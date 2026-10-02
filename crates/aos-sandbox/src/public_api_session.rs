@@ -101,6 +101,31 @@ pub struct PublicApiSessionAcceptor {
 }
 
 impl PublicApiSessionAcceptor {
+    // A delegation observes this SAME loaded map and credential originals. It
+    // does not reconstruct a TLS peer from the supplied fingerprint.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn check_git_delegated_registration(
+        &self,
+        fingerprint: [u8; 32],
+        principal: PrincipalId,
+        project: ProjectId,
+        binding: ChannelBinding,
+        client_ca: [u8; 32],
+        registrations: [u8; 32],
+    ) -> Result<(), PublicApiSessionError> {
+        self.credentials.recheck()?;
+        let trust = self.credentials.public_trust_digests();
+        let current = self.registrations.get(&fingerprint)
+            .ok_or(PublicApiSessionError::Authentication)?;
+        if current.principal != principal || current.project != project
+            || trust[1] != client_ca || trust[2] != registrations
+            || binding != certificate_key_binding(fingerprint)
+        {
+            return Err(PublicApiSessionError::Authentication);
+        }
+        self.credentials.recheck()
+    }
+
     /// Loads all four fixed public API credentials from systemd's credential directory.
     ///
     /// No caller-selected identity, certificate, trust root, or verifier enters
@@ -220,13 +245,7 @@ impl PublicApiSessionAcceptor {
         let session_binding = connection
             .export_keying_material([0; 32], EXPORTER_LABEL, Some(&digest))
             .map_err(|_| PublicApiSessionError::Authentication)?;
-        let key_binding = ChannelBinding::new(
-            Sha256::new()
-                .chain_update(KEY_BINDING_DOMAIN)
-                .chain_update(digest)
-                .finalize()
-                .into(),
-        );
+        let key_binding = certificate_key_binding(digest);
         let deadline = boottime()?
             .checked_add(SESSION_LIFETIME_NANOSECONDS)
             .ok_or(PublicApiSessionError::Stale)?;
@@ -247,6 +266,16 @@ impl PublicApiSessionAcceptor {
             .recheck()?;
         admission.authenticate()
     }
+}
+
+fn certificate_key_binding(digest: [u8; 32]) -> ChannelBinding {
+    ChannelBinding::new(
+        Sha256::new()
+            .chain_update(KEY_BINDING_DOMAIN)
+            .chain_update(digest)
+            .finalize()
+            .into(),
+    )
 }
 
 /// Retains authenticated peer identity without granting a capability.

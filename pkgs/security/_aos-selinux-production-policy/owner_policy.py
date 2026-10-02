@@ -546,3 +546,43 @@ def matrix(Access, Transition, accesses, ordinary_domains):
     negative.extend(view_negative)
     transitions.extend(view_transitions)
     return tuple(sorted(set(positive))), tuple(sorted(set(negative))), tuple(transitions)
+
+
+GIT_READ_RUNTIME = "aos_git_read_delegate_runtime_t"
+GIT_READ_CONTROLLER = "aos_sandbox_controller_t"
+GIT_READ_TASK_PAIRS = ((GATEWAY, GIT_READ_CONTROLLER), (GIT_READ_CONTROLLER, GATEWAY))
+
+
+def git_read_matrix(Access, Transition, accesses, ordinary_domains):
+    """Adds the closed selected cells to the SAME effective checker."""
+
+    positive = []
+    negative = []
+    transitions = (
+        Transition("init_t", "var_run_t", "dir", GIT_READ_RUNTIME, filename="git-upload-delegation"),
+        Transition(GIT_READ_CONTROLLER, GIT_READ_RUNTIME, "sock_file", GIT_READ_RUNTIME, filename="control.sock"),
+    )
+    positive.extend(accesses("init_t", GIT_READ_RUNTIME, "dir", ("create", "getattr", "open", "read", "search", "setattr")))
+    positive.extend(accesses(GIT_READ_CONTROLLER, GIT_READ_RUNTIME, "dir", ("add_name", "getattr", "open", "read", "remove_name", "search", "write")))
+    positive.extend(accesses(GIT_READ_CONTROLLER, GIT_READ_RUNTIME, "sock_file", ("create", "getattr", "setattr", "unlink")))
+    positive.extend(accesses(GATEWAY, GIT_READ_RUNTIME, "dir", ("getattr", "search")))
+    positive.extend(accesses(GATEWAY, GIT_READ_RUNTIME, "sock_file", ("getattr", "write")))
+    positive.extend((Access(GATEWAY, GIT_READ_CONTROLLER, "unix_stream_socket", "connectto"),
+                     Access(GIT_READ_RUNTIME, "tmpfs_t", "filesystem", "associate")))
+    for source, target in GIT_READ_TASK_PAIRS:
+        positive.append(Access(source, target, "process", "getattr"))
+        positive.extend(accesses(source, target, "dir", ("getattr", "search")))
+        positive.extend(accesses(source, target, "file", ("getattr", "open", "read")))
+        negative.extend(accesses(source, target, "process", ("ptrace", "transition", "sigkill", "signal")))
+        negative.extend(accesses(source, target, "file", ("append", "create", "link", "rename", "setattr", "unlink", "write")))
+        negative.extend(accesses(source, target, "dir", ("add_name", "create", "remove_name", "setattr", "write")))
+        for foreign in (*ordinary_domains, *ENFORCING, "init_t"):
+            if foreign not in (source, target):
+                negative.extend(accesses(source, foreign, "file", ("open", "read")))
+    negative.extend(accesses(GATEWAY, GIT_READ_RUNTIME, "dir", ("add_name", "create", "remove_name", "setattr", "write")))
+    negative.extend(accesses(GATEWAY, GIT_READ_RUNTIME, "sock_file", ("create", "setattr", "unlink")))
+    for foreign in (*ordinary_domains, *ENFORCING):
+        if foreign not in (GATEWAY, GIT_READ_CONTROLLER):
+            negative.extend(accesses(foreign, GIT_READ_RUNTIME, "sock_file", ("create", "open", "read", "write")))
+            negative.extend(accesses(foreign, GIT_READ_RUNTIME, "dir", ("add_name", "search", "write")))
+    return positive, negative, transitions

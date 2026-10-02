@@ -82,6 +82,7 @@ struct SelectionV1 {
     uid: u32,
     gid: u32,
     minimum_observed_node_available_bytes: u64,
+    delegation: Option<[String; 3]>,
 }
 
 impl SelectionV1 {
@@ -95,10 +96,23 @@ impl SelectionV1 {
                 .ok_or(Error::Configuration)
         };
         let selected = [next()?, next()?, next()?, next()?, next()?, next()?, next()?];
-        if arguments.next().is_some() {
-            return Err(Error::Configuration);
+        let mut selection = Self::decode(selected)?;
+        if let Some(flag) = arguments.next() {
+            let flag = flag.into_string().map_err(|_| Error::Configuration)?;
+            let uid = arguments.next().and_then(|value| value.into_string().ok()).ok_or(Error::Configuration)?;
+            let gid = arguments.next().and_then(|value| value.into_string().ok()).ok_or(Error::Configuration)?;
+            if flag != "--read-scope-inspection" || arguments.next().is_some() {
+                return Err(Error::Configuration);
+            }
+            let ids = [uid.parse::<u32>().map_err(|_| Error::Configuration)?,
+                gid.parse::<u32>().map_err(|_| Error::Configuration)?];
+            if ids.iter().any(|id| *id == 0 || *id >= 65536)
+                || ids[0].to_string() != uid || ids[1].to_string() != gid
+                || ids[0] == selection.uid || ids[1] == selection.gid
+            { return Err(Error::Configuration); }
+            selection.delegation = Some([flag, uid, gid]);
         }
-        Self::decode(selected)
+        Ok(selection)
     }
 
     fn decode(arguments: [String; 7]) -> Result<Self, Error> {
@@ -127,6 +141,7 @@ impl SelectionV1 {
             uid,
             gid,
             minimum_observed_node_available_bytes,
+            delegation: None,
         })
     }
 
@@ -136,6 +151,15 @@ impl SelectionV1 {
 
     fn policy_path(&self) -> &str {
         &self.arguments[4]
+    }
+
+    fn command_arguments(&self) -> std::borrow::Cow<'_, [String]> {
+        match &self.delegation {
+            None => std::borrow::Cow::Borrowed(&self.arguments),
+            Some(additional) => std::borrow::Cow::Owned(
+                self.arguments.iter().chain(additional).cloned().collect(),
+            ),
+        }
     }
 }
 
@@ -219,7 +243,7 @@ impl GatewayStartupV1 {
 }
 
 /// Keeps private launch custody, never a caller-constructible authority token.
-pub(super) struct GatewayAdmissionV1 {
+pub(in crate::git) struct GatewayAdmissionV1 {
     startup: GatewayStartupV1,
     manager: SystemdClient,
     original: ServiceObservationV1,
@@ -246,13 +270,22 @@ impl GatewayAdmissionV1 {
         finish_gate(&mut failure, result)
     }
 
-    pub(super) async fn recheck(&self) -> Result<(), Error> {
+    pub(in crate::git) async fn recheck(&self) -> Result<(), Error> {
         let mut failure = self.failure.lock().await;
         // Cancellation/unwind while any fallible observation is in flight
         // leaves admission latched. The mutex serializes both fixed drivers.
         begin_gate(&mut failure)?;
         let result = self.recheck_original().await;
         finish_gate(&mut failure, result)
+    }
+
+    pub(in crate::git) fn original_invocation(&self) -> [u8; 16] {
+        self.original.invocation
+    }
+
+    pub(in crate::git) fn delegation_controller_ids(&self) -> Option<(u32, u32)> {
+        let selected = self.startup.selection.delegation.as_ref()?;
+        Some((selected[1].parse().ok()?, selected[2].parse().ok()?))
     }
 
     async fn recheck_original(&self) -> Result<(), Error> {
@@ -395,7 +428,7 @@ fn require_service_delivery(
         || u64::try_from(nofile_soft).ok() != Some(NOFILE_MAX)
         || u64::try_from(cpu).ok() != Some(1_000_000)
         || u64::try_from(cpu_period).ok() != Some(100_000)
-        || !exact_command(start, &selection.arguments, pid)
+        || !exact_command(start, &selection.command_arguments(), pid)
         || !empty_array(pre) || !empty_array(post)
         || !empty_array(open_files) || !empty_array(extras)
         || u32::try_from(store_max).ok() != Some(0)
@@ -416,7 +449,9 @@ fn require_service_delivery(
         || bool::try_from(private_devices).ok() != Some(true)
         || bool::try_from(private_tmp).ok() != Some(true)
         || <&str>::try_from(protect_home).ok() != Some("yes")
-        || <&str>::try_from(protect_proc).ok() != Some("invisible")
+        || <&str>::try_from(protect_proc).ok() != Some(
+            if selection.delegation.is_some() { "default" } else { "invisible" },
+        )
         || bool::try_from(protect_tunables).ok() != Some(true)
         || bool::try_from(protect_modules).ok() != Some(true)
         || bool::try_from(protect_logs).ok() != Some(true)
@@ -467,7 +502,7 @@ fn exact_address_families(value: &OwnedValue) -> bool {
     found == [true; 3]
 }
 
-fn exact_command(value: &OwnedValue, arguments: &[String; 7], pid: u32) -> bool {
+fn exact_command(value: &OwnedValue, arguments: &[String], pid: u32) -> bool {
     let Some(command) = systemd_property_data::single_exec_start(value) else {
         return false;
     };

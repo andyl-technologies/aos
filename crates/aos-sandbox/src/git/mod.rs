@@ -12,6 +12,8 @@ mod compaction;
 mod confinement;
 mod durable;
 mod durable_payload;
+#[cfg(target_os = "linux")]
+pub mod delegated_read;
 mod fork_history;
 mod format;
 #[cfg(target_os = "linux")]

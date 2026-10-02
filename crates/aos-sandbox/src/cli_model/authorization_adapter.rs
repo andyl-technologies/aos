@@ -818,10 +818,56 @@ pub(crate) fn evaluate_current_protected_capability(
     operation: Operation,
     selector: &Selector,
 ) -> Result<CurrentCapabilityDecisionV1, CliAuthorizationAdapterError> {
+    evaluate_current_protected_capability_inner(
+        journal, capability_limits, policy_limits, capability_id,
+        authenticated_project, holder, channel_binding, protected_clock,
+        resource_kind, operation, selector, None,
+    )
+}
+
+// The closed retained inspection shares every policy/grant check with the
+// ordinary path, but owns its actual time-floor crossing before readback.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn evaluate_current_protected_capability_retained(
+    journal: &mut Journal,
+    capability_limits: PublisherAuthorityLimits,
+    policy_limits: PublisherPolicyLimits,
+    capability_id: CapabilityId,
+    authenticated_project: ProjectId,
+    holder: PrincipalId,
+    channel_binding: ChannelBinding,
+    protected_clock: &mut crate::controller::ControllerProtectedClockV1,
+    resource_kind: ResourceKind,
+    operation: Operation,
+    selector: &Selector,
+    crossing: &mut RetainedAuthorizationTimeFloorV1,
+) -> Result<CurrentCapabilityDecisionV1, CliAuthorizationAdapterError> {
+    evaluate_current_protected_capability_inner(
+        journal, capability_limits, policy_limits, capability_id,
+        authenticated_project, holder, channel_binding, protected_clock,
+        resource_kind, operation, selector, Some(crossing),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn evaluate_current_protected_capability_inner(
+    journal: &mut Journal,
+    capability_limits: PublisherAuthorityLimits,
+    policy_limits: PublisherPolicyLimits,
+    capability_id: CapabilityId,
+    authenticated_project: ProjectId,
+    holder: PrincipalId,
+    channel_binding: ChannelBinding,
+    protected_clock: &mut crate::controller::ControllerProtectedClockV1,
+    resource_kind: ResourceKind,
+    operation: Operation,
+    selector: &Selector,
+    crossing: Option<&mut RetainedAuthorizationTimeFloorV1>,
+) -> Result<CurrentCapabilityDecisionV1, CliAuthorizationAdapterError> {
     let clock = protected_clock
         .sample()
         .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
-    let time_floor = advance_protected_time_floor(journal, clock)?;
+    let time_floor = advance_protected_time_floor_inner(journal, clock, crossing)?;
     let trusted_now = clock.wall_seconds();
     let capability = {
         let registry = PublisherCapabilityRegistry::load(journal, capability_limits)
@@ -1181,10 +1227,46 @@ struct ProtectedTimeFloorRevisionV1 {
     digest: ObjectDigest,
 }
 
+/// Owns the exact proposed transaction, commit outcome and readback debt.
+/// This is negative custody, never a current decision or a retry capability.
+#[derive(Default)]
+pub(crate) struct RetainedAuthorizationTimeFloorV1 {
+    proposal: Option<JournalTransaction>,
+    commit: Option<Result<crate::journal::CommitResult, crate::JournalError>>,
+    expected: Option<(Vec<u8>, Vec<u8>)>,
+    readback: Option<bool>,
+    attempted: bool,
+}
+
+impl RetainedAuthorizationTimeFloorV1 {
+    pub(crate) fn failure(&self) -> Option<&crate::JournalError> {
+        self.commit.as_ref().and_then(|result| result.as_ref().err())
+    }
+
+    pub(crate) fn clean_readback(&self) -> bool {
+        matches!(self.commit, Some(Ok(_))) && self.readback == Some(true)
+    }
+}
+
 fn advance_protected_time_floor(
     journal: &mut Journal,
     clock: RawPairedClockSample,
 ) -> Result<ProtectedTimeFloorRevisionV1, CliAuthorizationAdapterError> {
+    advance_protected_time_floor_inner(journal, clock, None)
+}
+
+fn advance_protected_time_floor_inner(
+    journal: &mut Journal,
+    clock: RawPairedClockSample,
+    mut retained: Option<&mut RetainedAuthorizationTimeFloorV1>,
+) -> Result<ProtectedTimeFloorRevisionV1, CliAuthorizationAdapterError> {
+    if let Some(destination) = retained.as_deref_mut() {
+        if destination.attempted {
+            return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
+        }
+        // Interrupted or failed crossings can never be repeated.
+        destination.attempted = true;
+    }
     journal
         .ensure_protected_authority()
         .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
@@ -1236,8 +1318,32 @@ fn advance_protected_time_floor(
     .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
     // A journal error can be an acknowledgement loss after durable append.
     // Exact readback below is therefore the sole success criterion.
-    let _commit_outcome = journal.commit(&transaction);
+    let Some(destination) = retained else {
+        // Preserve ordinary locals and their original reverse drop order.
+        let _commit_outcome = journal.commit(&transaction);
+        if !time_floor_readback(journal, generation, &revision_bytes, &head_bytes) {
+            return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
+        }
+        return Ok(revision);
+    };
+    destination.proposal = Some(transaction);
+    destination.expected = Some((revision_bytes, head_bytes));
+    let proposal = destination.proposal.as_ref()
+        .ok_or(CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+    destination.commit = Some(journal.commit(proposal));
+    let (revision_bytes, head_bytes) = destination.expected.as_ref()
+        .ok_or(CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+    destination.readback = Some(time_floor_readback(
+        journal, generation, revision_bytes, head_bytes,
+    ));
+    if !destination.clean_readback() {
+        return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
+    }
 
+    Ok(revision)
+}
+
+fn time_floor_readback(journal: &Journal, generation: u64, revision: &[u8], head: &[u8]) -> bool {
     let committed_revision = journal.get(
         RecordNamespace::CliAuthorizationTime,
         &time_floor_revision_key(generation),
@@ -1246,13 +1352,7 @@ fn advance_protected_time_floor(
         RecordNamespace::CliAuthorizationTime,
         TIME_FLOOR_CURRENT_KEY,
     );
-    if committed_revision != Some(revision_bytes.as_slice())
-        || committed_head != Some(head_bytes.as_slice())
-    {
-        return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
-    }
-
-    Ok(revision)
+    committed_revision == Some(revision) && committed_head == Some(head)
 }
 
 /// Applies the ordinary protected CLI time fence before first capability issuance.

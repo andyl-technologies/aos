@@ -44,6 +44,7 @@
   # interpreter/tool paths do not depend on this policy, avoiding a cycle.
   productionPolicy = pkgs.aosSelinuxProductionPolicyWith {
     inherit viewPreparers homeContextAliases;
+    gitReadDelegation = config.aos.sandbox.controllerService.gitReadInspection.enable;
   };
   canonicalPolicyPath = "${productionPolicy}/etc/selinux/aos/policy/policy.33";
   # selinuxfs serializes the loaded policydb; its bytes are not the input file.

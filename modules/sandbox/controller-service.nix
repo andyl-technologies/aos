@@ -173,6 +173,8 @@ in {
 
     gitUploadBootstrap.enable = lib.mkEnableOption "the non-admitting Git capacity bootstrap under an independently designated full-project admin policy issuer; no upload/export activation";
 
+    gitReadInspection.enable = lib.mkEnableOption "the fixed Gateway read-scope inspection channel, without Git admission or backend effects";
+
     publisherIngress.uid = lib.mkOption {
       type = lib.types.int;
       default = 991;
@@ -317,6 +319,17 @@ in {
 
     assertions =
       [
+        {
+          assertion = !cfg.gitReadInspection.enable
+            || (cfg.publicApi.enable && cfg.publisherIngress.enable && cfg.gitUploadBootstrap.enable
+              && config.aos.sandbox.gitGatewayTransport.enable
+              && !cfg.sourceSuccessorIssuance.enable
+              && cfg.credentials.publicApiClientCa == config.aos.sandbox.gitGatewayTransport.credentials.clientCa
+              && cfg.credentials.publicApiPrincipals == config.aos.sandbox.gitGatewayTransport.credentials.principals
+              && controller.uid != config.aos.sandbox.gitGatewayTransport.uid
+              && controller.gid != config.aos.sandbox.gitGatewayTransport.gid);
+          message = "Git inspection requires the same independently supplied CA/registration map, distinct fixed owners, original publisher/Cache bootstrap and the registered Controller API; it activates no Git effects.";
+        }
         {
           assertion = cfg.credentials.nodeId != null;
           message = "aos.sandbox.controllerService.credentials.nodeId is required";
@@ -586,6 +599,7 @@ in {
           + lib.optionalString cfg.publicApi.enable " --public-api"
           + lib.optionalString cfg.publisherIngress.enable " --publisher-ingress"
           + lib.optionalString cfg.gitUploadBootstrap.enable " --git-upload-bootstrap"
+          + lib.optionalString cfg.gitReadInspection.enable " --git-read-inspection=${toString config.aos.sandbox.gitGatewayTransport.uid}:${toString config.aos.sandbox.gitGatewayTransport.gid}"
           + lib.optionalString cfg.sourceSuccessorIssuance.enable " --issue-source-successor";
         Sockets = lib.optional cfg.publisherIngress.enable "aos-sandboxd-publisher.socket";
         # Deliver the same configuration-selected inputs independently. Root's
@@ -636,7 +650,9 @@ in {
           "aos/sandboxd/view-sources"
         ];
         StateDirectoryMode = "0700";
-        RuntimeDirectory = "aos/sandboxd";
+        RuntimeDirectory = if cfg.gitReadInspection.enable
+          then ["aos/sandboxd" "aos/git-upload-delegation"]
+          else "aos/sandboxd";
         # Traversal grants no access to diagnostics or authority; the public
         # socket accepts only registered mutually authenticated TLS clients.
         RuntimeDirectoryMode =
@@ -667,7 +683,9 @@ in {
         ProtectKernelLogs = true;
         ProtectKernelModules = true;
         ProtectKernelTunables = true;
-        ProtectProc = "invisible";
+        # Selected peers need their exact stat/attr observations. MAC still
+        # denies generic foreign task contents; this is not ptrace authority.
+        ProtectProc = if cfg.gitReadInspection.enable then "default" else "invisible";
         ProtectSystem = "strict";
         RestrictAddressFamilies = ["AF_UNIX"];
         RestrictNamespaces = true;

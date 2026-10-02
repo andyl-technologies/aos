@@ -852,6 +852,7 @@ dependencies = [
  "aos-sandbox-source-provider-protocol",
  "aos-systemd",
  "axum",
+ "base64 0.22.1",
  "buffa",
  "bytes",
  "connectrpc",

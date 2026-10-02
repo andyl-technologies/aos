@@ -1243,7 +1243,7 @@ def _check_selected_launcher_image_ioctls(setools: Any, policy: Any) -> list[str
     return evidence
 
 
-def check_policy(setools: Any, policy: Any) -> list[str]:
+def check_policy(setools: Any, policy: Any, *, git_read_delegation: bool = False) -> list[str]:
     """Returns deterministic evidence lines or raises on a policy mismatch."""
 
     evidence: list[str] = []
@@ -1422,7 +1422,33 @@ def check_policy(setools: Any, policy: Any) -> list[str]:
         )
 
     evidence.extend(_check_selected_launcher_image_ioctls(setools, policy))
+    if git_read_delegation:
+        evidence.extend(_check_git_read_delegation(setools, policy))
     return evidence
+
+
+def _check_git_read_delegation(setools: Any, policy: Any) -> list[str]:
+    """Checks selected IPC/task cells without changing the default matrix."""
+
+    runtime = owner_policy.GIT_READ_RUNTIME
+    if str(policy.lookup_type(runtime)) != runtime:
+        raise ValueError("Git inspection IPC type is aliased")
+    for attribute in ("domain", "file_type"):
+        if runtime in attribute_members(setools, policy, attribute):
+            raise ValueError(f"Git inspection IPC inherited {attribute}")
+    positive, negative, transitions = owner_policy.git_read_matrix(
+        Access, Transition, accesses, DOMAINS,
+    )
+    for transition in transitions:
+        if not any(rule.enabled() for rule in transition_rules(setools, policy, transition)):
+            raise ValueError(f"missing selected Git transition: {transition}")
+    for access in positive:
+        if not any(rule.enabled() for rule in allow_rules(setools, policy, access)):
+            raise ValueError(f"missing selected Git allow: {access}")
+    for access in negative:
+        if allow_rules(setools, policy, access):
+            raise ValueError(f"forbidden selected Git allow exists: {access}")
+    return ["git-read-delegation\tselected-fixed-inspection-only"]
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -1430,6 +1456,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
     parser = argparse.ArgumentParser()
     parser.add_argument("policy", type=Path)
+    parser.add_argument("--git-read-delegation", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -1441,7 +1468,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     policy = setools.SELinuxPolicy(str(args.policy))
     queries = rule_query.IndexedPolicyQueries(setools, policy)
-    for line in check_policy(queries, policy):
+    for line in check_policy(queries, policy, git_read_delegation=args.git_read_delegation):
         print(line)
     return 0
 

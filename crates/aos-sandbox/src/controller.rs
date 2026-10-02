@@ -3107,6 +3107,23 @@ where
         self.reconciler.existing_cache_project_usage_v1(project)
     }
 
+    /// Inspects one genuinely received Gateway read scope without admitting Git.
+    ///
+    /// This uses the same exclusive Journal, holder-handle registry, evaluator
+    /// and protected time-floor engine as public authorization. Actual crossing
+    /// outcomes stay in the opaque request owner, including acknowledgement loss.
+    /// No reservation, public effect permission or backend readiness follows.
+    #[cfg(target_os = "linux")]
+    pub fn inspect_original_gateway_git_read_v1(
+        &mut self,
+        original: &mut crate::git::delegated_read::GitReadRequestOwnerV1,
+        acceptor: &crate::public_api_session::PublicApiSessionAcceptor,
+    ) {
+        public_api_authorization::inspect_original_gateway_git_read_v1(
+            self.reconciler.journal_mut(), original, acceptor,
+        );
+    }
+
     /// Rechecks the same fixed initialization owners after a project usage loan.
     ///
     /// # Errors

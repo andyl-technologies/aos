@@ -48,6 +48,7 @@ use super::{
 };
 
 use super::gateway_funding::FundedBodyBackingV1;
+use super::delegated_read::{BasicHolderV1, GitReadKindV1, NegativeGitResponseV1};
 
 type GitConnection = Connection<AuthenticatedPublicApiStream<TcpStream>, Bytes>;
 
@@ -303,10 +304,21 @@ struct OriginalRequestCutV1 {
 
 impl OriginalRequestCutV1 {
     fn capture(peer: &PublicApiPeer) -> Result<Self, GitHttpErrorV1> {
+        Self::capture_lifetime(peer, REQUEST_LIFETIME_NANOSECONDS)
+    }
+
+    fn capture_lifetime(peer: &PublicApiPeer, maximum_lifetime: u64) -> Result<Self, GitHttpErrorV1> {
         peer.recheck_original_socket().map_err(GitHttpErrorV1::OriginalSocket)?;
         let session_deadline = peer.deadline_boottime_nanoseconds().map_err(GitHttpErrorV1::Session)?;
         let now = boottime().map_err(GitHttpErrorV1::Clock)?;
-        let deadline_boottime = request_deadline(now, session_deadline)?;
+        let deadline_boottime = if maximum_lifetime == REQUEST_LIFETIME_NANOSECONDS {
+            request_deadline(now, session_deadline)?
+        } else {
+            let deadline = session_deadline.min(now.checked_add(maximum_lifetime)
+                .ok_or(GitHttpErrorV1::Clock(BoundedRecordError::Clock))?);
+            if deadline <= now { return Err(GitHttpErrorV1::Expired); }
+            deadline
+        };
         let cookie = peer.original_socket_cookie().map_err(GitHttpErrorV1::OriginalSocket)?;
 
         Ok(Self {
@@ -399,6 +411,9 @@ struct OriginalGitRequestV1 {
     response: Option<SendResponse<Bytes>>,
     outgoing: Option<RetainedGitResponseV1>,
     body: OriginalBodyV1,
+    read_kind: Option<GitReadKindV1>,
+    holder: Option<BasicHolderV1>,
+    negative_delivery: Option<Result<Result<(), h2::Error>, tokio::time::error::Elapsed>>,
 }
 
 impl OriginalGitRequestV1 {
@@ -412,6 +427,9 @@ impl OriginalGitRequestV1 {
             response: Some(response),
             outgoing: None,
             body: OriginalBodyV1::default(),
+            read_kind: None,
+            holder: None,
+            negative_delivery: None,
         }
     }
 }
@@ -421,6 +439,7 @@ struct OriginalHttpStateV1 {
     cut: Option<OriginalRequestCutV1>,
     original: Option<OriginalGitRequestV1>,
     funded_body: Option<Vec<u8>>,
+    delegated_read: bool,
 }
 
 /// Retains one concrete connection, its original request and its one-way end state.
@@ -486,6 +505,7 @@ impl GitHttpConnectionV1 {
                 cut: None,
                 original: None,
                 funded_body: None,
+                delegated_read: false,
             },
         };
         owner.recheck_handshake();
@@ -497,6 +517,12 @@ impl GitHttpConnectionV1 {
             if let Err(cause) = self.peer.recheck_original_socket() {
                 self.state.status.end_with(&self.peer, GitHttpErrorV1::OriginalSocket(cause));
             }
+        }
+    }
+
+    pub(super) fn select_delegated_read(&mut self) {
+        if self.state.status.phase == OriginalHttpPhaseV1::Idle {
+            self.state.delegated_read = true;
         }
     }
 
@@ -615,7 +641,11 @@ impl GitHttpConnectionV1 {
             return Err(GitHttpErrorV1::Request);
         }
         self.state.status.phase = OriginalHttpPhaseV1::Receiving;
-        self.state.cut = Some(OriginalRequestCutV1::capture(&self.peer)?);
+        self.state.cut = Some(if self.state.delegated_read {
+            OriginalRequestCutV1::capture_lifetime(&self.peer, 10_000_000_000)?
+        } else {
+            OriginalRequestCutV1::capture(&self.peer)?
+        });
         let cut = self.state.cut.as_ref().ok_or(GitHttpErrorV1::Request)?;
 
         let accepted = tokio::time::timeout_at(cut.wait_cut, self.connection.accept()).await;
@@ -635,7 +665,14 @@ impl GitHttpConnectionV1 {
         }
 
         let original = self.state.original.as_mut().ok_or(GitHttpErrorV1::Request)?;
-        let parsed = parse_request(&original.head)?;
+        let parsed = if self.state.delegated_read {
+            let (request, kind) = parse_delegated_request(&original.head)?;
+            original.read_kind = Some(kind);
+            original.holder = Some(BasicHolderV1::capture(&original.head.headers));
+            request
+        } else {
+            parse_request(&original.head)?
+        };
         original.parsed = Some(parsed);
         if parsed.endpoint().project() != self.peer.project() {
             return Err(GitHttpErrorV1::Request);
@@ -650,6 +687,11 @@ impl GitHttpConnectionV1 {
         let cut = self.state.cut.as_ref().ok_or(GitHttpErrorV1::Request)?;
         require_current(&self.peer, &self.state.status, cut)?;
         let original = self.state.original.as_mut().ok_or(GitHttpErrorV1::Request)?;
+        if original.read_kind == Some(GitReadKindV1::Discovery)
+            && !original.body.bytes.is_empty()
+        {
+            return Err(GitHttpErrorV1::Request);
+        }
         let facts = RequestFactsV1 {
             request: parsed,
             stream_id,
@@ -787,6 +829,16 @@ pub(crate) struct RetainedGitHttpConnectionCustodyV1 {
 }
 
 impl RetainedGitHttpConnectionCustodyV1 {
+    /// Borrows the selected negative delivery's actual nested native refusal.
+    pub(super) fn negative_delivery_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        let result = self.owner.state.original.as_ref()?.negative_delivery.as_ref()?;
+        match result {
+            Err(cause) => Some(cause),
+            Ok(Err(cause)) => Some(cause),
+            Ok(Ok(())) => None,
+        }
+    }
+
     /// Borrows an actual source; interruption state has no nested error object.
     pub(super) fn actual_cause(&self) -> Option<&GitHttpErrorV1> {
         self.owner.state.status.first_actual_cause()
@@ -821,6 +873,69 @@ pub(crate) struct GitHttpRequestV1<'connection> {
 }
 
 impl GitHttpRequestV1<'_> {
+    pub(super) fn delegated_input(&self) -> Option<(GitReadKindV1, &BasicHolderV1)> {
+        Some((self.original.read_kind?, self.original.holder.as_ref()?))
+    }
+
+    /// Sends only a closed negative status, with no Git advertisement or body.
+    /// Returned stream custody precedes the final same-original bookend.
+    pub(super) fn send_negative(
+        &mut self,
+        response: NegativeGitResponseV1,
+    ) -> impl Future<Output = Result<(), GitHttpErrorV1>> + '_ {
+        let mut attempt = RequestAttemptV1 { request: self, armed: true };
+        async move {
+            let result = attempt.request.send_negative_inner(response).await;
+            attempt.finish(result)
+        }
+    }
+
+    async fn send_negative_inner(
+        &mut self,
+        response: NegativeGitResponseV1,
+    ) -> Result<(), GitHttpErrorV1> {
+        self.recheck_original().await?;
+        if self.original.outgoing.is_some() {
+            return Err(GitHttpErrorV1::TerminalMismatch);
+        }
+        self.original.outgoing = Some(RetainedGitResponseV1 {
+            bytes: Bytes::new(), stream: None, queued: 0,
+        });
+        let mut headers = Response::builder()
+            .status(response.status())
+            .header(http::header::CACHE_CONTROL, "no-store")
+            .header(http::header::CONTENT_LENGTH, "0");
+        if response == NegativeGitResponseV1::Unauthorized {
+            headers = headers.header(http::header::WWW_AUTHENTICATE, "Basic realm=\"aos-git\"");
+        }
+        let headers = headers.body(()).map_err(GitHttpErrorV1::Headers)?;
+        let response = self.original.response.as_mut().ok_or(GitHttpErrorV1::Closed)?;
+        let stream = response.send_response(headers, true).map_err(GitHttpErrorV1::Transport)?;
+        let outgoing = self.original.outgoing.as_mut().ok_or(GitHttpErrorV1::Closed)?;
+        outgoing.stream = Some(stream);
+        self.original.response = None;
+        require_current(self.peer, self.status, self.cut)?;
+        // Queuing headers alone does not deliver them. Drive the SAME H2/TLS
+        // connection through bounded graceful close before deliberate disposal.
+        self.connection.graceful_shutdown();
+        self.original.negative_delivery = Some(tokio::time::timeout_at(
+            self.cut.wait_cut,
+            poll_fn(|context| self.connection.poll_closed(context)),
+        ).await);
+        if !matches!(self.original.negative_delivery, Some(Ok(Ok(())))) {
+            // The nested native close/timeout error stays in this actual slot.
+            return Err(GitHttpErrorV1::Closed);
+        }
+        // RDHUP after intentional closure is not a fresh socket proof. Only
+        // the original trust/cut are checked here; no remote ACK is inferred.
+        self.peer.recheck().map_err(GitHttpErrorV1::Session)?;
+        if boottime().map_err(GitHttpErrorV1::Clock)? >= self.cut.deadline_boottime {
+            return Err(GitHttpErrorV1::Expired);
+        }
+        self.status.phase = OriginalHttpPhaseV1::ResponseQueued;
+        Ok(())
+    }
+
     /// Borrows the authenticated peer for independent protected admission.
     pub(crate) fn peer(&self) -> &PublicApiPeer {
         self.peer
@@ -1166,6 +1281,45 @@ fn parse_request(head: &http::request::Parts) -> Result<GitSmartRequestV1, GitHt
     let repository = ResourceId::from_bytes(decode_id(&route[33..65])?);
     let endpoint = GitSmartEndpointV1::new(project, repository, service).map_err(GitHttpErrorV1::Profile)?;
     GitSmartRequestV1::parse(&endpoint.command()).map_err(GitHttpErrorV1::Profile)
+}
+
+fn parse_delegated_request(
+    head: &http::request::Parts,
+) -> Result<(GitSmartRequestV1, GitReadKindV1), GitHttpErrorV1> {
+    let mut protocols = head.headers.get_all("git-protocol").iter();
+    if protocols.next().map(|value| value.as_bytes()) != Some(b"version=2")
+        || protocols.next().is_some()
+    {
+        return Err(GitHttpErrorV1::Request);
+    }
+    if head.method == Method::POST {
+        let request = parse_request(head)?;
+        if request.endpoint().service() != GitProtocolV2ServiceV1::UploadPack {
+            return Err(GitHttpErrorV1::Request);
+        }
+        return Ok((request, GitReadKindV1::Upload));
+    }
+    if head.method != Method::GET
+        || head.uri.query() != Some("service=git-upload-pack")
+        || head.headers.contains_key(http::header::CONTENT_ENCODING)
+        || head.headers.contains_key(http::header::TRANSFER_ENCODING)
+    {
+        return Err(GitHttpErrorV1::Request);
+    }
+    let route = head.uri.path().as_bytes().strip_prefix(b"/aos/")
+        .ok_or(GitHttpErrorV1::Request)?;
+    if route.len() != 75 || route[32] != b'/' || route[65] != b'/'
+        || &route[66..] != b"info/refs"
+    {
+        return Err(GitHttpErrorV1::Request);
+    }
+    let endpoint = GitSmartEndpointV1::new(
+        ProjectId::from_bytes(decode_id(&route[..32])?),
+        ResourceId::from_bytes(decode_id(&route[33..65])?),
+        GitProtocolV2ServiceV1::UploadPack,
+    ).map_err(GitHttpErrorV1::Profile)?;
+    let request = GitSmartRequestV1::parse(&endpoint.command()).map_err(GitHttpErrorV1::Profile)?;
+    Ok((request, GitReadKindV1::Discovery))
 }
 
 fn decode_id(bytes: &[u8]) -> Result<[u8; 16], GitHttpErrorV1> {
