@@ -1474,6 +1474,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         signal_fault_branches,
         promote_signal_fault_campaign_choices: false,
         pending_live_network_prefix: None,
+        pending_held_host_outcomes: None,
         launch_configs,
         block_bindings,
         ninep_bindings,

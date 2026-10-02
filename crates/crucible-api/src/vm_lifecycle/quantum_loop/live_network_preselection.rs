@@ -8,6 +8,10 @@ impl ProductionVmLifecycleLoop {
         mut outcome: QuantumOutcome,
         prefix: PendingLiveNetworkPrefix,
     ) -> Result<QuantumOutcome, SchedulerError> {
+        let held_stop = self.inner.held_host_stop_witness();
+        if let Some(witness) = &held_stop {
+            self.inner.validate_held_host_stop(witness)?;
+        }
         let PendingLiveNetworkPrefix {
             decisions,
             appends,
@@ -65,6 +69,10 @@ impl ProductionVmLifecycleLoop {
             signal_fault_frontier_start,
             &mut outcome,
         )?;
+        if let Some(witness) = held_stop {
+            self.inner
+                .refresh_held_host_stop_prefix_after_transition(&witness)?;
+        }
         self.capture_debug_runtime_evidence()?;
         Ok(outcome)
     }

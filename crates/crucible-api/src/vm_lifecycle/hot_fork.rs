@@ -1422,6 +1422,7 @@ impl ProductionVmLifecycleLoop {
     pub fn capture_hot_fork_world_continuation(
         &mut self,
     ) -> Result<ProductionVmHotForkWorldContinuation, SchedulerError> {
+        self.require_published_host_continuation()?;
         if !self.exact_checkpoint_ready()? {
             return Err(hot_fork_boundary_error(
                 "production world is not at an exact checkpoint boundary",

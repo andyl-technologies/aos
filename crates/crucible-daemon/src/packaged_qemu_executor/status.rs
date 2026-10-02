@@ -581,6 +581,13 @@ where
         self.inner.drain_pending_selectable_requests()
     }
 
+    fn pending_selectable_request_time(
+        &self,
+        pending: &QemuNodeSelectablePendingRequest,
+    ) -> Result<VirtualTime, SchedulerError> {
+        self.inner.pending_selectable_request_time(pending)
+    }
+
     fn apply_selectable_reply(
         &mut self,
         parent: &Configuration,

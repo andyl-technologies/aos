@@ -345,6 +345,7 @@ impl ProductionVmLifecycleLoop {
         terminal_nodes: &BTreeSet<NodeId>,
         boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
     ) -> Result<ContentHash, SchedulerError> {
+        self.require_published_host_continuation()?;
         boundary()?;
         let configuration_id = configuration.id();
         let previous = match self.checkpoint_targets.get(&configuration_id) {
@@ -413,6 +414,7 @@ impl ProductionVmLifecycleLoop {
         terminal_nodes: &BTreeSet<NodeId>,
         boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
     ) -> Result<ContentHash, SchedulerError> {
+        self.require_published_host_continuation()?;
         boundary()?;
         // Drain every selectable delta before snapshotting scheduler and QEMU
         // state. Pending requests remain retained by the node set, while
