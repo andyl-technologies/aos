@@ -79,7 +79,7 @@ mod tests {
         json!({
             "packages":{"system":"x86_64-linux","artifacts":[],"modules":[]},
             "transaction":{"schema":"aos.package.transaction","system":"x86_64-linux",
-                "scope":["profile","main"],"inputs":[],"artifacts":[],"packages":[],
+                "scope":["profile","main"],"inputs":[],"artifacts":[],"packages":[],"retire":[],
                 "graph":{"schema":"aos.activation.graph","nodes":{},"order":[]}},
             "documentation":{"schema":"aos.module.documentation","system":"x86_64-linux",
                 "scope":["profile","main"],"packages":[],"options":[],"abilities":{}}
