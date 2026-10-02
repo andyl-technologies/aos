@@ -100,6 +100,7 @@ in
             ${pkgs.python3}/bin/python3 ${../fleet/native-filesystem-firewall-oracles-self-test.py} ${../fleet/native-filesystem-firewall-oracles.py}
             ${pkgs.python3}/bin/python3 ${../fleet/native-reference-filesystem-flights-self-test.py} ${../fleet/native-reference-filesystem-flights.py}
             ${pkgs.python3}/bin/python3 ${./managed-paths-test.py} ${../../pkgs/system/_aos-host-policy/managed-paths.py}
+            ${pkgs.python3}/bin/python3 ${../build/composefs-directory-source.py} ${../../pkgs/system/build-composefs-dump.py}
             ${pkgs.python3}/bin/python3 ${./host-store-seed-test.py} ${pkgs.bash}/bin/bash ${pkgs.coreutils} ${../../pkgs/boot/_aos-boot-preparations/aos-host-store-seed.sh} ${pkgs.nix}
             ${pkgs.python3}/bin/python3 ${./mount-var-test.py} ${pkgs.bash}/bin/bash ${../../pkgs/boot/_aos-boot-preparations/mount-var.sh}
             ${pkgs.python3}/bin/python3 ${./seed-profile-reconciliation.py} ${pkgs.bash}/bin/bash ${../../pkgs/boot/_aos-boot-preparations/aos-seed-profiles.sh} ${pkgs.coreutils}/bin ${pkgs.jq}/bin
