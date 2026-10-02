@@ -144,8 +144,12 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   rawMkDerivation = stdenv.mkDerivation;
   # Companion metadata is an artifact of a package, not another installable
   # package. Using the public builder here would recursively attach companions.
-  artifactBuilders = callPackage ./build-support/_trivial-builders.nix {
-    mkDerivation = rawMkDerivation;
+  # Compiler inputs can make inert catalog locators become scanned references.
+  # Keep these builders limited to text tools; explicit text contexts still
+  # retain module sources and qualification-selected payloads normally.
+  artifactBuilders.writeTextFile = import ./build-support/_artifact-text.nix {
+    inherit (resolvedBuildPackages) bash coreutils;
+    system = stdenv.buildPlatform.system;
   };
   qualificationArtifactsFor = package:
     lib.optionalAttrs (package ? qualification) (let
