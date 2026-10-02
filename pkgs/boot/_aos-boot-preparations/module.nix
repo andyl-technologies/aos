@@ -259,6 +259,22 @@
       logging = substrateLogging;
     })
     // {activationOwner = "image";};
+  initrdStoreHandoff = handoffService {
+    key = "aos-initrd-store-handoff";
+    description = "Retain committed provisioning receipts in the host store";
+    activationOwner = "manager";
+    arguments = ["handoff-initrd-store"] ++ stageInputs "initrd" cfg.initrdStateDirectory;
+    dependencies =
+      emptyDependencies
+      // {
+        after = [(serviceResource "nix-overlay-setup") (serviceResource "aos-ability-initrd-controller")];
+        requires = [(serviceResource "nix-overlay-setup") (serviceResource "aos-ability-initrd-controller")];
+        before = [initrdFilesystemsReadiness switchRootReadiness];
+        required_by = [initrdFilesystemsReadiness];
+        implicit_dependencies = false;
+      };
+    logging = substrateLogging;
+  };
   hostReceiver = handoffService {
     key = "aos-ability-host-receiver";
     description = "Revalidate and receive initrd ability ownership";
@@ -565,7 +581,7 @@
     machineId
     etcOverlaySetup
   ];
-  handoffInitrdServices = [initrdController initrdHandoffBarrier];
+  handoffInitrdServices = [initrdController initrdHandoffBarrier initrdStoreHandoff];
   handoffHostServices = [hostStoreSeed hostReceiver hostController];
   handoffPreparationResources =
     builtins.sort

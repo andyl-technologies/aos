@@ -23,7 +23,7 @@ use crate::native_deployment::{EvaluationInput, NativeDeploymentCommand};
 const INITRD_INPUT: &str = "/usr/lib/aos/initrd/deployment";
 const INITRD_STATE: &str = "/run/aos-boot-transaction-storage/aos/initrd-stage-journal";
 const BINDING: &str = "/usr/lib/aos/boot-metadata-binding.json";
-const AUTHORIZATION_LIMIT: u64 = 2 * 1024 * 1024;
+pub(super) const AUTHORIZATION_LIMIT: u64 = 2 * 1024 * 1024;
 
 pub(super) struct VerifiedAuthorization {
     pub(super) input: AuthorizedProvisioningInput,
@@ -64,8 +64,58 @@ pub(super) fn read_initial_in(
     initrd: &NativeDeploymentCommand,
     binding_path: &Path,
 ) -> Result<VerifiedAuthorization> {
+    let committed = read_committed_preparation(initrd, binding_path)?;
+    let result = committed.result;
+    let descriptor = EvaluationInput::read_in(
+        &host.input.join("evaluation.json"),
+        &host.nix_store,
+        &Default::default(),
+    )?;
+    let authorization = result.authorized_input;
+    let (root, suffix) = crate::deployment::nix::store_root_and_suffix(&authorization)?;
+    ensure!(
+        root == authorization && suffix.as_os_str().is_empty(),
+        "authorization receipt is not an immutable root file"
+    );
+    let bytes = read_immutable_bounded(&authorization, &host.nix_store, AUTHORIZATION_LIMIT)?;
+    let authorized =
+        validate_authorized_bytes(&bytes, result.authorized_input_sha256, &descriptor)?;
+    let source = serde_json::to_value(authorized.source)?;
+    ensure!(
+        source.as_str() == Some(result.source.as_str()),
+        "committed disk source differs from the metadata authorization decision"
+    );
+    Ok(VerifiedAuthorization {
+        input: authorized,
+        authorization,
+        authorization_sha256: result.authorized_input_sha256,
+        image: ImageAdmission {
+            path: fs::canonicalize(&initrd.admission)?,
+            sha256: initrd.admission_sha256,
+        },
+        decision: committed.decision,
+        _snapshot: committed.snapshot,
+    })
+}
+
+/// Keeps the image-selected preparation result and its journal authority locked.
+pub(super) struct CommittedPreparation {
+    pub(super) result: PreparationResult,
+    pub(super) decision: InitrdDecision,
+    pub(super) snapshot: Snapshot,
+}
+
+/// Selects the exact committed preparation for transfer or host adoption.
+///
+/// # Errors
+/// Returns an error for failed image admission, incomplete journal work,
+/// a foreign binding, or a missing or malformed preparation result.
+pub(super) fn read_committed_preparation(
+    initrd: &NativeDeploymentCommand,
+    binding_path: &Path,
+) -> Result<CommittedPreparation> {
     let input = &initrd.input;
-    crate::native_deployment::verify(&initrd)?;
+    crate::native_deployment::verify(initrd)?;
 
     let expected = read_initrd_deployment(input, &initrd.nix_store)?;
     let binding: MetadataBinding =
@@ -97,41 +147,16 @@ pub(super) fn read_initial_in(
     );
     crate::deployment::nix::store_root_and_suffix(&result.committed_plan)?;
 
-    let descriptor = EvaluationInput::read_in(
-        &host.input.join("evaluation.json"),
-        &host.nix_store,
-        &Default::default(),
-    )?;
-    let authorization = result.authorized_input;
-    let (root, suffix) = crate::deployment::nix::store_root_and_suffix(&authorization)?;
-    ensure!(
-        root == authorization && suffix.as_os_str().is_empty(),
-        "authorization receipt is not an immutable root file"
-    );
-    let bytes = read_immutable_bounded(&authorization, &host.nix_store, AUTHORIZATION_LIMIT)?;
-    let authorized =
-        validate_authorized_bytes(&bytes, result.authorized_input_sha256, &descriptor)?;
-    let source = serde_json::to_value(authorized.source)?;
-    ensure!(
-        source.as_str() == Some(result.source.as_str()),
-        "committed disk source differs from the metadata authorization decision"
-    );
     let decision = InitrdDecision {
         scope: binding.scope,
         sequence: committed.sequence,
         content: committed.content.clone(),
         effect: binding.effect,
     };
-    Ok(VerifiedAuthorization {
-        input: authorized,
-        authorization,
-        authorization_sha256: result.authorized_input_sha256,
-        image: ImageAdmission {
-            path: fs::canonicalize(&initrd.admission)?,
-            sha256: initrd.admission_sha256,
-        },
+    Ok(CommittedPreparation {
+        result,
         decision,
-        _snapshot: snapshot,
+        snapshot,
     })
 }
 

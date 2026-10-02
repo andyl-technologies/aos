@@ -6,6 +6,7 @@
 //! operator sources instead of reading new platform metadata.
 
 mod capture;
+mod handoff;
 mod image;
 mod proof;
 mod reader;
@@ -24,7 +25,7 @@ struct Arguments {
     deployment: crate::native_deployment::NativeDeploymentArgs,
 }
 
-/// Runs the OS bootstrap bridge with explicit verified image deployment inputs.
+/// Runs host metadata adoption or the fixed initrd receipt handoff.
 ///
 /// Local source authority comes from the checked committed initrd decision and
 /// the verified image admission. The receipt's signer label is not a signature.
@@ -35,8 +36,14 @@ struct Arguments {
 /// # Errors
 /// Returns an error for invalid invocation, missing or uncommitted metadata
 /// authority, changed source identities, admission or evaluation failure, or a
-/// failed native activation or recovery.
+/// failed native activation, recovery, or receipt transfer to the host store.
 pub fn run_from_process() -> Result<()> {
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|argument| argument == "handoff-initrd-store")
+    {
+        return handoff::run_from_process();
+    }
     let arguments = Arguments::parse();
     let mut command = arguments.deployment.command()?;
     ensure!(
