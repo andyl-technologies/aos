@@ -448,6 +448,28 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   that corpus. Their reviewed input branches remain separate; qualification
   against this stronger published check is pending. No full golden or native
   conformance is claimed.
+  Qualification against D-90's published whole file now passes both actual
+  auxiliary checks and all six exact model groups with strict template Clippy.
+  The attribute candidate's published-input build, all 490 core tests, strict
+  all-target Clippy, warnings/missing-docs rustdoc and mandatory formatting pass.
+  Its actual aggregate still rejects the absent `format_properties` target.
+  The namespace candidate's published-input build, all 490 core tests with
+  zero skips (run `9c15a5fe-e069-4084-8787-07c9882530ce`), strict all-target
+  Clippy, warnings/missing-docs rustdoc and mandatory formatting also pass.
+  Its actual aggregate likewise refuses the absent property target. The joint
+  candidate's minimal concrete `Sync`-bound correction passes the actual
+  `chunk-bomb-cap` check, a genuine non-Send fixture and std/wasm compilation.
+  After including that correction, the actual joint aggregate compiles native
+  default mode and fails the legacy state-without-inventory compatibility
+  assertion in `index-generation-manifest`. Neither that partial aggregate
+  execution nor the additional native cases proves the nineteen disclosure
+  contracts complete; no task or milestone advances.
+  A subsequent source audit identifies missing complete chunk-envelope and
+  merged-index-shard reference sections. The reserved
+  `container-reference-models` check requires independent primitive assembly
+  and three exact owning-codec groups; it fails explicitly until its input
+  files exist. Frame decompression and native publication remain separate
+  requirements; registration does not qualify them.
   The task stays unmerged, and complete golden coverage remains open.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
