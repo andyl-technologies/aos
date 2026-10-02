@@ -56,6 +56,7 @@ mod external_oci;
 pub use external_oci::ExternalOciRuntime;
 mod external_observation;
 mod external_copy;
+mod execute_observation;
 mod frozen;
 mod frozen_head;
 #[cfg(test)]
@@ -792,6 +793,16 @@ impl RemoteStorageWorkClient {
     /// Returns an error for a stale plan, Worker failure, oversized response,
     /// malformed result, or mismatched placement and object identity.
     pub async fn execute(&self, plan: &StorageWorkPlan) -> Result<StorageWorkResult> {
+        self.execute_observed(plan).await.map(|(result, _)| result)
+    }
+
+    async fn execute_observed(
+        &self,
+        plan: &StorageWorkPlan,
+    ) -> Result<(
+        StorageWorkResult,
+        Option<execute_observation::CheckedObservation>,
+    )> {
         let _permit = self
             .in_flight
             .acquire()
@@ -848,15 +859,26 @@ impl RemoteStorageWorkClient {
             1
         };
         let mut attempt = 0;
-        let response = loop {
+        let (response, mut observed_attempt) = loop {
             attempt += 1;
             plan.validate(&self.deployment_id, aos_hub_core::clock::now_unix_secs())
                 .inspect_err(|_| exchange.finish("invalid_plan"))?;
+            let mut observed_attempt = execute_observation::AttemptObservation::new(
+                plan,
+                exchange.transport_call_id(),
+                attempt,
+                &body,
+                &endpoint,
+            );
             let mut request = self
                 .http
                 .post(&endpoint)
                 .header("content-type", "application/json")
                 .header(STORAGE_WORK_SIGNATURE_HEADER, signature.clone())
+                .header(
+                    telemetry::STORAGE_CALL_ID_HEADER,
+                    observed_attempt.call_id(),
+                )
                 .body(body.clone());
             if matches!(
                 &plan.operation,
@@ -884,9 +906,11 @@ impl RemoteStorageWorkClient {
                 request = request.timeout(Duration::from_secs(10 * 60));
             }
             exchange.offer_plan(request_bytes);
+            observed_attempt.offer(request_bytes);
             let response = match request.send().await {
                 Ok(response) => response,
                 Err(error) if attempt < max_attempts => {
+                    observed_attempt.finish("transport_retry");
                     tracing::warn!(
                         plan_id = %plan.plan_id,
                         operation = plan.operation.kind(),
@@ -899,6 +923,7 @@ impl RemoteStorageWorkClient {
                 }
                 Err(error) => {
                     exchange.finish("transport_failed");
+                    observed_attempt.finish("transport_failed");
                     tracing::warn!(
                         plan_id = %plan.plan_id,
                         operation = plan.operation.kind(),
@@ -911,7 +936,9 @@ impl RemoteStorageWorkClient {
                     return Err(error).context("sending storage work plan");
                 }
             };
+            observed_attempt.response(response.status().as_u16());
             if attempt < max_attempts && retryable_worker_status(response.status()) {
+                observed_attempt.finish("http_status_retry");
                 exchange.discard_status_response();
                 tracing::warn!(
                     plan_id = %plan.plan_id,
@@ -923,7 +950,7 @@ impl RemoteStorageWorkClient {
                 tokio::time::sleep(Duration::from_millis(100 * attempt as u64)).await;
                 continue;
             }
-            break response;
+            break (response, observed_attempt);
         };
         let status = response.status();
         if status != reqwest::StatusCode::OK {
@@ -940,26 +967,45 @@ impl RemoteStorageWorkClient {
         if status == reqwest::StatusCode::PAYLOAD_TOO_LARGE {
             exchange.discard_status_response();
             exchange.finish("response_too_large");
+            observed_attempt.finish("response_too_large");
             return Err(StorageWorkResultTooLarge.into());
         }
         if status != reqwest::StatusCode::OK {
             exchange.discard_status_response();
             exchange.finish("http_rejected");
+            observed_attempt.finish("http_rejected");
             bail!("storage Worker returned HTTP {status}");
         }
-        let body =
-            read_observed_response(response, plan.operation.maximum_result_bytes(), |length| {
-                exchange.observe_body(length);
-            })
-            .await
-            .inspect_err(|_| exchange.finish("response_read_failed"))?;
+        let body = read_observed_response_chunks(
+            response,
+            plan.operation.maximum_result_bytes(),
+            |chunk| {
+                exchange.observe_body(chunk.len());
+                observed_attempt.exposed(chunk);
+            },
+        )
+        .await
+        .inspect_err(|_| {
+            exchange.finish("response_read_failed");
+            observed_attempt.finish("response_read_failed");
+        })?;
+        observed_attempt.eof();
         let response_bytes = body.len();
         let result: StorageWorkResult = serde_json::from_slice(&body)
             .context("decoding storage work result")
-            .inspect_err(|_| exchange.finish("malformed_result"))?;
-        validate_result(plan, &result).inspect_err(|_| exchange.finish("invalid_result"))?;
+            .inspect_err(|_| {
+                exchange.finish("malformed_result");
+                observed_attempt.finish("malformed_result");
+            })?;
+        validate_result(plan, &result).inspect_err(|_| {
+            exchange.finish("invalid_result");
+            observed_attempt.finish("invalid_result");
+        })?;
         validate_result_acceptance_at(plan, &result, aos_hub_core::clock::now_unix_secs())
-            .inspect_err(|_| exchange.finish("expired_result"))?;
+            .inspect_err(|_| {
+                exchange.finish("expired_result");
+                observed_attempt.finish("expired_result");
+            })?;
         exchange.finish("success");
         tracing::info!(
             plan_id = %plan.plan_id,
@@ -971,7 +1017,8 @@ impl RemoteStorageWorkClient {
             elapsed_ms = started.elapsed().as_millis() as u64,
             "hybrid storage boundary"
         );
-        Ok(result)
+        let checked = observed_attempt.checked();
+        Ok((result, checked))
     }
 }
 
@@ -1055,6 +1102,14 @@ async fn read_observed_response(
     maximum: usize,
     mut observe_chunk: impl FnMut(usize),
 ) -> Result<Vec<u8>> {
+    read_observed_response_chunks(response, maximum, |chunk| observe_chunk(chunk.len())).await
+}
+
+async fn read_observed_response_chunks(
+    response: reqwest::Response,
+    maximum: usize,
+    mut observe_chunk: impl FnMut(&[u8]),
+) -> Result<Vec<u8>> {
     anyhow::ensure!(
         response
             .content_length()
@@ -1065,7 +1120,7 @@ async fn read_observed_response(
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.context("reading storage Worker response")?;
-        observe_chunk(chunk.len());
+        observe_chunk(&chunk);
         let length = body
             .len()
             .checked_add(chunk.len())
@@ -1946,7 +2001,7 @@ impl HybridSurfaceFetch {
     }
 
     async fn execute(&self, plan: &StorageWorkPlan) -> Result<StorageWorkResult> {
-        let result = self.work.execute(plan).await?;
+        let (result, observation) = self.work.execute_observed(plan).await?;
         let placement = self
             .db
             .surface_placement(self.placement.id)
@@ -1965,6 +2020,7 @@ impl HybridSurfaceFetch {
                 && binding.kind == plan.binding_kind,
             "storage placement or binding changed during Worker execution"
         );
+        let mut commitments = BTreeMap::new();
         if let Some(expected_revision) = &plan.binding_snapshot_revision {
             let credentials = self.db.list_current_binding_credentials(binding.id).await?;
             self.work.validate_published_binding_snapshot(
@@ -1972,6 +2028,43 @@ impl HybridSurfaceFetch {
                 &credentials,
                 expected_revision,
             )?;
+            if let Some(digest) = telemetry::context::fact_digest(&(
+                expected_revision,
+                credentials
+                    .iter()
+                    .map(|credential| {
+                        (
+                            &credential.purpose,
+                            credential.generation,
+                            &credential.credential_fingerprint,
+                            &credential.validation_state,
+                            credential.validated_at,
+                            credential.head_resource_version,
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )) {
+                commitments.insert("credentialSnapshotSha256", digest);
+            }
+        }
+        if let Some(observation) = observation {
+            if let (Some(placement_digest), Some(binding_digest)) = (
+                telemetry::context::fact_digest(&(
+                    placement.id,
+                    placement.resource_version,
+                    placement.binding_id,
+                    &placement.prefix,
+                )),
+                telemetry::context::fact_digest(&(
+                    binding.id,
+                    binding.resource_version,
+                    &binding.kind,
+                )),
+            ) {
+                commitments.insert("placementStateSha256", placement_digest);
+                commitments.insert("bindingStateSha256", binding_digest);
+                observation.after_sql(commitments);
+            }
         }
         Ok(result)
     }

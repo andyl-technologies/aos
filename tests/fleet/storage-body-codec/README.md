@@ -10,7 +10,26 @@ The Managed GC allowlist is `ListPage`, `Head`, `HashOciRange` and
 `test-support` facade for the unchanged shared result correlation/budget checks,
 and the shared observation-shape validator. Debug assertions must remain
 enabled; stripping debug sections does not change those semantics. No synthetic
-historical clock is passed. Probe, raw range, content and other operations refuse.
+historical clock is passed. The additional ordinary-operation matrix covers
+`InspectSha256`, Git object/batch/tree selection, registry metadata/batches,
+documentation pages/content, `InspectOciRange`, `PutMetadata`, `PutProbe` and
+`DeleteProbe`. Other mutations, multipart operations and mirror transfers remain
+unsupported by this decoder.
+
+A validated OCI range contributes its actual decoded length to
+`replyRawObjectBytes`; bounded write/probe contents contribute their decoded
+length to `requestRawObjectBytes`. Git and registry metadata contents contribute
+their validated decoded length to `selectedDataBytes`. Documentation and selected
+tree pages contribute their canonical typed JSON length. These are application
+payload counts, distinct from the serialized HTTP envelope and provider reads;
+none is inferred from a descriptor size or `source_bytes` alone.
+
+On the exact storage-work route, closed source-owned refusal text for HTTP
+401/409/413/501/503 can be classified separately as refusal metadata. Unexpected
+status/text, content type, phase or operation refuses. This describes a complete
+independently captured upstream body; it does not establish that Native read or
+accepted that body. A supplied status without the exact body never supplies a
+zero observation.
 
 Build through the AOS development environment, then run the binary directly:
 

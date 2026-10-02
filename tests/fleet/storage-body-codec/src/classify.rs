@@ -55,8 +55,25 @@ pub(super) fn classify(
             )
         }
         aos_hub_core::storage_work::STORAGE_WORK_PATH => {
-            control_case(case)?;
-            let (request, class) = crate::storage_work::decode(request, reply, deployment)?;
+            ensure!(
+                case.method == "POST"
+                    && case.phase.is_none()
+                    && case.original_ingress.is_none()
+                    && case.received_ingress.is_none(),
+                "storage work transport differs"
+            );
+            let expected_type = if case.status == 200 {
+                "application/json"
+            } else {
+                "text/plain; charset=utf-8"
+            };
+            ensure!(
+                case.response_content_type.as_deref() == Some(expected_type),
+                "storage work response type differs"
+            );
+            let (request, class, observed) =
+                crate::storage_work::decode_transport(request, reply, deployment, case.status)?;
+            payload = observed;
             (request.operation.kind(), class, request.plan_id)
         }
         aos_hub_core::storage_authority::external_object::oci::control::EXTERNAL_OCI_PATH => {
@@ -96,9 +113,10 @@ pub(super) fn classify(
         }
         aos_hub_core::oci_cleanup::MANAGED_OCI_CLEANUP_PATH => {
             control_case(case)?;
-            let (request, _) = aos_hub_core::oci_cleanup::observation::decode_managed_oci_cleanup_observation(
-                request, reply, deployment,
-            )?;
+            let (request, _) =
+                aos_hub_core::oci_cleanup::observation::decode_managed_oci_cleanup_observation(
+                    request, reply, deployment,
+                )?;
             ensure!(
                 request.issuer.source_digest == source_digest,
                 "Managed cleanup implementation differs"
