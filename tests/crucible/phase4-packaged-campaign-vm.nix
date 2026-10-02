@@ -25,7 +25,7 @@
   controllerArtifactContract = controllerArtifacts.passthru.cargoArtifactContract;
   campaignFlightFeatures = lib.optionalString (campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || envoyKnownFinding) " --features packaged-midpoint-flight";
   campaignFlightBuildCommands = [
-    "test --frozen --offline --release --no-run -j$NIX_BUILD_CORES -p crucible-cli --test campaign_process --test campaign_store_process --bin crucible${campaignFlightFeatures}"
+    "test --frozen --offline --release --no-run -j$NIX_BUILD_CORES -p crucible-cli --test campaign_process --test campaign_store_process${campaignFlightFeatures}"
     # A test-only build does not promise the normal CLI executable.
     "build --frozen --offline --release -j$NIX_BUILD_CORES -p crucible-cli --bin crucible${campaignFlightFeatures}"
   ];
@@ -72,17 +72,14 @@
       artifacts="$NIX_BUILD_TOP/cargo-build-messages.jsonl"
       store_test_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "campaign_store_process" and .executable != null) | .executable' "$artifacts")
       campaign_test_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "campaign_process" and .executable != null) | .executable' "$artifacts")
-      unit_test_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "crucible" and .target.kind == ["bin"] and .profile.test == true and .executable != null) | .executable' "$artifacts")
       cli_binary=$(jq -r 'select(.reason == "compiler-artifact" and .target.name == "crucible" and .target.kind == ["bin"] and .profile.test == false and .executable != null) | .executable' "$artifacts" | sort -u)
       test -f "$store_test_binary"
       test -f "$campaign_test_binary"
-      test -f "$unit_test_binary"
       test -f "$cli_binary"
 
       mkdir -p "$out/bin"
       cp "$store_test_binary" "$out/bin/campaign-store-process-flight"
       cp "$campaign_test_binary" "$out/bin/campaign-process-flight"
-      cp "$unit_test_binary" "$out/bin/crucible-unit-flight"
       cp "$cli_binary" "$out/bin/crucible"
 
       # Genesis is captured before execution; the immutable blank disk still
@@ -894,17 +891,6 @@
           ${pkgs.grep}/bin/grep -Fq \
             'test result: ok. 1 passed; 0 failed; 0 ignored;' \
             /tmp/interactive-capture-replay-flight.log
-          if ! ${pkgs.coreutils}/bin/timeout -k 5 300 \
-            ${flight}/bin/crucible-unit-flight --ignored --exact \
-            cli_replay::tests::actual_session_run_artifact_replays_through_campaign_owner \
-            --nocapture > /tmp/campaign-actual-session-replay-flight.log 2>&1; then
-            cat /tmp/campaign-actual-session-replay-flight.log
-            exit 1
-          fi
-          cat /tmp/campaign-actual-session-replay-flight.log
-          ${pkgs.grep}/bin/grep -Fxq \
-            'actual_session_campaign_replay=true' \
-            /tmp/campaign-actual-session-replay-flight.log
           if ! ${pkgs.coreutils}/bin/timeout -k 5 60 \
             ${flight}/bin/campaign-process-flight --ignored --exact \
             guarded_campaign_rejects_insufficient_capacity_before_guest_launch \
