@@ -27,7 +27,9 @@ use crate::types::{package_name_bucket, validate_package_name, validate_registry
 pub(crate) mod artifacts;
 mod lineage;
 mod recovery;
+mod root_base;
 pub use artifacts::RegistryReleaseArtifacts;
+pub use root_base::{RootRegistryBase, inspect_root_base};
 
 /// Coordinates shared pack generation and publication after role-bound signing.
 pub struct RegistryReleaseLifecycle;
