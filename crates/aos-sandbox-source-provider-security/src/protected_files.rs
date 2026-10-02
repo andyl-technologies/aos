@@ -94,6 +94,10 @@ pub(crate) struct ProtectedPublicArchiveFileV5 {
 }
 
 impl ProtectedPublicArchiveDirectoryV5 {
+    pub(crate) fn sync_original_directory(&self) -> Result<(), rustix::io::Errno> {
+        rustix::fs::fsync(&self.directory)
+    }
+
     pub(crate) fn bounded_size(
         &self,
         name: &str,
@@ -238,6 +242,10 @@ impl ProtectedPublicArchiveDirectoryV5 {
 }
 
 impl ProtectedPublicArchiveFileV5 {
+    pub(crate) fn sync_original_inode(&self) -> Result<(), rustix::io::Errno> {
+        rustix::fs::fsync(&self.file.descriptor)
+    }
+
     pub(crate) fn exact(&self) -> &[u8] {
         &self.file.exact
     }
