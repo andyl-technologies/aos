@@ -309,6 +309,37 @@ impl PublisherPolicyBootstrapAttemptV1 {
         Ok(sample.wall_seconds())
     }
 
+    /// Checks the complete original bootstrap before lending its project DATA.
+    pub(super) fn current_cache_project(
+        &mut self,
+        controller: &mut ProductionController,
+    ) -> Result<aos_sandbox_core::ProjectId, ()> {
+        if self.first_failure.is_some() || self.postcheck_debt.is_some() {
+            return Err(());
+        }
+        let returned = (|| {
+            let now = self.check_originals_and_time()?;
+            let source = self.source.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(BootstrapCauseV1::Rejected)?;
+            let capacity = self.capacity.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(BootstrapCauseV1::Rejected)?;
+            let append = self.append.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(BootstrapCauseV1::Rejected)?;
+            let mut store = controller.publisher_policies(PublisherPolicyLimits::default())
+                .map_err(BootstrapCauseV1::Store)?;
+            store.current_git_upload_bootstrap(append, source, capacity, &self.credentials, now)
+                .map_err(BootstrapCauseV1::Current)?;
+            Ok::<_, BootstrapCauseV1>(source.policy().policy().project())
+        })();
+        match returned {
+            Ok(project) => Ok(project),
+            Err(cause) => {
+                self.first_failure.get_or_insert(cause);
+                Err(())
+            }
+        }
+    }
+
     // Diagnostics borrow the original cause; no stringification or move-out.
     pub(super) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
         let cause = self.first_failure.as_ref().or(self.postcheck_debt.as_ref())?;

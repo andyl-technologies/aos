@@ -73,6 +73,33 @@ pub struct CacheReplayControllerBootstrapOwnerV1 {
     owner_uid: u32,
 }
 
+pub(crate) fn open_existing_controller_cache_source(
+    owner_uid: u32,
+) -> Result<(Journal, RecoveryReport), JournalError> {
+    Journal::open_existing_protected_at_for_uid(
+        Path::new(CONTROLLER_CACHE_ROOT), CONTROLLER_CACHE_JOURNAL,
+        controller_cache_journal_limits(), owner_uid,
+    )
+}
+
+pub(crate) fn validate_controller_cache_source(
+    journal: &mut Journal,
+    report: &RecoveryReport,
+) -> Result<BTreeMap<ObjectDigest, Vec<u8>>, CacheReplayControllerBootstrapErrorV1> {
+    if report.truncated_bytes != 0 {
+        return Err(CacheReplayControllerBootstrapErrorV1::InvalidSource);
+    }
+    let records = read_source_records(journal)?;
+    if records.is_empty()
+        || report.committed_transactions == 0
+        || report.committed_transactions > records.len()
+        || report.committed_records != records.len()
+    {
+        return Err(CacheReplayControllerBootstrapErrorV1::InvalidSource);
+    }
+    Ok(records)
+}
+
 impl CacheReplayControllerBootstrapOwnerV1 {
     /// Opens and authenticates the fixed controller-side cache source journal.
     ///
@@ -100,17 +127,7 @@ impl CacheReplayControllerBootstrapOwnerV1 {
             controller_cache_journal_limits(),
             owner_uid,
         )?;
-        if report.truncated_bytes != 0 {
-            return Err(CacheReplayControllerBootstrapErrorV1::InvalidSource);
-        }
-        let records = read_source_records(&mut journal)?;
-        if records.is_empty()
-            || report.committed_transactions == 0
-            || report.committed_transactions > records.len()
-            || report.committed_records != records.len()
-        {
-            return Err(CacheReplayControllerBootstrapErrorV1::InvalidSource);
-        }
+        let records = validate_controller_cache_source(&mut journal, &report)?;
         Ok((
             Self {
                 journal,
@@ -214,6 +231,35 @@ impl CacheReplayControllerBootstrapOwnerV1 {
 
     pub(crate) const fn owner_uid(&self) -> u32 {
         self.owner_uid
+    }
+
+    pub(crate) fn capture_existing(
+        original: &mut Option<(Journal, RecoveryReport)>,
+        destination: &mut Option<Self>,
+        owner_uid: u32,
+    ) -> Result<(), CacheReplayControllerBootstrapErrorV1> {
+        if destination.is_some() {
+            return Err(CacheReplayControllerBootstrapErrorV1::InvalidSource);
+        }
+        let (journal, report) = original.as_mut()
+            .ok_or(CacheReplayControllerBootstrapErrorV1::InvalidSource)?;
+        let records = validate_controller_cache_source(journal, report)?;
+        let Some((journal, _)) = original.take() else {
+            return Err(CacheReplayControllerBootstrapErrorV1::InvalidSource);
+        };
+        *destination = Some(Self { journal, records, owner_uid });
+        Ok(())
+    }
+
+    pub(crate) fn recheck_existing(&mut self) -> Result<(), CacheReplayControllerBootstrapErrorV1> {
+        self.journal.require_protected_named_location(
+            Path::new(CONTROLLER_CACHE_ROOT), CONTROLLER_CACHE_JOURNAL,
+            self.owner_uid, controller_cache_journal_limits(),
+        )?;
+        if read_source_records(&mut self.journal)? != self.records {
+            return Err(CacheReplayControllerBootstrapErrorV1::InvalidSource);
+        }
+        Ok(())
     }
 
     /// Rechecks the exact retained controller record for one partition.

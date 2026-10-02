@@ -6,6 +6,7 @@
 //! manifest is published.
 
 use std::{collections::BTreeSet, path::Path};
+use std::borrow::Borrow;
 
 use sha2::{Digest as _, Sha256};
 
@@ -46,12 +47,34 @@ impl CacheReplayControllerBootstrapOwnerV1 {
         }
         target.replay()?;
         let existing = target.authority.current_replay_partition_evidence()?;
+        self.reconcile_replayed_partitions(target, existing, MissingPartitionProfileV1::Install)?;
+        Ok(())
+    }
+
+    pub(super) fn reconcile_existing_replayed_partitions(
+        &mut self,
+        target: &mut CacheResidencyProtectedOwnerV1,
+        existing: &[CacheResidencyReplayPartitionEvidenceV1],
+    ) -> Result<bool, CacheReplayControllerBootstrapErrorV1> {
+        if target.owner_uid != self.owner_uid() {
+            return Err(CacheReplayControllerBootstrapErrorV1::InvalidSource);
+        }
+        self.reconcile_replayed_partitions(target, existing, MissingPartitionProfileV1::ExistingOnly)
+    }
+
+    fn reconcile_replayed_partitions<E: Borrow<CacheResidencyReplayPartitionEvidenceV1>>(
+        &mut self,
+        target: &mut CacheResidencyProtectedOwnerV1,
+        existing: impl IntoIterator<Item = E>,
+        profile: MissingPartitionProfileV1,
+    ) -> Result<bool, CacheReplayControllerBootstrapErrorV1> {
         let mut installed = BTreeSet::new();
         for target_evidence in existing {
+            let target_evidence = target_evidence.borrow();
             let partition = target_evidence.partition.digest();
             let source_evidence = self.current_partition(partition)?;
             let limits = CacheRecoveryLimitsV1::default();
-            if encode_cache_replay_manifest(&target_evidence, limits)?
+            if encode_cache_replay_manifest(target_evidence, limits)?
                 != encode_cache_replay_manifest(&source_evidence, limits)?
             {
                 return Err(CacheReplayControllerBootstrapErrorV1::InvalidSource);
@@ -60,10 +83,13 @@ impl CacheReplayControllerBootstrapOwnerV1 {
         }
         for partition in self.partitions().collect::<Vec<_>>() {
             if !installed.contains(&partition) {
+                if matches!(profile, MissingPartitionProfileV1::ExistingOnly) {
+                    return Ok(false);
+                }
                 self.add_partition_to_fixed_cache(target, partition)?;
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Installs controller-custodied Replay authority and opens the first cache partition.
@@ -132,6 +158,11 @@ impl CacheReplayControllerBootstrapOwnerV1 {
         )?;
         Ok(())
     }
+}
+
+enum MissingPartitionProfileV1 {
+    Install,
+    ExistingOnly,
 }
 
 fn install_controller_replay_record(

@@ -171,6 +171,7 @@ mod public_watch;
 mod publisher_credential;
 mod publisher_ingress;
 mod publisher_policy_source;
+mod cache_usage;
 mod storage_snapshot;
 mod source_successor_issuance;
 mod view_mutations;
@@ -751,15 +752,20 @@ fn run_retained_controller(
     complete!(PublisherRegistration);
 
     begin!(Cache);
-    originals.cache_bundle = Some(checked!(read_cache_replay_bundle()));
-    if let Some(bundle) = required!(originals.cache_bundle.as_ref()) {
-        checked!(
-            CacheReplayControllerBootstrapOwnerV1::import_fixed_bundle_for_uid(
-                configuration.uid,
-                bundle,
-            )
-            .map_err(ControllerRuntimeError::CacheReplaySource)
-        );
+    if configuration.git_upload_bootstrap {
+        // ExistingResident never imports or creates its own Source authority.
+        originals.cache_bundle = Some(None);
+    } else {
+        originals.cache_bundle = Some(checked!(read_cache_replay_bundle()));
+        if let Some(bundle) = required!(originals.cache_bundle.as_ref()) {
+            checked!(
+                CacheReplayControllerBootstrapOwnerV1::import_fixed_bundle_for_uid(
+                    configuration.uid,
+                    bundle,
+                )
+                .map_err(ControllerRuntimeError::CacheReplaySource)
+            );
+        }
     }
     complete!(Cache);
 
@@ -909,6 +915,11 @@ fn run_retained_controller(
                 complete_configured_source_genesis(controller, genesis, profile)
                     .map_err(ControllerRuntimeError::from)
             );
+        }
+        if let Some(bootstrap) = publisher_policy_bootstrap.as_mut() {
+            if cache_usage::selected_bookend(controller, bootstrap).is_err() {
+                worker.terminate(ControllerResidentCauseV1::CacheUsage);
+            }
         }
     }
     complete!(ControllerStartup);
@@ -1242,6 +1253,7 @@ impl ControllerWorkerOriginalsV1 {
             pins: *self.pins.as_ref()?,
             genesis: self.genesis.as_ref()?.as_ref(),
             publisher: self.publisher_registration.as_mut()?.as_mut(),
+            cache_bootstrap: self.publisher_policy_bootstrap.as_mut(),
             capabilities: self.capabilities.as_ref()?,
             sessions: self.sessions.as_ref()?,
             commands: self.commands.as_ref()?,
@@ -1261,6 +1273,7 @@ struct ControllerWorkerLoanV1<'owner> {
     pins: Option<aos_sandbox::guest_root_publication::GuestRootTemplatePinsV1>,
     genesis: Option<&'owner ProvisionedControllerSourceGenesisInputV1>,
     publisher: Option<&'owner mut publisher_ingress::PublisherRegistrationOwnerV1>,
+    cache_bootstrap: Option<&'owner mut publisher_policy_source::PublisherPolicyBootstrapAttemptV1>,
     capabilities: &'owner Arc<Mutex<CapabilityState>>,
     sessions: &'owner SharedControllerBrokerSessions,
     commands: &'owner mpsc::Receiver<ControllerCommand>,
@@ -1276,6 +1289,8 @@ enum ControllerResidentCauseV1 {
     Publisher,
     // Actual original lower/verification/Journal cause stays in the SAME slot.
     PublisherPolicyBootstrap,
+    // Actual Cache initialization/replay causes stay in the SAME Controller.
+    CacheUsage,
     // Typed cause and every partial owner remain in SAME sessions' cold slot.
     StorageCold,
     Closed(&'static str),
@@ -1290,6 +1305,7 @@ impl ControllerResidentCauseV1 {
             Self::Receive(_) => "resident Controller event receiver disconnected",
             Self::Publisher => "resident original Publisher startup failure",
             Self::PublisherPolicyBootstrap => "resident original Publisher policy bootstrap failure",
+            Self::CacheUsage => "resident original Cache project observation failure",
             Self::StorageCold => "resident original Storage cold admission failure",
             Self::Closed(label) => label,
         }
@@ -1584,6 +1600,7 @@ fn controller_worker(
             pins: guest_root_pins,
             genesis: source_genesis_input.as_ref(),
             publisher: publisher_registration.as_mut(),
+            cache_bootstrap: None,
             capabilities: &capabilities,
             sessions: &sessions,
             commands: &commands,
@@ -1623,6 +1640,7 @@ fn controller_worker_loop(
         pins: guest_root_pins,
         genesis: source_genesis_input,
         publisher: mut publisher_registration,
+        mut cache_bootstrap,
         capabilities,
         sessions,
         commands,
@@ -1667,6 +1685,12 @@ fn controller_worker_loop(
             if custody.is_some_and(|owner| owner.ended.load(Ordering::Acquire)) {
                 return;
             }
+            if let Some(bootstrap) = cache_bootstrap.as_mut() {
+                if cache_usage::selected_bookend(controller, bootstrap).is_err() {
+                    report_controller_worker_failure(events, custody, ControllerResidentCauseV1::CacheUsage);
+                    return;
+                }
+            }
             match run_controller_cycle(
                 controller,
                 node_id,
@@ -1676,6 +1700,12 @@ fn controller_worker_loop(
                 attach_plan_signer,
             ) {
                 Ok(catalog) => {
+                    if let Some(bootstrap) = cache_bootstrap.as_mut() {
+                        if cache_usage::selected_bookend(controller, bootstrap).is_err() {
+                            report_controller_worker_failure(events, custody, ControllerResidentCauseV1::CacheUsage);
+                            return;
+                        }
+                    }
                     if custody.is_some_and(|owner| owner.ended.load(Ordering::Acquire)) {
                         return;
                     }
@@ -3375,6 +3405,7 @@ struct ProductionEffectExecutor {
         Option<aos_sandbox::attachment_mount::CompletedCurrentAttachmentMountAttemptV1>,
     source_domains: ProtectedSourceDomainJournalOwnerV1,
     cache_inventory: Option<CacheResidencyProtectedOwnerV1>,
+    cache_resident_usage: aos_sandbox::cache_residency::CacheResidentInitializationV1,
     cache_physical: Option<DormantCacheOwnerV1>,
     cache_physical_limits: Option<CacheOwnerLimitsV1>,
     pending_cache_pin: Option<cache_pin::PendingControllerCachePinV1>,
@@ -3479,6 +3510,7 @@ impl ProductionEffectExecutor {
             pending_attachment_source_consume: None,
             source_domains,
             cache_inventory: None,
+            cache_resident_usage: aos_sandbox::cache_residency::CacheResidentInitializationV1::new(),
             cache_physical: None,
             cache_physical_limits: None,
             pending_cache_pin: None,
@@ -4562,6 +4594,12 @@ impl ProductionEffectExecutor {
     }
 
     fn ensure_cache_inventory_owner(&mut self) -> Result<(), EffectFailure> {
+        if self.cache_resident_usage.started() {
+            self.cache_resident_usage.fence_unsupported_transition();
+            return Err(EffectFailure::Permanent(
+                "legacy Cache transition is unsupported under resident custody".to_owned(),
+            ));
+        }
         let (mut cache_source, _) =
             CacheReplayControllerBootstrapOwnerV1::open_fixed_protected_for_uid(
                 self.controller_uid,
@@ -5279,6 +5317,21 @@ fn reject_unqualified_delete_effect(plan: &EffectPlan) -> Result<(), EffectFailu
 }
 
 impl SingleNodeEffectExecutor for ProductionEffectExecutor {
+    fn existing_cache_project_usage_v1(
+        &mut self,
+        project: aos_sandbox_core::ProjectId,
+    ) -> Result<aos_sandbox::cache_residency::CacheProjectUsageLoanV1<'_>, aos_sandbox::cache_residency::CacheResidentUnavailableV1> {
+        self.observe_existing_cache_usage(project)
+    }
+
+    fn recheck_existing_cache_project_usage_v1(
+        &mut self,
+    ) -> Result<(), aos_sandbox::cache_residency::CacheResidentUnavailableV1> {
+        let owner = self.cache_inventory.as_mut()
+            .ok_or(aos_sandbox::cache_residency::CacheResidentUnavailableV1)?;
+        self.cache_resident_usage.recheck(owner)
+    }
+
     fn reconcile_operator_storage_repair(
         &mut self,
         operation_id: OperationId,

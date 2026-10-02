@@ -18,6 +18,17 @@ pub(super) struct RecoveredAccountingProjection {
 }
 
 impl RecoveredAccountingProjection {
+    pub(super) fn project_observation(
+        &self,
+        project: ProjectId,
+    ) -> (Option<ProjectCacheQuotaV1>, Option<CacheUsageV1>) {
+        let quota = self.project_quotas.get(project.as_bytes()).copied();
+        let usage = quota.map(|_| {
+            self.project_usage.get(project.as_bytes()).copied().unwrap_or_default()
+        });
+        (quota, usage)
+    }
+
     pub(super) fn from_subjects(
         global: &CacheGlobalRecoveryStateV1,
         subjects: &BTreeMap<ObjectDigest, CacheAtomicObjectPayloadV1>,

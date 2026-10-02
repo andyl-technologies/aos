@@ -54,6 +54,23 @@ use super::read_authority::{DescriptorHandoffPlanV1, DescriptorHandoffReceiptV1}
 use super::scrub::{BackingObservationV1, ScrubEvidenceV1, scrub_subject};
 
 mod accounting_projection;
+
+/// Selects bounded quantity DATA from the same completed recovery loop.
+pub(crate) enum CacheRecoverySelectionV1 {
+    Ordinary,
+    Project {
+        project: ProjectId,
+        result: Option<(Option<ProjectCacheQuotaV1>, Option<CacheUsageV1>)>,
+    },
+}
+
+impl CacheRecoverySelectionV1 {
+    fn retain(&mut self, accounting: &accounting_projection::RecoveredAccountingProjection) {
+        if let Self::Project { project, result } = self {
+            *result = Some(accounting.project_observation(*project));
+        }
+    }
+}
 mod canonical;
 mod checkpoint;
 mod classification;
@@ -1073,6 +1090,25 @@ impl CacheRecoveryInventoryV1 {
         limits: CacheRecoveryLimitsV1,
         now: u64,
     ) -> Result<Self, RecoveryError> {
+        Self::from_verified_selected(
+            owner, capability, partition, typed_checkpoint_bytes,
+            prior_typed_checkpoint_bytes, floor, records, limits, now,
+            &mut CacheRecoverySelectionV1::Ordinary,
+        )
+    }
+
+    pub(crate) fn from_verified_selected(
+        owner: &CacheAuthorityOwner<'_, '_>,
+        capability: &VerifiedCacheCapabilityV1,
+        partition: PhysicalPartitionId,
+        typed_checkpoint_bytes: &[u8],
+        prior_typed_checkpoint_bytes: Option<&[u8]>,
+        floor: CacheHistoryFloorV1,
+        records: impl IntoIterator<Item = Vec<u8>>,
+        limits: CacheRecoveryLimitsV1,
+        now: u64,
+        selection: &mut CacheRecoverySelectionV1,
+    ) -> Result<Self, RecoveryError> {
         Self::from_authorized(
             partition,
             typed_checkpoint_bytes,
@@ -1082,6 +1118,7 @@ impl CacheRecoveryInventoryV1 {
             limits,
             capability.scope().valid_until(),
             capability.record_digest(),
+            selection,
             |authority_scope| {
                 owner.validate_for_effect_at(
                     capability,
@@ -1104,6 +1141,24 @@ impl CacheRecoveryInventoryV1 {
         authority_scope: CacheAuthorityScopeV1,
         authority_record: ObjectDigest,
     ) -> Result<Self, RecoveryError> {
+        Self::from_authority_session_selected(
+            partition, typed_checkpoint_bytes, prior_typed_checkpoint_bytes,
+            floor, records, limits, authority_scope, authority_record,
+            &mut CacheRecoverySelectionV1::Ordinary,
+        )
+    }
+
+    pub(crate) fn from_authority_session_selected(
+        partition: PhysicalPartitionId,
+        typed_checkpoint_bytes: &[u8],
+        prior_typed_checkpoint_bytes: Option<&[u8]>,
+        floor: CacheHistoryFloorV1,
+        records: impl IntoIterator<Item = Vec<u8>>,
+        limits: CacheRecoveryLimitsV1,
+        authority_scope: CacheAuthorityScopeV1,
+        authority_record: ObjectDigest,
+        selection: &mut CacheRecoverySelectionV1,
+    ) -> Result<Self, RecoveryError> {
         Self::from_authorized(
             partition,
             typed_checkpoint_bytes,
@@ -1113,6 +1168,7 @@ impl CacheRecoveryInventoryV1 {
             limits,
             authority_scope.valid_until(),
             authority_record,
+            selection,
             |derived| {
                 if derived != authority_scope {
                     return Err(RecoveryError::AnchorMismatch);
@@ -1132,6 +1188,7 @@ impl CacheRecoveryInventoryV1 {
         limits: CacheRecoveryLimitsV1,
         authority_valid_until: u64,
         authority_record: ObjectDigest,
+        selection: &mut CacheRecoverySelectionV1,
         validate_authority: impl FnOnce(CacheAuthorityScopeV1) -> Result<(), RecoveryError>,
     ) -> Result<Self, RecoveryError> {
         let limits = limits.validate()?;
@@ -1363,6 +1420,7 @@ impl CacheRecoveryInventoryV1 {
             authority_valid_until,
         )?;
         validate_authority(authority_scope)?;
+        selection.retain(&accounting);
         let reconstructed = latest.into_values().collect::<Vec<_>>();
         let mut recovered_family_heads = Vec::with_capacity(family_heads.len());
         for ((subject, kind), (generation, record_digest)) in family_heads {

@@ -580,6 +580,7 @@ where
         authority,
         clock: None,
         owner_uid,
+        project_usage: super::project_usage::CacheProjectUsageProgressV1::default(),
     };
     let inventories = owner.reconstructed_partitions()?;
     let node_quotas: Vec<_> = inventories
