@@ -1002,7 +1002,18 @@ where
                     );
                 }
             };
-            let run_directory = match target.prepare_generation_run_directory(launch_resources) {
+            let prepared = target
+                .prepare_generation_run_directory(launch_resources)
+                .and_then(|mut directory| {
+                    directory
+                        .provision_hot_fork_child_files(target.child_process_contract()?)
+                        .map_err(|source| QemuVmRealizationError::Executor {
+                            operation: "provision private hot-fork child files",
+                            message: source.to_string(),
+                        })?;
+                    Ok(directory)
+                });
+            let run_directory = match prepared {
                 Ok(directory) => directory,
                 Err(error) => {
                     return self.recover_preflight_rejection(

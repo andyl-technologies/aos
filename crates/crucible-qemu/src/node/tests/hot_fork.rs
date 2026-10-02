@@ -1009,7 +1009,6 @@ fn successful_child_file_proof_seals_only_its_exact_destination_pair() -> Result
     let second_root = tempfile::tempdir()?;
     for root in [first_root.path(), second_root.path()] {
         std::fs::File::create(root.join(crate::DEFAULT_VMSTATE_FILE_NAME))?;
-        std::fs::File::create(root.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME))?;
     }
     let mut first = crate::QemuPreparedRunDirectory::open_for_test_requirements(
         requirements,
@@ -1021,6 +1020,12 @@ fn successful_child_file_proof_seals_only_its_exact_destination_pair() -> Result
         second_root.path(),
         &contract,
     )?;
+    assert!(matches!(
+        first.hot_fork_root_overlay_destination(),
+        Err(crate::QemuSpawnError::PreparedRootOverlayNotReady { .. })
+    ));
+    first.provision_hot_fork_child_files(&contract)?;
+    second.provision_hot_fork_child_files(&contract)?;
     std::fs::write(
         second_root.path().join(crate::DEFAULT_VMSTATE_FILE_NAME),
         b"foreign-vmstate",
@@ -1063,6 +1068,11 @@ fn successful_child_file_proof_seals_only_its_exact_destination_pair() -> Result
     assert!(first.validate_hot_fork_adoption().is_err());
     first.seal_hot_fork_child_file_transfer(&launch)?;
     first.validate_hot_fork_adoption()?;
+    assert!(
+        first
+            .provision_hot_fork_child_files(&process_owner.contract)
+            .is_err()
+    );
     let mut vmstate = String::new();
     let mut overlay = String::new();
     std::fs::File::open(first_root.path().join(crate::DEFAULT_VMSTATE_FILE_NAME))?

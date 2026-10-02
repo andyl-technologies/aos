@@ -3,6 +3,103 @@
 use super::*;
 
 #[test]
+fn hot_fork_child_provisioning_retains_original_empty_pair_authority() -> Result<(), Box<dyn Error>>
+{
+    let directory = tempfile::tempdir()?;
+    let vmstate = directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME);
+    let root = directory.path().join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME);
+    std::fs::File::create(&vmstate)?;
+    let contract = wide_test_process_contract()?;
+    let requirements = crate::QemuLaunchResourceRequirements::from_vm_shape(1, 1, true);
+    let mut prepared = QemuPreparedRunDirectory::open_for_test_requirements(
+        requirements,
+        directory.path(),
+        &contract,
+    )?;
+    let foreign = QemuChildProcessContract::from_unvalidated_test_descriptors(
+        contract.cgroup_procs.try_clone()?,
+        contract.cancellation_event.try_clone()?,
+        u32::MAX,
+        u64::MAX,
+        u64::MAX,
+    );
+
+    assert!(!root.exists());
+    assert!(matches!(
+        prepared.hot_fork_root_overlay_destination(),
+        Err(QemuSpawnError::PreparedRootOverlayNotReady { .. })
+    ));
+    assert_eq!(
+        contract.admitted_resource_ceiling(),
+        foreign.admitted_resource_ceiling()
+    );
+    assert!(matches!(
+        prepared.provision_hot_fork_child_files(&foreign),
+        Err(QemuSpawnError::PreparedLaunchAdmissionChanged)
+    ));
+    assert!(!root.exists());
+
+    prepared.provision_hot_fork_child_files(&contract)?;
+    let original = rustix::fs::fstat(prepared.hot_fork_root_overlay_destination()?)?;
+    let vmstate_identity = rustix::fs::fstat(prepared.hot_fork_child_file_destination()?)?;
+    assert_eq!(original.st_size, 0);
+    assert_eq!(original.st_mode & 0o777, 0o600);
+    assert_ne!(
+        (original.st_dev, original.st_ino),
+        (vmstate_identity.st_dev, vmstate_identity.st_ino)
+    );
+    prepared.provision_hot_fork_child_files(&contract)?;
+    let repeated = rustix::fs::fstat(prepared.hot_fork_root_overlay_destination()?)?;
+    assert_eq!(
+        (original.st_dev, original.st_ino),
+        (repeated.st_dev, repeated.st_ino)
+    );
+
+    std::fs::write(&root, b"already filled")?;
+    assert!(prepared.provision_hot_fork_child_files(&contract).is_err());
+    std::fs::write(&root, b"")?;
+    std::fs::write(&vmstate, b"already filled")?;
+    assert!(prepared.provision_hot_fork_child_files(&contract).is_err());
+    std::fs::write(&vmstate, b"")?;
+    let retained = directory.path().join("retained-root");
+    std::fs::rename(&root, &retained)?;
+    std::fs::File::create(&root)?;
+    assert!(matches!(
+        prepared.provision_hot_fork_child_files(&contract),
+        Err(QemuSpawnError::PreparedRootOverlayChanged { .. })
+    ));
+    std::fs::remove_file(&root)?;
+    std::fs::rename(&retained, &root)?;
+
+    prepared.invalidate_hot_fork_child_file_transfer();
+    assert!(prepared.provision_hot_fork_child_files(&contract).is_err());
+    assert!(prepared.hot_fork_root_overlay_destination().is_err());
+    Ok(())
+}
+
+#[test]
+fn hot_fork_child_provisioning_never_adopts_a_substituted_destination() -> Result<(), Box<dyn Error>>
+{
+    let directory = tempfile::tempdir()?;
+    std::fs::File::create(directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME))?;
+    let contract = wide_test_process_contract()?;
+    let mut prepared = QemuPreparedRunDirectory::open_for_test_requirements(
+        crate::QemuLaunchResourceRequirements::from_vm_shape(1, 1, true),
+        directory.path(),
+        &contract,
+    )?;
+    let root = directory.path().join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME);
+    std::fs::File::create(&root)?;
+
+    assert!(prepared.provision_hot_fork_child_files(&contract).is_err());
+    std::fs::remove_file(&root)?;
+    assert!(prepared.provision_hot_fork_child_files(&contract).is_err());
+    assert!(prepared.hot_fork_root_overlay_destination().is_err());
+    assert!(!root.exists());
+    Ok(())
+}
+
+#[test]
 fn retained_source_helper_preserves_original_attempt_and_ready_file_authority()
 -> Result<(), Box<dyn Error>> {
     let command = guarded_resource_test_command()?;
