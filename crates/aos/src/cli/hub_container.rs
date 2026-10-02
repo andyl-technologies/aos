@@ -343,6 +343,9 @@ pub enum HubContainerGcCmd {
         if_version: String,
         #[arg(long)]
         idempotency_key: Option<String>,
+        /// Retire the whole catalog ahead of registry deletion (requires every OCI route disabled)
+        #[arg(long)]
+        retire_registry: bool,
     },
     /// Apply one reviewed garbage-collection plan
     Apply {
@@ -687,6 +690,38 @@ mod tests {
             "7",
         ])
         .expect("GC plan requires the retention policy CAS version");
+        let retiring = Cli::try_parse_from([
+            "aos",
+            "hub",
+            "registry",
+            "container",
+            "gc",
+            "plan",
+            "andyl/main",
+            "--if-version",
+            "7",
+            "--retire-registry",
+        ])
+        .expect("GC plan accepts catalog retirement");
+        let Commands::Hub {
+            command:
+                HubCmd::Registry {
+                    command:
+                        HubRegistryCmd::Container {
+                            command:
+                                HubContainerCmd::Gc {
+                                    command:
+                                        HubContainerGcCmd::Plan {
+                                            retire_registry, ..
+                                        },
+                                },
+                        },
+                },
+        } = retiring.command
+        else {
+            panic!("expected Hub container GC plan command");
+        };
+        assert!(retire_registry);
         Cli::try_parse_from([
             "aos",
             "hub",
