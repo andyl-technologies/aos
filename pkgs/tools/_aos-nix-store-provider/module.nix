@@ -14,7 +14,7 @@
     && (config.aos.boot.stage or "host") == "host"
     && lib.take 1 config.aos.activation.scope != ["container"];
   configuration = config.aos.abilities.configuration.operations.file.effects.nix-store;
-  profiles = config.aos.abilities.filesystem.operations.persistentAllocate.effects.nix-profiles;
+  profiles = config.aos.abilities.filesystem.operations.view.effects.nix-profiles;
   roots = config.aos.abilities.filesystem.operations.directory.effects.nix-profile-gcroots;
   bridge = config.aos.abilities.mount.operations.ensure.effects.nix-profile-gcroots;
 in {
@@ -110,13 +110,10 @@ in {
           };
         };
         filesystem.operations = {
-          persistentAllocate.effects.nix-profiles = lib.mkIf hostRuntime {
-            input = {
-              path = "/var/lib/profiles";
-              mode = "0755";
-              owner = "root";
-              group = "root";
-            };
+          # The boot substrate owns and seeds the profile tree. Host convergence
+          # consumes that existing root without claiming or deleting its storage.
+          view.effects.nix-profiles = lib.mkIf hostRuntime {
+            input.sourcePath = "/var/lib/profiles";
           };
           directory.effects.nix-profile-gcroots = lib.mkIf hostRuntime {
             input = {

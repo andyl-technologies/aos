@@ -47,7 +47,7 @@
     service = "package-profile-convergence";
     activationOwner = "manager";
     autoStart = false;
-    activationAfter = [specification.output.resource];
+    activationAfter = [specification.outputs.resource];
     lifecycle = {
       description = "Converge the image-authored system package profile";
       execution_model = "oneshot";
@@ -58,7 +58,7 @@
         {
           executable = {
             path = "${package.outputs.apm}/bin/apm";
-            arguments = ["install" "--system" "--from" specification.output.path "--yes"];
+            arguments = ["install" "--system" "--from" specification.outputs.path "--yes"];
           };
           ignore_failure = false;
         }
@@ -133,10 +133,13 @@ in {
   };
 
   config = lib.mkIf (hostStage && cfg.enable) {
-    aos.abilities.configuration.operations.file.effects.package-profile-specification.input = {
-      path = "/run/apm/package-profile-desired.toml";
-      content = cfg.desiredText;
-      mode = "0600";
+    aos.abilities.configuration.operations.file.effects.package-profile-specification = {
+      after = [config.aos.abilities.filesystem.operations.allocate.effects."aos-runtime-run-apm".outputs.resource];
+      input = {
+        path = "/run/apm/package-profile-desired.toml";
+        content = cfg.desiredText;
+        mode = "0600";
+      };
     };
     # Manager startup follows aos-activate, so APM cannot recursively enter the
     # profile journal while the image's host transaction still holds its lock.
