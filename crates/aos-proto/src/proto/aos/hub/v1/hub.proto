@@ -306,6 +306,10 @@ service InstanceService {
   rpc PlanSetInstanceSettings(PlanSetInstanceSettingsRequest)
       returns (TopologyPlanResponse);
   // Apply one reviewed instance-settings plan exactly once.
+  // Enqueues one scheduled maintenance job immediately instead of waiting
+  // for the deployment's maintenance tick.
+  rpc TriggerInstanceMaintenance(TriggerInstanceMaintenanceRequest)
+      returns (InstanceMaintenanceTriggerResponse);
   rpc SetInstanceSettings(ApplyTopologyPlanRequest)
       returns (GetInstanceSettingsResponse);
 }
@@ -2693,6 +2697,19 @@ message InstanceSettings {
   int64 max_upload_bytes = 12;
   // Whether cache discovery is visible to unauthenticated visitors.
   bool caches_public = 13;
+}
+
+// Requests immediate execution of one scheduled maintenance job.
+message TriggerInstanceMaintenanceRequest {
+  // One of `dispatch_maintenance` (the whole scheduled tick),
+  // `run_topology_probes`, `recover_cache_writes`, `recover_oci_uploads`,
+  // `run_cache_gc`, `rebuild_directory`, `inventory_oci_providers`,
+  // `probe_oci_conditional_deletes`, or `run_oci_gc`.
+  string job = 1;
+}
+
+message InstanceMaintenanceTriggerResponse {
+  string job = 1;
 }
 
 message GetInstanceSettingsRequest {}

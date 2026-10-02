@@ -1837,6 +1837,13 @@
          "service" : "InstanceService"
       },
       {
+         "method" : "TriggerInstanceMaintenance",
+         "path" : "aos.hub.v1.InstanceService/TriggerInstanceMaintenance",
+         "request" : "TriggerInstanceMaintenanceRequest",
+         "response" : "InstanceMaintenanceTriggerResponse",
+         "service" : "InstanceService"
+      },
+      {
          "method" : "ListChangesets",
          "path" : "aos.hub.v1.RegistryConfigurationService/ListChangesets",
          "request" : "ListChangesetsRequest",

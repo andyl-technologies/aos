@@ -3067,6 +3067,11 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         "/aos.hub.v1.InstanceService/SetInstanceSettings",
         apply_set_instance_settings
     );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.InstanceService/TriggerInstanceMaintenance",
+        trigger_instance_maintenance
+    );
     // RegistryConfigurationService
     r = rpc_route!(
         r,

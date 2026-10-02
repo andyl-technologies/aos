@@ -1,7 +1,8 @@
 //! Handles hub instance commands and their domain-specific request validation.
 
 use crate::cli::{
-    HubInstanceCmd, HubInstanceSettingsMutationCmd, HubInstanceSettingsSectionCmd,
+    HubInstanceCmd, HubInstanceMaintenanceCmd, HubInstanceSettingsMutationCmd,
+    HubInstanceSettingsSectionCmd,
     HubInstanceTopologyDefaultsCmd, HubMutationArgs, HubOrgTopologyDefaultsCmd,
 };
 use crate::commands::hub::client::hub_client;
@@ -31,6 +32,18 @@ pub(super) async fn instance(printer: &Printer, command: &HubInstanceCmd) -> Res
         }
         HubInstanceCmd::Branding { command } => {
             instance_settings_section(printer, "branding", command).await
+        }
+        HubInstanceCmd::Maintenance {
+            command: HubInstanceMaintenanceCmd::Trigger { access, job },
+        } => {
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
+            let response: hub_types::InstanceMaintenanceTriggerResponse = client
+                .call_topology(
+                    HubTopologyMethod::TriggerInstanceMaintenance,
+                    &hub_types::TriggerInstanceMaintenanceRequest { job: job.clone() },
+                )
+                .await?;
+            print_topology_message(printer, &response)
         }
         HubInstanceCmd::TopologyDefaults { command } => {
             instance_topology_defaults(printer, command).await
