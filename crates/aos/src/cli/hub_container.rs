@@ -61,6 +61,37 @@ pub enum HubContainerCmd {
         #[command(subcommand)]
         command: HubContainerGcCmd,
     },
+    /// Expose the registry under its slug on instance OCI routes
+    Namespace {
+        #[command(subcommand)]
+        command: HubContainerNamespaceCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HubContainerNamespaceCmd {
+    /// Show whether instance OCI routes serve the registry under its slug
+    Show {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        registry: String,
+    },
+    /// Plan enabling the namespace or apply a reviewed plan
+    Enable {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        registry: Option<String>,
+        #[command(flatten)]
+        mutation: HubMutationArgs,
+    },
+    /// Plan disabling the namespace or apply a reviewed plan
+    Disable {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        registry: Option<String>,
+        #[command(flatten)]
+        mutation: HubMutationArgs,
+    },
 }
 
 #[derive(Subcommand)]
