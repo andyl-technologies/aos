@@ -213,7 +213,7 @@ where
             history_observation,
         )
         .await?;
-    if current.record() != session.record() || current.subject() != checked.requests[0].subject() {
+    if current.record() != session.record() || !current.same_principal(&checked.requests[0]) {
         return Err(invalid().into());
     }
     requests.push(current);

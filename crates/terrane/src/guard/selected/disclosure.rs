@@ -94,7 +94,7 @@ where
         for request in &selected_requests {
             if requests
                 .first()
-                .is_some_and(|first: &AuthorizedRef| first.subject() != request.subject())
+                .is_some_and(|first: &AuthorizedRef| !first.same_principal(request))
             {
                 return Err(invalid());
             }
