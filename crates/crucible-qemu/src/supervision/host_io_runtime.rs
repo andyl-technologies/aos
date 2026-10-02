@@ -372,6 +372,7 @@ impl QemuLiveHostIoRuntime {
                 "initial await did not establish a deadline",
             )
         })?;
+        self.wait_observation.observe_remaining(remaining);
         if remaining.is_zero() {
             return Ok(QemuAsyncWaitOutcome::TimedOut);
         }
@@ -383,6 +384,7 @@ impl QemuLiveHostIoRuntime {
                     "initial await did not establish a deadline",
                 )
             })?;
+            self.wait_observation.observe_remaining(remaining);
             if remaining.is_zero() {
                 return Ok(QemuAsyncWaitOutcome::TimedOut);
             }
@@ -478,6 +480,7 @@ impl QemuLiveHostIoRuntime {
                         "initial await did not establish a deadline",
                     )
                 })?;
+                self.wait_observation.observe_remaining(remaining);
                 if remaining.is_zero() {
                     return Ok(QemuAsyncWaitOutcome::TimedOut);
                 }
@@ -495,6 +498,10 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         timeout: Duration,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
         if self.advance_wait_deadline.start(timeout) {
+            // The async driver renews after TimedOut to check child liveness.
+            // Count only budget consumption already observed by that poll;
+            // early renewal cannot manufacture diagnostic elapsed time.
+            self.wait_observation.renew(timeout);
             Ok(())
         } else {
             Err(QemuAsyncDriverRuntimeError::new(

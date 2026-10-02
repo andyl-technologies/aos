@@ -102,6 +102,101 @@ fn real_advance_wait_keeps_timeout_and_owned_state_with_diagnostics_enabled_or_d
     Ok(())
 }
 
+#[test]
+fn early_renewal_counts_only_original_observed_consumption() {
+    let mut observation = WaitObservation::with_budget(2);
+    observation.begin(Duration::from_secs(1));
+    for _ in 0..10_000 {
+        observation.renew(Duration::from_secs(1));
+        assert!(!observation.due(Duration::from_secs(1)));
+    }
+    assert_eq!(observation.consumed_slices, Duration::ZERO);
+    assert_eq!(observation.remaining, 2);
+
+    observation.observe_remaining(Duration::from_millis(600));
+    observation.renew(Duration::from_secs(1));
+    assert_eq!(observation.consumed_slices, Duration::from_millis(400));
+    assert!(!observation.due(Duration::ZERO));
+    observation.renew(Duration::from_secs(1));
+    assert_eq!(observation.consumed_slices, Duration::from_millis(1400));
+
+    observation.begin(Duration::from_secs(1));
+    assert_eq!(observation.consumed_slices, Duration::ZERO);
+    assert!(!observation.due(Duration::ZERO));
+    assert_eq!(observation.remaining, 2);
+}
+
+#[test]
+fn real_one_second_renewals_sample_pending_advance_without_resetting_cadence()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::{QemuAsyncWait, QemuAsyncWaitOutcome, QemuHostIoRuntime};
+
+    let (mut runtime, plugin) = mapped_runtime()?;
+    runtime.wait_observation = WaitObservation::with_budget(2);
+    let ceiling = crucible_shmem::authorize_advance_ceiling(0, 1000, None)?;
+    plugin
+        .node_slot(0)?
+        .publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)?;
+    plugin.node_slot(0)?.publish_reached_icount(0)?;
+    let original = plugin.node_slot(0)?.snapshot();
+    let indices = runtime.wait_ring_indices();
+    let timeout = Duration::from_secs(1);
+
+    // This is the driver's actual await -> TimedOut -> renew -> repoll path.
+    for slice in 0..6 {
+        let outcome = if slice == 0 {
+            runtime.await_child(QemuAsyncWait::AdvanceCompletion, timeout)?
+        } else {
+            runtime.repoll_child(QemuAsyncWait::AdvanceCompletion, timeout)?
+        };
+        assert_eq!(outcome, QemuAsyncWaitOutcome::TimedOut);
+        if slice < 5 {
+            assert_eq!(runtime.wait_observation.remaining, 2);
+        }
+        runtime.renew_advance_completion_poll(timeout)?;
+    }
+    assert_eq!(runtime.wait_observation.remaining, 1);
+    assert_eq!(plugin.node_slot(0)?.snapshot(), original);
+    assert_eq!(runtime.wait_ring_indices(), indices);
+
+    // A new advance resets elapsed sampling without replenishing its lifetime cap.
+    assert_eq!(
+        runtime.await_child(QemuAsyncWait::AdvanceCompletion, Duration::from_millis(10))?,
+        QemuAsyncWaitOutcome::TimedOut,
+    );
+    assert_eq!(runtime.wait_observation.consumed_slices, Duration::ZERO);
+    assert_eq!(runtime.wait_observation.remaining, 1);
+    let (new_runtime, _) = mapped_runtime()?;
+    assert_eq!(new_runtime.wait_observation.consumed_slices, Duration::ZERO);
+    Ok(())
+}
+
+#[test]
+fn real_short_successes_preserve_the_lifetime_record_budget()
+-> Result<(), Box<dyn std::error::Error>> {
+    for maximum in [0, 256] {
+        let (mut runtime, plugin) = mapped_runtime()?;
+        runtime.wait_observation = WaitObservation::with_budget(maximum);
+        let ceiling = crucible_shmem::authorize_advance_ceiling(0, 1000, None)?;
+        plugin
+            .node_slot(0)?
+            .publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)?;
+        plugin.node_slot(0)?.mark_done();
+        let original = plugin.node_slot(0)?.snapshot();
+
+        for _ in 0..100 {
+            assert_eq!(
+                runtime.poll_advance_completion(Duration::from_secs(1))?,
+                crate::QemuAsyncWaitOutcome::Completed,
+            );
+            assert_eq!(runtime.wait_observation.remaining, maximum);
+            assert_eq!(runtime.wait_observation.consumed_slices, Duration::ZERO);
+        }
+        assert_eq!(plugin.node_slot(0)?.snapshot(), original);
+    }
+    Ok(())
+}
+
 fn mapped_runtime()
 -> Result<(QemuLiveHostIoRuntime, crucible_shmem::MappedSetupRegion), Box<dyn std::error::Error>> {
     let allocation =
