@@ -49,8 +49,27 @@ def invocation(ability, operation, value, revision="first", previous=None):
     return {"id": "example-effect", "effect": {"identity": ["test", ability, operation, "main"]}, "input": value, "revision": revision, "previous": previous}
 
 
+def hardening_policy(profile="privileged"):
+    return {
+        "privilege_bounds": {"kind": "unrestricted", "privileges": []},
+        "ambient_privileges": [], "operation_allow": [], "operation_deny": [],
+        "resource_control_delegation": False, "resource_control_access": "host",
+        "device_access_scope": "shared", "host_clock_mutation": True,
+        "host_name_mutation": True, "operating_system_log_access": True,
+        "operating_system_extension_access": True, "operating_system_tunable_access": True,
+        "writable_executable_memory": True, "permit_realtime": True,
+        "permit_elevated_file_identity": True, "lock_execution_personality": False,
+        "isolation_domains": [], "network_families": [],
+        "isolation_domain_creation": "allowed", "memory_pressure_adjustment": 0,
+        "process_visibility": "all", "operation_architectures": [],
+        "operation_profile": profile, "denied_operation_action": "kill-process",
+        "allow_privilege_escalation": True,
+    }
+
+
 def bootstrap_bus():
     value = dict(service(), service="dbus", bootstrap=True)
+    value["policy"] = {"hardening": hardening_policy()}
     value["manager_identity"] = {"name": "dbus", "aliases": ["messagebus"]}
     value["socket_activation"] = {"sockets": [{
         "name": "system-bus", "manager_name": "dbus", "enabled": True,
@@ -72,6 +91,41 @@ def active_bus_manager(calls):
 
 
 class NativeHandlerTests(unittest.TestCase):
+    def test_workload_profiles_preserve_master_syscall_filters(self):
+        for profile, expected in [
+            ("privileged", []),
+            ("restricted", ["SystemCallFilter=@system-service"]),
+            ("system-service", ["SystemCallFilter=@system-service"]),
+        ]:
+            with self.subTest(profile=profile):
+                value = service()
+                policy = hardening_policy(profile)
+                policy["denied_operation_action"] = "return-permission-denied"
+                value["policy"] = {"hardening": policy}
+
+                rendered = handler_module.realize_service(value)["units"]["example.service"]
+
+                filters = [line for line in rendered.splitlines() if line.startswith("SystemCallFilter=")]
+                self.assertEqual(filters, expected)
+                self.assertIn("SystemCallErrorNumber=EPERM", rendered)
+
+    def test_explicit_syscall_exceptions_follow_profile_and_exclusions(self):
+        value = service()
+        policy = hardening_policy("system-service")
+        policy["operation_deny"] = ["privileged", "mount"]
+        policy["operation_allow"] = ["clock", "change-file-ownership"]
+        value["policy"] = {"hardening": policy}
+
+        rendered = handler_module.realize_service(value)["units"]["example.service"]
+
+        filters = [line for line in rendered.splitlines() if line.startswith("SystemCallFilter=")]
+        self.assertEqual(filters, [
+            "SystemCallFilter=@system-service",
+            "SystemCallFilter=~@privileged @mount",
+            "SystemCallFilter=@clock @chown",
+        ])
+        self.assertNotIn("SystemCallErrorNumber=", rendered)
+
     def test_bootstrap_bus_adopts_exact_units_and_links_without_restart(self):
         with tempfile.TemporaryDirectory() as root:
             units = Path(root) / "units"
