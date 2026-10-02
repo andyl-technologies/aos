@@ -1334,9 +1334,19 @@ impl StatMountBuffer {
 }
 
 pub(crate) fn pidfd_open(pid: u32) -> Result<OwnedFd> {
-    // SAFETY: `pidfd_open` receives scalar arguments and returns a new fd.
-    let result = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0_u32) };
+    let result = pidfd_open_raw_result(pid);
     fd_result(result, "pidfd_open")
+}
+
+// The current-self owner parks this fresh descriptor before either flag check.
+pub(crate) fn pidfd_open_current_original() -> Result<OwnedFd> {
+    let result = pidfd_open_raw_result(std::process::id());
+    adopt_created_fd(result, "pidfd_open")
+}
+
+fn pidfd_open_raw_result(pid: u32) -> libc::c_long {
+    // SAFETY: `pidfd_open` receives scalar arguments and returns a new fd.
+    unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0_u32) }
 }
 
 pub(crate) fn pidfd_send_thread_group_signal(pidfd: BorrowedFd<'_>, signal: u8) -> Result<()> {

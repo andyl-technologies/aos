@@ -11,12 +11,11 @@ use std::io::{Read as _, Seek as _, SeekFrom};
 
 use rustix::fs::{Mode, OFlags, fcntl_getfl, fstatfs, open};
 
-use super::identity::{identity_from_stat, parse_proc_stat};
+use super::identity::{MAXIMUM_PROC_STAT_BYTES, identity_from_stat, parse_proc_stat};
 use super::{PidFd, PidFdInfo, PidFdProcessIdentity};
 use crate::{Error, Result};
 
 const PROCFS_MAGIC: u64 = 0x9fa0;
-const STAT_BYTES: usize = 4096;
 const CONTEXT_BYTES: usize = 256;
 const READ_INTERRUPT_LIMIT: usize = 8;
 
@@ -44,7 +43,7 @@ impl ProcFileV1 {
 
     const fn maximum(self) -> usize {
         match self {
-            Self::Stat => STAT_BYTES,
+            Self::Stat => MAXIMUM_PROC_STAT_BYTES,
             Self::Context => CONTEXT_BYTES,
         }
     }
@@ -228,15 +227,33 @@ impl PidFdProcObservationsV1 {
     }
 
     fn observe_identity_inner(&mut self, original: &PidFd) -> Result<PidFdProcessIdentity> {
-        let before = original.info()?;
-        self.stat.read(STAT_BYTES)?;
-        let stat = parse_proc_stat(&self.stat.current)?;
-        let after = original.info()?;
-        let identity = identity_from_stat(original, before, stat, after)?;
+        let identity = self.reread_identity_inner(original)?;
         if Some(identity) != self.original_identity {
             return Err(Error::invalid("proc observation", "original process identity changed"));
         }
         Ok(identity)
+    }
+
+    // Current-self purpose comparison remains in Core, with its original error.
+    pub(super) fn observe_stat_identity(
+        &mut self,
+        original: &PidFd,
+    ) -> Result<PidFdProcessIdentity> {
+        let operation = self.begin(ObservationPhaseV1::StatCaptured)?;
+        let result = operation.observations.reread_identity_inner(original);
+        operation.finish(result, ObservationPhaseV1::StatCaptured)
+    }
+
+    fn reread_identity_inner(&mut self, original: &PidFd) -> Result<PidFdProcessIdentity> {
+        let before = original.info()?;
+        self.stat.read(MAXIMUM_PROC_STAT_BYTES)?;
+        let stat = parse_proc_stat(&self.stat.current)?;
+        let after = original.info()?;
+        identity_from_stat(original, before, stat, after)
+    }
+
+    pub(super) fn fence(&mut self) {
+        self.phase = ObservationPhaseV1::Closed;
     }
 
     /// Rereads current context from the same original descriptor.
@@ -306,6 +323,28 @@ mod tests {
             original_identity: None,
             phase,
         }
+    }
+
+    #[test]
+    fn stat_only_state_does_not_satisfy_public_ready_gate() {
+        let mut observations = empty(ObservationPhaseV1::StatCaptured);
+        let operation = observations.begin(ObservationPhaseV1::StatCaptured).unwrap();
+        operation
+            .finish(Ok(()), ObservationPhaseV1::StatCaptured)
+            .unwrap();
+
+        assert_eq!(observations.phase, ObservationPhaseV1::StatCaptured);
+        assert!(observations.begin(ObservationPhaseV1::Ready).is_err());
+        assert_eq!(observations.phase, ObservationPhaseV1::Closed);
+    }
+
+    #[test]
+    fn stat_only_outer_fence_is_permanent() {
+        let mut observations = empty(ObservationPhaseV1::StatCaptured);
+        observations.fence();
+
+        assert_eq!(observations.phase, ObservationPhaseV1::Closed);
+        assert!(observations.begin(ObservationPhaseV1::StatCaptured).is_err());
     }
 
     #[test]

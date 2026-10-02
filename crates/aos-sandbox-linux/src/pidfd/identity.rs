@@ -11,7 +11,7 @@ use std::num::NonZeroU32;
 use super::{PidFd, PidFdInfo};
 use crate::{Error, Result};
 
-const MAXIMUM_PROC_STAT_BYTES: usize = 4096;
+pub(super) const MAXIMUM_PROC_STAT_BYTES: usize = 4096;
 
 /// Captures process facts while a [`PidFd`] retains the observed instance.
 ///

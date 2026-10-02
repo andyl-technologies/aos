@@ -3,6 +3,10 @@
 //! Namespace descriptors are acquired from a pinned pidfd with Linux 6.18's
 //! pidfs ioctls. The wrapper records the namespace `(device, inode)` identity
 //! at acquisition so callers can detect replacement across observations.
+//!
+//! Current-self custody retains a fresh pidfd and bounded original stat bytes
+//! through failed or interrupted observations. That reservoir is DATA, not a
+//! role, currentness, launch or drain authority.
 
 use std::marker::PhantomData;
 use std::num::NonZeroU32;
@@ -24,6 +28,159 @@ const LIVENESS_POLL_INTERRUPT_LIMIT: usize = 8;
 #[derive(Debug)]
 pub struct PidFd {
     fd: OwnedFd,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CurrentSelfPhaseV1 {
+    Fresh,
+    Ready,
+    Closed,
+}
+
+/// Retains the calling process's original pidfd and bounded stat observations.
+///
+/// The move-only owner selects only the current process. It parks each actual
+/// descriptor before fallible validation, retains failed partial observations
+/// until drop, and permanently fences interrupted operations. Returned identity
+/// bytes are DATA: an independent purpose owner must compare its original role,
+/// credentials and membership. This type grants no launch or process authority.
+pub struct CurrentSelfPidFdCustodyV1 {
+    raw: Option<OwnedFd>,
+    process: Option<PidFd>,
+    observations: Option<PidFdProcObservationsV1>,
+    phase: CurrentSelfPhaseV1,
+}
+
+impl CurrentSelfPidFdCustodyV1 {
+    /// Creates empty move-only slots without allocation or process observation.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            raw: None,
+            process: None,
+            observations: None,
+            phase: CurrentSelfPhaseV1::Fresh,
+        }
+    }
+
+    /// Captures the current process once while retaining every acquired original.
+    ///
+    /// # Errors
+    ///
+    /// Returns the actual syscall, descriptor-validation or bounded stat error.
+    /// Repeated or interrupted capture is refused. Error and unwind leave this
+    /// instance fenced; its descriptors and partial bytes remain owned.
+    pub fn capture_current(&mut self) -> Result<PidFdProcessIdentity> {
+        let operation = self.begin(CurrentSelfPhaseV1::Fresh)?;
+        let result = operation.custody.capture_current_inner();
+        operation.finish(result)
+    }
+
+    fn capture_current_inner(&mut self) -> Result<PidFdProcessIdentity> {
+        self.raw = Some(uapi::pidfd_open_current_original()?);
+
+        // Preserve the original fd_result pass, then the sole typed validator's
+        // second CLOEXEC pass. Both now borrow the already-resident fresh pin.
+        let raw = self.raw.as_ref().ok_or_else(current_self_closed)?;
+        uapi::ensure_cloexec(raw.as_fd())?;
+        PidFd::validate_owned_kind(raw.as_fd())?;
+
+        // Removal is followed only by an infallible same-owner typed transfer.
+        match self.raw.take() {
+            Some(fd) => self.process = Some(PidFd { fd }),
+            None => return Err(current_self_closed()),
+        }
+
+        let process = self.process.as_ref().ok_or_else(current_self_closed)?;
+        self.observations = Some(process.prepare_proc_observations_v1());
+        self.observations
+            .as_mut()
+            .ok_or_else(current_self_closed)?
+            .capture_stat(process)
+    }
+
+    /// Rereads identity using the same original pidfd and stat descriptor.
+    ///
+    /// Original identity equality remains the purpose owner's comparison. This
+    /// route needs no context capture and never reopens a procfs pathname.
+    ///
+    /// # Errors
+    ///
+    /// Refuses incomplete or fenced custody, or returns the actual bounded-read,
+    /// pidfd-consistency or liveness error. Err and unwind fence this instance.
+    pub fn observe_identity(&mut self) -> Result<PidFdProcessIdentity> {
+        let operation = self.begin(CurrentSelfPhaseV1::Ready)?;
+        let result = operation.custody.observe_identity_inner();
+        operation.finish(result)
+    }
+
+    fn observe_identity_inner(&mut self) -> Result<PidFdProcessIdentity> {
+        let process = self.process.as_ref().ok_or_else(current_self_closed)?;
+        self.observations
+            .as_mut()
+            .ok_or_else(current_self_closed)?
+            .observe_stat_identity(process)
+    }
+
+    /// Borrows the actual original pidfd only after completed capture.
+    ///
+    /// The short borrow is a process pin, not a purpose approval or a freshness
+    /// claim after the last observation.
+    ///
+    /// # Errors
+    ///
+    /// Refuses empty, interrupted or permanently fenced custody.
+    pub fn pidfd(&self) -> Result<&PidFd> {
+        if self.phase != CurrentSelfPhaseV1::Ready {
+            return Err(current_self_closed());
+        }
+        self.process.as_ref().ok_or_else(current_self_closed)
+    }
+
+    /// Permanently closes this instance without releasing retained originals.
+    ///
+    /// The purpose owner calls this on an outer failure. It creates no terminal
+    /// outcome, drain proof or resident copy of a previously returned cause.
+    pub fn fence(&mut self) {
+        self.phase = CurrentSelfPhaseV1::Closed;
+        if let Some(observations) = &mut self.observations {
+            observations.fence();
+        }
+    }
+
+    fn begin(&mut self, expected: CurrentSelfPhaseV1) -> Result<CurrentSelfOperationV1<'_>> {
+        if self.phase != expected {
+            self.fence();
+            return Err(current_self_closed());
+        }
+
+        // Arm before syscall, validation or reread. A dropped/forgotten borrow
+        // cannot restore usable custody after a caught unwind.
+        self.phase = CurrentSelfPhaseV1::Closed;
+        Ok(CurrentSelfOperationV1 { custody: self })
+    }
+}
+
+struct CurrentSelfOperationV1<'observation> {
+    custody: &'observation mut CurrentSelfPidFdCustodyV1,
+}
+
+impl CurrentSelfOperationV1<'_> {
+    fn finish<T>(self, result: Result<T>) -> Result<T> {
+        if result.is_ok() {
+            self.custody.phase = CurrentSelfPhaseV1::Ready;
+        } else {
+            self.custody.fence();
+        }
+        result
+    }
+}
+
+fn current_self_closed() -> Error {
+    Error::invalid(
+        "current-self custody",
+        "original observation is permanently closed",
+    )
 }
 
 impl PidFd {
@@ -51,7 +208,7 @@ impl PidFd {
         Ok(Self { fd })
     }
 
-    // Both callers use this sole checker and its original error precedence.
+    // All callers use this sole checker and its original error precedence.
     // The retaining caller leaves ownership in its guarded received slot.
     fn validate_owned_kind(fd: BorrowedFd<'_>) -> Result<()> {
         uapi::ensure_cloexec(fd)?;
@@ -611,6 +768,72 @@ mod tests {
     const LIVENESS_OBSERVER_ENV: &str = "AOS_PIDFD_CROSS_UID_OBSERVER_V1";
     #[cfg(feature = "kernel-tests")]
     const LIVE_MARKER: &str = "AOS_PIDFD_CROSS_UID_LIVE";
+
+    #[test]
+    fn empty_current_self_custody_exposes_no_pin() {
+        let mut custody = CurrentSelfPidFdCustodyV1::new();
+
+        assert!(custody.pidfd().is_err());
+        assert!(custody.observe_identity().is_err());
+        assert_eq!(custody.phase, CurrentSelfPhaseV1::Closed);
+        assert!(custody.raw.is_none());
+        assert!(custody.process.is_none());
+        assert!(custody.observations.is_none());
+        assert!(custody.capture_current().is_err());
+    }
+
+    #[test]
+    fn interrupted_current_self_borrow_stays_closed() {
+        let mut custody = CurrentSelfPidFdCustodyV1::new();
+        let operation = custody.begin(CurrentSelfPhaseV1::Fresh).unwrap();
+        drop(operation);
+
+        assert_eq!(custody.phase, CurrentSelfPhaseV1::Closed);
+        assert!(custody.pidfd().is_err());
+        assert!(custody.begin(CurrentSelfPhaseV1::Fresh).is_err());
+    }
+
+    #[test]
+    fn forgotten_current_self_borrow_stays_closed() {
+        let mut custody = CurrentSelfPidFdCustodyV1::new();
+        std::mem::forget(custody.begin(CurrentSelfPhaseV1::Fresh).unwrap());
+
+        assert_eq!(custody.phase, CurrentSelfPhaseV1::Closed);
+        assert!(custody.pidfd().is_err());
+        assert!(custody.begin(CurrentSelfPhaseV1::Fresh).is_err());
+    }
+
+    #[test]
+    fn current_self_returned_cause_is_not_replaced_by_fencing() {
+        let mut custody = CurrentSelfPidFdCustodyV1::new();
+        let operation = custody.begin(CurrentSelfPhaseV1::Fresh).unwrap();
+        let result = operation.finish::<()>(Err(Error::WrongDescriptorType {
+            expected: "pure failure sentinel",
+        }));
+
+        assert!(matches!(
+            result,
+            Err(Error::WrongDescriptorType {
+                expected: "pure failure sentinel",
+            }),
+        ));
+        assert_eq!(custody.phase, CurrentSelfPhaseV1::Closed);
+        assert!(custody.pidfd().is_err());
+    }
+
+    #[test]
+    fn caught_current_self_unwind_stays_closed() {
+        let mut custody = CurrentSelfPidFdCustodyV1::new();
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _operation = custody.begin(CurrentSelfPhaseV1::Fresh).unwrap();
+            panic!("pure current-self observation unwind");
+        }));
+
+        assert!(caught.is_err());
+        assert_eq!(custody.phase, CurrentSelfPhaseV1::Closed);
+        assert!(custody.pidfd().is_err());
+        assert!(custody.capture_current().is_err());
+    }
 
     fn spawn_liveness_target() -> Child {
         Command::new(std::env::current_exe().unwrap())

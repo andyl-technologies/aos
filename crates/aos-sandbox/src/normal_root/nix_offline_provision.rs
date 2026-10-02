@@ -2,8 +2,9 @@
 //!
 //! No TPM device, approval signer, runtime floor or journal is opened here.
 //! Returned activation descriptors and parked partial observations stay in the
-//! owner on error or unwind. Existing lower pidfd/cgroup pre-return custody gaps
-//! remain functional dependencies; this adapter does not repair those engines.
+//! owner on error or unwind. Current-self pidfd adoption and original stat reads
+//! use one resident lower DATA owner. Cgroup pre-return custody gaps remain
+//! functional dependencies; this adapter does not repair that engine.
 //! A genuine borrow exists only after selected image,
 //! PID1 delivery, confinement, stopped-runtime and credential comparisons.
 //! SecureBits=12 is a selected manager/unit configuration comparison, not a
@@ -16,7 +17,6 @@
 
 use std::fs::File;
 use std::io;
-use std::num::NonZeroU32;
 use std::os::fd::{AsFd as _, AsRawFd as _};
 use std::path::Path;
 use std::time::Duration;
@@ -24,7 +24,7 @@ use std::time::Duration;
 use aos_sandbox_linux::cgroup::{CgroupPopulationState, CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_linux::inherited_fd::{NixOfflinePrepareInitialTableV3, duplicate_descriptor};
 use aos_sandbox_linux::inventory::MountId;
-use aos_sandbox_linux::pidfd::{PidFd, PidFdProcessIdentity};
+use aos_sandbox_linux::pidfd::{CurrentSelfPidFdCustodyV1, PidFdProcessIdentity};
 use aos_sandbox_linux::selinux_policy::VerifiedLiveSelinuxPolicy;
 use aos_systemd::{OwnedValue, SystemdClient, Value};
 use rustix::fs::{Mode, OFlags};
@@ -188,7 +188,7 @@ pub struct OfflineNixPrepareStartupV3 {
     runtime: Vec<RetainedImmutableFileV1>,
     evidence: Vec<RetainedImmutableFileV1>,
     policy: Option<VerifiedLiveSelinuxPolicy>,
-    process: Option<PidFd>,
+    process: Option<CurrentSelfPidFdCustodyV1>,
     identity: Option<PidFdProcessIdentity>,
     cgroup: Option<RetainedCgroupAnchor>,
     cgroup_root: Option<CgroupV2Root>,
@@ -294,6 +294,9 @@ impl OfflineNixPrepareStartupV3 {
                 Ok(())
             }
             Err(error) => {
+                if let Some(process) = &mut self.process {
+                    process.fence();
+                }
                 self.failure.get_or_insert(error);
                 self.refuse()
             }
@@ -302,6 +305,9 @@ impl OfflineNixPrepareStartupV3 {
 
     fn refuse(&mut self) -> Result<(), &Error> {
         self.usable = false;
+        if let Some(process) = &mut self.process {
+            process.fence();
+        }
         Err(self.failure.get_or_insert(Error::Fenced))
     }
 
@@ -417,8 +423,13 @@ impl OfflineNixPrepareStartupV3 {
             VerifiedLiveSelinuxPolicy::verify(&profile.canonical_policy.path)
                 .map_err(|_| NormalRootStartupErrorV1::Confinement)?,
         );
-        self.process = Some(PidFd::open(NonZeroU32::new(std::process::id()).ok_or(Error::Rejected)?)?);
-        self.identity = Some(self.process.as_ref().ok_or(Error::Rejected)?.process_identity()?);
+        self.process = Some(CurrentSelfPidFdCustodyV1::new());
+        self.identity = Some(
+            self.process
+                .as_mut()
+                .ok_or(Error::Rejected)?
+                .capture_current()?,
+        );
         self.raw.push(File::from(rustix::fs::open(
             "/sys/fs/cgroup",
             OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
@@ -478,7 +489,7 @@ impl OfflineNixPrepareStartupV3 {
         self.require_self()
     }
 
-    fn require_self(&self) -> Result<(), Error> {
+    fn require_self(&mut self) -> Result<(), Error> {
         aos_sandbox_linux::guest_confinement::require_subject(CONTEXT)?;
         require_status(&super::read_bounded("/proc/self/status", 65_536)?)?;
         if rustix::process::getuid().as_raw() != 0
@@ -488,8 +499,20 @@ impl OfflineNixPrepareStartupV3 {
         {
             return Err(Error::Rejected);
         }
-        let process = self.process.as_ref().ok_or(Error::Rejected)?;
-        if Some(process.process_identity()?) != self.identity || !process.is_alive()? {
+        let identity = self
+            .process
+            .as_mut()
+            .ok_or(Error::Rejected)?
+            .observe_identity()?;
+        if Some(identity) != self.identity {
+            return Err(Error::Rejected);
+        }
+        let process = self
+            .process
+            .as_ref()
+            .ok_or(Error::Rejected)?
+            .pidfd()?;
+        if !process.is_alive()? {
             return Err(Error::Rejected);
         }
         let info = self.cgroup.as_ref().ok_or(Error::Rejected)?.verify_exact_membership(process)?;
@@ -878,5 +901,37 @@ mod tests {
         assert!(resident.capture_and_admit().is_err());
         assert!(resident.borrow_original().is_err());
         assert!(matches!(resident.failure(), Some(Error::Fenced)));
+    }
+
+    #[test]
+    fn outer_prepare_failure_fences_resident_self_slots_and_retains_cause() {
+        let mut resident = OfflineNixPrepareStartupV3::new();
+        resident.process = Some(CurrentSelfPidFdCustodyV1::new());
+        let result = resident.complete(Err(Error::Linux(
+            aos_sandbox_linux::Error::WrongDescriptorType {
+                expected: "pure failure sentinel",
+            },
+        )));
+
+        assert!(matches!(
+            result,
+            Err(Error::Linux(
+                aos_sandbox_linux::Error::WrongDescriptorType {
+                    expected: "pure failure sentinel",
+                },
+            )),
+        ));
+        assert!(resident.process.as_ref().unwrap().pidfd().is_err());
+        assert!(
+            resident.process.as_mut().unwrap().capture_current().is_err(),
+        );
+        assert!(matches!(
+            resident.failure(),
+            Some(Error::Linux(
+                aos_sandbox_linux::Error::WrongDescriptorType {
+                    expected: "pure failure sentinel",
+                },
+            )),
+        ));
     }
 }
