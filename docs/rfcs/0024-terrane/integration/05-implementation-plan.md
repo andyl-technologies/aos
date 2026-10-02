@@ -1590,6 +1590,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   their lookup keys cannot silently be treated as interchangeable. These are
   unresolved specification/integration prerequisites, not permission to start
   branch work or substitute a weaker gate.
+  D-99 corrects DRV-18's existing trigger to use the registered `sha256` hash
+  name and `hash.sha256` attribute name in their respective property sets;
+  its complexity and authorization obligations are unchanged. This editorial
+  namespace correction does not resolve the carrier, ordering or framed
+  descriptor prerequisites, and no native index capability is claimed.
   — satisfies DOM-1 to DOM-11, DOM-16, DOM-17, DOM-20, DOM-24;
   `checks.terrane.gates.dom-reference-order`,
   `checks.terrane.gates.dom-dedup-scope`.

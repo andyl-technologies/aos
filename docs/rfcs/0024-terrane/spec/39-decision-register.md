@@ -1806,6 +1806,27 @@ is added rather than editing history.
     additive correction precedes T1's initial encoding freeze and does not
     qualify the complete corpus, materialization or native operations.
 
+- **[D-99] Use registered hash and attribute names in the SHA-256 lookup trigger.**
+  - **Status:** Decided
+  - **Decision:** DRV-18's trigger names `sha256` in the root's `hashes`
+    property and `hash.sha256` in its `index` property. The lookup argument
+    remains `hash.sha256`; its result, complexity, reader-authority and
+    root-trust requirements remain unchanged.
+  - **Rationale:** The property registry and PROP-18 distinguish digest
+    algorithm names from derived attribute names. `hashes` accepts `sha256`,
+    while `index` names the derived attribute `hash.sha256`. The previous
+    trigger put `hash.sha256` in both sets and therefore could not be met by
+    a root with valid registered property values. This corrects the trigger
+    to its existing intended meaning without admitting another property
+    value or changing any encoded object, identity, profile or media type.
+    It does not equate a plaintext SHA-256 with an adapter's framed digest.
+  - **Alternatives considered:** Admit attribute names in `hashes` (rejected:
+    changes the registered property contract); drop indexed lookup (rejected:
+    violates the existing lookup and MVP obligations).
+  - **Affects:** DRV-18, PROP-18 and PROP-20. Requirement IDs and gate names
+    remain stable. This correction precedes T1's initial freeze and does not
+    qualify index maintenance, descriptor bridging or native disclosure.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

@@ -188,11 +188,11 @@ The motivating index is lookup of an object by a hash other than its primary
 content hash: a client that knows only the SHA-256 of a file asks the store
 for it.
 
-- **[DRV-18]** A store whose roots list `hash.sha256` in both `hashes` and
-  `index` MUST answer `lookup(root, hash.sha256, value)` with the set of
-  object hashes whose attribute equals `value`, in O(log n) plus the size of
-  the result. The answer MUST be filtered by the reader's authority and the
-  root's trust selector before it is returned.
+- **[DRV-18]** A store whose roots list `sha256` in `hashes` and
+  `hash.sha256` in `index` MUST answer `lookup(root, hash.sha256, value)`
+  with the set of object hashes whose attribute equals `value`, in O(log n)
+  plus the size of the result. The answer MUST be filtered by the reader's
+  authority and the root's trust selector before it is returned.
 
 ### Memos
 
