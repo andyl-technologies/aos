@@ -656,11 +656,7 @@ fn reservation_digest(reservation: &CacheReservationV1) -> ObjectDigest {
     hasher.update(reservation.operation.as_bytes());
     hasher.update(reservation.project.as_bytes());
     hasher.update(reservation.partition.digest().as_bytes());
-    let media = reservation.descriptor.media_type().as_str().as_bytes();
-    hasher.update((media.len() as u16).to_be_bytes());
-    hasher.update(media);
-    hasher.update(reservation.descriptor.digest().as_bytes());
-    hasher.update(reservation.descriptor.encoded_size().to_be_bytes());
+    super::catalog::hash_descriptor_fields_u16_v1(&mut hasher, &reservation.descriptor);
     hasher.update(reservation.reserved_bytes.to_be_bytes());
     hasher.update(reservation.plan_digest.as_bytes());
     hasher.update(reservation.resident_bytes.to_be_bytes());

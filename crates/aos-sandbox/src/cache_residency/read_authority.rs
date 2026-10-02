@@ -599,11 +599,7 @@ fn handoff_digest(plan: &DescriptorHandoffPlanV1) -> ObjectDigest {
     hasher.update(plan.authority_digest.as_bytes());
     hasher.update(plan.catalog_digest.as_bytes());
     hasher.update(plan.pin.as_bytes());
-    let media = plan.descriptor.media_type().as_str().as_bytes();
-    hasher.update((media.len() as u16).to_be_bytes());
-    hasher.update(media);
-    hasher.update(plan.descriptor.digest().as_bytes());
-    hasher.update(plan.descriptor.encoded_size().to_be_bytes());
+    super::catalog::hash_descriptor_fields_u16_v1(&mut hasher, &plan.descriptor);
     hasher.update(plan.backing.as_bytes());
     hasher.update(plan.physical_evidence.as_bytes());
     hasher.update(plan.valid_until.to_be_bytes());
