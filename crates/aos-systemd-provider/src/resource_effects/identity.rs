@@ -49,6 +49,14 @@ fn home() -> String {
     "/var/empty".into()
 }
 
+// A login home may be the filesystem root without allocating or owning it.
+fn normalized_home(value: &str) -> Result<&Path> {
+    if value == "/" {
+        return Ok(Path::new(value));
+    }
+    normalized_path(value)
+}
+
 #[derive(Clone, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 struct Membership {
@@ -526,7 +534,7 @@ fn desired(
                     matches!(value.login_access.as_str(), "enabled" | "disabled"),
                     "invalid login policy"
                 );
-                normalized_path(&value.home_directory)?;
+                normalized_home(&value.home_directory)?;
                 ensure!(
                     !value.description.contains([':', '\n', '\r', '\0'])
                         && !value.home_directory.contains(':'),
@@ -629,7 +637,7 @@ fn principal_row(
             "shell is not immutable"
         );
     }
-    normalized_path(&value.home_directory)?;
+    normalized_home(&value.home_directory)?;
     ensure!(
         !value.description.contains([':', '\n', '\r', '\0']) && !value.home_directory.contains(':'),
         "invalid account database field"
@@ -1134,6 +1142,90 @@ mod tests {
         remove_rows(root.path(), &receipt).unwrap();
         assert_eq!(database(root.path(), "passwd").unwrap().len(), 1);
     }
+
+    #[test]
+    fn principal_root_home_creation_and_update_preserve_identity_and_locked_login() {
+        let root = fixture();
+        let shells = Some((
+            "/nix/store/hash-bash/bin/bash",
+            "/nix/store/hash-util/sbin/nologin",
+        ));
+        let input = json!({
+            "name": "owned",
+            "primary_group": "staff",
+            "requested_id": 27,
+            "home_directory": "/"
+        });
+        let mut prior: Option<Receipt> = None;
+
+        for home in ["/", "/var/lib/owned", "/"] {
+            let mut input = input.clone();
+            input["home_directory"] = json!(home);
+            let mut receipt =
+                desired(root.path(), &input, "principal", prior.as_ref(), shells).unwrap();
+            if let Some(previous) = &prior {
+                receipt.previous_rows = previous.rows.clone();
+            }
+            install_rows(root.path(), &receipt).unwrap();
+            receipt.complete = true;
+            receipt.previous_rows.clear();
+
+            let rows = database(root.path(), "passwd").unwrap();
+            let row = lookup(&rows, "owned").unwrap();
+            assert_eq!(row[2], "27");
+            assert_eq!(row[3], "50");
+            assert_eq!(row[5], home);
+            assert_eq!(row[6], "/nix/store/hash-util/sbin/nologin");
+            assert_eq!(
+                lookup(&database(root.path(), "shadow").unwrap(), "owned").unwrap()[1],
+                "!"
+            );
+            assert!(check_rows(root.path(), &receipt).unwrap());
+            prior = Some(receipt);
+        }
+    }
+
+    #[test]
+    fn invalid_principal_homes_reject_creation_and_update_without_database_changes() {
+        let root = fixture();
+        let shells = Some((
+            "/nix/store/hash-bash/bin/bash",
+            "/nix/store/hash-util/sbin/nologin",
+        ));
+        let input = json!({"name": "owned", "primary_group": "staff", "requested_id": 27});
+        let mut receipt = desired(root.path(), &input, "principal", None, shells).unwrap();
+        install_rows(root.path(), &receipt).unwrap();
+        receipt.complete = true;
+        let files = ["passwd", "shadow", "group", "gshadow"];
+        let before = files.map(|file| fs::read(root.path().join(file)).unwrap());
+
+        for home in [
+            "relative",
+            "/var/../etc",
+            "/var/./lib",
+            "//",
+            "/var//lib",
+            "/var/lib/",
+        ] {
+            for prior in [None, Some(&receipt)] {
+                let mut invalid = input.clone();
+                invalid["home_directory"] = json!(home);
+                if prior.is_none() {
+                    invalid["name"] = json!("new");
+                    invalid["requested_id"] = json!(28);
+                }
+
+                let error = desired(root.path(), &invalid, "principal", prior, shells)
+                    .err()
+                    .unwrap();
+                assert!(error.to_string().contains("resource path"), "{error:#}");
+                for (file, bytes) in files.iter().zip(&before) {
+                    assert_eq!(&fs::read(root.path().join(file)).unwrap(), bytes);
+                }
+            }
+        }
+    }
+
     #[test]
     fn owned_principal_updates_retain_id_and_accept_interrupted_rows() {
         let root = fixture();
