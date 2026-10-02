@@ -460,7 +460,7 @@ impl QmpCommand<'_> {
                 expected_qemu_pid,
                 expected_template_generation,
             } => json!({
-                "execute": super::hot_fork::QMP_HOT_FORK_SOURCE_GRAPH_COMMAND,
+                "exec-oob": super::hot_fork::QMP_HOT_FORK_SOURCE_GRAPH_COMMAND,
                 "arguments": {
                     "expected-qemu-pid": expected_qemu_pid,
                     "expected-template-generation": expected_template_generation,

@@ -1685,6 +1685,28 @@ mod tests {
     }
 
     #[test]
+    fn source_graph_query_bypasses_retained_template_admission() {
+        let command = QmpCommand::HotForkSourceGraph {
+            expected_qemu_pid: 451,
+            expected_template_generation: 7,
+        };
+
+        assert_eq!(command.kind(), QmpCommandKind::HotForkSourceGraph);
+        assert_eq!(
+            command.request(),
+            json!({
+                "exec-oob": "crucible-hot-fork-source-graph",
+                "arguments": {
+                    "expected-qemu-pid": 451,
+                    "expected-template-generation": 7,
+                    "maximum-nodes": hot_fork::QMP_HOT_FORK_SOURCE_GRAPH_MAX_NODES,
+                    "maximum-bytes": hot_fork::QMP_HOT_FORK_SOURCE_GRAPH_MAX_BYTES,
+                },
+            })
+        );
+    }
+
+    #[test]
     fn hot_fork_command_carries_every_exact_generation() {
         let request = hot_fork_request();
         let cgroup = QmpDescriptorName::new("target-cgroup").expect("valid cgroup name");

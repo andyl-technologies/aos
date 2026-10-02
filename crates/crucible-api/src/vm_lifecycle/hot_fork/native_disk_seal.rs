@@ -83,34 +83,19 @@ impl ProductionVmHotForkDiskCustody {
             && state.seals(std::slice::from_ref(&self.request))
     }
 
-    /// Rechecks the original source's retained native seal through its backend.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the original backend cannot query its native seal.
-    pub(super) fn native_current_for_node(
+    fn source_identity_current(
         &self,
-        lifecycle: &mut ProductionVmLifecycleLoop,
-        node: &NodeId,
-    ) -> Result<bool, SchedulerError> {
-        let state = lifecycle
-            .inner
-            .backend_mut()
-            .query_hot_fork_disk_seal(node)
-            .map_err(|error| {
-                hot_fork_boundary_error(format!(
-                    "recheck prepared source `{}` native disk seal: {error}",
-                    node.name
-                ))
-            })?;
-        Ok(self.native_current(&state))
+        process: Option<&QemuProcessIdentity>,
+        generation: Option<&ProductionVmNodeGeneration>,
+    ) -> bool {
+        process == Some(&self.source_process) && generation == Some(&self.source_generation)
     }
 
     /// Authenticates the complete frozen native graph before child-file planning.
     ///
     /// # Errors
     ///
-    /// Returns an error when original process identity, graph roots or edges,
+    /// Returns an error when original process or lease identity, graph roots or edges,
     /// or independently retained regular-file contents differ.
     pub(super) fn authenticate_source_graph(
         &self,
@@ -118,16 +103,20 @@ impl ProductionVmHotForkDiskCustody {
         node: &NodeId,
         template_generation: u64,
     ) -> Result<(), SchedulerError> {
-        if lifecycle
-            .inner
-            .backend()
-            .process_identity(node)
-            .ok()
-            .as_ref()
-            != Some(&self.source_process)
-        {
+        if !self.source_identity_current(
+            lifecycle
+                .inner
+                .backend()
+                .process_identity(node)
+                .ok()
+                .as_ref(),
+            lifecycle
+                .node_leases
+                .get(node)
+                .map(|lease| lease.identity()),
+        ) {
             return Err(hot_fork_boundary_error(
-                "original graph source process is no longer current",
+                "original graph source process or lease is no longer current",
             ));
         }
         let graph = lifecycle
@@ -143,8 +132,32 @@ impl ProductionVmHotForkDiskCustody {
                     "authenticate original frozen source graph: {error}"
                 ))
             })?;
+        self.authenticate_graph_receipt(&graph)?;
+        if !self.source_identity_current(
+            lifecycle
+                .inner
+                .backend()
+                .process_identity(node)
+                .ok()
+                .as_ref(),
+            lifecycle
+                .node_leases
+                .get(node)
+                .map(|lease| lease.identity()),
+        ) {
+            return Err(hot_fork_boundary_error(
+                "original graph source process or lease changed during authentication",
+            ));
+        }
+        Ok(())
+    }
+
+    fn authenticate_graph_receipt(
+        &self,
+        graph: &QmpHotForkSourceGraphReceipt,
+    ) -> Result<(), SchedulerError> {
         authenticate_graph_edges(
-            &graph,
+            graph,
             self.basis(),
             self.request.overlay_node_name(),
             self.request.candidate().root_node_name(),
@@ -166,18 +179,6 @@ impl ProductionVmHotForkDiskCustody {
             })
             .collect::<Vec<_>>();
         self.files.authenticate_graph_files(&files)?;
-        if lifecycle
-            .inner
-            .backend()
-            .process_identity(node)
-            .ok()
-            .as_ref()
-            != Some(&self.source_process)
-        {
-            return Err(hot_fork_boundary_error(
-                "original graph source process changed during authentication",
-            ));
-        }
         Ok(())
     }
 
@@ -586,6 +587,56 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn graph_for_basis(
+        basis: &ProductionVmHotForkDiskBasis,
+    ) -> Result<QmpHotForkSourceGraphReceipt, serde_json::Error> {
+        let members = [
+            (0, 0, -1, "overlay", "", "qcow2", 0),
+            (0, 1, 0, "", "file", "file", 14),
+            (0, 2, 0, "snapshot", "backing", "qcow2", 0),
+            (0, 3, 2, "", "file", "file", 11),
+            (0, 4, 2, "boot", "backing", "raw", 0),
+            (0, 5, 4, "", "file", "file", 12),
+            (1, 0, -1, "vmstate", "", "qcow2", 0),
+            (1, 1, 0, "", "file", "file", 13),
+        ]
+        .into_iter()
+        .map(|(root, node, parent, name, edge, driver, inode)| {
+            let identity = match inode {
+                11 => basis.snapshot_identity,
+                12 => basis.boot_identity,
+                13 => basis.vmstate_identity,
+                14 => basis.detached_identity,
+                _ => (0, 0),
+            };
+            json!({
+                "root-index": root,
+                "node-index": node,
+                "parent-index": parent,
+                "backend-id": if root == 0 { basis.backend_id } else { 0 },
+                "backend-name": if root == 0 { crucible_qemu::ROOT_DRIVE_ID } else { "" },
+                "root-node-name": if root == 0 { "overlay" } else { "vmstate" },
+                "node-name": name,
+                "edge-name": edge,
+                "driver-name": driver,
+                "file-backed": inode != 0,
+                "originally-writable-file": inode == 13 || inode == 14,
+                "file-path": "",
+                "file-device": identity.0,
+                "file-inode": identity.1,
+                "file-size": 0,
+                "file-sha256": if inode == 0 { String::new() } else { "0".repeat(64) },
+            })
+        })
+        .collect::<Vec<_>>();
+        serde_json::from_value(json!({
+            "schema-version": 1, "qemu-pid": 451, "template-generation": 7,
+            "runstate-generation": 1, "vmstop-generation": 1, "vmstop-request-generation": 1,
+            "barrier-generation": 1, "graph-barrier-generation": 1, "graph-mutation-generation": 1,
+            "snapshot-generation": 1, "backend-generation": 1, "root-count": 2, "node-count": 8, "members": members,
+        }))
+    }
+
     #[test]
     fn graph_edges_bind_both_writable_roots_and_each_readonly_backing()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -607,31 +658,7 @@ mod tests {
             detached_content: ContentHash::from_bytes(b"overlay"),
             backing_files: Vec::new(),
         };
-        let members = [
-            (0, 0, -1, "overlay", "", "qcow2", 0),
-            (0, 1, 0, "", "file", "file", 14),
-            (0, 2, 0, "snapshot", "backing", "qcow2", 0),
-            (0, 3, 2, "", "file", "file", 11),
-            (0, 4, 2, "boot", "backing", "raw", 0),
-            (0, 5, 4, "", "file", "file", 12),
-            (1, 0, -1, "vmstate", "", "qcow2", 0),
-            (1, 1, 0, "", "file", "file", 13),
-        ].into_iter().map(|(root, node, parent, name, edge, driver, inode)| json!({
-            "root-index": root, "node-index": node, "parent-index": parent,
-            "backend-id": if root == 0 { 2 } else { 0 },
-            "backend-name": if root == 0 { crucible_qemu::ROOT_DRIVE_ID } else { "" },
-            "root-node-name": if root == 0 { "overlay" } else { "vmstate" },
-            "node-name": name, "edge-name": edge, "driver-name": driver,
-            "file-backed": inode != 0, "originally-writable-file": inode == 13 || inode == 14,
-            "file-path": "", "file-device": if inode == 0 { 0 } else { 1 }, "file-inode": inode,
-            "file-size": 0, "file-sha256": if inode == 0 { String::new() } else { "0".repeat(64) },
-        })).collect::<Vec<_>>();
-        let graph: QmpHotForkSourceGraphReceipt = serde_json::from_value(json!({
-            "schema-version": 1, "qemu-pid": 451, "template-generation": 7,
-            "runstate-generation": 1, "vmstop-generation": 1, "vmstop-request-generation": 1,
-            "barrier-generation": 1, "graph-barrier-generation": 1, "graph-mutation-generation": 1,
-            "snapshot-generation": 1, "backend-generation": 1, "root-count": 2, "node-count": 8, "members": members,
-        }))?;
+        let graph = graph_for_basis(&basis)?;
         authenticate_graph_edges(&graph, &basis, "overlay", "snapshot")?;
         let mut swapped = graph.clone();
         swapped.members[1].file_inode = 13;
@@ -649,6 +676,125 @@ mod tests {
         let mut omitted = graph.clone();
         omitted.members.remove(5);
         assert!(authenticate_graph_edges(&omitted, &basis, "overlay", "snapshot").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn frozen_graph_retains_original_custody_without_a_writable_seal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use sha2::{Digest, Sha256};
+
+        let directory = tempfile::tempdir()?;
+        let paths =
+            ["snapshot", "boot", "vmstate", "overlay"].map(|name| directory.path().join(name));
+        let bytes = [b"snapshot".as_slice(), b"boot", b"vmstate", b"overlay"];
+        for (path, contents) in paths.iter().zip(bytes) {
+            std::fs::write(path, contents)?;
+        }
+        let snapshot = File::open(&paths[0])?;
+        let metadata = snapshot.metadata()?;
+        let candidate: crucible_qemu::QmpHotForkBlockSealCandidate =
+            serde_json::from_value(json!({
+                "backend-id": 2,
+                "backend-name": crucible_qemu::ROOT_DRIVE_ID,
+                "root-node-name": "snapshot",
+                "file-path": paths[0],
+                "file-device": metadata.dev(),
+                "file-inode": metadata.ino(),
+                "virtual-size": 4096,
+            }))?;
+        let request = QmpHotForkBlockSealRequest::new(candidate, "overlay")?;
+        let sealed: QmpHotForkBlockSealState = serde_json::from_value(json!({
+            "schema-version": 1,
+            "qemu-pid": 451,
+            "receipt-generation": 1,
+            "backend-generation": 1,
+            "graph-mutation-generation": 1,
+            "barrier-held": true,
+            "barrier-generation": 1,
+            "barrier-quiescent": true,
+            "candidates": [],
+            "sealed-roots": [{
+                "backend-id": 2,
+                "backend-name": crucible_qemu::ROOT_DRIVE_ID,
+                "overlay-node-name": "overlay",
+                "snapshot-node-name": "snapshot",
+                "snapshot-file-path": paths[0],
+                "snapshot-file-device": metadata.dev(),
+                "snapshot-file-inode": metadata.ino(),
+                "virtual-size": 4096,
+                "overlay-empty": true,
+                "snapshot-read-only": true,
+            }],
+        }))?;
+        let process = QemuProcessIdentity {
+            process_id: 451,
+            start_time_ticks: 37,
+            executable: "qemu-system-test".into(),
+        };
+        let node = NodeId {
+            name: "router-a".into(),
+        };
+        let generation = ProductionVmNodeGeneration::new(node.clone(), 1)?;
+        let custody = ProductionVmHotForkDiskCustody::capture(
+            (process.clone(), generation.clone()),
+            (&sealed, &request),
+            (snapshot, &paths[0]),
+            (File::open(&paths[1])?, &paths[1]),
+            ContentHash::from_bytes(bytes[1]),
+            (File::open(&paths[2])?, &paths[2]),
+            (File::open(&paths[3])?, &paths[3]),
+        )?;
+        let mut graph = graph_for_basis(custody.basis())?;
+        for (index, path) in [1, 3, 5, 7]
+            .into_iter()
+            .zip([&paths[3], &paths[0], &paths[1], &paths[2]])
+        {
+            let contents = std::fs::read(path)?;
+            graph.members[index].file_size = contents.len() as u64;
+            graph.members[index].file_sha256 = Sha256::digest(&contents)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+        }
+
+        // Freezing retires the writable disposition, while the original seal,
+        // stopped template graph and independently pinned inodes remain owned.
+        let readonly: QmpHotForkBlockSealState = serde_json::from_value(json!({
+            "schema-version": 1,
+            "qemu-pid": 451,
+            "receipt-generation": 0,
+            "backend-generation": 2,
+            "graph-mutation-generation": 2,
+            "barrier-held": true,
+            "barrier-generation": 1,
+            "barrier-quiescent": true,
+            "candidates": [],
+            "sealed-roots": [],
+        }))?;
+        assert!(custody.native_current(&sealed));
+        assert!(!custody.native_current(&readonly));
+        assert!(custody.source_identity_current(Some(&process), Some(&generation)));
+        assert!(custody.current()?);
+        custody.authenticate_graph_receipt(&graph)?;
+
+        let mut stale_process = process.clone();
+        stale_process.start_time_ticks += 1;
+        let stale_generation = ProductionVmNodeGeneration::new(node, 2)?;
+        assert!(!custody.source_identity_current(Some(&stale_process), Some(&generation)));
+        assert!(!custody.source_identity_current(Some(&process), Some(&stale_generation)));
+        assert!(!custody.source_identity_current(None, Some(&generation)));
+        assert!(!custody.source_identity_current(Some(&process), None));
+
+        let mut changed_edge = graph.clone();
+        changed_edge.members[2].edge_name = "foreign".into();
+        assert!(custody.authenticate_graph_receipt(&changed_edge).is_err());
+        let mut changed_digest = graph.clone();
+        changed_digest.members[3].file_sha256 = "0".repeat(64);
+        assert!(custody.authenticate_graph_receipt(&changed_digest).is_err());
+        std::fs::write(&paths[0], b"tampered!")?;
+        assert!(!custody.current()?);
+        assert!(custody.authenticate_graph_receipt(&graph).is_err());
         Ok(())
     }
 }
