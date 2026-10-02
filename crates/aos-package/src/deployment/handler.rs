@@ -14,7 +14,7 @@
 
 use std::process::Command;
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, bail};
 use aos_ability_plan::module_graph::{Effect, Handler};
 use aos_ability_runtime::activation::{
     Action, ActivationAdapter, BoundaryEvent, BoundaryObserver, Invocation, Observation,
@@ -24,7 +24,7 @@ use aos_contract::limits::{BoundedWriter, JsonLimits};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::process::run_bounded;
+use super::process::{ProcessOutput, run_bounded};
 
 const MESSAGE_LIMITS: JsonLimits = JsonLimits {
     max_bytes: 256 * 1024,
@@ -32,6 +32,27 @@ const MESSAGE_LIMITS: JsonLimits = JsonLimits {
     max_items: 65_536,
     max_string_bytes: 128 * 1024,
 };
+
+/// Preserves a bounded diagnostic without exposing the typed result stream.
+fn check_handler_status(output: &ProcessOutput) -> Result<()> {
+    if output.status.success() {
+        return Ok(());
+    }
+
+    const DIAGNOSTIC_BYTES: usize = 4096;
+    let stderr =
+        String::from_utf8_lossy(&output.stderr[..output.stderr.len().min(DIAGNOSTIC_BYTES)]);
+    let suffix = if output.stderr.len() > DIAGNOSTIC_BYTES {
+        "\n[stderr truncated]"
+    } else {
+        ""
+    };
+    bail!(
+        "module handler exited with {}: {}{suffix}",
+        output.status,
+        stderr.trim_end()
+    )
+}
 
 /// Admits and durably retains handler outputs in the host's package store.
 ///
@@ -100,6 +121,12 @@ impl<A: HandlerArtifacts> ProcessAdapter<A> {
             cancellation,
             timeout_ms: invocation.effect.timeout_ms,
         };
+        let handler_context = || {
+            format!(
+                "{operation} handler {executable} for effect {:?}",
+                invocation.effect.identity
+            )
+        };
         let output = run_bounded(
             &mut command,
             Some(&input),
@@ -107,12 +134,8 @@ impl<A: HandlerArtifacts> ProcessAdapter<A> {
             &budget,
             &[],
         )
-        .context("module handler transport failed")?;
-        ensure!(
-            output.status.success(),
-            "module handler exited with {}",
-            output.status
-        );
+        .with_context(&handler_context)?;
+        check_handler_status(&output).with_context(handler_context)?;
         Ok(output.stdout)
     }
 }
@@ -202,5 +225,48 @@ impl RuntimeControl for InvocationBudget<'_> {
 
     fn recovery_remaining_millis(&self) -> u64 {
         self.timeout_ms
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::process::ExitStatusExt as _;
+    use std::process::ExitStatus;
+
+    use super::*;
+
+    #[test]
+    fn failed_handler_reports_stderr_without_its_typed_results() {
+        let output = ProcessOutput {
+            status: ExitStatus::from_raw(7 << 8),
+            stdout: b"private-result-value".to_vec(),
+            stderr: b"required device is absent\n".to_vec(),
+        };
+
+        let message = check_handler_status(&output).unwrap_err().to_string();
+
+        assert!(message.contains("exit status: 7"));
+        assert!(message.contains("required device is absent"));
+        assert!(!message.contains("private-result-value"));
+    }
+
+    #[test]
+    fn failed_handler_diagnostics_are_bounded_and_accept_non_utf8() {
+        let mut stderr = vec![0xff; 4096];
+        stderr.extend_from_slice(b"unretained-diagnostic-tail");
+        let mut output = ProcessOutput {
+            status: ExitStatus::from_raw(1 << 8),
+            stdout: Vec::new(),
+            stderr,
+        };
+
+        let message = check_handler_status(&output).unwrap_err().to_string();
+
+        assert!(message.contains("[stderr truncated]"));
+        assert!(!message.contains("unretained-diagnostic-tail"));
+        assert!(message.len() < 4096 * 3 + 128);
+
+        output.status = ExitStatus::from_raw(0);
+        assert!(check_handler_status(&output).is_ok());
     }
 }
