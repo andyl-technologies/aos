@@ -852,6 +852,27 @@ async fn gc(printer: &Printer, command: &HubContainerGcCmd) -> Result<()> {
                 .await?;
             print_topology_message(printer, &response)
         }
+        HubContainerGcCmd::Cancel {
+            access,
+            registry,
+            run_id,
+            if_version,
+            idempotency_key,
+        } => {
+            let client = client(access).await?;
+            let response: hub_types::ContainerGcRunResponse = client
+                .call_topology(
+                    Method::CancelContainerGcRun,
+                    &hub_types::CancelContainerGcRunRequest {
+                        registry: registry.clone(),
+                        run_id: run_id.clone(),
+                        expected_resource_version: if_version.clone(),
+                        idempotency_key: idempotency_key.clone(),
+                    },
+                )
+                .await?;
+            print_topology_message(printer, &response)
+        }
         HubContainerGcCmd::Requeue {
             access,
             registry,
