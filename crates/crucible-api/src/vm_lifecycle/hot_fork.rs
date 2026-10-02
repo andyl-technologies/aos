@@ -407,17 +407,13 @@ impl ProductionVmHotForkSourceWorld {
                         node.name
                     )));
                 }
+                // PREPARE freezes the writable seal into the retained source.
+                // Its complete frozen graph now authenticates current custody.
                 custody.authenticate_source_graph(
                     lifecycle,
                     node,
                     prepared.template_generation(),
                 )?;
-                if !custody.native_current_for_node(lifecycle, node)? {
-                    return Err(hot_fork_boundary_error(format!(
-                        "prepared source `{}` native disk seal changed",
-                        node.name
-                    )));
-                }
             } else if self.continuation.disk_bases.contains_key(node) {
                 return Err(hot_fork_boundary_error(format!(
                     "prepared source `{}` lost its disk file custody",
