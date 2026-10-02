@@ -133,11 +133,9 @@ apr create andyl-experimental \
 ```
 
 The Hub slug and signed release identity are `andyl/experimental`; the clone name and
-trust-line prefix are `andyl-experimental`. Generate threshold-signed bootstrap
-intents for the exact staging and production deployment identities and run
-`aos maintain release step bootstrap` once per surface as documented in
-[`canonical-releases.md`](canonical-releases.md). Bootstrap refuses a destination
-that already contains a publication.
+trust-line prefix are `andyl-experimental`. Keep this clone clean and at its
+single root commit: the first release plans exactly that commit as its base
+and refuses a clone with any other commit, reference, or uncommitted change.
 
 After the `andyl` organization exists in staging, create the public registry
 topology there with the ordinary reviewed Hub plan/apply protocol. Plan first:
@@ -168,11 +166,14 @@ aos hub registry show \
   andyl/experimental
 ```
 
-Bootstrap and qualify the empty base in staging. Only then repeat the topology
-plan/apply/show and bootstrap against `https://aos.andyl.org`, using the
-production access profile, deployment identity, plan, and idempotency key. The
-topology row and `aos maintain release step bootstrap` publication are separate: create and
-inspect the row first, then install the independently approved empty base.
+Inspect the staging row, then repeat the topology plan/apply/show against
+`https://aos.andyl.org` with the production access profile and idempotency
+key. The topology row and the base publication are separate: the rows hold no
+publication, and nothing installs the base yet. Its threshold-signed bootstrap
+intents bind the first release's plan digest, so `aos maintain release step
+bootstrap` installs the base on each surface as part of
+[the first edge release](#publish-the-first-or-a-later-edge-release).
+Bootstrap refuses a destination that already contains a publication.
 
 ## Prepare the image signing authorities
 
@@ -260,24 +261,63 @@ snapshot or use its isolated registry commit as the public registry base. The
 retaining the approved empty base commit and generation.
 
 Set the experimental configuration's `predecessor_bundle` to the retained
-snapshot, write the reviewed Linux image decisions to `images.json`, then
-freeze the public plan with the exact prepared version:
+snapshot and write the reviewed Linux image decisions to `images.json`.
+
+Both Hub surfaces authenticate through their `aos hub login` profiles unless
+the configuration sets `token_credential`. Only the active profile is used
+(see [Hub credentials](canonical-releases.md#hub-credentials)): sign in to
+`https://aos.staging.andyl.org` before the staging steps below and to
+`https://aos.andyl.org` before the production ones.
+
+The epoch's first release starts from Hubs that hold only the topology rows
+created above. Freeze its plan from the epoch-one clone's root commit with the
+exact prepared version:
 
 ```sh
-aos maintain release new --registry andyl/experimental --version 2026.9.0-dev.20260917.1 --images images.json
+aos maintain release new --registry andyl/experimental \
+  --version 2026.9.0-dev.20260917.1 --images images.json \
+  --first-release \
+  --source-registry ~/.local/share/apm/registries/andyl-experimental
 ```
 
 Check the printed summary: registry `andyl/experimental` (or the active epoch
 identity), the edge version, destinations `staging/edge` (`build`) and
-`production/edge` (`smoke`), the exact current experimental registry base commit and
-generation, the surface identities verified above, the change scope, and
-complete package and image decisions with all required signer roles. Then
-publish with:
+`production/edge` (`smoke`), the clone's root commit at generation 0 marked as
+a first release, the surface identities verified above, the change scope, and
+complete package and image decisions with all required signer roles. `new`
+refuses a staging Hub that already holds any publication, a dirty clone, a
+clone with more than its root commit, and a clone named other than
+`andyl-experimental` or `experimental`.
+
+Then install that base on both surfaces before publishing, following
+[Bootstrap the first registry base](canonical-releases.md#bootstrap-the-first-registry-base):
+
+1. Write the staging and production `aos.release.registry-bootstrap-intent/v1`
+   payloads for the printed plan digest and base commit, with the deployment
+   identities of `https://aos.staging.andyl.org` and `https://aos.andyl.org`,
+   and have every `release-evidence` key holder sign each with
+   `aos-release-signer sign-evidence`.
+2. Export the clone's root commit:
+   `apr origin upload --registry andyl-experimental --upload-url file://$PWD/base-registry-surface`.
+3. While signed in to staging, run `aos maintain release step bootstrap
+   --environment staging ... --output "$WORK/bootstrap/staging"`; then, signed
+   in to production, the same with `--environment production` and
+   `--output "$WORK/bootstrap/production"`. `$WORK` is the work directory
+   `new` printed.
+4. Copy the clean clone to `$WORK/inputs/source-registry/`.
+
+Then publish with:
 
 ```sh
 aos maintain release advance --to staging/edge
 aos maintain release advance --to production/edge
 ```
+
+`advance` stops with a `Waiting:` instruction before reaching a surface whose
+`bootstrap/<role>/` evidence is missing. Every later edge release omits
+`--first-release` and `--source-registry`: `new` reads the base commit and
+generation from the staging Hub's current ready publication, and refuses to
+plan while staging holds none.
 
 Follow the [release checklist](release-checklist.md), using
 [`canonical-releases.md`](canonical-releases.md) for command arguments.
