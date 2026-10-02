@@ -258,6 +258,103 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires the source-built boot fixture containing actual Nix result declarations"]
+    fn source_built_provisioning_results_match_declared_wire_contracts() -> Result<()> {
+        let fixture = PathBuf::from(
+            std::env::var_os("AOS_BOOT_CONFIGURATION_FIXTURE")
+                .context("source-built boot fixture is required")?,
+        );
+        let graph_path = fixture
+            .parent()
+            .context("boot fixture must have a parent directory")?
+            .join("provisioning-wire-graph.json");
+        let graph =
+            aos_ability_plan::module_graph::CheckedModuleGraph::decode(&fs::read(graph_path)?)?;
+        let operation = |ability: &str| {
+            graph
+                .graph()
+                .nodes
+                .values()
+                .find(|node| node.identity.iter().any(|part| part == ability))
+                .context("fixture must retain the actual provisioning operation")
+        };
+        let plan_node = operation("provisioningEvaluation")?;
+        let marker_node = operation("provisioningMarker")?;
+
+        // Nullable input fields are deliberately absent. Canonicalization must
+        // still emit every field required by the declaration-derived wire type.
+        let intent: ProvisioningPlan = serde_json::from_value(json!({
+            "schema": "aos.provisioning-plan/v1",
+            "storage": {"partitions": {"var": {
+                "label": "var", "type": "linux-generic", "sizeMin": "4G",
+                "weight": 1000, "grow": true, "growFs": true, "priority": 9000
+            }}}
+        }))?;
+        let marker_uuid = "01234567-89ab-4def-8123-456789abcdef";
+        let plan = canonicalize_provisioning_plan(
+            intent,
+            CanonicalProvisioningSource::Operator,
+            false,
+            marker_uuid,
+        )?;
+        assert!(plan.partitions["var"].size_max.is_none());
+        assert!(plan.partitions["var"].format.is_none());
+
+        let plan_results = json!({
+            "canonical_plan": String::from_utf8(aos_contract::canonical::to_vec(&plan)?)?,
+            "provisioning_plan": plan,
+        });
+        assert!(plan_results["provisioning_plan"]["partitions"]["var"]["size_max"].is_null());
+        assert!(plan_results["provisioning_plan"]["partitions"]["var"]["format"].is_null());
+        plan_node.check_results(&plan_results)?;
+
+        for field in ["size_max", "format"] {
+            let mut omitted = plan_results.clone();
+            omitted["provisioning_plan"]["partitions"]["var"]
+                .as_object_mut()
+                .context("canonical partition must be an object")?
+                .remove(field)
+                .context("canonical partition must retain its nullable field")?;
+            assert!(
+                plan_node.check_results(&omitted).is_err(),
+                "omitted {field}"
+            );
+        }
+
+        for state in [
+            ProvisioningMarkerState::Absent,
+            ProvisioningMarkerState::Completed,
+            ProvisioningMarkerState::Pending,
+            ProvisioningMarkerState::Indeterminate,
+        ] {
+            let completed = state == ProvisioningMarkerState::Completed;
+            let marker = ProvisioningMarkerObservation {
+                schema: "aos.storage.provisioning-marker-observation/v1".into(),
+                state,
+                source: completed.then_some(CanonicalProvisioningSource::Operator),
+                marker_uuid: completed.then(|| marker_uuid.into()),
+            };
+            validate_provisioning_marker_observation(&marker)?;
+            let marker_results = json!({"marker": marker});
+            marker_node.check_results(&marker_results)?;
+
+            for field in ["source", "marker_uuid"] {
+                let mut omitted = marker_results.clone();
+                omitted["marker"]
+                    .as_object_mut()
+                    .context("marker result must be an object")?
+                    .remove(field)
+                    .context("marker result must retain its nullable field")?;
+                assert!(
+                    marker_node.check_results(&omitted).is_err(),
+                    "omitted {field}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn projection_retains_source_and_proof_roots_without_payloads() {
         let source = "/nix/store/00000000000000000000000000000000-source";
         let proof = "/nix/store/11111111111111111111111111111111-proof";

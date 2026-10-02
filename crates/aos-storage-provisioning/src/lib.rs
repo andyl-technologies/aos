@@ -423,10 +423,10 @@ pub struct ProvisioningMarkerObservation {
     /// Classifies the complete marker set observed on the root disk.
     pub state: ProvisioningMarkerState,
     /// Identifies the committed provenance arm when exactly one marker exists.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub source: Option<CanonicalProvisioningSource>,
     /// Carries the canonical PARTUUID when exactly one committed marker exists.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub marker_uuid: Option<String>,
 }
 
@@ -489,12 +489,12 @@ pub struct CanonicalPartitionSpec {
     /// Minimum partition size in systemd size syntax.
     pub size_min: String,
     /// Optional maximum partition size.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub size_max: Option<String>,
     /// Relative free-space allocation weight.
     pub weight: i64,
     /// Optional initial filesystem format.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub format: Option<String>,
     /// Declared volume encryption, or null for measured-boot policy defaults.
     #[serde(default)]
@@ -525,7 +525,7 @@ pub enum CanonicalPartitionTarget {
 /// Validates and converts evaluated provisioning intent into its ability wire plan.
 ///
 /// Missing partition UUIDs are derived once from the durable marker UUID. Optional
-/// null fields remain absent in the serialized canonical value.
+/// fields serialize as null so the value retains its complete typed record.
 ///
 /// # Errors
 ///
@@ -847,7 +847,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_plan_assigns_uuid_and_omits_null_fields() {
+    fn canonical_plan_assigns_uuid_and_preserves_nullable_fields() {
         let plan = canonicalize_provisioning_plan(
             evaluated_plan(),
             CanonicalProvisioningSource::Operator,
@@ -866,8 +866,8 @@ mod tests {
 
         let value = serde_json::to_value(plan).expect("serializable canonical plan");
         let var = &value["partitions"]["var"];
-        assert!(var.get("size_max").is_none());
-        assert!(var.get("format").is_none());
+        assert_eq!(var.get("size_max"), Some(&serde_json::Value::Null));
+        assert_eq!(var.get("format"), Some(&serde_json::Value::Null));
     }
 
     #[test]

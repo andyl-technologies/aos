@@ -40,6 +40,9 @@ in
             "$executable" --exact \
               boot_configuration::integration::checked_metadata_adoption_recovers_and_preserves_operator_sources \
               --ignored --nocapture
+            "$executable" --exact \
+              config_eval::provisioning_evaluator::tests::source_built_provisioning_results_match_declared_wire_contracts \
+              --ignored --nocapture
           done
           echo PASS > "$out/result"
         '';
