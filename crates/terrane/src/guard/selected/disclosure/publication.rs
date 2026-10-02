@@ -359,6 +359,8 @@ where
             .ok_or_else(invalid)?
             .signature = signature;
     }
+    #[cfg(all(test, feature = "tokio"))]
+    super::mutations::apply(concrete.store().root(), &mut finalized)?;
     admitted.commit = resign(destination.guard(), finalized, &secret, session.epoch())?;
     prototype_history
         .insert_commit(admitted.commit.clone())

@@ -14,8 +14,16 @@ use terrane_core::tree_builder::Tree;
 use terrane_core::tree_format::{ContentRef, Entry, EntryKind, LeafItem, Property, TreeUse};
 
 #[cfg(unix)]
+mod boundary_checks;
+#[cfg(unix)]
 mod fresh_recovery;
 mod multiple;
+
+#[cfg(unix)]
+#[tokio::test]
+async fn disclosure_boundary_rejects_whole_commit_receipt_and_projection_mutations() {
+    boundary_checks::reject_signed_mutations().await;
+}
 
 #[cfg(unix)]
 #[tokio::test]

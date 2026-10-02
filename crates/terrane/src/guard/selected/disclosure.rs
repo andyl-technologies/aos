@@ -14,6 +14,12 @@ mod destination;
 mod publication;
 pub(crate) use publication::publish;
 
+#[cfg(all(test, feature = "tokio"))]
+#[path = "disclosure/mutations.rs"]
+mod mutations;
+#[cfg(all(test, feature = "tokio"))]
+pub(crate) use mutations::{CertificateMutation, corrupt_next_certificate};
+
 /// Arms one test interruption after actual import installation and before selection.
 ///
 /// # Errors
