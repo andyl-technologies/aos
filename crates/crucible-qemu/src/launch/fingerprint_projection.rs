@@ -287,7 +287,7 @@ const FAULT: ProjectionRow = versioned_row!(
     1,
     CONTROL,
     "fault-continuation",
-    2
+    3
 );
 const Q35_ACPI: ProjectionRow = row!("acpi_build", 0, "acpi_build", 1, DEVICE, "acpi-build");
 const AARCH64_ACPI: ProjectionRow = row!(
@@ -449,7 +449,7 @@ mod tests {
         assert_eq!(q35.sections, 40);
         assert_eq!(
             q35.digest,
-            "3a9543b78a836778a513700fb5703bed862890c96d27ee440b9c18064579c082"
+            "4b3df49d1b4658595065b7c10ba0dac8d12b86552c64735da9aad02ce5d589f2"
         );
 
         let aarch64 = expected_manifest_for_shape(base_shape(FaultCapabilityScope::Aarch64))
@@ -457,7 +457,7 @@ mod tests {
         assert_eq!(aarch64.sections, 19);
         assert_eq!(
             aarch64.digest,
-            "f3a98c8815ffaf4d58a25a7e31aa8ed5d2b6e3b9d02ee2a4286e4d7532e5277a"
+            "15dd503eb70f3a9ab73bf9f79236a6703fa607d3da852d6d9f8ffcb5d0f68f88"
         );
         assert_projection_row(
             &aarch64,
@@ -504,7 +504,7 @@ mod tests {
         assert_eq!(manifest.sections, 44);
         assert_eq!(
             manifest.digest,
-            "4997993e3c41b98a476c0c1bd892d7e11db639b861c65b34a807cdee2a621e96"
+            "00c14a5774c6c27963aa8eb655d370c854454b9e0010ecbd8974db5f0a34fba1"
         );
         Ok(())
     }
@@ -591,7 +591,7 @@ mod tests {
         assert_eq!(manifest.sections, 48);
         assert_eq!(
             manifest.digest,
-            "daaa47b86ac8b2175feace991ee77001357222dbc54e9e39295097e9c23f5dea"
+            "3666338bd7d614539114f9c9e9b8a3220ac75093523ce65709b298ba6a927034"
         );
         Ok(())
     }
@@ -614,7 +614,7 @@ mod tests {
         assert_eq!(manifest.sections, 51);
         assert_eq!(
             manifest.digest,
-            "7c5a1f187c4b9505f364bfc77338c8acccd98eedc84abc11569c4df000dbb686"
+            "5410ca98de5664cf9920c64f9c72040e16348f7878608197b0881e0e232dbec4"
         );
         Ok(())
     }
@@ -637,7 +637,7 @@ mod tests {
         assert_eq!(manifest.sections, 26);
         assert_eq!(
             manifest.digest,
-            "c1f00e5b71f40bc7f45d525e3741674ace3407e27b021d6ab77df82e40ec982c"
+            "0645d338114ec5305f6dc68acb452339f6fe39ba14e7c6f41c1032eb2259c2bc"
         );
         Ok(())
     }
@@ -652,7 +652,7 @@ mod tests {
         assert_eq!(q35.sections, 49);
         assert_eq!(
             q35.digest,
-            "864b67fdaba65ffb7a261f41cb4ad85625f6fdc11e638cad8561ca60bd914b7a"
+            "546ea4e3ec33f5be75999484b08f9c8e03d454cb98f4e4d26200aacbc6659096"
         );
 
         let identities = q35
@@ -694,7 +694,7 @@ mod tests {
         assert_eq!(aarch64.sections, 25);
         assert_eq!(
             aarch64.digest,
-            "7d05885eed659714ed7c7c2d78450b38d67244e9c711b4ad55852113600e4313"
+            "e842bcaedece3242e0bbd334d19697265564388dcfe2c9ee2f8cb83c5097073d"
         );
         assert_eq!(
             aarch64.rows.last().map(|row| row.id.as_str()),
@@ -834,8 +834,8 @@ mod tests {
             "crucible-fault",
             0,
             1,
-            "crucible.qemu.fault-continuation.v2",
-            2,
+            "crucible.qemu.fault-continuation.v3",
+            3,
         );
         assert_projection_row(
             &production,
@@ -852,8 +852,8 @@ mod tests {
             "crucible-fault",
             0,
             1,
-            "crucible.qemu.fault-continuation.v2",
-            2,
+            "crucible.qemu.fault-continuation.v3",
+            3,
         );
         Ok(())
     }
