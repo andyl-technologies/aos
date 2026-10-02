@@ -394,6 +394,20 @@ abandonment records leaked bytes and permits tombstone lifecycle completion,
 but never reports them as reclaimed. Database state must not claim storage was
 freed until the backend confirms it.
 
+The OCI provider inventory that supplies the strong ETags for registry
+placement deletion enumerates only the `oci/blobs/sha256/` namespace of a
+registry placement. The placement also
+holds the binary cache and git objects, which a blob inventory must never
+page through, so the surface listing port takes a key prefix that every
+backend applies natively (an object-store list prefix or a filesystem walk
+rooted at the prefix). Each listing page holds one object, and a page is
+checkpointed only once that object is hashed, so a dispatch that stops in the
+middle of a large blob resumes it without rehashing or skipping siblings. A
+durable checkpoint cursor is meaningful only for the prefix that produced it:
+it is stored with a scope tag, and a collecting generation whose cursor
+predates blob-scoped listing fails closed and restarts once as a fresh
+generation rather than resuming an unscoped cursor against a scoped walk.
+
 The deletion capability is stricter than ordinary write capability. A backend
 must atomically condition `DELETE` on the strong ETag captured by complete
 inventory. A plan fails closed before creating candidates when any targeted

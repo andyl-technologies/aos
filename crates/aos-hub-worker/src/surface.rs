@@ -708,12 +708,20 @@ impl SurfaceFetch for R2SurfaceFetch {
             .await
     }
 
-    async fn list_page(&self, cursor: Option<&str>, limit: usize) -> Result<SurfaceListPage> {
+    async fn list_page(
+        &self,
+        prefix: &str,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<SurfaceListPage> {
         anyhow::ensure!(
             limit > 0 && limit <= aos_hub_core::fetch::WORKER_MAX_SURFACE_LIST_PAGE_OBJECTS,
             "invalid R2 listing page limit"
         );
-        let listing_prefix = keymap::r2_key(&self.prefix, "");
+        aos_hub_core::fetch::validate_surface_list_prefix(prefix)?;
+        // Scope the bucket listing itself. A registry prefix also holds the
+        // binary cache and git objects; a namespace walk must not page them.
+        let listing_prefix = keymap::r2_key(&self.prefix, prefix);
         let page = self.contract.list(&listing_prefix, cursor, limit).await?;
         let mut entries = Vec::with_capacity(page.objects.len());
         for object in page.objects {
@@ -993,7 +1001,12 @@ impl SurfaceFetch for S3SurfaceFetch {
         Ok(Some(bytes))
     }
 
-    async fn list_page(&self, cursor: Option<&str>, limit: usize) -> Result<SurfaceListPage> {
+    async fn list_page(
+        &self,
+        prefix: &str,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<SurfaceListPage> {
         anyhow::ensure!(
             limit > 0 && limit <= aos_hub_core::fetch::WORKER_MAX_SURFACE_LIST_PAGE_OBJECTS,
             "invalid S3 listing page limit"
@@ -1006,7 +1019,7 @@ impl SurfaceFetch for S3SurfaceFetch {
         );
         let mut parsed_keys = 0_usize;
         let now = aos_hub_core::clock::now_unix_secs();
-        let url = self.surface.list_url(cursor, limit, now)?;
+        let url = self.surface.list_url(prefix, cursor, limit, now)?;
         let mut response = self
             .egress
             .send(&url, "GET", None, None, None, None, None)
