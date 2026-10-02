@@ -104,6 +104,16 @@ pub enum SessionError {
         /// Stable validation failure detail.
         reason: String,
     },
+    /// Terminal replay sampling failed and the recorded Stop also failed cleanup.
+    #[error(
+        "terminal replay fingerprint sampling failed: {sampling}; recorded Stop cleanup failed: {shutdown}"
+    )]
+    ControlReplayTerminalSamplingCleanup {
+        /// Original authenticated sampling failure.
+        sampling: Box<SessionError>,
+        /// Failure while executing the original recorded Stop.
+        shutdown: Box<SessionError>,
+    },
     /// Breakpoint condition evaluation could not build a checked log prefix.
     #[error("breakpoint condition prefix is invalid: {reason}")]
     BreakpointConditionPrefix {
@@ -454,7 +464,8 @@ impl<L> SessionActor<L> {
     ///
     /// Replay publishes emitted events and exact control records through this
     /// actor's observable logs. The replayed terminal actor stays alive for
-    /// queries until it receives an explicit shutdown request.
+    /// session-state queries until an explicit shutdown request. Backend
+    /// fingerprints must be sampled before the recorded Stop retires nodes.
     ///
     /// # Errors
     ///
@@ -477,6 +488,39 @@ impl<L> SessionActor<L> {
         self.publish_live_snapshot();
 
         Ok(self)
+    }
+
+    /// Replays an operator-stopped artifact with fingerprints sampled before retirement.
+    ///
+    /// Sampling occurs at the original paused terminal boundary immediately
+    /// before its final recorded Stop. The returned samples remain valid after
+    /// that Stop retires the backend; no extra scheduler quantum is driven.
+    /// Replay retains the complete control log and final snapshot checks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError`] for invalid replay records, an unpaused terminal
+    /// boundary, sampling refusal, shutdown failure, or final snapshot divergence.
+    /// The recorded Stop still executes when sampling fails; simultaneous
+    /// sampling and shutdown failures preserve both causes.
+    pub fn with_control_replay_artifact_and_terminal_fingerprints(
+        mut self,
+        artifact: &SessionControlReplayArtifact,
+        nodes: &[NodeId],
+    ) -> Result<(Self, Vec<FingerprintSample>), SessionError>
+    where
+        L: QuantumLoop,
+    {
+        let (_, fingerprints) = self
+            .engine
+            .replay_control_replay_artifact_with_terminal_fingerprints(artifact, nodes)?;
+        let entries = self.engine.drain_event_log_entries();
+        self.append_event_log_entries(&entries)?;
+        self.sync_reproduction_log();
+        self.terminal_command_keepalive = true;
+        self.publish_live_snapshot();
+
+        Ok((self, fingerprints))
     }
 
     /// Returns the actor-owned engine.

@@ -52,6 +52,7 @@ pub(in super::super) fn is_recoverable_command_rejection(
         | SessionError::ControlReplayFinalSnapshotMismatch { .. }
         | SessionError::ControlReplayInitialConfigurationMismatch { .. }
         | SessionError::ControlReplayRecordInvalid { .. }
+        | SessionError::ControlReplayTerminalSamplingCleanup { .. }
         | SessionError::DebugRuntimeRepositionMismatch(_) => false,
     }
 }
