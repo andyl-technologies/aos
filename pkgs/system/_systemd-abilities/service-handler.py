@@ -441,6 +441,9 @@ def realize_service(value):
         rendered[directory_name] = directory_unit.text()
         unit.add("Requires", directory_name, "Unit")
         unit.add("After", directory_name, "Unit")
+        # Splitting allocation into a helper must retain *Directory= namespace access.
+        roots = {"runtime": "/run/", "state": "/var/lib/", "cache": "/var/cache/", "logs": "/var/log/", "configuration": "/etc/"}
+        unit.add("BindPaths", quote(roots[directory["purpose"]] + path))
     rendered[unit_name] = unit.text()
     links = {}
     for field, relationship in {"wanted_by": "wants", "required_by": "requires"}.items():

@@ -289,6 +289,48 @@ class NativeHandlerTests(unittest.TestCase):
         self.assertIn("StateDirectoryMode=0750", directory)
         self.assertIn('StateDirectory="example/state"', directory)
 
+    def test_managed_directories_remain_writable_in_service_namespace(self):
+        purposes = {
+            "runtime": ("RuntimeDirectory", "/run/"),
+            "state": ("StateDirectory", "/var/lib/"),
+            "cache": ("CacheDirectory", "/var/cache/"),
+            "logs": ("LogsDirectory", "/var/log/"),
+            "configuration": ("ConfigurationDirectory", "/etc/"),
+        }
+        for purpose, (directive, root) in purposes.items():
+            with self.subTest(purpose=purpose):
+                value = service()
+                value["directories"] = {"managed": [{
+                    "path": "example/state", "purpose": purpose, "mode": "0700",
+                    "retention": "persistent", "owner": "state-owner", "group": "state-group",
+                }]}
+                value["isolation"] = {
+                    "privilege": "privileged", "filesystem": "read-only-system",
+                    "home_access": "inaccessible", "network": "host", "process_visibility": "host",
+                    "termination_scope": "all-processes", "temporary_directory": "private",
+                    "root_directory": "/srv/service-root",
+                    "temporary_filesystems": [{"path": root.rstrip("/"), "read_only": True}],
+                    "devices": [], "host_paths": [], "permit_core_dumps": False,
+                }
+
+                with patch.object(handler_module, "TRUE_EXECUTABLE", "/nix/store/coreutils/bin/true"):
+                    rendered = handler_module.realize_service(value)
+                directory_name = next(name for name in rendered["units"] if name != "example.service")
+                directory = rendered["units"][directory_name]
+                main = rendered["units"]["example.service"]
+
+                self.assertIn(directive + '="example/state"', directory)
+                self.assertIn(directive + "Mode=0700", directory)
+                self.assertIn("User=state-owner", directory)
+                self.assertIn("Group=state-group", directory)
+                self.assertIn("Requires=" + directory_name, main)
+                self.assertIn("After=" + directory_name, main)
+                self.assertIn("ProtectSystem=strict", main)
+                self.assertIn('RootDirectory="/srv/service-root"', main)
+                self.assertIn('TemporaryFileSystem="' + root.rstrip("/") + ':ro"', main)
+                self.assertIn('BindPaths="' + root + 'example/state"', main)
+                self.assertNotIn(directive + "=", main)
+
     def test_registry_state_directory_precedes_sandboxed_bootstrap_service(self):
         value = dict(service(), service="aos-registry-sync", activation_owner="image", auto_start=False)
         value["directories"] = {"managed": [{
