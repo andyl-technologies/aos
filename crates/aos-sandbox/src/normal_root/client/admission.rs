@@ -146,7 +146,8 @@ struct AdmissionStorage {
 /// release, not drain, queue settlement or completed Source-flight evidence.
 /// Successful observation still grants no Root, Source, repository or funding
 /// authority. The mutable phase/state cells intentionally keep this owner from
-/// being Sync; no installed caller selects this path yet.
+/// being Sync. Installed Controller startup selects this disposition; it does
+/// not migrate unrelated consuming callers or establish all-role custody.
 #[must_use = "retain the attempt until its exact successful profile is moved or the process terminates"]
 pub struct ProductionControllerSelectedProfileAdmissionV1 {
     storage: AdmissionStorage,
@@ -242,6 +243,86 @@ impl ProductionControllerSelectedProfileAdmissionV1 {
     /// Borrows the permanently retained first cause, if admission failed.
     pub fn first_failure(&self) -> Option<&ControllerProfileAdmissionFailureV1> {
         self.first_failure.as_ref()
+    }
+
+    /// Moves the same completed profile and producer-associated Nix capture.
+    ///
+    /// Nonpositive absence settles only the genuine early-return disposition.
+    /// Its associated unused delivery duplicate remains private Nix custody,
+    /// never a measured Root profile or an externally paired descriptor.
+    ///
+    /// # Errors
+    /// Retains the first failure and all originals on contradictory, repeated
+    /// or incomplete handoff. No observation or allocation follows removal.
+    pub fn take_admitted_roles(
+        &mut self,
+    ) -> Result<
+        (Option<ProductionControllerNormalRootProfileV1>,
+         Option<nix_startup::ProductionControllerNixStartupCaptureV1>),
+        &ControllerProfileAdmissionFailureV1,
+    > {
+        let state = self.state.get();
+        let absent = state == AdmissionState::Absent;
+        let capture = &self.storage.capture;
+        let unused_delivery = capture.nix_delivery.is_some();
+        let slots_empty = self.storage.profile.is_none()
+            && self.storage.policy.is_none()
+            && self.storage.files.is_empty()
+            && self.storage.observed.is_none()
+            && self.storage.process.is_none()
+            && self.storage.cgroup.is_none()
+            && [&self.storage.profile_file, &self.storage.nix_file,
+                &self.storage.pending_pin, &self.storage.fragment]
+                .iter().all(|pending| pending.original().is_err()
+                    && pending.measurement().is_err());
+        let absent_payload_empty = self.phase.get() == "captured"
+            && !self.storage.nix_present
+            && [&self.storage.profile_file, &self.storage.nix_file,
+                &self.storage.pending_pin, &self.storage.fragment]
+                .iter().all(|pending| pending.bytes().is_empty());
+        let delivery_pair = if absent {
+            capture.nix.is_some() == unused_delivery
+                && capture.nix.as_ref().is_none_or(|nix| {
+                    nix.can_park_absent_root_delivery()
+                })
+        } else {
+            !unused_delivery
+        };
+        if self.first_failure.is_some()
+            || !matches!(state, AdmissionState::Selected | AdmissionState::Absent)
+            || self.storage.selected.is_some() == absent
+            || capture.profile.is_some()
+            || capture.git_source_listener.is_some()
+            || !slots_empty
+            || !delivery_pair
+            || absent && !absent_payload_empty
+        {
+            self.state.set(AdmissionState::Ended);
+            return Err(self.first_failure.get_or_insert_with(|| {
+                ControllerProfileAdmissionFailureV1::missing("completed-roles")
+            }));
+        }
+
+        if absent && unused_delivery {
+            let originals = (
+                self.storage.capture.nix.as_mut(),
+                self.storage.capture.nix_delivery.take(),
+            );
+            match originals {
+                (Some(nix), Some(delivery)) => nix.park_absent_root_delivery(delivery),
+                (_, delivery) => {
+                    self.storage.capture.nix_delivery = delivery;
+                    self.state.set(AdmissionState::Ended);
+                    return Err(self.first_failure.get_or_insert_with(|| {
+                        ControllerProfileAdmissionFailureV1::missing("completed-role-pair")
+                    }));
+                }
+            }
+        }
+        let roles = (self.storage.selected.take(), self.storage.capture.nix.take());
+        self.state.set(AdmissionState::Moved);
+        self.armed = false;
+        Ok(roles)
     }
 
     /// Moves the same fully checked profile once without observation or allocation.

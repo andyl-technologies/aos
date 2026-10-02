@@ -27,27 +27,6 @@ enum IssuerAdmissionErrorV2 {
     Abandoned,
 }
 
-// This initial state protects the complete returned startup before its
-// consuming profile API is entered. That API does not return internal partial
-// custody on error; no missing profile or later pathname is reconstructed.
-struct CapturedInvocationV2 {
-    startup: Option<crate::production_startup::CapturedControllerStartupV1>,
-    launch_image: Option<crate::production_startup::Pid1LaunchImageV1>,
-    first_cause: Option<aos_sandbox::normal_root::NormalRootStartupErrorV1>,
-    armed: bool,
-}
-
-impl Drop for CapturedInvocationV2 {
-    fn drop(&mut self) {
-        if self.armed {
-            if self.first_cause.is_none() {
-                self.first_cause = Some(aos_sandbox::normal_root::NormalRootStartupErrorV1::Profile);
-            }
-            std::process::abort();
-        }
-    }
-}
-
 struct ResidentInvocationV2<'profile> {
     profile: &'profile ProductionControllerNormalRootProfileV1,
     launch_image: Option<crate::production_startup::Pid1LaunchImageV1>,
@@ -160,45 +139,21 @@ impl Drop for ResidentInvocationV2<'_> {
 
 pub(super) fn run(
     configuration: &RuntimeConfiguration,
-    startup: crate::production_startup::CapturedControllerStartupV1,
+    startup: &mut crate::production_startup::ControllerStartupContinuationV1,
 ) -> Result<(), ControllerRuntimeError> {
-    let mut captured = CapturedInvocationV2 {
-        startup: Some(startup),
-        launch_image: None,
-        first_cause: None,
-        armed: true,
-    };
-    let Some(startup) = captured.startup.take() else {
-        captured.first_cause = Some(aos_sandbox::normal_root::NormalRootStartupErrorV1::Profile);
-        std::process::exit(1);
-    };
     // Optional publisher/Nix roles are already forbidden by mode parsing and
     // the complete capture validator. No later descriptor or profile is read.
-    if startup.publisher_descriptor.is_some()
-        || startup.nix_capture.is_some()
-        || startup.git_source_listener.is_some()
-    {
-        captured.startup = Some(startup);
-        captured.first_cause = Some(aos_sandbox::normal_root::NormalRootStartupErrorV1::Activation);
-        std::process::exit(1);
+    if !startup.admit_root_once(configuration.uid, configuration.gid) {
+        startup.terminate_failed();
     }
-    captured.launch_image = startup.launch_image;
-    let profile = match startup.normal_root_capture.admit_selected(
-        configuration.uid, configuration.gid,
-    ) {
-        Ok(Some(profile)) => profile,
-        Ok(None) => {
-            captured.first_cause = Some(aos_sandbox::normal_root::NormalRootStartupErrorV1::Profile);
-            std::process::exit(1)
-        }
-        Err(cause) => {
-            captured.first_cause = Some(cause);
-            std::process::exit(1)
-        }
+    let Some(profile) = startup.profile() else {
+        // The issue-only admission never settles an absent Root profile.
+        // Keep the actual parent and nested attempt resident at process death.
+        std::process::exit(1);
     };
     let mut resident = ResidentInvocationV2 {
-        profile: &profile,
-        launch_image: captured.launch_image.take(),
+        profile,
+        launch_image: startup.image_share(),
         credentials: None,
         journal: None,
         source: None,
@@ -206,7 +161,6 @@ pub(super) fn run(
         first_cause: None,
         armed: true,
     };
-    captured.armed = false;
     if let Err(cause) = resident.admit_controller(configuration) {
         resident.fail(cause);
     }
@@ -218,12 +172,13 @@ pub(super) fn run(
         resident.fail(IssuerAdmissionErrorV2::Profile);
     };
     match controller.issue_source_successor_v2(resident.profile, credentials) {
-        Ok(_) => {
-            // Core success includes all native appends/readbacks/final checks
-            // and SAME-flight Finish. No active Root predicate follows Finish.
-            resident.armed = false;
-            Ok(())
-        }
+        Ok(_) => {}
         Err(failed) => failed.terminate_failed(),
-    }
+    };
+    // End the owning Result/loans before moving the resident owner. Core
+    // success includes SAME-flight Finish; no Root predicate follows it.
+    resident.armed = false;
+    drop(resident);
+    startup.complete_issue_finish();
+    Ok(())
 }

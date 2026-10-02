@@ -188,12 +188,15 @@ impl NixStartupProfileV2 {
     }
 }
 
-/// Holds only the paired Nix roles from Controller's original complete table.
+/// Holds the paired Nix roles from Controller's one original launch table.
+///
+/// The retained disposition arms this same opaque capture before credential
+/// loads. Its unused absent-Root duplicate is custody only, not a Root pin.
 pub struct ProductionControllerNixStartupCaptureV1 {
-    pid1: OwnedFd,
-    profile: OwnedFd,
-    root_profile: Option<OwnedFd>,
-    method46_image: bool,
+    fence: NixCaptureFence,
+    storage: NixAdmissionStorage,
+    attempted: bool,
+    first_failure: Option<NixAdmissionFailure>,
 }
 
 impl ProductionControllerNixStartupCaptureV1 {
@@ -204,11 +207,84 @@ impl ProductionControllerNixStartupCaptureV1 {
         method46_image: bool,
     ) -> Self {
         Self {
-            pid1,
-            profile,
-            root_profile,
-            method46_image,
+            fence: NixCaptureFence { armed: false },
+            storage: NixAdmissionStorage::new(pid1, profile, root_profile, method46_image),
+            attempted: false,
+            first_failure: None,
         }
+    }
+
+    pub(super) fn can_park_absent_root_delivery(&self) -> bool {
+        !self.fence.armed
+            && !self.attempted
+            && self.storage.raw.root_profile.is_none()
+            && self.storage.absent_root_delivery.is_none()
+    }
+
+    // Only FIRST6's same-capture handoff calls this after its pair/slot checks.
+    pub(super) fn park_absent_root_delivery(&mut self, delivery: OwnedFd) {
+        self.storage.absent_root_delivery = Some(delivery);
+    }
+
+    /// Arms the same original capture before fixed credential admission.
+    ///
+    /// Success selects retained custody. Before this boundary the capture
+    /// keeps its legacy release disposition; a pre-arm refusal records the
+    /// first failure but does not itself arm custody.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a repeated or consumed capture without another observation.
+    pub fn retain_admission(&mut self) -> Result<(), &Error> {
+        if self.fence.armed || self.attempted || self.first_failure.is_some() {
+            return Err(&self.first_failure.get_or_insert_with(NixAdmissionFailure::ended).original);
+        }
+        self.fence.armed = true;
+        Ok(())
+    }
+
+    /// Admits selected startup once while every returned object stays resident.
+    ///
+    /// # Errors
+    ///
+    /// Retains the actual first image, policy, process, unit or allocation
+    /// failure. Its borrowed legacy classification exposes no private cause.
+    pub fn admit_selected_once(&mut self, identities: [u32; 4]) -> Result<(), &Error> {
+        if !self.fence.armed || self.attempted || self.first_failure.is_some() {
+            return Err(&self.first_failure.get_or_insert_with(NixAdmissionFailure::ended).original);
+        }
+        self.attempted = true;
+        let result = {
+            let _unwind = AbortNixAdmissionUnwind;
+            self.storage.admit_controller(identities)
+        };
+        match result {
+            Ok(()) => Ok(()),
+            Err(failure) => Err(&self.first_failure.get_or_insert(failure).original),
+        }
+    }
+
+    /// Borrows the actual resident first refusal's legacy classification.
+    pub fn first_failure(&self) -> Option<&Error> {
+        self.first_failure.as_ref().map(|failure| &failure.original)
+    }
+
+    /// Moves the same completed startup once, without further observations.
+    ///
+    /// The caller parks it before sharing or any fallible continuation.
+    #[must_use]
+    pub fn take_admitted_startup(&mut self) -> Option<ProductionControllerNixStartupV1> {
+        if !self.fence.armed
+            || !self.attempted
+            || self.first_failure.is_some()
+            || self.storage.completed.is_none()
+            || !self.storage.residuals_empty()
+        {
+            return None;
+        }
+        let completed = self.storage.completed.take();
+        self.fence.armed = false;
+        completed.map(|retained| ProductionControllerNixStartupV1 { retained })
     }
 
     /// Admits actual selected Controller startup comparisons for Nix058.
@@ -220,22 +296,443 @@ impl ProductionControllerNixStartupCaptureV1 {
         self,
         identities: [u32; 4],
     ) -> Result<ProductionControllerNixStartupV1, Error> {
-        let root_profile = self
-            .root_profile
+        // Legacy cannot re-enter after selection, an attempt or a refusal.
+        if self.fence.armed || self.attempted || self.first_failure.is_some() {
+            return Err(Error::Profile);
+        }
+        let mut storage = self.storage;
+        let root_profile = storage.raw.root_profile
+            .take()
             .map(|fd| images::retain_profile(File::from(fd)))
             .transpose()?
             .map(|(file, _)| file);
+        let originals = (storage.raw.pid1.take(), storage.raw.profile.take());
+        let (pid1, profile) = match originals {
+            (Some(pid1), Some(profile)) => (pid1, profile),
+            (pid1, profile) => {
+                storage.raw.pid1 = pid1;
+                storage.raw.profile = profile;
+                return Err(Error::Activation);
+            }
+        };
+        let mut retained = RetainedNixStartup::admit(
+            Role::Controller,
+            pid1,
+            profile,
+            root_profile,
+            storage.raw.method46_image,
+            identities,
+        )?;
+        retained.absent_root_delivery = storage.absent_root_delivery.take();
+        Ok(ProductionControllerNixStartupV1 { retained })
+    }
+}
 
-        Ok(ProductionControllerNixStartupV1 {
-            retained: RetainedNixStartup::admit(
-                Role::Controller,
-                self.pid1,
-                self.profile,
+struct NixCaptureFence {
+    armed: bool,
+}
+
+impl Drop for NixCaptureFence {
+    fn drop(&mut self) {
+        if self.armed {
+            // This first field fences every remaining original before release.
+            std::process::abort();
+        }
+    }
+}
+
+struct AbortNixAdmissionUnwind;
+
+impl Drop for AbortNixAdmissionUnwind {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            std::process::abort();
+        }
+    }
+}
+
+struct ControllerNixOriginals {
+    // Field order preserves legacy partial-root-admission destruction order.
+    pid1: Option<OwnedFd>,
+    profile: Option<OwnedFd>,
+    root_profile: Option<OwnedFd>,
+    method46_image: bool,
+}
+
+#[allow(dead_code)]
+enum NixAdmissionCause {
+    Image(images::ImageObservationErrorV1),
+    Linux(aos_sandbox_linux::Error),
+    Policy(aos_sandbox_linux::selinux_policy::PolicyReadbackError),
+    Allocation(std::collections::TryReserveError),
+}
+
+struct NixAdmissionFailure {
+    original: Error,
+    cause: Option<NixAdmissionCause>,
+}
+
+impl NixAdmissionFailure {
+    fn plain(original: Error) -> Self {
+        Self {
+            original,
+            cause: None,
+        }
+    }
+
+    fn ended() -> Self {
+        Self::plain(Error::Profile)
+    }
+
+    fn image(cause: images::ImageObservationErrorV1) -> Self {
+        Self {
+            original: cause.legacy_error(),
+            cause: Some(NixAdmissionCause::Image(cause)),
+        }
+    }
+}
+
+struct NixAdmissionStorage {
+    raw: ControllerNixOriginals,
+    absent_root_delivery: Option<OwnedFd>,
+    root_present: bool,
+    root_profile: PendingImmutableFileV1,
+    profile_file: PendingImmutableFileV1,
+    profile: Option<NixStartupProfileV2>,
+    pid1: PendingImmutableFileV1,
+    executable: PendingImmutableFileV1,
+    helper: PendingImmutableFileV1,
+    runtime: Vec<RetainedImmutableFileV1>,
+    evidence: Vec<RetainedImmutableFileV1>,
+    pending_pin: PendingImmutableFileV1,
+    policy: Option<VerifiedLiveSelinuxPolicy>,
+    process: Option<PidFd>,
+    identity: Option<PidFdProcessIdentity>,
+    cgroup: Option<RetainedCgroupAnchor>,
+    observed: Option<service::ServiceObservationV1>,
+    fragment: PendingImmutableFileV1,
+    completed: Option<RetainedNixStartup>,
+}
+
+// Storage dispositions are closed here. The literal legacy expressions and
+// local-drop intervals remain separate from the retained resident prefix.
+macro_rules! nix_direct {
+    (legacy, $expression:expr) => { $expression? };
+    (retained, $expression:expr) => { $expression.map_err(NixAdmissionFailure::plain)? };
+}
+
+macro_rules! nix_checked {
+    (legacy, $expression:expr, $class:ident, $cause:ident) => {
+        $expression.map_err(|_| Error::$class)?
+    };
+    (retained, $expression:expr, $class:ident, $cause:ident) => {
+        $expression.map_err(|cause| NixAdmissionFailure {
+            original: Error::$class,
+            cause: Some(NixAdmissionCause::$cause(cause)),
+        })?
+    };
+}
+
+macro_rules! nix_bind {
+    (legacy, $storage:ident, $name:ident, $expression:expr) => {
+        let $name = $expression;
+    };
+    (retained, $storage:ident, $name:ident, $expression:expr) => {
+        $storage.$name = Some($expression);
+        let $name = $storage.$name.as_ref().ok_or_else(NixAdmissionFailure::ended)?;
+    };
+}
+
+macro_rules! nix_profile {
+    (legacy, $storage:ident, $profile_fd:ident, $role:ident, $file:ident, $bytes:ident) => {
+        let ($file, $bytes) = retain_profile(File::from($profile_fd), $role)?;
+    };
+    (retained, $storage:ident, $profile_fd:ident, $role:ident, $file:ident, $bytes:ident) => {
+        if $storage.profile_file.original().is_ok() || $storage.profile_file.measurement().is_ok() {
+            return Err(NixAdmissionFailure::ended());
+        }
+        let Some(original) = $storage.raw.profile.take() else {
+            return Err(NixAdmissionFailure::ended());
+        };
+        $storage.profile_file.park_original(File::from(original));
+        let path = profile_path($storage.profile_file.original()
+            .map_err(|cause| NixAdmissionFailure::image(cause.into()))?, $role)
+            .map_err(NixAdmissionFailure::image)?;
+        $storage.profile_file.measure_original(path, None, 1_048_576, false)
+            .map_err(|cause| NixAdmissionFailure::image(cause.into()))?;
+        $storage.profile_file.read_bounded()
+            .map_err(|cause| NixAdmissionFailure::image(cause.into()))?;
+        let $file = $storage.profile_file.measurement()
+            .map_err(|cause| NixAdmissionFailure::image(cause.into()))?;
+        let $bytes = $storage.profile_file.bytes();
+    };
+}
+
+macro_rules! nix_image {
+    (legacy, $storage:ident, $name:ident, $pin:expr, $original:expr, $kind:ident) => {
+        let $name = images::retain_pin($pin, $original, true)?;
+    };
+    (retained, $storage:ident, $name:ident, $pin:expr, $original:expr, pid1) => {
+        if $storage.pid1.original().is_ok() || $storage.pid1.measurement().is_ok() {
+            return Err(NixAdmissionFailure::ended());
+        }
+        let Some(original) = $storage.raw.pid1.take() else {
+            return Err(NixAdmissionFailure::ended());
+        };
+        $storage.pid1.park_original(File::from(original));
+        images::park_original_pin($pin, true, &mut $storage.pid1)
+            .map_err(NixAdmissionFailure::image)?;
+        let $name = $storage.pid1.measurement()
+            .map_err(|cause| NixAdmissionFailure::image(cause.into()))?;
+    };
+    (retained, $storage:ident, $name:ident, $pin:expr, $original:expr, executable) => {
+        let original = File::open("/proc/self/exe")
+            .map_err(|cause| NixAdmissionFailure::image(cause.into()))?;
+        $storage.executable.park_original(original);
+        images::park_original_pin($pin, true, &mut $storage.executable)
+            .map_err(NixAdmissionFailure::image)?;
+        let $name = $storage.executable.measurement()
+            .map_err(|cause| NixAdmissionFailure::image(cause.into()))?;
+    };
+    (retained, $storage:ident, $name:ident, $pin:expr, $original:expr, helper) => {
+        images::park_selected_pin($pin, true, &mut $storage.helper)
+            .map_err(NixAdmissionFailure::image)?;
+        let $name = $storage.helper.measurement()
+            .map_err(|cause| NixAdmissionFailure::image(cause.into()))?;
+    };
+}
+
+macro_rules! nix_pin_set {
+    (legacy, $storage:ident, $name:ident, $pin:ident, $iterator:expr, $executable:expr) => {
+        let $name = ($iterator).map(|$pin| {
+            images::retain_pin($pin, None, $executable)
+        }).collect::<Result<Vec<_>, _>>()?;
+    };
+    (retained, $storage:ident, $name:ident, $pin:ident, $iterator:expr, $executable:expr) => {
+        for $pin in $iterator {
+            $storage.$name.try_reserve(1).map_err(|cause| NixAdmissionFailure {
+                original: Error::Image,
+                cause: Some(NixAdmissionCause::Allocation(cause)),
+            })?;
+            images::park_selected_pin($pin, $executable, &mut $storage.pending_pin)
+                .map_err(NixAdmissionFailure::image)?;
+            let Some(original) = $storage.pending_pin.take_measurement() else {
+                return Err(NixAdmissionFailure::ended());
+            };
+            $storage.$name.push(original);
+        }
+    };
+}
+
+macro_rules! nix_fragment {
+    (legacy, $storage:ident, $observed:ident, $fragment:ident) => {
+        let $fragment = RetainedImmutableFileV1::observe_fragment($observed.fragment.clone())
+            .map_err(|_| Error::Service)?;
+    };
+    (retained, $storage:ident, $observed:ident, $fragment:ident) => {
+        $storage.fragment.open_and_measure($observed.fragment.clone(), None, 64 * 1024, false)
+            .map_err(|cause| NixAdmissionFailure {
+                original: Error::Service,
+                cause: Some(NixAdmissionCause::Image(cause.into())),
+            })?;
+    };
+}
+
+macro_rules! nix_root_reference {
+    (legacy, $storage:ident, $root:ident) => {};
+    (retained, $storage:ident, $root:ident) => {
+        let $root = if $storage.root_present {
+            Some($storage.root_profile.measurement()
+                .map_err(|cause| NixAdmissionFailure::image(cause.into()))?)
+        } else {
+            None
+        };
+    };
+}
+
+macro_rules! nix_finish {
+    (legacy, $storage:ident, $role:ident, $method:ident,
+     $file:ident, $profile:ident, $pid1:ident, $executable:ident, $helper:ident,
+     $runtime:ident, $evidence:ident, $root:ident, $policy:ident, $process:ident,
+     $identity:ident, $cgroup:ident, $fragment:ident, $observed:ident) => {
+        let retained = Self {
+            role: $role, profile_file: $file, profile: $profile, pid1: $pid1,
+            executable: $executable, helper: $helper, runtime: $runtime, evidence: $evidence,
+            root_profile: $root, method46_image: $method, policy: $policy,
+            process: $process, identity: $identity, cgroup: $cgroup,
+            fragment: $fragment, observed: $observed,
+            absent_root_delivery: None,
+        };
+        retained.recheck()?;
+        Ok(retained)
+    };
+    (retained, $storage:ident, $role:ident, $method:ident,
+     $file:ident, $profile:ident, $pid1:ident, $executable:ident, $helper:ident,
+     $runtime:ident, $evidence:ident, $root:ident, $policy:ident, $process:ident,
+     $identity:ident, $cgroup:ident, $fragment:ident, $observed:ident) => {
+        $storage.assemble($role, $method)?;
+        $storage.completed.as_ref().ok_or_else(NixAdmissionFailure::ended)?
+            .recheck().map_err(NixAdmissionFailure::plain)?;
+        Ok(())
+    };
+}
+
+macro_rules! nix_admission_recipe {
+    ($mode:ident, $storage:ident, $role:ident, $pid1:ident, $profile_fd:ident,
+     $root_profile:ident, $method46_image:ident, $identities:ident) => {{
+        nix_profile!($mode, $storage, $profile_fd, $role, profile_file, bytes);
+        nix_bind!($mode, $storage, profile,
+            nix_direct!($mode, NixStartupProfileV2::decode(&bytes, $role, $identities)));
+        nix_image!($mode, $storage, pid1, &profile.pid1, Some(File::from($pid1)), pid1);
+        nix_image!($mode, $storage, executable, &profile.executable,
+            Some(File::open("/proc/self/exe").map_err(|_| Error::Image)?), executable);
+        nix_image!($mode, $storage, helper, &profile.helper, None, helper);
+        nix_pin_set!($mode, $storage, runtime, pin, profile.runtime_files.iter(),
+            pin.path == profile.executable.path || pin.path == profile.loader.path);
+        nix_pin_set!($mode, $storage, evidence, pin,
+            [&profile.helper_loader, &profile.canonical_policy, &profile.source_policy, &profile.effective_matrix].into_iter(),
+            pin.path == profile.helper_loader.path);
+        nix_bind!($mode, $storage, policy,
+            nix_checked!($mode, VerifiedLiveSelinuxPolicy::verify(&profile.canonical_policy.path), Confinement, Policy));
+        if policy.digest() != profile.canonical_policy.sha256 {
+            return Err(nix_direct_error!($mode, Error::Confinement));
+        }
+        nix_bind!($mode, $storage, process,
+            nix_checked!($mode, PidFd::open(
+                nix_direct!($mode, NonZeroU32::new(std::process::id()).ok_or(Error::Service))
+            ), Service, Linux));
+        nix_bind!($mode, $storage, identity,
+            nix_checked!($mode, process.process_identity(), Service, Linux));
+        nix_bind!($mode, $storage, cgroup,
+            nix_direct!($mode, super::retain_fixed_cgroup(Path::new($role.cgroup()))));
+        nix_root_reference!($mode, $storage, $root_profile);
+        nix_bind!($mode, $storage, observed,
+            nix_direct!($mode, observe_delivery($role, profile_file.path(),
+                $root_profile.as_ref().map(|file| file.path()), $method46_image)));
+        nix_fragment!($mode, $storage, observed, fragment);
+        nix_finish!($mode, $storage, $role, $method46_image,
+            profile_file, profile, pid1, executable, helper, runtime, evidence,
+            $root_profile, policy, process, identity, cgroup, fragment, observed)
+    }};
+}
+
+macro_rules! nix_direct_error {
+    (legacy, $error:expr) => { $error };
+    (retained, $error:expr) => { NixAdmissionFailure::plain($error) };
+}
+
+impl NixAdmissionStorage {
+    fn new(
+        pid1: OwnedFd,
+        profile: OwnedFd,
+        root_profile: Option<OwnedFd>,
+        method46_image: bool,
+    ) -> Self {
+        Self {
+            raw: ControllerNixOriginals {
+                pid1: Some(pid1),
+                profile: Some(profile),
                 root_profile,
-                self.method46_image,
-                identities,
-            )?,
-        })
+                method46_image,
+            },
+            absent_root_delivery: None,
+            root_present: false,
+            root_profile: PendingImmutableFileV1::default(),
+            profile_file: PendingImmutableFileV1::default(),
+            profile: None,
+            pid1: PendingImmutableFileV1::default(),
+            executable: PendingImmutableFileV1::default(),
+            helper: PendingImmutableFileV1::default(),
+            runtime: Vec::new(),
+            evidence: Vec::new(),
+            pending_pin: PendingImmutableFileV1::default(),
+            policy: None,
+            process: None,
+            identity: None,
+            cgroup: None,
+            observed: None,
+            fragment: PendingImmutableFileV1::default(),
+            completed: None,
+        }
+    }
+
+    fn admit_controller(&mut self, identities: [u32; 4]) -> Result<(), NixAdmissionFailure> {
+        if self.raw.pid1.is_none() || self.raw.profile.is_none() || self.completed.is_some() {
+            return Err(NixAdmissionFailure::ended());
+        }
+        self.root_present = self.raw.root_profile.is_some();
+        if let Some(original) = self.raw.root_profile.take() {
+            self.root_profile.park_original(File::from(original));
+            images::park_controller_profile(&mut self.root_profile)
+                .map_err(NixAdmissionFailure::image)?;
+        }
+        let role = Role::Controller;
+        let method46_image = self.raw.method46_image;
+        nix_admission_recipe!(retained, self, role, pid1, profile_fd, root_profile, method46_image, identities)
+    }
+
+    fn residuals_empty(&self) -> bool {
+        self.raw.pid1.is_none() && self.raw.profile.is_none()
+            && self.raw.root_profile.is_none() && self.absent_root_delivery.is_none()
+            && self.profile.is_none() && self.policy.is_none()
+            && self.process.is_none() && self.identity.is_none() && self.cgroup.is_none()
+            && self.observed.is_none() && self.runtime.is_empty() && self.evidence.is_empty()
+            && [&self.root_profile, &self.profile_file, &self.pid1, &self.executable,
+                &self.helper, &self.pending_pin, &self.fragment].iter()
+                .all(|pending| pending.original().is_err() && pending.measurement().is_err())
+    }
+
+    fn assemble(&mut self, role: Role, method46_image: bool) -> Result<(), NixAdmissionFailure> {
+        if self.completed.is_some()
+            || self.raw.pid1.is_some() || self.raw.profile.is_some() || self.raw.root_profile.is_some()
+            || self.profile.is_none() || self.policy.is_none() || self.process.is_none()
+            || self.identity.is_none() || self.cgroup.is_none() || self.observed.is_none()
+            || self.root_profile.measurement().is_ok() != self.root_present
+            || [&self.profile_file, &self.pid1, &self.executable, &self.helper, &self.fragment]
+                .iter().any(|pending| pending.measurement().is_err())
+            || self.pending_pin.original().is_ok() || self.pending_pin.measurement().is_ok()
+        {
+            return Err(NixAdmissionFailure::ended());
+        }
+        let originals = (
+            self.profile_file.take_measurement(), self.profile.take(),
+            self.pid1.take_measurement(), self.executable.take_measurement(),
+            self.helper.take_measurement(), self.root_profile.take_measurement(),
+            self.policy.take(), self.process.take(), self.identity.take(),
+            self.cgroup.take(), self.fragment.take_measurement(), self.observed.take(),
+            std::mem::take(&mut self.runtime), std::mem::take(&mut self.evidence),
+        );
+        match originals {
+            (Some(profile_file), Some(profile), Some(pid1), Some(executable), Some(helper),
+             root_profile, Some(policy), Some(process), Some(identity), Some(cgroup),
+             Some(fragment), Some(observed), runtime, evidence)
+                if root_profile.is_some() == self.root_present => {
+                self.completed = Some(RetainedNixStartup {
+                    role, profile_file, profile, pid1, executable, helper, runtime, evidence,
+                    root_profile, method46_image, policy, process, identity, cgroup, fragment, observed,
+                    absent_root_delivery: self.absent_root_delivery.take(),
+                });
+                Ok(())
+            }
+            (profile_file, profile, pid1, executable, helper, root_profile, policy,
+             process, identity, cgroup, fragment, observed, runtime, evidence) => {
+                self.profile_file.restore_measurement(profile_file);
+                self.profile = profile;
+                self.pid1.restore_measurement(pid1);
+                self.executable.restore_measurement(executable);
+                self.helper.restore_measurement(helper);
+                self.root_profile.restore_measurement(root_profile);
+                self.policy = policy;
+                self.process = process;
+                self.identity = identity;
+                self.cgroup = cgroup;
+                self.fragment.restore_measurement(fragment);
+                self.observed = observed;
+                self.runtime = runtime;
+                self.evidence = evidence;
+                Err(NixAdmissionFailure::ended())
+            }
+        }
     }
 }
 
@@ -373,6 +870,8 @@ struct RetainedNixStartup {
     cgroup: RetainedCgroupAnchor,
     fragment: RetainedImmutableFileV1,
     observed: service::ServiceObservationV1,
+    // Unused same-producer delivery custody is not included in any pin/hash.
+    absent_root_delivery: Option<OwnedFd>,
 }
 
 impl RetainedNixStartup {
@@ -384,33 +883,7 @@ impl RetainedNixStartup {
         method46_image: bool,
         identities: [u32; 4],
     ) -> Result<Self, Error> {
-        let (profile_file, bytes) = retain_profile(File::from(profile_fd), role)?;
-        let profile = NixStartupProfileV2::decode(&bytes, role, identities)?;
-        let pid1 = images::retain_pin(&profile.pid1, Some(File::from(pid1)), true)?;
-        let executable = images::retain_pin(&profile.executable, Some(File::open("/proc/self/exe").map_err(|_| Error::Image)?), true)?;
-        let helper = images::retain_pin(&profile.helper, None, true)?;
-        let runtime = profile.runtime_files.iter().map(|pin| {
-            images::retain_pin(pin, None, pin.path == profile.executable.path || pin.path == profile.loader.path)
-        }).collect::<Result<Vec<_>, _>>()?;
-        let evidence = [&profile.helper_loader, &profile.canonical_policy, &profile.source_policy, &profile.effective_matrix]
-            .into_iter().map(|pin| images::retain_pin(pin, None, pin.path == profile.helper_loader.path))
-            .collect::<Result<Vec<_>, _>>()?;
-        let policy = VerifiedLiveSelinuxPolicy::verify(&profile.canonical_policy.path).map_err(|_| Error::Confinement)?;
-        if policy.digest() != profile.canonical_policy.sha256 {
-            return Err(Error::Confinement);
-        }
-        let process = PidFd::open(NonZeroU32::new(std::process::id()).ok_or(Error::Service)?)
-            .map_err(|_| Error::Service)?;
-        let identity = process.process_identity().map_err(|_| Error::Service)?;
-        let cgroup = super::retain_fixed_cgroup(Path::new(role.cgroup()))?;
-        let observed = observe_delivery(role, profile_file.path(), root_profile.as_ref().map(|file| file.path()), method46_image)?;
-        let fragment = RetainedImmutableFileV1::observe_fragment(observed.fragment.clone()).map_err(|_| Error::Service)?;
-        let retained = Self {
-            role, profile_file, profile, pid1, executable, helper, runtime, evidence,
-            root_profile, method46_image, policy, process, identity, cgroup, fragment, observed,
-        };
-        retained.recheck()?;
-        Ok(retained)
+        nix_admission_recipe!(legacy, unused, role, pid1, profile_fd, root_profile, method46_image, identities)
     }
 
     fn recheck(&self) -> Result<(), Error> {
@@ -621,4 +1094,19 @@ fn require_status(bytes: &[u8], effective: u64, bounding: u64) -> Result<(), Err
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod retained_failure_tests {
+    use super::*;
+
+    #[test]
+    fn ended_refusal_does_not_replace_the_original_failure() {
+        let mut first = Some(NixAdmissionFailure::plain(Error::Confinement));
+
+        let retained = first.get_or_insert_with(NixAdmissionFailure::ended);
+
+        assert!(matches!(retained.original, Error::Confinement));
+        assert!(retained.cause.is_none());
+    }
 }

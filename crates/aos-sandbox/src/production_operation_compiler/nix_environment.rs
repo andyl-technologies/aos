@@ -106,7 +106,315 @@ impl std::fmt::Debug for ControllerNixStartRecipeSelectorV2 {
     }
 }
 
+/// Borrows the same first owning selector or nested Nix refusal.
+///
+/// Diagnostics expose a fixed class only, not credential bytes or paths.
+pub enum ControllerNixSelectorFailureRefV2<'attempt> {
+    /// The selector retains this actual credential/codec/policy cause.
+    Selector(&'attempt NixStartAdmissionErrorV2),
+    /// The same nested capture retains its actual lower cause.
+    Nix(&'attempt crate::normal_root::NormalRootStartupErrorV1),
+    /// The original attempt is irreversibly closed.
+    Closed,
+}
+
+impl std::fmt::Debug for ControllerNixSelectorFailureRefV2<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Selector(_) => "Controller Nix selector admission refused",
+            Self::Nix(_) => "Controller Nix original startup refused",
+            Self::Closed => "Controller Nix selector admission closed",
+        })
+    }
+}
+
+enum SelectorAdmissionFailure {
+    Selector(NixStartAdmissionErrorV2),
+    Nix,
+    Closed,
+}
+
+/// Retains one same-capture admission and every returned fixed public credential.
+///
+/// Failed/abandoned/unwinding attempts abort before field release. This is not
+/// original credential-FD custody, funding, physical drain or public readiness.
+#[must_use]
+pub struct ControllerNixSelectorAdmissionV2 {
+    capture: ProductionControllerNixStartupCaptureV1,
+    controller_uid: u32,
+    controller_gid: u32,
+    node: NodeId,
+    credential_prefix: [Option<PinnedSystemdCredential>; 12],
+    credentials: Option<[PinnedSystemdCredential; 12]>,
+    pins: Option<NixFixedDomainPinsDataV2>,
+    startup: Option<Arc<ProductionControllerNixStartupV1>>,
+    recipes: Option<Vec<VerifiedNixRecipeArtifactV2>>,
+    completed: Option<ControllerNixStartRecipeSelectorV2>,
+    attempted: bool,
+    first_failure: Option<SelectorAdmissionFailure>,
+    armed: bool,
+    not_sync: std::marker::PhantomData<std::cell::Cell<()>>,
+}
+
+// One fixed expression list supplies both storage dispositions. No caller
+// chooses a loader, name, index, policy or execution callback.
+macro_rules! selector_loads {
+    (legacy, $storage:ident, $credentials:ident, $( $index:literal => $load:expr ),+ $(,)?) => {
+        let $credentials = [$( $load? ),+];
+    };
+    (retained, $storage:ident, $credentials:ident, $( $index:literal => $load:expr ),+ $(,)?) => {
+        if $storage.credentials.is_some() || $storage.credential_prefix.iter().any(Option::is_some) {
+            return Err(SelectorAdmissionFailure::Closed);
+        }
+        $(
+            $storage.credential_prefix[$index] = Some($load.map_err(|cause| {
+                SelectorAdmissionFailure::Selector(NixStartAdmissionErrorV2::from(cause))
+            })?);
+        )+
+        $storage.assemble_credentials()?;
+        let $credentials = $storage.credentials.as_ref().ok_or(SelectorAdmissionFailure::Closed)?;
+    };
+}
+
+macro_rules! selector_bind {
+    (legacy, $storage:ident, $name:ident, $expression:expr) => {
+        let $name = $expression?;
+    };
+    (retained, $storage:ident, $name:ident, $expression:expr) => {
+        $storage.$name = Some($expression.map_err(SelectorAdmissionFailure::Selector)?);
+        let $name = $storage.$name.as_ref().ok_or(SelectorAdmissionFailure::Closed)?;
+    };
+}
+
+macro_rules! selector_invalid {
+    (legacy) => { NixStartAdmissionErrorV2::Invalid };
+    (retained) => { SelectorAdmissionFailure::Selector(NixStartAdmissionErrorV2::Invalid) };
+}
+
+macro_rules! selector_startup {
+    (legacy, $storage:ident, $capture:ident, $pins:ident, $startup:ident) => {
+        let $startup = Arc::new($capture.admit_selected($pins.identities)?);
+    };
+    (retained, $storage:ident, $capture:ident, $pins:ident, $startup:ident) => {
+        if $storage.capture.admit_selected_once($pins.identities).is_err() {
+            return Err(SelectorAdmissionFailure::Nix);
+        }
+        if $storage.startup.is_some() {
+            return Err(SelectorAdmissionFailure::Closed);
+        }
+        let Some(original) = $storage.capture.take_admitted_startup() else {
+            return Err(SelectorAdmissionFailure::Closed);
+        };
+        // This existing sharing allocation is a FUNDING exclusion. No
+        // recoverable-allocation or universal caught-unwind custody is claimed.
+        $storage.startup = Some(Arc::new(original));
+    };
+}
+
+macro_rules! selector_finish {
+    (legacy, $storage:ident, $startup:ident, $pins:ident, $credentials:ident, $recipes:ident) => {
+        let owner = Self {
+            startup: $startup, pins: $pins, credentials: $credentials, recipes: $recipes,
+        };
+        owner.recheck()?;
+        owner.assignment_policy()?;
+        Ok(owner)
+    };
+    (retained, $storage:ident, $startup:ident, $pins:ident, $credentials:ident, $recipes:ident) => {
+        $storage.assemble_selector()?;
+        let owner = $storage.completed.as_ref().ok_or(SelectorAdmissionFailure::Closed)?;
+        owner.recheck().map_err(SelectorAdmissionFailure::Selector)?;
+        owner.assignment_policy().map_err(SelectorAdmissionFailure::Selector)?;
+        Ok(())
+    };
+}
+
+macro_rules! selector_admission_recipe {
+    ($mode:ident, $storage:ident, $capture:ident, $uid:ident, $gid:ident, $node:ident) => {{
+        selector_loads!($mode, $storage, credentials,
+            0 => PinnedSystemdCredential::load_nix_recipe_issuer_v2(),
+            1 => PinnedSystemdCredential::load_nix_fixed_domain_pins_v2(),
+            2 => PinnedSystemdCredential::load_nix_broker_session_manifest_v1(),
+            3 => PinnedSystemdCredential::load_nix_preadmitted_recipes_v2(),
+            4 => PinnedSystemdCredential::load_nix_ownership_policy(),
+            5 => PinnedSystemdCredential::load_nix_ownership_public_key(),
+            6 => PinnedSystemdCredential::load_nix_host_plan_policy(),
+            7 => PinnedSystemdCredential::load_nix_host_plan_public_key(),
+            8 => PinnedSystemdCredential::load_nix_host_plan_revocation_scope(),
+            9 => PinnedSystemdCredential::load_nix_mount_plan_policy(),
+            10 => PinnedSystemdCredential::load_nix_mount_plan_public_key(),
+            11 => PinnedSystemdCredential::load_nix_mount_plan_revocation_scope(),
+        );
+        selector_bind!($mode, $storage, pins, decode_public_domain_pins(&credentials));
+        if pins.node != $node || pins.identities[..2] != [$uid, $gid] {
+            return Err(selector_invalid!($mode));
+        }
+        selector_startup!($mode, $storage, $capture, pins, startup);
+        selector_bind!($mode, $storage, recipes, decode_public_catalog(&credentials, &pins, $node));
+        selector_finish!($mode, $storage, startup, pins, credentials, recipes)
+    }};
+}
+
+impl ControllerNixSelectorAdmissionV2 {
+    fn new(capture: ProductionControllerNixStartupCaptureV1, controller_uid: u32, controller_gid: u32, node: NodeId) -> Self {
+        let mut owner = Self {
+            capture, controller_uid, controller_gid, node,
+            credential_prefix: std::array::from_fn(|_| None),
+            credentials: None,
+            pins: None,
+            startup: None,
+            recipes: None,
+            completed: None,
+            attempted: false,
+            first_failure: None,
+            armed: true,
+            not_sync: std::marker::PhantomData,
+        };
+        if owner.capture.retain_admission().is_err() {
+            owner.first_failure = Some(SelectorAdmissionFailure::Nix);
+        }
+        owner
+    }
+
+    /// Runs the existing fixed admission sequence once with resident custody.
+    ///
+    /// # Errors
+    /// Borrows the same first credential, Nix startup, codec or policy cause.
+    /// Repetition is permanently closed without another load or observation.
+    pub fn admit_once(&mut self) -> Result<(), ControllerNixSelectorFailureRefV2<'_>> {
+        if self.attempted || self.first_failure.is_some() {
+            self.first_failure.get_or_insert(SelectorAdmissionFailure::Closed);
+        } else {
+            self.attempted = true;
+            let result = {
+                let _unwind = AbortSelectorAdmissionUnwind;
+                self.admit_body()
+            };
+            match result {
+                Ok(()) => return Ok(()),
+                Err(cause) => { self.first_failure.get_or_insert(cause); }
+            }
+        }
+        Err(self.failure_view())
+    }
+
+    /// Borrows a short view of the same nested first cause.
+    pub fn first_failure(&self) -> Option<ControllerNixSelectorFailureRefV2<'_>> {
+        self.first_failure.as_ref().map(|_| self.failure_view())
+    }
+
+    /// Moves the same completed selector once without observation/allocation.
+    ///
+    /// The caller parks its successful Arc before passing clones into runtime.
+    #[must_use]
+    pub fn take_admitted_selector(&mut self) -> Option<ControllerNixStartRecipeSelectorV2> {
+        if !self.attempted || self.first_failure.is_some() || self.completed.is_none()
+            || self.credential_prefix.iter().any(Option::is_some)
+            || self.credentials.is_some() || self.pins.is_some()
+            || self.startup.is_some() || self.recipes.is_some()
+        {
+            return None;
+        }
+        let completed = self.completed.take();
+        self.armed = false;
+        completed
+    }
+
+    fn failure_view(&self) -> ControllerNixSelectorFailureRefV2<'_> {
+        match &self.first_failure {
+            Some(SelectorAdmissionFailure::Selector(cause)) => ControllerNixSelectorFailureRefV2::Selector(cause),
+            Some(SelectorAdmissionFailure::Nix) => match self.capture.first_failure() {
+                Some(cause) => ControllerNixSelectorFailureRefV2::Nix(cause),
+                None => ControllerNixSelectorFailureRefV2::Closed,
+            },
+            Some(SelectorAdmissionFailure::Closed) | None => ControllerNixSelectorFailureRefV2::Closed,
+        }
+    }
+
+    fn admit_body(&mut self) -> Result<(), SelectorAdmissionFailure> {
+        let controller_uid = self.controller_uid;
+        let controller_gid = self.controller_gid;
+        let node = self.node;
+        selector_admission_recipe!(retained, self, capture, controller_uid, controller_gid, node)
+    }
+
+    fn assemble_credentials(&mut self) -> Result<(), SelectorAdmissionFailure> {
+        if self.credentials.is_some() || self.credential_prefix.iter().any(Option::is_none) {
+            return Err(SelectorAdmissionFailure::Closed);
+        }
+        let originals = std::mem::replace(
+            &mut self.credential_prefix, std::array::from_fn(|_| None),
+        );
+        match originals {
+            [Some(c0), Some(c1), Some(c2), Some(c3), Some(c4), Some(c5),
+             Some(c6), Some(c7), Some(c8), Some(c9), Some(c10), Some(c11)] => {
+                self.credentials = Some([c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11]);
+                Ok(())
+            }
+            originals => {
+                self.credential_prefix = originals;
+                Err(SelectorAdmissionFailure::Closed)
+            }
+        }
+    }
+
+    fn assemble_selector(&mut self) -> Result<(), SelectorAdmissionFailure> {
+        if self.completed.is_some() || self.startup.is_none() || self.pins.is_none()
+            || self.credentials.is_none() || self.recipes.is_none()
+            || self.credential_prefix.iter().any(Option::is_some)
+        {
+            return Err(SelectorAdmissionFailure::Closed);
+        }
+        let originals = (self.startup.take(), self.pins.take(), self.credentials.take(), self.recipes.take());
+        match originals {
+            (Some(startup), Some(pins), Some(credentials), Some(recipes)) => {
+                self.completed = Some(ControllerNixStartRecipeSelectorV2 { startup, pins, credentials, recipes });
+                Ok(())
+            }
+            (startup, pins, credentials, recipes) => {
+                self.startup = startup;
+                self.pins = pins;
+                self.credentials = credentials;
+                self.recipes = recipes;
+                Err(SelectorAdmissionFailure::Closed)
+            }
+        }
+    }
+}
+
+impl Drop for ControllerNixSelectorAdmissionV2 {
+    fn drop(&mut self) {
+        if self.armed {
+            std::process::abort();
+        }
+    }
+}
+
+struct AbortSelectorAdmissionUnwind;
+
+impl Drop for AbortSelectorAdmissionUnwind {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            std::process::abort();
+        }
+    }
+}
+
 impl ControllerNixStartRecipeSelectorV2 {
+    /// Parks the same opaque capture before the first fixed credential load.
+    ///
+    /// Construction performs no observation. Allocation/funding failure at
+    /// successful Arc sharing remains outside retained admission custody.
+    #[must_use]
+    pub fn begin_retained_original(
+        capture: ProductionControllerNixStartupCaptureV1,
+        controller_uid: u32,
+        controller_gid: u32,
+        node: NodeId,
+    ) -> ControllerNixSelectorAdmissionV2 {
+        ControllerNixSelectorAdmissionV2::new(capture, controller_uid, controller_gid, node)
+    }
+
     /// Consumes the sole original capture and independently loaded fixed pins.
     ///
     /// # Errors
@@ -118,39 +426,7 @@ impl ControllerNixStartRecipeSelectorV2 {
         controller_gid: u32,
         node: NodeId,
     ) -> Result<Self, NixStartAdmissionErrorV2> {
-        let credentials = [
-            PinnedSystemdCredential::load_nix_recipe_issuer_v2()?,
-            PinnedSystemdCredential::load_nix_fixed_domain_pins_v2()?,
-            PinnedSystemdCredential::load_nix_broker_session_manifest_v1()?,
-            PinnedSystemdCredential::load_nix_preadmitted_recipes_v2()?,
-            PinnedSystemdCredential::load_nix_ownership_policy()?,
-            PinnedSystemdCredential::load_nix_ownership_public_key()?,
-            PinnedSystemdCredential::load_nix_host_plan_policy()?,
-            PinnedSystemdCredential::load_nix_host_plan_public_key()?,
-            PinnedSystemdCredential::load_nix_host_plan_revocation_scope()?,
-            PinnedSystemdCredential::load_nix_mount_plan_policy()?,
-            PinnedSystemdCredential::load_nix_mount_plan_public_key()?,
-            PinnedSystemdCredential::load_nix_mount_plan_revocation_scope()?,
-        ];
-        let pins = decode_public_domain_pins(&credentials)?;
-        if pins.node != node
-            || pins.identities[..2] != [controller_uid, controller_gid]
-        {
-            return Err(NixStartAdmissionErrorV2::Invalid);
-        }
-        let startup = Arc::new(capture.admit_selected(pins.identities)?);
-        let recipes = decode_public_catalog(&credentials, &pins, node)?;
-        let owner = Self {
-            startup,
-            pins,
-            credentials,
-            recipes,
-        };
-        owner.recheck()?;
-        // Validate all required independent public policies at startup without
-        // acquiring a sandbox assignment or selecting a recipe.
-        owner.assignment_policy()?;
-        Ok(owner)
+        selector_admission_recipe!(legacy, unused, capture, controller_uid, controller_gid, node)
     }
 
     fn recheck(&self) -> Result<(), NixStartAdmissionErrorV2> {
@@ -730,6 +1006,31 @@ fn decode_catalog(
         return Err(NixStartAdmissionErrorV2::Invalid);
     }
     Ok(recipes)
+}
+
+#[cfg(test)]
+mod retained_failure_view_tests {
+    use super::*;
+
+    #[test]
+    fn selector_failure_view_borrows_the_same_cause() {
+        let cause = NixStartAdmissionErrorV2::Invalid;
+        let view = ControllerNixSelectorFailureRefV2::Selector(&cause);
+
+        assert!(matches!(view, ControllerNixSelectorFailureRefV2::Selector(retained)
+            if std::ptr::eq(retained, &cause)));
+        assert_eq!(format!("{view:?}"), "Controller Nix selector admission refused");
+    }
+
+    #[test]
+    fn nested_nix_failure_view_is_borrowed_and_bounded() {
+        let cause = crate::normal_root::NormalRootStartupErrorV1::Confinement;
+        let view = ControllerNixSelectorFailureRefV2::Nix(&cause);
+
+        assert!(matches!(view, ControllerNixSelectorFailureRefV2::Nix(retained)
+            if std::ptr::eq(retained, &cause)));
+        assert_eq!(format!("{view:?}"), "Controller Nix original startup refused");
+    }
 }
 
 #[cfg(test)]
