@@ -14,6 +14,8 @@ use terrane_core::tree_builder::Tree;
 use terrane_core::tree_format::{ContentRef, Entry, EntryKind, LeafItem, Property, TreeUse};
 
 #[cfg(unix)]
+mod ancestry;
+#[cfg(unix)]
 mod boundary_checks;
 #[cfg(unix)]
 mod conflicts;
@@ -34,6 +36,12 @@ mod occurrences;
 mod parents;
 #[cfg(unix)]
 mod producers;
+
+#[cfg(unix)]
+#[tokio::test]
+async fn disclosure_boundary_uses_public_introducer_and_public_ancestry() {
+    ancestry::check_public_selectors().await;
+}
 
 #[cfg(unix)]
 #[tokio::test]
@@ -152,6 +160,19 @@ async fn independent_factory_kind(
     crate::repository::local_authority::LocalAuthority,
     std::path::PathBuf,
 ) {
+    independent_factory_claims(domain, principal_kind, Vec::new()).await
+}
+
+/// Initializes genuine signed group claims without changing ordinary fixture defaults.
+async fn independent_factory_claims(
+    domain: &str,
+    principal_kind: terrane_core::refs::PrincipalKind,
+    groups: Vec<String>,
+) -> (
+    NativeFixture<TokioLocalFs>,
+    crate::repository::local_authority::LocalAuthority,
+    std::path::PathBuf,
+) {
     use crate::repository::local_authority::{LocalAuthority, LocalAuthorityParameters};
     use crate::store::LocalFs;
     use std::os::unix::fs::MetadataExt;
@@ -175,7 +196,7 @@ async fn independent_factory_kind(
                 key_id: "initial".into(),
                 subject: "writer".into(),
                 kind: principal_kind,
-                groups: Vec::new(),
+                groups,
                 not_after: u64::MAX,
                 not_before: None,
                 token_id: TokioLocalFs
