@@ -46,7 +46,7 @@ pub(crate) struct LocalControlInputs<'guard, F: LocalFs> {
 /// from a checked mutation carrying this context; decoded records cannot mint it.
 pub(crate) struct GuardEffectContext {
     final_check: super::OwnedFinalCheck,
-    controls: crate::guard::RetainedControls,
+    controls: Vec<crate::guard::RetainedControls>,
 }
 
 impl GuardEffectContext {
@@ -55,8 +55,8 @@ impl GuardEffectContext {
         self.final_check.clone()
     }
 
-    /// Borrows the exact controls and already duplicated kernel exclusions.
-    pub(crate) fn controls(&self) -> &crate::guard::RetainedControls {
+    /// Borrows each owner's exact controls and already duplicated kernel exclusions.
+    pub(crate) fn controls(&self) -> &[crate::guard::RetainedControls] {
         &self.controls
     }
 }
@@ -130,7 +130,7 @@ where
         final_check: Box::new(|| final_check.recheck()),
         effect_context: Some(GuardEffectContext {
             final_check: final_check.clone(),
-            controls: retained_controls,
+            controls: vec![retained_controls],
         }),
     };
     match held.publish_checked(permit).await {
@@ -345,7 +345,7 @@ where
         final_check: Box::new(|| final_check.recheck()),
         effect_context: Some(GuardEffectContext {
             final_check: final_check.clone(),
-            controls: retained_controls,
+            controls: vec![retained_controls],
         }),
     };
     #[cfg(test)]
@@ -515,7 +515,7 @@ where
         final_check: Box::new(|| final_check.recheck()),
         effect_context: Some(GuardEffectContext {
             final_check: final_check.clone(),
-            controls: retained_controls,
+            controls: vec![retained_controls],
         }),
     };
     let receipt = held.publish_checked(permit).await?;

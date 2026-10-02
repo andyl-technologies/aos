@@ -129,19 +129,23 @@ pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
     }
     let controls = context.controls();
     let owner = observed.configured_operator_uid();
-    if controls.owner() != owner {
+    if controls.first().ok_or_else(unsupported)?.owner() != owner {
         return Err(corrupt());
     }
     let mut exclusions = vec![duplicate(observed.identity().retained_namespace()?)?];
     for source in checked.sources() {
         exclusions.push(duplicate(source.identity().retained_namespace()?)?);
     }
-    let control_start = exclusions.len();
-    for exclusion in controls.exclusions().iter() {
-        exclusions.push(duplicate(exclusion)?);
-    }
-    if exclusions.len() == control_start {
-        return Err(unsupported());
+    let mut control_descriptors = Vec::with_capacity(controls.len());
+    for retained in controls {
+        let start = exclusions.len();
+        for exclusion in retained.exclusions().iter() {
+            exclusions.push(duplicate(exclusion)?);
+        }
+        if exclusions.len() == start {
+            return Err(unsupported());
+        }
+        control_descriptors.push(start..exclusions.len());
     }
     let mut frame = Frame {
         exclusions: exclusions.into(),
@@ -152,70 +156,90 @@ pub(crate) async fn publish_checked<F: LocalFs + BucketBinding>(
         owner,
     };
 
-    for ancestor in controls.ancestors() {
-        let metadata = fs
-            .symlink_metadata(ancestor.path())
-            .await
-            .map_err(io_failure)?;
-        let stamp = MetadataStamp::checked(&metadata).map_err(io_failure)?;
-        FencePolicy::ProtectedAncestor { owner }
+    for retained in controls {
+        let control_owner = retained.owner();
+        for ancestor in retained.ancestors() {
+            let metadata = fs
+                .symlink_metadata(ancestor.path())
+                .await
+                .map_err(io_failure)?;
+            let stamp = MetadataStamp::checked(&metadata).map_err(io_failure)?;
+            FencePolicy::ProtectedAncestor {
+                owner: control_owner,
+            }
             .validate(stamp)
             .map_err(io_failure)?;
-        if stamp.identity != ancestor.identity()
-            || (stamp.owner, stamp.mode & 0o7777) != ancestor.protection()
-        {
-            return Err(corrupt());
+            if stamp.identity != ancestor.identity()
+                || (stamp.owner, stamp.mode & 0o7777) != ancestor.protection()
+                || frame
+                    .parents
+                    .get(ancestor.path())
+                    .is_some_and(|(previous, _)| !stamp.same_incarnation(*previous))
+            {
+                return Err(corrupt());
+            }
+            frame
+                .parents
+                .insert(ancestor.path().to_owned(), (stamp, control_owner));
         }
-        frame
-            .parents
-            .insert(ancestor.path().to_owned(), (stamp, owner));
     }
     let control = frame.observation(fs, observed, 0).await?;
     for (index, source) in checked.sources().iter().enumerate() {
         frame.observation(fs, source, index + 1).await?;
     }
-    let (directory_identity, lock_identity) = controls.identities();
-    frame
-        .name(
-            fs,
-            controls.directory().to_owned(),
-            directory_identity,
-            FencePolicy::PrivateControlDirectory { owner },
-            None,
-        )
-        .await?;
-    for descriptor in control_start..frame.exclusions.len() {
+    // Each submitted worker owns every descriptor, including independent
+    // source configuration locks. Cancellation cannot release those inputs.
+    for (retained, descriptors) in controls.iter().zip(control_descriptors) {
+        let control_owner = retained.owner();
+        let (directory_identity, lock_identity) = retained.identities();
         frame
             .name(
                 fs,
-                controls.directory().join("retention.lock"),
-                lock_identity,
-                FencePolicy::ProtectedRecord { owner },
-                Some(descriptor),
+                retained.directory().to_owned(),
+                directory_identity,
+                FencePolicy::PrivateControlDirectory {
+                    owner: control_owner,
+                },
+                None,
             )
             .await?;
-    }
-    for record in controls.records() {
-        let metadata = fs
-            .symlink_metadata(record.path())
-            .await
-            .map_err(io_failure)?;
-        if MetadataStamp::checked(&metadata)
-            .map_err(io_failure)?
-            .identity
-            != record.identity()
-        {
-            return Err(corrupt());
+        for descriptor in descriptors {
+            frame
+                .name(
+                    fs,
+                    retained.directory().join("retention.lock"),
+                    lock_identity,
+                    FencePolicy::ProtectedRecord {
+                        owner: control_owner,
+                    },
+                    Some(descriptor),
+                )
+                .await?;
         }
-        frame
-            .observed_read(
-                fs,
-                record.path(),
-                Some(record.bytes()),
-                Some(&metadata),
-                FencePolicy::ProtectedRecord { owner },
-            )
-            .await?;
+        for record in retained.records() {
+            let metadata = fs
+                .symlink_metadata(record.path())
+                .await
+                .map_err(io_failure)?;
+            if MetadataStamp::checked(&metadata)
+                .map_err(io_failure)?
+                .identity
+                != record.identity()
+            {
+                return Err(corrupt());
+            }
+            frame
+                .observed_read(
+                    fs,
+                    record.path(),
+                    Some(record.bytes()),
+                    Some(&metadata),
+                    FencePolicy::ProtectedRecord {
+                        owner: control_owner,
+                    },
+                )
+                .await?;
+        }
     }
 
     if let Some(bytes) = checked.lineage() {
