@@ -100,7 +100,7 @@ where
     } = request;
     publication.validate_target(&target)?;
     coordinator.check_time(started)?;
-    let consumed = ConsumedResolver::new(concrete, authority)?;
+    let consumed = ConsumedResolver::new(coordinator.guard(), authority)?;
     consumed.registration(authority)?;
     let history = crate::guard::HistoryObservation::held(observed.identity()).tracked(&consumed);
     let requests = coordinator

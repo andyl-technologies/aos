@@ -221,19 +221,19 @@ impl<S: Store, C: Clock> Guard<S, C> {
             let source = self
                 .recheck_history_original(boundary.source().commit, observation)
                 .await?;
-            let source_repository = identity_name(source.baseline().authority().id());
             let retained_roles = source.historical_disclosure_roles()?.ok_or_else(invalid)?;
-            if source_repository != boundary.authority_repository()
-                || !retained_roles.iter().any(|role| {
-                    role.repository == boundary.authority_repository()
-                        && role.domain == boundary.authority_domain()
-                        && role.public_key == *boundary.authority_key()
-                        && boundary.observed_at() >= role.not_before
-                        && role
-                            .not_after
-                            .is_none_or(|end| boundary.observed_at() < end)
-                })
-            {
+            // Original authoring authority is independent of the current
+            // physical discloser. Its exact protected public role coordinates
+            // were retained by the paired native import producer separately.
+            if !retained_roles.iter().any(|role| {
+                role.repository == boundary.authority_repository()
+                    && role.domain == boundary.authority_domain()
+                    && role.public_key == *boundary.authority_key()
+                    && boundary.observed_at() >= role.not_before
+                    && role
+                        .not_after
+                        .is_none_or(|end| boundary.observed_at() < end)
+            }) {
                 return Err(invalid());
             }
             if let Some(consumed) = observation.consumed {
