@@ -364,6 +364,24 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   This qualifies only the pure revision compatibility prerequisite. Runtime
   historical-revision propagation, combined index qualification and format
   witness publication remain incomplete; no task checkbox advances.
+  The reviewed index candidate rebased onto D-102 with all ten owned blobs
+  unchanged. Its full core suite passes 494/494 with zero skipped (Nextest
+  run `bc7f0b6a-0042-4151-a7b8-2c54c90119ee`), including all eight previously
+  failing historical registry cases. Strict core Clippy/rustdoc, core and
+  native builds, the three exact index-format and four property-registry
+  cases, all 16 property-resolution cases, required attributes, domain
+  references, registry completeness, `core-no-std` and both formatters pass.
+  Its actual aggregate still fails on absent `format_properties`.
+  The unpublished combined qualification then runs all 618 owning core
+  tests: 614 pass and four fail, with zero skipped (Nextest run
+  `bde15c72-4282-4456-8561-39a0b122d410`). The failures expose two generated
+  registry models still labeling the moving vocabulary revision 1, missing
+  generated `IndexRoots` property coverage, and a published 33-name namespace
+  witness incorrectly compared with all 34 current names. Its build, strict
+  Clippy/rustdoc and both formatters pass; all 46 temporary inputs are compared
+  and restored exactly after every original terminal. The fixture correction
+  is isolated before further combined qualification. The index candidate
+  remains unmerged into the trunk, with no task or milestone advancement.
 - [x] **T-AUTH-1** Capability token verification (Ed25519, chain, caveats,
   attenuation) in `no_std`. — satisfies AUTH-7 to AUTH-22;
   `checks.terrane.gates.auth-verify-pure`,
