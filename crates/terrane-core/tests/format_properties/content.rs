@@ -46,6 +46,13 @@ fn identity_descriptors_validate_every_registered_domain_and_wire_boundary() {
             let plaintext: Vec<_> = (0..size).map(|_| generator.next() as u8).collect();
             let identity = TERRANE_V1.calculate(kind, &plaintext).unwrap();
             let descriptor = Descriptor::from_identity(&TERRANE_V1, &identity, &plaintext).unwrap();
+            let bytes = descriptor.encode();
+            assert_eq!(Descriptor::decode(&TERRANE_V1, &bytes).unwrap(), descriptor);
+            cbor_properties("identity descriptor", &bytes, |input| {
+                Ok::<_, terrane_core::identity::descriptor::Error>(
+                    Descriptor::decode(&TERRANE_V1, input)?.encode(),
+                )
+            });
             let wire = Descriptor::from_wire(
                 &TERRANE_V1,
                 descriptor.algorithm(),
@@ -69,6 +76,10 @@ fn identity_descriptors_validate_every_registered_domain_and_wire_boundary() {
                     wrong_size,
                 )
                 .unwrap();
+                assert_eq!(
+                    Descriptor::decode(&TERRANE_V1, &wrong.encode()).unwrap(),
+                    wrong
+                );
                 assert!(wrong.verify_bytes(&TERRANE_V1, kind, &plaintext).is_err());
             }
             for length in [0, 1, 31, 33, 64] {
@@ -722,5 +733,60 @@ fn derived_function_metadata_and_text_values_preserve_unknown_versions_and_limit
             argument: None,
         });
         assert!(value.encode().is_err());
+    }
+}
+
+#[test]
+fn disclosure_target_bindings_normalize_only_typed_signatures_and_retain_metadata() {
+    use terrane_core::{provenance::disclosure_target_binding, refs};
+    let mut generator = Generator::new(0xf732_271d_abde_9371);
+    for domain in [
+        "public",
+        "tenant:generated",
+        "group:generated",
+        "private:generated",
+    ] {
+        let mut model = super::records::commit(&mut generator, 0);
+        model.signature = Some(generator.bytes());
+        model.profile_pair.entry_receipts = Some(vec![refs::EntryReceipt {
+            root: generator.bytes(),
+            path: b"file".to_vec(),
+            origin: refs::EntryOrigin::Current,
+            attributes: None,
+            reintroduced_from: Some(refs::EntrySource {
+                commit: generator.bytes(),
+                root: generator.bytes(),
+                path: b"source".to_vec(),
+            }),
+            disclosure_proof: Some(refs::DisclosureProof {
+                authority_key: "01".repeat(32),
+                source_domain: domain.into(),
+                observed_at: u64::MAX,
+                signature: generator.bytes(),
+            }),
+        }]);
+        check_record!("disclosure certificate domain", model.clone(), refs::Commit);
+        let binding = disclosure_target_binding(&model).unwrap();
+        let mut changed_signature = model.clone();
+        changed_signature.signature = Some(generator.bytes());
+        changed_signature
+            .profile_pair
+            .entry_receipts
+            .as_mut()
+            .unwrap()[0]
+            .disclosure_proof
+            .as_mut()
+            .unwrap()
+            .signature = generator.bytes();
+        assert_eq!(
+            disclosure_target_binding(&changed_signature).unwrap(),
+            binding
+        );
+        let mut changed_metadata = model;
+        changed_metadata.message.push_str("metadata matters");
+        assert_ne!(
+            disclosure_target_binding(&changed_metadata).unwrap(),
+            binding
+        );
     }
 }

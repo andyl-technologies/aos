@@ -664,8 +664,143 @@ fn collection_fences_cover_every_ref_class_selected_payload_and_absent_generatio
             model.clone(),
             CurrentCollectionFence
         );
+        let mut capabilities = bucket::BucketCapabilities::decode(&model.capabilities).unwrap();
+        capabilities.generation = Some(1);
+        let manifest = bucket::GenerationManifest {
+            generation: 1,
+            shards: vec![],
+            written_at: 0,
+            cycle: 0,
+            inventory: Some(vec![]),
+            exclusions: Some(vec![]),
+            burns: Some(vec![]),
+        };
+        let mut state = model.state.clone();
+        state.burn_owners = Some(vec![]);
+        check_record!(
+            "populated copied fence",
+            CopiedPlacementFence {
+                capabilities: capabilities.encode().unwrap(),
+                manifest: manifest.encode().unwrap(),
+                refs: model.refs.clone(),
+                guard: model.guard,
+                state,
+                roots: model.roots.clone(),
+                marks: model.marks.clone(),
+                backend: model.backend.clone(),
+                controls: vec![
+                    terrane_core::gc::publication::evidence::RequiredControlPin {
+                        kind: terrane_core::gc::publication::evidence::ControlKind::Registration,
+                        owner: terrane_core::gc::publication::evidence::PhysicalRegistration::Local(
+                            terrane_core::gc::publication::evidence::LocalOriginalRegistration {
+                                original_id: generator.bytes(),
+                                root: b"/original".to_vec(),
+                                domain: "public".into(),
+                                root_device: 0,
+                                root_inode: 1,
+                                coordination_device: 0,
+                                coordination_inode: 2,
+                                control: b"/control".to_vec(),
+                            }
+                        ),
+                        key: "registration.cbor".into(),
+                        digest: generator.bytes(),
+                    }
+                ],
+                genesis: OwnershipSlot {
+                    revision: 0,
+                    digest: generator.bytes()
+                },
+                projection: RecordPointer {
+                    key: format!("publication/snapshots/{}:{}", u64::MAX, "00".repeat(32)),
+                    digest: generator.bytes()
+                },
+            },
+            CopiedPlacementFence
+        );
         let mut invalid = model;
         invalid.refs.pop();
         assert!(invalid.encode().is_err());
     }
+}
+
+#[test]
+fn permanent_pass_count_handle_and_whole_record_limits_reject_before_claimed_allocation() {
+    let mut generator = Generator::new(0x8a21_79c5_6134_bb92);
+    let backend = binding(1);
+    let mut model = PermanentDeletePass {
+        authorization_digest: generator.bytes(),
+        owner: OwnershipSlot {
+            revision: 1,
+            digest: generator.bytes(),
+        },
+        revision: 1,
+        pass: u64::MAX,
+        event: u64::MAX,
+        predecessor: OwnershipSlot {
+            revision: 2,
+            digest: generator.bytes(),
+        },
+        state: PublicationState {
+            revision: 2,
+            loss_generation: 0,
+            sources: vec![],
+            binding: backend.clone(),
+            branches: vec![],
+            guard: None,
+            burn_owners: None,
+        },
+        lease: gc::GcLease {
+            holder: "collector".into(),
+            epoch: u64::MAX,
+            expiry: u64::MAX,
+        },
+        backend,
+        phase: PassPhase::Open,
+        observations: vec![],
+        coverage: [PassCoverage::Unknown; 3],
+        nonce: generator.bytes(),
+        placement_fence: None,
+    };
+    for count in [0, 1, MAX_OBSERVATIONS] {
+        model.observations = (0..count)
+            .map(|index| RequestObservation {
+                artifact: ObservedArtifact::Trash(index as u64),
+                instance: ObservedInstance::Unversioned,
+                state: ObservationState::ConfirmedAbsent,
+            })
+            .collect();
+        let bytes = model.encode().unwrap();
+        assert_eq!(PermanentDeletePass::decode(&bytes).unwrap(), model);
+        for end in [0, 1, bytes.len() / 2, bytes.len() - 1] {
+            assert!(PermanentDeletePass::decode(&bytes[..end]).is_err());
+        }
+    }
+    model.observations.push(RequestObservation {
+        artifact: ObservedArtifact::Trash(MAX_OBSERVATIONS as u64),
+        instance: ObservedInstance::Unversioned,
+        state: ObservationState::ConfirmedAbsent,
+    });
+    assert!(model.encode().is_err());
+    for length in [0, 1, 4096, 4097] {
+        model.observations = vec![RequestObservation {
+            artifact: ObservedArtifact::Pack,
+            instance: ObservedInstance::Version(vec![0; length]),
+            state: ObservationState::Planned,
+        }];
+        let encoded = model.encode();
+        if (1..=4096).contains(&length) {
+            assert_eq!(
+                PermanentDeletePass::decode(&encoded.unwrap()).unwrap(),
+                model
+            );
+        } else {
+            assert!(encoded.is_err());
+        }
+    }
+    let too_large = vec![0; MAX_RECORD_BYTES + 1];
+    assert_eq!(
+        PermanentDeletePass::decode(&too_large),
+        Err(RetirementError::Cbor(terrane_core::cbor::Error::Limit))
+    );
 }
