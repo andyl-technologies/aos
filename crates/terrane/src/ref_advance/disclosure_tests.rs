@@ -32,6 +32,14 @@ mod multiple;
 mod occurrences;
 #[cfg(unix)]
 mod parents;
+#[cfg(unix)]
+mod producers;
+
+#[cfg(unix)]
+#[tokio::test]
+async fn disclosure_boundary_copied_attributes_require_independent_public_producers() {
+    producers::preserve_public_attribute_producer().await;
+}
 
 #[cfg(unix)]
 #[tokio::test]
