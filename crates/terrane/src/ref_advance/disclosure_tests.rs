@@ -43,6 +43,12 @@ async fn disclosure_graft_preserves_independent_private_attribute_producer() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn disclosure_replacement_graft_preserves_carried_private_producers() {
+    materialization::preserve_replacement_graft_producers().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn disclosure_dictionary_dependencies_preserve_registered_codecs_and_verified_lengths() {
     dictionaries::publish_dictionary_codecs().await;
 }
