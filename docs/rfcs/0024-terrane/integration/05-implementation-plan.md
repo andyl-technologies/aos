@@ -820,12 +820,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   rustdoc, `formats-no-std`, and both mandatory formatting commands pass.
   This does not qualify runtime surfaces or complete the exposure configuration.
   The integrated binary still has only its T0 configuration/role launcher.
-  The reviewed local command frontend is on its isolated task branch; after
-  the shared same-call verification correction, all three CLI integration tests
-  pass. Its unchanged whole workflow completes real initialization, directory
-  commit, fork, independent branch commits, merge, registered merged checkout
-  and fixed-commit checkout in 106.45 seconds within the original 120-second
-  limit. This branch remains unmerged while aggregate qualification is red.
+  The reviewed local command frontend remains on its isolated task branch.
+  Its latest unchanged suite passes two tests and times out in the whole
+  workflow at 120 seconds: initialization, directory commit, fork, independent
+  branch commits, merge and registered merged checkout finish, but fixed-commit
+  checkout does not return before the deadline. A prior source snapshot passed
+  all three tests in 106.45 seconds. Variable publication timings do not prove
+  a regression from the target-history correction; current complete-workflow
+  qualification remains open. This branch stays unmerged while aggregate
+  qualification is red.
   Its fresh feature matrix passes both 439-test core runs and 73 portable
   native tests, then fails with 351 native passes and eight failures, including
   a multiwriter join expiry. The release package builds, but its unchanged
@@ -834,7 +837,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   descendant-policy regression exceed their unchanged 120-second limits.
   The isolated workflow pass therefore does not establish package qualification.
   Strict native Clippy still fails on twenty production and two test dead-code
-  diagnostics; the shared correction adds none. No Terrane ext4
+  diagnostics; the latest shared correction adds none. The cancellation-only
+  native-read fixture candidate remains an unmerged WIP: its latest full run
+  passes 353 of 360 tests, with six backend failures and the unchanged
+  two-second cancellation-barrier arrival failure. No Terrane ext4
   workflow artifact is present in the current tracked gate or workflow sources;
   the earlier claim of registration does not establish qualification. The scoped
   descendant-only policy diff correction is integrated; its real protected-factory
