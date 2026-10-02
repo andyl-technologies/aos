@@ -1915,6 +1915,34 @@ is added rather than editing history.
     remain required. This decision supplies no occurrence carrier or runtime
     dispatch; those remain pre-freeze implementation prerequisites.
 
+- **[D-102] Immutable recorded property semantics revisions.**
+  - **Status:** Decided (2026-10-02)
+  - **Decision:** Register property revision 1's exact original 33 behavioral
+    names and revision 2's exact extension with `index-roots`. Match each
+    recorded vocabulary to its explicit revision, preserve historical bytes,
+    reject unknown revisions and mismatches, and keep represented later names
+    inert even when newer code recognizes them. Current complete configuration
+    records the explicitly registered revision matching its vocabulary.
+  - **Rationale:** D-101 adds a behavioral property. Comparing historical
+    revision-1 records with an evolving compiled name list reinterprets their
+    semantics and rejects previously valid published witnesses. Calling the
+    expanded list revision 1 also conflicts with the publication-authority
+    rule requiring an explicit revision when names acquire behavior. A fixed
+    name fence preserves historical records without admitting arbitrary sets
+    or granting behavior from later-name presence.
+    Nested records without a property revision retain their original intrinsic
+    behavioral checks and defer newer names to the enclosing explicit fence;
+    otherwise early nested decoding would reinterpret old inert properties.
+  - **Compatibility:** Advance the unreleased draft to 1.0-draft-4 under the
+    pre-freeze correction exception. Existing encoding schemas, identity
+    domains and all revision-1 golden bytes remain unchanged. Revision 2 uses
+    the existing explicit property-revision field and changes only newly
+    represented configuration data. It does not change the independent current
+    configuration, authority or original-policy verification obligations.
+  - **Affects:** PROP-30, configured registry inputs, the property registry,
+    and the recorded semantic fence in publication-authority evidence.
+    Runtime index verification and occurrence loading remain incomplete.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

@@ -211,6 +211,21 @@ hash algorithm, a secondary index, a classification) without a format change.
   entries. A binding MUST NOT grant authority or replace index verification.
   *Gate:* `gate:property-resolution`, `gate:index-tree-maintenance`.
 
+## Recorded property semantics
+
+- **[PROP-30]** Configured property semantics MUST use the explicit revisions
+  in `reference/property-registry.md`. Revision 1 MUST retain its exact
+  original 33 behavioral names and MUST NOT acquire `index-roots` behavior.
+  Revision 2 MUST contain exactly those names plus `index-roots`, with
+  PROP-29's owner-local semantics. A record whose names do not match its
+  revision MUST be rejected; unknown revisions MUST be rejected. Trusted
+  later preserve-only names MUST remain inert under the recorded revision,
+  even when newer implementation code recognizes the name. A current
+  configuration MUST record the revision matching its complete supported
+  behavioral vocabulary. Decoding a revision MUST NOT grant current authority
+  or replace independently checked configuration and root policy.
+  *Gate:* `gate:property-resolution`.
+
 ## Property summary
 
 Every property named anywhere in this specification is listed here with its

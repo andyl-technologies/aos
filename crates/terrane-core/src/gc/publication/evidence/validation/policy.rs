@@ -5,8 +5,83 @@ use crate::cbor::Decoder;
 use crate::chunking::{
     CDC_1M_MAX, CDC_1M_MIN, CDC_1M_NORMALIZATION, CDC_1M_TARGET, CDC_1M_WINDOW, ChunkProfile,
 };
-use crate::properties::{PropertyName, validate_property};
+use crate::properties::validate_property;
 use crate::tree_format::{MAX_NODE_ITEMS_BYTES, Property};
+
+// Historical revisions bind immutable vocabulary, not the moving compiled list.
+const REVISION_ONE_PROPERTIES: &[&str] = &[
+    "acl",
+    "baseline",
+    "chunk",
+    "classify",
+    "compaction_threshold",
+    "compression",
+    "dedup",
+    "degraded",
+    "domain",
+    "durability",
+    "encryption",
+    "gap_merge_bytes",
+    "hashes",
+    "home",
+    "index",
+    "merge",
+    "on-release",
+    "passthrough",
+    "prefetch",
+    "quota",
+    "reassembly",
+    "redundancy",
+    "reflog_retain",
+    "replicate",
+    "retain",
+    "span_max_bytes",
+    "store",
+    "strict-attrs",
+    "trust",
+    "warm",
+    "whole_pack_threshold",
+    "wipe",
+    "writers",
+];
+
+fn revision_properties(revision: u64) -> Result<Vec<&'static str>, EvidenceError> {
+    let mut properties = REVISION_ONE_PROPERTIES.to_vec();
+    match revision {
+        1 => {}
+        2 => {
+            properties.push("index-roots");
+            properties.sort_unstable();
+        }
+        _ => return Err(EvidenceError::UnsupportedRevision),
+    }
+    Ok(properties)
+}
+
+impl ConfiguredRegistryInputs {
+    /// Identifies the registered semantics of an exact behavioral name list.
+    ///
+    /// This identifies ordinary configuration data; it does not select a Guard
+    /// or establish current authority. Revision 1 retains its original 33 names,
+    /// and revision 2 adds only the owner-local `index-roots` binding.
+    ///
+    /// # Errors
+    /// Rejects names that are unsorted, duplicated, malformed, or do not match
+    /// either complete registered vocabulary.
+    pub fn property_revision_for(properties: &[String]) -> Result<u64, EvidenceError> {
+        names(properties)?;
+        for revision in [1, 2] {
+            if properties
+                .iter()
+                .map(String::as_str)
+                .eq(revision_properties(revision)?)
+            {
+                return Ok(revision);
+            }
+        }
+        Err(EvidenceError::Contradiction)
+    }
+}
 
 impl SeededChunkProfile {
     /// Recomputes the pure FastCDC profile from its six represented inputs.
@@ -87,7 +162,6 @@ fn names(names: &[String]) -> Result<(), EvidenceError> {
 impl Validate for ConfiguredRegistryInputs {
     fn validate(&self) -> Result<(), EvidenceError> {
         if [
-            self.property_revision,
             self.attribute_revision,
             self.selector_revision,
             self.tree_revision,
@@ -102,8 +176,7 @@ impl Validate for ConfiguredRegistryInputs {
         names(&self.behavioral_properties)?;
         names(&self.later_properties)?;
 
-        let mut registered: Vec<_> = PropertyName::ALL.iter().map(|name| name.as_str()).collect();
-        registered.sort_unstable();
+        let registered = revision_properties(self.property_revision)?;
         if !self
             .behavioral_properties
             .iter()
@@ -120,7 +193,7 @@ impl Validate for ConfiguredRegistryInputs {
             return Err(EvidenceError::Contradiction);
         }
 
-        // A nonempty later set remains inert decoded data. Genuine revision-one
+        // A nonempty later set remains inert decoded data. Genuine current
         // configuration separately requires the currently supported empty set.
         Ok(())
     }
@@ -169,17 +242,67 @@ pub(super) fn property_map(
         let value_start = decoder.position();
         crate::tree_format::property_value(&mut decoder)?;
         let value = decoder.slice(value_start, decoder.position())?;
-        if PropertyName::parse(name).is_ok() {
-            validate_property(&Property { name, value })?;
-        } else if let Some(registries) = registries
-            && !registries
+        if let Some(registries) = registries {
+            if registries
+                .behavioral_properties
+                .iter()
+                .any(|property| property == name)
+            {
+                validate_property(&Property { name, value })?;
+            } else if !registries
                 .later_properties
                 .iter()
                 .any(|later| later == name)
-        {
-            return Err(EvidenceError::Schema);
+            {
+                return Err(EvidenceError::Schema);
+            }
+        } else if REVISION_ONE_PROPERTIES.contains(&name) {
+            // Nested records have no revision field. Their original behavioral
+            // checks stay fixed; later names await the enclosing explicit fence.
+            validate_property(&Property { name, value })?;
         }
     }
     decoder.finish()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn later_property_names_remain_inert_under_their_recorded_revision() -> Result<(), EvidenceError>
+    {
+        let mut registry = ConfiguredRegistryInputs {
+            property_revision: 1,
+            behavioral_properties: REVISION_ONE_PROPERTIES
+                .iter()
+                .map(|name| (*name).into())
+                .collect(),
+            attribute_revision: 1,
+            selector_revision: 1,
+            tree_revision: 1,
+            chunk_revision: 1,
+            identity_profile: "terrane-v1".into(),
+            later_properties: alloc::vec!["index-roots".into()],
+        };
+        registry.validate()?;
+        // This canonical opaque value is invalid as a behavioral owner binding.
+        // Its meaning remains inert under the independently recorded old fence.
+        let map = b"\xa1\x6bindex-roots\x00";
+        property_map(map, Some(&registry))?;
+
+        registry.later_properties.clear();
+        assert_eq!(
+            property_map(map, Some(&registry)),
+            Err(EvidenceError::Schema)
+        );
+
+        registry.property_revision = 2;
+        registry.behavioral_properties.push("index-roots".into());
+        registry.behavioral_properties.sort();
+        registry.validate()?;
+        assert!(property_map(map, Some(&registry)).is_err());
+        Ok(())
+    }
 }

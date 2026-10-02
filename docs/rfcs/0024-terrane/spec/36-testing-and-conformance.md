@@ -163,7 +163,7 @@ here is a conformance error of this document.
 | `gate:one-protocol` | 03 | ARCH-5 |
 | `gate:property-domain-reference` | 08 | PROP-26 |
 | `gate:property-required-attrs` | 08 | PROP-21, DRV-27 |
-| `gate:property-resolution` | 08 | PROP-1, PROP-29 |
+| `gate:property-resolution` | 08 | PROP-1, PROP-29, PROP-30 |
 | `gate:publisher-sole-writer` | 03 | ARCH-8 |
 | `gate:ref-advance-ordering` | 09 | REF-12 |
 | `gate:ref-cas-only` | 01 | INV-2 |

@@ -69,6 +69,32 @@ Boundary properties (`store`, `domain`, `acl`) mark a root that `flatten`
 MUST NOT inline across ([`../08-properties.md`](../08-properties.md)
 PROP-17).
 
+## Property semantics revisions
+
+Configured registry inputs record these semantics independently of the
+record's encoding version (PROP-30). Behavioral names are sorted uniquely
+by unsigned UTF-8 bytes. They are fixed vocabulary, not a reference to the
+latest property table. Revision 1's exact 33 names are:
+
+```text
+acl baseline chunk classify compaction_threshold compression dedup degraded
+domain durability encryption gap_merge_bytes hashes home index merge
+on-release passthrough prefetch quota reassembly redundancy reflog_retain
+replicate retain span_max_bytes store strict-attrs trust warm
+whole_pack_threshold wipe writers
+```
+
+| Revision | Complete behavioral vocabulary | Semantics |
+| --- | --- | --- |
+| 1 | The exact 33 names above | Existing pre-D-101 properties and defaults |
+| 2 | Revision 1 plus `index-roots`, sorted together | Revision 1 plus PROP-29 |
+
+The separate registered attribute, selector, tree and chunk semantics remain
+revision 1. Later preserve-only names remain disjoint from the represented
+behavioral names and acquire no behavior from a newer implementation.
+Existing revision-1 bytes and identities remain unchanged; new complete
+configurations containing `index-roots` record property revision 2.
+
 ## Chunk profiles
 
 Named by the `chunk` property and recorded beside the identity profile in
