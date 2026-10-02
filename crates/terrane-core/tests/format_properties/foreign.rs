@@ -369,8 +369,8 @@ fn textual_ref_key_and_view_parsers_preserve_independent_target_and_path_models(
     }
     assert!(
         View::parse(&format!(
-            "refs/heads/_/a:/{}",
-            format!("{}x", super::support::maximum_key())
+            "refs/heads/_/a:/{}x",
+            super::support::maximum_key()
         ))
         .is_err()
     );

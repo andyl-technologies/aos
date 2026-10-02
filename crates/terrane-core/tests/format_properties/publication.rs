@@ -10,7 +10,7 @@ use terrane_core::properties::PropertyName;
 use terrane_core::refs::Locality;
 
 pub(super) fn binding(case: usize) -> BackendBinding {
-    if case % 2 == 0 {
+    if case.is_multiple_of(2) {
         BackendBinding::Local {
             root: format!("/bucket-{case}").into_bytes(),
             root_device: case as u64,
@@ -20,14 +20,14 @@ pub(super) fn binding(case: usize) -> BackendBinding {
         }
     } else {
         BackendBinding::Remote {
-            provider: if case % 3 == 0 {
+            provider: if case.is_multiple_of(3) {
                 RemoteProvider::Gcs
             } else {
                 RemoteProvider::S3
             },
             endpoint: format!("endpoint-{case}"),
             bucket: format!("bucket-{case}"),
-            prefix: if case % 3 == 0 {
+            prefix: if case.is_multiple_of(3) {
                 vec![]
             } else {
                 b"opaque-prefix/".to_vec()
@@ -46,8 +46,8 @@ fn state(case: usize, revision: u64) -> PublicationState {
         sources: vec![],
         binding: binding(case),
         branches: vec![],
-        guard: (case % 2 == 0).then_some([3; 32]),
-        burn_owners: (case % 3 == 0).then(Vec::new),
+        guard: (case.is_multiple_of(2)).then_some([3; 32]),
+        burn_owners: (case.is_multiple_of(3)).then(Vec::new),
     }
 }
 
@@ -172,7 +172,7 @@ fn publication_models_preserve_binding_selection_pointers_and_transaction_fields
 }
 
 fn registration(case: usize, original_id: [u8; 32]) -> PhysicalRegistration {
-    if case % 2 == 0 {
+    if case.is_multiple_of(2) {
         PhysicalRegistration::Local(LocalOriginalRegistration {
             original_id,
             root: b"/root".to_vec(),

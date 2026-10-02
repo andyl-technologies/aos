@@ -72,7 +72,7 @@ fn authorization(
     if copied {
         let backend = binding(case);
         let remote = barrier(exclusion);
-        let barrier = if case % 2 == 0 {
+        let barrier = if case.is_multiple_of(2) {
             BarrierArtifact::Local(LocalBarrierArtifact {
                 key: remote.key,
                 nonce: generator.bytes(),
@@ -102,7 +102,7 @@ fn authorization(
                 revision: 1,
                 digest: generator.bytes(),
             },
-            lineage_fence: (case % 3 == 0).then(|| RecordPointer {
+            lineage_fence: (case.is_multiple_of(3)).then(|| RecordPointer {
                 key: format!("gc/{case}/fence/2"),
                 digest: generator.bytes(),
             }),
