@@ -8,9 +8,13 @@ use super::{
     support::{Value, a, b, encode, m, n, remove, repeated, set, t, texts},
 };
 
+/// Carries one independently assembled input requiring structural decoder rejection.
 pub(crate) struct Negative {
+    /// Unique witness name used to locate its reference block.
     pub(crate) name: String,
+    /// Owning decoder family: commit, ref or log.
     pub(crate) family: &'static str,
+    /// Complete malformed wire reconstructed with independent primitives.
     pub(crate) wire: Vec<u8>,
 }
 
@@ -34,6 +38,10 @@ fn changed(
     add(values, name, family, fields);
 }
 
+/// Constructs all negative wires from primitive fields rather than owning record encoders.
+///
+/// # Panics
+/// Panics if a handwritten table no longer supports its required field paths.
 pub(crate) fn models() -> Vec<Negative> {
     let mut values = Vec::new();
     for key in 1..=6 {

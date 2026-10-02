@@ -15,6 +15,7 @@ use terrane_core::{
     },
 };
 
+/// Constructs a public locality model with all three labels.
 pub(crate) fn locality() -> Locality {
     Locality {
         region: Some("region".into()),
@@ -144,6 +145,11 @@ fn base(kind: PrincipalKind, source: CommitSource) -> Commit {
     }
 }
 
+/// Constructs complete public commits separately from the independent CBOR field tables.
+///
+/// # Panics
+/// Panics if the fixed scope fixture is rejected, copied context fields differ,
+/// or an independent table no longer supports its required field paths.
 pub(crate) fn models() -> Vec<(String, Commit, Value)> {
     let mut models = Vec::new();
     let kinds = [

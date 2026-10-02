@@ -12,6 +12,7 @@ use terrane_core::refs::{
     SnapshotEnvelope,
 };
 
+/// Constructs a complete public ref value with an optional opaque selector.
 pub(crate) fn record(seq: u8, selected: bool) -> RefRecord {
     RefRecord {
         commit: [seq; 32],
@@ -49,6 +50,11 @@ fn envelope() -> SnapshotEnvelope {
     }
 }
 
+/// Constructs public ref policy and annotation alternatives alongside independent field tables.
+///
+/// # Panics
+/// Panics if the fixed tag is rejected, the attestation table is missing, or
+/// an independent table no longer supports its required field paths.
 pub(crate) fn refs() -> Vec<(String, RefRecord, Value)> {
     let mut models = vec![
         (
@@ -144,6 +150,10 @@ fn log(reason: RefLogReason, mode: &str) -> RefLogRecord {
     model
 }
 
+/// Constructs public reflogs preserving CAS expectations and retained predecessors as data.
+///
+/// # Panics
+/// Panics if an independent table no longer supports its required field paths.
 pub(crate) fn logs() -> Vec<(String, RefLogRecord, Value)> {
     let reasons = [
         RefLogReason::Commit,

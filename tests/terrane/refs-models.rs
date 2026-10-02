@@ -33,6 +33,31 @@ fn reference_modern_commit_models_preserve_optional_fields_and_preimage() {
         );
         let decoded = Commit::decode(&wire).unwrap_or_else(|error| panic!("{name}: {error}"));
         assert_eq!(decoded, model, "all decoded fields: {name}");
+        if name == "commit-recipe-graft" {
+            let recipe = model
+                .profile_pair
+                .recipe
+                .as_deref()
+                .unwrap_or_else(|| panic!("missing graft recipe"));
+            let decoded_recipe = terrane_core::algebra::Recipe::decode(recipe)
+                .unwrap_or_else(|error| panic!("graft schema: {error}"));
+            let entry = encode(&refs_models::support::m(vec![
+                (1, Value::UInt(4)),
+                (6, Value::Bytes(vec![2; 32])),
+            ]));
+            assert_eq!(
+                decoded_recipe.as_recipe(),
+                terrane_core::algebra::Recipe::Graft {
+                    parent: [1; 32],
+                    target: [2; 32],
+                    at: b"target",
+                    entry: &entry,
+                    replace: false,
+                    domains: None,
+                }
+            );
+        }
+
         if let (Some(actual), Some(expected)) = (
             &decoded.profile_pair.commit_context,
             &model.profile_pair.commit_context,

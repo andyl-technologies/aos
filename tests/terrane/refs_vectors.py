@@ -79,7 +79,7 @@ def token(full=False):
 def recipe(operation):
     """Constructs schema-complete registered recipe alternatives."""
     if operation == "graft":
-        entry = {1: 1, 2: 0o644, 3: 6, 4: [0, repeated(12)]}
+        entry = {1: 4, 6: repeated(2)}
         return {1: operation, 2: [repeated(1), repeated(2)],
                 3: {"at": b"target", "entry": encode(entry), "replace": False}}
     if operation == "merge":

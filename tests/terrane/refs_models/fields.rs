@@ -5,6 +5,7 @@
 
 use super::support::{Value, a, b, m, n, repeated, t, texts};
 
+/// Lists every registered recipe operation represented by the fixtures.
 pub(crate) const OPERATIONS: [&str; 12] = [
     "graft",
     "split",
@@ -19,6 +20,7 @@ pub(crate) const OPERATIONS: [&str; 12] = [
     "index",
     "realize",
 ];
+/// Lists the closed reflog reason vocabulary in fixture order.
 pub(crate) const REASONS: [&str; 6] = [
     "commit",
     "merge",
@@ -27,6 +29,7 @@ pub(crate) const REASONS: [&str; 6] = [
     "job-checkpoint",
     "migrate",
 ];
+/// Lists every registered ref merge policy in fixture order.
 pub(crate) const POLICIES: [&str; 6] = [
     "prefer-ours",
     "prefer-theirs",
@@ -36,14 +39,17 @@ pub(crate) const POLICIES: [&str; 6] = [
     "error",
 ];
 
+/// Constructs all three optional locality fields as inert labels.
 pub(crate) fn locality() -> Value {
     m(vec![(1, t("region")), (2, t("zone")), (3, t("host"))])
 }
 
+/// Constructs an opaque source entry reference without resolving it.
 pub(crate) fn source() -> Value {
     a(vec![repeated(3, 32), repeated(4, 32), b(b"source\xff")])
 }
 
+/// Constructs every disclosure-certificate field without checking its signature.
 pub(crate) fn proof() -> Value {
     m(vec![
         (1, t(&"ab".repeat(32))),
@@ -53,6 +59,7 @@ pub(crate) fn proof() -> Value {
     ])
 }
 
+/// Constructs all receipt shapes with distinct absent and empty attribute maps.
 pub(crate) fn receipts() -> Value {
     let root = || repeated(1, 32);
     a(vec![
@@ -79,6 +86,7 @@ pub(crate) fn receipts() -> Value {
     ])
 }
 
+/// Constructs sorted scope assertions without establishing their truth.
 pub(crate) fn context() -> Value {
     m(vec![
         (1, t("refs/heads/_/main")),
@@ -95,6 +103,7 @@ pub(crate) fn context() -> Value {
     ])
 }
 
+/// Constructs the required token block fields and optional claims when requested.
 pub(crate) fn authority(full: bool) -> Value {
     let mut fields = vec![
         (1, t("issuer")),
@@ -121,6 +130,7 @@ pub(crate) fn authority(full: bool) -> Value {
     m(fields)
 }
 
+/// Constructs every attenuation field and registered caveat alternative.
 pub(crate) fn attenuation() -> Value {
     m(vec![
         (1, n(90)),
@@ -145,6 +155,7 @@ pub(crate) fn attenuation() -> Value {
     ])
 }
 
+/// Constructs an opaque canonical public token chain without verification.
 pub(crate) fn token(full: bool) -> Value {
     a(if full {
         vec![authority(true), attenuation()]
@@ -153,18 +164,14 @@ pub(crate) fn token(full: bool) -> Value {
     })
 }
 
+/// Constructs operation-specific recipe fields, including the complete graft tree entry.
 pub(crate) fn recipe(operation: &str) -> Value {
     let mut fields = vec![
         (1, t(operation)),
         (2, a(vec![repeated(1, 32), repeated(2, 32)])),
     ];
     if operation == "graft" {
-        let entry = m(vec![
-            (1, n(1)),
-            (2, n(0o644)),
-            (3, n(6)),
-            (4, a(vec![n(0), repeated(12, 32)])),
-        ]);
+        let entry = m(vec![(1, n(4)), (6, repeated(2, 32))]);
         fields.push((
             3,
             texts(vec![
@@ -183,6 +190,7 @@ pub(crate) fn recipe(operation: &str) -> Value {
     m(fields)
 }
 
+/// Constructs the required commit fields with absent optional map keys.
 pub(crate) fn commit(kind: u64, production: u64) -> Value {
     m(vec![
         (1, repeated(1, 32)),
@@ -206,6 +214,7 @@ pub(crate) fn commit(kind: u64, production: u64) -> Value {
     ])
 }
 
+/// Constructs complete inert tag annotation and nested attestation fields.
 pub(crate) fn envelope() -> Value {
     m(vec![
         (1, t("refs/tags/_/snapshot")),
@@ -225,6 +234,7 @@ pub(crate) fn envelope() -> Value {
     ])
 }
 
+/// Constructs a mutable ref value with an optional opaque candidate selector.
 pub(crate) fn record(seq: u8, selected: bool) -> Value {
     let mut fields = vec![
         (1, repeated(seq, 32)),
@@ -238,6 +248,7 @@ pub(crate) fn record(seq: u8, selected: bool) -> Value {
     m(fields)
 }
 
+/// Constructs legacy, selected and retained-predecessor reflog field alternatives.
 pub(crate) fn log(reason: &str, mode: &str) -> Value {
     let mut fields = vec![
         (1, record(2, mode != "legacy")),

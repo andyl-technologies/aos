@@ -12,31 +12,43 @@ use std::collections::BTreeMap;
 /// A small primitive value tree for independently assembled fixture fields.
 #[derive(Clone, Debug)]
 pub(crate) enum Value {
+    /// An unsigned integer encoded in its shortest representation.
     UInt(u64),
+    /// An opaque byte string.
     Bytes(Vec<u8>),
+    /// A UTF-8 text string.
     Text(String),
+    /// An ordered array of primitive values.
     Array(Vec<Value>),
+    /// A map whose encoded keys are sorted canonically during encoding.
     Map(Vec<(Value, Value)>),
+    /// A primitive boolean value.
     Bool(bool),
+    /// An explicit null, distinct from an absent map key.
     Null,
 }
 
+/// Constructs an unsigned primitive value.
 pub(crate) fn n(value: u64) -> Value {
     Value::UInt(value)
 }
 
+/// Copies opaque bytes into a primitive byte string.
 pub(crate) fn b(value: &[u8]) -> Value {
     Value::Bytes(value.to_vec())
 }
 
+/// Copies UTF-8 text into a primitive text string.
 pub(crate) fn t(value: &str) -> Value {
     Value::Text(value.into())
 }
 
+/// Constructs an ordered primitive array.
 pub(crate) fn a(values: Vec<Value>) -> Value {
     Value::Array(values)
 }
 
+/// Constructs a primitive map with numbered schema keys.
 pub(crate) fn m(fields: Vec<(u64, Value)>) -> Value {
     Value::Map(
         fields
@@ -46,6 +58,7 @@ pub(crate) fn m(fields: Vec<(u64, Value)>) -> Value {
     )
 }
 
+/// Copies UTF-8 text into a primitive text string.
 pub(crate) fn texts(fields: Vec<(&str, Value)>) -> Value {
     Value::Map(
         fields
@@ -55,6 +68,7 @@ pub(crate) fn texts(fields: Vec<(&str, Value)>) -> Value {
     )
 }
 
+/// Constructs fixed-width opaque fixture bytes.
 pub(crate) fn repeated(byte: u8, width: usize) -> Value {
     b(&vec![byte; width])
 }
@@ -74,6 +88,7 @@ fn head(output: &mut Vec<u8>, major: u8, value: u64) {
     }
 }
 
+/// Encodes a primitive value using shortest definite CBOR and canonical map ordering.
 pub(crate) fn encode(value: &Value) -> Vec<u8> {
     let mut output = Vec::new();
     match value {
@@ -113,7 +128,8 @@ pub(crate) fn encode(value: &Value) -> Vec<u8> {
 /// Replaces a numbered map field in an independent primitive model.
 ///
 /// # Panics
-/// Panics if the fixture path traverses a non-map value.
+/// Panics for an empty path, a path traversing a non-map value, or a missing
+/// intermediate field. A missing final field is inserted into its parent map.
 pub(crate) fn set(value: &mut Value, path: &[u64], replacement: Value) {
     let Value::Map(fields) = value else {
         panic!("fixture path must traverse a numbered map");
