@@ -52,7 +52,31 @@ where
     R: crate::HotCheckpointFallbackRetentionStore + Send + 'static,
 {
     fn orderly_shutdown(&self) -> Result<(), PackagedQemuHotForkSourceShutdownError> {
-        self.pool.orderly_shutdown().map(|_demotions| ())
+        self.pool
+            .orderly_shutdown()
+            .map(|_demotions| ())
+            .inspect_err(|error| {
+                if let SharedManagedQemuHotForkSourceWorldShutdownError::Sources(sources) = error {
+                    for (key, failure) in sources.failures().iter().take(8) {
+                        let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(failure);
+                        for depth in 0..4 {
+                            let Some(current) = cause else {
+                                break;
+                            };
+                            let message = current.to_string().chars().take(256).collect::<String>();
+                            eprintln!(
+                                "CRUCIBLE-HOT-FORK-SHUTDOWN-V1 source_key={key:?} depth={depth} cause_prefix={message:?}"
+                            );
+                            cause = current.source();
+                        }
+                    }
+                    eprintln!(
+                        "CRUCIBLE-HOT-FORK-SHUTDOWN-V1 failed_sources={} omitted_sources={}",
+                        sources.failures().len(),
+                        sources.failures().len().saturating_sub(8),
+                    );
+                }
+            })
     }
 
     fn retention_admin(&self) -> Arc<dyn crate::HotCheckpointFallbackRetentionAdmin> {

@@ -2,6 +2,9 @@
 
 use super::*;
 
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU16, Ordering};
+
 const BLACK_BOX_EXECUTION_FINGERPRINT_DOMAIN: &str =
     "crucible.qemu.black-box-execution-fingerprint.v1";
 
@@ -82,12 +85,60 @@ pub(crate) fn black_box_execution_fingerprint(
             lowercase_hex(&sample.device_state_schema_digest)
         ),
     ]);
-    Ok(ExecutionFingerprint {
+    let fingerprint = ExecutionFingerprint {
         hash: crucible::ContentHash::from_canonical_material(
             BLACK_BOX_EXECUTION_FINGERPRINT_DOMAIN,
             &material.join("\n"),
         ),
-    })
+    };
+    report_fingerprint_components(node, &fingerprint, &material);
+    Ok(fingerprint)
+}
+
+// Sampling already owns these validated components. Diagnostics issue no
+// control request and never alter the fingerprint or checkpoint envelope.
+fn report_fingerprint_components(
+    node: &crucible::NodeId,
+    fingerprint: &ExecutionFingerprint,
+    material: &[String],
+) {
+    static REMAINING: OnceLock<AtomicU16> = OnceLock::new();
+    let remaining = REMAINING.get_or_init(|| {
+        let maximum = std::env::var("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS")
+            .ok()
+            .and_then(|value| value.parse::<u16>().ok())
+            .unwrap_or_default()
+            .min(64);
+        AtomicU16::new(maximum)
+    });
+    if remaining
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            value.checked_sub(1)
+        })
+        .is_err()
+    {
+        return;
+    }
+    eprintln!(
+        "{}",
+        fingerprint_component_diagnostic(node, fingerprint, material)
+    );
+}
+
+fn fingerprint_component_diagnostic(
+    node: &crucible::NodeId,
+    fingerprint: &ExecutionFingerprint,
+    material: &[String],
+) -> String {
+    // Numeric and digest components have fixed protocol bounds (eight vCPUs).
+    // Escape and bound the only caller-authored string independently.
+    let node_prefix = node.name.chars().take(160).collect::<String>();
+    format!(
+        "CRUCIBLE-QEMU-FINGERPRINT-V1 host_process_id={} node={node_prefix:?} fingerprint={} components={:?}",
+        std::process::id(),
+        fingerprint.hash.to_hex(),
+        material.get(1..).unwrap_or_default(),
+    )
 }
 
 fn lowercase_hex(bytes: &[u8]) -> String {
@@ -98,4 +149,33 @@ fn lowercase_hex(bytes: &[u8]) -> String {
         encoded.push(HEX[(byte & 0x0f) as usize] as char);
     }
     encoded
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::*;
+
+    #[test]
+    fn component_diagnostic_bounds_and_escapes_node_names() {
+        let node = crucible::NodeId {
+            name: format!("quoted\"\n{}suffix", "x".repeat(160)),
+        };
+        let fingerprint = ExecutionFingerprint {
+            hash: crucible::ContentHash::from_bytes(b"diagnostic"),
+        };
+        let material = vec![
+            format!("node={}", node.name),
+            String::from("sample_icount=0"),
+            String::from("ram_digest=0123456789abcdef"),
+        ];
+
+        let diagnostic = fingerprint_component_diagnostic(&node, &fingerprint, &material);
+
+        assert_eq!(diagnostic.lines().count(), 1);
+        assert!(diagnostic.contains("quoted\\\"\\n"));
+        assert!(!diagnostic.contains("suffix"));
+        assert!(diagnostic.contains(&fingerprint.hash.to_hex()));
+        assert!(diagnostic.contains("sample_icount=0"));
+        assert!(diagnostic.contains("ram_digest=0123456789abcdef"));
+    }
 }
