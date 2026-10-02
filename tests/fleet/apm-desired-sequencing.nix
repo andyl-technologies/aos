@@ -40,7 +40,7 @@ in {
       varSizeMiB = 1024;
       # Seed only the package that the desired file will prune. The config
       # package is present in the image and registry fixture, but is not in the
-      # package profile until `apm reconcile --system --from` installs it.
+      # package profile until `apm apply --system --from` installs it.
       packages = ["desired-prune-test"];
     };
   };
@@ -146,7 +146,7 @@ in {
       )
 
       out = vm.succeed(
-          "HOME=/tmp/desired-run ${pkgs.aos.apm}/bin/apm reconcile --system "
+          "HOME=/tmp/desired-run ${pkgs.aos.apm}/bin/apm apply --system "
           "--from /etc/aos/packages.d/desired.toml --yes 2>&1",
           timeout=240,
       )

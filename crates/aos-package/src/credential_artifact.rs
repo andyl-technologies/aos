@@ -1,6 +1,6 @@
 //! Desired-package credential materialization.
 //!
-//! `apm reconcile --system --from desired.toml` accepts package-scoped
+//! `apm apply --system --from desired.toml` accepts package-scoped
 //! credential values keyed by package and credential name. This module
 //! validates those values against signed RFC-0001 `expose.config.credentials`
 //! metadata, writes plaintext credentials into the systemd plaintext credstore,

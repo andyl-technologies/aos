@@ -1134,7 +1134,7 @@ class Scenario:
             "set -eu; "
             "printf 'packages = [\"cryptsetup\", \"curl\", \"iproute2\", "
             "\"nginx\"]\\n' >/run/desired.toml; "
-            "apm reconcile --system --from /run/desired.toml --yes",
+            "apm apply --system --from /run/desired.toml --yes",
             timeout=1200,
         )
         machine.ssh(
@@ -1357,7 +1357,7 @@ http {
 
         machine.ssh(
             "set -eu; printf 'packages = []\\n' >/run/desired.toml; "
-            "apm reconcile --system --from /run/desired.toml --yes",
+            "apm apply --system --from /run/desired.toml --yes",
             timeout=600,
         )
         machine.ssh("test ! -x /bin/nginx")
@@ -1365,7 +1365,7 @@ http {
             "set -eu; "
             "printf 'packages = [\"cryptsetup\", \"curl\", \"iproute2\", "
             "\"nginx\"]\\n' >/run/desired.toml; "
-            "apm reconcile --system --from /run/desired.toml --yes",
+            "apm apply --system --from /run/desired.toml --yes",
             timeout=1200,
         )
         machine.ssh("systemctl restart qualification-nginx.service")

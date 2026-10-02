@@ -104,12 +104,13 @@ fn system_registry_scope_precedes_the_registry_operation() {
 }
 
 #[test]
-fn desired_set_reconciliation_requires_explicit_system_scope() {
-    assert!(TestCli::try_parse_from(["apm", "reconcile", "--from", "desired.toml"]).is_err());
-    assert!(TestCli::try_parse_from(["apm", "reconcile", "--system"]).is_err());
-    assert!(parse(&["reconcile", "--system", "--from", "desired.toml"]).is_system());
+fn desired_set_application_requires_explicit_system_scope() {
+    assert!(TestCli::try_parse_from(["apm", "apply", "--from", "desired.toml"]).is_err());
+    assert!(TestCli::try_parse_from(["apm", "apply", "--system"]).is_err());
+    assert!(parse(&["apply", "--system", "--from", "desired.toml"]).is_system());
 
     for arguments in [
+        &["apm", "reconcile", "--system", "--from", "desired.toml"][..],
         &["apm", "install", "--system", "--from", "desired.toml"][..],
         &["apm", "install", "--system", "aos", "--image", "raw"][..],
         &["apm", "upgrade", "--system", "--reboot"][..],
@@ -176,7 +177,7 @@ fn system_dispatch_child() {
             .join("desired.toml");
         aos_package::run(
             &parse(&[
-                "reconcile",
+                "apply",
                 "--system",
                 "--from",
                 desired.to_str().expect("path"),

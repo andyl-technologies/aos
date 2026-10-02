@@ -427,7 +427,7 @@ in {
         if [ -e /run/aos/manifest.json ]; then
           exit 0
         fi
-        AOS_EXPOSE_START_NO_WAIT=1 ${pkgs.aos.apm}/bin/apm reconcile --system --from /etc/aos/packages.d/desired.toml --yes
+        AOS_EXPOSE_START_NO_WAIT=1 ${pkgs.aos.apm}/bin/apm apply --system --from /etc/aos/packages.d/desired.toml --yes
       '';
     };
 

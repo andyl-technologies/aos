@@ -505,7 +505,7 @@
 
       echo "==> Desired-set reconciliation removes omitted packages and orphan dependencies"
       printf 'packages = ["install-basic-tool"]\n' > /tmp/system-desired.toml
-      $APM reconcile --system --from /tmp/system-desired.toml --yes
+      $APM apply --system --from /tmp/system-desired.toml --yes
       assert_file_exists "$SYSTEM_PROFILE/meta/$BASIC_HASH.json" \
         "reconcile retains the desired package"
       if [ -e "$SYSTEM_PROFILE/meta/$WRAPPER_HASH.json" ] || \

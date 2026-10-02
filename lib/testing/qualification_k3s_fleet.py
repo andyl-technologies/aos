@@ -293,7 +293,7 @@ class FleetScenario:
         desired.write_text("packages = " + json.dumps(packages) + "\n")
         machine.copy_to(desired, "/run/qualification-k3s-desired.toml")
         machine.ssh(
-            "apm reconcile --system --from /run/qualification-k3s-desired.toml --yes", timeout=1800,
+            "apm apply --system --from /run/qualification-k3s-desired.toml --yes", timeout=1800,
         )
 
     def credential(self, machine, token):
