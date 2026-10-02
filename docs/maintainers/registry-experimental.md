@@ -221,7 +221,7 @@ aos-release-signer show
 ## Publish the first or a later edge release
 
 The prepared first-release profile uses
-`2026.9.0-dev.20260927.1`. For every later edge release, update
+`2026.10.0-dev.20261002.1`. For every later edge release, update
 `aos.system.version` in the experimental profile to the next calendar SemVer
 `YYYY.M.P-dev.YYYYMMDD.N` through the reviewed source-update workflow before
 building. That value is the disk version and the OCI signed release identity;
@@ -229,7 +229,7 @@ the `aos` package version remains separate provenance.
 
 Before freezing the epoch-one public `.1` plan, create and retain the
 [non-public qualification predecessor](canonical-releases.md#create-a-first-qualification-predecessor)
-at `2026.9.0-dev.20260917.0`. Its protected source revision carries the `.0`
+at `2026.10.0-dev.20261002.0`. Its protected source revision carries the `.0`
 experimental profile and uses the reserved snapshot release id and source tag. After
 offline verification, advance the profile to `.1` in a later reviewed protected
 source revision.
@@ -283,7 +283,7 @@ exact prepared version:
 
 ```sh
 aos maintain release new --registry andyl/experimental \
-  --version 2026.9.0-dev.20260917.1 --images images.json \
+  --version 2026.10.0-dev.20261002.1 --images images.json \
   --first-release \
   --source-registry ~/.local/share/apm/registries/andyl-experimental
 ```

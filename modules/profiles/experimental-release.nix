@@ -13,7 +13,7 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
-    aos.system.version = "2026.10.0-dev.20261002.0";
+    aos.system.version = "2026.10.0-dev.20261002.1";
 
     aos.release = {
       enabled = true;
