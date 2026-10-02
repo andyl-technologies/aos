@@ -57,6 +57,10 @@
     }
     // lib.optionalAttrs (resolutionLock != null) {inherit resolutionLock;};
   buildPackages = pkgs.buildPackages;
+  writeArtifact = lib.build.writeArtifact {
+    inherit (buildPackages) bash coreutils;
+    system = buildPackages.stdenv.buildPlatform.system;
+  };
   libraryClosure = (lib.build.closureInfo {pkgs = buildPackages;}) {
     rootPaths = [library];
     pname = "aos-evaluation-library-identity";
@@ -64,13 +68,12 @@
   # Early projections need the original module sources and catalog identities,
   # but do not install or execute the host payloads. Full deployment descriptors
   # retain those payloads; only the early projection opts into source retention.
-  template = buildPackages.writeTextFile {
+  template = writeArtifact {
     name = "aos-native-evaluation-template";
     destination = "/template.json";
     text = builtins.toJSON descriptor;
   };
-  artifact = pkgs.runCommand "aos-native-evaluation-inputs" {} ''
-    rmdir "$out"
+  artifact = lib.build.runArtifact {pkgs = buildPackages;} "aos-native-evaluation-inputs" {} ''
     library_hash=$(${buildPackages.jq}/bin/jq -er \
       --arg library ${lib.escapeShellArg (builtins.toString library)} \
       '.paths[] | select(.path == $library) | .narHash' ${libraryClosure}/inventory.json)

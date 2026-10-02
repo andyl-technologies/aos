@@ -120,7 +120,7 @@
       lib.build.evaluationInput {
         inherit lib pkgs packages scope system configuration runtimeConfiguration osRelease;
       };
-  profileTemplate = buildPackages.writeTextFile {
+  profileTemplate = writeArtifact {
     name = "aos-image-installed-template";
     destination = "/template.json";
     text = builtins.toJSON profileRecords;
@@ -135,13 +135,18 @@
     graphInputs ++ builtins.map (artifact: artifact.path) resolved.artifacts
   );
   buildPackages = pkgs.buildPackages;
+  runArtifact = lib.build.runArtifact {pkgs = buildPackages;};
+  writeArtifact = lib.build.writeArtifact {
+    inherit (buildPackages) bash coreutils;
+    system = buildPackages.stdenv.buildPlatform.system;
+  };
   closureInfo = (lib.build.closureInfo {pkgs = buildPackages;}) {
     rootPaths = inputRoots;
     pname = "aos-image-admission-closure";
   };
   # Nix exports base32 hashes; the authenticated native protocol uses SHA256
   # hex identities. Keep conversion in the source-built Nix implementation.
-  normalizedInventory = buildPackages.runCommand "aos-native-admission-inventory" {} ''
+  normalizedInventory = runArtifact "aos-native-admission-inventory" {} ''
     mkdir -p "$out"
     ${buildPackages.jq}/bin/jq -c '.paths[]' ${closureInfo}/inventory.json |
     while IFS= read -r entry; do
@@ -154,8 +159,7 @@
     done > paths.jsonl
     ${buildPackages.jq}/bin/jq -cs '{paths:.}' paths.jsonl > "$out/inventory.json"
   '';
-  receipt = buildPackages.runCommand "aos-image-admission" {} ''
-    rmdir "$out"
+  receipt = runArtifact "aos-image-admission" {} ''
     ${buildPackages.jq}/bin/jq -c '
       {schema:"aos.package.admission",roots:[.paths[] | .path as $root | {
         storePath:.path,narHash:.narHash,narSize:.narSize,
@@ -165,12 +169,12 @@
   '';
   # The authenticated receipt root is its document. Its expected
   # digest is a separate image-owned artifact, avoiding receipt self-identity.
-  admissionDigest = buildPackages.runCommand "aos-image-admission-digest" {} ''
+  admissionDigest = runArtifact "aos-image-admission-digest" {} ''
     mkdir -p "$out"
     digest=$(${buildPackages.coreutils}/bin/sha256sum ${receipt})
     printf 'sha256:%s\n' "''${digest%% *}" > "$out/admission-sha256"
   '';
-  installed = buildPackages.runCommand "aos-image-installed" {} ''
+  installed = runArtifact "aos-image-installed" {} ''
     mkdir -p "$out"
     ${buildPackages.jq}/bin/jq -c '.[] | .apm.deployment, (.apm.module_documentation // empty), (.apm.qualification // empty)' ${profileTemplate}/template.json |
     while IFS= read -r encoded; do
@@ -226,12 +230,12 @@
     packages = serializedResolved.modules;
     inputs = builtins.map builtins.toString (lib.uniqueBy builtins.toString ([receipt] ++ graphInputs));
   };
-  transactionFile = pkgs.writeTextFile {
+  transactionFile = writeArtifact {
     name = "aos-image-transaction";
     destination = "/transaction.json";
     text = builtins.toJSON transaction;
   };
-  packagesFile = pkgs.writeTextFile {
+  packagesFile = writeArtifact {
     name = "aos-image-packages";
     destination = "/packages.json";
     text = builtins.toJSON serializedResolved;
@@ -247,27 +251,25 @@
 in
   assert compatibility.checkSeeds packages;
   assert compatibility.checkOsRequirements (compatibility.osRequirements packages) osRelease;
-    (pkgs.runCommand "aos-${lib.concatStringsSep "-" scope}-deployment" {
-        passthru = metadata;
-      } ''
-        # Validate the complete composed transaction at the same boundary used
-        # by runtime activation, before publishing a bootable bundle.
-        ${buildPackages.jq}/bin/jq -n \
-          --slurpfile packages ${packagesFile}/packages.json \
-          --slurpfile transaction ${transactionFile}/transaction.json \
-          '{packages: $packages[0], transaction: $transaction[0]}' > check-input.json
-        ${buildPackages.aos-deployment-check}/bin/aos-deployment-check < check-input.json
+    (runArtifact "aos-${lib.concatStringsSep "-" scope}-deployment" {} ''
+      # Validate the complete composed transaction at the same boundary used
+      # by runtime activation, before publishing a bootable bundle.
+      ${buildPackages.jq}/bin/jq -n \
+        --slurpfile packages ${packagesFile}/packages.json \
+        --slurpfile transaction ${transactionFile}/transaction.json \
+        '{packages: $packages[0], transaction: $transaction[0]}' > check-input.json
+      ${buildPackages.aos-deployment-check}/bin/aos-deployment-check < check-input.json
 
-        mkdir -p "$out"
-        ln -s ${transactionFile}/transaction.json "$out/transaction.json"
-        ln -s ${packagesFile}/packages.json "$out/packages.json"
-        ln -s ${receipt} "$out/admission.json"
-        ln -s ${admissionDigest}/admission-sha256 "$out/admission-sha256"
-        ln -s ${sourceLibrary} "$out/module-library"
-        ln -s ${closureInfo}/registration "$out/registration"
-        ${lib.optionalString withProfileRecords ''
-          ln -s ${installed}/installed.json "$out/installed.json"
-        ''}
-        ln -s ${evaluationFile} "$out/evaluation.json"
-      '')
+      mkdir -p "$out"
+      ln -s ${transactionFile}/transaction.json "$out/transaction.json"
+      ln -s ${packagesFile}/packages.json "$out/packages.json"
+      ln -s ${receipt} "$out/admission.json"
+      ln -s ${admissionDigest}/admission-sha256 "$out/admission-sha256"
+      ln -s ${sourceLibrary} "$out/module-library"
+      ln -s ${closureInfo}/registration "$out/registration"
+      ${lib.optionalString withProfileRecords ''
+        ln -s ${installed}/installed.json "$out/installed.json"
+      ''}
+      ln -s ${evaluationFile} "$out/evaluation.json"
+    '')
     // metadata

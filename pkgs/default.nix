@@ -147,7 +147,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   # Compiler inputs can make inert catalog locators become scanned references.
   # Keep these builders limited to text tools; explicit text contexts still
   # retain module sources and qualification-selected payloads normally.
-  artifactBuilders.writeTextFile = import ./build-support/_artifact-text.nix {
+  artifactBuilders.writeTextFile = lib.build.writeArtifact {
     inherit (resolvedBuildPackages) bash coreutils;
     system = stdenv.buildPlatform.system;
   };

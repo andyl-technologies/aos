@@ -225,6 +225,9 @@
       }
     );
   build = {
+    runArtifact = import ./build/run-artifact.nix;
+    writeArtifact = import ./build/artifact-text.nix;
+
     evaluationInput = args:
       import ./build/evaluation-input.nix (args // {lib = finalLib;});
 

@@ -32,7 +32,7 @@
     src = null;
     module = ../effects/package-interface;
     moduleDeps = [schema];
-    runtimeDeps = [dependency];
+    runtimeDeps = [dependency pkgs.binutils];
     outputs = ["out" "unused"];
     phases = [
       {
@@ -57,6 +57,11 @@
   inventory = root: (lib.build.closureInfo {inherit pkgs;}) {rootPaths = [root];};
   fullInventory = inventory full;
   projectionInventory = inventory projection;
+  capsule = import ../../pkgs/boot/_aos-host-evaluation-input/build.nix {
+    inherit pkgs;
+    evaluationInput = projection;
+  };
+  capsuleInventory = inventory capsule;
   bundle = selected: consumeAvailable: let
     evaluated = lib.evalPackageModules {
       packages = [selected];
@@ -64,7 +69,7 @@
       modules = lib.optional consumeAvailable {
         aos.abilities.echo.operations.run = {
           handler.program = selected;
-          effects.retained.input.message = "${package.unused}/marker:${dependency}/marker";
+          effects.retained.input.message = "${package.unused}/marker:${dependency}/marker:${pkgs.binutils}/marker";
         };
       };
     };
@@ -81,7 +86,7 @@
   primaryBundleInventory = inventory primaryBundle;
   alternateBundleInventory = inventory alternateBundle;
   consumedBundleInventory = inventory consumedBundle;
-  artifactText = import ../../pkgs/build-support/_artifact-text.nix {
+  artifactText = lib.build.writeArtifact {
     inherit (pkgs.buildPackages or pkgs) bash coreutils;
     system = pkgs.stdenv.buildPlatform.system;
   };
@@ -114,7 +119,7 @@ in
     pname = "native-projection-input-check";
     version = "0";
     src = null;
-    buildDeps = [pkgs.jq fullInventory projectionInventory primaryBundleInventory alternateBundleInventory consumedBundleInventory metadataCompanionInventory selectedCompanionInventory glibcToolsEnvelopeInventory];
+    buildDeps = [pkgs.jq fullInventory projectionInventory capsuleInventory primaryBundleInventory alternateBundleInventory consumedBundleInventory metadataCompanionInventory selectedCompanionInventory glibcToolsEnvelopeInventory];
     phases = [
       {
         name = "check";
@@ -166,6 +171,25 @@ in
             '.artifacts[0].outputs.unused == $alternate
               and any(.packages[]; .artifacts.dependencies."native-projection-available-dependency".path == $dependency)' \
             ${primaryBundle}/transaction.json >/dev/null
+          # Compiler-backed JSON writers used to retain this real build tool
+          # merely because its inert catalog path was scanner-visible.
+          for inventory in \
+            ${fullInventory}/inventory.json \
+            ${projectionInventory}/inventory.json \
+            ${primaryBundleInventory}/inventory.json \
+            ${alternateBundleInventory}/inventory.json \
+            ${capsuleInventory}/inventory.json; do
+            ${pkgs.jq}/bin/jq -e --arg tool ${lib.escapeShellArg (toString pkgs.binutils)} \
+              'all(.paths[]; .path != $tool)' "$inventory" >/dev/null
+          done
+          ${pkgs.jq}/bin/jq -e --arg tool ${lib.escapeShellArg (toString pkgs.binutils)} \
+            'any(.paths[]; .path == $tool)' \
+            ${consumedBundleInventory}/inventory.json >/dev/null
+          ${pkgs.jq}/bin/jq -e --arg tool ${lib.escapeShellArg (toString pkgs.binutils)} \
+            'any(.packages[]; .artifacts.dependencies.binutils.path == $tool)' \
+            ${primaryBundle}/transaction.json >/dev/null
+          test -L ${capsule}/evaluation.json
+          cmp ${capsule}/evaluation.json ${projection}
           ${pkgs.jq}/bin/jq -e --arg dev ${lib.escapeShellArg (toString pkgs.glibc.dev)} \
             --arg static ${lib.escapeShellArg (toString pkgs.glibc.static)} \
             --arg source ${lib.escapeShellArg (toString custodySource)} \
