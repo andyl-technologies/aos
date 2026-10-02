@@ -112,7 +112,7 @@ Ordinary machine-wide packages are reconciled from an authoritative desired
 file. Create `desired.toml`:
 
 ```toml
-packages = ["nginx", "curl"]
+packages = ["tailscale"]
 ```
 
 Preview and apply the complete set:
@@ -128,9 +128,14 @@ metadata. When applying additions, reconciliation also attempts an update and
 falls back to cached metadata with a warning if that update fails. A change
 with no additions does not refresh metadata.
 
+Keep every explicit package you want in this file when adding a workload.
+After installing its native module, configure the service with
+[host policy](host-nix.md#understand-the-runtime-boundary); installing a payload
+does not substitute for reviewing and enabling its service configuration.
+
 The list is declarative. Explicit packages omitted from the next file are
 removed during reconciliation, including packages made unreachable by that
-change. To remove `nginx`, delete it from `packages` and run the same command
+change. To remove `tailscale`, delete it from `packages` and run the same command
 again. There is no `apm remove --system` command.
 
 The desired format can also carry package configuration and credential input.

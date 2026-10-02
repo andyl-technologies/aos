@@ -1,10 +1,10 @@
-##! Shared full-host image budgets for server and edge variants.
+##! Bounded bootable-base image budgets for server and edge variants.
 {lib, ...}: {
   # OCI images use a separate package slice and closure budget.
   aos.image.budgets.maxRootMiB = lib.mkDefault 960;
-  # Current host payloads and retained qualification companions exceed 2643
-  # MiB before the initrd; the activation fixture measures 2861 MiB in total.
-  aos.image.budgets.maxRuntimeClosureMiB = lib.mkDefault 3072;
-  aos.image.budgets.maxDevelopmentPayloadMiB = lib.mkDefault 80;
+  # The source-built minimal base measures 1516 MiB including native initrd
+  # and qualification companions. Workload fixtures set their own allowances.
+  aos.image.budgets.maxRuntimeClosureMiB = lib.mkDefault 1792;
+  aos.image.budgets.maxDevelopmentPayloadMiB = lib.mkDefault 48;
   aos.image.budgets.maxDownloadMiB = lib.mkDefault 1280;
 }

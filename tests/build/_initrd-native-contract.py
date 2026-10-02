@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import sys
 
@@ -114,6 +115,25 @@ def check_bundle(assembly, stage, tree, directory, store):
     require(documents["admission-sha256"].decode().strip() == digest, "admission bytes changed")
 
 
+def check_minimal_base(root):
+    """Reject workload payloads in the actual production root filesystem."""
+    optional_payload = re.compile(
+        r"^[0-9a-z]{32}-(?:tailscale|docker|docker-engine|docker-buildx|docker-compose|"
+        r"containerd|qemu|libvirt|aos-hub|bind|dnsmasq)-[0-9]"
+    )
+    store = root / "nix.lower/store"
+    unexpected = sorted(entry.name for entry in store.iterdir() if optional_payload.match(entry.name))
+    require(not unexpected, "optional workload payloads retained in base: " + ", ".join(unexpected))
+
+    installed = json.loads(confined(root, "usr/lib/aos/host/deployment/installed.json", "nix.lower/store").read_bytes())
+    apm_roots = [record for record in installed if record["apm"]["name"] == "aos"]
+    require(apm_roots, "base lacks the APM package")
+    require(
+        any((store / Path(record["store_path"]).name / "bin/apm").is_file() for record in apm_roots),
+        "base lacks the installed APM executable",
+    )
+
+
 def main():
     assembly, contract_file, initrd, root = map(Path, sys.argv[1:5])
     contract = json.loads(contract_file.read_bytes())
@@ -124,6 +144,7 @@ def main():
     check_rejected_unit_mutations(initrd, contract)
     check_bundle(assembly, "initrd", initrd, "lib/aos/initrd/deployment", "nix/store")
     check_bundle(assembly, "host", root, "usr/lib/aos/host/deployment", "nix.lower/store")
+    check_minimal_base(root)
     # A runtime retained through a package dependency need not be a direct
     # closure root; verify the actual public executable in the archive.
     runtime = sys.argv[5]

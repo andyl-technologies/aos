@@ -644,13 +644,16 @@ last fully evaluated host input.
 
 ## Understand the runtime boundary
 
-The full module evaluator and activation pipeline can apply a file such as:
+Optional workload packages are installed separately from the bootable server
+base. First install the package through the
+[machine-wide APM workflow](packages.md#manage-machine-wide-packages).
+Once its authenticated native module is admitted, host policy can configure
+and enable its service. For example, after installing `tailscale`, create
+`tailscale.nix`:
 
 ```nix
 {
-  aos.networking.hostName = "web-01";
-  aos.services.ssh.port = 2222;
-  aos.apm.desiredPackages = ["nginx"];
+  aos.services.tailscale.enable = true;
 }
 ```
 
@@ -658,25 +661,26 @@ The change becomes live only after `aos-config.target` completes. The evaluator
 manifest alone is intermediate evidence; confirm the active generation and
 activation record as shown above.
 
-Desired packages are part of that same transaction. AOS pins each selected
-payload and rendered unit artifact to authenticated registry NAR identities,
-places the unit links and package-target preset in the candidate `/etc`, and
-enables the package target only after the atomic swap. Removing a package from
-`aos.apm.desiredPackages` removes that enablement edge and stops its target;
-image-bundled package units remain present but inert when they are not selected.
-
-For an interactive change, preview and apply the same file with:
+For an interactive change, add the module to the operator worktree, preview
+the complete transaction, then apply it:
 
 ```sh
-apm switch --from ./host.nix --dry-run
-apm switch --from ./host.nix
+apm config add ./tailscale.nix --name tailscale
+apm config apply --dry-run
+apm config apply
 ```
 
-That selects a transaction input; it does not rewrite the metadata source or
-the durable last-known-good metadata cache. Update the authoritative delivery
-channel before reboot. On an image using signed trust, a standalone file also
-needs its sibling `.sig`, `--require-signed-host-nix`, and the applicable
-`--trusted-config-keys-dir`.
+Use `apm config replace tailscale ./tailscale.nix` for subsequent changes.
+`apm switch` also applies the complete operator worktree. These commands retain
+immutable runtime module inputs; they do not rewrite the metadata delivery
+source. The same service configuration can be included in boot-delivered
+`host.nix` when its package module is already admitted.
+
+Runtime configuration applies to installed packages. A package name in
+`host.nix` does not currently install a new registry root automatically;
+`aos.apm.desiredPackages` is not consumed by the native runtime. Use APM to
+install new roots before enabling package-specific options. Disabling a service
+and removing its package are separate reviewed changes.
 
 Cloud-supplied public SSH keys are normalized into the typed
 `host.facts.ssh_authorized_keys` input. They are data, not implicit

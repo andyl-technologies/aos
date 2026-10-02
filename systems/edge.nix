@@ -42,5 +42,4 @@
   # host.nix assignment, or aos.roles.edge's mkDefault, overrides it without
   # rebuilding the image.
   aos.activation.stages.host.configuration = ["${pkgs.aos-host-policy.module}/baseline/edge.nix"];
-  aos.image.hostConfigClosures = [pkgs.chrony pkgs.openssh];
 }
