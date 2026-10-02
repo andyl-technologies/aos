@@ -56,10 +56,9 @@ in
     reference_binary="$CARGO_TARGET_DIR/debug/examples/reference_blake3"
     python3 ../tests/terrane/evidence_vectors.py --self-check \
       --blake3-bin "$reference_binary" > "$out/reference-result"
-    python3 ../tests/terrane/evidence_vectors.py --emit \
-      --blake3-bin "$reference_binary" > ../tests/terrane/evidence-reference.md
-    python3 ../tests/terrane/evidence_vectors.py --check ../tests/terrane/evidence-reference.md \
+    python3 ../tests/terrane/evidence_vectors.py --check ../docs/rfcs/0024-terrane/spec/reference/golden-vectors.md \
       --blake3-bin "$reference_binary" >> "$out/reference-result"
+    cp ../docs/rfcs/0024-terrane/spec/reference/golden-vectors.md ../tests/terrane/evidence-reference.md
     cp ../tests/terrane/evidence-reference.md "$out/reference.md"
     cargo fmt --all -- --check
     ${builtins.concatStringsSep "\n" (map runTest tests)}
