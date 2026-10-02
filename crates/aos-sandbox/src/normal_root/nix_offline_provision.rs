@@ -424,11 +424,16 @@ impl OfflineNixPrepareStartupV3 {
         retained_profile
             .revalidate()
             .map_err(|_| NormalRootStartupErrorV1::Image)?;
-        aos_sandbox_linux::protected_file::read_exact_positioned(
+        aos_sandbox_linux::protected_file::read_exact_positioned_retaining_cause(
             profile_original,
             &mut self.profile_bytes,
         )
-        .map_err(Error::Read)?;
+        .map_err(|failure| match failure {
+            aos_sandbox_linux::protected_file::ExactReadFailure::Io(errno) => {
+                Error::Io(io::Error::from_raw_os_error(errno.raw_os_error()))
+            }
+            failure => Error::Read(failure.legacy_classification()),
+        })?;
         retained_profile
             .revalidate()
             .map_err(|_| NormalRootStartupErrorV1::Image)?;
