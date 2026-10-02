@@ -24,6 +24,7 @@
   pkg-config,
   protobuf,
   dbus,
+  erofs-utils,
   sbsigntools,
   systemd,
   systemd-measure,
@@ -161,6 +162,15 @@
     LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
     PROTOC = "${buildProtobuf}/bin/protoc";
   };
+  # Native handler tests bind the same programs as their package recipe.
+  # Only test derivations retain the shipped runtime: adding that dependency
+  # to the ordinary CLI build would make its own output a build prerequisite.
+  testCargoEnv =
+    cargoEnv
+    // (import ../../boot/_aos-configuration-lower/cargo-env.nix {
+      inherit erofs-utils util-linux;
+      packageRuntime = (callPackage ./aos.nix {withTests = false;}).packageRuntime;
+    });
   cargoArtifacts = mkCargoArtifacts {
     pname =
       if withTests
@@ -179,7 +189,10 @@
       ++ lib.optionals withTests [
         "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${applicationTestFlags}"
       ];
-    inherit cargoEnv;
+    cargoEnv =
+      if withTests
+      then testCargoEnv
+      else cargoEnv;
     buildDeps = [buildPerl buildPkgConfig buildProtobuf buildCmake];
     runtimeDeps = [openssl sqlite libssh2 zlib];
   };
@@ -189,7 +202,13 @@
   # This gives a fast compile gate that does not wait on the full suite.
   testTargets = mkAosCargoPackage {
     pname = "aos-test-targets";
-    inherit version cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
+    inherit version cargoDeps;
+    cargoArtifacts =
+      if withTests
+      then cargoArtifacts
+      else (callPackage ./aos.nix {withTests = true;}).passthru.cargoArtifacts;
+    cargoArtifactContract = cargoArtifactContract // {family = "aos-native-release-and-test";};
+    cargoEnv = testCargoEnv;
     aosWorkspaceIntegrationInputs = true;
     cargoRoot = "crates";
     cargoBuildCommands = [
@@ -304,7 +323,11 @@ in
 
     cargoBuildCommands = releaseBuildCommands;
 
-    inherit cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
+    inherit cargoDeps cargoArtifacts cargoArtifactContract;
+    cargoEnv =
+      if withTests
+      then testCargoEnv
+      else cargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
     # The CI profile retains failed output in a machine-readable report. The
@@ -504,7 +527,7 @@ in
     # This package owns the AOS application and package-manager test surface.
     # Keep repository-aware checks out of the shipped CLI derivation so edits
     # to unrelated Nix sources do not change the runtime package identity.
-    cargoTestFlags = applicationTestFlags;
+    cargoTestFlags = lib.optionalString withTests applicationTestFlags;
     # Run the workspace test suite in the debug profile while the binary itself
     # ships release (installed from target/release). The registry-hub's
     # integration tests stand up loopback HTTP servers and register

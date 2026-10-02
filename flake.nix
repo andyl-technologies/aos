@@ -287,6 +287,10 @@
         devLauncher = aos.pkgs.writeShellScriptBin "aos-dev" ''
           exec ${aos.pkgs.bash}/bin/bash "''${AOS_DEV_ROOT:?Enter the AOS dev shell first}/tools/dev/aos-dev" "$@"
         '';
+        configurationLowerCargoEnv = import ./pkgs/boot/_aos-configuration-lower/cargo-env.nix {
+          inherit (aos.pkgs) erofs-utils util-linux;
+          packageRuntime = aos.pkgs.aos.packageRuntime;
+        };
         cargoBuildPackages = [
           aos.pkgs.rust
           aos.pkgs.rust.dev
@@ -322,6 +326,7 @@
           binPath = builtins.concatStringsSep ":" (map (p: "${p}/bin") ([devLauncher aos.pkgs.bash aos.pkgs.nix aos.pkgs.alejandra aos.pkgs.acl] ++ packages));
         in
           builtins.derivation {
+            inherit (configurationLowerCargoEnv) AOS_MKFS_EROFS AOS_FSCK_EROFS AOS_MOUNT AOS_UMOUNT AOS_PACKAGE_RUNTIME;
             inherit name system;
             outputs = ["out"];
             builder = "${aos.pkgs.bash}/bin/bash";
