@@ -1,4 +1,4 @@
-##! Manual prepare-only offline Nix candidates; no TPM or runtime installation.
+##! Manual offline Nix candidates and static inspection; no TPM or installation.
 {
   config,
   lib,
@@ -10,6 +10,7 @@
   selected = config.systemd.services.aos-sandbox-nix-floor-provision;
   service = selected.serviceConfig;
   program = "${pkgs.aos-sandboxd}/bin/aos-sandbox-nix-floor-provision";
+  command = "${program} ${cfg.command}";
   systemdLib = import ../../lib/modules/systemd/lib.nix {inherit lib pkgs;};
   delivery = [
     "node-id:/etc/credstore/node-id"
@@ -46,6 +47,12 @@ in {
   options.aos.sandbox.nixOfflinePrepare.enable = lib.mkEnableOption
     "the disabled-by-default manual prepare-keys unit, without TPM or runtime installation";
 
+  options.aos.sandbox.nixOfflinePrepare.command = lib.mkOption {
+    type = lib.types.enum ["prepare-keys" "inspect-approved-job"];
+    default = "prepare-keys";
+    description = "Select the manual offline command; inspection authenticates static DATA only.";
+  };
+
   config = lib.mkIf cfg.enable {
     assertions = [
       {
@@ -55,7 +62,7 @@ in {
       }
       {
         assertion = selected.wantedBy == [] && selected.requiredBy == []
-          && (service.ExecStart or null) == "${program} prepare-keys"
+          && (service.ExecStart or null) == command
           && (service.ExecStartPre or []) == [] && (service.ExecStartPost or []) == []
           && (service.User or null) == "root" && (service.Group or null) == "root"
           && (service.SupplementaryGroups or null) == ""
@@ -97,7 +104,7 @@ in {
 
       serviceConfig = {
         Type = "exec";
-        ExecStart = "${program} prepare-keys";
+        ExecStart = command;
         Restart = "no";
         User = "root";
         Group = "root";
