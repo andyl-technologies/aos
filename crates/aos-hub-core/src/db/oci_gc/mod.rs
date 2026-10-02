@@ -18,6 +18,7 @@ mod purge_plan;
 mod read;
 mod remediation;
 mod repair_worker;
+mod retirement;
 mod worker;
 
 #[cfg(test)]
@@ -137,6 +138,12 @@ pub struct OciGcGenerationRecord {
     pub last_error: Option<String>,
     /// Optimistic-concurrency version.
     pub resource_version: i64,
+    /// Whether the run retires the whole catalog ahead of registry deletion.
+    ///
+    /// A retiring run treats signed-release, tag, and tag-history roots as
+    /// retired and collects without grace, so apply revalidates under the same
+    /// reviewed mode.
+    pub retire_registry: bool,
 }
 
 /// One durable reason a plan failed closed.
