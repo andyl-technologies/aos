@@ -540,6 +540,16 @@ impl Database {
             .unchecked(),
             delete("cache_retention_refreshes", registry_id),
             delete("cache_retention_subscriptions", registry_id),
+            // Delivery setup workflows only record progress toward instance
+            // endpoints and gateways, which outlive the registry; they do not
+            // cascade, so retire them with the registry they were set up for.
+            Statement::new(
+                "DELETE FROM delivery_workflow_resumptions WHERE workflow_id IN (
+                   SELECT workflow_id FROM delivery_workflows WHERE registry_id = ?1)",
+                vals![registry_id],
+            )
+            .unchecked(),
+            delete("delivery_workflows", registry_id),
             delete("surface_write_authorities", registry_id),
             delete("surface_placements", registry_id),
             Statement::new(
