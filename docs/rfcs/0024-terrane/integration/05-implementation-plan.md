@@ -162,6 +162,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `chunk-codec` gate now requires two exact guarded-reader cases for all
   registered dictionary codecs and complete dependency validation before
   exposing plaintext; their implementation remains on its task branch.
+  Shared test-only native fixtures are crate-visible so those cases can reuse
+  actual protected initialization, publication and live ACL changes. The
+  existing immutable-read/live-policy test and mandatory formatting pass;
+  strict native Clippy still reports unused incomplete T1 implementations.
   — satisfies
   OBJ-11 to OBJ-18, CDC-1 to CDC-20;
   `checks.terrane.gates.object-identity-from-manifest`,

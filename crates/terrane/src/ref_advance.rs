@@ -17,10 +17,10 @@ mod prepared;
 mod watch;
 
 #[cfg(all(test, feature = "tokio"))]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(all(test, feature = "tokio", unix))]
-mod native_fixture;
+pub(crate) mod native_fixture;
 
 #[cfg(all(test, feature = "tokio", unix))]
 mod consumed_tests;

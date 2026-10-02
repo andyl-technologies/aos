@@ -17,7 +17,8 @@ use terrane_core::refs::{Commit, CommitSource, Locality, PrincipalKind, ProfileP
 use terrane_core::tree_builder::Tree;
 use terrane_core::tree_format::{Property, TreeUse};
 
-pub(super) struct Validator;
+/// Validates the canonical metadata accepted by the shared native test bucket.
+pub(crate) struct Validator;
 
 impl ContentValidator for Validator {
     fn validate_meta(&self, upload: &MetaUpload<'_>) -> Result<(), StoreFailure> {
@@ -60,7 +61,11 @@ fn public() -> [u8; 32] {
     key("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a")
 }
 
-pub(super) fn token() -> Vec<u8> {
+/// Issues the shared fixture's writer token with its registered test key.
+///
+/// # Panics
+/// Panics when the fixed test key, grants or token cannot be encoded.
+pub(crate) fn token() -> Vec<u8> {
     Token::issue(
         Authority {
             issuer: "test".into(),
@@ -120,7 +125,11 @@ pub(super) async fn config(root: std::path::PathBuf) -> FileBucketConfig {
     }
 }
 
-pub(super) async fn fixture() -> super::native_fixture::NativeFixture<TokioLocalFs> {
+/// Opens a fresh native fixture with production protected retention initialized.
+///
+/// # Panics
+/// Panics when test storage or protected native authority cannot be initialized.
+pub(crate) async fn fixture() -> super::native_fixture::NativeFixture<TokioLocalFs> {
     super::native_fixture::NativeFixture::initialize(raw_fixture().await).await
 }
 
@@ -343,7 +352,11 @@ pub(super) fn request(parents: Vec<[u8; 32]>) -> CommitRequest {
     request_acl(parents, 31)
 }
 
-pub(super) fn request_file(parents: Vec<[u8; 32]>, plaintext: &[u8]) -> CommitRequest {
+/// Builds the shared file proposal with the fixture's full writer ACL.
+///
+/// # Panics
+/// Panics when the canonical fixture tree or content identity cannot be built.
+pub(crate) fn request_file(parents: Vec<[u8; 32]>, plaintext: &[u8]) -> CommitRequest {
     request_file_acl(parents, plaintext, 31)
 }
 
@@ -351,7 +364,7 @@ pub(super) fn request_file(parents: Vec<[u8; 32]>, plaintext: &[u8]) -> CommitRe
 ///
 /// # Panics
 /// Panics when the canonical fixture tree or content identity cannot be built.
-pub(super) fn request_file_acl(
+pub(crate) fn request_file_acl(
     parents: Vec<[u8; 32]>,
     plaintext: &[u8],
     verbs: u8,

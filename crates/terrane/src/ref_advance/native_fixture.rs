@@ -20,7 +20,8 @@ use crate::{
 };
 use terrane_core::refs::{MergePolicy, RefRecord};
 
-pub(super) struct NativeFixture<F: LocalFs + BucketBinding> {
+/// Wraps the production native repository for shared guarded-publication tests.
+pub(crate) struct NativeFixture<F: LocalFs + BucketBinding> {
     repository: Repository<FileBucket<F, TokioClock, Validator>, TokioClock, F>,
 }
 
@@ -65,7 +66,7 @@ impl<F: LocalFs + BucketBinding + Sync + 'static> NativeFixture<F> {
     ///
     /// # Errors
     /// Preserves typed admission, retention, fencing and storage failures with sources.
-    pub(super) async fn advance(
+    pub(crate) async fn advance(
         &self,
         session: &mut WriterSession,
         request: CommitRequest,
