@@ -63,6 +63,9 @@ pub(super) struct Turn {
 pub(super) struct Receipt {
     pub turn: Turn,
     pub outcome: ExternalStageOutcome,
+    /// Actual acknowledged S3 closure version, never a derived guard version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_version: Option<String>,
 }
 
 impl Receipt {
@@ -72,6 +75,18 @@ impl Receipt {
             digest_string(&self.turn.dispatch_nonce),
             "invalid stage dispatch nonce"
         );
+        if let Some(version) = &self.provider_version {
+            ensure!(
+                aos_hub_core::storage_work::valid_provider_version(version)
+                    && version != "null"
+                    && matches!(
+                        self.outcome,
+                        ExternalStageOutcome::Closed { .. }
+                            | ExternalStageOutcome::EmptyClosed { .. }
+                    ),
+                "provider version requires a positive closure"
+            );
+        }
         let context = &self.turn.intent.context;
         match (&self.turn.intent.operation, &self.outcome) {
             (
@@ -288,6 +303,9 @@ pub(super) enum Reply {
         turn: Turn,
         floor: EpochLeaseFloor,
         source: Option<SourceProof>,
+        /// Same-journal positive source closure for this exact verification turn.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        closed: Option<Receipt>,
         #[serde(default)]
         direct_permission_expires_at: Option<WireInteger>,
     },

@@ -8,6 +8,24 @@ use crate::sigv4::{DirectPartCopySource, DirectSignedProviderRequest, PresignPar
 use super::S3Surface;
 
 impl S3Surface {
+    /// Signs a full read of the retained stage's strong ETag and actual optional version.
+    ///
+    /// # Errors
+    /// Returns an error for unsafe or public coordinates, malformed closure
+    /// metadata, expired credentials, excessive lifetime, or signing failure.
+    pub fn closed_stage_read_request(
+        &self,
+        path: &str,
+        etag: &str,
+        provider_version: Option<&str>,
+        now: i64,
+        maximum_ttl: u32,
+    ) -> Result<DirectSignedProviderRequest> {
+        self.with_direct_params(path, now, maximum_ttl, |parameters| {
+            crate::sigv4::presign_closed_stage_read(parameters, etag, provider_version, maximum_ttl)
+        })
+    }
+
     /// Signs one bounded immutable source range with exact version and If-Match.
     ///
     /// # Errors

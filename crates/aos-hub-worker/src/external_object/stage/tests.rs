@@ -453,7 +453,11 @@ impl Fixture {
     }
 
     fn terminal(&self, head: &Head, turn: Turn, outcome: Outcome) -> (Head, Receipt) {
-        let receipt = Receipt { turn, outcome };
+        let receipt = Receipt {
+            turn,
+            outcome,
+            provider_version: None,
+        };
         let next = state::terminal(head, &self.config, &receipt).unwrap();
         (next, receipt)
     }
@@ -1039,6 +1043,7 @@ async fn corrupted_pending_incarnation_rejects_before_terminal_replay() {
         .validate(&f.object, &f.context.scope(false).unwrap())
         .is_err());
     let receipt = Receipt {
+        provider_version: None,
         outcome: Outcome::EmptyClosed {
             etag: "\"empty\"".into(),
             guard_stamp: f.stamp(&turn),
@@ -1049,6 +1054,9 @@ async fn corrupted_pending_incarnation_rejects_before_terminal_replay() {
 }
 
 mod recovery;
+
+#[path = "tests/closed.rs"]
+mod closed;
 
 #[path = "tests/observation.rs"]
 mod observation;

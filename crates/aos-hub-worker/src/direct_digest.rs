@@ -164,10 +164,62 @@ pub(crate) async fn verify_response_observed(
     parts: &[DirectManifestPart],
     consumed: &dyn Fn(u64),
 ) -> Result<VerifiedStreamDigest> {
-    intent.validate()?;
     ensure!(
         response.status_code() == 200,
         "stage byte observation refused"
+    );
+    verify_reader_observed(response_reader(response)?, intent, parts, consumed).await
+}
+
+/// Attaches cancellation ownership without polling a returned native body.
+///
+/// Callers retain this owner before inspecting fallible response metadata. A
+/// rejected reader invokes native cancellation on drop; that invocation proves
+/// neither remote drain nor settlement of a physical mutation.
+///
+/// # Errors
+/// Returns an error when the response is not an empty body or a BYOB stream.
+pub(crate) fn response_reader(response: Response) -> Result<Option<Reader>> {
+    let (_, body) = response.into_parts();
+    match body {
+        ResponseBody::Stream(stream) => {
+            let stream: JsValue = stream.into();
+            match Reader::new(stream.clone()) {
+                Ok(reader) => Ok(Some(reader)),
+                Err(error) => {
+                    // Reader attachment can fail before it owns cancellation.
+                    // Refuse BYOB fallback, but cancel the original native body.
+                    if let Ok(value) = invoke(
+                        &stream,
+                        "cancel",
+                        &[JsValue::from_str("stage verification reader unavailable")],
+                    ) {
+                        consume_rejection(value);
+                    }
+                    Err(error)
+                }
+            }
+        }
+        ResponseBody::Empty => Ok(None),
+        _ => anyhow::bail!("stage body requires native stream"),
+    }
+}
+
+/// Verifies the exact stream whose cancellation owner was already attached.
+///
+/// # Errors
+/// Returns an error for invalid intent or manifest, unavailable native digest
+/// interfaces, failed input, or incorrect size, full SHA or part identity.
+pub(crate) async fn verify_reader_observed(
+    reader: Option<Reader>,
+    intent: &DirectUploadIntent,
+    parts: &[DirectManifestPart],
+    consumed: &dyn Fn(u64),
+) -> Result<VerifiedStreamDigest> {
+    intent.validate()?;
+    ensure!(
+        reader.is_some() || intent.byte_size.get() == 0,
+        "stage body requires native stream"
     );
     ensure!(
         parts.len() == intent.part_count()? as usize,
@@ -182,12 +234,6 @@ pub(crate) async fn verify_response_observed(
     }
 
     let full = Digest::new("SHA-256")?;
-    let (_, body) = response.into_parts();
-    let reader = match body {
-        ResponseBody::Stream(stream) => Some(Reader::new(stream.into())?),
-        ResponseBody::Empty if intent.byte_size.get() == 0 => None,
-        _ => anyhow::bail!("stage body requires native stream"),
-    };
     let mut counted = 0_u64;
     let mut part_index = 0_usize;
     let mut part_bytes = 0_u64;

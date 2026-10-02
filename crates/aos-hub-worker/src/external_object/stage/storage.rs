@@ -322,7 +322,11 @@ impl ExternalObjectGuard {
                     object.clock(),
                 )?;
                 if let Some((outcome, new_grants)) = metadata {
-                    let receipt = Receipt { turn, outcome };
+                    let receipt = Receipt {
+                        turn,
+                        outcome,
+                        provider_version: None,
+                    };
                     next = state::terminal(&next, &config, &receipt)?;
                     let session = next
                         .stage
@@ -362,6 +366,13 @@ impl ExternalObjectGuard {
                         },
                     );
                 }
+                let closed = if turn.intent.operation.immutable_read() {
+                    let closed = recovery_closed(&storage, &next).await?;
+                    state::verification_closure(&next, &config, &turn, &closed)?;
+                    Some(closed)
+                } else {
+                    None
+                };
                 let floor = next.floor.clone();
                 let source = next.stage.as_ref().and_then(|stage| stage.source.clone());
                 commit(&storage, prior, next, changes).await?;
@@ -369,6 +380,7 @@ impl ExternalObjectGuard {
                     turn,
                     floor,
                     source,
+                    closed,
                     direct_permission_expires_at,
                 })
             }

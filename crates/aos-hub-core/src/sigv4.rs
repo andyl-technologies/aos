@@ -77,6 +77,9 @@ impl std::fmt::Debug for PresignParams<'_> {
 mod direct;
 pub use direct::*;
 
+mod stage_read;
+pub use stage_read::presign_closed_stage_read;
+
 mod conditional_read;
 pub use conditional_read::presign_versioned_conditional_range;
 

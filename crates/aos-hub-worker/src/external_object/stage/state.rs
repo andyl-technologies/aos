@@ -464,6 +464,47 @@ pub(super) fn recovery_read(
     Ok(pending.clone())
 }
 
+/// Checks closure ownership against the newly admitted immutable read turn.
+pub(super) fn verification_closure(
+    head: &Head,
+    config: &Config,
+    turn: &Turn,
+    closed: &Receipt,
+) -> Result<()> {
+    super::closed::validate_projection(turn, closed)?;
+    let session = head
+        .stage
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("verification lost stage"))?;
+    session.validate(head, config)?;
+    session.admits(&turn.intent)?;
+    let reference = session
+        .closed
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("verification lost closure"))?;
+    ensure!(
+        !session.destination
+            && session.pending.as_ref() == Some(turn)
+            && session.context == turn.intent.context
+            && turn.expected_incarnation == head.incarnation
+            && reference.operation_id == closed.turn.intent.operation_id
+            && reference.digest == digest(closed)?,
+        "verification changed retained closure ownership"
+    );
+    if let Operation::CompleteStage {
+        upload_id,
+        manifest,
+    } = &closed.turn.intent.operation
+    {
+        ensure!(
+            session.upload_id.as_ref() == Some(upload_id)
+                && session.manifest.as_ref() == Some(manifest),
+            "verification changed frozen provider source"
+        );
+    }
+    Ok(())
+}
+
 pub(super) fn begin(
     head: &Head,
     object: &ObjectConfig,

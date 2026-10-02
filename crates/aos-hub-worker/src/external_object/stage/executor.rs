@@ -8,7 +8,7 @@ use anyhow::{ensure, Result};
 use aos_hub_core::direct_upload::{
     canonical_manifest_digest, DirectCredentialRevision, DirectManifestPart,
 };
-use aos_hub_core::s3surface::{self, Method as S3Method, S3Surface};
+use aos_hub_core::s3surface::{self, S3Surface};
 use aos_hub_core::storage_authority::{
     external_object::stage::{
         ExternalStageAdmissionMode, ExternalStageOperation as Action,
@@ -192,14 +192,15 @@ pub(crate) async fn execute_stage_observed(
         },
     )
     .await?;
-    let (turn, floor, source, direct_permission_expires_at) = match reply {
+    let (turn, floor, source, closed, direct_permission_expires_at) = match reply {
         Reply::Terminal { receipt } => return checked_result(&intent, &receipt),
         Reply::Dispatch {
             turn,
             floor,
             source,
+            closed,
             direct_permission_expires_at,
-        } => (turn, floor, source, direct_permission_expires_at),
+        } => (turn, floor, source, closed, direct_permission_expires_at),
         _ => anyhow::bail!("stage begin reply differs"),
     };
     ensure!(
@@ -210,6 +211,19 @@ pub(crate) async fn execute_stage_observed(
             && floor.executor_identity == object.executor_identity,
         "stage dispatch projection changed"
     );
+    if work.operation.immutable_read() {
+        super::closed::validate_projection(
+            &turn,
+            closed
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("verification closure absent"))?,
+        )?;
+    } else {
+        ensure!(
+            closed.is_none(),
+            "unrelated dispatch returned a source closure"
+        );
+    }
     let domain = config.domain(&work.context)?;
     ensure!(
         floor.authority == domain.write_cohort.authority,
@@ -259,7 +273,7 @@ pub(crate) async fn execute_stage_observed(
         now,
     )?;
     let relative = relative_key(&publication.snapshot.object_prefix, &scope.full_key)?;
-    let outcome = dispatch(
+    let (outcome, provider_version) = dispatch(
         env,
         work,
         &object,
@@ -270,12 +284,17 @@ pub(crate) async fn execute_stage_observed(
         &turn,
         &floor,
         source.as_ref(),
+        closed.as_ref(),
         &parts,
         direct_permission_expires_at,
         before_dispatch,
     )
     .await?;
-    let receipt = Receipt { turn, outcome };
+    let receipt = Receipt {
+        turn,
+        outcome,
+        provider_version,
+    };
     receipt.validate()?;
     match call(
         env,
@@ -332,10 +351,11 @@ async fn dispatch(
     turn: &Turn,
     floor: &EpochLeaseFloor,
     source: Option<&SourceProof>,
+    closed: Option<&Receipt>,
     parts: &[DirectManifestPart],
     direct_permission_expires_at: Option<aos_hub_core::direct_upload::WireInteger>,
     before_dispatch: &dyn Fn(),
-) -> Result<Outcome> {
+) -> Result<(Outcome, Option<String>)> {
     let now = object.clock().observed_at;
     let domain = config.domain(&work.context)?;
     let headers = Headers::new();
@@ -381,10 +401,21 @@ async fn dispatch(
                 Method::Post,
             )
         }
-        Action::VerifyClosedStage { .. } => (
-            surface.object_url(S3Method::Get, relative, now)?,
-            Method::Get,
-        ),
+        Action::VerifyClosedStage { .. } => {
+            let closed = closed.ok_or_else(|| anyhow::anyhow!("verification closure absent"))?;
+            super::closed::validate_projection(turn, closed)?;
+            let signed = surface.closed_stage_read_request(
+                relative,
+                &super::closed::closure_etag(closed)?,
+                closed.provider_version.as_deref(),
+                now,
+                PROVIDER_URL_SECONDS,
+            )?;
+            for header in signed.required_headers {
+                headers.set(&header.name, &header.value)?;
+            }
+            (signed.url, Method::Get)
+        }
         Action::AbortStage { upload_id } | Action::AbortDestination { upload_id, .. } => (
             surface.multipart_url("abort", relative, Some(upload_id), None, now)?,
             Method::Delete,
@@ -495,7 +526,21 @@ async fn dispatch(
     before_dispatch();
     crate::direct_upload::provider_capacity::record_dispatch();
     let response = Fetch::Request(request).send().await?;
-    match &work.operation {
+    // Only the actual positively acknowledged closure response supplies a version.
+    let provider_version = if matches!(
+        work.operation,
+        Action::CompleteStage { .. } | Action::CompleteDestination { .. }
+    ) || (matches!(
+        work.operation,
+        Action::CreateStage | Action::CreateDestination { .. }
+    ) && work.context.intent.byte_size.get() == 0)
+    {
+        ensure!(response.status_code() == 200, "closure not acknowledged");
+        super::closed::response_version(response.headers().get("x-amz-version-id")?.as_deref())?
+    } else {
+        None
+    };
+    let outcome: Result<Outcome> = match &work.operation {
         Action::CreateStage | Action::CreateDestination { .. }
             if work.context.intent.byte_size.get() == 0 =>
         {
@@ -546,6 +591,22 @@ async fn dispatch(
             close_receipt_digest,
             ..
         } => {
+            let status = response.status_code();
+            let headers = response.headers().clone();
+            // Attach native cancellation before any fallible status or header
+            // checks. Refusal drops this exact unpolled reader; success transfers
+            // the same owner into full-object integrity verification.
+            let reader = crate::direct_digest::response_reader(response)?;
+            let closed = closed.ok_or_else(|| anyhow::anyhow!("verification closure absent"))?;
+            let etag = headers.get("etag")?;
+            let version = headers.get("x-amz-version-id")?;
+            let reader = super::closed::select_response(
+                reader,
+                closed,
+                status,
+                etag.as_deref(),
+                version.as_deref(),
+            )?;
             let original = crate::direct_upload::observation::Object::new(
                 &work.context.session_id,
                 &work.context.logical_fingerprint,
@@ -554,8 +615,8 @@ async fn dispatch(
                 &work.operation_id,
             );
             let mut observed = crate::direct_upload::observation::Read::new(original);
-            let verified = crate::direct_digest::verify_response_observed(
-                response,
+            let verified = crate::direct_digest::verify_reader_observed(
+                reader,
                 &work.context.intent,
                 parts,
                 &|bytes| observed.consumed(bytes),
@@ -592,7 +653,8 @@ async fn dispatch(
             })
         }
         _ => anyhow::bail!("metadata operation reached provider"),
-    }
+    };
+    Ok((outcome?, provider_version))
 }
 
 pub(super) fn validate_publication(

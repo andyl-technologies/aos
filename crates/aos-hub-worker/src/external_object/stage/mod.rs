@@ -6,6 +6,7 @@
 //! may retry their exact source after positive provider closure; mutations keep
 //! unknown-outcome fences. Configuration is default-off and independently pinned.
 
+mod closed;
 mod config;
 mod protocol;
 #[cfg(any(test, target_arch = "wasm32"))]
