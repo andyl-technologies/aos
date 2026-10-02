@@ -30,10 +30,6 @@
   aos.filesystems.zfs.enable = lib.mkDefault false;
   aos.filesystems.rootFsType = lib.mkDefault "erofs";
   aos.filesystems.rootReadOnly = lib.mkDefault true;
-  aos.image.budgets = {
-    maxVerityMiB = 16;
-    maxInitrdMiB = 132;
-  };
 
   # The service modules predate host-time evaluation and default to enabled.
   # Give this policy-neutral image a lower-priority disabled baseline. A normal

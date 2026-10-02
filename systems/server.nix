@@ -25,20 +25,9 @@
   # Image capability: immutable root with writable state provisioned on /var.
   aos.image.enable = true;
   aos.filesystems.zfs.enable = lib.mkDefault false;
+  # The signed/measured boot executable authenticates the evaluator's root.
   aos.filesystems.rootFsType = lib.mkDefault "erofs";
   aos.filesystems.rootReadOnly = lib.mkDefault true;
-  # F1 is part of the production image contract: the base library/evaluator
-  # root is authenticated by the roothash carried in the signed/measured UKI.
-  # Specialized writable-root test variants may override this mkDefault.
-  aos.image.budgets = {
-    maxVerityMiB = 16;
-    # Source-built native initrds measure 161 MiB; adding the selected kernel
-    # needs at least 178 MiB before UKI metadata and signing overhead.
-    maxInitrdMiB = 176;
-    maxBootExecutableMiB = 200;
-    # Two bounded boot executables leave 48 MiB for firmware update headroom.
-    maxFirmwarePartitionMiB = 448;
-  };
 
   # The service modules retain backwards-compatible enabled defaults. Keep
   # the golden image policy-neutral at a weaker priority so authenticated
