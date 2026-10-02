@@ -6,6 +6,7 @@
 //! operator sources instead of reading new platform metadata.
 
 mod capture;
+mod image;
 mod proof;
 mod reader;
 mod retained;
@@ -37,7 +38,7 @@ struct Arguments {
 /// failed native activation or recovery.
 pub fn run_from_process() -> Result<()> {
     let arguments = Arguments::parse();
-    let command = arguments.deployment.command()?;
+    let mut command = arguments.deployment.command()?;
     ensure!(
         command.input == std::path::Path::new("/usr/lib/aos/host/deployment")
             && command.profile.as_deref() == Some(std::path::Path::new("/var/lib/profiles/system"))
@@ -61,6 +62,13 @@ pub fn run_from_process() -> Result<()> {
         std::env::var_os("AOS_NIX_STORE").as_deref() == Some(command.nix_store.as_os_str()),
         "host bootstrap store differs from its retained launcher"
     );
+    // The verified image copy preserves member aliases; evaluation requires
+    // the original registered bundle identity retained by its toplevel.
+    command.input = image::retained_bundle(
+        &command.input,
+        std::path::Path::new("/usr/lib/aos/toplevel"),
+    )?;
+    command.admission = command.input.join("admission.json");
     let cancellation = CancellationToken::default();
     if let Some(number) = crate::native_deployment::resume_profile(&command, &cancellation)? {
         retained::verify(&command, number)?;
