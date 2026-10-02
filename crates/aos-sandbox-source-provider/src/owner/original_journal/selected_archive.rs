@@ -61,15 +61,26 @@ impl FixedProviderOwnerV1 {
 
         // Run original bookends even after an installation error. The action
         // Result wins; a separate first postcheck cause cannot replace it.
-        let postcheck: Result<(), OriginalProducerErrorV5> = (|| {
-            self.require_selected_enrollments_v1()?;
-            self.require_original_producer_current_v5()?;
-            self.require_original_producer_readback_v5()?;
-            let signed = self.original_source_producer_v5()?.signed.as_ref()
-                .ok_or(ProviderLedgerError::Unavailable)?;
-            self.original_ingress.borrowed_clock_v5()?.require_request(signed)?;
-            Ok(())
-        })();
+        let postcheck = self.recheck_selected_archive_cut_v1();
+        self.park_selected_archive_postcheck_v1(postcheck)?;
+        self.retain_selected_archive_durability_v1()
+    }
+
+    fn recheck_selected_archive_cut_v1(&mut self) -> Result<(), OriginalProducerErrorV5> {
+        self.require_selected_enrollments_v1()?;
+        self.require_original_producer_owners_current_v5()?;
+        self.require_retained_selected_archive_file_v1()?;
+        self.require_original_producer_readback_v5()?;
+        let signed = self.original_source_producer_v5()?.signed.as_ref()
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        self.original_ingress.borrowed_clock_v5()?.require_request(signed)?;
+        Ok(())
+    }
+
+    fn park_selected_archive_postcheck_v1(
+        &mut self,
+        postcheck: Result<(), OriginalProducerErrorV5>,
+    ) -> Result<(), OriginalProducerErrorV5> {
         match self.state.as_mut().and_then(|state| match state {
             FixedProviderOwnerStateV1::HeldReadOnly(held) => held.original.as_mut()
                 .and_then(|original| original.producer.as_mut()),
@@ -97,7 +108,57 @@ impl FixedProviderOwnerV1 {
         }
     }
 
-    /// Checks the same retained file, without invoking the installer again.
+    fn retain_selected_archive_durability_v1(&mut self) -> Result<(), OriginalProducerErrorV5> {
+        if self.original_source_producer_v5()?.selected_archive_sync_attempted {
+            return self.require_retained_selected_archive_v1();
+        }
+        self.original_source_producer_mut_v5()?.selected_archive_sync_attempted = true;
+
+        // A failed pre-effect cut is resident debt, not permission to start or
+        // retry the barrier. There is no local Result discarded by a later gate.
+        let before = self.recheck_selected_archive_cut_v1();
+        self.park_selected_archive_postcheck_v1(before)?;
+        {
+            let Some(FixedProviderOwnerStateV1::HeldReadOnly(held)) = self.state.as_mut() else {
+                return Err(ProviderLedgerError::Unavailable.into());
+            };
+            let original = held.original.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
+            let history = &original.history;
+            let producer = original.producer.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
+            producer.selected_archive_file_sync = Some((|| {
+                let archive = history.archive.as_ref().ok_or(ProviderLedgerError::Unavailable)?;
+                let selected = producer.selected_archive.as_ref()
+                    .and_then(|result| result.as_ref().ok())
+                    .ok_or(ProviderLedgerError::Unavailable)?;
+                archive.sync_selected_input_file_v1(selected)
+                    .map_err(OriginalProducerErrorV5::ArchiveSync)
+            })());
+        }
+
+        // This post-file bookend is also the full pre-directory cut. Failure
+        // fences the second effect; a file-sync Err still keeps its own cause.
+        let between = self.recheck_selected_archive_cut_v1();
+        self.park_selected_archive_postcheck_v1(between)?;
+        {
+            let Some(FixedProviderOwnerStateV1::HeldReadOnly(held)) = self.state.as_mut() else {
+                return Err(ProviderLedgerError::Unavailable.into());
+            };
+            let original = held.original.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
+            let history = &original.history;
+            let producer = original.producer.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
+            producer.selected_archive_directory_sync = Some((|| {
+                let archive = history.archive.as_ref().ok_or(ProviderLedgerError::Unavailable)?;
+                archive.sync_selected_input_directory_v1()
+                    .map_err(OriginalProducerErrorV5::ArchiveSync)
+            })());
+        }
+
+        let after = self.recheck_selected_archive_cut_v1();
+        self.park_selected_archive_postcheck_v1(after)?;
+        self.require_retained_selected_archive_v1()
+    }
+
+    /// Requires both actual sync results and rechecks the same retained file.
     pub(super) fn require_retained_selected_archive_v1(
         &self,
     ) -> Result<(), OriginalProducerErrorV5> {
@@ -106,6 +167,14 @@ impl FixedProviderOwnerV1 {
             return Ok(());
         }
         selected_archive_result(producer)?;
+        if !selected_archive_sync_complete(producer) {
+            return Err(OriginalProducerErrorV5::SelectedArchive);
+        }
+        self.require_retained_selected_archive_file_v1()
+    }
+
+    fn require_retained_selected_archive_file_v1(&self) -> Result<(), OriginalProducerErrorV5> {
+        let producer = self.original_source_producer_v5()?;
         let selected = producer.selected_archive.as_ref().and_then(|result| result.as_ref().ok())
             .ok_or(OriginalProducerErrorV5::SelectedArchive)?;
         let Some(FixedProviderOwnerStateV1::HeldReadOnly(held)) = self.state.as_ref() else {
@@ -144,10 +213,8 @@ impl FixedProviderOwnerV1 {
         };
 
         Some(match marker {
-            OriginalProducerErrorV5::SelectedArchive => match producer.selected_archive.as_ref() {
-                Some(Err(cause)) => cause,
-                _ => marker,
-            },
+            OriginalProducerErrorV5::SelectedArchive => selected_archive_action_failure(producer)
+                .unwrap_or(marker),
             OriginalProducerErrorV5::SelectedArchivePostcheck => {
                 producer.selected_archive_postcheck.as_ref().unwrap_or(marker)
             }
@@ -195,6 +262,52 @@ mod tests {
         assert!(producer.selected_archive.is_none());
         assert!(producer.selected_archive_attempted);
     }
+
+    #[test]
+    fn partial_sync_slots_cannot_complete_a_prearmed_barrier() {
+        let mut producer = OriginalSourceProducerV5::default();
+        producer.selected_archive_sync_attempted = true;
+
+        assert!(!selected_archive_sync_complete(&producer));
+        producer.selected_archive_file_sync = Some(Ok(()));
+        assert!(!selected_archive_sync_complete(&producer));
+        assert!(producer.selected_archive_directory_sync.is_none());
+    }
+
+    #[test]
+    fn native_file_failure_is_borrowed_before_directory_failure_and_debt() {
+        let mut producer = OriginalSourceProducerV5::default();
+        producer.selected_archive_file_sync = Some(Err(OriginalProducerErrorV5::ArchiveSync(
+            rustix::io::Errno::IO,
+        )));
+        producer.selected_archive_directory_sync = Some(Err(OriginalProducerErrorV5::ArchiveSync(
+            rustix::io::Errno::NOSPC,
+        )));
+        producer.selected_archive_postcheck = Some(OriginalProducerErrorV5::Owner(
+            ProviderLedgerError::RuntimePoisoned,
+        ));
+
+        assert!(matches!(
+            selected_archive_action_failure(&producer),
+            Some(OriginalProducerErrorV5::ArchiveSync(cause)) if *cause == rustix::io::Errno::IO,
+        ));
+        assert!(matches!(&producer.selected_archive_directory_sync, Some(Err(_))));
+        assert!(producer.selected_archive_postcheck.is_some());
+    }
+
+    #[test]
+    fn successful_sync_slots_do_not_clear_later_debt() {
+        let mut producer = OriginalSourceProducerV5::default();
+        producer.selected_archive_sync_attempted = true;
+        producer.selected_archive_file_sync = Some(Ok(()));
+        producer.selected_archive_directory_sync = Some(Ok(()));
+        producer.selected_archive_postcheck = Some(OriginalProducerErrorV5::Owner(
+            ProviderLedgerError::RuntimePoisoned,
+        ));
+
+        assert!(!selected_archive_sync_complete(&producer));
+        assert!(producer.selected_archive_postcheck.is_some());
+    }
 }
 
 fn selected_archive_result(producer: &OriginalSourceProducerV5) -> Result<(), OriginalProducerErrorV5> {
@@ -202,10 +315,32 @@ fn selected_archive_result(producer: &OriginalSourceProducerV5) -> Result<(), Or
         Some(Ok(_)) => {}
         Some(Err(_)) | None => return Err(OriginalProducerErrorV5::SelectedArchive),
     }
+    if selected_archive_action_failure(producer).is_some() {
+        return Err(OriginalProducerErrorV5::SelectedArchive);
+    }
     if producer.selected_archive_postcheck.is_some() {
         return Err(OriginalProducerErrorV5::SelectedArchivePostcheck);
     }
     Ok(())
+}
+
+fn selected_archive_action_failure(
+    producer: &OriginalSourceProducerV5,
+) -> Option<&OriginalProducerErrorV5> {
+    producer.selected_archive.as_ref().and_then(|result| result.as_ref().err())
+        .or_else(|| {
+            producer.selected_archive_file_sync.as_ref().and_then(|result| result.as_ref().err())
+        })
+        .or_else(|| {
+            producer.selected_archive_directory_sync.as_ref().and_then(|result| result.as_ref().err())
+        })
+}
+
+fn selected_archive_sync_complete(producer: &OriginalSourceProducerV5) -> bool {
+    producer.selected_archive_sync_attempted
+        && matches!(&producer.selected_archive_file_sync, Some(Ok(())))
+        && matches!(&producer.selected_archive_directory_sync, Some(Ok(())))
+        && producer.selected_archive_postcheck.is_none()
 }
 
 /// Borrows disjoint existing replay owners for the sole native-row checker.

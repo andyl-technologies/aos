@@ -80,6 +80,8 @@ pub(in crate::owner) enum OriginalProducerErrorV5 {
     Receipt(#[from] aos_sandbox_source_provider_protocol::StorageZfsHoldReceiptErrorV1),
     #[error("original Source bounded retention failed")]
     Retention(#[from] std::collections::TryReserveError),
+    #[error("original Source selected archive sync failed")]
+    ArchiveSync(#[source] rustix::io::Errno),
     // The actual typed cause remains in the same producer's whole Result slot.
     #[error("original Source selected archive installation failed")]
     SelectedArchive,
@@ -147,6 +149,9 @@ pub(super) struct OriginalSourceProducerV5 {
         OriginalProducerErrorV5,
     >>,
     pub(super) selected_archive_postcheck: Option<OriginalProducerErrorV5>,
+    pub(super) selected_archive_sync_attempted: bool,
+    pub(super) selected_archive_file_sync: Option<Result<(), OriginalProducerErrorV5>>,
+    pub(super) selected_archive_directory_sync: Option<Result<(), OriginalProducerErrorV5>>,
     pub(super) storage_offer: Option<super::storage_offer::OriginalStorageOfferV5>,
     pub(super) original_completion: Option<super::completion::OriginalSourceCompletionV5>,
 }
@@ -291,6 +296,16 @@ impl FixedProviderOwnerV1 {
     }
 
     pub(super) fn require_original_producer_current_v5(&mut self) -> Result<(), OriginalProducerErrorV5> {
+        self.require_original_producer_owners_current_v5()?;
+        self.require_retained_selected_archive_v1()?;
+        Ok(())
+    }
+
+    // Internal archive stages reuse every original owner check without asking
+    // an incomplete durability barrier to satisfy its own final adapter.
+    pub(super) fn require_original_producer_owners_current_v5(
+        &mut self,
+    ) -> Result<(), OriginalProducerErrorV5> {
         let (root, acquire) = self.original_ingress.borrowed_pair_v5()?;
         let VerifiedProviderRequestV1::Acquire(verified) = acquire.verified() else {
             return Err(ProviderLedgerError::Equivocation.into());
@@ -323,7 +338,6 @@ impl FixedProviderOwnerV1 {
             return Err(ProviderLedgerError::Equivocation.into());
         }
         self.observe_original_journal_v5()?;
-        self.require_retained_selected_archive_v1()?;
         Ok(())
     }
 

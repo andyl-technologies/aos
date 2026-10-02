@@ -64,6 +64,34 @@ impl ProtectedOriginalSelectedInputV1 {
 }
 
 impl ProtectedOriginalConfigurationArchiveV5 {
+    /// Syncs the same retained selected inode without reopening or classifying its cause.
+    ///
+    /// The genuine Source caller parks the native Result before its bookends.
+    /// This mechanical operation alone supplies no durability or effect permit.
+    ///
+    /// # Errors
+    ///
+    /// Returns the actual native sync failure, including unsupported filesystem behavior.
+    #[doc(hidden)]
+    pub fn sync_selected_input_file_v1(
+        &self,
+        selected: &ProtectedOriginalSelectedInputV1,
+    ) -> Result<(), rustix::io::Errno> {
+        selected.file.sync_original_inode()
+    }
+
+    /// Syncs the same held archive directory without reopening or releasing its lock.
+    ///
+    /// The genuine Source caller brackets this operation with its original cut.
+    ///
+    /// # Errors
+    ///
+    /// Returns the actual native directory-sync failure without coarse remapping.
+    #[doc(hidden)]
+    pub fn sync_selected_input_directory_v1(&self) -> Result<(), rustix::io::Errno> {
+        self.directory.sync_original_directory()
+    }
+
     /// Installs selected preimages under a genuine immutable Applying origin.
     ///
     /// The caller retains the returned whole Result before postchecks. The sole
