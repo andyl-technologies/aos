@@ -278,6 +278,9 @@ in
               # EROFS lower + per-gen config lower + /var/etc) mounts
               # on top in stage-1 (etc-overlay-setup.service).
               mkdir -p rootfs/etc
+              # Switch-root identifies the OS before host configuration mounts
+              # /etc. Reuse the canonical image identity in the vendor location.
+              cp ${toplevel}/os-release rootfs/usr/lib/os-release
               mkdir -p rootfs/proc rootfs/sys rootfs/dev rootfs/tmp
               mkdir -p rootfs/run rootfs/var rootfs/sysroot
               mkdir -p rootfs/var/{log,lib,tmp}
