@@ -447,3 +447,153 @@ async fn exercise_adoption(acquire_absent_package: bool) -> Result<()> {
     retained::verify(&host, acquired_generation)?;
     Ok(())
 }
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires the source-built dynamic preparation fixture and a private source store"]
+async fn committed_dynamic_receipts_cross_stores_with_exact_authority() -> Result<()> {
+    #[derive(Deserialize)]
+    struct DynamicFixture {
+        #[serde(flatten)]
+        fixture: Fixture,
+        #[serde(rename = "sourceAuthorization")]
+        authorization: PathBuf,
+        #[serde(rename = "sourcePlan")]
+        plan: PathBuf,
+    }
+
+    let path = std::env::var_os("AOS_BOOT_HANDOFF_FIXTURE")
+        .context("dynamic preparation fixture is required")?;
+    let fixture: DynamicFixture = serde_json::from_slice(&fs::read(path)?)?;
+    let executable =
+        PathBuf::from(std::env::var_os("AOS_NIX_STORE").context("source-built store is required")?);
+    ensure!(
+        std::env::var("AOS_NIX_EVAL_STORE")?.starts_with("local?root="),
+        "dynamic handoff requires a private selected source store"
+    );
+    let cancellation = CancellationToken::default();
+    let scratch = tempfile::tempdir()?;
+    let target = scratch.path().join("target");
+    fs::create_dir(&target)?;
+    let initrd = command(
+        &fixture.fixture.initrd,
+        &scratch.path().join("initrd"),
+        None,
+        &executable,
+    )?;
+
+    ensure!(
+        super::handoff::handoff_in(&initrd, &fixture.fixture.binding, &target, &cancellation)
+            .is_err()
+            && fs::read_dir(&target)?.next().is_none(),
+        "uncommitted preparation mutated the target store"
+    );
+    crate::native_deployment::apply(&initrd, &cancellation)?;
+    let committed = reader::read_committed_preparation(&initrd, &fixture.fixture.binding)?;
+    let roots = [
+        committed.result.authorized_input.clone(),
+        committed.result.committed_plan.clone(),
+    ];
+    ensure!(
+        roots[0] != fixture.authorization && roots[1] != fixture.plan,
+        "preparation reused prebuilt roots instead of creating dynamic receipts"
+    );
+    let mut source_bytes = Vec::new();
+    for (root, original) in roots.iter().zip([&fixture.authorization, &fixture.plan]) {
+        let bytes = reader::read_immutable_bounded(root, &executable, 2 * 1024 * 1024)?;
+        ensure!(
+            bytes == reader::read_immutable_bounded(original, &executable, 2 * 1024 * 1024)?
+                && !target.join(root.strip_prefix("/")?).exists(),
+            "dynamic receipt bytes changed or were already present in the target"
+        );
+        let mut dump = aos_core::nix::identity::store_nar_command(
+            &executable,
+            root.to_str().context("receipt UTF-8")?,
+        )?;
+        let nar = dump.output()?;
+        ensure!(nar.status.success(), "source receipt NAR read failed");
+        source_bytes.push((bytes, nar.stdout));
+    }
+    drop(committed);
+
+    let mut unrelated: serde_json::Value =
+        serde_json::from_slice(&fs::read(&fixture.fixture.binding)?)?;
+    unrelated["effect"] = serde_json::Value::String("0".repeat(64));
+    let unrelated_binding = scratch.path().join("unrelated-binding.json");
+    fs::write(&unrelated_binding, serde_json::to_vec(&unrelated)?)?;
+    ensure!(
+        super::handoff::handoff_in(&initrd, &unrelated_binding, &target, &cancellation).is_err()
+            && fs::read_dir(&target)?.next().is_none(),
+        "unrelated image binding mutated the target store"
+    );
+
+    let target_uri = format!("local?root={}", target.display());
+    let target_command = |arguments: &[&str]| -> Result<std::process::Output> {
+        Ok(std::process::Command::new(&executable)
+            .args(["--store", &target_uri, "--option", "build-users-group", ""])
+            .args(arguments)
+            .output()?)
+    };
+    ensure!(
+        target_command(&["--init"])?.status.success(),
+        "target initialization failed"
+    );
+    for root in &roots {
+        ensure!(
+            !target_command(&["--check-validity", root.to_str().context("receipt UTF-8")?])?
+                .status
+                .success(),
+            "dynamic receipt was registered before handoff"
+        );
+    }
+
+    super::handoff::handoff_in(&initrd, &fixture.fixture.binding, &target, &cancellation)?;
+    let journal_before = fs::read(initrd.state_directory.join("generations.journal"))?;
+    super::handoff::handoff_in(&initrd, &fixture.fixture.binding, &target, &cancellation)?;
+    ensure!(
+        fs::read(initrd.state_directory.join("generations.journal"))? == journal_before,
+        "receipt retry changed the authoritative journal"
+    );
+    ensure!(
+        target_command(&["--gc"])?.status.success(),
+        "target GC failed"
+    );
+    let modern = aos_core::nix::identity::store_command(&executable)?;
+    for (root, (bytes, nar)) in roots.iter().zip(source_bytes) {
+        let root_text = root.to_str().context("receipt UTF-8")?;
+        let references = target_command(&["--query", "--references", root_text])?;
+        let target_nar = std::process::Command::new(modern.get_program())
+            .args([
+                "--store",
+                &target_uri,
+                "--extra-experimental-features",
+                "nix-command",
+                "store",
+                "dump-path",
+                root_text,
+            ])
+            .output()?;
+        ensure!(
+            target_command(&["--check-validity", root_text])?
+                .status
+                .success()
+                && references.status.success()
+                && references.stdout.iter().all(u8::is_ascii_whitespace)
+                && fs::read(target.join(root.strip_prefix("/")?))? == bytes
+                && target_nar.status.success()
+                && target_nar.stdout == nar,
+            "handoff lost a retained receipt's registration, flat identity or bytes"
+        );
+    }
+    for original in [&fixture.authorization, &fixture.plan] {
+        ensure!(
+            !target_command(&[
+                "--check-validity",
+                original.to_str().context("source UTF-8")?
+            ])?
+            .status
+            .success(),
+            "handoff imported an unselected source root"
+        );
+    }
+    Ok(())
+}

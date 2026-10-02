@@ -4,6 +4,7 @@
   lib,
   stateDirectory ? "/build/aos-boot-bootstrap-state",
   acquiredStateDirectory ? "/build/aos-boot-acquired-state",
+  preparationScript ? builtins.readFile ./boot-metadata-package/handler.sh,
 }: let
   provisioningTypes = import ../../pkgs/system/_aos-storage-provisioning-provider/types.nix {inherit lib;};
   provisioningWire = lib.evalModules {
@@ -57,7 +58,7 @@
   payload =
     (pkgs.writeShellScriptBin "handler" ''
       export PATH=${lib.makeBinPath [pkgs.coreutils pkgs.jq]}
-      ${builtins.readFile ./boot-metadata-package/handler.sh}
+      ${preparationScript}
     '').overrideAttrs (_: {
       catalogName = "boot-bootstrap-fixture";
       version = "1";
@@ -233,4 +234,4 @@ in
         }
       ];
   })
-  // {inherit acquiredPackage;}
+  // {inherit acquiredPackage receipt plan;}
