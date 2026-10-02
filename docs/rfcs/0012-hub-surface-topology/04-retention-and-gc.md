@@ -401,11 +401,30 @@ placement cannot provide that contract or has no strong ETag. AWS S3 general
 buckets provide `DeleteObject` with `If-Match`; AOS does not substitute
 size-only conditions. The Cloudflare Workers R2 binding exposes conditional
 `get` and `put`, but its `delete` has no condition, and R2's S3 compatibility
-does not advertise conditional `DeleteObject`. Direct R2, `local_fs`, and an
-R2-compatible binding therefore remain an explicit blocked GC capability until
-they gain a proven conditional-delete or cooperative fencing protocol. A
-read-then-delete sequence is not sufficient because it can delete a replacement
-written between those calls.
+does not advertise conditional `DeleteObject`. External R2 bindings reached
+through S3 credentials therefore remain a blocked GC capability until they
+gain a proven conditional delete. A read-then-delete sequence is not
+sufficient on a shared bucket because it can delete a replacement written
+between those calls.
+
+The deployment bucket (`deployment_r2`) and `local_fs` use a cooperative
+fencing protocol instead, and the capability probe exercises it like any other
+backend. The Hub is the only writer of those stores; keys are content
+addressed; a candidate's catalog row is tombstoned before any physical action;
+and a push refuses to re-adopt a digest whose blob row is not active while the
+run holds the registry lock. Nothing can therefore replace a candidate key
+between the identity check and the delete, so a head-then-delete that compares
+the strong ETag and size observed by inventory is equivalent to a provider
+conditional delete for those backends.
+
+Registry deletion requires an empty catalog, but signed releases and tags are
+permanent roots of ordinary collection. A reviewed *retiring* run drops the
+catalog-owned roots (signed releases, tags, retained tag history) and collects
+without grace. It fails closed while any enabled route serves the registry's
+OCI surface, at planning and inside the apply transaction, and once it is
+applying the indexer refuses to re-project container-release roots for that
+registry. Every physical deletion of a retiring run uses the same inventory,
+capability, and finalization fences as an ordinary run.
 
 Physical delete capability is also independent of logical write authority.
 The current authority controls where new bytes may be published; it does not

@@ -484,6 +484,7 @@ impl RpcService {
                 idempotency_key: req.idempotency_key,
                 expected_resource_version,
                 now: clock::now_unix_secs(),
+                retire_registry: req.retire_registry,
             })
             .await
             .map_err(plan_error)?;
@@ -1036,14 +1037,7 @@ fn gc_topology_plan(
             format!("topology_digest={}", run.topology_digest),
             format!("plan_digest={}", run.plan_digest),
         ],
-        effects: vec![
-            format!("delete {} immutable OCI objects", run.planned_objects),
-            format!("reclaim {} compressed bytes", run.planned_bytes),
-            format!(
-                "execute {} conditional placement deletions",
-                run.placement_action_count
-            ),
-        ],
+        effects: gc_plan_effects(run),
         warnings: blockers
             .iter()
             .map(|blocker| format!("{}: {}", blocker.kind, blocker.detail))
@@ -1051,6 +1045,26 @@ fn gc_topology_plan(
         confirmation_hash: run.confirmation_hash.to_string(),
         pin_impacts: Vec::new(),
     }
+}
+
+/// Lists the reviewed effects of one GC run; a retiring run additionally
+/// retires the catalog roots that would otherwise protect its candidates.
+fn gc_plan_effects(run: &crate::db::OciGcGenerationRecord) -> Vec<String> {
+    let mut effects = Vec::with_capacity(4);
+    if run.retire_registry {
+        effects.push(
+            "retire signed-release, tag, and tag-history roots of every candidate".to_string(),
+        );
+    }
+    effects.extend([
+        format!("delete {} immutable OCI objects", run.planned_objects),
+        format!("reclaim {} compressed bytes", run.planned_bytes),
+        format!(
+            "execute {} conditional placement deletions",
+            run.placement_action_count
+        ),
+    ]);
+    effects
 }
 
 fn plan_error(error: anyhow::Error) -> RpcError {

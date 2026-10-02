@@ -502,7 +502,7 @@ impl Database {
                      OR (?4 IS NULL AND ?5 IS NULL
                        AND EXISTS (SELECT 1 FROM bindings local_binding
                          WHERE local_binding.id = ?1
-                           AND local_binding.kind = 'local_fs'))
+                           AND local_binding.kind IN('local_fs', 'deployment_r2')))
                      OR EXISTS (SELECT 1 FROM binding_credential_heads head
                        JOIN binding_credential_revisions credential
                          ON credential.binding_id = head.binding_id
@@ -536,7 +536,7 @@ impl Database {
                   AND revision.revision = ?2
                  WHERE binding.id = ?1 AND binding.resource_version = ?3
                    AND (?7 = 'invalid'
-                     OR (?4 IS NULL AND ?5 IS NULL AND binding.kind = 'local_fs')
+                     OR (?4 IS NULL AND ?5 IS NULL AND binding.kind IN('local_fs', 'deployment_r2'))
                      OR EXISTS (SELECT 1 FROM binding_credential_heads head
                        JOIN binding_credential_revisions credential
                          ON credential.binding_id = head.binding_id
