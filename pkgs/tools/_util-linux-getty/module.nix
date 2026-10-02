@@ -20,7 +20,7 @@
   };
   startupReadiness =
     if isInitrd
-    then "initrd-fs.target"
+    then "sysinit.target"
     else "getty.target";
   userSessionsReadiness = "systemd-user-sessions.service";
 
@@ -32,6 +32,18 @@
     deallocate,
     sessionIdentifier ? null,
   }: {
+    activationOwner =
+      if isInitrd
+      then "image"
+      else "ability";
+    autoStart = !isInitrd;
+    manager_identity =
+      if isInitrd
+      then {
+        name = "debug-shell-${service}";
+        aliases = [];
+      }
+      else null;
     lifecycle = {
       inherit description;
       execution_model = "foreground";
@@ -47,7 +59,11 @@
       configuration_change_action = "restart";
       remain_after_exit = false;
       start_timeout_millis = 90000;
-      stop_timeout_millis = 90000;
+      # Interactive initrd shells ignore TERM; keep switch-root's kill wait short.
+      stop_timeout_millis =
+        if isInitrd
+        then 5000
+        else 90000;
     };
     dependencies = {
       after = lib.optional (!isInitrd) userSessionsReadiness;
@@ -77,7 +93,7 @@
   };
 
   virtualConsole = consoleService {
-    service = "virtual-console";
+    service = "console";
     description =
       if isInitrd
       then "Initrd debug shell on tty0"
@@ -102,7 +118,7 @@
       else "tty1";
   };
   serialConsole = consoleService {
-    service = "serial-console";
+    service = "serial";
     description =
       if isInitrd
       then "Initrd debug shell on ttyS0"

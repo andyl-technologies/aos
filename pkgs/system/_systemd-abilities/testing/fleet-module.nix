@@ -34,6 +34,12 @@
     '';
   };
 in {
+  aos.activation.stages.initrd.configuration = [
+    (builtins.path {
+      path = ./fleet-initrd-policy.nix;
+      name = "aos-fleet-initrd-policy.nix";
+    })
+  ];
   aos.activation.stages.host.configuration =
     lib.optional (bootMode == "kernel" && storageLayout.baked) storageLayout.configurationSource;
 
