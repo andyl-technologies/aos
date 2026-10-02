@@ -342,6 +342,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   input/data/route counters and measured resynchronization work remain required.
   This records a pre-freeze specification correction, not implementation
   qualification or task completion.
+  The shared pure evaluation module and exact
+  `checks.terrane.integration.index-evaluation` inventory are registered
+  before parallel implementation work. The scaffold compiles under
+  `core-no-std`, and both mandatory formatters pass. The requested evaluation
+  check exits 1 on zero selected tests, confirming that declarations alone
+  cannot qualify construction or relationship verification. This is an
+  implementation prerequisite; same-commit incremental maintenance, typed
+  runtime loading/current checks and the native safe-index case remain open.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route
