@@ -520,7 +520,7 @@ pub(super) fn admit_signed_project_policy_source_with_journals_v2(
     })
 }
 
-fn current_explicit_layer(
+pub(super) fn current_explicit_layer(
     controller_journal: &mut Journal,
     trusted_revocation_scope: RevocationScopeId,
     verified: &VerifiedSignedProjectPolicySourceV2,

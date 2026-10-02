@@ -28,9 +28,11 @@ use aos_sandbox::policy_compiler::{
     clear_current_create_v8_successor_fences_v1, closed_policy_binding_digest_v2,
     closed_policy_effect_handoff_v2, compare_closed_policy_binding_hold_claims_v2,
     compare_closed_policy_binding_released_cache_claims_v2,
+    current_parentless_create_compiler_input_v1,
     current_parentless_create_project_source_v1,
     propose_closed_current_create_explicit_policy_binding_v2, query_fixed_root_v8_settled_grant_v1,
     record_current_source_signer_challenge_v1, require_current_source_signer_challenge_v1,
+    validate_current_create_controller_journal_v1,
     with_current_create_cache_signer_barrier_v5,
     with_current_create_cache_signer_release_barrier_v7,
     with_current_create_cache_signer_released_barrier_v8,
@@ -54,6 +56,7 @@ use crate::policy_authority_client::{
     ClosedPolicyBindingClientObservationV4, ClosedPolicyBindingPreviewV4,
     ClosedPolicyBindingSignerFlightV4, ClosedPolicyHeldCasCompletionV8,
     ClosedPolicyHeldCasReplayV8, ClosedPolicySourceWriterFlightV5,
+    PolicyAuthorityExplicitHeadReceiptV4,
     PendingClosedPolicySourceWriterFlightV6, PendingClosedPolicySourceWriterFlightV7,
     PendingClosedPolicySourceWriterFlightV8, begin_staged_source_writer_held_flight_v6,
     begin_staged_source_writer_held_flight_v7, begin_staged_source_writer_held_flight_v8,
@@ -61,6 +64,7 @@ use crate::policy_authority_client::{
     inspect_staged_closed_policy_signer_flight_v4, inspect_staged_source_writer_flight_v5,
     preview_staged_closed_policy_binding_v4, recover_closed_policy_binding_decision_v5,
     recover_committed_source_held_binding_v8,
+    stage_closed_policy_binding_base_v4,
 };
 use crate::policy_root_ack_client::acknowledge_held_root_effect_v1;
 use crate::policy_root_ack_v8_client::{
@@ -68,6 +72,70 @@ use crate::policy_root_ack_v8_client::{
     complete_held_root_v8_terminal, recover_root_v8_terminal_custody,
     require_exact_released_root_v8_replay, verify_exact_released_root_v8_custody,
 };
+
+/// Stages signed Root sources and constructs Controller-current proposal input.
+///
+/// This calls the existing fixed AOSPHQ4B endpoint once. Root durably issues its
+/// stage nonce/epoch, then releases its writer before sending the receipt/base.
+/// The verification keys check that response; they do not nominate Root's
+/// stored head or signers. This function does not provision those keys.
+///
+/// The fixed Controller names and production limits are checked before Stage
+/// and again after input construction; Stage itself still commits issuance.
+///
+/// The owned receipt, stage and input are DATA only. No Source/Cache ancestry
+/// barrier, live Root hold, policy publication, V8 authority or public Create
+/// completion is supplied. A caller must establish all missing original-owner
+/// and live backend joins before later binding or effect work.
+///
+/// # Errors
+///
+/// Rejects an unsafe Controller journal, stale accepted Create or publisher
+/// cut, failed Root stage exchange, expired/mismatched receipt, or failed input
+/// constructor. There is no implicit stage retry. A transport failure may
+/// follow durable issuance; the existing stage API does not return its local
+/// socket/buffer prefix on error, so this function claims no retained Root
+/// failure custody, rollback or debt settlement.
+pub(crate) fn stage_fixed_parentless_create_compiler_input_v1(
+    controller: &mut Journal,
+    operation: OperationId,
+    sandbox: SandboxId,
+    deployment_verifying_key: &VerifyingKey,
+    project_verifying_key: &VerifyingKey,
+) -> io::Result<(
+    PolicyAuthorityExplicitHeadReceiptV4,
+    StagedClosedPolicyRootBaseV2,
+    PolicyCompilerInputV1,
+)> {
+    validate_current_create_controller_journal_v1(controller).map_err(io::Error::other)?;
+    let source = current_parentless_create_project_source_v1(controller, operation, sandbox)
+        .map_err(io::Error::other)?;
+
+    let (receipt, staged) =
+        stage_closed_policy_binding_base_v4(deployment_verifying_key, project_verifying_key)?;
+    if !receipt.matches_create_source(&source) {
+        return Err(invalid_cut());
+    }
+    let input = current_parentless_create_compiler_input_v1(
+        controller,
+        operation,
+        sandbox,
+        receipt.head(),
+        receipt.sources(),
+        receipt.project(),
+    )
+    .map_err(io::Error::other)?;
+
+    validate_current_create_controller_journal_v1(controller).map_err(io::Error::other)?;
+    let current = current_parentless_create_project_source_v1(controller, operation, sandbox)
+        .map_err(io::Error::other)?;
+    if current.commitment() != source.commitment()
+        || !receipt.matches_compiler_input(&current, &input)
+    {
+        return Err(invalid_cut());
+    }
+    Ok((receipt, staged, input))
+}
 
 /// Commits one held Q04 cut without opening public Create or effect handoff.
 ///
