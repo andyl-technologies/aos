@@ -36,7 +36,9 @@ fn shared_source_leases_allow_bounded_siblings_and_delay_reuse_until_the_last_re
         source_resources.overlay_count() * 3,
     )
     .expect("parent-and-two-child resource ceiling");
-    let limits = HotCheckpointLimits::new(1, parent_and_two_child_resources, 3, 1_000_000_000)
+    // Keep all checkouts in one rate window so rejected starts cannot be hidden
+    // by a clock-window rollover during this accounting regression.
+    let limits = HotCheckpointLimits::new(1, parent_and_two_child_resources, 3, u64::MAX)
         .expect("two-child lease limits");
     let retention = MemoryHotCheckpointFallbackRetentionStore::new();
     let mut pool = ManagedQemuHotForkSourceWorldPool::open(limits, ReapingDemotionSink, retention)
@@ -62,17 +64,39 @@ fn shared_source_leases_allow_bounded_siblings_and_delay_reuse_until_the_last_re
         .expect("second lease");
 
     assert!(Arc::ptr_eq(&first.source, &second.source));
-    assert!(matches!(
-        excess_provider.checkout(&key),
-        Err(SharedQemuHotForkSourceWorldProviderError::Checkout(
-            ManagedQemuHotForkSourceWorldCheckoutError::LeaseCapacity { pressure }
-        )) if pressure.template_bytes()
-            && pressure.expected_private_dirty_bytes()
-            && pressure.process_count()
-            && pressure.virtual_cpu_count()
-            && pressure.descriptor_count()
-            && pressure.overlay_count()
-    ));
+    let (lease_usage, next_lease) = {
+        let pool = shared.pool.lock().expect("shared pool before rejection");
+        (pool.source_lease_usage(), pool.next_lease)
+    };
+    for _ in 0..3 {
+        let error = match excess_provider.checkout(&key) {
+            Err(SharedQemuHotForkSourceWorldProviderError::Checkout(error)) => error,
+            _ => panic!("excess child must fail capacity admission"),
+        };
+        assert!(matches!(
+            &error,
+            ManagedQemuHotForkSourceWorldCheckoutError::LeaseCapacity {
+                pressure, current, projected, limits: rejected_limits,
+            } if pressure.template_bytes()
+                && pressure.expected_private_dirty_bytes()
+                && pressure.process_count()
+                && pressure.virtual_cpu_count()
+                && pressure.descriptor_count()
+                && pressure.overlay_count()
+                && current.template_bytes() == source_resources.template_bytes() * 3
+                && projected.template_bytes() == source_resources.template_bytes() * 4
+                && **rejected_limits == limits
+        ));
+        let diagnostic = error.to_string();
+        assert!(diagnostic.contains("current=HotCheckpointUsage"));
+        assert!(diagnostic.contains("projected=HotCheckpointUsage"));
+        assert!(diagnostic.contains("limits=HotCheckpointLimits"));
+
+        let pool = shared.pool.lock().expect("shared pool after rejection");
+        assert_eq!(pool.source_lease_usage(), lease_usage);
+        assert_eq!(pool.next_lease, next_lease);
+        assert_eq!(pool.leased_out.len(), 2);
+    }
     assert!(shared.orderly_shutdown().is_err());
 
     first_provider.restore(first);
@@ -87,6 +111,21 @@ fn shared_source_leases_allow_bounded_siblings_and_delay_reuse_until_the_last_re
         assert!(!pool.source_available(&key));
     }
     assert!(shared.orderly_shutdown().is_err());
+
+    // Rejected checkouts must leave the third fork-start permit available.
+    let replacement = excess_provider
+        .checkout(&key)
+        .expect("capacity rejection did not consume fork rate")
+        .expect("replacement child lease");
+    {
+        let pool = shared.pool.lock().expect("shared pool after replacement");
+        let record = pool
+            .leased_out
+            .get(&excess_provider.provider)
+            .expect("replacement reservation");
+        assert_eq!(record._permit.ordinal(), 3);
+    }
+    excess_provider.restore(replacement);
 
     second_provider.restore(second);
     {

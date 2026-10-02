@@ -11,6 +11,7 @@ use crucible_core::NetworkFaultSelectable;
 mod resource_audit;
 
 const ATTEMPT_WAIT: Duration = Duration::from_secs(600);
+const ENVOY_HOT_FORK_BYTE_CEILING: u64 = 6 * 1024 * 1024 * 1024;
 // This is a cap on completed scheduler quanta across the packaged campaign,
 // independent of the exact logical ticks or retired instructions in each RUN.
 const ENVOY_QUANTUM_BUDGET: &str = "250000";
@@ -28,6 +29,46 @@ pub(super) struct EnvoyCampaignFlight {
     pub(super) policy: PathBuf,
     pub(super) authority: PathBuf,
     pub(super) service: CampaignServiceChild,
+}
+
+fn complete_envoy_discovery<T>(
+    discovery: Result<Value, Box<dyn Error>>,
+    resource_audit: Result<T, Box<dyn Error>>,
+) -> Result<(Value, T), Box<dyn Error>> {
+    // Sampling often fails because discovery never launched a child. Preserve
+    // the attempt failure that explains why the required process pairs are absent.
+    match (discovery, resource_audit) {
+        (Ok(discovery), Ok(audit)) => Ok((discovery, audit)),
+        (Err(discovery), Err(audit)) => Err(format!(
+            "Envoy discovery failed: {discovery}; HotFork resource audit failed: {audit}"
+        )
+        .into()),
+        (Err(error), Ok(_)) | (Ok(_), Err(error)) => Err(error),
+    }
+}
+
+#[test]
+fn envoy_discovery_preserves_attempt_failure_when_resource_sampling_also_fails() {
+    let result = complete_envoy_discovery::<()>(
+        Err("attempt timed out; last execution failed: lease capacity".into()),
+        Err("five live source/child pairs were absent".into()),
+    );
+    let error = result.expect_err("both flight failures must be reported");
+    let diagnostic = error.to_string();
+
+    assert!(diagnostic.contains("attempt timed out; last execution failed: lease capacity"));
+    assert!(diagnostic.contains("five live source/child pairs were absent"));
+
+    let discovery_failure = complete_envoy_discovery(Err("discovery failed".into()), Ok(()))
+        .expect_err("discovery failure");
+    assert_eq!(discovery_failure.to_string(), "discovery failed");
+    let audit_failure = complete_envoy_discovery::<()>(
+        Ok(serde_json::json!({"attempt": "completed"})),
+        Err("audit failed".into()),
+    )
+    .expect_err("resource audit failure");
+    assert_eq!(audit_failure.to_string(), "audit failed");
+    assert!(complete_envoy_discovery(Ok(Value::Null), Ok(())).is_ok());
 }
 
 pub(super) fn start_envoy_campaign(
@@ -168,10 +209,13 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
         Duration::from_secs(900),
     );
     stop_resource_sampling.store(true, std::sync::atomic::Ordering::Release);
-    let resource_audit = resource_sampler
+    let resource_audit_result = resource_sampler
         .join()
-        .map_err(|_| "Envoy resource sampler panicked")??;
-    let discovery = discovery_result?;
+        .map_err(|_| "Envoy resource sampler panicked".to_owned())
+        .and_then(|result| result)
+        .map_err(|error| -> Box<dyn Error> { error.into() });
+    let (discovery, resource_audit) =
+        complete_envoy_discovery(discovery_result, resource_audit_result)?;
     assert_eq!(discovery["attempt"]["configuration"], genesis);
     assert_eq!(discovery["observation"]["stop"], "reached:next-choice");
     let materialization = guest_choice::capture_materialization_events(&service)?;
@@ -1067,7 +1111,7 @@ fn product_hot_fork_deployment(fixture: &FlightFixture) -> Result<PathBuf, Box<d
     product_hot_fork_deployment_with_template_limit(
         fixture,
         "envoy-hot-fork-executor.toml",
-        4_294_967_296,
+        ENVOY_HOT_FORK_BYTE_CEILING,
     )
 }
 
@@ -1091,12 +1135,14 @@ fn product_hot_fork_deployment_with_template_limit(
     let deployment = fixture._temporary.path().join(name);
     let authored = fs::read_to_string(required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?)?;
 
-    // One five-guest 512 MiB source plus one child must fit the product VM's
-    // aggregate slot and hot-template resource ceilings.
+    // Admission reserves the measured source profile once for the retained
+    // five-guest world and again for its child. The 5 GiB guest-RAM baseline
+    // needs headroom for QEMU resident memory and measured private dirties.
+    // The deployment's independent 7 GiB resident ceiling remains enforced.
     fs::write(
         &deployment,
         format!(
-            "{authored}\n[hot_fork]\nmaximum_templates = 2\nmaximum_template_bytes = {maximum_template_bytes}\nmaximum_expected_private_dirty_bytes = 4294967296\nmaximum_processes = 16\nmaximum_virtual_cpus = 10\nmaximum_descriptors = 16384\nmaximum_overlays = 16\nmaximum_forks_per_window = 8\nfork_rate_window_ms = 1000\nshutdown_step_timeout_ms = 1000\nhost_io_timeout_ms = 30000\n"
+            "{authored}\n[hot_fork]\nmaximum_templates = 2\nmaximum_template_bytes = {maximum_template_bytes}\nmaximum_expected_private_dirty_bytes = {ENVOY_HOT_FORK_BYTE_CEILING}\nmaximum_processes = 16\nmaximum_virtual_cpus = 10\nmaximum_descriptors = 16384\nmaximum_overlays = 16\nmaximum_forks_per_window = 8\nfork_rate_window_ms = 1000\nshutdown_step_timeout_ms = 1000\nhost_io_timeout_ms = 30000\n"
         ),
     )?;
     fs::set_permissions(&deployment, fs::Permissions::from_mode(0o600))?;
