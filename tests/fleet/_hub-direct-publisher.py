@@ -42,7 +42,9 @@ def assert_direct_fifo_checkpoint(client, tools, registry, signed, token):
         if not stat.S_ISFIFO(before.st_mode) or Path('/').stat().st_uid != 0:
             raise ValueError('FIFO admission fixture lacks actual trusted-root custody')
         environment = dict(os.environ)
-        environment.update(HOME=selected['home'], SSL_CERT_FILE='/etc/ssl/certs/ca-certificates.crt')
+        environment.update(XDG_CONFIG_HOME=selected['home']+'/.config',
+            XDG_DATA_HOME=selected['home']+'/.local/share',
+            XDG_CACHE_HOME=selected['home']+'/.cache', SSL_CERT_FILE='/etc/ssl/certs/ca-certificates.crt')
         started = time.time_ns()
         try:
             result = subprocess.run(selected['arguments'], env=environment, capture_output=True,
@@ -124,8 +126,11 @@ def prepare_direct_signed_surface(client, python, apr, git, openssh, nix,
         home.mkdir(mode=0o700, parents=True, exist_ok=False)
         surface = '/var/lib/hybrid-client/' + name + '-surface'
         environment = dict(os.environ)
-        environment.update(HOME=str(home), USER='fleet-publisher', NIX_REMOTE='',
-            NIX_CONF_DIR=str(home / '.config/nix'))
+        environment.update(XDG_CONFIG_HOME=str(home / '.config'),
+            XDG_DATA_HOME=str(home / '.local/share'), XDG_CACHE_HOME=str(home / '.cache'),
+            NIX_REMOTE='', NIX_CONF_DIR=str(home / '.config/nix'),
+            GIT_AUTHOR_NAME='Hybrid Fleet Publisher', GIT_AUTHOR_EMAIL='fleet-publisher@example.test',
+            GIT_COMMITTER_NAME='Hybrid Fleet Publisher', GIT_COMMITTER_EMAIL='fleet-publisher@example.test')
         environment['PATH'] = ':'.join([{git.rsplit('/', 1)[0]!r},
             {openssh!r}, {nix!r}, environment.get('PATH', '')])
         configuration = home / '.config/nix'
@@ -141,8 +146,6 @@ def prepare_direct_signed_surface(client, python, apr, git, openssh, nix,
                 raise ValueError('actual signed publisher preparation refused')
             return result.stdout + result.stderr
 
-        run([{git!r}, 'config', '--global', 'user.name', 'Hybrid Fleet Publisher'])
-        run([{git!r}, 'config', '--global', 'user.email', 'fleet-publisher@example.test'])
         generated = run([{apr!r}, 'keys', 'generate', 'initial', '--registry', name])
         keys = re.findall(rb'Public key:\\s*(' + name.encode() + rb':Ed25519:[A-Za-z0-9+/=]+)', generated)
         if len(keys) != 1:
@@ -152,6 +155,12 @@ def prepare_direct_signed_surface(client, python, apr, git, openssh, nix,
         run([{apr!r}, 'create', name, '--trust-key', trust_key,
             '--trust-key-id', 'initial', '--key', str(key)])
         registry = home / ('.local/share/apm/registries/' + name)
+        # APR's initial commit uses the command-scoped identity above. Later
+        # commits use the real registry's local config, with no global mutation.
+        run([{git!r}, '-C', str(registry), 'config', '--local', 'user.name', 'Hybrid Fleet Publisher'])
+        run([{git!r}, '-C', str(registry), 'config', '--local', 'user.email', 'fleet-publisher@example.test'])
+        for field in ('GIT_AUTHOR_NAME', 'GIT_AUTHOR_EMAIL', 'GIT_COMMITTER_NAME', 'GIT_COMMITTER_EMAIL'):
+            environment.pop(field, None)
         configuration = home / '.config/apm/registries.d'
         configuration.mkdir(mode=0o700, parents=True, exist_ok=True)
         (configuration / (name + '.toml')).write_text(

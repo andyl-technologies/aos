@@ -76,7 +76,9 @@ def start_direct_publication(client, tools, registry_slug, signed, token, label,
         retain_receipt('process.json', pin)
         selected = json.loads((root / 'input.json').read_bytes())
         environment = dict(os.environ)
-        environment.update(HOME=selected['publisherHome'], SSL_CERT_FILE='/etc/ssl/certs/ca-certificates.crt')
+        environment.update(XDG_CONFIG_HOME=selected['publisherHome']+'/.config',
+            XDG_DATA_HOME=selected['publisherHome']+'/.local/share',
+            XDG_CACHE_HOME=selected['publisherHome']+'/.cache', SSL_CERT_FILE='/etc/ssl/certs/ca-certificates.crt')
         started = time.time_ns()
         with open(root / 'stdout', 'xb') as stdout, open(root / 'stderr', 'xb') as stderr:
             os.chmod(root / 'stdout', 0o600)
