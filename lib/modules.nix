@@ -610,6 +610,9 @@
     # their option schemas. The resolver disables this check only for that
     # seed evaluation; full stage-2 evaluation remains fail-closed.
     enforceRuntimeDeclarations ? true,
+    # Checked projection boundaries belong to the evaluator, independently of
+    # module-authored strictness and freeform configuration.
+    checkDefinitionPaths ? [],
   }: let
     moduleLib =
       if lib == {}
@@ -1891,9 +1894,16 @@
       # point) and at the `_module` subtree (engine-internal).
       freeformType = finalConfig._module.freeformType or null;
       isStrict = finalConfig._module.strict or false;
+      matchesCheckedPath = path:
+        builtins.any
+        (prefix:
+          lists.take (builtins.length prefix) path
+          == prefix
+          || lists.take (builtins.length path) prefix == path)
+        checkDefinitionPaths;
 
       configWithFreeform = builtins.seq runtimeProvisioningCheck (builtins.seq runtimeDeclarationCheck (builtins.seq packageDeclarationCheck (builtins.seq packageAuthorshipCheck (
-        if freeformType == null && !isStrict
+        if freeformType == null && !isStrict && checkDefinitionPaths == []
         then finalConfig
         else let
           declaredLeafSet = optionMap;
@@ -1925,10 +1935,14 @@
             go = path: conditions: val: let
               key = builtins.concatStringsSep "." path;
               descend = builtins.concatMap (name: go (path ++ [name]) conditions val.${name}) (builtins.attrNames val);
+              relevant =
+                isStrict
+                || freeformType != null
+                || matchesCheckedPath path;
             in
               # Declared leaves own their own type checking. Do not force their
               # values or guards while checking the surrounding module's keys.
-              if key == "_module" || declaredLeafSet ? ${key}
+              if !relevant || key == "_module" || declaredLeafSet ? ${key}
               then []
               else if isMkIf val
               then go path (conditions ++ [val._condition]) val._value
@@ -1955,8 +1969,20 @@
             )
             evaluatedModules
           );
+          checkedDefs = builtins.filter (definition: matchesCheckedPath definition.path) undeclaredDefs;
+          reject = definitions:
+            throw ''
+              The following option(s) are not declared:
+              ${builtins.concatStringsSep "\n" (builtins.map
+                (definition: "  - '${builtins.concatStringsSep "." definition.path}' (defined in ${definition.file})")
+                definitions)}
+
+              This evaluation rejects undeclared options in its checked paths.
+            '';
         in
-          if undeclaredDefs == []
+          if checkedDefs != []
+          then reject checkedDefs
+          else if undeclaredDefs == []
           then finalConfig
           else if freeformType != null
           then let
@@ -1987,21 +2013,7 @@
             ];
           in
             deepMerge merged finalConfig
-          else let
-            # isStrict == true (the remaining case)
-            formatted = builtins.concatStringsSep "\n" (
-              builtins.map (
-                d: "  - '${builtins.concatStringsSep "." d.path}' (defined in ${d.file})"
-              )
-              undeclaredDefs
-            );
-          in
-            throw ''
-              The following option(s) are not declared:
-              ${formatted}
-
-              Because `_module.strict = true` on this evaluation, undeclared options are not allowed. Declare the option, or set `_module.freeformType` to a type that accepts these values.
-            ''
+          else reject undeclaredDefs
       ))));
     in {
       config = configWithFreeform;
@@ -2038,6 +2050,7 @@
               packageModules
               enforcePackageAuthorship
               enforceRuntimeDeclarations
+              checkDefinitionPaths
               ;
           }
           // builtins.removeAttrs args ["modules"]);

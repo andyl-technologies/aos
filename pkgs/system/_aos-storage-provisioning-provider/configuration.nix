@@ -6,6 +6,7 @@
 ##! provisioning and frozen until factory reset.
 {lib, ...}: let
   partitionType = lib.types.submodule ({name, ...}: {
+    _module.strict = true;
     options = {
       device = lib.mkOption {
         type = lib.types.nullOr lib.types.str;
@@ -87,6 +88,7 @@
     };
   });
   arrayType = lib.types.submodule {
+    _module.strict = true;
     options = {
       level = lib.mkOption {
         type = lib.types.enum ["raid0" "raid1" "raid5" "raid6" "raid10"];

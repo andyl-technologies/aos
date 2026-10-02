@@ -331,6 +331,30 @@ impl Evaluation {
             .collect())
     }
 
+    /// Projects the closed provisioning namespace before host packages exist.
+    ///
+    /// The initrd checks every provisioning definition and its declared types.
+    /// Unavailable host package options are checked during host admission; they
+    /// cannot contribute executable effects through this data-only projection.
+    ///
+    /// # Errors
+    /// Returns an error for undeclared or mistyped provisioning configuration,
+    /// source failure, cancellation, timeout, or malformed projected output.
+    pub(crate) fn provisioning_storage(
+        &self,
+        staging: &Path,
+        timeout_ms: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<Value> {
+        self.run_output_checked(
+            staging,
+            timeout_ms,
+            cancellation,
+            "(evaluated.extendModules { checkDefinitionPaths = [[\"aos\" \"provisioning\"]]; }).config.aos.provisioning.storage",
+            false,
+        )
+    }
+
     fn inputs(&self) -> Result<Vec<String>> {
         std::iter::once(&self.library)
             .chain(self.configuration.iter())
