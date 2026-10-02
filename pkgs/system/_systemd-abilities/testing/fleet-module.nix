@@ -15,6 +15,11 @@
   writeTextFile,
 }: {config, ...}: let
   storageLayout = import ./storage-layout.nix {inherit varProvisioning varSizeMiB;};
+  kernelPolicy = builtins.path {
+    path = ./fleet-kernel-policy.nix;
+    name = "aos-fleet-kernel-policy.nix";
+  };
+  kernelSources = lib.optional (bootMode == "kernel") kernelPolicy;
   agentPackage = config.aos.packages.aos-test-agent.package or defaultAgentPackage;
   agentPath = "${agentPackage}/share/aos-test-agent/aos-test-agent";
   runtimeAgentUnit = writeTextFile {
@@ -34,14 +39,18 @@
     '';
   };
 in {
-  aos.activation.stages.initrd.configuration = [
-    (builtins.path {
-      path = ./fleet-initrd-policy.nix;
-      name = "aos-fleet-initrd-policy.nix";
-    })
-  ];
+  imports = kernelSources;
+
+  aos.activation.stages.initrd.configuration =
+    kernelSources
+    ++ [
+      (builtins.path {
+        path = ./fleet-initrd-policy.nix;
+        name = "aos-fleet-initrd-policy.nix";
+      })
+    ];
   aos.activation.stages.host.configuration =
-    lib.optional (bootMode == "kernel" && storageLayout.baked) storageLayout.configurationSource;
+    kernelSources ++ lib.optional (bootMode == "kernel" && storageLayout.baked) storageLayout.configurationSource;
 
   # Fleet machines have no interactive console. Mask debug shells that would
   # corrupt the serial transport or delay switch-root during test shutdown.

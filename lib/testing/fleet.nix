@@ -156,9 +156,6 @@
   in {
     imports = [platformModule];
 
-    # Direct-kernel tests have no authenticated root hash. Image-boot tests keep
-    # the evaluated system's integrity policy and exercise its full boot chain.
-    aos.security.verity.enable = lib.mkIf (m.bootMode == "kernel") (lib.mkForce false);
     aos.networking.hostName = m.name;
 
     environment.etc =

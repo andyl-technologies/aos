@@ -65,9 +65,9 @@ in {
   swapMatchesBakedDisk = baked.swap.sizeMin == "${toString layout.swapSizeMiB}M" && baked.swap.sizeMax == baked.swap.sizeMin && !baked.swap.grow;
   varMatchesBakedDisk = baked.var.sizeMin == "${toString layout.varSizeMiB}M" && baked.var.sizeMax == baked.var.sizeMin && !baked.var.grow;
   assemblyUsesSharedSizes = contains script "VAR_SIZE_MIB=${toString layout.varSizeMiB}" && contains script "SWAP_SECTORS=$(( ${toString layout.swapSizeMiB} * 1024 * 1024 / 512 ))";
-  retainedPolicyIsShared = sources "kernel" "baked" == [layout.configurationSource];
+  retainedPolicyIsShared = builtins.elem layout.configurationSource (sources "kernel" "baked");
   imageBootDoesNotRetainPolicy = sources "image" "baked" == [];
-  repartDoesNotRetainPolicy = sources "kernel" "repart" == [] && (layoutFor {varProvisioning = "repart";}).configurationSource == null;
+  repartDoesNotRetainPolicy = !(builtins.elem layout.configurationSource (sources "kernel" "repart")) && (layoutFor {varProvisioning = "repart";}).configurationSource == null;
   authoredPolicyOverridesFixture = operator.var.sizeMin == "3072M" && operator.var.sizeMax == "4096M" && operator.var.grow;
   invalidSizeRejected = !(builtins.tryEval (layoutFor {varSizeMiB = 0;}).baked).success;
   invalidModeRejected = !(builtins.tryEval (layoutFor {varProvisioning = "unknown";}).baked).success;
