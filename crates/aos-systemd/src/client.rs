@@ -228,6 +228,35 @@ impl SystemdClient {
         Self::from_connection(conn).await
     }
 
+    /// Connects a Nix offline observer to the fixed bus without incoming FDs.
+    ///
+    /// The Unix reader rejects ancillary control before authentication and
+    /// every subsequent message read. The fixed address has no environment
+    /// override or alternate transport. This constructs a DATA transport only;
+    /// the caller still owns genuine startup, approval and current custody.
+    /// Ordinary [`Self::connect`] behavior is unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::SystemdUnavailable`] for address, connection or
+    /// authentication failures, including terminal incoming-control rejection,
+    /// or any error from [`Self::from_connection`].
+    ///
+    /// # Panics
+    ///
+    /// Panics if polled outside a Tokio runtime with its I/O driver enabled.
+    #[cfg(target_os = "linux")]
+    pub async fn connect_nix_offline_hardware_observer() -> Result<Self> {
+        let conn = zbus::connection::Builder::address("unix:path=/run/dbus/system_bus_socket")
+            .map_err(Error::SystemdUnavailable)?
+            .reject_incoming_unix_fds()
+            .build()
+            .await
+            .map_err(Error::SystemdUnavailable)?;
+
+        Self::from_connection(conn).await
+    }
+
     /// Build a client around a caller-supplied connection. Used by the unit
     /// tests to inject one end of a p2p pair pointing at a `FakeSystemd`; also
     /// a legitimate embedding API. Unconditionally `pub` so the integration
