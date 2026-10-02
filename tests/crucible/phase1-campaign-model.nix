@@ -59,7 +59,7 @@ in
         {
           name = "run-campaign-model";
           script = ''
-            set -eu
+            set -euo pipefail
             : "$DEPENDENCY_PATHS"
             if [ -d source ] && [ -f source/crates/Cargo.toml ]; then
               cd source
@@ -68,38 +68,41 @@ in
             run_exact_lib_test() {
               gate_package=$1
               gate_test=$2
+              gate_list_log="$TMPDIR/campaign-model-list.log"
+              gate_test_log="$TMPDIR/campaign-model-test.log"
 
-              if output=$(cargo test --frozen --offline \
+              printf 'listing library tests for %s\n' "$gate_package"
+              if cargo test --frozen --offline \
                 --manifest-path crates/Cargo.toml \
                 --target-dir "$TMPDIR/campaign-model-target" \
-                -p "$gate_package" --lib -- --list 2>&1); then
+                -p "$gate_package" --lib -- --list 2>&1 \
+                | "${pkgs.coreutils}/bin/tee" "$gate_list_log"; then
                 :
               else
-                status=$?
-                printf '%s\n' "$output" >&2
+                status="''${PIPESTATUS[0]}"
+                [ "$status" -ne 0 ] || status=1
                 exit "$status"
               fi
-              printf '%s\n' "$output"
-              match_count=$(printf '%s\n' "$output" | grep -Fxc "$gate_test: test" || true)
+              match_count=$(grep -Fxc "$gate_test: test" "$gate_list_log" || true)
               if [ "$match_count" -ne 1 ]; then
                 printf 'expected exactly one listed test named %s; found %s\n' \
                   "$gate_test" "$match_count" >&2
                 exit 1
               fi
 
-              if output=$(cargo test --frozen --offline \
+              printf 'running exact test %s::%s\n' "$gate_package" "$gate_test"
+              if cargo test --frozen --offline \
                 --manifest-path crates/Cargo.toml \
                 --target-dir "$TMPDIR/campaign-model-target" \
-                -p "$gate_package" --lib -- --exact "$gate_test" --test-threads=1 2>&1); then
+                -p "$gate_package" --lib -- --exact "$gate_test" --test-threads=1 2>&1 \
+                | "${pkgs.coreutils}/bin/tee" "$gate_test_log"; then
                 :
               else
-                status=$?
-                printf '%s\n' "$output" >&2
+                status="''${PIPESTATUS[0]}"
+                [ "$status" -ne 0 ] || status=1
                 exit "$status"
               fi
-              printf '%s\n' "$output"
-              if ! printf '%s\n' "$output" \
-                | grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;'; then
+              if ! grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$gate_test_log"; then
                 printf 'required test did not produce the exact pass count: %s\n' \
                   "$gate_test" >&2
                 exit 1
