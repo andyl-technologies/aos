@@ -183,7 +183,7 @@ fn attribute(state: &mut u64, case: usize) -> AttributeValue {
         }),
         _ => AttributeValue::Shebang(ShebangValue {
             interpreter: "/interpreter".into(),
-            argument: (case / 8).is_multiple_of(2).then(String::new),
+            argument: (case / 8).is_multiple_of(2).then(|| "a".into()),
         }),
     }
 }
@@ -212,6 +212,15 @@ fn shuffle<T>(state: &mut u64, values: &mut [T]) {
 
 #[test]
 fn selected_evidence_models_preserve_tuple_fields_and_filtered_row_order() {
+    let empty_argument = AttributeValue::Shebang(ShebangValue {
+        interpreter: "/interpreter".into(),
+        argument: Some(String::new()),
+    });
+    assert_eq!(
+        empty_argument.encode(),
+        Err(crate::derived::Error::InvalidValue)
+    );
+
     let mut state = 0x892c_14af_7ed0_563b;
     for case in 0..48 {
         let view = opaque(&mut state);

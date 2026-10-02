@@ -1878,7 +1878,7 @@
       "test": "provenance::side_attributes::serialization::tests::selected_evidence_models_preserve_tuple_fields_and_filtered_row_order",
       "source": "crates/terrane-core/src/provenance/side_attributes/serialization/tests.rs",
       "seed": "0x892c_14af_7ed0_563b",
-      "models": "48 ordinary maps at input row counts 0/1/2/7/24/256; all eight attribute names/values/functions, all eight magic labels, ELF 32/64 and optional interpreter/needed fields, shebang argument absent/empty; path byte lengths 1/23/255/4096 with valid components; all four producer/selected domains; independent producer and carrying-witness commits",
+      "models": "48 ordinary maps at input row counts 0/1/2/7/24/256; all eight attribute names/values/functions, all eight magic labels, ELF 32/64 and optional interpreter/needed fields, shebang argument absent/one-byte with explicit empty argument encode rejection; path byte lengths 1/23/255/4096 with valid components; all four producer/selected domains; independent producer and carrying-witness commits",
       "projection_evidence": "Actual tuple helper compared with independent nine-slot model; sensitivity for every tuple field and location component; full canonical parsing. Actual selection helper filters both view and domain over the sorted unique BTreeMap input contract; six view/domain selections and three seeded insertion histories preserve independent five-slot row models; public untrusted context validator checks each resulting projection.",
       "scope_limit": "Ordinary borrowed payloads and map keys only, without VerifiedAttributeEvidence or history construction. Production keeps the same BTreeMap ordering and genuine evidence getter calls; no extra sort or authority constructor is introduced."
     },
