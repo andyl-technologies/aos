@@ -798,6 +798,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   disclosure boundary cases or the unfinished publication producer.
   Its ancestor-first complete-history draft also passes 17 selected native
   regressions; dedicated issuance and paired publication remain closed.
+  The isolated dedicated-role factory run passes 18 native regressions,
+  including a distinct disclosure key and refusal to repair an erased seed.
+  Native publication now derives its consumed snapshot from the actual held
+  guard's trust state, preserving complete snapshot equality. Historical
+  original authority remains independent of the current physical discloser;
+  identical issuer labels across independently initialized repositories still
+  need scoped historical handling before paired publication can qualify.
   — satisfies PROV-1 to PROV-31;
   `checks.terrane.gates.prov-commit-signature`,
   `checks.terrane.gates.prov-selector-presets`,
@@ -909,6 +916,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   exists and an actual request fails explicitly as pending. The concrete
   hermetic ext4 VM workflow and its successful artifact remain unimplemented;
   registration does not qualify local workflow or store conformance.
+  The isolated two-file ext4 workflow candidate is implemented and reviewed.
+  Its actual VM check builds the genuine release package, but required package
+  tests exit with failure before the rootfs or VM can run. No per-test totals
+  were emitted, the VM never boots, and no successful artifact exists. The
+  actual aggregate also fails on the 19 unqualified disclosure cases. Syntax
+  and both mandatory formatting checks pass; package checks remain enabled.
   Both mandatory formatting commands pass. Complete workflow and package
   qualification remain pending; native I/O
   batching preserves every required observation and fence.
