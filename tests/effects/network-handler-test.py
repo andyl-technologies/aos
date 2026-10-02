@@ -28,6 +28,55 @@ def policy(links):
 
 
 class NativeNetworkTests(unittest.TestCase):
+    def test_default_dhcp_preserves_ethernet_names_and_lease_policy(self):
+        link = {
+            "name": "default-dhcp", "kind": "ethernet",
+            "selector": {"kind": "ethernet", "value": "en*"},
+            "addressing": {
+                "dhcp": True, "addresses": [], "dns": [],
+                "dhcp_use_dns": True, "dhcp_use_ntp": True, "dhcp_use_domains": "yes",
+            },
+        }
+
+        files = handler.render(policy([link]))
+        text = next(content for name, content in files.items() if name.endswith(".network"))
+
+        self.assertIn('[Match]\nName="en*"\nType=ether\n', text)
+        self.assertIn("[Network]\nDHCP=yes\n", text)
+        self.assertIn("[DHCPv4]\nUseDNS=yes\nUseNTP=yes\nUseDomains=yes\n", text)
+
+    def test_explicit_selectors_and_unconfigured_dhcp_options_are_unchanged(self):
+        self.assertEqual(handler.selector({"kind": "ethernet", "value": ""}), "Type=ether\n")
+        self.assertEqual(handler.selector({"kind": "name", "value": "eth0"}), 'Name="eth0"\n')
+        self.assertEqual(handler.selector({"kind": "mac", "value": "52:54:00:12:00:01"}), 'MACAddress=52:54:00:12:00:01\n')
+        link = physical()
+        link["addressing"]["dhcp"] = True
+
+        files = handler.render(policy([link]))
+
+        self.assertFalse(any("[DHCPv4]" in text for text in files.values()))
+
+    def test_dhcp_policy_does_not_capture_vlan_attachment_directives(self):
+        link = physical()
+        link["addressing"].update(dhcp=True, dhcp_use_dns=False, dhcp_use_ntp=False, dhcp_use_domains="route")
+        vlan = {"name": "vlan10", "kind": "vlan", "parent": link["selector"], "id": 10, "addressing": {"dhcp": True, "addresses": [], "dns": []}}
+
+        files = handler.render(policy([link, vlan]))
+        text = next(content for name, content in files.items() if 'Name="eth0"' in content)
+
+        self.assertLess(text.index('VLAN="vlan10"'), text.index("[DHCPv4]"))
+        self.assertIn("UseDNS=no\nUseNTP=no\nUseDomains=route", text)
+
+    def test_default_matching_and_dhcp_policies_reject_invalid_values(self):
+        with self.assertRaisesRegex(ValueError, "Ethernet name pattern"):
+            handler.selector({"kind": "ethernet", "value": "en*\nName=eth0"})
+        for field, invalid in (("dhcp_use_dns", "yes"), ("dhcp_use_ntp", 1), ("dhcp_use_domains", "invalid")):
+            with self.subTest(field=field):
+                link = physical()
+                link["addressing"][field] = invalid
+                with self.assertRaisesRegex(ValueError, "DHCPv4"):
+                    handler.render(policy([link]))
+
     def test_vlan_parent_preserves_static_addressing_and_mtu(self):
         vlan = {"name": "vlan10", "kind": "vlan", "parent": {"kind": "name", "value": "eth0"}, "id": 10, "addressing": {"dhcp": True, "addresses": [], "dns": []}}
         files = handler.render(policy([physical(), vlan]))

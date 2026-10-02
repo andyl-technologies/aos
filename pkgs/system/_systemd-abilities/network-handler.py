@@ -40,7 +40,14 @@ def link_name(name):
 def selector(match):
     kind = match["kind"]
     if kind == "ethernet":
-        return "Type=ether\n"
+        pattern = match.get("value", "")
+        require(isinstance(pattern, str), "invalid Ethernet name pattern")
+        if pattern:
+            require(
+                len(pattern) <= 15 and re.fullmatch(r"[A-Za-z0-9_.:-]+\*?", pattern),
+                "invalid Ethernet name pattern",
+            )
+        return ("Name=" + value(pattern) + "\n" if pattern else "") + "Type=ether\n"
     if kind == "name":
         return "Name=" + value(link_name(match["value"])) + "\n"
     require(kind == "mac" and re.fullmatch(r"[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}", match["value"]), "invalid MAC selector")
@@ -61,6 +68,18 @@ def addressing(policy):
     link_local = policy.get("link_local", "ipv6")
     require(link_local in ("no", "ipv4", "ipv6", "yes"), "invalid link-local policy")
     text += "LinkLocalAddressing=" + link_local + "\n"
+    dhcp_options = []
+    for field, directive in (("dhcp_use_dns", "UseDNS"), ("dhcp_use_ntp", "UseNTP")):
+        configured = policy.get(field)
+        if configured is not None:
+            require(type(configured) is bool, "invalid DHCPv4 boolean policy")
+            dhcp_options.append(directive + "=" + ("yes" if configured else "no"))
+    domains = policy.get("dhcp_use_domains")
+    if domains is not None:
+        require(domains in ("yes", "no", "route"), "invalid DHCPv4 domain policy")
+        dhcp_options.append("UseDomains=" + domains)
+    if dhcp_options:
+        text += "\n[DHCPv4]\n" + "\n".join(dhcp_options) + "\n"
     if policy.get("ipv4_link_local_route", False):
         text += "\n[Route]\nDestination=169.254.0.0/16\nScope=link\n"
     return text
@@ -117,7 +136,12 @@ def render(policy):
             basename = "10-aos-" + hashlib.sha256(matching[0]["name"].encode()).hexdigest()[:24]
             path = "etc/systemd/network/" + basename + ".network"
             text = files[path]
-            split = text.find("\n[Route]")
+            # Attachment directives belong to Network, before DHCP/Route sections.
+            sections = [
+                position for marker in ("\n[DHCPv4]", "\n[Route]")
+                if (position := text.find(marker)) >= 0
+            ]
+            split = min(sections) if sections else -1
             if split < 0:
                 files[path] += "".join(sorted(attachments))
             else:

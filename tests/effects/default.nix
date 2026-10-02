@@ -18,9 +18,13 @@
     stages = import ./stages.nix;
     frozenHandler = import ./frozen-handler.nix;
     bootConsumers = import ./boot-consumers.nix;
+    testDiskProvenance = import ./test-disk-provenance.nix;
     daemonConsumers = import ./daemon-consumers.nix;
     hubConsumer = import ./hub-consumer.nix;
     securityPolicy = import ./security-policy.nix;
+    rolePackageDiscovery = import ./role-package-discovery.nix {inherit lib pkgs;};
+    rolePackageSelection = import ./role-package-selection.nix;
+    hostPolicyDefaults = import ./host-policy-defaults.nix;
     securityServices = import ./security-services.nix;
     systemdResources = import ./systemd-resources.nix;
     platformReplay = import ./platform-replay.nix;
