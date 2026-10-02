@@ -411,6 +411,12 @@ in
                 cp -a "$TOPLEVEL/initrd-deployment" ${receivedInitrdDestination}
               ''}
 
+              # Host adoption reads this selected policy in every boot image,
+              # including direct-kernel fixtures built without production hooks.
+              ${lib.optionalString ((system.config.system.build.bootMetadataBinding or null) != null) ''
+                cp ${system.config.system.build.bootMetadataBinding}/binding.json rootfs/usr/lib/aos/boot-metadata-binding.json
+              ''}
+
               # ── 9. /usr/lib/aos/nix-registration Nix DB seed ───────────────────────────
               # Stage-2 loads this plain text `nix-store --load-db` stream to
               # register the image closure without canonicalising/chowning store

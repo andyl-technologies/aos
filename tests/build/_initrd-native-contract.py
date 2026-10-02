@@ -192,7 +192,10 @@ def main():
     require(runtime.startswith("/nix/store/") and "/" not in runtime.removeprefix("/nix/store/"), "runtime is not a store root")
     runtime_executable = confined(initrd, runtime.removeprefix("/") + "/bin/aos-package-runtime", "nix/store")
     require(runtime_executable.is_file() and runtime_executable.stat().st_mode & 0o111, "public native runtime is not executable")
-    for path in sys.argv[6:]:
+    require(not (root / "usr/lib/aos/boot-metadata-binding.json").is_symlink(), "image metadata binding is not a copied regular file")
+    binding = confined(root, "usr/lib/aos/boot-metadata-binding.json", "usr/lib/aos/nix/store")
+    require(binding.read_bytes() == Path(sys.argv[6]).read_bytes(), "image metadata binding differs from selected policy")
+    for path in sys.argv[7:]:
         require(not (initrd / path.removeprefix("/")).exists(), "build-only output retained in initrd")
     require((initrd / "nix/var/nix/db").is_dir(), "initrd lacks writable native Nix state")
     require((initrd / "nix/var/nix/gcroots").is_dir(), "initrd lacks native retention directory")

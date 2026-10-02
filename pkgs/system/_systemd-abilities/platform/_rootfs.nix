@@ -72,10 +72,6 @@
       kernelModulePackages = config.aos.kernel.modulePackages;
       firmwarePackages = lib.optionals config.aos.kernel.includeFirmware config.aos.kernel.firmwarePackages;
       postPopulate = ''
-        ${lib.optionalString ((config.system.build.bootMetadataBinding or null) != null) ''
-          mkdir -p rootfs/usr/lib/aos
-          cp ${config.system.build.bootMetadataBinding}/binding.json rootfs/usr/lib/aos/boot-metadata-binding.json
-        ''}
         ${lib.optionalString sb.enable ''
           mkdir -p rootfs/usr/lib/aos/image-trust
           cp ${dbCertificate} rootfs/usr/lib/aos/image-trust/boot-db.crt

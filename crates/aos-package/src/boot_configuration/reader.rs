@@ -161,7 +161,8 @@ pub(super) fn read_bounded(path: &Path, maximum: u64) -> Result<Vec<u8>> {
         path,
         rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
         rustix::fs::Mode::empty(),
-    )?;
+    )
+    .with_context(|| format!("opening bounded boot source {}", path.display()))?;
     let file = fs::File::from(descriptor);
     let metadata = file.metadata()?;
     ensure!(
@@ -186,6 +187,9 @@ mod tests {
     fn source_documents_reject_symlinks_and_oversized_files() {
         let scratch = tempfile::tempdir().unwrap();
         let path = scratch.path().join("source.json");
+        let missing = read_bounded(&path, 3).unwrap_err();
+        assert!(format!("{missing:#}").contains(path.to_str().unwrap()));
+
         fs::write(&path, b"{}\n").unwrap();
         assert_eq!(read_bounded(&path, 3).unwrap(), b"{}\n");
         assert!(read_bounded(&path, 2).is_err());
