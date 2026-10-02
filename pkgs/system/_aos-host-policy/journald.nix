@@ -15,7 +15,8 @@
     };
     maxRetentionSeconds = lib.mkOption {
       type = lib.types.ints.between 1 315576000;
-      default = 2592000;
+      # Preserve the former systemd "1month" retention interval exactly.
+      default = 2629800;
       description = "Maximum event retention in seconds.";
     };
     maxUseBytes = lib.mkOption {

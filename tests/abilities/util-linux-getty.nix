@@ -12,6 +12,31 @@
   disabled = evaluate "host" [];
   host = evaluate "host" debug.config.aos.activation.stages.host.configuration;
   initrd = evaluate "initrd" debug.config.aos.activation.stages.initrd.configuration;
+  fleetModule = import ../../pkgs/system/_systemd-abilities/testing/fleet-module.nix {
+    inherit lib;
+    packages = {inherit (pkgs) bash coreutils systemd;};
+  };
+  fleet = (fleetModule {
+    bootMode = "kernel";
+    varProvisioning = "baked";
+    varSizeMiB = 2048;
+    bakeAgentUnit = false;
+    debugMac = "52:54:00:12:34:57";
+    mac = "52:54:00:12:34:56";
+    ip = "192.0.2.5";
+    defaultAgentPackage = pkgs.aos-test-agent;
+    inherit (pkgs) writeTextFile;
+  }) {config.aos.packages = {};};
+  fleetPolicies = fleet.aos.activation.stages.initrd.configuration;
+  fleetInitrd = evaluate "initrd" (debug.config.aos.activation.stages.initrd.configuration ++ fleetPolicies);
+  fleetBootstrap = import ../../pkgs/system/_systemd-abilities/observer-bootstrap.nix {
+    inherit lib pkgs;
+    config = fleetInitrd.config;
+  };
+  withoutGettyContract = lib.evalModules {
+    inherit lib;
+    modules = fleetPolicies;
+  };
   forceDisabled = evaluate "host" (debug.config.aos.activation.stages.host.configuration
     ++ [
       ({lib, ...}: {
@@ -22,6 +47,13 @@
   hostVirtual = host.config.aos.services."getty.virtual-console";
   initrdVirtual = initrd.config.aos.services."getty.virtual-console";
   hostSerial = host.config.aos.services."getty.serial-console";
+  initrdSerial = initrd.config.aos.services."getty.serial-console";
+  bootstrap = import ../../pkgs/system/_systemd-abilities/observer-bootstrap.nix {
+    inherit lib pkgs;
+    config = initrd.config;
+  };
+  initrdInputs = map (node: node.input) (gettyNodes initrd);
+  fleetMasks = fleet.boot.initrd.systemd.maskedUnits;
   gettyNodes = evaluated:
     builtins.filter (node:
       builtins.elem (lib.last node.identity) ["getty.virtual-console" "getty.serial-console"])
@@ -70,6 +102,9 @@ in
   assert gettyNodes forceDisabled == [];
   assert builtins.length (gettyNodes host) == 2;
   assert builtins.length (gettyNodes initrd) == 2;
+  assert gettyNodes fleetInitrd == [];
+  assert !(fleetBootstrap ? "getty.virtual-console") && !(fleetBootstrap ? "getty.serial-console");
+  assert !(withoutGettyContract.config.aos.getty.autologin.enable or false);
   assert !invalidStage.success;
   assert (builtins.head hostVirtual.lifecycle.start).executable
   == {
@@ -77,6 +112,11 @@ in
     arguments = ["--noclear" "tty1" "linux"];
   };
   assert hostVirtual.lifecycle.restart == "always";
+  assert hostVirtual.lifecycle.stop_timeout_millis == 90000;
+  assert hostSerial.lifecycle.stop_timeout_millis == 90000;
+  assert hostVirtual.activationOwner == "ability" && hostVirtual.autoStart;
+  assert hostSerial.activationOwner == "ability" && hostSerial.autoStart;
+  assert hostVirtual.manager_identity == null && hostSerial.manager_identity == null;
   assert hostVirtual.dependencies.after == ["systemd-user-sessions.service"];
   assert hostVirtual.dependencies.wanted_by == ["getty.target"];
   assert hostVirtual.dependencies.implicit_dependencies;
@@ -91,7 +131,15 @@ in
   assert !hostSerial.terminal.deallocate;
   assert (builtins.head initrdVirtual.lifecycle.start).executable.arguments == ["--noclear" "tty0" "linux"];
   assert initrdVirtual.dependencies.after == [];
-  assert initrdVirtual.dependencies.wanted_by == ["initrd-fs.target"];
+  assert initrdVirtual.dependencies.wanted_by == ["sysinit.target"];
+  assert initrdSerial.dependencies.wanted_by == ["sysinit.target"];
+  assert initrdVirtual.lifecycle.stop_timeout_millis == 5000;
+  assert initrdSerial.lifecycle.stop_timeout_millis == 5000;
+  assert bootstrap ? "getty.virtual-console" && bootstrap ? "getty.serial-console";
+  assert initrdVirtual.manager_identity.name == "debug-shell-console";
+  assert initrdSerial.manager_identity.name == "debug-shell-serial";
+  assert builtins.all (input: input.activation_owner == "image" && !input.auto_start) initrdInputs;
+  assert builtins.all (input: builtins.elem "${input.manager_identity.name}.service" fleetMasks) initrdInputs;
   assert !initrdVirtual.dependencies.implicit_dependencies;
   assert initrdVirtual.terminal.device == "/dev/tty0";
   assert !initrdVirtual.terminal.deallocate;
