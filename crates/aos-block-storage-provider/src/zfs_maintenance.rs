@@ -20,7 +20,12 @@ pub fn run(arguments: &[String]) -> Result<()> {
         [operation, pool, destination] if operation == "metrics" => {
             publish_metrics(pool, Path::new(destination))
         }
-        _ => bail!("expected `health POOL` or `metrics POOL DESTINATION`"),
+        [operation, executable, pool, declared @ ..] if operation == "report-undeclared" => {
+            crate::zfs_report::run(Path::new(executable), pool, declared)
+        }
+        _ => bail!(
+            "expected `health POOL`, `metrics POOL DESTINATION`, or `report-undeclared ZFS POOL [DATASET...]`"
+        ),
     }
 }
 

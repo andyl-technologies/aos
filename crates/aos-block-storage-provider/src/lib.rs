@@ -14,6 +14,7 @@ pub mod native_storage_provisioning;
 pub mod process;
 pub mod zfs_maintenance;
 pub mod zfs_memory;
+mod zfs_report;
 
 pub mod native_cryptsetup;
 pub mod native_state;

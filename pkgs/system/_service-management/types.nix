@@ -235,6 +235,11 @@
   lifecycleFeature = feature {
     description = boundedString 1024;
     execution_model = lib.types.enum ["foreground" "forking" "oneshot"];
+    start_mode = {
+      type = lib.types.enum ["wait" "enqueue"];
+      default = "wait";
+      description = "Wait for startup completion, or acknowledge the queued manager job without asserting service health.";
+    };
     working_directory = {
       type = lib.types.nullOr (lib.types.deferred executionPath);
       optional = true;
