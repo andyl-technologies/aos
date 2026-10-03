@@ -647,8 +647,10 @@ inventory. Keeping a completed retirement declaration in later generations is a
 no-op; an unknown identity is rejected. Removing a
 package or pruning a generation alone does not retire persistent state.
 
-Persistence also applies across reboot. Configuration-file generations carry
-retained persistent file contents and ownership until explicit retirement.
+Persistence also applies across reboot. Literal configuration-file generations
+carry retained persistent file bytes and ownership until explicit retirement.
+Live nonliteral file records retain metadata and existing upper-state custody;
+they do not synthesize boot-seed bytes.
 Before host activation, the selected identity backend restores its receipt-owned
 accounts from checked retained effect records, including accounts whose package
 has been removed. Existing foreign account rows remain intact; conflicting or

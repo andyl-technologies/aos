@@ -303,9 +303,10 @@ activator. It passes the generic retained export to the selected identity backen
 That backend validates the complete receipt-owned account projection before
 publishing any database changes and preserves foreign rows. Package-specific
 restoration stays in the backend; the shared package runtime does not interpret
-identity operations. Persistent configuration files similarly carry their exact
+identity operations. Literal persistent configuration files carry their exact
 file-effect identity, lifetime, bytes, mode, and owner into later immutable lower
-generations until an explicit retirement supplies the removal decision.
+generations until explicit retirement. Live nonliteral records retain metadata
+and existing upper-state custody without inventing boot-seed bytes.
 
 Committed generations retain their documents and results for inspection and
 rollback. Rollback applies a retained desired document as a new transaction;
