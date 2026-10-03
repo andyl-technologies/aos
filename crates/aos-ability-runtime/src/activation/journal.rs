@@ -106,7 +106,7 @@ impl State {
                     !transaction.is_empty() && transaction.len() <= 256,
                     "invalid transaction identity"
                 );
-                let desired = CheckedModuleGraph::decode(&canonical::to_vec(document)?)?;
+                let desired = CheckedModuleGraph::decode(&canonical::canonical_json(document)?)?;
                 let unique: std::collections::BTreeSet<_> = retire.iter().collect();
                 ensure!(
                     unique.len() == retire.len(),

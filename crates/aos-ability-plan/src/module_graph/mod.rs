@@ -162,7 +162,7 @@ impl CheckedModuleGraph {
     /// # Errors
     /// Returns an error if canonical serialization fails.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
-        canonical::to_vec(&self.document)
+        canonical::canonical_json(&self.document)
     }
 }
 

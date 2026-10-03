@@ -128,10 +128,13 @@ impl ActivationInspection {
 /// limits, or any record that violates native activation ordering or schemas.
 pub fn inspect(path: impl AsRef<Path>, limits: JournalLimits) -> Result<ActivationInspection> {
     let snapshot = FileJournal::<Event>::read_only_snapshot(path, limits)?;
+    let incomplete_tail_bytes = snapshot.incomplete_tail_bytes();
     let mut state = State::default();
     let mut pending_sequence = None;
     let mut records = Vec::with_capacity(snapshot.records().len());
-    for record in snapshot.records() {
+    // Release each historical payload after replay instead of keeping every
+    // graph and invocation alive while constructing the inspection result.
+    for record in snapshot.into_records() {
         let sequence = record.sequence();
         let dispatch = match record.body() {
             Event::Started { invocation } => {
@@ -187,7 +190,7 @@ pub fn inspect(path: impl AsRef<Path>, limits: JournalLimits) -> Result<Activati
         retired_effects: state.retired.clone(),
         schema: "aos.activation.inspection",
         live_state_verified: false,
-        incomplete_tail_bytes: snapshot.incomplete_tail_bytes(),
+        incomplete_tail_bytes,
         pending: state
             .pending
             .as_ref()
