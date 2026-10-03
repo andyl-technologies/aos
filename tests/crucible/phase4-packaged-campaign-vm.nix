@@ -152,9 +152,10 @@
     maximum_execution_quanta = ${
       if envoyProduct || twoNodeHttp
       then "250000"
-      # The choice promotion charges each 10us runnable replay step across
-      # both nodes. The measured source has about 58,200 such steps.
-      else if guestChoice
+      # Promotion charges each 10us runnable replay step. Choice sources need
+      # about 58,200 steps; the one-guest comparison exhausted 10,000 quanta
+      # before its observed 553ms capture. Both use the replay allowance.
+      else if guestChoice || singleGuestMaterialization
       then "75000"
       else "10000"
     }
