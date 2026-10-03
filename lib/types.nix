@@ -84,16 +84,13 @@
         })
     ];
 
-  # Given a list of defs whose values may be wrapped in any combination
-  # of `mkIf` / `mkMerge` / `mkDefault` / `mkForce` / `mkOverride`, peel
-  # all markers off, drop defs whose mkIf conditions are false, and keep
-  # only the defs at the winning (lowest) override priority.
-  peelProperties = defs: let
-    peeled = builtins.concatLists (
-      builtins.map (d: peelDef d (d.condition or true) (d._priority or 100) d.value) defs
+  # Peel property wrappers while retaining guards for nested module evaluation.
+  deferredProperties = defs:
+    builtins.concatLists (
+      builtins.map (d: peelDef d (d._condition or (d.condition or true)) (d._priority or 100) d.value) defs
     );
-  in
-    builtins.filter (d: d._condition) peeled;
+
+  peelProperties = defs: builtins.filter (d: d._condition) (deferredProperties defs);
 
   dischargeProperties = defs: let
     active = peelProperties defs;
@@ -742,7 +739,12 @@ in rec {
             # and accidentally erase unrelated package fields, and would make
             # host priority 75 incorrectly beat a nested package mkForce 50.
             filteredDefs =
-              if elemType.mergeProvenanceByKey or false || elemType ? _submodule
+              if lazy && elemType ? _submodule
+              # Submodule declarations must be available before their guarded
+              # configuration is evaluated. A sibling option may supply the
+              # guard; the nested evaluator discharges it at the concrete leaf.
+              then deferredProperties valueDefs
+              else if elemType.mergeProvenanceByKey or false || elemType ? _submodule
               then peelProperties valueDefs
               else dischargeProperties valueDefs;
           in

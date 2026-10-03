@@ -111,6 +111,30 @@ in {
     description = "Service configurations checked by the selected operation input schema.";
   };
 
+  config.aos.abilities.serviceManagement.operations.resourceGroup = {
+    input.options = {
+      name = lib.mkOption {
+        type = lib.types.strMatching "aos-pkg-[a-z0-9-]+";
+        description = "Resource group within the declaring package's namespace.";
+      };
+      description = lib.mkOption {
+        type = lib.types.str;
+        default = "Package service resource group";
+        description = "Human-readable resource group description.";
+      };
+    };
+    result.options = {
+      resource = lib.mkOption {
+        type = lib.types.str;
+        description = "Canonical manager resource established by this effect.";
+      };
+      name = lib.mkOption {
+        type = lib.types.strMatching "aos-pkg-[a-z0-9-]+";
+        description = "Established resource group name consumed by services.";
+      };
+    };
+  };
+
   config.aos.abilities.serviceManagement.operations.realize = {
     input = ./input.nix;
     result.options = {

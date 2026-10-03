@@ -128,7 +128,7 @@
       };
     defModule = d: {
       _file = d.file or "<anonymous submodule definition>";
-      config =
+      config = modules.mkIf (d._condition or (d.condition or true)) (
         applyInheritedPriority (
           if
             builtins.elem (d.provenance or "@base") ["@host" "@runtime"]
@@ -136,7 +136,8 @@
           then 100
           else d._priority or 100
         )
-        d.value;
+        d.value
+      );
     };
     baseDefModules = builtins.map defModule (builtins.filter
       (d:

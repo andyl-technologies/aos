@@ -564,7 +564,7 @@
   resourcesFeature =
     feature {
       resource_group = {
-        type = lib.types.nullOr (lib.types.strMatching "aos-pkg-[a-z0-9-]+");
+        type = lib.types.nullOr (lib.types.deferred (lib.types.strMatching "aos-pkg-[a-z0-9-]+"));
         default = null;
       };
       open_files = processResourceLimit;
