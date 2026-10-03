@@ -331,6 +331,9 @@ pub enum PackageCommand {
         /// Also remove orphaned dependencies
         #[arg(long)]
         autoremove: bool,
+        /// Remove from the system package profile
+        #[arg(long)]
+        system: bool,
     },
     /// Remove orphaned dependency packages
     Autoremove,
@@ -964,7 +967,7 @@ impl PackageCommand {
 
     /// Returns whether the command selects system scope.
     ///
-    /// Mutating and sysroot commands (`install`, `upgrade`, `rollback`,
+    /// Mutating and sysroot commands (`install`, `remove`, `upgrade`, `rollback`,
     /// `update`, `registry`) select the system scope to act on it; the
     /// read-only query commands (`search`, `show`, `list`, `depends`,
     /// `rdepends`, `policy`, `files`, `held`, `orphans`, `info`) select it to
@@ -973,6 +976,7 @@ impl PackageCommand {
         match self {
             PackageCommand::Image { .. } => true,
             PackageCommand::Install { system, .. } => *system,
+            PackageCommand::Remove { system, .. } => *system,
             PackageCommand::Upgrade { system, .. } => *system,
             PackageCommand::Rollback { system, .. } => *system,
             PackageCommand::Update { system, .. } => *system,
@@ -3012,6 +3016,7 @@ pub async fn run(
         PackageCommand::Remove {
             packages,
             autoremove,
+            ..
         } => {
             let auto_remove = *autoremove || config.settings.auto_autoremove;
             let outcome =

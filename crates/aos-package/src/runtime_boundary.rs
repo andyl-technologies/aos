@@ -163,8 +163,8 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
             AttestCommand::Verify { system, .. } | AttestCommand::Catalog { system, .. } => *system,
             AttestCommand::Enroll { .. } => false,
         },
-        PackageCommand::Remove { .. }
-        | PackageCommand::Autoremove
+        PackageCommand::Remove { system, .. } => *system,
+        PackageCommand::Autoremove
         | PackageCommand::Reinstall { .. }
         | PackageCommand::FullUpgrade
         | PackageCommand::Hold { .. }
@@ -411,6 +411,41 @@ mod tests {
         TestRegistryCli::try_parse_from(std::iter::once("apr").chain(arguments.iter().copied()))
             .expect("test registry command parses")
             .command
+    }
+
+    #[test]
+    fn remove_preserves_user_default_and_selects_system_scope_explicitly() {
+        let user = command(&["remove", "nix-daemon"]);
+        assert!(matches!(
+            &user,
+            PackageCommand::Remove { packages, autoremove: false, system: false }
+                if packages == &["nix-daemon"]
+        ));
+        assert!(!user.is_system());
+        assert_eq!(
+            user.runtime_requirement(),
+            crate::environment::RuntimeRequirement::Portable
+        );
+
+        let system = command(&["remove", "--system", "nix-daemon", "--autoremove"]);
+        assert!(matches!(
+            &system,
+            PackageCommand::Remove { packages, autoremove: true, system: true }
+                if packages == &["nix-daemon"]
+        ));
+        assert!(system.is_system());
+        assert_eq!(
+            system.runtime_requirement(),
+            crate::environment::RuntimeRequirement::AosRoot
+        );
+        assert!(!is_read_only(&system));
+
+        let container = RuntimeBoundary {
+            container: true,
+            read_only: false,
+        };
+        container.validate(&user).unwrap();
+        assert!(container.validate(&system).is_err());
     }
 
     #[test]

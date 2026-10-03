@@ -198,7 +198,7 @@ in {
         assert committed["schema"] == "aos.package.generation.inspection", committed
         daemon_effects = committed["daemonEffects"]
         assert len(daemon_effects) == 1, committed
-        command = f"{APM} remove nix-daemon --yes"
+        command = f"{APM} remove nix-daemon --system --yes"
         exit_code, stdout, stderr = builder.execute(command, timeout=600)
         result = {
             "exit_code": exit_code,
