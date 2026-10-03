@@ -536,6 +536,11 @@ impl OwnedCallbackRuntimeState {
                 self.slot_index,
                 binding.child_process_generation,
             );
+            live.as_mut().get_mut().rebind_control_stage_identity(
+                expected_identity,
+                self.slot_index,
+                binding.child_process_generation,
+            );
             live.as_mut()
                 .get_mut()
                 .reinitialize_hot_fork_child_workers(Arc::clone(&self.workers))
@@ -809,6 +814,11 @@ impl OwnedCallbackRuntimeState {
             }
             None => callback_state,
         };
+        let callback_state = callback_state.attach_control_stage_identity(
+            state.setup.mapped_region().backing_identity(),
+            slot_index,
+            process_generation,
+        );
         let callback_state = Box::pin(callback_state);
         let callback_pointer = std::ptr::from_ref(callback_state.as_ref().get_ref()).cast_mut();
         state.live_vcpu_time = Some(callback_state);
