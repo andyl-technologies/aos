@@ -1952,7 +1952,7 @@ fn pause_for_exact_checkpoint(
     Ok(())
 }
 
-fn directory_checkpoint_inspection_store(
+pub(super) fn directory_checkpoint_inspection_store(
     fixture: &FlightFixture,
 ) -> Result<ExactCheckpointStore, Box<dyn Error>> {
     let backend: Arc<dyn ImmutableBlobBackend> = Arc::new(DirectoryBlobBackend::new(

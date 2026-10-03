@@ -8,8 +8,8 @@
 //! fork materialization, replay, and restore stages of the second flight.
 
 use super::*;
-use crucible_campaign::AttemptId;
-use crucible_daemon::{AttemptExecutionKey, AttemptRuntimeState};
+use crucible_campaign::{AttemptExecutionScope, AttemptId, CampaignFactId, ExactCheckpointId};
+use crucible_daemon::{AttemptExecutionKey, AttemptRuntimeState, ExactCheckpointStore};
 use crucible_qemu::QemuLaunchArtifactIdentity;
 use crucible_session::engine::MarkerId;
 
@@ -301,7 +301,65 @@ fn capture_and_restore(
         ready["reached_configuration"],
         source["observation"]["child"]
     );
-    let checkpoint = json_string(&ready, "checkpoint")?;
+    let checkpoints = guest_choice::directory_checkpoint_inspection_store(fixture)?;
+    let ready_checkpoint = ExactCheckpointId::parse(&json_string(&ready, "checkpoint")?)?;
+    let ready_root = checkpoints.load_attempt_checkpoint(ready_checkpoint)?;
+    let raw_checkpoint = ready_root.promotion_source().unwrap_or(ready_checkpoint);
+    let attempt = AttemptId::parse(&json_string(&ready, "attempt")?)?;
+    let capture_scope = AttemptExecutionScope::SavepointCapture {
+        request: CampaignFactId::parse(&request)?,
+    };
+    // Ready authenticates the captured root. Restart requires its durable
+    // replay-validated replacement before shutdown cancels promotion workers.
+    let mut last_runtime = None;
+    let checkpoint = wait_with_progress(service, "checkpoint-promoted", || {
+        // The public Ready response requires Paused; publication temporarily
+        // owns CheckpointPromoting, so inspect the original scoped ledger first.
+        let mut states = guest_choice::attempt_states(fixture)?
+            .into_iter()
+            .filter(|(key, _)| key.attempt() == attempt && key.scope() == capture_scope);
+        let (_, state) = states.next().ok_or("Ready capture runtime is absent")?;
+        if states.next().is_some() {
+            return Err("Ready capture runtime is ambiguous".into());
+        }
+        last_runtime = Some(state);
+        let checkpoint = match state {
+            AttemptRuntimeState::Paused { checkpoint, .. } => checkpoint,
+            AttemptRuntimeState::CheckpointPromoting { .. } => return Ok(None),
+            _ => return Err(format!("Ready capture runtime changed: {state:?}").into()),
+        };
+        let Some(checkpoint) =
+            matching_capture_promotion(&checkpoints, checkpoint, raw_checkpoint)?
+        else {
+            return Ok(None);
+        };
+        let head = campaign_status(fixture)?;
+        let report = run_json(
+            connected_campaign(fixture).args([
+                "capture-status",
+                CAMPAIGN,
+                "--snapshot",
+                &json_string(&head, "snapshot")?,
+                "--request",
+                &request,
+            ]),
+            "inspect single-guest capture promotion",
+        )?;
+        assert_eq!(report["outcome"], "ready");
+        assert_eq!(report["attempt"], ready["attempt"]);
+        assert_eq!(report["source_observation"], ready["source_observation"]);
+        assert_eq!(
+            report["reached_configuration"],
+            ready["reached_configuration"]
+        );
+        assert_eq!(
+            ExactCheckpointId::parse(&json_string(&report, "checkpoint")?)?,
+            checkpoint
+        );
+        Ok(Some(checkpoint))
+    })
+    .map_err(|error| format!("{error}; last_capture_runtime={last_runtime:?}"))?;
+    let checkpoint = checkpoint.to_string();
     println!("single_guest_saved_checkpoint={checkpoint}");
     processes.observe(service.child.id(), false)?;
     service.stop()?;
@@ -349,6 +407,15 @@ fn capture_and_restore(
     )?;
     println!("single_guest_exact_restore_authenticated=true");
     Ok(())
+}
+
+fn matching_capture_promotion(
+    checkpoints: &ExactCheckpointStore,
+    checkpoint: ExactCheckpointId,
+    raw_checkpoint: ExactCheckpointId,
+) -> Result<Option<ExactCheckpointId>, Box<dyn std::error::Error>> {
+    let loaded = checkpoints.load_attempt_checkpoint(checkpoint)?;
+    Ok((loaded.promotion_source() == Some(raw_checkpoint)).then_some(checkpoint))
 }
 
 fn wait_for_observation(
