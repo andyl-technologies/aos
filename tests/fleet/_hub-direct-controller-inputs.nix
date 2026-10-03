@@ -38,14 +38,15 @@ in
     testDerivation = fleet.drvPath;
     driverExecutable = "${aos.pkgs.aos-test-driver}/bin/aos-test-driver";
     nixExecutable = "${aos.pkgs.nix}/bin/nix";
-    runtimePath = aos.lib.concatStringsSep ":" (builtins.map (package: "${package}/bin") [
-      aos.pkgs.coreutils
-      aos.pkgs.qemu
-      aos.pkgs.socat
-      aos.pkgs.gptfdisk
-      aos.pkgs.python3
-      aos.pkgs.bash
-    ]);
+    runtimePath = aos.lib.concatStringsSep ":" [
+      "${aos.pkgs.coreutils}/bin"
+      "${aos.pkgs.qemu}/bin"
+      "${aos.pkgs.socat}/bin"
+      # gptfdisk installs its disk tools in sbin.
+      "${aos.pkgs.gptfdisk}/sbin"
+      "${aos.pkgs.python3}/bin"
+      "${aos.pkgs.bash}/bin"
+    ];
     controllerPhase = (builtins.head selectedPhases).script;
     scope = "normal fleet input export only; no build, launch or qualification";
   }

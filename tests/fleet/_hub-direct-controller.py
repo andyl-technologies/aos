@@ -65,7 +65,7 @@ def captured_inputs(document):
     if document["controllerPhase"].count(document["driverExecutable"]) != 1:
         raise ValueError("normal controller driver differs from the selected executable")
     for directory in document["runtimePath"].split(":"):
-        if not re.fullmatch(STORE_FILE, directory) or Path(directory).name != "bin":
+        if not re.fullmatch(STORE_FILE, directory) or Path(directory).name not in {"bin", "sbin"}:
             raise ValueError("controller PATH contains a non-store tool directory")
     return selected
 
