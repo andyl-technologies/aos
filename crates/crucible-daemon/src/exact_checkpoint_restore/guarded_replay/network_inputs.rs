@@ -2,8 +2,7 @@
 
 use crucible::{
     BackendInput, Configuration, NodeId, ScheduledEventPayload, SchedulerEventLogClass,
-    SchedulerEventLogPayload, SingleSchedulerCheckpoint, World,
-    SimInstant,
+    SchedulerEventLogPayload, SimInstant, SingleSchedulerCheckpoint, World,
 };
 use crucible_qemu::QemuVmRealizationError;
 
