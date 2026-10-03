@@ -43,7 +43,7 @@ SECTIONS = {
     "Local reconciliation record field witnesses":
         ((0, 91, 91), ("reconciliation",)),
     "Publication and original-control alternative witnesses":
-        ((125, 0, 125), ("control",)),
+        ((126, 0, 126), ("control",)),
     "Consumed-lineage record field witnesses": ((0, 191, 191), ("lineage",)),
     "Outer recipe domain and trust field witnesses":
         ((0, 75, 75), ("recipe-context",)),

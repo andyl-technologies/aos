@@ -3,6 +3,7 @@
     "reference_backend_binding_models_preserve_all_alternatives"
     "reference_original_control_models_preserve_all_registered_versions"
     "reference_guard_snapshot_models_preserve_complete_nested_fields"
+    "reference_registry_attribute_revisions_preserve_registered_data_and_refuse_unknown"
     "reference_portable_snapshot_and_genesis_models_preserve_mandatory_inventory"
     "reference_publication_proof_models_preserve_all_alternatives"
     "reference_publication_control_negatives_require_structural_rejection"
@@ -36,5 +37,5 @@ in
     cargo fmt --all -- --check
     ${builtins.concatStringsSep "\n" (map runTest tests)}
     cargo clippy --frozen --offline -p terrane-core --test control_vectors -- -D warnings
-    printf 'PASS: independent publication/control alternatives and six exact owning-codec groups\n' > "$out/result"
+    printf 'PASS: independent publication/control alternatives and seven exact owning-codec groups\n' > "$out/result"
   ''

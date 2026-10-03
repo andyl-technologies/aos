@@ -2040,6 +2040,34 @@ is added rather than editing history.
     lookup, independent producers and the native index case remain mandatory.
     This decision qualifies no runtime behavior or task completion.
 
+- **[D-105] Correct the registered attribute-revision witness.**
+  - **Status:** Decided (2026-10-02)
+  - **Decision:** Preserve the former revision-two negative control bytes as
+    the positive `control-registry-attribute-two` ordinary-data witness.
+    Replace `control-negative-registry-revision` with unregistered attribute
+    revision three, and require an exact owning-codec group that checks both
+    registered revisions independently of the recorded property revision.
+  - **Rationale:** D-104 registers attribute revision two. The old negative
+    witness still required its rejection, contradicting that registration
+    and failing the actual golden and current-trunk aggregates. Recorded
+    scalar revisions remain independent ordinary data; only the exact active
+    carrier tuple enables the completed executable profile. Changing a
+    decoder to reject the registered revision would hide the contradiction.
+  - **Alternatives considered:** Keep revision two as a negative (rejected:
+    contradicts D-104); remove the rejection test (rejected: loses unknown
+    revision coverage); silently change its wire without preserving the old
+    data case (rejected: obscures the compatibility boundary).
+  - **Compatibility:** No encoding, identity, profile, registry meaning or
+    interface changes. All prior positive witnesses retain their bytes.
+    The former negative bytes remain present as a positive data case; their
+    obsolete rejection interpretation is withdrawn. The negative witness
+    retains its name while using a currently unregistered scalar. Requirement
+    IDs and gate names remain stable. No active interpretation or authority
+    follows from decoding either registered revision.
+  - **Affects:** TEST-1 to TEST-3, TREE-35, PROP-31 and D-104's recorded
+    attribute-revision compatibility. Independent generator reproduction and
+    owning-codec checks remain mandatory; this correction completes no task.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

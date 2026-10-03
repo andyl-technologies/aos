@@ -19148,6 +19148,36 @@ a9000101010298216361636c68626173656c696e65656368756e6b68636c6173
 2d61686675747572652d7a
 ```
 
+### control-registry-attribute-two
+
+Positive complete field model; owning decoding establishes format consistency only.
+
+```text
+{ 0 : 1 , 1 : 1 , 2 : [ "acl" , "baseline" , "chunk" , "classify" ,
+"compaction_threshold" , "compression" , "dedup" , "degraded" , "domain" ,
+"durability" , "encryption" , "gap_merge_bytes" , "hashes" , "home" , "index"
+, "merge" , "on-release" , "passthrough" , "prefetch" , "quota" , "reassembly"
+, "redundancy" , "reflog_retain" , "replicate" , "retain" , "span_max_bytes" ,
+"store" , "strict-attrs" , "trust" , "warm" , "whole_pack_threshold" , "wipe"
+, "writers" ] , 3 : 2 , 4 : 1 , 5 : 1 , 6 : 1 , 7 : "terrane-v1" , 8 : [
+"future-a" , "future-z" ] }
+```
+
+```hex
+a9000101010298216361636c68626173656c696e65656368756e6b68636c6173
+7369667974636f6d70616374696f6e5f7468726573686f6c646b636f6d707265
+7373696f6e65646564757068646567726164656466646f6d61696e6a64757261
+62696c6974796a656e6372797074696f6e6f6761705f6d657267655f62797465
+736668617368657364686f6d6565696e646578656d657267656a6f6e2d72656c
+656173656b706173737468726f7567686870726566657463686571756f74616a
+7265617373656d626c796a726564756e64616e63796d7265666c6f675f726574
+61696e697265706c69636174656672657461696e6e7370616e5f6d61785f6279
+7465736573746f72656c7374726963742d617474727365747275737464776172
+6d7477686f6c655f7061636b5f7468726573686f6c6464776970656777726974
+6572730302040105010601076a74657272616e652d7631088268667574757265
+2d61686675747572652d7a
+```
+
 ### control-profile
 
 Positive complete field model; owning decoding establishes format consistency only.
@@ -20337,7 +20367,7 @@ aa0001016573746f7265026468696e7403a30166726567696f6e02647a6f6e65
 
 ### control-negative-registry-revision
 
-Revision two has no registered interpretation.
+Attribute revision three is unregistered.
 
 ```text
 { 0 : 1 , 1 : 1 , 2 : [ "acl" , "baseline" , "chunk" , "classify" ,
@@ -20346,7 +20376,7 @@ Revision two has no registered interpretation.
 , "merge" , "on-release" , "passthrough" , "prefetch" , "quota" , "reassembly"
 , "redundancy" , "reflog_retain" , "replicate" , "retain" , "span_max_bytes" ,
 "store" , "strict-attrs" , "trust" , "warm" , "whole_pack_threshold" , "wipe"
-, "writers" ] , 3 : 2 , 4 : 1 , 5 : 1 , 6 : 1 , 7 : "terrane-v1" , 8 : [
+, "writers" ] , 3 : 3 , 4 : 1 , 5 : 1 , 6 : 1 , 7 : "terrane-v1" , 8 : [
 "future-a" , "future-z" ] }
 ```
 
@@ -20361,7 +20391,7 @@ a9000101010298216361636c68626173656c696e65656368756e6b68636c6173
 61696e697265706c69636174656672657461696e6e7370616e5f6d61785f6279
 7465736573746f72656c7374726963742d617474727365747275737464776172
 6d7477686f6c655f7061636b5f7468726573686f6c6464776970656777726974
-6572730302040105010601076a74657272616e652d7631088268667574757265
+6572730303040105010601076a74657272616e652d7631088268667574757265
 2d61686675747572652d7a
 ```
 

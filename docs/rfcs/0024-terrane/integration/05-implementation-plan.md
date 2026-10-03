@@ -443,6 +443,25 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   older suites cannot qualify the new contracts. Pure carrier implementation,
   independently published witnesses and complete T-DRV-2 runtime qualification
   remain pending, with no task checkbox or milestone advancement.
+  Parent review combines the carrier and recorded-revision candidates only
+  in the unpublished qualification branch. Its complete core suite passes
+  577/577 with zero skipped (Nextest run
+  `d0c7473c-f166-4be7-aeb9-65085eaa10c7`), as do core build, strict all-target
+  Clippy/rustdoc, `core-fuzz`, canonical CBOR, namespace reference models,
+  property resolution, both pure index/registry inventories, `core-no-std`,
+  registry completeness and both mandatory formatters. The actual golden
+  and current-trunk aggregates fail
+  `reference_publication_control_negatives_require_structural_rejection`:
+  the old `registry-revision` witness rejects attribute revision two, now
+  registered by D-104. D-105 preserves that wire as positive ordinary data
+  and replaces the negative with unregistered revision three. The shared
+  inventory requires the new exact owning-codec group before fixture work
+  begins; independent regeneration and actual checks remain pending.
+  D-105's shared registry check and both mandatory formatters pass. The
+  source-built Python inventory validates all 28 sections and their 17 owning
+  consumers. The actual `integration.control-reference-models` check exits 1
+  explicitly because the owning fixture files are absent from the trunk.
+  No candidate merges into the trunk and no task checkbox advances.
 - [x] **T-AUTH-1** Capability token verification (Ed25519, chain, caveats,
   attenuation) in `no_std`. — satisfies AUTH-7 to AUTH-22;
   `checks.terrane.gates.auth-verify-pure`,
