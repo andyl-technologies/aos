@@ -642,3 +642,296 @@ fn enabled_checker_preserves_marker_authentication_and_prefix_refusals() -> Test
     ));
     Ok(())
 }
+
+fn sparse_marker(
+    ticks: u64,
+    kind: GuestAssertionKind,
+    condition: bool,
+    must_hit: bool,
+) -> ObservableEvent {
+    ObservableEvent::guest_assertion_marker(
+        Icount { retired: ticks },
+        NodeId {
+            name: "guest".into(),
+        },
+        GuestAssertionMarker::new(
+            AssertionId::from_name("sparse"),
+            format!("marker at {ticks}"),
+            kind,
+            condition,
+            must_hit,
+            vec![],
+            format!("fixture.rs:{ticks}"),
+        ),
+    )
+}
+
+fn marker_entry(sequence: u64, marker: &ObservableEvent) -> SchedulerEventLogEntry {
+    crucible::test_support::condition_observation_entry_for_test(sequence, marker)
+}
+
+fn published_report(
+    checker: &OfflineAssertionChecker,
+    properties: &Properties,
+    entries: &[SchedulerEventLogEntry],
+) -> Result<crucible::HostAssertionReport, OfflineAssertionCheckError> {
+    // Explicit offsets retain the original every-prefix checker path.
+    let recorded =
+        RecordedAssertionLog::from_segments(entries.iter().cloned().map(|entry| vec![entry]))?;
+    checker.check_run_with_oracle(properties, &recorded, &mut BlackBoxHostOracle)
+}
+
+#[test]
+fn sparse_markers_match_original_prefix_reports_for_every_kind_and_update() -> TestResult {
+    let world = world(WhiteBoxPolicy::Enabled)?;
+    let checker = OfflineAssertionChecker::new().with_world_white_box_policies(&world);
+    let properties = Properties::empty();
+
+    for kind in [
+        GuestAssertionKind::Always,
+        GuestAssertionKind::Sometimes,
+        GuestAssertionKind::Reachable,
+        GuestAssertionKind::Unreachable,
+    ] {
+        for first in [false, true] {
+            for later_kind in [kind, GuestAssertionKind::Always] {
+                let first_marker = sparse_marker(2, kind, first, false);
+                let update = sparse_marker(5, later_kind, !first, true);
+                let entries = vec![
+                    boundary(0, 1),
+                    marker_entry(1, &first_marker),
+                    boundary(2, 3),
+                    boundary(3, 4),
+                    marker_entry(4, &update),
+                    boundary(5, 6),
+                ];
+
+                let sparse = checker.check_run(&properties, &entries)?;
+                let original = published_report(&checker, &properties, &entries)?;
+
+                assert_eq!(
+                    sparse, original,
+                    "kind={kind:?} first={first} update={later_kind:?}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn sparse_marker_observes_first_visible_atomic_prefix_before_closing_boundary() -> TestResult {
+    let world = world(WhiteBoxPolicy::Enabled)?;
+    let checker = OfflineAssertionChecker::new().with_world_white_box_policies(&world);
+    let marker = sparse_marker(5, GuestAssertionKind::Always, false, false);
+    let hidden = ObservableEvent::network_delivered(time(9), None, b"hidden".to_vec());
+    let visible = ObservableEvent::network_delivered(time(10), None, b"visible".to_vec());
+    let entries = vec![
+        boundary(0, 10),
+        marker_entry(1, &marker),
+        marker_entry(2, &hidden),
+        marker_entry(3, &visible),
+        boundary(4, 11),
+    ];
+    let published = RecordedAssertionLog::from_segments([
+        entries[..1].to_vec(),
+        entries[1..4].to_vec(),
+        entries[4..].to_vec(),
+    ])?;
+
+    let sparse = checker.check_run(&Properties::empty(), &entries)?;
+    let original =
+        checker.check_run_with_oracle(&Properties::empty(), &published, &mut BlackBoxHostOracle)?;
+
+    assert_eq!(sparse, original);
+    assert_eq!(
+        sparse.outcomes()[0].kind,
+        HostAssertionOutcomeKind::Violated
+    );
+    assert_eq!(sparse.outcomes()[0].at, time(10));
+    Ok(())
+}
+
+#[test]
+fn sparse_marker_reports_match_at_flight_scale_without_implicit_observations() -> TestResult {
+    let world = world(WhiteBoxPolicy::Enabled)?;
+    let properties = Properties::empty();
+    let checker = OfflineAssertionChecker::new().with_world_white_box_policies(&world);
+
+    for count in [512_u64, 1024, 2048, 10952] {
+        let mut entries: Vec<_> = (0..count)
+            .map(|sequence| boundary(sequence, sequence + 1))
+            .collect();
+        entries[32] = marker_entry(
+            32,
+            &sparse_marker(33, GuestAssertionKind::Reachable, true, true),
+        );
+        let marker_prefix =
+            crucible::test_support::condition_prefix_from_scheduler_entries_for_test(
+                entries[..33].to_vec(),
+            )?;
+        let terminal = crucible::test_support::condition_prefix_from_scheduler_entries_for_test(
+            entries.clone(),
+        )?;
+        let mut original_evaluator =
+            HostAssertionEvaluator::new(&properties).with_world_white_box_policies(&world);
+        original_evaluator.observe_prefix(&marker_prefix, &mut BlackBoxHostOracle);
+        let expected = original_evaluator.finalize_prefix(&terminal, &mut BlackBoxHostOracle);
+
+        let report = checker.check_run(&properties, &entries)?;
+
+        assert_eq!(report, expected);
+        assert_eq!(report.outcomes()[0].at, time(33));
+    }
+    Ok(())
+}
+
+#[test]
+fn sparse_marker_payload_reapplication_and_late_retirement_keep_terminal_evidence() -> TestResult {
+    let world = world(WhiteBoxPolicy::Enabled)?;
+    let checker = OfflineAssertionChecker::new().with_world_white_box_policies(&world);
+    let retired = ObservableEvent::node_state(
+        time(4),
+        NodeId {
+            name: "guest".into(),
+        },
+        crucible::NodeLifecycle::Exited,
+    );
+
+    for kind in [
+        GuestAssertionKind::Always,
+        GuestAssertionKind::Reachable,
+        GuestAssertionKind::Unreachable,
+    ] {
+        let marker = sparse_marker(2, kind, kind == GuestAssertionKind::Always, false);
+        let update = sparse_marker(5, kind, kind == GuestAssertionKind::Always, true);
+        let entries = vec![
+            boundary(0, 1),
+            marker_entry(1, &marker),
+            boundary(2, 3),
+            marker_entry(3, &retired),
+            marker_entry(4, &update),
+            boundary(5, 6),
+        ];
+
+        assert_eq!(
+            checker.check_run(&Properties::empty(), &entries)?,
+            published_report(&checker, &Properties::empty(), &entries)?
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn sparse_marker_preserves_original_invalid_history_and_terminal_error_order() -> TestResult {
+    let world = world(WhiteBoxPolicy::Enabled)?;
+    let checker = OfflineAssertionChecker::new().with_world_white_box_policies(&world);
+    let marker = marker_entry(
+        1,
+        &sparse_marker(5, GuestAssertionKind::Always, false, false),
+    );
+    let mut invalid = vec![
+        boundary(0, 10),
+        marker.clone(),
+        boundary(2, 5),
+        boundary(3, 10),
+    ];
+
+    assert_eq!(
+        checker.check_run(&Properties::empty(), &invalid),
+        published_report(&checker, &Properties::empty(), &invalid)
+    );
+    assert!(matches!(
+        checker.check_run(&Properties::empty(), &invalid),
+        Err(OfflineAssertionCheckError::ConditionEvaluation(
+            ConditionEvaluationError::FutureEventLogEntry { .. }
+        ))
+    ));
+    invalid[3] = crucible::test_support::condition_entry_with_content_hash_for_test(
+        invalid[3].clone(),
+        ContentHash::from_bytes(b"terminal corrupt"),
+    );
+    assert!(matches!(
+        checker.check_run(&Properties::empty(), &invalid),
+        Err(OfflineAssertionCheckError::ConditionEvaluation(
+            ConditionEvaluationError::InvalidEventLogEntryHash { sequence: 3 }
+        ))
+    ));
+    assert!(matches!(
+        checker.check_run(
+            &Properties::empty(),
+            &[
+                boundary(0, 1),
+                marker_entry(
+                    2,
+                    &sparse_marker(2, GuestAssertionKind::Always, false, false)
+                )
+            ]
+        ),
+        Err(OfflineAssertionCheckError::ConditionEvaluation(
+            ConditionEvaluationError::NonPrefixEventLogSequence {
+                expected: 1,
+                actual: 2
+            }
+        ))
+    ));
+
+    let atomic = vec![boundary(0, 10), marker, boundary(2, 10)];
+    assert!(checker.check_run(&Properties::empty(), &atomic).is_ok());
+    assert!(matches!(
+        published_report(&checker, &Properties::empty(), &atomic),
+        Err(OfflineAssertionCheckError::ConditionEvaluation(
+            ConditionEvaluationError::FutureEventLogEntry { .. }
+        ))
+    ));
+    Ok(())
+}
+
+#[test]
+fn sparse_marker_catalog_and_host_assertions_keep_original_every_prefix_path() -> TestResult {
+    let world = world(WhiteBoxPolicy::Enabled)?;
+    let marker = sparse_marker(2, GuestAssertionKind::Always, true, false);
+    let entries = vec![boundary(0, 1), marker_entry(1, &marker), boundary(2, 3)];
+    let properties = Properties::from_assertions_for_world(
+        &world,
+        vec![AssertionDef {
+            id: AssertionId::from_name("host-failure"),
+            message: "missing ack".into(),
+            property: Property::Always {
+                predicate: Predicate::network_match(
+                    None,
+                    FramePredicate::contains(b"ack".to_vec()),
+                ),
+            },
+        }],
+    )?;
+    let checker = OfflineAssertionChecker::new().with_world_white_box_policies(&world);
+
+    assert_eq!(
+        checker.check_run(&properties, &entries)?,
+        published_report(&checker, &properties, &entries)?
+    );
+    assert!(
+        checker
+            .check_run(&properties, &entries)?
+            .outcomes()
+            .iter()
+            .any(|outcome| outcome.at == time(1)
+                && outcome.kind == HostAssertionOutcomeKind::Violated)
+    );
+    let catalog = GuestAssertionMarker::new(
+        AssertionId::from_name("catalog"),
+        "required",
+        GuestAssertionKind::Reachable,
+        false,
+        true,
+        vec![],
+        "fixture.rs:1",
+    );
+    let catalog_checker = checker.with_guest_assertion_catalog([catalog]);
+    assert_eq!(
+        catalog_checker.check_run(&Properties::empty(), &entries)?,
+        published_report(&catalog_checker, &Properties::empty(), &entries)?
+    );
+    Ok(())
+}

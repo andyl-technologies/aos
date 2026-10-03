@@ -739,33 +739,44 @@ impl OfflineAssertionChecker {
             require_recorded_offsets,
         )?;
 
-        // An empty checker without enabled guest assertion markers has no
-        // intermediate observation effects. The authenticated terminal prefix
-        // retains every observable entry, including earlier assertion markers.
-        // Prove visibility or original atomic deferral before skipping reconstruction;
-        // other cases retain the original offset and atomic-batch semantics.
-        if !require_recorded_offsets
+        // With no host or declared guest states, only new enabled markers can
+        // change intermediate outcomes. Reapplying retained marker payloads is
+        // idempotent; guest marker states have no deadlines or lifecycle triggers.
+        // Prove temporal eligibility first, retaining the original loop
+        // for offsets, catalogs, and invalid or unsupported atomic histories.
+        let observe_new_markers_only = !require_recorded_offsets
             && recorded_log.prefix_offsets.is_empty()
             && evaluator.states.is_empty()
             && evaluator.guest_marker_states.is_empty()
             && self.guest_assertion_catalog.is_empty()
-            && !terminal_prefix.observable_events().iter().any(|event| {
-                matches!(
-                    event.payload(),
-                    ObservableEventPayload::GuestAssertionMarker { node, .. }
-                        if self.white_box_policies.get(node) == Some(&WhiteBoxPolicy::Enabled)
-                )
-            })
-            && intermediate_prefix_times_are_visible_or_atomic(event_log)
-        {
-            return Ok(evaluator.finalize_prefix(&terminal_prefix, oracle));
-        }
+            && intermediate_prefix_times_are_visible_or_atomic(event_log);
+        let mut pending_enabled_marker = false;
+        let mut latest_entry_ticks = 0;
 
         for index in 0..event_log.len() {
             let prefix_len = index + 1;
             if prefix_len == terminal_prefix_len {
                 continue;
             }
+            if observe_new_markers_only {
+                let entry = &event_log[index];
+                latest_entry_ticks = latest_entry_ticks.max(entry.at().ticks);
+                pending_enabled_marker |= matches!(
+                    entry.payload(),
+                    SchedulerEventLogPayload::Observable(
+                        ObservableEventPayload::GuestAssertionMarker { node, .. }
+                    ) if self.white_box_policies.get(node) == Some(&WhiteBoxPolicy::Enabled)
+                );
+                // An atomic batch can hide a marker until a later visible entry.
+                // Observe its first valid original prefix, even before the batch's
+                // closing boundary, so violation coordinates remain unchanged.
+                if !pending_enabled_marker
+                    || latest_entry_ticks > EventEvaluationPoint::event_log_entry(entry).at().ticks
+                {
+                    continue;
+                }
+            }
+
             let prefix_len_u64 = u64::try_from(prefix_len)
                 .map_err(|_| OfflineAssertionCheckError::PrefixLengthOverflow { prefix_len })?;
             let recorded_offset = recorded_log.event_log_offset(prefix_len_u64);
@@ -788,6 +799,7 @@ impl OfflineAssertionChecker {
                 Err(error) => return Err(error),
             };
             evaluator.observe_prefix(&prefix, oracle);
+            pending_enabled_marker = false;
         }
 
         Ok(evaluator.finalize_prefix(&terminal_prefix, oracle))
