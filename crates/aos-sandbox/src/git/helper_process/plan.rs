@@ -1,7 +1,8 @@
-//! The fixed E0 helper's bounded 120-byte inspection plan encoder.
+//! The fixed E0 helper's bounded 120-byte inspection and upload plan encoder.
 //!
 //! This is mechanical DATA, not a Git packet parser or an admission record.
-//! The only emitted verbs inspect an existing directory without publishing it.
+//! Inspection, upload and advertisement use one closed recipe selection. No
+//! emitted verb mutates refs or publishes an existing directory.
 //!
 //! ```text
 //! 0..8 magic AOSGHP01; 8 verb; 9 object format; 10..16 reserved zero
@@ -29,6 +30,42 @@ pub(in crate::git) enum GitHelperInspectionV1 {
     References = 5,
     /// Reports ancestry through the canonical two-OID E0 input grammar.
     IsAncestor = 10,
+}
+
+/// Selects the two existing E0 read-only smart HTTP recipes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::git) enum GitHelperUploadV1 {
+    /// Consumes the original nonempty stateless upload request.
+    Upload,
+    /// Advertises the same export with empty standard input.
+    Advertise,
+}
+
+/// Shares the wire encoder without enabling any E0 write verb.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum GitHelperRecipeV1 {
+    Inspection(GitHelperInspectionV1),
+    Upload(GitHelperUploadV1),
+}
+
+impl GitHelperRecipeV1 {
+    fn code(self) -> u8 {
+        match self {
+            Self::Inspection(verb) => verb as u8,
+            Self::Upload(GitHelperUploadV1::Upload) => 1,
+            Self::Upload(GitHelperUploadV1::Advertise) => 11,
+        }
+    }
+
+    fn accepts_input(self, input_bytes: u64) -> bool {
+        match self {
+            Self::Inspection(verb) => {
+                verb == GitHelperInspectionV1::IsAncestor || input_bytes == 0
+            }
+            Self::Upload(GitHelperUploadV1::Upload) => input_bytes != 0,
+            Self::Upload(GitHelperUploadV1::Advertise) => input_bytes == 0,
+        }
+    }
 }
 
 /// Carries finite mechanical budgets, never a hard aggregate ODB reservation.
@@ -71,6 +108,29 @@ pub(super) fn encode(
     git_verity: [u8; 32],
     helper_verity: [u8; 32],
 ) -> Result<[u8; PLAN_BYTES], GitHelperPlanErrorV1> {
+    encode_recipe(
+        GitHelperRecipeV1::Inspection(verb),
+        format,
+        limits,
+        input_bytes,
+        git_verity,
+        helper_verity,
+    )
+}
+
+/// Encodes one closed recipe with the same finite limits and wire layout.
+///
+/// # Errors
+/// Rejects invalid limits, recipe input lengths or absent image measurements,
+/// in the same limit/input/measurement order as the inspection adapter.
+pub(super) fn encode_recipe(
+    recipe: GitHelperRecipeV1,
+    format: GitObjectFormatV1,
+    limits: GitHelperLimitsV1,
+    input_bytes: usize,
+    git_verity: [u8; 32],
+    helper_verity: [u8; 32],
+) -> Result<[u8; PLAN_BYTES], GitHelperPlanErrorV1> {
     let input_bytes = u64::try_from(input_bytes).map_err(|_| GitHelperPlanErrorV1::Limit)?;
     let output_bytes = u64::try_from(limits.maximum_output_bytes)
         .map_err(|_| GitHelperPlanErrorV1::Limit)?;
@@ -92,9 +152,9 @@ pub(super) fn encode(
         return Err(GitHelperPlanErrorV1::Limit);
     }
 
-    // E0 owns the canonical two-OID parser for IsAncestor; no second parser is
-    // introduced here. All other inspection verbs have literal empty stdin.
-    if verb != GitHelperInspectionV1::IsAncestor && input_bytes != 0 {
+    // E0 owns ancestry grammar and Git owns smart protocol parsing. No second
+    // parser is introduced; only the recipe's exact empty/nonempty rule changes.
+    if !recipe.accepts_input(input_bytes) {
         return Err(GitHelperPlanErrorV1::Input);
     }
     if git_verity == [0; 32] || helper_verity == [0; 32] {
@@ -103,7 +163,7 @@ pub(super) fn encode(
 
     let mut bytes = [0; PLAN_BYTES];
     bytes[..8].copy_from_slice(b"AOSGHP01");
-    bytes[8] = verb as u8;
+    bytes[8] = recipe.code();
     bytes[9] = format as u8;
 
     for (offset, value) in [
@@ -264,5 +324,81 @@ mod tests {
 
             assert!(encoded.is_ok());
         }
+    }
+
+    #[test]
+    fn upload_and_advertisement_preserve_the_existing_e0_layout() {
+        for (upload, code, input_bytes) in [
+            (GitHelperUploadV1::Upload, 1, 130),
+            (GitHelperUploadV1::Advertise, 11, 0),
+        ] {
+            let bytes = encode_recipe(
+                GitHelperRecipeV1::Upload(upload),
+                GitObjectFormatV1::Sha256,
+                limits(),
+                input_bytes,
+                [0x31; 32],
+                [0x72; 32],
+            )
+            .unwrap();
+
+            let mut expected = [0; PLAN_BYTES];
+            expected[..8].copy_from_slice(b"AOSGHP01");
+            expected[8] = code;
+            expected[9] = 2;
+            for (offset, value) in [
+                (16, input_bytes as u64),
+                (24, 4096),
+                (32, 8192),
+                (40, 16),
+                (48, 5),
+            ] {
+                expected[offset..offset + 8].copy_from_slice(&value.to_be_bytes());
+            }
+            expected[56..88].copy_from_slice(&[0x31; 32]);
+            expected[88..120].copy_from_slice(&[0x72; 32]);
+
+            assert_eq!(bytes, expected);
+        }
+    }
+
+    #[test]
+    fn upload_and_advertisement_keep_the_exact_input_boundary() {
+        for (upload, input_bytes) in [
+            (GitHelperUploadV1::Upload, 0),
+            (GitHelperUploadV1::Advertise, 1),
+        ] {
+            let result = encode_recipe(
+                GitHelperRecipeV1::Upload(upload),
+                GitObjectFormatV1::Sha1,
+                limits(),
+                input_bytes,
+                [1; 32],
+                [2; 32],
+            );
+
+            assert!(matches!(result, Err(GitHelperPlanErrorV1::Input)));
+        }
+    }
+
+    #[test]
+    fn shared_limit_then_input_then_measurement_precedence_is_unchanged() {
+        let recipe = GitHelperRecipeV1::Upload(GitHelperUploadV1::Upload);
+        let mut invalid = limits();
+        invalid.maximum_output_bytes = 0;
+
+        let limit = encode_recipe(
+            recipe, GitObjectFormatV1::Sha1, invalid, 0, [0; 32], [0; 32],
+        );
+        let input = encode_recipe(
+            recipe, GitObjectFormatV1::Sha1, limits(), 0, [0; 32], [0; 32],
+        );
+        let measurement = encode_recipe(
+            recipe, GitObjectFormatV1::Sha1, limits(), 1, [0; 32], [0; 32],
+        );
+
+        assert!(matches!(limit, Err(GitHelperPlanErrorV1::Limit)));
+        assert!(matches!(input, Err(GitHelperPlanErrorV1::Input)));
+        assert!(matches!(measurement, Err(GitHelperPlanErrorV1::Measurement)));
     }
 }
