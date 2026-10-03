@@ -141,7 +141,88 @@ let
   opksshLogNode = builtins.head (builtins.filter (node: builtins.elem "opkssh-log" node.identity) (builtins.attrValues opkssh.deployment.graph.nodes));
   opksshLogId = builtins.head (builtins.attrNames (lib.filterAttrs (_: node: builtins.elem "opkssh-log" node.identity) opkssh.deployment.graph.nodes));
   opksshSshNode = builtins.head (builtins.filter (node: builtins.elem "serviceManagement" node.identity && builtins.elem "realize" node.identity && builtins.elem "ssh" node.identity) (builtins.attrValues opkssh.deployment.graph.nodes));
+  nixDaemon = lib.evalPackageModules {
+    scope = ["profile" "system"];
+    packageModules = [
+      (record "service-management" ../../pkgs/system/_service-management {})
+      (record "filesystem" ../../pkgs/filesystem/_aos-filesystem-provider {})
+      (record "aos-nix-store-provider" ../../pkgs/tools/_aos-nix-store-provider {})
+      (record "nix-daemon" ../../pkgs/tools/_nix-daemon-config (dependenciesFor ["nix" "bash" "coreutils" "systemd"]))
+    ];
+    operatorModules = [
+      {
+        nix-daemon.enable = false;
+        aos.abilities = builtins.listToAttrs (map (ability: {
+            name = ability.name;
+            value.operations = builtins.listToAttrs (map (name: {
+                inherit name;
+                value.handler.program = artifactLib.value (artifact "${ability.name}-handler");
+              })
+              ability.operations);
+          }) [
+            {
+              name = "serviceManagement";
+              operations = ["realize"];
+            }
+            {
+              name = "identity";
+              operations = ["group" "principal" "membership"];
+            }
+            {
+              name = "configuration";
+              operations = ["file"];
+            }
+            {
+              name = "mount";
+              operations = ["ensure"];
+            }
+          ]);
+      }
+    ];
+  };
+  nixDaemonLower =
+    (import ../../pkgs/system/_aos-host-policy/configuration-lower.nix {
+      inherit lib;
+      config = nixDaemon.config;
+    }).config._value.aos.configurationLower;
+  nixDaemonPersistentFiles = ["nix-daemon-slice" "nix-daemon-resources"];
+  nixDaemonFile = name: nixDaemon.config.aos.abilities.configuration.operations.file.effects.${name};
+  nixDaemonNodeId = name: builtins.hashString "sha256" (builtins.toJSON (nixDaemonFile name).contract.identity);
 in {
+  nixDaemonFilesRemainPersistent = assert builtins.all
+  (name: let
+    effect = nixDaemonFile name;
+    node = nixDaemon.deployment.graph.nodes.${nixDaemonNodeId name};
+  in
+    effect.lifetime
+    == "persistent"
+    && node.lifetime == "persistent"
+    && node.input.path == effect.input.path)
+  nixDaemonPersistentFiles; true;
+  nixDaemonLowerRetainsExactFileEffects = assert builtins.all
+  (name: let
+    effect = nixDaemonFile name;
+    path = lib.removePrefix "/etc/" effect.input.path;
+  in
+    nixDaemonLower.files.${path}.text
+    == effect.input.content
+    && nixDaemonLower.ownership.files.${path} == effect.contract.owner
+    && nixDaemonLower.fileEffects.${path}
+    == {
+      id = nixDaemonNodeId name;
+      lifetime = "persistent";
+    })
+  nixDaemonPersistentFiles; true;
+  nixDaemonPersistentFilesHaveOneProducer = assert builtins.all
+  (name:
+    builtins.length (builtins.filter
+      (node:
+        builtins.elem "configuration" node.identity
+        && builtins.elem "file" node.identity
+        && node.input.path == (nixDaemonFile name).input.path)
+      (builtins.attrValues nixDaemon.deployment.graph.nodes))
+    == 1)
+  nixDaemonPersistentFiles; true;
   dynamicStorageHasOneOwner = assert builtins.all
   (name:
     evaluated.config.aos.services.${name}.identity.ephemeral

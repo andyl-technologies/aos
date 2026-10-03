@@ -18,6 +18,12 @@ pub struct Input {
     pub etc_trees: Vec<EtcTree>,
     /// Maps relative configuration paths to typed contents.
     pub files: BTreeMap<String, Entry>,
+    /// Binds native file paths to their declaring effect and lifetime.
+    #[serde(rename = "fileEffects", default)]
+    pub file_effects: BTreeMap<String, FileEffect>,
+    /// Names exact effects explicitly retired by the current deployment.
+    #[serde(rename = "retiredEffects", default)]
+    pub retired_effects: Vec<String>,
     /// Retains executable scripts referenced by configuration bodies.
     #[serde(rename = "jobScripts")]
     pub job_scripts: BTreeMap<String, JobScript>,
@@ -38,6 +44,28 @@ pub struct Input {
     /// Names the OS-owned content-addressed lower repository.
     #[serde(rename = "retainedRoot")]
     pub retained_root: String,
+}
+
+/// Binds one native file path to its authenticated effect identity.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FileEffect {
+    /// Names the canonical SHA-256 identity of the declaring effect.
+    pub id: String,
+    /// Determines whether the file survives disappearance from desired state.
+    pub lifetime: FileLifetime,
+}
+
+/// Describes the lifetime of a projected native configuration file.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum FileLifetime {
+    /// Ends after the transaction's consumers have completed.
+    Transaction,
+    /// Ends when the declaring effect leaves desired state.
+    Instance,
+    /// Survives until its exact effect is explicitly retired.
+    Persistent,
 }
 
 /// Retains one package-authored immutable configuration directory.
@@ -272,6 +300,38 @@ impl Input {
                 .all(|owner| !owner.is_empty()),
             "configuration owner is empty"
         );
+        let mut effect_ids = std::collections::BTreeSet::new();
+        for (path, effect) in &self.file_effects {
+            ensure!(
+                self.files
+                    .get(path)
+                    .is_none_or(|entry| matches!(entry, Entry::Text { .. })),
+                "seeded native file metadata must name a literal text file"
+            );
+            ensure!(
+                valid_effect_id(&effect.id),
+                "native file effect identity is invalid"
+            );
+            ensure!(
+                effect_ids.insert(&effect.id),
+                "native file effect owns multiple paths"
+            );
+        }
+        let mut retired_ids = std::collections::BTreeSet::new();
+        for id in &self.retired_effects {
+            ensure!(
+                valid_effect_id(id),
+                "retired file effect identity is invalid"
+            );
+            ensure!(
+                retired_ids.insert(id),
+                "retired effect identity is duplicated"
+            );
+            ensure!(
+                !effect_ids.contains(id),
+                "configured file effect cannot be retired"
+            );
+        }
         for root in &self.store_paths {
             ensure!(
                 root.starts_with("/nix/store/") && root.split('/').count() == 4,
@@ -281,6 +341,7 @@ impl Input {
         for path in self
             .files
             .keys()
+            .chain(self.file_effects.keys())
             .chain(self.removed_paths.iter())
             .chain(self.baseline_paths.iter())
         {
@@ -363,6 +424,13 @@ impl Input {
     }
 }
 
+fn valid_effect_id(id: &str) -> bool {
+    id.len() == 64
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 fn collect_tree_paths(
     input: &Input,
     source: &Path,
@@ -431,6 +499,8 @@ mod tests {
                     mode: "0444".into(),
                 },
             )]),
+            file_effects: BTreeMap::new(),
+            retired_effects: Vec::new(),
             job_scripts: BTreeMap::new(),
             removed_paths: Vec::new(),
             baseline_paths: Vec::new(),
@@ -443,6 +513,81 @@ mod tests {
             store_paths: Vec::new(),
             retained_root: "/var/lib/aos/configuration-lowers".into(),
         }
+    }
+
+    #[test]
+    fn native_file_metadata_requires_literal_unique_canonical_effects() {
+        let mut input = input();
+        let effect = FileEffect {
+            id: "a".repeat(64),
+            lifetime: FileLifetime::Persistent,
+        };
+        input
+            .file_effects
+            .insert("app/config".into(), effect.clone());
+        input.validate().unwrap();
+
+        for invalid in [
+            "A".repeat(64),
+            "a".repeat(63),
+            format!("sha256:{}", "a".repeat(64)),
+        ] {
+            input.file_effects.get_mut("app/config").unwrap().id = invalid;
+            assert!(input.validate().is_err());
+        }
+        input
+            .file_effects
+            .insert("app/config".into(), effect.clone());
+        input
+            .file_effects
+            .insert("../missing".into(), effect.clone());
+        assert!(input.validate().is_err());
+        input.file_effects.remove("../missing");
+
+        input.files.insert(
+            "other".into(),
+            Entry::Text {
+                text: "other".into(),
+                mode: "0644".into(),
+            },
+        );
+        input.ownership.files.insert("other".into(), "other".into());
+        input.file_effects.insert("other".into(), effect.clone());
+        assert!(input.validate().is_err());
+        input.file_effects.remove("other");
+        input.files.insert(
+            "app/config".into(),
+            Entry::Symlink {
+                target: "other".into(),
+            },
+        );
+        assert!(input.validate().is_err());
+    }
+
+    #[test]
+    fn retirement_metadata_rejects_configured_duplicate_and_invalid_identities() {
+        let mut input = input();
+        let configured = "a".repeat(64);
+        input.file_effects.insert(
+            "app/config".into(),
+            FileEffect {
+                id: configured.clone(),
+                lifetime: FileLifetime::Persistent,
+            },
+        );
+        for invalid in [
+            vec![configured],
+            vec!["invalid".into()],
+            vec!["b".repeat(64), "b".repeat(64)],
+        ] {
+            input.retired_effects = invalid;
+            assert!(input.validate().is_err());
+        }
+        input.retired_effects = vec!["b".repeat(64)];
+        input.validate().unwrap();
+        let mut document = serde_json::to_value(&input).unwrap();
+        document["fileEffects"]["app/config"]["lifetime"] = serde_json::json!("forever");
+        assert!(serde_json::from_value::<Input>(document).is_err());
     }
 
     #[test]

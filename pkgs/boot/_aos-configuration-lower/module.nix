@@ -49,6 +49,13 @@
     etcTrees = defaulted treeOption.type [] "Immutable directory sources expanded before explicit configuration files.";
     baselineInventory = defaulted (lib.types.nullOr lib.types.pathInStore) null "Authenticated initial image managed-leaf inventory JSON file.";
     files = defaulted (lib.types.attrsOf entry) {} "Merged relative OS baseline configuration entries.";
+    fileEffects = defaulted (lib.types.attrsOf (lib.types.submodule {
+      options = {
+        id = option (lib.types.strMatching "[0-9a-f]{64}") "Exact declaring activation effect identity.";
+        lifetime = option (lib.types.enum ["transaction" "instance" "persistent"]) "Declaring effect's state lifetime.";
+      };
+    })) {} "Derived lifecycle ownership of native file declarations.";
+    retiredEffects = defaulted (lib.types.listOf (lib.types.strMatching "[0-9a-f]{64}")) [] "Exact persistent effect identities explicitly retired by this deployment.";
     jobScripts = defaulted (lib.types.attrsOf (lib.types.submodule {
       options = {
         text = option text "Exact script content with interpreter.";

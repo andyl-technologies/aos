@@ -18,6 +18,19 @@
           content = "host-owned\n";
           mode = "0644";
         };
+        aos.abilities.configuration.operations.file.effects.retained = {
+          lifetime = "persistent";
+          input = {
+            path = "/etc/runtime-config/retained.conf";
+            content = "retained-package-policy\n";
+            mode = "0640";
+          };
+        };
+        aos.activation.retire = [(builtins.hashString "sha256" "unconfigured-retained-effect")];
+        aos.abilities.configuration.operations.file.effects.live.input = {
+          path = "/etc/runtime-config/live.conf";
+          fragments = ["runtime-only\n"];
+        };
         aos.filesystems.etcTrees = [
           {
             target = "package-tree";
