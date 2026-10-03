@@ -170,6 +170,50 @@ let
       aos.abilities.serviceManagement.operations.realize.handler = {inherit program;};
     }
   ];
+  guardedService = operatorModules:
+    lib.evalModules {
+      inherit lib operatorModules;
+      modules = [
+        ../../lib/effects/module.nix
+        ../../pkgs/system/_service-management/module.nix
+        ({config, ...}: {
+          aos.services.example = {
+            enable = lib.mkDefault true;
+            inherit lifecycle;
+            resources.resource_group = config.aos.abilities.serviceManagement.operations.resourceGroup.effects.example.outputs.name;
+          };
+          aos.abilities.serviceManagement.operations = {
+            realize.handler = {inherit program;};
+            # The sibling operation is guarded by the consumer whose input
+            # depends on its output. Inspecting enable must not force that input.
+            resourceGroup = lib.mkIf config.aos.services.example.enable {
+              handler = {inherit program;};
+              effects.example.input = {
+                name = "aos-pkg-example";
+                description = lib.mkDefault "Package resource group";
+              };
+            };
+          };
+        })
+      ];
+    };
+  guardedEnabled = guardedService [];
+  guardedDisabled = guardedService [{aos.services.example.enable = lib.mkForce false;}];
+  operatorResourceGroup = {config, ...}: {
+    aos.abilities.serviceManagement.operations.resourceGroup.effects = lib.mkIf config.aos.services.example.enable {
+      example.input.description = lib.mkForce "Operator resource group";
+    };
+  };
+  guardedOverride = guardedService [operatorResourceGroup];
+  guardedOverrideDisabled = guardedService [
+    {aos.services.example.enable = lib.mkForce false;}
+    operatorResourceGroup
+  ];
+  enabledGraph = guardedEnabled.config.aos.activation.graph;
+  operationId = graph: operation:
+    builtins.head (builtins.filter (id: builtins.elem operation graph.nodes.${id}.identity) (builtins.attrNames graph.nodes));
+  groupId = operationId enabledGraph "resourceGroup";
+  serviceId = operationId enabledGraph "realize";
 in {
   noManualInstances = assert builtins.attrNames configured.config.aos.abilities.serviceManagement.operations.realize.effects == ["example"]; true;
   sharedInputExtension = assert extended.config.aos.services.example.operatorSetting == "configured";
@@ -186,4 +230,21 @@ in {
   managerAliasCollisionFails = assert !(builtins.tryEval (builtins.deepSeq aliasCollision.config.aos.activation.graph true)).success; true;
   invalidModeFails = assert !(builtins.tryEval (builtins.deepSeq invalidMode.config.aos.activation.graph true)).success; true;
   taggedPathCondition = assert (builtins.head signalCondition.config.aos.services.example.conditions.all).predicate == "exists"; true;
+  guardedSiblingOperationKeepsDependency = assert builtins.length (builtins.attrNames enabledGraph.nodes) == 2;
+  assert enabledGraph.nodes.${serviceId}.dependencies == [groupId];
+  assert enabledGraph.order == [groupId serviceId]; true;
+  guardedSiblingOperationKeepsTypedOutput = assert guardedEnabled.config.aos.services.example.resources.resource_group
+  == guardedEnabled.config.aos.abilities.serviceManagement.operations.resourceGroup.effects.example.outputs.name;
+  assert enabledGraph.nodes.${groupId}.input.name == "aos-pkg-example"; true;
+  disabledGuardHasNoOrphanedEffects = assert guardedDisabled.config.aos.services.example.enable == false;
+  assert guardedDisabled.config.aos.abilities.serviceManagement.operations.resourceGroup.effects == {};
+  assert guardedDisabled.config.aos.abilities.serviceManagement.operations.realize.effects == {};
+  assert guardedDisabled.config.aos.activation.graph.nodes == {};
+  assert guardedDisabled.config.aos.activation.graph.order == []; true;
+  nestedGuardPreservesDefaultPriority = assert enabledGraph.nodes.${groupId}.input.description == "Package resource group"; true;
+  nestedGuardPreservesOperatorPriority = assert guardedOverride.config.aos.abilities.serviceManagement.operations.resourceGroup.effects.example.input.description == "Operator resource group";
+  assert (builtins.attrValues guardedOverride.config.aos.activation.graph.nodes) != []; true;
+  disabledNestedOperatorOverrideHasNoOrphans = assert guardedOverrideDisabled.config.aos.abilities.serviceManagement.operations.resourceGroup.effects == {};
+  assert guardedOverrideDisabled.config.aos.activation.graph.nodes == {};
+  assert guardedOverrideDisabled.config.aos.activation.graph.order == []; true;
 }
