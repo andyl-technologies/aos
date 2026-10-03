@@ -314,7 +314,7 @@ fn validate_desired(desired: &Desired) -> Result<()> {
     Ok(())
 }
 
-fn validate_pool_name(pool: &str) -> Result<()> {
+pub(crate) fn validate_pool_name(pool: &str) -> Result<()> {
     ensure!(
         !pool.is_empty() && pool.len() <= 255,
         "storage-pool name is invalid"
@@ -330,7 +330,7 @@ fn validate_pool_name(pool: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_dataset_name(dataset: &str) -> Result<()> {
+pub(crate) fn validate_dataset_name(dataset: &str) -> Result<()> {
     ensure!(
         !dataset.is_empty() && dataset.len() <= 1024,
         "storage-dataset name is invalid"

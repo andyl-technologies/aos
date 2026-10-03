@@ -656,6 +656,9 @@ class Handler(ConfigurationHandler):
         return fields
 
     def service(self, action):
+        start_mode = self.value["lifecycle"].get("start_mode", "wait")
+        if start_mode not in {"wait", "enqueue"}:
+            raise ValueError("unsupported service startup dispatch mode")
         group = (self.value.get("resources") or {}).get("resource_group")
         identity = self.invocation["effect"]["identity"]
         owner = identity[-4] if len(identity) >= 4 else None
@@ -725,16 +728,19 @@ class Handler(ConfigurationHandler):
                 started = int((evidence or {}).get("ExecMainStartTimestampMonotonic", "0"))
                 prior_start = int(self.receipt.get("prior_start", "0"))
                 exited = int((evidence or {}).get("ExecMainExitTimestampMonotonic", "0"))
-                if evidence and started > prior_start and evidence.get("Result") == "success" and (evidence.get("ActiveState") == "active" or exited >= started):
+                completed = evidence and started > prior_start and (evidence.get("ActiveState") == "active" or exited >= started)
+                if completed and (start_mode == "enqueue" or evidence.get("Result") == "success"):
                     # Unit retirement may still be pending after dispatch. Reconcile
-                    # it before acknowledging an otherwise successful execution.
+                    # it before acknowledging the evidenced dispatch.
                     if self.receipt.get("previous_units") or self.receipt.get("previous_links"):
                         return {"status": "indeterminate"}
+                    # Enqueued startup acknowledges dispatch, not health. A
+                    # completed failed run is evidence that it was dispatched.
                     self.save(dict(self.receipt, pending=False, dispatching=False))
                     return {"status": "current", "outputs": result}
                 return {"status": "indeterminate"}
             if expected and self.receipt and not self.receipt.get("pending") and self.receipt["revision"] == self.invocation["revision"]:
-                if owner == "ability" and self.value["auto_start"] and self.value["enabled"]:
+                if start_mode == "wait" and owner == "ability" and self.value["auto_start"] and self.value["enabled"]:
                     state = self.manager("show", unit_name, "--property=ActiveState", "--value", check=False)
                     if state.returncode != 0 or state.stdout.strip() not in {"active", "reloading"}:
                         if self.value["lifecycle"]["execution_model"] != "oneshot":
@@ -815,7 +821,10 @@ class Handler(ConfigurationHandler):
             evidence = self.execution_evidence(unit_name)
             receipt.update(dispatching=True, prior_start=(evidence or {}).get("ExecMainStartTimestampMonotonic", "0"))
             self.save(receipt)
-            self.manager(operation, unit_name)
+            if start_mode == "enqueue":
+                self.manager(operation, "--no-block", unit_name)
+            else:
+                self.manager(operation, unit_name)
         for name in prior_units.keys() - desired.keys():
             if self.unit_digest(name, custody) == prior_units[name]:
                 durable_unlink(self.unit_directory / name)

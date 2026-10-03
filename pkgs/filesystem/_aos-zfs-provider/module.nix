@@ -73,6 +73,15 @@
   readinessResources =
     [poolOperation.effects.system.outputs.resource]
     ++ lib.mapAttrsToList (name: _: datasetOperation.effects.${name}.outputs.resource) configuredDatasets;
+  hostActivator = config.aos.boot.hostActivatorService or null;
+  reportAfter = lib.optional (hostActivator != null) (let
+    service = config.aos.services.${hostActivator};
+  in
+    if service.manager_identity != null
+    then service.manager_identity.name
+    else if service.service != ""
+    then service.service
+    else hostActivator);
   largeRecordDatasets = builtins.filter (name: !(builtins.elem cfg.datasets.${name}.recordSize safeRecordSizes)) (builtins.attrNames cfg.datasets);
   deduplicatedDatasets = builtins.filter (name: cfg.datasets.${name}.deduplicate) (builtins.attrNames cfg.datasets);
 in {
@@ -85,7 +94,7 @@ in {
     };
     poolName = lib.mkOption {
       type = lib.types.strMatching "[A-Za-z][A-Za-z0-9_.:-]*";
-      default = "aos-pool";
+      default = "rpool";
       description = "Name of the storage pool for persistent data.";
     };
     systemState = lib.mkOption {
@@ -257,6 +266,52 @@ in {
       };
     }
     (lib.mkIf cfg.enable {aos.filesystems.zfs.maintenance.enable = lib.mkDefault true;})
+    {
+      aos.services."zfs-storage.aos-zfs-report-undeclared" = {
+        enable = cfg.enable && cfg.reportUndeclaredDatasets;
+        service = "aos-zfs-report-undeclared";
+        autoStart = true;
+        activationAfter = readinessResources;
+        dependencies = {
+          prerequisites = [];
+          after = reportAfter;
+          before = [];
+          requires = [];
+          wants = [];
+          wanted_by = ["multi-user.target"];
+        };
+        lifecycle = {
+          description = "Report ZFS datasets that no configuration declares";
+          execution_model = "oneshot";
+          # A failed report remains visible in PID 1 without blocking storage
+          # activation. Ordering delays its job until the boot activator exits.
+          start_mode = "enqueue";
+          environment_files = [];
+          condition = [];
+          pre_start = [];
+          start = [
+            {
+              executable = {
+                path = "${package}/bin/aos-zfs-maintenance";
+                arguments =
+                  ["report-undeclared" "${dependencies.zfs}/sbin/zfs" cfg.poolName]
+                  ++ lib.mapAttrsToList (name: _: "${cfg.poolName}/${name}") configuredDatasets;
+              };
+              ignore_failure = false;
+            }
+          ];
+          post_start = [];
+          stop = [];
+          post_stop = [];
+          restart = "never";
+          restart_delay_millis = 0;
+          configuration_change_action = "restart";
+          remain_after_exit = true;
+          start_timeout_millis = 90000;
+          stop_timeout_millis = 90000;
+        };
+      };
+    }
     (lib.optionalAttrs ((options.aos.kernel or {}) ? externalPackages) {
       aos.kernel.externalPackages.${packageName} = lib.mkIf cfg.enable [dependencies.zfs];
     })

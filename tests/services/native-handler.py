@@ -815,6 +815,106 @@ class NativeHandlerTests(unittest.TestCase):
             instance.service("apply")
             self.assertEqual(calls, [("daemon-reload",)])
 
+    def test_enqueued_report_keeps_failed_unit_visible_without_repeating_dispatch(self):
+        with tempfile.TemporaryDirectory() as root:
+            value = service()
+            value["lifecycle"].update(
+                execution_model="oneshot", start_mode="enqueue",
+                configuration_change_action="restart", remain_after_exit=True,
+            )
+            units = Path(root) / "units"
+            state = Path(root) / "state"
+            calls = []
+
+            def manager(*args, **kwargs):
+                calls.append(args)
+                return subprocess.CompletedProcess(args, 0, (
+                    "ActiveState=failed\nResult=exit-code\n"
+                    "ExecMainStartTimestampMonotonic=100\n"
+                    "ExecMainExitTimestampMonotonic=150\n"
+                ), "")
+
+            first = handler_module.Handler(
+                invocation("serviceManagement", "realize", value), "unused", units, state,
+            )
+            first.manager = manager
+            first.service("apply")
+
+            self.assertIn(("start", "--no-block", "example.service"), calls)
+            self.assertFalse(first.receipt["pending"])
+            before = list(calls)
+            self.assertEqual(first.service("observe")["status"], "current")
+            self.assertEqual(calls, before)
+
+            value["lifecycle"]["description"] = "Updated advisory report"
+            changed = handler_module.Handler(
+                invocation("serviceManagement", "realize", value, "changed", {}),
+                "unused", units, state,
+            )
+            changed.manager = manager
+            changed.service("apply")
+
+            self.assertEqual(calls.count(("restart", "--no-block", "example.service")), 1)
+            self.assertIn("Updated advisory report", (units / "example.service").read_text())
+
+            (units / "example.service").write_text("foreign unit")
+            self.assertEqual(changed.service("observe")["status"], "indeterminate")
+
+    def test_interrupted_enqueue_requires_actual_new_execution_evidence(self):
+        for start_mode in ("wait", "enqueue"):
+            with self.subTest(start_mode=start_mode), tempfile.TemporaryDirectory() as root:
+                value = service()
+                value["lifecycle"].update(execution_model="oneshot", start_mode=start_mode)
+                state = Path(root) / "state"
+                calls = []
+
+                def lost_reply(*args, **kwargs):
+                    calls.append(args)
+                    if args[0] == "start":
+                        raise RuntimeError("manager reply unavailable")
+                    return subprocess.CompletedProcess(args, 0, (
+                        "ActiveState=inactive\nResult=success\n"
+                        "ExecMainStartTimestampMonotonic=100\n"
+                        "ExecMainExitTimestampMonotonic=150\n"
+                    ), "")
+
+                instance = handler_module.Handler(
+                    invocation("serviceManagement", "realize", value), "unused", root, state,
+                )
+                instance.manager = lost_reply
+                with self.assertRaisesRegex(RuntimeError, "reply unavailable"):
+                    instance.service("apply")
+
+                recovered = handler_module.Handler(
+                    invocation("serviceManagement", "realize", value), "unused", root, state,
+                )
+                recovered.manager = lost_reply
+                self.assertEqual(recovered.service("observe")["status"], "indeterminate")
+                self.assertTrue(recovered.receipt["pending"])
+                self.assertEqual(sum(call[0] == "start" for call in calls), 1)
+
+                recovered.manager = lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, (
+                    "ActiveState=failed\nResult=exit-code\n"
+                    "ExecMainStartTimestampMonotonic=200\n"
+                    "ExecMainExitTimestampMonotonic=250\n"
+                ), "")
+                expected = "current" if start_mode == "enqueue" else "indeterminate"
+                self.assertEqual(recovered.service("observe")["status"], expected)
+                self.assertEqual(recovered.receipt["pending"], start_mode == "wait")
+
+    def test_invalid_service_start_mode_fails_before_manager_dispatch(self):
+        with tempfile.TemporaryDirectory() as root:
+            value = service()
+            value["lifecycle"]["start_mode"] = "ignore-failure"
+            instance = handler_module.Handler(
+                invocation("serviceManagement", "realize", value),
+                "unused", root, Path(root) / "state",
+            )
+            instance.manager = lambda *args, **kwargs: self.fail("invalid mode reached manager")
+
+            with self.assertRaisesRegex(ValueError, "dispatch mode"):
+                instance.service("apply")
+
     def test_socket_activation_and_install_links_are_rendered(self):
         value = service()
         value["socket_activation"] = {"sockets": [{"name": "bus", "manager_name": "dbus", "enabled": True, "endpoints": [{"kind": "unix", "path": "/run/dbus/system_bus_socket"}], "mode": "0666", "remove_on_stop": False}]}
