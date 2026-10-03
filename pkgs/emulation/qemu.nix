@@ -2717,6 +2717,10 @@ in
                    r"notifier_list_notify\(&qemu_plugin_wake_notifiers,\s*"
                    r"\(void \*\)\(intptr_t\)"
                    r"QEMU_PLUGIN_WAKE_EVENT_DRAINED\);\s*\}\s*"
+                   r"if \(drained && "
+                   r"qemu_plugin_crucible_vmstop_pending\(\)\) \{\s*"
+                   r"qemu_plugin_trace_stop_context\("
+                   r"CRUCIBLE_STOP_READER_DRAINED\);\s*\}\s*"
                    r"if \(single_threaded_rr &&\s*"
                    r"qemu_plugin_crucible_vmstop_quiesced\(\)\) \{\s*"
                    r'qemu_plugin_trace_control_delivery\("wake-stopped"\);\s*'
@@ -3807,10 +3811,18 @@ in
                   ("deferred control rearms only at a valid owner", control_rearm,
                    r"g_assert\(bql_locked\(\)\);\s*"
                    r"if \(!qatomic_load_acquire\("
-                   r"&qemu_plugin_control_boundary_deferred\) \|\|\s*"
-                   r"!first_cpu \|\| qemu_force_shutdown_requested\(\) \|\|\s*"
-                   r"qatomic_load_acquire\(&qemu_plugin_time_advance_pending\)\) "
+                   r"&qemu_plugin_control_boundary_deferred\)\) "
                    r"\{\s*return;\s*\}\s*"
+                   r"if \(!first_cpu\) \{\s*"
+                   r"qemu_plugin_trace_stop_context\("
+                   r"CRUCIBLE_STOP_REARM_NO_CPU\);\s*return;\s*\}\s*"
+                   r"if \(qemu_force_shutdown_requested\(\)\) \{\s*"
+                   r"qemu_plugin_trace_stop_context\("
+                   r"CRUCIBLE_STOP_REARM_SHUTDOWN\);\s*return;\s*\}\s*"
+                   r"if \(qatomic_load_acquire\("
+                   r"&qemu_plugin_time_advance_pending\)\) \{\s*"
+                   r"qemu_plugin_trace_stop_context\("
+                   r"CRUCIBLE_STOP_REARM_ADVANCE\);\s*return;\s*\}\s*"
                    r'qemu_plugin_trace_control_delivery\("rearm"\);\s*'
                    r"if \(qemu_plugin_quiesced_control_boundary_available\(\)\) "
                    r"\{\s*qemu_plugin_schedule_control_boundary\(\);\s*"
@@ -3820,7 +3832,10 @@ in
                    r"&qemu_plugin_control_boundary_deferred, false\);\s*"
                    r"if \(!qemu_plugin_crucible_rr_control_boundary_pending\(\)\) "
                    r"\{.*?qemu_plugin_request_rr_control_boundary\(\);\s*"
-                   r"\} else \{\s*qemu_plugin_schedule_control_boundary\(\);",
+                   r"\} else \{\s*qemu_plugin_schedule_control_boundary\(\);\s*"
+                   r"\}\s*\} else \{\s*"
+                   r"qemu_plugin_trace_stop_context\("
+                   r"CRUCIBLE_STOP_REARM_NO_OWNER\);\s*\}",
                    1),
                   ("paused control owner authenticates stopped precise RR",
                    control_owner,
