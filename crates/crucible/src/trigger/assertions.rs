@@ -739,19 +739,23 @@ impl OfflineAssertionChecker {
             require_recorded_offsets,
         )?;
 
-        // An empty black-box checker has no intermediate observation effects.
-        // Authenticate the entire terminal prefix first, then prove that none
-        // of its intermediate evaluation points would reject a future entry.
-        // Other cases retain the original offset and atomic-batch semantics.
+        // An empty checker without enabled guest assertion markers has no
+        // intermediate observation effects. The authenticated terminal prefix
+        // retains every observable entry, including earlier assertion markers.
+        // Prove temporal visibility before skipping intermediate reconstruction;
+        // other cases retain the original offset and atomic-batch semantics.
         if !require_recorded_offsets
             && recorded_log.prefix_offsets.is_empty()
             && evaluator.states.is_empty()
             && evaluator.guest_marker_states.is_empty()
             && self.guest_assertion_catalog.is_empty()
-            && !self
-                .white_box_policies
-                .values()
-                .any(|policy| *policy == WhiteBoxPolicy::Enabled)
+            && !terminal_prefix.observable_events().iter().any(|event| {
+                matches!(
+                    event.payload(),
+                    ObservableEventPayload::GuestAssertionMarker { node, .. }
+                        if self.white_box_policies.get(node) == Some(&WhiteBoxPolicy::Enabled)
+                )
+            })
             && intermediate_prefix_times_are_visible(event_log)
         {
             return Ok(evaluator.finalize_prefix(&terminal_prefix, oracle));
