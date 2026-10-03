@@ -2,8 +2,8 @@
 //!
 //! Four exact transactions use the existing Root native writer/reducer and
 //! conserved floor. The child retains every proposal, tentative table, append
-//! and actual readback; it cannot send Root4, settle interest or mint a manager
-//! SourceRoot capability.
+//! and actual readback. The named response continuation can send stored Root4
+//! once; it cannot settle interest or mint a manager SourceRoot capability.
 
 use aos_sandbox::{JournalRecord, JournalTransaction, RecordNamespace};
 use aos_sandbox_source_provider_protocol::native_held_completion::{
@@ -57,6 +57,64 @@ impl OriginalNativePositiveFlightV5 {
 }
 
 impl OriginalNativeAcquireFlightV5 {
+    pub(super) fn send_stored_positive(
+        &mut self,
+        writer: &mut MountOriginalNativeJournalAuthorityV5<'_>,
+        session: &mut CurrentRootMountSourceProviderSessionV1,
+        sent: &SentProviderQueryV2,
+    ) -> Result<bool> {
+        OriginalFlightBoundaryV5::new(self, session).run(|flight, session| {
+            let result = (|| {
+                if flight.stopped || flight.stage != Stage::Finished
+                    || flight.sent.is_some() || flight.positive.stage != PositiveStage::Complete
+                {
+                    return Err(state_error("Root4 requires the actual stored positive endpoint"));
+                }
+                let phase5 = flight.positive.appends[3].as_ref()
+                    .ok_or_else(|| state_error("stored Root4 append absent"))?.readback()?;
+                let (attempt, authorization) = sent.security_parts();
+                original_sidecar(phase5, attempt, 5)?;
+                let received = flight.pending.received.as_mut()
+                    .ok_or_else(|| state_error("Root4 original receiver absent"))?;
+                session.send_original_root_accepted_v5(writer, phase5, authorization, received)
+                    .map_err(|_| state_error("Root4 send or currentness failed; actual cause retained"))
+            })();
+            match result {
+                Ok(sent) => Ok(sent),
+                Err(cause) => {
+                    flight.positive.first_failure.get_or_insert(cause);
+                    Err(state_error("Root4 continuation remains retained"))
+                }
+            }
+        })
+    }
+
+    pub(in crate::source_acquisition) fn original_response_failure_v5(
+        &self,
+    ) -> Option<crate::broker::OriginalMountResponseFailureV5<'_>> {
+        if let Some(received) = self.pending.received.as_ref() {
+            if let Some(cause) = received.original_accepted_send_failure_v5() {
+                return Some(crate::broker::OriginalMountResponseFailureV5::Native(cause));
+            }
+            let (cause, debt) = received.original_positive_failures_v5();
+            if let Some(cause) = cause {
+                return Some(crate::broker::OriginalMountResponseFailureV5::Security(cause));
+            }
+            if let Some(debt) = debt {
+                return Some(crate::broker::OriginalMountResponseFailureV5::Security(debt));
+            }
+        }
+        self.positive.first_failure.as_ref()
+            .map(crate::broker::OriginalMountResponseFailureV5::Mount)
+    }
+
+    pub(in crate::source_acquisition) fn original_response_postcheck_debt_v5(
+        &self,
+    ) -> Option<&aos_sandbox_source_provider_security::SourceProviderSecurityError> {
+        self.pending.received.as_ref()
+            .and_then(|received| received.original_positive_failures_v5().1)
+    }
+
     pub(super) fn advance_positive(
         &mut self,
         table: &mut SourceAcquisitionTableV2,

@@ -343,6 +343,33 @@ impl FixedMountSourceAcquisitionOwnerV2<'_> {
         })
     }
 
+    /// Borrows the existing writer/runtime/effect around the named response.
+    pub(crate) fn advance_signed_original_response_v5(
+        &mut self,
+        session: &mut CurrentRootMountSourceProviderSessionV1,
+        effect: &mut crate::broker::OriginalMountSignedEffectLoanV1<'_>,
+    ) -> Result<crate::broker::OriginalMountResponseProgressV5> {
+        OriginalRuntimeBoundaryV5::new(self, session).run(|owner, session| {
+            effect.check_before_original_effect()?;
+            owner.require_no_original_inventory_v6(session)?;
+            let flight = owner.runtime.pending_original_native.as_mut()
+                .ok_or_else(|| state_error("original response flight absent"))?;
+            let sent = owner.runtime.pending_provider.as_ref()
+                .ok_or_else(|| state_error("original response Sent custody absent"))?;
+            let mut writer = owner.protected.root_original_native_authority_v5()
+                .map_err(|cause| state_error(&cause.to_string()))?;
+            let progress = flight.advance_original_response_v5(
+                &mut owner.runtime.table,
+                &mut owner.runtime.original_native_sidecars,
+                &mut writer,
+                session,
+                sent,
+            )?;
+            effect.check_before_original_effect()?;
+            Ok(progress)
+        })
+    }
+
     /// Keeps unrelated legacy operations away from retained original owners.
     pub(super) fn require_no_original_native_flight(&self) -> Result<()> {
         if self.runtime.pending_original_native.is_some() {
@@ -351,5 +378,21 @@ impl FixedMountSourceAcquisitionOwnerV2<'_> {
             ));
         }
         Ok(())
+    }
+}
+
+impl super::SourceAcquisitionRuntimeV2 {
+    pub(crate) fn original_response_failure_v5(
+        &self,
+    ) -> Option<crate::broker::OriginalMountResponseFailureV5<'_>> {
+        self.pending_original_native.as_ref()
+            .and_then(OriginalNativeAcquireFlightV5::original_response_failure_v5)
+    }
+
+    pub(crate) fn original_response_postcheck_debt_v5(
+        &self,
+    ) -> Option<&aos_sandbox_source_provider_security::SourceProviderSecurityError> {
+        self.pending_original_native.as_ref()
+            .and_then(OriginalNativeAcquireFlightV5::original_response_postcheck_debt_v5)
     }
 }

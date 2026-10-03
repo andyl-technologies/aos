@@ -45,6 +45,35 @@ impl OriginalNativePendingFlightV5 {
 }
 
 impl OriginalNativeAcquireFlightV5 {
+    /// Selects a response only from the same completed Pending/positive owner.
+    pub(in crate::source_acquisition) fn advance_original_response_v5(
+        &mut self,
+        table: &mut SourceAcquisitionTableV2,
+        native_index: &mut BTreeMap<[u8; 32], RootNativeHeldSidecarV2>,
+        writer: &mut MountOriginalNativeJournalAuthorityV5<'_>,
+        session: &mut CurrentRootMountSourceProviderSessionV1,
+        sent: &SentProviderQueryV2,
+    ) -> Result<crate::broker::OriginalMountResponseProgressV5> {
+        use crate::broker::OriginalMountResponseProgressV5 as Progress;
+        OriginalFlightBoundaryV5::new(self, session).run(|flight, session| {
+            // Once Pending was committed, its old RootClosed engine owns later
+            // progress. Re-entering Pending would check obsolete phase1 rows.
+            if flight.pending.stage == PendingStage::Complete {
+                return flight.advance_root_closed(table, native_index, writer, session, sent)
+                    .map(|sent| if sent { Progress::PendingClosedSent } else { Progress::Waiting });
+            }
+            if !flight.advance_pending(table, native_index, writer, session, sent)? {
+                return Ok(Progress::Waiting);
+            }
+            match flight.pending.stage {
+                PendingStage::Positive => flight.send_stored_positive(writer, session, sent)
+                    .map(|sent| if sent { Progress::RootAcceptedSent } else { Progress::Waiting }),
+                PendingStage::Complete => Ok(Progress::Waiting),
+                _ => Err(state_error("original completed response association changed")),
+            }
+        })
+    }
+
     /// Dispatches the same parked first record into Pending or local acceptance.
     pub(in crate::source_acquisition) fn advance_pending(
         &mut self,
