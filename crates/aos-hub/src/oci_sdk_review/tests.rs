@@ -242,18 +242,109 @@ fn private_custody_rejects_symlinks_public_modes_and_output_replacement() {
     assert!(files::selected_bytes(directory.path(), &reference).is_err());
 }
 
+const NATIVE_OBSERVATION_TEST: &str =
+    "oci_sdk_review::tests::actual_owned_native_process_observation_binds_current_elf_and_configuration";
+const NATIVE_OBSERVATION_CHILD: &str = "AOS_OCI_NATIVE_OBSERVATION_CHILD";
+const NATIVE_OBSERVATION_READY: &[u8] = b"oci-native-observation-ready\n";
+
+struct ObservationChild(std::process::Child);
+
+impl Drop for ObservationChild {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn observation_child(executable: &Path, oversized_environment: bool) -> ObservationChild {
+    use std::io::Read as _;
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    // Nextest inherits build inputs that can exceed the real process reader's
+    // environment bound. Observe an owned child with explicit fixture inputs.
+    let mut command = Command::new(executable);
+    command
+        .args(["--exact", NATIVE_OBSERVATION_TEST, "--nocapture"])
+        .env_clear()
+        .env(NATIVE_OBSERVATION_CHILD, "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    if oversized_environment {
+        command.env("AOS_OCI_OBSERVATION_PADDING", "x".repeat(32 * 1024));
+    }
+    let mut child = ObservationChild(command.spawn().unwrap());
+    let stdout = child.0.stdout.as_mut().unwrap();
+    rustix::fs::fcntl_setfl(&*stdout, rustix::fs::OFlags::NONBLOCK).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut output = Vec::new();
+    let mut buffer = [0_u8; 256];
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "observation child readiness timed out"
+        );
+        match stdout.read(&mut buffer) {
+            Ok(0) => panic!("observation child exited before readiness"),
+            Ok(count) => {
+                output.extend_from_slice(&buffer[..count]);
+                assert!(
+                    output.len() <= 1024,
+                    "observation child output exceeded bound"
+                );
+                if output
+                    .windows(NATIVE_OBSERVATION_READY.len())
+                    .any(|window| window == NATIVE_OBSERVATION_READY)
+                {
+                    break;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => panic!("observation child readiness failed: {error}"),
+        }
+    }
+    assert!(child.0.try_wait().unwrap().is_none());
+    child
+}
+
 #[test]
 fn actual_owned_native_process_observation_binds_current_elf_and_configuration() {
+    use std::io::{Read as _, Write as _};
+
+    if std::env::var_os(NATIVE_OBSERVATION_CHILD).as_deref() == Some(std::ffi::OsStr::new("1")) {
+        std::io::stdout()
+            .write_all(NATIVE_OBSERVATION_READY)
+            .unwrap();
+        std::io::stdout().flush().unwrap();
+        // The observing parent owns this lifetime until its stdin closes.
+        let mut completion = [0_u8; 1];
+        let _ = std::io::stdin().read(&mut completion).unwrap();
+        return;
+    }
+
     let directory = private_directory();
     let executable = std::env::current_exe().unwrap();
+    let child = observation_child(&executable, false);
     let report = directory.path().join("native.json");
     let configuration = directory.path().join("configuration.json");
 
-    let hash =
-        observe_oci_sdk_native(std::process::id(), &executable, &configuration, &report).unwrap();
+    let hash = observe_oci_sdk_native(child.0.id(), &executable, &configuration, &report).unwrap();
     let native: observations::Native = serde_json::from_slice(&fs::read(&report).unwrap()).unwrap();
     assert_eq!(hash, files::digest(&fs::read(&report).unwrap()));
-    assert_eq!(native.process_id, std::process::id());
+    assert_eq!(native.process_id, child.0.id());
+    let observed_configuration: native::Configuration =
+        serde_json::from_slice(&fs::read(&configuration).unwrap()).unwrap();
+    assert_eq!(observed_configuration.process_id, child.0.id());
+    assert_eq!(observed_configuration.start_ticks, native.start_ticks);
+    assert_eq!(
+        STANDARD
+            .decode(&observed_configuration.environment_base64)
+            .unwrap(),
+        format!("{NATIVE_OBSERVATION_CHILD}=1\0").as_bytes()
+    );
     assert_eq!(
         native.executable_sha256,
         files::hash_installed(&executable).unwrap().0
@@ -263,12 +354,25 @@ fn actual_owned_native_process_observation_binds_current_elf_and_configuration()
         files::digest(&fs::read(&configuration).unwrap())
     );
     assert!(observe_oci_sdk_native(
-        std::process::id(),
+        child.0.id(),
         &configuration,
         &directory.path().join("other-config.json"),
         &directory.path().join("other-report.json")
     )
     .is_err());
+
+    let oversized = observation_child(&executable, true);
+    let rejected_configuration = directory.path().join("oversized-config.json");
+    let rejected_report = directory.path().join("oversized-report.json");
+    assert!(observe_oci_sdk_native(
+        oversized.0.id(),
+        &executable,
+        &rejected_configuration,
+        &rejected_report,
+    )
+    .is_err());
+    assert!(!rejected_configuration.exists());
+    assert!(!rejected_report.exists());
 }
 
 #[test]
