@@ -506,6 +506,7 @@ fn apply_profile(
             .join("evaluation.json"),
         None => command.input.join("evaluation.json"),
     };
+    let mut projected_observer = None;
     let (mut deployment, installed, mut evaluation) = match consumer.current() {
         Some(committed) => {
             let generation = profile
@@ -681,7 +682,10 @@ fn apply_profile(
                 retained_inputs,
                 evaluation_input: Some(source_descriptor.clone()),
             };
-            deployment = evaluator.evaluate(staging.path(), 60_000, cancellation)?;
+            let projected =
+                evaluator.evaluate_with_observer(staging.path(), 60_000, cancellation)?;
+            deployment = projected.deployment;
+            projected_observer = Some(projected.observer);
             evaluation = EvaluationInputs::read(&source_descriptor)?;
             admission.persist(&command.state_directory.join("registry-admissions"))?;
         }
@@ -775,10 +779,11 @@ fn apply_profile(
         &aos_core::output::Printer::new(0, true, false),
     )?;
     EvaluationInputs::retain_descriptor(&source_descriptor, &generation)?;
-    configure_profile_observer(
+    configure_profile_observer_projected(
         &mut consumer,
         &profile,
         Some((&source_descriptor, &deployment)),
+        projected_observer.as_ref(),
         cancellation,
     )?;
     consumer.apply(&deployment, &generation, cancellation)
@@ -982,6 +987,16 @@ pub(crate) fn deployment_observer(
     admission: &mut impl ArtifactAdmission,
     cancellation: &CancellationToken,
 ) -> Result<Option<Box<dyn aos_ability_runtime::activation::BoundaryObserver>>> {
+    deployment_observer_projected(descriptor, deployment, admission, None, cancellation)
+}
+
+fn deployment_observer_projected(
+    descriptor: &Path,
+    deployment: &Deployment,
+    admission: &mut impl ArtifactAdmission,
+    projected: Option<&serde_json::Value>,
+    cancellation: &CancellationToken,
+) -> Result<Option<Box<dyn aos_ability_runtime::activation::BoundaryObserver>>> {
     let executable = crate::install::native::packaged_path("AOS_NIX_STORE")?;
     let (descriptor, _) = read_descriptor_in(descriptor, &executable, cancellation)?;
     let input = EvaluationInput::read_in(&descriptor, &executable, cancellation)?;
@@ -1032,12 +1047,15 @@ pub(crate) fn deployment_observer(
         evaluation_input: Some(descriptor),
     };
     let staging = tempfile::tempdir()?;
-    let value = evaluation.project_optional(
-        &["aos".into(), "execution".into(), "observer".into()],
-        staging.path(),
-        90_000,
-        cancellation,
-    )?;
+    let value = match projected {
+        Some(value) => value.clone(),
+        None => evaluation.project_optional(
+            &["aos".into(), "execution".into(), "observer".into()],
+            staging.path(),
+            90_000,
+            cancellation,
+        )?,
+    };
     if value.is_null() {
         return Ok(None);
     }
@@ -1066,6 +1084,16 @@ pub(crate) fn configure_profile_observer<S: crate::deployment::transaction::Depl
     desired: Option<(&Path, &Deployment)>,
     cancellation: &CancellationToken,
 ) -> Result<()> {
+    configure_profile_observer_projected(consumer, profile, desired, None, cancellation)
+}
+
+fn configure_profile_observer_projected<S: crate::deployment::transaction::DeploymentStore>(
+    consumer: &mut crate::profile::deployment::ProfileDeployment<'_, S>,
+    profile: &crate::profile::Profile,
+    desired: Option<(&Path, &Deployment)>,
+    projected: Option<&serde_json::Value>,
+    cancellation: &CancellationToken,
+) -> Result<()> {
     let pending = consumer.recovery_evaluation()?;
     let selected = pending
         .as_ref()
@@ -1083,10 +1111,14 @@ pub(crate) fn configure_profile_observer<S: crate::deployment::transaction::Depl
         executable,
         &profile.path.join("deployment/registry-admissions"),
     )?;
-    consumer.set_observer(deployment_observer(
+    // Pending recovery always projects its original authoritative descriptor.
+    // Fresh co-projection applies only to the matching desired evaluation.
+    let projected = if pending.is_none() { projected } else { None };
+    consumer.set_observer(deployment_observer_projected(
         descriptor,
         deployment,
         &mut admission,
+        projected,
         cancellation,
     )?);
     Ok(())
