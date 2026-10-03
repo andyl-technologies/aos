@@ -70,10 +70,6 @@
   runtime = {
     NIX_DAEMON_ENABLED = bool cfg.enable;
     NIX_DAEMON_BUILD_DIRECTORY = cfg.buildDirectory;
-    NIX_DAEMON_CPU_QUOTA = "${toString (cfg.resources.cpuQuotaCores * 100)}%";
-    NIX_DAEMON_MEMORY_HIGH = cfg.resources.memoryHigh;
-    NIX_DAEMON_MEMORY_MAX = cfg.resources.memoryMax;
-    NIX_DAEMON_MEMORY_SWAP_MAX = cfg.resources.memorySwapMax;
     NIX_DAEMON_CONFIG_GENERATION = generation;
   };
   file = path: content: {
