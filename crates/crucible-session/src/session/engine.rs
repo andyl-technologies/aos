@@ -906,8 +906,8 @@ impl<L> Engine<L> {
             .breakpoints
             .iter()
             .map(|(id, spec, was_true)| {
-                let mut pass = ConditionEvaluationPass::from_log_prefix(
-                    prefix.clone(),
+                let mut pass = ConditionEvaluationPass::from_log_prefix_ref(
+                    &prefix,
                     self.breakpoint_host_metadata.oracle_at(self.frontier),
                 )
                 .with_once_latches(self.breakpoints.once_latches(id))

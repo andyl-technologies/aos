@@ -1099,11 +1099,9 @@ impl SingleScheduler {
     where
         O: ConditionLeafOracle,
     {
-        let mut pass = ConditionEvaluationPass::from_log_prefix(
-            self.event_log.condition_prefix().clone(),
-            oracle,
-        )
-        .with_timer_fires(self.trigger_actions.armed_timers.clone());
+        let mut pass =
+            ConditionEvaluationPass::from_log_prefix_ref(self.event_log.condition_prefix(), oracle)
+                .with_timer_fires(self.trigger_actions.armed_timers.clone());
         pass.evaluate_event_graph(graph, state)
     }
 

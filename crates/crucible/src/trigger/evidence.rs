@@ -619,7 +619,7 @@ pub(super) fn logged_condition_truth(
     condition: &Condition,
     white_box_policies: &BTreeMap<NodeId, WhiteBoxPolicy>,
 ) -> bool {
-    let mut evaluation = ConditionEvaluation::from_log_prefix(prefix.clone(), false_condition_leaf)
+    let mut evaluation = ConditionEvaluation::from_log_prefix_ref(prefix, false_condition_leaf)
         .with_white_box_policies(white_box_policies.clone());
     evaluation.evaluate_condition(condition)
 }

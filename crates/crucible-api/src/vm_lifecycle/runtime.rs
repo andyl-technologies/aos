@@ -1138,13 +1138,13 @@ impl ProductionVmLifecycleLoop {
             return Ok(None);
         }
         let scheduler = self.inner.loop_impl();
-        let prefix = scheduler.condition_event_log_prefix().clone();
+        let prefix = scheduler.condition_event_log_prefix();
         if prefix.point().kind() != crucible::EventEvaluationKind::Genesis {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from("initial trigger entrypoints lost their genesis boundary"),
             });
         }
-        let mut pass = ConditionEvaluationPass::from_log_prefix(prefix, no_named_trigger_leaf)
+        let mut pass = ConditionEvaluationPass::from_log_prefix_ref(prefix, no_named_trigger_leaf)
             .with_timer_fires(scheduler.trigger_actions().armed_timers.clone())
             .with_scheduler_quiescence(scheduler.quiescence()?)
             .with_world_white_box_policies(&self.trigger_world);
@@ -1229,8 +1229,8 @@ impl ProductionVmLifecycleLoop {
             }
 
             let scheduler = self.inner.loop_impl();
-            let mut pass = ConditionEvaluationPass::from_log_prefix(
-                scheduler.condition_event_log_prefix().clone(),
+            let mut pass = ConditionEvaluationPass::from_log_prefix_ref(
+                scheduler.condition_event_log_prefix(),
                 no_named_trigger_leaf,
             )
             .with_timer_fires(scheduler.trigger_actions().armed_timers.clone())
