@@ -146,6 +146,16 @@ pub async fn run(
         return Ok(());
     }
 
+    if let Some(candidate) = to_upgrade
+        .iter()
+        .find(|candidate| candidate.new_meta.sysroot)
+    {
+        anyhow::bail!(
+            "'{}' is an operating-system image; use `apm image upgrade`",
+            candidate.name
+        );
+    }
+
     // Step 5: Print upgrade summary.
     print_upgrade_summary(&to_upgrade, &held_back, printer);
 

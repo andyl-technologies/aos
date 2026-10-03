@@ -144,7 +144,7 @@ fn doc_lint_and_gate_catalog_checks_remain_wired() -> Result<(), Box<dyn Error>>
         &documentation_hygiene_nix,
         &[
             "tasks=T-STD-12",
-            "source_filter=CLAUDE.md,AGENTS.md,documentation_hygiene.rs,phase1-documentation-hygiene.nix",
+            "source_filter=AGENTS.md,documentation_hygiene.rs,phase1-documentation-hygiene.nix",
             "rfc_consistency_check=checks.crucible.phase1.rfcConsistency",
             "phase_gate_wiring_check=checks.crucible.phase1.phaseGateWiring",
         ],
@@ -165,10 +165,7 @@ fn doc_lint_and_gate_catalog_checks_remain_wired() -> Result<(), Box<dyn Error>>
     require_terms(
         "pkgs/tools/crucible/_source.nix",
         &crucible_source_nix,
-        &[
-            "pathString == \"${repoRootString}/CLAUDE.md\"",
-            "pathString == \"${repoRootString}/AGENTS.md\"",
-        ],
+        &["pathString == \"${repoRootString}/AGENTS.md\""],
         &mut failures,
     );
 

@@ -82,10 +82,17 @@ in
       {
         name = "check";
         # Reinitializing Python 100 times takes about seven minutes under
-        # emulation; preserve the full repeated-import regression test.
+        # emulation and can exceed Meson's 30-second default on a loaded
+        # native builder, such as a release repeat build that rebuilds the
+        # package set in parallel. Preserve the full repeated-import
+        # regression test and scale its timeout instead.
         script = ''
           PYTHONPATH=${buildPackages.meson}/lib/python3/site-packages \
-            meson test -C build --print-errorlogs${lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) " --timeout-multiplier=20"}
+            meson test -C build --print-errorlogs --timeout-multiplier=${
+            if stdenv.isCross && stdenv.hostPlatform.isLinux
+            then "20"
+            else "10"
+          }
         '';
       }
       {

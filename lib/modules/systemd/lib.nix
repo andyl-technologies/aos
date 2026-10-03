@@ -25,7 +25,7 @@
 #     only build-side derivation seam. Package/upstream discovery consumes a
 #     stage-1-authored `systemdUnitInventory` instead of reading outputs (IFD).
 #   - The `X-*` switch-to-configuration emissions were originally dropped
-#     here. The live in-place `apm upgrade --system` path
+#     here. The live in-place `apm image upgrade` path
 #     (2026-05-27_apm_system_upgrade_refactor_v2 §6.4) restores them: the
 #     `unitConfig` mixin emits `X-RestartIfChanged`, `X-ReloadIfChanged`,
 #     `X-StopOnRemoval`, `X-StopOnReconfiguration`, `X-OnlyManualStart`,

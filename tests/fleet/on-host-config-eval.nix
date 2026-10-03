@@ -465,7 +465,7 @@ in {
           f"{JQ} -er '.running' /var/lib/profiles/image/state.json"
       ).strip()
 
-      runtime.succeed(f"{APM} rollback --system --generation {first}", timeout=300)
+      runtime.succeed(f"{APM} config rollback --generation {first}", timeout=300)
       assert current_generation() == first
       assert runtime.succeed(
           f"{JQ} -er '.running' /var/lib/profiles/image/state.json"
