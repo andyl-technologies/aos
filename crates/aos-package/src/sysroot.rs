@@ -630,15 +630,9 @@ pub async fn install_system(
 
         printer.step(6, 8, "Importing...");
         for result in &results {
-            crate::store::import_nar_with_compression(
-                &result.local_path,
-                &result.store_path,
-                &result.references,
-                result.deriver.as_deref(),
-                &result.compression,
-            )
-            .await
-            .with_context(|| format!("importing {}", result.store_path))?;
+            crate::store::import_nar(&result.local_path, &result.narinfo)
+                .await
+                .with_context(|| format!("importing {}", result.store_path))?;
         }
     } else {
         printer.info("All paths already in store.");
@@ -3179,14 +3173,7 @@ async fn ensure_image_imported(
                 result.store_path
             )
         })?;
-        crate::store::import_nar_with_compression(
-            &result.local_path,
-            &result.store_path,
-            &result.references,
-            result.deriver.as_deref(),
-            &result.compression,
-        )
-        .await?;
+        crate::store::import_nar(&result.local_path, &result.narinfo).await?;
     }
     if !store_path.exists() {
         bail!(
@@ -3321,14 +3308,7 @@ async fn download_image(
         &result.compression,
     )
     .with_context(|| format!("verifying image NAR for {}", img.store_path))?;
-    crate::store::import_nar_with_compression(
-        &result.local_path,
-        &result.store_path,
-        &result.references,
-        result.deriver.as_deref(),
-        &result.compression,
-    )
-    .await?;
+    crate::store::import_nar(&result.local_path, &result.narinfo).await?;
 
     // Copy the image file from the store path to the output.
     // The image store path typically contains a single large file.

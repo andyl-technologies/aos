@@ -10,6 +10,10 @@ in
     inherit testing pkgs;
     inherit (shared) fixtures installBasicTool installDepTool installWithDepsTool realInstallDeps setupNixEnv;
   })
+  // (import ./packages/user-store.nix {
+    inherit testing pkgs;
+    inherit (shared) fixtures installBasicTool installDepTool installWithDepsTool realInstallDeps setupNixEnv;
+  })
   // (import ./packages/idempotency.nix {
     inherit testing pkgs;
     inherit (shared) fixtures idempotentTool idempotentWrapper realIdempotentDeps setupNixEnv;

@@ -332,15 +332,9 @@ pub async fn run(
         // Import NARs into the store.
         printer.step(5, 7, "Importing packages...");
         for result in &results {
-            crate::store::import_nar_with_compression(
-                &result.local_path,
-                &result.store_path,
-                &result.references,
-                result.deriver.as_deref(),
-                &result.compression,
-            )
-            .await
-            .with_context(|| format!("importing {}", result.store_path))?;
+            crate::store::import_nar(&result.local_path, &result.narinfo)
+                .await
+                .with_context(|| format!("importing {}", result.store_path))?;
         }
         imported_count = results.len();
     } else {
@@ -1342,6 +1336,18 @@ mod tests {
     #[test]
     fn verify_secondary_artifact_downloads_rejects_image_references() {
         let result = crate::download::DownloadResult {
+            narinfo: aos_core::nar::info::NarInfo {
+                store_path: "/var/lib/store/image-web".to_string(),
+                url: "nar/image.nar.zst".to_string(),
+                compression: "zstd".to_string(),
+                file_hash: Some("sha256:download".to_string()),
+                file_size: None,
+                nar_hash: "sha256:image".to_string(),
+                nar_size: 0,
+                references: vec!["/var/lib/store/ref-dep".to_string()],
+                deriver: None,
+                signatures: Vec::new(),
+            },
             store_path: "/var/lib/store/image-web".to_string(),
             local_path: std::path::PathBuf::from("/does/not/exist"),
             download_hash: "sha256:download".to_string(),

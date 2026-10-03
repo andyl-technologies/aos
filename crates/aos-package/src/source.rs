@@ -570,15 +570,9 @@ async fn fetch_source_from_registry_cache(
     }
 
     for result in &results {
-        crate::store::import_nar_with_compression(
-            &result.local_path,
-            &result.store_path,
-            &result.references,
-            result.deriver.as_deref(),
-            &result.compression,
-        )
-        .await
-        .with_context(|| format!("importing source path {}", result.store_path))?;
+        crate::store::import_nar(&result.local_path, &result.narinfo)
+            .await
+            .with_context(|| format!("importing source path {}", result.store_path))?;
     }
 
     Ok(())
