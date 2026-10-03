@@ -4,16 +4,29 @@ Use `apm` to find, install, update, and remove software on your AOS host. Give
 it package names; APM downloads the packages and installs the dependencies
 they need to work.
 
-The examples below install packages for everyone on the machine. Run commands
-that change machine-wide packages as an administrator. To manage packages for
-your own account, omit `--system`; see [Personal packages](#personal-packages).
+## Personal packages
+
+By default, `apm` manages packages for your own account. Each user has a
+separate package profile, so installing, upgrading, or removing your packages
+does not change another user's selection. Users can keep different package
+versions when needed.
+
+Package builds and their dependencies live in the shared `/nix/store`. Users
+and the machine-wide profile reuse identical store paths instead of keeping
+separate installed copies. Different versions or builds can coexist; each
+profile selects the packages available in its environment. Registry metadata
+and download caches remain separate for each scope.
+
+Before using personal installs, ask your administrator to provision writable
+XDG directories, `/var/lib/profiles/per-user/$USER`, and access to install into
+the local store. The following commands assume that account setup is complete.
 
 ## Find packages
 
 First refresh the package lists so APM knows what is available:
 
 ```sh
-apm update --system
+apm update
 ```
 
 This downloads package information from your configured registries. It does
@@ -22,11 +35,11 @@ not install or upgrade anything.
 Search by name or description, then inspect a package:
 
 ```sh
-apm search nginx --system
-apm show nginx --system
+apm search curl
+apm show curl
 ```
 
-Use `apm policy nginx --system` to see available versions and their registries.
+Use `apm policy curl` to see available versions and their registries.
 To add a registry or select a different source, see
 [Configure package registries](registries.md).
 
@@ -35,35 +48,36 @@ To add a registry or select a different source, see
 Install a package by name:
 
 ```sh
-apm install --system nginx
+apm install curl
 ```
 
 You can install several packages in one command:
 
 ```sh
-apm install --system nginx curl
+apm install curl jq
 ```
 
 APM shows the planned changes and asks for confirmation. Dependencies are
 installed automatically. Installing named packages keeps unrelated packages
-already installed on the machine.
+already installed in your profile.
 
 To review the plan without making changes, add `--dry-run`:
 
 ```sh
-apm install --system nginx --dry-run
+apm install curl --dry-run
 ```
 
 To choose a particular registry, add `--registry NAME`. For unattended use,
 `--yes` skips the confirmation prompt; review the plan before using it.
 
-Installed programs are available on the login session's `PATH`. To inspect
+Installed programs are available on the login session's `PATH`, with your
+personal packages ahead of machine-wide packages. To inspect
 what is installed and which files a package supplies:
 
 ```sh
-apm list --system --installed
-apm files nginx --system
-apm depends nginx --system
+apm list --installed
+apm files curl
+apm depends curl
 ```
 
 For packages that expose services, see
@@ -76,26 +90,26 @@ Refresh the package lists, check which packages have newer versions, then
 upgrade:
 
 ```sh
-apm update --system
-apm list --system --upgradable
-apm upgrade --system --dry-run
-apm upgrade --system
+apm update
+apm list --upgradable
+apm upgrade --dry-run
+apm upgrade
 ```
 
 `upgrade` uses the package lists you last downloaded; it does not refresh them
 itself. To upgrade only selected packages, supply their names:
 
 ```sh
-apm upgrade --system nginx curl
+apm upgrade curl jq
 ```
 
 To keep a package at its installed version during ordinary upgrades, hold it.
 Remove the hold when you are ready to upgrade it:
 
 ```sh
-apm hold --system nginx
-apm held --system
-apm unhold --system nginx
+apm hold curl
+apm held
+apm unhold curl
 ```
 
 These commands update runtime packages. To update the operating-system image,
@@ -107,7 +121,7 @@ use `apm image upgrade` as described in
 Remove packages by name:
 
 ```sh
-apm remove --system nginx
+apm remove curl
 ```
 
 APM checks whether installed packages still need them and shows the removal
@@ -115,13 +129,13 @@ plan before asking for confirmation. Dependencies are kept unless you ask to
 remove those that are no longer needed:
 
 ```sh
-apm autoremove --system
+apm autoremove
 ```
 
 You can combine both operations:
 
 ```sh
-apm remove --system nginx --autoremove
+apm remove curl --autoremove
 ```
 
 Removing a package changes the active package set. Older package generations
@@ -133,46 +147,87 @@ retain their files so that you can roll back. See
 To download and install a package again:
 
 ```sh
-apm reinstall --system nginx
+apm reinstall curl
 ```
 
 Package changes are recorded as numbered generations. List earlier package
 sets and preview a rollback:
 
 ```sh
-apm rollback --system --list
-apm rollback --system --generation N --dry-run
+apm rollback --list
+apm rollback --generation N --dry-run
 ```
 
 Replace `N` with a generation from the list, then apply it:
 
 ```sh
-apm rollback --system --generation N
+apm rollback --generation N
 ```
 
 Without `--generation`, APM selects the previous package generation. Rollback
 restores the package set, not application data such as databases. It does not
 replace the running OS image or roll back host configuration.
 
-## Personal packages
+## Clean up old packages
 
-Omit `--system` to manage packages for your own account:
+Keep the latest three personal package generations and the active generation:
 
 ```sh
-apm update
-apm install curl jq
-apm list --installed
-apm upgrade
-apm remove curl
+apm clean --generations --keep 3
 ```
 
-The same package commands, including `hold`, `reinstall`, and `rollback`, work
-in this scope. Personal packages do not change the machine-wide package set.
+To reclaim unreferenced files from the shared store:
 
-An administrator must provision writable XDG directories, the account's
-`/var/lib/profiles/per-user/$USER` directory, and access to install into the
-local store before personal installs can be used. Stock hosts support the
-machine-wide commands above without that account setup.
+```sh
+apm gc
+```
+
+Garbage collection works across the shared store. Files still referenced by
+another user's profile or a retained generation remain available.
+
+## Manage machine-wide packages
+
+Administrators can add `--system` to manage packages for everyone on the
+machine. Stock hosts support this workflow without personal account setup.
+Find and install packages by name:
+
+```sh
+apm update --system
+apm search nginx --system
+apm install --system nginx curl --dry-run
+apm install --system nginx curl
+apm list --system --installed
+```
+
+The same package commands work in this scope:
+
+```sh
+apm upgrade --system --dry-run
+apm upgrade --system
+apm hold --system nginx
+apm unhold --system nginx
+apm remove --system nginx
+apm autoremove --system
+apm reinstall --system curl
+apm rollback --system --list
+apm rollback --system --generation N --dry-run
+apm rollback --system --generation N
+```
+
+Run commands that change machine-wide packages as an administrator. These
+operations change the runtime package set; use `apm image` for OS images and
+`apm config rollback` for host configuration.
+
+To clean machine-wide package and host configuration generations, then collect
+unreferenced store files and clean machine-wide registry overlays:
+
+```sh
+apm clean --system --generations --keep 3
+apm gc --system
+```
+
+The active generations are retained. OS-image generations are not pruned, and
+store garbage collection still covers the shared store.
 
 ## Apply a complete package set from a file
 
@@ -209,22 +264,6 @@ APM validates them before changing the package profile. Prefer systemd
 system-credential references; protect any file containing credential bytes as
 secret state. See [Manage secrets](secrets.md) and
 [Configure an AOS host](configuration.md) for configuration and provisioning.
-
-## Clean up old packages
-
-Keep the latest three generations and the active generation, then reclaim
-unreferenced files:
-
-```sh
-apm clean --system --generations --keep 3
-apm gc --system
-```
-
-With `--system`, generation cleanup covers both machine-wide package and host
-configuration generations. It does not prune OS-image generations. Omit
-`--system` to clean your personal package generations. Garbage collection
-reclaims unreferenced files across the shared store; `gc --system` also cleans
-machine-wide registry overlays.
 
 ## Package state and trust
 
