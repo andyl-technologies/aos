@@ -279,6 +279,14 @@ later generations; durable removal outcomes supply that history.
 Artifact release is separately journaled. Old implementations remain available
 until their update or teardown has durably completed.
 
+Image staging must preserve physical store custody as well as GC roots. The
+package layer supplies authenticated retained system-profile inputs and orphan
+handlers under the generation read lock. The selected OS storage backend
+preserves their closures, along with both image implementations and module
+libraries, before replacing an immutable root. Existing copies must match NAR
+identity and Unix modes; new copies are verified and durably published before
+the first root-slot write.
+
 ## Package generations
 
 `aos-package::deployment::transaction::Transactions` coordinates a generation

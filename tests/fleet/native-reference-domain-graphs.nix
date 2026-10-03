@@ -11,7 +11,7 @@
       inherit backend backendExecutable;
     };
   filesystem = wrapper aos.pkgs.aos-filesystem-provider "bin/aos-filesystem-provider";
-  configuration = wrapper aos.pkgs.systemd "bin/aos-service-handler";
+  configuration = wrapper aos.pkgs.systemd.handlers "bin/aos-service-handler";
   firewall = wrapper aos.pkgs.aos-network-ruleset-provider "bin/aos-network-ruleset-provider";
   markers = import (root + /tests/abilities/native-dependency-barrier/package.nix) {inherit (aos.pkgs) mkDerivation python3;};
   evaluate = extra:

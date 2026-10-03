@@ -61,8 +61,8 @@
       inherit bootstrapJSON bootstrapGroupsJSON;
       passAsFile = ["bootstrapJSON" "bootstrapGroupsJSON"];
     } ''
-      ${artifacts.buildPackages.systemd}/bin/aos-service-handler render --output-dir "$out" < "$bootstrapJSONPath"
-      ${artifacts.buildPackages.systemd}/bin/aos-systemd-native-resources render-resource-groups --output-dir "$out" < "$bootstrapGroupsJSONPath"
+      ${artifacts.buildPackages.systemd.handlers}/bin/aos-service-handler render --output-dir "$out" < "$bootstrapJSONPath"
+      ${artifacts.buildPackages.systemd.handlers}/bin/aos-systemd-native-resources render-resource-groups --output-dir "$out" < "$bootstrapGroupsJSONPath"
       # Keep the new output writable for its own metadata finalization.
       cp -a --no-preserve=mode ${baseUnits}/. "$out/"
     '';
@@ -86,7 +86,7 @@
         mkdir -p "$out"
         ${lib.concatMapStringsSep "\n" (entry: ''
             rendered="$TMPDIR/network-${builtins.hashString "sha256" entry.name}"
-            ${artifacts.buildPackages.systemd}/bin/aos-network-handler render-network --output-dir "$rendered" < ${entry.file}
+            ${artifacts.buildPackages.systemd.handlers}/bin/aos-network-handler render-network --output-dir "$rendered" < ${entry.file}
             for file in "$rendered"/etc/systemd/network/*; do
               test -e "$file" || continue
               filename=$(basename "$file")

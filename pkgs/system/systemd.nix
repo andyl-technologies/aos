@@ -61,6 +61,7 @@
   python3-pyelftools,
   aos-recovery,
   aos-systemd-provider,
+  nix,
   pe-tools,
 }: let
   identityShells = import ./_systemd-abilities/identity-shells.nix {inherit bash util-linux;};
@@ -194,7 +195,9 @@ in
     # Keep UKI construction and kernel installation in `tools`, including
     # kernel-install's Python hook. PID 1 and boot-time generators do not need
     # that interpreter. Image builders select systemd.tools explicitly.
-    outputs = ["out" "tools"];
+    # Native effect entry points have their own small authenticated NAR.
+    # Only handlers reference out; out must not link back to these wrappers.
+    outputs = ["out" "tools" "handlers"];
 
     # The package performs ELF path cleanup below, then retains its declared
     # runtime directories for libraries loaded on demand. A second DT_NEEDED-
@@ -702,6 +705,7 @@ in
             --blkid "${util-linux}/bin/blkid" \\
             --objcopy "${pe-tools}/bin/objcopy" \\
             --veritysetup "${cryptsetup}/bin/veritysetup" \\
+            --nix-store "${nix}/bin/nix-store" \\
             "\$@"
           EOF
           chmod +x "$out/bin/aos-systemd-image-stage"
@@ -710,41 +714,42 @@ in
       {
         name = "install-native-network-handler";
         script = ''
-          mkdir -p "$out/libexec" "$out/bin"
-          cp ${./_systemd-abilities/network-handler.py} "$out/libexec/aos-network-handler.py"
-          cat > "$out/bin/aos-network-handler" << EOF
+          mkdir -p "$handlers/libexec" "$handlers/bin"
+          cp ${./_systemd-abilities/network-handler.py} "$handlers/libexec/aos-network-handler.py"
+          cat > "$handlers/bin/aos-network-handler" << EOF
           #!${bash}/bin/bash
-          exec "${python3}/bin/python3" "$out/libexec/aos-network-handler.py" \\
+          exec "${python3}/bin/python3" "$handlers/libexec/aos-network-handler.py" \\
             --systemctl "$out/bin/systemctl" \\
             --wait-online "$out/lib/systemd/systemd-networkd-wait-online" \\
             --unit-directory "$out/lib/systemd/system" \\
             "\$@"
           EOF
-          chmod +x "$out/bin/aos-network-handler"
+          chmod +x "$handlers/bin/aos-network-handler"
         '';
       }
       {
         name = "install-native-service-handler";
         script = ''
-          mkdir -p "$out/libexec" "$out/bin"
-          cp ${./_systemd-abilities/service-handler.py} "$out/libexec/aos-service-handler.py"
-          cat > "$out/bin/aos-service-handler" << EOF
+          mkdir -p "$handlers/libexec" "$handlers/bin"
+          cp ${./_systemd-abilities/service-handler.py} "$handlers/libexec/aos-service-handler.py"
+          cat > "$handlers/bin/aos-service-handler" << EOF
           #!${bash}/bin/bash
           export PYTHONPATH="${aos-configuration-provider}/libexec"
-          exec "${python3}/bin/python3" -B "$out/libexec/aos-service-handler.py" \\
+          exec "${python3}/bin/python3" -B "$handlers/libexec/aos-service-handler.py" \\
             --systemctl "$out/bin/systemctl" \\
             --true-executable "${coreutils}/bin/true" \\
             --flock-executable "${util-linux}/bin/flock" \\
-            --mac-condition-executable "$out/bin/aos-service-handler" \\
+            --mac-condition-executable "$handlers/bin/aos-service-handler" \\
             "\$@"
           EOF
-          chmod +x "$out/bin/aos-service-handler"
+          chmod +x "$handlers/bin/aos-service-handler"
         '';
       }
       {
         name = "install-native-resource-handler";
         script = ''
-          cat > "$out/bin/aos-systemd-native-resources" << EOF
+          mkdir -p "$handlers/bin"
+          cat > "$handlers/bin/aos-systemd-native-resources" << EOF
           #!${bash}/bin/bash
           exec "${aos-systemd-provider}/bin/aos-systemd-native-resource-provider" \\
             --systemd-creds "$out/bin/systemd-creds" \\
@@ -752,7 +757,7 @@ in
             --nologin-shell "${identityShells.nologin}" \\
             "\$@"
           EOF
-          chmod +x "$out/bin/aos-systemd-native-resources"
+          chmod +x "$handlers/bin/aos-systemd-native-resources"
         '';
       }
       {

@@ -38,8 +38,8 @@
         inherit bootstrapJSON bootstrapGroupsJSON;
         passAsFile = ["bootstrapJSON" "bootstrapGroupsJSON"];
       } ''
-        ${pkgs.buildPackages.systemd}/bin/aos-service-handler render --output-dir "$out" < "$bootstrapJSONPath"
-        ${pkgs.buildPackages.systemd}/bin/aos-systemd-native-resources render-resource-groups --output-dir "$out" < "$bootstrapGroupsJSONPath"
+        ${pkgs.buildPackages.systemd.handlers}/bin/aos-service-handler render --output-dir "$out" < "$bootstrapJSONPath"
+        ${pkgs.buildPackages.systemd.handlers}/bin/aos-systemd-native-resources render-resource-groups --output-dir "$out" < "$bootstrapGroupsJSONPath"
         # Keep the new output writable for its own metadata finalization.
         cp -a --no-preserve=mode ${baseUnits}/. "$out/"
       '';

@@ -15,12 +15,12 @@
   };
   interceptor = import ../abilities/native-handler-interception/package.nix {
     inherit (pkgs) mkDerivation python3;
-    backend = pkgs.systemd;
+    backend = pkgs.systemd.handlers;
     backendExecutable = "bin/aos-systemd-native-resources";
   };
   serviceInterceptor = import ../abilities/native-handler-interception/package.nix {
     inherit (pkgs) mkDerivation python3;
-    backend = pkgs.systemd;
+    backend = pkgs.systemd.handlers;
     backendExecutable = "bin/aos-service-handler";
     pname = "native-handler-interception-systemd-service";
   };
@@ -85,7 +85,7 @@ in
       PYTHON = "${pkgs.python3}/bin/python3"
       MOUNT = "${pkgs.util-linux}/bin/mount"
       UMOUNT = "${pkgs.util-linux}/bin/umount"
-      SERVICE_RENDERER = "${pkgs.systemd}/bin/aos-service-handler"
+      SERVICE_RENDERER = "${pkgs.systemd.handlers}/bin/aos-service-handler"
       SERVICE_FLIGHTS = types.ModuleType("native_reference_service_flights")
       SERVICE_FLIGHTS.__dict__.update(globals())
       exec(compile(${builtins.toJSON (builtins.readFile ./native-reference-service-flights.py)},

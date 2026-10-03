@@ -7,7 +7,11 @@ let
     inherit name;
     version = "1";
     path = payload name;
-    outputs.out = payload name;
+    outputs =
+      {out = payload name;}
+      // lib.optionalAttrs (name == "systemd") {
+        handlers = payload "systemd-handlers";
+      };
     mainProgram = "aos-reference-binding";
   };
   record = name: source: let
@@ -37,7 +41,7 @@ let
     ];
     operatorModules = [
       ({config, ...}: {
-        aos.abilities.serviceManagement.operations.realize.handler.program = artifacts.value ((artifact "systemd") // {mainProgram = "aos-service-handler";});
+        aos.abilities.serviceManagement.operations.realize.handler.program = (artifacts.value (artifact "systemd")).handlers // {meta.mainProgram = "aos-service-handler";};
         aos.referenceHttpBackend = {
           enable = true;
           endpoints.app-a = {

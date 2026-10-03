@@ -35,7 +35,8 @@
   example = builtins.head (builtins.filter (node: builtins.elem "example" node.identity) services);
 in
   assert example.owner == "service-management";
-  assert example.handler.executable == "${pkgs.systemd}/bin/aos-service-handler";
+  assert example.handler.artifact == toString pkgs.systemd.handlers;
+  assert example.handler.executable == "${pkgs.systemd.handlers}/bin/aos-service-handler";
   assert example.input.activation_owner == "image";
   assert !example.input.auto_start;
   assert (builtins.head example.input.directories.managed).owner == "example";

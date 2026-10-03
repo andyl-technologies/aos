@@ -43,7 +43,7 @@ in
   assert mapping.input.cipher == "aes-xts-plain64";
   assert mapping.input.keySizeBits == 256;
   assert format.input.policy == "always";
-  assert swap.handler.executable == "${fixture.manager}/bin/aos-systemd-native-resources";
+  assert swap.handler.executable == "${fixture.manager.handlers}/bin/aos-systemd-native-resources";
   assert builtins.elem (fixture.identity pool) dataset.dependencies;
   assert dataset.input.mountpoint == "/var/lib/data";
   assert zfs.config.aos.kernel.externalPackages.aos-zfs-provider != [];

@@ -11,7 +11,10 @@
     inherit name;
     version = "1.0.0";
     path = toString package;
-    outputs.out = toString package;
+    outputs = builtins.listToAttrs (map (output: {
+      name = output;
+      value = toString (package.${output} or package);
+    }) (package.outputs or ["out"]));
     mainProgram = package.meta.mainProgram or name;
   };
   record = name: source: package: dependencies: let
@@ -31,13 +34,13 @@
   };
   handlers = {
     aos.abilities = {
-      serviceManagement.operations.realize.handler.program = artifactLib.value ((artifact "systemd" pkgs.systemd) // {mainProgram = "aos-service-handler";});
-      configuration.operations.file.handler.program = artifactLib.value ((artifact "systemd" pkgs.systemd) // {mainProgram = "aos-service-handler";});
+      serviceManagement.operations.realize.handler.program = artifactLib.value ((artifact "systemd" pkgs.systemd.handlers) // {mainProgram = "aos-service-handler";});
+      configuration.operations.file.handler.program = artifactLib.value ((artifact "systemd" pkgs.systemd.handlers) // {mainProgram = "aos-service-handler";});
       identity.operations = builtins.listToAttrs (map (name: {
         inherit name;
-        value.handler.program = artifactLib.value ((artifact "systemd" pkgs.systemd) // {mainProgram = "aos-systemd-native-resources";});
+        value.handler.program = artifactLib.value ((artifact "systemd" pkgs.systemd.handlers) // {mainProgram = "aos-systemd-native-resources";});
       }) ["group" "principal" "membership"]);
-      mount.operations.ensure.handler.program = artifactLib.value ((artifact "systemd" pkgs.systemd) // {mainProgram = "aos-systemd-native-resources";});
+      mount.operations.ensure.handler.program = artifactLib.value ((artifact "systemd" pkgs.systemd.handlers) // {mainProgram = "aos-systemd-native-resources";});
     };
   };
   # Source-backed records keep pure checks independent of module-output builds.

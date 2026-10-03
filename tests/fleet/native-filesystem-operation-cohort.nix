@@ -23,7 +23,7 @@
   };
   configurationInterception = import ../abilities/native-handler-interception/package.nix {
     inherit (pkgs) mkDerivation python3;
-    backend = pkgs.systemd;
+    backend = pkgs.systemd.handlers;
     backendExecutable = "bin/aos-service-handler";
   };
   firewallInterception = import ../abilities/native-handler-interception/package.nix {

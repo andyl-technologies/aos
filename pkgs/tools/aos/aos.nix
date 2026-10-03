@@ -167,6 +167,7 @@
   # to the ordinary CLI build would make its own output a build prerequisite.
   testCargoEnv =
     cargoEnv
+    // {AOS_NIX_STORE = "${nix}/bin/nix-store";}
     // (import ../../boot/_aos-configuration-lower/cargo-env.nix {
       inherit erofs-utils util-linux;
       packageRuntime = (callPackage ./aos.nix {withTests = false;}).packageRuntime;

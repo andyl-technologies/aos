@@ -10,6 +10,7 @@ let
     outputs = {
       out = toString (payload name);
       packageRuntime = toString (payload "runtime");
+      handlers = toString (payload "systemd-handlers");
     };
     mainProgram = "handler";
   };
@@ -113,7 +114,7 @@ in {
     assert command.executable.path == "${(artifact "bash").path}/bin/bash";
     assert lib.hasInfix "set -euo pipefail" pipeline;
     assert lib.hasInfix "${(artifact "aos").outputs.packageRuntime}/bin/aos-package-runtime deployment-retained-effects --profile /var/lib/profiles/system" pipeline;
-    assert lib.hasInfix "${(artifact "systemd").path}/bin/aos-systemd-native-resources restore-identities" pipeline; true;
+    assert lib.hasInfix "${(artifact "systemd").outputs.handlers}/bin/aos-systemd-native-resources restore-identities" pipeline; true;
   canonical_host_has_one_activator = assert builtins.attrNames (hostActivators canonicalHost) == ["control-plane.aos-activate"];
   assert canonicalHost.config.aos.boot.hostActivatorService == "control-plane.aos-activate";
   assert canonicalHost.config.aos.services."control-plane.aos-activate".resources.memory_max_bytes.value == 2147483648;

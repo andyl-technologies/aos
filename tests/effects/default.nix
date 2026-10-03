@@ -7,7 +7,7 @@
   hostActivationInput = builtins.toFile "host-activation-input.json" (builtins.toJSON hostActivationNamespace.input);
   projectedServiceInput = builtins.toFile "projected-service-input.json" (builtins.toJSON hostActivationNamespace.projectedInput);
   projectedServiceUnits = pkgs.runCommand "native-projected-service-units" {} ''
-    ${pkgs.buildPackages.systemd}/bin/aos-service-handler render --output-dir "$out" < ${builtins.toFile "projected-services.json" (builtins.toJSON {"control-plane.aos-activate" = hostActivationNamespace.projectedInput;})}
+    ${pkgs.buildPackages.systemd.handlers}/bin/aos-service-handler render --output-dir "$out" < ${builtins.toFile "projected-services.json" (builtins.toJSON {"control-plane.aos-activate" = hostActivationNamespace.projectedInput;})}
   '';
   packageConvergenceInput = builtins.toFile "package-convergence-input.json" (builtins.toJSON hostActivationNamespace.convergenceRenderInput);
   checks = {

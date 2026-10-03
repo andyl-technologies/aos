@@ -16,7 +16,12 @@
   };
   artifact = name: (package name (root + /pkgs/system/_service-management)) // {module = null;};
   service = package "service-management" (root + /pkgs/system/_service-management);
-  manager = package "manager" (root + /pkgs/system/_service-management);
+  manager =
+    (package "manager" (root + /pkgs/system/_service-management))
+    // {
+      outputs = ["out" "handlers"];
+      handlers = artifact "manager-handlers";
+    };
   kmod = package "kmod" (root + /pkgs/system/_kmod-abilities);
   storage = package "storage-interface" (root + /pkgs/system/_storage-interface);
   tunables = package "aos-kernel-tunable-provider" (root + /pkgs/tools/_aos-kernel-tunable-provider);

@@ -6,6 +6,11 @@ let
     type = "derivation";
     name = "systemd-fixture";
     outPath = builtins.toString (import ./_fixture-payload.nix "systemd");
+    handlers = {
+      type = "derivation";
+      name = "systemd-handlers-fixture";
+      outPath = builtins.toString (import ./_fixture-payload.nix "systemd-handlers");
+    };
     meta.mainProgram = "unused";
   };
   evaluated = lib.evalModules {
@@ -52,7 +57,7 @@ let
 in let
   graph = evaluated.config.aos.activation.graph;
   nodes = builtins.attrValues graph.nodes;
-  selected = builtins.all (node: node.handler.executable == "${package.outPath}/bin/aos-systemd-native-resources") nodes;
+  selected = builtins.all (node: node.handler.executable == "${package.handlers.outPath}/bin/aos-systemd-native-resources") nodes;
   interval = builtins.head (builtins.filter (node: builtins.elem "interval" node.identity) nodes);
 in
   assert builtins.length nodes == 5;

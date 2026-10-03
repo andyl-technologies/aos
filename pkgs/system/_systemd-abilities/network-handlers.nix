@@ -6,7 +6,7 @@
   ...
 }: let
   program =
-    package
+    package.handlers
     // {
       mainProgram = "aos-network-handler";
       meta.mainProgram = "aos-network-handler";

@@ -1,7 +1,7 @@
 ##! Selects native systemd runtime handlers and package-owned host policies.
 {package, ...}: let
   program =
-    package
+    package.handlers
     // {
       mainProgram = "aos-service-handler";
       meta.mainProgram = "aos-service-handler";

@@ -186,6 +186,12 @@ its outputs and `mainProgram`. Build-time handlers may also use derivations.
 The evaluator lowers this Nix value to an immutable program reference; users do
 not duplicate an executable string or manually maintained revision number.
 
+A handler may select a named package output too. For example, systemd keeps its
+service, network, and resource handlers in `package.handlers`, separately from
+the manager binaries in `package.out`. The small handler output retains its
+tools through ordinary store references. Admission checks its exact NAR at each
+dispatch, without hashing unrelated files in the manager output.
+
 A richer service manager can compose lower operations instead. Suppose
 `init.install` accepts `name` and `command`, returning `path`, while
 `supervision.ensure` accepts `definition` and `after`, returning `handle`.
@@ -480,6 +486,12 @@ by the selected payload's actual store references. The pre-evaluation descriptor
 also retains the real deployment envelopes for module-only dependencies, so
 subsequent offline reconfiguration can resolve their original dependency edges.
 These metadata companions do not select additional payload outputs.
+
+Before replacing an image, the host storage backend preserves the physical
+closure bytes needed by retained images, system-profile generations, pending
+transactions, and orphaned handlers. GC links alone cannot preserve files that
+exist only in the image being replaced. The backend verifies existing copies
+and publishes new copies atomically before writing the replacement root slot.
 
 | Build output | Contents |
 | --- | --- |
