@@ -10,6 +10,7 @@
   additionalClosures ? [],
   ...
 }: let
+  advisoryReport = import ./_runtime-advisory-report.nix {inherit pkgs;};
   observer = import ./_ability-execution-observer.nix {
     inherit lib pkgs;
     forwardToCrucible = forwardObserverToCrucible;
@@ -27,6 +28,10 @@
       ../../systems/server-test.nix
       {
         aos.packages = {
+          aos-runtime-advisory-report = {
+            package = advisoryReport;
+            bundle = true;
+          };
           nginx = {
             package = pkgs.nginx;
             bundle = true;
@@ -52,7 +57,7 @@
         aos.activation.stages.host.configuration = selectedFixture.sources;
       }
     ]);
-  payloads = [pkgs.nginx pkgs.envoy pkgs.k3s-worker observer.package];
+  payloads = [pkgs.nginx pkgs.envoy pkgs.k3s-worker observer.package advisoryReport];
   companions = lib.concatMap (package: [package.deploymentArtifact package.documentationArtifact]) payloads;
 in {
   name = "runtime-module-composition";
@@ -132,6 +137,7 @@ in {
       NIX_STORE = "${pkgs.nix}/bin/nix-store"
       SYSTEMCTL = "${pkgs.systemd}/bin/systemctl"
       SYSTEMD_RUN = "${pkgs.systemd}/bin/systemd-run"
+      REPORT_UNIT = "aos-runtime-advisory-report.service"
       OBSERVER_CONTROLLER = "${observer.controller}/bin/aos-ability-boundary-controller"
       PROFILE = "/var/lib/profiles/system"
       JOURNAL = f"{PROFILE}/deployment/effects.journal"
@@ -204,6 +210,44 @@ in {
           assert runtime.succeed(f"{CURL} --fail --silent http://127.0.0.1:18081/health") == "envoy-runtime"
           runtime.fail(f"{SYSTEMCTL} is-active --quiet k3s.service")
           assert runtime.succeed(f"{COREUTILS}/cat /etc/runtime-modules/operator.conf").strip() == "authority=runtime"
+
+      def advisory_node():
+          matches = [(key, node) for key, node in graph()["nodes"].items()
+              if node["identity"][-3:-1] == ["serviceManagement", "realize"]
+              and node["input"].get("service") == REPORT_UNIT.removesuffix(".service")]
+          assert len(matches) == 1, matches
+          key, node = matches[0]
+          assert node["input"]["lifecycle"]["start_mode"] == "enqueue", node
+          return key, node
+
+      def advisory_failure(previous_invocation=None):
+          failed = f"{SYSTEMCTL} is-failed --quiet {REPORT_UNIT}"
+          if previous_invocation is not None:
+              failed += (
+                  f" && report_invocation=$({SYSTEMCTL} show --property=InvocationID --value {REPORT_UNIT})"
+                  f" && test -n \"$report_invocation\""
+                  f" && test \"$report_invocation\" != {shlex.quote(previous_invocation)}"
+              )
+          runtime.wait_until_succeeds(failed, timeout=180)
+          status = dict(line.split("=", 1) for line in runtime.succeed(
+              f"{SYSTEMCTL} show --property=InvocationID,ActiveState,Result,ExecMainStatus {REPORT_UNIT}"
+          ).splitlines())
+          assert status["ActiveState"] == "failed", status
+          assert status["Result"] == "exit-code" and status["ExecMainStatus"] == "1", status
+          assert status["InvocationID"], status
+          if previous_invocation is not None:
+              assert status["InvocationID"] != previous_invocation, status
+          return status["InvocationID"]
+
+      def advisory_outcomes(document, effect):
+          return [record for record in document["records"]
+              if record.get("dispatch") and record["dispatch"]["effect"] == effect]
+
+      def advisory_dispatches(effect, revision):
+          events = [json.loads(line) for line in native_document(f"{COREUTILS}/cat {EVENTS}").splitlines()]
+          return [event for event in events if event["effect"] == effect
+              and event["revision"] == revision and event["action"] == "apply"
+              and event["boundary"] == "dispatch-returned"]
 
       def payload_hash(path):
           return runtime.succeed(f"{NIX_STORE} --dump {shlex.quote(path)} | {COREUTILS}/sha256sum").split()[0]
@@ -340,6 +384,7 @@ in {
           };
         };
         aos.k3s.enable = false;
+        aos.tests.advisoryReport = {enable = true; label = "initial";};
       }"""
       write_file(f"{WORKTREE}/10-packages.nix", packages_source)
       write_file(f"{WORKTREE}/20-services.nix", services_source)
@@ -353,16 +398,54 @@ in {
       check_services("nginx-runtime")
       assert_payloads_immutable()
 
+      # Queue acknowledgement commits configuration without claiming report health.
+      assert current_generation() > initial_generation
+      report_effect, initial_report = advisory_node()
+      first_report_invocation = advisory_failure()
+      report_committed = inspection()
+      assert report_committed["pending"] is None and report_committed["completed"] is not None, report_committed
+      assert report_effect in report_committed["retainedOutputs"], report_committed
+      initial_report_records = advisory_outcomes(report_committed, report_effect)
+      assert [record["event"] for record in initial_report_records] == ["started", "finished"], initial_report_records
+      initial_dispatch_revision = initial_report_records[0]["dispatch"]["revision"]
+      assert initial_report_records[1]["dispatch"]["revision"] == initial_dispatch_revision
+
+      apply("unchanged-advisory")
+      unchanged_report = inspection()
+      assert unchanged_report["pending"] is None and unchanged_report["completed"] is not None, unchanged_report
+      assert advisory_failure() == first_report_invocation
+      assert unchanged_report["retainedOutputs"][report_effect] == report_committed["retainedOutputs"][report_effect]
+      assert advisory_node()[1]["revision"] == initial_report["revision"]
+      assert len(advisory_dispatches(report_effect, initial_dispatch_revision)) == 1
+
       def select_response(response):
-          write_file(f"{WORKTREE}/20-services.nix", services_source.replace('body = "nginx-runtime";', 'body = ' + json.dumps(response) + ';'))
+          source = services_source.replace('body = "nginx-runtime";', 'body = ' + json.dumps(response) + ';')
+          write_file(f"{WORKTREE}/20-services.nix", source.replace('label = "initial";', 'label = "updated";'))
 
       process_id = runtime.succeed(f"{SYSTEMCTL} show --property=MainPID --value nginx.service").strip()
       invocation_id = runtime.succeed(f"{SYSTEMCTL} show --property=InvocationID --value nginx.service").strip()
+      before_report_restart_generation = current_generation()
       select_response("nginx-runtime-reloaded")
       apply("reloaded")
       check_services("nginx-runtime-reloaded")
       assert runtime.succeed(f"{SYSTEMCTL} show --property=MainPID --value nginx.service").strip() == process_id
       assert runtime.succeed(f"{SYSTEMCTL} show --property=InvocationID --value nginx.service").strip() == invocation_id
+      assert current_generation() > before_report_restart_generation
+      assert advisory_failure(previous_invocation=first_report_invocation) != first_report_invocation
+      changed_report_effect, changed_report = advisory_node()
+      assert changed_report_effect == report_effect
+      assert changed_report["revision"] != initial_report["revision"]
+      assert changed_report["input"]["lifecycle"]["start"][0]["executable"]["arguments"] == ["report", "updated"]
+      restarted_report = inspection()
+      assert restarted_report["pending"] is None and restarted_report["completed"] is not None, restarted_report
+      new_report_records = [record for record in advisory_outcomes(restarted_report, report_effect)
+          if record["sequence"] > unchanged_report["records"][-1]["sequence"]
+          and record["dispatch"]["revision"] != initial_dispatch_revision]
+      assert [record["event"] for record in new_report_records] == ["started", "finished"], new_report_records
+      changed_dispatch_revision = new_report_records[0]["dispatch"]["revision"]
+      assert new_report_records[1]["dispatch"]["revision"] == changed_dispatch_revision
+      assert len(advisory_dispatches(report_effect, changed_dispatch_revision)) == 1
+      assert len(advisory_dispatches(report_effect, initial_dispatch_revision)) == 1
 
       # Admission rejects an invalid ordinary module before publishing a new
       # generation or mutating the running service and its configuration.

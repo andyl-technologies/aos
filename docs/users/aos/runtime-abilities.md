@@ -258,6 +258,12 @@ the group using its manager's native resource, such as a systemd slice. This
 contract belongs to the service-management package; the generic library only
 checks the typed reference and constructs the dependency edge.
 
+An advisory service can set `lifecycle.start_mode = "enqueue"` to acknowledge
+the manager's queued startup job. A later process failure remains visible in
+the manager without failing the configuration transaction. Its outputs identify
+the installed service; they do not assert health. Recovery still requires
+execution evidence for an interrupted dispatch and does not blindly run it again.
+
 `input.after` in the composed-handler example is service-manager policy. An effect's own `after`
 field is an explicit activation dependency expressed using output references;
 these are different kinds of ordering.
