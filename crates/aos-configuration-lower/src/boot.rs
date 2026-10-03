@@ -46,12 +46,14 @@ pub fn mount_generation(
         fs::create_dir_all(destination)?;
         return Ok(());
     }
-    let metadata = fs::symlink_metadata(binding)?;
+    let metadata = fs::symlink_metadata(binding)
+        .with_context(|| format!("inspecting configuration binding {}", binding.display()))?;
     ensure!(
         metadata.is_file() && metadata.len() <= 128,
         "configuration binding is not a bounded immutable file"
     );
-    let effect = fs::read_to_string(binding)?;
+    let effect = fs::read_to_string(binding)
+        .with_context(|| format!("reading configuration binding {}", binding.display()))?;
     let effect = effect.trim_end_matches('\n');
     ensure!(
         effect.len() == 64
@@ -74,7 +76,13 @@ pub fn mount_generation(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
-        .spawn()?;
+        .spawn()
+        .with_context(|| {
+            format!(
+                "reading committed configuration result for generation {generation}, effect {effect}, using {}",
+                runtime.display()
+            )
+        })?;
     let mut output = Vec::new();
     child
         .stdout
@@ -89,19 +97,110 @@ pub fn mount_generation(
     );
     let lower: Lower =
         serde_json::from_slice(&output).context("decoding checked configuration lower result")?;
-    validate_beneath(&lower, &lower.receipt_effect, tools, root)?;
+    validate_beneath(&lower, &lower.receipt_effect, tools, root).with_context(|| {
+        format!(
+            "validating committed configuration lower {} beneath {}",
+            lower.directory,
+            root.display()
+        )
+    })?;
 
     fs::create_dir_all(destination)?;
     let image = root.join(Path::new(&lower.image).strip_prefix("/")?);
     let status = Command::new(mount)
         .env_clear()
         .args(["-t", "erofs", "-o", "ro,nodev,nosuid"])
-        .arg(image)
+        .arg(&image)
         .arg(destination)
-        .status()?;
+        .status()
+        .with_context(|| {
+            format!(
+                "mounting configuration image {} at {} using {}",
+                image.display(),
+                destination.display(),
+                mount.display()
+            )
+        })?;
     ensure!(
         status.success(),
         "mounting the native configuration lower failed: {status}"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    fn nonzero_generation(root: &Path) -> anyhow::Error {
+        mount_generation(
+            root,
+            &root.join("var/lib/profiles/system"),
+            8,
+            &root.join("usr/lib/aos/configuration-lower-effect"),
+            &root.join("run/etc/config-8/etc"),
+            &root.join("absent-runtime"),
+            &root.join("absent-mount"),
+            &Tools {
+                mkfs: root.join("absent-mkfs"),
+                fsck: root.join("absent-fsck"),
+            },
+        )
+        .unwrap_err()
+    }
+
+    #[test]
+    fn nonzero_generation_requires_the_image_binding_before_any_mutation() {
+        let root = tempfile::tempdir().unwrap();
+        let binding = root.path().join("usr/lib/aos/configuration-lower-effect");
+
+        let error = format!("{:#}", nonzero_generation(root.path()));
+
+        assert!(error.contains(&format!(
+            "inspecting configuration binding {}",
+            binding.display()
+        )));
+        assert!(!root.path().join("run").exists());
+        assert!(!root.path().join("var").exists());
+    }
+
+    #[test]
+    fn regular_canonical_binding_is_consumed_for_the_selected_generation() {
+        let root = tempfile::tempdir().unwrap();
+        let binding = root.path().join("usr/lib/aos/configuration-lower-effect");
+        fs::create_dir_all(binding.parent().unwrap()).unwrap();
+        let effect = "a".repeat(64);
+        fs::write(&binding, format!("{effect}\n")).unwrap();
+
+        // An absent runtime stops at the process boundary without fabricating
+        // a committed journal or lower result. The error binds the exact input.
+        let error = format!("{:#}", nonzero_generation(root.path()));
+
+        assert!(error.contains(&format!("generation 8, effect {effect}")));
+        assert!(error.contains(&root.path().join("absent-runtime").display().to_string()));
+        assert_eq!(fs::read_to_string(binding).unwrap(), format!("{effect}\n"));
+        assert!(!root.path().join("run").exists());
+    }
+
+    #[test]
+    fn malformed_and_symlink_bindings_are_refused_before_runtime_lookup() {
+        let root = tempfile::tempdir().unwrap();
+        let binding = root.path().join("usr/lib/aos/configuration-lower-effect");
+        fs::create_dir_all(binding.parent().unwrap()).unwrap();
+        fs::write(&binding, "A".repeat(64)).unwrap();
+
+        let malformed = nonzero_generation(root.path()).to_string();
+        assert!(malformed.contains("not a canonical effect identity"));
+
+        fs::remove_file(&binding).unwrap();
+        let target = root.path().join("foreign-binding");
+        fs::write(&target, "a".repeat(64)).unwrap();
+        symlink(&target, &binding).unwrap();
+
+        let substituted = nonzero_generation(root.path()).to_string();
+        assert!(substituted.contains("not a bounded immutable file"));
+        assert_eq!(fs::read_to_string(target).unwrap(), "a".repeat(64));
+        assert!(!root.path().join("run").exists());
+    }
 }
