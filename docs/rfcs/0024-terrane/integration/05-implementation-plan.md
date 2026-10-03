@@ -263,9 +263,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   checkbox advancement follow. D-107's reviewed independent witnesses now
   publish 113 complete wires (21 contexts, 22 recipes and 70 format negatives),
   preserving all previous golden bytes. The complete golden gate additionally
-  requires their owning suite and a 30-section inventory; published-input and
-  combined qualification remain pending. Fresh historical association,
-  prefix-preserving policy evaluation and native propagation remain required.
+  requires their owning suite and a 30-section inventory. The published-input
+  auxiliary now passes all three exact owning groups and strict Clippy; its
+  output matches the entire normative reference byte-for-byte. The parent
+  combined complete golden gate also passes all 19 mandatory owning suites.
+  Full current-trunk qualification and task merges remain pending; neither
+  these format results nor the ordinary claims establish runtime conformance.
+  Fresh historical association, prefix-preserving policy evaluation and native
+  propagation remain required.
   — satisfies ALG-15 to ALG-21, ALG-28 to ALG-39;
   `checks.terrane.gates.algebra-merge`, `checks.terrane.gates.algebra-fork`.
 - [ ] **T-PROP-1** Property resolution, types, boundary properties,
