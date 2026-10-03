@@ -134,7 +134,11 @@
     maximum_resident_bytes = ${toString (
       if envoyProduct
       then 7516192768
-      else if guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || singleGuestMaterialization || twoNodeHttp
+      # Two 256 MiB guests also retain separate TCG code buffers and plugin
+      # mappings. Their combined resident use exhausted the 1 GiB attempt cap.
+      else if twoNodeHttp
+      then 1610612736
+      else if guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || singleGuestMaterialization
       then 1073741824
       else 536870912
     )}
