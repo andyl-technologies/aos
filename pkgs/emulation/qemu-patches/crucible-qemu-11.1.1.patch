@@ -1,6 +1,6 @@
-From 1a711b829b6f82134554891b011daab817cce310 Mon Sep 17 00:00:00 2001
+From 39a0e603dd25905ada9f87276485375f9836b70c Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Fri, 2 Oct 2026 19:59:29 -0700
+Date: Sat, 3 Oct 2026 07:08:17 +0000
 Subject: [PATCH] Integrate deterministic execution and private fork I/O
  custody
 
@@ -24,6 +24,12 @@ late generations, and preserve native operation and error semantics.
 Carry production-body regressions and explicit causal negatives.
 Declare extracted public entry points with their original types so
 configured prototype diagnostics remain enforced in the fork fixture.
+
+Transfer an outstanding running-owner control request at genuine stopped
+publication to the existing paused owner. Preserve the original request
+counters, stop-clearing rearm, flush and callback ownership checks.
+Exercise reader-before-publication and reader-after-publication ordering,
+no-request behavior, and nested next-generation exactly-once completion.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -75168,7 +75174,7 @@ index 9e9941fe73e77a7b3bcc3ca1ab7ad4bec58f0151..66e2d8cd64d01e2304aa51675bfe4959
  
  static int net_slirp_init(NetClientState *peer, const char *model,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fbf905cd63e4cc109748b379f4209f6ad6547c2c..b39c70b6bc715d42ad83a896b72b602d2efd1eaf 100644
+index fbf905cd63e4cc109748b379f4209f6ad6547c2c..ad6391e3dc586dd5f5e65516db26dfb43e82c512 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -11,12 +11,40 @@
@@ -76133,7 +76139,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..b39c70b6bc715d42ad83a896b72b602d
          return &has_control;
      }
      return NULL;
-@@ -123,9 +1054,1903 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
+@@ -123,9 +1054,1908 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
  void qemu_plugin_update_ns(const void *handle, int64_t new_time)
  {
      if (handle == &has_control) {
@@ -77153,7 +77159,12 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..b39c70b6bc715d42ad83a896b72b602d
 +                        QEMU_PLUGIN_CRUCIBLE_VMSTOP_ADMITTED,
 +                        QEMU_PLUGIN_CRUCIBLE_VMSTOP_STOPPED);
 +        qemu_plugin_trace_stop_context(CRUCIBLE_STOP_PUBLISHED);
-+        qemu_plugin_rearm_deferred_control_boundary();
++        if (qemu_plugin_crucible_rr_control_boundary_pending()) {
++            /* A reader during admission still names the running RR owner. */
++            qemu_plugin_crucible_rr_control_boundary_defer();
++        } else {
++            qemu_plugin_rearm_deferred_control_boundary();
++        }
 +        qemu_plugin_control_drain_notify();
 +    }
 +}
@@ -155827,10 +155838,10 @@ index 0000000000000000000000000000000000000000..8d80e3052d7c9a6b187e2f7095f7ab8e
 +    main()
 diff --git a/tests/unit/test-crucible-control-deferred.py b/tests/unit/test-crucible-control-deferred.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..5b2e165527cba0d5ca4fdefb6b987590f5177123
+index 0000000000000000000000000000000000000000..41bbef9142c500adb2e4a176079d1571e48adf63
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-deferred.py
-@@ -0,0 +1,428 @@
+@@ -0,0 +1,433 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise control ownership across production TX stop and advance settlement.
 +
@@ -156059,6 +156070,10 @@ index 0000000000000000000000000000000000000000..5b2e165527cba0d5ca4fdefb6b987590
 +    count_control(index, coordinate, userdata);
 +    publish_wake();
 +    emit_batch();
++    /* Transfer may queue the next owner, but cannot reenter this callback. */
++    g_assert_cmpuint(control_calls, ==, 1);
++    g_assert_cmpuint(qemu_plugin_rr_control_complete_generation, ==, 1);
++    g_assert_cmpuint(qemu_plugin_rr_control_request_generation, ==, 2);
 +    qemu_plugin_control_boundary_cb = count_control;
 +}
 +
@@ -156070,10 +156085,11 @@ index 0000000000000000000000000000000000000000..5b2e165527cba0d5ca4fdefb6b987590
 +    qemu_plugin_crucible_rr_control_boundary_acknowledge();
 +    current_cpu = NULL;
 +    service_events();
-+    g_assert_cmpuint(control_calls, ==, 1);
++    g_assert_cmpuint(control_calls, ==, 2);
 +    g_assert_true(qemu_plugin_crucible_vmstop_quiesced());
-+    g_assert_cmpuint(qemu_plugin_rr_control_complete_generation, ==, 1);
++    g_assert_cmpuint(qemu_plugin_rr_control_complete_generation, ==, 2);
 +    g_assert_cmpuint(qemu_plugin_rr_control_request_generation, ==, 2);
++    /* A later RR scan must not deliver the transferred request twice. */
 +    rr_crucible_sim_acknowledge_control_boundary();
 +    service_events();
 +    g_assert_cmpuint(control_calls, ==, 2);
@@ -175998,10 +176014,10 @@ index 0000000000000000000000000000000000000000..99c5e4e0e5e6c2b1687a34c93c5d3c2d
 +}
 diff --git a/tests/unit/test-crucible-stop-context.py b/tests/unit/test-crucible-stop-context.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..a7546c1a4f519aa6ec667fa017a33a699037ba2e
+index 0000000000000000000000000000000000000000..2b3644a16e99286fd2e8cee7280baa7a55b5c501
 --- /dev/null
 +++ b/tests/unit/test-crucible-stop-context.py
-@@ -0,0 +1,401 @@
+@@ -0,0 +1,402 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise original stop, rearm and registered reader diagnostic call sites.
 +
@@ -176119,6 +176135,7 @@ index 0000000000000000000000000000000000000000..a7546c1a4f519aa6ec667fa017a33a69
 +}
 +static void qemu_plugin_schedule_control_boundary(void) { schedules++; }
 +static bool qemu_plugin_crucible_rr_control_boundary_pending(void) { return false; }
++void qemu_plugin_crucible_rr_control_boundary_defer(void);
 +static void qemu_plugin_request_rr_control_boundary(void) { request_calls++; }
 +static void qemu_plugin_trace_control_delivery(const char *phase) { }
 +static void qemu_plugin_trace_rr_control_boundary_state(const char *phase) { }
@@ -176405,10 +176422,10 @@ index 0000000000000000000000000000000000000000..a7546c1a4f519aa6ec667fa017a33a69
 +    main()
 diff --git a/tests/unit/test-crucible-stopped-control-rearm.py b/tests/unit/test-crucible-stopped-control-rearm.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..814fd7b675996aafc922110a64b2058ddffa882e
+index 0000000000000000000000000000000000000000..9ecf614260a8e6ed71e5e873d6e33bde3582ec26
 --- /dev/null
 +++ b/tests/unit/test-crucible-stopped-control-rearm.py
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,237 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise retained control intent when native pause reasserts CPU stop.
 +
@@ -176438,6 +176455,7 @@ index 0000000000000000000000000000000000000000..814fd7b675996aafc922110a64b2058d
 +#define bql locked
 +static int qemu_pause_cond;
 +static unsigned int empty_pause_waits;
++static unsigned int expected_control_calls;
 +static void pause_all_vcpus(void);
 +static void rr_crucible_sim_drain_vcpu_work(void);
 +static bool rr_crucible_sim_stop_or_unplug_pending(void);
@@ -176475,9 +176493,10 @@ index 0000000000000000000000000000000000000000..814fd7b675996aafc922110a64b2058d
 +    g_assert_true(qemu_plugin_crucible_vmstop_quiesced());
 +    current_cpu = NULL;
 +    service_events();
-+    g_assert_cmpuint(control_calls, ==, 1);
++    g_assert_cmpuint(control_calls, ==, expected_control_calls);
 +    g_assert_false(qemu_plugin_crucible_control_boundary_outstanding());
-+    g_assert_cmpuint(qemu_plugin_control_boundary_schedule_sequence, ==, 1);
++    g_assert_cmpuint(qemu_plugin_control_boundary_schedule_sequence, ==,
++                     expected_control_calls);
 +    if (waits == 3) {
 +        /* A modeled explicit resume is issued only after stopped host passes. */
 +        qemu_plugin_crucible_vmstop_request_complete();
@@ -176486,12 +176505,15 @@ index 0000000000000000000000000000000000000000..814fd7b675996aafc922110a64b2058d
 +    current_cpu = rr_owner;
 +}
 +
-+int main(void)
++int main(int argc, char **argv)
 +{
++    bool admitted_reader = argc == 2 && strcmp(argv[1], "admitted-reader") == 0;
++    bool no_request = argc == 2 && strcmp(argv[1], "no-request") == 0;
 +    uint64_t stop_generation;
 +    int wake;
 +
 +    reset();
++    expected_control_calls = no_request ? 0 : 1;
 +    raw_icount = timers_state.qemu_icount = 2;
 +    cpu.stop = cpu.stopped = false;
 +    current_cpu = &cpu;
@@ -176504,6 +176526,20 @@ index 0000000000000000000000000000000000000000..814fd7b675996aafc922110a64b2058d
 +    g_assert_false(cpu.stop);
 +    g_assert_true(cpu.stopped);
 +
++    wake = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
++    g_assert_cmpint(wake, >=, 0);
++    if (admitted_reader) {
++        /* The reader sees admission before the main loop publishes pause. */
++        current_cpu = NULL;
++        g_assert_cmpint(eventfd_write(wake, 1), ==, 0);
++        qemu_plugin_wake_fd_read((void *)(intptr_t)wake);
++        g_assert_false(qemu_plugin_control_boundary_deferred);
++        g_assert_true(qemu_plugin_crucible_rr_control_boundary_pending());
++        g_assert_cmpuint(qemu_plugin_rr_control_request_generation, ==, 1);
++        g_assert_cmpuint(qemu_plugin_rr_control_ack_generation, ==, 0);
++        g_assert_cmpuint(qemu_plugin_rr_control_complete_generation, ==, 0);
++    }
++
 +    /* Real main-loop pause reasserts stop despite the earlier acknowledgment. */
 +    current_cpu = NULL;
 +    g_assert_cmpint(do_vm_stop(RUN_STATE_PAUSED, true), ==, 0);
@@ -176513,18 +176549,21 @@ index 0000000000000000000000000000000000000000..814fd7b675996aafc922110a64b2058d
 +    g_assert_true(qemu_plugin_crucible_vmstop_quiesced());
 +    stop_generation = qemu_plugin_crucible_vmstop_generation_value;
 +
-+    wake = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
-+    g_assert_cmpint(wake, >=, 0);
-+    g_assert_cmpint(eventfd_write(wake, 1), ==, 0);
-+    qemu_plugin_wake_fd_read((void *)(intptr_t)wake);
++    if (!admitted_reader && !no_request) {
++        g_assert_cmpint(eventfd_write(wake, 1), ==, 0);
++        qemu_plugin_wake_fd_read((void *)(intptr_t)wake);
++        g_assert_true(qemu_plugin_control_boundary_deferred);
++    }
 +    g_assert_cmpint(close(wake), ==, 0);
-+    g_assert_true(qemu_plugin_control_boundary_deferred);
 +    g_assert_cmpuint(qemu_plugin_control_boundary_scheduled, ==, 0);
-+    g_assert_true(qemu_plugin_crucible_control_boundary_outstanding());
-+    g_assert_false(crucible_hot_fork_exact_paused_boundary());
-+    g_assert_cmpint(qemu_plugin_crucible_vmstop_cold_begin(), ==, -EBUSY);
-+    g_assert_cmpuint(qemu_plugin_crucible_vmstop_generation_value, ==,
-+                     stop_generation);
++    g_assert_cmpint(qemu_plugin_crucible_control_boundary_outstanding(), ==,
++                    !no_request);
++    if (!no_request) {
++        g_assert_false(crucible_hot_fork_exact_paused_boundary());
++        g_assert_cmpint(qemu_plugin_crucible_vmstop_cold_begin(), ==, -EBUSY);
++        g_assert_cmpuint(qemu_plugin_crucible_vmstop_generation_value, ==,
++                         stop_generation);
++    }
 +    service_events();
 +    g_assert_cmpuint(control_calls, ==, 0);
 +
@@ -176532,8 +176571,14 @@ index 0000000000000000000000000000000000000000..814fd7b675996aafc922110a64b2058d
 +    current_cpu = &cpu;
 +    rr_crucible_sim_park_vmstop();
 +    g_assert_cmpuint(waits, ==, 3);
-+    g_assert_cmpuint(control_calls, ==, 1);
++    g_assert_cmpuint(control_calls, ==, expected_control_calls);
 +    g_assert_cmpuint(resumes, ==, 1);
++    g_assert_cmpuint(qemu_plugin_rr_control_request_generation, ==,
++                     admitted_reader ? 1 : 0);
++    g_assert_cmpuint(qemu_plugin_rr_control_ack_generation, ==,
++                     admitted_reader ? 1 : 0);
++    g_assert_cmpuint(qemu_plugin_rr_control_complete_generation, ==,
++                     admitted_reader ? 1 : 0);
 +    g_assert_cmpuint(raw_icount, ==, 2);
 +    g_assert_cmpuint(qemu_plugin_crucible_vmstop_generation_value, ==,
 +                     stop_generation);
@@ -176547,6 +176592,7 @@ index 0000000000000000000000000000000000000000..814fd7b675996aafc922110a64b2058d
 +    parser = argparse.ArgumentParser()
 +    parser.add_argument("--output-dir", type=Path, required=True)
 +    parser.add_argument("--negative-control", action="store_true")
++    parser.add_argument("--negative-transfer", action="store_true")
 +    arguments = parser.parse_args()
 +    arguments.output_dir.mkdir(parents=True, exist_ok=True)
 +    prelude = NETWORK["PRELUDE"]
@@ -176587,6 +176633,17 @@ index 0000000000000000000000000000000000000000..814fd7b675996aafc922110a64b2058d
 +        statement = "            qemu_plugin_crucible_rr_control_boundary_rearm();\n"
 +        assert bodies.count(statement) == 1
 +        bodies = bodies.replace(statement, "")
++    if arguments.negative_transfer:
++        transfer = """        if (qemu_plugin_crucible_rr_control_boundary_pending()) {
++            /* A reader during admission still names the running RR owner. */
++            qemu_plugin_crucible_rr_control_boundary_defer();
++        } else {
++            qemu_plugin_rearm_deferred_control_boundary();
++        }
++"""
++        assert bodies.count(transfer) == 1
++        bodies = bodies.replace(
++            transfer, "        qemu_plugin_rearm_deferred_control_boundary();\n")
 +    support = NETWORK["TESTS"].split("int main(void)")[0]
 +    generated = arguments.output_dir / "stopped-control-rearm.c"
 +    generated.write_text(prelude + SUPPORT["EXTRA"] + EXTRA + bodies + support + CHECKS)
@@ -176599,7 +176656,9 @@ index 0000000000000000000000000000000000000000..814fd7b675996aafc922110a64b2058d
 +    (arguments.output_dir / "compile-command.json").write_text(
 +        json.dumps(command, indent=2) + "\n")
 +    subprocess.run(command, check=True)
-+    subprocess.run([str(binary)], cwd=arguments.output_dir, check=True)
++    for case in ["stopped-reader", "admitted-reader", "no-request"]:
++        print(f"case={case}", flush=True)
++        subprocess.run([str(binary), case], cwd=arguments.output_dir, check=True)
 +
 +
 +if __name__ == "__main__":

@@ -1705,6 +1705,11 @@ in
                 control-delivery.result
               grep -Fxq 'PASS native stop reassertion, retained intent, RR drain edge, explicit resume' \
                 stopped-control-rearm.result
+              for case in stopped-reader admitted-reader no-request; do
+                grep -Fxq "case=$case" stopped-control-rearm.result
+              done
+              test "$(grep -Fxc 'PASS native stop reassertion, retained intent, RR drain edge, explicit resume' \
+                stopped-control-rearm.result)" -eq 3
               grep -Fxq 'PASS production template control drain: original FD, callback return, connection lifetime, exact coordinate, failure refusal' \
                 template-control-drain.result
               grep -Fxq 'admitted-stop status=0 raw=17 after=17 next_tb_entered=0 high=-1' \
