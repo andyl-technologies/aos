@@ -956,6 +956,31 @@ impl GitHttpRequestV1<'_> {
         &self.original.body.bytes
     }
 
+    /// Splits original input from the same mutable live checker without effects.
+    /// The short view cannot replace custody, renew the cut or send a response.
+    /// Dropping it adds no end action; the original READY parent still owns Drop.
+    pub(super) fn split_original_read(&mut self) -> (&[u8], GitHttpReadCurrentV1<'_>) {
+        let OriginalGitRequestV1 {
+            incoming, response, outgoing, body, read_kind, holder, ..
+        } = &mut *self.original;
+
+        (
+            &body.bytes,
+            GitHttpReadCurrentV1 {
+                connection: &mut *self.connection,
+                peer: self.peer,
+                status: &mut *self.status,
+                cut: self.cut,
+                incoming,
+                response,
+                outgoing,
+                read_kind: *read_kind,
+                holder: holder.as_ref(),
+                facts: self.facts,
+            },
+        )
+    }
+
     /// Returns the actual stream number as nonauthorizing DATA.
     pub(super) fn original_stream_id(&self) -> u32 {
         self.facts.stream_id.as_u32()
@@ -984,43 +1009,8 @@ impl GitHttpRequestV1<'_> {
     }
 
     async fn recheck_original(&mut self) -> Result<(), GitHttpErrorV1> {
-        self.require_ready_original()?;
-        poll_fn(|context| self.poll_original_reset(context)).await?;
-        require_current(self.peer, self.status, self.cut)
-    }
-
-    fn require_ready_original(&self) -> Result<(), GitHttpErrorV1> {
-        require_current(self.peer, self.status, self.cut)?;
-        if !matches!(self.status.phase, OriginalHttpPhaseV1::Ready | OriginalHttpPhaseV1::ResponseQueued)
-            || self.original.incoming.stream_id() != self.facts.stream_id
-            || self.cut.cookie != self.facts.cookie
-        {
-            return Err(GitHttpErrorV1::Closed);
-        }
-
-        Ok(())
-    }
-
-    fn poll_original_reset(&mut self, context: &mut Context<'_>) -> Poll<Result<(), GitHttpErrorV1>> {
-        if let Err(cause) = require_current(self.peer, self.status, self.cut) {
-            return Poll::Ready(Err(cause));
-        }
-        if let Poll::Ready(cause) = poll_connection(self.connection, context) {
-            return Poll::Ready(Err(cause));
-        }
-        let reset = match (&mut self.original.response, &mut self.original.outgoing) {
-            (Some(response), _) => response.poll_reset(context),
-            (None, Some(outgoing)) => match outgoing.stream.as_mut() {
-                Some(stream) => stream.poll_reset(context),
-                None => return Poll::Ready(Err(GitHttpErrorV1::Closed)),
-            },
-            _ => return Poll::Ready(Err(GitHttpErrorV1::Closed)),
-        };
-        match reset {
-            Poll::Pending => Poll::Ready(Ok(())),
-            Poll::Ready(Ok(reason)) => Poll::Ready(Err(GitHttpErrorV1::Reset(reason))),
-            Poll::Ready(Err(cause)) => Poll::Ready(Err(GitHttpErrorV1::Transport(cause))),
-        }
+        let (_, mut current) = self.split_original_read();
+        current.recheck_original().await
     }
 
     /// Polls the same original checks and installs connection/reset wakers.
@@ -1031,19 +1021,8 @@ impl GitHttpRequestV1<'_> {
         &mut self,
         context: &mut Context<'_>,
     ) -> Poll<Result<std::convert::Infallible, GitHttpErrorV1>> {
-        let mut attempt = RequestAttemptV1 { request: self, armed: true };
-        let result = (|| {
-            attempt.request.require_ready_original()?;
-            match attempt.request.poll_original_reset(context) {
-                Poll::Ready(result) => result?,
-                Poll::Pending => {}
-            }
-            require_current(attempt.request.peer, attempt.request.status, attempt.request.cut)
-        })();
-        match attempt.finish(result) {
-            Ok(()) => Poll::Pending,
-            Err(cause) => Poll::Ready(Err(cause)),
-        }
+        let (_, mut current) = self.split_original_read();
+        current.poll_while_child_parked(context)
     }
 
     /// Projects the captured original exclusive endpoint as nonauthorizing DATA.
@@ -1206,6 +1185,153 @@ impl Drop for GitHttpRequestV1<'_> {
     }
 }
 
+/// Borrows only the live fields disjoint from the original immutable input.
+/// No constructor accepts caller facts, peer, FD, path or clock coordinates.
+/// This view has no Drop effect and cannot outlive its READY parent borrow.
+pub(super) struct GitHttpReadCurrentV1<'original> {
+    connection: &'original mut GitConnection,
+    peer: &'original PublicApiPeer,
+    status: &'original mut OriginalHttpStatusV1,
+    cut: &'original OriginalRequestCutV1,
+    incoming: &'original mut h2::RecvStream,
+    response: &'original mut Option<SendResponse<Bytes>>,
+    outgoing: &'original mut Option<RetainedGitResponseV1>,
+    read_kind: Option<GitReadKindV1>,
+    holder: Option<&'original BasicHolderV1>,
+    facts: RequestFactsV1,
+}
+
+impl GitHttpReadCurrentV1<'_> {
+    pub(super) fn delegated_input(&self) -> Option<(GitReadKindV1, &BasicHolderV1)> {
+        Some((self.read_kind?, self.holder?))
+    }
+
+    pub(super) fn peer(&self) -> &PublicApiPeer {
+        self.peer
+    }
+
+    pub(super) const fn request(&self) -> GitSmartRequestV1 {
+        self.facts.request
+    }
+
+    pub(super) const fn binding(&self) -> GitChannelBindingDigestV1 {
+        self.facts.binding
+    }
+
+    pub(super) fn original_stream_id(&self) -> u32 {
+        self.facts.stream_id.as_u32()
+    }
+
+    pub(super) const fn original_socket_cookie(&self) -> NonZeroU64 {
+        self.facts.cookie
+    }
+
+    pub(super) const fn original_deadline_boottime(&self) -> u64 {
+        self.cut.deadline_boottime
+    }
+
+    /// Rechecks the same originals while the complete input stays borrowed.
+    ///
+    /// # Errors
+    /// Retains the first actual cause and separate original shutdown debt.
+    ///
+    /// # Panics
+    /// An h2 internal lock may panic; the armed operation ends the same transport.
+    pub(super) async fn recheck(&mut self) -> Result<(), GitHttpErrorV1> {
+        let mut attempt = ReadCurrentAttemptV1 { current: self, armed: true };
+        let result = attempt.current.recheck_original().await;
+        attempt.finish(result)
+    }
+
+    async fn recheck_original(&mut self) -> Result<(), GitHttpErrorV1> {
+        self.require_ready_original()?;
+        poll_fn(|context| self.poll_original_reset(context)).await?;
+        require_current(self.peer, self.status, self.cut)
+    }
+
+    fn require_ready_original(&self) -> Result<(), GitHttpErrorV1> {
+        require_current(self.peer, self.status, self.cut)?;
+        if !matches!(self.status.phase, OriginalHttpPhaseV1::Ready | OriginalHttpPhaseV1::ResponseQueued)
+            || self.incoming.stream_id() != self.facts.stream_id
+            || self.cut.cookie != self.facts.cookie
+        {
+            return Err(GitHttpErrorV1::Closed);
+        }
+
+        Ok(())
+    }
+
+    fn poll_original_reset(&mut self, context: &mut Context<'_>) -> Poll<Result<(), GitHttpErrorV1>> {
+        if let Err(cause) = require_current(self.peer, self.status, self.cut) {
+            return Poll::Ready(Err(cause));
+        }
+        if let Poll::Ready(cause) = poll_connection(self.connection, context) {
+            return Poll::Ready(Err(cause));
+        }
+        let reset = match (&mut *self.response, &mut *self.outgoing) {
+            (Some(response), _) => response.poll_reset(context),
+            (None, Some(outgoing)) => match outgoing.stream.as_mut() {
+                Some(stream) => stream.poll_reset(context),
+                None => return Poll::Ready(Err(GitHttpErrorV1::Closed)),
+            },
+            _ => return Poll::Ready(Err(GitHttpErrorV1::Closed)),
+        };
+        match reset {
+            Poll::Pending => Poll::Ready(Ok(())),
+            Poll::Ready(Ok(reason)) => Poll::Ready(Err(GitHttpErrorV1::Reset(reason))),
+            Poll::Ready(Err(cause)) => Poll::Ready(Err(GitHttpErrorV1::Transport(cause))),
+        }
+    }
+
+    /// Installs original reset wakers and returns Pending on successful checks.
+    ///
+    /// The original READY parent still owns the abandonment boundary. This
+    /// short view does not strengthen cancellation of a separately kept parent.
+    pub(super) fn poll_while_child_parked(
+        &mut self,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<std::convert::Infallible, GitHttpErrorV1>> {
+        let mut attempt = ReadCurrentAttemptV1 { current: self, armed: true };
+        let result = (|| {
+            attempt.current.require_ready_original()?;
+            match attempt.current.poll_original_reset(context) {
+                Poll::Ready(result) => result?,
+                Poll::Pending => {}
+            }
+            require_current(attempt.current.peer, attempt.current.status, attempt.current.cut)
+        })();
+        match attempt.finish(result) {
+            Ok(()) => Poll::Pending,
+            Err(cause) => Poll::Ready(Err(cause)),
+        }
+    }
+}
+
+// Full send/receive views and disjoint read views share exactly one end recipe.
+// Their borrowing guards differ only in which already-resident view they loan.
+fn finish_request_attempt(
+    status: &mut OriginalHttpStatusV1,
+    peer: &PublicApiPeer,
+    result: Result<(), GitHttpErrorV1>,
+) -> Result<(), GitHttpErrorV1> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(cause) => {
+            status.end_with(peer, cause);
+            Err(status.retained_error())
+        }
+    }
+}
+
+fn interrupt_request_attempt(status: &mut OriginalHttpStatusV1, peer: &PublicApiPeer) {
+    let interruption = if std::thread::panicking() {
+        InterruptionV1::Unwound
+    } else {
+        InterruptionV1::Cancelled
+    };
+    status.end_interrupted(peer, interruption);
+}
+
 struct RequestAttemptV1<'attempt, 'connection> {
     request: &'attempt mut GitHttpRequestV1<'connection>,
     armed: bool,
@@ -1213,13 +1339,7 @@ struct RequestAttemptV1<'attempt, 'connection> {
 
 impl RequestAttemptV1<'_, '_> {
     fn finish(&mut self, result: Result<(), GitHttpErrorV1>) -> Result<(), GitHttpErrorV1> {
-        let result = match result {
-            Ok(()) => Ok(()),
-            Err(cause) => {
-                self.request.status.end_with(self.request.peer, cause);
-                Err(self.request.status.retained_error())
-            }
-        };
+        let result = finish_request_attempt(self.request.status, self.request.peer, result);
         self.armed = false;
         result
     }
@@ -1228,12 +1348,28 @@ impl RequestAttemptV1<'_, '_> {
 impl Drop for RequestAttemptV1<'_, '_> {
     fn drop(&mut self) {
         if self.armed {
-            let interruption = if std::thread::panicking() {
-                InterruptionV1::Unwound
-            } else {
-                InterruptionV1::Cancelled
-            };
-            self.request.status.end_interrupted(self.request.peer, interruption);
+            interrupt_request_attempt(self.request.status, self.request.peer);
+        }
+    }
+}
+
+struct ReadCurrentAttemptV1<'attempt, 'original> {
+    current: &'attempt mut GitHttpReadCurrentV1<'original>,
+    armed: bool,
+}
+
+impl ReadCurrentAttemptV1<'_, '_> {
+    fn finish(&mut self, result: Result<(), GitHttpErrorV1>) -> Result<(), GitHttpErrorV1> {
+        let result = finish_request_attempt(self.current.status, self.current.peer, result);
+        self.armed = false;
+        result
+    }
+}
+
+impl Drop for ReadCurrentAttemptV1<'_, '_> {
+    fn drop(&mut self) {
+        if self.armed {
+            interrupt_request_attempt(self.current.status, self.current.peer);
         }
     }
 }

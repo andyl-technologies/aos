@@ -448,7 +448,11 @@ impl GatewayReadyLoanV1<'_> {
             if self.delegation.is_some() { return Err(Error::Runtime); }
             *self.delegation = Some(GitDelegatedClientV1::new(uid, gid));
             let client = self.delegation.as_mut().ok_or(Error::Runtime)?;
-            match client.inspect(&mut self.request, admission).await {
+            let inspected = {
+                let (body, mut current) = self.request.split_original_read();
+                client.inspect(body, &mut current, admission).await
+            };
+            match inspected {
                 Ok(negative) => negative,
                 Err(_) => {
                     let _queued = self.request.send_negative(NegativeGitResponseV1::Unavailable).await;

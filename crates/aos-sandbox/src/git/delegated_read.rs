@@ -1080,7 +1080,8 @@ impl GitDelegatedClientV1 {
 
     pub(super) fn inspect<'a>(
         &'a mut self,
-        ready: &'a mut super::http_owner::GitHttpRequestV1<'_>,
+        body: &'a [u8],
+        ready: &'a mut super::http_owner::GitHttpReadCurrentV1<'_>,
         admission: &'a super::gateway_service::startup::GatewayAdmissionV1,
     ) -> impl std::future::Future<Output = Result<NegativeGitResponseV1, GitReadInspectionUnavailableV1>> + 'a {
         let armed = self.channel.phase == PhaseV1::Fresh && self.request.is_none();
@@ -1112,11 +1113,11 @@ impl GitDelegatedClientV1 {
                 bytes[128..160].copy_from_slice(peer.key_binding().as_bytes());
                 bytes[160..192].copy_from_slice(&peer.session_binding());
                 bytes[192..224].copy_from_slice(ready.binding().as_bytes());
-                let body_digest = Sha256::digest(ready.body()).into();
+                let body_digest = Sha256::digest(body).into();
                 bytes[224..256].copy_from_slice(&request_commitment(
                     kind as u8, *peer.project().as_bytes(),
                     *ready.request().endpoint().repository().as_bytes(),
-                    ready.body().len() as u32, body_digest,
+                    body.len() as u32, body_digest,
                 ));
                 bytes[256..288].copy_from_slice(&body_digest);
                 bytes[288..320].copy_from_slice(&holder);
@@ -1126,7 +1127,7 @@ impl GitDelegatedClientV1 {
                 bytes[400..408].copy_from_slice(&ready.original_socket_cookie().get().to_be_bytes());
                 bytes[408..412].copy_from_slice(&ready.original_stream_id().to_be_bytes());
                 bytes[412..420].copy_from_slice(&peer.deadline_boottime_nanoseconds().map_err(CauseV1::Session)?.to_be_bytes());
-                bytes[420..424].copy_from_slice(&(ready.body().len() as u32).to_be_bytes());
+                bytes[420..424].copy_from_slice(&(body.len() as u32).to_be_bytes());
                 *request = Some(bytes);
                 operation.channel.socket = Some(SeqpacketSocket::connect_retaining(Path::new(ENDPOINT)));
                 let socket = operation.channel.socket.as_ref().and_then(|result| result.as_ref().ok()).ok_or(CauseV1::Closed)?;
