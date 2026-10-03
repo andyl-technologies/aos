@@ -229,8 +229,13 @@ in {
         assert property("nix-daemon-policy.service", "Slice") == "aos-pkg-nix-daemon.slice"
         assert property("nix-daemon.service", "Slice") == SLICE
         assert property("nix-daemon-policy.service", "Result") == "success"
+        # Resource changes survive reload through one package-owned drop-in.
+        # In particular, percentage defaults cannot override absolute limits.
+        builder.succeed("systemctl daemon-reload")
+        assert property(SLICE, "DropInPaths") == f"/etc/systemd/system/{SLICE}.d/30-aos-resources.conf"
         memory_max = property(SLICE, "MemoryMax")
         assert memory_max == "1", {"unit": SLICE, "MemoryMax": memory_max}
+        assert property(SLICE, "MemoryHigh") == "1"
         builder.wait_until_succeeds(
             f"test -r /sys/fs/cgroup$(systemctl show {SLICE} --property=ControlGroup --value)/memory.events "
             f"&& awk '$1 == \"oom\" && $2 > 0 {{ found = 1 }} END {{ exit !found }}' "
@@ -317,7 +322,7 @@ in {
             builder.succeed(f"test -r '{worker}'")
             builder.succeed(f"test -s {PROFILE}/deployment/effects.journal")
 
-            # Reverting to defaults while disabled must reset transient live policy too.
+            # Reverting to defaults while disabled resets retained workers' live limits.
             apply(configuration(False, count=2))
             assert_quota(2)
             assert property(SLICE, "MemorySwapMax") == "0"

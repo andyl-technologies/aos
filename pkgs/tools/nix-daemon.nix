@@ -21,14 +21,11 @@
         test "$NIX_DAEMON_ENABLED" = true
         ;;
       policy)
-        # Set every property on every generation, including disabled states,
-        # so rollback resets prior transient policy. Surviving workers stay
-        # beneath this slice and continue to obey its aggregate limits.
-        ${systemd}/bin/systemctl set-property --runtime aos-pkg-nix-daemon-builds.slice \
-          "CPUQuota=$NIX_DAEMON_CPU_QUOTA" \
-          "MemoryHigh=$NIX_DAEMON_MEMORY_HIGH" \
-          "MemoryMax=$NIX_DAEMON_MEMORY_MAX" \
-          "MemorySwapMax=$NIX_DAEMON_MEMORY_SWAP_MAX"
+        # The package-owned slice drop-in is the single resource-policy source.
+        # Reload reapplies it to active slices, including retained workers.
+        # Runtime set-property creates competing absolute and percentage files
+        # whose precedence can restore obsolete limits on a later reload.
+        ${systemd}/bin/systemctl daemon-reload
         ;;
       prepare)
         test "$NIX_DAEMON_ENABLED" = true
