@@ -251,6 +251,308 @@ impl ProtectedPublicArchiveFileV5 {
     }
 }
 
+/// Pins only the fixed public archive for named O_PATH-relative reads.
+///
+/// This staged owner has no writer, directory listing, flock or path selector.
+pub(crate) struct ReadonlyPublicArchiveDirectoryV1 {
+    directory: Option<OwnedFd>,
+    comparison: Option<OwnedFd>,
+    metadata: Option<MetadataSnapshot>,
+    group: u32,
+}
+
+impl ReadonlyPublicArchiveDirectoryV1 {
+    pub(crate) fn new() -> Self {
+        Self {
+            directory: None,
+            comparison: None,
+            metadata: None,
+            group: rustix::process::getegid().as_raw(),
+        }
+    }
+
+    pub(crate) fn open_fixed(&mut self) -> Result<(), SourceProviderSecurityError> {
+        if self.directory.is_some() {
+            return Err(SourceProviderSecurityError::Currentness);
+        }
+        self.directory = Some(open_directory(Path::new(
+            "/var/lib/aos/source-provider/configuration-history",
+        ))?);
+        let directory = self.directory.as_ref()
+            .ok_or(SourceProviderSecurityError::Currentness)?;
+        self.metadata = Some(validate_archive_directory(directory, self.group)?);
+        self.revalidate()
+    }
+
+    pub(crate) fn revalidate(&mut self) -> Result<(), SourceProviderSecurityError> {
+        if self.comparison.is_some() {
+            return Err(SourceProviderSecurityError::Currentness);
+        }
+
+        let directory = self.directory.as_ref()
+            .ok_or(SourceProviderSecurityError::Currentness)?;
+        let metadata = self.metadata.ok_or(SourceProviderSecurityError::Currentness)?;
+        if rustix::process::geteuid().as_raw() != 0
+            || rustix::process::getegid().as_raw() != self.group
+            || validate_archive_directory(directory, self.group)? != metadata
+        {
+            return Err(SourceProviderSecurityError::Currentness);
+        }
+
+        // Park the returned comparison before metadata can refuse or unwind.
+        // A failed slot is never replaced, and the original directory stays held.
+        self.comparison = Some(open_directory(Path::new(
+            "/var/lib/aos/source-provider/configuration-history",
+        ))?);
+        let comparison = self.comparison.as_ref()
+            .ok_or(SourceProviderSecurityError::Currentness)?;
+        if validate_archive_directory(comparison, self.group)? != metadata {
+            return Err(SourceProviderSecurityError::Currentness);
+        }
+
+        self.comparison = None;
+        Ok(())
+    }
+
+    pub(crate) fn read(
+        &mut self,
+        file: &mut ReadonlyPublicArchiveFileV1,
+        kind: ReadonlyPublicArchiveNameV1,
+        maximum: usize,
+    ) -> Result<(), SourceProviderSecurityError> {
+        self.revalidate()?;
+        if file.descriptor.is_some() {
+            return Err(SourceProviderSecurityError::Currentness);
+        }
+        let directory = self.directory.as_ref()
+            .ok_or(SourceProviderSecurityError::Currentness)?;
+        file.name = Some(kind.filename());
+        let name = file.name.as_ref()
+            .ok_or(SourceProviderSecurityError::Currentness)?;
+        let opened = protected_file::open_nofollow_child(directory, name);
+        file.descriptor = Some(opened.map_err(|source| file.record_syscall(source, "open"))?);
+        let descriptor = file.descriptor.as_ref()
+            .ok_or(SourceProviderSecurityError::Currentness)?;
+        file.metadata = Some(validate_child(
+            descriptor, self.group, 1, maximum, "configuration archive",
+        )?);
+        let size = usize::try_from(file.metadata.ok_or(SourceProviderSecurityError::Currentness)?.size)
+            .map_err(|_| SourceProviderSecurityError::Currentness)?;
+        let reserved = file.exact.try_reserve_exact(size);
+        file.finish_allocation(reserved)?;
+        file.exact.resize(size, 0);
+
+        file.read_original()?;
+        self.validate_file(file)
+    }
+
+    pub(crate) fn validate_file(
+        &mut self,
+        file: &mut ReadonlyPublicArchiveFileV1,
+    ) -> Result<(), SourceProviderSecurityError> {
+        self.revalidate()?;
+        let directory = self.directory.as_ref()
+            .ok_or(SourceProviderSecurityError::Currentness)?;
+        let descriptor = file.descriptor.as_ref()
+            .ok_or(SourceProviderSecurityError::Currentness)?;
+        let expected = file.metadata.ok_or(SourceProviderSecurityError::Currentness)?;
+        let size = file.exact.len();
+        if validate_child(descriptor, self.group, size, size, "configuration archive")? != expected {
+            return Err(SourceProviderSecurityError::Currentness);
+        }
+
+        let reserved = file.scratch.try_reserve_exact(size.saturating_sub(file.scratch.len()));
+        file.finish_allocation(reserved)?;
+        file.scratch.resize(size, 0);
+        file.compare_original()?;
+        file.compare_original()?;
+        let name = file.name.as_ref()
+            .ok_or(SourceProviderSecurityError::Currentness)?;
+        let reopened = protected_file::open_nofollow_child(directory, name);
+        file.comparison = Some(reopened.map_err(|source| file.record_syscall(source, "reopen"))?);
+        let comparison = file.comparison.as_ref()
+            .ok_or(SourceProviderSecurityError::Currentness)?;
+        if validate_child(comparison, self.group, size, size, "configuration archive")? != expected {
+            return Err(SourceProviderSecurityError::Currentness);
+        }
+        let result = protected_file::read_exact_positioned_retaining_cause(comparison, &mut file.scratch);
+        file.finish_read(result)?;
+        if file.scratch != file.exact
+            || validate_child(
+                file.descriptor.as_ref().ok_or(SourceProviderSecurityError::Currentness)?,
+                self.group, size, size, "configuration archive",
+            )? != expected
+        {
+            return Err(SourceProviderSecurityError::Currentness);
+        }
+        self.revalidate()?;
+        file.comparison = None;
+        Ok(())
+    }
+}
+
+/// Restricts this reader to two public image kinds, never origin/cut files.
+pub(crate) enum ReadonlyPublicArchiveNameV1 {
+    Selected(aos_sandbox_core::ObjectDigest),
+    Deployment(aos_sandbox_core::ObjectDigest),
+}
+
+impl ReadonlyPublicArchiveNameV1 {
+    fn filename(self) -> String {
+        let (kind, digest) = match self {
+            Self::Selected(digest) => (b's', digest),
+            Self::Deployment(digest) => (b'e', digest),
+        };
+        archive_filename(kind, digest)
+    }
+}
+
+// This is the existing Source filename encoding, shared without changing its
+// allocation, byte sequence or ignored infallible String-formatting result.
+pub(crate) fn archive_filename(kind: u8, identity: aos_sandbox_core::ObjectDigest) -> String {
+    use std::fmt::Write as _;
+    let mut name = String::with_capacity(66);
+    name.push(char::from(kind));
+    name.push('-');
+    for byte in identity.as_bytes() {
+        let _ = write!(name, "{byte:02x}");
+    }
+    name
+}
+
+/// Retains the original inode, partial bytes and actual read cause before mapping.
+pub(crate) struct ReadonlyPublicArchiveFileV1 {
+    descriptor: Option<OwnedFd>,
+    comparison: Option<OwnedFd>,
+    name: Option<String>,
+    metadata: Option<MetadataSnapshot>,
+    exact: Vec<u8>,
+    scratch: Vec<u8>,
+    read_failure: Option<protected_file::ExactReadFailure>,
+    syscall_failure: Option<rustix::io::Errno>,
+    allocation_failure: Option<std::collections::TryReserveError>,
+}
+
+impl ReadonlyPublicArchiveFileV1 {
+    pub(crate) const fn new() -> Self {
+        Self {
+            descriptor: None,
+            comparison: None,
+            name: None,
+            metadata: None,
+            exact: Vec::new(),
+            scratch: Vec::new(),
+            read_failure: None,
+            syscall_failure: None,
+            allocation_failure: None,
+        }
+    }
+
+    pub(crate) fn exact(&self) -> &[u8] {
+        &self.exact
+    }
+
+    pub(crate) fn read_failure(&self) -> Option<&protected_file::ExactReadFailure> {
+        self.read_failure.as_ref()
+    }
+
+    pub(crate) fn syscall_failure(&self) -> Option<&rustix::io::Errno> {
+        self.syscall_failure.as_ref()
+    }
+
+    pub(crate) fn allocation_failure(&self) -> Option<&std::collections::TryReserveError> {
+        self.allocation_failure.as_ref()
+    }
+
+    fn finish_allocation(
+        &mut self,
+        result: Result<(), std::collections::TryReserveError>,
+    ) -> Result<(), SourceProviderSecurityError> {
+        if let Err(source) = result {
+            self.allocation_failure.get_or_insert(source);
+            return Err(SourceProviderSecurityError::Currentness);
+        }
+        Ok(())
+    }
+
+    fn record_syscall(
+        &mut self,
+        source: rustix::io::Errno,
+        operation: &'static str,
+    ) -> SourceProviderSecurityError {
+        self.syscall_failure.get_or_insert(source);
+        SourceProviderSecurityError::filesystem("configuration archive", operation)
+    }
+
+    fn read_original(&mut self) -> Result<(), SourceProviderSecurityError> {
+        let descriptor = self.descriptor.as_ref()
+            .ok_or(SourceProviderSecurityError::Currentness)?;
+        let result = protected_file::read_exact_positioned_retaining_cause(descriptor, &mut self.exact);
+        self.finish_read(result)
+    }
+
+    fn compare_original(&mut self) -> Result<(), SourceProviderSecurityError> {
+        let descriptor = self.descriptor.as_ref()
+            .ok_or(SourceProviderSecurityError::Currentness)?;
+        let result = protected_file::read_exact_positioned_retaining_cause(descriptor, &mut self.scratch);
+        self.finish_read(result)?;
+        if self.scratch != self.exact {
+            return Err(SourceProviderSecurityError::Currentness);
+        }
+        Ok(())
+    }
+
+    fn finish_read(
+        &mut self,
+        result: Result<(), protected_file::ExactReadFailure>,
+    ) -> Result<(), SourceProviderSecurityError> {
+        if let Err(source) = result {
+            let source = self.read_failure.get_or_insert(source);
+            return Err(match source.legacy_classification() {
+                ExactReadError::Read => SourceProviderSecurityError::filesystem("configuration archive", "read"),
+                ExactReadError::TrailingBytes => SourceProviderSecurityError::Metadata { object: "configuration archive" },
+            });
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod readonly_archive_tests {
+    use super::*;
+
+    #[test]
+    fn fixed_names_share_exact_legacy_encoding_without_other_kinds() {
+        let digest = aos_sandbox_core::ObjectDigest::from_bytes([0xab; 32]);
+        let selected = ReadonlyPublicArchiveNameV1::Selected(digest).filename();
+        let deployment = ReadonlyPublicArchiveNameV1::Deployment(digest).filename();
+
+        assert_eq!(selected, archive_filename(b's', digest));
+        assert_eq!(deployment, archive_filename(b'e', digest));
+        assert_eq!(selected.len(), 66);
+        assert!(selected.starts_with("s-abab"));
+        require_archive_name(&selected).unwrap();
+        require_archive_name(&deployment).unwrap();
+    }
+
+    #[test]
+    fn native_read_cause_and_partial_output_survive_diagnostic_mapping() {
+        let mut file = ReadonlyPublicArchiveFileV1::new();
+        file.exact.extend_from_slice(b"actual partial DATA");
+        let error = protected_file::ExactReadFailure::Io(rustix::io::Errno::INTR);
+
+        assert!(file.finish_read(Err(error)).is_err());
+        let first = file.read_failure().unwrap() as *const protected_file::ExactReadFailure;
+        assert!(file.finish_read(Err(protected_file::ExactReadFailure::TrailingBytes)).is_err());
+
+        assert_eq!(file.exact(), b"actual partial DATA");
+        assert_eq!(file.read_failure().unwrap() as *const protected_file::ExactReadFailure, first);
+        assert!(matches!(file.read_failure(), Some(protected_file::ExactReadFailure::Io(source))
+            if *source == rustix::io::Errno::INTR));
+        assert!(file.descriptor.is_none());
+    }
+}
+
 fn require_archive_name(name: &str) -> Result<(), SourceProviderSecurityError> {
     if name.len() != 66
         || !matches!(name.get(..2), Some("e-") | Some("o-") | Some("c-") | Some("s-"))

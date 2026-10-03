@@ -14,6 +14,10 @@
 //! peer and protected service scope, then require later records to preserve the
 //! same live session. A privileged sender may nominate another subject within
 //! its kernel authority, so the carrier does not by itself identify the writer.
+//!
+//! Fixed retaining adapters share the same native sender and original receive
+//! engine. Their negative fence retains the socket but denies every later I/O
+//! loan after fatal failure; shutdown debt never proves peer exit or Drain.
 
 use std::io::IoSlice;
 use std::mem::MaybeUninit;
@@ -21,11 +25,12 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
 use std::path::{Component, Path};
 
+use super::receive_custody::{ReceiveAttemptV1, SubjectProfileV1, receive_packet};
 use super::socket_binding::ReceivedSocketOrigin;
 use super::{
     ConnectionPeerIdentity, KernelAuthorizedRecordSubject, PendingSocketAdmissionV1,
-    RetainedSeqpacketAdmissionErrorV1, SeqpacketError, admit_connected_peer,
-    connect_pending_seqpacket, map_kernel_error,
+    RetainedSeqpacketAdmissionErrorV1, RetainedSeqpacketReceiveErrorV1, SeqpacketError,
+    admit_connected_peer, connect_pending_seqpacket, map_kernel_error,
 };
 use crate::Error;
 use crate::uapi::{self, RawAncillary};
@@ -43,6 +48,148 @@ const KERNEL_EXPORT_DESCRIPTORS: usize = 3;
 pub struct DescriptorSubjectSocket {
     fd: Option<OwnedFd>,
     peer: ConnectionPeerIdentity,
+    retention: OriginalRetentionV1,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RetentionPhaseV1 {
+    Legacy,
+    Healthy,
+    Failed,
+}
+
+#[derive(Debug)]
+struct OriginalRetentionV1 {
+    phase: RetentionPhaseV1,
+    shutdown_attempted: bool,
+    shutdown_failure: Option<std::io::Error>,
+}
+
+impl OriginalRetentionV1 {
+    const fn legacy() -> Self {
+        Self {
+            phase: RetentionPhaseV1::Legacy,
+            shutdown_attempted: false,
+            shutdown_failure: None,
+        }
+    }
+
+    fn end(&mut self, fd: &Option<OwnedFd>) {
+        self.phase = RetentionPhaseV1::Failed;
+        if self.shutdown_attempted {
+            return;
+        }
+
+        self.shutdown_attempted = true;
+        self.shutdown_failure = fd.as_ref().and_then(|fd| {
+            rustix::net::shutdown(fd, rustix::net::Shutdown::Both)
+                .err()
+                .map(std::io::Error::from)
+        });
+    }
+}
+
+// The exclusive operation prearms a negative fence. Only this observation's
+// full success or initial nonconsuming receive/send refusal may restore it.
+struct OriginalObservationV1<'a> {
+    fd: &'a Option<OwnedFd>,
+    retention: &'a mut OriginalRetentionV1,
+    settled: bool,
+}
+
+impl<'a> OriginalObservationV1<'a> {
+    fn begin(
+        fd: &'a Option<OwnedFd>,
+        retention: &'a mut OriginalRetentionV1,
+    ) -> Result<Self, SeqpacketError> {
+        if retention.phase == RetentionPhaseV1::Failed || fd.is_none() {
+            return Err(SeqpacketError::Closed);
+        }
+
+        retention.phase = RetentionPhaseV1::Failed;
+        Ok(Self {
+            fd,
+            retention,
+            settled: false,
+        })
+    }
+
+    fn fd(&self) -> Result<BorrowedFd<'_>, SeqpacketError> {
+        self.fd.as_ref().map(AsFd::as_fd).ok_or(SeqpacketError::Closed)
+    }
+
+    fn complete(&mut self) {
+        self.retention.phase = RetentionPhaseV1::Healthy;
+        self.settled = true;
+    }
+}
+
+impl Drop for OriginalObservationV1<'_> {
+    fn drop(&mut self) {
+        if !self.settled {
+            self.retention.end(self.fd);
+        }
+    }
+}
+
+enum SocketDispositionV1<'a> {
+    Legacy {
+        fd: &'a mut Option<OwnedFd>,
+        retention: &'a mut OriginalRetentionV1,
+    },
+    Retained(OriginalObservationV1<'a>),
+}
+
+#[derive(Clone, Copy)]
+enum SendDispositionV1 {
+    Legacy,
+    Retained,
+}
+
+impl<'a> SocketDispositionV1<'a> {
+    fn begin(
+        fd: &'a mut Option<OwnedFd>,
+        retention: &'a mut OriginalRetentionV1,
+        disposition: SendDispositionV1,
+    ) -> Result<Self, SeqpacketError> {
+        match disposition {
+            SendDispositionV1::Retained => {
+                Ok(Self::Retained(OriginalObservationV1::begin(fd, retention)?))
+            }
+            SendDispositionV1::Legacy => Ok(Self::Legacy { fd, retention }),
+        }
+    }
+
+    fn fd(&self) -> Result<BorrowedFd<'_>, SeqpacketError> {
+        match self {
+            Self::Legacy { fd, retention } => {
+                if retention.phase == RetentionPhaseV1::Failed {
+                    return Err(SeqpacketError::Closed);
+                }
+                fd.as_ref().map(AsFd::as_fd).ok_or(SeqpacketError::Closed)
+            }
+            Self::Retained(observation) => observation.fd(),
+        }
+    }
+
+    fn fatal(&mut self) {
+        match self {
+            Self::Legacy { fd, retention } => {
+                if retention.phase == RetentionPhaseV1::Legacy {
+                    fd.take();
+                } else {
+                    retention.end(fd);
+                }
+            }
+            Self::Retained(observation) => observation.retention.end(observation.fd),
+        }
+    }
+
+    fn complete(&mut self) {
+        if let Self::Retained(observation) = self {
+            observation.complete();
+        }
+    }
 }
 
 impl DescriptorSubjectSocket {
@@ -111,7 +258,11 @@ impl DescriptorSubjectSocket {
     pub fn from_owned(fd: OwnedFd) -> Result<Self, SeqpacketError> {
         let peer = admit_connected_peer(fd.as_fd())?;
         uapi::enable_seqpacket_identity(fd.as_fd())?;
-        Ok(Self { fd: Some(fd), peer })
+        Ok(Self {
+            fd: Some(fd),
+            peer,
+            retention: OriginalRetentionV1::legacy(),
+        })
     }
 
     /// Adopts an original descriptor while retaining failed admission custody.
@@ -135,7 +286,11 @@ impl DescriptorSubjectSocket {
             return Err(pending.fail(source));
         }
         let (fd, peer) = pending.finish()?;
-        Ok(Self { fd: Some(fd), peer })
+        Ok(Self {
+            fd: Some(fd),
+            peer,
+            retention: OriginalRetentionV1::legacy(),
+        })
     }
 
     /// Returns the process that established this connected channel.
@@ -153,6 +308,9 @@ impl DescriptorSubjectSocket {
     ///
     /// Rejects a channel closed after a fatal transport error.
     pub fn as_fd(&self) -> Result<BorrowedFd<'_>, SeqpacketError> {
+        if self.retention.phase == RetentionPhaseV1::Failed {
+            return Err(SeqpacketError::Closed);
+        }
         self.fd
             .as_ref()
             .map(AsFd::as_fd)
@@ -189,7 +347,40 @@ impl DescriptorSubjectSocket {
     /// failure so hostile bytes cannot be followed by a fresh parser on the
     /// same stream.
     pub fn close(&mut self) {
-        self.fd.take();
+        self.dispose_fatal();
+    }
+
+    /// Commits negative retention of this already owned original channel.
+    ///
+    /// This cannot reopen a failed channel or authenticate its application role.
+    pub fn begin_original_retention_v1(&mut self) {
+        if self.retention.phase == RetentionPhaseV1::Legacy {
+            self.retention.phase = if self.fd.is_some() {
+                RetentionPhaseV1::Healthy
+            } else {
+                RetentionPhaseV1::Failed
+            };
+        }
+    }
+
+    /// Reports irreversible negative state, never EOF or peer Drain.
+    #[must_use]
+    pub fn original_retention_failed_v1(&self) -> bool {
+        self.retention.phase == RetentionPhaseV1::Failed
+    }
+
+    /// Borrows additional original-socket shutdown debt without releasing custody.
+    #[must_use]
+    pub fn original_shutdown_failure_v1(&self) -> Option<&std::io::Error> {
+        self.retention.shutdown_failure.as_ref()
+    }
+
+    fn dispose_fatal(&mut self) {
+        if self.retention.phase == RetentionPhaseV1::Legacy {
+            self.fd.take();
+        } else {
+            self.retention.end(&self.fd);
+        }
     }
 
     /// Provisions and verifies capacity for one bounded application packet.
@@ -266,14 +457,36 @@ impl DescriptorSubjectSocket {
     /// Rejects an empty or oversized packet, a closed channel, transport errors,
     /// or a short send. Backpressure and interruption are retryable.
     pub fn send(&mut self, payload: &[u8]) -> Result<(), SeqpacketError> {
+        self.send_with_disposition(payload, SendDispositionV1::Legacy)
+    }
+
+    /// Sends through the same native sender while retaining fatal original custody.
+    ///
+    /// # Errors
+    ///
+    /// Retains the original endpoint on refusal; only native backpressure or
+    /// interruption permits retry. This is not a writer-authentication result.
+    pub fn send_retaining(&mut self, payload: &[u8]) -> Result<(), SeqpacketError> {
+        self.send_with_disposition(payload, SendDispositionV1::Retained)
+    }
+
+    fn send_with_disposition(
+        &mut self,
+        payload: &[u8],
+        selected: SendDispositionV1,
+    ) -> Result<(), SeqpacketError> {
+        let mut disposition = SocketDispositionV1::begin(&mut self.fd, &mut self.retention, selected)?;
         if payload.is_empty() || payload.len() > MAXIMUM_PACKET_BYTES {
             return Err(SeqpacketError::InvalidMaximum);
         }
-        let result = uapi::send_seqpacket(self.as_fd()?, payload).map_err(map_kernel_error);
+        let result = uapi::send_seqpacket(disposition.fd()?, payload).map_err(map_kernel_error);
         match result {
-            Ok(written) if written == payload.len() => Ok(()),
+            Ok(written) if written == payload.len() => {
+                disposition.complete();
+                Ok(())
+            }
             Ok(written) => {
-                self.fd.take();
+                disposition.fatal();
                 Err(SeqpacketError::PartialSend {
                     expected: payload.len(),
                     actual: written,
@@ -281,7 +494,9 @@ impl DescriptorSubjectSocket {
             }
             Err(error) => {
                 if error.is_fatal() {
-                    self.fd.take();
+                    disposition.fatal();
+                } else {
+                    disposition.complete();
                 }
                 Err(error)
             }
@@ -300,6 +515,30 @@ impl DescriptorSubjectSocket {
         payload: &[u8],
         descriptors: &[BorrowedFd<'_>],
     ) -> Result<(), SeqpacketError> {
+        self.send_descriptors_with_disposition(payload, descriptors, SendDispositionV1::Legacy)
+    }
+
+    /// Sends the existing one-to-two-descriptor profile with original retention.
+    ///
+    /// # Errors
+    ///
+    /// Rejects the same bounds/native sends, retaining fatal endpoint custody.
+    /// This never widens the separate three-descriptor kernel-export profile.
+    pub fn send_with_descriptors_retaining(
+        &mut self,
+        payload: &[u8],
+        descriptors: &[BorrowedFd<'_>],
+    ) -> Result<(), SeqpacketError> {
+        self.send_descriptors_with_disposition(payload, descriptors, SendDispositionV1::Retained)
+    }
+
+    fn send_descriptors_with_disposition(
+        &mut self,
+        payload: &[u8],
+        descriptors: &[BorrowedFd<'_>],
+        selected: SendDispositionV1,
+    ) -> Result<(), SeqpacketError> {
+        let mut disposition = SocketDispositionV1::begin(&mut self.fd, &mut self.retention, selected)?;
         if payload.is_empty()
             || payload.len() > MAXIMUM_PACKET_BYTES
             || descriptors.is_empty()
@@ -311,13 +550,13 @@ impl DescriptorSubjectSocket {
             rustix::cmsg_space!(ScmRights(MAXIMUM_TRANSFERRED_DESCRIPTORS))];
         let mut control = SendAncillaryBuffer::new(&mut control_space);
         if !control.push(SendAncillaryMessage::ScmRights(descriptors)) {
-            self.fd.take();
+            disposition.fatal();
             return Err(SeqpacketError::Ancillary(
                 "SCM_RIGHTS descriptor table exceeded its fixed buffer",
             ));
         }
         let result = sendmsg(
-            self.as_fd()?,
+            disposition.fd()?,
             &[IoSlice::new(payload)],
             &mut control,
             SendFlags::DONTWAIT | SendFlags::NOSIGNAL,
@@ -329,9 +568,12 @@ impl DescriptorSubjectSocket {
             })
         });
         match result {
-            Ok(written) if written == payload.len() => Ok(()),
+            Ok(written) if written == payload.len() => {
+                disposition.complete();
+                Ok(())
+            }
             Ok(written) => {
-                self.fd.take();
+                disposition.fatal();
                 Err(SeqpacketError::PartialSend {
                     expected: payload.len(),
                     actual: written,
@@ -339,7 +581,9 @@ impl DescriptorSubjectSocket {
             }
             Err(error) => {
                 if error.is_fatal() {
-                    self.fd.take();
+                    disposition.fatal();
+                } else {
+                    disposition.complete();
                 }
                 Err(error)
             }
@@ -368,7 +612,7 @@ impl DescriptorSubjectSocket {
             [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(KERNEL_EXPORT_DESCRIPTORS))];
         let mut control = SendAncillaryBuffer::new(&mut control_space);
         if !control.push(SendAncillaryMessage::ScmRights(&descriptors)) {
-            self.fd.take();
+            self.dispose_fatal();
             return Err(SeqpacketError::Ancillary(
                 "SCM_RIGHTS descriptor table exceeded its fixed buffer",
             ));
@@ -388,7 +632,7 @@ impl DescriptorSubjectSocket {
         match result {
             Ok(written) if written == payload.len() => Ok(()),
             Ok(written) => {
-                self.fd.take();
+                self.dispose_fatal();
                 Err(SeqpacketError::PartialSend {
                     expected: payload.len(),
                     actual: written,
@@ -396,7 +640,7 @@ impl DescriptorSubjectSocket {
             }
             Err(error) => {
                 if error.is_fatal() {
-                    self.fd.take();
+                    self.dispose_fatal();
                 }
                 Err(error)
             }
@@ -419,7 +663,7 @@ impl DescriptorSubjectSocket {
         }
         let result = self.receive_inner(maximum_bytes, KERNEL_EXPORT_DESCRIPTORS, false);
         if result.as_ref().is_err_and(SeqpacketError::is_fatal) {
-            self.fd.take();
+            self.dispose_fatal();
         }
         result
     }
@@ -449,7 +693,7 @@ impl DescriptorSubjectSocket {
         }
         let result = self.receive_inner(maximum_bytes, expected_descriptors, false);
         if result.as_ref().is_err_and(SeqpacketError::is_fatal) {
-            self.fd.take();
+            self.dispose_fatal();
         }
         result
     }
@@ -494,7 +738,7 @@ impl DescriptorSubjectSocket {
         (super::RecordBindingError, ReceivedDescriptorRecord),
     > {
         if let Err(error) = self.require_record_origin(&record) {
-            self.fd.take();
+            self.dispose_fatal();
             return Err((error, record));
         }
 
@@ -519,7 +763,7 @@ impl DescriptorSubjectSocket {
         record: &ReceivedDescriptorRecord,
     ) -> Result<(), super::RecordBindingError> {
         if let Err(error) = self.require_record_origin(record) {
-            self.fd.take();
+            self.dispose_fatal();
             return Err(error);
         }
 
@@ -592,7 +836,7 @@ impl DescriptorSubjectSocket {
         }
         let result = self.receive_inner(maximum_bytes, expected_descriptors, true);
         if result.as_ref().is_err_and(SeqpacketError::is_fatal) {
-            self.fd.take();
+            self.dispose_fatal();
         }
         result
     }
@@ -655,14 +899,119 @@ impl DescriptorSubjectSocket {
         &self,
         record: &ReceivedDescriptorRecord,
     ) -> Result<(), super::RecordBindingError> {
-        let fd = self
-            .fd
-            .as_ref()
-            .map(AsFd::as_fd)
-            .ok_or_else(super::RecordBindingError::closed)?;
-        self.peer.binding.require_current(fd)?;
-        record.origin.require_binding(self.peer.binding)
+        let fd = self.as_fd().map_err(|_| super::RecordBindingError::closed())?;
+        require_record_origin(fd, &self.peer, record)
     }
+}
+
+impl DescriptorSubjectSocket {
+    /// Receives the fixed zero-descriptor profile with original lower custody.
+    ///
+    /// # Errors
+    ///
+    /// Returns the owning receive failure. Only an initial nonconsuming EAGAIN
+    /// or EINTR can retry; fatal/partial errors retain and fence this endpoint.
+    pub fn receive_zero_descriptors_retaining(
+        &mut self,
+        maximum_bytes: usize,
+    ) -> Result<ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1> {
+        self.receive_profile_retaining(
+            maximum_bytes,
+            SubjectProfileV1::Descriptors { expected: 0, allow_empty: false },
+        )
+    }
+
+    /// Receives only zero or one descriptor through the original receive engine.
+    ///
+    /// # Errors
+    ///
+    /// Retains native/subject/framing failures and fences every fatal epoch.
+    /// Application role and zero-descriptor error semantics remain caller checks.
+    pub fn receive_optional_descriptor_reply_retaining(
+        &mut self,
+        maximum_bytes: usize,
+    ) -> Result<ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1> {
+        self.receive_profile_retaining(
+            maximum_bytes,
+            SubjectProfileV1::Descriptors { expected: 1, allow_empty: true },
+        )
+    }
+
+    fn receive_profile_retaining(
+        &mut self,
+        maximum: usize,
+        profile: SubjectProfileV1,
+    ) -> Result<ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1> {
+        let mut observation = OriginalObservationV1::begin(&self.fd, &mut self.retention)
+            .map_err(RetainedSeqpacketReceiveErrorV1::before_receive)?;
+        let result = (|| {
+            if maximum == 0 || maximum > MAXIMUM_PACKET_BYTES {
+                return Err(RetainedSeqpacketReceiveErrorV1::before_receive(
+                    SeqpacketError::InvalidMaximum,
+                ));
+            }
+
+            let fd = observation.fd().map_err(RetainedSeqpacketReceiveErrorV1::before_receive)?;
+            let attempt = ReceiveAttemptV1::capture(fd, self.peer.socket_cookie())?;
+            let mut attempt = receive_packet(attempt, maximum, profile)?;
+            let message = &mut attempt.messages[1];
+            let Some(subject) = message.subject.take() else {
+                return Err(attempt.reject(SeqpacketError::Ancillary("missing SCM_PIDFD")));
+            };
+            let record = ReceivedDescriptorRecord::from_parts(
+                std::mem::take(&mut message.payload),
+                subject,
+                message.take_descriptors(),
+                self.peer.binding.received_origin(),
+            );
+            attempt.disarm();
+            Ok(record)
+        })();
+
+        let retryable = match &result {
+            Ok(_) => true,
+            Err(error) => error.is_nonconsuming_would_block() || error.is_nonconsuming_interrupted(),
+        };
+        if retryable {
+            observation.complete();
+        }
+        result
+    }
+
+    /// Checks a caller-resident record without disposing packet or original socket.
+    ///
+    /// # Errors
+    ///
+    /// Fences the same endpoint on any binding refusal and returns its typed cause.
+    /// This establishes carrier continuity only, not application currentness.
+    pub fn validate_received_origin_retaining(
+        &mut self,
+        record: &ReceivedDescriptorRecord,
+    ) -> Result<(), super::RecordBindingError> {
+        let mut observation = OriginalObservationV1::begin(&self.fd, &mut self.retention)
+            .map_err(|_| super::RecordBindingError::closed())?;
+        let fd = observation.fd().map_err(|_| super::RecordBindingError::closed())?;
+        require_record_origin(fd, &self.peer, record)?;
+        observation.complete();
+        Ok(())
+    }
+}
+
+impl Drop for DescriptorSubjectSocket {
+    fn drop(&mut self) {
+        if self.retention.phase != RetentionPhaseV1::Legacy {
+            self.retention.end(&self.fd);
+        }
+    }
+}
+
+fn require_record_origin(
+    fd: BorrowedFd<'_>,
+    peer: &ConnectionPeerIdentity,
+    record: &ReceivedDescriptorRecord,
+) -> Result<(), super::RecordBindingError> {
+    peer.binding.require_current(fd)?;
+    record.origin.require_binding(peer.binding)
 }
 
 /// Retains a received record's kernel subject and exact transferred descriptor sequence.
@@ -843,6 +1192,50 @@ mod admission_tests {
             assert!(!failure.shutdown_attempted());
             assert!(failure.shutdown_failure().is_none());
         }
+    }
+}
+
+#[cfg(test)]
+mod retention_tests {
+    use super::*;
+
+    #[test]
+    fn already_failed_observation_cannot_begin_or_rearm() {
+        let fd = None;
+        let mut retention = OriginalRetentionV1::legacy();
+        retention.phase = RetentionPhaseV1::Failed;
+
+        assert!(OriginalObservationV1::begin(&fd, &mut retention).is_err());
+        assert_eq!(retention.phase, RetentionPhaseV1::Failed);
+    }
+
+    #[test]
+    fn terminal_state_and_first_shutdown_debt_are_irreversible() {
+        let mut retention = OriginalRetentionV1::legacy();
+        retention.shutdown_attempted = true;
+        retention.shutdown_failure = Some(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        let first = retention.shutdown_failure.as_ref().unwrap() as *const std::io::Error;
+
+        retention.end(&None);
+        retention.end(&None);
+
+        assert_eq!(retention.phase, RetentionPhaseV1::Failed);
+        assert_eq!(retention.shutdown_failure.as_ref().unwrap() as *const std::io::Error, first);
+    }
+
+    #[test]
+    fn legacy_disposition_has_no_retained_shutdown_effect() {
+        let mut fd = None;
+        let mut retention = OriginalRetentionV1::legacy();
+
+        {
+            let _disposition = SocketDispositionV1::begin(
+                &mut fd, &mut retention, SendDispositionV1::Legacy,
+            ).unwrap();
+        }
+
+        assert_eq!(retention.phase, RetentionPhaseV1::Legacy);
+        assert!(!retention.shutdown_attempted);
     }
 }
 

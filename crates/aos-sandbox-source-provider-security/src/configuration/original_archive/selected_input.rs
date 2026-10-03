@@ -21,9 +21,9 @@ use aos_sandbox_source_provider_protocol::{
 
 use super::*;
 
-const MAGIC: &[u8; 8] = b"AOSPSI01";
-const HEADER: usize = 176;
-const MAXIMUM: usize = HEADER + SOURCE_SELECTED_NATIVE_EXECUTION_INPUT_BYTES_V1
+pub(super) const MAGIC: &[u8; 8] = b"AOSPSI01";
+pub(super) const HEADER: usize = 176;
+pub(super) const MAXIMUM: usize = HEADER + SOURCE_SELECTED_NATIVE_EXECUTION_INPUT_BYTES_V1
     + MAXIMUM_HELD_SNAPSHOT_CATALOG_BYTES_V1 + 928 + 160;
 
 const _: () = assert!(MAXIMUM == 22_958);
@@ -184,16 +184,7 @@ impl ProtectedOriginalConfigurationArchiveV5 {
         {
             return Err(SourceProviderSecurityError::Currentness);
         }
-        let parts = sections(exact, HEADER, 160, 4)?;
-        selected_size([parts[0], parts[1], parts[2], parts[3]])?;
-        let frame = SourceSelectedNativeExecutionInputDataV1::from_canonical_bytes(parts[0])
-            .map_err(|_| SourceProviderSecurityError::Currentness)?;
-        if frame.digest() != selected {
-            return Err(SourceProviderSecurityError::Currentness);
-        }
-        let catalog = (HEADER + parts[0].len())..(HEADER + parts[0].len() + parts[1].len());
-        let backend = catalog.end..(catalog.end + parts[2].len());
-        let dedicated = backend.end..exact.len();
+        let (frame, catalog, backend, dedicated, _parts) = selected_body(exact, selected)?;
         self.retain(b's', selected, exact.len())?;
         self.directory.validate_file(&file)?;
         Ok(ProtectedOriginalSelectedInputV1 { file, frame, catalog, backend, dedicated })
@@ -233,6 +224,29 @@ impl ProtectedOriginalConfigurationArchiveV5 {
         }
         Ok(())
     }
+}
+
+// Context comparisons stay in the Source caller before this allocating body.
+// Its returned parts Vec preserves the caller's original allocation/drop
+// interval. A readonly caller shares structure, not live admission.
+pub(super) fn selected_body<'a>(
+    exact: &'a [u8],
+    selected: ObjectDigest,
+) -> Result<
+    (SourceSelectedNativeExecutionInputDataV1, Range<usize>, Range<usize>, Range<usize>, Vec<&'a [u8]>),
+    SourceProviderSecurityError,
+> {
+    let parts = sections(exact, HEADER, 160, 4)?;
+    selected_size([parts[0], parts[1], parts[2], parts[3]])?;
+    let frame = SourceSelectedNativeExecutionInputDataV1::from_canonical_bytes(parts[0])
+        .map_err(|_| SourceProviderSecurityError::Currentness)?;
+    if frame.digest() != selected {
+        return Err(SourceProviderSecurityError::Currentness);
+    }
+    let catalog = (HEADER + parts[0].len())..(HEADER + parts[0].len() + parts[1].len());
+    let backend = catalog.end..(catalog.end + parts[2].len());
+    let dedicated = backend.end..exact.len();
+    Ok((frame, catalog, backend, dedicated, parts))
 }
 
 fn selected_size(parts: [&[u8]; 4]) -> Result<usize, SourceProviderSecurityError> {
@@ -282,5 +296,19 @@ mod tests {
         assert!(sections(&bytes, HEADER, 160, 4).is_err());
         bytes[10] = 1;
         assert!(require_header(&bytes, MAGIC, HEADER).is_err());
+    }
+
+    #[test]
+    fn shared_selected_body_refuses_noncanonical_frame_and_extent() {
+        let mut exact = header(MAGIC);
+        exact.resize(160, 0);
+        for length in [648, 1, 928, 160] {
+            append_length(&mut exact, length).unwrap();
+        }
+        exact.resize(HEADER + 648 + 1 + 928 + 160, 0);
+
+        assert!(selected_body(&exact, ObjectDigest::from_bytes([1; 32])).is_err());
+        exact.push(0);
+        assert!(selected_body(&exact, ObjectDigest::from_bytes([1; 32])).is_err());
     }
 }
