@@ -40,6 +40,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use super::*;
 use crate::{ExecutionCancellation, ExecutionCheckpointRequest, QemuFreshAttemptLifecycleOwner};
 
+mod guest_marker_boundary;
 mod network_boundary;
 
 #[test]
