@@ -3,7 +3,10 @@
   testing,
   pkgs,
 }: let
-  bootstrapScript = ../../pkgs/boot/_aos-boot-preparations/run-etc-setup.sh;
+  bootstrapScript = builtins.path {
+    path = ../../pkgs/boot/_aos-boot-preparations/run-etc-setup.sh;
+    name = "run-etc-setup.sh";
+  };
 in
   testing.mkVMTest {
     name = "native-configuration-lower";
