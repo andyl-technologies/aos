@@ -472,7 +472,7 @@ shape-line|crates/crucible-qemu/src/linux_attempt_storage.rs|1779
 shape-line|crates/crucible-linux-resource/src/linux_project_quota.rs|1134
 shape-line|crates/crucible-qemu/src/node.rs|3609
 shape-line|crates/crucible-qemu/src/node/hot_fork_child_qmp.rs|731
-shape-line|crates/crucible-qemu/src/node/hot_fork_diagnostics.rs|715
+shape-line|crates/crucible-qemu/src/node/hot_fork_diagnostics.rs|668
 shape-line|crates/crucible-qemu/src/node/hot_fork_plugin_endpoints.rs|653
 shape-line|crates/crucible-qemu/src/node/hot_fork_ring_image.rs|952
 shape-line|crates/crucible-qemu/src/node_tests.rs|2392

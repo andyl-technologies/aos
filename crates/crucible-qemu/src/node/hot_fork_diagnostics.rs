@@ -576,28 +576,32 @@ mod tests {
     #[test]
     fn retained_child_control_tail_survives_detached_finalization()
     -> Result<(), Box<dyn std::error::Error>> {
-        let mut pair = create_diagnostic_pair(47)?;
-        let mut consumer = pair.take_consumer()?;
-        let row = "CRUCIBLE-CONTROL-CALLBACK-V1 phase=exit reason=pending pid=153 raw_icount=5859612126 token_kind=observed token_before=4498 token_after=4498";
-        pair.child.write_all(row.as_bytes())?;
-        consumer.drain_available()?;
-        let retained = consumer.retained().to_vec();
-        let partial = consumer.control_diagnostics_summary(153);
-        assert!(partial.contains("accepted_rows=0"));
-        assert!(partial.contains("incomplete_last_row=true"));
-        assert_eq!(consumer.retained(), retained);
+        for row in [
+            "CRUCIBLE-CONTROL-CALLBACK-V1 phase=exit reason=pending pid=153 raw_icount=5859612126 token_kind=observed token_before=4498 token_after=4498",
+            "CRUCIBLE-NATIVE-STOP-CONTEXT-V1 phase=rearm-shutdown pid=153 gen=3 request=12830 ack=12829 complete=12829 state=2 runstate=4 flush=0 shutdown=1 advance=0 fd=7 scope=unavailable pc=unavailable coord=unavailable",
+        ] {
+            let mut pair = create_diagnostic_pair(47)?;
+            let mut consumer = pair.take_consumer()?;
+            pair.child.write_all(row.as_bytes())?;
+            consumer.drain_available()?;
+            let retained = consumer.retained().to_vec();
+            let partial = consumer.control_diagnostics_summary(153);
+            assert!(partial.contains("accepted_rows=0"));
+            assert!(partial.contains("incomplete_last_row=true"));
+            assert_eq!(consumer.retained(), retained);
 
-        pair.child.write_all(b"\n")?;
-        pair.child.shutdown(Shutdown::Write)?;
-        consumer.mark_writer_detached(&pair.descriptor_name, pair.socket_cookie, 47)?;
-        let capture = consumer.finish_detached_capture()?;
-        let summary = capture.control_diagnostics_summary(153);
-        assert!(summary.contains("accepted_rows=1"));
-        assert!(summary.ends_with(row));
-        assert_eq!(capture.bytes(), format!("{row}\n").as_bytes());
-        assert_eq!(capture.socket_cookie(), pair.socket_cookie);
-        assert_eq!(capture.template_generation(), 47);
-        assert!(consumer.drain_available().is_err());
+            pair.child.write_all(b"\n")?;
+            pair.child.shutdown(Shutdown::Write)?;
+            consumer.mark_writer_detached(&pair.descriptor_name, pair.socket_cookie, 47)?;
+            let capture = consumer.finish_detached_capture()?;
+            let summary = capture.control_diagnostics_summary(153);
+            assert!(summary.contains("accepted_rows=1"));
+            assert!(summary.ends_with(row));
+            assert_eq!(capture.bytes(), format!("{row}\n").as_bytes());
+            assert_eq!(capture.socket_cookie(), pair.socket_cookie);
+            assert_eq!(capture.template_generation(), 47);
+            assert!(consumer.drain_available().is_err());
+        }
         Ok(())
     }
 

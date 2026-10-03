@@ -8,6 +8,9 @@ use std::collections::VecDeque;
 #[path = "network_output_context.rs"]
 mod network_output_context;
 
+#[path = "native_stop_context.rs"]
+mod native_stop_context;
+
 const MAXIMUM_ROWS: usize = 32;
 const MAXIMUM_ROW_BYTES: usize = 512;
 
@@ -21,7 +24,8 @@ pub(super) fn control_diagnostics_summary(bytes: &[u8], child_process_id: u32) -
         let Some(line) = line.strip_suffix(b"\n") else {
             continue;
         };
-        if !line.starts_with(b"CRUCIBLE-NETWORK-OUTPUT-CONTEXT-V1 ")
+        if !line.starts_with(b"CRUCIBLE-NATIVE-STOP-CONTEXT-V1 ")
+            && !line.starts_with(b"CRUCIBLE-NETWORK-OUTPUT-CONTEXT-V1 ")
             && !line.starts_with(b"CRUCIBLE-CONTROL-CALLBACK-V1 ")
             && !line.starts_with(b"CRUCIBLE-CONTROL-LAST-V1 ")
             && !line.starts_with(b"CRUCIBLE-RR-CONTROL-DEFER-V1 ")
@@ -34,7 +38,8 @@ pub(super) fn control_diagnostics_summary(bytes: &[u8], child_process_id: u32) -
                 && row
                     .bytes()
                     .all(|byte| byte == b' ' || byte.is_ascii_graphic())
-                && (network_output_context::valid_row(row, child_process_id)
+                && (native_stop_context::valid_row(row, child_process_id)
+                    || network_output_context::valid_row(row, child_process_id)
                     || valid_callback_row(row, child_process_id)
                     || valid_last_callback_row(row, child_process_id)
                     || valid_defer_row(row)
@@ -328,5 +333,43 @@ mod tests {
             assert!(summary.contains("accepted_rows=0 rejected_rows=1"));
             assert_eq!(summary.lines().count(), 1);
         }
+    }
+
+    #[test]
+    fn late_native_stop_context_uses_existing_child_tail_bound() {
+        let mut bytes = Vec::new();
+        for generation in 0..40 {
+            let row = format!(
+                "CRUCIBLE-NATIVE-STOP-CONTEXT-V1 phase=stopped pid=153 gen={generation} request=7 ack=6 complete=6 state=2 runstate=4 flush=0 shutdown=0 advance=0 fd=7 scope=unavailable pc=unavailable coord=unavailable\n"
+            );
+            bytes.extend_from_slice(row.as_bytes());
+        }
+        for malformed in [
+            "CRUCIBLE-NATIVE-STOP-CONTEXT-V1 phase=stopped pid=132 gen=40 request=7 ack=6 complete=6 state=2 runstate=4 flush=0 shutdown=0 advance=0 fd=7 scope=unavailable pc=unavailable coord=unavailable\n".to_owned(),
+            format!("CRUCIBLE-NATIVE-STOP-CONTEXT-V1 {}\n", "x".repeat(512)),
+        ] {
+            bytes.extend_from_slice(malformed.as_bytes());
+        }
+        bytes.extend_from_slice(b"CRUCIBLE-NATIVE-STOP-CONTEXT-V1 incomplete");
+
+        let summary = control_diagnostics_summary(&bytes, 153);
+        assert!(summary.contains(
+            "accepted_rows=40 rejected_rows=2 tail_rows=32 omitted_rows=8 incomplete_last_row=true"
+        ));
+        assert_eq!(summary.lines().count(), 33);
+        assert!(
+            summary
+                .lines()
+                .nth(1)
+                .is_some_and(|row| row.contains("gen=8 "))
+        );
+        assert!(
+            summary
+                .lines()
+                .last()
+                .is_some_and(|row| row.contains("gen=39 "))
+        );
+        assert!(!summary.contains("pid=132"));
+        assert!(summary.len() <= 32 * MAXIMUM_ROW_BYTES + 256);
     }
 }
