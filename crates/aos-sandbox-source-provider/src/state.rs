@@ -781,6 +781,9 @@ pub struct ProviderLedgerV1<'a> {
     pub(crate) configuration: ProtectedProviderConfigurationV1,
     pub(crate) recovered: RecoveredProviderLedgerV1,
     pub(crate) current_sessions: BTreeMap<[u8; 16], InstalledProviderSessionV1>,
+    // The selected original-only entry has an inline destination before any
+    // Session handoff. It is never a generic holder-map admission or replacement.
+    selected_first_session: Option<InstalledProviderSessionV1>,
     pub(crate) pending_acquisitions:
         BTreeMap<ObjectDigest, crate::pending::LivePendingAcquisitionV1>,
     pub(crate) pending_releases: BTreeMap<ObjectDigest, crate::release::LivePendingReleaseV1>,
@@ -800,6 +803,7 @@ pub(crate) struct DetachedProviderLedgerV1 {
     configuration: ProtectedProviderConfigurationV1,
     recovered: RecoveredProviderLedgerV1,
     current_sessions: BTreeMap<[u8; 16], InstalledProviderSessionV1>,
+    selected_first_session: Option<InstalledProviderSessionV1>,
     pending_acquisitions: BTreeMap<ObjectDigest, crate::pending::LivePendingAcquisitionV1>,
     pending_releases: BTreeMap<ObjectDigest, crate::release::LivePendingReleaseV1>,
     recovery_authorizations: BTreeMap<
@@ -815,6 +819,21 @@ pub(crate) struct DetachedProviderLedgerV1 {
 }
 
 impl DetachedProviderLedgerV1 {
+    /// Identifies only the resident selected original-only Session destination.
+    pub(crate) fn has_selected_first_session(&self) -> bool {
+        self.selected_first_session.is_some()
+    }
+
+    /// Borrows only the genuine original slot for a negative cause view.
+    pub(crate) fn selected_original_session(
+        &self,
+    ) -> Option<&CurrentProviderIngressSessionV1> {
+        if !self.current_sessions.is_empty() {
+            return None;
+        }
+        self.selected_first_session.as_ref().map(|installed| &installed.session)
+    }
+
     /// Borrows the actual saved publication without rebuilding configuration.
     pub(crate) fn original_catalog_publication_v5(&self) -> &[u8] {
         &self.configuration.canonical_catalog_publication
@@ -834,7 +853,12 @@ impl DetachedProviderLedgerV1 {
         ),
         ProviderLedgerError,
     > {
-        let installed = self.current_sessions.values_mut().next().ok_or(
+        if self.selected_first_session.is_some() && !self.current_sessions.is_empty() {
+            return Err(ProviderLedgerError::RuntimePoisoned);
+        }
+        let installed = self.selected_first_session.as_mut().or_else(|| {
+            self.current_sessions.values_mut().next()
+        }).ok_or(
             ProviderLedgerError::InvalidTransition(
                 "fixed provider owner has no live ingress session",
             ),
@@ -845,7 +869,10 @@ impl DetachedProviderLedgerV1 {
     /// Checks pair-only idle bounds without restricting ordinary reception.
     pub(crate) fn original_ingress_is_idle(&self) -> Result<(), ProviderLedgerError> {
         if self.poisoned
-            || self.current_sessions.len() != 1
+            || !matches!(
+                (self.current_sessions.len(), self.selected_first_session.is_some()),
+                (1, false) | (0, true)
+            )
             || !self.pending_acquisitions.is_empty()
             || !self.pending_releases.is_empty()
             || self.pending_recovery_bridge.is_some()
@@ -853,6 +880,9 @@ impl DetachedProviderLedgerV1 {
                 .current_sessions
                 .values()
                 .any(|installed| installed.supersession.is_some())
+            || self.selected_first_session.as_ref().is_some_and(|installed| {
+                installed.supersession.is_some() || installed.recovered_execution_death.is_some()
+            })
         {
             return Err(ProviderLedgerError::InvalidTransition(
                 "original ingress is not idle",
@@ -883,6 +913,13 @@ impl DetachedProviderLedgerV1 {
         ),
         ProviderLedgerError,
     > {
+        if self.selected_first_session.is_some() {
+            self.original_ingress_is_idle()?;
+            return match self.selected_first_session.take() {
+                Some(installed) => Ok((installed.session, installed.recovered_execution_death)),
+                None => Err(ProviderLedgerError::RuntimePoisoned),
+            };
+        }
         if self.current_sessions.len() != 1 {
             return Err(ProviderLedgerError::InvalidTransition(
                 "fixed provider successor handshake requires one current session",
@@ -907,6 +944,7 @@ impl<'a> ProviderLedgerV1<'a> {
             configuration: self.configuration,
             recovered: self.recovered,
             current_sessions: self.current_sessions,
+            selected_first_session: self.selected_first_session,
             pending_acquisitions: self.pending_acquisitions,
             pending_releases: self.pending_releases,
             recovery_authorizations: self.recovery_authorizations,
@@ -927,6 +965,7 @@ impl<'a> ProviderLedgerV1<'a> {
             configuration: detached.configuration,
             recovered: detached.recovered,
             current_sessions: detached.current_sessions,
+            selected_first_session: detached.selected_first_session,
             pending_acquisitions: detached.pending_acquisitions,
             pending_releases: detached.pending_releases,
             recovery_authorizations: detached.recovery_authorizations,

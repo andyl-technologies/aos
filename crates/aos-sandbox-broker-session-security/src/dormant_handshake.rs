@@ -1443,6 +1443,53 @@ impl DormantBrokerOutcomeVerificationV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    /// Shares the original request/current-clock/Live decoder without taking it.
+    ///
+    /// Each returned gate, clock and decoded owner is parked before the next
+    /// fallible operation. The caller retains the actual request and session;
+    /// neither this BSA readback nor Live replaces independent domain admission.
+    pub(crate) fn park_original_mount_live(
+        &mut self,
+        request: &DormantReceivedBrokerRequestV1,
+        verification: &mut Option<Result<DormantBrokerOutcomeVerificationV1, BrokerSessionSecurityError>>,
+        clock: &mut Option<Result<u64, BrokerSessionSecurityError>>,
+        live: &mut Option<Result<aos_sandbox_protocol::LiveValidatedAcquireMountSourceRequest, aos_sandbox_protocol::ProtocolValidationError>>,
+    ) -> bool {
+        if request.0.method() != BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
+            || request.0.authorization().is_none()
+            || verification.is_some() || clock.is_some() || live.is_some()
+        {
+            return false;
+        }
+        if !self.recheck_original_mount_request(request, verification, clock) {
+            return false;
+        }
+        let Some(Ok(now)) = clock.as_ref() else {
+            return false;
+        };
+        *live = Some(aos_sandbox_protocol::decode_acquire_mount_source_request(
+            request.0.exact_body(),
+            request.0.peer(),
+            request.0.peer_policy(),
+            *now,
+        ));
+        matches!(live, Some(Ok(decoded))
+            if decoded.header().request_id() == &request.0.request_id())
+    }
+
+    /// Rechecks the same resident signed request through the sole BSA owner.
+    pub(crate) fn recheck_original_mount_request(
+        &mut self,
+        request: &DormantReceivedBrokerRequestV1,
+        verification: &mut Option<Result<DormantBrokerOutcomeVerificationV1, BrokerSessionSecurityError>>,
+        clock: &mut Option<Result<u64, BrokerSessionSecurityError>>,
+    ) -> bool {
+        *verification = Some(self.reopen_broker_outcome(&request.0));
+        let Some(Ok(verification)) = verification.as_ref() else { return false; };
+        *clock = Some(current_publication_boottime(&request.0, &verification.context));
+        matches!(clock, Some(Ok(_)))
+    }
+
     pub(crate) fn hold_fuse_intent_transport<'session>(
         &'session mut self,
         request: &'session AuthenticatedBrokerMethodRequestV1,

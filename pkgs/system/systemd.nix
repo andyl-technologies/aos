@@ -136,6 +136,8 @@ in
     #          credential/inode join for the fixed Guest owner bootstrap.
     #   0020 — Bound the fixed Controller plaintext publisher-policy handoff
     #          and deliver its credential mount with strict ownership and labels.
+    #   0021 — Loan PID1's current image only to the two sealed own-unit
+    #          Mount/Source principals; no generic executable or unit selector.
     patches = [
       ./patches/0001-remove-usr-lib-unit-lookup-paths.patch
       ./patches/0002-add-prefix-to-conf-paths.patch
@@ -157,6 +159,7 @@ in
       ./patches/0017-nspawn-guest-cgroup-custody.patch
       ./patches/0019-fixed-fuse-worker-private-transport.patch
       ./patches/0020-bounded-controller-publisher-policy-credential.patch
+      ./patches/0021-fixed-source-launcher-image-loan.patch
     ];
 
     buildDeps = [

@@ -55,6 +55,54 @@ pub fn validate_fixed_provider_authority_v1() -> Result<(), SourceProviderSecuri
     Ok(())
 }
 
+/// Validates selected RootMount custody through its genuine retained self role.
+///
+/// This preactivation check opens only the fixed RootMount tree. Its temporary
+/// custody is intentionally released on return; it is not a live session or a
+/// substitute for the selected carrier owner's resident opening reservoir.
+///
+/// # Errors
+///
+/// Rejects a non-enforcing or wrong selected task role, changed self execution,
+/// unsafe protected files, inactive keys or authority, or an invalid clock.
+pub fn validate_fixed_selected_root_mount_authority_v1(
+) -> Result<(), SourceProviderSecurityError> {
+    let mut opening = ProtectedRootMountCustodyV1::begin_fixed_selected_mount_source();
+    opening.open_inner()?;
+    let mut custody = opening
+        .take_root_mount_custody()
+        .ok_or(SourceProviderSecurityError::Poisoned)?;
+
+    crate::RevalidatedProviderConfigurationV1::capture_root_mount(
+        &mut custody,
+        current_unix_seconds()?,
+    )?;
+    Ok(())
+}
+
+/// Validates selected Provider custody through its genuine retained self role.
+///
+/// This preactivation check opens only the fixed Provider tree. Its temporary
+/// custody is intentionally released on return; it grants no session, journal,
+/// source effect or signing capability. A live selected owner must repeat the
+/// same opening under its original-carrier shutdown reservoir.
+///
+/// # Errors
+///
+/// Rejects a non-enforcing or wrong selected task role, changed self execution,
+/// unsafe protected files, inactive keys or authority, or an invalid clock.
+pub fn validate_fixed_selected_provider_authority_v1(
+) -> Result<(), SourceProviderSecurityError> {
+    let mut opening = ProtectedProviderCustodyV1::begin_fixed_selected_mount_source();
+    opening.open_inner()?;
+    let mut custody = opening
+        .take_provider_custody()
+        .ok_or(SourceProviderSecurityError::Poisoned)?;
+
+    crate::RevalidatedProviderConfigurationV1::capture(&mut custody, current_unix_seconds()?)?;
+    Ok(())
+}
+
 fn current_unix_seconds() -> Result<i64, SourceProviderSecurityError> {
     let now = rustix::time::clock_gettime(rustix::time::ClockId::Realtime).tv_sec;
     if now < 0 {
@@ -107,6 +155,15 @@ impl core::fmt::Debug for ProtectedProviderCustodyV1 {
 }
 
 impl ProtectedRootMountCustodyV1 {
+    /// Creates an empty opening for the fixed selected RootMount custody.
+    ///
+    /// The caller parks this value under its original-carrier shutdown guard
+    /// before invoking [`SelectedSourceProviderCustodyOpeningV1::open_once`].
+    /// Creation performs no observation and grants no protected authority.
+    pub fn begin_fixed_selected_mount_source() -> SelectedSourceProviderCustodyOpeningV1 {
+        SelectedSourceProviderCustodyOpeningV1::new(SourceProviderSecurityRoleV1::RootMount)
+    }
+
     pub(crate) fn load(path: &Path) -> Result<Self, SourceProviderSecurityError> {
         Ok(Self {
             inner: ProtectedCustodyV1::load(path, SourceProviderSecurityRoleV1::RootMount)?,
@@ -130,6 +187,15 @@ impl ProtectedRootMountCustodyV1 {
 }
 
 impl ProtectedProviderCustodyV1 {
+    /// Creates an empty opening for the fixed selected Provider custody.
+    ///
+    /// The caller parks this value under its original-carrier shutdown guard
+    /// before invoking [`SelectedSourceProviderCustodyOpeningV1::open_once`].
+    /// Creation performs no observation and grants no protected authority.
+    pub fn begin_fixed_selected_mount_source() -> SelectedSourceProviderCustodyOpeningV1 {
+        SelectedSourceProviderCustodyOpeningV1::new(SourceProviderSecurityRoleV1::Provider)
+    }
+
     /// Produces a current non-secret projection after complete revalidation.
     ///
     /// # Errors
@@ -171,6 +237,193 @@ impl ProtectedProviderCustodyV1 {
 
     pub(crate) fn inner_mut(&mut self) -> &mut ProtectedCustodyV1 {
         &mut self.inner
+    }
+}
+
+/// Retains returned prefixes while opening one fixed selected role's custody.
+///
+/// Only the two purpose-specific custody entry points construct this value.
+/// The selected self owner is parked before protected files are opened. Each
+/// returned files, nonce and authority owner remains resident before the next
+/// fallible crossing. The first actual error is terminal and borrowed, never
+/// copied into a replacement owner. Lower openers' unreturned partial resources
+/// and allocation funding are not closed by this reservoir.
+///
+/// This value does not own a transport. Its installed caller must retain it
+/// inside the whole original-carrier shutdown owner throughout opening and
+/// failure, so shutdown precedes dropping these nested fields.
+#[must_use = "retain selected opening custody through success or terminal failure"]
+pub struct SelectedSourceProviderCustodyOpeningV1 {
+    role: SourceProviderSecurityRoleV1,
+    attempted: bool,
+    first_failure: Option<SourceProviderSecurityError>,
+    execution: Option<RetainedSelfExecutionV1>,
+    files: Option<ProtectedSourceProviderFiles>,
+    nonces: Option<ProcessNonceSourceV1>,
+    root_authority: Option<SourceProviderCurrentAuthorityV1>,
+    provider_authority: Option<SourceProviderCurrentAuthorityV1>,
+    admitted: Option<ProtectedCustodyV1>,
+}
+
+impl core::fmt::Debug for SelectedSourceProviderCustodyOpeningV1 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("SelectedSourceProviderCustodyOpeningV1([retained opening])")
+    }
+}
+
+impl SelectedSourceProviderCustodyOpeningV1 {
+    fn new(role: SourceProviderSecurityRoleV1) -> Self {
+        Self {
+            role,
+            attempted: false,
+            first_failure: None,
+            execution: None,
+            files: None,
+            nonces: None,
+            root_authority: None,
+            provider_authority: None,
+            admitted: None,
+        }
+    }
+
+    /// Opens the one fixed role exactly once, retaining every returned prefix.
+    ///
+    /// # Errors
+    ///
+    /// Lends the first actual selected-subject, protected-file, nonce or
+    /// authority failure. A second invocation is refused without observation;
+    /// no failed opening can be retried or changed into another role.
+    pub fn open_once(&mut self) -> Result<(), &SourceProviderSecurityError> {
+        if self.attempted {
+            if self.first_failure.is_none() {
+                self.first_failure = Some(SourceProviderSecurityError::Poisoned);
+            }
+        } else {
+            self.attempted = true;
+            if let Err(error) = self.open_inner() {
+                self.first_failure = Some(error);
+            }
+        }
+
+        match self.first_failure.as_ref() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    /// Lends the actual terminal failure without observing or reopening files.
+    pub const fn failure(&self) -> Option<&SourceProviderSecurityError> {
+        self.first_failure.as_ref()
+    }
+
+    pub(crate) fn admitted_execution(&self) -> Option<&RetainedSelfExecutionV1> {
+        self.admitted.as_ref().map(ProtectedCustodyV1::execution)
+    }
+
+    /// Moves successful Provider custody once, without further observation.
+    ///
+    /// Returns `None` for RootMount, failure, incomplete or already moved state.
+    pub fn take_provider_custody(&mut self) -> Option<ProtectedProviderCustodyV1> {
+        if self.role != SourceProviderSecurityRoleV1::Provider || self.first_failure.is_some() {
+            return None;
+        }
+        self.admitted
+            .take()
+            .map(|inner| ProtectedProviderCustodyV1 { inner })
+    }
+
+    /// Moves successful RootMount custody once, without further observation.
+    ///
+    /// Returns `None` for Provider, failure, incomplete or already moved state.
+    pub fn take_root_mount_custody(&mut self) -> Option<ProtectedRootMountCustodyV1> {
+        if self.role != SourceProviderSecurityRoleV1::RootMount || self.first_failure.is_some() {
+            return None;
+        }
+        self.admitted
+            .take()
+            .map(|inner| ProtectedRootMountCustodyV1 { inner })
+    }
+
+    fn open_inner(&mut self) -> Result<(), SourceProviderSecurityError> {
+        let path = match self.role {
+            SourceProviderSecurityRoleV1::RootMount => {
+                RetainedSelfExecutionV1::capture_selected_root_mount(&mut self.execution)?;
+                Path::new(FIXED_ROOT_MOUNT_SOURCE_PROVIDER_CUSTODY)
+            }
+            SourceProviderSecurityRoleV1::Provider => {
+                RetainedSelfExecutionV1::capture_selected_provider(&mut self.execution)?;
+                Path::new(FIXED_PROVIDER_SOURCE_PROVIDER_CUSTODY)
+            }
+        };
+        self.files = Some(ProtectedSourceProviderFiles::load(path, self.role)?);
+
+        let execution = self
+            .execution
+            .as_ref()
+            .ok_or(SourceProviderSecurityError::Poisoned)?;
+        let files = self
+            .files
+            .as_ref()
+            .ok_or(SourceProviderSecurityError::Poisoned)?;
+        self.nonces = Some(ProcessNonceSourceV1::create(self.role, execution, files)?);
+        self.root_authority = Some(current_authority(files, SourceProviderPeerRole::RootMount)?);
+        self.provider_authority = Some(current_authority(files, SourceProviderPeerRole::Provider)?);
+        execution.revalidate()?;
+
+        // Validate all slot associations before taking any original. The
+        // completed assembly is infallible; an invariant failure restores the
+        // same tuple rather than dropping a partially taken prefix.
+        if self.files.is_none()
+            || self.execution.is_none()
+            || self.nonces.is_none()
+            || self.root_authority.is_none()
+            || self.provider_authority.is_none()
+            || self.admitted.is_some()
+        {
+            return Err(SourceProviderSecurityError::Poisoned);
+        }
+        let parts = (
+            self.files.take(),
+            self.execution.take(),
+            self.nonces.take(),
+            self.root_authority.take(),
+            self.provider_authority.take(),
+        );
+        match parts {
+            (
+                Some(files),
+                Some(execution),
+                Some(nonces),
+                Some(root_authority),
+                Some(provider_authority),
+            ) => {
+                self.admitted = Some(ProtectedCustodyV1 {
+                    files,
+                    execution,
+                    nonces,
+                    root_authority,
+                    provider_authority,
+                    poisoned: false,
+                });
+                Ok(())
+            }
+            (files, execution, nonces, root_authority, provider_authority) => {
+                self.files = files;
+                self.execution = execution;
+                self.nonces = nonces;
+                self.root_authority = root_authority;
+                self.provider_authority = provider_authority;
+                Err(SourceProviderSecurityError::Poisoned)
+            }
+        }?;
+
+        // The whole final custody stays resident across its ordinary final
+        // file/process/authority bookend. Failure cannot take it out again.
+        let now = current_unix_seconds()?;
+        self.admitted
+            .as_mut()
+            .ok_or(SourceProviderSecurityError::Poisoned)?
+            .revalidate_at(now)
     }
 }
 

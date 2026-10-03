@@ -40,6 +40,10 @@
     if mountExecutableCarrier == null
     then ""
     else "carrier_root_hash.o";
+  sourceCarrierCompileFlag =
+    if mountExecutableCarrier != null && (mountExecutableCarrier.passthru.sourceProviderCarrier or false)
+    then " -DAOS_MOUNT_SOURCE_CARRIER=1"
+    else "";
 in
   mkDerivation {
     pname = stage0Name;
@@ -183,7 +187,7 @@ in
             "-DAOS_GUARD_PATH=\"$out/bin/${stage0Name}\"" \
             '-DAOS_SYSTEMD_PATH="${systemd}/lib/systemd/systemd"' \
             '-DAOS_ADMISSION_UNIT="${admissionUnitValue}"' \
-            '-DAOS_QUALIFICATION_POST_PIN_GATE="${qualificationPostPinGateValue}"' ${carrierCompileFlag} \
+            '-DAOS_QUALIFICATION_POST_PIN_GATE="${qualificationPostPinGateValue}"' ${carrierCompileFlag}${sourceCarrierCompileFlag} \
             -o ${stage0Name} \
             $src \
             loaded_policy.o \

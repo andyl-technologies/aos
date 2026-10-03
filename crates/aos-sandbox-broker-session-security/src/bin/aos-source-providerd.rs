@@ -3,8 +3,8 @@
 //! Startup installs a signed catalog locator from a named systemd credential.
 //! The service retains the fixed authenticated owner and answers fresh catalog
 //! challenges. A selected LocalLive Acquire may reach authenticated Storage
-//! readback; a genuine native original pair may reach resident Complete readback.
-//! Complete, Provider3, SourceRoot delivery, relay and settlement remain closed.
+//! readback; a genuine native original pair may reach local Held and Complete
+//! transmission. Root acceptance, relay and settlement remain closed.
 //! Holder Inventory
 //! uses the fixed owner's durable admission and
 //! reopens every active source before claiming completeness. A cold selected
@@ -18,15 +18,18 @@ use aos_sandbox_broker_session_security::{
     ProductionBrokerDeadlineErrorV1, ProductionBrokerSessionActivationErrorV1,
     ProductionSourceProviderCatalogInstallErrorV1, ProductionSourceProviderIngressErrorV1,
     ProductionSourceProviderIngressV1, ProductionSourceProviderStorageReadbackV1,
-    install_fixed_source_provider_catalog_credential, production_deadline_after,
+    ProductionSelectedSourceProviderOriginalV1,
+    install_fixed_source_provider_catalog_credential,
+    install_fixed_selected_source_provider_catalog_credential, production_deadline_after,
 };
 use aos_sandbox_source_provider::{
     FixedProviderBackendRequestOutcomeV1, FixedProviderIngressProgressV1,
     FixedProviderOriginalCompletionProgressV5, FixedProviderOwnerV1,
-    NativeNoDispatchSettlementV1, ProviderLedgerError,
+    FixedSelectedProviderProgressV1, NativeNoDispatchSettlementV1, ProviderLedgerError,
 };
 use aos_sandbox_source_provider_security::{
-    SourceProviderSecurityError, validate_fixed_provider_authority_v1,
+    ProtectedProviderCustodyV1, SourceProviderSecurityError,
+    validate_fixed_provider_authority_v1,
 };
 
 const ACCEPT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -72,6 +75,17 @@ fn run() -> Result<(), SourceProviderDaemonErrorV1> {
             install_fixed_source_provider_catalog_credential()?;
             Ok(())
         }
+        (Some("--install-catalog"), Some(selected))
+            if selected == "--selected-mount-source" && arguments.next().is_none() =>
+        {
+            if let Err(_original) = install_fixed_selected_source_provider_catalog_credential() {
+                // This typed owner keeps actual partial credentials, writes and
+                // readback resident. Death is release, not a drained receipt.
+                eprintln!("aos-source-providerd: selected catalog installation refused");
+                std::process::exit(1);
+            }
+            Ok(())
+        }
         (Some("--check-source-provider-authority"), None) => {
             if !rustix::process::getuid().is_root() || !rustix::process::geteuid().is_root() {
                 return Err(SourceProviderDaemonErrorV1::Identity);
@@ -79,9 +93,44 @@ fn run() -> Result<(), SourceProviderDaemonErrorV1> {
             validate_fixed_provider_authority_v1()?;
             Ok(())
         }
+        (Some("--check-source-provider-authority"), Some(selected))
+            if selected == "--selected-mount-source" && arguments.next().is_none() =>
+        {
+            check_selected_provider_authority()
+        }
         (None, None) => serve_authenticated_ingress(),
+        (Some("--selected-mount-source"), None) => serve_selected_authenticated_ingress(),
         _ => Err(SourceProviderDaemonErrorV1::Arguments),
     }
+}
+
+// This is a prestart check, not a transferable currentness or signing loan.
+// A failed selected opening stays resident until intentional process death.
+// Success releases custody normally after its final original-owner bookend.
+fn check_selected_provider_authority() -> Result<(), SourceProviderDaemonErrorV1> {
+    if !rustix::process::getuid().is_root() || !rustix::process::geteuid().is_root() {
+        return Err(SourceProviderDaemonErrorV1::Identity);
+    }
+
+    let mut opening = ProtectedProviderCustodyV1::begin_fixed_selected_mount_source();
+    if opening.open_once().is_err() {
+        eprintln!("aos-source-providerd: selected authority opening refused");
+        std::process::exit(1);
+    }
+
+    let mut custody = opening.take_provider_custody();
+    let final_observation = match custody.as_mut() {
+        Some(custody) => Some(custody.revalidated_configuration()),
+        None => None,
+    };
+    if !matches!(final_observation.as_ref(), Some(Ok(_))) {
+        // Keep the genuine returned custody and actual final cause resident.
+        // Process death releases them; this is not queue or owner settlement.
+        eprintln!("aos-source-providerd: selected authority final check refused");
+        std::process::exit(1);
+    }
+
+    Ok(())
 }
 
 fn serve_authenticated_ingress() -> Result<(), SourceProviderDaemonErrorV1> {
@@ -89,9 +138,7 @@ fn serve_authenticated_ingress() -> Result<(), SourceProviderDaemonErrorV1> {
         return Err(SourceProviderDaemonErrorV1::Identity);
     }
 
-    // SAFETY: process startup is single-threaded and no other owner has
-    // claimed systemd FD 3 before exact activation adoption.
-    let mut ingress = unsafe { ProductionSourceProviderIngressV1::adopt_systemd()? };
+    let mut ingress = adopt_fixed_ingress()?;
     loop {
         let deadline = production_deadline_after(ACCEPT_TIMEOUT)?;
         match ingress.accept_authenticated_owner(deadline) {
@@ -207,6 +254,99 @@ fn serve_authenticated_ingress() -> Result<(), SourceProviderDaemonErrorV1> {
             Err(error) => return Err(error.into()),
         }
     }
+}
+
+// Both closed routes adopt the same original table before any observer or
+// runtime thread. This is the sole existing activation engine, not an FD
+// constructor or permission derived from the selected argument.
+fn adopt_fixed_ingress()
+    -> Result<ProductionSourceProviderIngressV1, SourceProviderDaemonErrorV1>
+{
+    // SAFETY: process startup is single-threaded and no other owner has
+    // claimed systemd FD 3 before exact activation adoption.
+    Ok(unsafe { ProductionSourceProviderIngressV1::adopt_systemd()? })
+}
+
+fn serve_selected_authenticated_ingress() -> Result<(), SourceProviderDaemonErrorV1> {
+    if !rustix::process::getuid().is_root() || !rustix::process::geteuid().is_root() {
+        return Err(SourceProviderDaemonErrorV1::Identity);
+    }
+
+    let mut ingress = adopt_fixed_ingress()?;
+    loop {
+        let deadline = production_deadline_after(ACCEPT_TIMEOUT)?;
+        match ingress.accept_selected_pending_owner(deadline) {
+            Ok(original) => serve_selected_original(&ingress, original),
+            Err(ProductionSourceProviderIngressErrorV1::Activation(
+                ProductionBrokerSessionActivationErrorV1::Deadline,
+            )) => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+// The genuine accepted socket is already in this value before role, protected
+// file, catalog, Journal or HELLO effects. Returned failures remain nested in
+// that same owner. No selected error enters the consuming legacy route.
+fn serve_selected_original(
+    ingress: &ProductionSourceProviderIngressV1,
+    mut original: ProductionSelectedSourceProviderOriginalV1,
+) -> ! {
+    if original.open_once(ingress).is_err() {
+        terminate_selected_original(&mut original);
+    }
+
+    loop {
+        match original.advance_opening(ingress) {
+            Ok(FixedSelectedProviderProgressV1::Pending) => {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Ok(FixedSelectedProviderProgressV1::OriginalCurrent) => break,
+            Err(_) => terminate_selected_original(&mut original),
+        }
+    }
+
+    let mut paired = false;
+    loop {
+        if !paired {
+            match original.advance_original_ingress(ingress) {
+                Ok(FixedProviderIngressProgressV1::Pending)
+                | Ok(FixedProviderIngressProgressV1::CatalogReplied)
+                | Ok(FixedProviderIngressProgressV1::OriginalRootPreparedRetained) => {}
+                Ok(FixedProviderIngressProgressV1::OriginalPairRetained) => {
+                    // The pair stays inside the selected original owner. Its
+                    // narrow driver uses the accepted same-original engine.
+                    paired = true;
+                }
+                Ok(_) => {
+                    terminate_selected_original(&mut original);
+                }
+                Err(_) => terminate_selected_original(&mut original),
+            }
+        } else {
+            match original.advance_original_native_completion(ingress) {
+                Ok(FixedProviderOriginalCompletionProgressV5::Pending)
+                | Ok(FixedProviderOriginalCompletionProgressV5::CompleteCommitted)
+                | Ok(FixedProviderOriginalCompletionProgressV5::HeldStored)
+                | Ok(FixedProviderOriginalCompletionProgressV5::ProviderHeldSent)
+                | Ok(FixedProviderOriginalCompletionProgressV5::CompleteSent) => {}
+                Ok(FixedProviderOriginalCompletionProgressV5::Closed)
+                | Err(_) => terminate_selected_original(&mut original),
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+fn terminate_selected_original(original: &mut ProductionSelectedSourceProviderOriginalV1) -> ! {
+    original.end_original();
+    // No raw body, key, path, FD or remote error string is emitted. The actual
+    // owning first cause is still in `original` during this diagnostic and
+    // intentional process death. A diagnostic unwind first runs its same-queue
+    // shutdown Drop; death is not a Drained or settled-queue receipt.
+    eprintln!("aos-source-providerd: selected original Source flight failed");
+    std::process::exit(1)
 }
 
 // The selected original owner never returns to the consuming legacy route.

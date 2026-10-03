@@ -1,6 +1,21 @@
 [
   {
     "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "name": "rustix",
+    "version": "1.1.4",
+    "archiveSha256": "b6fe4565b9518b83ef4f91bb47ce29620ca828bd32cb7e408f0062e9930ba190",
+    "patch": "pkgs/tools/aos/cargo-patches/rustix-1.1.4-received-control-length.patch",
+    "patchSha256": "2c7f49e40c902f1f519c24ee9d33be3fd8d6968a7b9cd4529722ddc48b7762e5",
+    "files": [
+      {
+        "path": "src/net/send_recv/msg.rs",
+        "beforeSha256": "d44b02ee8275f12c32ee67508aaf88d4d34954ebee037bfe7168527c98ebd0bb",
+        "afterSha256": "95565ebe7f384696503ffec3f609e7d3eb666990bad52910b0d1b3bf1691f572"
+      }
+    ]
+  },
+  {
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
     "name": "tokio",
     "version": "1.52.3",
     "archiveSha256": "8fc7f01b389ac15039e4dc9531aa973a135d7a4135281b12d7c1bc79fd57fffe",
@@ -50,22 +65,37 @@
     "version": "5.15.0",
     "archiveSha256": "c3bcbf15c8708d7fc1be0c993622e0a5cbd5e8b52bfa40afa4c3e0cd8d724ac1",
     "patch": "pkgs/tools/aos/cargo-patches/zbus-5.15.0-zero-incoming-fds.patch",
-    "patchSha256": "60cdba93bb59267cff3d30eeec5ebe19da980388ed3267333462e4e768ed6c6c",
+    "patchSha256": "80c7c08d2972cfc3cfa0572805814734eb5331f273c97a2734cba8672d805e3e",
     "files": [
       {
         "path": "src/connection/builder.rs",
         "beforeSha256": "57b4875499c6543d528bcc6badc3dc40736fcdff28fd07d7ec3da106ba46a0b0",
-        "afterSha256": "688d6ca92a1398e234bcfc38d742befe307990b19a2c28af18b83d9cd4aae034"
+        "afterSha256": "103a35e3cfa3e230aecb167b826cf715856937dcebdf3324fee7bbb95d03378d"
+      },
+      {
+        "path": "src/connection/mod.rs",
+        "beforeSha256": "906dfb7f93c08577ef6a669585c85b060bedd6748f8e2d624435c40333b41929",
+        "afterSha256": "2ebc5cb9a11f1b8d727c904d01121737144cf63685dca81b5ae4b7ec5c4ada53"
       },
       {
         "path": "src/connection/socket/mod.rs",
         "beforeSha256": "68894b3e46d5635eababd236e412247964717d662628801bf1f1297bdd512388",
-        "afterSha256": "94141d322099e281ef2a21285bd95b9c1fb0124e1d6987be0329d09d377d0a78"
+        "afterSha256": "7840a8f6b7bbed5930bbc5fc3c0cd2c43992c4d7d376c6c1d76e5dfce5d5443c"
       },
       {
         "path": "src/connection/socket/unix.rs",
         "beforeSha256": "2874cd10639951c02322d0ce544039332146ad945c707cebeb1e2ff7a59dfdb7",
-        "afterSha256": "a3600faa4ad1d54ec2ef0de8a14b67b4b25c1132aa905f6983f4220641455d58"
+        "afterSha256": "fc8857431a8d12f4170e6c98bc1b503cd31b64b7ecf1289f117fe215ac5a55fc"
+      },
+      {
+        "path": "src/connection/handshake/common.rs",
+        "beforeSha256": "c08124f412b24cb128db863b4aaf4f4a2aa5dee16fcee1779e063abe9195340f",
+        "afterSha256": "bdb55ccd90e579e971a4d1f6c6640e3a39a79280b6c53c7318f48a23e2ff872c"
+      },
+      {
+        "path": "src/connection/handshake/client.rs",
+        "beforeSha256": "5af34ba455924f1775bd70591a514af3baf2aa93c466b471d17248759547e586",
+        "afterSha256": "7ac7b226317c94b5922ab4cd317bac4a0b2b04fd370fb9b0fb0416d37c53e9e7"
       }
     ]
   }

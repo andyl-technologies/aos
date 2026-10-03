@@ -232,9 +232,12 @@ pub use production_dispatch::{
 pub use production_receive::{
     ProductionBrokerReceiveErrorV1, ProductionBrokerRequestEventV1,
     ProductionHostBrokerRequestEventV1,
+    ProductionOriginalMountReceiptV1, ProductionOriginalMountReceiptFailureV1,
 };
 pub use production_response::ProductionBrokerResponseErrorV1;
 pub use production_root_mount_source_provider::{
+    ProductionSelectedRootMountSourceProviderV1,
+    ProductionSelectedRootMountSourceProviderFailureV1,
     ProductionRootMountSourceProviderErrorV1, advance_authenticated_pending_acquire_recovery,
     connect_authenticated_fixed_source_provider, observe_original_pending_acquires,
     observe_remote_cold_source_inventory, observe_remote_source_inventory,
@@ -242,13 +245,17 @@ pub use production_root_mount_source_provider::{
 };
 pub use production_service::{
     ProductionBrokerDeadlineErrorV1, ProductionBrokerServiceErrorV1, ProductionMountBrokerOwnersV1,
+    ProductionOriginalMountCycleV1, ProductionOriginalMountCycleFailureV1,
     production_deadline_after,
 };
 pub use production_source_provider::{
     ProductionSourceProviderIngressErrorV1, ProductionSourceProviderIngressV1,
+    ProductionSelectedSourceProviderFailureRefV1, ProductionSelectedSourceProviderOriginalV1,
 };
 pub use production_source_provider_catalog::{
     ProductionSourceProviderCatalogInstallErrorV1, install_fixed_source_provider_catalog_credential,
+    SelectedSourceProviderCatalogFailureRefV1, SelectedSourceProviderCatalogInstallFailureV1,
+    install_fixed_selected_source_provider_catalog_credential,
 };
 pub use production_source_provider_storage::{
     ProductionSourceProviderStorageErrorV1, ProductionSourceProviderStorageOutcomeV1,

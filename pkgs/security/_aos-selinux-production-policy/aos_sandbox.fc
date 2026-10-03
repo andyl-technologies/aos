@@ -71,3 +71,37 @@
 /var/lib/aos/sandbox-network/namespace-inspector/spent-staging/\.aosni-spent-[0-9a-f]{64} -- system_u:object_r:aos_sandbox_network_spent_record_t
 /var/lib/aos/sandbox-network/namespace-inspector/spent-final -d system_u:object_r:aos_sandbox_network_spent_final_t
 /var/lib/aos/sandbox-network/namespace-inspector/spent-final/aosni-spent-[0-9a-f]{64} -- system_u:object_r:aos_sandbox_network_spent_record_t
+# AOS_SELECTED_MOUNT_SOURCE_BEGIN
+
+# The selected carrier's daemon is already sealed with this exact object type.
+/(nix|nix\.lower)/store/@AOS_MOUNT_BASENAME_REGEX@/bin/aos-sandbox-mountd -- system_u:object_r:aos_sandbox_mount_exec_t
+/(nix|nix\.lower)/store/@AOS_MOUNT_BASENAME_REGEX@/bin/aos-sandbox-mount-helper -- system_u:object_r:aos_sandbox_mount_helper_exec_t
+/(nix|nix\.lower)/store/@AOS_SOURCE_PROVIDER_BASENAME_REGEX@/bin/aos-source-providerd -- system_u:object_r:aos_source_provider_exec_t
+/run/aos/mount-executable-carrier/(install|chmod) -- system_u:object_r:aos_sandbox_mount_install_exec_t
+
+/run/credentials/aos-sandbox-mountd\.service -d system_u:object_r:aos_sandbox_mount_credential_t
+/run/credentials/aos-sandbox-mountd\.service/(broker-plan-policy\.cbor|broker-plan-public-key|broker-revocation-scope|ownership-lease-policy\.cbor|ownership-lease-public-key|node-id|journal-mac-key|mount-(broker|host-client|fuse-broker)-(manifest|hello-key|record-key)|current-catalog-publication|current-catalog-manifest) -- system_u:object_r:aos_sandbox_mount_credential_t
+/run/credentials/aos-source-providerd\.service -d system_u:object_r:aos_source_provider_credential_t
+/run/credentials/aos-source-providerd\.service/(current-catalog-publication|current-catalog-manifest) -- system_u:object_r:aos_source_provider_credential_t
+
+/var/lib/aos/sandbox-mount -d system_u:object_r:aos_sandbox_mount_state_t
+/var/lib/aos/sandbox-mount/(mount\.journal(\.lock|\.compact\.tmp)?|startup-policy\.pending) -- system_u:object_r:aos_sandbox_mount_state_t
+/var/lib/aos/sandbox-mount/broker-session(/(host|fuse|custody))* -d system_u:object_r:aos_sandbox_mount_state_t
+/var/lib/aos/sandbox-mount/broker-session(/(host|fuse|custody))*/(session(-floor)?\.journal(\.lock|\.compact\.tmp)?|broker-session-manifest|client-hello-signing-key|client-record-signing-key|broker-hello-signing-key|broker-outcome-signing-key) -- system_u:object_r:aos_sandbox_mount_state_t
+/var/lib/aos/sandbox-mount/source-provider-authority -d system_u:object_r:aos_sandbox_mount_custody_t
+/var/lib/aos/sandbox-mount/source-provider-authority/(source-provider-manifest|source-provider-trust|current-route|root-mount-hello-signing-key|root-mount-record-signing-key) -- system_u:object_r:aos_sandbox_mount_custody_t
+/run/aos/sandbox-mount-catalog(/.*)? system_u:object_r:aos_sandbox_mount_catalog_t
+/run/aos/sandbox-mount -d system_u:object_r:aos_sandbox_mount_runtime_t
+/run/aos/sandbox-mount/control\.sock -s system_u:object_r:aos_sandbox_mount_runtime_t
+
+/var/lib/aos/source-provider -d system_u:object_r:aos_source_provider_state_t
+/var/lib/aos/source-provider/(provider\.journal(\.lock|\.compact\.tmp)?|current-catalog-publication|catalog-manifest-[0-9a-f]{64}|native-hold-challenges\.journal(\.lock|\.compact\.tmp)?) -- system_u:object_r:aos_source_provider_state_t
+/var/lib/aos/source-provider/configuration-history -d system_u:object_r:aos_source_provider_state_t
+/var/lib/aos/source-provider/configuration-history/(e|o|c)-[0-9a-f]{64} -- system_u:object_r:aos_source_provider_state_t
+/var/lib/aos/source-provider/authority -d system_u:object_r:aos_source_provider_custody_t
+/var/lib/aos/source-provider/authority/(source-provider-manifest|source-provider-trust|current-route|provider-hello-signing-key|provider-outcome-signing-key) -- system_u:object_r:aos_source_provider_custody_t
+/var/lib/aos/source-provider/backend-authority -d system_u:object_r:aos_source_provider_custody_t
+/var/lib/aos/source-provider/backend-authority/current-verifiers -- system_u:object_r:aos_source_provider_custody_t
+/run/aos/source-provider -d system_u:object_r:aos_source_provider_runtime_t
+/run/aos/source-provider/control\.sock -s system_u:object_r:aos_source_provider_runtime_t
+# AOS_SELECTED_MOUNT_SOURCE_END

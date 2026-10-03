@@ -1777,6 +1777,11 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         callPackage ./security/_aos-mount-executable-carrier.nix {
           linux = kernel;
         };
+      aosMountSourceExecutableCarrierForKernel = kernel:
+        callPackage ./security/_aos-mount-executable-carrier.nix {
+          linux = kernel;
+          sourceProviderCarrier = true;
+        };
       linux-headers = callPackage ./kernel/linux-headers.nix {inherit linuxSource;};
       zfsForKernel = kernel:
         callPackage ./filesystem/zfs.nix {inherit kernel;};

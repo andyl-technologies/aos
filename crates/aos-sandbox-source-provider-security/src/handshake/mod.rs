@@ -7,6 +7,21 @@ mod root_mount;
 pub(crate) use mount_request::original_kernel_clock;
 
 use core::cell::Cell;
+use std::os::fd::OwnedFd;
+use std::sync::Arc;
+
+use aos_sandbox_linux::seqpacket::{RecordBindingError, SeqpacketError};
+use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
+
+use crate::SourceProviderSecurityError;
+use crate::carrier::{
+    CarrierFailureV1, InertSourceProviderCarrierV1, RetainedSourceProviderRecordV5,
+    SelectedCarrierOpeningFailureV1, SelectedNegativeEndpointV1,
+};
+use crate::custody::{
+    ProtectedProviderCustodyV1, ProtectedRootMountCustodyV1,
+    SelectedSourceProviderCustodyOpeningV1,
+};
 
 pub use mount_request::{
     AuthorizedMountAcquireVerificationFloorV2, AuthorizedMountProviderOutcomeV2,
@@ -30,13 +45,379 @@ pub use provider::{
     ProviderIngressReopenCheckpointV1, ProviderOwnerSecurityFacadeV1,
     ProviderSessionSupersessionEvidenceV1, ProviderSourceProviderHandshakeStatusV1,
     ProviderSourceProviderOwnerV1, RevalidatedProviderReplayV1,
+    SelectedProviderSourceProviderOwnerV1,
 };
 pub use root_mount::{
     AuthenticatedRootMountCatalogCurrentnessV1, AuthenticatedRootMountNativeRecoveryUnavailableV1,
     AuthenticatedRootMountRecoveryObservationV2, AuthenticatedRootMountRecoveryUnavailableV1,
     CurrentRootMountSourceProviderSessionV1, InventoryReadbackProgressV1,
     RootMountSourceProviderHandshakeStatusV1, RootMountSourceProviderOwnerV1,
+    SelectedRootMountSourceProviderOwnerV1,
 };
+
+enum SelectedOpeningFailureV1 {
+    Custody,
+    Local(SourceProviderSecurityError),
+    EndpointLookup,
+    EndpointDuplicate,
+    Socket(SeqpacketError),
+}
+
+/// Lends the actual first selected opening or handshake cause.
+///
+/// Each reference points into the same resident original owner. The value
+/// grants no retry, transport, signing or custody authority and copies no owned
+/// error. Its diagnostic representation reveals only the cause category.
+pub enum SelectedSourceProviderFailureRefV1<'owner> {
+    /// The existing fixed Source custody or protocol validator failed.
+    Source(&'owner SourceProviderSecurityError),
+    /// The original descriptor-subject endpoint could not be borrowed.
+    Socket(&'owner SeqpacketError),
+    /// Safe duplication of the same original endpoint failed.
+    Endpoint(&'owner std::io::Error),
+    /// The original typed packet could not be bound to the same endpoint.
+    Binding(&'owner RecordBindingError),
+    /// The same protected journal loan failed its actual currentness check.
+    Journal(&'owner aos_sandbox::JournalError),
+}
+
+impl core::fmt::Debug for SelectedSourceProviderFailureRefV1<'_> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str(match self {
+            Self::Source(_) => "SelectedSourceProviderFailureRefV1(Source)",
+            Self::Socket(_) => "SelectedSourceProviderFailureRefV1(Socket)",
+            Self::Endpoint(_) => "SelectedSourceProviderFailureRefV1(Endpoint)",
+            Self::Binding(_) => "SelectedSourceProviderFailureRefV1(Binding)",
+            Self::Journal(_) => "SelectedSourceProviderFailureRefV1(Journal)",
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+enum HandshakeReceiveModeV1 {
+    Legacy,
+    Selected,
+}
+
+// Role-specific transcript checks share one closed zero-FD HELLO receive
+// selection. Neither recipe widens the original carrier profile or parser.
+fn receive_hello_record(
+    carrier: &mut InertSourceProviderCarrierV1,
+    slot: &mut Option<RetainedSourceProviderRecordV5>,
+    mode: HandshakeReceiveModeV1,
+) -> Result<(), CarrierFailureV1> {
+    let maximum = aos_sandbox_source_provider_protocol::SOURCE_PROVIDER_HELLO_FRAME_BYTES;
+    match mode {
+        HandshakeReceiveModeV1::Legacy => carrier
+            .receive_zero_descriptors(maximum)
+            .map(|record| *slot = Some(RetainedSourceProviderRecordV5::Bound(record))),
+        HandshakeReceiveModeV1::Selected => carrier
+            .receive_zero_descriptors_retaining_v5(maximum, slot)
+            .map(|_| ()),
+    }
+}
+
+/// Parks the fixed selected role's returned opening prefixes under its socket.
+///
+/// The role-local entry points construct this before opening protected files.
+/// The nested custody failure stays in its original reservoir; this owner
+/// records only which original cause must be lent. Negative Drop closes the
+/// carrier before any nested custody fields are released. Unreturned lower
+/// opener prefixes and allocation funding remain independent limitations.
+struct SelectedHandshakeOpeningV1 {
+    socket: Option<DescriptorSubjectSocket>,
+    endpoint: Option<Arc<SelectedNegativeEndpointV1>>,
+    endpoint_lookup_failure: Option<SeqpacketError>,
+    custody_opening: SelectedSourceProviderCustodyOpeningV1,
+    provider_custody: Option<ProtectedProviderCustodyV1>,
+    root_mount_custody: Option<ProtectedRootMountCustodyV1>,
+    carrier: Option<InertSourceProviderCarrierV1>,
+    first_failure: Option<SelectedOpeningFailureV1>,
+    attempted: bool,
+    armed: bool,
+    ended: bool,
+    shutdown_attempted: bool,
+    shutdown_failure: Option<std::io::Error>,
+    shutdown_unavailable: bool,
+}
+
+impl SelectedHandshakeOpeningV1 {
+    fn provider(socket: DescriptorSubjectSocket) -> Self {
+        Self::new(
+            socket,
+            ProtectedProviderCustodyV1::begin_fixed_selected_mount_source(),
+        )
+    }
+
+    fn root_mount(socket: DescriptorSubjectSocket) -> Self {
+        Self::new(
+            socket,
+            ProtectedRootMountCustodyV1::begin_fixed_selected_mount_source(),
+        )
+    }
+
+    fn new(
+        socket: DescriptorSubjectSocket,
+        custody_opening: SelectedSourceProviderCustodyOpeningV1,
+    ) -> Self {
+        let mut opening = Self {
+            socket: Some(socket),
+            endpoint: None,
+            endpoint_lookup_failure: None,
+            custody_opening,
+            provider_custody: None,
+            root_mount_custody: None,
+            carrier: None,
+            first_failure: None,
+            attempted: false,
+            armed: true,
+            ended: false,
+            shutdown_attempted: false,
+            shutdown_failure: None,
+            shutdown_unavailable: false,
+        };
+
+        // The whole armed owner already holds the original socket before this
+        // selected-only allocation. Allocation funding is not a drain proof.
+        opening.endpoint = Some(Arc::new(SelectedNegativeEndpointV1::empty()));
+        opening
+    }
+
+    fn open_once(&mut self) -> Result<(), SelectedSourceProviderFailureRefV1<'_>> {
+        if self.attempted {
+            if self.first_failure.is_none() {
+                self.first_failure = Some(SelectedOpeningFailureV1::Local(
+                    SourceProviderSecurityError::Poisoned,
+                ));
+            }
+        } else {
+            self.attempted = true;
+            if let Err(error) = self.open_inner() {
+                self.first_failure = Some(error);
+            }
+        }
+
+        if self.first_failure.is_some() && self.failure().is_none() {
+            self.first_failure = Some(SelectedOpeningFailureV1::Local(
+                SourceProviderSecurityError::Poisoned,
+            ));
+        }
+        if self.first_failure.is_some() {
+            self.close();
+        }
+        match self.failure() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    fn failure(&self) -> Option<SelectedSourceProviderFailureRefV1<'_>> {
+        match self.first_failure.as_ref() {
+            Some(SelectedOpeningFailureV1::Custody) => self
+                .custody_opening
+                .failure()
+                .map(SelectedSourceProviderFailureRefV1::Source),
+            Some(SelectedOpeningFailureV1::Local(error)) => {
+                Some(SelectedSourceProviderFailureRefV1::Source(error))
+            }
+            Some(SelectedOpeningFailureV1::EndpointLookup) => self
+                .endpoint_lookup_failure
+                .as_ref()
+                .map(SelectedSourceProviderFailureRefV1::Socket),
+            Some(SelectedOpeningFailureV1::EndpointDuplicate) => self
+                .endpoint
+                .as_ref()
+                .and_then(|endpoint| endpoint.duplicate_failure())
+                .map(SelectedSourceProviderFailureRefV1::Endpoint),
+            Some(SelectedOpeningFailureV1::Socket(error)) => {
+                Some(SelectedSourceProviderFailureRefV1::Socket(error))
+            }
+            None => None,
+        }
+    }
+
+    fn open_inner(&mut self) -> Result<(), SelectedOpeningFailureV1> {
+        // This +1 selected FD is a negative fence only. Park the actual Result
+        // before the first custody/capacity/HELLO effect; a lower plain close
+        // cannot prevent shutdown of this same original open-file-description.
+        let socket = self.socket.as_ref().ok_or(SelectedOpeningFailureV1::Local(
+            SourceProviderSecurityError::Poisoned,
+        ))?;
+        let original = match socket.as_fd() {
+            Ok(original) => original,
+            Err(error) => {
+                self.endpoint_lookup_failure = Some(error);
+                return Err(SelectedOpeningFailureV1::EndpointLookup);
+            }
+        };
+        let endpoint = self.endpoint.as_ref().ok_or(SelectedOpeningFailureV1::Local(
+            SourceProviderSecurityError::Poisoned,
+        ))?;
+        endpoint.retain_duplicate(original);
+        if endpoint.duplicate_failure().is_some() {
+            return Err(SelectedOpeningFailureV1::EndpointDuplicate);
+        }
+
+        self.custody_opening
+            .open_once()
+            .map_err(|_| SelectedOpeningFailureV1::Custody)?;
+        let execution = self
+            .custody_opening
+            .admitted_execution()
+            .ok_or(SelectedOpeningFailureV1::Local(
+                SourceProviderSecurityError::Poisoned,
+            ))?;
+        self.carrier = Some(
+            InertSourceProviderCarrierV1::adopt_selected(&mut self.socket, execution, endpoint)
+                .map_err(|error| match error {
+                    SelectedCarrierOpeningFailureV1::Source(error) => {
+                        SelectedOpeningFailureV1::Local(error)
+                    }
+                    SelectedCarrierOpeningFailureV1::Socket(error) => {
+                        SelectedOpeningFailureV1::Socket(error)
+                    }
+                })?,
+        );
+
+        // Each completed original moves directly into its destination before
+        // the next clock or file/process observation. These takes do no I/O.
+        self.provider_custody = self.custody_opening.take_provider_custody();
+        self.root_mount_custody = self.custody_opening.take_root_mount_custody();
+        let now = current_unix_seconds().map_err(SelectedOpeningFailureV1::Local)?;
+        match (&mut self.provider_custody, &mut self.root_mount_custody) {
+            (Some(custody), None) => custody.inner_mut().revalidate_at(now),
+            (None, Some(custody)) => custody.inner_mut().revalidate_at(now),
+            _ => Err(SourceProviderSecurityError::Poisoned),
+        }
+        .map_err(SelectedOpeningFailureV1::Local)
+    }
+
+    fn take_provider_parts(
+        &mut self,
+    ) -> Option<(ProtectedProviderCustodyV1, InertSourceProviderCarrierV1)> {
+        if !self.attempted
+            || self.ended
+            || self.first_failure.is_some()
+            || self.socket.is_some()
+            || self.root_mount_custody.is_some()
+            || self.provider_custody.is_none()
+            || self.carrier.is_none()
+        {
+            return None;
+        }
+
+        match (self.provider_custody.take(), self.carrier.take()) {
+            (Some(custody), Some(carrier)) => {
+                self.armed = false;
+                Some((custody, carrier))
+            }
+            (custody, carrier) => {
+                self.provider_custody = custody;
+                self.carrier = carrier;
+                None
+            }
+        }
+    }
+
+    fn take_root_mount_parts(
+        &mut self,
+    ) -> Option<(ProtectedRootMountCustodyV1, InertSourceProviderCarrierV1)> {
+        if !self.attempted
+            || self.ended
+            || self.first_failure.is_some()
+            || self.socket.is_some()
+            || self.provider_custody.is_some()
+            || self.root_mount_custody.is_none()
+            || self.carrier.is_none()
+        {
+            return None;
+        }
+
+        match (self.root_mount_custody.take(), self.carrier.take()) {
+            (Some(custody), Some(carrier)) => {
+                self.armed = false;
+                Some((custody, carrier))
+            }
+            (custody, carrier) => {
+                self.root_mount_custody = custody;
+                self.carrier = carrier;
+                None
+            }
+        }
+    }
+
+    fn shutdown_attempted(&self) -> bool {
+        self.shutdown_attempted
+            || self
+                .endpoint
+                .as_ref()
+                .is_some_and(|endpoint| endpoint.shutdown_attempted())
+    }
+
+    fn shutdown_failure(&self) -> Option<&std::io::Error> {
+        self.shutdown_failure.as_ref().or_else(|| {
+            self.endpoint
+                .as_ref()
+                .and_then(|endpoint| endpoint.shutdown_failure())
+        })
+    }
+
+    fn shutdown_unavailable(&self) -> bool {
+        self.shutdown_unavailable
+            || self
+                .endpoint
+                .as_ref()
+                .is_some_and(|endpoint| endpoint.shutdown_unavailable())
+    }
+
+    fn close(&mut self) {
+        if !self.ended {
+            self.ended = true;
+            let endpoint = self.endpoint.as_ref().filter(|endpoint| endpoint.retains_alias());
+            if let Some(endpoint) = endpoint {
+                endpoint.end_original();
+                self.shutdown_attempted = endpoint.shutdown_attempted();
+                self.shutdown_unavailable = endpoint.shutdown_unavailable();
+            } else if let Some(socket) = self.socket.as_ref() {
+                // A failed duplicate has no alias. The still-resident original
+                // is used only to end its queue, never as a fallback transport.
+                match socket.as_fd() {
+                    Ok(original) => {
+                        self.shutdown_attempted = true;
+                        self.shutdown_failure =
+                            rustix::net::shutdown(original, rustix::net::Shutdown::Both)
+                                .err()
+                                .map(std::io::Error::from);
+                    }
+                    Err(_) => self.shutdown_unavailable = true,
+                }
+            } else {
+                self.shutdown_unavailable = true;
+            }
+        }
+
+        if let Some(socket) = self.socket.as_mut() {
+            socket.close();
+        }
+        if let Some(carrier) = self.carrier.as_mut() {
+            carrier.close();
+        }
+        if let Some(custody) = self.provider_custody.as_mut() {
+            custody.inner_mut().poison();
+        }
+        if let Some(custody) = self.root_mount_custody.as_mut() {
+            custody.inner_mut().poison();
+        }
+    }
+}
+
+impl Drop for SelectedHandshakeOpeningV1 {
+    fn drop(&mut self) {
+        if self.armed {
+            self.close();
+        }
+    }
+}
 
 /// Carries a provider outcome after exact AOSSPL persistence.
 pub struct CommittedProviderOutcomeV1 {

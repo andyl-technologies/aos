@@ -292,6 +292,7 @@ impl FixedProviderOwnerV1 {
         rows: Option<&[u8]>,
     ) -> Result<ReceivedOriginalIngressV1, ProviderLedgerError> {
         self.original_ingress.require_open()?;
+        let selected_original = self.selected_prefix.is_some();
         // These old containers already own this carrier; never overwrite them.
         let carrier_idle = self.recovery_handshake.is_none()
             && self.ingress_reopen.is_none()
@@ -418,7 +419,7 @@ impl FixedProviderOwnerV1 {
                     }
                 }
                 CurrentProviderOriginalCarrierPacketV1::Rejected { packet, error } => {
-                    if pair.pending.is_some() || packet.starts_with(b"AOSNHC01") {
+                    if selected_original || pair.pending.is_some() || packet.starts_with(b"AOSNHC01") {
                         pair.rejected_packet = Some(packet);
                     }
                     return Err(error.into());

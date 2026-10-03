@@ -58,8 +58,11 @@ pub use configuration::original_archive::{
     ProtectedOriginalDeploymentV5, ProtectedOriginalOriginV5, ProtectedOriginalSelectedInputV1,
 };
 pub use custody::{
-    ProtectedProviderCustodyV1, ProtectedRootMountCustodyV1, validate_fixed_provider_authority_v1,
+    ProtectedProviderCustodyV1, ProtectedRootMountCustodyV1, SelectedSourceProviderCustodyOpeningV1,
+    validate_fixed_provider_authority_v1,
     validate_fixed_root_mount_authority_v1,
+    validate_fixed_selected_provider_authority_v1,
+    validate_fixed_selected_root_mount_authority_v1,
 };
 pub use descriptor::{
     ActiveMountSourceRootV2, CommittedMountSourceReleaseV2, CommittedSourceRootV1,
@@ -103,6 +106,9 @@ pub use handshake::{
     ReopenedMountSourceRootV2, ReservedMountProviderRequestV2, RetainedRootRecoveryAuthorizationV2,
     RevalidatedProviderReplayV1, RootAcceptedNativeExportFenceV1,
     RootMountSourceProviderHandshakeStatusV1, RootMountSourceProviderOwnerV1,
+    SelectedRootMountSourceProviderOwnerV1,
+    SelectedProviderSourceProviderOwnerV1,
+    SelectedSourceProviderFailureRefV1,
     SentMountProviderRequestV2, VerifiedMountProviderOutcomeV2,
     VerifiedReceivedMountProviderOutcomeV2,
 };

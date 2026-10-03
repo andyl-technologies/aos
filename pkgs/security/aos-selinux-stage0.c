@@ -89,7 +89,11 @@
 #define AOS_MOUNT_CARRIER_SALT \
     "0000000000000000000000000000000000000000000000000000000000000021"
 #define EXPECTED_ROOT_CONTEXT "system_u:object_r:root_t"
+#ifdef AOS_MOUNT_SOURCE_CARRIER
+#define EXPECTED_BIN_CONTEXT "system_u:object_r:aos_sandbox_mount_exec_t"
+#else
 #define EXPECTED_BIN_CONTEXT "system_u:object_r:bin_t"
+#endif
 #endif
 
 #ifdef AOS_MOUNT_CARRIER_FIRST_LAUNCHER
@@ -1682,6 +1686,16 @@ static void require_mount_carrier_handoff(void) {
     close(open_verified_mount_carrier_file(
         root_fd, "daemon", EXPECTED_BIN_CONTEXT, root_status.st_dev,
         observed_context, sizeof(observed_context)));
+#ifdef AOS_MOUNT_SOURCE_CARRIER
+    /* The copies are mechanics only; PID1 separately seals each command's
+     * whole argv/FD recipe. The running Mount task cannot execute them. */
+    close(open_verified_mount_carrier_file(
+        root_fd, "install", "system_u:object_r:aos_sandbox_mount_install_exec_t",
+        root_status.st_dev, observed_context, sizeof(observed_context)));
+    close(open_verified_mount_carrier_file(
+        root_fd, "chmod", "system_u:object_r:aos_sandbox_mount_install_exec_t",
+        root_status.st_dev, observed_context, sizeof(observed_context)));
+#endif
     close(root_fd);
     log_status("Mount carrier retained across handoff: st_dev=%ju", (uintmax_t)root_status.st_dev);
 }

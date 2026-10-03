@@ -137,12 +137,78 @@ impl FixedMountSourceAcquisitionOwnerV2<'_> {
         Ok(())
     }
 
+    /// Parks every selected original input before any native stage can run.
+    ///
+    /// Occupancy and all mandatory slots are checked before taking originals.
+    /// The tuple fallback restores the same objects without I/O or allocation;
+    /// successful assembly is the existing infallible flight constructor.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn begin_signed_original_native_acquire_v5(
+        &mut self,
+        live: &mut Option<LiveValidatedAcquireMountSourceRequest>,
+        request: &mut Option<Vec<u8>>,
+        plan: [u8; 32],
+        lease: [u8; 32],
+        publication: &mut Option<Vec<u8>>,
+        catalog: &mut Option<Vec<u8>>,
+        selection: &mut Option<Vec<u8>>,
+        deadline: i64,
+    ) -> Result<()> {
+        self.require_original_start_slot_v5()?;
+        if live.is_none() || request.is_none() || publication.is_none() || catalog.is_none() {
+            return Err(state_error("selected original input slots are incomplete"));
+        }
+
+        match (live.take(), request.take(), publication.take(), catalog.take()) {
+            (Some(live), Some(request), Some(publication), Some(catalog)) => {
+                self.runtime.pending_original_native = Some(OriginalNativeAcquireFlightV5::new(
+                    live,
+                    request,
+                    plan,
+                    lease,
+                    publication,
+                    catalog,
+                    selection.take(),
+                    deadline,
+                ));
+                Ok(())
+            }
+            (actual_live, actual_request, actual_publication, actual_catalog) => {
+                *live = actual_live;
+                *request = actual_request;
+                *publication = actual_publication;
+                *catalog = actual_catalog;
+                Err(state_error("selected original input association changed"))
+            }
+        }
+    }
+
     /// Advances one owned original stage, retaining the flight on every error.
     pub(crate) fn advance_original_native_acquire_v5(
         &mut self,
         session: &mut CurrentRootMountSourceProviderSessionV1,
     ) -> Result<bool> {
+        self.advance_original_native_acquire_recipe_v5(session, None)
+    }
+
+    /// Advances the same recipe under the genuine reopened domain-effect loan.
+    pub(crate) fn advance_signed_original_native_acquire_v5(
+        &mut self,
+        session: &mut CurrentRootMountSourceProviderSessionV1,
+        effect: &mut crate::broker::OriginalMountSignedEffectLoanV1<'_>,
+    ) -> Result<bool> {
+        self.advance_original_native_acquire_recipe_v5(session, Some(effect))
+    }
+
+    fn advance_original_native_acquire_recipe_v5(
+        &mut self,
+        session: &mut CurrentRootMountSourceProviderSessionV1,
+        mut effect: Option<&mut crate::broker::OriginalMountSignedEffectLoanV1<'_>>,
+    ) -> Result<bool> {
         OriginalRuntimeBoundaryV5::new(self, session).run(|owner, session| {
+            if let Some(effect) = effect.as_mut() {
+                effect.check_before_original_effect()?;
+            }
             owner.require_no_original_inventory_v6(session)?;
             let flight = owner
                 .runtime
@@ -157,6 +223,9 @@ impl FixedMountSourceAcquisitionOwnerV2<'_> {
                 authority.with_authority(|journal| {
                     flight.advance_catalog(&mut owner.runtime.table, journal, session)
                 })?;
+                if let Some(effect) = effect.as_mut() {
+                    effect.check_before_original_effect()?;
+                }
                 return Ok(false);
             }
             let mut writer = owner
@@ -178,6 +247,9 @@ impl FixedMountSourceAcquisitionOwnerV2<'_> {
                     // row-derived outcome permit. Retain the rest of the flight.
                     owner.runtime.pending_provider = Some(sent);
                 }
+            }
+            if let Some(effect) = effect.as_mut() {
+                effect.check_before_original_effect()?;
             }
             Ok(finished)
         })

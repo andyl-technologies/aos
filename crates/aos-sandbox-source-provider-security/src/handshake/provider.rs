@@ -22,11 +22,14 @@ use aos_sandbox_source_provider_protocol::{
 };
 
 use super::{
-    CommittedProviderOutcomeV1, CurrentProviderRequestV1, HandshakeTransitionV1,
-    ProviderOutcomeAuthorizationV1, current_unix_seconds, process_identity,
+    CommittedProviderOutcomeV1, CurrentProviderRequestV1, HandshakeReceiveModeV1,
+    HandshakeTransitionV1, ProviderOutcomeAuthorizationV1, current_unix_seconds,
+    process_identity, receive_hello_record,
 };
 use crate::SourceProviderSecurityError;
-use crate::carrier::{CarrierFailureV1, InertSourceProviderCarrierV1};
+use crate::carrier::{
+    CarrierFailureV1, InertSourceProviderCarrierV1, RetainedSourceProviderRecordV5,
+};
 use crate::custody::{FIXED_PROVIDER_SOURCE_PROVIDER_CUSTODY, ProtectedProviderCustodyV1};
 use crate::execution::ProcessExecutionEvidenceV1;
 
@@ -42,6 +45,9 @@ mod native_release_status;
 pub use native_prepared::{CurrentProviderOriginalCarrierPacketV1, CurrentRootPreparedCarrierV1};
 #[path = "provider/session.rs"]
 mod session;
+#[path = "provider/selected.rs"]
+mod selected;
+pub use selected::SelectedProviderSourceProviderOwnerV1;
 #[path = "provider/storage_export.rs"]
 mod storage_export;
 #[path = "provider/storage_native.rs"]
@@ -69,7 +75,7 @@ pub(super) struct AwaitingRootMountHelloV1 {
 pub(super) struct VerifiedRootMountHelloV1 {
     custody: ProtectedProviderCustodyV1,
     carrier: InertSourceProviderCarrierV1,
-    root_mount_hello: SignedSourceProviderHelloV1,
+    root_mount_hello: Option<SignedSourceProviderHelloV1>,
     root_mount_execution: ProcessExecutionEvidenceV1,
 }
 
@@ -92,6 +98,7 @@ pub struct CurrentProviderIngressSessionV1 {
     session: SourceProviderIngressSessionV1,
     root_mount_execution: ProcessExecutionEvidenceV1,
     failure_disposition: CurrentSessionFailureDispositionV5,
+    selected_receive: Option<selected::SelectedCurrentReceiveV1>,
 }
 
 impl CurrentProviderIngressSessionV1 {
@@ -493,6 +500,17 @@ impl core::fmt::Debug for ProviderSourceProviderOwnerV1 {
 }
 
 impl ProviderSourceProviderOwnerV1 {
+    /// Parks one original channel before fixed selected Provider admission.
+    ///
+    /// The returned attempt performs no protected-file or transport effect.
+    /// It must be retained through opening, handshake and fixed-ledger handoff;
+    /// it grants no session, signing, backend or retry authority.
+    pub fn begin_fixed_selected_mount_source(
+        socket: DescriptorSubjectSocket,
+    ) -> SelectedProviderSourceProviderOwnerV1 {
+        SelectedProviderSourceProviderOwnerV1::new(socket)
+    }
+
     /// Opens fixed provider custody and adopts one connected socket.
     ///
     /// # Errors
@@ -725,6 +743,8 @@ impl CurrentProviderIngressSessionV1 {
             carrier,
             session: _,
             root_mount_execution: _,
+            failure_disposition: _,
+            selected_receive: _,
         } = self;
         let awaiting = AwaitingRootMountHelloV1::accept_carrier(custody, carrier)?;
         Ok(ProviderSourceProviderOwnerV1 {
@@ -762,36 +782,96 @@ impl AwaitingRootMountHelloV1 {
     pub(super) fn receive_root_mount(
         mut self,
     ) -> HandshakeTransitionV1<AwaitingRootMountHelloV1, VerifiedRootMountHelloV1> {
-        if let Err(error) = self.revalidate_before_action() {
-            return HandshakeTransitionV1::Fatal(error);
-        }
-        let received = match self.carrier.receive_zero_descriptors(
-            aos_sandbox_source_provider_protocol::SOURCE_PROVIDER_HELLO_FRAME_BYTES,
+        let mut received = None;
+        let mut root_mount_hello = None;
+        match self.receive_step(
+            &mut received,
+            &mut root_mount_hello,
+            HandshakeReceiveModeV1::Legacy,
         ) {
-            Ok(received) => received,
-            Err(CarrierFailureV1::Retryable) => return HandshakeTransitionV1::Retry(self),
+            Ok(false) => HandshakeTransitionV1::Retry(self),
+            Err(error) => HandshakeTransitionV1::Fatal(error),
+            Ok(true) => {
+                if !matches!(received, Some(RetainedSourceProviderRecordV5::Bound(_)))
+                    || root_mount_hello.is_none()
+                {
+                    return HandshakeTransitionV1::Fatal(poison_and_close(
+                        &mut self.custody,
+                        &mut self.carrier,
+                        SourceProviderSecurityError::Poisoned,
+                    ));
+                }
+                match (received.take(), root_mount_hello.take()) {
+                    (Some(RetainedSourceProviderRecordV5::Bound(received)), Some(root_mount_hello)) => {
+                        HandshakeTransitionV1::Complete(VerifiedRootMountHelloV1 {
+                            custody: self.custody,
+                            carrier: self.carrier,
+                            root_mount_hello: Some(root_mount_hello),
+                            root_mount_execution: received.execution,
+                        })
+                    }
+                    (old_received, old_hello) => {
+                        received = old_received;
+                        root_mount_hello = old_hello;
+                        HandshakeTransitionV1::Fatal(poison_and_close(
+                            &mut self.custody,
+                            &mut self.carrier,
+                            SourceProviderSecurityError::Poisoned,
+                        ))
+                    }
+                }
+            }
+        }
+    }
+
+    fn receive_step(
+        &mut self,
+        received_slot: &mut Option<RetainedSourceProviderRecordV5>,
+        hello_slot: &mut Option<SignedSourceProviderHelloV1>,
+        mode: HandshakeReceiveModeV1,
+    ) -> Result<bool, SourceProviderSecurityError> {
+        if let Err(error) = self.revalidate_before_action() {
+            return Err(error);
+        }
+        match receive_hello_record(&mut self.carrier, received_slot, mode) {
+            Ok(()) => {}
+            Err(CarrierFailureV1::Retryable) => return Ok(false),
             Err(CarrierFailureV1::Fatal(error)) => {
-                return HandshakeTransitionV1::Fatal(poison_and_close(
+                return Err(poison_and_close(
                     &mut self.custody,
                     &mut self.carrier,
                     error,
+                ));
+            }
+        }
+        let received = match received_slot
+            .as_ref()
+            .and_then(RetainedSourceProviderRecordV5::bound)
+        {
+            Some(received) => received,
+            None => {
+                return Err(poison_and_close(
+                    &mut self.custody,
+                    &mut self.carrier,
+                    SourceProviderSecurityError::Poisoned,
                 ));
             }
         };
         let root_mount_hello = match decode_message(&received.payload) {
             Ok(SourceProviderMessageV1::HelloRequest(hello)) => hello,
             _ => {
-                return HandshakeTransitionV1::Fatal(poison_and_close(
+                return Err(poison_and_close(
                     &mut self.custody,
                     &mut self.carrier,
                     SourceProviderSecurityError::SessionContinuity,
                 ));
             }
         };
+        *hello_slot = Some(root_mount_hello);
         let now = match current_unix_seconds() {
             Ok(now) => now,
             Err(error) => {
-                return HandshakeTransitionV1::Fatal(poison_and_close(
+                return Err(poison_and_close(
                     &mut self.custody,
                     &mut self.carrier,
                     error,
@@ -799,13 +879,23 @@ impl AwaitingRootMountHelloV1 {
             }
         };
         if let Err(error) = self.custody.inner_mut().revalidate_at(now) {
-            return HandshakeTransitionV1::Fatal(poison_and_close(
+            return Err(poison_and_close(
                 &mut self.custody,
                 &mut self.carrier,
                 error,
             ));
         }
-        if verify_root_hello_preflight(&self.custody, &root_mount_hello, &received.execution, now)
+        let root_mount_hello = match hello_slot.as_ref() {
+            Some(hello) => hello,
+            None => {
+                return Err(poison_and_close(
+                    &mut self.custody,
+                    &mut self.carrier,
+                    SourceProviderSecurityError::Poisoned,
+                ));
+            }
+        };
+        if verify_root_hello_preflight(&self.custody, root_mount_hello, &received.execution, now)
             .is_err()
             || received.execution.boot_id() != self.custody.inner().execution().boot_id()
             || received
@@ -813,21 +903,16 @@ impl AwaitingRootMountHelloV1 {
                 .revalidate(self.carrier.socket().peer())
                 .is_err()
         {
-            return HandshakeTransitionV1::Fatal(poison_and_close(
+            return Err(poison_and_close(
                 &mut self.custody,
                 &mut self.carrier,
                 SourceProviderSecurityError::SessionContinuity,
             ));
         }
         if let Err(error) = self.revalidate_before_action() {
-            return HandshakeTransitionV1::Fatal(error);
+            return Err(error);
         }
-        HandshakeTransitionV1::Complete(VerifiedRootMountHelloV1 {
-            custody: self.custody,
-            carrier: self.carrier,
-            root_mount_hello,
-            root_mount_execution: received.execution,
-        })
+        Ok(true)
     }
 
     fn revalidate_before_action(&mut self) -> Result<(), SourceProviderSecurityError> {
@@ -848,6 +933,53 @@ impl VerifiedRootMountHelloV1 {
     pub(super) fn prepare_provider_hello(
         mut self,
     ) -> Result<ProviderHelloPreparedV1, SourceProviderSecurityError> {
+        let mut provider_hello = None;
+        let mut session = None;
+        let mut packet = None;
+        self.prepare_step(
+            &mut provider_hello,
+            &mut session,
+            &mut packet,
+            HandshakeReceiveModeV1::Legacy,
+        )?;
+
+        if session.is_none() || packet.is_none() {
+            return Err(poison_and_close(
+                &mut self.custody,
+                &mut self.carrier,
+                SourceProviderSecurityError::Poisoned,
+            ));
+        }
+        match (session.take(), packet.take()) {
+            (Some(session), Some(packet)) => Ok(ProviderHelloPreparedV1 {
+                custody: self.custody,
+                carrier: self.carrier,
+                session,
+                root_mount_execution: self.root_mount_execution,
+                packet,
+            }),
+            (old_session, old_packet) => {
+                session = old_session;
+                packet = old_packet;
+                Err(poison_and_close(
+                    &mut self.custody,
+                    &mut self.carrier,
+                    SourceProviderSecurityError::Poisoned,
+                ))
+            }
+        }
+    }
+
+    // The literal Legacy recipe consumes each signed DATA value at its old
+    // argument interval. Selected continuation keeps the original signed
+    // prefixes resident through all later observations and negative shutdown.
+    fn prepare_step(
+        &mut self,
+        hello_slot: &mut Option<SignedSourceProviderHelloV1>,
+        session_slot: &mut Option<SourceProviderIngressSessionV1>,
+        packet_slot: &mut Option<Vec<u8>>,
+        mode: HandshakeReceiveModeV1,
+    ) -> Result<(), SourceProviderSecurityError> {
         let now = match current_unix_seconds() {
             Ok(now) => now,
             Err(error) => {
@@ -881,10 +1013,14 @@ impl VerifiedRootMountHelloV1 {
         };
         let (client_nonce, client_digest, capabilities, recursive, kernel_coupled) = {
             let inner = self.custody.inner();
-            let client = self.root_mount_hello.subject();
+            let root_mount_hello = self
+                .root_mount_hello
+                .as_ref()
+                .ok_or(SourceProviderSecurityError::Poisoned)?;
+            let client = root_mount_hello.subject();
             (
                 client.nonce(),
-                digest_signed_hello(&self.root_mount_hello),
+                digest_signed_hello(root_mount_hello),
                 client.proof_class_capabilities() & inner.manifest().proof_capabilities(),
                 client.supports_recursive() && inner.manifest().allow_recursive(),
                 client.supports_kernel_coupled() && inner.manifest().allow_kernel_coupled(),
@@ -956,6 +1092,7 @@ impl VerifiedRootMountHelloV1 {
                 ));
             }
         };
+        *hello_slot = Some(provider_hello);
         let after_signature = current_unix_seconds()
             .and_then(|now| self.custody.inner_mut().revalidate_at(now))
             .and_then(|_| {
@@ -984,8 +1121,15 @@ impl VerifiedRootMountHelloV1 {
             SourceProviderIngressSessionV1::authenticate(
                 client_nonce,
                 now,
-                self.root_mount_hello,
-                provider_hello.clone(),
+                match mode {
+                    HandshakeReceiveModeV1::Legacy => self.root_mount_hello.take(),
+                    HandshakeReceiveModeV1::Selected => self.root_mount_hello.clone(),
+                }
+                .ok_or(SourceProviderSecurityError::Poisoned)?,
+                hello_slot
+                    .as_ref()
+                    .ok_or(SourceProviderSecurityError::Poisoned)?
+                    .clone(),
                 inner.trust(),
                 inner.root_authority(),
                 inner.provider_authority(),
@@ -1005,7 +1149,14 @@ impl VerifiedRootMountHelloV1 {
                 ));
             }
         };
-        let packet = match encode_message(&SourceProviderMessageV1::HelloResponse(provider_hello)) {
+        *session_slot = Some(session);
+        let packet = match encode_message(&SourceProviderMessageV1::HelloResponse(
+            match mode {
+                HandshakeReceiveModeV1::Legacy => hello_slot.take(),
+                HandshakeReceiveModeV1::Selected => hello_slot.clone(),
+            }
+            .ok_or(SourceProviderSecurityError::Poisoned)?,
+        )) {
             Ok(packet) => packet,
             Err(_) => {
                 return Err(poison_and_close(
@@ -1015,7 +1166,13 @@ impl VerifiedRootMountHelloV1 {
                 ));
             }
         };
-        if packet.len() != aos_sandbox_source_provider_protocol::SOURCE_PROVIDER_HELLO_FRAME_BYTES {
+        *packet_slot = Some(packet);
+        if packet_slot
+            .as_ref()
+            .ok_or(SourceProviderSecurityError::Poisoned)?
+            .len()
+            != aos_sandbox_source_provider_protocol::SOURCE_PROVIDER_HELLO_FRAME_BYTES
+        {
             return Err(poison_and_close(
                 &mut self.custody,
                 &mut self.carrier,
@@ -1035,13 +1192,7 @@ impl VerifiedRootMountHelloV1 {
                 error,
             ));
         }
-        Ok(ProviderHelloPreparedV1 {
-            custody: self.custody,
-            carrier: self.carrier,
-            session,
-            root_mount_execution: self.root_mount_execution,
-            packet,
-        })
+        Ok(())
     }
 }
 
@@ -1049,27 +1200,36 @@ impl ProviderHelloPreparedV1 {
     pub(super) fn send(
         mut self,
     ) -> HandshakeTransitionV1<ProviderHelloPreparedV1, CurrentProviderIngressSessionV1> {
-        if let Err(error) = self.revalidate_before_action() {
-            return HandshakeTransitionV1::Fatal(error);
-        }
-        match self.carrier.send(&self.packet) {
-            Err(CarrierFailureV1::Retryable) => HandshakeTransitionV1::Retry(self),
-            Err(CarrierFailureV1::Fatal(error)) => HandshakeTransitionV1::Fatal(poison_and_close(
-                &mut self.custody,
-                &mut self.carrier,
-                error,
-            )),
-            Ok(()) => {
-                if let Err(error) = self.revalidate_before_action() {
-                    return HandshakeTransitionV1::Fatal(error);
-                }
+        match self.send_step() {
+            Ok(false) => HandshakeTransitionV1::Retry(self),
+            Err(error) => HandshakeTransitionV1::Fatal(error),
+            Ok(true) => {
                 HandshakeTransitionV1::Complete(CurrentProviderIngressSessionV1 {
                     custody: self.custody,
                     carrier: self.carrier,
                     session: self.session,
                     root_mount_execution: self.root_mount_execution,
                     failure_disposition: CurrentSessionFailureDispositionV5::LegacyDisposal,
+                    selected_receive: None,
                 })
+            }
+        }
+    }
+
+    // The Legacy wrapper consumes only after this shared borrowing recipe
+    // completes. Selected continuation keeps the stage resident on failure.
+    fn send_step(&mut self) -> Result<bool, SourceProviderSecurityError> {
+        self.revalidate_before_action()?;
+        match self.carrier.send(&self.packet) {
+            Err(CarrierFailureV1::Retryable) => Ok(false),
+            Err(CarrierFailureV1::Fatal(error)) => Err(poison_and_close(
+                &mut self.custody,
+                &mut self.carrier,
+                error,
+            )),
+            Ok(()) => {
+                self.revalidate_before_action()?;
+                Ok(true)
             }
         }
     }

@@ -43,6 +43,7 @@ NO_CONTEXT_TRANSLATION_DOMAINS = (
     fuse_worker_policy.WORKER_DOMAIN,
     *owner_policy.HELPER_DOMAINS,
     *view_policy.SIGNER_DOMAINS,
+    *owner_policy.SELECTED_MOUNT_SOURCE_DOMAINS,
 )
 PRIVATE_ROOT_CUSTODY_ATTRIBUTE = "aos_private_root_custody_domain"
 EXPLICIT_DOMAIN_ATTRIBUTES = (
@@ -52,6 +53,7 @@ EXPLICIT_DOMAIN_ATTRIBUTES = (
         "aos_sandbox_policy_authority_t",
         "aos_nix_offline_prepare_t",
         "aos_nix_offline_tpm_helper_t",
+        *owner_policy.SELECTED_MOUNT_SOURCE_DOMAINS,
     )),
 )
 GUEST_ROOT_PUBLISHER = "aos_sandbox_guest_root_publisher_t"
