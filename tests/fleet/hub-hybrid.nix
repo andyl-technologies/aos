@@ -257,8 +257,19 @@
       }
     ));
 
+  # Diagnostic guests retain the ordinary AOS runtime and boot identity CLI.
+  # Use the established qualification closure allowance and the measured initrd
+  # bound locally; production defaults and the other image budgets stay intact.
+  qualificationImageBudget = {
+    aos.image.budgets = {
+      maxRuntimeClosureMiB = 912;
+      maxInitrdMiB = 144;
+    };
+  };
+
   nativeSystem = fixture.hubSystem.extendModules {
     modules = [
+      qualificationImageBudget
       {
         aos.registry-hub = {
           deploymentId = "fleet-hybrid-v1";
@@ -320,6 +331,7 @@
 
   edgeSystem = mkSystem [
     ../../systems/server-test.nix
+    qualificationImageBudget
     {
       aos.security.pki.certificates = [caCertificate s3CaCertificate];
       aos.firewall.allowedTCP = [443] ++ lib.optionals externalDirect [8453 4643 4644 4673 4674];
@@ -329,6 +341,7 @@
   ];
   clientSystem = mkSystem [
     ../../systems/server-test.nix
+    qualificationImageBudget
     {
       aos.security.pki.certificates = [caCertificate s3CaCertificate];
       aos.kernel.modules = ["9pnet_virtio" "9p"];
