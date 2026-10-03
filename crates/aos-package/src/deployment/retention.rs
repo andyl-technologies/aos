@@ -60,6 +60,12 @@ impl<A: ArtifactAdmission> NixStore<A> {
 
     fn pin(&mut self, key: &str, root: &str) -> Result<()> {
         self.admission.admit(root)?;
+        self.pin_admitted(key, root)
+    }
+
+    // Admission is scoped to the current retention call. Each ownership key
+    // still needs its own checked, durable root even when artifacts are shared.
+    fn pin_admitted(&mut self, key: &str, root: &str) -> Result<()> {
         let link = self
             .directory
             .join(Sha256Digest::of_bytes(key.as_bytes()).hex());
@@ -140,6 +146,19 @@ impl<A: ArtifactAdmission> HandlerArtifacts for NixStore<A> {
         Ok(())
     }
 
+    fn retain_batch(&mut self, effects: &[&Effect]) -> Result<()> {
+        let mut admitted = BTreeSet::new();
+        for effect in effects {
+            if let Handler::Process { artifact, .. } = &effect.handler {
+                if admitted.insert(artifact.as_str()) {
+                    self.admission.admit(artifact)?;
+                }
+                self.pin_admitted(&Self::effect_key(effect, artifact)?, artifact)?;
+            }
+        }
+        Ok(())
+    }
+
     fn release(&mut self, effect: &Effect) -> Result<()> {
         if let Handler::Process { artifact, .. } = &effect.handler {
             self.unpin(&Self::effect_key(effect, artifact)?)?;
@@ -194,8 +213,222 @@ fn generation_roots(deployment: &Deployment) -> BTreeSet<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::deployment::handler::ProcessAdapter;
     use crate::deployment::model::{Artifact, ResolvedPackages};
+    use aos_ability_runtime::activation::{Action, ActivationAdapter, Invocation};
+    use aos_ability_runtime::adapter::CancellationToken;
     use serde_json::json;
+    use std::collections::BTreeMap;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone)]
+    struct CheckedFixture {
+        members: BTreeMap<String, PathBuf>,
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl ArtifactAdmission for CheckedFixture {
+        fn admit(&mut self, root: &str) -> Result<()> {
+            self.calls.lock().unwrap().push(root.to_owned());
+            let path = self
+                .members
+                .get(root)
+                .context("unauthorized fixture artifact")?;
+            ensure!(
+                std::fs::read(path)? == b"admitted",
+                "fixture artifact changed"
+            );
+            Ok(())
+        }
+    }
+
+    fn source_tool(name: &str) -> PathBuf {
+        std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .filter(|directory| directory.starts_with("/nix/store"))
+            .map(|directory| directory.join(name))
+            .find(|path| path.is_file())
+            .unwrap_or_else(|| panic!("source-built AOS {name} must be in PATH"))
+    }
+
+    fn effect(instance: &str, root: &str) -> Effect {
+        serde_json::from_value(json!({
+            "identity": ["fixture", "retain", instance],
+            "owner": "@environment",
+            "input": {},
+            "inputs": {},
+            "input_type": {"kind": "submodule", "open": false, "fields": {}},
+            "results": {},
+            "after": [],
+            "dependencies": [],
+            "revision": "0".repeat(64),
+            "handler": {
+                "kind": "process",
+                "artifact": root,
+                "executable": format!("{root}/bin/run")
+            },
+            "lifetime": "persistent",
+            "timeout_ms": 1000
+        }))
+        .unwrap()
+    }
+
+    fn fixture(directory: &Path) -> (NixStore<CheckedFixture>, String, String) {
+        let old = "/nix/store/00000000000000000000000000000000-old-provider".to_owned();
+        let new = "/nix/store/11111111111111111111111111111111-new-provider".to_owned();
+        let valid = directory.join("valid");
+        std::fs::create_dir(&valid).unwrap();
+        let members = [&old, &new]
+            .into_iter()
+            .map(|root| {
+                let path = valid.join(Path::new(root).file_name().unwrap());
+                std::fs::write(&path, b"admitted").unwrap();
+                (root.clone(), path)
+            })
+            .collect();
+        let executable = directory.join("store-protocol");
+        // This unit-only protocol shim uses source-built tools and real GC-root
+        // links. It models store availability, not NAR or release authentication.
+        let script = format!(
+            r#"#!{shell}
+case "$1" in
+    --check-validity)
+        test -f "{valid}/${{2##*/}}"
+        ;;
+    --add-root)
+        "{link}" -s -- "$5" "$2"
+        ;;
+    *)
+        exit 1
+        ;;
+esac
+"#,
+            shell = source_tool("bash").display(),
+            valid = valid.display(),
+            link = source_tool("ln").display(),
+        );
+        std::fs::write(&executable, script).unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let admission = CheckedFixture {
+            members,
+            calls: Arc::default(),
+        };
+        (
+            NixStore::open(executable, directory.join("roots"), admission).unwrap(),
+            old,
+            new,
+        )
+    }
+
+    fn root_link(store: &NixStore<CheckedFixture>, effect: &Effect, artifact: &str) -> PathBuf {
+        store.directory.join(
+            Sha256Digest::of_bytes(
+                NixStore::<CheckedFixture>::effect_key(effect, artifact)
+                    .unwrap()
+                    .as_bytes(),
+            )
+            .hex(),
+        )
+    }
+
+    #[test]
+    fn batch_admission_preserves_independent_effect_and_replacement_roots() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut store, old, new) = fixture(directory.path());
+        let first = effect("first", &old);
+        let second = effect("second", &old);
+        let replacement = effect("first", &new);
+
+        store
+            .retain_batch(&[&first, &second, &replacement])
+            .unwrap();
+
+        assert_eq!(
+            *store.admission.calls.lock().unwrap(),
+            [old.clone(), new.clone()]
+        );
+        for (effect, artifact) in [(&first, &old), (&second, &old), (&replacement, &new)] {
+            assert_eq!(
+                std::fs::read_link(root_link(&store, effect, artifact)).unwrap(),
+                Path::new(artifact)
+            );
+        }
+        store.release(&first).unwrap();
+        assert_eq!(
+            std::fs::symlink_metadata(root_link(&store, &first, &old))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::NotFound
+        );
+        assert_eq!(
+            std::fs::read_link(root_link(&store, &second, &old)).unwrap(),
+            Path::new(&old)
+        );
+        assert_eq!(
+            std::fs::read_link(root_link(&store, &replacement, &new)).unwrap(),
+            Path::new(&new)
+        );
+
+        store.retain_batch(&[&second, &replacement]).unwrap();
+        assert_eq!(
+            *store.admission.calls.lock().unwrap(),
+            [old.clone(), new.clone(), old, new]
+        );
+    }
+
+    #[test]
+    fn batch_rechecks_each_root_key_and_revalidates_after_return() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut store, old, new) = fixture(directory.path());
+        let first = effect("first", &old);
+        let second = effect("second", &old);
+        let key = root_link(&store, &second, &old);
+        std::os::unix::fs::symlink(&new, &key).unwrap();
+
+        assert!(
+            store
+                .retain_batch(&[&first, &second])
+                .unwrap_err()
+                .to_string()
+                .contains("another artifact")
+        );
+        assert_eq!(std::fs::read_link(key).unwrap(), Path::new(&new));
+        std::fs::write(&store.admission.members[&old], b"changed").unwrap();
+        assert!(
+            store
+                .retain_batch(&[&first])
+                .unwrap_err()
+                .to_string()
+                .contains("artifact changed")
+        );
+        assert_eq!(*store.admission.calls.lock().unwrap(), [old.clone(), old]);
+    }
+
+    #[test]
+    fn dispatch_rechecks_live_custody_after_batch_before_process_execution() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut store, old, _) = fixture(directory.path());
+        let first = effect("first", &old);
+        store.retain_batch(&[&first]).unwrap();
+        std::fs::write(&store.admission.members[&old], b"changed").unwrap();
+        let calls = store.admission.calls.clone();
+        let mut adapter = ProcessAdapter::new(store);
+        let invocation = Invocation {
+            id: "fixture".into(),
+            effect: first,
+            input: json!({}),
+            revision: "0".repeat(64),
+            action: Action::Apply,
+            previous: None,
+        };
+
+        let error = adapter
+            .invoke(&invocation, &CancellationToken::default())
+            .unwrap_err();
+
+        assert_eq!(error.to_string(), "fixture artifact changed");
+        assert_eq!(*calls.lock().unwrap(), [old.clone(), old]);
+    }
 
     #[test]
     fn generation_roots_keep_selected_and_referenced_outputs_only() {

@@ -66,6 +66,20 @@ pub trait HandlerArtifacts {
     /// Returns an error for unauthorized or unavailable artifacts or failed roots.
     fn retain(&mut self, effect: &Effect) -> Result<()>;
 
+    /// Retains every effect while allowing authentication to be shared in preflight.
+    ///
+    /// Sharing is limited to this call; subsequent dispatches still authenticate
+    /// their selected artifact through [`Self::retain`].
+    ///
+    /// # Errors
+    /// Returns an error when any artifact cannot be authenticated or retained.
+    fn retain_batch(&mut self, effects: &[&Effect]) -> Result<()> {
+        for effect in effects {
+            self.retain(effect)?;
+        }
+        Ok(())
+    }
+
     /// Idempotently releases a handler root after durable teardown or replacement.
     ///
     /// # Errors
@@ -153,6 +167,15 @@ impl<A: HandlerArtifacts> ActivationAdapter for ProcessAdapter<A> {
             self.artifacts.retain(effect)?;
         }
         Ok(())
+    }
+
+    fn retain_batch(&mut self, effects: &[&Effect]) -> Result<()> {
+        let handlers = effects
+            .iter()
+            .copied()
+            .filter(|effect| matches!(effect.handler, Handler::Process { .. }))
+            .collect::<Vec<_>>();
+        self.artifacts.retain_batch(&handlers)
     }
 
     fn observe(

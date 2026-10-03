@@ -60,6 +60,8 @@ pub(super) struct Host {
     interrupt_release: bool,
     releases: usize,
     boundaries: Vec<BoundaryEvent>,
+    retention_calls: Vec<Vec<String>>,
+    reject_retention: bool,
     pub(super) halt_boundary: Option<Boundary>,
 }
 
@@ -72,7 +74,11 @@ impl ActivationAdapter for Host {
         Ok(())
     }
 
-    fn retain(&mut self, _: &Effect) -> Result<()> {
+    fn retain(&mut self, effect: &Effect) -> Result<()> {
+        self.retention_calls.push(effect.identity.clone());
+        if self.reject_retention {
+            bail!("unauthorized fixture artifact");
+        }
         Ok(())
     }
 
@@ -117,6 +123,73 @@ impl ActivationAdapter for Host {
         }
         Ok(())
     }
+}
+
+#[test]
+fn default_batch_retains_all_inventory_including_compositions() {
+    let desired = graph(Some("current"), "persistent");
+    let effect = desired.graph().nodes.values().next().unwrap();
+    let invocation = |name: &str| {
+        let mut effect = effect.clone();
+        effect.identity[2] = name.to_owned();
+        Invocation {
+            id: name.into(),
+            revision: effect.revision.clone(),
+            effect,
+            input: json!({"value":"previous"}),
+            action: Action::Apply,
+            previous: None,
+        }
+    };
+    let mut retained = invocation("composition");
+    retained.effect.handler = aos_ability_plan::module_graph::Handler::Composition {
+        children: vec![],
+        exports: BTreeMap::new(),
+    };
+    let released = invocation("released");
+    let pending = invocation("pending");
+    let mut host = Host::default();
+
+    host.retain_batch(&[effect, &retained.effect, &released.effect, &pending.effect])
+        .unwrap();
+
+    assert_eq!(
+        host.retention_calls,
+        [
+            effect.identity.clone(),
+            retained.effect.identity,
+            released.effect.identity,
+            pending.effect.identity
+        ]
+    );
+    assert!(host.mutations.is_empty());
+}
+
+#[test]
+fn failed_batch_admission_precedes_intent_and_dispatch() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("journal");
+    let mut activation = Activation::open(&path, JournalLimits::default()).unwrap();
+    let before = std::fs::read(&path).unwrap();
+    let mut host = Host {
+        reject_retention: true,
+        ..Host::default()
+    };
+
+    let error = activation
+        .activate(
+            &graph(Some("value"), "persistent"),
+            &BTreeSet::new(),
+            &mut host,
+            &CancellationToken::default(),
+        )
+        .unwrap_err();
+
+    assert_eq!(error.to_string(), "unauthorized fixture artifact");
+    assert_eq!(std::fs::read(path).unwrap(), before);
+    assert!(activation.retained().is_empty());
+    assert!(host.mutations.is_empty());
+    assert!(host.boundaries.is_empty());
 }
 
 #[test]

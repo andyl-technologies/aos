@@ -112,6 +112,21 @@ pub trait ActivationAdapter {
     /// be retained for recovery.
     fn retain(&mut self, effect: &Effect) -> Result<()>;
 
+    /// Authenticates and retains a complete preflight inventory.
+    ///
+    /// Implementations may share artifact authentication within this call, but
+    /// must retain each effect independently. This does not authorize a later
+    /// dispatch without its own live artifact check.
+    ///
+    /// # Errors
+    /// Returns an error when any handler cannot be authenticated or retained.
+    fn retain_batch(&mut self, effects: &[&Effect]) -> Result<()> {
+        for effect in effects {
+            self.retain(effect)?;
+        }
+        Ok(())
+    }
+
     /// Observes the exact invocation without blindly repeating its mutation.
     ///
     /// # Errors
