@@ -282,7 +282,7 @@ extern "C" fn test_wait_idle_wake(
     TEST_IDLE_WAKE_WAIT_STATUS.get()
 }
 
-extern "C" fn test_force_vcpu_tb_exit() -> i32 {
+pub(super) extern "C" fn test_force_vcpu_tb_exit() -> i32 {
     0
 }
 

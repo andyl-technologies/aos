@@ -531,6 +531,11 @@ impl OwnedCallbackRuntimeState {
                     binding.child_process_generation,
                 )
                 .map_err(|_source| HotForkChildRuntimeError::ProcessGeneration)?;
+            live.as_mut().get_mut().rebind_stop_caller_identity(
+                expected_identity,
+                self.slot_index,
+                binding.child_process_generation,
+            );
             live.as_mut()
                 .get_mut()
                 .reinitialize_hot_fork_child_workers(Arc::clone(&self.workers))
@@ -712,6 +717,7 @@ impl OwnedCallbackRuntimeState {
         // independently pinned callback allocation. The new allocation is
         // installed before its address becomes observable to QEMU.
         let state = unsafe { self.get_unchecked_mut() };
+        let stop_backing_identity = state.setup.mapped_region().backing_identity();
         let header = std::ptr::NonNull::from(state.setup.mapped_region().header());
         let fault_commands = crate::fault_command::FaultCommandBridge::new(
             fault_command_apis,
@@ -752,6 +758,7 @@ impl OwnedCallbackRuntimeState {
             Arc::clone(&state.quiescence),
             Arc::clone(&state.teardown_router),
         )?
+        .attach_stop_caller_identity(stop_backing_identity, slot_index, process_generation)
         .attach_network(
             slot_index,
             mapped.first,
