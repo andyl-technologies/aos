@@ -124,19 +124,22 @@ empty `terrane` binary.
 
 ### T1 — Local repository
 
-**Status:** In progress. The reviewed combined candidate `04d50d8ac714`
-passes all 599 core tests with zero skips (Nextest run
-`98d55ce4-1ca1-446b-8e9e-477e56ce1970`), strict all-target core Clippy,
-strict rustdoc, both required formatters and seven actual gates:
+**Status:** In progress. The reviewed combined candidate `93c8cf0f90b2`
+passes all 602 core tests with zero skips (Nextest run
+`b16244f3-9fb5-411d-bb5e-96b7bb172bda`), strict all-target core Clippy,
+strict rustdoc, both required formatters and five actual gates:
 `property-resolution`, `prov-selector-presets`, `canonical-cbor`,
-`core-no-std`, `store-verify-on-get`, `store-has-batched` and
-`store-verify-on-put`. Its full current aggregate passes the earlier legacy
-index-completeness assertion, then fails `index-generation-manifest` at
+`core-no-std` and `algebra-merge`. Its complete golden gate also passes all
+19 mandatory owning suites and the 30-section inventory. Its full current
+aggregate exits 1 through `store-idempotent-put` at
 `physical_exclusion_overrides_live_rows_during_fresh_admission`:
-`publish_shards` returns `Unsupported` before the content lookup. These
-results precede the three newly mandatory recorded-evaluator cases; those
-cases, native propagation and full native qualification remain pending.
-No task merge, checkbox, milestone exit or freeze follows from this run.
+`publish_shards` returns `Unsupported` before content lookup. These results
+precede the newly mandatory ordinary association-table cases. The core
+evaluator binds
+independently supplied recorded interpretation to checked view/root evidence
+and actual recipe rebinding. Native historical sourcing and executable
+version-three fold replay remain unqualified. No formal task merge, checkbox,
+milestone exit or freeze follows from this run.
 
 Deployable as: a local tool that initializes a store under a `file://`
 root, commits a directory, forks and merges branches, and checks a commit
@@ -382,6 +385,17 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   revision/vocabulary and selected-evidence relationship cases. Their codecs,
   independent publication and complete caller association remain pending;
   decoded claims cannot establish a trusted registration or current authority.
+  A native caller audit finds five legacy trust constructor calls without a
+  retained per-view property revision/preservation source. The next ordinary
+  data prerequisite is an immutable caller-supplied view/original-root table:
+  it must own validated fixed interpretations, distinguish independently
+  configured views even when roots coincide, reject conflicting duplicate
+  views, and refuse absent views or root mismatches. Three exact association
+  cases are now mandatory in `property-resolution`; their implementation
+  remains on an isolated workline. The table itself cannot authenticate its
+  caller's justification, recover historical configuration, or grant authority.
+  Native installation, snapshot propagation and live-policy separation remain
+  subsequent obligations, with no task checkbox or freeze advancement.
   — satisfies TREE-14,
   PROP-1 to PROP-30;
   `checks.terrane.gates.property-resolution`,

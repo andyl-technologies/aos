@@ -20,6 +20,9 @@ in {
     ${runTests "properties::semantics::tests::resolution_recorded_revisions_preserve_inert_later_names -- --exact"}
     ${runTests "properties::semantics::tests::resolution_revisions_bind_defaults_and_graft_placement_exactly -- --exact"}
     ${runTests "properties::semantics::tests::resolution_unknown_revisions_and_unregistered_extensions_refuse -- --exact"}
+    ${runTests "properties::semantics::associations::tests::recorded_associations_own_fixed_interpretations_and_preservation_names -- --exact"}
+    ${runTests "properties::semantics::associations::tests::recorded_associations_distinguish_views_and_refuse_conflicting_duplicates -- --exact"}
+    ${runTests "properties::semantics::associations::tests::recorded_associations_refuse_missing_views_and_original_root_mismatches -- --exact"}
     ${runTests "provenance::root_context::snapshot::tests::snapshot_recorded_revisions_preserve_defaults_and_inert_names -- --exact"}
     ${runTests "provenance::root_context::snapshot::tests::snapshot_recorded_revisions_follow_full_and_parent_graft_paths -- --exact"}
     ${runTests "provenance::root_context::snapshot::tests::snapshot_recorded_revisions_reject_untrusted_names_and_placement -- --exact"}
