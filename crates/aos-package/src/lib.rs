@@ -166,6 +166,7 @@ pub mod registry_ops;
 pub mod remove;
 pub mod resolve;
 pub mod rollback;
+mod runtime_authoring;
 mod runtime_boundary;
 pub(crate) mod runtime_modules;
 pub mod security;
@@ -2571,30 +2572,6 @@ fn publish_runtime_module(source: &Path, destination: &Path, replace: bool) -> R
     Ok(())
 }
 
-fn copy_runtime_tree(source: &Path, destination: &Path) -> Result<()> {
-    std::fs::create_dir(destination)?;
-    std::fs::set_permissions(
-        destination,
-        std::os::unix::fs::PermissionsExt::from_mode(0o700),
-    )?;
-    for entry in std::fs::read_dir(source)? {
-        let entry = entry?;
-        let ty = entry.file_type()?;
-        let target = destination.join(entry.file_name());
-        if ty.is_dir() {
-            copy_runtime_tree(&entry.path(), &target)?;
-        } else if ty.is_file() {
-            std::fs::copy(entry.path(), &target)?;
-            std::fs::set_permissions(&target, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
-            std::fs::File::open(&target)?.sync_all()?;
-        } else {
-            bail!("retained runtime module set contains an unsupported object");
-        }
-    }
-    std::fs::File::open(destination)?.sync_all()?;
-    Ok(())
-}
-
 async fn run_runtime_config_command(
     command: &RuntimeConfigCommand,
     printer: &Printer,
@@ -2651,6 +2628,7 @@ async fn run_runtime_config_command(
                 })
                 .context("runtime module source has no UTF-8 file name; pass --name")?;
             validate_runtime_module_name(&name)?;
+            runtime_authoring::initialize(worktree)?;
             publish_runtime_module(source, &worktree.join(&name), false)?;
             printer.success(&format!(
                 "Added runtime module {name}; run `apm config apply` to activate."
@@ -2664,6 +2642,7 @@ async fn run_runtime_config_command(
         } => {
             let _lock = acquire_runtime_config_lock(worktree)?;
             validate_runtime_module_name(name)?;
+            runtime_authoring::initialize(worktree)?;
             publish_runtime_module(source, &worktree.join(name), true)?;
             printer.success(&format!(
                 "Replaced runtime module {name}; run `apm config apply` to activate."
@@ -2673,6 +2652,7 @@ async fn run_runtime_config_command(
         RuntimeConfigCommand::Remove { name, worktree } => {
             let _lock = acquire_runtime_config_lock(worktree)?;
             validate_runtime_module_name(name)?;
+            runtime_authoring::initialize(worktree)?;
             let source = worktree.join(name);
             if !source.is_file() {
                 bail!("runtime module {} does not exist", source.display());
@@ -2700,45 +2680,12 @@ async fn run_runtime_config_command(
         }
         RuntimeConfigCommand::Discard { worktree } => {
             let _lock = acquire_runtime_config_lock(worktree)?;
-            let profile = profile::Profile::open_readonly(types::ProfileScope::System);
-            let generation = profile
-                .current_generation()?
-                .context("no active native profile generation")?;
-            profile::deployment::committed_generation(&profile.path, generation.number)?;
-            let inputs = native_deployment::EvaluationInputs::read(
-                &generation.path.join("evaluation.json"),
-            )?;
-            let parent = worktree
-                .parent()
-                .context("runtime worktree has no parent")?;
-            let staged = parent.join(format!(".modules.restore.{}", std::process::id()));
-            match inputs.runtime_configuration.first() {
-                Some(module) => {
-                    let (root, _) = deployment::nix::store_root_and_suffix(module)?;
-                    copy_runtime_tree(&root, &staged)?;
-                }
-                None => {
-                    std::fs::create_dir(&staged)?;
-                    std::fs::File::open(&staged)?.sync_all()?;
-                }
-            }
-            std::fs::set_permissions(&staged, std::os::unix::fs::PermissionsExt::from_mode(0o700))?;
-            if worktree.exists() {
-                let backup = parent.join(format!("modules.backup.{}", std::process::id()));
-                if backup.exists() {
-                    bail!(
-                        "runtime worktree backup already exists: {}",
-                        backup.display()
-                    );
-                }
-                std::fs::rename(worktree, &backup)?;
+            if let Some(backup) = runtime_authoring::restore(worktree)? {
                 printer.plain(&format!(
                     "previous worktree preserved at {}",
                     backup.display()
                 ));
             }
-            std::fs::rename(&staged, worktree)?;
-            std::fs::File::open(parent)?.sync_all()?;
             printer.success("Restored worktree from the active generation.");
             Ok(())
         }
@@ -2781,20 +2728,47 @@ async fn apply_runtime_worktree(
     dry_run: bool,
     printer: &Printer,
 ) -> Result<()> {
-    let _lock = acquire_runtime_config_lock(worktree)?;
+    let _lock = if dry_run {
+        let path = worktree
+            .parent()
+            .context("runtime worktree has no parent")?
+            .join("modules.lock");
+        match std::fs::File::open(path) {
+            Ok(lock) => {
+                rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockShared)?;
+                Some(lock)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        }
+    } else {
+        Some(acquire_runtime_config_lock(worktree)?)
+    };
     let config = config::ApmConfig::load(types::ProfileScope::System)?;
     let profile = profile::Profile::open_readonly(config.scope);
     if !dry_run {
         install::native::recover(&profile)?;
     }
-    if !worktree.exists() {
-        std::fs::create_dir(worktree)?;
-        std::fs::set_permissions(
-            worktree,
-            std::os::unix::fs::PermissionsExt::from_mode(0o700),
-        )?;
-    }
-    let snapshot = runtime_modules::snapshot(worktree, eval_root, !allow_unprivileged_worktree)?;
+    let scratch = tempfile::tempdir()?;
+    let staged = if dry_run
+        && std::fs::symlink_metadata(worktree)
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+    {
+        Some(runtime_authoring::stage_current(scratch.path())?)
+    } else {
+        if !dry_run {
+            runtime_authoring::initialize(worktree)?;
+        }
+        None
+    };
+    let source = staged
+        .as_ref()
+        .map_or(worktree, |staged| staged.path.as_path());
+    let snapshot = runtime_modules::snapshot(
+        source,
+        eval_root,
+        staged.is_none() && !allow_unprivileged_worktree,
+    )?;
     install::native::reconfigure(&config, &snapshot, dry_run, printer)
 }
 

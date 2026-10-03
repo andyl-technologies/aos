@@ -25,14 +25,14 @@ struct SourceView {
 }
 
 /// Keeps original identities separate from private, hash-checked read locations.
-pub(super) struct SourceViews {
+pub(crate) struct SourceViews {
     directory: tempfile::TempDir,
     roots: BTreeMap<PathBuf, SourceView>,
 }
 
 impl SourceViews {
     /// Exports and restores each distinct source root within the shared deadline.
-    pub(super) fn prepare<'a>(
+    pub(crate) fn prepare<'a>(
         nix_store: &Path,
         paths: impl IntoIterator<Item = &'a Path>,
         staging: &Path,
@@ -105,6 +105,26 @@ impl SourceViews {
     /// Supplies the one private read prefix authorized for the pure evaluator.
     pub(super) fn directory(&self) -> &Path {
         self.directory.path()
+    }
+
+    /// Returns the private read location for an original prepared identity.
+    ///
+    /// # Errors
+    /// Returns an error for a noncanonical identity or an unprepared source root.
+    pub(crate) fn read_path(&self, identity: &Path) -> Result<PathBuf> {
+        let (root, suffix) = store_root_and_suffix(identity)?;
+        let view = self.roots.get(&root).context("source was not prepared")?;
+        Ok(view.path.join(suffix))
+    }
+
+    /// Returns the exported NAR hash for a prepared original source root.
+    ///
+    /// # Errors
+    /// Returns an error for a noncanonical identity or an unprepared source root.
+    pub(crate) fn nar_hash(&self, identity: &Path) -> Result<&str> {
+        let (root, _) = store_root_and_suffix(identity)?;
+        let view = self.roots.get(&root).context("source was not prepared")?;
+        Ok(&view.nar_hash)
     }
 
     /// Locks a readable snapshot to the exported original NAR identity.

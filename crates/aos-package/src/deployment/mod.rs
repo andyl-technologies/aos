@@ -16,7 +16,7 @@ pub mod model;
 pub mod nix;
 pub(crate) mod process;
 pub mod retention;
-mod source_views;
+pub(crate) mod source_views;
 pub mod transaction;
 
 #[cfg(test)]
