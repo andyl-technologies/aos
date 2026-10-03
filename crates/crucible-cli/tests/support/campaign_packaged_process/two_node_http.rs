@@ -27,19 +27,21 @@ fn http_measurement_definitions(
     world: &World,
     plan: &Plan,
 ) -> Result<MeasurementDefinitions, Box<dyn Error>> {
-    // The client emits this semantic marker only after validating the response
-    // body. Sealing requires its exact instance and client cohort to be declared.
+    // Measure the response marker's own coordinate directly; retained execution
+    // evidence need not contain a scenario-ready event.
+    let response_marker = BoundarySelector::GuestMarker {
+        marker: MarkerId::from_name(HTTP_MARKER),
+        instance: Some(MeasurementInstanceKey::parse(HTTP_MARKER_INSTANCE)?),
+    };
+
     Ok(MeasurementDefinitions::new(
         world,
         plan,
         &Properties::empty(),
         vec![MeasurementDefinition {
             id: MeasurementId::parse(HTTP_MARKER)?,
-            begin: BoundarySelector::ScenarioReady,
-            end: BoundarySelector::GuestMarker {
-                marker: MarkerId::from_name(HTTP_MARKER),
-                instance: Some(MeasurementInstanceKey::parse(HTTP_MARKER_INSTANCE)?),
-            },
+            begin: response_marker.clone(),
+            end: response_marker,
             timeout: None,
             cohort: CohortPolicy::All(vec![NodeId {
                 name: "curl".into(),
@@ -442,8 +444,15 @@ fn http_wait_reports_retryable_execution_failure_without_misclassifying_warnings
 fn http_measurement_publication_accepts_only_the_declared_client_marker()
 -> Result<(), Box<dyn Error>> {
     use crucible_campaign::{ConfigurationId, ScenarioDefId};
-    use crucible_core::{SchedulerEventLogEntry, model::MeasurementTerminalState};
-    use crucible_daemon::{CrucibleMeasurementError, evaluate_crucible_measurement_publication};
+    use crucible_core::SchedulerEventLogEntry;
+    use crucible_core::model::{
+        MeasurementAggregateValue, MeasurementEvaluationError, MeasurementSampleValue,
+        MeasurementTerminalState, MeasurementWindowOutcome,
+    };
+    use crucible_daemon::{
+        CrucibleMeasurementError, evaluate_crucible_measurement_publication,
+        verify_crucible_measurement_publication,
+    };
 
     let client = NodeId {
         name: "curl".into(),
@@ -485,7 +494,7 @@ fn http_measurement_publication_accepts_only_the_declared_client_marker()
         "http-measurement-test",
         b"configuration",
     ));
-    let evaluate = |definitions: &MeasurementDefinitions, node: NodeId, instance: &str| {
+    let evaluate = |definitions: &MeasurementDefinitions, node: NodeId, instance: &str, ready| {
         evaluate_crucible_measurement_publication(
             scenario,
             configuration,
@@ -499,8 +508,8 @@ fn http_measurement_publication_accepts_only_the_declared_client_marker()
                 Vec::new(),
             )],
             MeasurementTerminalState {
-                scenario_ready_at: Some(VirtualTime { ticks: 1 }),
-                at: VirtualTime { ticks: 5 },
+                scenario_ready_at: ready,
+                at: VirtualTime { ticks: 10 },
                 node_icounts: BTreeMap::from([(client.clone(), Icount { retired: 5 })]),
                 scheduler_quiescent: true,
             },
@@ -512,20 +521,85 @@ fn http_measurement_publication_accepts_only_the_declared_client_marker()
         &MeasurementDefinitions::empty(),
         client.clone(),
         "instance-1",
+        None,
     );
     assert!(
         matches!(undeclared, Err(CrucibleMeasurementError::GuestMeasurementProtocol { sequence: 0, reason }) if reason == "semantic marker `http.request-response` instance `instance-1` is not declared")
     );
-    let accepted = evaluate(
+    let mut needs_ready = definitions.definitions().to_vec();
+    needs_ready[0].begin = BoundarySelector::ScenarioReady;
+    let needs_ready =
+        MeasurementDefinitions::new(&world, &plan, &Properties::empty(), needs_ready)?;
+    assert!(matches!(
+        evaluate(&needs_ready, client.clone(), HTTP_MARKER_INSTANCE, None),
+        Err(CrucibleMeasurementError::Evaluation(
+            MeasurementEvaluationError::EmptySamples { aggregation: "max" }
+        ))
+    ));
+
+    let no_response_marker = evaluate_crucible_measurement_publication(
+        scenario,
+        configuration,
         restored.measurements(),
-        client.clone(),
-        HTTP_MARKER_INSTANCE,
-    )?;
-    assert_eq!(accepted.evidence().entries().len(), 1);
+        Vec::new(),
+        MeasurementTerminalState {
+            scenario_ready_at: None,
+            at: VirtualTime { ticks: 10 },
+            node_icounts: BTreeMap::new(),
+            scheduler_quiescent: true,
+        },
+        1024 * 1024,
+    );
+    assert!(matches!(
+        no_response_marker,
+        Err(CrucibleMeasurementError::Evaluation(
+            MeasurementEvaluationError::EmptySamples { aggregation: "max" }
+        ))
+    ));
+
+    for ready in [
+        None,
+        Some(VirtualTime { ticks: 1 }),
+        Some(VirtualTime { ticks: 6 }),
+    ] {
+        let accepted = evaluate(
+            restored.measurements(),
+            client.clone(),
+            HTTP_MARKER_INSTANCE,
+            ready,
+        )?;
+        let evaluation = verify_crucible_measurement_publication(
+            accepted.measurement_set(),
+            accepted.evidence(),
+            scenario,
+            configuration,
+            restored.measurements(),
+        )?;
+        let outcome = &evaluation.outcomes()[&MeasurementId::parse(HTTP_MARKER)?];
+        let MeasurementWindowOutcome::Completed { begin, end } = outcome.window() else {
+            panic!("response marker must close its own measurement window");
+        };
+        let marker = &accepted.evidence().entries()[0];
+        assert_eq!(begin, end);
+        assert_eq!(begin.sequence(), Some(marker.sequence()));
+        assert_eq!(begin.at(), marker.at());
+        assert_eq!(begin.events()[0].content_hash(), marker.content_hash());
+
+        let metric = &outcome.metrics()[&MetricId::parse("completion_virtual_time")?];
+        assert_eq!(metric.samples().len(), 1);
+        assert_eq!(
+            metric.samples()[0].value(),
+            &MeasurementSampleValue::Unsigned(marker.at().ticks)
+        );
+        assert_eq!(
+            metric.aggregate(),
+            &MeasurementAggregateValue::Unsigned(marker.at().ticks)
+        );
+    }
 
     for refused in [
-        evaluate(&definitions, client.clone(), "instance-2"),
-        evaluate(&definitions, server, "instance-1"),
+        evaluate(&definitions, client.clone(), "instance-2", None),
+        evaluate(&definitions, server, "instance-1", None),
     ] {
         assert!(matches!(
             refused,
