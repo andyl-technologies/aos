@@ -176,6 +176,7 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
         PackageCommand::ApplyDeployment(..)
         | PackageCommand::VerifyDeployment(..)
         | PackageCommand::DeploymentCurrent { .. }
+        | PackageCommand::DeploymentRetainedEffects { .. }
         | PackageCommand::DeploymentResult { .. }
         | PackageCommand::Switch { .. }
         | PackageCommand::Config { .. } => true,
@@ -201,6 +202,7 @@ fn is_read_only(command: &PackageCommand) -> bool {
         | PackageCommand::Verify { .. }
         | PackageCommand::VerifyDeployment(..)
         | PackageCommand::DeploymentCurrent { .. }
+        | PackageCommand::DeploymentRetainedEffects { .. }
         | PackageCommand::DeploymentResult { .. } => true,
         PackageCommand::Docs { command } => documentation_is_read_only(command),
         PackageCommand::Options { .. } | PackageCommand::Schema { .. } => true,

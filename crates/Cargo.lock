@@ -1086,6 +1086,7 @@ name = "aos-systemd-provider"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-ability-plan",
  "aos-ability-runtime",
  "aos-boot-identity",
  "aos-contract",

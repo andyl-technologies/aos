@@ -32,7 +32,7 @@ let
       dependencies = builtins.listToAttrs (builtins.map (name: {
         inherit name;
         value = artifact name;
-      }) ["aos" "nix" "coreutils" "jq" "util-linux" "sbsigntools" "tpm2-tools"]);
+      }) ["aos" "bash" "systemd" "nix" "coreutils" "jq" "util-linux" "sbsigntools" "tpm2-tools"]);
     };
   };
   packageModules = [
@@ -99,6 +99,21 @@ let
   receiver = host.config.aos.services."boot-preparations.aos-ability-host-receiver";
   bootServices = builtins.filter (service: service.enable) (builtins.attrValues initrd.config.aos.services);
 in {
+  retained_identity_restoration_precedes_both_host_activation_paths = let
+    restoration = host.config.aos.services."boot-preparations.aos-identity-restoration";
+    command = builtins.head restoration.lifecycle.start;
+    pipeline = builtins.elemAt command.executable.arguments 1;
+  in
+    assert restoration.enable && restoration.bootstrap && restoration.activationOwner == "manager" && !restoration.autoStart;
+    assert !initrd.config.aos.services."boot-preparations.aos-identity-restoration".enable;
+    assert builtins.elem "aos-host-store-seed.service" restoration.dependencies.requires;
+    assert builtins.elem "local-fs.target" restoration.dependencies.after;
+    assert builtins.elem "aos-identity-restoration.service" host.config.aos.services."boot-preparations.aos-ability-host-controller".dependencies.requires;
+    assert builtins.elem "aos-identity-restoration.service" canonicalHost.config.aos.services."control-plane.aos-activate".dependencies.requires;
+    assert command.executable.path == "${(artifact "bash").path}/bin/bash";
+    assert lib.hasInfix "set -euo pipefail" pipeline;
+    assert lib.hasInfix "${(artifact "aos").outputs.packageRuntime}/bin/aos-package-runtime deployment-retained-effects --profile /var/lib/profiles/system" pipeline;
+    assert lib.hasInfix "${(artifact "systemd").path}/bin/aos-systemd-native-resources restore-identities" pipeline; true;
   canonical_host_has_one_activator = assert builtins.attrNames (hostActivators canonicalHost) == ["control-plane.aos-activate"];
   assert canonicalHost.config.aos.boot.hostActivatorService == "control-plane.aos-activate";
   assert canonicalHost.config.aos.services."control-plane.aos-activate".resources.memory_max_bytes.value == 2147483648;

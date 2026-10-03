@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use anyhow::Result;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::journal::{Event, State};
@@ -64,6 +64,20 @@ pub struct CompletedTransaction {
     pub content: String,
 }
 
+/// Preserves the exact established invocation and its checked result.
+///
+/// This authority is available to backend recovery readers, including for
+/// persistent effects absent from the current desired graph. Its arguments
+/// remain excluded from the ordinary journal inspection JSON.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetainedEffect {
+    /// Contains the original implementation and fully materialized arguments.
+    pub invocation: Invocation,
+    /// Contains the schema-checked result recorded after successful dispatch.
+    pub outputs: Value,
+}
+
 /// Reports durable activation state without claiming live-state verification.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -88,6 +102,20 @@ pub struct ActivationInspection {
     pub retired_effects: BTreeSet<String>,
     /// Lists complete frames in journal order without exposing handler arguments.
     pub records: Vec<InspectionRecord>,
+    #[serde(skip)]
+    retained_effects: Vec<RetainedEffect>,
+}
+
+impl ActivationInspection {
+    /// Returns established authority without including a pending invocation.
+    ///
+    /// These records establish previous completion, not current live state.
+    /// Backend recovery must authenticate artifacts and its own custody before
+    /// using their arguments to restore external resources.
+    #[must_use]
+    pub fn retained_effects(&self) -> &[RetainedEffect] {
+        &self.retained_effects
+    }
 }
 
 /// Reads a bounded native journal without repair, dispatch, or mutation.
@@ -141,6 +169,20 @@ pub fn inspect(path: impl AsRef<Path>, limits: JournalLimits) -> Result<Activati
         });
     }
 
+    let retained_outputs = state
+        .retained
+        .iter()
+        .map(|(id, retained)| (id.clone(), retained.outputs.clone()))
+        .collect();
+    let retained_effects = state
+        .retained
+        .into_values()
+        .map(|retained| RetainedEffect {
+            invocation: retained.invocation,
+            outputs: retained.outputs,
+        })
+        .collect();
+
     Ok(ActivationInspection {
         retired_effects: state.retired.clone(),
         schema: "aos.activation.inspection",
@@ -164,11 +206,8 @@ pub fn inspect(path: impl AsRef<Path>, limits: JournalLimits) -> Result<Activati
             .map(|graph| serde_json::to_value(graph.graph()))
             .transpose()?,
         transaction: state.transaction,
-        retained_outputs: state
-            .retained
-            .into_iter()
-            .map(|(id, retained)| (id, retained.outputs))
-            .collect(),
+        retained_outputs,
+        retained_effects,
         records,
     })
 }
@@ -216,6 +255,7 @@ mod tests {
         assert!(pending.desired.is_some());
         assert!(pending.completed.is_none());
         assert!(pending.retained_outputs.is_empty());
+        assert!(pending.retained_effects().is_empty());
         assert!(!pending.live_state_verified);
         assert_eq!(fs::read(&path)?, before);
 
@@ -255,6 +295,113 @@ mod tests {
                 .journal_sequence,
             identity.journal_sequence
         );
+        Ok(())
+    }
+
+    #[test]
+    fn private_retained_authority_survives_persistent_orphaning_without_public_invocations()
+    -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("effects.journal");
+        let mut host = Host::default();
+        let mut activation = Activation::open(&path, JournalLimits::default())?;
+        activation.activate_once(
+            "declared",
+            &graph(Some("resolved-original"), "persistent"),
+            &BTreeSet::new(),
+            &mut host,
+            &CancellationToken::default(),
+        )?;
+        drop(activation);
+        let established = inspect(&path, JournalLimits::default())?;
+        let original = serde_json::to_value(established.retained_effects())?;
+        assert_eq!(
+            original[0]["invocation"]["input"],
+            serde_json::json!({"value":"resolved-original"})
+        );
+        assert_eq!(
+            original[0]["outputs"],
+            serde_json::json!({"value":"resolved-original"})
+        );
+        assert_eq!(original[0]["invocation"]["action"], "apply");
+
+        let mut activation = Activation::open(&path, JournalLimits::default())?;
+        activation.activate_once(
+            "absent",
+            &graph(None, "persistent"),
+            &BTreeSet::new(),
+            &mut host,
+            &CancellationToken::default(),
+        )?;
+        drop(activation);
+        let journal = fs::read(&path)?;
+
+        let orphaned = inspect(&path, JournalLimits::default())?;
+
+        assert_eq!(serde_json::to_value(orphaned.retained_effects())?, original);
+        assert!(orphaned.pending.is_none());
+        assert!(orphaned.desired.is_none());
+        assert_eq!(orphaned.completed.as_ref().unwrap().transaction, "absent");
+        let public = serde_json::to_value(&orphaned)?;
+        assert!(public.get("retainedEffects").is_none());
+        assert!(public.get("retained_effects").is_none());
+        assert!(!serde_json::to_string(&public)?.contains("\"invocation\""));
+        assert_eq!(public["retainedOutputs"].as_object().unwrap().len(), 1);
+        assert_eq!(fs::read(&path)?, journal);
+        Ok(())
+    }
+
+    #[test]
+    fn pending_update_exports_only_the_previous_finished_invocation_read_only() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("effects.journal");
+        let mut host = Host::default();
+        let mut activation = Activation::open(&path, JournalLimits::default())?;
+        activation.activate_once(
+            "first",
+            &graph(Some("finished"), "persistent"),
+            &BTreeSet::new(),
+            &mut host,
+            &CancellationToken::default(),
+        )?;
+        drop(activation);
+        let finished =
+            serde_json::to_value(inspect(&path, JournalLimits::default())?.retained_effects())?;
+
+        host.halt_boundary = Some(Boundary::DispatchReturned);
+        let mut activation = Activation::open(&path, JournalLimits::default())?;
+        assert!(
+            activation
+                .activate_once(
+                    "update",
+                    &graph(Some("unacknowledged"), "persistent"),
+                    &BTreeSet::new(),
+                    &mut host,
+                    &CancellationToken::default(),
+                )
+                .is_err()
+        );
+        drop(activation);
+        let journal = fs::read(&path)?;
+
+        let interrupted = inspect(&path, JournalLimits::default())?;
+
+        assert!(interrupted.pending.is_some());
+        assert_eq!(interrupted.transaction.as_deref(), Some("update"));
+        assert_eq!(
+            serde_json::to_value(interrupted.retained_effects())?,
+            finished
+        );
+        assert_eq!(
+            interrupted.retained_effects()[0].outputs,
+            serde_json::json!({"value":"finished"})
+        );
+        assert!(
+            serde_json::to_value(&interrupted)?
+                .get("retainedEffects")
+                .is_none()
+        );
+        assert_eq!(fs::read(&path)?, journal);
         Ok(())
     }
 

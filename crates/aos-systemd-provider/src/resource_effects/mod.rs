@@ -5,6 +5,7 @@
 
 mod credential;
 mod identity;
+pub(crate) use identity::restore as restore_identities;
 mod listener;
 mod packaged_unit;
 mod unit;

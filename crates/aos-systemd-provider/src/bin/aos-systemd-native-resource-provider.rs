@@ -51,6 +51,22 @@ async fn run() -> Result<()> {
         }
         return resource_effects::render_resource_groups(&bytes, std::path::Path::new(&output));
     }
+    if action == "restore-identities" {
+        if arguments.next().is_some() {
+            bail!("unexpected identity restoration option");
+        }
+        let mut bytes = Vec::new();
+        std::io::stdin().take(67_108_865).read_to_end(&mut bytes)?;
+        if bytes.len() > 67_108_864 {
+            bail!("retained identity authority exceeds 64 MiB");
+        }
+        let shells = match (login_shell.as_deref(), nologin_shell.as_deref()) {
+            (Some(login), Some(nologin)) => Some((login, nologin)),
+            (None, None) => None,
+            _ => bail!("both pinned shell executables are required"),
+        };
+        return resource_effects::restore_identities(&bytes, shells);
+    }
     if arguments.next().is_some() || !matches!(action.as_str(), "apply" | "remove" | "observe") {
         bail!("expected apply, remove, or observe");
     }
