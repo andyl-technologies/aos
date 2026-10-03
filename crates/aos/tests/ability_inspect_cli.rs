@@ -214,6 +214,140 @@ fn journal_inspection_is_checked_and_read_only() {
 }
 
 #[test]
+fn journal_inspection_accepts_large_native_frames_and_rejects_corruption() {
+    use aos_ability_plan::module_graph::{CheckedModuleGraph, Effect, identity_key};
+    use aos_ability_runtime::activation::{Activation, ActivationAdapter, Invocation, Observation};
+    use aos_ability_runtime::adapter::CancellationToken;
+
+    struct InterruptedHandler;
+
+    impl ActivationAdapter for InterruptedHandler {
+        fn retain(&mut self, _: &Effect) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn observe(
+            &mut self,
+            _: &Invocation,
+            _: &CancellationToken,
+        ) -> anyhow::Result<Observation> {
+            Ok(Observation::Absent)
+        }
+
+        fn invoke(&mut self, _: &Invocation, _: &CancellationToken) -> anyhow::Result<Value> {
+            anyhow::bail!("fixture stops after durable dispatch intent")
+        }
+
+        fn release(&mut self, _: &Effect) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    let identity = vec!["profile", "system", "sample", "configure", "main"];
+    let id = identity_key(
+        &identity
+            .iter()
+            .map(|part| (*part).to_owned())
+            .collect::<Vec<_>>(),
+    )
+    .unwrap();
+    let mut node = json!({
+        "identity": identity,
+        "owner": "@environment",
+        "input": {"chunks": vec!["x".repeat(192 * 1024); 8]},
+        "inputs": {},
+        "input_type": {"kind": "submodule", "open": false, "fields": {
+            "chunks": {"kind": "list", "element": {"kind": "string"}}
+        }},
+        "after": [],
+        "results": {},
+        "handler": {
+            "kind": "process",
+            "artifact": "/nix/store/00000000000000000000000000000000-handler",
+            "executable": "/nix/store/00000000000000000000000000000000-handler/bin/handler"
+        },
+        "lifetime": "instance",
+        "timeout_ms": 1000
+    });
+    let mut semantic = node.clone();
+    semantic.as_object_mut().unwrap().remove("inputs");
+    node["revision"] = Sha256Digest::of_bytes(serde_json::to_vec(&semantic).unwrap())
+        .hex()
+        .into();
+    node["dependencies"] = json!([]);
+    let nodes = std::collections::BTreeMap::from([(id.clone(), node)]);
+    let graph = CheckedModuleGraph::decode(
+        &serde_json::to_vec(&json!({
+            "schema": "aos.activation.graph", "nodes": nodes, "order": [&id]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("activation.journal");
+    let mut activation = Activation::open(
+        &path,
+        aos_package::deployment::transaction::journal_limits(),
+    )
+    .unwrap();
+    let failure = activation
+        .activate_once(
+            "large-native-transaction",
+            &graph,
+            &Default::default(),
+            &mut InterruptedHandler,
+            &CancellationToken::default(),
+        )
+        .unwrap_err();
+    assert!(failure.to_string().contains("fixture stops"));
+    drop(activation);
+
+    let before = std::fs::read(&path).unwrap();
+    assert!(before.len() > aos_ability_runtime::journal::JournalLimits::default().max_body_bytes);
+    assert!(
+        aos_ability_runtime::activation::inspect(
+            &path,
+            aos_ability_runtime::journal::JournalLimits::default(),
+        )
+        .is_err()
+    );
+    let arguments = [
+        "ability",
+        "journal",
+        "activation.journal",
+        "--format",
+        "json",
+    ];
+    let output = run(directory.path(), &arguments);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let inspection: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(inspection["transaction"], "large-native-transaction");
+    assert_eq!(inspection["pending"]["effect"], id);
+    assert_eq!(inspection["pending"]["action"], "apply");
+    assert_eq!(
+        inspection["desired"]["nodes"][&id]["identity"],
+        json!(identity)
+    );
+    assert_eq!(inspection["liveStateVerified"], false);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+
+    // A complete frame remains subject to its checksum even with the writer's larger budget.
+    let mut corrupt = before;
+    *corrupt.last_mut().unwrap() ^= 1;
+    std::fs::write(&path, &corrupt).unwrap();
+    let rejected = run(directory.path(), &arguments);
+    assert!(!rejected.status.success());
+    assert!(rejected.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("digest"));
+    assert_eq!(std::fs::read(&path).unwrap(), corrupt);
+}
+
+#[test]
 fn native_package_and_os_requirements_render_without_a_solver() {
     let directory = tempfile::tempdir().unwrap();
     let mut document = reference("Versioned interface consumer");

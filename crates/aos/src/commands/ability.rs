@@ -33,7 +33,7 @@ pub async fn run(command: &AbilityCommand, printer: &Printer) -> Result<()> {
         AbilityCommand::Journal(args) => {
             let inspection = aos_ability_runtime::activation::inspect(
                 &args.journal,
-                aos_ability_runtime::journal::JournalLimits::default(),
+                aos_package::deployment::transaction::journal_limits(),
             )?;
             printer.json(&serde_json::to_value(&inspection)?);
             Ok(())
