@@ -73,6 +73,9 @@ in {
     ${runCase "provenance::trust::encoding::recorded_tests::prov_recorded_context_encoder_preserves_explicit_fields_and_legacy_bytes"}
     ${runCase "provenance::trust::context::recorded_tests::prov_recorded_context_decoder_requires_exact_revision_and_canonical_fence"}
     ${runCase "provenance::trust::context::recorded_tests::prov_recorded_context_selected_rows_keep_existing_relationships"}
+    ${runCase "provenance::trust::recorded_evaluation_tests::recorded_evaluator_binds_verified_view_and_complete_configuration"}
+    ${runCase "provenance::trust::recorded_evaluation_tests::recorded_evaluator_keeps_one_interpretation_across_graft_prefixes"}
+    ${runCase "provenance::trust::recorded_evaluation_tests::recorded_evaluator_refuses_missing_or_inconsistent_association"}
     printf 'PASS: closed trust presets and verified entry preservation\n' > "$out/result"
   '';
 }

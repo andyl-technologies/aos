@@ -271,6 +271,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   these format results nor the ordinary claims establish runtime conformance.
   Fresh historical association, prefix-preserving policy evaluation and native
   propagation remain required.
+  The selector gate additionally requires three exact core recorded-evaluation
+  cases: verified original-view/configuration binding, one retained
+  interpretation across every graft prefix, and refusal of absent or
+  inconsistent explicit association. The isolated workline must use separately
+  supplied caller configuration and existing verified views; decoded context
+  claims and current defaults cannot supply the association. These cases and
+  native propagation remain pending, with no task or freeze advancement.
   — satisfies ALG-15 to ALG-21, ALG-28 to ALG-39;
   `checks.terrane.gates.algebra-merge`, `checks.terrane.gates.algebra-fork`.
 - [ ] **T-PROP-1** Property resolution, types, boundary properties,
