@@ -78,6 +78,13 @@ in {
     profiles = find "nix-profiles";
   in
     builtins.elem "view" profiles.identity && profiles.input.sourcePath == "/var/lib/profiles" && builtins.any (node: builtins.elem "mount" node.identity && builtins.elem profiles.id node.dependencies) nodes;
+  profileMountpointHasNoCoveredDirectoryReceipt = let
+    mount = lib.findFirst (node: builtins.elem "mount" node.identity && lib.last node.identity == "nix-profile-gcroots") (throw "missing profile bridge mount") nodes;
+  in
+    mount.input.destination
+    == "/nix/var/nix/gcroots/aos-profiles"
+    && !(evaluation.config.aos.abilities.filesystem.operations.directory.effects ? nix-profile-gcroots)
+    && builtins.all (node: !(builtins.elem "filesystem" node.identity && node.input ? path && node.input.path == mount.input.destination)) nodes;
   sshPrivateDirectoriesPrecedeTheirConsumers = let
     keys = find "ssh-host-keys";
     privilegeSeparation = find "ssh-privilege-separation";
