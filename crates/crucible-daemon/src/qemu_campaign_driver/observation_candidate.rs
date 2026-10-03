@@ -3,6 +3,195 @@
 use super::*;
 use crucible_cas::content_store::ObjectKind;
 
+pub(super) fn project_boundary(
+    mut pending: QemuFreshPendingObservation,
+    project_stop: bool,
+    supplemental_oracle: Option<(&dyn GuardedCampaignFindingOracle, ContentId)>,
+) -> Result<QemuBoundaryProjection, QemuFreshModeledDriverError> {
+    validate_live_network_preselection(&pending)?;
+    let timeout = retain_modeled_timeout(&mut pending)?;
+    if project_stop {
+        record_assertion_seal_input(&pending);
+    }
+    let report = check_pending_assertions(&pending)?;
+    if project_stop {
+        crate::crucible_execution::record_execution_phase_diagnostic(
+            "seal-assertions-return",
+            format_args!("outcomes={}", report.outcomes().len()),
+        );
+    }
+    let supplemental = supplemental_oracle
+        .map(|(oracle, source)| {
+            oracle
+                .evaluate(&pending.configuration)
+                .map(|evaluation| evaluation.map(|evaluation| (evaluation, source)))
+        })
+        .transpose()
+        .map_err(QemuFreshModeledDriverError::SupplementalFinding)?
+        .flatten();
+    if let Some((evaluation, _)) = &supplemental
+        && !report
+            .outcomes()
+            .iter()
+            .any(|outcome| outcome.assertion.name == evaluation.property())
+    {
+        return Err(QemuFreshModeledDriverError::ScenarioMismatch);
+    }
+    let properties = property_verdicts(&report, supplemental.as_ref())?;
+    let mut failures: Vec<_> = report
+        .violations()
+        .iter()
+        .cloned()
+        .map(FailurePropertyViolationRecord::new)
+        .map(FailureClusterReportFailure::property)
+        .collect();
+    if let Some((evaluation, _)) = &supplemental {
+        failures.retain(|failure| {
+            !matches!(
+                failure,
+                FailureClusterReportFailure::Property(record)
+                    if record.violation.assertion.name == evaluation.property()
+            )
+        });
+        failures.push(FailureClusterReportFailure::property(
+            FailurePropertyViolationRecord::new(evaluation.violation().clone()),
+        ));
+    }
+    if let Some(timeout) = timeout {
+        failures.push(FailureClusterReportFailure::timeout(timeout));
+    }
+
+    if project_stop {
+        crate::crucible_execution::record_execution_phase_diagnostic(
+            "seal-configuration-enter",
+            format_args!("events={}", pending.event_log.len()),
+        );
+    }
+    let scenario_artifact = encode_crucible_scenario_artifact(pending.input.scenario())?;
+    if scenario_artifact.id()? != pending.input.lineage().scenario_content()
+        || scenario_artifact.scenario() != pending.input.lineage().scenario()
+    {
+        return Err(QemuFreshModeledDriverError::ScenarioMismatch);
+    }
+    let child = encode_crucible_configuration_artifact(
+        &scenario_artifact,
+        &pending.configuration.schedule,
+    )?;
+    if project_stop {
+        crate::crucible_execution::record_execution_phase_diagnostic(
+            "seal-configuration-return",
+            format_args!("completed=true"),
+        );
+        crate::crucible_execution::record_execution_phase_diagnostic(
+            "seal-measurements-enter",
+            format_args!("events={}", pending.event_log.len()),
+        );
+    }
+    let measurement_publication = campaign_measurements(&pending, child.configuration())?;
+    if project_stop {
+        crate::crucible_execution::record_execution_phase_diagnostic(
+            "seal-measurements-return",
+            format_args!("completed=true"),
+        );
+    }
+    let (measurement_evidence, _, measurements) = measurement_publication.into_parts();
+    let mut stop = project_stop
+        .then(|| stop_outcome(pending.stop, &report))
+        .transpose()?;
+    if report.verdict().failures().is_empty()
+        && let Some((evaluation, _)) = &supplemental
+        && let Some(stop) = &mut stop
+    {
+        *stop = StopOutcome::AssertionFailure(evaluation.property().to_owned());
+    }
+    if project_stop {
+        crate::crucible_execution::record_execution_phase_diagnostic(
+            "seal-coverage-enter",
+            format_args!("events={}", pending.event_log.len()),
+        );
+    }
+    let coverage = coverage_projection(&pending.event_log)?;
+    if project_stop {
+        crate::crucible_execution::record_execution_phase_diagnostic(
+            "seal-coverage-return",
+            format_args!("completed=true"),
+        );
+    }
+    let discovered_choices = pending.discoveries.into_values().collect::<Vec<_>>();
+    let discovered_ids = discovered_choices
+        .iter()
+        .map(|discovery| discovery.opportunity().id())
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    let produced_selections = produced_selections_after_start(
+        pending.input.start().configuration(),
+        &pending.configuration,
+        &discovered_ids,
+    )?;
+    Ok(QemuBoundaryProjection {
+        input: pending.input,
+        child,
+        measurement_evidence,
+        measurements,
+        properties,
+        failures,
+        coverage,
+        discovered_choices,
+        discovered_ids,
+        produced_selections,
+        stop,
+    })
+}
+
+/// Counts retained input classes only after the existing opt-in notice is admitted.
+/// These counts do not authenticate the log or decide checker eligibility.
+fn record_assertion_seal_input(pending: &QemuFreshPendingObservation) {
+    crate::crucible_execution::record_execution_phase_diagnostic_lazy(
+        "seal-assertions-enter",
+        || {
+            let mut observable = 0;
+            let mut causal = 0;
+            let mut boundaries = 0;
+            let mut enabled_markers = 0;
+            let mut backwards_points = 0;
+            let mut latest_ticks = 0;
+            for entry in &pending.event_log {
+                match entry.payload() {
+                    SchedulerEventLogPayload::Observable(payload) => {
+                        observable += 1;
+                        if let ObservableEventPayload::GuestAssertionMarker { node, .. } = payload
+                            && pending.input.scenario().world().vm_nodes().iter().any(
+                                |world_node| {
+                                    world_node.id == *node
+                                        && world_node.white_box == crucible::WhiteBoxPolicy::Enabled
+                                },
+                            )
+                        {
+                            enabled_markers += 1;
+                        }
+                    }
+                    SchedulerEventLogPayload::ResolvedHappening(_)
+                    | SchedulerEventLogPayload::Decision(_) => causal += 1,
+                    SchedulerEventLogPayload::EvaluationBoundary(_) => boundaries += 1,
+                    _ => {}
+                }
+                latest_ticks = latest_ticks.max(entry.at().ticks);
+                if latest_ticks
+                    > crucible::EventEvaluationPoint::event_log_entry(entry)
+                        .at()
+                        .ticks
+                {
+                    backwards_points += 1;
+                }
+            }
+            format!(
+                "events={} properties={} observable={observable} causal={causal} boundaries={boundaries} enabled_markers={enabled_markers} backwards_points={backwards_points}",
+                pending.event_log.len(),
+                pending.input.scenario().properties().assertions().len()
+            )
+        },
+    );
+}
+
 pub(super) fn campaign_measurements(
     pending: &QemuFreshPendingObservation,
     configuration: crucible_campaign::ConfigurationId,
@@ -120,6 +309,13 @@ fn build_observation_candidate_inner(
     supplemental_oracle: Option<(&dyn GuardedCampaignFindingOracle, ContentId)>,
     resolved_effect_trace: Option<Vec<u8>>,
 ) -> Result<AttemptExecutionProduct, QemuFreshModeledDriverError> {
+    crate::crucible_execution::record_execution_phase_diagnostic(
+        "seal-effect-trace-enter",
+        format_args!(
+            "bytes={}",
+            resolved_effect_trace.as_ref().map_or(0, Vec::len)
+        ),
+    );
     if let Some(bytes) = &resolved_effect_trace {
         crucible::model::ResolvedEffectTrace::from_canonical_bytes(
             bytes,
@@ -132,7 +328,15 @@ fn build_observation_candidate_inner(
         )
         .map_err(QemuFreshModeledDriverError::ResolvedEffectTrace)?;
     }
+    crate::crucible_execution::record_execution_phase_diagnostic(
+        "seal-effect-trace-return",
+        format_args!("completed=true"),
+    );
     let projection = project_boundary(pending, true, supplemental_oracle)?;
+    crate::crucible_execution::record_execution_phase_diagnostic(
+        "seal-candidate-enter",
+        format_args!("completed_projection=true"),
+    );
     let observation = Observation::new(
         projection.input.attempt().id()?,
         Observation::outcome(
@@ -171,5 +375,9 @@ fn build_observation_candidate_inner(
     };
     let result =
         PreparedSemanticAttemptResult::new(candidate, vec![projection.measurement_evidence], None)?;
+    crate::crucible_execution::record_execution_phase_diagnostic(
+        "seal-candidate-return",
+        format_args!("completed=true"),
+    );
     Ok(AttemptExecutionProduct::prepared_semantic(result))
 }

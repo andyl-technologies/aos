@@ -3,12 +3,14 @@
 #![forbid(unsafe_code)]
 
 use crucible::{
-    AssertionDef, AssertionId, BlackBoxHostOracle, ConditionEvaluationError, ContentHash,
-    FramePredicate, GuestAssertionKind, GuestAssertionMarker, HostAssertionEvaluator,
-    HostAssertionOutcomeKind, Icount, NodeId, NodeTemplate, ObservableEvent,
-    OfflineAssertionCheckError, OfflineAssertionChecker, Predicate, Properties, Property,
-    ReadyPoint, RecordedAssertionLog, SchedulerEvaluationBoundaryKind, SchedulerEventLogEntry,
-    VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
+    AssertionDef, AssertionId, BackendInput, BlackBoxHostOracle, ConditionEvaluationError,
+    ContentHash, Decision, EventDiagnosticPayload, EventLevel, FramePredicate, GuestAssertionKind,
+    GuestAssertionMarker, HostAssertionEvaluator, HostAssertionOutcomeKind, Icount, NodeId,
+    NodeTemplate, ObservableEvent, OfflineAssertionCheckError, OfflineAssertionChecker, Predicate,
+    Properties, Property, ReadyPoint, RecordedAssertionLog, RngDecision, RngStreamId,
+    ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerEvaluationBoundaryKind,
+    SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerNodeId, SchedulingNodeKind,
+    SharedTimelineKey, SimInstant, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -98,6 +100,235 @@ fn enabled_empty_checker_authenticates_marker_free_runs() -> TestResult {
         println!(
             "empty_whitebox_checker_measurement entries={count} canonical_material_bytes={canonical_bytes}",
         );
+    }
+    Ok(())
+}
+
+#[test]
+fn enabled_empty_checker_matches_published_atomic_batches() -> TestResult {
+    let world = world(WhiteBoxPolicy::Enabled)?;
+    let checker = OfflineAssertionChecker::new().with_world_white_box_policies(&world);
+    let properties = Properties::empty();
+    let observation = ObservableEvent::network_delivered(time(5), None, b"atomic".to_vec());
+
+    for count in [512_u64, 1024, 2048, 10958] {
+        let mut entries = vec![boundary(0, 10)];
+        entries.extend((1..count - 1).map(|sequence| {
+            crucible::test_support::condition_observation_entry_for_test(sequence, &observation)
+        }));
+        entries.push(boundary(count - 1, 10));
+        let canonical_bytes: usize = entries
+            .iter()
+            .map(SchedulerEventLogEntry::canonical_material_len)
+            .sum();
+        let published = RecordedAssertionLog::from_segments([entries.clone()])?;
+
+        let flat_report = checker.check_run(&properties, &entries)?;
+        let published_report =
+            checker.check_run_with_oracle(&properties, &published, &mut BlackBoxHostOracle)?;
+
+        assert_eq!(flat_report, published_report);
+        assert!(flat_report.outcomes().is_empty());
+        println!(
+            "atomic_empty_checker_measurement entries={count} canonical_material_bytes={canonical_bytes}",
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn enabled_empty_checker_matches_a_late_published_atomic_batch() -> TestResult {
+    let world = world(WhiteBoxPolicy::Enabled)?;
+    let checker = OfflineAssertionChecker::new().with_world_white_box_policies(&world);
+    let properties = Properties::empty();
+    let observation = ObservableEvent::network_delivered(time(5), None, b"late atomic".to_vec());
+
+    for count in [512_u64, 1024, 2048, 10958] {
+        let mut entries: Vec<_> = (0..count - 3)
+            .map(|sequence| boundary(sequence, sequence + 1))
+            .collect();
+        entries.extend((count - 3..count - 1).map(|sequence| {
+            crucible::test_support::condition_observation_entry_for_test(sequence, &observation)
+        }));
+        entries.push(boundary(count - 1, count));
+        let canonical_bytes: usize = entries
+            .iter()
+            .map(SchedulerEventLogEntry::canonical_material_len)
+            .sum();
+        let published = RecordedAssertionLog::from_segments([entries.clone()])?;
+
+        let flat_report = checker.check_run(&properties, &entries)?;
+        let published_report =
+            checker.check_run_with_oracle(&properties, &published, &mut BlackBoxHostOracle)?;
+
+        assert_eq!(flat_report, published_report);
+        assert!(flat_report.outcomes().is_empty());
+        println!(
+            "late_atomic_empty_checker_measurement entries={count} canonical_material_bytes={canonical_bytes}",
+        );
+    }
+    Ok(())
+}
+
+fn causal_payloads() -> [SchedulerEventLogPayload; 2] {
+    let node = NodeId {
+        name: "guest".into(),
+    };
+    let owner = SchedulerNodeId {
+        node: node.clone(),
+        kind: SchedulingNodeKind::Vm,
+    };
+    [
+        SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
+            stream: RngStreamId::from_name("atomic-empty"),
+            value: 7,
+        })),
+        SchedulerEventLogPayload::ResolvedHappening(ScheduledEvent {
+            key: ScheduledEventKey::new(
+                SharedTimelineKey {
+                    virtual_time: SimInstant { ticks: 5 },
+                    node: owner.clone(),
+                    sequence: 0,
+                },
+                owner,
+            ),
+            payload: ScheduledEventPayload::BackendInput(BackendInput {
+                node,
+                payload: b"delivered".to_vec(),
+            }),
+        }),
+    ]
+}
+
+fn payload_entry(
+    sequence: u64,
+    ticks: u64,
+    payload: SchedulerEventLogPayload,
+) -> SchedulerEventLogEntry {
+    let resolved = matches!(payload, SchedulerEventLogPayload::ResolvedHappening(_));
+    let entry =
+        crucible::test_support::condition_payload_entry_for_test(sequence, time(ticks), payload);
+    if resolved {
+        crucible::test_support::condition_entry_with_retirement_witness_for_test(
+            entry,
+            Some(NodeId {
+                name: "guest".into(),
+            }),
+            Icount { retired: 0 },
+        )
+    } else {
+        entry
+    }
+}
+
+fn assert_future_at_five(entries: &[SchedulerEventLogEntry]) {
+    assert!(matches!(
+        OfflineAssertionChecker::new().check_run(&Properties::empty(), entries),
+        Err(OfflineAssertionCheckError::ConditionEvaluation(
+            ConditionEvaluationError::FutureEventLogEntry { point, sequence: 0, event_at }
+        )) if point == time(5) && event_at == time(10)
+    ));
+}
+
+#[test]
+fn empty_checker_requires_the_original_first_atomic_boundary() {
+    let observation = ObservableEvent::network_delivered(time(5), None, b"atomic".to_vec());
+    for causal in causal_payloads() {
+        // A later visible causal entry cannot repair the hidden observable prefix.
+        assert_future_at_five(&[
+            boundary(0, 10),
+            crucible::test_support::condition_observation_entry_for_test(1, &observation),
+            payload_entry(2, 10, causal.clone()),
+            boundary(3, 10),
+        ]);
+        let diagnostic = SchedulerEventLogPayload::Diagnostic(EventDiagnosticPayload::new(
+            "interrupt",
+            EventLevel::Info,
+            Default::default(),
+        ));
+        assert_future_at_five(&[
+            boundary(0, 10),
+            payload_entry(1, 5, causal.clone()),
+            payload_entry(2, 10, diagnostic),
+            boundary(3, 10),
+        ]);
+        assert_future_at_five(&[
+            boundary(0, 10),
+            payload_entry(1, 5, causal.clone()),
+            payload_entry(
+                2,
+                10,
+                SchedulerEventLogPayload::Observable(observation.payload().clone()),
+            ),
+        ]);
+        // Terminal visibility is valid, but an earlier causal obligation is unclosed.
+        assert_future_at_five(&[
+            boundary(0, 10),
+            payload_entry(1, 5, causal.clone()),
+            payload_entry(2, 10, causal),
+        ]);
+    }
+    let visible = ObservableEvent::network_delivered(time(10), None, b"visible".to_vec());
+    assert_future_at_five(&[
+        boundary(0, 10),
+        crucible::test_support::condition_observation_entry_for_test(1, &observation),
+        crucible::test_support::condition_observation_entry_for_test(2, &visible),
+    ]);
+    // A temporally hidden evaluation boundary remains an original refusal.
+    assert_future_at_five(&[
+        boundary(0, 10),
+        crucible::test_support::condition_observation_entry_for_test(1, &observation),
+        boundary(2, 5),
+        boundary(3, 10),
+    ]);
+}
+
+#[test]
+fn empty_checker_preserves_causal_batches_offsets_and_authentication() -> TestResult {
+    for causal in causal_payloads() {
+        let observation = ObservableEvent::network_delivered(time(10), None, b"visible".to_vec());
+        let entries = vec![
+            boundary(0, 10),
+            payload_entry(1, 5, causal),
+            crucible::test_support::condition_observation_entry_for_test(2, &observation),
+            boundary(3, 10),
+        ];
+        let checker = OfflineAssertionChecker::new();
+        let flat = checker.check_run(&Properties::empty(), &entries)?;
+        let atomic = RecordedAssertionLog::from_segments([entries.clone()])?;
+        assert_eq!(
+            flat,
+            checker.check_run_with_oracle(
+                &Properties::empty(),
+                &atomic,
+                &mut BlackBoxHostOracle
+            )?
+        );
+
+        let published =
+            RecordedAssertionLog::from_segments(entries.iter().cloned().map(|entry| vec![entry]))?;
+        assert!(matches!(
+            checker.check_run_with_oracle(
+                &Properties::empty(),
+                &published,
+                &mut BlackBoxHostOracle
+            ),
+            Err(OfflineAssertionCheckError::ConditionEvaluation(
+                ConditionEvaluationError::FutureEventLogEntry { sequence: 0, .. }
+            ))
+        ));
+
+        let mut corrupt = entries;
+        corrupt[3] = crucible::test_support::condition_entry_with_content_hash_for_test(
+            corrupt[3].clone(),
+            ContentHash::from_bytes(b"tampered"),
+        );
+        assert!(matches!(
+            checker.check_run(&Properties::empty(), &corrupt),
+            Err(OfflineAssertionCheckError::ConditionEvaluation(
+                ConditionEvaluationError::InvalidEventLogEntryHash { sequence: 3 }
+            ))
+        ));
     }
     Ok(())
 }

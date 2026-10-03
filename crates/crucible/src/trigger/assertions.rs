@@ -742,7 +742,7 @@ impl OfflineAssertionChecker {
         // An empty checker without enabled guest assertion markers has no
         // intermediate observation effects. The authenticated terminal prefix
         // retains every observable entry, including earlier assertion markers.
-        // Prove temporal visibility before skipping intermediate reconstruction;
+        // Prove visibility or original atomic deferral before skipping reconstruction;
         // other cases retain the original offset and atomic-batch semantics.
         if !require_recorded_offsets
             && recorded_log.prefix_offsets.is_empty()
@@ -756,7 +756,7 @@ impl OfflineAssertionChecker {
                         if self.white_box_policies.get(node) == Some(&WhiteBoxPolicy::Enabled)
                 )
             })
-            && intermediate_prefix_times_are_visible(event_log)
+            && intermediate_prefix_times_are_visible_or_atomic(event_log)
         {
             return Ok(evaluator.finalize_prefix(&terminal_prefix, oracle));
         }
@@ -794,16 +794,52 @@ impl OfflineAssertionChecker {
     }
 }
 
-/// Proves temporal visibility without reconstructing already authenticated prefixes.
-fn intermediate_prefix_times_are_visible(event_log: &[SchedulerEventLogEntry]) -> bool {
+/// Proves that intermediate prefixes are visible or deferred by the original atomic rule.
+///
+/// A hidden observable prefix requires its first non-observable successor to be
+/// an evaluation boundary. A hidden causal prefix permits causal and observable
+/// successors until that boundary. Resolve these obligations at their first
+/// incompatible payload, even if later entries are temporally visible. This
+/// authenticates no new facts and visits each already authenticated entry once.
+fn intermediate_prefix_times_are_visible_or_atomic(event_log: &[SchedulerEventLogEntry]) -> bool {
     let mut latest_entry_ticks = 0;
+    let mut awaiting_observable_boundary = false;
+    let mut awaiting_causal_boundary = false;
+
     for entry in event_log {
+        match entry.payload() {
+            SchedulerEventLogPayload::EvaluationBoundary(_) => {
+                awaiting_observable_boundary = false;
+                awaiting_causal_boundary = false;
+            }
+            SchedulerEventLogPayload::Observable(_) => {}
+            SchedulerEventLogPayload::ResolvedHappening(_)
+            | SchedulerEventLogPayload::Decision(_) => {
+                if awaiting_observable_boundary {
+                    return false;
+                }
+            }
+            _ => {
+                if awaiting_observable_boundary || awaiting_causal_boundary {
+                    return false;
+                }
+            }
+        }
+
         latest_entry_ticks = latest_entry_ticks.max(entry.at().ticks);
         if latest_entry_ticks > EventEvaluationPoint::event_log_entry(entry).at().ticks {
-            return false;
+            match entry.payload() {
+                SchedulerEventLogPayload::Observable(_) => awaiting_observable_boundary = true,
+                SchedulerEventLogPayload::ResolvedHappening(_)
+                | SchedulerEventLogPayload::Decision(_) => {
+                    awaiting_causal_boundary = true;
+                }
+                _ => return false,
+            }
         }
     }
-    true
+
+    !awaiting_observable_boundary && !awaiting_causal_boundary
 }
 
 /// Reports whether an unpublished entry belongs to a completed atomic batch.
