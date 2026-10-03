@@ -8,6 +8,8 @@
 }: let
   inherit (lib) mkOption types;
   cfg = config.nix-daemon;
+  packageResourceGroup = "aos-pkg-nix-daemon";
+  buildsResourceGroup = "${packageResourceGroup}-builds";
   settings = builtins.removeAttrs cfg.settings ["_module"];
   identities = builtins.genList (index: "nixbld${toString (index + 1)}") 64;
   activeIdentities = lib.take cfg.buildUsers.count identities;
@@ -150,7 +152,7 @@
     };
     environment.search_path = [];
     resources = {
-      resource_group = "aos-pkg-nix-daemon-builds";
+      resource_group = buildsResourceGroup;
       open_files = {
         kind = "maximum";
         value = 1048576;
@@ -350,6 +352,7 @@ in {
           after = [files.nix-daemon-runtime.outputs.resource files.nix-daemon-slice.outputs.resource files.nix-daemon-resources.outputs.resource];
           input = {
             service = "nix-daemon-policy";
+            resources.resource_group = packageResourceGroup;
             identity = rootIdentity;
             inherit isolation;
             lifecycle =

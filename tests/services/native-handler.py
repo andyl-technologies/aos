@@ -605,12 +605,45 @@ class NativeHandlerTests(unittest.TestCase):
         self.assertIn("Requires=policy.service", socket)
 
     def test_resource_group_cannot_escape_owning_package(self):
-        with tempfile.TemporaryDirectory() as root:
-            value = service()
-            value["resources"] = {"resource_group": "aos-pkg-foreign-builds"}
-            instance = handler_module.Handler(invocation("serviceManagement", "realize", value), "unused", root, Path(root) / "state")
-            with self.assertRaisesRegex(ValueError, "owning package"):
-                instance.service("apply")
+        for group in ["aos-pkg-foreign-builds", "aos-pkg-example2", "aos-pkg-example2-builds", "system"]:
+            with self.subTest(group=group), tempfile.TemporaryDirectory() as root:
+                value = dict(service(), resources={"resource_group": group})
+                request = invocation("serviceManagement", "realize", value)
+                request["effect"]["identity"] = ["test", "example", "serviceManagement", "realize", "main"]
+                instance = handler_module.Handler(request, "unused", root, Path(root) / "state")
+
+                with self.assertRaisesRegex(ValueError, "owning package"):
+                    instance.service("apply")
+
+                self.assertFalse((Path(root) / "example.service").exists())
+
+    @unittest.skipUnless(systemd_analyze, "pinned systemd-analyze executable not supplied")
+    def test_own_package_root_and_child_groups_reconcile_and_parse(self):
+        for group in ["aos-pkg-example", "aos-pkg-example-builds"]:
+            with self.subTest(group=group), tempfile.TemporaryDirectory() as root:
+                value = dict(service(), resources={"resource_group": group})
+                value["lifecycle"]["start"][0]["executable"] = {
+                    "path": str(systemd_analyze), "arguments": ["--version"],
+                }
+                request = invocation("serviceManagement", "realize", value)
+                request["effect"]["identity"] = ["test", "example", "serviceManagement", "realize", "main"]
+                units = Path(root) / "units"
+                instance = handler_module.Handler(request, "unused", units, Path(root) / "state")
+                instance.manager = active_bus_manager([])
+
+                result = instance.service("apply")
+                unit = units / "example.service"
+                vendor_units = systemd_analyze.parent.parent / "lib/systemd/system"
+                environment = dict(os.environ, SYSTEMD_UNIT_PATH=f"{units}:{vendor_units}",
+                                   SYSTEMD_LOG_COLOR="0", SYSTEMD_LOG_LEVEL="debug")
+                verified = subprocess.run(
+                    [str(systemd_analyze), "--man=no", "--generators=no", "verify", str(unit)],
+                    env=environment, capture_output=True, text=True, check=False,
+                )
+
+                self.assertEqual(result["resource"], "example.service")
+                self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+                self.assertIn("Slice: " + group + ".slice", verified.stdout)
 
     def test_removal_guard_refusal_preserves_service_and_receipt(self):
         with tempfile.TemporaryDirectory() as root:

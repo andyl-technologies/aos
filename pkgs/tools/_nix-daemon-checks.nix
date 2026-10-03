@@ -128,6 +128,9 @@
   assert disabled.config.aos.abilities.identity.operations.principal.effects.nixbld64.lifetime == "persistent";
   assert builtins.length enabled.config.aos.abilities.identity.operations.membership.effects.nix-daemon-builders.input.members == 4;
   assert !disabled.config.aos.abilities.serviceManagement.operations.realize.effects.nix-daemon.input.enabled;
+  assert enabled.config.aos.abilities.serviceManagement.operations.realize.effects.nix-daemon-policy.input.resources.resource_group == "aos-pkg-nix-daemon";
+  assert enabled.config.aos.abilities.serviceManagement.operations.realize.effects.nix-daemon.input.resources.resource_group == "aos-pkg-nix-daemon-builds";
+  assert disabled.config.aos.abilities.serviceManagement.operations.realize.effects.nix-daemon-policy.input.resources.resource_group == "aos-pkg-nix-daemon";
   assert (files disabled).nix-daemon-slice.lifetime == "persistent";
   assert lib.hasInfix "build-users-group = nixbld" native;
   assert lib.hasInfix "sandbox = true" native;

@@ -658,8 +658,12 @@ class Handler(ConfigurationHandler):
     def service(self, action):
         group = (self.value.get("resources") or {}).get("resource_group")
         identity = self.invocation["effect"]["identity"]
-        if group and (len(identity) < 4 or not group.startswith("aos-pkg-" + identity[-4] + "-")):
-            raise ValueError("service resource group must be a descendant of its owning package")
+        package_group = "aos-pkg-" + identity[-4] if len(identity) >= 4 else None
+        owns_group = package_group is not None and (
+            group == package_group or (group is not None and group.startswith(package_group + "-"))
+        )
+        if group and not owns_group:
+            raise ValueError("service resource group must be its owning package or a descendant")
         realization = realize_service(self.value)
         unit_name = realization["resource"]
         result = {"resource": unit_name, "path": str(self.unit_directory / unit_name)}
