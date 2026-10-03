@@ -52,6 +52,16 @@
     }
   ];
   brokerSessionConfiguration = brokerSession.configure cfg.credentials brokerSessionEndpoints;
+  # Preserve the sole credential command generator. Selected controls use
+  # regular immutable copies and literal paths checked by PID1 before spawn.
+  brokerSessionInstallCommands =
+    if cfg.sourceProviderSession.enable
+    then map (
+      builtins.replaceStrings
+      ["${pkgs.coreutils}/bin/install" "${pkgs.coreutils}/bin/chmod" "%d/"]
+      ["/run/aos/mount-executable-carrier/install" "/run/aos/mount-executable-carrier/chmod" "/run/credentials/aos-sandbox-mountd.service/"]
+    ) brokerSessionConfiguration.installCommands
+    else brokerSessionConfiguration.installCommands;
   credentialFields = {
     brokerPlanPolicy = "broker-plan-policy.cbor";
     brokerPlanPublicKey = "broker-plan-public-key";
@@ -126,6 +136,20 @@ in {
         }
         {
           assertion =
+            !cfg.sourceProviderSession.enable
+            || (cfg.useExecutableCarrier
+              && cfg.package == pkgs.aos-sandbox-mountd
+              && sourceProvider.package == pkgs.aos-source-providerd
+              && config.systemd.package == pkgs.systemd
+              && config.aos.security.selinux.enable
+              && config.aos.security.selinux.bootMode == "immutable-stage0"
+              && config.aos.security.selinux.mode == "enforcing"
+              && signedCarrier != null
+              && (signedCarrier.passthru.sourceProviderCarrier or false));
+          message = "selected Mount/Source requires the fixed packages, enforcing immutable stage0 and its selected executable carrier";
+        }
+        {
+          assertion =
             !cfg.useExecutableCarrier
             || (signedCarrier
               != null
@@ -148,6 +172,9 @@ in {
         }
       ]
       ++ brokerSessionConfiguration.assertions;
+
+    boot.initrd.systemd.mountExecutableCarrier = lib.mkIf cfg.sourceProviderSession.enable
+      (pkgs.aosMountSourceExecutableCarrierForKernel config.system.build.kernel);
 
     systemd.sockets.aos-sandbox-mountd = {
       description = "AOS sandbox mount broker socket";
@@ -178,14 +205,18 @@ in {
         Type = "simple";
         NotifyAccess = "main";
         ExecStartPre =
-          brokerSessionConfiguration.installCommands
+          brokerSessionInstallCommands
           ++ lib.optionals cfg.sourceProviderSession.enable [
-            "${daemonPath} --check-source-provider-authority"
+            "${daemonPath} --check-selected-source-provider-authority"
           ];
         # The service does not provision RootMount custody; the daemon checks
         # its fixed files, peer and signed hello before retaining the session.
-        ExecStart = "${daemonPath} ${cfg.package}/bin/aos-sandbox-mount-helper${lib.optionalString cfg.sourceProviderSession.enable " --source-provider"}";
-        LoadCredential = loadCredentials ++ brokerSessionConfiguration.loadCredentials;
+        ExecStart = "${daemonPath} ${cfg.package}/bin/aos-sandbox-mount-helper${lib.optionalString cfg.sourceProviderSession.enable " --source-provider --selected-mount-source"}";
+        LoadCredential = loadCredentials ++ brokerSessionConfiguration.loadCredentials
+          ++ lib.optionals cfg.sourceProviderSession.enable [
+            "current-catalog-publication:/run/credentials/@system/${sourceProvider.credentials.catalogPublication}"
+            "current-catalog-manifest:/run/credentials/@system/${sourceProvider.credentials.catalogManifest}"
+          ];
         Restart = "on-failure";
         RestartSec = "2s";
         FileDescriptorStoreMax = cfg.maximumRetainedMounts;
@@ -216,13 +247,16 @@ in {
         ProtectKernelLogs = true;
         ProtectKernelModules = true;
         ProtectKernelTunables = true;
-        ProtectProc = "invisible";
+        ProtectProc = if cfg.sourceProviderSession.enable then "default" else "invisible";
         ProtectSystem = "strict";
         RestrictAddressFamilies = ["AF_UNIX"];
         RestrictRealtime = true;
         RestrictSUIDSGID = true;
         Slice = "aos-control.slice";
         TasksMax = 64;
+      } // lib.optionalAttrs cfg.sourceProviderSession.enable {
+        AosOwnLauncherImage = true;
+        SELinuxContext = "system_u:system_r:aos_sandbox_mount_t:s0";
       };
     };
   };

@@ -21,6 +21,11 @@ pub use client::{
     ServiceControlGroupObservation, SettleOutcome, SystemdClient,
 };
 pub use client::GitSourceSocketObservationV1;
+#[cfg(target_os = "linux")]
+pub use client::{
+    CompletedOwnUnitPid1ImageV1, OwnUnitPid1ImageAttemptV1,
+    OwnUnitPid1ImageEndedV1, OwnUnitPid1ImageFailureV1,
+};
 pub use error::{Error, Result};
 pub use manager_proxy::ListUnitsEntry;
 pub use sandbox::{

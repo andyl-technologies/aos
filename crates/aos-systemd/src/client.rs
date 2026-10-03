@@ -24,6 +24,13 @@ use crate::manager_proxy::{ListUnitsEntry, ManagerProxy, ServiceProxy, UnitProxy
 mod service_properties;
 mod git_source_socket;
 pub use git_source_socket::GitSourceSocketObservationV1;
+#[cfg(target_os = "linux")]
+mod source_launcher_image;
+#[cfg(target_os = "linux")]
+pub use source_launcher_image::{
+    CompletedOwnUnitPid1ImageV1, OwnUnitPid1ImageAttemptV1,
+    OwnUnitPid1ImageEndedV1, OwnUnitPid1ImageFailureV1,
+};
 
 /// Classification of a systemd job's terminal `result`, per the `job_result`
 /// table in systemd's `src/core/job.h`. We name only the four cases

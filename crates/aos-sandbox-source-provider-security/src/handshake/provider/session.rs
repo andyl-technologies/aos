@@ -431,6 +431,9 @@ impl CurrentProviderIngressSessionV1 {
     pub(super) fn receive_current_request_packet_owned(
         &mut self,
     ) -> Result<Option<Vec<u8>>, (Option<Vec<u8>>, SourceProviderSecurityError)> {
+        if self.selected_receive.is_some() {
+            return self.receive_selected_request_packet_owned();
+        }
         self.revalidate().map_err(|error| (None, error))?;
         let received = match self.carrier.receive_zero_descriptors(MAXIMUM_FRAME_BYTES) {
             Ok(received) => received,
@@ -460,6 +463,61 @@ impl CurrentProviderIngressSessionV1 {
         if let Err(error) = self.revalidate() {
             return Err((Some(payload), error));
         }
+        Ok(Some(payload))
+    }
+
+    fn receive_selected_request_packet_owned(
+        &mut self,
+    ) -> Result<Option<Vec<u8>>, (Option<Vec<u8>>, SourceProviderSecurityError)> {
+        self.revalidate().map_err(|error| (None, error))?;
+        let pending = self.selected_receive.as_mut().ok_or((
+            None, SourceProviderSecurityError::Poisoned,
+        ))?;
+        if pending.completed {
+            // Only the previous successfully checked packet is completed. A
+            // failed raw/bound record is never cleared for another receive.
+            pending.record = None;
+            pending.completed = false;
+        } else if pending.record.is_some() {
+            return Err((None, poison_and_close(
+                &mut self.custody, &mut self.carrier,
+                SourceProviderSecurityError::Poisoned,
+            )));
+        }
+
+        // The existing closed 0-or-1 lower profile lets an unexpected single
+        // FD reach this reservoir; the zero-FD application check follows only
+        // after the complete actual packet/execution/FD table is parked.
+        match self.carrier.receive_original_retaining_v5(&mut pending.record) {
+            Ok(false) | Err(CarrierFailureV1::Retryable) => return Ok(None),
+            Err(CarrierFailureV1::Fatal(error)) => {
+                return Err((None, poison_and_close(&mut self.custody, &mut self.carrier, error)));
+            }
+            Ok(true) => {}
+        }
+        let checked = pending.record.as_ref().and_then(crate::carrier::RetainedSourceProviderRecordV5::bound)
+            .is_some_and(|received| {
+                received.descriptors.is_empty()
+                    && received.execution.has_same_execution(&self.root_mount_execution)
+            });
+        if !checked {
+            return Err((None, poison_and_close(
+                &mut self.custody, &mut self.carrier,
+                SourceProviderSecurityError::SessionContinuity,
+            )));
+        }
+        if let Err(error) = self.revalidate() {
+            return Err((None, error));
+        }
+        let pending = self.selected_receive.as_mut().ok_or((
+            None, SourceProviderSecurityError::Poisoned,
+        ))?;
+        let received = pending.record.as_ref().and_then(crate::carrier::RetainedSourceProviderRecordV5::bound)
+            .ok_or((None, SourceProviderSecurityError::Poisoned))?;
+        // The shared Root1/packet classifier receives DATA, while the actual
+        // whole record remains resident across its later fallible checks.
+        let payload = received.payload.clone();
+        pending.completed = true;
         Ok(Some(payload))
     }
 
@@ -1476,7 +1534,8 @@ impl CurrentProviderIngressSessionV1 {
     }
 
     pub(crate) fn revalidate(&mut self) -> Result<(), SourceProviderSecurityError> {
-        let result = current_unix_seconds()
+        let result = self.carrier.require_selected_open()
+            .and_then(|_| current_unix_seconds())
             .and_then(|now| self.custody.inner_mut().revalidate_at(now))
             .and_then(|_| {
                 self.root_mount_execution

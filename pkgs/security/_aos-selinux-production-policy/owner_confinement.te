@@ -508,3 +508,178 @@ allow aos_sandbox_runtime_roots_t aos_sandbox_controller_state_t:dir { add_name 
 allow aos_sandbox_runtime_roots_t aos_method46_controller_floor_t:dir { create getattr open read search setattr };
 allow aos_sandbox_runtime_roots_t aos_sandbox_storage_state_t:dir { add_name create getattr open read search write };
 allow aos_sandbox_runtime_roots_t aos_method46_storage_floor_t:dir { create getattr open read search };
+# AOS_SELECTED_MOUNT_SOURCE_BEGIN
+
+# This closed suffix is compiled only with the fixed Mount/Source carrier.
+# Protected objects deliberately have no file_type or generic readable cohort.
+# There is no default ELF transition or new principal/capability assignment.
+type aos_sandbox_mount_t;
+typeattribute aos_sandbox_mount_t domain;
+typeattribute aos_sandbox_mount_t aos_private_root_custody_domain;
+typeattribute aos_sandbox_mount_t aos_no_context_translation_domain;
+role system_r types aos_sandbox_mount_t;
+type aos_sandbox_mount_exec_t;
+type aos_sandbox_mount_helper_exec_t;
+type aos_sandbox_mount_install_exec_t;
+type aos_sandbox_mount_credential_t;
+type aos_sandbox_mount_state_t;
+type aos_sandbox_mount_custody_t;
+type aos_sandbox_mount_catalog_t;
+type aos_sandbox_mount_runtime_t;
+
+type aos_source_provider_t;
+typeattribute aos_source_provider_t domain;
+typeattribute aos_source_provider_t aos_private_root_custody_domain;
+typeattribute aos_source_provider_t aos_no_context_translation_domain;
+role system_r types aos_source_provider_t;
+type aos_source_provider_exec_t;
+type aos_source_provider_credential_t;
+type aos_source_provider_state_t;
+type aos_source_provider_custody_t;
+type aos_source_provider_runtime_t;
+
+allow init_t aos_sandbox_mount_exec_t:file { execute getattr map open read };
+allow init_t aos_sandbox_mount_t:process transition;
+allow init_t aos_sandbox_mount_t:process2 nnp_transition;
+allow aos_sandbox_mount_t aos_sandbox_mount_exec_t:file { entrypoint execute getattr map open read };
+allow aos_sandbox_mount_t aos_sandbox_mount_helper_exec_t:file { execute execute_no_trans getattr map open read };
+# Only PID1 may enter an installer, after its whole fixed command/FD check.
+# Post-transition ELF mappings need execute, but same-SID invocation still
+# requires execute_no_trans, which is deliberately absent on these copies.
+allow init_t aos_sandbox_mount_install_exec_t:file { execute getattr map open read };
+allow aos_sandbox_mount_t aos_sandbox_mount_install_exec_t:file { entrypoint execute getattr map open read };
+allow init_t aos_source_provider_exec_t:file { execute getattr map open read };
+allow init_t aos_source_provider_t:process transition;
+allow init_t aos_source_provider_t:process2 nnp_transition;
+allow aos_source_provider_t aos_source_provider_exec_t:file { entrypoint execute getattr map open read };
+
+allow aos_sandbox_mount_t self:capability { sys_admin sys_chroot };
+allow { aos_sandbox_mount_t aos_source_provider_t } self:process { fork getattr getsched setrlimit sigchld signal };
+allow { aos_sandbox_mount_t aos_source_provider_t } init_t:fd use;
+allow { aos_sandbox_mount_t aos_source_provider_t } init_exec_t:file { getattr ioctl read };
+allowxperm { aos_sandbox_mount_t aos_source_provider_t } init_exec_t:file ioctl { 0x6686 };
+allow { aos_sandbox_mount_t aos_source_provider_t } null_device_t:chr_file { getattr open read write };
+allow { aos_sandbox_mount_t aos_source_provider_t } { root_t var_t var_lib_t var_run_t usr_t etc_t }:dir { getattr open search };
+allow { aos_sandbox_mount_t aos_source_provider_t } etc_t:file { getattr open read };
+allow { aos_sandbox_mount_t aos_source_provider_t } etc_t:lnk_file { getattr read };
+allow { aos_sandbox_mount_t aos_source_provider_t } { lib_t ld_so_t }:file { execute getattr map open read };
+allow { aos_sandbox_mount_t aos_source_provider_t } proc_t:dir { getattr open read search };
+allow { aos_sandbox_mount_t aos_source_provider_t } proc_t:filesystem getattr;
+allow { aos_sandbox_mount_t aos_source_provider_t } security_t:dir { getattr open read search };
+allow { aos_sandbox_mount_t aos_source_provider_t } security_t:filesystem getattr;
+allow { aos_sandbox_mount_t aos_source_provider_t } security_t:file { getattr open read };
+allow { aos_sandbox_mount_t aos_source_provider_t } cgroup_t:dir { getattr open read search };
+allow { aos_sandbox_mount_t aos_source_provider_t } cgroup_t:file { getattr open read };
+allow { aos_sandbox_mount_t aos_source_provider_t } sysctl_t:dir search;
+allow { aos_sandbox_mount_t aos_source_provider_t } sysctl_kernel_t:dir search;
+allow { aos_sandbox_mount_t aos_source_provider_t } sysctl_kernel_t:file { getattr open read };
+allow { aos_sandbox_mount_t aos_source_provider_t } systemd_unit_t:file { getattr open read };
+allow { aos_sandbox_mount_t aos_source_provider_t } tmpfs_t:filesystem getattr;
+
+# These are type-wide reads of the two actual task roles. Kernel ptrace/DAC
+# restrictions remain independent; no task memory, signal or transition grant.
+allow { aos_sandbox_mount_t aos_source_provider_t } { aos_sandbox_mount_t aos_source_provider_t }:process getattr;
+allow { aos_sandbox_mount_t aos_source_provider_t } { aos_sandbox_mount_t aos_source_provider_t }:dir { getattr open read search };
+allow { aos_sandbox_mount_t aos_source_provider_t } { aos_sandbox_mount_t aos_source_provider_t }:file { getattr open read };
+allow { aos_sandbox_mount_t aos_source_provider_t } { aos_sandbox_mount_t aos_source_provider_t }:lnk_file { getattr read };
+
+# The activated connecting endpoint belongs to PID1, not the SCM Source task.
+# The actual attr/current observer needs these type-wide init_t reads; it does
+# not read /proc/1/exe or gain process:ptrace. Source does not inherit them.
+allow aos_sandbox_mount_t init_t:process getattr;
+allow aos_sandbox_mount_t init_t:dir { getattr open read search };
+allow aos_sandbox_mount_t init_t:file { getattr open read };
+
+# PID1's genuine requester/cgroup observer retains its existing trusted read
+# side under the private-root attribute. Runtime owners gain no inverse use.
+allow init_t { aos_sandbox_mount_t aos_source_provider_t }:process getattr;
+allow init_t { aos_sandbox_mount_t aos_source_provider_t }:dir { getattr open read search lock ioctl };
+allow init_t { aos_sandbox_mount_t aos_source_provider_t }:file { getattr open read lock ioctl };
+allow init_t { aos_sandbox_mount_t aos_source_provider_t }:lnk_file { getattr read };
+
+# Fixed original sockets and status-only manager transport. There is no TCP,
+# general domain:fd use or manager service/system mutation permission.
+allow { aos_sandbox_mount_t aos_source_provider_t } self:unix_stream_socket { accept bind connect create getattr getopt listen read setopt shutdown write };
+allow { aos_sandbox_mount_t aos_source_provider_t } init_t:unix_stream_socket { getattr getopt read setopt shutdown write };
+allow aos_sandbox_mount_t aos_source_provider_t:unix_stream_socket { connectto getattr getopt read setopt shutdown write };
+allow aos_source_provider_t aos_sandbox_mount_t:unix_stream_socket { getattr getopt read setopt shutdown write };
+allow aos_source_provider_t aos_sandbox_mount_t:fd use;
+allow aos_sandbox_mount_t aos_source_provider_t:fd use;
+allow aos_sandbox_mount_t aos_sandbox_controller_t:unix_stream_socket { getattr getopt read setopt shutdown write };
+allow aos_sandbox_mount_t aos_sandbox_controller_t:fd use;
+allow aos_sandbox_controller_t aos_sandbox_mount_t:unix_stream_socket connectto;
+allow aos_sandbox_controller_t aos_sandbox_mount_runtime_t:sock_file { getattr open read write };
+allow { aos_sandbox_mount_t aos_source_provider_t } system_dbusd_var_run_t:sock_file { getattr open read write };
+allow { aos_sandbox_mount_t aos_source_provider_t } system_dbusd_t:unix_stream_socket connectto;
+allow { aos_sandbox_mount_t aos_source_provider_t } { init_t system_dbusd_t }:dbus send_msg;
+allow { init_t system_dbusd_t } { aos_sandbox_mount_t aos_source_provider_t }:dbus send_msg;
+allow { aos_sandbox_mount_t aos_source_provider_t } systemd_unit_t:service status;
+allow { aos_sandbox_mount_t aos_source_provider_t } init_t:system status;
+
+allow aos_sandbox_mount_t aos_sandbox_mount_credential_t:dir { getattr open read search };
+allow aos_sandbox_mount_t aos_sandbox_mount_credential_t:file { getattr open read };
+allow aos_source_provider_t aos_source_provider_credential_t:dir { getattr open read search };
+allow aos_source_provider_t aos_source_provider_credential_t:file { getattr open read };
+allow { aos_sandbox_mount_credential_t aos_source_provider_credential_t } tmpfs_t:filesystem associate;
+allow init_t { aos_sandbox_mount_credential_t aos_source_provider_credential_t }:dir { add_name create getattr mounton open read relabelto remove_name search setattr write };
+allow init_t { aos_sandbox_mount_credential_t aos_source_provider_credential_t }:file { create getattr open read setattr unlink write };
+type_transition init_t aos_sandbox_mount_credential_t:file init_tmpfs_t;
+type_transition init_t aos_source_provider_credential_t:file init_tmpfs_t;
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "broker-plan-policy.cbor";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "broker-plan-public-key";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "broker-revocation-scope";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "ownership-lease-policy.cbor";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "ownership-lease-public-key";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "node-id";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "journal-mac-key";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "mount-broker-manifest";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "mount-broker-hello-key";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "mount-broker-record-key";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "mount-host-client-manifest";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "mount-host-client-hello-key";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "mount-host-client-record-key";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "mount-fuse-broker-manifest";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "mount-fuse-broker-hello-key";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "mount-fuse-broker-record-key";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "current-catalog-publication";
+type_transition init_t aos_sandbox_mount_credential_t:file aos_sandbox_mount_credential_t "current-catalog-manifest";
+type_transition init_t aos_source_provider_credential_t:file aos_source_provider_credential_t "current-catalog-publication";
+type_transition init_t aos_source_provider_credential_t:file aos_source_provider_credential_t "current-catalog-manifest";
+
+allow aos_sandbox_mount_t aos_sandbox_mount_state_t:dir { add_name create getattr open read remove_name search setattr write };
+allow aos_sandbox_mount_t aos_sandbox_mount_state_t:file { append create getattr lock open read rename setattr unlink write };
+type_transition aos_sandbox_mount_t aos_sandbox_mount_state_t:dir aos_sandbox_mount_state_t;
+type_transition aos_sandbox_mount_t aos_sandbox_mount_state_t:file aos_sandbox_mount_state_t;
+allow aos_source_provider_t aos_source_provider_state_t:dir { add_name create getattr lock open read remove_name search setattr write };
+allow aos_source_provider_t aos_source_provider_state_t:file { append create getattr lock open read rename setattr unlink write };
+type_transition aos_source_provider_t aos_source_provider_state_t:dir aos_source_provider_state_t;
+type_transition aos_source_provider_t aos_source_provider_state_t:file aos_source_provider_state_t;
+
+# External secret trees are read/lock only, never generic state descendants.
+allow aos_sandbox_mount_t aos_sandbox_mount_custody_t:dir { getattr open read search };
+allow aos_sandbox_mount_t aos_sandbox_mount_custody_t:file { getattr lock open read };
+allow aos_source_provider_t aos_source_provider_custody_t:dir { getattr open read search };
+allow aos_source_provider_t aos_source_provider_custody_t:file { getattr lock open read };
+allow { aos_sandbox_mount_state_t aos_sandbox_mount_custody_t aos_source_provider_state_t aos_source_provider_custody_t } fs_t:filesystem associate;
+
+allow aos_sandbox_mount_t aos_sandbox_mount_catalog_t:dir { add_name create getattr open read remove_name search setattr write };
+allow aos_sandbox_mount_t aos_sandbox_mount_catalog_t:file { create getattr lock open read rename setattr unlink write };
+type_transition aos_sandbox_mount_t aos_sandbox_mount_catalog_t:dir aos_sandbox_mount_catalog_t;
+type_transition aos_sandbox_mount_t aos_sandbox_mount_catalog_t:file aos_sandbox_mount_catalog_t;
+allow aos_sandbox_mount_catalog_t tmpfs_t:filesystem associate;
+allow aos_sandbox_mount_t aos_sandbox_mount_runtime_t:dir { add_name getattr open read remove_name search write };
+allow aos_sandbox_mount_t aos_sandbox_mount_runtime_t:sock_file { create getattr open read setattr unlink write };
+type_transition aos_sandbox_mount_t aos_sandbox_mount_runtime_t:sock_file aos_sandbox_mount_runtime_t;
+allow aos_source_provider_t aos_source_provider_runtime_t:dir { add_name getattr open read remove_name search write };
+allow aos_source_provider_t aos_source_provider_runtime_t:sock_file { create getattr open read setattr unlink write };
+type_transition aos_source_provider_t aos_source_provider_runtime_t:sock_file aos_source_provider_runtime_t;
+allow { aos_sandbox_mount_runtime_t aos_source_provider_runtime_t } tmpfs_t:filesystem associate;
+allow aos_sandbox_mount_t aos_source_provider_runtime_t:sock_file { getattr open read write };
+allow init_t { aos_sandbox_mount_runtime_t aos_source_provider_runtime_t }:dir { add_name create getattr open remove_name search setattr write };
+allow init_t { aos_sandbox_mount_runtime_t aos_source_provider_runtime_t }:sock_file { create getattr open read setattr unlink write };
+allow init_t { aos_sandbox_mount_state_t aos_source_provider_state_t }:dir { add_name create getattr open relabelto search setattr write };
+
+# Fixed Mount plan/report memfds are created by that same role. These tmpfs
+# cells are type-wide DATA access, never permission to accept caller memfds.
+allow aos_sandbox_mount_t tmpfs_t:file { getattr lock read write };
+# AOS_SELECTED_MOUNT_SOURCE_END

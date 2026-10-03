@@ -14,7 +14,7 @@ use aos_proto::aos::sandbox::local::v1::{
     MountRecipe, MountResult, MountSourceConsistency, MountSourceProofClass, MountState,
 };
 use aos_sandbox::journal::{
-    IdempotencyKey, IdempotencyOutcome, Journal, JournalRecord, JournalTransaction, RecordNamespace,
+    IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace,
 };
 use aos_sandbox_core::{
     AttachmentSlotId, ObjectDigest, OperationId, ProtocolVersion, RawPairedClockSample,
@@ -66,6 +66,211 @@ use crate::{MountError, Result};
 mod fuse_intent;
 mod source_custody;
 
+/// Retains the independent signed-domain admission for one original Acquire.
+///
+/// Live and the exact body remain resident before domain verification. Each
+/// returned sealed value, transaction and reopen result is parked before the
+/// next fallible crossing. This is not a Source descriptor, terminal effect,
+/// combined native funding proof or detachable permission.
+pub struct OriginalMountAcquireAuthorityV1 {
+    sandbox_id: [u8; 16],
+    request_id: [u8; 16],
+    live: Option<aos_sandbox_protocol::LiveValidatedAcquireMountSourceRequest>,
+    body: Option<Vec<u8>>,
+    admission: Option<core::result::Result<VerifiedMountAdmissionV1, crate::authorization::MountAdmissionError>>,
+    sealed_fence: Option<core::result::Result<Vec<u8>, crate::authorization::MountAdmissionError>>,
+    sealed_effect: Option<core::result::Result<Vec<u8>, crate::authorization::MountAdmissionError>>,
+    transaction: Option<core::result::Result<JournalTransaction, JournalError>>,
+    preflight: Option<core::result::Result<(), JournalError>>,
+    commit: Option<core::result::Result<(), JournalError>>,
+    opened_fence: Option<core::result::Result<aos_sandbox_broker::BrokerAuthorizationFenceV1, crate::authorization::MountAdmissionError>>,
+    opened_effect: Option<core::result::Result<aos_sandbox_broker::BrokerEffectIntentV1, crate::authorization::MountAdmissionError>>,
+    current_fence: Option<core::result::Result<(), crate::authorization::MountAdmissionError>>,
+    clock: Option<Result<RawPairedClockSample>>,
+    clock_check: Option<core::result::Result<(), crate::authorization::MountAdmissionError>>,
+    first_stage: Option<OriginalMountAuthorityStageV1>,
+    state_failure: Option<MountError>,
+    attempted: bool,
+    committed: bool,
+    stopped: bool,
+}
+
+#[derive(Clone, Copy)]
+enum OriginalMountAuthorityStageV1 {
+    State,
+    Clock,
+    Admission,
+    FenceSeal,
+    EffectSeal,
+    Transaction,
+    Preflight,
+    Commit,
+    FenceOpen,
+    FenceCurrent,
+    EffectOpen,
+    ClockCheck,
+}
+
+/// Borrows an actual first failure held by the original signed-domain owner.
+pub enum OriginalMountAcquireAuthorityFailureV1<'owner> {
+    /// A genuine signature, fence, seal or effect-clock check failed.
+    Authority(&'owner crate::authorization::MountAdmissionError),
+    /// A returned transaction, preflight or commit result failed.
+    Journal(&'owner JournalError),
+    /// An actual clock or state association failed.
+    Mount(&'owner MountError),
+    /// The owner ended without a returned cause, including unwind.
+    Ended,
+}
+
+impl core::fmt::Debug for OriginalMountAcquireAuthorityFailureV1<'_> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str(match self {
+            Self::Authority(_) => "OriginalMountAcquireAuthorityFailureV1::Authority",
+            Self::Journal(_) => "OriginalMountAcquireAuthorityFailureV1::Journal",
+            Self::Mount(_) => "OriginalMountAcquireAuthorityFailureV1::Mount",
+            Self::Ended => "OriginalMountAcquireAuthorityFailureV1::Ended",
+        })
+    }
+}
+
+impl core::fmt::Debug for OriginalMountAcquireAuthorityV1 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("OriginalMountAcquireAuthorityV1([original signed admission])")
+    }
+}
+
+impl OriginalMountAcquireAuthorityV1 {
+    /// Parks genuine Live and its exact original body without observation.
+    ///
+    /// This constructor creates no admission. The broker independently verifies
+    /// the same untrusted quartet before any pair can be committed or lent.
+    #[must_use]
+    pub fn new(
+        live: aos_sandbox_protocol::LiveValidatedAcquireMountSourceRequest,
+        body: Vec<u8>,
+    ) -> Self {
+        Self {
+            sandbox_id: *live.fence().sandbox_id(),
+            request_id: *live.header().request_id(),
+            live: Some(live),
+            body: Some(body),
+            admission: None,
+            sealed_fence: None,
+            sealed_effect: None,
+            transaction: None,
+            preflight: None,
+            commit: None,
+            opened_fence: None,
+            opened_effect: None,
+            current_fence: None,
+            clock: None,
+            clock_check: None,
+            first_stage: None,
+            state_failure: None,
+            attempted: false,
+            committed: false,
+            stopped: false,
+        }
+    }
+
+    fn state_failure(&mut self, message: &'static str) {
+        self.stopped = true;
+        if self.first_stage.is_none() {
+            self.first_stage = Some(OriginalMountAuthorityStageV1::State);
+            self.state_failure = Some(MountError::Fence(message));
+        }
+    }
+
+    /// Lends the actual first cause without observation or another admission.
+    #[must_use]
+    pub fn failure(&self) -> Option<OriginalMountAcquireAuthorityFailureV1<'_>> {
+        use OriginalMountAuthorityStageV1 as Stage;
+        let failure = match self.first_stage {
+            Some(Stage::State) => self.state_failure.as_ref()
+                .map(OriginalMountAcquireAuthorityFailureV1::Mount),
+            Some(Stage::Clock) => self.clock.as_ref().and_then(|result| result.as_ref().err())
+                .map(OriginalMountAcquireAuthorityFailureV1::Mount),
+            Some(Stage::Admission) => self.admission.as_ref().and_then(|result| result.as_ref().err())
+                .map(OriginalMountAcquireAuthorityFailureV1::Authority),
+            Some(Stage::FenceSeal) => self.sealed_fence.as_ref().and_then(|result| result.as_ref().err())
+                .map(OriginalMountAcquireAuthorityFailureV1::Authority),
+            Some(Stage::EffectSeal) => self.sealed_effect.as_ref().and_then(|result| result.as_ref().err())
+                .map(OriginalMountAcquireAuthorityFailureV1::Authority),
+            Some(Stage::Transaction) => self.transaction.as_ref().and_then(|result| result.as_ref().err())
+                .map(OriginalMountAcquireAuthorityFailureV1::Journal),
+            Some(Stage::Preflight) => self.preflight.as_ref().and_then(|result| result.as_ref().err())
+                .map(OriginalMountAcquireAuthorityFailureV1::Journal),
+            Some(Stage::Commit) => self.commit.as_ref().and_then(|result| result.as_ref().err())
+                .map(OriginalMountAcquireAuthorityFailureV1::Journal),
+            Some(Stage::FenceOpen) => self.opened_fence.as_ref().and_then(|result| result.as_ref().err())
+                .map(OriginalMountAcquireAuthorityFailureV1::Authority),
+            Some(Stage::FenceCurrent) => self.current_fence.as_ref().and_then(|result| result.as_ref().err())
+                .map(OriginalMountAcquireAuthorityFailureV1::Authority),
+            Some(Stage::EffectOpen) => self.opened_effect.as_ref().and_then(|result| result.as_ref().err())
+                .map(OriginalMountAcquireAuthorityFailureV1::Authority),
+            Some(Stage::ClockCheck) => self.clock_check.as_ref().and_then(|result| result.as_ref().err())
+                .map(OriginalMountAcquireAuthorityFailureV1::Authority),
+            None => None,
+        };
+        failure.or_else(|| self.stopped.then_some(OriginalMountAcquireAuthorityFailureV1::Ended))
+    }
+
+    /// Stops this original without authorizing cleanup, replay or quota release.
+    pub fn stop(&mut self) {
+        self.stopped = true;
+    }
+}
+
+/// Borrows actual same-broker authority and the resident reopened Pending effect.
+pub(crate) struct OriginalMountSignedEffectLoanV1<'owner> {
+    authority: &'owner MountAuthorityV1,
+    original: &'owner mut OriginalMountAcquireAuthorityV1,
+}
+
+/// Latches refusal before the broker or any retained admission can be dropped.
+struct OriginalMountAuthorityBoundaryV1<'broker, 'original, W> {
+    broker: &'broker mut MountBroker<W>,
+    original: &'original mut OriginalMountAcquireAuthorityV1,
+    completed: bool,
+}
+
+impl<W> Drop for OriginalMountAuthorityBoundaryV1<'_, '_, W> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.original.stop();
+            self.broker.source_runtime_failed = true;
+        }
+    }
+}
+
+impl OriginalMountSignedEffectLoanV1<'_> {
+    /// Checks the original signed/boot-time limits at an actual effect crossing.
+    pub(crate) fn check_before_original_effect(&mut self) -> Result<()> {
+        if self.original.stopped || !self.original.committed {
+            return Err(MountError::Fence("original signed-domain owner is stopped"));
+        }
+        self.original.clock = Some(crate::service::trusted_paired_clock_sample());
+        let Some(Ok(clock)) = self.original.clock.as_ref() else {
+            self.original.first_stage = Some(OriginalMountAuthorityStageV1::Clock);
+            self.original.stopped = true;
+            return Err(MountError::Fence("original signed-domain clock failed"));
+        };
+        let Some(Ok(effect)) = self.original.opened_effect.as_ref() else {
+            self.original.state_failure("original reopened effect is absent");
+            return Err(MountError::Fence("original reopened effect is absent"));
+        };
+        self.original.clock_check = Some(self.authority.validate_effect_clock(effect, clock));
+        if !matches!(self.original.clock_check, Some(Ok(()))) {
+            self.original.first_stage = Some(OriginalMountAuthorityStageV1::ClockCheck);
+            self.original.stopped = true;
+            return Err(MountError::Fence("original signed-domain effect expired"));
+        }
+
+        Ok(())
+    }
+}
+
 pub use fuse_intent::{
     HeldMountFuseIntentPreparationV1, PreparedMountFuseWorkerHandoffV1,
     PreparedMountFuseWorkerObjectsV1,
@@ -87,6 +292,332 @@ pub struct MountBroker<W> {
 }
 
 impl<W: MountWorker> MountBroker<W> {
+    /// Commits and reopens one independently admitted original Acquire pair.
+    ///
+    /// The actual Live request, body, signature intersection, sealed records
+    /// and returned journal results remain in `original`. The same protected
+    /// journal receives DesiredState and Pending Effect in one transaction,
+    /// before the native runtime borrows its first snapshot. This is not a
+    /// combined future native funding reservation or a terminal outcome.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an occupied/replayed request, unhealthy owner, invalid domain
+    /// admission, failed preflight/commit or changed authenticated readback.
+    /// The actual first cause remains available through `original.failure()`;
+    /// ambiguity requires protected restart, never a second original attempt.
+    pub fn prepare_original_acquire_authority(
+        &mut self,
+        original: &mut OriginalMountAcquireAuthorityV1,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+    ) -> Result<()> {
+        if original.attempted || original.stopped || self.source_runtime_failed {
+            original.state_failure("original signed-domain admission cannot be retried");
+            return Err(MountError::Fence("original signed-domain admission cannot be retried"));
+        }
+        original.attempted = true;
+
+        let mut boundary = OriginalMountAuthorityBoundaryV1 {
+            broker: self,
+            original,
+            completed: false,
+        };
+        let succeeded = boundary.broker.prepare_original_acquire_authority_inner(
+            boundary.original,
+            artifacts,
+        );
+        boundary.completed = succeeded;
+        if succeeded {
+            Ok(())
+        } else {
+            Err(MountError::Fence("original signed-domain admission remains retained"))
+        }
+    }
+
+    fn prepare_original_acquire_authority_inner(
+        &mut self,
+        original: &mut OriginalMountAcquireAuthorityV1,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+    ) -> bool {
+        if let Err(cause) = self.ensure_authority_healthy() {
+            original.state_failure = Some(cause);
+            original.first_stage = Some(OriginalMountAuthorityStageV1::State);
+            return false;
+        }
+        if self.journal.get(RecordNamespace::Effect, &original.request_id).is_some() {
+            original.state_failure("original request already has a durable effect");
+            return false;
+        }
+        let (Some(live), Some(body)) = (original.live.as_ref(), original.body.as_ref()) else {
+            original.state_failure("original request slots are incomplete");
+            return false;
+        };
+
+        original.clock = Some(crate::service::trusted_paired_clock_sample());
+        let Some(Ok(clock)) = original.clock.as_ref() else {
+            original.first_stage = Some(OriginalMountAuthorityStageV1::Clock);
+            return false;
+        };
+        original.admission = Some(self.authority.admit_original_acquire_source(
+            live,
+            body,
+            artifacts,
+            clock,
+            self.journal.get(RecordNamespace::DesiredState, &original.sandbox_id),
+        ));
+        let Some(Ok(admission)) = original.admission.as_ref() else {
+            original.first_stage = Some(OriginalMountAuthorityStageV1::Admission);
+            return false;
+        };
+
+        original.sealed_fence = Some(self.authority.seal_fence(
+            &original.sandbox_id,
+            &admission.fence,
+        ));
+        if !matches!(original.sealed_fence, Some(Ok(_))) {
+            original.first_stage = Some(OriginalMountAuthorityStageV1::FenceSeal);
+            return false;
+        }
+        original.sealed_effect = Some(self.authority.seal_effect(
+            &original.request_id,
+            &admission.effect,
+        ));
+        let (Some(Ok(fence)), Some(Ok(effect))) = (
+            original.sealed_fence.as_ref(),
+            original.sealed_effect.as_ref(),
+        ) else {
+            original.first_stage = Some(OriginalMountAuthorityStageV1::EffectSeal);
+            return false;
+        };
+
+        original.transaction = Some(JournalTransaction::new(
+            authority_refresh_transaction(
+                original.request_id,
+                admission.effect.plan_digest(),
+                admission.effect.lease_digest(),
+            ),
+            vec![
+                JournalRecord::put(RecordNamespace::DesiredState, original.sandbox_id.to_vec(), fence.clone()),
+                JournalRecord::put(RecordNamespace::Effect, original.request_id.to_vec(), effect.clone()),
+            ],
+        ));
+        let Some(Ok(transaction)) = original.transaction.as_ref() else {
+            original.first_stage = Some(OriginalMountAuthorityStageV1::Transaction);
+            return false;
+        };
+        original.preflight = Some(self.journal.preflight_transactions(std::slice::from_ref(transaction)));
+        if !matches!(original.preflight, Some(Ok(()))) {
+            original.first_stage = Some(OriginalMountAuthorityStageV1::Preflight);
+            return false;
+        }
+
+        original.commit = Some(self.journal.commit(transaction));
+        if !matches!(original.commit, Some(Ok(()))) {
+            original.first_stage = Some(OriginalMountAuthorityStageV1::Commit);
+            return false;
+        }
+        // Exact bytes, not a sequence or digest alone, bind both same-owner
+        // locations. Commit ambiguity has already latched the negative owner.
+        if self.journal.get(RecordNamespace::DesiredState, &original.sandbox_id) != Some(fence.as_slice())
+            || self.journal.get(RecordNamespace::Effect, &original.request_id) != Some(effect.as_slice())
+        {
+            original.state_failure("original sealed pair differs from protected readback");
+            return false;
+        }
+        original.opened_fence = Some(self.authority.open_original_acquire_fence(&original.sandbox_id, fence));
+        let Some(Ok(opened_fence)) = original.opened_fence.as_ref() else {
+            original.first_stage = Some(OriginalMountAuthorityStageV1::FenceOpen);
+            return false;
+        };
+        original.current_fence = Some(self.authority.check_original_acquire_fence(opened_fence));
+        if !matches!(original.current_fence, Some(Ok(()))) {
+            original.first_stage = Some(OriginalMountAuthorityStageV1::FenceCurrent);
+            return false;
+        }
+        original.opened_effect = Some(self.authority.open_effect(&original.request_id, effect));
+        let Some(Ok(opened_effect)) = original.opened_effect.as_ref() else {
+            original.first_stage = Some(OriginalMountAuthorityStageV1::EffectOpen);
+            return false;
+        };
+        if opened_effect != &admission.effect
+            || opened_effect.status() != aos_sandbox_broker::BrokerEffectStatusV1::Pending
+            || opened_fence.assignment() != admission.fence.assignment()
+            || opened_fence.plan_digest() != admission.fence.plan_digest()
+            || opened_fence.local_lease_record() != admission.fence.local_lease_record()
+        {
+            original.state_failure("original reopened pair differs from signed admission");
+            return false;
+        }
+        original.committed = true;
+        let mut loan = OriginalMountSignedEffectLoanV1 {
+            authority: &self.authority,
+            original,
+        };
+        loan.check_before_original_effect().is_ok()
+    }
+
+    /// Moves complete original inputs into the sole protected native runtime.
+    ///
+    /// Only the genuine pair prepared by this broker can enter this route.
+    /// Live/body and catalog slots stay with their original owners until all
+    /// runtime occupancy checks pass; assembly then moves them infallibly.
+    /// The catalog inputs remain DATA and are authenticated by the existing
+    /// Source/native engine. This registers no public Acquire handler.
+    ///
+    /// # Errors
+    ///
+    /// Retains inputs and the first cause on invalid pair, attachment, occupied
+    /// runtime or input association. The actual Session is invalidated before
+    /// runtime restoration on returned error or unwind.
+    pub fn begin_signed_original_acquire(
+        &mut self,
+        original: &mut OriginalMountAcquireAuthorityV1,
+        session: &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
+        publication: &mut Option<Vec<u8>>,
+        catalog: &mut Option<Vec<u8>>,
+        selection: &mut Option<Vec<u8>>,
+    ) -> Result<()> {
+        let mut boundary = OriginalMountAuthorityBoundaryV1 {
+            broker: self,
+            original,
+            completed: false,
+        };
+        let result = boundary.broker.begin_signed_original_acquire_inner(
+            boundary.original,
+            session,
+            publication,
+            catalog,
+            selection,
+        );
+        if let Err(cause) = result {
+            if boundary.original.first_stage.is_none() {
+                boundary.original.first_stage = Some(OriginalMountAuthorityStageV1::State);
+                boundary.original.state_failure = Some(cause);
+            }
+            return Err(MountError::Fence("original native start remains retained"));
+        }
+        boundary.completed = true;
+        Ok(())
+    }
+
+    fn begin_signed_original_acquire_inner(
+        &mut self,
+        original: &mut OriginalMountAcquireAuthorityV1,
+        session: &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
+        publication: &mut Option<Vec<u8>>,
+        catalog: &mut Option<Vec<u8>>,
+        selection: &mut Option<Vec<u8>>,
+    ) -> Result<()> {
+        let mut entry = source_custody::QueryEntryBoundaryV6::new(self, session);
+        let result = (|| {
+            let broker = &mut *entry.broker;
+            if broker.source_runtime_failed || original.stopped || !original.committed {
+                return Err(MountError::Fence("original signed pair is unavailable"));
+            }
+            OriginalMountSignedEffectLoanV1 {
+                authority: &broker.authority,
+                original,
+            }.check_before_original_effect()?;
+            broker.ensure_authority_healthy()?;
+            let Some(Ok(admission)) = original.admission.as_ref() else {
+                return Err(MountError::Fence("original signed admission is absent"));
+            };
+            let plan = *admission.effect.plan_digest().as_bytes();
+            let lease = *admission.effect.lease_digest().as_bytes();
+            let deadline = admission.effect.plan_expires_seconds()
+                .min(admission.effect.authority_expires_seconds());
+
+            broker.source_runtime_failed = true;
+            let mut runtime = source_custody::SourceRuntimeLoanV6::new(
+                &mut broker.source_runtime,
+                &mut broker.source_runtime_failed,
+            );
+            runtime.attach(&mut broker.journal)?;
+            runtime.operate(|owner| {
+                owner.begin_signed_original_native_acquire_v5(
+                    &mut original.live,
+                    &mut original.body,
+                    plan,
+                    lease,
+                    publication,
+                    catalog,
+                    selection,
+                    deadline,
+                )?;
+                OriginalMountSignedEffectLoanV1 {
+                    authority: &broker.authority,
+                    original,
+                }.check_before_original_effect()
+            })
+        })();
+        entry.finish(result)
+    }
+
+    /// Advances one original stage under the same reopened signed effect.
+    ///
+    /// The existing physical writer, runtime, Session and first-flight engine
+    /// remain the only producers. A fresh signed/boot-time check brackets each
+    /// selected stage; ordinary routes retain their original observation order.
+    /// `true` reports local original sends, not Complete, Ready or descriptor
+    /// ownership transferred to the public broker caller.
+    ///
+    /// # Errors
+    ///
+    /// Retains runtime/admission custody and the first returned cause, while
+    /// permanently invalidating the actual Session on error or unwind.
+    pub fn advance_signed_original_acquire(
+        &mut self,
+        original: &mut OriginalMountAcquireAuthorityV1,
+        session: &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
+    ) -> Result<bool> {
+        let mut boundary = OriginalMountAuthorityBoundaryV1 {
+            broker: self,
+            original,
+            completed: false,
+        };
+        let result = {
+            let mut entry = source_custody::QueryEntryBoundaryV6::new(boundary.broker, session);
+            let result = (|| {
+                let broker = &mut *entry.broker;
+                if broker.source_runtime_failed || boundary.original.stopped || !boundary.original.committed {
+                    return Err(MountError::Fence("original signed pair is unavailable"));
+                }
+                OriginalMountSignedEffectLoanV1 {
+                    authority: &broker.authority,
+                    original: boundary.original,
+                }.check_before_original_effect()?;
+                broker.source_runtime_failed = true;
+                broker.ensure_authority_healthy()?;
+                let mut runtime = source_custody::SourceRuntimeLoanV6::new(
+                    &mut broker.source_runtime,
+                    &mut broker.source_runtime_failed,
+                );
+                runtime.attach(&mut broker.journal)?;
+                let mut effect = OriginalMountSignedEffectLoanV1 {
+                    authority: &broker.authority,
+                    original: boundary.original,
+                };
+                runtime.operate(|owner| {
+                    owner.advance_signed_original_native_acquire_v5(entry.session, &mut effect)
+                })
+            })();
+            entry.finish(result)
+        };
+        match result {
+            Ok(finished) => {
+                boundary.completed = true;
+                Ok(finished)
+            }
+            Err(cause) => {
+                if boundary.original.first_stage.is_none() {
+                    boundary.original.first_stage = Some(OriginalMountAuthorityStageV1::State);
+                    boundary.original.state_failure = Some(cause);
+                }
+                Err(MountError::Fence("original native progress remains retained"))
+            }
+        }
+    }
+
     /// Reports whether existing durable resources can be changed or cleaned up.
     #[must_use]
     pub fn supports_existing_resource_actions(&self) -> bool {

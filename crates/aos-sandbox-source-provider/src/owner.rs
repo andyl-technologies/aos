@@ -37,6 +37,11 @@ mod held_readonly;
 pub use held_readonly::FixedProviderHeldReadOnlyObservationV1;
 mod original_ingress;
 mod original_journal;
+mod selected;
+pub use selected::{
+    FixedSelectedProviderFailureRefV1, FixedSelectedProviderOpeningV1,
+    FixedSelectedProviderProgressV1,
+};
 
 enum FixedProviderOwnerStateV1 {
     Handshake {
@@ -275,6 +280,12 @@ pub enum FixedMountStateMigrationRecoveryOutcomeV2 {
 /// journal, and backend-verifier locations are compiled in and cannot be
 /// redirected.
 pub struct FixedProviderOwnerV1 {
+    // First in field-drop order: the selected queue is shut down before any
+    // journal, verifier, runtime or returned handshake prefix is destroyed.
+    selected_prefix:
+        Option<aos_sandbox_source_provider_security::SelectedProviderSourceProviderOwnerV1>,
+    selected_catalog_packet: Option<Vec<u8>>,
+    selected_failure: Option<ProviderLedgerError>,
     journal: Option<Journal>,
     hold_challenges: crate::zfs_hold_challenge::ProtectedZfsHoldChallengesV1,
     state: Option<FixedProviderOwnerStateV1>,
@@ -347,6 +358,9 @@ impl FixedProviderOwnerV1 {
         let security = ProviderSourceProviderOwnerV1::open_fixed(socket)?;
         Ok((
             Self {
+                selected_prefix: None,
+                selected_catalog_packet: None,
+                selected_failure: None,
                 journal: Some(journal),
                 hold_challenges,
                 state: Some(FixedProviderOwnerStateV1::Handshake {
@@ -388,6 +402,7 @@ impl FixedProviderOwnerV1 {
     /// Returns [`ProviderLedgerError`] for fatal handshake failure, catalog or
     /// configuration mismatch, malformed replay, or ambiguous initialization.
     pub fn advance_handshake(&mut self) -> Result<FixedProviderOwnerStatusV1, ProviderLedgerError> {
+        self.require_ordinary_owner()?;
         self.require_original_ingress_idle()?;
         let state = self
             .state
@@ -583,6 +598,7 @@ impl FixedProviderOwnerV1 {
             &mut crate::zfs_hold_challenge::ProtectedZfsHoldChallengesV1,
         ) -> Result<R, ProviderLedgerError>,
     ) -> Result<R, ProviderLedgerError> {
+        self.require_ordinary_owner()?;
         self.require_original_ingress_idle()?;
         let state = self
             .state
@@ -655,6 +671,7 @@ impl FixedProviderOwnerV1 {
     /// ingress session and has not yet accepted a fresh request.
     #[doc(hidden)]
     pub fn begin_recovery_successor_handshake(&mut self) -> Result<(), ProviderLedgerError> {
+        self.require_ordinary_owner()?;
         self.require_original_ingress_idle()?;
         if let Some(FixedProviderOwnerStateV1::Ready(detached)) = &self.state {
             // The old fallible rotation consumes detached ownership. Native
@@ -706,6 +723,7 @@ impl FixedProviderOwnerV1 {
         &mut self,
         checkpoint: aos_sandbox_source_provider_security::ProviderIngressReopenCheckpointV1,
     ) -> Result<(), ProviderLedgerError> {
+        self.require_ordinary_owner()?;
         self.require_original_ingress_idle()?;
         if let Some(FixedProviderOwnerStateV1::Ready(detached)) = &self.state {
             detached.require_native_reply_custody_empty()?;
@@ -748,6 +766,7 @@ impl FixedProviderOwnerV1 {
         &mut self,
         socket: DescriptorSubjectSocket,
     ) -> Result<(), ProviderLedgerError> {
+        self.require_ordinary_owner()?;
         self.require_original_ingress_idle()?;
         if self.recovery_handshake.is_some() {
             return Err(ProviderLedgerError::InvalidTransition(
@@ -789,6 +808,7 @@ impl FixedProviderOwnerV1 {
     pub fn advance_recovery_successor_handshake(
         &mut self,
     ) -> Result<FixedProviderOwnerStatusV1, ProviderLedgerError> {
+        self.require_ordinary_owner()?;
         self.require_original_ingress_idle()?;
         let (mut security, detached, recovered_execution_death) = self
             .recovery_handshake
@@ -864,6 +884,7 @@ impl FixedProviderOwnerV1 {
         &mut self,
         signed_request: &aos_sandbox_source_provider_protocol::SignedSourceProviderRequestV1,
     ) -> Result<bool, ProviderLedgerError> {
+        self.require_ordinary_owner()?;
         self.require_original_ingress_idle()?;
         let matching = self
             .pending_backend_recovery
@@ -916,6 +937,7 @@ impl FixedProviderOwnerV1 {
         &mut self,
         signed_request: aos_sandbox_source_provider_protocol::SignedSourceProviderRequestV1,
     ) -> Result<(), ProviderLedgerError> {
+        self.require_ordinary_owner()?;
         self.require_original_ingress_idle()?;
         if self.ingress_reopen.is_none() {
             return Err(ProviderLedgerError::InvalidTransition(
@@ -1200,6 +1222,7 @@ impl FixedProviderOwnerV1 {
     /// Records that the fixed Root-Mount carrier accepted the fresh packet.
     #[doc(hidden)]
     pub fn mark_backend_recovery_request_in_flight(&mut self) -> Result<(), ProviderLedgerError> {
+        self.require_ordinary_owner()?;
         self.require_original_ingress_idle()?;
         if self.pending_backend_recovery.is_empty()
             || self.pending_backend_recovery[0].has_fresh_request()
@@ -1231,6 +1254,7 @@ impl FixedProviderOwnerV1 {
         provenance: crate::SupplementalV2MigrationProvenanceV1,
         canonical_manifest: &[u8],
     ) -> Result<FixedProviderOwnerStatusV1, ProviderLedgerError> {
+        self.require_ordinary_owner()?;
         self.require_original_ingress_idle()?;
         let state = self
             .state
@@ -1334,6 +1358,7 @@ impl FixedProviderOwnerV1 {
     pub fn recover_aosspl_v2_to_v3_migration(
         &mut self,
     ) -> Result<FixedProviderOwnerStatusV1, ProviderLedgerError> {
+        self.require_ordinary_owner()?;
         self.require_original_ingress_idle()?;
         let state = self
             .state
@@ -1418,6 +1443,7 @@ impl FixedProviderOwnerV1 {
     /// is malformed, its session is no longer installed, or final durability,
     /// custody, peer, descriptor, or carrier validation fails.
     pub fn send_reply(&mut self, reply: DurableProviderReplyV1) -> Result<(), ProviderLedgerError> {
+        self.require_ordinary_owner()?;
         self.require_original_ingress_idle()?;
         let native_identity = reply.native_identity();
         let session_binding = reply.session_binding()?;
@@ -1521,6 +1547,7 @@ impl FixedProviderOwnerV1 {
         &mut self,
         canonical_catalog_publication: &[u8],
     ) -> Result<FixedProviderCatalogProgressV1, ProviderLedgerError> {
+        self.require_ordinary_owner()?;
         self.require_original_ingress_idle()?;
         if canonical_catalog_publication.len() != CANONICAL_CATALOG_PUBLICATION_BYTES {
             return Err(ProviderLedgerError::Corrupt(
@@ -1591,6 +1618,7 @@ impl FixedProviderOwnerV1 {
         &mut self,
         canonical_catalog_publication: &[u8],
     ) -> Result<FixedProviderIngressProgressV1, ProviderLedgerError> {
+        self.require_ordinary_owner()?;
         self.require_original_ingress_idle()?;
         if canonical_catalog_publication.len() != CANONICAL_CATALOG_PUBLICATION_BYTES {
             return Err(ProviderLedgerError::Corrupt(
@@ -1824,6 +1852,7 @@ impl FixedProviderOwnerV1 {
         canonical_catalog_publication: &[u8],
         query: CatalogCurrentnessQueryV1,
     ) -> Result<FixedProviderCatalogProgressV1, ProviderLedgerError> {
+        self.require_ordinary_owner()?;
         self.require_original_ingress_idle()?;
         let last_sequence = self.last_catalog_sequence;
         let last_minimum = self.last_catalog_minimum;
@@ -1833,34 +1862,14 @@ impl FixedProviderOwnerV1 {
                     "fixed provider owner has no live ingress session",
                 ),
             )?;
-            validate_catalog_query_progress(&query, last_sequence, last_minimum)?;
-
-            let snapshot = ledger.journal.snapshot()?;
-            let protected = installed.session.revalidated_provider_configuration()?;
-            let publication = aos_sandbox_source_provider_security::verify_catalog_publication(
-                &protected,
-                canonical_catalog_publication,
-            )?;
-            let current_catalog = installed
-                .session
-                .authorize_fixed_current_catalog_publication_v1(
-                    &ledger.journal,
-                    snapshot,
-                    publication,
-                )?;
-            let publication_digest =
-                ObjectDigest::from_bytes(Sha256::digest(canonical_catalog_publication).into());
-            let response = installed.session.sign_current_catalog_response(
+            prepare_current_catalog_response(
                 &ledger.journal,
-                &current_catalog,
-                &query,
-                publication_digest,
-            )?;
-            Ok(PendingCatalogCurrentnessV1 {
+                &mut installed.session,
+                canonical_catalog_publication,
                 query,
-                response,
-                current_catalog,
-            })
+                last_sequence,
+                last_minimum,
+            )
         })?;
 
         self.last_catalog_sequence = pending.query.sequence();
@@ -1884,6 +1893,7 @@ impl FixedProviderOwnerV1 {
         &mut self,
         canonical_catalog_publication: &[u8],
     ) -> Result<(), ProviderLedgerError> {
+        self.require_ordinary_owner()?;
         self.require_original_ingress_idle()?;
         let state = self
             .state
@@ -1950,6 +1960,7 @@ impl FixedProviderOwnerV1 {
         aos_sandbox_source_provider_security::ProtectedCurrentCatalogPublicationV1,
         ProviderLedgerError,
     > {
+        self.require_ordinary_owner()?;
         self.require_original_ingress_idle()?;
         if canonical_catalog_publication.len() != CANONICAL_CATALOG_PUBLICATION_BYTES {
             return Err(ProviderLedgerError::Corrupt(
@@ -2019,6 +2030,7 @@ impl FixedProviderOwnerV1 {
             &aos_sandbox::ProtectedJournalAuthority<'journal>,
         ) -> Result<R, ProviderLedgerError>,
     ) -> Result<R, ProviderLedgerError> {
+        self.require_ordinary_owner()?;
         self.require_original_ingress_idle()?;
         let state = self
             .state
@@ -2066,6 +2078,7 @@ impl FixedProviderOwnerV1 {
         aos_sandbox_source_provider_security::MountSourceStateMigrationInstallOutcomeV2,
         ProviderLedgerError,
     > {
+        self.require_ordinary_owner()?;
         self.require_original_ingress_idle()?;
         let state = self
             .state
@@ -2135,7 +2148,10 @@ impl FixedProviderOwnerV1 {
         mount_owner: &mut aos_sandbox::MountManagerStartupProtectedOwnerV1,
         recovery: aos_sandbox_source_provider_security::MountSourceStateMigrationRecoveryV2,
     ) -> FixedMountStateMigrationRecoveryOutcomeV2 {
-        if let Err(error) = self.require_original_ingress_idle() {
+        if let Err(error) = self
+            .require_ordinary_owner()
+            .and_then(|()| self.require_original_ingress_idle())
+        {
             return FixedMountStateMigrationRecoveryOutcomeV2::RetryRequired { error, recovery };
         }
         let Some(state) = self.state.take() else {
@@ -2210,6 +2226,7 @@ impl FixedProviderOwnerV1 {
     }
 
     fn reopen_fixed_journal(&mut self) -> Result<(), ProviderLedgerError> {
+        self.require_ordinary_owner()?;
         self.require_original_ingress_idle()?;
         drop(self.journal.take());
         let (journal, _) = Journal::open_protected_at(
@@ -2305,6 +2322,42 @@ fn configured_ledger(
         catalog,
         ProviderLedgerLimits::default(),
     )
+}
+
+fn prepare_current_catalog_response(
+    journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+    session: &mut aos_sandbox_source_provider_security::CurrentProviderIngressSessionV1,
+    canonical_catalog_publication: &[u8],
+    query: CatalogCurrentnessQueryV1,
+    last_sequence: u64,
+    last_minimum: Option<(u64, ObjectDigest)>,
+) -> Result<PendingCatalogCurrentnessV1, ProviderLedgerError> {
+    validate_catalog_query_progress(&query, last_sequence, last_minimum)?;
+
+    let snapshot = journal.snapshot()?;
+    let protected = session.revalidated_provider_configuration()?;
+    let publication = aos_sandbox_source_provider_security::verify_catalog_publication(
+        &protected,
+        canonical_catalog_publication,
+    )?;
+    let current_catalog = session.authorize_fixed_current_catalog_publication_v1(
+        journal,
+        snapshot,
+        publication,
+    )?;
+    let publication_digest =
+        ObjectDigest::from_bytes(Sha256::digest(canonical_catalog_publication).into());
+    let response = session.sign_current_catalog_response(
+        journal,
+        &current_catalog,
+        &query,
+        publication_digest,
+    )?;
+    Ok(PendingCatalogCurrentnessV1 {
+        query,
+        response,
+        current_catalog,
+    })
 }
 
 fn validate_recovery_query_progress(

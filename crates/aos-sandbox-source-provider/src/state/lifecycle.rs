@@ -161,6 +161,7 @@ impl<'a> ProviderLedgerV1<'a> {
             configuration,
             recovered,
             current_sessions: BTreeMap::new(),
+            selected_first_session: None,
             pending_acquisitions: BTreeMap::new(),
             pending_releases: BTreeMap::new(),
             recovery_authorizations: BTreeMap::new(),
@@ -206,6 +207,7 @@ impl<'a> ProviderLedgerV1<'a> {
             configuration,
             recovered,
             current_sessions: BTreeMap::new(),
+            selected_first_session: None,
             pending_acquisitions: BTreeMap::new(),
             pending_releases: BTreeMap::new(),
             recovery_authorizations: BTreeMap::new(),
@@ -231,14 +233,7 @@ impl<'a> ProviderLedgerV1<'a> {
         &mut self,
         mut session: CurrentProviderIngressSessionV1,
     ) -> Result<(), ProviderLedgerError> {
-        self.ensure_open()?;
-        let journal_snapshot = self.journal.snapshot()?;
-        self.journal
-            .validate_source_provider_authority_snapshot(&journal_snapshot)?;
-        let projection = session.current_projection()?;
-        if projection.provider() != &self.configuration.provider {
-            return Err(ProviderLedgerError::ConfigurationMismatch);
-        }
+        let (_journal_snapshot, projection) = self.validate_session_installation(&mut session)?;
         let holder_id = projection.holder().authority_id();
         let replacement_binding = projection.session_binding();
         // A replacement over descriptor-bearing history remains quarantined.
@@ -257,6 +252,70 @@ impl<'a> ProviderLedgerV1<'a> {
             },
         );
         Ok(())
+    }
+
+    /// Validates the sole ordinary installation recipe without consuming a Session.
+    ///
+    /// Returning both actual DATA owners keeps the successful Legacy projection
+    /// and snapshot alive through its original replacement/insertion interval.
+    fn validate_session_installation(
+        &mut self,
+        session: &mut CurrentProviderIngressSessionV1,
+    ) -> Result<
+        (
+            aos_sandbox::ProtectedJournalSnapshot,
+            aos_sandbox_source_provider_security::CurrentProviderSessionProjectionV1,
+        ),
+        ProviderLedgerError,
+    > {
+        self.ensure_open()?;
+        let journal_snapshot = self.journal.snapshot()?;
+        self.journal
+            .validate_source_provider_authority_snapshot(&journal_snapshot)?;
+        let projection = session.current_projection()?;
+        if projection.provider() != &self.configuration.provider {
+            return Err(ProviderLedgerError::ConfigurationMismatch);
+        }
+        Ok((journal_snapshot, projection))
+    }
+
+    /// Parks a genuine selected original Session in its preexisting inline slot.
+    ///
+    /// This is not a holder-map admission. Mixed, pending or replacement state
+    /// is refused before any original is taken. All fallible validation borrows
+    /// the original in its caller's reservoir; the final move allocates nothing.
+    pub(crate) fn install_selected_first_session_retaining(
+        &mut self,
+        session: &mut Option<CurrentProviderIngressSessionV1>,
+    ) -> Result<(), ProviderLedgerError> {
+        if self.selected_first_session.is_some()
+            || !self.current_sessions.is_empty()
+            || !self.pending_acquisitions.is_empty()
+            || !self.pending_releases.is_empty()
+            || !self.recovery_authorizations.is_empty()
+            || self.pending_recovery_bridge.is_some()
+            || self.qualified_native_bridge.is_some()
+            || !self.native_acquire_custody.is_empty()
+        {
+            return Err(ProviderLedgerError::RuntimePoisoned);
+        }
+        self.native_reply_custody.require_empty()?;
+        let original = session.as_mut().ok_or(ProviderLedgerError::RuntimePoisoned)?;
+        let (_journal_snapshot, _projection) = self.validate_session_installation(original)?;
+
+        // The inline slot was created with the genuine recovered ledger. No
+        // map entry, allocation, observation or callback follows this move.
+        match session.take() {
+            Some(session) => {
+                self.selected_first_session = Some(InstalledProviderSessionV1 {
+                    session,
+                    supersession: None,
+                    recovered_execution_death: None,
+                });
+                Ok(())
+            }
+            None => Err(ProviderLedgerError::RuntimePoisoned),
+        }
     }
 
     pub(crate) fn install_recovery_successor_session(

@@ -1,0 +1,20 @@
+--- a/src/net/send_recv/msg.rs
++++ b/src/net/send_recv/msg.rs
+@@ -444,6 +444,17 @@
+             length: 0,
+         }
+     }
+ 
++    /// Returns the number of received control bytes that have not been drained.
++    ///
++    /// Before the first drain following a successful `recvmsg`, this is the
++    /// kernel-returned control length, not the buffer capacity. Draining decreases
++    /// this count. It exposes no initialized bytes, parsed messages or descriptors
++    /// and does not assert that truncated control was complete.
++    #[inline]
++    pub fn received_control_len(&self) -> usize {
++        self.length
++    }
++
+     /// Returns a pointer to the message data.
+     pub(crate) fn as_control_ptr(&mut self) -> *mut u8 {

@@ -1548,6 +1548,68 @@ impl SourceProviderSessionV1 {
         })
     }
 
+    /// Authenticates supplied Provider fields separately from PID1 establishment DATA.
+    ///
+    /// This fixed socket-activation recipe does not identify a kernel peer or
+    /// authorize a service. The Security owner must independently retain and
+    /// recheck the original PID1 establishment, actual Provider record-subject
+    /// pidfd, fixed task/unit/cgroup policy, and same socket. Neither supplied
+    /// projection nor the returned transcript proves those observations.
+    ///
+    /// The signed Provider identity remains the actual nominated Provider task,
+    /// not PID1. The ordinary [`Self::authenticate`] recipe remains strict about
+    /// equality between its supplied peer and subject fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SourceProviderTrustError`] for the existing transcript failures,
+    /// a supplied non-root/non-PID1 or dead establishment projection, or Provider
+    /// fields that differ from the same protected route.
+    #[allow(clippy::too_many_arguments)]
+    pub fn authenticate_activated_provider(
+        expected_client_nonce: [u8; 32],
+        now_seconds: i64,
+        root_mount_hello: SignedSourceProviderHelloV1,
+        provider_hello: SignedSourceProviderHelloV1,
+        trust_set: &SourceProviderTrustSetV1,
+        root_current: &SourceProviderCurrentAuthorityV1,
+        provider_current: &SourceProviderCurrentAuthorityV1,
+        pid1_establishment: SourceProviderProcessIdentityV1,
+        nominated_provider_subject: SourceProviderProcessIdentityV1,
+        route: &ProtectedSourceProviderRouteV1,
+    ) -> Result<Self, SourceProviderTrustError> {
+        let transcript = authenticate_transcript(
+            expected_client_nonce,
+            now_seconds,
+            &root_mount_hello,
+            &provider_hello,
+            trust_set,
+            root_current,
+            provider_current,
+            route,
+        )?;
+        if pid1_establishment.uid != 0
+            || pid1_establishment.gid != 0
+            || pid1_establishment.tgid != 1
+            || !pid1_establishment.pidfd_live
+            || nominated_provider_subject.uid != route.expected_uid
+            || nominated_provider_subject.gid != route.expected_gid
+            || nominated_provider_subject.cgroup_digest != route.expected_cgroup_digest
+            || !nominated_provider_subject.pidfd_live
+        {
+            return Err(SourceProviderTrustError::SessionMismatch);
+        }
+
+        Ok(Self {
+            root_mount_hello,
+            provider_hello,
+            route: route.clone(),
+            provider_identity: nominated_provider_subject,
+            binding: transcript.binding,
+            signer_set_commitment: transcript.signer_set_commitment,
+        })
+    }
+
     /// Returns the Root Mount process introduction.
     #[must_use]
     pub const fn root_mount_hello(&self) -> &SourceProviderHelloV1 {

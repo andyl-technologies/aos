@@ -20,6 +20,7 @@ use aos_sandbox_broker_session_security::{
     ProductionBrokerDeadlineErrorV1, ProductionBrokerServiceErrorV1,
     ProductionBrokerSessionActivationErrorV1, ProductionBrokerSessionActivationV1,
     ProductionMountBrokerOwnersV1, ProductionRootMountSourceProviderErrorV1,
+    ProductionOriginalMountCycleV1,
     connect_authenticated_fixed_source_provider, observe_original_pending_acquires,
     production_deadline_after, recover_reserved_remote_inventories,
 };
@@ -43,6 +44,7 @@ use aos_sandbox_protocol::mount_manager_startup::{
 use aos_sandbox_source_provider_security::{
     RootMountSourceProviderOwnerV1, SourceProviderSecurityError,
     validate_fixed_root_mount_authority_v1,
+    validate_fixed_selected_root_mount_authority_v1,
 };
 use sha2::{Digest as _, Sha256};
 
@@ -105,6 +107,13 @@ fn run() -> Result<(), MountDaemonErrorV1> {
     }
 
     let arguments = env::args().collect::<Vec<_>>();
+    if matches!(arguments.as_slice(), [_, command]
+        if command == "--check-selected-source-provider-authority")
+    {
+        validate_fixed_selected_root_mount_authority_v1()
+            .map_err(ProductionRootMountSourceProviderErrorV1::from)?;
+        return Ok(());
+    }
     if arguments
         .get(1)
         .is_some_and(|argument| argument == "--check-source-provider-authority")
@@ -157,7 +166,17 @@ fn run() -> Result<(), MountDaemonErrorV1> {
         MAXIMUM_RETAINED_MOUNTS,
     )?);
 
-    let (helper_executable, source_provider_enabled) = parse_arguments(arguments)?;
+    let selected_mount_source = matches!(arguments.as_slice(), [_, _, source, selected]
+        if source == "--source-provider" && selected == "--selected-mount-source");
+    let (helper_executable, source_provider_enabled) = if selected_mount_source {
+        let [_, helper, _, _] = arguments.as_slice() else {
+            return Err(MountDaemonErrorV1::Arguments);
+        };
+        if helper.starts_with('-') { return Err(MountDaemonErrorV1::Arguments); }
+        (helper.clone(), true)
+    } else {
+        parse_arguments(arguments)?
+    };
     let (mut journal, _) = Journal::open_protected_at(
         Path::new(STATE_ROOT),
         "mount.journal",
@@ -199,6 +218,10 @@ fn run() -> Result<(), MountDaemonErrorV1> {
         .map_err(|error| MountError::State(error.to_string()))?;
     let mut broker =
         MountBroker::new_with_destination_slots(journal, worker, authority, CATALOG_ROOT, 0)?;
+    if selected_mount_source {
+        run_selected_original_mount(&mut activation, &mut broker)?;
+        return Ok(());
+    }
     // A disabled connector cannot recover a cold request. Enabled startup
     // selects the validated cold graph before constructing the source runtime;
     // pending replacement still requires proven death and genuine funding.
@@ -258,6 +281,32 @@ fn run() -> Result<(), MountDaemonErrorV1> {
             }
         }
     }
+}
+
+fn run_selected_original_mount<W: aos_sandbox_mount::worker::MountWorker>(
+    activation: &mut ProductionBrokerSessionActivationV1,
+    broker: &mut MountBroker<W>,
+) -> Result<(), MountDaemonErrorV1> {
+    // This branch does not replace the preceding exclusive FD-table capture.
+    // Its selected PID1-image bridge remains an actual missing prerequisite;
+    // no D-Bus image DATA or caller flag is converted into that Core proof.
+    let accept_deadline = production_deadline_after(ACCEPT_TIMEOUT)?;
+    // Derive the fixed cycle deadline before accepting an original. No
+    // fallible clock operation may stand between receipt and resident custody;
+    // time spent accepting is charged to this same deadline, never renewed.
+    let request_deadline = production_deadline_after(REQUEST_TIMEOUT)?;
+    let session = activation.accept_authenticated(accept_deadline)?;
+    let mut original = ProductionOriginalMountCycleV1::new(session, request_deadline);
+    let locally_sent = original.run_once(broker).is_ok();
+    if locally_sent {
+        eprintln!("aos-sandbox-mountd: original Root1 sent; terminal continuation remains unavailable");
+    } else {
+        eprintln!("aos-sandbox-mountd: selected original Mount cycle refused; original invocation retained");
+    }
+    // Keep the cycle, activation and sole broker runtime resident through the
+    // intentional failed invocation. OS death releases them; this is not Drop,
+    // queue settlement, terminal drain, BSA completion or public Acquire success.
+    std::process::exit(1)
 }
 
 fn requires_source_recovery(source_provider_enabled: bool, journal: &Journal) -> bool {

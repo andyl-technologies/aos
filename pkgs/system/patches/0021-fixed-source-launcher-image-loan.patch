@@ -1,0 +1,498 @@
+diff --git a/src/core/load-fragment.h b/src/core/load-fragment.h
+--- a/src/core/load-fragment.h
++++ b/src/core/load-fragment.h
+@@ -14,4 +14,7 @@ 
+ bool aos_network_image_guard_active(void);
+ int aos_network_verify_loaded_fragment(const Unit *u);
++bool aos_own_launcher_name(const char *name);
++bool aos_own_launcher_protected_unit(const Unit *u);
++int aos_own_launcher_verify_loaded_fragment(const Unit *u);
+ 
+ int parse_crash_chvt(const char *value, int *data);
+diff --git a/src/core/service.h b/src/core/service.h
+--- a/src/core/service.h
++++ b/src/core/service.h
+@@ -256,5 +256,10 @@ typedef struct Service {
+         size_t n_extra_fds;
+         /* One local FD-only launch arm, deliberately absent from serialization. */
+         bool aos_fuse_worker_launch_armed;
++        /* Selection and the original parsed-FILE seal are not serialized. */
++        bool aos_own_launcher_image;
++        bool aos_own_launcher_fragment_pinned;
++        dev_t aos_own_launcher_fragment_device;
++        ino_t aos_own_launcher_fragment_inode;
+ 
+         LIST_HEAD(OpenFile, open_files);
+diff --git a/src/core/load-fragment-gperf.gperf.in b/src/core/load-fragment-gperf.gperf.in
+--- a/src/core/load-fragment-gperf.gperf.in
++++ b/src/core/load-fragment-gperf.gperf.in
+@@ -487,2 +487,3 @@ 
+ Service.NotifyAccess,                         config_parse_notify_access,                         0,                                  offsetof(Service, notify_access)
++Service.AosOwnLauncherImage,                  config_parse_bool,                                  0,                                  offsetof(Service, aos_own_launcher_image)
+ Service.Sockets,                              config_parse_service_sockets,                       0,                                  0
+diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
+--- a/src/core/load-fragment.c
++++ b/src/core/load-fragment.c
+@@ -6155,3 +6155,6 @@ static const char *aos_network_template_name(const char *name) {
+ static const char *aos_network_template_name(const char *name) {
++        /* Share only the physical manifest walk, not Network admission. */
++        if (aos_own_launcher_name(name))
++                return name;
+         /* The Network protected-name set is unchanged. Only the private image
+          * path resolver is shared with the separately armed fixed FUSE role. */
+@@ -6379,3 +6379,69 @@ 
+-int unit_load_fragment(Unit *u) {
++bool aos_own_launcher_name(const char *name) {
++        return streq_ptr(name, "aos-sandbox-mountd.service") ||
++               streq_ptr(name, "aos-source-providerd.service");
++}
++
++bool aos_own_launcher_protected_unit(const Unit *u) {
++        const Service *s;
++
++        if (u->type != UNIT_SERVICE)
++                return false;
++        s = SERVICE(u);
++        return s->aos_own_launcher_image || s->aos_own_launcher_fragment_pinned;
++}
++
++/* Bind the directive to the FILE which the sole parser actually consumed.
++ * A drop-in, flag, reopened logical name or serialized bit cannot create it. */
++static int aos_own_launcher_pin_parsed_fragment(Unit *u, const struct stat *parsed) {
++        _cleanup_free_ char *expected = NULL;
++        struct stat physical;
++        Service *s;
++        int r;
++
++        if (!aos_own_launcher_protected_unit(u))
++                return 0;
++        if (!aos_own_launcher_name(u->id) || !aos_network_image_guard_active() ||
++            u->transient || !set_isempty(u->aliases) || !isempty(u->source_path))
++                return -EPERM;
++        r = aos_network_image_fragment(u->id, &expected, NULL, &physical);
++        if (r < 0)
++                return r;
++        if (parsed->st_dev != physical.st_dev || parsed->st_ino != physical.st_ino ||
++            !streq_ptr(u->fragment_path,
++                       strjoina("/nix/store/", expected + strlen("/nix.lower/store/"))))
++                return -EPERM;
++
++        s = SERVICE(u);
++        s->aos_own_launcher_fragment_device = parsed->st_dev;
++        s->aos_own_launcher_fragment_inode = parsed->st_ino;
++        s->aos_own_launcher_fragment_pinned = true;
++        return 0;
++}
++
++int aos_own_launcher_verify_loaded_fragment(const Unit *u) {
++        _cleanup_free_ char *expected = NULL;
++        struct stat physical;
++        const Service *s;
++        int r;
++
++        if (!aos_own_launcher_protected_unit(u))
++                return 0;
++        s = SERVICE(u);
++        if (!s->aos_own_launcher_image || !s->aos_own_launcher_fragment_pinned ||
++            !aos_own_launcher_name(u->id) || !aos_network_image_guard_active() ||
++            u->transient || u->load_state != UNIT_LOADED || !set_isempty(u->aliases) ||
++            !strv_isempty(u->dropin_paths) || !isempty(u->source_path))
++                return -EPERM;
++        r = aos_network_image_fragment(u->id, &expected, NULL, &physical);
++        if (r < 0)
++                return r;
++        if (physical.st_dev != s->aos_own_launcher_fragment_device ||
++            physical.st_ino != s->aos_own_launcher_fragment_inode)
++                return -EPERM;
++        return streq_ptr(u->fragment_path,
++                         strjoina("/nix/store/", expected + strlen("/nix.lower/store/"))) ? 0 : -EPERM;
++}
++
++int unit_load_fragment(Unit *u) {
+         _cleanup_free_ char *image_fragment = NULL;
+         _cleanup_close_ int image_fd = -EBADF;
+@@ -6470,6 +6470,9 @@ int unit_load_fragment(Unit *u) {
+                         if (r == -ENOEXEC)
+                                 log_unit_notice_errno(u, r, "Unit configuration has fatal error, unit will not be started.");
+                         if (r < 0)
+                                 return r;
++                        r = aos_own_launcher_pin_parsed_fragment(u, &st);
++                        if (r < 0)
++                                return log_unit_error_errno(u, r, "Refusing unsealed own-launcher fragment: %m");
+                 }
+         }
+diff --git a/src/core/service.c b/src/core/service.c
+--- a/src/core/service.c
++++ b/src/core/service.c
+@@ -20,2 +20,3 @@
+ #include "bus-util.h"
++#include "capability-util.h"
+ #include "cgroup.h"
+@@ -1965,1 +1965,121 @@
+-static int service_spawn_internal(
++/* Private multicall copies are not a general Mount executable surface.
++ * Only this genuine PID1 control-command crossing selects their purpose. */
++static bool aos_own_launcher_directory(const ExecContext *context, ExecDirectoryType type, const char *path) {
++        const ExecDirectory *directory = &context->directories[type];
++
++        return directory->mode == 0700 && directory->n_items == 1 && directory->items &&
++               streq_ptr(directory->items[0].path, path) && directory->items[0].flags == 0 &&
++               !directory->items[0].idmapped && strv_isempty(directory->items[0].symlinks);
++}
++
++static int aos_own_launcher_mount_installer(Service *s, ExecCommand *c, ExecFlags flags) {
++        static const struct {
++                const char *name;
++                const char *root;
++                bool client;
++        } rows[] = {
++                { "mount-broker", "/var/lib/aos/sandbox-mount/broker-session", false },
++                { "mount-host-client", "/var/lib/aos/sandbox-mount/broker-session/host", true },
++                { "mount-fuse-broker", "/var/lib/aos/sandbox-mount/broker-session/fuse", false },
++        };
++        static const char install[] = "/run/aos/mount-executable-carrier/install";
++        static const char chmod[] = "/run/aos/mount-executable-carrier/chmod";
++        static const char credentials[] = "/run/credentials/aos-sandbox-mountd.service/";
++        const ExecContext *context = &s->exec_context;
++        ExecCommand *command;
++        bool original_prestart = false;
++        size_t i;
++
++        /* Do not alter other selected daemon/check commands here. The
++         * independent original-fragment seal still applies to every spawn. */
++        if (!streq_ptr(c->path, install) && !streq_ptr(c->path, chmod))
++                return 0;
++        if (!streq_ptr(UNIT(s)->id, "aos-sandbox-mountd.service"))
++                return -EPERM;
++        LIST_FOREACH(command, command, s->exec_command[SERVICE_EXEC_START_PRE])
++                if (command == c)
++                        original_prestart = true;
++        if (!original_prestart || c->flags != 0 || !FLAGS_SET(flags, EXEC_IS_CONTROL) ||
++            !FLAGS_SET(flags, EXEC_APPLY_SANDBOXING|EXEC_APPLY_CHROOT) ||
++            !FLAGS_SET(flags, EXEC_SETUP_CREDENTIALS_FRESH) ||
++            (flags & (EXEC_PASS_FDS|EXEC_CONTROL_CGROUP)) ||
++            s->permissions_start_only || s->root_directory_start_only)
++                return -EPERM;
++
++        /* Enum choices alone do not exclude actual Service FD overrides.
++         * Resident daemon activation/stashed stores need not be empty: this
++         * control command forwards none of them through the shared engine. */
++        if (s->stdin_fd >= 0 || s->stdout_fd >= 0 || s->stderr_fd >= 0 || s->root_directory_fd >= 0 ||
++            s->socket_fd_selinux_context_net || context->selinux_context_ignore ||
++            context->stdio_as_fds || context->root_directory_as_fd ||
++            context->std_input != EXEC_INPUT_NULL || context->std_output != EXEC_OUTPUT_JOURNAL ||
++            context->std_error != EXEC_OUTPUT_INHERIT || context->stdin_data || context->stdin_data_size)
++                return -EPERM;
++        for (i = 0; i < 3; i++)
++                if (!isempty(context->stdio_fdname[i]) || !isempty(context->stdio_file[i]))
++                        return -EPERM;
++        if (!streq_ptr(context->selinux_context, "system_u:system_r:aos_sandbox_mount_t:s0") ||
++            !isempty(context->user) || !isempty(context->group) ||
++            !strv_isempty(context->supplementary_groups) || context->dynamic_user ||
++            !context->no_new_privileges ||
++            context->capability_bounding_set != ((UINT64_C(1) << CAP_SYS_ADMIN) | (UINT64_C(1) << CAP_SYS_CHROOT)) ||
++            context->capability_ambient_set != context->capability_bounding_set)
++                return -EPERM;
++
++        /* No caller environment or namespace overlay may change multicall
++         * dispatch, its literal sources, or the immutable carrier path. The
++         * sole existing unit environment engine supplies its fixed PATH. */
++        if (!strv_isempty(context->environment) || !strv_isempty(context->environment_files) ||
++            !strv_isempty(context->pass_environment) || !strv_isempty(context->unset_environment) ||
++            !strv_isempty(context->exec_search_path) || !isempty(context->working_directory) ||
++            context->working_directory_home || !isempty(context->root_directory) ||
++            !isempty(context->root_image) || !isempty(context->root_verity) ||
++            !isempty(context->root_hash_path) || !isempty(context->root_hash_sig_path) ||
++            context->root_hash.iov_len || context->root_hash_sig.iov_len ||
++            !isempty(context->root_mstack) || context->root_ephemeral ||
++            context->n_bind_mounts || context->n_temporary_filesystems ||
++            context->n_mount_images || context->n_extension_images ||
++            !strv_isempty(context->extension_directories) ||
++            !strv_isempty(context->read_write_paths) || !strv_isempty(context->read_only_paths) ||
++            !strv_isempty(context->inaccessible_paths) || !strv_isempty(context->exec_paths) ||
++            !strv_isempty(context->no_exec_paths) || !isempty(context->user_namespace_path) ||
++            !isempty(context->network_namespace_path) || !isempty(context->ipc_namespace_path))
++                return -EPERM;
++        if (!aos_own_launcher_directory(context, EXEC_DIRECTORY_STATE, "aos/sandbox-mount") ||
++            !aos_own_launcher_directory(context, EXEC_DIRECTORY_RUNTIME, "aos/sandbox-mount-catalog"))
++                return -EPERM;
++        for (i = 0; i < _EXEC_DIRECTORY_TYPE_MAX; i++)
++                if (i != EXEC_DIRECTORY_STATE && i != EXEC_DIRECTORY_RUNTIME && context->directories[i].n_items != 0)
++                        return -EPERM;
++        if (!hashmap_isempty(context->set_credentials) || !ordered_set_isempty(context->import_credentials))
++                return -EPERM;
++
++        /* Membership is in the genuine configured credential row, never in
++         * a caller pathname or an invented empty/zero authority projection.
++         * All resulting strings are bounded concatenations of fixed DATA. */
++        for (i = 0; i < ELEMENTSOF(rows); i++) {
++                const char *custody = strjoina(rows[i].root, "/custody");
++                const char *manifest = strjoina(rows[i].name, "-manifest");
++                const char *hello = strjoina(rows[i].name, "-hello-key");
++                const char *record = strjoina(rows[i].name, "-record-key");
++                const char *hello_destination = rows[i].client ? "client-hello-signing-key" : "broker-hello-signing-key";
++                const char *record_destination = rows[i].client ? "client-record-signing-key" : "broker-outcome-signing-key";
++
++                if (!hashmap_contains(context->load_credentials, manifest) ||
++                    !hashmap_contains(context->load_credentials, hello) ||
++                    !hashmap_contains(context->load_credentials, record))
++                        continue;
++                if (streq_ptr(c->path, install) &&
++                    (strv_equal(c->argv, STRV_MAKE(install, "-d", "-m", "0700", rows[i].root)) ||
++                     strv_equal(c->argv, STRV_MAKE(install, "-d", "-m", "0700", custody)) ||
++                     strv_equal(c->argv, STRV_MAKE(install, "-m", "0400", strjoina(credentials, manifest), strjoina(custody, "/broker-session-manifest"))) ||
++                     strv_equal(c->argv, STRV_MAKE(install, "-m", "0400", strjoina(credentials, hello), strjoina(custody, "/", hello_destination))) ||
++                     strv_equal(c->argv, STRV_MAKE(install, "-m", "0400", strjoina(credentials, record), strjoina(custody, "/", record_destination)))))
++                        return 0;
++                if (streq_ptr(c->path, chmod) && strv_equal(c->argv, STRV_MAKE(chmod, "0500", custody)))
++                        return 0;
++        }
++        return -EPERM;
++}
++
++static int service_spawn_internal(
+@@ -1988,4 +1988,13 @@ static int service_spawn_internal(
+         assert(c);
+         assert(ret_pid);
+ 
++        if (aos_own_launcher_protected_unit(UNIT(s))) {
++                r = aos_own_launcher_verify_loaded_fragment(UNIT(s));
++                if (r < 0)
++                        return log_unit_error_errno(UNIT(s), r, "Refusing unsealed own-launcher command: %m");
++                r = aos_own_launcher_mount_installer(s, c, flags);
++                if (r < 0)
++                        return log_unit_error_errno(UNIT(s), r, "Refusing unsealed Mount installer recipe: %m");
++        }
++
+         if (aos_fuse_worker_protected_unit(UNIT(s))) {
+diff --git a/src/core/load-dropin.c b/src/core/load-dropin.c
+--- a/src/core/load-dropin.c
++++ b/src/core/load-dropin.c
+@@ -38,4 +38,8 @@ static int process_deps(
+         if (r < 0)
+                 return r;
+ 
++        if (aos_own_launcher_protected_unit(u) && !strv_isempty(paths))
++                return log_unit_error_errno(u, SYNTHETIC_ERRNO(EPERM),
++                                            "Refusing own-launcher dependency drop-ins: %m");
++
+         if (((aos_network_image_guard_active() && aos_network_protected_unit(u)) ||
+@@ -136,4 +136,8 @@ int unit_load_dropin(Unit *u) {
+         if (r <= 0)
+                 return 0;
+ 
++        if (aos_own_launcher_protected_unit(u))
++                return log_unit_error_errno(u, SYNTHETIC_ERRNO(EPERM),
++                                            "Refusing own-launcher configuration drop-ins: %m");
++
+         if ((aos_network_image_guard_active() && aos_network_protected_unit(u)) ||
+diff --git a/src/core/dbus-unit.c b/src/core/dbus-unit.c
+--- a/src/core/dbus-unit.c
++++ b/src/core/dbus-unit.c
+@@ -2597,2 +2597,5 @@ int bus_unit_set_properties(
+         /* Reject in-memory control overrides before the first setter runs. */
++        if (aos_own_launcher_protected_unit(u))
++                return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_ACCESS_DENIED,
++                                         "Own-launcher units do not accept property overrides");
+         if (aos_fuse_worker_protected_unit(u))
+diff --git a/src/core/unit.c b/src/core/unit.c
+--- a/src/core/unit.c
++++ b/src/core/unit.c
+@@ -1804,5 +1804,11 @@ static int aos_network_unit_environment(Unit *u, char ***ret) {
+         char **env;
+ 
++        if (aos_own_launcher_protected_unit(u)) {
++                int r = aos_own_launcher_verify_loaded_fragment(u);
++                if (r < 0)
++                        return r;
++        }
++
+         if ((!aos_network_image_guard_active() || !aos_network_protected_unit(u)) &&
+-            !aos_fuse_worker_protected_unit(u))
++            !aos_fuse_worker_protected_unit(u) && !aos_own_launcher_protected_unit(u))
+                 return manager_get_effective_environment(u->manager, ret);
+@@ -6683,3 +6683,7 @@ int unit_live_mount(
+         assert(UNIT_VTABLE(u)->live_mount);
+ 
++        if (aos_own_launcher_protected_unit(u))
++                return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_ACCESS_DENIED,
++                                         "Own-launcher units do not accept live mounts");
++
+         if ((aos_network_image_guard_active() && aos_network_protected_unit(u)) ||
+diff --git a/src/core/dbus-manager.c b/src/core/dbus-manager.c
+--- a/src/core/dbus-manager.c
++++ b/src/core/dbus-manager.c
+@@ -5,3 +5,6 @@ 
+ #include <unistd.h>
++#include <fcntl.h>
++#include <sys/stat.h>
++#include <sys/statvfs.h>
+ 
+ #include "alloc-util.h"
+@@ -17,2 +17,3 @@ 
+ #include "bus-util.h"
++#include "bus-message.h"
+ #include "chase.h"
+@@ -41,2 +41,3 @@ 
+ #include "log.h"
++#include "load-fragment.h"
+ #include "manager-dump.h"
+@@ -48,2 +48,4 @@ 
+ #include "selinux-access.h"
++#include "selinux-util.h"
++#include "service.h"
+ #include "set.h"
+@@ -723,1 +723,147 @@ 
+-static int method_load_unit(sd_bus_message *message, void *userdata, sd_bus_error *reterr_error) {
++static int aos_own_launcher_enforcing(void) {
++#if HAVE_SELINUX
++        int r = dlopen_libselinux(LOG_ERR);
++        if (r < 0)
++                return r;
++        return sym_security_getenforce() == 1 ? 0 : -EPERM;
++#else
++        return -EOPNOTSUPP;
++#endif
++}
++
++static int aos_own_launcher_require_sender(
++                Manager *m,
++                sd_bus_message *message,
++                PidRef *sender,
++                Unit *expected,
++                sd_id128_t invocation,
++                sd_bus_error *error) {
++        _cleanup_(sd_bus_creds_unrefp) sd_bus_creds *creds = NULL;
++        const char *context, *required;
++        Service *s;
++        Unit *u;
++        int r;
++
++        if (getpid_cached() != 1 || m->runtime_scope != RUNTIME_SCOPE_SYSTEM || sender->fd < 0)
++                return -EPERM;
++        u = manager_get_unit_by_pidref_cgroup(m, sender);
++        if (!u || u->type != UNIT_SERVICE || !aos_own_launcher_name(u->id) ||
++            !aos_own_launcher_protected_unit(u) || (expected && u != expected))
++                return -EPERM;
++        r = aos_own_launcher_verify_loaded_fragment(u);
++        if (r < 0)
++                return r;
++        s = SERVICE(u);
++        if (!IN_SET(s->state, SERVICE_START, SERVICE_RUNNING) || !s->main_pid_known ||
++            s->main_pid_alien || s->main_pid.fd < 0 || sender->pid != s->main_pid.pid ||
++            !s->main_command || s->main_command != s->exec_command[SERVICE_EXEC_START] ||
++            s->main_command->command_next || sd_id128_is_null(u->invocation_id) ||
++            (expected && !sd_id128_equal(u->invocation_id, invocation)))
++                return -EPERM;
++        r = pidref_acquire_pidfd_id(sender);
++        if (r < 0)
++                return r;
++        r = pidref_acquire_pidfd_id(&s->main_pid);
++        if (r < 0)
++                return r;
++        if (sender->fd_id == 0 || s->main_pid.fd_id == 0 || sender->fd_id != s->main_pid.fd_id ||
++            pidref_verify(sender) <= 0 || pidref_verify(&s->main_pid) <= 0)
++                return -EPERM;
++
++        r = aos_own_launcher_enforcing();
++        if (r < 0)
++                return r;
++        r = sd_bus_query_sender_creds(message, SD_BUS_CREDS_SELINUX_CONTEXT, &creds);
++        if (r < 0)
++                return r;
++        if (sd_bus_creds_get_augmented_mask(creds) & SD_BUS_CREDS_SELINUX_CONTEXT)
++                return -EPERM;
++        r = sd_bus_creds_get_selinux_context(creds, &context);
++        if (r < 0)
++                return r;
++        required = streq(u->id, "aos-sandbox-mountd.service") ?
++                   "system_u:system_r:aos_sandbox_mount_t:s0" :
++                   "system_u:system_r:aos_source_provider_t:s0";
++        if (!streq(context, required))
++                return -EPERM;
++        return mac_selinux_unit_access_check(u, message, "status", error);
++}
++
++static int aos_own_launcher_require_image(int descriptor, const struct stat *expected) {
++        struct stat held, current;
++        struct statvfs backing;
++        int flags;
++
++        flags = fcntl(descriptor, F_GETFL);
++        if (flags < 0 || fstat(descriptor, &held) < 0 ||
++            fstatvfs(descriptor, &backing) < 0 || stat("/proc/self/exe", &current) < 0)
++                return -errno;
++        if ((flags & O_ACCMODE) != O_RDONLY || (flags & O_PATH) ||
++            !S_ISREG(held.st_mode) || held.st_uid != 0 || held.st_gid != 0 || held.st_nlink != 1 ||
++            (held.st_mode & 0111) == 0 || (held.st_mode & 0222) != 0 ||
++            !FLAGS_SET(backing.f_flag, ST_RDONLY) ||
++            held.st_dev != current.st_dev || held.st_ino != current.st_ino ||
++            held.st_dev != expected->st_dev || held.st_ino != expected->st_ino ||
++            held.st_size != expected->st_size || held.st_mode != expected->st_mode ||
++            held.st_mtim.tv_sec != expected->st_mtim.tv_sec ||
++            held.st_mtim.tv_nsec != expected->st_mtim.tv_nsec ||
++            held.st_ctim.tv_sec != expected->st_ctim.tv_sec ||
++            held.st_ctim.tv_nsec != expected->st_ctim.tv_nsec)
++                return -EPERM;
++        return 0;
++}
++
++static int method_get_aos_own_launcher_image(sd_bus_message *message, void *userdata, sd_bus_error *error) {
++        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
++        _cleanup_(pidref_done) PidRef sender = PIDREF_NULL;
++        _cleanup_close_ int image = -EBADF;
++        Manager *m = ASSERT_PTR(userdata);
++        sd_id128_t invocation;
++        struct stat original;
++        Unit *u;
++        int r;
++
++        if (sd_bus_message_is_empty(message) <= 0 || message->n_fds != 0)
++                return -EINVAL;
++        r = bus_query_sender_pidref(message, &sender);
++        if (r < 0)
++                return r;
++        r = aos_own_launcher_require_sender(m, message, &sender, NULL, SD_ID128_NULL, error);
++        if (r < 0)
++                return r;
++        u = manager_get_unit_by_pidref_cgroup(m, &sender);
++        if (!u)
++                return -EPERM;
++        invocation = u->invocation_id;
++
++        image = open("/proc/self/exe", O_RDONLY | O_CLOEXEC | O_NOCTTY);
++        if (image < 0 || fstat(image, &original) < 0)
++                return -errno;
++        r = aos_own_launcher_require_image(image, &original);
++        if (r < 0)
++                return r;
++        r = aos_own_launcher_require_sender(m, message, &sender, u, invocation, error);
++        if (r < 0)
++                return r;
++        r = sd_bus_message_new_method_return(message, &reply);
++        if (r < 0)
++                return r;
++        r = sd_bus_message_append(reply, "h", image);
++        if (r < 0)
++                return r;
++
++        /* The native message owns its duplicate before the final bookends.
++         * The local original remains held until native send has returned. */
++        r = aos_own_launcher_require_image(image, &original);
++        if (r < 0)
++                return r;
++        r = aos_own_launcher_require_sender(m, message, &sender, u, invocation, error);
++        if (r < 0)
++                return r;
++        r = aos_own_launcher_enforcing();
++        if (r < 0)
++                return r;
++        return sd_bus_message_send(reply);
++}
++
++static int method_load_unit(sd_bus_message *message, void *userdata, sd_bus_error *reterr_error) {
+@@ -3021,2 +3021,4 @@ 
++        SD_BUS_METHOD("GetAosOwnLauncherImageV1", "", "h",
++                      method_get_aos_own_launcher_image, SD_BUS_VTABLE_UNPRIVILEGED),
+         SD_BUS_METHOD_WITH_ARGS("GetUnit",
+                                 SD_BUS_ARGS("s", name),

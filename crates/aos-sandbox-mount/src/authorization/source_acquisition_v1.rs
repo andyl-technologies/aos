@@ -29,6 +29,60 @@ use super::admission_v1::{
 const MOUNT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::new(2, 0);
 
 impl MountAuthorityV1 {
+    /// Reopens the exact same-journal fence for the original Acquire recipe.
+    pub(crate) fn open_original_acquire_fence(
+        &self,
+        sandbox_id: &[u8; 16],
+        bytes: &[u8],
+    ) -> Result<aos_sandbox_broker::BrokerAuthorizationFenceV1, MountAdmissionError> {
+        self.0.open_fence(sandbox_id, bytes)
+    }
+
+    /// Rechecks current protected identity for the reopened original fence.
+    pub(crate) fn check_original_acquire_fence(
+        &self,
+        fence: &aos_sandbox_broker::BrokerAuthorizationFenceV1,
+    ) -> Result<(), MountAdmissionError> {
+        self.0.check_current_fence(fence)
+    }
+
+    /// Admits the exact body of a durably authenticated original Acquire.
+    ///
+    /// The modern session has no legacy envelope to reconstruct. Its closed
+    /// descriptor-free receipt supplies the same original body and untrusted
+    /// quartet. Live validation is not permission: the sole domain admission
+    /// below independently verifies the signatures, assignment, fence and time.
+    pub(crate) fn admit_original_acquire_source(
+        &self,
+        request: &LiveValidatedAcquireMountSourceRequest,
+        body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        current_clock: &RawPairedClockSample,
+        prior_fence: Option<&[u8]>,
+    ) -> Result<VerifiedMountAdmissionV1, MountAdmissionError> {
+        if request.header().protocol_version() != MOUNT_PROTOCOL_VERSION
+            || request.header().audience() != Audience::AUDIENCE_NODE_CONTROLLER
+            || mount_source_acquisition_request_digest_v1(body) != request.request_digest()
+        {
+            return Err(MountAdmissionError::RequestMismatch);
+        }
+        let semantics = canonical_acquire_mount_source_semantics_v1(request.request())
+            .map_err(|_| MountAdmissionError::RequestMismatch)?;
+
+        self.admit_source_operation(
+            ValidatedSourceEffectCarrier {
+                artifacts,
+                request_body: body,
+                descriptor_count: 0,
+            },
+            request.header(),
+            request.fence(),
+            semantics,
+            current_clock,
+            prior_fence,
+        )
+    }
+
     /// Intersects one exact source Acquire with protected Mount authority.
     ///
     /// The request must already have passed live peer, header, deadline,

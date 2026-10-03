@@ -6,6 +6,8 @@
   ...
 }: let
   cfg = config.aos.sandbox.sourceProvider;
+  selectedSourceMount = config.aos.sandbox.mountBroker.sourceProviderSession.enable;
+  selectedArguments = lib.optionalString selectedSourceMount " --selected-mount-source";
 in {
   options.aos.sandbox.sourceProvider = {
     enable = lib.mkEnableOption "the authenticated SourceProvider catalog and closed source ingress";
@@ -71,10 +73,10 @@ in {
         Type = "simple";
         Sockets = ["aos-source-providerd.socket"];
         ExecStartPre = [
-          "${cfg.package}/bin/aos-source-providerd --check-source-provider-authority"
-          "${cfg.package}/bin/aos-source-providerd --install-catalog"
+          "${cfg.package}/bin/aos-source-providerd --check-source-provider-authority${selectedArguments}"
+          "${cfg.package}/bin/aos-source-providerd --install-catalog${selectedArguments}"
         ];
-        ExecStart = "${cfg.package}/bin/aos-source-providerd";
+        ExecStart = "${cfg.package}/bin/aos-source-providerd${selectedArguments}";
         LoadCredential = [
           "current-catalog-publication:/run/credentials/@system/${cfg.credentials.catalogPublication}"
           "current-catalog-manifest:/run/credentials/@system/${cfg.credentials.catalogManifest}"
@@ -99,7 +101,7 @@ in {
         ProtectKernelLogs = true;
         ProtectKernelModules = true;
         ProtectKernelTunables = true;
-        ProtectProc = "invisible";
+        ProtectProc = if selectedSourceMount then "default" else "invisible";
         ProtectSystem = "strict";
         RestrictAddressFamilies = ["AF_UNIX"];
         RestrictNamespaces = true;
@@ -107,6 +109,9 @@ in {
         RestrictSUIDSGID = true;
         Slice = "aos-control.slice";
         TasksMax = 32;
+      } // lib.optionalAttrs selectedSourceMount {
+        AosOwnLauncherImage = true;
+        SELinuxContext = "system_u:system_r:aos_source_provider_t:s0";
       };
     };
   };

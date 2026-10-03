@@ -24,8 +24,16 @@ OFFLINE_PREPARE_EXECUTABLE = "aos_nix_offline_prepare_exec_t"
 OFFLINE_PREPARE_PROFILE = "aos_nix_offline_prepare_profile_t"
 OFFLINE_PREPARE_CREDENTIAL = "aos_nix_offline_prepare_credential_t"
 OFFLINE_PREPARE_STATE = "aos_nix_offline_prepare_state_t"
-ENFORCING = (*OWNER_DOMAINS, *HELPER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE)
-NO_DEFAULT_ENTRY = (*OWNER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE)
+# Only the closed selected production recipe renders these two task names.
+# The empty default neither changes an existing cohort nor skips its checks.
+SELECTED_MOUNT_SOURCE_DOMAINS = ()
+SELECTED_LAUNCHER_IMAGE_IOCTL_CELLS = (
+    ("aos_sandbox_mount_t", "init_exec_t"),
+    ("aos_source_provider_t", "init_exec_t"),
+)
+SELECTED_LAUNCHER_IMAGE_IOCTL_SELECTORS = frozenset()
+ENFORCING = (*OWNER_DOMAINS, *HELPER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE, *SELECTED_MOUNT_SOURCE_DOMAINS)
+NO_DEFAULT_ENTRY = (*OWNER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE, *SELECTED_MOUNT_SOURCE_DOMAINS)
 ROOT_CUSTODY_CUTS = (
     ("fd", "use"),
     ("unix_stream_socket", "read"),
@@ -527,12 +535,162 @@ def matrix(Access, Transition, accesses, ordinary_domains):
         negative.append(Access(domain, "*", "process", "setsockcreate"))
         negative.append(Access(domain, "*", "capability", "sys_ptrace"))
         negative.append(Access(domain, "*", "cap_userns", "sys_ptrace"))
-        if domain not in PREPARER_DOMAINS:
+        selected_mount = domain == "aos_sandbox_mount_t" and domain in SELECTED_MOUNT_SOURCE_DOMAINS
+        if domain not in PREPARER_DOMAINS and not selected_mount:
             negative.append(Access(domain, "*", "capability", "sys_admin"))
             negative.append(Access(domain, "*", "cap_userns", "sys_admin"))
+
+    selected_positive, selected_negative, selected_transitions = _selected_mount_source_matrix(
+        Access, Transition, accesses, all_roles,
+    )
+    positive.extend(selected_positive)
+    negative.extend(selected_negative)
+    transitions.extend(selected_transitions)
 
     view_positive, view_negative, view_transitions = view_policy.matrix(Access, Transition, accesses, all_roles)
     positive.extend(view_positive)
     negative.extend(view_negative)
     transitions.extend(view_transitions)
     return tuple(sorted(set(positive))), tuple(sorted(set(negative))), tuple(transitions)
+
+
+def _selected_mount_source_matrix(Access, Transition, accesses, all_roles):
+    """Returns fixed selected-owner DATA for the same native policy queries."""
+
+    if not SELECTED_MOUNT_SOURCE_DOMAINS:
+        return (), (), ()
+    if SELECTED_MOUNT_SOURCE_DOMAINS != ("aos_sandbox_mount_t", "aos_source_provider_t"):
+        raise ValueError("unexpected selected Mount/Source owner cohort")
+
+    mount, source = SELECTED_MOUNT_SOURCE_DOMAINS
+    positive = []
+    negative = []
+    transitions = []
+    file_read = ("getattr", "open", "read")
+    file_mutate = ("append", "create", "link", "lock", "rename", "setattr", "unlink", "write")
+    dir_mutate = ("add_name", "create", "remove_name", "rename", "rmdir", "setattr", "write")
+    owner_rows = (
+        (mount, "aos_sandbox_mount"),
+        (source, "aos_source_provider"),
+    )
+
+    for domain, prefix in owner_rows:
+        executable = f"{prefix}_exec_t"
+        credential = f"{prefix}_credential_t"
+        state = f"{prefix}_state_t"
+        custody = f"{prefix}_custody_t"
+        runtime = f"{prefix}_runtime_t"
+
+        positive.extend(accesses("init_t", executable, "file", (
+            "execute", "getattr", "map", "open", "read",
+        )))
+        positive.extend((
+            Access("init_t", domain, "process", "transition"),
+            Access("init_t", domain, "process2", "nnp_transition"),
+            Access(domain, "init_t", "fd", "use"),
+        ))
+        positive.extend(accesses(domain, executable, "file", (
+            "entrypoint", "execute", "getattr", "map", "open", "read",
+        )))
+        # ELF mapping execute is not permission for another same-SID exec.
+        negative.append(Access(domain, executable, "file", "execute_no_trans"))
+        negative.append(Access(domain, domain, "process", "transition"))
+        for other in all_roles:
+            if other not in ("init_t", domain):
+                negative.extend(accesses(other, executable, "file", (
+                    "entrypoint", "execute", "execute_no_trans",
+                )))
+        positive.extend(accesses(domain, credential, "file", file_read))
+        positive.extend(accesses(domain, credential, "dir", (*file_read, "search")))
+        positive.extend(accesses("init_t", credential, "file", CREDENTIAL_PID1_FILE_DELIVERY))
+        positive.extend(accesses("init_t", credential, "dir", CREDENTIAL_PID1_DIR_DELIVERY))
+        positive.append(Access(credential, "tmpfs_t", "filesystem", "associate"))
+        transitions.append(Transition("init_t", credential, "file", "init_tmpfs_t", filename=Transition.UNNAMED))
+
+        positive.extend(accesses(domain, state, "file", (
+            "append", "create", "getattr", "lock", "open", "read", "rename", "setattr", "unlink", "write",
+        )))
+        positive.extend(accesses(domain, state, "dir", (
+            "add_name", "create", "getattr", "open", "read", "remove_name", "search", "setattr", "write",
+        )))
+        positive.extend(accesses(domain, custody, "dir", (*file_read, "search")))
+        positive.extend(accesses(domain, custody, "file", (*file_read, "lock")))
+        for target in (state, custody):
+            positive.append(Access(target, "fs_t", "filesystem", "associate"))
+        transitions.append(Transition(domain, state, "file", state))
+        transitions.append(Transition(domain, state, "dir", state))
+        positive.extend(accesses(domain, runtime, "dir", (
+            "add_name", "getattr", "open", "read", "remove_name", "search", "write",
+        )))
+        positive.extend(accesses(domain, runtime, "sock_file", (
+            "create", "getattr", "open", "read", "setattr", "unlink", "write",
+        )))
+        positive.append(Access(runtime, "tmpfs_t", "filesystem", "associate"))
+        transitions.append(Transition(domain, runtime, "sock_file", runtime))
+
+        for other in all_roles:
+            if other == domain:
+                continue
+            for target in (state, custody):
+                negative.extend(accesses(other, target, "file", (*file_read, *file_mutate)))
+                # PID1 creates the fixed state root but never opens a secret.
+                forbidden_dirs = dir_mutate if other != "init_t" or target == custody else ("remove_name", "rename", "rmdir")
+                negative.extend(accesses(other, target, "dir", forbidden_dirs))
+            if other != "init_t":
+                negative.extend(accesses(other, credential, "file", (*file_read, *file_mutate)))
+                negative.extend(accesses(other, credential, "dir", (*file_read, "search", *dir_mutate)))
+        negative.extend(accesses(domain, custody, "file", file_mutate))
+        negative.extend(accesses(domain, custody, "dir", dir_mutate))
+        negative.extend(accesses(domain, credential, "file", (*file_mutate, "execute", "execute_no_trans", "map", "relabelfrom", "relabelto")))
+        negative.extend(accesses(domain, credential, "dir", (*dir_mutate, "mounton", "relabelfrom", "relabelto")))
+
+        for target in ("security_t", "cgroup_t", "sysctl_kernel_t", "systemd_unit_t", "etc_t"):
+            positive.extend(accesses(domain, target, "file", file_read))
+        positive.extend(accesses(domain, "init_exec_t", "file", ("getattr", "read", "ioctl")))
+        negative.extend(accesses(domain, "init_exec_t", "file", (*file_mutate, "execute", "execute_no_trans", "entrypoint", "map")))
+        negative.extend(accesses(domain, "proc_t", "file", file_read))
+        for target in ("security_t", "cgroup_t", "sysctl_kernel_t"):
+            negative.extend(accesses(domain, target, "file", file_mutate))
+        for target in ("proc_t", "security_t", "tmpfs_t"):
+            positive.append(Access(domain, target, "filesystem", "getattr"))
+        positive.extend(accesses(domain, "null_device_t", "chr_file", ("getattr", "open", "read", "write")))
+        positive.extend(accesses(domain, domain, "unix_stream_socket", (
+            "accept", "bind", "connect", "create", "getattr", "getopt", "listen", "read", "setopt", "shutdown", "write",
+        )))
+        positive.extend((
+            Access(domain, "init_t", "system", "status"),
+            Access(domain, "systemd_unit_t", "service", "status"),
+            Access(domain, "system_dbusd_t", "unix_stream_socket", "connectto"),
+        ))
+        for peer in ("init_t", "system_dbusd_t"):
+            positive.extend((Access(domain, peer, "dbus", "send_msg"), Access(peer, domain, "dbus", "send_msg")))
+        for permission in ("start", "stop", "reload", "enable", "disable"):
+            negative.append(Access(domain, "*", "service", permission))
+        for permission in ("start", "stop", "reload", "reboot", "halt"):
+            negative.append(Access(domain, "*", "system", permission))
+
+    mount_credential = "aos_sandbox_mount_credential_t"
+    for name in (
+        "broker-plan-policy.cbor", "broker-plan-public-key", "broker-revocation-scope",
+        "ownership-lease-policy.cbor", "ownership-lease-public-key", "node-id", "journal-mac-key",
+        "mount-broker-manifest", "mount-broker-hello-key", "mount-broker-record-key",
+        "mount-host-client-manifest", "mount-host-client-hello-key", "mount-host-client-record-key",
+        "mount-fuse-broker-manifest", "mount-fuse-broker-hello-key", "mount-fuse-broker-record-key",
+        "current-catalog-publication", "current-catalog-manifest",
+    ):
+        transitions.append(Transition("init_t", mount_credential, "file", mount_credential, filename=name))
+    for name in ("current-catalog-publication", "current-catalog-manifest"):
+        transitions.append(Transition("init_t", "aos_source_provider_credential_t", "file", "aos_source_provider_credential_t", filename=name))
+
+    installer = "aos_sandbox_mount_install_exec_t"
+    positive.extend(accesses("init_t", installer, "file", ("execute", "getattr", "map", "open", "read")))
+    positive.extend(accesses(mount, installer, "file", ("entrypoint", "execute", "getattr", "map", "open", "read")))
+    negative.append(Access(mount, installer, "file", "execute_no_trans"))
+    negative.extend(accesses(source, installer, "file", ("execute", "execute_no_trans", "entrypoint", "map", "open", "read")))
+    positive.extend(accesses(mount, "aos_sandbox_mount_helper_exec_t", "file", ("execute", "execute_no_trans", "getattr", "map", "open", "read")))
+    positive.extend(accesses(mount, mount, "capability", ("sys_admin", "sys_chroot")))
+    negative.append(Access(mount, "*", "cap_userns", "sys_admin"))
+    negative.extend(accesses(source, "*", "file", ("execute_no_trans",)))
+    negative.extend(accesses(source, "*", "capability", ("sys_admin", "sys_chroot")))
+
+    return positive, negative, transitions

@@ -1,15 +1,333 @@
+diff --git a/src/connection/builder.rs b/src/connection/builder.rs
+index fe36fa990f0618ba069a617fd295bb6ed3ec2e32..ab4d79cf0e9b85bccaa9dcac92ff8204edcd04df 100644
 --- a/src/connection/builder.rs
 +++ b/src/connection/builder.rs
-@@ -89,6 +89,8 @@
+@@ -42,6 +42,313 @@ use super::{
+ 
+ const DEFAULT_MAX_QUEUED: usize = 64;
+ 
++/// Owns one closed Mount or Source launcher-image observation over the fixed bus.
++///
++/// The original socket, AUTH bytes, requests, replies and consumed failure state
++/// stay resident. Completion yields transport DATA only: it does not admit an
++/// execution, make a fragment immutable or authorize a Source operation.
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++pub struct FixedLauncherImageAttemptV1 {
++    custody: std::sync::Arc<super::socket::LauncherImageReceiveCustodyV1>,
++    connection: Option<Connection>,
++    unit: &'static str,
++    attempted: bool,
++    next: usize,
++    owner: Option<crate::names::OwnedUniqueName>,
++    path: Option<zvariant::OwnedObjectPath>,
++    replies: Vec<Message>,
++}
++
++/// Fences the same original queue if its enclosing fixed observation is cancelled.
++///
++/// This guard owns no separate transport or descriptor and creates no authority.
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++pub struct FixedLauncherImageCancellationV1 {
++    custody: std::sync::Arc<super::socket::LauncherImageReceiveCustodyV1>,
++    completed: bool,
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++impl std::fmt::Debug for FixedLauncherImageCancellationV1 {
++    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        formatter.debug_struct("FixedLauncherImageCancellationV1")
++            .field("completed", &self.completed)
++            .finish_non_exhaustive()
++    }
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++impl FixedLauncherImageCancellationV1 {
++    /// Disarms this negative guard after the complete enclosing DATA observation.
++    pub fn complete(&mut self) {
++        self.completed = true;
++    }
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++impl Drop for FixedLauncherImageCancellationV1 {
++    fn drop(&mut self) {
++        if !self.completed {
++            self.custody.end();
++        }
++    }
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++impl std::fmt::Debug for FixedLauncherImageAttemptV1 {
++    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        formatter.debug_struct("FixedLauncherImageAttemptV1")
++            .field("attempted", &self.attempted)
++            .field("completed_steps", &self.next)
++            .finish_non_exhaustive()
++    }
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++impl FixedLauncherImageAttemptV1 {
++    /// Creates an inert attempt for the fixed Mount service.
++    pub fn mount() -> Self {
++        Self::empty("aos-sandbox-mountd.service")
++    }
++
++    /// Creates an inert attempt for the fixed Source service.
++    pub fn source() -> Self {
++        Self::empty("aos-source-providerd.service")
++    }
++
++    fn empty(unit: &'static str) -> Self {
++        Self {
++            custody: std::sync::Arc::new(super::socket::LauncherImageReceiveCustodyV1::empty()),
++            connection: None,
++            unit,
++            attempted: false,
++            next: 0,
++            owner: None,
++            path: None,
++            replies: Vec::with_capacity(24),
++        }
++    }
++
++    /// Connects once to the fixed system bus and performs the existing AUTH/Hello.
++    ///
++    /// # Errors
++    /// Refuses a repeated or ended attempt. Native, AUTH or parser failure closes
++    /// the original queue and retains its owning cause; it never reconnects.
++    pub async fn connect(&mut self) -> Result<()> {
++        self.custody.require_open()?;
++        if self.attempted {
++            self.custody.end();
++            return Err(Error::InvalidReply);
++        }
++        self.attempted = true;
++        let custody = self.custody.clone();
++        let mut boundary = super::socket::LauncherReceiveBoundary::new(&custody);
++        let mut builder = match Builder::address("unix:path=/run/dbus/system_bus_socket") {
++            Ok(builder) => builder,
++            Err(cause) => {
++                custody.retain_failure(cause);
++                return Err(Error::InvalidReply);
++            }
++        };
++        builder.launcher_image = Some(custody.clone());
++        let result = builder.build().await;
++        match result {
++            Ok(connection) => self.connection = Some(connection),
++            Err(cause) => {
++                custody.retain_failure(cause);
++                return Err(Error::InvalidReply);
++            }
++        }
++        boundary.complete();
++
++        Ok(())
++    }
++
++    /// Advances the sole fixed 24-request recipe, returning its resident reply.
++    ///
++    /// # Errors
++    /// Refuses an unconnected, ended or malformed flight. No caller chooses a
++    /// destination, path, method, property, descriptor or expected image serial.
++    pub async fn observe_next(&mut self) -> Result<Option<&Message>> {
++        self.custody.require_open()?;
++        if self.next == 24 {
++            return Ok(None);
++        }
++        let custody = self.custody.clone();
++        let mut boundary = super::socket::LauncherReceiveBoundary::new(&custody);
++        let Some(connection) = self.connection.as_ref() else {
++            custody.retain_failure(Error::InvalidReply);
++            return Err(Error::InvalidReply);
++        };
++        const MANAGER_PATH: &str = "/org/freedesktop/systemd1";
++        const MANAGER_INTERFACE: &str = "org.freedesktop.systemd1.Manager";
++        const BUS_PATH: &str = "/org/freedesktop/DBus";
++        const BUS_INTERFACE: &str = "org.freedesktop.DBus";
++
++        let result = match self.next {
++            0 | 22 => connection.call_method(
++                Some(BUS_INTERFACE), BUS_PATH, Some(BUS_INTERFACE),
++                "GetNameOwner", &("org.freedesktop.systemd1",),
++            ).await,
++            1 | 23 => match self.owner.as_ref() {
++                Some(owner) => connection.call_method(
++                    Some(BUS_INTERFACE), BUS_PATH, Some(BUS_INTERFACE),
++                    "GetConnectionUnixProcessID", &(owner.as_str(),),
++                ).await,
++                None => Err(Error::InvalidReply),
++            },
++            2 | 21 => match self.owner.as_ref() {
++                Some(owner) => connection.call_method(
++                    Some(owner.as_str()), MANAGER_PATH, Some(MANAGER_INTERFACE),
++                    "GetUnit", &(self.unit,),
++                ).await,
++                None => Err(Error::InvalidReply),
++            },
++            11 | 20 => match self.owner.as_ref() {
++                Some(owner) => connection.call_method(
++                    Some(owner.as_str()), MANAGER_PATH, Some(MANAGER_INTERFACE),
++                    "GetAosOwnLauncherImageV1", &(),
++                ).await,
++                None => Err(Error::InvalidReply),
++            },
++            step => {
++                let property_index = if step < 11 { step - 3 } else { step - 12 };
++                let property = [
++                    "Id", "ActiveState", "SubState", "MainPID", "InvocationID",
++                    "FragmentPath", "DropInPaths", "Transient",
++                ][property_index];
++                let interface = if property == "MainPID" {
++                    "org.freedesktop.systemd1.Service"
++                } else {
++                    "org.freedesktop.systemd1.Unit"
++                };
++                match (self.owner.as_ref(), self.path.as_ref()) {
++                    (Some(owner), Some(path)) => connection.call_method(
++                        Some(owner.as_str()), path.as_str(), Some("org.freedesktop.DBus.Properties"),
++                        "Get", &(interface, property),
++                    ).await,
++                    _ => Err(Error::InvalidReply),
++                }
++            }
++        };
++        match result {
++            Ok(reply) => self.replies.push(reply),
++            Err(cause) => {
++                custody.retain_failure(cause);
++                return Err(Error::InvalidReply);
++            }
++        }
++
++        // The complete actual reply is parked before these canonical decoders.
++        let Some(reply) = self.replies.last() else {
++            custody.retain_failure(Error::InvalidReply);
++            return Err(Error::InvalidReply);
++        };
++        if self.next == 0 {
++            match reply.body().deserialize::<crate::names::OwnedUniqueName>() {
++                Ok(owner) => self.owner = Some(owner),
++                Err(cause) => {
++                    custody.retain_failure(cause);
++                    return Err(Error::InvalidReply);
++                }
++            }
++        } else if self.next == 2 {
++            match reply.body().deserialize::<zvariant::OwnedObjectPath>() {
++                Ok(path) if path.as_str().len() <= 4096 => self.path = Some(path),
++                Ok(_) => {
++                    custody.retain_failure(Error::ExcessData);
++                    return Err(Error::InvalidReply);
++                }
++                Err(cause) => {
++                    custody.retain_failure(cause);
++                    return Err(Error::InvalidReply);
++                }
++            }
++        }
++        self.next += 1;
++        boundary.complete();
++
++        Ok(self.replies.last())
++    }
++
++    /// Returns an already resident expected reply without observation or retry.
++    pub fn reply(&self, index: usize) -> Option<&Message> {
++        self.replies.get(index)
++    }
++
++    /// Arms cancellation shutdown over this same already resident original.
++    #[must_use]
++    pub fn cancellation_fence(&self) -> FixedLauncherImageCancellationV1 {
++        FixedLauncherImageCancellationV1 { custody: self.custody.clone(), completed: false }
++    }
++
++    /// Reports whether the original queue has permanently ended, without I/O.
++    #[must_use]
++    pub fn has_ended(&self) -> bool {
++        self.custody.require_open().is_err()
++    }
++
++    /// Borrows the actual resident failure without observing or retrying the bus.
++    ///
++    /// # Errors
++    /// Reports a locked or poisoned custody slot rather than recovering its state.
++    pub fn failure(&self) -> std::result::Result<
++        Option<super::socket::LauncherImageFailureLoanV1<'_>>,
++        super::socket::LauncherImageFailureUnavailableV1,
++    > {
++        self.custody.failure()
++    }
++
++    /// Borrows original and invariant-rejection shutdown outcomes, in that order.
++    ///
++    /// This performs no I/O or retry and does not borrow receive/parser slots.
++    /// None is unavailable, not successful shutdown; Ok is not drain proof.
++    pub fn shutdown_outcomes(&self) -> (
++        Option<&std::io::Result<()>>,
++        Option<&std::io::Result<()>>,
++    ) {
++        self.custody.shutdown_outcomes()
++    }
++
++    /// Permanently closes the original queue while retaining all flight state.
++    pub fn end(&self) {
++        self.custody.end();
++    }
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++impl Drop for FixedLauncherImageAttemptV1 {
++    fn drop(&mut self) {
++        self.custody.end();
++    }
++}
++
++#[cfg(all(test, target_os = "linux", feature = "tokio"))]
++mod launcher_negative_tests {
++    #[test]
++    fn ended_attempt_refuses_connect_before_address_effects() {
++        struct InertWake;
++        impl std::task::Wake for InertWake {
++            fn wake(self: std::sync::Arc<Self>) {}
++        }
++        let mut attempt = super::FixedLauncherImageAttemptV1::mount();
++        attempt.end();
++        let waker = std::task::Waker::from(std::sync::Arc::new(InertWake));
++        let mut context = std::task::Context::from_waker(&waker);
++
++        let mut connect = Box::pin(attempt.connect());
++        assert!(matches!(
++            std::future::Future::poll(connect.as_mut(), &mut context),
++            std::task::Poll::Ready(Err(_))
++        ));
++        drop(connect);
++
++        assert!(!attempt.attempted);
++        assert!(attempt.has_ended());
++        assert!(attempt.shutdown_outcomes().0.is_none());
++    }
++}
++
+ #[derive(Debug)]
+ enum Target {
+     #[cfg(any(unix, not(feature = "tokio")))]
+@@ -89,6 +396,10 @@ pub struct Builder<'a> {
      request_name_flags: BitFlags<RequestNameFlags>,
      method_timeout: Option<std::time::Duration>,
      user_id: Option<u32>,
 +    #[cfg(all(target_os = "linux", feature = "tokio"))]
 +    reject_incoming_unix_fds: bool,
++    #[cfg(all(target_os = "linux", feature = "tokio"))]
++    launcher_image: Option<std::sync::Arc<super::socket::LauncherImageReceiveCustodyV1>>,
  }
  
  impl<'a> Builder<'a> {
-@@ -102,6 +104,23 @@
+@@ -102,6 +413,23 @@ impl<'a> Builder<'a> {
          Ok(Self::new(Target::Address(Address::system()?)))
      }
  
@@ -33,35 +351,72 @@
      /// Create a builder for an IBus connection.
      ///
      /// IBus (Intelligent Input Bus) is an input method framework. This method creates a builder
-@@ -601,6 +620,8 @@
+@@ -542,7 +870,15 @@ impl<'a> Builder<'a> {
+         #[cfg(unix)]
+         let already_received_fds = auth.already_received_fds.drain(..).collect();
+ 
+-        let mut conn = Connection::new(auth, is_bus_conn, executor, self.method_timeout).await?;
++        let mut conn = Connection::new(
++            auth,
++            is_bus_conn,
++            executor,
++            self.method_timeout,
++            #[cfg(all(target_os = "linux", feature = "tokio"))]
++            self.launcher_image.clone(),
++        )
++        .await?;
+         conn.set_max_queued(self.max_queued.unwrap_or(DEFAULT_MAX_QUEUED));
+ 
+         if !self.interfaces.is_empty() {
+@@ -601,6 +937,10 @@ impl<'a> Builder<'a> {
              request_name_flags: BitFlags::default(),
              method_timeout: None,
              user_id: None,
 +            #[cfg(all(target_os = "linux", feature = "tokio"))]
 +            reject_incoming_unix_fds: false,
++            #[cfg(all(target_os = "linux", feature = "tokio"))]
++            launcher_image: None,
          }
      }
  
-@@ -678,6 +699,9 @@
+@@ -612,6 +952,13 @@ impl<'a> Builder<'a> {
+ 
+         #[allow(unused_mut)]
+         let (mut stream, server_guid, authenticated) = self.target_connect().await?;
++        #[cfg(all(target_os = "linux", feature = "tokio"))]
++        if let Some(custody) = self.launcher_image.as_ref() {
++            return Authenticated::client_launcher(
++                stream, server_guid, self.auth_mechanism, is_bus_conn,
++                self.user_id, custody.clone(),
++            ).await;
++        }
+         if authenticated {
+             let (socket_read, socket_write) = stream.take();
+             Ok(Authenticated {
+@@ -678,6 +1025,13 @@ impl<'a> Builder<'a> {
      }
  
      async fn target_connect(&mut self) -> Result<(BoxedSplit, Option<OwnedGuid>, bool)> {
 +        #[cfg(all(target_os = "linux", feature = "tokio"))]
 +        self.require_incoming_fd_target()?;
++        #[cfg(all(target_os = "linux", feature = "tokio"))]
++        if let Some(custody) = self.launcher_image.as_ref() {
++            custody.require_open()?;
++        }
 +
          let mut authenticated = false;
          let mut guid = None;
          // SAFETY: `self.target` is always `Some` from the beginning and this method is only called
-@@ -686,7 +710,7 @@
+@@ -686,7 +1040,7 @@ impl<'a> Builder<'a> {
              #[cfg(not(feature = "tokio"))]
              Target::UnixStream(stream) => Async::new(stream)?.into(),
              #[cfg(all(unix, feature = "tokio"))]
 -            Target::UnixStream(stream) => stream.into(),
-+            Target::UnixStream(stream) => self.unix_stream_split(stream),
++            Target::UnixStream(stream) => self.unix_stream_split(stream)?,
              #[cfg(not(feature = "tokio"))]
              Target::TcpStream(stream) => Async::new(stream)?.into(),
              #[cfg(feature = "tokio")]
-@@ -698,8 +722,10 @@
+@@ -698,8 +1052,10 @@ impl<'a> Builder<'a> {
              Target::Address(address) => {
                  guid = address.guid().map(|g| g.to_owned().into());
                  match address.connect().await? {
@@ -69,11 +424,11 @@
 +                    #[cfg(not(feature = "tokio"))]
                      address::transport::Stream::Unix(stream) => stream.into(),
 +                    #[cfg(all(unix, feature = "tokio"))]
-+                    address::transport::Stream::Unix(stream) => self.unix_stream_split(stream),
++                    address::transport::Stream::Unix(stream) => self.unix_stream_split(stream)?,
                      #[cfg(unix)]
                      address::transport::Stream::Unixexec(stream) => stream.into(),
                      address::transport::Stream::Tcp(stream) => stream.into(),
-@@ -720,6 +746,113 @@
+@@ -720,6 +1076,117 @@ impl<'a> Builder<'a> {
  
          Ok((split, guid, authenticated))
      }
@@ -99,13 +454,17 @@
 +    }
 +
 +    #[cfg(all(unix, feature = "tokio"))]
-+    fn unix_stream_split(&self, stream: UnixStream) -> BoxedSplit {
++    fn unix_stream_split(&self, stream: UnixStream) -> Result<BoxedSplit> {
++        #[cfg(target_os = "linux")]
++        if let Some(custody) = self.launcher_image.as_ref() {
++            return super::socket::split_launcher_image(stream, custody.clone());
++        }
 +        #[cfg(target_os = "linux")]
 +        if self.reject_incoming_unix_fds {
-+            return super::socket::split_reject_incoming_unix_fds(stream);
++            return Ok(super::socket::split_reject_incoming_unix_fds(stream));
 +        }
 +
-+        stream.into()
++        Ok(stream.into())
 +    }
 +}
 +
@@ -187,20 +546,1082 @@
  }
  
  /// Start the internal executor thread.
+diff --git a/src/connection/mod.rs b/src/connection/mod.rs
+index 1ef2b75ba83bfb64988ef4e864d8e34457f6f99a..33217e13687d119795806e7184708d7168c91df4 100644
+--- a/src/connection/mod.rs
++++ b/src/connection/mod.rs
+@@ -31,6 +31,8 @@ use crate::{
+ 
+ mod builder;
+ pub use builder::Builder;
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++pub use builder::{FixedLauncherImageAttemptV1, FixedLauncherImageCancellationV1};
+ 
+ pub mod socket;
+ pub use socket::Socket;
+@@ -80,6 +82,8 @@ pub(crate) struct ConnectionInner {
+     method_timeout: Option<Duration>,
+     // Cache the credentials.
+     credentials: OnceLock<Arc<ConnectionCredentials>>,
++    #[cfg(all(target_os = "linux", feature = "tokio"))]
++    launcher_image: Option<Arc<socket::LauncherImageReceiveCustodyV1>>,
+ }
+ 
+ impl Drop for ConnectionInner {
+@@ -393,6 +397,11 @@ impl Connection {
+         }
+         let msg = builder.build(body)?;
+ 
++        #[cfg(all(target_os = "linux", feature = "tokio"))]
++        if let Some(custody) = self.inner.launcher_image.as_ref() {
++            custody.retain_request(&msg)?;
++        }
++
+         let msg_receiver = self.inner.method_return_receiver.activate_cloned();
+         let stream = Some(MessageStream::for_subscription_channel(
+             msg_receiver,
+@@ -1150,6 +1159,8 @@ impl Connection {
+         #[allow(unused)] bus_connection: bool,
+         executor: Executor<'static>,
+         method_timeout: Option<Duration>,
++        #[cfg(all(target_os = "linux", feature = "tokio"))]
++        launcher_image: Option<Arc<socket::LauncherImageReceiveCustodyV1>>,
+     ) -> Result<Self> {
+         #[cfg(unix)]
+         let cap_unix_fd = auth.cap_unix_fd;
+@@ -1203,6 +1214,8 @@ impl Connection {
+                 drop_event: Event::new(),
+                 method_timeout,
+                 credentials: OnceLock::new(),
++                #[cfg(all(target_os = "linux", feature = "tokio"))]
++                launcher_image,
+             }),
+         };
+ 
+diff --git a/src/connection/socket/mod.rs b/src/connection/socket/mod.rs
+index d313103752e59bc391ace89fd429e0096575980d..5b5bf7bb22174008905d6ee7fcd3f2033e6d5ebe 100644
 --- a/src/connection/socket/mod.rs
 +++ b/src/connection/socket/mod.rs
-@@ -12,6 +12,8 @@
+@@ -12,6 +12,14 @@ pub(crate) mod command;
  pub(crate) use command::Command;
  mod tcp;
  mod unix;
 +#[cfg(all(target_os = "linux", feature = "tokio"))]
 +pub(super) use unix::split_reject_incoming_unix_fds;
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++pub(crate) use unix::LauncherImageReceiveCustodyV1;
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++pub use unix::{LauncherImageFailureLoanV1, LauncherImageFailureRefV1, LauncherImageFailureUnavailableV1};
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++pub(crate) use unix::{LauncherHandshakeBoundary, LauncherReceiveBoundary, split_launcher_image};
  mod vsock;
  
  #[cfg(not(feature = "tokio"))]
+@@ -44,6 +52,195 @@ type RecvmsgResult = io::Result<(usize, Vec<OwnedFd>)>;
+ #[cfg(not(unix))]
+ type RecvmsgResult = io::Result<usize>;
+ 
++// Field order preserves the old local bytes-before-fds destruction interval.
++// The selected adapter parks this exact frame before invoking the same parser.
++#[derive(Debug)]
++pub(crate) struct ReceiveFrame {
++    bytes: Vec<u8>,
++    #[cfg(unix)]
++    fds: Vec<OwnedFd>,
++    data: Option<serialized::Data<'static, 'static>>,
++    retained: bool,
++}
++
++impl ReceiveFrame {
++    fn legacy() -> Self {
++        Self {
++            bytes: Vec::new(),
++            #[cfg(unix)]
++            fds: Vec::new(),
++            data: None,
++            retained: false,
++        }
++    }
++
++    #[cfg(all(target_os = "linux", feature = "tokio"))]
++    fn selected() -> Self {
++        Self {
++            bytes: Vec::with_capacity(64 * 1024),
++            fds: Vec::with_capacity(1),
++            data: None,
++            retained: true,
++        }
++    }
++}
++
++async fn receive_message_in_frame<R: ReadHalf + ?Sized>(
++    reader: &mut R,
++    seq: u64,
++    already_received_bytes: &mut Vec<u8>,
++    #[cfg(unix)] already_received_fds: &mut Vec<OwnedFd>,
++    frame: &mut ReceiveFrame,
++) -> crate::Result<Message> {
++    #[cfg(unix)]
++    if frame.retained {
++        // Carryover belongs to this same frame before any header decode. The
++        // selected raw reader counts it before accepting another right; Legacy
++        // keeps its original late carryover decode and error order below.
++        frame.fds.append(already_received_fds);
++        if frame.fds.len() > 1 {
++            return Err(crate::Error::ExcessData);
++        }
++    }
++
++    if already_received_bytes.len() < MIN_MESSAGE_SIZE {
++        if !already_received_bytes.is_empty() {
++            mem::swap(already_received_bytes, &mut frame.bytes);
++        }
++
++        let mut pos = frame.bytes.len();
++        frame.bytes.resize(MIN_MESSAGE_SIZE, 0);
++        while pos < MIN_MESSAGE_SIZE {
++            let res = reader.recvmsg(&mut frame.bytes[pos..]).await?;
++            let len = {
++                #[cfg(unix)]
++                {
++                    frame.fds.extend(res.1);
++                    res.0
++                }
++                #[cfg(not(unix))]
++                {
++                    res
++                }
++            };
++            pos += len;
++            if len == 0 {
++                return Err(std::io::Error::new(
++                    std::io::ErrorKind::UnexpectedEof,
++                    "failed to receive message",
++                )
++                .into());
++            }
++        }
++    } else if frame.retained {
++        frame.bytes.extend(already_received_bytes.drain(..MIN_MESSAGE_SIZE));
++    } else {
++        frame.bytes = already_received_bytes.drain(..MIN_MESSAGE_SIZE).collect();
++    }
++
++    let (primary_header, fields_len) = PrimaryHeader::read(&frame.bytes)?;
++    let header_len = if frame.retained {
++        MIN_MESSAGE_SIZE.checked_add(fields_len as usize).ok_or(crate::Error::ExcessData)?
++    } else {
++        MIN_MESSAGE_SIZE + fields_len as usize
++    };
++    let body_padding = padding_for_8_bytes(header_len);
++    let body_len = primary_header.body_len() as usize;
++    let total_len = if frame.retained {
++        header_len.checked_add(body_padding)
++            .and_then(|length| length.checked_add(body_len))
++            .ok_or(crate::Error::ExcessData)?
++    } else {
++        header_len + body_padding + body_len
++    };
++    if total_len > MAX_MESSAGE_SIZE || (frame.retained && total_len > 64 * 1024) {
++        return Err(crate::Error::ExcessData);
++    }
++
++    if !already_received_bytes.is_empty() {
++        let pending = total_len - frame.bytes.len();
++        let to_take = std::cmp::min(pending, already_received_bytes.len());
++        frame.bytes.extend(already_received_bytes.drain(..to_take));
++    }
++    let mut pos = frame.bytes.len();
++    frame.bytes.resize(total_len, 0);
++
++    while pos < total_len {
++        let res = reader.recvmsg(&mut frame.bytes[pos..]).await?;
++        let read = {
++            #[cfg(unix)]
++            {
++                frame.fds.extend(res.1);
++                res.0
++            }
++            #[cfg(not(unix))]
++            {
++                res
++            }
++        };
++        pos += read;
++        if read == 0 {
++            return Err(crate::Error::InputOutput(
++                std::io::Error::new(
++                    std::io::ErrorKind::UnexpectedEof,
++                    "failed to receive message",
++                )
++                .into(),
++            ));
++        }
++    }
++
++    let endian = Endian::from(primary_header.endian_sig());
++    #[cfg(unix)]
++    if !already_received_fds.is_empty() {
++        use crate::message::header::PRIMARY_HEADER_SIZE;
++
++        let ctxt = Context::new_dbus(endian, PRIMARY_HEADER_SIZE);
++        let encoded_fields =
++            serialized::Data::new(&frame.bytes[PRIMARY_HEADER_SIZE..header_len], ctxt);
++        let fields: crate::message::Fields<'_> = encoded_fields.deserialize()?.0;
++        let num_required_fds = match fields.unix_fds {
++            Some(num_fds) => num_fds as usize,
++            _ => 0,
++        };
++        let num_pending = num_required_fds
++            .checked_sub(frame.fds.len())
++            .ok_or_else(|| crate::Error::ExcessData)?;
++        if num_pending == 0 {
++            return Err(crate::Error::MissingParameter("Missing file descriptors"));
++        }
++        if frame.retained && (num_pending > 1 || already_received_fds.len() < num_pending) {
++            return Err(crate::Error::ExcessData);
++        }
++
++        let mut already_received: Vec<_> = already_received_fds.drain(..num_pending).collect();
++        mem::swap(&mut already_received, &mut frame.fds);
++        frame.fds.extend(already_received);
++    }
++
++    let ctxt = Context::new_dbus(endian, 0);
++    #[cfg(unix)]
++    let data = serialized::Data::new_fds(
++        mem::take(&mut frame.bytes),
++        ctxt,
++        mem::take(&mut frame.fds),
++    );
++    #[cfg(not(unix))]
++    let data = serialized::Data::new(mem::take(&mut frame.bytes), ctxt);
++
++    if frame.retained {
++        // Data's Arc allocation is a funding exclusion. Once returned, the
++        // original bytes and rights stay parked through all parser failures.
++        frame.data = Some(data);
++        match frame.data.as_ref() {
++            Some(data) => Message::from_raw_parts(data.clone(), seq),
++            None => Err(crate::Error::InvalidReply),
++        }
++    } else {
++        Message::from_raw_parts(data, seq)
++    }
++}
++
+ /// Trait representing some transport layer over which the DBus protocol can be used.
+ ///
+ /// In order to allow simultaneous reading and writing, this trait requires you to split the socket
+@@ -96,129 +293,16 @@ pub trait ReadHalf: std::fmt::Debug + Send + Sync + 'static {
+         already_received_bytes: &mut Vec<u8>,
+         #[cfg(unix)] already_received_fds: &mut Vec<OwnedFd>,
+     ) -> crate::Result<Message> {
+-        #[cfg(unix)]
+-        let mut fds = vec![];
+-        let mut bytes = if already_received_bytes.len() < MIN_MESSAGE_SIZE {
+-            let mut bytes = vec![];
+-            if !already_received_bytes.is_empty() {
+-                mem::swap(already_received_bytes, &mut bytes);
+-            }
+-            let mut pos = bytes.len();
+-            bytes.resize(MIN_MESSAGE_SIZE, 0);
+-            // We don't have enough data to make a proper message header yet.
+-            // Some partial read may be in raw_in_buffer, so we try to complete it
+-            // until we have MIN_MESSAGE_SIZE bytes
+-            //
+-            // Given that MIN_MESSAGE_SIZE is 16, this codepath is actually extremely unlikely
+-            // to be taken more than once
+-            while pos < MIN_MESSAGE_SIZE {
+-                let res = self.recvmsg(&mut bytes[pos..]).await?;
+-                let len = {
+-                    #[cfg(unix)]
+-                    {
+-                        fds.extend(res.1);
+-                        res.0
+-                    }
+-                    #[cfg(not(unix))]
+-                    {
+-                        res
+-                    }
+-                };
+-                pos += len;
+-                if len == 0 {
+-                    return Err(std::io::Error::new(
+-                        std::io::ErrorKind::UnexpectedEof,
+-                        "failed to receive message",
+-                    )
+-                    .into());
+-                }
+-            }
+-
+-            bytes
+-        } else {
+-            already_received_bytes.drain(..MIN_MESSAGE_SIZE).collect()
+-        };
+-
+-        let (primary_header, fields_len) = PrimaryHeader::read(&bytes)?;
+-        let header_len = MIN_MESSAGE_SIZE + fields_len as usize;
+-        let body_padding = padding_for_8_bytes(header_len);
+-        let body_len = primary_header.body_len() as usize;
+-        let total_len = header_len + body_padding + body_len;
+-        if total_len > MAX_MESSAGE_SIZE {
+-            return Err(crate::Error::ExcessData);
+-        }
+-
+-        // By this point we have a full primary header, so we know the exact length of the complete
+-        // message.
+-        if !already_received_bytes.is_empty() {
+-            // still have some bytes buffered.
+-            let pending = total_len - bytes.len();
+-            let to_take = std::cmp::min(pending, already_received_bytes.len());
+-            bytes.extend(already_received_bytes.drain(..to_take));
+-        }
+-        let mut pos = bytes.len();
+-        bytes.resize(total_len, 0);
+-
+-        // Read the rest, if any
+-        while pos < total_len {
+-            let res = self.recvmsg(&mut bytes[pos..]).await?;
+-            let read = {
+-                #[cfg(unix)]
+-                {
+-                    fds.extend(res.1);
+-                    res.0
+-                }
+-                #[cfg(not(unix))]
+-                {
+-                    res
+-                }
+-            };
+-            pos += read;
+-            if read == 0 {
+-                return Err(crate::Error::InputOutput(
+-                    std::io::Error::new(
+-                        std::io::ErrorKind::UnexpectedEof,
+-                        "failed to receive message",
+-                    )
+-                    .into(),
+-                ));
+-            }
+-        }
+-
+-        // If we reach here, the message is complete; return it
+-        let endian = Endian::from(primary_header.endian_sig());
+-
+-        #[cfg(unix)]
+-        if !already_received_fds.is_empty() {
+-            use crate::message::header::PRIMARY_HEADER_SIZE;
+-
+-            let ctxt = Context::new_dbus(endian, PRIMARY_HEADER_SIZE);
+-            let encoded_fields =
+-                serialized::Data::new(&bytes[PRIMARY_HEADER_SIZE..header_len], ctxt);
+-            let fields: crate::message::Fields<'_> = encoded_fields.deserialize()?.0;
+-            let num_required_fds = match fields.unix_fds {
+-                Some(num_fds) => num_fds as usize,
+-                _ => 0,
+-            };
+-            let num_pending = num_required_fds
+-                .checked_sub(fds.len())
+-                .ok_or_else(|| crate::Error::ExcessData)?;
+-            // If we had previously received FDs, `num_pending` has to be > 0
+-            if num_pending == 0 {
+-                return Err(crate::Error::MissingParameter("Missing file descriptors"));
+-            }
+-            // All previously received FDs must go first in the list.
+-            let mut already_received: Vec<_> = already_received_fds.drain(..num_pending).collect();
+-            mem::swap(&mut already_received, &mut fds);
+-            fds.extend(already_received);
+-        }
+-
+-        let ctxt = Context::new_dbus(endian, 0);
+-        #[cfg(unix)]
+-        let bytes = serialized::Data::new_fds(bytes, ctxt, fds);
+-        #[cfg(not(unix))]
+-        let bytes = serialized::Data::new(bytes, ctxt);
+-        Message::from_raw_parts(bytes, seq)
++        let mut frame = ReceiveFrame::legacy();
++        receive_message_in_frame(
++            self,
++            seq,
++            already_received_bytes,
++            #[cfg(unix)]
++            already_received_fds,
++            &mut frame,
++        )
++        .await
+     }
+ 
+     /// Attempt to receive bytes from the socket.
+diff --git a/src/connection/socket/unix.rs b/src/connection/socket/unix.rs
+index 1875ce0a5113b3918bef098de25b767086b56dd4..408dd5b1399816245f9eddfdce6acbac0b341f62 100644
 --- a/src/connection/socket/unix.rs
 +++ b/src/connection/socket/unix.rs
-@@ -129,26 +129,7 @@
+@@ -27,6 +27,663 @@ use rustix::net::{
+ #[cfg(unix)]
+ use crate::utils::FDS_MAX;
+ 
++// The selected observer shares the ordinary readiness, recvmsg and control
++// decoder. Only storage and its closed admission limits differ.
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++const LAUNCHER_MESSAGE_BYTES: usize = 64 * 1024;
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++const LAUNCHER_AUTH_BYTES: usize = 4 * 1024;
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++const LAUNCHER_MESSAGE_COUNT: usize = 33;
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++const LAUNCHER_CAPTURE_BYTES: usize =
++    LAUNCHER_AUTH_BYTES + LAUNCHER_MESSAGE_COUNT * LAUNCHER_MESSAGE_BYTES;
++
++#[cfg(unix)]
++#[derive(Debug)]
++struct LauncherRawRecord {
++    control: [std::mem::MaybeUninit<u8>; rustix::cmsg_space!(ScmRights(1))],
++    capture: LauncherRawCapture,
++}
++
++#[cfg(unix)]
++#[derive(Debug)]
++struct LauncherRawCapture {
++    control_used: usize,
++    reported: usize,
++    flags: rustix::net::ReturnFlags,
++    prefix_start: usize,
++    prefix_end: usize,
++    disposed: usize,
++    ordinary: Option<OwnedFd>,
++    screening: Option<std::fs::File>,
++    metadata: Option<std::io::Result<std::fs::Metadata>>,
++    output: Vec<OwnedFd>,
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++impl LauncherRawRecord {
++    fn empty(prefix_start: usize) -> Self {
++        Self {
++            control: [std::mem::MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))],
++            capture: LauncherRawCapture {
++                control_used: 0,
++                reported: 0,
++                flags: rustix::net::ReturnFlags::empty(),
++                prefix_start,
++                prefix_end: prefix_start,
++                disposed: 0,
++                ordinary: None,
++                screening: None,
++                metadata: None,
++                output: Vec::with_capacity(1),
++            },
++        }
++    }
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++#[derive(Debug)]
++struct LauncherNativeCustody {
++    records: [LauncherRawRecord; 3],
++    current: usize,
++    empty_reads: usize,
++    empty_bytes: usize,
++    empty_flags: rustix::net::ReturnFlags,
++    prefixes: Vec<u8>,
++    first_failure: Option<std::io::Error>,
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++#[derive(Debug)]
++struct LauncherFrames {
++    frames: Vec<super::ReceiveFrame>,
++    next: usize,
++    messages: Vec<crate::Message>,
++}
++
++/// Retains the original fixed-manager transport and its consumed receive state.
++///
++/// This opaque storage is created only by the two fixed launcher observers. It
++/// is transport custody, not a current peer, executed image or permission.
++/// Failed reads never expose raw control bytes or revive disposed descriptors.
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++pub(crate) struct LauncherImageReceiveCustodyV1 {
++    socket: std::sync::OnceLock<std::sync::Arc<tokio::net::UnixStream>>,
++    shutdown_result: std::sync::OnceLock<std::io::Result<()>>,
++    rejected_socket: std::sync::OnceLock<std::sync::Arc<tokio::net::UnixStream>>,
++    rejected_shutdown_result: std::sync::OnceLock<std::io::Result<()>>,
++    ended: std::sync::atomic::AtomicBool,
++    expected_image_serial: std::sync::atomic::AtomicU32,
++    frame_fds: std::sync::atomic::AtomicUsize,
++    in_auth: std::sync::atomic::AtomicBool,
++    native: std::sync::Mutex<LauncherNativeCustody>,
++    frames: tokio::sync::Mutex<LauncherFrames>,
++    first_failure: std::sync::OnceLock<crate::Error>,
++    requests: std::sync::Mutex<Vec<crate::Message>>,
++    pub(crate) auth_sends: tokio::sync::Mutex<Vec<Vec<u8>>>,
++    auth_lines: std::sync::Mutex<Vec<Vec<u8>>>,
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++impl std::fmt::Debug for LauncherImageReceiveCustodyV1 {
++    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        formatter.debug_struct("LauncherImageReceiveCustodyV1")
++            .field("ended", &self.ended.load(std::sync::atomic::Ordering::Acquire))
++            .finish_non_exhaustive()
++    }
++}
++
++/// Reports why the original retained failure could not be borrowed.
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub enum LauncherImageFailureUnavailableV1 {
++    /// Another original receive currently holds the native custody slot.
++    WouldBlock,
++    /// A caught unwind poisoned the original native custody slot.
++    Poisoned,
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++impl std::fmt::Display for LauncherImageFailureUnavailableV1 {
++    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        formatter.write_str(match self {
++            Self::WouldBlock => "fixed launcher custody is borrowed",
++            Self::Poisoned => "fixed launcher custody is poisoned",
++        })
++    }
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++impl std::error::Error for LauncherImageFailureUnavailableV1 {}
++
++/// Borrows one actual owning cause with redacted presentation.
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++pub enum LauncherImageFailureRefV1<'owner> {
++    /// An actual syscall or metadata result remains resident.
++    Native(&'owner std::io::Error),
++    /// The actual AUTH, message parser or method result remains resident.
++    Protocol(&'owner crate::Error),
++    /// The original queue ended without a returned typed cause.
++    Ended,
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++impl std::fmt::Debug for LauncherImageFailureRefV1<'_> {
++    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        formatter.write_str(match self {
++            Self::Native(_) => "LauncherImageFailureRefV1::Native",
++            Self::Protocol(_) => "LauncherImageFailureRefV1::Protocol",
++            Self::Ended => "LauncherImageFailureRefV1::Ended",
++        })
++    }
++}
++
++/// Holds a nonobserving loan of the same original failure slots.
++///
++/// This move-only loan is neither Send nor Sync and cannot reset the flight.
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++pub struct LauncherImageFailureLoanV1<'owner> {
++    owner: &'owner LauncherImageReceiveCustodyV1,
++    native: std::sync::MutexGuard<'owner, LauncherNativeCustody>,
++    not_sync: std::marker::PhantomData<std::cell::Cell<()>>,
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++impl std::fmt::Debug for LauncherImageFailureLoanV1<'_> {
++    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        formatter.write_str("LauncherImageFailureLoanV1")
++    }
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++impl LauncherImageFailureLoanV1<'_> {
++    /// Borrows the one-shot shutdown outcome separately from the first cause.
++    ///
++    /// None means no resident socket was shut down; Ok does not prove peer
++    /// retirement, remote acknowledgement or descriptor drain.
++    pub fn shutdown_outcome(&self) -> Option<&std::io::Result<()>> {
++        self.owner.shutdown_result.get()
++    }
++
++    /// Borrows the one-shot outcome for a rejected duplicate socket, if any.
++    ///
++    /// The invariant-rejection original remains resident and cannot be retried.
++    pub fn rejected_shutdown_outcome(&self) -> Option<&std::io::Result<()>> {
++        self.owner.rejected_shutdown_result.get()
++    }
++
++    /// Borrows the original cause, never a copied I/O or decoded error.
++    pub fn cause(&self) -> LauncherImageFailureRefV1<'_> {
++        for record in &self.native.records {
++            if let Some(Err(cause)) = record.capture.metadata.as_ref() {
++                return LauncherImageFailureRefV1::Native(cause);
++            }
++        }
++        if let Some(cause) = self.native.first_failure.as_ref() {
++            return LauncherImageFailureRefV1::Native(cause);
++        }
++        match self.owner.first_failure.get() {
++            Some(cause) => LauncherImageFailureRefV1::Protocol(cause),
++            None => LauncherImageFailureRefV1::Ended,
++        }
++    }
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++impl LauncherImageReceiveCustodyV1 {
++    pub(crate) fn empty() -> Self {
++        // These are pre-effect allocations, not an allocator/funding proof.
++        // Empty-control successful chunks share exact bounded byte storage;
++        // two successful image controls and one terminal control remain separate.
++        Self {
++            socket: std::sync::OnceLock::new(),
++            shutdown_result: std::sync::OnceLock::new(),
++            rejected_socket: std::sync::OnceLock::new(),
++            rejected_shutdown_result: std::sync::OnceLock::new(),
++            ended: std::sync::atomic::AtomicBool::new(false),
++            expected_image_serial: std::sync::atomic::AtomicU32::new(0),
++            frame_fds: std::sync::atomic::AtomicUsize::new(0),
++            in_auth: std::sync::atomic::AtomicBool::new(true),
++            native: std::sync::Mutex::new(LauncherNativeCustody {
++                records: [
++                    LauncherRawRecord::empty(0),
++                    LauncherRawRecord::empty(0),
++                    LauncherRawRecord::empty(0),
++                ],
++                current: 0,
++                empty_reads: 0,
++                empty_bytes: 0,
++                empty_flags: rustix::net::ReturnFlags::empty(),
++                prefixes: Vec::with_capacity(LAUNCHER_CAPTURE_BYTES),
++                first_failure: None,
++            }),
++            frames: tokio::sync::Mutex::new(LauncherFrames {
++                frames: (0..LAUNCHER_MESSAGE_COUNT)
++                    .map(|_| super::ReceiveFrame::selected())
++                    .collect(),
++                next: 0,
++                messages: Vec::with_capacity(LAUNCHER_MESSAGE_COUNT),
++            }),
++            first_failure: std::sync::OnceLock::new(),
++            requests: std::sync::Mutex::new(Vec::with_capacity(25)),
++            auth_sends: tokio::sync::Mutex::new(Vec::with_capacity(4)),
++            auth_lines: std::sync::Mutex::new(Vec::with_capacity(4)),
++        }
++    }
++
++    /// Permanently shuts down the original transport without releasing custody.
++    pub fn end(&self) {
++        self.ended.store(true, std::sync::atomic::Ordering::Release);
++        if let Some(socket) = self.socket.get() {
++            self.shutdown_result.get_or_init(|| {
++                rustix::net::shutdown(socket.as_fd(), rustix::net::Shutdown::Both)
++                    .map_err(std::io::Error::from)
++            });
++        }
++    }
++
++    pub(crate) fn failure(&self) -> Result<Option<LauncherImageFailureLoanV1<'_>>, LauncherImageFailureUnavailableV1> {
++        if !self.ended.load(std::sync::atomic::Ordering::Acquire) {
++            return Ok(None);
++        }
++        let native = self.native.try_lock().map_err(|error| match error {
++            std::sync::TryLockError::WouldBlock => LauncherImageFailureUnavailableV1::WouldBlock,
++            std::sync::TryLockError::Poisoned(_) => LauncherImageFailureUnavailableV1::Poisoned,
++        })?;
++
++        Ok(Some(LauncherImageFailureLoanV1 {
++            owner: self,
++            native,
++            not_sync: std::marker::PhantomData,
++        }))
++    }
++
++    pub(crate) fn shutdown_outcomes(&self) -> (
++        Option<&std::io::Result<()>>,
++        Option<&std::io::Result<()>>,
++    ) {
++        (self.shutdown_result.get(), self.rejected_shutdown_result.get())
++    }
++
++    pub(crate) fn require_open(&self) -> crate::Result<()> {
++        if self.ended.load(std::sync::atomic::Ordering::Acquire) {
++            return Err(crate::Error::InvalidReply);
++        }
++
++        Ok(())
++    }
++
++    pub(crate) fn retain_failure(&self, cause: crate::Error) {
++        self.end();
++        let _ = self.first_failure.set(cause);
++    }
++
++    pub(crate) fn retain_request(&self, message: &crate::Message) -> crate::Result<()> {
++        self.require_open()?;
++        let mut requests = self.requests.try_lock().map_err(|_| crate::Error::InvalidReply)?;
++        if requests.len() == 25 || message.data().len() > LAUNCHER_MESSAGE_BYTES {
++            self.end();
++            return Err(crate::Error::ExcessData);
++        }
++        requests.push(message.clone());
++        if message.header().member().is_some_and(|member| member.as_str() == "GetAosOwnLauncherImageV1") {
++            self.expected_image_serial.store(
++                message.primary_header().serial_num().get(),
++                std::sync::atomic::Ordering::Release,
++            );
++        }
++
++        Ok(())
++    }
++
++    pub(crate) fn remaining_auth_bytes(&self) -> crate::Result<usize> {
++        let native = self.native.try_lock().map_err(|_| crate::Error::InvalidReply)?;
++        LAUNCHER_AUTH_BYTES.checked_sub(native.prefixes.len()).ok_or(crate::Error::ExcessData)
++    }
++
++    pub(crate) fn retain_auth_line(&self, bytes: &[u8]) -> crate::Result<()> {
++        let mut lines = self.auth_lines.try_lock().map_err(|_| crate::Error::InvalidReply)?;
++        if lines.len() == 4 || bytes.len() > LAUNCHER_AUTH_BYTES {
++            self.end();
++            return Err(crate::Error::ExcessData);
++        }
++        lines.push(bytes.to_vec());
++
++        Ok(())
++    }
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++impl Drop for LauncherImageReceiveCustodyV1 {
++    fn drop(&mut self) {
++        self.end();
++    }
++}
++
++// Every fallible selected interval has this original-queue fence ahead of the
++// local temporaries it protects. It never adopts or releases descriptor custody.
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++pub(crate) struct LauncherReceiveBoundary<'owner> {
++    owner: &'owner LauncherImageReceiveCustodyV1,
++    completed: bool,
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++impl<'owner> LauncherReceiveBoundary<'owner> {
++    pub(crate) fn new(owner: &'owner LauncherImageReceiveCustodyV1) -> Self {
++        Self { owner, completed: false }
++    }
++
++    pub(crate) fn complete(&mut self) {
++        self.completed = true;
++    }
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++impl Drop for LauncherReceiveBoundary<'_> {
++    fn drop(&mut self) {
++        if !self.completed {
++            self.owner.end();
++        }
++    }
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++#[derive(Debug)]
++struct LauncherUnixReadHalf {
++    stream: std::sync::Arc<tokio::net::UnixStream>,
++    custody: std::sync::Arc<LauncherImageReceiveCustodyV1>,
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++#[derive(Debug)]
++struct LauncherUnixWriteHalf {
++    stream: std::sync::Arc<tokio::net::UnixStream>,
++    custody: std::sync::Arc<LauncherImageReceiveCustodyV1>,
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++impl Drop for LauncherUnixReadHalf {
++    fn drop(&mut self) {
++        self.custody.end();
++    }
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++impl Drop for LauncherUnixWriteHalf {
++    fn drop(&mut self) {
++        self.custody.end();
++    }
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++#[derive(Debug)]
++pub(crate) struct LauncherHandshakeBoundary {
++    custody: Option<std::sync::Arc<LauncherImageReceiveCustodyV1>>,
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++impl LauncherHandshakeBoundary {
++    pub(crate) fn new(custody: Option<std::sync::Arc<LauncherImageReceiveCustodyV1>>) -> Self {
++        Self { custody }
++    }
++
++    pub(crate) fn complete(&mut self) {
++        self.custody = None;
++    }
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++impl Drop for LauncherHandshakeBoundary {
++    fn drop(&mut self) {
++        if let Some(custody) = self.custody.as_ref() {
++            custody.end();
++        }
++    }
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++pub(crate) fn split_launcher_image(
++    stream: tokio::net::UnixStream,
++    custody: std::sync::Arc<LauncherImageReceiveCustodyV1>,
++) -> crate::Result<super::BoxedSplit> {
++    let mut boundary = LauncherReceiveBoundary::new(&custody);
++    custody.require_open()?;
++
++    // The Arc allocation is an explicit funding boundary. The outer attempt
++    // already owns custody; no successful allocation creates peer authority.
++    let stream = std::sync::Arc::new(stream);
++    if let Err(original) = custody.socket.set(stream.clone()) {
++        // This fixed builder has one split attempt. Park its actual rejected
++        // original before ending either queue; it is not a replacement stream.
++        let original = custody.rejected_socket.get_or_init(|| original);
++        custody.end();
++        custody.rejected_shutdown_result.get_or_init(|| {
++            rustix::net::shutdown(original.as_fd(), rustix::net::Shutdown::Both)
++                .map_err(std::io::Error::from)
++        });
++        return Err(crate::Error::InvalidReply);
++    }
++
++    let split = super::Split::new(
++        Box::new(LauncherUnixReadHalf { stream: stream.clone(), custody: custody.clone() }),
++        Box::new(LauncherUnixWriteHalf { stream, custody: custody.clone() }),
++    );
++    boundary.complete();
++
++    Ok(split)
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++#[async_trait::async_trait]
++impl super::ReadHalf for LauncherUnixReadHalf {
++    async fn recvmsg(&mut self, buf: &mut [u8]) -> super::RecvmsgResult {
++        tokio_recvmsg(
++            &self.stream,
++            buf,
++            TokioReceiveDisposition::launcher(&self.custody),
++        )
++        .await
++    }
++
++    async fn receive_message(
++        &mut self,
++        seq: u64,
++        already_received_bytes: &mut Vec<u8>,
++        already_received_fds: &mut Vec<OwnedFd>,
++    ) -> crate::Result<crate::Message> {
++        let custody = self.custody.clone();
++        let mut boundary = LauncherReceiveBoundary::new(&custody);
++        custody.require_open()?;
++        let mut storage = custody.frames.lock().await;
++        custody.require_open()?;
++        let index = storage.next;
++        if index == LAUNCHER_MESSAGE_COUNT {
++            custody.retain_failure(crate::Error::ExcessData);
++            return Err(crate::Error::InvalidReply);
++        }
++        storage.next += 1;
++        custody.in_auth.store(false, std::sync::atomic::Ordering::Release);
++        custody.frame_fds.store(already_received_fds.len(), std::sync::atomic::Ordering::Release);
++
++        let result = super::receive_message_in_frame(
++            self,
++            seq,
++            already_received_bytes,
++            already_received_fds,
++            &mut storage.frames[index],
++        )
++        .await;
++        let message = match result {
++            Ok(message) => message,
++            Err(cause) => {
++                custody.retain_failure(cause);
++                return Err(crate::Error::InvalidReply);
++            }
++        };
++        storage.messages.push(message);
++        let Some(message) = storage.messages.last() else {
++            custody.retain_failure(crate::Error::InvalidReply);
++            return Err(crate::Error::InvalidReply);
++        };
++
++        let expected = custody.expected_image_serial.load(std::sync::atomic::Ordering::Acquire);
++        let matches_image = expected != 0 && message.header().reply_serial().is_some_and(|serial| serial.get() == expected);
++        if message.header().unix_fds().unwrap_or(0) as usize != message.data().fds().len()
++            || (!message.data().fds().is_empty()
++            && (!matches_image || message.data().fds().len() != 1
++                || message.message_type() != crate::message::Type::MethodReturn))
++        {
++            custody.retain_failure(crate::Error::InvalidReply);
++            return Err(crate::Error::InvalidReply);
++        }
++        if matches_image {
++            custody.expected_image_serial.store(0, std::sync::atomic::Ordering::Release);
++        }
++        let reply = message.clone();
++        boundary.complete();
++
++        Ok(reply)
++    }
++
++    fn can_pass_unix_fd(&self) -> bool {
++        true
++    }
++
++    async fn peer_credentials(&mut self) -> std::io::Result<crate::fdo::ConnectionCredentials> {
++        get_unix_peer_creds(&self.stream).await
++    }
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++#[async_trait::async_trait]
++impl super::WriteHalf for LauncherUnixWriteHalf {
++    async fn sendmsg(&mut self, buffer: &[u8], fds: &[BorrowedFd<'_>]) -> std::io::Result<usize> {
++        let mut boundary = LauncherReceiveBoundary::new(&self.custody);
++        if self.custody.require_open().is_err() || !fds.is_empty() {
++            return Err(IncomingControlError::Fenced.into_io());
++        }
++
++        let result = tokio_sendmsg(&self.stream, buffer, fds).await;
++        match result {
++            Ok(written) => {
++                boundary.complete();
++                Ok(written)
++            }
++            Err(cause) => {
++                self.custody.retain_failure(cause.into());
++                Err(IncomingControlError::Fenced.into_io())
++            }
++        }
++    }
++
++    async fn close(&mut self) -> std::io::Result<()> {
++        self.custody.end();
++        // The native causes remain in custody; this refusal cannot clone them
++        // into the consuming trait return or erase a rejected-socket debt.
++        match (self.custody.shutdown_result.get(), self.custody.rejected_shutdown_result.get()) {
++            (Some(Ok(())), None | Some(Ok(()))) => Ok(()),
++            _ => Err(IncomingControlError::Fenced.into_io()),
++        }
++    }
++
++    fn can_pass_unix_fd(&self) -> bool {
++        true
++    }
++
++    async fn peer_credentials(&mut self) -> std::io::Result<crate::fdo::ConnectionCredentials> {
++        get_unix_peer_creds(&self.stream).await
++    }
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++fn fd_recvmsg_launcher(
++    fd: BorrowedFd<'_>,
++    buffer: &mut [u8],
++    custody: &LauncherImageReceiveCustodyV1,
++) -> super::RecvmsgResult {
++    use std::sync::atomic::Ordering;
++
++    if custody.require_open().is_err() {
++        return Err(IncomingControlError::Fenced.into_io());
++    }
++    let mut native = match custody.native.try_lock() {
++        Ok(native) => native,
++        Err(_) => {
++            custody.retain_failure(crate::Error::InvalidReply);
++            return Err(IncomingControlError::Fenced.into_io());
++        }
++    };
++    let mut boundary = LauncherReceiveBoundary::new(custody);
++    if native.current >= native.records.len()
++        || buffer.len() > LAUNCHER_CAPTURE_BYTES - native.prefixes.len()
++        || (custody.in_auth.load(Ordering::Acquire)
++            && buffer.len() > LAUNCHER_AUTH_BYTES - native.prefixes.len())
++    {
++        custody.retain_failure(crate::Error::ExcessData);
++        return Err(IncomingControlError::Fenced.into_io());
++    }
++
++    let accepts_image_fd = !custody.in_auth.load(Ordering::Acquire)
++        && custody.expected_image_serial.load(Ordering::Acquire) != 0
++        && custody.frame_fds.load(Ordering::Acquire) == 0;
++    if accepts_image_fd && native.current >= 2 {
++        custody.retain_failure(crate::Error::ExcessData);
++        return Err(IncomingControlError::Fenced.into_io());
++    }
++    let LauncherNativeCustody {
++        records, current, empty_reads, empty_bytes, empty_flags, prefixes, first_failure,
++    } = &mut *native;
++    let record = &mut records[*current];
++    record.capture.prefix_start = prefixes.len();
++    let control = IncomingControl::Launcher { accepts_image_fd };
++    let result = fd_recvmsg_in_storage(
++        fd,
++        buffer,
++        control,
++        &mut record.control[..control.capacity()],
++        Some(&mut record.capture),
++        Some(prefixes),
++    );
++
++    match result {
++        Ok((reported, fds)) => {
++            if record.capture.control_used == 0 {
++                // No cmsg bytes were captured. Capacity is not initialized data.
++                // All actual payload bytes remain in the aggregate prefix owner.
++                *empty_reads += 1;
++                *empty_bytes += reported;
++                *empty_flags |= record.capture.flags;
++                record.capture.reported = 0;
++                record.capture.prefix_start = prefixes.len();
++                record.capture.prefix_end = prefixes.len();
++            } else {
++                *current += 1;
++            }
++            custody.frame_fds.fetch_add(fds.len(), Ordering::AcqRel);
++            boundary.complete();
++            Ok((reported, fds))
++        }
++        // These two errno values arise only from recvmsg(-1). Post-consumption
++        // denials use InvalidData and therefore cannot enter Tokio's retry loop.
++        Err(error) if record.capture.reported == 0
++            && record.capture.control_used == 0
++            && matches!(error.kind(), std::io::ErrorKind::Interrupted | std::io::ErrorKind::WouldBlock) =>
++        {
++            boundary.complete();
++            Err(error)
++        }
++        Err(error) => {
++            custody.end();
++            if first_failure.is_none() {
++                *first_failure = Some(error);
++            }
++            Err(IncomingControlError::Fenced.into_io())
++        }
++    }
++}
++
+ #[cfg(all(unix, not(feature = "tokio")))]
+ #[async_trait::async_trait]
+ impl super::ReadHalf for Arc<Async<UnixStream>> {
+@@ -129,26 +786,7 @@ impl super::Socket for tokio::net::UnixStream {
  #[async_trait::async_trait]
  impl super::ReadHalf for tokio::net::unix::OwnedReadHalf {
      async fn recvmsg(&mut self, buf: &mut [u8]) -> super::RecvmsgResult {
@@ -228,13 +1649,16 @@
      }
  
      /// Supports passing file descriptors.
-@@ -162,6 +143,136 @@
+@@ -161,6 +799,159 @@ impl super::ReadHalf for tokio::net::unix::OwnedReadHalf {
+     }
  }
  
- #[cfg(all(unix, feature = "tokio"))]
++#[cfg(all(unix, feature = "tokio"))]
 +struct TokioReceiveDisposition<'a> {
 +    control: IncomingControl,
 +    failed: Option<&'a mut bool>,
++    #[cfg(target_os = "linux")]
++    launcher: Option<&'a LauncherImageReceiveCustodyV1>,
 +}
 +
 +#[cfg(all(unix, feature = "tokio"))]
@@ -243,6 +1667,8 @@
 +        Self {
 +            control: IncomingControl::Legacy,
 +            failed: None,
++            #[cfg(target_os = "linux")]
++            launcher: None,
 +        }
 +    }
 +
@@ -251,6 +1677,16 @@
 +        Self {
 +            control: IncomingControl::RejectIncoming,
 +            failed: Some(failed),
++            launcher: None,
++        }
++    }
++
++    #[cfg(target_os = "linux")]
++    fn launcher(custody: &'a LauncherImageReceiveCustodyV1) -> Self {
++        Self {
++            control: IncomingControl::Launcher { accepts_image_fd: false },
++            failed: None,
++            launcher: Some(custody),
 +        }
 +    }
 +
@@ -259,6 +1695,10 @@
 +    }
 +
 +    fn require_open(&self) -> std::io::Result<()> {
++        #[cfg(target_os = "linux")]
++        if self.launcher.is_some_and(|owner| owner.require_open().is_err()) {
++            return Err(IncomingControlError::Fenced.into_io());
++        }
 +        #[cfg(target_os = "linux")]
 +        if self.failed.as_deref() == Some(&true) {
 +            return Err(IncomingControlError::Fenced.into_io());
@@ -300,6 +1740,11 @@
 +                    IncomingControl::RejectIncoming => {
 +                        fd_recvmsg_with_control(stream.as_fd(), buf, IncomingControl::RejectIncoming)
 +                    }
++                    #[cfg(target_os = "linux")]
++                    IncomingControl::Launcher { .. } => match disposition.launcher {
++                        Some(custody) => fd_recvmsg_launcher(stream.as_fd(), buf, custody),
++                        None => Err(IncomingControlError::Fenced.into_io()),
++                    },
 +                }
 +            }) {
 +                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
@@ -361,11 +1806,41 @@
 +    split
 +}
 +
-+#[cfg(all(unix, feature = "tokio"))]
+ #[cfg(all(unix, feature = "tokio"))]
  #[async_trait::async_trait]
  impl super::WriteHalf for tokio::net::unix::OwnedWriteHalf {
-     async fn sendmsg(
-@@ -275,21 +386,120 @@
+@@ -169,29 +960,7 @@ impl super::WriteHalf for tokio::net::unix::OwnedWriteHalf {
+         buffer: &[u8],
+         #[cfg(unix)] fds: &[BorrowedFd<'_>],
+     ) -> std::io::Result<usize> {
+-        let stream = self.as_ref();
+-        poll_fn(|cx| {
+-            loop {
+-                match stream.try_io(tokio::io::Interest::WRITABLE, || {
+-                    fd_sendmsg(
+-                        stream.as_fd(),
+-                        buffer,
+-                        #[cfg(unix)]
+-                        fds,
+-                    )
+-                }) {
+-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+-                        match stream.poll_write_ready(cx) {
+-                            Poll::Pending => return Poll::Pending,
+-                            Poll::Ready(res) => res?,
+-                        }
+-                    }
+-                    v => return Poll::Ready(v),
+-                }
+-            }
+-        })
+-        .await
++        tokio_sendmsg(self.as_ref(), buffer, fds).await
+     }
+ 
+     async fn close(&mut self) -> std::io::Result<()> {
+@@ -275,27 +1044,234 @@ impl super::WriteHalf for Arc<Async<UnixStream>> {
  
  #[cfg(unix)]
  fn fd_recvmsg(fd: BorrowedFd<'_>, buffer: &mut [u8]) -> std::io::Result<(usize, Vec<OwnedFd>)> {
@@ -378,6 +1853,8 @@
 +    Legacy,
 +    #[cfg(all(target_os = "linux", feature = "tokio"))]
 +    RejectIncoming,
++    #[cfg(all(target_os = "linux", feature = "tokio"))]
++    Launcher { accepts_image_fd: bool },
 +}
 +
 +#[cfg(unix)]
@@ -387,6 +1864,10 @@
 +            Self::Legacy => rustix::cmsg_space!(ScmRights(FDS_MAX)),
 +            #[cfg(all(target_os = "linux", feature = "tokio"))]
 +            Self::RejectIncoming => 0,
++            #[cfg(all(target_os = "linux", feature = "tokio"))]
++            Self::Launcher { accepts_image_fd } => {
++                if accepts_image_fd { rustix::cmsg_space!(ScmRights(1)) } else { 0 }
++            }
 +        }
 +    }
 +}
@@ -428,22 +1909,64 @@
 +) -> std::io::Result<(usize, Vec<OwnedFd>)> {
      use std::mem::MaybeUninit;
  
-     let mut iov = [IoSliceMut::new(buffer)];
+-    let mut iov = [IoSliceMut::new(buffer)];
      let mut cmsg_buffer = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(FDS_MAX))];
 -    let mut ancillary = RecvAncillaryBuffer::new(&mut cmsg_buffer);
 +    let control_storage = &mut cmsg_buffer[..control.capacity()];
++
++    fd_recvmsg_in_storage(fd, buffer, control, control_storage, None, None)
++}
++
++// One syscall/control adopter serves Legacy, zero-FD and retained-image reads.
++#[cfg(unix)]
++fn fd_recvmsg_in_storage(
++    fd: BorrowedFd<'_>,
++    buffer: &mut [u8],
++    control: IncomingControl,
++    control_storage: &mut [std::mem::MaybeUninit<u8>],
++    mut capture: Option<&mut LauncherRawCapture>,
++    mut prefixes: Option<&mut Vec<u8>>,
++) -> std::io::Result<(usize, Vec<OwnedFd>)> {
++    let mut iov = [IoSliceMut::new(buffer)];
 +    let mut ancillary = RecvAncillaryBuffer::new(control_storage);
- 
-     let msg = recvmsg(fd, &mut iov, &mut ancillary, RecvFlags::empty())?;
++
++    #[cfg(all(target_os = "linux", feature = "tokio"))]
++    let flags = if matches!(control, IncomingControl::Launcher { .. }) {
++        RecvFlags::CMSG_CLOEXEC
++    } else {
++        RecvFlags::empty()
++    };
++    #[cfg(not(all(target_os = "linux", feature = "tokio")))]
++    let flags = RecvFlags::empty();
++    let msg = recvmsg(fd, &mut iov, &mut ancillary, flags)?;
++    if let Some(record) = capture.as_deref_mut() {
++        // This getter must precede drain: drain decreases the actual used count.
++        record.control_used = ancillary.received_control_len();
++        record.reported = msg.bytes;
++        record.flags = msg.flags;
++        if let Some(prefixes) = prefixes.as_deref_mut() {
++            prefixes.extend_from_slice(&buffer[..msg.bytes.min(buffer.len())]);
++            record.prefix_end = prefixes.len();
++        }
++    }
 +    // Selected rejection happens before EOF and before any FD escapes this call.
 +    #[cfg(all(target_os = "linux", feature = "tokio"))]
 +    let selected_fds = if matches!(control, IncomingControl::RejectIncoming) {
 +        require_untruncated_control(msg.flags)?;
 +        Some(collect_received_fds(&mut ancillary, control)?)
++    } else if matches!(control, IncomingControl::Launcher { .. }) {
++        // Park every screened ordinary right through the same adopter before
++        // refusing truncated control. The buffer still owns undisposed rights.
++        let adopted = collect_received_fds_into(&mut ancillary, control, capture.as_deref_mut());
++        if msg.flags.intersects(rustix::net::ReturnFlags::CTRUNC | rustix::net::ReturnFlags::TRUNC) {
++            return Err(IncomingControlError::Truncated.into_io());
++        }
++        Some(adopted?)
 +    } else {
 +        None
 +    };
-+
+ 
+-    let msg = recvmsg(fd, &mut iov, &mut ancillary, RecvFlags::empty())?;
      if msg.bytes == 0 {
          return Err(std::io::Error::new(
              std::io::ErrorKind::BrokenPipe,
@@ -452,6 +1975,21 @@
      }
 +    #[cfg(all(target_os = "linux", feature = "tokio"))]
 +    if let Some(fds) = selected_fds {
++        if matches!(control, IncomingControl::Launcher { .. }) {
++            if let Some(record) = capture {
++                if let Some(original) = record.ordinary.take() {
++                    record.output.push(original);
++                }
++
++                let output = if record.output.is_empty() {
++                    Vec::new()
++                } else {
++                    std::mem::take(&mut record.output)
++                };
++                return Ok((msg.bytes, output));
++            }
++            return Err(IncomingControlError::Fenced.into_io());
++        }
 +        return Ok((msg.bytes, fds));
 +    }
 +
@@ -474,6 +2012,15 @@
 +    ancillary: &mut RecvAncillaryBuffer<'_>,
 +    control: IncomingControl,
 +) -> std::io::Result<Vec<OwnedFd>> {
++    collect_received_fds_into(ancillary, control, None)
++}
++
++#[cfg(unix)]
++fn collect_received_fds_into(
++    ancillary: &mut RecvAncillaryBuffer<'_>,
++    control: IncomingControl,
++    mut capture: Option<&mut LauncherRawCapture>,
++) -> std::io::Result<Vec<OwnedFd>> {
      let mut fds = vec![];
      for msg in ancillary.drain() {
 +        #[cfg(all(target_os = "linux", feature = "tokio"))]
@@ -486,17 +2033,95 @@
 +
          match msg {
              RecvAncillaryMessage::ScmRights(iter) => {
++                #[cfg(all(target_os = "linux", feature = "tokio"))]
++                if let IncomingControl::Launcher { accepts_image_fd } = control {
++                    let Some(record) = capture.as_deref_mut() else {
++                        drop(iter);
++                        return Err(IncomingControlError::Fenced.into_io());
++                    };
++
++                    for original in iter {
++                        if !accepts_image_fd || record.ordinary.is_some() {
++                            drop(original);
++                            record.disposed += 1;
++                            return Err(IncomingControlError::Unexpected.into_io());
++                        }
++
++                        // metadata uses the actual adopted descriptor and needs
++                        // no procfs, unsafe conversion or extra rustix features.
++                        record.screening = Some(std::fs::File::from(original));
++                        record.metadata = match record.screening.as_ref() {
++                            Some(file) => Some(file.metadata()),
++                            None => return Err(IncomingControlError::Fenced.into_io()),
++                        };
++                        let regular = matches!(record.metadata.as_ref(), Some(Ok(metadata)) if metadata.is_file());
++                        if !regular {
++                            // Anonymous/ring or unidentifiable rights are disposed
++                            // before a retained error owner can become observable.
++                            drop(record.screening.take());
++                            record.disposed += 1;
++                            return Err(IncomingControlError::Unexpected.into_io());
++                        }
++                        record.ordinary = record.screening.take().map(OwnedFd::from);
++                    }
++
++                    continue;
++                }
                  fds.extend(iter);
-@@ -308,7 +518,7 @@
+             }
+             #[cfg(any(target_os = "linux", target_os = "android"))]
+             RecvAncillaryMessage::ScmCredentials(_) => {
++                #[cfg(all(target_os = "linux", feature = "tokio"))]
++                if matches!(control, IncomingControl::Launcher { .. }) {
++                    return Err(IncomingControlError::Unexpected.into_io());
++                }
+                 // On Linux, credentials might be received. This shouldn't normally happen
+                 // in our use case since we don't request them, but ignore if present.
+                 continue;
+@@ -308,7 +1284,41 @@ fn fd_recvmsg(fd: BorrowedFd<'_>, buffer: &mut [u8]) -> std::io::Result<(usize,
              }
          }
      }
 -    Ok((msg.bytes, fds))
++    #[cfg(all(target_os = "linux", feature = "tokio"))]
++    if matches!(control, IncomingControl::Launcher { .. }) {
++        return Ok(fds);
++    }
 +    Ok(fds)
++}
++
++#[cfg(all(unix, feature = "tokio"))]
++async fn tokio_sendmsg(
++    stream: &tokio::net::UnixStream,
++    buffer: &[u8],
++    fds: &[BorrowedFd<'_>],
++) -> std::io::Result<usize> {
++        poll_fn(|cx| {
++            loop {
++                match stream.try_io(tokio::io::Interest::WRITABLE, || {
++                    fd_sendmsg(
++                        stream.as_fd(),
++                        buffer,
++                        #[cfg(unix)]
++                        fds,
++                    )
++                }) {
++                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
++                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
++                        match stream.poll_write_ready(cx) {
++                            Poll::Pending => return Poll::Pending,
++                            Poll::Ready(res) => res?,
++                        }
++                    }
++                    v => return Poll::Ready(v),
++                }
++            }
++        })
++        .await
  }
  
  #[cfg(unix)]
-@@ -528,3 +738,97 @@
+@@ -528,3 +1538,97 @@ fn send_zero_byte_blocking(fd: RawFd) -> std::io::Result<usize> {
          Ok(ret as usize)
      }
  }
@@ -594,3 +2219,189 @@
 +        assert!(fds.is_empty());
 +    }
 +}
+diff --git a/src/connection/handshake/common.rs b/src/connection/handshake/common.rs
+index d87f150374d04a1899bfe4c6137f692b1c8970c5..1947157c261290bff7079cd538ab35409e15cbbb 100644
+--- a/src/connection/handshake/common.rs
++++ b/src/connection/handshake/common.rs
+@@ -6,6 +6,10 @@ use crate::{Error, Result};
+ // Common code for the client and server side of the handshake.
+ #[derive(Debug)]
+ pub(super) struct Common {
++    #[cfg(all(target_os = "linux", feature = "tokio"))]
++    launcher_boundary: crate::conn::socket::LauncherHandshakeBoundary,
++    #[cfg(all(target_os = "linux", feature = "tokio"))]
++    launcher: Option<std::sync::Arc<crate::conn::socket::LauncherImageReceiveCustodyV1>>,
+     socket: BoxedSplit,
+     recv_buffer: Vec<u8>,
+     #[cfg(unix)]
+@@ -19,6 +23,10 @@ impl Common {
+     /// Start a handshake on this client socket
+     pub fn new(socket: BoxedSplit, mechanism: AuthMechanism) -> Self {
+         Self {
++            #[cfg(all(target_os = "linux", feature = "tokio"))]
++            launcher_boundary: crate::conn::socket::LauncherHandshakeBoundary::new(None),
++            #[cfg(all(target_os = "linux", feature = "tokio"))]
++            launcher: None,
+             socket,
+             recv_buffer: Vec::new(),
+             #[cfg(unix)]
+@@ -34,6 +42,20 @@ impl Common {
+         &self.socket
+     }
+ 
++    #[cfg(all(target_os = "linux", feature = "tokio"))]
++    pub(super) fn install_launcher(
++        &mut self,
++        custody: std::sync::Arc<crate::conn::socket::LauncherImageReceiveCustodyV1>,
++    ) {
++        self.launcher_boundary = crate::conn::socket::LauncherHandshakeBoundary::new(Some(custody.clone()));
++        self.launcher = Some(custody);
++    }
++
++    #[cfg(all(target_os = "linux", feature = "tokio"))]
++    pub(super) fn launcher(&self) -> Option<&std::sync::Arc<crate::conn::socket::LauncherImageReceiveCustodyV1>> {
++        self.launcher.as_ref()
++    }
++
+     pub fn socket_mut(&mut self) -> &mut BoxedSplit {
+         &mut self.socket
+     }
+@@ -46,7 +68,9 @@ impl Common {
+         self.mechanism
+     }
+ 
+-    pub fn into_components(self) -> IntoComponentsReturn {
++    pub fn into_components(mut self) -> IntoComponentsReturn {
++        #[cfg(all(target_os = "linux", feature = "tokio"))]
++        self.launcher_boundary.complete();
+         (
+             self.socket,
+             self.recv_buffer,
+@@ -68,6 +92,14 @@ impl Common {
+         commands: &[Command],
+         extra_bytes: Option<&[u8]>,
+     ) -> Result<()> {
++        #[cfg(all(target_os = "linux", feature = "tokio"))]
++        let custody = self.launcher.clone();
++        #[cfg(all(target_os = "linux", feature = "tokio"))]
++        let mut retained_sends = match custody.as_ref() {
++            Some(custody) => Some(custody.auth_sends.try_lock().map_err(|_| Error::InvalidReply)?),
++            None => None,
++        };
++
+         let mut send_buffer =
+             commands
+                 .iter()
+@@ -87,6 +119,26 @@ impl Common {
+         if let Some(extra_bytes) = extra_bytes {
+             send_buffer.extend_from_slice(extra_bytes);
+         }
++        #[cfg(all(target_os = "linux", feature = "tokio"))]
++        if let Some(sends) = retained_sends.as_mut() {
++            // Move the actual send buffer before any socket effect. Keeping a
++            // written offset preserves its complete original bytes on failure.
++            let retained_bytes: usize = sends.iter().map(Vec::len).sum();
++            if sends.len() == 4 || send_buffer.len() > 4 * 1024 - retained_bytes {
++                return Err(Error::ExcessData);
++            }
++            sends.push(send_buffer);
++            let Some(buffer) = sends.last() else { return Err(Error::InvalidReply); };
++            let mut position = 0;
++            while position < buffer.len() {
++                let written = self.socket.write_mut().sendmsg(&buffer[position..], &[]).await?;
++                if written == 0 || written > buffer.len() - position {
++                    return Err(Error::InvalidReply);
++                }
++                position += written;
++            }
++            return Ok(());
++        }
+         while !send_buffer.is_empty() {
+             let written = self
+                 .socket
+@@ -116,6 +168,10 @@ impl Common {
+         let mut n_received_commands = 0;
+         'outer: loop {
+             while let Some(lf_index) = self.recv_buffer.iter().position(|b| *b == b'\n') {
++                #[cfg(all(target_os = "linux", feature = "tokio"))]
++                if self.launcher.is_some() && lf_index == 0 {
++                    return Err(Error::Handshake("Invalid line ending in handshake".into()));
++                }
+                 if self.recv_buffer[lf_index - 1] != b'\r' {
+                     return Err(Error::Handshake("Invalid line ending in handshake".into()));
+                 }
+@@ -134,6 +190,10 @@ impl Common {
+                     start_index = 1;
+                 };
+ 
++                #[cfg(all(target_os = "linux", feature = "tokio"))]
++                if let Some(custody) = self.launcher.as_ref() {
++                    custody.retain_auth_line(&self.recv_buffer[..=lf_index])?;
++                }
+                 let line_bytes = self.recv_buffer.drain(..=lf_index);
+                 let line = std::str::from_utf8(&line_bytes.as_slice()[start_index..])
+                     .map_err(|e| Error::Handshake(e.to_string()))?;
+@@ -147,7 +207,18 @@ impl Common {
+                 }
+             }
+ 
+-            let mut buf = vec![0; 1024];
++            #[cfg(all(target_os = "linux", feature = "tokio"))]
++            let capacity = match self.launcher.as_ref() {
++                Some(custody) => {
++                    let remaining = custody.remaining_auth_bytes()?;
++                    if remaining == 0 { return Err(Error::ExcessData); }
++                    1024.min(remaining)
++                }
++                None => 1024,
++            };
++            #[cfg(not(all(target_os = "linux", feature = "tokio")))]
++            let capacity = 1024;
++            let mut buf = vec![0; capacity];
+             let res = self.socket.read_mut().recvmsg(&mut buf).await?;
+             let read = {
+                 #[cfg(unix)]
+diff --git a/src/connection/handshake/client.rs b/src/connection/handshake/client.rs
+index 94f19fdf8fb7679deb30ee044c29f7d843b8b263..fb3725cc9755de8656b85c54b3b1822ebd60d124 100644
+--- a/src/connection/handshake/client.rs
++++ b/src/connection/handshake/client.rs
+@@ -20,6 +20,24 @@ pub struct Client {
+     user_id: Result<String>,
+ }
+ 
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++impl Authenticated {
++    // The closed Builder supplies its same resident transport owner; the old
++    // public client constructor and ReadHalf trait remain unchanged.
++    pub(crate) async fn client_launcher(
++        socket: BoxedSplit,
++        server_guid: Option<OwnedGuid>,
++        mechanism: Option<AuthMechanism>,
++        bus: bool,
++        user_id: Option<u32>,
++        custody: std::sync::Arc<crate::conn::socket::LauncherImageReceiveCustodyV1>,
++    ) -> Result<Self> {
++        let mut client = Client::new(socket, mechanism, server_guid, bus, user_id);
++        client.common.install_launcher(custody);
++        client.perform().await
++    }
++}
++
+ impl Client {
+     /// Start a handshake on this client socket
+     pub fn new(
+@@ -145,6 +163,14 @@ impl Client {
+             None
+         };
+ 
++        #[cfg(all(target_os = "linux", feature = "tokio"))]
++        if let (Some(custody), Some(message)) = (
++            self.common.launcher(),
++            hello_method.as_ref(),
++        ) {
++            custody.retain_request(message)?;
++        }
++
+         self.common
+             .write_commands(&commands, hello_method.as_ref().map(|m| &**m.data()))
+             .await?;

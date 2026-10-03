@@ -24,6 +24,7 @@ use aos_sandbox_source_provider::{
 };
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fs::{FileType, Mode, OFlags, Stat, fstat, open, openat};
+use rustix::io::fcntl_dupfd_cloexec;
 
 use crate::ProductionBrokerSessionActivationErrorV1;
 use crate::production_activation::{
@@ -38,6 +39,176 @@ const LISTENER_PATH: &str = "/run/aos/source-provider/control.sock";
 const STATE_ROOT: &str = "/var/lib/aos/source-provider";
 const CATALOG_PUBLICATION: &str = "current-catalog-publication";
 const CATALOG_PUBLICATION_BYTES: usize = 520;
+
+// Local expansion keeps the original consuming/error/drop sequence. Selected
+// expansion parks each returned Result before the following observation.
+macro_rules! catalog_read_step {
+    (Local, $pending:ident, $field:ident, $expression:expr, $label:literal) => {
+        $expression.map_err(|_| ProductionSourceProviderIngressErrorV1::Catalog($label))?
+    };
+    (Retained, $pending:ident, $field:ident, $expression:expr, $label:literal) => {{
+        $pending.$field = Some($expression);
+        match $pending.$field.as_ref() {
+            Some(Ok(value)) => value,
+            _ => return Err(ProductionSourceProviderIngressErrorV1::Catalog($label)),
+        }
+    }};
+}
+
+macro_rules! catalog_resolution_root {
+    (Local, $pending:ident, $root:ident) => {
+        BeneathRoot::from_owned($root)
+            .map_err(|_| ProductionSourceProviderIngressErrorV1::Catalog("filesystem root"))?
+    };
+    (Retained, $pending:ident, $root:ident) => {{
+        $pending.root_duplicate = Some(fcntl_dupfd_cloexec($root, 0));
+        let duplicate = match $pending.root_duplicate.take() {
+            Some(Ok(duplicate)) => duplicate,
+            other => {
+                $pending.root_duplicate = other;
+                return Err(ProductionSourceProviderIngressErrorV1::Catalog("filesystem root"));
+            }
+        };
+        // The same raw original remains in filesystem_root. This unchanged
+        // lower consuming validator may still lose its unreturned duplicate.
+        $pending.checked_root = Some(BeneathRoot::from_owned(duplicate));
+        match $pending.checked_root.as_ref() {
+            Some(Ok(root)) => root,
+            _ => return Err(ProductionSourceProviderIngressErrorV1::Catalog("filesystem root")),
+        }
+    }};
+}
+
+macro_rules! catalog_read_file {
+    (Local, $pending:ident, $descriptor:ident) => {
+        File::from($descriptor)
+    };
+    (Retained, $pending:ident, $descriptor:ident) => {{
+        // All slot checks precede the infallible raw-FD-to-File move.
+        if $pending.file.is_some() || !matches!($pending.descriptor.as_ref(), Some(Ok(_))) {
+            return Err(ProductionSourceProviderIngressErrorV1::Catalog("publication file custody"));
+        }
+        match $pending.descriptor.take() {
+            Some(Ok(descriptor)) => $pending.file = Some(File::from(descriptor)),
+            other => {
+                $pending.descriptor = other;
+                return Err(ProductionSourceProviderIngressErrorV1::Catalog("publication file custody"));
+            }
+        }
+        match $pending.file.as_mut() {
+            Some(file) => file,
+            None => return Err(ProductionSourceProviderIngressErrorV1::Catalog("publication file custody")),
+        }
+    }};
+}
+
+macro_rules! catalog_read_bytes {
+    (Local, $pending:ident, $count:ident) => {
+        vec![0; $count]
+    };
+    (Retained, $pending:ident, $count:ident) => {{
+        $pending.bytes.resize($count, 0);
+        &mut $pending.bytes
+    }};
+}
+
+macro_rules! catalog_read_tail {
+    (Local, $pending:ident) => { [0] };
+    (Retained, $pending:ident) => { &mut $pending.trailing };
+}
+
+macro_rules! catalog_read_complete {
+    (Local, $bytes:ident) => { Ok($bytes) };
+    (Retained, $bytes:ident) => { Ok(()) };
+}
+
+macro_rules! read_catalog_recipe {
+    ($name:ident, $maximum:ident, $disposition:ident, $pending:ident) => {{
+        let filesystem_root = catalog_read_step!(
+            $disposition, $pending, filesystem_root,
+            open("/", OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()),
+            "filesystem root"
+        );
+        let root = catalog_resolution_root!($disposition, $pending, filesystem_root);
+        let relative = Path::new(STATE_ROOT).strip_prefix("/")
+            .map_err(|_| ProductionSourceProviderIngressErrorV1::Catalog("fixed state path"))?;
+        let directory = catalog_read_step!(
+            $disposition, $pending, directory,
+            root.resolve(relative, ResolveOptions { no_mount_crossing: false, require_directory: true }),
+            "state directory"
+        );
+        let directory_stat = catalog_read_step!(
+            $disposition, $pending, directory_stat, fstat(directory.as_fd()), "state metadata"
+        );
+        if FileType::from_raw_mode(directory_stat.st_mode) != FileType::Directory
+            || directory_stat.st_uid != 0 || directory_stat.st_mode & 0o7777 != 0o700
+        {
+            return Err(ProductionSourceProviderIngressErrorV1::Catalog("state directory is not protected"));
+        }
+
+        let descriptor = catalog_read_step!(
+            $disposition, $pending, descriptor,
+            openat(directory.as_fd(), $name, OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC, Mode::empty()),
+            "publication file"
+        );
+        let before = catalog_read_step!(
+            $disposition, $pending, before, fstat(&descriptor), "publication metadata"
+        );
+        if !valid_catalog_metadata(CatalogMetadata::capture(&before), $maximum) {
+            return Err(ProductionSourceProviderIngressErrorV1::Catalog("publication is not protected"));
+        }
+
+        let mut file = catalog_read_file!($disposition, $pending, descriptor);
+        let byte_count = usize::try_from(before.st_size)
+            .map_err(|_| ProductionSourceProviderIngressErrorV1::Catalog("catalog file length"))?;
+        let mut bytes = catalog_read_bytes!($disposition, $pending, byte_count);
+        catalog_read_step!(
+            $disposition, $pending, read_result, file.read_exact(&mut bytes), "publication bytes"
+        );
+        let mut trailing = catalog_read_tail!($disposition, $pending);
+        let tail_count = catalog_read_step!(
+            $disposition, $pending, tail_result, file.read(&mut trailing), "publication tail"
+        );
+        if *catalog_tail_count!($disposition, tail_count) != 0 {
+            return Err(ProductionSourceProviderIngressErrorV1::Catalog("publication has trailing bytes"));
+        }
+        let after = catalog_read_step!(
+            $disposition, $pending, after, fstat(file.as_fd()), "publication recheck"
+        );
+        if !same_stable_metadata(&before, &after) {
+            return Err(ProductionSourceProviderIngressErrorV1::Catalog("publication changed while being read"));
+        }
+        catalog_read_complete!($disposition, bytes)
+    }};
+}
+
+macro_rules! catalog_tail_count {
+    (Local, $count:ident) => { &$count };
+    (Retained, $count:ident) => { $count };
+}
+
+
+fn validate_catalog_pair_data(
+    publication: &[u8],
+    rows: &[u8],
+    digest: aos_sandbox_core::ObjectDigest,
+) -> Result<(), ProductionSourceProviderIngressErrorV1> {
+    let (generation, namespace, rows_digest) = catalog_rows_head(rows)
+        .ok_or(ProductionSourceProviderIngressErrorV1::Catalog("catalog rows format"))?;
+    if rows_digest != digest || publication.get(72..104) != Some(namespace.as_bytes().as_slice())
+        || publication.get(104..112) != Some(generation.to_be_bytes().as_slice())
+    {
+        return Err(ProductionSourceProviderIngressErrorV1::Catalog("manifest does not match publication"));
+    }
+    Ok(())
+}
+
+
+mod selected;
+pub(crate) use selected::{CatalogReadFailureRefV1, SelectedCatalogPairV1};
+pub use selected::{
+    ProductionSelectedSourceProviderFailureRefV1, ProductionSelectedSourceProviderOriginalV1,
+};
 
 /// Reports failure before a SourceProvider owner becomes authenticated.
 #[derive(Debug, thiserror::Error)]
@@ -125,17 +296,41 @@ impl ProductionSourceProviderIngressV1 {
         (FixedProviderOwnerV1, FixedProviderOpenReportV1),
         ProductionSourceProviderIngressErrorV1,
     > {
-        let socket = loop {
+        let socket = self.accept_fixed_candidate(deadline_boottime_nanoseconds)?;
+        let catalog = read_protected_catalog_publication()?;
+        FixedProviderOwnerV1::open_fixed(socket, &catalog).map_err(Into::into)
+    }
+
+    /// Parks one genuine fixed-listener candidate in the selected opening.
+    ///
+    /// No protected catalog or authority file is read here. The selected
+    /// opening first validates its actual retained local task role.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an expired deadline, changed listener or lower acceptance error.
+    /// A lower call that never returns a socket remains a custody exclusion.
+    pub fn accept_selected_pending_owner(
+        &mut self,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<ProductionSelectedSourceProviderOriginalV1, ProductionSourceProviderIngressErrorV1> {
+        let socket = self.accept_fixed_candidate(deadline_boottime_nanoseconds)?;
+        Ok(ProductionSelectedSourceProviderOriginalV1::new(socket, deadline_boottime_nanoseconds))
+    }
+
+    fn accept_fixed_candidate(
+        &self,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket, ProductionSourceProviderIngressErrorV1> {
+        loop {
             self.wait_until_ready(deadline_boottime_nanoseconds)?;
             self.listener.validate_current()?;
             match self.listener.accept_descriptor_subject() {
-                Ok(socket) => break socket,
+                Ok(socket) => return Ok(socket),
                 Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => continue,
                 Err(error) => return Err(error.into()),
             }
-        };
-        let catalog = read_protected_catalog_publication()?;
-        FixedProviderOwnerV1::open_fixed(socket, &catalog).map_err(Into::into)
+        }
     }
 
     /// Completes peer authentication and fixed-journal admission by a deadline.
@@ -283,17 +478,7 @@ impl ProductionSourceProviderIngressV1 {
             )?);
         let name = crate::production_source_provider_catalog::manifest_filename(digest);
         let manifest_bytes = read_protected_catalog_file(&name, MAXIMUM_CATALOG_ROWS_BYTES)?;
-        let (generation, namespace, rows_digest) = catalog_rows_head(&manifest_bytes).ok_or(
-            ProductionSourceProviderIngressErrorV1::Catalog("catalog rows format"),
-        )?;
-        if rows_digest != digest
-            || publication[72..104] != *namespace.as_bytes()
-            || publication[104..112] != generation.to_be_bytes()
-        {
-            return Err(ProductionSourceProviderIngressErrorV1::Catalog(
-                "manifest does not match publication",
-            ));
-        }
+        validate_catalog_pair_data(&publication, &manifest_bytes, digest)?;
         Ok((publication, manifest_bytes))
     }
 
@@ -372,76 +557,7 @@ fn read_protected_catalog_file(
     name: &str,
     maximum_bytes: usize,
 ) -> Result<Vec<u8>, ProductionSourceProviderIngressErrorV1> {
-    let filesystem_root = open(
-        "/",
-        OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(|_| ProductionSourceProviderIngressErrorV1::Catalog("filesystem root"))?;
-    let root = BeneathRoot::from_owned(filesystem_root)
-        .map_err(|_| ProductionSourceProviderIngressErrorV1::Catalog("filesystem root"))?;
-    let relative = Path::new(STATE_ROOT)
-        .strip_prefix("/")
-        .map_err(|_| ProductionSourceProviderIngressErrorV1::Catalog("fixed state path"))?;
-    let directory = root
-        .resolve(
-            relative,
-            ResolveOptions {
-                no_mount_crossing: false,
-                require_directory: true,
-            },
-        )
-        .map_err(|_| ProductionSourceProviderIngressErrorV1::Catalog("state directory"))?;
-    let directory_stat = fstat(directory.as_fd())
-        .map_err(|_| ProductionSourceProviderIngressErrorV1::Catalog("state metadata"))?;
-    if FileType::from_raw_mode(directory_stat.st_mode) != FileType::Directory
-        || directory_stat.st_uid != 0
-        || directory_stat.st_mode & 0o7777 != 0o700
-    {
-        return Err(ProductionSourceProviderIngressErrorV1::Catalog(
-            "state directory is not protected",
-        ));
-    }
-
-    let descriptor = openat(
-        directory.as_fd(),
-        name,
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-        Mode::empty(),
-    )
-    .map_err(|_| ProductionSourceProviderIngressErrorV1::Catalog("publication file"))?;
-    let before = fstat(&descriptor)
-        .map_err(|_| ProductionSourceProviderIngressErrorV1::Catalog("publication metadata"))?;
-    if !valid_catalog_metadata(CatalogMetadata::capture(&before), maximum_bytes) {
-        return Err(ProductionSourceProviderIngressErrorV1::Catalog(
-            "publication is not protected",
-        ));
-    }
-
-    let mut file = File::from(descriptor);
-    let byte_count = usize::try_from(before.st_size)
-        .map_err(|_| ProductionSourceProviderIngressErrorV1::Catalog("catalog file length"))?;
-    let mut bytes = vec![0; byte_count];
-    file.read_exact(&mut bytes)
-        .map_err(|_| ProductionSourceProviderIngressErrorV1::Catalog("publication bytes"))?;
-    let mut trailing = [0];
-    if file
-        .read(&mut trailing)
-        .map_err(|_| ProductionSourceProviderIngressErrorV1::Catalog("publication tail"))?
-        != 0
-    {
-        return Err(ProductionSourceProviderIngressErrorV1::Catalog(
-            "publication has trailing bytes",
-        ));
-    }
-    let after = fstat(file.as_fd())
-        .map_err(|_| ProductionSourceProviderIngressErrorV1::Catalog("publication recheck"))?;
-    if !same_stable_metadata(&before, &after) {
-        return Err(ProductionSourceProviderIngressErrorV1::Catalog(
-            "publication changed while being read",
-        ));
-    }
-    Ok(bytes)
+    read_catalog_recipe!(name, maximum_bytes, Local, unused)
 }
 
 fn valid_catalog_metadata(metadata: CatalogMetadata, maximum_bytes: usize) -> bool {

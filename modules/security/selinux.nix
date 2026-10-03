@@ -16,6 +16,7 @@
   cfg = config.aos.security.selinux;
   immutableStage0 = cfg.bootMode == "immutable-stage0";
   protectedSandboxNetworkRoots = cfg.protectedSandboxNetworkRoots.enable;
+  selectedSourceMount = config.aos.sandbox.mountBroker.sourceProviderSession.enable;
   policyName = cfg.policy;
   refpolicy = pkgs.refpolicy;
   viewPreparers = [
@@ -44,6 +45,7 @@
   # interpreter/tool paths do not depend on this policy, avoiding a cycle.
   productionPolicy = pkgs.aosSelinuxProductionPolicyWith {
     inherit viewPreparers homeContextAliases;
+    sourceProviderMount = selectedSourceMount;
   };
   canonicalPolicyPath = "${productionPolicy}/etc/selinux/aos/policy/policy.33";
   # selinuxfs serializes the loaded policydb; its bytes are not the input file.
@@ -694,12 +696,15 @@ in {
         "aos.selinux.root_handoff=1"
         "rootflags=nodev"
       ];
-      aos.boot.initrd.stage0 = pkgs.aosSelinuxStage0With {
+      aos.boot.initrd.stage0 = pkgs.aosSelinuxStage0With ({
         aos-selinux-production-policy = productionPolicy;
         aos-selinux-runtime-roots = runtimeRootsProvisioner;
         expectedPolicy = canonicalReadbackPath;
         expectedPolicyKernel = config.system.build.kernel;
-      };
+      } // lib.optionalAttrs selectedSourceMount {
+        mountExecutableCarrier = config.boot.initrd.systemd.mountExecutableCarrier;
+        mountCarrierFirstLauncher = true;
+      });
       aos.kernel._extraConfigFragments = [strictKernelConfig];
 
       # Keep production admission closed until the signed-boot VM matrix has

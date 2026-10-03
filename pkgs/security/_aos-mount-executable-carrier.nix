@@ -7,7 +7,55 @@
   linux,
   systemd,
   aos-sandbox-mountd,
+  sourceProviderCarrier ? false,
 }: let
+  # This closed variant changes only Mount's executable subject. PID1 retains
+  # its existing init_exec_t launcher and the same carrier/sealing engine.
+  daemonContext =
+    if sourceProviderCarrier
+    then "system_u:object_r:aos_sandbox_mount_exec_t"
+    else "system_u:object_r:bin_t";
+  installerContext = "system_u:object_r:aos_sandbox_mount_install_exec_t";
+  selectedInstallerCopies = lib.optionalString sourceProviderCarrier ''
+    # Copy the target-built regular multicall inode, never its install/chmod
+    # symlinks. PID1's separate closed argv recipe narrows each private copy.
+    test -f ${hostPackages.coreutils}/bin/coreutils
+    test ! -L ${hostPackages.coreutils}/bin/coreutils
+    install -m 0555 ${hostPackages.coreutils}/bin/coreutils carrier-tree/install
+    install -m 0555 ${hostPackages.coreutils}/bin/coreutils carrier-tree/chmod
+  '';
+  selectedInstallerLabels = lib.optionalString sourceProviderCarrier ''
+    for name in install chmod; do
+      debugfs -w -R \
+        "ea_set /$name security.selinux ${installerContext}" carrier.ext4
+    done
+  '';
+  selectedInstallerSealing = lib.optionalString sourceProviderCarrier ''
+    install_digest=$(${sealTool}/bin/aos-mount-carrier-seal \
+      seal /mnt/carrier/install ${installerContext})
+    chmod_digest=$(${sealTool}/bin/aos-mount-carrier-seal \
+      seal /mnt/carrier/chmod ${installerContext})
+    test "$(stat -c %i /mnt/carrier/install)" != \
+      "$(stat -c %i /mnt/carrier/chmod)"
+    for private in install chmod; do
+      for original in launcher daemon; do
+        test "$(stat -c %i /mnt/carrier/$private)" != \
+          "$(stat -c %i /mnt/carrier/$original)"
+      done
+    done
+  '';
+  selectedInstallerReadback = lib.optionalString sourceProviderCarrier ''
+    test "$install_digest" = "$(${sealTool}/bin/aos-mount-carrier-seal \
+      measure /mnt/carrier/install ${installerContext})"
+    test "$chmod_digest" = "$(${sealTool}/bin/aos-mount-carrier-seal \
+      measure /mnt/carrier/chmod ${installerContext})"
+    printf 'AOS_CARRIER_INSTALL_SHA256=%s\n' "$install_digest"
+    printf 'AOS_CARRIER_CHMOD_SHA256=%s\n' "$chmod_digest"
+  '';
+  selectedInstallerEvidence = lib.optionalString sourceProviderCarrier ''
+    test "$(grep -c '^AOS_CARRIER_INSTALL_SHA256=[0-9a-f]\{64\}$' serial-clean.log)" -eq 1
+    test "$(grep -c '^AOS_CARRIER_CHMOD_SHA256=[0-9a-f]\{64\}$' serial-clean.log)" -eq 1
+  '';
   sealTool = mkDerivation {
     pname = "aos-mount-carrier-seal";
     version = "1";
@@ -55,9 +103,10 @@
         launcher_digest=$(${sealTool}/bin/aos-mount-carrier-seal \
           seal /mnt/carrier/launcher system_u:object_r:init_exec_t)
         daemon_digest=$(${sealTool}/bin/aos-mount-carrier-seal \
-          seal /mnt/carrier/daemon system_u:object_r:bin_t)
+          seal /mnt/carrier/daemon ${daemonContext})
         test "$(stat -c %i /mnt/carrier/launcher)" != \
           "$(stat -c %i /mnt/carrier/daemon)"
+        ${selectedInstallerSealing}
 
         sync
         umount /mnt/carrier
@@ -67,7 +116,8 @@
         test "$launcher_digest" = "$(${sealTool}/bin/aos-mount-carrier-seal \
           measure /mnt/carrier/launcher system_u:object_r:init_exec_t)"
         test "$daemon_digest" = "$(${sealTool}/bin/aos-mount-carrier-seal \
-          measure /mnt/carrier/daemon system_u:object_r:bin_t)"
+          measure /mnt/carrier/daemon ${daemonContext})"
+        ${selectedInstallerReadback}
         printf 'AOS_CARRIER_LAUNCHER_SHA256=%s\n' "$launcher_digest"
         printf 'AOS_CARRIER_DAEMON_SHA256=%s\n' "$daemon_digest"
         umount /mnt/carrier
@@ -99,11 +149,12 @@ in
           mkdir carrier-tree
           install -m 0555 ${systemd}/lib/systemd/systemd carrier-tree/launcher
           install -m 0555 ${aos-sandbox-mountd}/bin/aos-sandbox-mountd carrier-tree/daemon
+          ${selectedInstallerCopies}
           mkfs.ext4 -F -q -b 4096 -O verity -d carrier-tree carrier.ext4 128M
 
           # debugfs edits the offline ext4 metadata; the guest checks these
           # exact fields before fs-verity seals either executable.
-          for name in launcher daemon; do
+          for name in launcher daemon${lib.optionalString sourceProviderCarrier " install chmod"}; do
             debugfs -w -R "set_inode_field /$name uid 0" carrier.ext4
             debugfs -w -R "set_inode_field /$name gid 0" carrier.ext4
           done
@@ -111,8 +162,9 @@ in
             'ea_set /launcher security.selinux system_u:object_r:init_exec_t' \
             carrier.ext4
           debugfs -w -R \
-            'ea_set /daemon security.selinux system_u:object_r:bin_t' \
+            'ea_set /daemon security.selinux ${daemonContext}' \
             carrier.ext4
+          ${selectedInstallerLabels}
           debugfs -w -R \
             'ea_set / security.selinux system_u:object_r:root_t' \
             carrier.ext4
@@ -171,6 +223,7 @@ in
           fi
           test "$(grep -c '^AOS_CARRIER_LAUNCHER_SHA256=[0-9a-f]\{64\}$' serial-clean.log)" -eq 1
           test "$(grep -c '^AOS_CARRIER_DAEMON_SHA256=[0-9a-f]\{64\}$' serial-clean.log)" -eq 1
+          ${selectedInstallerEvidence}
           e2fsck -fn carrier.ext4
 
           veritysetup format \
@@ -196,6 +249,7 @@ in
       kernel = linux;
       launcher = systemd;
       daemon = aos-sandbox-mountd;
+      inherit sourceProviderCarrier;
     };
 
     meta = {

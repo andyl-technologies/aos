@@ -4,7 +4,7 @@ use std::num::NonZeroU32;
 
 use aos_sandbox_linux::pidfd::{PidFd, PidFdCredentials, PidFdInfo, PidFdProcessIdentity};
 
-use super::{CurrentKernelBootV1, read_cgroup_path_digest};
+use super::{CurrentKernelBootV1, SelectedExecutionRoleV1, read_cgroup_path_digest};
 use crate::SourceProviderSecurityError;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -21,6 +21,7 @@ pub(crate) struct ExecutionBaselineV1 {
 pub(crate) struct RetainedSelfExecutionV1 {
     pidfd: PidFd,
     baseline: ExecutionBaselineV1,
+    selected_role: Option<SelectedExecutionRoleV1>,
 }
 
 impl RetainedSelfExecutionV1 {
@@ -33,7 +34,47 @@ impl RetainedSelfExecutionV1 {
             PidFd::open(NonZeroU32::new(pid).ok_or(SourceProviderSecurityError::ExecutionChanged)?)
                 .map_err(|_| SourceProviderSecurityError::ExecutionChanged)?;
         let baseline = observe(&pidfd, boot_before.boot_id(), pid, tgid)?;
-        Ok(Self { pidfd, baseline })
+        Ok(Self {
+            pidfd,
+            baseline,
+            selected_role: None,
+        })
+    }
+
+    pub(crate) fn capture_selected_root_mount(
+        slot: &mut Option<Self>,
+    ) -> Result<(), SourceProviderSecurityError> {
+        Self::capture_selected(SelectedExecutionRoleV1::RootMount, slot)
+    }
+
+    pub(crate) fn capture_selected_provider(
+        slot: &mut Option<Self>,
+    ) -> Result<(), SourceProviderSecurityError> {
+        Self::capture_selected(SelectedExecutionRoleV1::Provider, slot)
+    }
+
+    fn capture_selected(
+        role: SelectedExecutionRoleV1,
+        slot: &mut Option<Self>,
+    ) -> Result<(), SourceProviderSecurityError> {
+        if slot.is_some() {
+            return Err(SourceProviderSecurityError::Poisoned);
+        }
+        role.require_current()?;
+        let mut execution = Self::capture()?;
+        execution.selected_role = Some(role);
+
+        // The caller owns the same returned pidfd before the first selected
+        // postcheck. No original is taken out during these observations.
+        *slot = Some(execution);
+        match slot.as_ref() {
+            Some(execution) => execution.revalidate(),
+            None => Err(SourceProviderSecurityError::Poisoned),
+        }
+    }
+
+    pub(crate) const fn selected_role(&self) -> Option<SelectedExecutionRoleV1> {
+        self.selected_role
     }
 
     pub(crate) const fn boot_id(&self) -> [u8; 16] {
@@ -45,10 +86,19 @@ impl RetainedSelfExecutionV1 {
     }
 
     pub(crate) fn revalidate(&self) -> Result<(), SourceProviderSecurityError> {
+        if let Some(role) = self.selected_role {
+            role.require_current()?;
+            role.require_task(&self.pidfd)?;
+        }
+
         let pid = u32::try_from(rustix::process::getpid().as_raw_nonzero().get())
             .map_err(|_| SourceProviderSecurityError::ExecutionChanged)?;
         let current = observe(&self.pidfd, self.baseline.boot_id, pid, pid)?;
         if current == self.baseline {
+            if let Some(role) = self.selected_role {
+                role.require_task(&self.pidfd)?;
+                role.require_current()?;
+            }
             Ok(())
         } else {
             Err(SourceProviderSecurityError::ExecutionChanged)

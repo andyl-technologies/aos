@@ -14,15 +14,56 @@
   aos-sandbox-zfs-worker,
   aos-sandboxd,
   aos-storaged,
+  aos-sandbox-mountd,
+  aos-source-providerd,
   systemd,
   aos-method46-tpm-helper,
   aos-sandbox-view-preparer-tools,
   viewPreparers ? [],
   homeContextAliases ? "",
+  sourceProviderMount ? false,
 }: let
   policyVersion = "33";
   policySupport = ./_aos-selinux-production-policy;
   homeAliases = builtins.toFile "aos-selinux-home-context-aliases" homeContextAliases;
+  # The suffix has one fixed beginning and ending, and no trailing source.
+  # The false branch restores the exact original newline, not a blank block.
+  closedSelectedSource = path: let
+    source = builtins.readFile path;
+    parts = builtins.split "\n# AOS_SELECTED_MOUNT_SOURCE_BEGIN\n" source;
+    ending =
+      if builtins.length parts == 3
+      then builtins.split "# AOS_SELECTED_MOUNT_SOURCE_END\n" (builtins.elemAt parts 2)
+      else [];
+  in
+    if builtins.length parts != 3 || builtins.length ending != 3 || builtins.elemAt ending 2 != ""
+    then throw "selected Mount/Source policy requires exactly one closed suffix"
+    else if sourceProviderMount
+    then source
+    else builtins.elemAt parts 0 + "\n";
+  replaceSelectedInitializer = pattern: literal: replacement: source:
+    if builtins.length (builtins.split pattern source) != 3
+    then throw "selected owner DATA requires exactly one fixed initializer"
+    else builtins.replaceStrings [literal] [replacement] source;
+  selectedOwnerData = builtins.toFile "aos-selected-owner-policy.py" (
+    replaceSelectedInitializer
+    "SELECTED_LAUNCHER_IMAGE_IOCTL_SELECTORS = frozenset\\(\\)"
+    "SELECTED_LAUNCHER_IMAGE_IOCTL_SELECTORS = frozenset()"
+    "SELECTED_LAUNCHER_IMAGE_IOCTL_SELECTORS = frozenset({0x6686})"
+    (
+      replaceSelectedInitializer
+      "SELECTED_MOUNT_SOURCE_DOMAINS = \\(\\)"
+      "SELECTED_MOUNT_SOURCE_DOMAINS = ()"
+      "SELECTED_MOUNT_SOURCE_DOMAINS = (\"aos_sandbox_mount_t\", \"aos_source_provider_t\")"
+      (builtins.readFile (policySupport + "/owner_policy.py"))
+    )
+  );
+  # Selected checks import the rendered immutable DATA beside the same checker.
+  # No policy observation or runtime option chooses its expected permissions.
+  checkerScript =
+    if sourceProviderMount
+    then "selected-policy-checker/effective_policy.py"
+    else "${policySupport}/effective_policy.py";
   # toFile cannot carry an output reference, and the policy must not build
   # the executable it labels. The system module co-installs this exact output.
   netdBasename = builtins.unsafeDiscardStringContext (builtins.baseNameOf (toString aos-netd));
@@ -67,7 +108,7 @@
   ownerModule = builtins.toFile "aos_sandbox.te" (
     builtins.readFile (policySupport + "/aos_sandbox.te")
     + "\n"
-    + builtins.readFile (policySupport + "/owner_confinement.te")
+    + closedSelectedSource (policySupport + "/owner_confinement.te")
     + "\n"
     + builtins.readFile (policySupport + "/view_confinement.te")
   );
@@ -128,9 +169,11 @@
     then
       builtins.toFile "aos_sandbox.fc" (
         builtins.replaceStrings
-        ["@AOS_NETD_BASENAME_REGEX@" "@AOS_FUSE_WORKER_BASENAME_REGEX@" "@AOS_ZFS_WORKER_BASENAME_REGEX@" "@AOS_CONTROLLER_BASENAME_REGEX@" "@AOS_STORAGE_BASENAME_REGEX@" "@AOS_TPM_HELPER_BASENAME_REGEX@" "@AOS_VIEW_TOOLS_BASENAME_REGEX@" "@AOS_SYSTEMD_BASENAME_REGEX@"]
-        [netdBasenameRegex workerBasenameRegex publisherBasenameRegex (exactPackageBasename "aos-sandboxd" aos-sandboxd) (exactPackageBasename "aos-storaged" aos-storaged) (exactPackageBasename "aos-method46-tpm-helper" aos-method46-tpm-helper) (exactPackageBasename "aos-sandbox-view-preparer-tools" aos-sandbox-view-preparer-tools) systemdBasenameRegex]
-        (builtins.readFile (policySupport + "/aos_sandbox.fc"))
+        (["@AOS_NETD_BASENAME_REGEX@" "@AOS_FUSE_WORKER_BASENAME_REGEX@" "@AOS_ZFS_WORKER_BASENAME_REGEX@" "@AOS_CONTROLLER_BASENAME_REGEX@" "@AOS_STORAGE_BASENAME_REGEX@" "@AOS_TPM_HELPER_BASENAME_REGEX@" "@AOS_VIEW_TOOLS_BASENAME_REGEX@" "@AOS_SYSTEMD_BASENAME_REGEX@"]
+          ++ (if sourceProviderMount then ["@AOS_MOUNT_BASENAME_REGEX@" "@AOS_SOURCE_PROVIDER_BASENAME_REGEX@"] else []))
+        ([netdBasenameRegex workerBasenameRegex publisherBasenameRegex (exactPackageBasename "aos-sandboxd" aos-sandboxd) (exactPackageBasename "aos-storaged" aos-storaged) (exactPackageBasename "aos-method46-tpm-helper" aos-method46-tpm-helper) (exactPackageBasename "aos-sandbox-view-preparer-tools" aos-sandbox-view-preparer-tools) systemdBasenameRegex]
+          ++ (if sourceProviderMount then [(exactPackageBasename "aos-sandbox-mountd" aos-sandbox-mountd) (exactPackageBasename "aos-source-providerd" aos-source-providerd)] else []))
+        (closedSelectedSource (policySupport + "/aos_sandbox.fc"))
         + builtins.concatStringsSep "" (map viewEntrypointContext viewPreparers)
       )
     else throw "fixed service SELinux labels must match only their evaluated package roots";
@@ -159,6 +202,14 @@ in
           aos_module=aos_sandbox
           attribute_negative_module=aos_sandbox_attribute_negative
           export PYTHONPATH=${setools}/lib/python3/site-packages
+
+          ${if sourceProviderMount then ''
+            mkdir selected-policy-checker
+            cp -R ${policySupport}/. selected-policy-checker/
+            chmod u+w selected-policy-checker
+            chmod u+w selected-policy-checker/owner_policy.py
+            install -m 0444 ${selectedOwnerData} selected-policy-checker/owner_policy.py
+          '' else ""}
 
           AOS_SELINUX_PRODUCTION_RECIPE=${./aos-selinux-production-policy.nix} \
             ${python3}/bin/python3 ${policySupport}/effective_policy_test.py
@@ -215,7 +266,7 @@ in
           ${checkpolicy}/bin/checkpolicy -b -C \
             -o final-policy.cil final-policy.${policyVersion}
           grep -Fx '(policycap nnp_nosuid_transition)' final-policy.cil
-          ${python3}/bin/python3 ${policySupport}/effective_policy.py \
+          ${python3}/bin/python3 ${checkerScript} \
             final-policy.${policyVersion} > effective-policy.tsv
           test -s effective-policy.tsv
 
@@ -230,7 +281,7 @@ in
               -c ${policyVersion} \
               "$narrow_negative_module-linked.mod" \
               "$narrow_negative_module-policy.${policyVersion}"
-            if ${python3}/bin/python3 ${policySupport}/effective_policy.py \
+            if ${python3}/bin/python3 ${checkerScript} \
               "$narrow_negative_module-policy.${policyVersion}" \
               > "$narrow_negative_module-effective.tsv" \
               2> "$narrow_negative_module-diagnostic"
@@ -304,7 +355,7 @@ in
             -c ${policyVersion} \
             attribute-negative-linked-policy.mod \
             attribute-negative-policy.${policyVersion}
-          if ${python3}/bin/python3 ${policySupport}/effective_policy.py \
+          if ${python3}/bin/python3 ${checkerScript} \
             attribute-negative-policy.${policyVersion} \
             > attribute-negative-effective-policy.tsv \
             2> attribute-negative-diagnostic

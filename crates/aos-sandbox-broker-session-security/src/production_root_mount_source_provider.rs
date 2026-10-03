@@ -19,12 +19,329 @@ use aos_sandbox_source_provider_protocol::SourceProviderMethod;
 use aos_sandbox_source_provider_security::{
     AuthenticatedRootMountRecoveryObservationV2, RootMountSourceProviderHandshakeStatusV1,
     RootMountSourceProviderOwnerV1, SourceProviderSecurityError,
+    SelectedRootMountSourceProviderOwnerV1, SelectedSourceProviderFailureRefV1,
 };
 
 use crate::ProductionBrokerSessionActivationErrorV1;
 use crate::production_activation::remaining_duration;
 
 const FIXED_PROVIDER_SOCKET: &str = "/run/aos/source-provider/control.sock";
+
+/// Retains fixed selected RootMount connection, opening and HELLO custody.
+///
+/// The genuine selected self/custody checks run before protected file reads.
+/// PID1 establishment and the signed Source SCM task stay distinct. This owner
+/// cannot supply the still-missing Core/Linux initial-table image bridge; it
+/// preserves the actual refusal instead of falling back to the ordinary role.
+pub struct ProductionSelectedRootMountSourceProviderV1 {
+    socket: Option<Result<DescriptorSubjectSocket, SeqpacketError>>,
+    owner: Option<SelectedRootMountSourceProviderOwnerV1>,
+    deadline: u64,
+    attempted: bool,
+    ended: bool,
+    first_deadline_failure: Option<ProductionBrokerSessionActivationErrorV1>,
+    first_stage: Option<SelectedRootOpeningStageV1>,
+    catalog: crate::production_source_provider_catalog::SelectedMountCatalogCredentialsV1,
+    shutdown_failure: Option<std::io::Error>,
+}
+
+#[derive(Clone, Copy)]
+enum SelectedRootOpeningStageV1 {
+    Socket,
+    Security,
+    Deadline,
+    Catalog,
+}
+
+impl std::fmt::Debug for ProductionSelectedRootMountSourceProviderV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ProductionSelectedRootMountSourceProviderV1([original opening])")
+    }
+}
+
+/// Lends an actual selected connection, opening or deadline refusal.
+pub enum ProductionSelectedRootMountSourceProviderFailureV1<'owner> {
+    /// The returned native connection error remains resident.
+    Socket(&'owner SeqpacketError),
+    /// The selected opening retains its original typed cause and prefixes.
+    Security(SelectedSourceProviderFailureRefV1<'owner>),
+    /// The original absolute boot-time deadline failed.
+    Deadline(&'owner ProductionBrokerSessionActivationErrorV1),
+    /// The fixed delivered catalog reader retains its original native cause.
+    Catalog(crate::production_source_provider_catalog::SelectedSourceProviderCatalogFailureRefV1<'owner>),
+    /// The opening ended without a returned cause, including unwind.
+    Ended,
+}
+
+impl std::fmt::Debug for ProductionSelectedRootMountSourceProviderFailureV1<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::Socket(_) => "ProductionSelectedRootMountSourceProviderFailureV1::Socket",
+            Self::Security(_) => "ProductionSelectedRootMountSourceProviderFailureV1::Security",
+            Self::Deadline(_) => "ProductionSelectedRootMountSourceProviderFailureV1::Deadline",
+            Self::Catalog(_) => "ProductionSelectedRootMountSourceProviderFailureV1::Catalog",
+            Self::Ended => "ProductionSelectedRootMountSourceProviderFailureV1::Ended",
+        })
+    }
+}
+
+struct SelectedRootOpeningBoundaryV1<'owner> {
+    owner: &'owner mut ProductionSelectedRootMountSourceProviderV1,
+    completed: bool,
+}
+
+impl Drop for SelectedRootOpeningBoundaryV1<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.owner.end();
+        }
+    }
+}
+
+impl ProductionSelectedRootMountSourceProviderV1 {
+    /// Creates an inert, fixed selected opening with its original deadline.
+    #[must_use]
+    pub fn new(deadline_boottime_nanoseconds: u64) -> Self {
+        Self {
+            socket: None,
+            owner: None,
+            deadline: deadline_boottime_nanoseconds,
+            attempted: false,
+            ended: false,
+            first_deadline_failure: None,
+            first_stage: None,
+            catalog: Default::default(),
+            shutdown_failure: None,
+        }
+    }
+
+    /// Connects and opens once, retaining every returned owner before checks.
+    ///
+    /// # Errors
+    ///
+    /// Lends the actual first socket, selected-custody, transcript or deadline
+    /// refusal. It never reconnects, renews or switches to ordinary custody.
+    pub fn connect_once(
+        &mut self,
+    ) -> Result<(), ProductionSelectedRootMountSourceProviderFailureV1<'_>> {
+        if self.attempted || self.ended {
+            self.end();
+            return Err(self.failure_or_ended());
+        }
+        self.attempted = true;
+
+        let succeeded = {
+            let mut boundary = SelectedRootOpeningBoundaryV1 {
+                owner: self,
+                completed: false,
+            };
+            let succeeded = boundary.owner.connect_inner();
+            boundary.completed = succeeded;
+            succeeded
+        };
+        if succeeded {
+            Ok(())
+        } else {
+            Err(self.failure_or_ended())
+        }
+    }
+
+    fn check_deadline(&mut self) -> bool {
+        match remaining_duration(self.deadline) {
+            Ok(_) => true,
+            Err(cause) => {
+                if self.first_deadline_failure.is_none() {
+                    self.first_deadline_failure = Some(cause);
+                }
+                self.note_failure(SelectedRootOpeningStageV1::Deadline);
+                self.end();
+                false
+            }
+        }
+    }
+
+    fn note_failure(&mut self, stage: SelectedRootOpeningStageV1) {
+        if self.first_stage.is_none() {
+            self.first_stage = Some(stage);
+        }
+    }
+
+    fn connect_inner(&mut self) -> bool {
+        if !self.check_deadline() {
+            return false;
+        }
+        self.socket = Some(DescriptorSubjectSocket::connect(Path::new(FIXED_PROVIDER_SOCKET)));
+        if !matches!(self.socket, Some(Ok(_))) {
+            self.note_failure(SelectedRootOpeningStageV1::Socket);
+            return false;
+        }
+        if !self.check_deadline() {
+            return false;
+        }
+
+        // All slots are checked before the original is moved. Construction
+        // parks that same socket immediately; its Arc funding boundary remains
+        // explicit, as do lower connect prefixes that never returned here.
+        if self.owner.is_some() {
+            return false;
+        }
+        match self.socket.take() {
+            Some(Ok(socket)) => {
+                self.owner = Some(RootMountSourceProviderOwnerV1::begin_fixed_selected_mount_source(socket));
+            }
+            other => {
+                self.socket = other;
+                return false;
+            }
+        }
+        let Some(owner) = self.owner.as_mut() else {
+            return false;
+        };
+        if owner.open_once().is_err() {
+            self.note_failure(SelectedRootOpeningStageV1::Security);
+            return false;
+        }
+
+        loop {
+            if !self.check_deadline() {
+                return false;
+            }
+            let progress = match self.owner.as_mut() {
+                Some(owner) => owner.advance_handshake(),
+                None => return false,
+            };
+            let current = match progress {
+                Ok(RootMountSourceProviderHandshakeStatusV1::Current) => true,
+                Ok(RootMountSourceProviderHandshakeStatusV1::Pending) => false,
+                Err(_) => {
+                    self.note_failure(SelectedRootOpeningStageV1::Security);
+                    return false;
+                }
+            };
+            if !self.check_deadline() {
+                return false;
+            }
+            if current {
+                return true;
+            }
+            // This is the existing bounded fixed handshake backpressure wait,
+            // not a renewed timeout or a second receive/supervisor engine.
+            std::thread::sleep(Duration::from_nanos(2_000_000));
+        }
+    }
+
+    /// Lends only the genuine current Session while retaining its whole owner.
+    pub(crate) fn borrow_current_session(
+        &mut self,
+    ) -> Option<&mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1> {
+        if self.ended || !self.check_deadline() {
+            return None;
+        }
+        let owner = self.owner.as_mut()?;
+        match owner.borrow_current_session() {
+            Ok(Some(session)) => Some(session),
+            _ => {
+                self.first_stage.get_or_insert(SelectedRootOpeningStageV1::Security);
+                None
+            }
+        }
+    }
+
+    pub(crate) fn read_catalog_once(&mut self) -> bool {
+        let mut boundary = SelectedRootOpeningBoundaryV1 { owner: self, completed: false };
+        let succeeded = if !boundary.owner.current_session_is_present() {
+            false
+        } else if !boundary.owner.catalog.read_once() {
+            boundary.owner.note_failure(SelectedRootOpeningStageV1::Catalog);
+            false
+        } else {
+            boundary.owner.current_session_is_present()
+        };
+        boundary.completed = succeeded;
+        succeeded
+    }
+
+    pub(crate) fn recheck_catalog(&mut self) -> bool {
+        let mut boundary = SelectedRootOpeningBoundaryV1 { owner: self, completed: false };
+        let succeeded = if !boundary.owner.current_session_is_present() {
+            false
+        } else if !boundary.owner.catalog.recheck() {
+            boundary.owner.note_failure(SelectedRootOpeningStageV1::Catalog);
+            false
+        } else {
+            boundary.owner.current_session_is_present()
+        };
+        boundary.completed = succeeded;
+        succeeded
+    }
+
+    fn current_session_is_present(&mut self) -> bool {
+        if self.ended || !self.check_deadline() {
+            return false;
+        }
+        if matches!(self.owner.as_mut().map(|owner| owner.borrow_current_session()), Some(Ok(Some(_)))) {
+            true
+        } else {
+            self.note_failure(SelectedRootOpeningStageV1::Security);
+            false
+        }
+    }
+
+    pub(crate) fn catalog_pair(&self) -> Option<(&[u8], &[u8])> {
+        if self.ended { None } else { self.catalog.pair() }
+    }
+
+    /// Lends the first failure without I/O or recovery.
+    #[must_use]
+    pub fn failure(&self) -> Option<ProductionSelectedRootMountSourceProviderFailureV1<'_>> {
+        let failure = match self.first_stage {
+            Some(SelectedRootOpeningStageV1::Socket) => self.socket.as_ref()
+                .and_then(|result| result.as_ref().err())
+                .map(ProductionSelectedRootMountSourceProviderFailureV1::Socket),
+            Some(SelectedRootOpeningStageV1::Security) => self.owner.as_ref()
+                .and_then(SelectedRootMountSourceProviderOwnerV1::failure)
+                .map(ProductionSelectedRootMountSourceProviderFailureV1::Security),
+            Some(SelectedRootOpeningStageV1::Deadline) => self.first_deadline_failure.as_ref()
+                .map(ProductionSelectedRootMountSourceProviderFailureV1::Deadline),
+            Some(SelectedRootOpeningStageV1::Catalog) => self.catalog.failure()
+                .map(ProductionSelectedRootMountSourceProviderFailureV1::Catalog),
+            None => None,
+        };
+        failure.or_else(|| self.ended.then_some(ProductionSelectedRootMountSourceProviderFailureV1::Ended))
+    }
+
+    fn failure_or_ended(&self) -> ProductionSelectedRootMountSourceProviderFailureV1<'_> {
+        self.failure().unwrap_or(ProductionSelectedRootMountSourceProviderFailureV1::Ended)
+    }
+
+    /// Permanently closes the selected original queue before prefixes drop.
+    pub fn end(&mut self) {
+        self.ended = true;
+        if let Some(owner) = self.owner.as_mut() {
+            owner.end();
+        }
+        if let Some(Ok(socket)) = self.socket.as_ref() {
+            if let Ok(original) = socket.as_fd() {
+                if let Err(cause) = rustix::net::shutdown(original, rustix::net::Shutdown::Both) {
+                    if self.shutdown_failure.is_none() { self.shutdown_failure = Some(cause.into()); }
+                }
+            }
+        }
+    }
+
+    /// Lends failed native shutdown separately from original admission failure.
+    /// This is debt only, never transport or descendant-drain evidence.
+    #[must_use]
+    pub fn shutdown_failure(&self) -> Option<&std::io::Error> {
+        self.shutdown_failure.as_ref()
+    }
+}
+
+impl Drop for ProductionSelectedRootMountSourceProviderV1 {
+    fn drop(&mut self) {
+        self.end();
+    }
+}
 
 /// Reports failure before RootMount can retain an authenticated provider session.
 #[derive(Debug, thiserror::Error)]
