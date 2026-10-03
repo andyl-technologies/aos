@@ -143,8 +143,15 @@ gates and complete golden gate (19 owning suites and 30-section inventory).
 The core evaluator binds independently supplied recorded interpretation to
 checked view/root evidence and actual recipe rebinding; the new owned table
 retains caller configuration without authenticating its justification.
-Native historical sourcing and executable version-three fold replay remain
-unqualified. No formal task merge, checkbox, milestone exit or freeze follows.
+Reviewed recorded-fold candidate `7f859c34bf33` passes all 606 core tests with
+zero skips, strict Clippy/rustdoc, its augmented merge gate, selector and no-std
+gates, and both formatters. Parent combined candidate `eaa190b4577b` is running
+the mandatory checks. The core case qualifies original-view binding through
+exclusion preprocessing and fresh recipe replay; all incoming deltas are
+excluded, so it does not newly qualify conflict-policy winner selection or
+changed-domain preprocessing. Native historical sourcing and full native fold
+propagation remain unqualified. No formal task merge, checkbox, milestone exit
+or freeze follows.
 
 Deployable as: a local tool that initializes a store under a `file://`
 root, commits a directory, forks and merges branches, and checks a commit
@@ -304,9 +311,17 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   freshly checked signed inputs must retain their independently supplied
   original view/root interpretations after exclusions change the incoming
   physical root, then rebind the decoded complete recipe. Missing or changed
-  original associations and inconsistent replay inputs must refuse. The new
-  exact owning case remains pending; published fold models and legacy fold
-  cases alone do not qualify this obligation or native historical sourcing.
+  original associations and inconsistent replay inputs must refuse. Reviewed
+  candidate `7f859c34bf33` passes the exact owning case, all 606 core tests,
+  strict Clippy/rustdoc, three actual task gates and both formatters. It uses
+  fresh production signature verification and independently modeled complete
+  contexts, recipe bytes, preimage and key. Both restoration and removal change
+  the incoming root; missing or changed original associations, interpretations,
+  legacy contexts and inconsistent replay evidence refuse actual binding.
+  Every incoming delta is excluded, so this case qualifies preprocessing and
+  binding replay, without newly qualifying conflict-policy winner selection,
+  graft traversal or changed-domain preprocessing. Parent combined checks are
+  running; native historical sourcing and full native propagation remain open.
   — satisfies ALG-15 to ALG-21, ALG-28 to ALG-39;
   `checks.terrane.gates.algebra-merge`, `checks.terrane.gates.algebra-fork`.
 - [ ] **T-PROP-1** Property resolution, types, boundary properties,
