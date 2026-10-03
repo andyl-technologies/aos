@@ -9,7 +9,7 @@ import tarfile
 import tempfile
 import unittest
 
-from cargo_inventory import enrich_cargo_inventory
+from cargo_inventory import MAX_INDEX_DEPTH, enrich_cargo_inventory
 from transport import DeliveryError
 
 
@@ -82,6 +82,18 @@ class CargoInventoryTests(unittest.TestCase):
         coverage = enrich_cargo_inventory(self.layout, catalog, spdx)
         return catalog, spdx, coverage
 
+    def wrap_index(self, children=None):
+        if children is None:
+            children = json.loads((self.layout / "index.json").read_text())["manifests"]
+        descriptor = self.blob(
+            json.dumps({"schemaVersion": 2, "manifests": children}).encode(),
+            "application/vnd.oci.image.index.v1+json",
+        )
+        (self.layout / "index.json").write_text(
+            json.dumps({"schemaVersion": 2, "manifests": [descriptor]}), encoding="utf-8"
+        )
+        return descriptor
+
     def test_selects_exact_compiled_registry_library(self):
         self.image()
 
@@ -93,6 +105,66 @@ class CargoInventoryTests(unittest.TestCase):
         self.assertEqual(coverage["skippedArtifacts"]["test"], 1)
         self.assertEqual(spdx["packages"][0]["externalRefs"][0]["referenceLocator"], "pkg:cargo/tokio@1.45.0")
         self.assertEqual(coverage["buildMessagesDigest"], "sha256:" + hashlib.sha256(messages()).hexdigest())
+
+    def test_nested_index_preserves_exact_platform_coverage(self):
+        self.image()
+        flat = self.enrich()
+        self.wrap_index()
+        self.wrap_index()
+
+        self.assertEqual(self.enrich(), flat)
+
+    def test_nested_index_rejects_multiple_platforms(self):
+        self.image()
+        child = json.loads((self.layout / "index.json").read_text())["manifests"][0]
+        self.wrap_index([child, child])
+
+        with self.assertRaisesRegex(DeliveryError, "exactly one"):
+            self.enrich()
+
+    def test_nested_index_rejects_empty_selection(self):
+        self.image()
+        self.wrap_index([])
+
+        with self.assertRaisesRegex(DeliveryError, "exactly one"):
+            self.enrich()
+
+    def test_nested_index_rechecks_wrapper_bytes(self):
+        self.image()
+        descriptor = self.wrap_index()
+        path = self.layout / "blobs" / "sha256" / descriptor["digest"][7:]
+        path.write_bytes(path.read_bytes() + b" ")
+
+        with self.assertRaisesRegex(DeliveryError, "differs"):
+            self.enrich()
+
+    def test_nested_index_rechecks_child_size(self):
+        self.image()
+        child = json.loads((self.layout / "index.json").read_text())["manifests"][0]
+        child["size"] += 1
+        self.wrap_index([child])
+
+        with self.assertRaisesRegex(DeliveryError, "differs"):
+            self.enrich()
+
+    def test_nested_index_rejects_non_image_child(self):
+        self.image()
+        child = json.loads((self.layout / "index.json").read_text())["manifests"][0]
+        child["mediaType"] = "application/vnd.oci.artifact.manifest.v1+json"
+        self.wrap_index([child])
+
+        with self.assertRaisesRegex(DeliveryError, "platform manifest"):
+            self.enrich()
+
+    def test_nested_index_enforces_depth_bound(self):
+        self.image()
+        for _ in range(MAX_INDEX_DEPTH):
+            self.wrap_index()
+        self.assertEqual(self.enrich()[2]["cratesIoLibraryCandidates"], 1)
+        self.wrap_index()
+
+        with self.assertRaisesRegex(DeliveryError, "nesting"):
+            self.enrich()
 
     def test_whiteout_removes_lower_layer_evidence(self):
         self.image(extra_layers=[[(ROOT + "/nix-support/.wh.cargo-build-messages.jsonl", b"", "file")]])

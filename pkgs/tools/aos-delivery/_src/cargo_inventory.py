@@ -25,6 +25,7 @@ REGISTRY = re.compile(
 MAX_METADATA_BYTES = 16 << 20
 MAX_LAYER_BYTES = 1 << 30
 MAX_LAYER_ENTRIES = 1_000_000
+MAX_INDEX_DEPTH = 8
 
 
 def file_digest(path):
@@ -80,18 +81,33 @@ def remove_tree(values, prefix):
             del values[path]
 
 
+def platform_manifest_descriptor(layout):
+    """Selects one platform through bounded, authenticated OCI index wrappers."""
+    index = read_json(layout / "index.json")
+
+    for depth in range(MAX_INDEX_DEPTH + 1):
+        descriptors = index.get("manifests", [])
+        if index.get("schemaVersion") != 2 or (
+            not isinstance(descriptors, list) or len(descriptors) != 1
+        ):
+            raise DeliveryError("Cargo inventory requires exactly one Native platform image")
+        descriptor = descriptors[0]
+        if not isinstance(descriptor, dict):
+            raise DeliveryError("Cargo inventory manifest descriptor is malformed")
+        media = descriptor.get("mediaType")
+        if media == "application/vnd.oci.image.manifest.v1+json":
+            return descriptor
+        if media != "application/vnd.oci.image.index.v1+json":
+            raise DeliveryError("Cargo inventory requires an OCI platform manifest")
+        if depth == MAX_INDEX_DEPTH:
+            raise DeliveryError("Cargo inventory index nesting exceeds its read bound")
+        index = read_json(descriptor_file(layout, descriptor))
+
+
 def source_messages(layout):
     """Reads final-image Native build evidence without extracting layer files."""
     layout = Path(layout)
-    index = read_json(layout / "index.json")
-    descriptors = index.get("manifests", [])
-    if not isinstance(descriptors, list) or len(descriptors) != 1:
-        raise DeliveryError("Cargo inventory requires exactly one Native platform image")
-    descriptor = descriptors[0]
-    if not isinstance(descriptor, dict):
-        raise DeliveryError("Cargo inventory manifest descriptor is malformed")
-    if descriptor.get("mediaType") != "application/vnd.oci.image.manifest.v1+json":
-        raise DeliveryError("Cargo inventory requires a normalized platform manifest")
+    descriptor = platform_manifest_descriptor(layout)
     manifest = read_json(descriptor_file(layout, descriptor))
     messages = {}
     binaries = {}
