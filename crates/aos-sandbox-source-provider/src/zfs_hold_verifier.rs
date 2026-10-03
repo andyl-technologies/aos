@@ -16,19 +16,21 @@
 use std::os::fd::OwnedFd;
 use std::sync::Arc;
 
-use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
-    SignedStorageZfsHoldReceiptV1, StorageZfsHoldReceiptV1, StorageZfsHoldSignerV1,
+    SignedStorageZfsHoldReceiptV1, StorageZfsHoldReceiptV1,
     StorageZfsHoldVerifierV1,
 };
 use rustix::fs::{FileType, FlockOperation, Mode, OFlags, Stat};
+#[cfg(test)]
 use sha2::{Digest as _, Sha256};
 
 use crate::ProviderLedgerError;
 use crate::backend_verifier::ProtectedBackendVerifierV1;
 
 const FILE_NAME: &str = "current-zfs-hold-receipt-verifier";
+#[cfg(test)]
 const MAGIC: &[u8; 8] = b"AOSZHV01";
+#[cfg(test)]
 const VERSION: u16 = 1;
 const MANIFEST_BYTES: usize = 160;
 
@@ -180,25 +182,20 @@ impl ProtectedStorageZfsHoldVerifierV1 {
 fn decode_manifest(
     bytes: &[u8; MANIFEST_BYTES],
 ) -> Result<StorageZfsHoldVerifierV1, ProviderLedgerError> {
-    if bytes[..8] != *MAGIC || bytes[8..10] != VERSION.to_be_bytes() || bytes[10..16] != [0; 6] {
-        return Err(ProviderLedgerError::Corrupt("ZFS hold verifier header"));
-    }
-    let public_key: [u8; 32] = bytes[96..128]
-        .try_into()
-        .map_err(|_| ProviderLedgerError::Corrupt("ZFS hold verifier key"))?;
-    if Sha256::digest(public_key).as_slice() != &bytes[128..160] {
-        return Err(ProviderLedgerError::Corrupt("ZFS hold verifier key digest"));
-    }
-    let signer = StorageZfsHoldSignerV1::new(
-        array(bytes, 16)?,
-        u64_at(bytes, 32)?,
-        ObjectDigest::from_bytes(array(bytes, 40)?),
-        array(bytes, 72)?,
-        u64_at(bytes, 88)?,
-    )
-    .map_err(|_| ProviderLedgerError::Corrupt("ZFS hold verifier signer"))?;
-    StorageZfsHoldVerifierV1::new(signer, public_key)
-        .map_err(|_| ProviderLedgerError::Corrupt("ZFS hold verifier public key"))
+    use aos_sandbox_source_provider_protocol::storage_zfs_hold_receipt::{
+        StorageZfsHoldEnrollmentErrorV1 as Error, decode_storage_zfs_hold_enrollment_v1,
+    };
+
+    decode_storage_zfs_hold_enrollment_v1(bytes).map_err(|error| {
+        ProviderLedgerError::Corrupt(match error {
+            Error::Header => "ZFS hold verifier header",
+            Error::Key => "ZFS hold verifier key",
+            Error::KeyDigest => "ZFS hold verifier key digest",
+            Error::Signer => "ZFS hold verifier signer",
+            Error::PublicKey => "ZFS hold verifier public key",
+            Error::Truncated => "ZFS hold verifier truncated",
+        })
+    })
 }
 
 fn open_manifest(directory: &OwnedFd) -> Result<OwnedFd, ProviderLedgerError> {
@@ -252,19 +249,6 @@ fn read_manifest(descriptor: &OwnedFd) -> Result<[u8; MANIFEST_BYTES], ProviderL
     Ok(bytes)
 }
 
-fn array<const N: usize>(
-    bytes: &[u8; MANIFEST_BYTES],
-    offset: usize,
-) -> Result<[u8; N], ProviderLedgerError> {
-    bytes[offset..offset + N]
-        .try_into()
-        .map_err(|_| ProviderLedgerError::Corrupt("ZFS hold verifier truncated"))
-}
-
-fn u64_at(bytes: &[u8; MANIFEST_BYTES], offset: usize) -> Result<u64, ProviderLedgerError> {
-    Ok(u64::from_be_bytes(array(bytes, offset)?))
-}
-
 fn require_original_enrollment_bytes_v5(
     current: &[u8; MANIFEST_BYTES],
     archived: &[u8],
@@ -292,6 +276,75 @@ mod tests {
         bytes[96..128].copy_from_slice(&public);
         bytes[128..160].copy_from_slice(&Sha256::digest(public));
         bytes
+    }
+
+    #[test]
+    fn shared_public_decoder_preserves_source_category_and_check_order() {
+        use aos_sandbox_source_provider_protocol::storage_zfs_hold_receipt::{
+            StorageZfsHoldEnrollmentErrorV1 as Error, decode_storage_zfs_hold_enrollment_v1,
+        };
+
+        let bytes = manifest();
+        assert_eq!(
+            decode_manifest(&bytes).unwrap().projection(),
+            decode_storage_zfs_hold_enrollment_v1(&bytes).unwrap().projection(),
+        );
+
+        let mut header_and_digest = bytes;
+        header_and_digest[0] ^= 1;
+        header_and_digest[128] ^= 1;
+        assert_eq!(
+            decode_storage_zfs_hold_enrollment_v1(&header_and_digest).unwrap_err(),
+            Error::Header,
+        );
+        assert!(matches!(
+            decode_manifest(&header_and_digest),
+            Err(ProviderLedgerError::Corrupt("ZFS hold verifier header")),
+        ));
+
+        let mut digest_and_signer = bytes;
+        digest_and_signer[128] ^= 1;
+        digest_and_signer[16..32].fill(0);
+        assert_eq!(
+            decode_storage_zfs_hold_enrollment_v1(&digest_and_signer).unwrap_err(),
+            Error::KeyDigest,
+        );
+        assert!(matches!(
+            decode_manifest(&digest_and_signer),
+            Err(ProviderLedgerError::Corrupt("ZFS hold verifier key digest")),
+        ));
+    }
+
+    #[test]
+    fn shared_decoder_retains_signer_and_weak_key_source_classifications() {
+        use aos_sandbox_source_provider_protocol::storage_zfs_hold_receipt::{
+            StorageZfsHoldEnrollmentErrorV1 as Error, decode_storage_zfs_hold_enrollment_v1,
+        };
+
+        let mut invalid_signer = manifest();
+        invalid_signer[16..32].fill(0);
+
+        assert_eq!(
+            decode_storage_zfs_hold_enrollment_v1(&invalid_signer).unwrap_err(),
+            Error::Signer,
+        );
+        assert!(matches!(
+            decode_manifest(&invalid_signer),
+            Err(ProviderLedgerError::Corrupt("ZFS hold verifier signer")),
+        ));
+
+        let mut weak_key = manifest();
+        weak_key[96..128].fill(0);
+        weak_key[128..160].copy_from_slice(&Sha256::digest([0_u8; 32]));
+
+        assert_eq!(
+            decode_storage_zfs_hold_enrollment_v1(&weak_key).unwrap_err(),
+            Error::PublicKey,
+        );
+        assert!(matches!(
+            decode_manifest(&weak_key),
+            Err(ProviderLedgerError::Corrupt("ZFS hold verifier public key")),
+        ));
     }
 
     #[test]

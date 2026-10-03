@@ -255,7 +255,15 @@ impl FixedMountSourceAcquisitionOwnerV2<'_> {
         })
     }
 
-    /// Advances the Pending-only continuation without releasing original custody.
+    /// Advances the same first-record dispatch through Pending or stored Root4.
+    ///
+    /// A positive result ends at actual phase5 readback. It does not authorize
+    /// Root4 wire delivery, an ACK, manager handoff, settlement or Drain.
+    ///
+    /// # Errors
+    ///
+    /// Keeps the original flight, received packets and append attempts resident
+    /// while revoking effects on writer, currentness or continuation failure.
     pub(crate) fn advance_original_native_pending_v5(
         &mut self,
         session: &mut CurrentRootMountSourceProviderSessionV1,

@@ -569,6 +569,37 @@ impl SourceAcquisitionTableV2 {
         Ok((prepared.transaction, prepared.tentative))
     }
 
+    /// Prepares exact Complete T/C/H DATA from the original receiver's borrows.
+    ///
+    /// The original Session and native writer retain the physical FD, actual
+    /// currentness and phase3 readback responsibilities. This proposal neither
+    /// admits a generic native outcome nor produces committed SourceRoot custody.
+    ///
+    /// # Errors
+    ///
+    /// Rejects absent checked DATA, a wrong status/attempt or a disposition that
+    /// fails the existing acquisition and whole-table validation recipe.
+    pub(super) fn prepare_original_complete_disposition_v5(
+        &self,
+        attempt_id: [u8; 32],
+        received: &aos_sandbox_source_provider_security::OriginalNativeReceivedOutcomeV5,
+    ) -> Result<(JournalTransaction, Self)> {
+        let (checked, observation) = received.checked_original_complete_v5()
+            .ok_or_else(|| state_error("original Complete checked DATA is absent"))?;
+        let (head, session, attempt, reference) =
+            self.prepare_verified_attempt_v2(attempt_id, checked)?;
+        if attempt.method != ProviderMethodV2::Acquire
+            || checked.status() != SourceProviderStatus::Complete
+        {
+            return Err(state_error("original Complete disposition shape"));
+        }
+
+        let prepared = self.prepare_acquisition_disposition(
+            head, session, attempt, reference, Some(observation),
+        )?;
+        Ok((prepared.transaction, prepared.tentative))
+    }
+
     /// Shares the actual Reserved-owner and verifier-to-Attempt preparation.
     fn prepare_verified_attempt_v2(
         &self,

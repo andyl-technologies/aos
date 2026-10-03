@@ -1,8 +1,9 @@
-//! Retained actual original Pending receipt and unsigned Closed preparation.
+//! Retained original first-record dispatch and Pending Closed preparation.
 //!
 //! No constructor accepts recovered rows or caller bytes. The typed carrier
 //! packet, sender subject, transferred FDs and original guard remain owned on
-//! every post-receive error. Positive packets stay unsupported and parked.
+//! every post-receive error. The separate positive child stores Held, consumes
+//! Complete and records local RootAccepted without authorizing later settlement.
 
 use std::{cell::Cell, sync::Arc};
 
@@ -20,7 +21,16 @@ use crate::carrier::RetainedSourceProviderRecordV5;
 
 mod root_closed;
 
-/// Owns one actual original packet through its Pending-only continuation.
+#[path = "native_positive.rs"]
+mod positive;
+
+#[derive(Clone, Copy)]
+enum FirstRecordDispositionV5 {
+    PendingOnly,
+    PendingOrHeld,
+}
+
+/// Owns actual original packets through Pending or local Accepted continuation.
 ///
 /// This move-only value has no public constructor or descriptor extractor.
 /// Verification borrows the original packet and shares only the same private
@@ -33,6 +43,7 @@ pub struct OriginalNativeReceivedOutcomeV5 {
     disposition: Option<RootNativeDispositionAssertionV1>,
     unsigned8: Option<PreparedNativeHeldControlV1>,
     closed: root_closed::RootClosedProgressV5,
+    positive: positive::OriginalPositiveProgressV5,
     failed: Cell<bool>,
 }
 
@@ -55,6 +66,12 @@ impl OriginalNativeReceivedOutcomeV5 {
         } else {
             self.verified.as_ref()
         }
+    }
+
+    /// Reports an observed Held first packet, not Root acceptance or currentness.
+    #[must_use]
+    pub fn has_original_held_v5(&self) -> bool {
+        self.positive.held().is_some()
     }
 
     /// Borrows retained unsigned Closed DATA even after a post-check failure.
@@ -96,13 +113,66 @@ impl CurrentRootMountSourceProviderSessionV1 {
         authorization: &AuthorizedMountProviderOutcomeV2,
         slot: &mut Option<OriginalNativeReceivedOutcomeV5>,
     ) -> Result<bool, SourceProviderSecurityError> {
-        OriginalBoundaryV5::new(self, slot).run(|owner, slot| {
+        self.advance_original_first_record_inner_v5(
+            writer, phase1, authorization, slot, FirstRecordDispositionV5::PendingOnly,
+        )
+    }
+
+    /// Receives Pending or Held once into the same original resident packet slot.
+    ///
+    /// A Held result is proposal DATA only. It must be stored and revalidated
+    /// before this same carrier can receive Complete's sole descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Retains malformed, foreign, reordered or descriptor-bearing controls and
+    /// available native causes, irreversibly closing the original continuation.
+    #[doc(hidden)]
+    pub fn advance_original_native_first_receive_v5(
+        &mut self,
+        writer: &MountOriginalNativeJournalAuthorityV5<'_>,
+        phase1: &OriginalRootProtectedReadbackV5,
+        authorization: &AuthorizedMountProviderOutcomeV2,
+        slot: &mut Option<OriginalNativeReceivedOutcomeV5>,
+    ) -> Result<bool, SourceProviderSecurityError> {
+        self.advance_original_first_record_inner_v5(
+            writer, phase1, authorization, slot, FirstRecordDispositionV5::PendingOrHeld,
+        )
+    }
+
+    fn advance_original_first_record_inner_v5(
+        &mut self,
+        writer: &MountOriginalNativeJournalAuthorityV5<'_>,
+        phase1: &OriginalRootProtectedReadbackV5,
+        authorization: &AuthorizedMountProviderOutcomeV2,
+        slot: &mut Option<OriginalNativeReceivedOutcomeV5>,
+        disposition: FirstRecordDispositionV5,
+    ) -> Result<bool, SourceProviderSecurityError> {
+        let result = OriginalBoundaryV5::new(self, &mut *slot).run(|owner, slot| {
             if slot.as_ref().is_some_and(|retained| {
                 retained.failed.get()
                     || retained.received.is_some()
                     || retained.verified.is_some()
             }) {
                 return Err(owner.poison(SourceProviderSecurityError::SessionContinuity));
+            }
+            if matches!(disposition, FirstRecordDispositionV5::PendingOrHeld) {
+                owner.carrier.begin_original_delivery_retention_v5();
+                if slot.is_none() {
+                    let original = authorization.native_outcome.as_ref()
+                        .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+                    **slot = Some(OriginalNativeReceivedOutcomeV5 {
+                        received: None,
+                        original: Arc::clone(original),
+                        verified: None,
+                        pending_cut: None,
+                        disposition: None,
+                        unsigned8: None,
+                        closed: root_closed::RootClosedProgressV5::new(),
+                        positive: positive::OriginalPositiveProgressV5::new(),
+                        failed: Cell::new(false),
+                    });
+                }
             }
             writer
                 .validate_readback(phase1)
@@ -144,14 +214,29 @@ impl CurrentRootMountSourceProviderSessionV1 {
                     disposition: None,
                     unsigned8: None,
                     closed: root_closed::RootClosedProgressV5::new(),
+                    positive: positive::OriginalPositiveProgressV5::new(),
                     failed: Cell::new(false),
                 });
             }
             let retained = slot.as_mut()
                 .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-            match owner.carrier.receive_original_retaining_v5(&mut retained.received) {
+            let received = match disposition {
+                FirstRecordDispositionV5::PendingOnly => owner
+                    .carrier.receive_original_retaining_v5(&mut retained.received),
+                FirstRecordDispositionV5::PendingOrHeld => owner
+                    .carrier.receive_original_first_retaining_v5(&mut retained.received),
+            };
+            match received {
                 Ok(true) => {}
-                Ok(false) | Err(CarrierFailureV1::Retryable) => return Ok(false),
+                Ok(false) | Err(CarrierFailureV1::Retryable) => {
+                    if matches!(disposition, FirstRecordDispositionV5::PendingOrHeld) {
+                        owner.require_native_outcome_authorization_v3(authorization)?;
+                        writer.validate_readback(phase1)
+                            .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+                        owner.carrier.finish_original_receive_backpressure_v5();
+                    }
+                    return Ok(false);
+                }
                 Err(CarrierFailureV1::Fatal(error)) => return Err(owner.poison(error)),
             }
 
@@ -167,10 +252,17 @@ impl CurrentRootMountSourceProviderSessionV1 {
                     return Err(SourceProviderSecurityError::SessionContinuity);
                 }
 
-                // Native control packets do not pass this ordinary response parser;
-                // Complete remains parked with its sole descriptor, never accepted.
-                let response = decode_acquire_response(&record.payload)
-                    .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+                // The same first packet is parsed once as an ordinary response.
+                // A selected canonical Held is the only alternative. Early
+                // Complete or another control remains resident fatal DATA.
+                let response = match decode_acquire_response(&record.payload) {
+                    Ok(response) => response,
+                    Err(_) if matches!(disposition, FirstRecordDispositionV5::PendingOrHeld) => {
+                        owner.capture_original_held_v5(writer, phase1, authorization, retained)?;
+                        return Ok(true);
+                    }
+                    Err(_) => return Err(SourceProviderSecurityError::SessionContinuity),
+                };
                 if response.status() != SourceProviderStatus::Pending
                     || response.signed_receipt().is_some()
                     || !record.descriptors.is_empty()
@@ -190,7 +282,16 @@ impl CurrentRootMountSourceProviderSessionV1 {
             })();
 
             result
-        })
+        });
+        if matches!(disposition, FirstRecordDispositionV5::PendingOrHeld) {
+            if let Err(error) = result {
+                if let Some(retained) = slot.as_mut() {
+                    retained.retain_first_positive_failure_v5(error);
+                }
+                return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+            }
+        }
+        result
     }
 
     /// Rechecks the same received token against the exact current protected cut.

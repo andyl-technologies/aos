@@ -37,6 +37,26 @@ pub(in crate::handshake::mount_request) struct NativeAcquireOutcomeCustodyV3 {
 }
 
 impl NativeAcquireOutcomeCustodyV3 {
+    /// Borrows the actual original catalog inputs, never a remote owner or floor.
+    pub(in crate::handshake::mount_request) fn original_selection_v5(
+        &self,
+    ) -> Result<(
+        AcquireSourceRequestV1,
+        &VerifiedCatalogPublicationV1,
+        &ProviderHeldSnapshotCatalogV1,
+        &SourceResourceV1,
+        &ZfsHeldSnapshotProofV1,
+    ), SourceProviderSecurityError> {
+        let guard = self.guard()?;
+        Ok((
+            self.validate_request()?,
+            &guard.preparation.publication,
+            &guard.preparation.catalog,
+            &guard.resource,
+            &guard.snapshot,
+        ))
+    }
+
     pub(in crate::handshake::mount_request) fn original_root_witness(
         &self,
         records: [NativeHeldByteWitnessV1; 4],
@@ -138,6 +158,36 @@ impl NativeAcquireOutcomeCustodyV3 {
 }
 
 impl CurrentRootMountSourceProviderSessionV1 {
+    pub(in crate::handshake::mount_request) fn require_original_storage_validity_v5(
+        &mut self,
+        authorization: &AuthorizedMountProviderOutcomeV2,
+        expires_seconds: i64,
+    ) -> Result<(), SourceProviderSecurityError> {
+        self.require_native_outcome_authorization_v3(authorization)?;
+        let original = authorization.native_outcome.as_ref()
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        let guard = original.guard()?;
+        let now = kernel_clock().map_err(|error| self.poison(error))?;
+        guard.preparation.deadline.require_current_until(now, expires_seconds)
+            .map_err(|error| self.poison(error))
+    }
+
+    // Called only after the same owner/role/readback observations. No slow
+    // physical scan follows this sample at the selected caller's effect edge.
+    pub(in crate::handshake::mount_request) fn require_original_positive_effect_clock_v5(
+        &mut self,
+        original: &NativeAcquireOutcomeCustodyV3,
+        canonical_response: &[u8],
+        storage_expires: i64,
+    ) -> Result<(), SourceProviderSecurityError> {
+        let lease_expires = original.validate_response(canonical_response)?
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        let guard = original.guard()?;
+        let now = kernel_clock().map_err(|error| self.poison(error))?;
+        guard.preparation.deadline.require_current_until(now, lease_expires.min(storage_expires))
+            .map_err(|error| self.poison(error))
+    }
+
     pub(in crate::handshake::mount_request) fn require_native_outcome_authorization_v3(
         &mut self,
         authorization: &AuthorizedMountProviderOutcomeV2,

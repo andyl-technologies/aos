@@ -483,6 +483,132 @@ pub(crate) struct AuthenticatedCompleteAcquireRecordV1 {
     pub(crate) profile: SourceRootObservationProfileV1,
 }
 
+/// Retains physical observation staging while the sole FD stays in its packet.
+///
+/// This is not an Observed/CommittedSourceRoot constructor. It borrows the
+/// original received descriptor and execution for every observation; the
+/// resident packet, namespace and completed observations survive late refusal.
+pub(crate) struct OriginalSourceRootObservationV5 {
+    preliminary: Option<ReadOnlyDirectorySnapshot>,
+    namespace: Option<NamespaceFd>,
+    first: Option<DescriptorSnapshotV1>,
+    second: Option<DescriptorSnapshotV1>,
+    original: Option<DescriptorSnapshotV1>,
+    profile: Option<SourceRootObservationProfileV1>,
+    observation: Option<SourceRootObservationV1>,
+}
+
+impl OriginalSourceRootObservationV5 {
+    pub(crate) const fn new() -> Self {
+        Self {
+            preliminary: None,
+            namespace: None,
+            first: None,
+            second: None,
+            original: None,
+            profile: None,
+            observation: None,
+        }
+    }
+
+    pub(crate) fn capture_preliminary(
+        &mut self,
+        descriptor: &OwnedFd,
+    ) -> Result<SourceRootObservationV1, SourceProviderSecurityError> {
+        if self.preliminary.is_some() {
+            return Err(SourceProviderSecurityError::SessionContinuity);
+        }
+        self.preliminary = Some(ReadOnlyDirectorySnapshot::capture(descriptor.as_fd())
+            .map_err(|_| SourceProviderSecurityError::DescriptorObservation)?);
+        let snapshot = self.preliminary.as_ref()
+            .ok_or(SourceProviderSecurityError::DescriptorObservation)?;
+        CurrentRootMountSourceProviderSessionV1::original_physical_observation_v5(snapshot)
+    }
+
+    // Concrete borrows keep descriptor, Session and namespace responsibilities
+    // explicit; a caller-labelled aggregate would weaken that ownership seam.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn capture_authenticated(
+        &mut self,
+        descriptor: &OwnedFd,
+        execution: &ProcessExecutionEvidenceV1,
+        profile: SourceRootObservationProfileV1,
+        expected: SourceRootObservationV1,
+        commitment: ObjectDigest,
+        session: &mut CurrentRootMountSourceProviderSessionV1,
+        binding: ObjectDigest,
+        cookie: NonZeroU64,
+    ) -> Result<(), SourceProviderSecurityError> {
+        if self.namespace.is_some() || self.original.is_some() {
+            return Err(SourceProviderSecurityError::SessionContinuity);
+        }
+        session.require_complete_acquire_association(binding, cookie, execution)?;
+        self.namespace = Some(execution.mount_namespace()?);
+        self.profile = Some(profile);
+        self.observation = Some(expected.clone());
+        self.observe_pair(descriptor, execution, session, binding, cookie)?;
+
+        let first = self.first.as_ref()
+            .ok_or(SourceProviderSecurityError::DescriptorObservation)?;
+        if self.second.as_ref() != Some(first)
+            || self.preliminary.as_ref() != Some(&first.physical)
+            || first.physical.boot_id != execution.boot_id()
+            || CurrentRootMountSourceProviderSessionV1::original_physical_observation_v5(
+                &first.physical,
+            )? != expected
+            || source_root_descriptor_commitment_v1(&expected) != commitment
+        {
+            return Err(SourceProviderSecurityError::DescriptorObservation);
+        }
+        self.original = Some(first.clone());
+        Ok(())
+    }
+
+    pub(crate) fn revalidate(
+        &mut self,
+        descriptor: &OwnedFd,
+        execution: &ProcessExecutionEvidenceV1,
+        session: &mut CurrentRootMountSourceProviderSessionV1,
+        binding: ObjectDigest,
+        cookie: NonZeroU64,
+    ) -> Result<(), SourceProviderSecurityError> {
+        if self.original.is_none() || self.observation.is_none() {
+            return Err(SourceProviderSecurityError::SessionContinuity);
+        }
+        self.observe_pair(descriptor, execution, session, binding, cookie)?;
+        if self.first != self.original || self.second != self.original {
+            return Err(SourceProviderSecurityError::DescriptorObservation);
+        }
+        Ok(())
+    }
+
+    fn observe_pair(
+        &mut self,
+        descriptor: &OwnedFd,
+        execution: &ProcessExecutionEvidenceV1,
+        session: &mut CurrentRootMountSourceProviderSessionV1,
+        binding: ObjectDigest,
+        cookie: NonZeroU64,
+    ) -> Result<(), SourceProviderSecurityError> {
+        let namespace = self.namespace.as_ref()
+            .ok_or(SourceProviderSecurityError::DescriptorObservation)?;
+        let profile = self.profile
+            .ok_or(SourceProviderSecurityError::DescriptorObservation)?;
+        session.require_complete_acquire_association(binding, cookie, execution)?;
+        execution.require_mount_namespace(namespace)?;
+        self.first = Some(observe_source_root_snapshot(descriptor, profile, Some(namespace))?);
+        session.require_complete_acquire_association(binding, cookie, execution)?;
+        execution.require_mount_namespace(namespace)?;
+        self.second = Some(observe_source_root_snapshot(descriptor, profile, Some(namespace))?);
+        session.require_complete_acquire_association(binding, cookie, execution)?;
+        execution.require_mount_namespace(namespace)
+    }
+
+    pub(crate) const fn observation(&self) -> Option<&SourceRootObservationV1> {
+        self.observation.as_ref()
+    }
+}
+
 pub(super) struct SourceRootDispositionCommitReceiptV1 {
     descriptor_commitment: ObjectDigest,
     acquisition_id: [u8; 32],

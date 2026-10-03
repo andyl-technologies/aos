@@ -4,7 +4,9 @@ use std::os::fd::{AsFd as _, OwnedFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use aos_sandbox_linux::seqpacket::{RecordBindingError, SeqpacketError};
+use aos_sandbox_linux::seqpacket::{
+    RecordBindingError, RetainedSeqpacketReceiveErrorV1, SeqpacketError,
+};
 use aos_sandbox_linux::seqpacket::descriptor_subject::{
     DescriptorSubjectSocket, ReceivedDescriptorRecord,
 };
@@ -171,6 +173,8 @@ pub(crate) struct InertSourceProviderCarrierV1 {
     poisoned: bool,
     interrupted_retries: u8,
     original_delivery_retention: bool,
+    original_receive_failure: Option<RetainedSeqpacketReceiveErrorV1>,
+    original_binding_failure: Option<RecordBindingError>,
     selected_peer_establishment: Option<SelectedPeerEstablishmentV1>,
     selected_endpoint: Option<Arc<SelectedNegativeEndpointV1>>,
     selected_failure: Option<SelectedCarrierFailureV1>,
@@ -283,6 +287,8 @@ impl InertSourceProviderCarrierV1 {
             poisoned: false,
             interrupted_retries: 0,
             original_delivery_retention: false,
+            original_receive_failure: None,
+            original_binding_failure: None,
             selected_peer_establishment: None,
             selected_endpoint: None,
             selected_failure: None,
@@ -341,6 +347,8 @@ impl InertSourceProviderCarrierV1 {
                 poisoned: false,
                 interrupted_retries: 0,
                 original_delivery_retention: false,
+                original_receive_failure: None,
+                original_binding_failure: None,
                 selected_peer_establishment: Some(establishment),
                 selected_endpoint: Some(endpoint),
                 selected_failure: None,
@@ -496,6 +504,94 @@ impl InertSourceProviderCarrierV1 {
         slot: &mut Option<RetainedSourceProviderRecordV5>,
     ) -> Result<bool, CarrierFailureV1> {
         self.receive_retaining(true, MAXIMUM_FRAME_BYTES, slot)
+    }
+
+    /// Receives the bounded first control/Pending packet on the same original.
+    pub(crate) fn receive_original_first_retaining_v5(
+        &mut self,
+        slot: &mut Option<RetainedSourceProviderRecordV5>,
+    ) -> Result<bool, CarrierFailureV1> {
+        self.receive_original_positive_retaining_v5(
+            aos_sandbox_source_provider_protocol::native_held_completion::MAXIMUM_NATIVE_HELD_CONTROL_BYTES_V1,
+            slot,
+        )
+    }
+
+    /// Receives Complete through the same optional-one-FD lower parser.
+    pub(crate) fn receive_original_complete_retaining_v5(
+        &mut self,
+        slot: &mut Option<RetainedSourceProviderRecordV5>,
+    ) -> Result<bool, CarrierFailureV1> {
+        self.receive_original_positive_retaining_v5(MAXIMUM_FRAME_BYTES, slot)
+    }
+
+    fn receive_original_positive_retaining_v5(
+        &mut self,
+        maximum_bytes: usize,
+        slot: &mut Option<RetainedSourceProviderRecordV5>,
+    ) -> Result<bool, CarrierFailureV1> {
+        if self.poisoned || slot.is_some() || self.original_receive_failure.is_some() {
+            return Err(CarrierFailureV1::Fatal(
+                SourceProviderSecurityError::SessionContinuity,
+            ));
+        }
+
+        self.begin_original_delivery_retention_v5();
+        let received = match self.socket.receive_optional_descriptor_reply_retaining(maximum_bytes) {
+            Ok(received) => received,
+            Err(error) => {
+                let retryable = error.is_nonconsuming_would_block()
+                    || error.is_nonconsuming_interrupted();
+                self.original_receive_failure = Some(error);
+                if retryable {
+                    if self.original_receive_failure.as_ref()
+                        .is_some_and(RetainedSeqpacketReceiveErrorV1::is_nonconsuming_interrupted)
+                    {
+                        return self.interrupted_retry();
+                    }
+                    return Ok(false);
+                }
+                self.close();
+                return Err(CarrierFailureV1::Fatal(
+                    SourceProviderSecurityError::SessionContinuity,
+                ));
+            }
+        };
+        *slot = Some(RetainedSourceProviderRecordV5::Received(received));
+        let Some(RetainedSourceProviderRecordV5::Received(received)) = slot.as_ref() else {
+            return Err(CarrierFailureV1::Fatal(SourceProviderSecurityError::SessionContinuity));
+        };
+        if let Err(error) = self.socket.validate_received_origin_retaining(received) {
+            self.original_binding_failure = Some(error);
+            self.close();
+            return Err(CarrierFailureV1::Fatal(SourceProviderSecurityError::SessionContinuity));
+        }
+        // Selected reception keeps the same genuine launcher establishment;
+        // the ordinary consumer retains its original execution checks.
+        let captured = match self.selected_peer_establishment {
+            Some(establishment) => ProcessExecutionEvidenceV1::capture_selected_parked_record(
+                self.socket.peer(),
+                slot,
+                establishment,
+            ),
+            None => ProcessExecutionEvidenceV1::capture_parked_record(self.socket.peer(), slot),
+        };
+        if let Err(error) = captured {
+            self.close();
+            return Err(CarrierFailureV1::Fatal(error));
+        }
+        self.interrupted_retries = 0;
+        Ok(true)
+    }
+
+    // Only the upper original-owner bookend may release a nonconsuming attempt.
+    // A fatal result is never replaced by a fresh receive or projected to retry.
+    pub(crate) fn finish_original_receive_backpressure_v5(&mut self) {
+        if self.original_receive_failure.as_ref().is_some_and(|error| {
+            error.is_nonconsuming_would_block() || error.is_nonconsuming_interrupted()
+        }) {
+            self.original_receive_failure = None;
+        }
     }
 
     /// Keeps the exact zero-descriptor profile while retaining typed packets.
@@ -681,6 +777,8 @@ mod tests {
                 poisoned: false,
                 interrupted_retries: 0,
                 original_delivery_retention: false,
+                original_receive_failure: None,
+                original_binding_failure: None,
                 selected_peer_establishment: None,
                 selected_endpoint: None,
                 selected_failure: None,
