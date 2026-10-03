@@ -151,7 +151,7 @@ pub(super) fn classify(
         }
         _ if case.status >= 400
             || !case.path_and_query.starts_with("/v2/")
-            || case.method == "HEAD" =>
+            || is_oci_head_read(case) =>
         {
             let (operation, class, exchange_id, observed) =
                 crate::ingress::decode(case, request, reply, deployment, consumed)?;
@@ -190,6 +190,20 @@ pub(super) fn classify(
         class,
         payload,
     })
+}
+
+// Upload-status HEAD uses its own shared 204 control codec. Only object and
+// manifest HEAD routes belong to the empty 200 read-authorization decoder.
+fn is_oci_head_read(case: &Case) -> bool {
+    let path = case
+        .path_and_query
+        .split_once('?')
+        .map_or(case.path_and_query.as_str(), |(path, _)| path);
+    case.method == "HEAD"
+        && matches!(
+            parse_oci_path(path),
+            Ok(OciRequest::Blob { .. } | OciRequest::Manifest { .. })
+        )
 }
 
 fn control_case(case: &Case) -> Result<()> {

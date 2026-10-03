@@ -64,6 +64,75 @@ fn empty_machine_read_does_not_admit_a_nonempty_object_or_swapped_method() {
 }
 
 #[test]
+fn head_object_authorization_requires_the_exact_empty_read_exchange() {
+    let fixture = Fixture::new();
+    let paths = [
+        format!("/v2/aos/blobs/sha256:{}", "d".repeat(64)),
+        "/v2/aos/manifests/tag".into(),
+    ];
+
+    for path in paths {
+        let rows = inspect(ingress_case(&fixture, &path, "HEAD", None, b"", b"", 200)).unwrap();
+        assert_eq!(rows[0].class, "ingress_empty_read_authorization");
+        assert_eq!(rows[0].payload.request_raw_object_bytes, "0");
+        assert_eq!(rows[0].payload.reply_raw_object_bytes, "0");
+
+        for (phase, request, reply, status) in [
+            (Some("preflight"), b"".as_slice(), b"".as_slice(), 200),
+            (None, b"unexpected".as_slice(), b"".as_slice(), 200),
+            (None, b"".as_slice(), b"unexpected".as_slice(), 200),
+            (None, b"".as_slice(), b"".as_slice(), 201),
+            (None, b"".as_slice(), b"".as_slice(), 204),
+        ] {
+            assert!(inspect(ingress_case(
+                &fixture, &path, "HEAD", phase, request, reply, status,
+            ))
+            .is_err());
+        }
+        assert!(inspect(ingress_case(
+            &fixture,
+            &format!("{path}?unexpected=1"),
+            "HEAD",
+            None,
+            b"",
+            b"",
+            200,
+        ))
+        .is_err());
+
+        let mut original = ingress_case(&fixture, &path, "HEAD", None, b"", b"", 200);
+        let other_fixture = Fixture::new();
+        let mut other = ingress_case(
+            &other_fixture,
+            "/v2/aos/manifests/other",
+            "HEAD",
+            None,
+            b"",
+            b"",
+            200,
+        );
+        original.cases[0].received_ingress = other.cases.remove(0).received_ingress;
+        assert!(inspect(original).is_err());
+    }
+}
+
+#[test]
+fn head_upload_status_keeps_the_shared_control_constraints() {
+    let fixture = Fixture::new();
+    let rows = inspect(fixture.upload_control("HEAD", "", None, b"", 204)).unwrap();
+    assert_eq!(rows[0].operation, "oci_upload_status");
+
+    for (query, phase, reply, status) in [
+        ("", None, b"".as_slice(), 200),
+        ("", Some("preflight"), b"".as_slice(), 204),
+        ("?unexpected=1", None, b"".as_slice(), 204),
+        ("", None, b"unexpected".as_slice(), 204),
+    ] {
+        assert!(inspect(fixture.upload_control("HEAD", query, phase, reply, status)).is_err());
+    }
+}
+
+#[test]
 fn semantic_browse_counts_actual_selected_json_and_rejects_unknown_content() {
     let fixture = Fixture::new();
     let body = br#"[{"name":"package","description":"summary"}]"#;
