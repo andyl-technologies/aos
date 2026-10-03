@@ -71,6 +71,15 @@ in {
             "cat /tmp/retained-build.log /tmp/retained-build.out 2>/dev/null || true",
             "systemctl status nix-daemon.service nix-daemon.socket nix-daemon-policy.service --no-pager || true",
             "journalctl -u nix-daemon.service -u nix-daemon-policy.service -n 80 --no-pager || true",
+            f"systemctl show {SLICE} --property=LoadState,ActiveState,FragmentPath,DropInPaths,MemoryMax,MemoryHigh,MemoryCurrent,ControlGroup",
+            "cat /etc/aos/packages/nix-daemon/runtime.env "
+            "/etc/systemd/system/aos-pkg-nix-daemon-builds.slice "
+            "/etc/systemd/system/aos-pkg-nix-daemon-builds.slice.d/30-aos-resources.conf",
+            "cat /run/systemd/system.control/aos-pkg-nix-daemon-builds.slice.d/* 2>/dev/null || true",
+            f"group=$(systemctl show {SLICE} --property=ControlGroup --value); "
+            "test -n \"$group\" && "
+            "for name in memory.max memory.high memory.current memory.events cgroup.controllers; do "
+            "printf '%s\\n' \"$name\"; cat \"/sys/fs/cgroup$group/$name\"; done",
             f"{RUNTIME} deployment-current --profile {PROFILE} --committed-during-recovery; systemctl show {HOST_ACTIVATOR} --property=ActiveState",
             "for p in /proc/[0-9]*/status; do "
             "awk '$1 == \"Name:\" { name = $2 } $1 == \"State:\" { state = $2 } "
@@ -220,7 +229,8 @@ in {
         assert property("nix-daemon-policy.service", "Slice") == "aos-pkg-nix-daemon.slice"
         assert property("nix-daemon.service", "Slice") == SLICE
         assert property("nix-daemon-policy.service", "Result") == "success"
-        assert property(SLICE, "MemoryMax") == "1"
+        memory_max = property(SLICE, "MemoryMax")
+        assert memory_max == "1", {"unit": SLICE, "MemoryMax": memory_max}
         builder.wait_until_succeeds(
             f"test -r /sys/fs/cgroup$(systemctl show {SLICE} --property=ControlGroup --value)/memory.events "
             f"&& awk '$1 == \"oom\" && $2 > 0 {{ found = 1 }} END {{ exit !found }}' "
