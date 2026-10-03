@@ -44,9 +44,9 @@ Before changing a host:
 
 ```sh
 apm update --system
-apm rollback --system --image --list
-apm rollback --system --list
-apm upgrade --system --dry-run
+apm image list
+apm config rollback --list
+apm image upgrade --dry-run
 ```
 
 The dry run resolves the selected candidate and reports the plan without
@@ -59,7 +59,7 @@ provider-resolution changes.
 ## Stage an A/B image upgrade
 
 ```sh
-apm upgrade --system
+apm image upgrade
 ```
 
 APM verifies the registry graph and Secure Boot policy, imports the
@@ -83,9 +83,7 @@ Activation modes are:
 | Mode | Behavior |
 | --- | --- |
 | no mode flag | Stage the inactive slot and print a reboot advisory |
-| `--live` | Stage only; like the default, defer the image transition until reboot |
 | `--reboot` | Stage, then request a full reboot |
-| `--kexec` | Rejected for A/B images because kexec cannot change the root slot |
 | `--drain` | Drain workloads before a requested `--reboot` |
 
 The candidate UKI carries an sd-boot boot-counting suffix. Each unsuccessful
@@ -138,14 +136,14 @@ addition to systemd state.
 List configuration generations and preview a target:
 
 ```sh
-apm rollback --system --list
-apm rollback --system --generation N --dry-run
+apm config rollback --list
+apm config rollback --generation N --dry-run
 ```
 
 Apply it:
 
 ```sh
-apm rollback --system --generation N
+apm config rollback --generation N
 ```
 
 Without `--generation`, APM chooses the most recent earlier configuration.
@@ -161,16 +159,16 @@ round trip because each generation retains its `cfgsrc` inputs.
 List and preview the image axis separately:
 
 ```sh
-apm rollback --system --image --list
-apm rollback --system --image --generation N --dry-run
+apm image list
+apm image rollback --generation N --dry-run
 ```
 
 Select the older image as the durable next boot, optionally rebooting in the
 same operation:
 
 ```sh
-apm rollback --system --image --generation N
-apm rollback --system --image --generation N --reboot
+apm image rollback --generation N
+apm image rollback --generation N --reboot
 ```
 
 The running kernel does not change until reboot. On the selected image's first
@@ -203,13 +201,13 @@ and activation work rather than silently skipping it.
 For controlled staging, select the registry and sysroot package explicitly:
 
 ```sh
-apm install aos --system --registry acme --dry-run
-apm install aos --system --registry acme --yes
+apm image install aos --registry acme --dry-run
+apm image install aos --registry acme --yes
 ```
 
 This accepts exactly one package marked `sysroot = true` and stages its A/B
-image. Ordinary machine-wide packages use a desired file as documented in
-[Manage packages](packages.md#manage-machine-wide-packages).
+image. For ordinary machine-wide packages, use `apm install --system PACKAGE`.
+See [Manage packages](packages.md#install-packages).
 
 ## Keep scopes separate
 
@@ -228,6 +226,6 @@ package rollback does not replace the running kernel or root slot.
 Add `--system` to prune both ordinary machine-wide package generations and
 configuration generations, keeping the latest `N` of each plus each profile's
 current generation. Configuration pruning is serialized with activation and
-releases its `cfg/` and `cfgsrc/` roots; a later `apm gc` can reclaim the now
+releases its `cfg/` and `cfgsrc/` roots; a later `apm gc --system` can reclaim the now
 unreachable store paths. A/B image-generation pruning remains unavailable.
 `aos gc --list-generations` refers to an unrelated Nix profile.
