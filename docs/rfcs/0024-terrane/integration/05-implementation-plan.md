@@ -350,6 +350,21 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   cannot qualify construction or relationship verification. This is an
   implementation prerequisite; same-commit incremental maintenance, typed
   runtime loading/current checks and the native safe-index case remain open.
+  The reviewed pure evaluation candidate constructs canonical hierarchical
+  I/P/G data over an explicitly supplied ordinary namespace graph and checks
+  its exact immutable relationships without invoking construction again.
+  Independent models cover repeated grafts, present/missing occurrences of
+  one object, zero candidates with gaps, long local-hop sequences, divergent
+  rows/routes/gaps and internal child summaries. Unsupported conflicts and
+  overlay sources refuse explicitly. Parent qualification passes all 585
+  core tests with zero skipped (Nextest run
+  `9814a24b-18e1-4e20-b1cb-7caebebecdc9`), core/native builds, strict core
+  Clippy/rustdoc and the three exact `integration.index-evaluation` cases.
+  Public counters describe traversal events, excluding total encoding,
+  hashing and canonical rebuilding cost. This qualifies an immutable-data
+  foundation only; runtime loading, indexed discovery, current policy and
+  independent producer checks, incremental maintenance and native safe-index
+  materialization remain required. No task checkbox advances.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route
@@ -462,6 +477,27 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   consumers. The actual `integration.control-reference-models` check exits 1
   explicitly because the owning fixture files are absent from the trunk.
   No candidate merges into the trunk and no task checkbox advances.
+  The reviewed D-105 fixture candidate reproduces all 126 published control
+  wires: 89 positive and 37 negative. It preserves 124 old wires unchanged,
+  retains the former negative bytes exactly as the new positive, and changes
+  only the explicitly withdrawn negative interpretation. All seven exact
+  owning-codec groups and strict consumer Clippy pass. Its full core run with
+  temporary consumer copies passes 592/592 with zero skipped (Nextest run
+  `9374aeeb-c5d2-4982-ae42-cde97267dc2e`); those copies and the complete
+  reference are compared and removed after all original consumers terminate.
+  Parent qualification of the final unpublished joint source passes its
+  normal 585-test core suite, core/native builds, strict core Clippy/rustdoc,
+  all eleven focused checks and both mandatory formatters. This includes
+  the actual complete `golden-vectors` gate with all 17 mandatory owning
+  suites, the corrected control group and the new pure evaluation group.
+  The actual current-trunk aggregate exits 1 in `prov-disclosure-boundary`,
+  explicitly naming the still-unqualified native key-window/revocation,
+  safe-index producer/rebuild and whiteout application cases. That is this
+  run's observed failure; the prior backend failure is not a new result.
+  The worker's separate `checks.rust.aos-test-targets` selection is unavailable
+  because the attribute is absent; no replacement check is declared green.
+  Normative index witness publication and complete runtime/index maintenance
+  remain pending. No candidate task merge, checkbox or milestone advances.
 - [x] **T-AUTH-1** Capability token verification (Ed25519, chain, caveats,
   attenuation) in `no_std`. — satisfies AUTH-7 to AUTH-22;
   `checks.terrane.gates.auth-verify-pure`,
