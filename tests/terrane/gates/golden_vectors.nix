@@ -11,6 +11,7 @@
     control = "control-models.nix";
     evidence = "evidence-models.nix";
     foundation = "foundation-vectors.nix";
+    index = "index-models.nix";
     legacy = "legacy-vectors.nix";
     lineage = "lineage-models.nix";
     namespace = "namespace-models.nix";

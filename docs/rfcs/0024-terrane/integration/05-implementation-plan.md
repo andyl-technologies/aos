@@ -270,6 +270,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   of unknown revisions or unregistered extensions. Their pure resolver
   implementation is pending on an isolated task branch; codec vocabulary
   checks alone do not qualify this behavior or native caller propagation.
+  The actual augmented gate rejects zero selected tests for its first new
+  resolver case after all preceding property and carrier cases pass. Shared
+  registry completeness and both mandatory formatters pass. This is a
+  prerequisite, not resolver qualification or a task merge.
   — satisfies TREE-14,
   PROP-1 to PROP-30;
   `checks.terrane.gates.property-resolution`,
@@ -382,6 +386,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   authority. Root/occurrence loading, producer verification, incremental
   maintenance, complete coverage and native dispatch remain T-DRV-2.
   Publish independently assembled format witnesses jointly with T-TEST-1.
+  The shared golden gate now additionally requires the index owning suite,
+  with seven exact codec/relationship groups and independent reproduction.
+  Missing fixtures fail explicitly. Its complete fields, positive immutable
+  identities/descriptors, retained historical context and scope-specific
+  rejection witnesses remain pending; the previous 17-suite result does not
+  qualify this new mandatory consumer or publish the missing index corpus.
+  The requested `integration.index-reference-models` check exits 1 explicitly
+  on its missing owning fixtures. Shared registry completeness and both
+  mandatory formatters pass; no format or task is qualified by the scaffold.
   The shared property gate now requires the exact owning-root binding case;
   its absence must fail rather than qualify the new registry entry from old
   property tests. D-104 additionally requires exact role/placement and semantic
