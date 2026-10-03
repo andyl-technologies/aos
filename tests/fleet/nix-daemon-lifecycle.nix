@@ -115,7 +115,14 @@ in {
             f"{APM} config apply --eval-root /run/daemon-eval-{sequence}"
         )
         if allow_degraded:
-            builder.execute(command, timeout=600)
+            exit_code, stdout, stderr = builder.execute(command, timeout=600)
+            result = {
+                "exit_code": exit_code,
+                "stdout": stdout.decode("utf-8", errors="replace"),
+                "stderr": stderr.decode("utf-8", errors="replace"),
+            }
+            print("Degraded daemon apply result:", result, flush=True)
+            return result
         elif succeeds:
             builder.succeed(command, timeout=600)
         else:
@@ -196,8 +203,13 @@ in {
         # outside the build slice and must remain able to restore its limits.
         tiny = 'resources.memoryHigh = "1"; resources.memoryMax = "1";'
         before_exhaustion = generation()
-        apply(configuration(True, tiny), allow_degraded=True)
-        assert generation() != before_exhaustion
+        degraded_result = apply(configuration(True, tiny), allow_degraded=True)
+        after_exhaustion = generation()
+        assert after_exhaustion != before_exhaustion, {
+            "before_generation": before_exhaustion,
+            "after_generation": after_exhaustion,
+            "apply_result": degraded_result,
+        }
         assert property("nix-daemon-policy.service", "Slice") == "aos-pkg-nix-daemon.slice"
         assert property("nix-daemon.service", "Slice") == SLICE
         assert property("nix-daemon-policy.service", "Result") == "success"
