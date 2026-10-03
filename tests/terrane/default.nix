@@ -211,4 +211,5 @@ in {
   integration.lineage-reference-models = import ./lineage-models.nix {inherit sourceGate;};
   integration.prefix-reference-models = import ./prefix-models.nix {inherit sourceGate;};
   integration.recipe-context-reference-models = import ./recipe-context-models.nix {inherit sourceGate;};
+  integration.recorded-context-reference-models = import ./recorded-context-models.nix {inherit sourceGate;};
 }

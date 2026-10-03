@@ -248,6 +248,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   historical association. The merge gate now requires an exact pure
   complete-context/recipe-key case; its implementation and independent
   publication remain pending. Runtime evaluator binding remains required.
+  A separate `integration.recorded-context-reference-models` auxiliary reserves
+  independent complete version-three fields, malformed input refusal and
+  enclosing recipe/configuration/preimage witnesses in three exact groups.
+  It fails explicitly while the primitive generator, owning templates and
+  reviewed normative publication are absent. No runtime association or task
+  completion follows from this pure format prerequisite.
   — satisfies ALG-15 to ALG-21, ALG-28 to ALG-39;
   `checks.terrane.gates.algebra-merge`, `checks.terrane.gates.algebra-fork`.
 - [ ] **T-PROP-1** Property resolution, types, boundary properties,
