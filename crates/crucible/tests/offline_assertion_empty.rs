@@ -72,6 +72,37 @@ fn empty_checker_authenticates_2004_entries_and_matches_terminal_report() -> Tes
 }
 
 #[test]
+fn enabled_empty_checker_authenticates_marker_free_runs() -> TestResult {
+    let enabled_world = world(WhiteBoxPolicy::Enabled)?;
+    let disabled_world = world(WhiteBoxPolicy::Disabled)?;
+    let properties = Properties::empty();
+
+    for count in [512_u64, 1024, 2048, 10958] {
+        let entries: Vec<_> = (0..count)
+            .map(|sequence| boundary(sequence, sequence + 1))
+            .collect();
+        let canonical_bytes: usize = entries
+            .iter()
+            .map(SchedulerEventLogEntry::canonical_material_len)
+            .sum();
+
+        let enabled = OfflineAssertionChecker::new()
+            .with_world_white_box_policies(&enabled_world)
+            .check_run(&properties, &entries)?;
+        let disabled = OfflineAssertionChecker::new()
+            .with_world_white_box_policies(&disabled_world)
+            .check_run(&properties, &entries)?;
+
+        assert_eq!(enabled, disabled);
+        assert!(enabled.outcomes().is_empty());
+        println!(
+            "empty_whitebox_checker_measurement entries={count} canonical_material_bytes={canonical_bytes}",
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn empty_checker_preserves_terminal_integrity_and_error_precedence() {
     let checker = OfflineAssertionChecker::new();
     let properties = Properties::empty();
@@ -237,5 +268,146 @@ fn guest_catalog_declared_properties_and_whitebox_markers_keep_outcomes() -> Tes
         dynamic.outcomes()[0].kind,
         HostAssertionOutcomeKind::NeverReachedFail
     );
+    Ok(())
+}
+
+#[test]
+fn enabled_markers_retain_earlier_violation_before_later_success() -> TestResult {
+    let world = world(WhiteBoxPolicy::Enabled)?;
+    let marker = |ticks, condition| {
+        ObservableEvent::guest_assertion_marker(
+            Icount { retired: ticks },
+            NodeId {
+                name: "guest".into(),
+            },
+            GuestAssertionMarker::new(
+                AssertionId::from_name("invariant"),
+                "guest invariant",
+                GuestAssertionKind::Always,
+                condition,
+                false,
+                vec![],
+                "fixture.rs:2",
+            ),
+        )
+    };
+    let failing = marker(2, false);
+    let passing = marker(3, true);
+    let entries = vec![
+        boundary(0, 1),
+        crucible::test_support::condition_observation_entry_for_test(1, &failing),
+        boundary(2, 2),
+        crucible::test_support::condition_observation_entry_for_test(3, &passing),
+        boundary(4, 3),
+    ];
+
+    let report = OfflineAssertionChecker::new()
+        .with_world_white_box_policies(&world)
+        .check_run(&Properties::empty(), &entries)?;
+
+    assert_eq!(report.outcomes().len(), 1);
+    assert_eq!(
+        report.outcomes()[0].kind,
+        HostAssertionOutcomeKind::Violated
+    );
+    assert_eq!(report.outcomes()[0].at, time(2));
+    let terminal =
+        crucible::test_support::condition_prefix_from_scheduler_entries_for_test(entries)?;
+    assert!(terminal.observable_events().contains(&failing));
+    assert!(terminal.observable_events().contains(&passing));
+    Ok(())
+}
+
+#[test]
+fn disabled_and_unknown_node_markers_remain_unobserved() -> TestResult {
+    for (policy, marker_node) in [
+        (WhiteBoxPolicy::Disabled, "guest"),
+        (WhiteBoxPolicy::Enabled, "unknown"),
+    ] {
+        let world = world(policy)?;
+        let observation = ObservableEvent::guest_assertion_marker(
+            Icount { retired: 1 },
+            NodeId {
+                name: marker_node.into(),
+            },
+            GuestAssertionMarker::new(
+                AssertionId::from_name("ignored"),
+                "unobserved marker",
+                GuestAssertionKind::Always,
+                false,
+                false,
+                vec![],
+                "fixture.rs:3",
+            ),
+        );
+        let entries = vec![
+            crucible::test_support::condition_observation_entry_for_test(0, &observation),
+            boundary(1, 1),
+        ];
+
+        let report = OfflineAssertionChecker::new()
+            .with_world_white_box_policies(&world)
+            .check_run(&Properties::empty(), &entries)?;
+
+        assert!(report.outcomes().is_empty());
+    }
+    Ok(())
+}
+
+#[test]
+fn enabled_checker_preserves_marker_authentication_and_prefix_refusals() -> TestResult {
+    let world = world(WhiteBoxPolicy::Enabled)?;
+    let checker = OfflineAssertionChecker::new().with_world_white_box_policies(&world);
+    let observation = ObservableEvent::guest_assertion_marker(
+        Icount { retired: 9 },
+        NodeId {
+            name: "guest".into(),
+        },
+        GuestAssertionMarker::new(
+            AssertionId::from_name("authenticated"),
+            "authenticated marker",
+            GuestAssertionKind::Always,
+            false,
+            false,
+            vec![],
+            "fixture.rs:4",
+        ),
+    );
+    let marker_entry =
+        crucible::test_support::condition_observation_entry_for_test(2, &observation);
+    let corrupt = crucible::test_support::condition_entry_with_content_hash_for_test(
+        marker_entry.clone(),
+        ContentHash::from_bytes(b"tampered marker"),
+    );
+
+    assert!(matches!(
+        checker.check_run(
+            &Properties::empty(),
+            &[boundary(0, 10), boundary(1, 8), corrupt, boundary(3, 10)],
+        ),
+        Err(OfflineAssertionCheckError::ConditionEvaluation(
+            ConditionEvaluationError::InvalidEventLogEntryHash { sequence: 2 }
+        ))
+    ));
+    for suffix in [marker_entry, boundary(2, 9)] {
+        assert!(matches!(
+            checker.check_run(
+                &Properties::empty(),
+                &[boundary(0, 10), boundary(1, 8), suffix, boundary(3, 10)],
+            ),
+            Err(OfflineAssertionCheckError::ConditionEvaluation(
+                ConditionEvaluationError::FutureEventLogEntry { sequence: 0, .. }
+            ))
+        ));
+    }
+
+    assert!(matches!(
+        checker.check_run_with_oracle(
+            &Properties::empty(),
+            &RecordedAssertionLog::from_entries(vec![boundary(0, 1)]),
+            &mut BlackBoxHostOracle,
+        ),
+        Err(OfflineAssertionCheckError::MissingEventLogOffset { prefix_len: 1 })
+    ));
     Ok(())
 }
