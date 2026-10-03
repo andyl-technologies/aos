@@ -2,6 +2,7 @@
 {
   lib,
   mkAosCargoPackage,
+  nix,
   aosWorkspaceVendor,
   cmake,
   libssh2,
@@ -49,6 +50,7 @@ in
       OPENSSL_STATIC = "0";
       LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
       PROTOC = "${protobuf}/bin/protoc";
+      AOS_NIX_STORE = "${nix}/bin/nix-store";
       AOS_TPM2_CREATEEK = "${tpm2-tools}/bin/tpm2_createek";
       AOS_TPM2_CREATEAK = "${tpm2-tools}/bin/tpm2_createak";
       AOS_TPM2_READPUBLIC = "${tpm2-tools}/bin/tpm2_readpublic";

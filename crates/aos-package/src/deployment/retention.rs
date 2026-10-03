@@ -234,7 +234,7 @@ fn run_store_command(command: &mut Command) -> Result<ProcessOutput> {
     .context("accessing the selected Nix store for deployment retention")
 }
 
-fn generation_roots(deployment: &Deployment) -> BTreeSet<&str> {
+pub(crate) fn generation_roots(deployment: &Deployment) -> BTreeSet<&str> {
     let mut roots: BTreeSet<_> = deployment.inputs().iter().map(String::as_str).collect();
     for artifact in deployment.artifacts() {
         roots.insert(artifact.path.as_str());

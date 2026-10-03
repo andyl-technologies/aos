@@ -631,7 +631,7 @@
                   ''
                     set -euo pipefail
                     ${dependencies.aos.outputs.packageRuntime}/bin/aos-package-runtime deployment-retained-effects --profile /var/lib/profiles/system |
-                      ${dependencies.systemd.path}/bin/aos-systemd-native-resources restore-identities
+                      ${dependencies.systemd.handlers}/bin/aos-systemd-native-resources restore-identities
                   ''
                 ];
               };

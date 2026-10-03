@@ -20,6 +20,9 @@ use sha2::{Digest, Sha256};
 
 use crate::executable::validate_store_executable;
 
+#[path = "image_stage/copy_up.rs"]
+mod copy_up;
+
 #[derive(Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 enum StageAction {
@@ -40,6 +43,7 @@ struct Request {
     candidate: Value,
     running: Value,
     retained_generations: Vec<Value>,
+    retained_store_roots: Vec<String>,
 }
 
 struct Tools {
@@ -48,6 +52,7 @@ struct Tools {
     blkid: PathBuf,
     objcopy: PathBuf,
     veritysetup: PathBuf,
+    nix_store: PathBuf,
 }
 
 /// Executes physical staging with exact tool paths supplied by the retained wrapper.
@@ -59,8 +64,8 @@ struct Tools {
 pub(crate) fn run_from_process() -> Result<()> {
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     ensure!(
-        arguments.len() == 10,
-        "image stage requires five exact retained tools"
+        arguments.len() == 12,
+        "image stage requires six exact retained tools"
     );
     let names = [
         "--mount",
@@ -68,6 +73,7 @@ pub(crate) fn run_from_process() -> Result<()> {
         "--blkid",
         "--objcopy",
         "--veritysetup",
+        "--nix-store",
     ];
     let mut paths = Vec::new();
     for (index, name) in names.into_iter().enumerate() {
@@ -85,6 +91,7 @@ pub(crate) fn run_from_process() -> Result<()> {
         blkid: paths[2].clone(),
         objcopy: paths[3].clone(),
         veritysetup: paths[4].clone(),
+        nix_store: paths[5].clone(),
     };
     let mut bytes = Vec::new();
     io::stdin().take(1024 * 1024 + 1).read_to_end(&mut bytes)?;
@@ -332,6 +339,7 @@ fn stage(request: &Request, tools: &Tools) -> Result<Value> {
             "retirement_required":retirement_required,
         }));
     }
+    copy_up::persist(&tools.nix_store, request)?;
     write_block(
         &root_path,
         destination,

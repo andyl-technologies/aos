@@ -45,6 +45,7 @@ struct StageRequest<'a> {
     candidate: &'a ImageGeneration,
     running: &'a ImageGeneration,
     retained_generations: &'a [ImageGeneration],
+    retained_store_roots: &'a [String],
 }
 
 #[derive(Deserialize)]
@@ -274,6 +275,7 @@ pub(crate) async fn stage_candidate(
             candidate: &candidate,
             running: &running,
             retained_generations: &state.generations,
+            retained_store_roots: &[],
         },
         cancellation,
     )?;
@@ -311,6 +313,12 @@ pub(crate) async fn stage_candidate(
         }
         Err(error) => return Err(error.into()),
     }
+    // Keep native generation authority locked until the physical backend has
+    // preserved every retained input and orphan handler before slot replacement.
+    let retained = crate::deployment::retained::RetainedStoreRoots::open(
+        &crate::types::ProfileScope::System.profile_path(),
+        &crate::install::native::packaged_path("AOS_NIX_STORE")?,
+    )?;
     let request = StageRequest {
         schema: "aos.image-candidate-stage",
         action: "stage",
@@ -322,6 +330,7 @@ pub(crate) async fn stage_candidate(
         candidate: &candidate,
         running: &running,
         retained_generations: &state.generations,
+        retained_store_roots: retained.roots(),
     };
     let receipt = run_stage(&executable, &request, cancellation)?;
     candidate = admit_receipt(profile, &mut state, candidate, receipt)?;

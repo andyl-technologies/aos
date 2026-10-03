@@ -6,6 +6,11 @@ let
     type = "derivation";
     name = "native-service-fixture";
     outPath = builtins.toString (import ./_fixture-payload.nix "native-service");
+    handlers = {
+      type = "derivation";
+      name = "native-service-handlers-fixture";
+      outPath = builtins.toString (import ./_fixture-payload.nix "native-service-handlers");
+    };
     meta.mainProgram = "native-handler";
   };
   evaluate = enabled: overrides:

@@ -37,7 +37,7 @@ in
             [ -s "${config.environment.etc."os-release".source}" ]
             # Native bootstrap units supplement the declarative image units.
             # Compare their exact union so undeclared extra files also fail.
-            ${pkgs.buildPackages.systemd}/bin/aos-service-handler render \
+            ${pkgs.buildPackages.systemd.handlers}/bin/aos-service-handler render \
               --output-dir expected-bootstrap-units < "$bootstrapServicesJSONPath"
             ${pkgs.findutils}/bin/find expected-bootstrap-units \
               \( -type f -o -type l \) -printf '%P\n' > bootstrap-systemd-paths

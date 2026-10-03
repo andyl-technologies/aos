@@ -6,7 +6,7 @@
   ...
 }: let
   systemConfig = config;
-  program = package // {meta = (package.meta or {}) // {mainProgram = "aos-systemd-native-resources";};};
+  program = package.handlers // {meta = (package.handlers.meta or {}) // {mainProgram = "aos-systemd-native-resources";};};
   option = type: description: lib.mkOption {inherit type description;};
   defaulted = type: default: description: lib.mkOption {inherit type default description;};
   text = lib.types.str;
