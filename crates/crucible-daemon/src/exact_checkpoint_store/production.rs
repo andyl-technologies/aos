@@ -1368,6 +1368,7 @@ mod tests {
                 .load_production_closure_with_cancellation(raw, &cancellation)
                 .expect("load raw repository closure"),
         );
+        assert_eq!(loaded.promotion_source(), None);
 
         let node = b"node-0";
         let mut evidence = Vec::new();
@@ -1429,6 +1430,7 @@ mod tests {
             .expect("load repository-backed replay promotion");
 
         assert_eq!(promoted.promotion_source(), Some(raw));
+        assert_ne!(promoted.root(), raw);
         promoted
             .authenticate_replay_oracle_promotion(&loaded)
             .expect("authenticate unchanged repository promotion source");
