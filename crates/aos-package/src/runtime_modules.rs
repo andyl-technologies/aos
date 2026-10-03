@@ -15,10 +15,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use rustix::fs::{self, Dir, FileType, Mode, OFlags};
 
-const MAX_DEPTH: usize = 16;
-const MAX_FILES: usize = 256;
-const MAX_FILE_BYTES: u64 = 1024 * 1024;
-const MAX_TOTAL_BYTES: u64 = 8 * 1024 * 1024;
+pub(crate) const MAX_DEPTH: usize = 16;
+pub(crate) const MAX_FILES: usize = 256;
+pub(crate) const MAX_FILE_BYTES: u64 = 1024 * 1024;
+pub(crate) const MAX_TOTAL_BYTES: u64 = 8 * 1024 * 1024;
 
 /// One immutable snapshot ready to be passed to both evaluator projections.
 #[derive(Debug, Clone)]
