@@ -270,6 +270,266 @@ fn recovers_prepared_generation_and_interrupted_pruning() {
 }
 
 #[test]
+fn reconciliation_without_a_committed_generation_does_not_prepare_work() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::default();
+    let mut transactions =
+        Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+    let cancellation = CancellationToken::default();
+
+    let error = transactions.reconcile_current(&cancellation).unwrap_err();
+
+    assert!(error.to_string().contains("no committed generation"));
+    assert!(transactions.current().is_none());
+    assert!(transactions.pending().is_none());
+    assert_eq!(transactions.next_sequence().unwrap(), 1);
+    assert!(store.0.lock().unwrap().retained.is_empty());
+    drop(transactions);
+
+    let snapshot = super::transaction::inspect(directory.path(), JournalLimits::default()).unwrap();
+    assert!(!snapshot.has_pending_work());
+    assert!(snapshot.activation().records.is_empty());
+}
+
+#[test]
+fn repeated_reconciliation_preserves_generation_and_roots_but_uses_fresh_attempts() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::default();
+    let cancellation = CancellationToken::default();
+    let deployment = empty_deployment("main");
+    let content = deployment.id().unwrap();
+    let mut transactions =
+        Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+    let original = transactions.apply(&deployment, &cancellation).unwrap();
+    let roots = store.0.lock().unwrap().retained.clone();
+
+    for _ in 0..2 {
+        let reconciled = transactions.reconcile_current(&cancellation).unwrap();
+
+        assert_eq!(reconciled.sequence, original.sequence);
+        assert_eq!(reconciled.content, original.content);
+        assert_eq!(reconciled.outputs, original.outputs);
+        assert_eq!(
+            reconciled.deployment.canonical_bytes().unwrap(),
+            deployment.canonical_bytes().unwrap()
+        );
+        assert_eq!(transactions.generations().len(), 1);
+        assert_eq!(transactions.next_sequence().unwrap(), 2);
+        assert!(transactions.pending().is_none());
+        assert_eq!(store.0.lock().unwrap().retained, roots);
+    }
+    drop(transactions);
+
+    let snapshot = super::transaction::inspect(directory.path(), JournalLimits::default()).unwrap();
+    let identities: Vec<_> = snapshot
+        .activation()
+        .records
+        .iter()
+        .filter(|record| record.event == "begin")
+        .map(|record| record.transaction.clone().unwrap())
+        .collect();
+    assert_eq!(
+        identities,
+        vec![
+            format!("package-1-{content}"),
+            format!("reconcile-1-1-{content}"),
+            format!("reconcile-1-2-{content}"),
+        ]
+    );
+    assert_eq!(
+        snapshot
+            .activation()
+            .records
+            .iter()
+            .filter(|record| record.event == "commit")
+            .count(),
+        3
+    );
+    assert_eq!(
+        snapshot
+            .activation()
+            .completed
+            .as_ref()
+            .unwrap()
+            .transaction,
+        identities[2]
+    );
+    assert!(!snapshot.has_pending_work());
+    drop(snapshot);
+
+    let mut transactions =
+        Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+    let next = transactions.apply(&deployment, &cancellation).unwrap();
+    assert_eq!(next.sequence, 2);
+    transactions.prune(1).unwrap();
+    assert_eq!(
+        transactions
+            .generations()
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![2]
+    );
+    assert_eq!(
+        store.0.lock().unwrap().retained,
+        BTreeSet::from([format!("package-2-{content}")])
+    );
+    drop(transactions);
+
+    let snapshot = super::transaction::inspect(directory.path(), JournalLimits::default()).unwrap();
+    assert_eq!(snapshot.current().unwrap().sequence, 2);
+    assert_eq!(
+        snapshot
+            .activation()
+            .completed
+            .as_ref()
+            .unwrap()
+            .transaction,
+        format!("package-2-{content}")
+    );
+    assert!(!snapshot.has_pending_work());
+}
+
+#[test]
+fn prepared_reconciliation_reopens_and_resumes_the_same_attempt() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::default();
+    let cancellation = CancellationToken::default();
+    let deployment = empty_deployment("main");
+    let content = deployment.id().unwrap();
+    let mut transactions =
+        Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+    transactions.apply(&deployment, &cancellation).unwrap();
+    let roots = store.0.lock().unwrap().retained.clone();
+    {
+        let mut state = store.0.lock().unwrap();
+        state.fail_retain_at = Some(state.retains + 1);
+    }
+
+    assert!(transactions.reconcile_current(&cancellation).is_err());
+    assert_eq!(transactions.current().unwrap().sequence, 1);
+    assert_eq!(transactions.pending_sequence(), Some(1));
+    assert_eq!(transactions.pending().unwrap().id().unwrap(), content);
+    assert!(transactions.next_sequence().is_err());
+    drop(transactions);
+
+    let snapshot = super::transaction::inspect(directory.path(), JournalLimits::default()).unwrap();
+    assert!(snapshot.has_pending_work());
+    assert_eq!(snapshot.pending_sequence(), Some(1));
+    assert_eq!(
+        snapshot
+            .activation()
+            .records
+            .iter()
+            .filter(|record| record.event == "begin")
+            .count(),
+        1
+    );
+    drop(snapshot);
+
+    let mut transactions =
+        Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+    let resumed = transactions.resume(&cancellation).unwrap().unwrap();
+    assert_eq!(resumed.sequence, 1);
+    assert_eq!(resumed.content, content);
+    assert_eq!(transactions.next_sequence().unwrap(), 2);
+    assert_eq!(store.0.lock().unwrap().retained, roots);
+    drop(transactions);
+
+    let snapshot = super::transaction::inspect(directory.path(), JournalLimits::default()).unwrap();
+    assert_eq!(
+        snapshot
+            .activation()
+            .completed
+            .as_ref()
+            .unwrap()
+            .transaction,
+        format!("reconcile-1-1-{content}")
+    );
+    assert_eq!(
+        snapshot
+            .activation()
+            .records
+            .iter()
+            .filter(|record| record.event == "begin")
+            .count(),
+        2
+    );
+    assert!(!snapshot.has_pending_work());
+}
+
+#[test]
+fn reconciliation_completion_gap_reuses_the_completed_activation() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::default();
+    let cancellation = CancellationToken::default();
+    let deployment = empty_deployment("main");
+    let content = deployment.id().unwrap();
+    let generations = directory.path().join("generations.journal");
+    let mut transactions =
+        Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+    transactions.apply(&deployment, &cancellation).unwrap();
+    let before_reconciliation = std::fs::metadata(&generations).unwrap().len();
+    {
+        let mut state = store.0.lock().unwrap();
+        state.fail_retain_at = Some(state.retains + 1);
+    }
+    assert!(transactions.reconcile_current(&cancellation).is_err());
+    let prepared_prefix = std::fs::metadata(&generations).unwrap().len();
+    transactions.resume(&cancellation).unwrap().unwrap();
+    drop(transactions);
+    let completed_bytes = std::fs::read(&generations).unwrap();
+
+    // Keep real activation completion but restore the previously captured,
+    // verified generation prefix to model loss before Reconciled was durable.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&generations)
+        .unwrap()
+        .set_len(prepared_prefix)
+        .unwrap();
+    let snapshot = super::transaction::inspect(directory.path(), JournalLimits::default()).unwrap();
+    assert!(snapshot.has_pending_work());
+    assert_eq!(snapshot.pending_sequence(), Some(1));
+    assert_eq!(
+        snapshot
+            .activation()
+            .completed
+            .as_ref()
+            .unwrap()
+            .transaction,
+        format!("reconcile-1-1-{content}")
+    );
+    let activation_records = snapshot.activation().records.len();
+    drop(snapshot);
+
+    let mut transactions =
+        Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+    let resumed = transactions.reconcile_current(&cancellation).unwrap();
+    assert_eq!(resumed.sequence, 1);
+    assert_eq!(transactions.next_sequence().unwrap(), 2);
+    drop(transactions);
+
+    let snapshot = super::transaction::inspect(directory.path(), JournalLimits::default()).unwrap();
+    assert!(!snapshot.has_pending_work());
+    assert_eq!(snapshot.activation().records.len(), activation_records);
+    assert_eq!(snapshot.current().unwrap().content, content);
+    drop(snapshot);
+
+    // A completed activation without its generation-side intent is not a
+    // paired history, even when both remaining journal prefixes verify.
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&generations)
+        .unwrap()
+        .set_len(before_reconciliation)
+        .unwrap();
+    assert!(super::transaction::inspect(directory.path(), JournalLimits::default()).is_err());
+    std::fs::write(&generations, completed_bytes).unwrap();
+    assert!(super::transaction::inspect(directory.path(), JournalLimits::default()).is_ok());
+}
+
+#[test]
 fn rejects_scope_change_and_invalid_retirement_without_preparing() {
     let directory = tempfile::tempdir().unwrap();
     let mut transactions =

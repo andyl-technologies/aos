@@ -5,10 +5,14 @@
 //! restart between effect completion and generation commit does not repeat
 //! one-shot operations. The committed journal record is the authoritative
 //! generation pointer; profile frontends may publish their links from it.
+//! Live reconciliation has its own recoverable execution identity and preserves
+//! that generation's publication while refreshing its checked effect results.
 //!
 //! ```text
 //! prepared { sequence, document, packages }
 //! committed { sequence, outputs }
+//! reconciliation-prepared { sequence, attempt, content }
+//! reconciled { sequence, attempt, outputs }
 //! ```
 
 use std::collections::BTreeMap;
@@ -86,6 +90,16 @@ enum Event {
         sequence: u64,
         outputs: ActivationResults,
     },
+    ReconciliationPrepared {
+        sequence: u64,
+        attempt: u64,
+        content: String,
+    },
+    Reconciled {
+        sequence: u64,
+        attempt: u64,
+        outputs: ActivationResults,
+    },
     Pruning {
         sequence: u64,
     },
@@ -131,6 +145,21 @@ pub struct Generation {
 struct Pending {
     sequence: u64,
     deployment: Deployment,
+}
+
+struct Reconciliation {
+    sequence: u64,
+    attempt: u64,
+    content: String,
+}
+
+impl Reconciliation {
+    fn identity(&self) -> String {
+        format!(
+            "reconcile-{}-{}-{}",
+            self.sequence, self.attempt, self.content
+        )
+    }
 }
 
 /// Owns one installation scope's generation and effect journals.
@@ -197,22 +226,19 @@ impl<S: DeploymentStore> Transactions<S> {
         self.state.next_sequence()
     }
 
-    /// Returns the prepared document when recovery or activation is still pending.
+    /// Returns the desired document awaiting generation or reconciliation recovery.
     #[must_use]
     pub fn pending(&self) -> Option<&Deployment> {
-        self.state
-            .pending
-            .as_ref()
-            .map(|pending| &pending.deployment)
+        self.state.pending_deployment()
     }
 
-    /// Returns the durable sequence of the generation awaiting recovery.
+    /// Returns the generation sequence associated with pending recovery.
     ///
-    /// The sequence identifies its staged inputs even when several generations
-    /// evaluate to identical deployment content.
+    /// Reconciliation uses its already committed generation. Publication uses
+    /// the staged generation, even when desired content matches an older one.
     #[must_use]
     pub fn pending_sequence(&self) -> Option<u64> {
-        self.state.pending.as_ref().map(|pending| pending.sequence)
+        self.state.pending_sequence()
     }
 
     /// Lists retained effect results, including persistent state absent from the current graph.
@@ -226,13 +252,20 @@ impl<S: DeploymentStore> Transactions<S> {
         *self.adapter.artifacts_mut() = store;
     }
 
-    /// Resumes a prepared generation before accepting another package transaction.
+    pub(crate) fn pending_reconciliation(&self) -> bool {
+        self.state.reconciliation.is_some()
+    }
+
+    /// Resumes prepared generation or live reconciliation work.
     ///
     /// # Errors
     /// Returns an error for failed artifact admission, uncertain effects, failed
     /// recovery, cancellation, or failure to commit the generation journal.
     pub fn resume(&mut self, cancellation: &CancellationToken) -> Result<Option<Generation>> {
         self.finish_pruning()?;
+        if self.state.reconciliation.is_some() {
+            return self.resume_reconciliation(cancellation).map(Some);
+        }
         let Some(pending) = &self.state.pending else {
             return Ok(None);
         };
@@ -258,6 +291,76 @@ impl<S: DeploymentStore> Transactions<S> {
         Ok(self.current().cloned())
     }
 
+    /// Observes and repairs the committed deployment without publishing a generation.
+    ///
+    /// Each attempt has a durable activation identity bound to the current
+    /// generation and content. Recovery resumes that identity; a later call
+    /// observes live state again rather than reusing an earlier completion.
+    /// Existing generation roots and checked runtime results remain authoritative.
+    ///
+    /// # Errors
+    /// Returns an error when no generation is committed, recovery or artifact
+    /// admission fails, an effect is uncertain, cancellation occurs, or a
+    /// reconciliation record cannot be committed durably.
+    pub fn reconcile_current(&mut self, cancellation: &CancellationToken) -> Result<Generation> {
+        let recovering = self.state.reconciliation.is_some();
+        self.resume(cancellation)?;
+        if recovering {
+            return self
+                .current()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("reconciled generation is absent"));
+        }
+
+        let current = self
+            .current()
+            .ok_or_else(|| anyhow::anyhow!("no committed generation to reconcile"))?;
+        let event = Event::ReconciliationPrepared {
+            sequence: current.sequence,
+            attempt: self.state.next_reconciliation_attempt()?,
+            content: current.content.clone(),
+        };
+        self.journal.ensure_capacity(2)?;
+        self.journal.append(&event)?;
+        self.state.replay(&event)?;
+        self.resume_reconciliation(cancellation)
+    }
+
+    fn resume_reconciliation(&mut self, cancellation: &CancellationToken) -> Result<Generation> {
+        let reconciliation = self
+            .state
+            .reconciliation
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("reconciliation intent is absent"))?;
+        let current = self
+            .state
+            .current()
+            .ok_or_else(|| anyhow::anyhow!("reconciliation has no committed generation"))?;
+        let identity = reconciliation.identity();
+        let retained_identity = format!("package-{}-{}", current.sequence, current.content);
+        self.adapter
+            .artifacts_mut()
+            .retain_generation(&retained_identity, &current.deployment)?;
+        self.journal.ensure_capacity(1)?;
+        let outputs = self.activation.activate_once(
+            &identity,
+            current.deployment.graph(),
+            current.deployment.retire(),
+            &mut self.adapter,
+            cancellation,
+        )?;
+        let event = Event::Reconciled {
+            sequence: reconciliation.sequence,
+            attempt: reconciliation.attempt,
+            outputs,
+        };
+        self.journal.append(&event)?;
+        self.state.replay(&event)?;
+        self.current()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("reconciled generation is absent"))
+    }
+
     /// Prepares and activates a package generation in this installation scope.
     ///
     /// Reconfiguration and rollback use the same method with a newly evaluated
@@ -271,6 +374,9 @@ impl<S: DeploymentStore> Transactions<S> {
         cancellation: &CancellationToken,
     ) -> Result<Generation> {
         self.finish_pruning()?;
+        if self.state.reconciliation.is_some() {
+            self.resume_reconciliation(cancellation)?;
+        }
         if let Some(pending) = &self.state.pending {
             let same = pending.deployment.id()? == deployment.id()?;
             let recovered = self.resume(cancellation)?;
@@ -328,7 +434,7 @@ impl<S: DeploymentStore> Transactions<S> {
             return Ok(());
         }
         ensure!(
-            self.state.pending.is_none(),
+            self.state.pending.is_none() && self.state.reconciliation.is_none(),
             "cannot prune during pending activation"
         );
         ensure!(
@@ -371,11 +477,57 @@ impl<S: DeploymentStore> Transactions<S> {
 struct GenerationState {
     scope: Option<Vec<String>>,
     pending: Option<Pending>,
+    reconciliation: Option<Reconciliation>,
+    reconciliation_attempt: u64,
+    completed_activation: Option<String>,
     generations: BTreeMap<u64, Generation>,
     pruning: Option<u64>,
 }
 
 impl GenerationState {
+    fn pending_deployment(&self) -> Option<&Deployment> {
+        self.pending
+            .as_ref()
+            .map(|pending| &pending.deployment)
+            .or_else(|| {
+                self.reconciliation
+                    .as_ref()
+                    .and_then(|_| self.current().map(|current| &current.deployment))
+            })
+    }
+
+    fn pending_sequence(&self) -> Option<u64> {
+        self.pending
+            .as_ref()
+            .map(|pending| pending.sequence)
+            .or_else(|| self.reconciliation.as_ref().map(|pending| pending.sequence))
+    }
+
+    fn pending_identity(&self) -> Result<Option<String>> {
+        if let Some(reconciliation) = &self.reconciliation {
+            return Ok(Some(reconciliation.identity()));
+        }
+        self.pending
+            .as_ref()
+            .map(|pending| {
+                pending
+                    .deployment
+                    .id()
+                    .map(|content| format!("package-{}-{content}", pending.sequence))
+            })
+            .transpose()
+    }
+
+    fn next_reconciliation_attempt(&self) -> Result<u64> {
+        ensure!(
+            self.pending.is_none() && self.reconciliation.is_none() && self.pruning.is_none(),
+            "generation work is pending"
+        );
+        self.reconciliation_attempt
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("reconciliation attempt sequence is exhausted"))
+    }
+
     fn current(&self) -> Option<&Generation> {
         self.generations
             .last_key_value()
@@ -384,7 +536,7 @@ impl GenerationState {
 
     fn next_sequence(&self) -> Result<u64> {
         ensure!(
-            self.pending.is_none(),
+            self.pending.is_none() && self.reconciliation.is_none(),
             "package generation recovery is pending"
         );
         ensure!(self.pruning.is_none(), "generation pruning is pending");
@@ -404,7 +556,10 @@ impl GenerationState {
                 packages,
             } => {
                 ensure!(self.pruning.is_none(), "generation pruning is pending");
-                ensure!(self.pending.is_none(), "package generation already pending");
+                ensure!(
+                    self.pending.is_none() && self.reconciliation.is_none(),
+                    "package generation already pending"
+                );
                 ensure!(
                     *sequence == self.next_sequence()?,
                     "invalid package generation sequence"
@@ -431,29 +586,75 @@ impl GenerationState {
                     pending.sequence == *sequence,
                     "package generation commit mismatch"
                 );
-                ensure!(
-                    outputs.len() == pending.deployment.graph().graph().nodes.len(),
-                    "generation result set differs from its graph"
-                );
-                for (id, effect) in &pending.deployment.graph().graph().nodes {
-                    effect.check_results(
-                        outputs
-                            .get(id)
-                            .ok_or_else(|| anyhow::anyhow!("generation omitted effect results"))?,
-                    )?;
-                }
+                check_outputs(&pending.deployment, outputs)?;
                 let generation = Generation {
                     sequence: *sequence,
                     content: pending.deployment.id()?,
                     outputs: outputs.clone(),
                     deployment: pending.deployment.clone(),
                 };
+                self.completed_activation =
+                    Some(format!("package-{}-{}", sequence, generation.content));
                 self.generations.insert(*sequence, generation);
                 self.pending = None;
             }
+            Event::ReconciliationPrepared {
+                sequence,
+                attempt,
+                content,
+            } => {
+                ensure!(
+                    *attempt == self.next_reconciliation_attempt()?,
+                    "invalid reconciliation attempt sequence"
+                );
+                let current = self
+                    .current()
+                    .ok_or_else(|| anyhow::anyhow!("reconciliation has no committed generation"))?;
+                ensure!(
+                    current.sequence == *sequence && current.content == *content,
+                    "reconciliation differs from the committed generation"
+                );
+                self.reconciliation = Some(Reconciliation {
+                    sequence: *sequence,
+                    attempt: *attempt,
+                    content: content.clone(),
+                });
+                self.reconciliation_attempt = *attempt;
+            }
+            Event::Reconciled {
+                sequence,
+                attempt,
+                outputs,
+            } => {
+                let pending = self
+                    .reconciliation
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("completion without prepared reconciliation"))?;
+                ensure!(
+                    pending.sequence == *sequence && pending.attempt == *attempt,
+                    "reconciliation completion mismatch"
+                );
+                let current = self
+                    .current()
+                    .ok_or_else(|| anyhow::anyhow!("reconciliation has no committed generation"))?;
+                ensure!(
+                    current.sequence == pending.sequence && current.content == pending.content,
+                    "reconciliation differs from the committed generation"
+                );
+                check_outputs(&current.deployment, outputs)?;
+                let identity = pending.identity();
+                self.generations
+                    .get_mut(sequence)
+                    .ok_or_else(|| anyhow::anyhow!("reconciled generation is absent"))?
+                    .outputs = outputs.clone();
+                self.completed_activation = Some(identity);
+                self.reconciliation = None;
+            }
             Event::Pruning { sequence } => {
                 ensure!(
-                    self.pending.is_none() && self.pruning.is_none(),
+                    self.pending.is_none()
+                        && self.reconciliation.is_none()
+                        && self.pruning.is_none(),
                     "generation work is pending"
                 );
                 ensure!(
@@ -478,6 +679,21 @@ impl GenerationState {
         }
         Ok(())
     }
+}
+
+fn check_outputs(deployment: &Deployment, outputs: &ActivationResults) -> Result<()> {
+    ensure!(
+        outputs.len() == deployment.graph().graph().nodes.len(),
+        "generation result set differs from its graph"
+    );
+    for (id, effect) in &deployment.graph().graph().nodes {
+        effect.check_results(
+            outputs
+                .get(id)
+                .ok_or_else(|| anyhow::anyhow!("generation omitted effect results"))?,
+        )?;
+    }
+    Ok(())
 }
 
 /// Holds a read-only, replay-checked view of package and activation history.
@@ -505,25 +721,23 @@ impl Snapshot {
         &self.state.generations
     }
 
-    /// Returns the prepared document awaiting completion, if any.
+    /// Returns the desired document awaiting generation or reconciliation completion.
     #[must_use]
     pub fn pending(&self) -> Option<&Deployment> {
-        self.state
-            .pending
-            .as_ref()
-            .map(|pending| &pending.deployment)
+        self.state.pending_deployment()
     }
 
-    /// Returns the exact durable sequence of a pending generation.
+    /// Returns the generation sequence associated with pending recovery.
     #[must_use]
     pub fn pending_sequence(&self) -> Option<u64> {
-        self.state.pending.as_ref().map(|pending| pending.sequence)
+        self.state.pending_sequence()
     }
 
     /// Reports whether activation or pruning requires writable recovery.
     #[must_use]
     pub fn has_pending_work(&self) -> bool {
         self.state.pending.is_some()
+            || self.state.reconciliation.is_some()
             || self.state.pruning.is_some()
             || self.activation.transaction.is_some()
     }
@@ -558,19 +772,8 @@ pub fn inspect(directory: &Path, limits: JournalLimits) -> Result<Snapshot> {
     }
     let activation =
         aos_ability_runtime::activation::inspect(directory.join("effects.journal"), limits)?;
-    let pending_identity = state
-        .pending
-        .as_ref()
-        .map(|pending| {
-            pending
-                .deployment
-                .id()
-                .map(|content| format!("package-{}-{content}", pending.sequence))
-        })
-        .transpose()?;
-    let current_identity = state
-        .current()
-        .map(|current| format!("package-{}-{}", current.sequence, current.content));
+    let pending_identity = state.pending_identity()?;
+    let current_identity = &state.completed_activation;
     if let Some(active) = &activation.transaction {
         ensure!(
             Some(active) == pending_identity.as_ref(),

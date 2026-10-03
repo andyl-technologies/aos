@@ -21,7 +21,8 @@ pub(super) fn verify(command: &NativeDeploymentCommand, number: u32) -> Result<(
         .profile
         .as_ref()
         .context("host source validation requires a profile")?;
-    let committed = crate::profile::deployment::committed_generation(profile, number)?;
+    let committed =
+        crate::profile::deployment::committed_generation_during_recovery(profile, number)?;
     let (descriptor_path, descriptor) = crate::native_deployment::read_retained_evaluation_in(
         &profile.join(format!("gen-{number}/evaluation.json")),
         &committed.deployment,

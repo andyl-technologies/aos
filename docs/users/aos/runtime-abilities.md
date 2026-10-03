@@ -693,6 +693,13 @@ state; subsequent boots reconcile the committed profile and recover pending
 work. They must not overwrite an installed profile with the original image's
 package selection. Container images select a smaller package-managed base.
 
+Boot reconciliation preserves the committed package generation, evaluation
+descriptor, and publication marker. It records a separate execution attempt
+bound to that generation's exact content, observes live resources, and repairs
+drift through the selected handlers. An interrupted attempt resumes its original
+identity. Installation, removal, reconfiguration, and rollback publish new
+package generations; replaying the same committed state at boot does not.
+
 On the first host activation, the image's immutable bootstrap policy says
 whether platform metadata is required. When required, the bootstrap bridge
 checks the exact committed initrd result, retains the accepted host configuration
