@@ -4,7 +4,8 @@
 {pkgs}: let
   worker = pkgs.aos-hub-direct-guard-e2e.passthru.workerDist;
   selector = "external_object::stage::tests::observation::actual_verification_hold_observation";
-  cargoCommand = "test --release --frozen --offline --no-run -p aos-hub-worker --lib --features do-e2e -j$NIX_BUILD_CORES";
+  # The Native test-support dependency requires the ordinary test profile.
+  cargoCommand = "test --frozen --offline --no-run -p aos-hub-worker --lib --features do-e2e -j$NIX_BUILD_CORES";
 in
   assert pkgs.stdenv.hostPlatform.isLinux && !pkgs.stdenv.isCross;
     pkgs.mkCargoPackage {
@@ -20,14 +21,29 @@ in
       };
       cargoBuildCommands = [cargoCommand];
       cargoEnv = {
+        # Host tests also compile the Native service's development dependencies.
+        OPENSSL_DIR = "${pkgs.openssl}";
+        OPENSSL_LIB_DIR = "${pkgs.openssl}/lib";
+        OPENSSL_INCLUDE_DIR = "${pkgs.openssl}/include";
+        OPENSSL_NO_VENDOR = "1";
+        OPENSSL_STATIC = "0";
+        LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
         AOS_HUB_WORKER_SOURCE_DIGEST = builtins.hashString "sha256" (toString worker.src);
         PROTOC = "${pkgs.protobuf}/bin/protoc";
         AOS_HUB_CONSOLE_JS = "${pkgs.aos-hub-console-dist}/hub-console.js";
         AOS_HUB_CONSOLE_WASM = "${pkgs.aos-hub-console-dist}/hub-console_bg.wasm";
         AOS_HUB_CONSOLE_CSS = "${pkgs.aos-hub-console-dist}/hub-console.css";
       };
-      buildDeps = [pkgs.protobuf pkgs.coreutils pkgs.grep];
-      runtimeDeps = [];
+      buildDeps = [
+        pkgs.perl
+        pkgs.pkg-config
+        pkgs.openssl
+        pkgs.sqlite
+        pkgs.protobuf
+        pkgs.coreutils
+        pkgs.grep
+      ];
+      runtimeDeps = [pkgs.openssl pkgs.sqlite pkgs.zlib];
       installBins = false;
       doCheck = false;
 
