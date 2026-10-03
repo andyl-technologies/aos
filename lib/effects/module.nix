@@ -17,6 +17,7 @@
     operation = config;
     operationName = name;
     inputType = types.submodule operation.input;
+    inputSchema = projectType inputType;
     resultType = types.submodule operation.result;
     resultSchema = (projectType resultType).fields;
     documentation = import ./documentation.nix {inherit lib;};
@@ -119,7 +120,7 @@
           inherit identity;
           handled = operation.handler != null;
           inputs = inputDocumentation;
-          input_type = projectType (types.submodule operation.input);
+          input_type = inputSchema;
           results = resultSchema;
           inherit owner;
         };
@@ -174,7 +175,7 @@
       documentation = {
         input = inputDocumentation;
         result = documentation.options resultType;
-        inputType = projectType inputType;
+        inputType = inputSchema;
         inputDefaults =
           map (declaration: declaration.path)
           (builtins.filter (declaration: declaration.hasDefault && builtins.head declaration.path != "_module")
