@@ -170,7 +170,7 @@ def hardening(unit, value):
         raise ValueError("operation allow and deny sets overlap")
     unit.add("AmbientCapabilities", " ".join(CAPABILITIES[p] for p in policy["ambient_privileges"]))
     unit.add("Delegate", yes(policy["resource_control_delegation"]))
-    unit.add("ProtectControlGroups", {"host": "no", "read-only": "yes", "private": "strict"}[policy["resource_control_access"]])
+    unit.add("ProtectControlGroups", {"host": "no", "read-only": "yes", "private": "private"}[policy["resource_control_access"]])
     unit.add("PrivateDevices", yes(policy["device_access_scope"] == "private"))
     for field, directive in {
         "host_clock_mutation": "ProtectClock", "host_name_mutation": "ProtectHostname",
@@ -194,7 +194,11 @@ def hardening(unit, value):
         unit.add("RestrictAddressFamilies", " ".join(families[f] for f in policy["network_families"]))
     unit.add("RestrictNamespaces", yes(policy["isolation_domain_creation"] == "denied"))
     unit.add("OOMScoreAdjust", policy["memory_pressure_adjustment"])
-    unit.add("ProtectProc", {"all": "default", "same-user": "ptraceable", "self": "invisible"}[policy["process_visibility"]])
+    visibility = policy["process_visibility"]
+    if (value.get("isolation") or {}).get("process_visibility") == "private":
+        visibility = "self"
+    unit.add("ProtectProc", {"all": "default", "same-user": "ptraceable", "self": "invisible"}[visibility])
+    unit.add("ProcSubset", "pid" if policy.get("process_filesystem_scope", "full") == "processes" else "all")
     unit.add("SELinuxContext", policy.get("security_label"))
     unit.add("SystemCallArchitectures", " ".join(map(token, policy["operation_architectures"])))
     allow = [OPERATIONS[o] for o in policy["operation_allow"]]
@@ -238,7 +242,15 @@ def process_features(unit, value):
     for field, directive in {"open_files": "LimitNOFILE", "processes": "LimitNPROC", "tasks": "TasksMax", "locked_memory_bytes": "LimitMEMLOCK", "memory_high_bytes": "MemoryHigh", "memory_max_bytes": "MemoryMax", "memory_swap_max_bytes": "MemorySwapMax"}.items():
         limit = resources.get(field)
         if limit:
-            unit.add(directive, "infinity" if limit["kind"] == "unbounded" else limit["value"])
+            if limit["kind"] == "range":
+                if field not in {"open_files", "processes", "locked_memory_bytes"}:
+                    raise ValueError("soft and hard limits require a process resource")
+                soft, hard = limit["soft"], limit["hard"]
+                if not all(type(bound) is int for bound in (soft, hard)) or not 0 <= soft <= hard <= 9007199254740991:
+                    raise ValueError("invalid process resource soft and hard limits")
+                unit.add(directive, f"{soft}:{hard}")
+            else:
+                unit.add(directive, "infinity" if limit["kind"] == "unbounded" else limit["value"])
     unit.add("OOMPolicy", resources.get("oom_policy"))
     scheduling = value.get("scheduling")
     if scheduling:
@@ -246,6 +258,7 @@ def process_features(unit, value):
         unit.add("Nice", scheduling["nice"])
         unit.add("IOSchedulingClass", scheduling["io_class"])
         unit.add("IOSchedulingPriority", scheduling["io_priority"])
+    directory_modes = {}
     logging = value.get("logging")
     if logging:
         targets = {"console": "console", "discard": "null", "inherit": "inherit", "structured": "journal", "structured-and-console": "journal+console"}
@@ -253,7 +266,8 @@ def process_features(unit, value):
         unit.add("StandardError", targets[logging["standard_error"]])
         unit.add("LogNamespace", logging.get("namespace"))
         unit.repeat("LogsDirectory", logging["directories"], encode=quote)
-        unit.add("LogsDirectoryMode", logging["directory_mode"])
+        if logging["directories"]:
+            directory_modes["LogsDirectory"] = f"{mode(logging['directory_mode']):04o}"
     for entry in (value.get("configuration") or {}).get("views", []):
         unit.add("ReadOnlyPaths", ("-" if entry["optional"] else "") + quote(absolute(entry["source"])))
     for entry in (value.get("storage") or {}).get("mounts", []):
@@ -265,8 +279,20 @@ def process_features(unit, value):
                 raise ValueError("service-owned storage requires a standard managed directory")
             prefix, key = selected[0]
             unit.add(key, quote(path[len(prefix):]))
+            directory_mode = entry.get("directory_mode")
+            if directory_mode is not None:
+                directory_mode = f"{mode(directory_mode):04o}"
+                # The manager applies one mode to all directories of each kind.
+                if directory_modes.setdefault(key, directory_mode) != directory_mode:
+                    raise ValueError("service-owned directories require a common mode for each kind")
         else:
+            if entry.get("directory_mode") is not None:
+                raise ValueError("directory mode requires service-identity ownership")
             unit.add("ReadOnlyPaths" if entry["access"] == "read-only" else "ReadWritePaths", quote(path))
+    if logging:
+        directory_modes.setdefault("LogsDirectory", logging["directory_mode"])
+    for key, directory_mode in directory_modes.items():
+        unit.add(key + "Mode", directory_mode)
     for entry in (value.get("credentials") or {}).get("views", []):
         name = checked_text(entry["name"])
         if name in {".", ".."} or len(name) > 128 or not re.fullmatch(r"[A-Za-z0-9._-]+", name):
@@ -283,7 +309,8 @@ def process_features(unit, value):
         unit.add("PrivateTmp", {"shared": "no", "private": "yes", "disconnected": "disconnected"}[isolation["temporary_directory"]])
         unit.add("ProtectSystem", {"host": "no", "private": "strict", "read-only-system": "strict", "read-only-software": "full"}[isolation["filesystem"]])
         unit.add("ProtectHome", {"host": "no", "read-only": "read-only", "inaccessible": "yes"}[isolation["home_access"]])
-        unit.add("ProtectProc", "invisible" if isolation["process_visibility"] == "private" else "default")
+        if not (value.get("policy") or {}).get("hardening"):
+            unit.add("ProtectProc", "invisible" if isolation["process_visibility"] == "private" else "default")
         unit.add("KillMode", {"all-processes": "control-group", "main-process": "process", "mixed": "mixed"}[isolation["termination_scope"]])
         unit.add("LimitCORE", "infinity" if isolation["permit_core_dumps"] else "0")
         for entry in isolation.get("temporary_filesystems", []):

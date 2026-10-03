@@ -186,6 +186,11 @@
     permit_realtime = lib.types.bool;
     permit_elevated_file_identity = lib.types.bool;
     process_visibility = lib.types.enum ["all" "same-user" "self"];
+    process_filesystem_scope = {
+      type = lib.types.enum ["full" "processes"];
+      default = "full";
+      description = "Whether the process filesystem exposes host metadata or only process entries.";
+    };
     security_label = {
       type = lib.types.nullOr (boundedString 4096);
       optional = true;

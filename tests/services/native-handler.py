@@ -1006,6 +1006,187 @@ class NativeHandlerTests(unittest.TestCase):
         self.assertIn("StateDirectoryMode=0750", directory)
         self.assertIn('StateDirectory="example/state"', directory)
 
+    @unittest.skipUnless(systemd_analyze, "pinned systemd-analyze executable not supplied")
+    def test_process_limits_and_privacy_reach_actual_pinned_manager(self):
+        value = scalar_path_service()
+        value.pop("terminal")
+        value["lifecycle"]["environment_files"] = []
+        value["lifecycle"]["start"][0]["executable"] = {
+            "path": str(systemd_analyze), "arguments": ["--version"],
+        }
+        value["resources"] = {
+            "open_files": {"kind": "range", "soft": 1024, "hard": 4096},
+            "processes": {"kind": "range", "soft": 16, "hard": 64},
+            "locked_memory_bytes": {"kind": "range", "soft": 4096, "hard": 8192},
+        }
+        policy = hardening_policy()
+        policy["resource_control_access"] = "private"
+        policy["process_filesystem_scope"] = "processes"
+        value["policy"] = {"hardening": policy}
+
+        privacy_cases = [
+            ("same-user", "host", "ptraceable"),
+            ("self", "host", "invisible"),
+            ("all", "private", "invisible"),
+        ]
+        for visibility, isolation_visibility, parsed_visibility in privacy_cases:
+            with self.subTest(visibility=visibility, isolation=isolation_visibility), tempfile.TemporaryDirectory() as root:
+                policy["process_visibility"] = visibility
+                value["isolation"]["process_visibility"] = isolation_visibility
+                units = Path(root) / "units"
+                handler_module.render_services({"example": value}, units)
+                unit = units / "example.service"
+                vendor_units = systemd_analyze.parent.parent / "lib/systemd/system"
+                environment = dict(os.environ, SYSTEMD_UNIT_PATH=f"{units}:{vendor_units}",
+                                   SYSTEMD_LOG_COLOR="0", SYSTEMD_LOG_LEVEL="debug")
+
+                verified = subprocess.run(
+                    [str(systemd_analyze), "--man=no", "--generators=no", "verify", str(unit)],
+                    env=environment, capture_output=True, text=True, check=False,
+                )
+
+                self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+                for parsed in [
+                    "LimitNOFILE: 4096", "LimitNOFILESoft: 1024",
+                    "LimitNPROC: 64", "LimitNPROCSoft: 16",
+                    "LimitMEMLOCK: 8192", "LimitMEMLOCKSoft: 4096",
+                    "ProtectControlGroups: private", "ProcSubset: pid",
+                    "ProtectProc: " + parsed_visibility,
+                ]:
+                    with self.subTest(parsed=parsed):
+                        self.assertIn(parsed, verified.stdout)
+                self.assertEqual(unit.read_text().count("ProtectProc="), 1)
+
+                # The default full process filesystem remains visible unless
+                # a policy explicitly narrows it to process directories.
+                policy.pop("process_filesystem_scope", None)
+                handler_module.render_services({"example": value}, units)
+                unrestricted = subprocess.run(
+                    [str(systemd_analyze), "--man=no", "--generators=no", "verify", str(unit)],
+                    env=environment, capture_output=True, text=True, check=False,
+                )
+
+                self.assertEqual(unrestricted.returncode, 0, unrestricted.stdout + unrestricted.stderr)
+                self.assertIn("ProcSubset: all", unrestricted.stdout)
+                policy["process_filesystem_scope"] = "processes"
+
+    def test_process_resource_ranges_reject_invalid_bounds(self):
+        for field in ["open_files", "processes", "locked_memory_bytes"]:
+            for soft, hard in [(2, 1), (-1, 10), (1, 9007199254740992), (True, 10), (1, False), (1.0, 10)]:
+                with self.subTest(field=field, soft=soft, hard=hard):
+                    value = dict(service(), resources={field: {
+                        "kind": "range", "soft": soft, "hard": hard,
+                    }})
+
+                    with self.assertRaisesRegex(ValueError, "invalid process resource"):
+                        handler_module.realize_service(value)
+
+    def test_soft_and_hard_limits_cannot_be_applied_to_cgroup_resources(self):
+        for field in ["tasks", "memory_high_bytes", "memory_max_bytes", "memory_swap_max_bytes"]:
+            with self.subTest(field=field):
+                value = dict(service(), resources={field: {
+                    "kind": "range", "soft": 1, "hard": 10,
+                }})
+
+                with self.assertRaisesRegex(ValueError, "require a process resource"):
+                    handler_module.realize_service(value)
+
+    @unittest.skipUnless(systemd_analyze, "pinned systemd-analyze executable not supplied")
+    def test_service_owned_runtime_mode_reaches_actual_pinned_manager(self):
+        value = service()
+        value["lifecycle"]["start"][0]["executable"] = {
+            "path": str(systemd_analyze), "arguments": ["--version"],
+        }
+        value["storage"] = {"mounts": [{
+            "name": "runtime", "source": "/run/example", "access": "read-write",
+            "ownership": "service-identity", "directory_mode": "0750",
+        }]}
+
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            handler_module.render_services({"example": value}, units)
+            unit = units / "example.service"
+            vendor_units = systemd_analyze.parent.parent / "lib/systemd/system"
+            environment = dict(os.environ, SYSTEMD_UNIT_PATH=f"{units}:{vendor_units}",
+                               SYSTEMD_LOG_COLOR="0", SYSTEMD_LOG_LEVEL="debug")
+
+            verified = subprocess.run(
+                [str(systemd_analyze), "--man=no", "--generators=no", "verify", str(unit)],
+                env=environment, capture_output=True, text=True, check=False,
+            )
+
+            self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+            self.assertIn("RuntimeDirectoryMode=0750\n", unit.read_text())
+            self.assertIn("RuntimeDirectoryMode: 0750", verified.stdout)
+
+    def test_service_owned_directory_modes_remain_unspecified_by_default(self):
+        for directory_mode in [None, "absent"]:
+            with self.subTest(directory_mode=directory_mode):
+                mount = {
+                    "name": "runtime", "source": "/run/example", "access": "read-write",
+                    "ownership": "service-identity",
+                }
+                if directory_mode is None:
+                    mount["directory_mode"] = None
+                value = dict(service(), storage={"mounts": [mount]})
+
+                unit = handler_module.realize_service(value)["units"]["example.service"]
+
+                self.assertIn('RuntimeDirectory="example"', unit)
+                self.assertNotIn("RuntimeDirectoryMode=", unit)
+
+    def test_service_owned_directories_require_one_mode_per_kind(self):
+        mounts = [{
+            "name": name, "source": "/run/" + name, "access": "read-write",
+            "ownership": "service-identity", "directory_mode": directory_mode,
+        } for name, directory_mode in [("first", "0750"), ("second", "0700")]]
+        value = dict(service(), storage={"mounts": mounts})
+
+        with self.assertRaisesRegex(ValueError, "common mode for each kind"):
+            handler_module.realize_service(value)
+
+        mounts[1]["directory_mode"] = "0750"
+        unit = handler_module.realize_service(value)["units"]["example.service"]
+
+        self.assertEqual(unit.count("RuntimeDirectoryMode=0750\n"), 1)
+        self.assertIn('RuntimeDirectory="first"', unit)
+        self.assertIn('RuntimeDirectory="second"', unit)
+
+    def test_provider_owned_mount_cannot_set_manager_directory_mode(self):
+        value = dict(service(), storage={"mounts": [{
+            "name": "state", "source": "/var/lib/example", "access": "read-write",
+            "ownership": "provider", "directory_mode": "0750",
+        }]})
+
+        with self.assertRaisesRegex(ValueError, "requires service-identity ownership"):
+            handler_module.realize_service(value)
+
+    def test_storage_logs_mode_must_match_actual_logging_directories(self):
+        value = dict(service(), storage={"mounts": [{
+            "name": "log", "source": "/var/log/example", "access": "read-write",
+            "ownership": "service-identity", "directory_mode": "0750",
+        }]})
+        value["logging"] = {
+            "standard_output": "structured", "standard_error": "structured",
+            "directories": ["other-log"], "directory_mode": "0700",
+        }
+
+        with self.assertRaisesRegex(ValueError, "common mode for each kind"):
+            handler_module.realize_service(value)
+
+        value["logging"]["directory_mode"] = "0750"
+        unit = handler_module.realize_service(value)["units"]["example.service"]
+
+        self.assertEqual(unit.count("LogsDirectoryMode=0750\n"), 1)
+        self.assertIn('LogsDirectory="other-log"', unit)
+        self.assertIn('LogsDirectory="example"', unit)
+
+        value["logging"]["directories"] = []
+        value["logging"]["directory_mode"] = "0700"
+        unit = handler_module.realize_service(value)["units"]["example.service"]
+
+        self.assertIn("LogsDirectoryMode=0750\n", unit)
+
     def test_managed_directories_remain_writable_in_service_namespace(self):
         purposes = {
             "runtime": ("RuntimeDirectory", "/run/"),
