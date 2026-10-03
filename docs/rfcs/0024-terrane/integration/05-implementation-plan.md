@@ -124,22 +124,24 @@ empty `terrane` binary.
 
 ### T1 — Local repository
 
-**Status:** In progress. The reviewed combined candidate `93c8cf0f90b2`
-passes all 602 core tests with zero skips (Nextest run
-`b16244f3-9fb5-411d-bb5e-96b7bb172bda`), strict all-target core Clippy,
-strict rustdoc, both required formatters and five actual gates:
-`property-resolution`, `prov-selector-presets`, `canonical-cbor`,
-`core-no-std` and `algebra-merge`. Its complete golden gate also passes all
-19 mandatory owning suites and the 30-section inventory. Its full current
-aggregate exits 1 through `store-idempotent-put` at
-`physical_exclusion_overrides_live_rows_during_fresh_admission`:
-`publish_shards` returns `Unsupported` before content lookup. These results
-precede the newly mandatory ordinary association-table cases. The core
-evaluator binds
-independently supplied recorded interpretation to checked view/root evidence
-and actual recipe rebinding. Native historical sourcing and executable
-version-three fold replay remain unqualified. No formal task merge, checkbox,
-milestone exit or freeze follows from this run.
+**Status:** In progress. The reviewed owned-association candidate `28e8a7b6e5b9`
+passes all 605 core tests with zero skips (Nextest run
+`256a9f8c-e8dd-4b19-b284-69a3a4c4478b`), strict all-target core Clippy and
+rustdoc. The final increment adds only the public callback panic contract;
+strict rustdoc and both required formatters pass again. Parent combined
+candidate `b7da6543b94d` passes both formatters and the actual
+`property-resolution`, `prov-selector-presets` and `core-no-std` gates,
+including all three newly mandatory association cases. Its aggregate is
+running with `--keep-going`; observed native failures are physical-exclusion
+admission and portable bucket reopen, both returning `Unsupported`.
+These results precede the newly mandatory executable recorded-fold case.
+The prior combined candidate `93c8cf0f90b2` passes its five recorded evaluator
+gates and complete golden gate (19 owning suites and 30-section inventory).
+The core evaluator binds independently supplied recorded interpretation to
+checked view/root evidence and actual recipe rebinding; the new owned table
+retains caller configuration without authenticating its justification.
+Native historical sourcing and executable version-three fold replay remain
+unqualified. No formal task merge, checkbox, milestone exit or freeze follows.
 
 Deployable as: a local tool that initializes a store under a `file://`
 root, commits a directory, forks and merges branches, and checks a commit
@@ -398,8 +400,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   it must own validated fixed interpretations, distinguish independently
   configured views even when roots coincide, reject conflicting duplicate
   views, and refuse absent views or root mismatches. Three exact association
-  cases are now mandatory in `property-resolution`; their implementation
-  remains on an isolated workline. The table itself cannot authenticate its
+  cases are now mandatory in `property-resolution`; reviewed candidate
+  `28e8a7b6e5b9` passes them and all 605 core tests. Parent combined
+  qualification also passes the actual property, selector and no-std gates
+  and both formatters, with the aggregate still running. The table itself
+  cannot authenticate its
   caller's justification, recover historical configuration, or grant authority.
   Native installation, snapshot propagation and live-policy separation remain
   subsequent obligations, with no task checkbox or freeze advancement.
