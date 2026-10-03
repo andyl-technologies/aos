@@ -55,6 +55,69 @@ pub struct CacheResidencyWriterReadbackV2 {
     node_quotas: Vec<crate::cache_residency::NodeCacheQuotaV1>,
 }
 
+// Complete current replay selection before any Q04 logical hold. The actual
+// initializer retains every writer; this value contains no issuer or permit.
+#[cfg(target_os = "linux")]
+pub(crate) struct Q04CachePrepareReadbackV1 {
+    selected: super::CurrentProjectPhysicalCacheHeadV1,
+    quota_digest: ObjectDigest,
+    node_quotas: Vec<crate::cache_residency::NodeCacheQuotaV1>,
+}
+
+#[cfg(target_os = "linux")]
+impl Q04CachePrepareReadbackV1 {
+    pub(in crate::cache_residency) fn from_current_inventories(
+        project: aos_sandbox_core::ProjectId,
+        inventories: Vec<crate::cache_residency::CacheRecoveryInventoryV1>,
+    ) -> Result<Self, CacheResidencyProtectedJournalErrorV1> {
+        let selection = current_inventory_selection(project, &inventories);
+        // This consuming Q04 entrypoint discards its inventory at the same
+        // point as before, before constructing the returned DATA readback.
+        drop(inventories);
+
+        let (selected, quota_digest, node_quotas) = selection?;
+        Ok(Self { selected, quota_digest, node_quotas })
+    }
+
+    pub(crate) fn selected(&self) -> super::CurrentProjectPhysicalCacheHeadV1 {
+        self.selected
+    }
+
+    pub(crate) fn quota_digest(&self) -> ObjectDigest {
+        self.quota_digest
+    }
+
+    pub(in crate::cache_residency) fn require_physical_limits(
+        &self,
+        limits: crate::cache_residency::CacheOwnerLimitsV1,
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        if !limits.matches_node_quotas(&self.node_quotas) {
+            return Err(crate::policy_compiler::create_q04::CreateQ04ErrorV1::ChangedCut);
+        }
+        Ok(())
+    }
+}
+
+// Keep the ordinary allocation and selection order: quota collection, its
+// complete digest, then unique project selection. Prepare and terminal replay
+// share this DATA recipe rather than creating an artificial active hold.
+fn current_inventory_selection(
+    project: aos_sandbox_core::ProjectId,
+    inventories: &[crate::cache_residency::CacheRecoveryInventoryV1],
+) -> Result<(
+    super::CurrentProjectPhysicalCacheHeadV1,
+    ObjectDigest,
+    Vec<crate::cache_residency::NodeCacheQuotaV1>,
+), CacheResidencyProtectedJournalErrorV1> {
+    let node_quotas: Vec<_> = inventories
+        .iter()
+        .map(|inventory| inventory.global.node_quota)
+        .collect();
+    let quota_digest = complete_node_quota_digest_v2(node_quotas.clone())?;
+    let selected = select_project_physical_cache_head(project, inventories)?;
+    Ok((selected, quota_digest, node_quotas))
+}
+
 /// Confirms that Cache cleared one exact pending release under retained custody.
 ///
 /// Source may require this token before clearing its own pending marker. The
@@ -114,6 +177,66 @@ impl CacheTerminalCutV1 {
 }
 
 impl CacheResidencyWriterReadbackV2 {
+    // This is the same ordered selection recipe used by the old terminal
+    // engine. Its return value is historical DATA, never a held owner token.
+    fn from_current_inventories(
+        hold: CachePolicyHoldV1,
+        inventories: &[crate::cache_residency::CacheRecoveryInventoryV1],
+    ) -> Result<Self, CacheResidencyProtectedJournalErrorV1> {
+        let (selected, quota_digest, node_quotas) = current_inventory_selection(hold.project(), inventories)?;
+        Self::from_inventory_selection(hold, selected, quota_digest, node_quotas)
+    }
+
+    // Both entrypoints share the same hold comparison and DATA assembly, while
+    // their callers separately preserve borrowed versus consuming lifetimes.
+    fn from_inventory_selection(
+        hold: CachePolicyHoldV1,
+        selected: super::CurrentProjectPhysicalCacheHeadV1,
+        quota_digest: ObjectDigest,
+        node_quotas: Vec<crate::cache_residency::NodeCacheQuotaV1>,
+    ) -> Result<Self, CacheResidencyProtectedJournalErrorV1> {
+        if selected.partition().digest() != hold.partition()
+            || selected.head() != hold.cache_head()
+        {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+        Ok(Self { hold, selected, quota_digest, node_quotas })
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(in crate::cache_residency) fn from_original_q04_inventories(
+        hold: CachePolicyHoldV1,
+        inventories: Vec<crate::cache_residency::CacheRecoveryInventoryV1>,
+        identity: &crate::policy_compiler::create_q04::Q04CutIdentityV1,
+    ) -> Result<Self, crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        let selection = current_inventory_selection(hold.project(), &inventories);
+        // Preserve the consuming Q04 boundary before either the hold/head or
+        // the original-cut identity comparisons, including selection errors.
+        drop(inventories);
+
+        let (selected, quota_digest, node_quotas) = selection?;
+        let readback = Self::from_inventory_selection(hold, selected, quota_digest, node_quotas)?;
+        if hold.project() != identity.project()
+            || hold.epoch() != identity.epoch()
+            || hold.binding() != identity.binding()
+            || readback.quota_digest != identity.cache_quota()
+        {
+            return Err(crate::policy_compiler::create_q04::CreateQ04ErrorV1::ChangedCut);
+        }
+        Ok(readback)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(in crate::cache_residency) fn require_original_q04_physical_limits(
+        &self,
+        limits: crate::cache_residency::CacheOwnerLimitsV1,
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        if !limits.matches_node_quotas(self.node_quotas()) {
+            return Err(crate::policy_compiler::create_q04::CreateQ04ErrorV1::ChangedCut);
+        }
+        Ok(())
+    }
+
     /// Returns the exact active hold matched to typed protected Cache replay.
     #[must_use]
     pub const fn hold(&self) -> CachePolicyHoldV1 {
@@ -378,23 +501,7 @@ impl CacheResidencyProtectedOwnerV1 {
         hold_journal.validate_protected_writer_name_witness(&hold_witness)?;
 
         let result = self.with_reconstructed_partitions(|inventories| {
-            let node_quotas: Vec<_> = inventories
-                .iter()
-                .map(|inventory| inventory.global.node_quota)
-                .collect();
-            let quota_digest = complete_node_quota_digest_v2(node_quotas.clone())?;
-            let selected = select_project_physical_cache_head(hold.project(), &inventories)?;
-            if selected.partition().digest() != hold.partition()
-                || selected.head() != hold.cache_head()
-            {
-                return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
-            }
-            let readback = CacheResidencyWriterReadbackV2 {
-                hold,
-                selected,
-                quota_digest,
-                node_quotas,
-            };
+            let readback = CacheResidencyWriterReadbackV2::from_current_inventories(hold, &inventories)?;
             if !physical_limits.matches_node_quotas(readback.node_quotas()) {
                 return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
             }

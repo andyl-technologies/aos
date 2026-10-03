@@ -41,6 +41,10 @@ pub(crate) use successor_issuance::{
 };
 pub use current::CurrentRootSourceGenesisFloorV1;
 pub(in crate::policy_compiler) use flight::CompletedRootSourceGenesisFloorV1;
+pub(in crate::policy_compiler) use flight::OriginalRootGenesisFlightV1;
+pub(in crate::policy_compiler) use flight::{
+    kernel_pair as original_root_kernel_pair_v1, require_open_receive_queue,
+};
 pub use flight::{HeldRootSourceGenesisIntentV1, RootSourceGenesisFloorProofV1};
 pub use records::{
     ROOT_SOURCE_GENESIS_INTENT_BYTES_V1, RootSourceGenesisIntentRecordV1,
@@ -48,6 +52,22 @@ pub use records::{
     SourceHierarchyFloorRecordV1,
 };
 pub use store::{RootSourceGenesisAuthorityV1, fixed_root_source_genesis_recovery_available_v1};
+pub(in crate::policy_compiler) use store::Q04RootGen1CutLoanV1;
+
+// Both original-flight owners use the same bounded readiness wait. The
+// purpose-specific owner checks remain in their respective live loans.
+pub(in crate::policy_compiler) fn wait_original_root_v1(
+    descriptor: std::os::fd::BorrowedFd<'_>,
+    interest: rustix::event::PollFlags,
+    deadline: std::time::Instant,
+) -> Result<(), crate::hierarchy::genesis_profile::SourceGenesisErrorV1> {
+    transport::wait(descriptor, interest, deadline)
+}
+#[cfg(target_os = "linux")]
+pub(in crate::policy_compiler) use wire::{
+    RootCreateQ04TransferKindV1, decode_root_create_q04_transfer_v1,
+    encode_root_create_q04_transfer_v1,
+};
 pub use wire::{
     ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1, ROOT_SOURCE_GENESIS_HELLO_MAGIC_V1,
     ROOT_SOURCE_GENESIS_QUERY_MAGIC_V1, RootSourceGenesisFrameKindV1,

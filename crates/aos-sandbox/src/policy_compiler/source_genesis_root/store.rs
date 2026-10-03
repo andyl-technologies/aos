@@ -10,6 +10,7 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use aos_sandbox_core::ProjectId;
+use ed25519_dalek::VerifyingKey;
 
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
 use crate::hierarchy::source_genesis::SourceTreeGenesisStateV1;
@@ -55,7 +56,833 @@ pub struct RootSourceGenesisAuthorityV1 {
     pub(super) accepted: Option<VerifiedControllerSourceGenesisReadbackV1>,
 }
 
+// This is a short loan from the same actual Root writer. The added Controller
+// fields are projections of a packet already checked by the sole old decoder,
+// not a new parser, sequence-based authority or detachable current-floor token.
+pub(in crate::policy_compiler) struct Q04RootGen1CutLoanV1<'root> {
+    owner: &'root RootSourceGenesisAuthorityV1,
+    current: super::CurrentRootSourceGenesisFloorV1<'root>,
+    controller_sequence: u64,
+    controller_names: ProtectedJournalNamesV1,
+}
+
+impl Q04RootGen1CutLoanV1<'_> {
+    pub(in crate::policy_compiler) fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
+        self.current.recheck()
+    }
+
+    pub(in crate::policy_compiler) fn floor(&self) -> &SourceHierarchyFloorRecordV1 {
+        self.current.floor()
+    }
+
+    pub(in crate::policy_compiler) fn controller_names(&self) -> ProtectedJournalNamesV1 {
+        self.controller_names
+    }
+
+    pub(in crate::policy_compiler) fn controller_coordinates(
+        &self,
+    ) -> Result<(ProtectedJournalNamesV1, u64), super::super::create_q04::CreateQ04ErrorV1> {
+        self.recheck()?;
+        let coordinates = (self.controller_names, self.controller_sequence);
+        self.recheck()?;
+        Ok(coordinates)
+    }
+
+    // Equality DATA from the actual fresh signed Controller/Source pair
+    // already joined by require_same_source_cut and the anchored floor.
+    pub(in crate::policy_compiler) fn source_coordinates(
+        &self,
+    ) -> Result<(ProtectedJournalNamesV1, u64), super::super::create_q04::CreateQ04ErrorV1> {
+        self.recheck()?;
+        let accepted = self.owner.accepted.as_ref()
+            .ok_or(super::super::create_q04::CreateQ04ErrorV1::ChangedCut)?;
+        let coordinates = (accepted.source_names, accepted.source_sequence);
+        self.recheck()?;
+        Ok(coordinates)
+    }
+
+    // The actual Root pin verifies this distinct Q04 packet. Its sequence is
+    // compared to a fresh completed gen1 observation under the same original
+    // nonce; an old held signature is never treated as current after a write.
+    pub(in crate::policy_compiler) fn acknowledgement<'packet>(
+        &self,
+        kind: super::super::create_q04::Q04AcknowledgementKindV1,
+        packet: &'packet [u8],
+        identity: &super::super::create_q04::Q04CutIdentityV1,
+        original_controller_names: ProtectedJournalNamesV1,
+    ) -> Result<super::super::create_q04::Q04AcknowledgementV1<'packet>, super::super::create_q04::CreateQ04ErrorV1> {
+        use super::super::create_q04::{CreateQ04ErrorV1, Q04AcknowledgementV1};
+
+        self.recheck()?;
+        self.owner.recheck()?;
+        let packet = Q04AcknowledgementV1::verify(kind, packet, &self.owner.pins.controller, identity)?;
+        if identity.nonce() != self.owner.nonce
+            || identity.controller_uid() != self.owner.controller_uid
+            || identity.bytes()[84..88] != self.owner.source_uid.to_be_bytes()
+            || self.floor().digest() != identity.gen1_floor()
+            || self.floor().project() != identity.project()
+            || packet.controller_sequence() != self.controller_sequence
+            || self.controller_names != original_controller_names
+        {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        self.recheck()?;
+        self.owner.recheck()?;
+        Ok(packet)
+    }
+
+    // Signature provenance and original named/sequence equality are separate
+    // from any held proof. This read-only prehold purpose never issues a Stage
+    // or permits publication; the original Root flight retains all packets.
+    pub(in crate::policy_compiler) fn prehold_input<'packet>(
+        &self,
+        packet: &'packet [u8],
+        stage: &super::super::binding_v2::Q04RootStageRecipeV1,
+    ) -> Result<
+        (
+            super::super::create_q04::Q04PreholdInputDataV1<'packet>,
+            super::super::VerifiedControllerProjectAdmissionV1,
+        ),
+        super::super::create_q04::CreateQ04ErrorV1,
+    > {
+        self.recheck()?;
+        let checked = self.owner.q04_verify_prehold_input(packet, stage, self)?;
+        self.recheck()?;
+        Ok(checked)
+    }
+
+    pub(in crate::policy_compiler) fn verify_claim<'packet>(
+        &self,
+        packet: &'packet [u8],
+        identity: &super::super::create_q04::Q04CutIdentityV1,
+    ) -> Result<
+        super::super::create_q04::Q04ClaimV1<'packet>,
+        super::super::create_q04::CreateQ04ErrorV1,
+    > {
+        self.recheck()?;
+        let claim = self.owner.q04_verify_claim(packet, identity)?;
+        self.recheck()?;
+        Ok(claim)
+    }
+
+    pub(in crate::policy_compiler) fn controller_cut(
+        &self,
+        current_packet: &[u8],
+        held_packet: &[u8],
+        proposed: &[u8],
+        stage: &super::super::binding_v2::Q04RootStageRecipeV1,
+        identity: &super::super::create_q04::Q04CutIdentityV1,
+    ) -> Result<
+        (
+            super::super::VerifiedControllerProjectAdmissionV1,
+            super::super::VerifiedControllerHoldReadbackV1,
+        ),
+        super::super::create_q04::CreateQ04ErrorV1,
+    > {
+        self.owner.q04_verify_controller_cut(
+            current_packet, held_packet, proposed, self, stage, identity,
+        )
+    }
+
+    // This retains only signature provenance from the original prehold/C1
+    // packets. The distinct current ACK above must establish the later live
+    // Controller cut; this projection cannot replace that actual observation.
+    pub(in crate::policy_compiler) fn original_controller_provenance(
+        &self,
+        current_packet: &[u8],
+        held_packet: &[u8],
+        proposed: &[u8],
+        stage: &super::super::binding_v2::Q04RootStageRecipeV1,
+        identity: &super::super::create_q04::Q04CutIdentityV1,
+        original_next: u64,
+    ) -> Result<(super::super::VerifiedControllerProjectAdmissionV1,
+        super::super::VerifiedControllerHoldReadbackV1), super::super::create_q04::CreateQ04ErrorV1> {
+        self.owner.q04_verify_controller_cut_for(
+            current_packet, held_packet, proposed, self, stage, identity,
+            Q04ControllerPacketPositionV1::OriginalHeld { original_next },
+        )
+    }
+
+    pub(in crate::policy_compiler) fn signed_project_sources(
+        &self,
+        project_input: &[u8],
+        deployment_inputs: &super::super::PolicyDeploymentInputsV1<'_>,
+        now_unix_seconds: i64,
+    ) -> Result<
+        (
+            super::super::VerifiedSignedProjectPolicySourceV2,
+            super::super::PolicyDeploymentHeadV1,
+            super::super::PolicyDeploymentSourcesV1,
+        ),
+        super::super::create_q04::CreateQ04ErrorV1,
+    > {
+        self.recheck()?;
+        let sources = self.owner.q04_signed_project_sources(
+            project_input, deployment_inputs, now_unix_seconds,
+        )?;
+        self.recheck()?;
+        Ok(sources)
+    }
+
+    pub(in crate::policy_compiler) fn cache_cut(
+        &self,
+        packet: &[u8],
+        proposed: &[u8],
+        stage: &super::super::binding_v2::Q04RootStageRecipeV1,
+        identity: &super::super::create_q04::Q04CutIdentityV1,
+        cache_uid: u32,
+    ) -> Result<
+        crate::cache_residency::VerifiedClosedCacheOwnerReadbackV2,
+        super::super::create_q04::CreateQ04ErrorV1,
+    > {
+        self.recheck()?;
+        let cache = self.owner.q04_verify_cache_cut(packet, proposed, stage, identity, cache_uid)?;
+        self.recheck()?;
+        Ok(cache)
+    }
+
+    pub(in crate::policy_compiler) fn original_cache_provenance(
+        &self,
+        packet: &[u8],
+        proposed: &[u8],
+        stage: &super::super::binding_v2::Q04RootStageRecipeV1,
+        identity: &super::super::create_q04::Q04CutIdentityV1,
+        cache_uid: u32,
+    ) -> Result<crate::cache_residency::VerifiedClosedCacheOwnerReadbackV2,
+        super::super::create_q04::CreateQ04ErrorV1> {
+        self.recheck()?;
+        let observed = self.owner.q04_verify_original_cache_packet(packet, proposed, stage, identity, cache_uid)?;
+        self.recheck()?;
+        Ok(observed)
+    }
+}
+
+enum Q04ControllerPacketPositionV1 {
+    CurrentHeld,
+    OriginalHeld { original_next: u64 },
+}
+
 impl RootSourceGenesisAuthorityV1 {
+    pub(in crate::policy_compiler) fn q04_before_rows(
+        &self,
+    ) -> Result<
+        (u64, ProtectedJournalNamesV1, aos_sandbox_core::ObjectDigest),
+        super::super::create_q04::CreateQ04ErrorV1,
+    > {
+        self.recheck()?;
+        self.journal.q04_root_before_rows_v1()
+    }
+
+    // Only the actual original Root owner checks its entire eligible native
+    // suffix. This is nonissuing capacity DATA, not an exported reservation,
+    // floor certificate or permission to append future shaped packets.
+    pub(in crate::policy_compiler) fn q04_preflight_authority_suffix(
+        &self,
+        before: (u64, ProtectedJournalNamesV1, aos_sandbox_core::ObjectDigest),
+        transactions: &[JournalTransaction],
+    ) -> Result<(), super::super::create_q04::CreateQ04ErrorV1> {
+        use super::super::create_q04::CreateQ04ErrorV1;
+
+        self.recheck()?;
+        if transactions.is_empty() || self.q04_before_rows()? != before
+            || self.journal.all_records().any(|(namespace, key, _)| {
+                namespace == RecordNamespace::DesiredState && key.starts_with(b"\0aos-q04-root-")
+            })
+        {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        self.journal.preflight_root_q04_capacity_v1(transactions)?;
+        self.recheck()?;
+        if self.q04_before_rows()? != before {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        Ok(())
+    }
+
+    // This is a fixed action of the original Root owner, not a Journal getter
+    // or caller-provided permission. The enclosing attempt parks the returned
+    // outcome before invoking any postappend floor/native/clock bookend.
+    pub(in crate::policy_compiler) fn q04_append_original_binding_prefix(
+        &mut self,
+        history: &super::super::create_q04::Q04RootAuthorityHistoryV1,
+        stage: &super::super::binding_v2::Q04RootStageRecipeV1,
+        source_packet: &[u8],
+        original: &super::super::create_q04::RootOriginalInputLoanV1<'_, '_>,
+        index: usize,
+    ) -> Result<crate::journal::CommitResult, super::super::create_q04::CreateQ04ErrorV1> {
+        use super::super::create_q04::CreateQ04ErrorV1;
+
+        self.recheck()?;
+        let current = self.current_anchored_floor(source_packet)?;
+        current.recheck()?;
+        if current.floor().digest() != history.identity().gen1_floor()
+            || current.floor().project() != stage.project()
+            || stage.staged().challenge() != self.nonce
+            || stage.staged().base().next_generation() != history.identity().epoch()
+        {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        drop(current);
+        history.require_fixed_original(&self.journal)?;
+        let stage_index = history.transactions().iter()
+            .position(|transaction| transaction.id() == stage.transaction().id())
+            .ok_or(CreateQ04ErrorV1::ChangedCut)?;
+        stage.require_original_row(&self.journal, index > stage_index)?;
+        original.recheck_cut(history.identity())?;
+        self.journal.commit_root_q04_original_v1(history, index, original)
+    }
+
+    pub(in crate::policy_compiler) fn q04_recheck_original_binding_prefix(
+        &self,
+        history: &super::super::create_q04::Q04RootAuthorityHistoryV1,
+        stage: &super::super::binding_v2::Q04RootStageRecipeV1,
+        source_packet: &[u8],
+    ) -> Result<(), super::super::create_q04::CreateQ04ErrorV1> {
+        use super::super::create_q04::CreateQ04ErrorV1;
+
+        self.recheck()?;
+        history.require_fixed_original(&self.journal)?;
+        let current = self.current_anchored_floor(source_packet)?;
+        current.recheck()?;
+        if current.floor().digest() != history.identity().gen1_floor()
+            || current.floor().project() != stage.project()
+            || stage.staged().challenge() != self.nonce
+        {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        let stage_index = history.transactions().iter()
+            .position(|transaction| transaction.id() == stage.transaction().id())
+            .ok_or(CreateQ04ErrorV1::ChangedCut)?;
+        stage.require_original_row(&self.journal, history.committed() > stage_index)?;
+        self.recheck()?;
+        Ok(())
+    }
+
+    fn q04_verify_prehold_input<'packet>(
+        &self,
+        packet: &'packet [u8],
+        stage: &super::super::binding_v2::Q04RootStageRecipeV1,
+        gen1: &Q04RootGen1CutLoanV1<'_>,
+    ) -> Result<
+        (
+            super::super::create_q04::Q04PreholdInputDataV1<'packet>,
+            super::super::VerifiedControllerProjectAdmissionV1,
+        ),
+        super::super::create_q04::CreateQ04ErrorV1,
+    > {
+        use super::super::create_q04::{CreateQ04ErrorV1, Q04PreholdInputDataV1};
+        use super::super::public_create_source::{
+            HistoricalCreateProjectSourceHeadsV1, create_project_source_commitment_v1,
+        };
+
+        self.recheck()?;
+        gen1.recheck()?;
+        if !std::ptr::eq(gen1.owner, self) || stage.staged().challenge() != self.nonce {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        // The distinct whole-row DATA signature is verified before any
+        // projection. It cannot replace CTP03's purpose or current gen1.
+        let request = Q04PreholdInputDataV1::verify(packet, &self.pins.controller)?;
+        let fields = request.fields();
+        let metadata = fields[0];
+        let challenge = super::super::staged_closed_policy_signer_challenge_v2(
+            stage.staged(), fields[4],
+        )?;
+        let controller = super::super::verify_controller_project_admission_readback_v1(
+            fields[5], &self.pins.controller,
+            super::super::ControllerProjectAdmissionChallengeV1::new(challenge.nonce(), challenge.cut())?,
+            self.controller_uid,
+        )?;
+        let accepted = self.accepted.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
+        let names = ProtectedJournalNamesV1::from_bytes(&metadata[176..224])?;
+        let source_names = ProtectedJournalNamesV1::from_bytes(&metadata[224..272])?;
+        let sequence = u64::from_be_bytes(crate::hierarchy::genesis_profile::take(metadata, 464)?);
+        let source_sequence = u64::from_be_bytes(crate::hierarchy::genesis_profile::take(metadata, 472)?);
+        if !accepted.completed
+            || controller.project() != gen1.floor().project()
+            || controller.project() != stage.project()
+            || controller.journal_sequence() != gen1.controller_sequence
+            || sequence != gen1.controller_sequence
+            || names != gen1.controller_names
+            || source_names != accepted.source_names
+            || source_sequence != accepted.source_sequence
+        {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+
+        let proposal = super::super::binding_v2::ClosedPolicyRootBindingV2::q04_decode(fields[4])?;
+        let source = controller.source_commitment();
+        let view = proposal.q04_fields(&source);
+        let expected_source = create_project_source_commitment_v1(
+            *view.operation, *view.operation_revision, *view.accepted_generation,
+            *view.sandbox, *view.project,
+            HistoricalCreateProjectSourceHeadsV1 {
+                projection_revision: *view.projection_revision,
+                publisher_generation: controller.publisher_generation(),
+                publisher_digest: controller.publisher_digest(),
+                cache_domain_head: controller.cache_domain_head(),
+                revocation_scope: controller.revocation_scope(),
+                revocation_generation: controller.revocation_generation(),
+                revocation_head: controller.revocation_head(),
+            },
+        );
+        if *view.operation != controller.operation()
+            || *view.sandbox != controller.sandbox()
+            || *view.project != controller.project()
+            || *view.accepted_generation != 1
+            || *view.publisher_generation != controller.publisher_generation()
+            || *view.publisher_head != controller.publisher_digest()
+            || *view.cache_domain_head != controller.cache_domain_head()
+            || *view.revocation_head != controller.revocation_head()
+            || *view.ancestry != gen1.floor().tree_head()
+            || expected_source != controller.source_commitment()
+        {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        gen1.recheck()?;
+        self.recheck()?;
+        Ok((request, controller))
+    }
+
+    // This mode never prepares or repairs genesis. It must already have the
+    // exact settled generation-one floor under the verified historical input.
+    pub(in crate::policy_compiler) fn q04_require_existing_completed_floor(
+        &self,
+        project: ProjectId,
+    ) -> Result<(), super::super::create_q04::CreateQ04ErrorV1> {
+        use super::super::create_q04::CreateQ04ErrorV1;
+
+        self.recheck()?;
+        let accepted = self.accepted.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
+        let floor = self.floor(project)?.ok_or(CreateQ04ErrorV1::ChangedCut)?;
+        if !accepted.historical
+            || accepted.vacant
+            || accepted.acceptance.project() != project
+            || floor.semantic_revision() != 1
+            || floor.predecessor().is_some()
+            || floor.receipt().acceptance_digest() != accepted.acceptance.digest()
+            || floor.roles() != self.pins.digest()
+            || self.intent(project)?.is_some()
+        {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        self.recheck()?;
+        Ok(())
+    }
+
+    // Every permitted Controller/Source self-write requires a newly produced
+    // matching Complete packet and Source observation. The old owner engine
+    // repeats nonce/pins/full acceptance/named Source sequence/ACK joins; only
+    // afterwards may the extra already-verified Controller fields be viewed.
+    pub(in crate::policy_compiler) fn q04_refresh_completed_gen1(
+        &mut self,
+        controller_packet: &[u8],
+        source_packet: &[u8],
+    ) -> Result<Q04RootGen1CutLoanV1<'_>, super::super::create_q04::CreateQ04ErrorV1> {
+        self.accept_controller_readback(controller_packet)?;
+        self.q04_require_completed_controller_packet()?;
+        let current = self.current_anchored_floor(source_packet)?;
+        current.recheck()?;
+        let controller_sequence = u64::from_be_bytes(
+            crate::hierarchy::genesis_profile::take::<8>(controller_packet, 32)?,
+        );
+        let controller_names = ProtectedJournalNamesV1::from_bytes(&controller_packet[672..720])?;
+        Ok(Q04RootGen1CutLoanV1 {
+            owner: self,
+            current,
+            controller_sequence,
+            controller_names,
+        })
+    }
+
+    pub(in crate::policy_compiler) fn q04_require_completed_controller_packet(
+        &self,
+    ) -> Result<(), super::super::create_q04::CreateQ04ErrorV1> {
+        if !self.accepted.as_ref().is_some_and(|accepted| accepted.completed) {
+            return Err(super::super::create_q04::CreateQ04ErrorV1::ChangedCut);
+        }
+        Ok(())
+    }
+
+    // Verification lends only the actual independent Root pin. The complete
+    // packet remains in its original flight owner's buffer and success is DATA,
+    // not a detachable currentness or writer capability.
+    pub(in crate::policy_compiler) fn q04_verify_claim<'packet>(
+        &self,
+        packet: &'packet [u8],
+        identity: &super::super::create_q04::Q04CutIdentityV1,
+    ) -> Result<
+        super::super::create_q04::Q04ClaimV1<'packet>,
+        super::super::create_q04::CreateQ04ErrorV1,
+    > {
+        self.recheck()?;
+        if identity.nonce() != self.nonce
+            || identity.controller_uid() != self.controller_uid
+            || identity.bytes()[84..88] != self.source_uid.to_be_bytes()
+        {
+            return Err(super::super::create_q04::CreateQ04ErrorV1::ChangedCut);
+        }
+        let claim = super::super::create_q04::Q04ClaimV1::verify(
+            packet,
+            &self.pins.controller,
+            identity,
+        )?;
+        self.recheck()?;
+        Ok(claim)
+    }
+
+    // The two real Controller-purpose packets share the Root-created nonce
+    // and actual Stage cut. The old current signer is never called under a
+    // hold: its prehold packet is retained and joined to the fresh held packet.
+    pub(in crate::policy_compiler) fn q04_verify_controller_cut(
+        &self,
+        current_packet: &[u8],
+        held_packet: &[u8],
+        proposed: &[u8],
+        gen1: &Q04RootGen1CutLoanV1<'_>,
+        stage: &super::super::binding_v2::Q04RootStageRecipeV1,
+        identity: &super::super::create_q04::Q04CutIdentityV1,
+    ) -> Result<
+        (
+            super::super::VerifiedControllerProjectAdmissionV1,
+            super::super::VerifiedControllerHoldReadbackV1,
+        ),
+        super::super::create_q04::CreateQ04ErrorV1,
+    > {
+        self.q04_verify_controller_cut_for(current_packet, held_packet, proposed,
+            gen1, stage, identity, Q04ControllerPacketPositionV1::CurrentHeld)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn q04_verify_controller_cut_for(
+        &self,
+        current_packet: &[u8],
+        held_packet: &[u8],
+        proposed: &[u8],
+        gen1: &Q04RootGen1CutLoanV1<'_>,
+        stage: &super::super::binding_v2::Q04RootStageRecipeV1,
+        identity: &super::super::create_q04::Q04CutIdentityV1,
+        position: Q04ControllerPacketPositionV1,
+    ) -> Result<(super::super::VerifiedControllerProjectAdmissionV1,
+        super::super::VerifiedControllerHoldReadbackV1), super::super::create_q04::CreateQ04ErrorV1> {
+        use super::super::create_q04::CreateQ04ErrorV1;
+
+        self.recheck()?;
+        gen1.recheck()?;
+        if !std::ptr::eq(gen1.owner, self)
+            || gen1.floor().digest() != identity.gen1_floor()
+            || stage.staged().challenge() != self.nonce
+            || identity.nonce() != self.nonce
+            || identity.controller_uid() != self.controller_uid
+            || identity.project() != stage.project()
+            || identity.epoch() != stage.staged().base().next_generation()
+            || super::super::closed_policy_binding_digest_v2(proposed)? != identity.binding()
+        {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        // Stage's record cut authenticates its original reservation. The
+        // Controller/Cache signer cut additionally binds the complete B664;
+        // derive it once through the existing sole challenge recipe.
+        let challenge = super::super::staged_closed_policy_signer_challenge_v2(
+            stage.staged(), proposed,
+        )?;
+        let current = super::super::verify_controller_project_admission_readback_v1(
+            current_packet,
+            &self.pins.controller,
+            super::super::ControllerProjectAdmissionChallengeV1::new(challenge.nonce(), challenge.cut())?,
+            self.controller_uid,
+        )?;
+        let held = super::super::verify_controller_hold_readback_v1(
+            held_packet,
+            &self.pins.controller,
+            super::super::ControllerHoldReadbackChallengeV1::new(challenge.nonce(), challenge.cut())?,
+            self.controller_uid,
+        )?;
+        let accepted = self.accepted.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
+        if !accepted.completed
+            || accepted.acceptance.project() != current.project()
+            || current.project() != identity.project()
+            || current.operation() != identity.operation()
+            || current.sandbox() != identity.sandbox()
+            || held.operation() != current.operation()
+            || held.sandbox() != current.sandbox()
+            || held.source() != current.source_commitment()
+            || current.journal_sequence() > held.journal_sequence()
+            || held.binding() != identity.binding()
+            || held.epoch() != identity.epoch()
+        {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        match position {
+            Q04ControllerPacketPositionV1::CurrentHeld => {
+                if held.journal_sequence() != gen1.controller_sequence {
+                    return Err(CreateQ04ErrorV1::ChangedCut);
+                }
+            }
+            Q04ControllerPacketPositionV1::OriginalHeld { original_next } => {
+                if current.journal_sequence() != original_next
+                    || held.journal_sequence() != original_next.checked_add(5)
+                        .ok_or(CreateQ04ErrorV1::Bounds)?
+                    || held.journal_sequence() >= gen1.controller_sequence
+                {
+                    return Err(CreateQ04ErrorV1::ChangedCut);
+                }
+            }
+        }
+        gen1.recheck()?;
+        self.recheck()?;
+        Ok((current, held))
+    }
+
+    // Source reconstruction reads the independently retained actual Root
+    // records/pins. It never adopts a supplied key, a Controller journal or a
+    // serialized cache-domain brand. Returned values are signed provenance.
+    pub(in crate::policy_compiler) fn q04_signed_project_sources(
+        &self,
+        project_input: &[u8],
+        deployment_inputs: &super::super::PolicyDeploymentInputsV1<'_>,
+        now_unix_seconds: i64,
+    ) -> Result<
+        (
+            super::super::VerifiedSignedProjectPolicySourceV2,
+            super::super::PolicyDeploymentHeadV1,
+            super::super::PolicyDeploymentSourcesV1,
+        ),
+        super::super::create_q04::CreateQ04ErrorV1,
+    > {
+        use super::super::create_q04::CreateQ04ErrorV1;
+        use super::super::project_source_v2::{HEAD_KEY_V2, INPUT_KEY_V2};
+
+        self.recheck()?;
+        let namespace = RecordNamespace::DesiredState;
+        let pins = self.journal.get(namespace, SIGNER_PINS_KEY)
+            .ok_or(CreateQ04ErrorV1::ChangedCut)?;
+        let (deployment_generation, deployment_key, project_generation, project_key) =
+            decode_policy_signer_pins_v1(pins)?;
+        let deployment_packet = self.journal.get(namespace, HEAD_KEY)
+            .ok_or(CreateQ04ErrorV1::ChangedCut)?;
+        let deployment = super::super::verify_policy_deployment_head_v1(
+            deployment_packet,
+            deployment_inputs,
+            &deployment_key,
+            now_unix_seconds,
+        )?;
+        let decoded = super::super::decode_policy_deployment_sources_v1(
+            deployment_inputs,
+            deployment,
+        )?;
+        let project_packet = self.journal.get(namespace, HEAD_KEY_V2)
+            .ok_or(CreateQ04ErrorV1::ChangedCut)?;
+        if self.journal.get(namespace, INPUT_KEY_V2) != Some(project_input) {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        let project = super::super::verify_signed_project_policy_source_v2(
+            project_packet,
+            project_input,
+            &project_key,
+            now_unix_seconds,
+        )?;
+        if project.head().deployment_signer_generation() != deployment_generation
+            || project.head().project_signer_generation() != project_generation
+            || project.head().prerequisite_claims()[1] != deployment.packet_digest()
+        {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        self.recheck()?;
+        Ok((project, deployment, decoded))
+    }
+
+    // This uses the actual Root-retained Cache pin and the unchanged fixed
+    // read-only replay engine. It does not invent a spent V8 challenge or a
+    // physical writer lease; the original Q04 caller retains those writers.
+    pub(in crate::policy_compiler) fn q04_verify_cache_cut(
+        &self,
+        packet: &[u8],
+        proposed: &[u8],
+        stage: &super::super::binding_v2::Q04RootStageRecipeV1,
+        identity: &super::super::create_q04::Q04CutIdentityV1,
+        cache_uid: u32,
+    ) -> Result<
+        crate::cache_residency::VerifiedClosedCacheOwnerReadbackV2,
+        super::super::create_q04::CreateQ04ErrorV1,
+    > {
+        use super::super::cache_readback_pin::CACHE_PIN_KEY;
+        use super::super::create_q04::CreateQ04ErrorV1;
+
+        self.recheck()?;
+        if identity.nonce() != self.nonce
+            || identity.project() != stage.project()
+            || identity.epoch() != stage.staged().base().next_generation()
+            || super::super::closed_policy_binding_digest_v2(proposed)? != identity.binding()
+        {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        let credential = self.journal.get(RecordNamespace::DesiredState, CACHE_PIN_KEY)
+            .ok_or(CreateQ04ErrorV1::ChangedCut)?;
+        let before = super::super::read_fixed_policy_cache_hold_v1()?;
+        let observed = self.q04_verify_original_cache_packet(packet, proposed, stage, identity, cache_uid)?;
+        if observed.hold() != before.hold
+            || observed.quota_digest() != before.replay.quota_digest
+        {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+
+        self.recheck()?;
+        let after = super::super::read_fixed_policy_cache_hold_v1()?;
+        if before != after
+            || self.journal.get(RecordNamespace::DesiredState, CACHE_PIN_KEY) != Some(credential)
+        {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        self.recheck()?;
+        Ok(observed)
+    }
+
+    // This authenticates only the original Cache packet. Terminal consumers
+    // separately replay its actual fixed four-journal Q04 released/clear cut;
+    // the old held bytes can never stand in for a current Cache observation.
+    fn q04_verify_original_cache_packet(
+        &self,
+        packet: &[u8],
+        proposed: &[u8],
+        stage: &super::super::binding_v2::Q04RootStageRecipeV1,
+        identity: &super::super::create_q04::Q04CutIdentityV1,
+        cache_uid: u32,
+    ) -> Result<crate::cache_residency::VerifiedClosedCacheOwnerReadbackV2,
+        super::super::create_q04::CreateQ04ErrorV1> {
+        use super::super::cache_readback_pin::CACHE_PIN_KEY;
+        use super::super::create_q04::CreateQ04ErrorV1;
+
+        self.recheck()?;
+        if cache_uid == 0 || identity.controller_uid() != self.controller_uid
+            || identity.nonce() != self.nonce || identity.project() != stage.project()
+            || identity.epoch() != stage.staged().base().next_generation()
+            || super::super::closed_policy_binding_digest_v2(proposed)? != identity.binding()
+        {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        let pin = self.journal.get(RecordNamespace::DesiredState, CACHE_PIN_KEY)
+            .ok_or(CreateQ04ErrorV1::ChangedCut)?;
+        let signer = crate::cache_residency::PinnedCacheOwnerReadbackSignerV1::decode(pin)?;
+        let challenge = super::super::staged_closed_policy_signer_challenge_v2(stage.staged(), proposed)?;
+        // The signed physical root belongs to the actual Controller. The
+        // separate Cache-view UID still governs named journal/idmap checks.
+        let observed = crate::cache_residency::verify_closed_cache_owner_readback_v2(
+            packet, &signer,
+            crate::cache_residency::CacheOwnerReadbackChallengeV1::new(challenge.nonce(), challenge.cut())?,
+            self.controller_uid,
+        )?;
+        if !observed.hold().is_held() || observed.hold().project() != identity.project()
+            || observed.hold().binding() != identity.binding() || observed.hold().epoch() != identity.epoch()
+            || observed.quota_digest() != identity.cache_quota()
+        {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        self.recheck()?;
+        Ok(observed)
+    }
+
+    // Preview borrows the actual completed gen1 owner before lending its same
+    // journal to the existing binding engine. No current-floor loan survives
+    // that mutable borrow and the returned Stage recipe confers no authority.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::policy_compiler) fn q04_preview_stage(
+        &mut self,
+        source_packet: &[u8],
+        expected_deployment_packet: &[u8],
+        deployment_signer_generation: u64,
+        deployment_key: &VerifyingKey,
+        project_packet: &[u8],
+        project_input: &[u8],
+        project_signer_generation: u64,
+        project_key: &VerifyingKey,
+        controller_gid: u32,
+        now_unix_seconds: i64,
+    ) -> Result<
+        super::super::binding_v2::Q04RootStageRecipeV1,
+        super::super::create_q04::CreateQ04ErrorV1,
+    > {
+        let project = {
+            let current = self.current_anchored_floor(source_packet)?;
+            current.recheck()?;
+            current.floor().project()
+        };
+        let recipe = super::super::binding_v2::q04_preview_stage_in_journal_v1(
+            &mut self.journal,
+            expected_deployment_packet,
+            deployment_signer_generation,
+            deployment_key,
+            project_packet,
+            project_input,
+            project_signer_generation,
+            project_key,
+            self.controller_uid,
+            controller_gid,
+            now_unix_seconds,
+            self.nonce,
+        )?;
+        if recipe.project() != project || recipe.staged().challenge() != self.nonce {
+            return Err(super::super::create_q04::CreateQ04ErrorV1::ChangedCut);
+        }
+
+        self.current_anchored_floor(source_packet)?.recheck()?;
+        Ok(recipe)
+    }
+
+    // The actual daemon's retained input bytes are verified against the same
+    // independently pinned Root rows. The returned encoding is nonissuing
+    // Preview DATA; neither a future native head nor a detached Cut enters it.
+    pub(in crate::policy_compiler) fn q04_encode_preview(
+        &self,
+        output: &mut Vec<u8>,
+        stage: &super::super::binding_v2::Q04RootStageRecipeV1,
+        inputs: &super::super::PolicyDeploymentInputsV1<'_>,
+        project_input: &[u8],
+        original_clock: aos_sandbox_core::RawPairedClockSample,
+        now_unix_seconds: i64,
+    ) -> Result<(), super::super::create_q04::CreateQ04ErrorV1> {
+        use super::super::create_q04::CreateQ04ErrorV1;
+        use super::super::project_source_v2::{HEAD_KEY_V2, INPUT_KEY_V2};
+
+        self.recheck()?;
+        let (project, _, _) = self.q04_signed_project_sources(project_input, inputs, now_unix_seconds)?;
+        if project.head().project() != stage.project()
+            || stage.staged().challenge() != self.nonce
+            || self.journal.get(RecordNamespace::DesiredState, INPUT_KEY_V2) != Some(project_input)
+        {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        let (sequence, names, before_rows) = self.journal.q04_root_before_rows_v1()?;
+        let deadline = original_clock.boottime_nanoseconds().checked_add(65_000_000_000)
+            .ok_or(CreateQ04ErrorV1::Bounds)?;
+        let mut metadata = [0; 120];
+        metadata[..16].copy_from_slice(&original_clock.host_boot_id());
+        metadata[16..24].copy_from_slice(&original_clock.boottime_nanoseconds().to_be_bytes());
+        metadata[24..32].copy_from_slice(&deadline.to_be_bytes());
+        metadata[32..40].copy_from_slice(&sequence.to_be_bytes());
+        metadata[40..88].copy_from_slice(&names.to_bytes());
+        metadata[88..120].copy_from_slice(before_rows.as_bytes());
+        let staged = stage.preview_fields();
+        let deployment_packet = self.journal.get(RecordNamespace::DesiredState, HEAD_KEY)
+            .ok_or(CreateQ04ErrorV1::ChangedCut)?;
+        let project_packet = self.journal.get(RecordNamespace::DesiredState, HEAD_KEY_V2)
+            .ok_or(CreateQ04ErrorV1::ChangedCut)?;
+        super::super::create_q04::encode_q04_preview_body_v1(
+            output,
+            [
+                &metadata, &staged, deployment_packet,
+                inputs.node, inputs.site, inputs.backend, inputs.catalogs,
+                project_packet, project_input,
+            ],
+            self.nonce,
+        )?;
+        self.recheck()?;
+        if self.journal.q04_root_before_rows_v1()? != (sequence, names, before_rows) {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        Ok(())
+    }
+
     /// Opens the actual fixed protected Root owner for one genesis flight.
     ///
     /// Both UIDs come from the daemon's privileged service configuration, not

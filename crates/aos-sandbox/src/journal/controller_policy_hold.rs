@@ -35,6 +35,13 @@ use super::{
     SourceDomainPolicyHoldV1,
 };
 
+#[cfg(target_os = "linux")]
+use crate::policy_compiler::create_q04::{
+    CONTROLLER_IDENTITY_KEY, CONTROLLER_PHASE_PREFIX, Q04CutIdentityV1,
+    CreateQ04ErrorV1, Q04EffectSubgateV1, Q04PhaseOwnerV1, Q04PhaseRecordV1,
+    Q04RootDecisionV1, Q04TransactionOwnerV1,
+};
+
 mod v8_pre_release_floor;
 mod v8_settlement;
 
@@ -575,6 +582,13 @@ impl ControllerPolicyHoldV1 {
         ))
     }
 
+    // Canonical comparison DATA only. A digest does not observe retirement or
+    // permit a transition; the Q04 native/owner engines establish that cut.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn q04_released_record_digest(self) -> Result<ObjectDigest, JournalError> {
+        Self { held: false, ..self }.record_digest()
+    }
+
     fn validate(self) -> Result<(), JournalError> {
         if self.operation.as_bytes() == &[0; 16]
             || self.sandbox.as_bytes() == &[0; 16]
@@ -653,6 +667,18 @@ impl ControllerPolicyHoldV1 {
 fn current(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
 ) -> Result<Option<ControllerPolicyHoldV1>, JournalError> {
+    current_readback(state).map(|readback| readback.hold)
+}
+
+struct ControllerHoldReadbackV1 {
+    hold: Option<ControllerPolicyHoldV1>,
+    #[cfg(target_os = "linux")]
+    q04: Option<ControllerQ04HistoryV1>,
+}
+
+fn current_readback(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+) -> Result<ControllerHoldReadbackV1, JournalError> {
     let mut hold = None;
     let mut ack = None;
     let mut attempt = None;
@@ -660,6 +686,8 @@ fn current(
     let mut v8_root_receipt = None;
     let mut v8_floor = None;
     let mut v8_settlement = None;
+    #[cfg(target_os = "linux")]
+    let mut q04 = false;
     for ((_, key), value) in state
         .range((RecordNamespace::ControllerPolicyHold, Vec::new())..)
         .take_while(|((namespace, _), _)| *namespace == RecordNamespace::ControllerPolicyHold)
@@ -681,6 +709,10 @@ fn current(
             }
             V8_SETTLEMENT_KEY if v8_settlement.is_none() => {
                 v8_settlement = Some(ControllerPolicyV8SettlementV1::decode(value)?)
+            }
+            #[cfg(target_os = "linux")]
+            key if key == CONTROLLER_IDENTITY_KEY || key.starts_with(CONTROLLER_PHASE_PREFIX) => {
+                q04 = true;
             }
             _ => return Err(JournalError::ProtectedBoundary),
         }
@@ -736,7 +768,436 @@ fn current(
     if hold.is_some_and(|hold| !hold.is_held()) && attempt.is_some() && v8_settlement.is_none() {
         return Err(JournalError::ProtectedBoundary);
     }
-    Ok(hold)
+    #[cfg(target_os = "linux")]
+    let q04 = if q04 {
+        if ack.is_some()
+            || attempt.is_some()
+            || v8_ack.is_some()
+            || v8_root_receipt.is_some()
+            || v8_floor.is_some()
+            || v8_settlement.is_some()
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Some(q04_history(state, hold.ok_or(JournalError::ProtectedBoundary)?)?)
+    } else {
+        None
+    };
+    Ok(ControllerHoldReadbackV1 {
+        hold,
+        #[cfg(target_os = "linux")]
+        q04,
+    })
+}
+
+// These are bounded historical DATA. Native membership and the complete
+// Create ledger are independently checked by the closed replay/transition.
+#[cfg(target_os = "linux")]
+pub(crate) struct ControllerQ04HistoryV1 {
+    pub(crate) identity: Q04CutIdentityV1,
+    pub(crate) phases: Vec<Q04PhaseRecordV1>,
+}
+
+#[cfg(target_os = "linux")]
+fn has_q04_history(state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>) -> bool {
+    state
+        .range((RecordNamespace::ControllerPolicyHold, Vec::new())..)
+        .take_while(|((namespace, _), _)| *namespace == RecordNamespace::ControllerPolicyHold)
+        .any(|((_, key), _)| {
+            key == CONTROLLER_IDENTITY_KEY || key.starts_with(CONTROLLER_PHASE_PREFIX)
+        })
+}
+
+// Old private hold transitions are not a Q04 waiver. Check this even when
+// they select the existing policy-hold transition flag; only the new named
+// closed action may later cross this purpose boundary.
+#[cfg(target_os = "linux")]
+pub(super) fn require_q04_ordinary_boundary(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    transaction: &JournalTransaction,
+) -> Result<(), JournalError> {
+    if has_q04_history(state)
+        || transaction.records().iter().any(|record| {
+            (record.namespace() == RecordNamespace::ControllerPolicyHold
+                && (record.key() == CONTROLLER_IDENTITY_KEY
+                    || record.key().starts_with(CONTROLLER_PHASE_PREFIX)))
+                || (record.namespace() == RecordNamespace::Effect
+                    && record.value().is_some_and(|bytes| bytes.first() == Some(&6)))
+        })
+    {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn q04_history(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    hold: ControllerPolicyHoldV1,
+) -> Result<ControllerQ04HistoryV1, JournalError> {
+    let identity = state
+        .get(&(RecordNamespace::ControllerPolicyHold, CONTROLLER_IDENTITY_KEY.to_vec()))
+        .ok_or(JournalError::ProtectedBoundary)?;
+    let identity = Q04CutIdentityV1::decode(identity)?;
+    if hold.operation() != identity.operation()
+        || hold.sandbox() != identity.sandbox()
+        || hold.binding() != identity.binding()
+        || hold.epoch() != identity.epoch()
+    {
+        return Err(JournalError::ProtectedBoundary);
+    }
+
+    let mut phases = Vec::<Q04PhaseRecordV1>::new();
+    for ((_, key), bytes) in state
+        .range((RecordNamespace::ControllerPolicyHold, Vec::new())..)
+        .take_while(|((namespace, _), _)| *namespace == RecordNamespace::ControllerPolicyHold)
+    {
+        if !key.starts_with(CONTROLLER_PHASE_PREFIX) {
+            continue;
+        }
+        if key.len() != CONTROLLER_PHASE_PREFIX.len() + 1 {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        let phase = Q04PhaseRecordV1::decode(Q04PhaseOwnerV1::Controller, bytes, &identity)?;
+        let expected = u8::try_from(phases.len() + 1)
+            .map_err(|_| JournalError::ProtectedBoundary)?;
+        if phase.phase() != expected
+            || key[CONTROLLER_PHASE_PREFIX.len()] != expected
+            || phase.bytes()[512..544] != *identity.before_controller_rows().as_bytes()
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        let predecessor = if let Some(prior) = phases.last() {
+            phase.require_successor(prior)?;
+            prior.digest()
+        } else {
+            identity.before_controller_rows()
+        };
+        if phase.native_transaction_id()
+            != Q04TransactionOwnerV1::Controller.transaction_id(&identity, expected, predecessor)?
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        phases.push(phase);
+    }
+
+    let first = phases.first().ok_or(JournalError::ProtectedBoundary)?;
+    let last = phases.last().ok_or(JournalError::ProtectedBoundary)?;
+    let held = ControllerPolicyHoldV1 { held: true, ..hold }.record_digest()?;
+    let released = ControllerPolicyHoldV1 { held: false, ..hold }.record_digest()?;
+    if first.bytes()[288..320] != *held.as_bytes()
+        || hold.is_held() != (last.phase() < 5)
+        || (last.phase() >= 5 && last.bytes()[320..352] != *released.as_bytes())
+    {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    Ok(ControllerQ04HistoryV1 { identity, phases })
+}
+
+/// Retains one closed native recipe, never a currentness or commit permit.
+///
+/// Only the private installed Q04 caller may combine it with the same real
+/// Controller writer and original Root/Source/Cache/clock loans. Preflight
+/// validates recipe DATA; every append repeats full original admission.
+#[cfg(target_os = "linux")]
+pub(crate) struct ControllerQ04TransitionV1<'cut> {
+    ledger: &'cut crate::reconciler::OriginalQ04ControllerLedgerV1,
+    identity: &'cut Q04CutIdentityV1,
+    phase: &'cut Q04PhaseRecordV1,
+    decision: Option<&'cut Q04RootDecisionV1>,
+    gate: Option<&'cut Q04EffectSubgateV1>,
+    transaction: JournalTransaction,
+}
+
+#[cfg(target_os = "linux")]
+impl<'cut> ControllerQ04TransitionV1<'cut> {
+    pub(crate) fn recipe(
+        ledger: &'cut crate::reconciler::OriginalQ04ControllerLedgerV1,
+        identity: &'cut Q04CutIdentityV1,
+        phase: &'cut Q04PhaseRecordV1,
+        decision: Option<&'cut Q04RootDecisionV1>,
+        gate: Option<&'cut Q04EffectSubgateV1>,
+    ) -> Result<Self, CreateQ04ErrorV1> {
+        ledger.require_identity(identity)?;
+        Q04PhaseRecordV1::decode(Q04PhaseOwnerV1::Controller, phase.bytes(), identity)?;
+        let number = phase.phase();
+        let held = ControllerPolicyHoldV1::new(
+            identity.operation(), identity.sandbox(), ledger.source_commitment(),
+            identity.binding(), identity.epoch(),
+        )?;
+        if phase.bytes()[288..320] != *held.record_digest()?.as_bytes()
+            || phase.bytes()[512..544] != *identity.before_controller_rows().as_bytes()
+        {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        if number >= 2 {
+            let decision = decision.ok_or(CreateQ04ErrorV1::ChangedCut)?;
+            Q04RootDecisionV1::decode(decision.bytes(), identity)?;
+            if phase.bytes()[96..128] != *decision.digest().as_bytes()
+                || phase.bytes()[352..384] != decision.bytes()[216..248]
+                || phase.bytes()[416..448] != decision.bytes()[248..280]
+            {
+                return Err(CreateQ04ErrorV1::ChangedCut);
+            }
+        } else if decision.is_some() {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+
+        let writes_effect = matches!(number, 2 | 5 | 7 | 8);
+        if gate.is_some() != writes_effect {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        if let Some(gate) = gate {
+            gate.require_identity(identity, decision.ok_or(CreateQ04ErrorV1::ChangedCut)?)?;
+            if gate.historical_consumed_record()?.digest().as_bytes() != &phase.bytes()[128..160]
+                || gate.status() != match number { 2 => 1, 5 => 2, 7 => 3, 8 => 4, _ => 0 }
+                || (number != 2 && gate.acknowledgement() != phase.acknowledgement())
+            {
+                return Err(CreateQ04ErrorV1::ChangedCut);
+            }
+        }
+
+        let mut records = Vec::new();
+        records.try_reserve_exact(match number { 1 | 5 => 3, 2 | 7 | 8 => 2, _ => 1 })?;
+        if number == 1 || number == 5 {
+            let row = if number == 1 { held } else { ControllerPolicyHoldV1 { held: false, ..held } };
+            if number == 5 && phase.bytes()[320..352] != *row.record_digest()?.as_bytes() {
+                return Err(CreateQ04ErrorV1::ChangedCut);
+            }
+            records.push(JournalRecord::put(
+                RecordNamespace::ControllerPolicyHold, KEY.to_vec(), row.encode()?.to_vec(),
+            ));
+        }
+        if number == 1 {
+            records.push(JournalRecord::put(
+                RecordNamespace::ControllerPolicyHold, CONTROLLER_IDENTITY_KEY.to_vec(),
+                identity.bytes().to_vec(),
+            ));
+        }
+        if let Some(gate) = gate {
+            records.push(ledger.effect_record(gate)?);
+        }
+        let mut phase_key = CONTROLLER_PHASE_PREFIX.to_vec();
+        phase_key.push(number);
+        records.push(JournalRecord::put(
+            RecordNamespace::ControllerPolicyHold, phase_key, phase.bytes().to_vec(),
+        ));
+        let predecessor = if number == 1 {
+            identity.before_controller_rows()
+        } else {
+            ObjectDigest::from_bytes(phase.bytes()[64..96].try_into()
+                .map_err(|_| JournalError::ProtectedBoundary)?)
+        };
+        let transaction = JournalTransaction::new(
+            Q04TransactionOwnerV1::Controller.transaction_id(identity, number, predecessor)?,
+            records,
+        )?;
+        if transaction.id() != &phase.native_transaction_id() {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        Ok(Self { ledger, identity, phase, decision, gate, transaction })
+    }
+
+    pub(crate) fn transaction(&self) -> &JournalTransaction {
+        &self.transaction
+    }
+
+    pub(crate) fn ledger(&self) -> &crate::reconciler::OriginalQ04ControllerLedgerV1 {
+        self.ledger
+    }
+
+    pub(crate) fn identity(&self) -> &Q04CutIdentityV1 {
+        self.identity
+    }
+
+    pub(crate) fn phase_record(&self) -> &Q04PhaseRecordV1 {
+        self.phase
+    }
+
+    pub(crate) fn phase_number(&self) -> u8 {
+        self.phase.phase()
+    }
+
+    pub(crate) fn same_original_cut(&self, other: &Self) -> bool {
+        self.identity == other.identity && std::ptr::eq(self.ledger, other.ledger)
+    }
+
+    pub(crate) fn require_signing_binding(&self, proposed: &[u8]) -> Result<(), CreateQ04ErrorV1> {
+        if crate::policy_compiler::closed_policy_binding_digest_v2(proposed)? != self.identity.binding() {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn require_fixed_owner(&self, journal: &Journal) -> Result<(), CreateQ04ErrorV1> {
+        crate::policy_compiler::validate_current_create_controller_journal_v1(journal)?;
+        if journal.protected_owner_uid()? != self.identity.controller_uid() {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn require_current_readback(&self, journal: &Journal) -> Result<(), CreateQ04ErrorV1> {
+        self.require_fixed_owner(journal)?;
+        let current = current_readback(&journal.state)?;
+        let history = current.q04.ok_or(CreateQ04ErrorV1::ChangedCut)?;
+        if history.identity != *self.identity
+            || history.phases.len() != usize::from(self.phase.phase())
+            || history.phases.last() != Some(self.phase)
+            || current.hold.map(ControllerPolicyHoldV1::source)
+                != Some(self.ledger.source_commitment())
+            || !crate::reconciler::require_q04_original_pending_v1(journal)?
+        {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        Ok(())
+    }
+}
+
+// Derive the actual held prefix from the sole canonical history engine, not
+// from a nominated phase/sequence. The full native observer separately joins
+// these exact recipe bytes to the same original Journal's committed history.
+#[cfg(target_os = "linux")]
+pub(super) fn require_q04_signing_prefix(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    transitions: &[ControllerQ04TransitionV1<'_>],
+) -> Result<usize, CreateQ04ErrorV1> {
+    require_q04_owner_prefix(state, transitions, Q04ControllerPrefixPurposeV1::HeldSigner)
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn require_q04_refresh_prefix(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    transitions: &[ControllerQ04TransitionV1<'_>],
+) -> Result<usize, CreateQ04ErrorV1> {
+    require_q04_owner_prefix(state, transitions, Q04ControllerPrefixPurposeV1::Gen1Refresh)
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+enum Q04ControllerPrefixPurposeV1 {
+    HeldSigner,
+    Gen1Refresh,
+}
+
+// These two private purposes share exact canonical history/recipe matching.
+// Gen1 refresh may observe a released prefix but cannot mint a held packet,
+// waive a commit gate or change any phase. The signer remains restricted1..4.
+#[cfg(target_os = "linux")]
+fn require_q04_owner_prefix(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    transitions: &[ControllerQ04TransitionV1<'_>],
+    purpose: Q04ControllerPrefixPurposeV1,
+) -> Result<usize, CreateQ04ErrorV1> {
+    if transitions.len() != 8 {
+        return Err(CreateQ04ErrorV1::ChangedCut);
+    }
+    let readback = current_readback(state)?;
+    let held = readback.hold.filter(|hold| {
+        matches!(purpose, Q04ControllerPrefixPurposeV1::Gen1Refresh) || hold.is_held()
+    })
+        .ok_or(CreateQ04ErrorV1::ChangedCut)?;
+    let history = readback.q04.ok_or(CreateQ04ErrorV1::ChangedCut)?;
+    let prefix = history.phases.len();
+    let last = match purpose {
+        Q04ControllerPrefixPurposeV1::HeldSigner => 4,
+        Q04ControllerPrefixPurposeV1::Gen1Refresh => 8,
+    };
+    if !(1..=last).contains(&prefix)
+        || history.identity != *transitions[0].identity
+        || held.source() != transitions[0].ledger.source_commitment()
+    {
+        return Err(CreateQ04ErrorV1::ChangedCut);
+    }
+    for (index, transition) in transitions.iter().enumerate() {
+        if !transition.same_original_cut(&transitions[0])
+            || transition.phase_number() != u8::try_from(index + 1)
+                .map_err(|_| CreateQ04ErrorV1::Bounds)?
+            || (index < prefix && history.phases.get(index) != Some(transition.phase))
+        {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+    }
+    Ok(prefix)
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn require_q04_signing_original(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+) -> Result<(), CreateQ04ErrorV1> {
+    let readback = current_readback(state)?;
+    if readback.q04.is_some() || readback.hold.is_some_and(|hold| hold.is_held()) {
+        return Err(CreateQ04ErrorV1::ChangedCut);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn require_q04_transition(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    transaction: &JournalTransaction,
+    transition: &ControllerQ04TransitionV1<'_>,
+) -> Result<(), JournalError> {
+    if transaction != transition.transaction() {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    let prior_gate = transition.ledger.require_materialized_rows(state)
+        .map_err(|cause| JournalError::Q04ControllerLedger(Box::new(cause)))?;
+    let readback = current_readback(state)?;
+    let number = transition.phase.phase();
+    if number == 1 {
+        if readback.hold.is_some() || readback.q04.is_some() || prior_gate.is_some() {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        return Ok(());
+    }
+    let history = readback.q04.ok_or(JournalError::ProtectedBoundary)?;
+    let prior = history.phases.last().ok_or(JournalError::ProtectedBoundary)?;
+    if history.identity != *transition.identity
+        || history.phases.len() + 1 != usize::from(number)
+        || readback.hold.map(ControllerPolicyHoldV1::source)
+            != Some(transition.ledger.source_commitment())
+    {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    transition.phase.require_successor(prior)?;
+    if matches!(number, 4 | 7)
+        && transition.phase.acknowledgement() != prior.acknowledgement()
+    {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    if prior.phase() == 1 {
+        if prior_gate.is_some() {
+            return Err(JournalError::ProtectedBoundary);
+        }
+    } else {
+        let prior_gate = prior_gate.ok_or(JournalError::ProtectedBoundary)?;
+        prior_gate.require_identity(
+            transition.identity, transition.decision.ok_or(JournalError::ProtectedBoundary)?,
+        )?;
+        if prior_gate.status() != match prior.phase() { 2..=4 => 1, 5..=6 => 2, 7 => 3, 8 => 4, _ => 0 }
+            || prior_gate.historical_consumed_record()?.digest().as_bytes() != &prior.bytes()[128..160]
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        let acknowledgement_phase = match prior_gate.status() {
+            1 => None,
+            2 => Some(5),
+            3 => Some(6),
+            4 => Some(8),
+            _ => return Err(JournalError::ProtectedBoundary),
+        };
+        if let Some(number) = acknowledgement_phase {
+            let phase = history.phases.get(number - 1).ok_or(JournalError::ProtectedBoundary)?;
+            if prior_gate.acknowledgement() != phase.acknowledgement() {
+                return Err(JournalError::ProtectedBoundary);
+            }
+        }
+        if let Some(gate) = transition.gate {
+            gate.require_successor(&prior_gate)?;
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn v8_root_receipt_matches_ack(
@@ -908,6 +1369,10 @@ pub(super) fn require_no_mutation(
     {
         return Err(JournalError::ProtectedBoundary);
     }
+    #[cfg(target_os = "linux")]
+    if has_q04_history(state) {
+        return Err(JournalError::ProtectedBoundary);
+    }
     Ok(())
 }
 
@@ -917,6 +1382,10 @@ pub(super) fn require_no_compaction(
     if current(state)?.is_some_and(ControllerPolicyHoldV1::is_held)
         || current_v8_attempt(state)?.is_some()
     {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    #[cfg(target_os = "linux")]
+    if has_q04_history(state) {
         return Err(JournalError::ProtectedBoundary);
     }
     Ok(())
@@ -1192,6 +1661,14 @@ impl Journal {
     ) -> Result<Option<ControllerPolicyHoldV1>, JournalError> {
         ensure_controller(self)?;
         current(&self.state)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn controller_q04_history_v1(
+        &self,
+    ) -> Result<Option<ControllerQ04HistoryV1>, JournalError> {
+        ensure_controller(self)?;
+        Ok(current_readback(&self.state)?.q04)
     }
 
     /// Reads the durable no-Apply Controller acknowledgment under its writer.

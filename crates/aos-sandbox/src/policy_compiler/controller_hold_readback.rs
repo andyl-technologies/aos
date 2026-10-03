@@ -232,15 +232,7 @@ fn sign_controller_hold_readback_at(
     let snapshot = journal
         .claim_protected_authority(RecordNamespace::ControllerPolicyHold)?
         .snapshot()?;
-    let fields = VerifiedControllerHoldReadbackV1 {
-        controller_uid: uid,
-        journal_sequence: snapshot.sequence(),
-        operation: held.operation(),
-        sandbox: held.sandbox(),
-        source: held.source(),
-        binding: held.binding(),
-        epoch: held.epoch(),
-    };
+    let fields = fields_from_hold(held, uid, snapshot.sequence());
     let bytes = sign_fields(fields, challenge, signer_generation, signing_key)?;
 
     journal.require_protected_named_location(
@@ -257,6 +249,99 @@ fn sign_controller_hold_readback_at(
     }
     require_current_source(journal, held)?;
     Ok(bytes)
+}
+
+fn fields_from_hold(
+    held: ControllerPolicyHoldV1,
+    uid: u32,
+    sequence: u64,
+) -> VerifiedControllerHoldReadbackV1 {
+    VerifiedControllerHoldReadbackV1 {
+        controller_uid: uid,
+        journal_sequence: sequence,
+        operation: held.operation(),
+        sandbox: held.sandbox(),
+        source: held.source(),
+        binding: held.binding(),
+        epoch: held.epoch(),
+    }
+}
+
+// This is not the ordinary namespace snapshot path. Only the actual closed
+// Q04 phase recipes/current history can join its mixed Controller ledger;
+// output and cause belong to the same resident invocation before postchecks.
+#[cfg(target_os = "linux")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn sign_q04_held_controller_v1(
+    journal: &mut Journal,
+    transitions: &[crate::journal::ControllerQ04TransitionV1<'_>],
+    challenge: ControllerHoldReadbackChallengeV1,
+    signer_generation: u64,
+    signing_key: &SigningKey,
+    packet: &mut Option<[u8; CLOSED_CONTROLLER_HOLD_READBACK_BYTES_V1]>,
+    first_cause: &mut Option<super::create_q04::CreateQ04ErrorV1>,
+    postcheck_debt: &mut Option<super::create_q04::CreateQ04ErrorV1>,
+) -> Result<(), ()> {
+    use super::create_q04::CreateQ04ErrorV1;
+
+    if packet.is_some() || first_cause.is_some() || postcheck_debt.is_some() {
+        first_cause.get_or_insert(CreateQ04ErrorV1::ChangedCut);
+        return Err(());
+    }
+    let result = sign_q04_held_controller_original(
+        journal, transitions, challenge, signer_generation, signing_key, packet, first_cause,
+    );
+    super::create_q04::finish_controller_q04_signing_v1(result, first_cause, postcheck_debt)
+}
+
+#[cfg(target_os = "linux")]
+#[allow(clippy::too_many_arguments)]
+fn sign_q04_held_controller_original(
+    journal: &mut Journal,
+    transitions: &[crate::journal::ControllerQ04TransitionV1<'_>],
+    challenge: ControllerHoldReadbackChallengeV1,
+    signer_generation: u64,
+    signing_key: &SigningKey,
+    packet: &mut Option<[u8; CLOSED_CONTROLLER_HOLD_READBACK_BYTES_V1]>,
+    first_cause: &mut Option<super::create_q04::CreateQ04ErrorV1>,
+) -> Result<(), super::create_q04::CreateQ04ErrorV1> {
+    use super::create_q04::CreateQ04ErrorV1;
+
+    let uid = rustix::process::getuid().as_raw();
+    if uid == 0 || signer_generation == 0 {
+        return Err(ControllerHoldReadbackErrorV1::NonCanonical.into());
+    }
+    let ledger = transitions.first().ok_or(CreateQ04ErrorV1::ChangedCut)?.ledger();
+    let directory = Path::new(CONTROLLER_DIRECTORY);
+    journal.require_protected_named_location(
+        directory, CONTROLLER_JOURNAL, uid, production_journal_limits(),
+    )?;
+    let before = journal.q04_controller_signing_bookend_v1(ledger, Some(transitions))?;
+    let held = before.2.filter(|hold| hold.is_held())
+        .ok_or(ControllerHoldReadbackErrorV1::Stale)?;
+    require_current_source(journal, held)?;
+    let fields = fields_from_hold(held, uid, before.0);
+
+    match sign_fields(fields, challenge, signer_generation, signing_key) {
+        Ok(returned) => *packet = Some(returned),
+        Err(error) => *first_cause = Some(error.into()),
+    }
+
+    journal.require_protected_named_location(
+        directory, CONTROLLER_JOURNAL, uid, production_journal_limits(),
+    )?;
+    if journal.q04_controller_signing_bookend_v1(ledger, Some(transitions))? != before {
+        return Err(ControllerHoldReadbackErrorV1::Stale.into());
+    }
+    require_current_source(journal, held)?;
+    let current = journal.controller_policy_hold_v1()?
+        .filter(|hold| hold.is_held()).ok_or(ControllerHoldReadbackErrorV1::Stale)?;
+    if fields_from_hold(current, uid, journal.snapshot_sequence()) != fields
+        || journal.q04_controller_signing_bookend_v1(ledger, Some(transitions))? != before
+    {
+        return Err(ControllerHoldReadbackErrorV1::Stale.into());
+    }
+    Ok(())
 }
 
 fn require_current_source(

@@ -33,6 +33,12 @@ use crate::normal_root::{OriginalNormalRootPeerV1, ProductionControllerNormalRoo
 use crate::policy_compiler::controller_readback_session::fresh_root_nonce;
 const MAXIMUM_FLIGHT: Duration = Duration::from_secs(60);
 
+#[derive(Clone, Copy)]
+enum Q04ReceivePositionV1 {
+    Open,
+    FinalSourceObservation,
+}
+
 /// Borrows one actual Root prepare flight; decoding an intent cannot create it.
 pub struct HeldRootSourceGenesisIntentV1<'flight> {
     origin: &'flight OriginalRootGenesisFlightV1<'flight>,
@@ -141,7 +147,7 @@ impl CompletedRootSourceGenesisFloorV1<'_, '_> {
 
 // Private to the same-flight coordinator. There is no adoption constructor
 // accepting caller-supplied peers, subjects, floor bytes, or ready flags.
-pub(super) struct OriginalRootGenesisFlightV1<'profile> {
+pub(in crate::policy_compiler) struct OriginalRootGenesisFlightV1<'profile> {
     stream: RefCell<RetainedUnixStream>,
     peer: OriginalNormalRootPeerV1<'profile>,
     clock: RawPairedClockSample,
@@ -194,6 +200,20 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
         adopted: &mut Option<RetainedUnixStream>,
         parked: &mut Option<Self>,
     ) -> Result<(), SourceGenesisErrorV1> {
+        let client_nonce = Self::park_connection(profile, raw, adopted, parked)?;
+        let origin = parked.as_mut().ok_or(SourceGenesisErrorV1::Stale)?;
+        origin.establish_hello(client_nonce)
+    }
+
+    // This is the same connection/adoption/peer engine for the old issuer and
+    // Q04. The latter selects only a distinct fixed query and retaining receive
+    // below; it does not accept an endpoint or invoke a caller trust callback.
+    fn park_connection(
+        profile: &'profile ProductionControllerNormalRootProfileV1,
+        raw: &mut Option<OwnedFd>,
+        adopted: &mut Option<RetainedUnixStream>,
+        parked: &mut Option<Self>,
+    ) -> Result<[u8; 16], SourceGenesisErrorV1> {
         if parked.is_some() || adopted.is_some() || raw.is_some() {
             return Err(SourceGenesisErrorV1::Conflict);
         }
@@ -218,8 +238,7 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
             source_uid,
         });
 
-        let origin = parked.as_mut().ok_or(SourceGenesisErrorV1::Stale)?;
-        origin.establish_hello(client_nonce)
+        Ok(client_nonce)
     }
 
     fn establish_hello(&mut self, client_nonce: [u8; 16]) -> Result<(), SourceGenesisErrorV1> {
@@ -228,6 +247,10 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
         request[8..24].copy_from_slice(&client_nonce);
         self.write(&request)?;
         let hello = self.receive_exact(56)?;
+        self.accept_hello(&hello, client_nonce)
+    }
+
+    fn accept_hello(&mut self, hello: &[u8], client_nonce: [u8; 16]) -> Result<(), SourceGenesisErrorV1> {
         if hello.get(..8) != Some(ROOT_SOURCE_GENESIS_HELLO_MAGIC_V1.as_slice())
             || hello[8..16] != [0, 1, 0, 0, 0, 0, 0, 0]
             || take::<16>(&hello, 16)? != client_nonce
@@ -239,6 +262,261 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
         }
         self.nonce = take(&hello, 32)?;
         self.recheck()
+    }
+
+    pub(in crate::policy_compiler) fn connect_q04_parked(
+        profile: &'profile ProductionControllerNormalRootProfileV1,
+        raw: &mut Option<OwnedFd>,
+        adopted: &mut Option<RetainedUnixStream>,
+        parked: &mut Option<Self>,
+        hello: &mut Vec<u8>,
+        received: &mut Option<Result<
+            UnixStreamSubjectChunk,
+            aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1,
+        >>,
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
+
+        if !hello.is_empty() || received.is_some() {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        let client_nonce = Self::park_connection(profile, raw, adopted, parked)?;
+        let origin = parked.as_mut().ok_or(CreateQ04ErrorV1::ChangedCut)?;
+        let mut request = [0; 32];
+        request[..8].copy_from_slice(b"AOSSGQ04");
+        request[8..24].copy_from_slice(&client_nonce);
+        origin.write(&request)?;
+        origin.receive_q04_exact(56, hello, received)?;
+        origin.accept_hello(hello, client_nonce)?;
+        Ok(())
+    }
+
+    // The enclosing invocation already owns both slots. No partial or owning
+    // fatal result can disappear through a caller's post-receive boundary.
+    pub(in crate::policy_compiler) fn receive_q04_exact(
+        &self,
+        length: usize,
+        output: &mut Vec<u8>,
+        received: &mut Option<Result<
+            UnixStreamSubjectChunk,
+            aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1,
+        >>,
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        self.receive_q04_at_position(length, output, received, Q04ReceivePositionV1::Open)
+    }
+
+    // Only the actual C8 continuation selects this fixed last DATA response.
+    // Root may close immediately after sending it, so original role/subject
+    // and clock checks remain, but an open queue is not a terminal invariant.
+    pub(in crate::policy_compiler) fn receive_q04_final_source_observation(
+        &self,
+        output: &mut Vec<u8>,
+        received: &mut Option<Result<
+            UnixStreamSubjectChunk,
+            aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1,
+        >>,
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        self.receive_q04_at_position(
+            ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1
+                + super::super::SOURCE_TREE_GENESIS_READBACK_BYTES_V1,
+            output, received, Q04ReceivePositionV1::FinalSourceObservation,
+        )
+    }
+
+    fn require_q04_receive_position(
+        &self,
+        position: Q04ReceivePositionV1,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        match position {
+            Q04ReceivePositionV1::Open => self.recheck(),
+            Q04ReceivePositionV1::FinalSourceObservation => self.q04_terminal_clock().map(|_| ()),
+        }
+    }
+
+    fn receive_q04_at_position(
+        &self,
+        length: usize,
+        output: &mut Vec<u8>,
+        received: &mut Option<Result<
+            UnixStreamSubjectChunk,
+            aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1,
+        >>,
+        position: Q04ReceivePositionV1,
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
+
+        if length == 0 || length > 4096 || !output.is_empty() || received.is_some() {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        output.try_reserve_exact(length)?;
+        while output.len() < length {
+            self.require_q04_receive_position(position)?;
+            *received = Some(self.stream.try_borrow_mut()
+                .map_err(|_| CreateQ04ErrorV1::ChangedCut)?
+                .try_receive_subject_chunk_retaining(length - output.len()));
+
+            let nonconsuming = match received.as_ref() {
+                Some(Err(error)) => {
+                    error.is_nonconsuming_would_block() || error.is_nonconsuming_interrupted()
+                }
+                Some(Ok(_)) => false,
+                None => return Err(CreateQ04ErrorV1::ChangedCut),
+            };
+            if nonconsuming {
+                *received = None;
+                let stream = self.stream.try_borrow()
+                    .map_err(|_| CreateQ04ErrorV1::ChangedCut)?;
+                transport::wait(stream.as_fd(), rustix::event::PollFlags::IN,
+                    self.started + MAXIMUM_FLIGHT)?;
+                continue;
+            }
+            if matches!(received, Some(Err(_))) {
+                self.poisoned.set(true);
+                return match received.take() {
+                    Some(Err(first)) => Err(first.into()),
+                    Some(Ok(chunk)) => {
+                        *received = Some(Ok(chunk));
+                        Err(CreateQ04ErrorV1::ChangedCut)
+                    }
+                    None => Err(CreateQ04ErrorV1::ChangedCut),
+                };
+            }
+
+            let chunk = received.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(CreateQ04ErrorV1::ChangedCut)?;
+            match position {
+                Q04ReceivePositionV1::Open => self.require_root_chunk(chunk)?,
+                Q04ReceivePositionV1::FinalSourceObservation => {
+                    self.q04_terminal_clock()?;
+                    let stream = self.stream.try_borrow()
+                        .map_err(|_| CreateQ04ErrorV1::ChangedCut)?;
+                    self.peer.require_chunk(&stream, chunk)
+                        .map_err(|_| SourceGenesisErrorV1::Stale)?;
+                }
+            }
+            output.extend_from_slice(chunk.payload());
+            self.require_q04_receive_position(position)?;
+            *received = None;
+        }
+        self.require_q04_receive_position(position)?;
+        Ok(())
+    }
+
+    pub(in crate::policy_compiler) fn q04_original_clock(&self) -> Result<RawPairedClockSample, SourceGenesisErrorV1> {
+        self.signing_boundary_clock()?;
+        Ok(self.clock)
+    }
+
+    pub(in crate::policy_compiler) fn q04_current_clock(&self) -> Result<RawPairedClockSample, SourceGenesisErrorV1> {
+        self.signing_boundary_clock()
+    }
+
+    pub(in crate::policy_compiler) fn q04_nonce(&self) -> Result<[u8; 16], SourceGenesisErrorV1> {
+        self.recheck()?;
+        if self.nonce == [0; 16] {
+            return Err(SourceGenesisErrorV1::Stale);
+        }
+        Ok(self.nonce)
+    }
+
+    pub(in crate::policy_compiler) fn q04_send_original(&self, bytes: &[u8]) -> Result<(), SourceGenesisErrorV1> {
+        self.write(bytes)
+    }
+
+    // Only the Q04 final receipt calls this position after actual Root7/C8
+    // and its last same-flight gen1 observation. The original process/profile
+    // and socket identity remain mandatory; an open receive queue does not.
+    pub(in crate::policy_compiler) fn q04_terminal_clock(
+        &self,
+    ) -> Result<RawPairedClockSample, SourceGenesisErrorV1> {
+        if self.poisoned.get() || self.started.elapsed() >= MAXIMUM_FLIGHT {
+            return Err(SourceGenesisErrorV1::Stale);
+        }
+        let stream = self.stream.try_borrow().map_err(|_| SourceGenesisErrorV1::Stale)?;
+        stream.revalidate_original()?;
+        self.peer.recheck_stream(&stream).map_err(|_| SourceGenesisErrorV1::Stale)?;
+        if self.source_uid != self.peer.source_uid() {
+            return Err(SourceGenesisErrorV1::Stale);
+        }
+        let now = kernel_pair()?;
+        self.clock.validate_later_sample(now).map_err(|_| SourceGenesisErrorV1::Stale)?;
+        transport::require_remaining(self.started + MAXIMUM_FLIGHT)?;
+        Ok(now)
+    }
+
+    pub(in crate::policy_compiler) fn q04_terminal_nonce(&self) -> Result<[u8; 16], SourceGenesisErrorV1> {
+        self.q04_terminal_clock()?;
+        if self.nonce == [0; 16] {
+            return Err(SourceGenesisErrorV1::Stale);
+        }
+        Ok(self.nonce)
+    }
+
+    pub(in crate::policy_compiler) fn q04_terminal_original_clock(
+        &self,
+    ) -> Result<RawPairedClockSample, SourceGenesisErrorV1> {
+        self.q04_terminal_clock()?;
+        Ok(self.clock)
+    }
+
+    pub(in crate::policy_compiler) fn q04_expect_original_shutdown(
+        &self,
+        observation: &mut Option<Result<usize, rustix::io::Errno>>,
+        byte: &mut [u8; 1],
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
+
+        if observation.is_some() {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        loop {
+            self.q04_terminal_clock()?;
+            let stream = self.stream.try_borrow().map_err(|_| CreateQ04ErrorV1::ChangedCut)?;
+            *observation = Some(rustix::net::recv(
+                stream.as_fd(), byte, rustix::net::RecvFlags::PEEK | rustix::net::RecvFlags::DONTWAIT,
+            ));
+            drop(stream);
+            // The raw result and peek byte are owned by the invocation before
+            // either classification or these potentially slow final checks.
+            self.q04_terminal_clock()?;
+            match observation.as_ref() {
+                Some(Ok(0)) => return Ok(()),
+                Some(Ok(_)) => return Err(CreateQ04ErrorV1::ChangedCut),
+                Some(Err(rustix::io::Errno::AGAIN | rustix::io::Errno::INTR)) => {
+                    *observation = None;
+                    let stream = self.stream.try_borrow().map_err(|_| CreateQ04ErrorV1::ChangedCut)?;
+                    transport::wait(stream.as_fd(), rustix::event::PollFlags::IN, self.started + MAXIMUM_FLIGHT)?;
+                }
+                Some(Err(first)) => return Err(std::io::Error::from(*first).into()),
+                None => return Err(CreateQ04ErrorV1::ChangedCut),
+            }
+        }
+    }
+
+    // The same old receipt/parser and original owner construct this short
+    // proof. Q04 only supplies a retaining receive at its preceding boundary.
+    pub(in crate::policy_compiler) fn q04_floor_from_frame<'flight>(
+        &'flight self,
+        controller: &HeldControllerSourceGenesisV1<'_>,
+        original_frame: &[u8],
+    ) -> Result<RootSourceGenesisFloorProofV1<'flight>, SourceGenesisErrorV1> {
+        let payload = decode_root_source_genesis_frame_v1(original_frame, Phase::Anchored, self.nonce)?;
+        self.floor_from_original_payload(controller, payload)
+    }
+
+    pub(in crate::policy_compiler) fn q04_completed_from_frame<'completed, 'flight>(
+        &self,
+        proof: &'completed RootSourceGenesisFloorProofV1<'flight>,
+        original_frame: &[u8],
+    ) -> Result<CompletedRootSourceGenesisFloorV1<'completed, 'flight>, SourceGenesisErrorV1> {
+        if !std::ptr::eq(self, proof.origin) {
+            return Err(SourceGenesisErrorV1::Stale);
+        }
+        proof.recheck()?;
+        let payload = decode_root_source_genesis_frame_v1(original_frame, Phase::Completed, self.nonce)?;
+        require_completed_digest(payload, proof.floor().digest().as_bytes())?;
+        proof.recheck()?;
+        Ok(CompletedRootSourceGenesisFloorV1 { proof })
     }
 
     pub(super) fn issuance_clock(&self) -> Result<RawPairedClockSample, SourceGenesisErrorV1> {
@@ -553,7 +831,9 @@ impl Drop for OriginalRootGenesisFlightV1<'_> {
 
 // Creator pidfd liveness does not imply the daemon still retains this writer:
 // the server shuts down its original endpoint before releasing the journal.
-fn require_open_receive_queue(descriptor: BorrowedFd<'_>) -> Result<(), SourceGenesisErrorV1> {
+pub(in crate::policy_compiler) fn require_open_receive_queue(
+    descriptor: BorrowedFd<'_>,
+) -> Result<(), SourceGenesisErrorV1> {
     use rustix::event::{PollFd, PollFlags, Timespec, poll};
 
     let mut descriptors = [PollFd::new(&descriptor, PollFlags::RDHUP)];
@@ -574,7 +854,7 @@ fn require_open_receive_queue(descriptor: BorrowedFd<'_>) -> Result<(), SourceGe
     Ok(())
 }
 
-fn kernel_pair() -> Result<RawPairedClockSample, SourceGenesisErrorV1> {
+pub(in crate::policy_compiler) fn kernel_pair() -> Result<RawPairedClockSample, SourceGenesisErrorV1> {
     let before = KernelBootId::current()?.into_bytes();
     let boot = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
     let wall = rustix::time::clock_gettime(rustix::time::ClockId::Realtime).tv_sec;

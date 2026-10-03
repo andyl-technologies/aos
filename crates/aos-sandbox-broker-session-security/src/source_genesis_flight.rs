@@ -23,6 +23,65 @@ use aos_sandbox::policy_compiler::{
 
 use crate::source_signer_exchange::request_root_source_tree_genesis_readback_v2;
 
+/// Joins actual existing gen1 observations inside the original Q04 Root owner.
+///
+/// The caller first parks its accepted socket and genuine startup in the
+/// shared negative attempt. Each RPC borrows that same Root owner; its actual
+/// returned `Result` is moved immediately into the loan before postchecks.
+/// This prelude neither prepares new genesis nor issues Stage/publication.
+/// It leaves Root owned for the later fully funded policy continuation.
+///
+/// # Errors
+/// Retains missing existing floor/Complete/ACK, malformed original packets,
+/// changed fixed custody or the actual Source RPC error in the same attempt.
+/// The caller must terminate without dropping the failed attempt or retrying.
+pub fn prepare_root_create_q04_existing_gen1_v1(
+    attempt: &mut aos_sandbox::policy_compiler::OriginalRootCreateQ04AttemptV1<'_>,
+    source_signer_uid: u32,
+    controller_gid: u32,
+) -> Result<(), ()> {
+    attempt.begin_existing_gen1()?;
+    let preparation = attempt.read_existing_source_preparation()?;
+    observe_root_create_q04_source(preparation, source_signer_uid, controller_gid)?;
+    attempt.send_existing_anchor()?;
+
+    let completion = attempt.read_existing_source_completion()?;
+    observe_root_create_q04_source(completion, source_signer_uid, controller_gid)?;
+    attempt.send_existing_completion()
+}
+
+/// Rejoins fresh gen1 DATA after one permitted original Controller/Source write.
+///
+/// The same original Root stream and owners remain retained. This calls the
+/// unchanged fixed Source signer engine and parks its returned result before
+/// any later check. It does not replace held Claim/ACK phase authentication,
+/// authorize a logical transition or renew the original deadline.
+///
+/// # Errors
+/// Retains malformed fresh Complete, mismatched Source/current floor, changed
+/// actual names/owners, original RPC cause or the unchanged original cutoff.
+pub fn refresh_root_create_q04_gen1_v1(
+    attempt: &mut aos_sandbox::policy_compiler::OriginalRootCreateQ04AttemptV1<'_>,
+    source_signer_uid: u32,
+    controller_gid: u32,
+) -> Result<(), ()> {
+    let observation = attempt.read_current_gen1_refresh()?;
+    observe_root_create_q04_source(observation, source_signer_uid, controller_gid)?;
+    attempt.send_current_gen1_refresh()
+}
+
+fn observe_root_create_q04_source(
+    observation: aos_sandbox::policy_compiler::RootCreateQ04SourceObservationLoanV1<'_, '_>,
+    source_signer_uid: u32,
+    controller_gid: u32,
+) -> Result<(), ()> {
+    let (challenge, project, context, signer) = observation.request();
+    let returned = request_root_source_tree_genesis_readback_v2(
+        challenge, Some(project), Some(context), signer, source_signer_uid, controller_gid,
+    );
+    observation.park_result(returned)
+}
+
 // The client's original 60-second deadline starts before connection. Root's
 // phase deadline begins later and is 65 seconds; it never expires before the
 // client's maximum custody interval. Every stream fragment uses its remaining

@@ -112,6 +112,14 @@ pub(crate) mod host_execution_fence;
 mod host_settlement_admission_gate;
 mod source_domain_challenge;
 mod source_domain_policy_hold;
+#[cfg(target_os = "linux")]
+pub(crate) use source_domain_policy_hold::SourceQ04TransactionRecipesV1;
+#[cfg(target_os = "linux")]
+pub(crate) use cache_policy_hold::CacheQ04TransactionRecipesV1;
+#[cfg(target_os = "linux")]
+pub(crate) use cache_policy_hold::q04_clear_recipe_digest_data as q04_cache_clear_recipe_digest_data_v1;
+#[cfg(target_os = "linux")]
+pub(crate) use source_domain_policy_hold::q04_clear_recipe_digest_data as q04_source_clear_recipe_digest_data_v1;
 mod source_project_admission_challenge;
 pub(crate) mod source_tree_genesis;
 pub use cache_policy_hold::CachePolicyHoldV1;
@@ -139,6 +147,8 @@ pub(crate) use controller_policy_hold::{
     ControllerPolicyV8SettlementV1, controller_v8_root_receipt_record_digest_v1,
     v8_root_receipt_matches_ack,
 };
+#[cfg(target_os = "linux")]
+pub(crate) use controller_policy_hold::ControllerQ04TransitionV1;
 pub(crate) use host_currentness_fence::HostCurrentnessFenceV1;
 pub(crate) use host_execution_fence::HostExecutionFenceV1;
 pub use source_domain_challenge::SourceDomainChallengeV1;
@@ -605,6 +615,14 @@ pub struct CommitResult {
 /// Reports journal validation, durability, and ownership failures.
 #[derive(Debug, thiserror::Error)]
 pub enum JournalError {
+    /// The same original Root flight failed its final physical/clock check.
+    #[cfg(target_os = "linux")]
+    #[error(transparent)]
+    Q04RootOriginal(Box<crate::policy_compiler::create_q04::CreateQ04ErrorV1>),
+    /// The closed Q04 transition failed its unchanged canonical Create ledger.
+    #[cfg(target_os = "linux")]
+    #[error(transparent)]
+    Q04ControllerLedger(Box<crate::reconciler::ReconcilerError>),
     /// A filesystem operation failed.
     #[error("journal I/O failed: {0}")]
     Io(#[from] io::Error),
@@ -732,6 +750,10 @@ pub struct Journal {
     source_challenge_history: Vec<source_original_native::SourceOriginalChallengeCheckpointV5>,
     source_original_replay: source_original_native::replay::SourceOriginalReplayCacheV5,
     source_history_compacted: bool,
+    // Deny-only native provenance survives deletion of a Q04 lower marker.
+    // It is never a floor, currentness certificate or permission to mutate.
+    #[cfg(target_os = "linux")]
+    q04_lower_history_present: bool,
 }
 
 // One materializer adopts a completely replayed original. The selected opener
@@ -759,6 +781,8 @@ macro_rules! journal_from_original_replay {
             source_challenge_history: $replay.source_challenge_history,
             source_original_replay: $replay.source_original_replay,
             source_history_compacted: $replay.source_history_compacted,
+            #[cfg(target_os = "linux")]
+            q04_lower_history_present: $replay.q04_lower_history_present,
         }
     };
 }
@@ -1104,6 +1128,403 @@ fn require_no_nix_native_mutation(
         return Err(JournalError::ProtectedBoundary);
     }
     Ok(())
+}
+
+// A borrowed DATA view avoids copying the complete eligible Q04 suffix just
+// to enter the one existing bounds/materializer/frame-preflight engine.
+enum PreflightTransactionViewV1<'recipes> {
+    Ordinary(&'recipes [JournalTransaction]),
+    #[cfg(target_os = "linux")]
+    CacheQ04ReadOnlyBase {
+        hold: &'recipes Journal,
+        transactions: &'recipes [JournalTransaction; 0],
+    },
+    #[cfg(target_os = "linux")]
+    RootQ04Capacity(&'recipes [JournalTransaction]),
+    #[cfg(target_os = "linux")]
+    RootQ04 {
+        history: &'recipes crate::policy_compiler::create_q04::Q04RootAuthorityHistoryV1,
+        first: usize,
+        end: usize,
+    },
+    #[cfg(target_os = "linux")]
+    ControllerQ04(&'recipes [ControllerQ04TransitionV1<'recipes>]),
+    #[cfg(target_os = "linux")]
+    SourceQ04 {
+        recipes: &'recipes SourceQ04TransactionRecipesV1<'recipes>,
+        first: usize,
+        end: usize,
+    },
+    #[cfg(target_os = "linux")]
+    CacheQ04 {
+        recipes: &'recipes CacheQ04TransactionRecipesV1<'recipes>,
+        first: usize,
+        end: usize,
+    },
+}
+
+// Named, closed DATA cases enter the same ordinary validation boundary.
+// This value carries no owner, callback, general hold waiver or commit right.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+enum Q04JournalTransitionV1<'recipe> {
+    Controller(
+        &'recipe ControllerQ04TransitionV1<'recipe>,
+        Option<&'recipe crate::policy_compiler::create_q04::OriginalQ04RootCacheLoanV1<'recipe, 'recipe, 'recipe>>,
+    ),
+    Source(
+        &'recipe SourceQ04TransactionRecipesV1<'recipe>, usize,
+        Option<&'recipe crate::policy_compiler::create_q04::OriginalQ04RootCacheLoanV1<'recipe, 'recipe, 'recipe>>,
+        Option<&'recipe crate::cache_residency::OriginalQ04CacheClearanceLoanV1<'recipe, 'recipe, 'recipe, 'recipe, 'recipe>>,
+    ),
+    Cache(
+        &'recipe CacheQ04TransactionRecipesV1<'recipe>, usize,
+        Option<&'recipe crate::policy_compiler::create_q04::OriginalQ04RootCacheLoanV1<'recipe, 'recipe, 'recipe>>,
+    ),
+    Root(
+        &'recipe crate::policy_compiler::create_q04::Q04RootAuthorityHistoryV1,
+        usize,
+        Option<&'recipe crate::policy_compiler::create_q04::RootOriginalInputLoanV1<'recipe, 'recipe>>,
+    ),
+    // Capacity permits only the nonissuing preflight engine. Actual commit
+    // rejects this position even if its predicted bytes are canonical.
+    RootCapacity(&'recipe JournalTransaction),
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+enum Q04ControllerBookendPurposeV1<'recipes> {
+    Original,
+    HeldSigner(&'recipes [ControllerQ04TransitionV1<'recipes>]),
+    Gen1Refresh(&'recipes [ControllerQ04TransitionV1<'recipes>]),
+}
+
+// These closed phases select observation only. They never select the mutable
+// Cache gate, waive a pin check or authorize an own-successor authority append.
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Q04CacheTerminalPhaseV1 {
+    Held,
+    Released,
+    Cleared,
+}
+
+#[cfg(target_os = "linux")]
+impl Q04CacheTerminalPhaseV1 {
+    fn prefix(self) -> usize {
+        match self {
+            Self::Held => 1,
+            Self::Released => 2,
+            Self::Cleared => 3,
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct Q04OriginalCacheTargetV1 {
+    instance: Arc<JournalAuthorityInstance>,
+    sequence: u64,
+    limits: JournalLimits,
+    name: &'static str,
+    uid: u32,
+    witness: ProtectedWriterNameWitness,
+}
+
+#[cfg(target_os = "linux")]
+impl Q04OriginalCacheTargetV1 {
+    fn capture(journal: &Journal, name: &'static str, uid: u32) -> Result<Self, JournalError> {
+        journal.require_protected_named_location(
+            Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT), name, uid, journal.limits,
+        )?;
+        Ok(Self {
+            instance: Arc::clone(&journal.authority_instance),
+            sequence: journal.snapshot_sequence(),
+            limits: journal.limits,
+            name,
+            uid,
+            witness: journal.protected_writer_name_witness()?,
+        })
+    }
+
+    fn require(&self, journal: &Journal) -> Result<(), JournalError> {
+        if !Arc::ptr_eq(&self.instance, &journal.authority_instance)
+            || self.sequence != journal.snapshot_sequence()
+            || self.limits != journal.limits
+        {
+            return Err(JournalError::StaleAuthoritySnapshot);
+        }
+        journal.require_protected_named_location(
+            Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT), self.name, self.uid, self.limits,
+        )?;
+        journal.validate_protected_writer_name_witness(&self.witness)
+    }
+}
+
+// The actual resident initialization lends this original hold writer. The
+// other targets are pinned to their exact allocations, names, limits and
+// sequences; neither their Journals nor a mutable gate can escape this loan.
+#[cfg(target_os = "linux")]
+pub(crate) struct Q04CacheTerminalNativeLoanV1<'hold, 'recipes, 'cut> {
+    hold: &'hold mut Journal,
+    recipes: &'recipes CacheQ04TransactionRecipesV1<'cut>,
+    phase: Q04CacheTerminalPhaseV1,
+    targets: [Q04OriginalCacheTargetV1; 2],
+}
+
+// This is an existing-only observation before Root is opened. The original
+// hold remains mutably borrowed, but no mutable gate or transaction escapes.
+#[cfg(target_os = "linux")]
+pub(crate) struct Q04CachePrepareNativeLoanV1<'hold> {
+    hold: &'hold mut Journal,
+    prior: Option<CachePolicyHoldV1>,
+    targets: [Q04OriginalCacheTargetV1; 2],
+    original_hold: Q04OriginalCacheTargetV1,
+}
+
+#[cfg(target_os = "linux")]
+impl Q04CachePrepareNativeLoanV1<'_> {
+    pub(crate) fn require_current(
+        &self,
+        state: &Journal,
+        authority: &ProtectedJournalAuthority<'_>,
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        if authority.namespace != RecordNamespace::DesiredState
+            || authority.scope != ProtectedAuthorityScope::SingleNamespace
+            || self.hold.require_q04_cache_prepare_v1()? != self.prior
+        {
+            return Err(JournalError::ProtectedBoundary.into());
+        }
+        self.original_hold.require(self.hold)?;
+        self.targets[0].require(state)?;
+        self.targets[1].require(authority.journal)?;
+        self.hold.require_q04_native_recipes_v1(&[])?;
+        state.preflight_q04_cache_read_only_base_v1(self.hold)?;
+        authority.journal.preflight_q04_cache_read_only_base_v1(self.hold)?;
+        self.original_hold.require(self.hold)?;
+        self.targets[0].require(state)?;
+        self.targets[1].require(authority.journal)?;
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Q04CacheTerminalNativeLoanV1<'_, '_, '_> {
+    pub(crate) fn identity(&self) -> &crate::policy_compiler::create_q04::Q04CutIdentityV1 {
+        self.recipes.identity()
+    }
+
+    pub(crate) fn hold(&self) -> CachePolicyHoldV1 {
+        self.recipes.terminal_hold(self.phase)
+    }
+
+    pub(crate) fn require_current(
+        &mut self,
+        state: &Journal,
+        authority: &ProtectedJournalAuthority<'_>,
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        if authority.namespace != RecordNamespace::DesiredState
+            || authority.scope != ProtectedAuthorityScope::SingleNamespace
+        {
+            return Err(JournalError::ForeignAuthorityNamespace.into());
+        }
+        self.targets[0].require(state)?;
+        self.targets[1].require(authority.journal)?;
+        // Zero selections still run the sole whole native parser and complete
+        // replay comparison. Cache state/authority may not append in this cut.
+        state.require_q04_native_recipes_v1(&[])?;
+        authority.journal.require_q04_native_recipes_v1(&[])?;
+        self.recipes.require_fixed_journal(self.hold)?;
+        self.recipes.require_prefix(&self.hold.state, self.phase.prefix())?;
+        self.hold.require_q04_native_recipe_prefix_v1(
+            &self.recipes.transactions()[..self.phase.prefix()], self.recipes.original_next(),
+        )?;
+        self.targets[0].require(state)?;
+        self.targets[1].require(authority.journal)?;
+        self.recipes.require_fixed_journal(self.hold)?;
+        self.recipes.require_prefix(&self.hold.state, self.phase.prefix())?;
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Journal {
+    pub(crate) fn borrow_q04_cache_prepare_native_v1<'hold>(
+        state: &Journal,
+        authority: &Journal,
+        hold: &'hold mut Journal,
+    ) -> Result<Q04CachePrepareNativeLoanV1<'hold>, crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        let root = Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT);
+        let uid = hold.protected_owner_uid()?;
+        if state.cache_policy_gate.as_ref().is_none_or(|(directory, owner)| {
+            directory.as_path() != root || *owner != uid
+        }) || authority.cache_policy_gate != state.cache_policy_gate
+        {
+            return Err(JournalError::ProtectedBoundary.into());
+        }
+        let prior = hold.require_q04_cache_prepare_v1()?;
+        let original_hold = Q04OriginalCacheTargetV1::capture(hold, CACHE_POLICY_HOLD_JOURNAL, uid)?;
+        let targets = [
+            Q04OriginalCacheTargetV1::capture(state, "state.journal", uid)?,
+            Q04OriginalCacheTargetV1::capture(authority, "authority.journal", uid)?,
+        ];
+        Ok(Q04CachePrepareNativeLoanV1 { hold, prior, targets, original_hold })
+    }
+
+    // Only the zero-suffix DATA branch can bypass the ordinary reopen-based
+    // mutation gate. It compares the actual retained hold, audits the entire
+    // native file and enters the same preflight engine; it cannot append.
+    pub(crate) fn preflight_q04_cache_read_only_base_v1(
+        &self,
+        hold: &Journal,
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        self.preflight_with_q04_transaction_view(
+            PreflightTransactionViewV1::CacheQ04ReadOnlyBase { hold, transactions: &[] },
+            None, false, false, None, None, None, None, CacheMutationGateV1::Ordinary, None,
+        )?;
+        Ok(())
+    }
+
+    fn require_q04_cache_read_only_base_v1(&self, hold: &Journal) -> Result<(), JournalError> {
+        let uid = hold.protected_owner_uid()?;
+        hold.require_q04_cache_prepare_v1()?;
+        let location = self.protected.as_ref().ok_or(JournalError::ProtectedBoundary)?;
+        let fixed_target = match location.name.as_str() {
+            "clock.journal" => self.cache_policy_gate.is_none(),
+            "authority.journal" | "state.journal" => self.cache_policy_gate.as_ref().is_some_and(|(root, owner)| {
+                root.as_path() == Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT) && *owner == uid
+            }),
+            _ => false,
+        };
+        if !fixed_target
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        self.require_protected_named_location(
+            Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT), &location.name, uid, self.limits,
+        )?;
+        self.require_q04_native_recipes_v1(&[])
+            .map_err(|cause| JournalError::Q04RootOriginal(Box::new(cause)))?;
+        hold.require_q04_native_recipes_v1(&[])
+            .map_err(|cause| JournalError::Q04RootOriginal(Box::new(cause)))?;
+        Ok(())
+    }
+
+    pub(crate) fn borrow_q04_cache_terminal_native_v1<'hold, 'recipes, 'cut>(
+        state: &Journal,
+        authority: &Journal,
+        hold: &'hold mut Journal,
+        recipes: &'recipes CacheQ04TransactionRecipesV1<'cut>,
+        phase: Q04CacheTerminalPhaseV1,
+    ) -> Result<Q04CacheTerminalNativeLoanV1<'hold, 'recipes, 'cut>, crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        let root = Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT);
+        let uid = hold.protected_owner_uid()?;
+        if state.cache_policy_gate.as_ref().is_none_or(|(directory, owner)| {
+            directory.as_path() != root || *owner != uid
+        }) || authority.cache_policy_gate != state.cache_policy_gate
+        {
+            return Err(JournalError::ProtectedBoundary.into());
+        }
+        recipes.require_fixed_journal(hold)?;
+        recipes.require_prefix(&hold.state, phase.prefix())?;
+        let targets = [
+            Q04OriginalCacheTargetV1::capture(state, "state.journal", uid)?,
+            Q04OriginalCacheTargetV1::capture(authority, "authority.journal", uid)?,
+        ];
+        Ok(Q04CacheTerminalNativeLoanV1 { hold, recipes, phase, targets })
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn require_q04_journal_transition(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    transaction: &JournalTransaction,
+    transition: Option<Q04JournalTransitionV1<'_>>,
+) -> Result<(), JournalError> {
+    match transition {
+        Some(Q04JournalTransitionV1::Controller(recipe, _)) => {
+            controller_policy_hold::require_q04_transition(state, transaction, recipe)?;
+        }
+        _ => controller_policy_hold::require_q04_ordinary_boundary(state, transaction)?,
+    }
+    match transition {
+        Some(Q04JournalTransitionV1::Source(recipes, index, ..)) => {
+            source_domain_policy_hold::require_q04_transition(state, transaction, recipes, index)?;
+        }
+        _ => source_domain_policy_hold::require_q04_ordinary_boundary(state, transaction)?,
+    }
+    match transition {
+        Some(Q04JournalTransitionV1::Cache(recipes, index, ..)) => {
+            cache_policy_hold::require_q04_transition(state, transaction, recipes, index)?;
+        }
+        _ => cache_policy_hold::require_q04_ordinary_boundary(state, transaction)?,
+    }
+    match transition {
+        Some(Q04JournalTransitionV1::Root(history, index, _)) => {
+            history.require_transition(state, transaction, index)?;
+        }
+        Some(Q04JournalTransitionV1::RootCapacity(expected)) if expected == transaction => {}
+        _ => crate::policy_compiler::create_q04::require_root_q04_ordinary_boundary(state, transaction)?,
+    }
+    Ok(())
+}
+
+impl PreflightTransactionViewV1<'_> {
+    fn len(&self) -> usize {
+        match self {
+            Self::Ordinary(transactions) => transactions.len(),
+            #[cfg(target_os = "linux")]
+            Self::CacheQ04ReadOnlyBase { transactions, .. } => transactions.len(),
+            #[cfg(target_os = "linux")]
+            Self::RootQ04Capacity(transactions) => transactions.len(),
+            #[cfg(target_os = "linux")]
+            Self::RootQ04 { first, end, .. } => end - first,
+            #[cfg(target_os = "linux")]
+            Self::ControllerQ04(transitions) => transitions.len(),
+            #[cfg(target_os = "linux")]
+            Self::SourceQ04 { first, end, .. } => end - first,
+            #[cfg(target_os = "linux")]
+            Self::CacheQ04 { first, end, .. } => end - first,
+        }
+    }
+
+    // Only the private 0..len loop calls this accessor. Both slices remain
+    // immutable for the entire preflight; no callback can change their length.
+    fn transaction(&self, index: usize) -> &JournalTransaction {
+        match self {
+            Self::Ordinary(transactions) => &transactions[index],
+            #[cfg(target_os = "linux")]
+            Self::CacheQ04ReadOnlyBase { transactions, .. } => &transactions[index],
+            #[cfg(target_os = "linux")]
+            Self::RootQ04Capacity(transactions) => &transactions[index],
+            #[cfg(target_os = "linux")]
+            Self::RootQ04 { history, first, .. } => &history.transactions()[first + index],
+            #[cfg(target_os = "linux")]
+            Self::ControllerQ04(transitions) => transitions[index].transaction(),
+            #[cfg(target_os = "linux")]
+            Self::SourceQ04 { recipes, first, .. } => &recipes.transactions()[first + index],
+            #[cfg(target_os = "linux")]
+            Self::CacheQ04 { recipes, first, .. } => &recipes.transactions()[first + index],
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn q04_transition(&self, index: usize) -> Option<Q04JournalTransitionV1<'_>> {
+        match self {
+            Self::Ordinary(_) => None,
+            Self::CacheQ04ReadOnlyBase { .. } => None,
+            Self::RootQ04Capacity(transactions) => Some(Q04JournalTransitionV1::RootCapacity(&transactions[index])),
+            Self::RootQ04 { history, first, .. } => Some(Q04JournalTransitionV1::Root(history, first + index, None)),
+            Self::ControllerQ04(transitions) => {
+                Some(Q04JournalTransitionV1::Controller(&transitions[index], None))
+            }
+            Self::SourceQ04 { recipes, first, .. } => {
+                Some(Q04JournalTransitionV1::Source(recipes, first + index, None, None))
+            }
+            Self::CacheQ04 { recipes, first, .. } => {
+                Some(Q04JournalTransitionV1::Cache(recipes, first + index, None))
+            }
+        }
+    }
 }
 
 fn validate_root_owner_edge(
@@ -2898,8 +3319,40 @@ impl Journal {
         source_genesis_transition: source_tree_genesis::SourceGenesisTransitionV1,
         root_genesis_transition: RootSourceGenesisTransitionV1,
         root_local_edge: Option<RootOwnerEdge>,
+        cache_gate: CacheMutationGateV1<'_>,
+        successor_issuance_transition: Option<controller_source_successor_issuance::Transition>,
+    ) -> Result<CommitResult, JournalError> {
+        self.commit_with_cache_gate_and_q04_transition(
+            transaction, settling_reservation, allow_capacity_records,
+            allow_policy_hold_transition, allow_host_fence_acquisition,
+            allow_host_currentness_fence_acquisition, allow_host_settlement_admission_append,
+            project_admission_transition, controller_genesis_transition,
+            source_genesis_transition, root_genesis_transition, root_local_edge, cache_gate,
+            successor_issuance_transition,
+            #[cfg(target_os = "linux")]
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_with_cache_gate_and_q04_transition(
+        &mut self,
+        transaction: &JournalTransaction,
+        settling_reservation: Option<[u8; 32]>,
+        allow_capacity_records: bool,
+        allow_policy_hold_transition: bool,
+        allow_host_fence_acquisition: bool,
+        allow_host_currentness_fence_acquisition: bool,
+        allow_host_settlement_admission_append: bool,
+        project_admission_transition: SourceProjectAdmissionTransition,
+        controller_genesis_transition: controller_source_genesis::ControllerSourceGenesisTransition,
+        source_genesis_transition: source_tree_genesis::SourceGenesisTransitionV1,
+        root_genesis_transition: RootSourceGenesisTransitionV1,
+        root_local_edge: Option<RootOwnerEdge>,
         mut cache_gate: CacheMutationGateV1<'_>,
         successor_issuance_transition: Option<controller_source_successor_issuance::Transition>,
+        #[cfg(target_os = "linux")]
+        q04_transition: Option<Q04JournalTransitionV1<'_>>,
     ) -> Result<CommitResult, JournalError> {
         #[cfg(target_os = "linux")]
         if matches!(root_local_edge, Some(RootOwnerEdge::NixOfflineClosureData)) {
@@ -2986,8 +3439,42 @@ impl Journal {
             transaction,
             allow_host_fence_acquisition,
         )?;
+        #[cfg(target_os = "linux")]
+        if q04_transition.is_some() {
+            if matches!(q04_transition, Some(Q04JournalTransitionV1::RootCapacity(_)))
+                || matches!(q04_transition, Some(Q04JournalTransitionV1::Controller(_, None)))
+                || matches!(q04_transition, Some(Q04JournalTransitionV1::Root(_, _, None)))
+                || matches!(q04_transition, Some(Q04JournalTransitionV1::Source(_, _, None, _)))
+                || matches!(q04_transition, Some(Q04JournalTransitionV1::Source(_, 2, _, None)))
+                || matches!(q04_transition, Some(Q04JournalTransitionV1::Cache(_, _, None)))
+                || allow_capacity_records || allow_policy_hold_transition
+                || allow_host_fence_acquisition || allow_host_currentness_fence_acquisition
+                || allow_host_settlement_admission_append || settling_reservation.is_some()
+                || project_admission_transition != SourceProjectAdmissionTransition::None
+                || controller_genesis_transition
+                    != controller_source_genesis::ControllerSourceGenesisTransition::None
+                || source_genesis_transition != source_tree_genesis::SourceGenesisTransitionV1::None
+                || root_genesis_transition != RootSourceGenesisTransitionV1::None
+                || root_local_edge.is_some() || successor_issuance_transition.is_some()
+                || !matches!(&cache_gate, CacheMutationGateV1::Ordinary)
+            {
+                return Err(JournalError::ProtectedBoundary);
+            }
+        }
+        #[cfg(target_os = "linux")]
+        require_q04_journal_transition(&self.state, transaction, q04_transition)?;
         if !allow_policy_hold_transition {
+            #[cfg(target_os = "linux")]
+            if !matches!(q04_transition, Some(Q04JournalTransitionV1::Controller(..))) {
+                controller_policy_hold::require_no_mutation(&self.state, transaction)?;
+            }
+            #[cfg(not(target_os = "linux"))]
             controller_policy_hold::require_no_mutation(&self.state, transaction)?;
+            #[cfg(target_os = "linux")]
+            if !matches!(q04_transition, Some(Q04JournalTransitionV1::Source(..))) {
+                source_domain_policy_hold::require_no_mutation(&self.state, transaction)?;
+            }
+            #[cfg(not(target_os = "linux"))]
             source_domain_policy_hold::require_no_mutation(&self.state, transaction)?;
         }
         validate_transaction(transaction, self.limits)?;
@@ -3068,6 +3555,39 @@ impl Journal {
         // writer takes Cache journal locks before this lock in the same order.
         let _cache_policy_guard = cache_gate.before_append(self)?;
 
+        #[cfg(target_os = "linux")]
+        if let Some(Q04JournalTransitionV1::Root(history, _, Some(original))) = q04_transition {
+            // This is the actual borrowed Root flight, checked after native
+            // encoding/preflight and immediately before the shared append.
+            // The lower synchronous I/O can still straddle the cutoff; its
+            // outcome must remain resident and pass an upper postcheck.
+            original.recheck_cut(history.identity())
+                .map_err(|first| JournalError::Q04RootOriginal(Box::new(first)))?;
+        }
+        #[cfg(target_os = "linux")]
+        match q04_transition {
+            Some(Q04JournalTransitionV1::Controller(transition, Some(root))) => {
+                if !std::ptr::eq(root.identity(), transition.identity()) {
+                    return Err(JournalError::ProtectedBoundary);
+                }
+                root.require_controller_transition(transition)
+                    .map_err(|first| JournalError::Q04RootOriginal(Box::new(first)))?;
+            }
+            Some(Q04JournalTransitionV1::Source(recipes, index, Some(root), clearance)) => {
+                root.require_lower_transition(index, recipes.release_authorization())
+                    .map_err(|first| JournalError::Q04RootOriginal(Box::new(first)))?;
+                if let Some(clearance) = clearance {
+                    clearance.recheck_at_append(recipes.identity())
+                        .map_err(|first| JournalError::Q04RootOriginal(Box::new(first)))?;
+                }
+            }
+            Some(Q04JournalTransitionV1::Cache(recipes, index, Some(root))) => {
+                root.require_lower_transition(index, recipes.release_authorization())
+                    .map_err(|first| JournalError::Q04RootOriginal(Box::new(first)))?;
+            }
+            _ => {}
+        }
+
         let durable_bytes = match append_and_sync(&mut self.file, &frames) {
             Ok(bytes) => bytes,
             Err(error) => {
@@ -3091,6 +3611,11 @@ impl Journal {
         self.transaction_ids.insert(transaction.id);
         self.committed_namespaces
             .extend(transaction.records().iter().map(JournalRecord::namespace));
+        #[cfg(target_os = "linux")]
+        {
+            self.q04_lower_history_present |= transaction.records().iter()
+                .any(is_q04_lower_history_record_v1);
+        }
 
         if let Err(error) =
             cache_gate.own_successor(self, transaction, following_sequence, durable_bytes)
@@ -3285,6 +3810,30 @@ impl Journal {
         >,
         genesis_transitions: Option<&[source_tree_genesis::SourceGenesisTransitionV1]>,
         root_local_edge: Option<RootOwnerEdge>,
+        cache_gate: CacheMutationGateV1<'_>,
+        successor_issuance_transitions: Option<&[controller_source_successor_issuance::Transition]>,
+    ) -> Result<(), JournalError> {
+        self.preflight_with_q04_transaction_view(
+            PreflightTransactionViewV1::Ordinary(transactions), settling_reservation,
+            allow_capacity_records, allow_policy_hold_transition, project_transitions,
+            controller_genesis_transitions, genesis_transitions, root_local_edge,
+            cache_gate, successor_issuance_transitions,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn preflight_with_q04_transaction_view(
+        &self,
+        transactions: PreflightTransactionViewV1<'_>,
+        settling_reservation: Option<[u8; 32]>,
+        allow_capacity_records: bool,
+        allow_policy_hold_transition: bool,
+        project_transitions: Option<&[SourceProjectAdmissionTransition]>,
+        controller_genesis_transitions: Option<
+            &[controller_source_genesis::ControllerSourceGenesisTransition],
+        >,
+        genesis_transitions: Option<&[source_tree_genesis::SourceGenesisTransitionV1]>,
+        root_local_edge: Option<RootOwnerEdge>,
         mut cache_gate: CacheMutationGateV1<'_>,
         successor_issuance_transitions: Option<&[controller_source_successor_issuance::Transition]>,
     ) -> Result<(), JournalError> {
@@ -3316,6 +3865,13 @@ impl Journal {
         {
             return Err(JournalError::ProtectedBoundary);
         }
+        #[cfg(target_os = "linux")]
+        if let PreflightTransactionViewV1::CacheQ04ReadOnlyBase { hold, .. } = &transactions {
+            self.require_q04_cache_read_only_base_v1(hold)?;
+        } else {
+            cache_gate.check(self)?;
+        }
+        #[cfg(not(target_os = "linux"))]
         cache_gate.check(self)?;
 
         let mut state = self.state.clone();
@@ -3326,7 +3882,8 @@ impl Journal {
         let mut committed_transactions = self.committed_transactions;
         let mut expected_length = self.file.metadata()?.len();
 
-        for (index, transaction) in transactions.iter().enumerate() {
+        for index in 0..transactions.len() {
+            let transaction = transactions.transaction(index);
             if !nix_offline_provisioning_edge(root_local_edge) {
                 require_no_nix_native_mutation(&state, transaction)?;
             }
@@ -3384,8 +3941,32 @@ impl Journal {
             host_settlement_admission_gate::require_no_mutation(&state, transaction, false)?;
             host_currentness_fence::require_no_mutation(&state, transaction, false)?;
             host_execution_fence::require_no_mutation(&state, transaction, false)?;
+            #[cfg(target_os = "linux")]
+            let q04_transition = transactions.q04_transition(index);
+            #[cfg(target_os = "linux")]
+            if q04_transition.is_some()
+                && (allow_capacity_records || allow_policy_hold_transition
+                    || settling_reservation.is_some() || root_local_edge.is_some()
+                    || project_transitions.is_some() || controller_genesis_transitions.is_some()
+                    || genesis_transitions.is_some() || successor_issuance_transitions.is_some()
+                    || !matches!(&cache_gate, CacheMutationGateV1::Ordinary))
+            {
+                return Err(JournalError::ProtectedBoundary);
+            }
+            #[cfg(target_os = "linux")]
+            require_q04_journal_transition(&state, transaction, q04_transition)?;
             if !allow_policy_hold_transition {
+                #[cfg(target_os = "linux")]
+                if !matches!(q04_transition, Some(Q04JournalTransitionV1::Controller(..))) {
+                    controller_policy_hold::require_no_mutation(&state, transaction)?;
+                }
+                #[cfg(not(target_os = "linux"))]
                 controller_policy_hold::require_no_mutation(&state, transaction)?;
+                #[cfg(target_os = "linux")]
+                if !matches!(q04_transition, Some(Q04JournalTransitionV1::Source(..))) {
+                    source_domain_policy_hold::require_no_mutation(&state, transaction)?;
+                }
+                #[cfg(not(target_os = "linux"))]
                 source_domain_policy_hold::require_no_mutation(&state, transaction)?;
             }
             let has_capacity_records = transaction
@@ -3488,6 +4069,13 @@ impl Journal {
     /// whose original native history must remain intact.
     pub fn compact(&mut self) -> Result<(), JournalError> {
         self.ensure_healthy()?;
+        #[cfg(target_os = "linux")]
+        if self.q04_lower_history_present {
+            // The initial Q04 slice retains exact completed lower native
+            // acquire/release/clear membership. Materializing only the final
+            // released row would erase that relation; no retirement is implied.
+            return Err(JournalError::ProtectedBoundary);
+        }
         if self.state.keys().any(|(namespace, _)| {
             *namespace == RecordNamespace::NixOfflineProvisioning
         }) {
@@ -3557,6 +4145,10 @@ impl Journal {
             self.source_challenge_history = replay.source_challenge_history;
             self.source_original_replay = replay.source_original_replay;
             self.source_history_compacted = replay.source_history_compacted;
+            #[cfg(target_os = "linux")]
+            {
+                self.q04_lower_history_present = replay.q04_lower_history_present;
+            }
             self.authority_instance = Arc::new(JournalAuthorityInstance);
             return Ok(());
         }
@@ -3590,6 +4182,10 @@ impl Journal {
         self.source_challenge_history = replay.source_challenge_history;
         self.source_original_replay = replay.source_original_replay;
         self.source_history_compacted = replay.source_history_compacted;
+        #[cfg(target_os = "linux")]
+        {
+            self.q04_lower_history_present = replay.q04_lower_history_present;
+        }
         self.authority_instance = Arc::new(JournalAuthorityInstance);
         Ok(())
     }
@@ -4961,6 +5557,18 @@ struct ReplayState {
     source_challenge_history: Vec<source_original_native::SourceOriginalChallengeCheckpointV5>,
     source_original_replay: source_original_native::replay::SourceOriginalReplayCacheV5,
     source_history_compacted: bool,
+    #[cfg(target_os = "linux")]
+    q04_lower_history_present: bool,
+}
+
+#[cfg(target_os = "linux")]
+fn is_q04_lower_history_record_v1(record: &JournalRecord) -> bool {
+    use crate::policy_compiler::create_q04::{CACHE_PENDING_KEY, CONTROLLER_IDENTITY_KEY, SOURCE_PENDING_KEY};
+
+    (record.namespace() == RecordNamespace::SourceDomainPolicyHold && record.key() == SOURCE_PENDING_KEY)
+        || (record.namespace() == RecordNamespace::DesiredState && record.key() == CACHE_PENDING_KEY)
+        || (record.namespace() == RecordNamespace::ControllerPolicyHold && record.key() == CONTROLLER_IDENTITY_KEY)
+        || (record.namespace() == RecordNamespace::DesiredState && record.key().starts_with(b"\0aos-q04-root-"))
 }
 
 fn replay(file: &mut File, limits: JournalLimits) -> Result<ReplayState, JournalError> {
@@ -5009,6 +5617,7 @@ enum DeploymentHistoryObserverV1<'observer, 'data> {
     Sidecar(&'observer mut runtime_deployment_sidecar_history::SidecarHistoryAuditV1),
     Storage(&'observer mut storage_native_issuance_history::StorageHistoryObserverV1),
     NixOffline(&'observer mut nix_offline_provisioning::NativeHistoryV5),
+    Q04(&'observer mut Q04NativeRecipeAuditV1<'data>),
 }
 
 #[cfg(target_os = "linux")]
@@ -5027,12 +5636,640 @@ impl DeploymentHistoryObserverV1<'_, '_> {
             Self::Storage(history) => history.observe(
                 transaction, begin_sequence, commit_sequence, begin_offset, end_offset,
             ),
+            Self::Q04(history) => history.observe(
+                transaction, begin_sequence, commit_sequence, begin_offset, end_offset,
+            ),
             Self::NixOffline(history) => history.observe(
                 transaction, begin_sequence, begin_offset, end_offset,
             ),
         }
     }
 }
+
+// Only validated COMMIT calls reach this observer. Matching an ID without its
+// complete ordered records and original physical boundary is insufficient.
+// The recipes are DATA retained by a closed Q04 owner, not commit permissions.
+#[cfg(target_os = "linux")]
+struct Q04NativeRecipeAuditV1<'recipes> {
+    recipes: PreflightTransactionViewV1<'recipes>,
+    matched: usize,
+    previous_end: u64,
+    previous_next: u64,
+    original_next: Option<u64>,
+}
+
+#[cfg(target_os = "linux")]
+impl Q04NativeRecipeAuditV1<'_> {
+    fn observe(
+        &mut self,
+        transaction: &JournalTransaction,
+        begin_sequence: u64,
+        commit_sequence: u64,
+        begin_offset: u64,
+        end_offset: u64,
+    ) -> Result<(), JournalError> {
+        let next = commit_sequence.checked_add(1).ok_or(JournalError::SequenceExhausted)?;
+        let frames = u64::try_from(transaction.records().len())
+            .map_err(|_| JournalError::LimitExceeded("Q04 native record count"))?
+            .checked_add(2).ok_or(JournalError::SequenceExhausted)?;
+        if begin_sequence != self.previous_next
+            || next.checked_sub(begin_sequence) != Some(frames)
+            || begin_offset != self.previous_end
+            || end_offset.checked_sub(begin_offset)
+                != Some(encoded_transaction_append_bytes(transaction)?)
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        self.previous_end = end_offset;
+        self.previous_next = next;
+
+        if let Some(original_next) = self.original_next {
+            if begin_sequence < original_next {
+                if next > original_next || (0..self.recipes.len()).any(|index| {
+                    self.recipes.transaction(index).id() == transaction.id()
+                }) {
+                    return Err(JournalError::ProtectedBoundary);
+                }
+                return Ok(());
+            }
+            // A terminal readback compares the entire in-cut suffix, not a
+            // selected subsequence separated by unobserved foreign appends.
+            if self.matched >= self.recipes.len()
+                || (self.matched == 0 && begin_sequence != original_next)
+                || transaction != self.recipes.transaction(self.matched)
+            {
+                return Err(JournalError::ProtectedBoundary);
+            }
+            self.matched += 1;
+            return Ok(());
+        }
+
+        if self.matched < self.recipes.len() {
+            let expected = self.recipes.transaction(self.matched);
+            if transaction.id() == expected.id() {
+                if transaction != expected {
+                    return Err(JournalError::ProtectedBoundary);
+                }
+                self.matched += 1;
+            } else if (0..self.recipes.len()).any(|index| {
+                self.recipes.transaction(index).id() == transaction.id()
+            }) {
+                return Err(JournalError::ProtectedBoundary);
+            }
+        } else if (0..self.recipes.len()).any(|index| {
+            self.recipes.transaction(index).id() == transaction.id()
+        }) {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Journal {
+    pub(crate) fn require_root_q04_materialized_prefix_v1(
+        &self,
+        history: &crate::policy_compiler::create_q04::Q04RootAuthorityHistoryV1,
+        prefix: usize,
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        history.require_prefix_rows(self.state.iter().map(|((namespace, key), value)| {
+            (*namespace, key.as_slice(), value.as_slice())
+        }), prefix)?;
+        Ok(())
+    }
+
+    // Only Root's fixed nonissuing owner preflight calls this DATA position.
+    // It cannot be selected by actual commit, even for identical bytes.
+    pub(crate) fn preflight_root_q04_capacity_v1(
+        &self,
+        transactions: &[JournalTransaction],
+    ) -> Result<(), JournalError> {
+        crate::policy_compiler::create_q04::require_root_q04_fixed_writer(self)?;
+        self.preflight_with_q04_transaction_view(
+            PreflightTransactionViewV1::RootQ04Capacity(transactions),
+            None, false, false, None, None, None, None, CacheMutationGateV1::Ordinary, None,
+        )
+    }
+
+    // This returns directly to the actual Root parent, which parks the whole
+    // Result before native/name/floor/clock postchecks. No retry classification
+    // or postappend failure can consume the original returned outcome here.
+    pub(crate) fn commit_root_q04_original_v1(
+        &mut self,
+        history: &crate::policy_compiler::create_q04::Q04RootAuthorityHistoryV1,
+        index: usize,
+        original: &crate::policy_compiler::create_q04::RootOriginalInputLoanV1<'_, '_>,
+    ) -> Result<CommitResult, crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
+
+        if !history.may_append(index) {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        history.require_fixed_original(self)?;
+        self.preflight_with_q04_transaction_view(
+            PreflightTransactionViewV1::RootQ04 {
+                history, first: index, end: history.transactions().len(),
+            },
+            None, false, false, None, None, None, None, CacheMutationGateV1::Ordinary, None,
+        )?;
+        history.require_fixed_original(self)?;
+        original.recheck_cut(history.identity())?;
+        self.commit_with_cache_gate_and_q04_transition(
+            &history.transactions()[index], None, false, false, false, false, false,
+            SourceProjectAdmissionTransition::None,
+            controller_source_genesis::ControllerSourceGenesisTransition::None,
+            source_tree_genesis::SourceGenesisTransitionV1::None,
+            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
+            None, Some(Q04JournalTransitionV1::Root(history, index, Some(original))),
+        ).map_err(Into::into)
+    }
+
+    // This observes the actual whole Controller ledger/native file under its
+    // original mutable borrow. The copied tuple is equality DATA only; every
+    // signer calls this again after parking its returned packet or first cause.
+    pub(crate) fn q04_controller_signing_bookend_v1(
+        &mut self,
+        ledger: &crate::reconciler::OriginalQ04ControllerLedgerV1,
+        transitions: Option<&[ControllerQ04TransitionV1<'_>]>,
+    ) -> Result<(u64, ProtectedJournalNamesV1, Option<ControllerPolicyHoldV1>), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        let purpose = match transitions {
+            None => Q04ControllerBookendPurposeV1::Original,
+            Some(transitions) => Q04ControllerBookendPurposeV1::HeldSigner(transitions),
+        };
+        self.q04_controller_ledger_bookend_v1(ledger, purpose)
+    }
+
+    // Released Q04 history is observable for genuine gen1 refresh, not for
+    // the held signer. Exact native membership and all original rows remain.
+    pub(crate) fn q04_controller_refresh_bookend_v1(
+        &mut self,
+        ledger: &crate::reconciler::OriginalQ04ControllerLedgerV1,
+        transitions: &[ControllerQ04TransitionV1<'_>],
+    ) -> Result<(u64, ProtectedJournalNamesV1, Option<ControllerPolicyHoldV1>), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        self.q04_controller_ledger_bookend_v1(ledger, Q04ControllerBookendPurposeV1::Gen1Refresh(transitions))
+    }
+
+    fn q04_controller_ledger_bookend_v1(
+        &mut self,
+        ledger: &crate::reconciler::OriginalQ04ControllerLedgerV1,
+        purpose: Q04ControllerBookendPurposeV1<'_>,
+    ) -> Result<(u64, ProtectedJournalNamesV1, Option<ControllerPolicyHoldV1>), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
+
+        crate::policy_compiler::validate_current_create_controller_journal_v1(self)?;
+        ledger.require_original(self)?;
+        match purpose {
+            Q04ControllerBookendPurposeV1::Original => {
+                controller_policy_hold::require_q04_signing_original(&self.state)?;
+                self.require_q04_native_recipes_v1(&[])?;
+                if self.snapshot_sequence() != ledger.original_next() {
+                    return Err(CreateQ04ErrorV1::ChangedCut);
+                }
+            }
+            Q04ControllerBookendPurposeV1::HeldSigner(transitions)
+                | Q04ControllerBookendPurposeV1::Gen1Refresh(transitions) => {
+                let prefix = if matches!(purpose, Q04ControllerBookendPurposeV1::HeldSigner(_)) {
+                    controller_policy_hold::require_q04_signing_prefix(&self.state, transitions)?
+                } else {
+                    controller_policy_hold::require_q04_refresh_prefix(&self.state, transitions)?
+                };
+                if !std::ptr::eq(ledger, transitions[0].ledger()) {
+                    return Err(CreateQ04ErrorV1::ChangedCut);
+                }
+                for transition in transitions {
+                    transition.require_fixed_owner(self)?;
+                }
+                self.require_q04_native_recipe_view_at_original_v1(
+                    PreflightTransactionViewV1::ControllerQ04(&transitions[..prefix]),
+                    Some(ledger.original_next()),
+                )?;
+                transitions[prefix - 1].require_current_readback(self)?;
+            }
+        }
+        ledger.require_original(self)?;
+        crate::policy_compiler::validate_current_create_controller_journal_v1(self)?;
+        Ok((
+            self.snapshot_sequence(),
+            self.protected_writer_physical_names_v1()?,
+            self.controller_policy_hold_v1()?,
+        ))
+    }
+
+    // A pre-envelope seed uses the complete actual old native row recipe,
+    // names and sequence. It excludes every Q04 future transaction/phase/head
+    // and provides comparison DATA only, never a floor or writer certificate.
+    pub(crate) fn q04_root_before_rows_v1(
+        &self,
+    ) -> Result<(u64, ProtectedJournalNamesV1, ObjectDigest), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        self.require_q04_native_recipes_v1(&[])?;
+        self.validate_held_protected_names()?;
+        let sequence = self.snapshot_sequence();
+        let names = self.protected_writer_physical_names_v1()?;
+        let mut digest = Sha256::new();
+        digest.update(b"aos.sandbox.create-q04.root-before-rows.v1\0");
+        digest.update(names.to_bytes());
+        digest.update(sequence.to_be_bytes());
+        for (namespace, key, value) in self.all_records() {
+            digest.update(encode_record_fields(namespace, key, Some(value))?);
+        }
+        self.require_q04_native_recipes_v1(&[])?;
+        self.validate_held_protected_names()?;
+        if self.snapshot_sequence() != sequence || self.protected_writer_physical_names_v1()? != names {
+            return Err(JournalError::StaleAuthoritySnapshot.into());
+        }
+        Ok((sequence, names, ObjectDigest::from_bytes(digest.finalize().into())))
+    }
+
+    /// Checks retained Q04 recipe DATA against this same original native file.
+    ///
+    /// This private observation issues no authority or reusable current token.
+    /// Its real owning caller separately validates purpose, exact ledger,
+    /// eligible suffix, other owners and the unchanged original cutoff.
+    pub(crate) fn require_q04_native_recipes_v1(
+        &self,
+        recipes: &[JournalTransaction],
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        self.require_q04_native_recipe_view_v1(PreflightTransactionViewV1::Ordinary(recipes))
+    }
+
+    fn require_q04_native_recipe_view_v1(
+        &self,
+        recipes: PreflightTransactionViewV1<'_>,
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        self.require_q04_native_recipe_view_at_original_v1(recipes, None)
+    }
+
+    // Original NEXT is comparison DATA captured before the first logical
+    // hold. This reads through the sole native parser; it does not establish
+    // currentness or authorize a commit from a sequence scalar.
+    pub(crate) fn require_q04_native_recipe_prefix_v1(
+        &self,
+        recipes: &[JournalTransaction],
+        original_next: u64,
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        if original_next == 0 {
+            return Err(JournalError::ProtectedBoundary.into());
+        }
+        self.require_q04_native_recipe_view_at_original_v1(
+            PreflightTransactionViewV1::Ordinary(recipes), Some(original_next),
+        )
+    }
+
+    fn require_q04_native_recipe_view_at_original_v1(
+        &self,
+        recipes: PreflightTransactionViewV1<'_>,
+        original_next: Option<u64>,
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
+
+        self.ensure_protected_authority()?;
+        let witness = self.protected_writer_name_witness()?;
+        let result = (|| {
+            // Before any Q04 selfwrite there are no selected recipes yet.
+            // An empty selection still audits the entire original native
+            // history and compares its complete replay to this same owner.
+            if recipes.len() > self.limits.maximum_transactions
+                || (0..recipes.len()).any(|index| {
+                    (0..index).any(|prior| {
+                        recipes.transaction(prior).id() == recipes.transaction(index).id()
+                    })
+                })
+            {
+                return Err(JournalError::ProtectedBoundary);
+            }
+            let recipe_count = recipes.len();
+            let mut history = Q04NativeRecipeAuditV1 {
+                recipes,
+                matched: 0,
+                previous_end: 0,
+                previous_next: 1,
+                original_next,
+            };
+            let mut reader = runtime_deployment_history::ReadAtCursorV1::new(
+                &self.file, witness.file.size,
+            );
+            let replayed = replay_original_observed(
+                &mut reader, self.limits, None,
+                Some(DeploymentHistoryObserverV1::Q04(&mut history)),
+            )?;
+            if history.matched != recipe_count
+                || (recipe_count == 0 && original_next.is_some_and(|next| next != self.next_sequence))
+                || history.previous_end != witness.file.size
+                || history.previous_next != self.next_sequence
+                || replayed.durable_end != witness.file.size
+                || replayed.next_sequence != self.next_sequence
+                || replayed.committed_transactions != self.committed_transactions
+                || replayed.transaction_ids != self.transaction_ids
+                || replayed.committed_namespaces != self.committed_namespaces
+                || replayed.state != self.state
+                || replayed.materialized_bytes != self.materialized_bytes
+                || replayed.idempotency != self.idempotency
+                || !replayed.source_challenge_history.is_empty()
+                || !self.source_challenge_history.is_empty()
+                || replayed.source_original_replay.has_dependencies()
+                || self.source_original_replay.has_dependencies()
+                || replayed.source_history_compacted != self.source_history_compacted
+                || replayed.q04_lower_history_present != self.q04_lower_history_present
+            {
+                return Err(JournalError::StaleAuthoritySnapshot);
+            }
+            Ok(())
+        })();
+        let bookend = self.validate_protected_writer_name_witness(&witness);
+        match (result, bookend) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(first), final_bookend) => Err(CreateQ04ErrorV1::NativeHistory {
+                first,
+                final_bookend: final_bookend.err(),
+            }),
+            (Ok(()), Err(first)) => Err(CreateQ04ErrorV1::NativeHistory {
+                first,
+                final_bookend: None,
+            }),
+        }
+    }
+
+    /// Advises the complete eight-phase suffix through the same native engine.
+    ///
+    /// This does not write, hold, reserve capacity, issue Stage or authenticate
+    /// predicted future events. The actual caller repeats every owner and
+    /// original-cut check before each permitted transition.
+    pub(crate) fn preflight_controller_q04_suffix_v1(
+        &mut self,
+        transitions: &[ControllerQ04TransitionV1<'_>],
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
+
+        if transitions.len() != 8 {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        let ledger = transitions[0].ledger();
+        for (index, transition) in transitions.iter().enumerate() {
+            if !transition.same_original_cut(&transitions[0])
+                || transition.phase_number() != u8::try_from(index + 1)
+                    .map_err(|_| CreateQ04ErrorV1::Bounds)?
+            {
+                return Err(CreateQ04ErrorV1::ChangedCut);
+            }
+            transition.require_fixed_owner(self)?;
+        }
+        ledger.require_original(self)?;
+        self.preflight_with_q04_transaction_view(
+            PreflightTransactionViewV1::ControllerQ04(transitions),
+            None, false, false, None, None, None, None,
+            CacheMutationGateV1::Ordinary, None,
+        )?;
+        ledger.require_original(self)?;
+        Ok(())
+    }
+
+    /// Appends one exact closed phase without borrowing a generic hold waiver.
+    ///
+    /// Original admission, native prefix and fixed names are rejoined on both
+    /// sides. Any append/readback ambiguity stays in the same owning caller;
+    /// this method supplies neither retry nor a final Create/Effect outcome.
+    pub(crate) fn commit_controller_q04_phase_v1(
+        &mut self,
+        transitions: &[ControllerQ04TransitionV1<'_>],
+        index: usize,
+        root: &crate::policy_compiler::create_q04::OriginalQ04RootCacheLoanV1<'_, '_, '_>,
+    ) -> Result<CommitResult, crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
+
+        if transitions.len() != 8 || index >= transitions.len() {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        let transition = &transitions[index];
+        transition.require_fixed_owner(self)?;
+        for (number, prior) in transitions.iter().enumerate() {
+            if !prior.same_original_cut(transition)
+                || prior.phase_number() != u8::try_from(number + 1)
+                    .map_err(|_| CreateQ04ErrorV1::Bounds)?
+            {
+                return Err(CreateQ04ErrorV1::ChangedCut);
+            }
+        }
+        transition.ledger().require_original(self)?;
+        self.require_q04_native_recipe_view_at_original_v1(
+            PreflightTransactionViewV1::ControllerQ04(&transitions[..index]),
+            Some(transition.ledger().original_next()),
+        )?;
+        // The first full suffix is advisory, not a reusable funding token.
+        // Re-enter the same native engine from this actual committed prefix
+        // before every append, including all still-eligible terminal phases.
+        self.preflight_with_q04_transaction_view(
+            PreflightTransactionViewV1::ControllerQ04(&transitions[index..]),
+            None, false, false, None, None, None, None,
+            CacheMutationGateV1::Ordinary, None,
+        )?;
+        transition.ledger().require_original(self)?;
+        if !std::ptr::eq(root.identity(), transition.identity()) {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        root.require_controller_transition(transition)?;
+        // The caller parks this whole outcome before any fallible readback.
+        // In particular, an acknowledged append is not replaced by a later
+        // currentness error and its original native position remains owned.
+        self.commit_with_cache_gate_and_q04_transition(
+            transition.transaction(), None, false, false, false, false, false,
+            SourceProjectAdmissionTransition::None,
+            controller_source_genesis::ControllerSourceGenesisTransition::None,
+            source_tree_genesis::SourceGenesisTransitionV1::None,
+            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
+            None, Some(Q04JournalTransitionV1::Controller(transition, Some(root))),
+        ).map_err(Into::into)
+    }
+
+    pub(crate) fn readback_controller_q04_phase_v1(
+        &mut self,
+        transitions: &[ControllerQ04TransitionV1<'_>],
+        index: usize,
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
+
+        let transition = transitions.get(index).ok_or(CreateQ04ErrorV1::ChangedCut)?;
+        if transitions.len() != 8 {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        let readback = (|| {
+            transition.ledger().require_original(self)?;
+            self.require_q04_native_recipe_view_at_original_v1(
+                PreflightTransactionViewV1::ControllerQ04(&transitions[..=index]),
+                Some(transition.ledger().original_next()),
+            )?;
+            transition.require_current_readback(self)?;
+            Ok(())
+        })();
+        if let Err(error) = readback {
+            self.poisoned = true;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Advises all three Source phases without creating a hold or clearance.
+    ///
+    /// The recipes are comparison DATA. The actual live action must supply
+    /// the same retained owners and phase-specific Root/Cache loans; this
+    /// method does not construct those proofs or permit a Source append.
+    pub(crate) fn preflight_source_q04_suffix_v1(
+        &mut self,
+        recipes: &SourceQ04TransactionRecipesV1<'_>,
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        self.preflight_source_q04_remaining_v1(recipes, 0)
+    }
+
+    pub(crate) fn preflight_source_q04_remaining_v1(
+        &mut self,
+        recipes: &SourceQ04TransactionRecipesV1<'_>,
+        first: usize,
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        if first >= 3 {
+            return Err(crate::policy_compiler::create_q04::CreateQ04ErrorV1::ChangedCut);
+        }
+        recipes.require_fixed_journal(self)?;
+        recipes.require_prefix(&self.state, first)?;
+        self.require_q04_native_recipe_prefix_v1(&recipes.transactions()[..first], recipes.original_next())?;
+        self.preflight_with_q04_transaction_view(
+            PreflightTransactionViewV1::SourceQ04 { recipes, first, end: 3 },
+            None, false, false, None, None, None, None,
+            CacheMutationGateV1::Ordinary, None,
+        )?;
+        recipes.require_fixed_journal(self)?;
+        recipes.require_prefix(&self.state, first)?;
+        self.require_q04_native_recipe_prefix_v1(&recipes.transactions()[..first], recipes.original_next())?;
+        Ok(())
+    }
+
+    /// Advises the complete inert Cache suffix through the same native engine.
+    ///
+    /// This does not hold Cache, authorize a release or construct clearance.
+    pub(crate) fn preflight_cache_q04_suffix_v1(
+        &mut self,
+        recipes: &CacheQ04TransactionRecipesV1<'_>,
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        self.preflight_cache_q04_remaining_v1(recipes, 0)
+    }
+
+    pub(crate) fn preflight_cache_q04_remaining_v1(
+        &mut self,
+        recipes: &CacheQ04TransactionRecipesV1<'_>,
+        first: usize,
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        if first >= 3 {
+            return Err(crate::policy_compiler::create_q04::CreateQ04ErrorV1::ChangedCut);
+        }
+        recipes.require_fixed_journal(self)?;
+        recipes.require_prefix(&self.state, first)?;
+        self.require_q04_native_recipe_prefix_v1(&recipes.transactions()[..first], recipes.original_next())?;
+        self.preflight_with_q04_transaction_view(
+            PreflightTransactionViewV1::CacheQ04 { recipes, first, end: 3 },
+            None, false, false, None, None, None, None,
+            CacheMutationGateV1::Ordinary, None,
+        )?;
+        recipes.require_fixed_journal(self)?;
+        recipes.require_prefix(&self.state, first)?;
+        self.require_q04_native_recipe_prefix_v1(&recipes.transactions()[..first], recipes.original_next())?;
+        Ok(())
+    }
+
+    pub(crate) fn commit_source_q04_original_v1(
+        &mut self,
+        recipes: &SourceQ04TransactionRecipesV1<'_>,
+        index: usize,
+        root: &crate::policy_compiler::create_q04::OriginalQ04RootCacheLoanV1<'_, '_, '_>,
+        clearance: Option<&crate::cache_residency::OriginalQ04CacheClearanceLoanV1<'_, '_, '_, '_, '_>>,
+    ) -> Result<CommitResult, crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
+
+        if !std::ptr::eq(recipes.identity(), root.identity()) || (index == 2) != clearance.is_some() {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        root.require_lower_transition(index, recipes.release_authorization())?;
+        self.preflight_source_q04_remaining_v1(recipes, index)?;
+        if let Some(clearance) = clearance {
+            clearance.recheck_at_append(recipes.identity())?;
+        }
+        // No postappend check can consume this original result. The actual
+        // Source owner parks it before full native/name/Root/Cache readback.
+        self.commit_with_cache_gate_and_q04_transition(
+            &recipes.transactions()[index], None, false, false, false, false, false,
+            SourceProjectAdmissionTransition::None,
+            controller_source_genesis::ControllerSourceGenesisTransition::None,
+            source_tree_genesis::SourceGenesisTransitionV1::None,
+            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
+            None, Some(Q04JournalTransitionV1::Source(recipes, index, Some(root), clearance)),
+        ).map_err(Into::into)
+    }
+
+    pub(crate) fn readback_source_q04_original_v1(
+        &mut self,
+        recipes: &SourceQ04TransactionRecipesV1<'_>,
+        committed: usize,
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        if committed == 0 || committed > 3 {
+            return Err(crate::policy_compiler::create_q04::CreateQ04ErrorV1::ChangedCut);
+        }
+        recipes.require_fixed_journal(self)?;
+        recipes.require_prefix(&self.state, committed)?;
+        self.require_q04_native_recipe_prefix_v1(&recipes.transactions()[..committed], recipes.original_next())?;
+        recipes.require_fixed_journal(self)?;
+        recipes.require_prefix(&self.state, committed)?;
+        Ok(())
+    }
+
+    pub(crate) fn commit_cache_q04_original_v1(
+        &mut self,
+        recipes: &CacheQ04TransactionRecipesV1<'_>,
+        index: usize,
+        root: &crate::policy_compiler::create_q04::OriginalQ04RootCacheLoanV1<'_, '_, '_>,
+    ) -> Result<CommitResult, crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        if !std::ptr::eq(recipes.identity(), root.identity()) {
+            return Err(crate::policy_compiler::create_q04::CreateQ04ErrorV1::ChangedCut);
+        }
+        root.require_lower_transition(index, recipes.release_authorization())?;
+        self.preflight_cache_q04_remaining_v1(recipes, index)?;
+        self.commit_with_cache_gate_and_q04_transition(
+            &recipes.transactions()[index], None, false, false, false, false, false,
+            SourceProjectAdmissionTransition::None,
+            controller_source_genesis::ControllerSourceGenesisTransition::None,
+            source_tree_genesis::SourceGenesisTransitionV1::None,
+            RootSourceGenesisTransitionV1::None, None, CacheMutationGateV1::Ordinary,
+            None, Some(Q04JournalTransitionV1::Cache(recipes, index, Some(root))),
+        ).map_err(Into::into)
+    }
+
+    pub(crate) fn readback_cache_q04_original_v1(
+        &self,
+        recipes: &CacheQ04TransactionRecipesV1<'_>,
+        committed: usize,
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        if committed == 0 || committed > 3 {
+            return Err(crate::policy_compiler::create_q04::CreateQ04ErrorV1::ChangedCut);
+        }
+        recipes.require_fixed_journal(self)?;
+        recipes.require_prefix(&self.state, committed)?;
+        self.require_q04_native_recipe_prefix_v1(&recipes.transactions()[..committed], recipes.original_next())?;
+        recipes.require_fixed_journal(self)?;
+        recipes.require_prefix(&self.state, committed)?;
+        Ok(())
+    }
+
+    pub(crate) fn require_q04_returned_commit_v1(
+        &self,
+        result: &CommitResult,
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        self.validate_held_protected_names()?;
+        if self.next_sequence != result.commit_sequence.checked_add(1).ok_or(JournalError::SequenceExhausted)?
+            || self.file.metadata()?.len() != result.durable_bytes
+        {
+            return Err(JournalError::StaleAuthoritySnapshot.into());
+        }
+        self.validate_held_protected_names()?;
+        Ok(())
+    }
+}
+
 
 // The closed history observers use the original parser and actual File.
 // A private read-at cursor changes no append-description offset or identity.
@@ -5052,6 +6289,8 @@ fn replay_original_observed<R: Read + Seek + Borrow<File>>(
     let mut committed_records = 0_usize;
     let mut transaction_ids = BTreeSet::new();
     let mut committed_namespaces = BTreeSet::new();
+    #[cfg(target_os = "linux")]
+    let mut q04_lower_history_present = false;
     let mut state = BTreeMap::new();
     let mut materialized_bytes = 0_usize;
     let mut idempotency = BTreeMap::new();
@@ -5267,6 +6506,10 @@ fn replay_original_observed<R: Read + Seek + Borrow<File>>(
                 }
                 for record in &replay_transaction.records {
                     committed_namespaces.insert(record.namespace());
+                    #[cfg(target_os = "linux")]
+                    {
+                        q04_lower_history_present |= is_q04_lower_history_record_v1(record);
+                    }
                     apply_record(&mut state, &mut idempotency, record)?;
                 }
                 committed_transactions = committed_transactions
@@ -5303,6 +6546,8 @@ fn replay_original_observed<R: Read + Seek + Borrow<File>>(
         source_challenge_history,
         source_original_replay,
         source_history_compacted,
+        #[cfg(target_os = "linux")]
+        q04_lower_history_present,
     })
 }
 
@@ -5486,6 +6731,53 @@ pub fn encoded_transaction_append_bytes(
     total
         .and_then(|bytes| bytes.checked_add(commit.frame_bytes as u64))
         .ok_or(JournalError::JournalTooLarge)
+}
+
+// Closed lower clear-recipe DATA, not an append certificate. The actual
+// owner later verifies full native membership at these original coordinates.
+// SHA256(domain || owner:u8 || (BEu32 length || Cut680) ||
+//   (BEu32 length || names48) || (BEu32 length || NEXT:BEu64) ||
+//   (BEu32 length || concatenated SAME canonical BEGIN/DELETE/COMMIT frames)).
+#[cfg(target_os = "linux")]
+fn q04_lower_clear_native_digest_v1(
+    identity: &crate::policy_compiler::create_q04::Q04CutIdentityV1,
+    owner: crate::policy_compiler::create_q04::Q04TransactionOwnerV1,
+    names: ProtectedJournalNamesV1,
+    first_sequence: u64,
+    transaction: &JournalTransaction,
+) -> Result<ObjectDigest, crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+    use crate::policy_compiler::create_q04::{
+        CACHE_PENDING_KEY, CreateQ04ErrorV1, Q04TransactionOwnerV1, SOURCE_PENDING_KEY,
+    };
+
+    let (tag, namespace, key) = match owner {
+        Q04TransactionOwnerV1::Source => (1, RecordNamespace::SourceDomainPolicyHold, SOURCE_PENDING_KEY),
+        Q04TransactionOwnerV1::Cache => (2, RecordNamespace::DesiredState, CACHE_PENDING_KEY),
+        _ => return Err(CreateQ04ErrorV1::ChangedCut),
+    };
+    if first_sequence == 0 || transaction.records().len() != 1
+        || transaction.records()[0].namespace() != namespace
+        || transaction.records()[0].key() != key
+        || transaction.records()[0].value().is_some()
+    {
+        return Err(CreateQ04ErrorV1::ChangedCut);
+    }
+    let frames = encode_transaction(transaction, first_sequence)?;
+    let native_bytes = frames.iter().try_fold(0_usize, |total, frame| {
+        total.checked_add(frame.len()).ok_or(CreateQ04ErrorV1::Bounds)
+    })?;
+    let mut digest = Sha256::new();
+    digest.update(b"aos.sandbox.create-q04.lower-clear-native-recipe.v1\0");
+    digest.update([tag]);
+    for value in [identity.bytes().as_slice(), names.to_bytes().as_slice(), first_sequence.to_be_bytes().as_slice()] {
+        digest.update(u32::try_from(value.len()).map_err(|_| CreateQ04ErrorV1::Bounds)?.to_be_bytes());
+        digest.update(value);
+    }
+    digest.update(u32::try_from(native_bytes).map_err(|_| CreateQ04ErrorV1::Bounds)?.to_be_bytes());
+    for frame in frames {
+        digest.update(frame);
+    }
+    Ok(ObjectDigest::from_bytes(digest.finalize().into()))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5839,15 +7131,53 @@ impl EncodedFrameLayout {
 }
 
 fn encode_record(record: &JournalRecord) -> Result<Vec<u8>, JournalError> {
-    let layout = EncodedRecordLayout::of(record)?;
-    let value_bytes = record.value.as_deref().unwrap_or_default();
+    encode_record_fields(record.namespace, &record.key, record.value.as_deref())
+}
+
+// The private borrowed field view uses the same measured layout and encoder;
+// retained Q04 before rows need not clone a temporary JournalRecord graph.
+fn encode_record_fields(
+    namespace: RecordNamespace,
+    key: &[u8],
+    value: Option<&[u8]>,
+) -> Result<Vec<u8>, JournalError> {
+    let layout = EncodedRecordLayout::new(key.len(), value.map(<[u8]>::len))?;
+    let value_bytes = value.unwrap_or_default();
     let mut payload = Vec::with_capacity(layout.payload_bytes);
-    payload.push(record.namespace as u8);
+    payload.push(namespace as u8);
     payload.extend_from_slice(&layout.key_length.to_le_bytes());
     payload.extend_from_slice(&layout.value_length.to_le_bytes());
-    payload.extend_from_slice(&record.key);
+    payload.extend_from_slice(key);
     payload.extend_from_slice(value_bytes);
     Ok(payload)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn q04_controller_before_rows_digest_v1(
+    operation_id: OperationId,
+    sandbox: [u8; 16],
+    operation: &[u8],
+    desired: &[u8],
+    effect: &[u8],
+) -> Result<ObjectDigest, JournalError> {
+    use crate::controller_service::public_projection::{PublicProjectionKindV1, projection_key};
+
+    let desired_key = projection_key(PublicProjectionKindV1::Sandbox, sandbox);
+    let effect_key = crate::reconciler::effect_key(operation_id, 0);
+    let rows: [(RecordNamespace, &[u8], &[u8]); 3] = [
+        (RecordNamespace::Operation, operation_id.as_bytes(), operation),
+        (RecordNamespace::DesiredState, &desired_key, desired),
+        (RecordNamespace::Effect, &effect_key, effect),
+    ];
+    let mut digest = Sha256::new();
+    digest.update(b"aos.sandbox.create-q04.controller-before-rows.v1\0");
+    for (namespace, key, value) in rows {
+        if value.is_empty() || value.len() > 64 * 1024 {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        digest.update(encode_record_fields(namespace, key, Some(value))?);
+    }
+    Ok(ObjectDigest::from_bytes(digest.finalize().into()))
 }
 
 fn decode_record(payload: &[u8], limits: JournalLimits) -> Result<JournalRecord, JournalError> {
@@ -6602,6 +7932,34 @@ mod tests {
             encode_transaction(&invalid, u64::MAX - 1),
             Err(JournalError::LimitExceeded("record key bytes")),
         ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn q04_lower_history_includes_put_and_clear_only_in_the_exact_owner_namespace() {
+        use crate::policy_compiler::create_q04::{CACHE_PENDING_KEY, SOURCE_PENDING_KEY};
+
+        for (namespace, key) in [
+            (RecordNamespace::SourceDomainPolicyHold, SOURCE_PENDING_KEY),
+            (RecordNamespace::DesiredState, CACHE_PENDING_KEY),
+        ] {
+            let put = JournalRecord::put(namespace, key.to_vec(), vec![1]);
+            let clear = JournalRecord::delete(namespace, key.to_vec());
+
+            assert!(super::is_q04_lower_history_record_v1(&put));
+            assert!(super::is_q04_lower_history_record_v1(&clear));
+        }
+
+        for (namespace, key) in [
+            (RecordNamespace::DesiredState, SOURCE_PENDING_KEY),
+            (RecordNamespace::SourceDomainPolicyHold, CACHE_PENDING_KEY),
+            (RecordNamespace::Effect, SOURCE_PENDING_KEY),
+            (RecordNamespace::DesiredState, b"ordinary".as_slice()),
+        ] {
+            let record = JournalRecord::put(namespace, key.to_vec(), vec![1]);
+
+            assert!(!super::is_q04_lower_history_record_v1(&record));
+        }
     }
 
     #[test]

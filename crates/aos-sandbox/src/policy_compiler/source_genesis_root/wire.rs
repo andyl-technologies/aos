@@ -78,9 +78,7 @@ pub fn encode_root_source_genesis_frame_v1(
         return Err(SourceGenesisErrorV1::NonCanonical);
     }
     let mut frame = vec![0; ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 + payload.len()];
-    frame[..8].copy_from_slice(kind.magic());
-    frame[8..10].copy_from_slice(&1_u16.to_be_bytes());
-    frame[16..32].copy_from_slice(&nonce);
+    write_frame_header(&mut frame, kind.magic(), 1, nonce);
     frame[32..].copy_from_slice(payload);
     Ok(frame)
 }
@@ -95,13 +93,139 @@ pub fn decode_root_source_genesis_frame_v1(
     nonce: [u8; 16],
 ) -> Result<&[u8], SourceGenesisErrorV1> {
     if frame.len() != ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 + kind.payload_bytes()
-        || frame.get(..8) != Some(kind.magic().as_slice())
-        || frame[8..10] != 1_u16.to_be_bytes()
-        || frame[10..16] != [0; 6]
-        || nonce == [0; 16]
-        || frame[16..32] != nonce
+        || !has_frame_header(frame, kind.magic(), 1, nonce)
     {
         return Err(SourceGenesisErrorV1::NonCanonical);
+    }
+    Ok(&frame[ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1..])
+}
+
+// Both modes use this exact header engine. The ordinary entry retains its
+// original infallible allocation and fixed-width checks; Q04 alone lends a
+// pre-parked output and selects version two with a closed transfer purpose.
+fn write_frame_header(frame: &mut [u8], magic: &[u8; 8], version: u16, nonce: [u8; 16]) {
+    frame[..8].copy_from_slice(magic);
+    frame[8..10].copy_from_slice(&version.to_be_bytes());
+    frame[10..16].fill(0);
+    frame[16..32].copy_from_slice(&nonce);
+}
+
+fn has_frame_header(frame: &[u8], magic: &[u8; 8], version: u16, nonce: [u8; 16]) -> bool {
+    frame.len() >= ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1
+        && frame.get(..8) == Some(magic.as_slice())
+        && frame[8..10] == version.to_be_bytes()
+        && frame[10..16] == [0; 6]
+        && nonce != [0; 16]
+        && frame[16..32] == nonce
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+pub(in crate::policy_compiler) enum RootCreateQ04TransferKindV1 {
+    PreviewIndex,
+    PreviewChunk,
+    ClaimIndex,
+    ClaimChunk,
+    SourceObservation,
+    SourceRefresh,
+    PreholdIndex,
+    PreholdChunk,
+    PreholdRecipe,
+    Decision,
+    PolicyAcknowledgement,
+    PolicyAccepted,
+    ReleaseAcknowledgement,
+    ReleaseAuthorized,
+    SettlementAcknowledgement,
+    Settled,
+    ClearanceAcknowledgement,
+    FinalClearance,
+}
+
+#[cfg(target_os = "linux")]
+impl RootCreateQ04TransferKindV1 {
+    fn magic(self) -> &'static [u8; 8] {
+        match self {
+            Self::PreviewIndex => b"AOSQ4V01",
+            Self::PreviewChunk => b"AOSQ4U01",
+            Self::ClaimIndex => b"AOSQ4X01",
+            Self::ClaimChunk => b"AOSQ4B01",
+            Self::SourceObservation => b"AOSQ4O01",
+            Self::SourceRefresh => b"AOSQ4H01",
+            Self::PreholdIndex => b"AOSQ4N01",
+            Self::PreholdChunk => b"AOSQ4M01",
+            Self::PreholdRecipe => b"AOSQ4J01",
+            Self::Decision => b"AOSQ4D01",
+            Self::PolicyAcknowledgement => b"AOSQ4A01",
+            Self::PolicyAccepted => b"AOSQ4P01",
+            Self::ReleaseAcknowledgement => b"AOSQ4E01",
+            Self::ReleaseAuthorized => b"AOSQ4R01",
+            Self::SettlementAcknowledgement => b"AOSQ4T01",
+            Self::Settled => b"AOSQ4S01",
+            Self::ClearanceAcknowledgement => b"AOSQ4F01",
+            Self::FinalClearance => b"AOSQ4Z01",
+        }
+    }
+
+    fn require_payload(self, length: usize) -> bool {
+        use crate::policy_compiler::create_q04::{
+            CLAIM_CHUNK_BYTES, CLAIM_CHUNK_PREFIX_BYTES, CLAIM_INDEX_BYTES, PREVIEW_INDEX_BYTES,
+        };
+        match self {
+            Self::PreviewIndex | Self::PreholdIndex => length == PREVIEW_INDEX_BYTES,
+            Self::ClaimIndex => length == CLAIM_INDEX_BYTES,
+            Self::SourceObservation => {
+                length == crate::policy_compiler::SOURCE_TREE_GENESIS_READBACK_BYTES_V1
+            }
+            Self::SourceRefresh => length == CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1,
+            Self::PreholdRecipe => length == crate::policy_compiler::create_q04::PREHOLD_RESPONSE_BYTES,
+            Self::Decision => length == crate::policy_compiler::create_q04::DECISION_BYTES,
+            Self::PolicyAcknowledgement | Self::ReleaseAcknowledgement => length == 408,
+            Self::SettlementAcknowledgement => length == 600,
+            Self::ClearanceAcknowledgement => length == 728,
+            Self::PolicyAccepted | Self::ReleaseAuthorized | Self::Settled | Self::FinalClearance => {
+                length == crate::policy_compiler::create_q04::PHASE_BYTES
+            }
+            Self::PreviewChunk | Self::ClaimChunk | Self::PreholdChunk => {
+                length > CLAIM_CHUNK_PREFIX_BYTES
+                    && length <= CLAIM_CHUNK_PREFIX_BYTES + CLAIM_CHUNK_BYTES
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(in crate::policy_compiler) fn encode_root_create_q04_transfer_v1(
+    output: &mut Vec<u8>,
+    kind: RootCreateQ04TransferKindV1,
+    original_nonce: [u8; 16],
+    payload: &[u8],
+) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+    use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
+
+    if !output.is_empty() || original_nonce == [0; 16] || !kind.require_payload(payload.len()) {
+        return Err(CreateQ04ErrorV1::ChangedCut);
+    }
+    let length = ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 + payload.len();
+    output.try_reserve_exact(length)?;
+    output.resize(length, 0);
+    write_frame_header(output, kind.magic(), 2, original_nonce);
+    output[ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1..].copy_from_slice(payload);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub(in crate::policy_compiler) fn decode_root_create_q04_transfer_v1(
+    frame: &[u8],
+    kind: RootCreateQ04TransferKindV1,
+    original_nonce: [u8; 16],
+) -> Result<&[u8], crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+    use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
+
+    if !has_frame_header(frame, kind.magic(), 2, original_nonce)
+        || !kind.require_payload(frame.len() - ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1)
+    {
+        return Err(CreateQ04ErrorV1::ChangedCut);
     }
     Ok(&frame[ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1..])
 }
@@ -140,6 +264,50 @@ mod tests {
                 let mut changed = frame.clone();
                 changed[offset] ^= 1;
                 assert!(decode_root_source_genesis_frame_v1(&changed, kind, [1; 16]).is_err());
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn q04_transfers_keep_original_header_and_closed_version_two_purpose() {
+        // These inert payloads test framing only. Source observation and
+        // signed Claim authentication belong to their actual owner consumers.
+        let kinds = [
+            (RootCreateQ04TransferKindV1::PreviewIndex, 48),
+            (RootCreateQ04TransferKindV1::PreviewChunk, 96 + 3072),
+            (RootCreateQ04TransferKindV1::ClaimIndex, 96),
+            (RootCreateQ04TransferKindV1::ClaimChunk, 96 + 1),
+            (RootCreateQ04TransferKindV1::SourceObservation,
+                crate::policy_compiler::SOURCE_TREE_GENESIS_READBACK_BYTES_V1),
+            (RootCreateQ04TransferKindV1::SourceRefresh, CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1),
+            (RootCreateQ04TransferKindV1::PreholdIndex, 48),
+            (RootCreateQ04TransferKindV1::PreholdChunk, 96 + 3072),
+            (RootCreateQ04TransferKindV1::PreholdRecipe, crate::policy_compiler::create_q04::PREHOLD_RESPONSE_BYTES),
+        ];
+        for (kind, width) in kinds {
+            let payload = vec![7; width];
+            let mut frame = Vec::new();
+            encode_root_create_q04_transfer_v1(&mut frame, kind, [1; 16], &payload).unwrap();
+
+            assert_eq!(frame.len(), ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 + width);
+            assert_eq!(&frame[8..10], &2_u16.to_be_bytes());
+            assert_eq!(decode_root_create_q04_transfer_v1(&frame, kind, [1; 16]).unwrap(), payload);
+            assert!(decode_root_create_q04_transfer_v1(&frame, kind, [2; 16]).is_err());
+            assert!(encode_root_create_q04_transfer_v1(&mut frame, kind, [1; 16], &payload).is_err());
+            assert!(decode_root_source_genesis_frame_v1(&frame, RootSourceGenesisFrameKindV1::Prepare, [1; 16]).is_err());
+
+            for offset in [0, 8, 10, 15, 16, 31] {
+                let mut changed = frame.clone();
+                changed[offset] ^= 1;
+                assert!(decode_root_create_q04_transfer_v1(&changed, kind, [1; 16]).is_err());
+            }
+            if matches!(kind, RootCreateQ04TransferKindV1::PreviewChunk
+                | RootCreateQ04TransferKindV1::ClaimChunk | RootCreateQ04TransferKindV1::PreholdChunk)
+            {
+                assert!(decode_root_create_q04_transfer_v1(&frame[..32 + 96], kind, [1; 16]).is_err());
+            } else {
+                assert!(decode_root_create_q04_transfer_v1(&frame[..frame.len() - 1], kind, [1; 16]).is_err());
             }
         }
     }

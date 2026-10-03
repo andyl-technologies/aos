@@ -23,6 +23,13 @@ mod controller_project_admission_readback;
 mod controller_project_dispatch_readback;
 mod controller_project_terminal_readback;
 
+#[cfg(target_os = "linux")]
+pub(crate) use controller_hold_readback::sign_q04_held_controller_v1;
+#[cfg(target_os = "linux")]
+pub(crate) use controller_project_admission_readback::{
+    sign_q04_current_controller_project_v1, sign_q04_prehold_input_v1,
+};
+
 pub use controller_project_dispatch_readback::{
     CONTROLLER_PROJECT_DISPATCH_READBACK_BYTES_V1,
     sign_fixed_controller_project_dispatch_readback_v1,
@@ -62,6 +69,13 @@ pub(crate) use project_admission_root::{
 mod project_source_v2;
 mod project_source_v3;
 mod protected_journal;
+#[cfg(target_os = "linux")]
+pub(crate) mod create_q04;
+#[cfg(target_os = "linux")]
+pub use create_q04::root::{
+    OriginalRootCreateQ04AttemptV1, ROOT_CREATE_Q04_QUERY_MAGIC_V1,
+    RootCreateQ04SourceObservationLoanV1,
+};
 mod protected_owner;
 mod public_create_source;
 pub(crate) use public_create_source::{

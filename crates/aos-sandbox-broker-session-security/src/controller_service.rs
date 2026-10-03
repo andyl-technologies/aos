@@ -164,6 +164,7 @@ mod git_read_inspection;
 mod nix_inputs;
 mod original_attach;
 mod operator_repair;
+mod create_q04;
 mod public_api;
 mod public_attach;
 mod public_hierarchy;
@@ -422,6 +423,9 @@ fn run_ordinary_controller(
         startup.terminate_failed();
     }
     let normal_root_profile = startup.profile_share();
+    if configuration.create_q04_policy_subgate && normal_root_profile.is_none() {
+        startup.fail_runtime(ControllerRuntimeError::InvalidCredential);
+    }
     if !startup.require_source_delivery_absent() {
         if startup.must_retain_failure() {
             startup.terminate_failed();
@@ -930,6 +934,18 @@ fn run_retained_controller(
         }
     }
     complete!(ControllerStartup);
+
+    if configuration.create_q04_policy_subgate {
+        // The SAME admitted profile and whole Controller remain parked in the
+        // existing worker before selected Cache opens or the first cycle.
+        let ControllerWorkerOriginalsV1 { controller, profile, .. } = &mut *originals;
+        let profile = required!(required!(profile.as_ref()).as_ref());
+        if required!(controller.as_mut())
+            .select_original_create_q04_policy_subgate_v1(Arc::clone(profile)).is_err()
+        {
+            worker.terminate(ControllerResidentCauseV1::Closed("original Q04 selection failed"));
+        }
+    }
 
     begin!(AsyncDiagnostic);
     {
@@ -3358,6 +3374,7 @@ struct RuntimeConfiguration {
     git_read_inspection: Option<(u32, u32)>,
     nix_start_admission: bool,
     issue_source_successor: bool,
+    create_q04_policy_subgate: bool,
 }
 
 impl RuntimeConfiguration {
@@ -3377,6 +3394,7 @@ impl RuntimeConfiguration {
         let mut git_read_inspection = None;
         let mut nix_start_admission = false;
         let mut issue_source_successor = false;
+        let mut create_q04_policy_subgate = false;
         for argument in arguments {
             match argument.as_str() {
                 "--public-api" if !public_api => public_api = true,
@@ -3385,6 +3403,9 @@ impl RuntimeConfiguration {
                 "--nix-start-admission" if !nix_start_admission => nix_start_admission = true,
                 "--issue-source-successor" if !issue_source_successor => {
                     issue_source_successor = true;
+                }
+                "--create-q04-policy-subgate" if !create_q04_policy_subgate => {
+                    create_q04_policy_subgate = true;
                 }
                 value if value.starts_with("--git-read-inspection=")
                     && git_read_inspection.is_none() => {
@@ -3415,11 +3436,20 @@ impl RuntimeConfiguration {
             }
         }
         if issue_source_successor
-            && (public_api || publisher_ingress || nix_start_admission || git_upload_bootstrap
-                || git_read_inspection.is_some())
+            && (public_api
+                || publisher_ingress
+                || nix_start_admission
+                || git_upload_bootstrap
+                || git_read_inspection.is_some()
+                || create_q04_policy_subgate)
         {
             return Err(ControllerRuntimeError::InvalidArguments(
                 "issue mode is exclusive",
+            ));
+        }
+        if create_q04_policy_subgate && git_upload_bootstrap {
+            return Err(ControllerRuntimeError::InvalidArguments(
+                "original Q04 freshness is incompatible with Git Cache bootstrap",
             ));
         }
         if git_upload_bootstrap && !publisher_ingress {
@@ -3443,6 +3473,7 @@ impl RuntimeConfiguration {
             git_read_inspection,
             nix_start_admission,
             issue_source_successor,
+            create_q04_policy_subgate,
         })
     }
 
@@ -3499,6 +3530,7 @@ struct ProductionEffectExecutor {
     process_start: Option<([u8; 16], u64)>,
     pending_source_commit: Option<PendingSourceCommit>,
     pending_atomic_snapshot: Option<storage_snapshot::PendingAtomicSnapshotV1>,
+    q04: Option<create_q04::OriginalQ04ControllerSelectionV1>,
 }
 
 struct PendingSourceCommit {
@@ -3605,6 +3637,7 @@ impl ProductionEffectExecutor {
             process_start,
             pending_source_commit: None,
             pending_atomic_snapshot: None,
+            q04: None,
         }
     }
 
@@ -4678,6 +4711,11 @@ impl ProductionEffectExecutor {
     }
 
     fn ensure_cache_inventory_owner(&mut self) -> Result<(), EffectFailure> {
+        if self.q04.is_some() {
+            return Err(EffectFailure::Permanent(
+                "original Q04 Cache writers cannot be reopened or used by ordinary mutation".to_owned(),
+            ));
+        }
         if self.cache_resident_usage.started() {
             self.cache_resident_usage.fence_unsupported_transition();
             return Err(EffectFailure::Permanent(
@@ -5409,6 +5447,28 @@ fn reject_unqualified_delete_effect(plan: &EffectPlan) -> Result<(), EffectFailu
 }
 
 impl SingleNodeEffectExecutor for ProductionEffectExecutor {
+    fn select_original_create_q04_policy_subgate_v1(
+        &mut self,
+        profile: Arc<aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1>,
+    ) -> Result<(), EffectFailure> {
+        create_q04::select(self, profile)
+    }
+
+    fn reconcile_original_create_q04_policy_subgate_v1(
+        &mut self,
+        operation: OperationId,
+        step: u32,
+        effect_count: u32,
+        plan: &EffectPlan,
+        dispatch: Option<&PreparedAuthorityEffectV1>,
+        authority_gate: Option<(aos_sandbox_core::SandboxId, ObjectDigest)>,
+        journal: &mut Journal,
+    ) -> Option<Result<(), EffectFailure>> {
+        create_q04::reconcile(
+            self, operation, step, effect_count, plan, dispatch, authority_gate, journal,
+        )
+    }
+
     fn existing_cache_project_usage_v1(
         &mut self,
         project: aos_sandbox_core::ProjectId,
@@ -7691,6 +7751,7 @@ mod tests {
             git_read_inspection: None,
             nix_start_admission: false,
             issue_source_successor: false,
+            create_q04_policy_subgate: false,
         }
     }
 
@@ -7706,6 +7767,20 @@ mod tests {
         assert!(parse(&["--publisher-ingress", "--git-upload-bootstrap"]).unwrap().git_upload_bootstrap);
         assert!(parse(&["--publisher-ingress", "--git-upload-bootstrap", "--issue-source-successor"]).is_err());
         assert!(parse(&["--publisher-ingress", "--git-upload-bootstrap", "--git-upload-bootstrap"]).is_err());
+    }
+
+    #[test]
+    fn q04_selection_is_default_off_and_refuses_nonfresh_git_bootstrap() {
+        let parse = |flags: &[&str]| RuntimeConfiguration::from_arguments(
+            ["sandboxd", "1000", "1000"].into_iter()
+                .chain(flags.iter().copied()).map(str::to_owned),
+        );
+
+        assert!(!parse(&[]).unwrap().create_q04_policy_subgate);
+        assert!(parse(&["--create-q04-policy-subgate"]).unwrap().create_q04_policy_subgate);
+        assert!(parse(&["--create-q04-policy-subgate", "--create-q04-policy-subgate"]).is_err());
+        assert!(parse(&["--create-q04-policy-subgate", "--issue-source-successor"]).is_err());
+        assert!(parse(&["--publisher-ingress", "--git-upload-bootstrap", "--create-q04-policy-subgate"]).is_err());
     }
 
     #[test]

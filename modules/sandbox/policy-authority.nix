@@ -224,7 +224,7 @@ in {
           else if option == "cacheOwnerReadbackPublicKey"
           then "Optional 80-byte AOSCPK01 Cache-only signer pin for nonauthorizing V2 settlement and Q04 held-flight readback; first CAS and Create remain closed."
           else if option == "controllerHoldPublicKey"
-          then "Optional 80-byte AOSCTK01 Controller-only hold signer pin. Root persists exact replay but Q04 does not consume receipts or publish Create."
+          then "Optional 80-byte AOSCTK01 Controller-only hold signer pin for the same-original Q04 policy subgate; it never completes public Create."
           else if option == "sourceHoldPublicKey"
           then "Optional 80-byte AOSSPK01 Source-only hold signer pin for nonauthorizing Q04 held-flight readback; first CAS and Create remain closed."
           else if option == "sourceTreeSeedIssuer"

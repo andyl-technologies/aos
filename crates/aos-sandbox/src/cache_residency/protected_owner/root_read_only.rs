@@ -67,6 +67,81 @@ pub struct CacheResidencyRootReadOnlyPolicyHoldV1 {
     pub hold: CachePolicyHoldV1,
 }
 
+// These are comparison inputs supplied by the same actual Root flight. They
+// create neither a clearance loan nor permission to mutate a Cache writer.
+#[cfg(target_os = "linux")]
+pub(crate) struct Q04RootCacheTerminalRequestV1<'cut> {
+    pub(crate) identity: &'cut crate::policy_compiler::create_q04::Q04CutIdentityV1,
+    pub(crate) phase: crate::journal::Q04CacheTerminalPhaseV1,
+    pub(crate) original_names: crate::journal::ProtectedJournalNamesV1,
+    pub(crate) original_next: u64,
+    pub(crate) held: CachePolicyHoldV1,
+    pub(crate) release_authorization: ObjectDigest,
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) struct Q04RootCacheTerminalOutcomeV1 {
+    pub(crate) readback: Result<CacheResidencyRootReadOnlyPolicyHoldV1,
+        crate::policy_compiler::create_q04::CreateQ04ErrorV1>,
+    pub(crate) final_mount: Result<(), CacheResidencyProtectedJournalErrorV1>,
+}
+
+#[cfg(target_os = "linux")]
+struct Q04ReadOnlyHoldPositionV1<'request, 'cut> {
+    request: &'request Q04RootCacheTerminalRequestV1<'cut>,
+    returned: Option<Result<CachePolicyHoldV1,
+        crate::policy_compiler::create_q04::CreateQ04ErrorV1>>,
+}
+
+enum ReadOnlyHoldPositionV1<'position, 'request, 'cut> {
+    Legacy {
+        require_hold: bool,
+        loans: std::marker::PhantomData<(&'position (), &'request (), &'cut ())>,
+    },
+    #[cfg(target_os = "linux")]
+    Q04(&'position mut Q04ReadOnlyHoldPositionV1<'request, 'cut>),
+}
+
+impl ReadOnlyHoldPositionV1<'_, '_, '_> {
+    fn legacy(require_hold: bool) -> Self {
+        Self::Legacy { require_hold, loans: std::marker::PhantomData }
+    }
+
+    fn requires_hold(&self) -> bool {
+        match self {
+            Self::Legacy { require_hold, .. } => *require_hold,
+            #[cfg(target_os = "linux")]
+            Self::Q04(_) => true,
+        }
+    }
+
+    fn observe(
+        &mut self,
+        journal: &mut ReadOnlyProtectedJournal,
+    ) -> Result<CachePolicyHoldV1, CacheResidencyProtectedJournalErrorV1> {
+        match self {
+            Self::Legacy { .. } => journal.held_cache_policy_hold().map_err(Into::into),
+            #[cfg(target_os = "linux")]
+            Self::Q04(position) => {
+                if position.returned.is_some() {
+                    return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
+                }
+                let request = position.request;
+                position.returned = Some(journal.q04_terminal_cache_policy_hold(
+                    request.identity, request.phase, request.original_names,
+                    request.original_next, request.held, request.release_authorization,
+                ));
+                match position.returned.as_ref() {
+                    Some(Ok(hold)) => Ok(*hold),
+                    // The real typed first cause remains parked above. This
+                    // marker only stops the old replay engine immediately.
+                    _ => Err(ProtectedDomainJournalErrorV1::StaleAuthority),
+                }
+            }
+        }
+    }
+}
+
 pub(super) struct ReadOnlyCacheClockV1 {
     pub(super) floor: CacheClockFloorV1,
 }
@@ -310,6 +385,60 @@ fn replay_fixed_root_read_only_cache_journals_inner(
     Ok(replay)
 }
 
+// The caller retains this whole returned outcome before original Root/clock
+// bookends. Its first native failure and a later mount check remain distinct.
+// A genuine same-owner gen1 loan is required but is not, by itself, evidence
+// of Q04 settlement; the fixed Root caller also checks its actual phase.
+#[cfg(target_os = "linux")]
+pub(crate) fn replay_fixed_root_q04_terminal_cache_journals_v1(
+    original: &crate::policy_compiler::source_genesis_root::Q04RootGen1CutLoanV1<'_>,
+    request: &Q04RootCacheTerminalRequestV1<'_>,
+) -> Q04RootCacheTerminalOutcomeV1 {
+    if let Err(first) = original.recheck() {
+        return Q04RootCacheTerminalOutcomeV1 {
+            readback: Err(first.into()), final_mount: Ok(()),
+        };
+    }
+    let mount = match require_fixed_read_only_cache_mount() {
+        Ok(mount) => mount,
+        Err(first) => {
+            return Q04RootCacheTerminalOutcomeV1 {
+                readback: Err(first.into()), final_mount: Ok(()),
+            };
+        }
+    };
+    let mut position = Q04ReadOnlyHoldPositionV1 { request, returned: None };
+    let returned = (|| {
+        reject_legacy_cache_journals()?;
+        let (replay, hold) = replay_cache_journals_at_for(
+            Path::new(ROOT_READ_ONLY_CACHE_VIEW), 0,
+            ReadOnlyHoldPositionV1::Q04(&mut position),
+            Journal::open_read_only_protected_at,
+            ReadOnlyJournalNameWitness::check_named_currentness,
+            ReadOnlyProtectedJournal::check_named_currentness,
+            |_| Ok(()),
+        )?;
+        reject_legacy_cache_journals()?;
+        if require_fixed_read_only_cache_mount()? != mount {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+        let (hold, hold_journal) = hold.ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        if replay.quota_digest.as_bytes() != &request.identity.bytes()[584..616] {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+        original.recheck()?;
+        Ok(CacheResidencyRootReadOnlyPolicyHoldV1 { replay, hold_journal, hold })
+    })();
+    let readback = match position.returned.take() {
+        Some(Err(first)) => Err(first),
+        _ => returned,
+    };
+    let final_mount = require_fixed_read_only_cache_mount().and_then(|after| {
+        if after == mount { Ok(()) } else { Err(ProtectedDomainJournalErrorV1::StaleAuthority) }
+    });
+    Q04RootCacheTerminalOutcomeV1 { readback, final_mount }
+}
+
 fn replay_cache_journals_at(
     view: &Path,
     owner_uid: u32,
@@ -329,6 +458,26 @@ fn replay_cache_journals_at(
         CacheResidencyRootReadOnlyReplayV1,
         Option<(CachePolicyHoldV1, RecoveryReport)>,
     ),
+    CacheResidencyProtectedJournalErrorV1,
+> {
+    replay_cache_journals_at_for(
+        view, owner_uid, ReadOnlyHoldPositionV1::legacy(require_hold), open,
+        check_name, check_hold, check_quotas,
+    )
+}
+
+fn replay_cache_journals_at_for(
+    view: &Path,
+    owner_uid: u32,
+    mut hold_position: ReadOnlyHoldPositionV1<'_, '_, '_>,
+    open: impl Fn(&Path, &str, JournalLimits)
+        -> Result<(ReadOnlyProtectedJournal, RecoveryReport), JournalError>,
+    check_name: impl Fn(&ReadOnlyJournalNameWitness) -> Result<(), JournalError>,
+    check_hold: impl Fn(&ReadOnlyProtectedJournal) -> Result<(), JournalError>,
+    check_quotas: impl FnOnce(&[crate::cache_residency::NodeCacheQuotaV1])
+        -> Result<(), CacheResidencyProtectedJournalErrorV1>,
+) -> Result<
+    (CacheResidencyRootReadOnlyReplayV1, Option<(CachePolicyHoldV1, RecoveryReport)>),
     CacheResidencyProtectedJournalErrorV1,
 > {
     let owner_scope = cache_owner_scope();
@@ -388,13 +537,13 @@ fn replay_cache_journals_at(
     check_quotas(&node_quotas)?;
     let quota_digest = complete_node_quota_digest_v2(node_quotas)?;
     let mut hold_witness = None;
-    let hold = if require_hold {
+    let hold = if hold_position.requires_hold() {
         let (mut journal, report) = open(
             view,
             CACHE_POLICY_HOLD_JOURNAL,
             Journal::cache_policy_hold_limits(),
         )?;
-        let hold = journal.held_cache_policy_hold()?;
+        let hold = hold_position.observe(&mut journal)?;
         let current = select_project_physical_cache_head(hold.project(), &inventories)?;
         if !hold_matches_replayed_head(hold, current.partition().digest(), current.head()) {
             return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());

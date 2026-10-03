@@ -319,6 +319,78 @@ fn sign_controller_project_admission_at(
     Ok(packet)
 }
 
+// The ordinary SingleNamespace route above deliberately stays unchanged.
+// Q04 instead rejoins the captured real whole ledger/native prefix twice,
+// while its caller retains the original Journal, credentials and flight.
+#[cfg(target_os = "linux")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn sign_q04_current_controller_project_v1(
+    journal: &mut Journal,
+    ledger: &crate::reconciler::OriginalQ04ControllerLedgerV1,
+    challenge: ControllerProjectAdmissionChallengeV1,
+    signer_generation: u64,
+    signing_key: &SigningKey,
+    packet: &mut Option<[u8; CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1]>,
+    first_cause: &mut Option<super::create_q04::CreateQ04ErrorV1>,
+    postcheck_debt: &mut Option<super::create_q04::CreateQ04ErrorV1>,
+) -> Result<(), ()> {
+    use super::create_q04::CreateQ04ErrorV1;
+
+    if packet.is_some() || first_cause.is_some() || postcheck_debt.is_some() {
+        first_cause.get_or_insert(CreateQ04ErrorV1::ChangedCut);
+        return Err(());
+    }
+    let result = sign_q04_current_controller_project_original(
+        journal, ledger, challenge, signer_generation, signing_key, packet, first_cause,
+    );
+    super::create_q04::finish_controller_q04_signing_v1(result, first_cause, postcheck_debt)
+}
+
+#[cfg(target_os = "linux")]
+#[allow(clippy::too_many_arguments)]
+fn sign_q04_current_controller_project_original(
+    journal: &mut Journal,
+    ledger: &crate::reconciler::OriginalQ04ControllerLedgerV1,
+    challenge: ControllerProjectAdmissionChallengeV1,
+    signer_generation: u64,
+    signing_key: &SigningKey,
+    packet: &mut Option<[u8; CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1]>,
+    first_cause: &mut Option<super::create_q04::CreateQ04ErrorV1>,
+) -> Result<(), super::create_q04::CreateQ04ErrorV1> {
+    let uid = rustix::process::getuid().as_raw();
+    if uid == 0 || signer_generation == 0 {
+        return Err(ControllerProjectAdmissionReadbackErrorV1::NonCanonical.into());
+    }
+    let directory = Path::new(CONTROLLER_DIRECTORY);
+    journal.require_protected_named_location(
+        directory, CONTROLLER_JOURNAL, uid, production_journal_limits(),
+    )?;
+    let before = journal.q04_controller_signing_bookend_v1(ledger, None)?;
+    let source = ledger.signing_current_source(journal)?;
+    let fields = fields_from_source(journal, &source, uid, before.0)?;
+
+    // The actual signature or its typed error is resident before any later
+    // original-name, full replay or current-field observation can fail.
+    match sign_fields(fields, challenge, signer_generation, signing_key) {
+        Ok(returned) => *packet = Some(returned),
+        Err(error) => *first_cause = Some(error.into()),
+    }
+
+    journal.require_protected_named_location(
+        directory, CONTROLLER_JOURNAL, uid, production_journal_limits(),
+    )?;
+    if journal.q04_controller_signing_bookend_v1(ledger, None)? != before {
+        return Err(ControllerProjectAdmissionReadbackErrorV1::Stale.into());
+    }
+    let current = ledger.signing_current_source(journal)?;
+    if fields_from_source(journal, &current, uid, before.0)? != fields
+        || journal.q04_controller_signing_bookend_v1(ledger, None)? != before
+    {
+        return Err(ControllerProjectAdmissionReadbackErrorV1::Stale.into());
+    }
+    Ok(())
+}
+
 fn fields_from_source(
     journal: &mut Journal,
     source: &CurrentCreateProjectPolicySourceV1,
@@ -356,6 +428,86 @@ fn fields_from_source(
     };
     fields.validate(uid)?;
     Ok(fields)
+}
+
+// The prehold request signs complete original-row comparison DATA under this
+// same genuine mixed Controller ledger. It is not the old SingleNamespace
+// signer, an authority DTO or a detached currentness/funding certificate.
+#[cfg(target_os = "linux")]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn sign_q04_prehold_input_v1(
+    journal: &mut Journal,
+    ledger: &crate::reconciler::OriginalQ04ControllerLedgerV1,
+    metadata: &[u8; super::create_q04::PREHOLD_METADATA_BYTES],
+    proposed: &[u8],
+    current_packet: &[u8; CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1],
+    signer_generation: u64,
+    signing_key: &SigningKey,
+    resident_packet: &mut Vec<u8>,
+    first_cause: &mut Option<super::create_q04::CreateQ04ErrorV1>,
+    postcheck_debt: &mut Option<super::create_q04::CreateQ04ErrorV1>,
+) -> Result<(), ()> {
+    use super::create_q04::{CreateQ04ErrorV1, finish_controller_q04_signing_v1};
+
+    if first_cause.is_some() || postcheck_debt.is_some() || !resident_packet.is_empty() {
+        return finish_controller_q04_signing_v1(
+            Err(CreateQ04ErrorV1::ChangedCut), first_cause, postcheck_debt,
+        );
+    }
+    let mut original = None;
+    let mut original_fields = None;
+    let signed = (|| {
+        let before = journal.q04_controller_signing_bookend_v1(ledger, None)?;
+        original = Some(before);
+        let uid = journal.protected_owner_uid()?;
+        if uid == 0 || uid != rustix::process::getuid().as_raw() {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        let source = ledger.signing_current_source(journal)?;
+        let fields = fields_from_source(journal, &source, uid, before.0)?;
+        original_fields = Some(fields);
+        if signer_generation == 0
+            || metadata[32..40] != signer_generation.to_be_bytes()
+            || metadata[176..224] != before.1.to_bytes()
+            || metadata[464..472] != before.0.to_be_bytes()
+            || fields.journal_sequence != before.0
+            || current_packet[12..20] != signer_generation.to_be_bytes()
+        {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        let rows = ledger.original_rows();
+        super::create_q04::encode_q04_prehold_body_v1(
+            resident_packet,
+            [metadata, rows[0], rows[1], rows[2], proposed, current_packet],
+        )?;
+        super::create_q04::sign_q04_prehold_body_v1(resident_packet, signing_key)
+    })();
+
+    // Park the actual signing/allocation error before any physical postcheck.
+    // A successfully appended signature already belongs to resident_packet.
+    let result = finish_controller_q04_signing_v1(signed, first_cause, postcheck_debt);
+    let checked = (|| {
+        let after = journal.q04_controller_signing_bookend_v1(ledger, None)?;
+        if let Some(before) = original {
+            if after != before {
+                return Err(CreateQ04ErrorV1::ChangedCut);
+            }
+        }
+        if let Some(before_fields) = original_fields {
+            let source = ledger.signing_current_source(journal)?;
+            let uid = journal.protected_owner_uid()?;
+            let fields = fields_from_source(journal, &source, uid, after.0)?;
+            if fields != before_fields {
+                return Err(CreateQ04ErrorV1::ChangedCut);
+            }
+            if journal.q04_controller_signing_bookend_v1(ledger, None)? != after {
+                return Err(CreateQ04ErrorV1::ChangedCut);
+            }
+        }
+        Ok(())
+    })();
+    let postflight = finish_controller_q04_signing_v1(checked, first_cause, postcheck_debt);
+    result.and(postflight)
 }
 
 /// Verifies a Controller project-admission receipt against a Root-owned pin.

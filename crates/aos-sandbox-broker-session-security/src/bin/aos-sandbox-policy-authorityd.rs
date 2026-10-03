@@ -215,6 +215,7 @@ enum HeadRequestMode {
     Query,
     Lease,
     SourceGenesis,
+    CreateQ04,
     ConsumerReadPreRoot,
     ClosedBinding,
     QualifiedClosedBinding,
@@ -1193,6 +1194,11 @@ fn read_head_request(
         // its prearmed capsule before every fallible new-purpose check/gate.
         return Ok((request, HeadRequestMode::GitEvidenceView));
     }
+    if &request[..8] == aos_sandbox::policy_compiler::ROOT_CREATE_Q04_QUERY_MAGIC_V1 {
+        // Discrimination is not authority. The actual accepted owner must be
+        // parked before even missing-startup or malformed-purpose refusal.
+        return Ok((request, HeadRequestMode::CreateQ04));
+    }
     if &request[..8]
         == aos_sandbox::policy_compiler::consumer_read_flight::CONSUMER_READ_BOOTSTRAP_MAGIC_V1
     {
@@ -1417,6 +1423,63 @@ fn require_pre_root_startup(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+fn serve_original_create_q04(
+    attempt: &mut aos_sandbox::policy_compiler::OriginalRootCreateQ04AttemptV1<'_>,
+    source_signer_uid: u32,
+    controller_gid: u32,
+    packet: &[u8],
+    inputs: &PolicyDeploymentInputsV1<'_>,
+    deployment_key: &VerifyingKey,
+    deployment_generation: u64,
+    explicit_project: Option<(&[u8], &[u8])>,
+    project_key: &VerifyingKey,
+    project_generation: u64,
+) -> Result<(), ()> {
+    use aos_sandbox_broker_session_security::source_genesis_flight::{
+        prepare_root_create_q04_existing_gen1_v1,
+        refresh_root_create_q04_gen1_v1,
+    };
+
+    prepare_root_create_q04_existing_gen1_v1(attempt, source_signer_uid, controller_gid)?;
+    attempt.send_nonissuing_preview(
+        packet, deployment_generation, deployment_key, explicit_project,
+        project_generation, project_key, inputs,
+    )?;
+    attempt.prepare_publication_data()?;
+
+    // C1 and Source acquisition each change a real signed gen1 observation.
+    // Cache acquisition does not change either of those original writers.
+    for _ in 0..2 {
+        refresh_root_create_q04_gen1_v1(attempt, source_signer_uid, controller_gid)?;
+    }
+    attempt.receive_held_claim()?;
+    attempt.commit_held_root_binding()?;
+    attempt.publish_held_policy()?;
+    attempt.publish_decision()?;
+
+    refresh_root_create_q04_gen1_v1(attempt, source_signer_uid, controller_gid)?; // C2
+    attempt.consume_policy_acknowledgement()?;
+    for _ in 0..2 { // C3, C4
+        refresh_root_create_q04_gen1_v1(attempt, source_signer_uid, controller_gid)?;
+    }
+    attempt.authorize_lower_release()?;
+
+    for _ in 0..2 { // Source release, C5 atomic released settlement
+        refresh_root_create_q04_gen1_v1(attempt, source_signer_uid, controller_gid)?;
+    }
+    attempt.settle_lower_release()?;
+    for _ in 0..3 { // C6, Source clear after Cache clear, C7
+        refresh_root_create_q04_gen1_v1(attempt, source_signer_uid, controller_gid)?;
+    }
+    attempt.acknowledge_lower_clearance()?;
+
+    // Root7 does not release this owner. The fresh C8 Complete/Source packet
+    // is the final same-flight observation before actual bounded shutdown.
+    refresh_root_create_q04_gen1_v1(attempt, source_signer_uid, controller_gid)?;
+    attempt.finish_original_clearance()
+}
+
 fn serve_current_head(
     mut original: std::os::unix::net::UnixStream,
     startup: Option<
@@ -1458,6 +1521,24 @@ fn serve_current_head(
             // Neither fallible diagnostics nor an ordinary return may drop
             // the original failed flight/writer before terminal process exit.
             let _ = writeln!(std::io::stderr().lock(), "aos-sandbox-policy-authorityd: {error}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if matches!(mode, HeadRequestMode::CreateQ04) {
+        let mut attempt = aos_sandbox::policy_compiler::OriginalRootCreateQ04AttemptV1::new(
+            original, startup, request, controller_uid, controller_gid,
+            controller_uid, cache_signer_uid,
+        );
+        let returned = serve_original_create_q04(
+            &mut attempt, source_signer_uid, controller_gid,
+            packet, inputs, verifying_key, deployment_signer_generation,
+            explicit_project, project_key, project_signer_generation,
+        );
+        if returned.is_err() {
+            // The first cause, original partials, both actual Root writers and
+            // shutdown result are resident before diagnostics or process exit.
+            let _ = writeln!(std::io::stderr().lock(), "aos-sandbox-policy-authorityd: original Q04 cut refused");
             std::process::exit(1);
         }
         return Ok(());
@@ -3954,6 +4035,7 @@ fn select_project_source<'a>(
             )
         }),
         HeadRequestMode::SourceGenesis
+        | HeadRequestMode::CreateQ04
         | HeadRequestMode::ConsumerReadPreRoot
         | HeadRequestMode::GitEvidenceView
         | HeadRequestMode::ClosedBindingReplay

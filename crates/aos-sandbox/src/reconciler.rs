@@ -43,6 +43,18 @@ use crate::publication::{
 };
 
 mod create_failure;
+#[cfg(target_os = "linux")]
+mod create_q04;
+#[cfg(target_os = "linux")]
+pub(crate) use create_q04::validate_original_claim_rows_v1;
+#[cfg(target_os = "linux")]
+pub(crate) use create_q04::{Q04OriginalRowBindingV1, read_original_q04_rows_v1};
+#[cfg(target_os = "linux")]
+pub(crate) use create_q04::OriginalQ04ControllerLedgerV1;
+#[cfg(target_os = "linux")]
+pub(crate) use create_q04::require_original_pending as require_q04_original_pending_v1;
+#[cfg(target_os = "linux")]
+pub use create_q04::continue_original_create_q04_policy_subgate_v1;
 mod effect;
 #[cfg(target_os = "linux")]
 mod fuse_admission;
@@ -778,6 +790,47 @@ pub trait SingleNodeEffectExecutor {
         Err(crate::cache_residency::CacheResidentUnavailableV1)
     }
 
+    /// Selects the closed original-gen1 Create policy-subgate continuation.
+    ///
+    /// Only the installed caller supplies its genuinely admitted normal-Root
+    /// profile. The default refuses selection without touching ordinary owners.
+    /// Selection itself grants no public Create or generic Effect completion.
+    ///
+    /// # Errors
+    /// Refuses missing genuine owner support or a repeated/failed selection.
+    #[cfg(target_os = "linux")]
+    fn select_original_create_q04_policy_subgate_v1(
+        &mut self,
+        _profile: std::sync::Arc<crate::normal_root::ProductionControllerNormalRootProfileV1>,
+    ) -> Result<(), EffectFailure> {
+        Err(EffectFailure::Permanent("original Q04 owner selection is unavailable".to_owned()))
+    }
+
+    /// Continues a selected Create subgate without returning a generic receipt.
+    ///
+    /// `None` preserves the literal ordinary Create executor path. A selected
+    /// implementation retains the real owners through policy and final Root
+    /// clearance; success still leaves Operation/Effect Applying and pending.
+    /// The existing dispatch and authority-gate shapes are negative graph
+    /// checks, not permissions: selection refuses either before owner I/O.
+    ///
+    /// # Errors
+    /// Selected failures must retain original first causes and debt before
+    /// deliberate terminal handling, never generic Apply/retry or dropped Err.
+    #[cfg(target_os = "linux")]
+    fn reconcile_original_create_q04_policy_subgate_v1(
+        &mut self,
+        _operation: OperationId,
+        _step: u32,
+        _effect_count: u32,
+        _plan: &EffectPlan,
+        _dispatch: Option<&PreparedAuthorityEffectV1>,
+        _authority_gate: Option<(SandboxId, ObjectDigest)>,
+        _journal: &mut Journal,
+    ) -> Option<Result<(), EffectFailure>> {
+        None
+    }
+
     /// Issues only the fixed administrative successor on real original owners.
     ///
     /// The default is retaining terminal refusal. Production borrows its SAME
@@ -1241,6 +1294,14 @@ where
         &mut self,
     ) -> Result<(), crate::cache_residency::CacheResidentUnavailableV1> {
         self.executor.recheck_existing_cache_project_usage_v1()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn select_original_create_q04_policy_subgate_v1(
+        &mut self,
+        profile: std::sync::Arc<crate::normal_root::ProductionControllerNormalRootProfileV1>,
+    ) -> Result<(), EffectFailure> {
+        self.executor.select_original_create_q04_policy_subgate_v1(profile)
     }
 
     #[cfg(target_os = "linux")]
@@ -1834,6 +1895,12 @@ where
         if create_failure::has_prepare_floor(&self.journal, operation_id)? {
             return Ok(ReconcileOutcome::CreateFailurePending);
         }
+        #[cfg(target_os = "linux")]
+        if create_q04::require_original_pending(&self.journal)? {
+            // A Controller-wide Q04 fence applies before every generic effect
+            // or observer call, including C1 before a consumed gate exists.
+            return Ok(ReconcileOutcome::RetryPending);
+        }
 
         let mut canceled_before_commit = false;
         for step in 0..operation.effect_count {
@@ -1842,7 +1909,17 @@ where
                 .journal
                 .get(RecordNamespace::Effect, &key)
                 .ok_or(ReconcilerError::CorruptLedger("missing effect record"))?;
+            #[cfg(target_os = "linux")]
+            let (record, q04) = effect::decode_effect_with_q04(bytes)?;
+            #[cfg(not(target_os = "linux"))]
             let record = decode_effect(bytes)?;
+            #[cfg(target_os = "linux")]
+            if q04.is_some() {
+                // A historical policy subgate cannot dispatch Create, retire
+                // it, or restart Stage through generic reconciliation. Only
+                // the original selected invocation advances its closed phase.
+                return Ok(ReconcileOutcome::RetryPending);
+            }
             match record.state {
                 EffectState::Applied { receipt, .. } => {
                     if receipt
@@ -2796,6 +2873,23 @@ where
                 }
             }
         }
+        #[cfg(target_os = "linux")]
+        if plan.public_mutation_method() == Some(crate::controller_query::PublicOperationMethodV1::CreateSandbox) {
+            if let Some(result) = self.executor.reconcile_original_create_q04_policy_subgate_v1(
+                operation_id, step, effect_count, &plan, dispatch.as_ref(), authority_gate,
+                &mut self.journal,
+            ) {
+                result.map_err(|_| ReconcilerError::InvalidExecutorOutput(
+                    "selected Q04 original custody cannot fall back to generic Apply",
+                ))?;
+                self.ledger_validated = false;
+                self.ensure_ledger_validated()?;
+                if !create_q04::require_original_pending(&self.journal)? {
+                    return Err(ReconcilerError::InvalidExecutorOutput("Q04 policy subgate lost its pending fence"));
+                }
+                return Ok(ReconcileOutcome::RetryPending);
+            }
+        }
         let receipt = if let Some(prepared) = dispatch.as_ref() {
             let observed = match self
                 .executor
@@ -3103,6 +3197,15 @@ where
             .journal
             .get(RecordNamespace::Effect, &effect_key(operation_id, step))
             .ok_or(ReconcilerError::CorruptLedger("missing effect record"))?;
+        #[cfg(target_os = "linux")]
+        if effect::q04_effect_subgate(current)?.is_some() {
+            // The selected same-flight CAS is the only writer for this
+            // Applying subgate. A generic retry/result must not erase it or
+            // turn policy admission into Applied/public Create completion.
+            return Err(ReconcilerError::CorruptLedger(
+                "Q04 policy admission requires its original closed transition",
+            ));
+        }
         let current = decode_effect(current)?;
         if current.plan != record.plan
             || record
@@ -4080,7 +4183,7 @@ fn has_operator_repair_settlement_debt_v1(journal: &Journal, operation: Operatio
     Err(ReconcilerError::CorruptLedger("Repair owner settlement requires Linux custody"))
 }
 
-fn effect_key(operation_id: OperationId, step: u32) -> [u8; EFFECT_KEY_BYTES] {
+pub(crate) fn effect_key(operation_id: OperationId, step: u32) -> [u8; EFFECT_KEY_BYTES] {
     let mut key = [0_u8; EFFECT_KEY_BYTES];
     key[..OPERATION_KEY_BYTES].copy_from_slice(operation_id.as_bytes());
     key[OPERATION_KEY_BYTES..].copy_from_slice(&step.to_be_bytes());

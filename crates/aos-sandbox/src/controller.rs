@@ -3071,6 +3071,22 @@ where
             .coordinate_provisioned_source_genesis_v1(input, profile)
     }
 
+    /// Selects only the genuine original-gen1 Create policy-admission subgate.
+    ///
+    /// The installed selected caller retains this same Controller and its
+    /// admitted profile before the first worker cycle. This neither opens the
+    /// public Create gate nor completes its Applying Effect or backend method.
+    ///
+    /// # Errors
+    /// Refuses unavailable original owner support or repeated/failed selection.
+    #[cfg(target_os = "linux")]
+    pub fn select_original_create_q04_policy_subgate_v1(
+        &mut self,
+        profile: std::sync::Arc<crate::normal_root::ProductionControllerNormalRootProfileV1>,
+    ) -> Result<(), crate::reconciler::EffectFailure> {
+        self.reconciler.select_original_create_q04_policy_subgate_v1(profile)
+    }
+
     /// Issues fixed protected successor DATA through the SAME resident owners.
     ///
     /// This private administrative route opens no public mutation or readiness.

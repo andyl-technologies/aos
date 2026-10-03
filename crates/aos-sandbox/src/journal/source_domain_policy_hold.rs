@@ -26,6 +26,12 @@ use sha2::{Digest as _, Sha256};
 
 use super::{Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace};
 
+#[cfg(target_os = "linux")]
+use crate::policy_compiler::create_q04::{
+    Q04CutIdentityV1, Q04PendingOwnerV1, Q04PendingRecordV1, Q04TransactionOwnerV1,
+    SOURCE_PENDING_KEY,
+};
+
 const KEY: &[u8] = b"\0aos-source-domain-policy-hold-v1\0";
 const V8_PENDING_KEY: &[u8] = b"\0aos-source-domain-policy-v8-pending-settlement-v1\0";
 const MAGIC: &[u8; 8] = b"AOSSDH01";
@@ -132,6 +138,13 @@ impl SourceDomainPolicyHoldV1 {
         Ok(ObjectDigest::from_bytes(
             Sha256::digest(self.encode()?).into(),
         ))
+    }
+
+    // This reuses the sole record encoder for equality DATA. It supplies no
+    // Source writer, observed release, settlement permission or authority.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn q04_released_record_digest(self) -> Result<ObjectDigest, JournalError> {
+        Self { held: false, ..self }.record_digest()
     }
 
     fn validate(self) -> Result<(), JournalError> {
@@ -348,7 +361,7 @@ impl SourceDomainPolicyV8PendingSettlementV1 {
 fn current(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
 ) -> Result<Option<SourceDomainPolicyHoldV1>, JournalError> {
-    current_with_v8_pending(state).map(|(hold, _)| hold)
+    current_state(state).map(|readback| readback.hold)
 }
 
 fn current_with_v8_pending(
@@ -360,16 +373,41 @@ fn current_with_v8_pending(
     ),
     JournalError,
 > {
+    let readback = current_state(state)?;
+    #[cfg(target_os = "linux")]
+    if readback.q04_pending.is_some() {
+        // A Q04 marker is never interpreted as a legacy/V8 release proof.
+        return Err(JournalError::ProtectedBoundary);
+    }
+    Ok((readback.hold, readback.v8_pending))
+}
+
+struct SourceDomainPolicyHoldStateV1 {
+    hold: Option<SourceDomainPolicyHoldV1>,
+    v8_pending: Option<SourceDomainPolicyV8PendingSettlementV1>,
+    #[cfg(target_os = "linux")]
+    q04_pending: Option<Q04PendingRecordV1>,
+}
+
+fn current_state(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+) -> Result<SourceDomainPolicyHoldStateV1, JournalError> {
     let mut records = state
         .range((RecordNamespace::SourceDomainPolicyHold, Vec::new())..)
         .take_while(|((namespace, _), _)| *namespace == RecordNamespace::SourceDomainPolicyHold);
     let mut hold = None;
     let mut pending = None;
+    #[cfg(target_os = "linux")]
+    let mut q04_pending = None;
     for ((_, key), value) in &mut records {
         match key.as_slice() {
             KEY if hold.is_none() => hold = Some(SourceDomainPolicyHoldV1::decode(value)?),
             V8_PENDING_KEY if pending.is_none() => {
                 pending = Some(SourceDomainPolicyV8PendingSettlementV1::decode(value)?)
+            }
+            #[cfg(target_os = "linux")]
+            SOURCE_PENDING_KEY if q04_pending.is_none() => {
+                q04_pending = Some(Q04PendingRecordV1::decode(Q04PendingOwnerV1::Source, value)?);
             }
             _ => return Err(JournalError::ProtectedBoundary),
         }
@@ -380,16 +418,51 @@ fn current_with_v8_pending(
             _ => return Err(JournalError::ProtectedBoundary),
         }
     }
-    Ok((hold, pending))
+    #[cfg(target_os = "linux")]
+    if let Some(marker) = &q04_pending {
+        let row = hold.ok_or(JournalError::ProtectedBoundary)?;
+        if pending.is_some() {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        require_q04_marker_row(marker, row)?;
+    }
+    Ok(SourceDomainPolicyHoldStateV1 {
+        hold,
+        v8_pending: pending,
+        #[cfg(target_os = "linux")]
+        q04_pending,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn require_q04_marker_row(
+    marker: &Q04PendingRecordV1,
+    row: SourceDomainPolicyHoldV1,
+) -> Result<(), JournalError> {
+    let held = SourceDomainPolicyHoldV1 { held: true, ..row };
+    let released = SourceDomainPolicyHoldV1 { held: false, ..row };
+    if marker.is_held() != row.is_held()
+        || marker.bytes()[64..96] != *row.binding().as_bytes()
+        || marker.bytes()[96..104] != row.epoch().to_be_bytes()
+        || marker.bytes()[104..136] != *held.record_digest()?.as_bytes()
+        || marker.bytes()[136..168] != *released.record_digest()?.as_bytes()
+    {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    Ok(())
 }
 
 pub(super) fn require_no_mutation(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     transaction: &JournalTransaction,
 ) -> Result<(), JournalError> {
-    let (hold, pending) = current_with_v8_pending(state)?;
-    if hold.is_some_and(SourceDomainPolicyHoldV1::is_held)
-        || pending.is_some()
+    let readback = current_state(state)?;
+    #[cfg(target_os = "linux")]
+    if readback.q04_pending.is_some() {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    if readback.hold.is_some_and(SourceDomainPolicyHoldV1::is_held)
+        || readback.v8_pending.is_some()
         || transaction
             .records()
             .iter()
@@ -400,13 +473,331 @@ pub(super) fn require_no_mutation(
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+pub(super) fn require_q04_ordinary_boundary(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    transaction: &JournalTransaction,
+) -> Result<(), JournalError> {
+    // Old private hold/V8 flags do not waive this new purpose. Its marker
+    // freezes all Source writes until the exact retained transition clears it.
+    let writes_marker = transaction.records().iter().any(|record| {
+            record.namespace() == RecordNamespace::SourceDomainPolicyHold
+                && record.key() == SOURCE_PENDING_KEY
+        });
+    let has_marker = state.keys().any(|(namespace, key)| {
+        *namespace == RecordNamespace::SourceDomainPolicyHold && key == SOURCE_PENDING_KEY
+    });
+    if !has_marker
+        && !writes_marker
+    {
+        // No new-purpose byte means no additional legacy parse or reordered
+        // ordinary error. The existing validators retain their old positions.
+        return Ok(());
+    }
+    current_state(state)?;
+    Err(JournalError::ProtectedBoundary)
+}
+
+// These are inert complete transaction recipes, not a Source writer lease or
+// a Root release proof. The installed coordinator retains the real owner and
+// repeats its gen1/native/named/clock joins before selecting any append.
+#[cfg(target_os = "linux")]
+pub(crate) struct SourceQ04TransactionRecipesV1<'cut> {
+    identity: &'cut Q04CutIdentityV1,
+    names: super::ProtectedJournalNamesV1,
+    original_next: u64,
+    release_authorization: Option<ObjectDigest>,
+    prior: Option<SourceDomainPolicyHoldV1>,
+    held: SourceDomainPolicyHoldV1,
+    held_marker: Q04PendingRecordV1,
+    released_marker: Q04PendingRecordV1,
+    transactions: [JournalTransaction; 3],
+}
+
+#[cfg(target_os = "linux")]
+impl<'cut> SourceQ04TransactionRecipesV1<'cut> {
+    pub(crate) fn capture(
+        source: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        ledger: &crate::reconciler::OriginalQ04ControllerLedgerV1,
+        identity: &'cut Q04CutIdentityV1,
+    ) -> Result<Self, crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
+
+        ledger.require_identity(identity)?;
+        source.require_fixed_named_writer_v1()?;
+        if source.journal().protected_owner_uid()? != identity.source_uid() {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        let before = current_state(&source.journal().state)?;
+        if before.hold.is_some_and(SourceDomainPolicyHoldV1::is_held)
+            || before.v8_pending.is_some()
+            || before.q04_pending.is_some()
+        {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        let names = source.fixed_physical_names_v1()?;
+        let original_next = source.journal().snapshot_sequence();
+        let held = SourceDomainPolicyHoldV1::new(
+            identity.operation(),
+            identity.sandbox(),
+            ledger.source_commitment(),
+            identity.ancestry(),
+            identity.binding(),
+            identity.epoch(),
+        )?;
+        // Only uncommitted release/clear shapes use this nonissuing value.
+        // Acquisition bytes do not depend on a future Root response.
+        let bodies = q04_hold_recipe_bodies(
+            identity, names, held,
+            crate::policy_compiler::create_q04::lower_release_capacity_shape(identity),
+        )?;
+        source.require_fixed_named_writer_v1()?;
+        if source.fixed_physical_names_v1()? != names {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        Ok(Self {
+            identity,
+            names,
+            original_next,
+            release_authorization: None,
+            prior: before.hold,
+            held,
+            held_marker: bodies.held_marker,
+            released_marker: bodies.released_marker,
+            transactions: bodies.transactions,
+        })
+    }
+
+    pub(crate) fn transactions(&self) -> &[JournalTransaction; 3] {
+        &self.transactions
+    }
+
+    pub(crate) fn identity(&self) -> &Q04CutIdentityV1 {
+        self.identity
+    }
+
+    pub(crate) fn original_next(&self) -> u64 {
+        self.original_next
+    }
+
+    pub(crate) fn release_authorization(&self) -> Option<ObjectDigest> {
+        self.release_authorization
+    }
+
+    pub(crate) fn terminal_pair_data(
+        &self,
+    ) -> Result<[ObjectDigest; 2], crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        Ok([self.held.record_digest()?, self.held.q04_released_record_digest()?])
+    }
+
+    pub(crate) fn bind_observed_release(
+        &mut self,
+        source: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        root: &crate::policy_compiler::create_q04::OriginalQ04RootCacheLoanV1<'_, '_, '_>,
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
+
+        if self.release_authorization.is_some() || !std::ptr::eq(self.identity, root.identity()) {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        let release = root.release_phase()?.digest();
+        root.require_lower_transition(1, Some(release))?;
+        self.require_named_owner(source)?;
+        self.require_prefix(&source.journal().state, 1)?;
+        source.journal().require_q04_native_recipe_prefix_v1(
+            &self.transactions[..1], self.original_next,
+        )?;
+        let bodies = q04_hold_recipe_bodies(self.identity, self.names, self.held, release)?;
+        if bodies.held_marker != self.held_marker || bodies.transactions[0] != self.transactions[0] {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        self.released_marker = bodies.released_marker;
+        self.transactions = bodies.transactions;
+        self.release_authorization = Some(release);
+        source.journal().preflight_source_q04_remaining_v1(self, 1)?;
+        self.require_named_owner(source)?;
+        root.require_lower_transition(1, Some(release))
+    }
+
+    pub(crate) fn clear_recipe_digest(
+        &self,
+    ) -> Result<ObjectDigest, crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        if self.release_authorization.is_none() {
+            return Err(crate::policy_compiler::create_q04::CreateQ04ErrorV1::ChangedCut);
+        }
+        super::q04_lower_clear_native_digest_v1(
+            self.identity, Q04TransactionOwnerV1::Source, self.names,
+            self.original_next.checked_add(8).ok_or(JournalError::SequenceExhausted)?,
+            &self.transactions[2],
+        )
+    }
+
+    pub(crate) fn require_fixed_journal(&self, journal: &Journal) -> Result<(), JournalError> {
+        journal.require_protected_named_location(
+            std::path::Path::new(crate::lifecycle::protected_journal_join::PROTECTED_SOURCE_DOMAIN_ROOT),
+            JOURNAL_NAME,
+            self.identity.source_uid(),
+            crate::lifecycle::protected_journal_join::source_domain_journal_limits(),
+        )?;
+        if journal.protected_writer_physical_names_v1()? != self.names {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn require_named_owner(
+        &self,
+        source: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+    ) -> Result<(), JournalError> {
+        source.require_fixed_named_writer_v1()?;
+        if source.journal().protected_owner_uid()? != self.identity.source_uid()
+            || source.fixed_physical_names_v1()? != self.names
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn require_prefix(
+        &self,
+        state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+        committed: usize,
+    ) -> Result<(), JournalError> {
+        let readback = current_state(state)?;
+        if readback.v8_pending.is_some() {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        let released = SourceDomainPolicyHoldV1 { held: false, ..self.held };
+        let matches = match committed {
+            0 => readback.hold == self.prior && readback.q04_pending.is_none(),
+            1 => readback.hold == Some(self.held)
+                && readback.q04_pending.as_ref() == Some(&self.held_marker),
+            2 => readback.hold == Some(released)
+                && readback.q04_pending.as_ref() == Some(&self.released_marker),
+            3 => readback.hold == Some(released) && readback.q04_pending.is_none(),
+            _ => false,
+        };
+        if !matches {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+struct Q04SourceHoldRecipeBodiesV1 {
+    held_marker: Q04PendingRecordV1,
+    released_marker: Q04PendingRecordV1,
+    transactions: [JournalTransaction; 3],
+}
+
+// This is the sole Source Q04 record/transaction recipe. Root calls the same
+// DATA builder only after authenticating the original fields independently.
+#[cfg(target_os = "linux")]
+fn q04_hold_recipe_bodies(
+    identity: &Q04CutIdentityV1,
+    names: super::ProtectedJournalNamesV1,
+    held: SourceDomainPolicyHoldV1,
+    release_authorization: ObjectDigest,
+) -> Result<Q04SourceHoldRecipeBodiesV1, crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+    use crate::policy_compiler::create_q04::{CreateQ04ErrorV1, PENDING_BYTES};
+
+    if !held.is_held() || held.operation() != identity.operation()
+        || held.sandbox() != identity.sandbox() || held.binding() != identity.binding()
+        || held.epoch() != identity.epoch() || held.ancestry() != identity.ancestry()
+        || release_authorization.as_bytes() == &[0; 32]
+    {
+        return Err(CreateQ04ErrorV1::ChangedCut);
+    }
+    let released = SourceDomainPolicyHoldV1 { held: false, ..held };
+    let owner_recipe = ObjectDigest::from_bytes(Sha256::new()
+        .chain_update(b"aos.sandbox.create-q04.source-before-owner-recipe.v1\0")
+        .chain_update(names.to_bytes())
+        .chain_update(held.encode()?)
+        .chain_update(released.encode()?)
+        .finalize().into());
+    let mut body = [0; PENDING_BYTES];
+    body[16..48].copy_from_slice(identity.digest().as_bytes());
+    body[48..64].copy_from_slice(&identity.nonce());
+    body[64..96].copy_from_slice(identity.binding().as_bytes());
+    body[96..104].copy_from_slice(&identity.epoch().to_be_bytes());
+    body[104..136].copy_from_slice(held.record_digest()?.as_bytes());
+    body[136..168].copy_from_slice(released.record_digest()?.as_bytes());
+    body[200..232].copy_from_slice(owner_recipe.as_bytes());
+    let held_marker = Q04PendingRecordV1::from_body(Q04PendingOwnerV1::Source, 1, body)?;
+    body[168..200].copy_from_slice(release_authorization.as_bytes());
+    let released_marker = Q04PendingRecordV1::from_body(Q04PendingOwnerV1::Source, 2, body)?;
+    released_marker.require_release_of(&held_marker)?;
+
+    let acquire = q04_transaction(identity, 1, owner_recipe, vec![
+        JournalRecord::put(RecordNamespace::SourceDomainPolicyHold, KEY.to_vec(), held.encode()?.to_vec()),
+        JournalRecord::put(RecordNamespace::SourceDomainPolicyHold, SOURCE_PENDING_KEY.to_vec(), held_marker.bytes().to_vec()),
+    ])?;
+    let release = q04_transaction(identity, 2, held_marker.digest(), vec![
+        JournalRecord::put(RecordNamespace::SourceDomainPolicyHold, KEY.to_vec(), released.encode()?.to_vec()),
+        JournalRecord::put(RecordNamespace::SourceDomainPolicyHold, SOURCE_PENDING_KEY.to_vec(), released_marker.bytes().to_vec()),
+    ])?;
+    let clear = q04_transaction(identity, 3, released_marker.digest(), vec![
+        JournalRecord::delete(RecordNamespace::SourceDomainPolicyHold, SOURCE_PENDING_KEY.to_vec()),
+    ])?;
+    Ok(Q04SourceHoldRecipeBodiesV1 {
+        held_marker, released_marker, transactions: [acquire, release, clear],
+    })
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn q04_clear_recipe_digest_data(
+    identity: &Q04CutIdentityV1,
+    names: super::ProtectedJournalNamesV1,
+    original_next: u64,
+    held: SourceDomainPolicyHoldV1,
+    release_authorization: ObjectDigest,
+) -> Result<ObjectDigest, crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+    let bodies = q04_hold_recipe_bodies(identity, names, held, release_authorization)?;
+    super::q04_lower_clear_native_digest_v1(
+        identity, Q04TransactionOwnerV1::Source, names,
+        original_next.checked_add(8).ok_or(JournalError::SequenceExhausted)?,
+        &bodies.transactions[2],
+    )
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn require_q04_transition(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    transaction: &JournalTransaction,
+    recipes: &SourceQ04TransactionRecipesV1<'_>,
+    index: usize,
+) -> Result<(), JournalError> {
+    if recipes.transactions().get(index) != Some(transaction) {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    recipes.require_prefix(state, index)
+}
+
+#[cfg(target_os = "linux")]
+fn q04_transaction(
+    identity: &Q04CutIdentityV1,
+    phase: u8,
+    predecessor: ObjectDigest,
+    records: Vec<JournalRecord>,
+) -> Result<JournalTransaction, JournalError> {
+    JournalTransaction::new(
+        Q04TransactionOwnerV1::Source.transaction_id(identity, phase, predecessor)?,
+        records,
+    )
+}
+
 pub(super) fn require_no_compaction(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
 ) -> Result<(), JournalError> {
     // The typed parser validates the released row and marker together before
     // generic compaction materializes every current record.
-    let (hold, _) = current_with_v8_pending(state)?;
-    if hold.is_some_and(SourceDomainPolicyHoldV1::is_held) {
+    let readback = current_state(state)?;
+    #[cfg(target_os = "linux")]
+    if readback.q04_pending.is_some() {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    if readback.hold.is_some_and(SourceDomainPolicyHoldV1::is_held) {
         return Err(JournalError::ProtectedBoundary);
     }
     Ok(())
