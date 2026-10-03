@@ -544,11 +544,27 @@ impl SigningFixture {
 
 async fn serve_one(mut stream: TcpStream, root: PathBuf) -> Result<()> {
     let mut buf = vec![0u8; 8192];
-    let n = stream.read(&mut buf).await.context("reading request")?;
-    if n == 0 {
-        return Ok(());
+    let mut length = 0;
+    // TCP reads can split an object ID; resolve only after full headers arrive.
+    while !buf[..length].windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+        if length == buf.len() {
+            write_response(&mut stream, 431, "Request Header Fields Too Large", b"").await?;
+            return Ok(());
+        }
+        let received = stream
+            .read(&mut buf[length..])
+            .await
+            .context("reading request")?;
+        if received == 0 {
+            if length != 0 {
+                write_response(&mut stream, 400, "Bad Request", b"").await?;
+            }
+            return Ok(());
+        }
+        length += received;
     }
-    let request = String::from_utf8_lossy(&buf[..n]);
+
+    let request = String::from_utf8_lossy(&buf[..length]);
     let Some(line) = request.lines().next() else {
         return Ok(());
     };
