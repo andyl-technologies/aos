@@ -32,6 +32,9 @@
   earlyFiles = lib.filterAttrs (_: entry: entry.kind == "text") system.config.aos.manager.selected.configuration.filesystemEntries;
   imageContent = system.config.system.build.etcBasedir;
   imageMetadata = system.config.system.build.etcDump;
+  configurationLowerEffect = builtins.hashString "sha256" (
+    builtins.toJSON system.config.aos.abilities.configurationLower.operations.install.effects.image.contract.identity
+  );
 in
   assert assembly != null;
   assert builtins.length (builtins.filter (path: path == builtins.toString pkgs.coreutils) rootPaths) == 1;
@@ -82,6 +85,14 @@ in
             ${pkgs.libarchive}/bin/bsdtar --format=pax -cf initrd.tar @initrd.cpio
             ${pkgs.libarchive}/bin/bsdtar -xpf initrd.tar -C initrd-tree
             ${pkgs.erofs-utils}/bin/fsck.erofs --extract=root-tree ${assembly}/inputs/root.img
+            # Boot restoration must bind to the selected lower effect, rather
+            # than infer ownership from whichever file is visible at reboot.
+            lower_effect=root-tree/usr/lib/aos/configuration-lower-effect
+            test -f "$lower_effect"
+            test ! -L "$lower_effect"
+            printf '%s\n' ${lib.escapeShellArg configurationLowerEffect} > expected-lower-effect
+            ${pkgs.diffutils}/bin/cmp expected-lower-effect "$lower_effect"
+
             # Early services must find their canonical file prerequisites in
             # the shipped content and metadata before native activation starts.
             ${lib.concatStringsSep "\n" (lib.mapAttrsToList (path: entry: ''

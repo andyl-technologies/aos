@@ -99,6 +99,10 @@
   hostBundleDestination = lib.escapeShellArg ("rootfs" + stageInputPaths.host.bundle);
   receivedInitrdDestination = lib.escapeShellArg ("rootfs" + stageInputPaths.receivedInitrd.bundle);
   receivedInitrdParent = lib.escapeShellArg ("rootfs" + builtins.dirOf stageInputPaths.receivedInitrd.bundle);
+  configurationLowerEffect =
+    if system.config.aos.configurationLower.enable
+    then builtins.hashString "sha256" (builtins.toJSON system.config.aos.abilities.configurationLower.operations.install.effects.image.contract.identity)
+    else null;
   kernelPackage = kernel.package;
   kernelModuleTree =
     if kernel.configuration.moduleTree == null
@@ -272,6 +276,12 @@ in
               # shebang), the latter directly on disk for inspection.
               mkdir -p rootfs/usr/lib/aos/nix/store
               printf 'aos.config-bundle/v1\n' > rootfs/usr/lib/aos/configuration-capabilities
+              # Nonzero native generations resolve this exact operation's
+              # committed result before mounting their retained /etc lower.
+              ${lib.optionalString (configurationLowerEffect != null) ''
+                printf '%s\n' ${lib.escapeShellArg configurationLowerEffect} > rootfs/usr/lib/aos/configuration-lower-effect
+                chmod 0444 rootfs/usr/lib/aos/configuration-lower-effect
+              ''}
               mkdir -p rootfs/nix
               mkdir -p rootfs/usr/bin rootfs/usr/lib
               ln -sfn bin rootfs/usr/sbin
