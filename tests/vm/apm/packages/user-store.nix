@@ -135,9 +135,15 @@
       done
       for account in client second-client; do
         case "$account" in client) uid=1000 ;; second-client) uid=1001 ;; esac
+        # The read-only fixture origin is root-owned, unlike a normal remote server.
+        run_user "$uid" "$account" git config --global --add safe.directory /tmp/user-store-origin.git
+        run_user "$uid" "$account" git ls-remote file:///tmp/user-store-origin.git \
+          "refs/heads/$DEFAULT_BRANCH" > "/tmp/$account-origin-ref"
+        test -s "/tmp/$account-origin-ref"
         run_user "$uid" "$account" "$APM" registry add file:///tmp/user-store-origin.git \
           --name user-store-reg --branch "$DEFAULT_BRANCH" \
           --trust-key "user-store-reg:Ed25519:$REGISTRY_PUBLIC_KEY"
+        run_user "$uid" "$account" "$APM" update --registry user-store-reg
       done
 
       run_user 1000 client "$APM" install install-with-deps --registry user-store-reg --yes
