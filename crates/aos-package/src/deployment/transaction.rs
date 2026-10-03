@@ -221,6 +221,11 @@ impl<S: DeploymentStore> Transactions<S> {
         self.activation.retained()
     }
 
+    /// Replaces artifact admission without releasing either journal lock.
+    pub(crate) fn replace_store(&mut self, store: S) {
+        *self.adapter.artifacts_mut() = store;
+    }
+
     /// Resumes a prepared generation before accepting another package transaction.
     ///
     /// # Errors

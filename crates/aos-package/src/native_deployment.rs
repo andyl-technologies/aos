@@ -754,15 +754,14 @@ fn apply_profile(
             admission.admit(&documentation.store_path)?;
         }
     }
-    // Replace the initial recovery reader's store with the complete admission
-    // assembled above. Source receipts are durable before any new graph intent.
-    drop(consumer);
+    // Refresh admission after evaluation while keeping the authoritative
+    // journals locked and replayed. Source receipts precede any new graph intent.
     let store = NixStore::open(
         command.nix_store.clone(),
         command.state_directory.join("roots"),
         admission,
     )?;
-    let mut consumer = ProfileDeployment::open(&profile, store, journal_limits())?;
+    consumer.replace_store(store);
     let generation = profile.new_generation()?;
     let staged = Profile {
         path: generation.path.clone(),

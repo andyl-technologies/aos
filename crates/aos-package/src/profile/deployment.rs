@@ -228,6 +228,10 @@ impl<'a, S: DeploymentStore> ProfileDeployment<'a, S> {
         self.transactions.set_observer(observer);
     }
 
+    pub(crate) fn replace_store(&mut self, store: S) {
+        self.transactions.replace_store(store);
+    }
+
     pub(crate) fn recovery_evaluation(&self) -> Result<Option<(std::path::PathBuf, Deployment)>> {
         let Some(sequence) = self.transactions.pending_sequence() else {
             return Ok(None);
@@ -633,6 +637,66 @@ mod tests {
             staged.number
         );
         assert!(recovered.transactions.pending().is_none());
+    }
+
+    #[test]
+    fn refreshed_admission_preserves_locked_pending_generation_until_recovery() {
+        let temporary = tempfile::tempdir().unwrap();
+        let profile = Profile::open_at(temporary.path().into(), ProfileScope::User).unwrap();
+        let staged = profile.new_generation().unwrap();
+        let mut consumer = ProfileDeployment::open(
+            &profile,
+            Store {
+                fail_at: Some(2),
+                ..Store::default()
+            },
+            JournalLimits::default(),
+        )
+        .unwrap();
+        let cancellation = CancellationToken::default();
+        assert!(
+            consumer
+                .apply(&deployment(), &staged, &cancellation)
+                .is_err()
+        );
+        let sequence = consumer.transactions.pending_sequence();
+        let original = consumer
+            .transactions
+            .pending()
+            .unwrap()
+            .canonical_bytes()
+            .unwrap();
+
+        consumer.replace_store(Store {
+            reject: true,
+            ..Store::default()
+        });
+
+        assert!(
+            ProfileDeployment::open(&profile, Store::default(), JournalLimits::default()).is_err()
+        );
+        assert!(consumer.recover(&cancellation).is_err());
+        assert_eq!(consumer.transactions.pending_sequence(), sequence);
+        assert_eq!(
+            consumer
+                .transactions
+                .pending()
+                .unwrap()
+                .canonical_bytes()
+                .unwrap(),
+            original
+        );
+        assert!(profile.current_generation().unwrap().is_none());
+
+        consumer.replace_store(Store::default());
+        consumer.recover(&cancellation).unwrap();
+
+        assert!(consumer.transactions.pending().is_none());
+        assert_eq!(consumer.current().unwrap().sequence, sequence.unwrap());
+        assert_eq!(
+            profile.current_generation().unwrap().unwrap().number,
+            staged.number
+        );
     }
 
     #[test]
