@@ -345,7 +345,11 @@ impl Activation {
                                 self.invoke(&invocation, sequence, adapter, cancellation)?
                             }
                             Observation::Indeterminate => {
-                                anyhow::bail!("retained effect cannot be observed safely")
+                                anyhow::bail!(
+                                    "retained effect {} ({}) cannot be observed safely",
+                                    invocation.id,
+                                    invocation.effect.identity.join("/")
+                                )
                             }
                         }
                     } else {

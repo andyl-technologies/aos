@@ -228,6 +228,31 @@ fn converges_observes_and_updates_without_tearing_down_state() {
 }
 
 #[test]
+fn indeterminate_retained_effect_reports_identity_without_repeating_mutation() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut activation =
+        Activation::open(directory.path().join("journal"), JournalLimits::default()).unwrap();
+    let desired = graph(Some("first"), "instance");
+    let mut host = Host::default();
+    let cancellation = CancellationToken::default();
+
+    activation
+        .activate(&desired, &BTreeSet::new(), &mut host, &cancellation)
+        .unwrap();
+    host.uncertain = true;
+
+    let error = activation
+        .activate(&desired, &BTreeSet::new(), &mut host, &cancellation)
+        .unwrap_err();
+
+    assert!(error.to_string().contains(&desired.graph().order[0]));
+    assert!(error.to_string().contains("test/echo/main"));
+    assert_eq!(host.mutations, [Action::Apply]);
+    assert_eq!(activation.retained(), host.resources);
+    assert_eq!(host.releases, 0);
+}
+
+#[test]
 fn observes_interrupted_mutation_after_reopening_without_repeating_it() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("journal");
