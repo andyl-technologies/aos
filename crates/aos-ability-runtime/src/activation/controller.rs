@@ -167,21 +167,20 @@ impl Activation {
         graph: &CheckedModuleGraph,
         adapter: &mut impl ActivationAdapter,
     ) -> Result<()> {
-        for effect in graph.graph().nodes.values().chain(
-            self.state
-                .retained
-                .values()
-                .map(|state| &state.invocation.effect),
-        ) {
-            adapter.retain(effect)?;
-        }
-        for effect in &self.state.releases {
-            adapter.retain(effect)?;
-        }
-        if let Some(pending) = &self.state.pending {
-            adapter.retain(&pending.effect)?;
-        }
-        Ok(())
+        let effects = graph
+            .graph()
+            .nodes
+            .values()
+            .chain(
+                self.state
+                    .retained
+                    .values()
+                    .map(|state| &state.invocation.effect),
+            )
+            .chain(&self.state.releases)
+            .chain(self.state.pending.as_ref().map(|pending| &pending.effect))
+            .collect::<Vec<_>>();
+        adapter.retain_batch(&effects)
     }
 
     fn record(&mut self, event: Event) -> Result<u64> {
