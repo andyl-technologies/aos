@@ -1692,8 +1692,8 @@ fn evaluate_example_graph(
     state: &mut EventGraphState,
     world: &World,
 ) -> Result<EventFirings, ExampleCorpusError> {
-    let mut pass = ConditionEvaluationPass::from_log_prefix(
-        scheduler.condition_event_log_prefix().clone(),
+    let mut pass = ConditionEvaluationPass::from_log_prefix_ref(
+        scheduler.condition_event_log_prefix(),
         NoNamedLeaves,
     )
     .with_timer_fires(scheduler.trigger_actions().armed_timers.clone())

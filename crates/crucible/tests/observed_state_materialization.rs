@@ -107,7 +107,10 @@ fn observed_state_materializes_only_checked_event_log_prefix() {
     let expected_observable_events = state.observable_events().to_vec();
     let expected_ordering_facts = state.ordering_facts().to_vec();
 
+    let borrowed = ConditionEvaluationPass::from_log_prefix_ref(&prefix, NoLeaves);
     let pass = ConditionEvaluationPass::from_log_prefix(prefix, NoLeaves);
+    assert_eq!(borrowed.point(), pass.point());
+    assert_eq!(borrowed.observed_state(), pass.observed_state());
     assert_eq!(
         pass.observed_state().observable_events(),
         expected_observable_events.as_slice()
@@ -116,6 +119,107 @@ fn observed_state_materializes_only_checked_event_log_prefix() {
         pass.observed_state().ordering_facts(),
         expected_ordering_facts.as_slice()
     );
+}
+
+#[test]
+fn borrowed_projection_preserves_event_timer_and_once_histories() {
+    use crucible::{
+        Action, Condition, Event, EventGraph, EventGraphState, EventId, SimDuration, TimerId,
+        TriggerActionApplication,
+    };
+
+    let anchor = EventId::from_name("anchor");
+    let timer = TimerId {
+        name: String::from("finish"),
+    };
+    let initial = EventGraph::new(vec![Event::once(
+        anchor.clone(),
+        Some(Condition::at(time(3))),
+        Action::arm_timer(timer.clone(), SimDuration { ticks: 10 }),
+    )])
+    .expect("initial graph should validate");
+    let initial_prefix = crucible::ConditionEventLogPrefix::from_evaluation_boundary(
+        0,
+        time(3),
+        SchedulerEvaluationBoundaryKind::Quantum,
+    )
+    .expect("initial boundary should validate");
+    let mut initial_pass = ConditionEvaluationPass::from_log_prefix(initial_prefix, NoLeaves);
+    let initial_firings = initial_pass.evaluate_event_graph(&initial, &mut EventGraphState::new());
+    let firing = initial_firings.as_slice()[0].clone();
+    let prefix = crucible::test_support::condition_prefix_from_scheduler_entries_for_test(vec![
+        payload_entry(0, time(3), SchedulerEventLogPayload::TriggerFired(firing)),
+        payload_entry(
+            1,
+            time(3),
+            SchedulerEventLogPayload::TriggerActionApplied(TriggerActionApplication {
+                sequence: 0,
+                event: anchor.clone(),
+                at: time(3),
+                path: Vec::new(),
+                action: Action::arm_timer(timer.clone(), SimDuration { ticks: 10 }),
+            }),
+        ),
+        boundary_entry(2, time(13)),
+    ])
+    .expect("runtime facts should form a checked prefix");
+    let once = Condition::Once {
+        predicate: Box::new(Condition::at(time(13))),
+    };
+    let conditions = [
+        (
+            Condition::after(SimDuration { ticks: 10 }, anchor.clone()),
+            true,
+        ),
+        (Condition::after(SimDuration { ticks: 11 }, anchor), false),
+        (Condition::timer(timer), true),
+        (
+            Condition::timer(TimerId {
+                name: String::from("absent"),
+            }),
+            false,
+        ),
+        (once.clone(), true),
+    ];
+    let mut owned = ConditionEvaluationPass::from_log_prefix(prefix.clone(), NoLeaves);
+    let mut borrowed = ConditionEvaluationPass::from_log_prefix_ref(&prefix, NoLeaves);
+
+    assert_eq!(borrowed.point(), owned.point());
+    assert_eq!(borrowed.observed_state(), owned.observed_state());
+    for (condition, expected) in conditions {
+        assert_eq!(owned.evaluate_assertion_condition(&condition), expected);
+        assert_eq!(borrowed.evaluate_assertion_condition(&condition), expected);
+    }
+    assert_eq!(borrowed.once_latches(), &[Condition::at(time(13))]);
+    assert_eq!(borrowed.once_latches(), owned.once_latches());
+
+    let graph = EventGraph::new(vec![Event::once(
+        EventId::from_name("finish"),
+        Some(once.clone()),
+        Action::Pass,
+    )])
+    .expect("completion graph should validate");
+    let mut owned_state = EventGraphState::new();
+    let mut borrowed_state = EventGraphState::new();
+    let borrowed_firings = borrowed.evaluate_event_graph(&graph, &mut borrowed_state);
+    let owned_firings = owned.evaluate_event_graph(&graph, &mut owned_state);
+    assert_eq!(borrowed_firings.len(), 1);
+    assert_eq!(borrowed_firings.as_slice()[0].action(), &Action::Pass);
+    assert_eq!(borrowed_firings, owned_firings);
+    assert_eq!(
+        borrowed_state.to_compact_binary(),
+        owned_state.to_compact_binary()
+    );
+
+    let later = crucible::ConditionEventLogPrefix::from_evaluation_boundary(
+        0,
+        time(14),
+        SchedulerEvaluationBoundaryKind::Quantum,
+    )
+    .expect("later boundary should validate");
+    let mut restored = ConditionEvaluationPass::from_log_prefix_ref(&later, NoLeaves)
+        .with_once_latches(borrowed.once_latches().to_vec());
+    assert!(restored.evaluate_assertion_condition(&once));
 }
 
 #[test]

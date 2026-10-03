@@ -939,6 +939,29 @@ impl<O> ConditionEvaluation<O> {
         }
     }
 
+    /// Builds a condition evaluator from a borrowed deterministic prefix.
+    ///
+    /// Copies the observable state used by evaluation without copying the
+    /// scheduler-entry history or its prefix-offset index. The evaluator owns
+    /// its projected state and does not retain a borrow of `prefix`.
+    #[must_use]
+    pub fn from_log_prefix_ref(prefix: &ConditionEventLogPrefix, oracle: O) -> Self {
+        Self {
+            point: prefix.point,
+            event_log_offset: prefix.event_log_offset,
+            oracle,
+            event_firings: prefix.event_firings.clone(),
+            timer_fires: prefix.timer_fires.clone(),
+            observable_events: prefix.observable_events.clone(),
+            ordering_facts: prefix.ordering_facts.clone(),
+            scheduler_quiescence: None,
+            white_box_policies: BTreeMap::new(),
+            once_latches: Vec::new(),
+            code_points: BTreeMap::new(),
+            mem_places: BTreeMap::new(),
+        }
+    }
+
     /// Returns the deterministic point where this evaluator observes the log.
     #[must_use]
     pub fn point(&self) -> EventEvaluationPoint {
@@ -1045,6 +1068,17 @@ impl<O> ConditionEvaluationPass<O> {
     pub fn from_log_prefix(prefix: ConditionEventLogPrefix, oracle: O) -> Self {
         Self {
             evaluation: ConditionEvaluation::from_log_prefix(prefix, oracle),
+        }
+    }
+
+    /// Builds a shared pass by projecting a borrowed deterministic prefix.
+    ///
+    /// Copies only evaluation state, preserving the prefix's point and log
+    /// identity without copying its scheduler-entry history or offset index.
+    #[must_use]
+    pub fn from_log_prefix_ref(prefix: &ConditionEventLogPrefix, oracle: O) -> Self {
+        Self {
+            evaluation: ConditionEvaluation::from_log_prefix_ref(prefix, oracle),
         }
     }
 
