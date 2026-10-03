@@ -117,6 +117,32 @@ pub struct Evaluation {
     pub evaluation_input: Option<PathBuf>,
 }
 
+/// Carries private auxiliary data from the same checked deployment fixed point.
+///
+/// The observer value is consumed only by the fresh evaluation's caller; it is
+/// not part of the deployment wire format or a reusable admission cache.
+pub(crate) struct EvaluatedDeployment {
+    /// Contains the ordinary strictly checked deployment and retained inputs.
+    pub(crate) deployment: Deployment,
+    /// Carries the optional observer value from that same module fixed point.
+    pub(crate) observer: Value,
+}
+
+fn optional_config_projection(path: &[String]) -> Result<String> {
+    let path = nix_string(&serde_json::to_string(path)?);
+    Ok(format!(
+        "builtins.foldl' (value: key: if builtins.isAttrs value && builtins.hasAttr key value then builtins.getAttr key value else null) evaluated.config (builtins.fromJSON {path})"
+    ))
+}
+
+fn deployment_observer_projection() -> Result<String> {
+    let observer =
+        optional_config_projection(&["aos".into(), "execution".into(), "observer".into()])?;
+    Ok(format!(
+        "{{ deployment = evaluated.deployment; observer = {observer}; }}"
+    ))
+}
+
 impl Evaluation {
     fn expression_for(
         &self,
@@ -200,6 +226,45 @@ impl Evaluation {
         cancellation: &CancellationToken,
     ) -> Result<Deployment> {
         let value = self.run(staging, timeout_ms, cancellation, false)?;
+        self.checked_deployment(value)
+    }
+
+    /// Projects observer configuration alongside the ordinary strict deployment.
+    ///
+    /// Both outputs share one immutable source snapshot and module fixed point.
+    /// The caller must retain the same descriptor and admission checks before
+    /// using the private observer value.
+    ///
+    /// # Errors
+    /// Returns an error for source or evaluation failure, cancellation, timeout,
+    /// malformed projected output, or a deployment outside its admitted inputs.
+    pub(crate) fn evaluate_with_observer(
+        &self,
+        staging: &Path,
+        timeout_ms: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<EvaluatedDeployment> {
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Projection {
+            deployment: Value,
+            observer: Value,
+        }
+
+        let value = self.run_output(
+            staging,
+            timeout_ms,
+            cancellation,
+            &deployment_observer_projection()?,
+        )?;
+        let projected: Projection = serde_json::from_value(value)?;
+        Ok(EvaluatedDeployment {
+            deployment: self.checked_deployment(projected.deployment)?,
+            observer: projected.observer,
+        })
+    }
+
+    fn checked_deployment(&self, value: Value) -> Result<Deployment> {
         let deployment = Deployment::decode(&serde_json::to_vec(&value)?, &self.packages)?;
         ensure!(
             self.inputs()?
@@ -292,10 +357,12 @@ impl Evaluation {
             !path.is_empty() && path.iter().all(|part| !part.is_empty()),
             "configuration projection requires nonempty path segments"
         );
-        let path = nix_string(&serde_json::to_string(path)?);
-        self.run_output(staging, timeout_ms, cancellation, &format!(
-            "builtins.foldl' (value: key: if builtins.isAttrs value && builtins.hasAttr key value then builtins.getAttr key value else null) evaluated.config (builtins.fromJSON {path})"
-        ))
+        self.run_output(
+            staging,
+            timeout_ms,
+            cancellation,
+            &optional_config_projection(path)?,
+        )
     }
 
     /// Projects package roots before their configuration modules are acquired.
@@ -499,4 +566,79 @@ fn evaluator_store() -> Result<Option<std::ffi::OsString>> {
         "AOS_NIX_EVAL_STORE must not be empty"
     );
     Ok(store)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn eval_projection(expression: &str) -> (Value, String) {
+        let executable = std::env::var_os("AOS_NIX_STORE")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::split_paths(&std::env::var_os("PATH")?)
+                    .map(|directory| directory.join("nix-store"))
+                    .find(|path| path.is_file())
+            })
+            .expect("the test requires the source-built AOS Nix suite");
+        let mut command = aos_core::nix::identity::store_command(&executable).unwrap();
+        let output = command
+            .args(["eval", "--json", "--expr", expression])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        (
+            serde_json::from_slice(&output.stdout).unwrap(),
+            String::from_utf8(output.stderr).unwrap(),
+        )
+    }
+
+    #[test]
+    fn co_projection_preserves_null_and_configured_observer() {
+        let projection = deployment_observer_projection().unwrap();
+        let expected = serde_json::json!({"socketPath":"/run/override.sock","timeoutMillis":1234});
+        for (configured, observer) in [
+            ("null", Value::Null),
+            (
+                "{ socketPath = \"/run/override.sock\"; timeoutMillis = 1234; }",
+                expected,
+            ),
+        ] {
+            let expression = format!(
+                "let evaluated = {{ deployment = {{ checked = true; }}; \
+                 config.aos.execution.observer = {configured}; }}; in {projection}"
+            );
+
+            let (value, _) = eval_projection(&expression);
+
+            assert_eq!(
+                value,
+                serde_json::json!({"deployment":{"checked":true},"observer":observer})
+            );
+        }
+    }
+
+    #[test]
+    fn co_projection_shares_the_fixed_point_and_missing_observer_is_null() {
+        let projection = deployment_observer_projection().unwrap();
+        let expression = format!(
+            "let evaluated = builtins.trace \"shared-evaluation-projection\" \
+             {{ deployment = {{ checked = true; }}; config = {{}}; }}; in {projection}"
+        );
+
+        let (value, diagnostic) = eval_projection(&expression);
+
+        assert_eq!(
+            value,
+            serde_json::json!({"deployment":{"checked":true},"observer":null})
+        );
+        assert_eq!(
+            diagnostic.matches("shared-evaluation-projection").count(),
+            1
+        );
+    }
 }
