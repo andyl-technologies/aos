@@ -694,6 +694,16 @@ in rec {
             # aos-dev cache pruning. It does not enter package outputs.
             touch "$CARGO_TARGET_DIR"
           fi
+          ${
+            if cargoSourceId == null
+            then ""
+            else ''
+              # Cargo build scripts may leave read-only outputs copied from
+              # vendored sources. The next Nix UID cannot overwrite them.
+              . ${./cargo-target-writable.sh}
+              aos_prepare_cargo_build_outputs "$CARGO_TARGET_DIR"
+            ''
+          }
           # Release and qualification builds retain the ordinary disabled
           # setting; aos-dev can enable incremental units independently of
           # the persistent target directory.

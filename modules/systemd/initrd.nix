@@ -88,6 +88,18 @@ in {
   options.boot.initrd.systemd = {
     enable = lib.mkEnableOption "a systemd-based initrd (tier ii, not yet implemented)";
 
+    mountExecutableCarrier = lib.mkOption {
+      type = lib.types.nullOr lib.types.package;
+      default = null;
+      description = ''
+        Optional immutable Mount executable carrier artifact. Its output must
+        contain carrier.ext4, carrier.hash, and carrier.root-hash. The initrd
+        builder verifies the dm-verity tree and embeds all three beneath the
+        signed stage-1 EROFS image. This only stages the carrier; it does not
+        activate it or authorize Mount startup capture.
+      '';
+    };
+
     services = lib.mkOption {
       type = systemdTypes.initrdServices;
       default = {};
@@ -221,8 +233,11 @@ in {
           serviceConfig = {
             Type = "oneshot";
             RemainAfterExit = true;
-            StandardOutput = "journal+console";
-            StandardError = "journal+console";
+            # Identity failures isolate away the initrd journal. Kmsg keeps
+            # the security decision observable on every configured kernel
+            # console even when /dev/console names only the final one.
+            StandardOutput = "kmsg+console";
+            StandardError = "kmsg+console";
           };
           script = ''
             set -eu
@@ -267,9 +282,16 @@ in {
           serviceConfig = {
             Type = "oneshot";
             RemainAfterExit = true;
+            StandardOutput = "kmsg+console";
+            StandardError = "kmsg+console";
           };
           script = ''
-            test -f /run/aos/boot-identity-valid
+            if test ! -f /run/aos/boot-identity-valid; then
+              ! ${pkgs.util-linux}/bin/mountpoint -q /sysroot/var
+              test ! -e /dev/mapper/root
+              echo "AOS boot identity failure: verity root absent; /var unmounted" >&2
+              exit 1
+            fi
           '';
         };
 
@@ -280,8 +302,8 @@ in {
           unitConfig.DefaultDependencies = "no";
           serviceConfig = {
             Type = "oneshot";
-            StandardOutput = "journal+console";
-            StandardError = "journal+console";
+            StandardOutput = "kmsg+console";
+            StandardError = "kmsg+console";
           };
           script = ''
             ! ${pkgs.util-linux}/bin/mountpoint -q /sysroot/var
@@ -336,6 +358,9 @@ in {
       loadModules = config.aos.boot.initrd.loadModules;
       initrdUnits = config.system.build.systemdInitrdUnits;
       initrdExtraPackages = config.aos.boot.initrd.extraPackages;
+      mountExecutableCarrier = cfg.mountExecutableCarrier;
+      stage0Init = config.aos.boot.initrd.stage0;
+      immutableSelinuxPolicy = config.system.build.immutableSelinuxPolicy;
       inherit initrdNetworkDir;
       maskedUnits =
         cfg.maskedUnits
@@ -344,7 +369,6 @@ in {
           "rescue.target"
         ];
       validateBootIdentity = config.aos.security.verity.enable;
-      keepBinutils = config.aos.boot.recovery.enable;
     };
   };
 }

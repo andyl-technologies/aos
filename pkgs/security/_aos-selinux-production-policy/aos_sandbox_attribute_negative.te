@@ -1,0 +1,15 @@
+module aos_sandbox_attribute_negative 1.0;
+
+require {
+    attribute domain;
+
+    class process ptrace;
+}
+
+# This intentionally forbidden rule proves that the effective-policy gate
+# expands a source attribute and rejects process:ptrace to a target outside the
+# four protected runtime domains.
+attribute aos_sandbox_negative_target;
+type aos_sandbox_negative_outside_t;
+typeattribute aos_sandbox_negative_outside_t aos_sandbox_negative_target;
+allow domain aos_sandbox_negative_target:process ptrace;

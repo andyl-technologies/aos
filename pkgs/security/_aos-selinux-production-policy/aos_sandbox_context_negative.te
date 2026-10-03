@@ -1,0 +1,14 @@
+module aos_sandbox_context_negative 1.0;
+
+require {
+    type aos_filesystem_fuse_worker_t;
+    type setrans_runtime_t;
+
+    class sock_file open;
+}
+
+# A raw-label worker must not regain pathname-opened context translation
+# through an indirect source grant after the production exclusion.
+attribute aos_sandbox_negative_context_client;
+typeattribute aos_filesystem_fuse_worker_t aos_sandbox_negative_context_client;
+allow aos_sandbox_negative_context_client setrans_runtime_t:sock_file open;

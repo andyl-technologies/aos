@@ -1,0 +1,1097 @@
+diff --git a/src/common/handshake.rs b/src/common/handshake.rs
+index a772c00b5d..871b7bc36c 100644
+--- a/src/common/handshake.rs
++++ b/src/common/handshake.rs
+@@ -33,53 +33,60 @@ pub(crate) enum MidHandshake<IS: IoSession> {
+     },
+ }
+ 
+-impl<IS, SD> Future for MidHandshake<IS>
++impl<IS, SD> MidHandshake<IS>
+ where
+     IS: IoSession + Unpin,
+     IS::Io: AsyncRead + AsyncWrite + Unpin,
+     IS::Session: DerefMut + Deref<Target = ConnectionCommon<SD>> + Unpin,
+     SD: SideData,
+ {
+-    type Output = Result<IS, (io::Error, IS::Io)>;
+-
+-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+-        let this = self.get_mut();
+-
+-        let mut stream = match mem::replace(this, Self::End) {
++    // A terminal None error is the original cause already resident in Error or
++    // SendAlert. A Some error is newly returned by the record/flush engine.
++    // Keeping every variant in place lets the server retain the actual failed
++    // session instead of reconstructing it from IO after an error.
++    pub(crate) fn poll_handshake(
++        &mut self,
++        cx: &mut Context<'_>,
++        progress: &mut (bool, bool),
++    ) -> Poll<Result<(), Option<io::Error>>> {
++        let stream = match self {
+             Self::Handshaking(stream) => stream,
+             Self::SendAlert {
+-                mut io,
+-                mut alert,
+-                error,
++                io,
++                alert,
++                ..
+             } => loop {
+-                match alert.write(&mut SyncWriteAdapter { io: &mut io, cx }) {
++                match alert.write(&mut SyncWriteAdapter { io, cx }) {
+                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+-                        *this = Self::SendAlert { io, error, alert };
+                         return Poll::Pending;
+                     }
+-                    Err(_) | Ok(0) => return Poll::Ready(Err((error, io))),
++                    Err(_) | Ok(0) => return Poll::Ready(Err(None)),
+                     Ok(_) => {}
+                 };
+             },
+             // Starting the handshake returned an error; fail the future immediately.
+-            Self::Error { io, error } => return Poll::Ready(Err((error, io))),
++            Self::Error { .. } => return Poll::Ready(Err(None)),
+             _ => panic!("unexpected polling after handshake"),
+         };
+ 
+         if !stream.skip_handshake() {
+             let (state, io, session, need_flush) = stream.get_mut();
+             let mut tls_stream = Stream::new(io, session)
+-                .set_eof(!state.readable())
++                .set_eof(!state.readable() || progress.0)
+                 .set_need_flush(*need_flush);
+ 
+             macro_rules! try_poll {
+                 ( $e:expr ) => {
+                     match $e {
+                         Poll::Ready(Ok(x)) => x,
+-                        Poll::Ready(Err(err)) => return Poll::Ready(Err((err, stream.into_io()))),
++                        Poll::Ready(Err(err)) => {
++                            *progress = (tls_stream.eof, tls_stream.need_flush);
++                            *need_flush = tls_stream.need_flush;
++                            return Poll::Ready(Err(Some(err)));
++                        }
+                         Poll::Pending => {
++                            *progress = (tls_stream.eof, tls_stream.need_flush);
+                             *need_flush = tls_stream.need_flush;
+-                            *this = MidHandshake::Handshaking(stream);
+                             return Poll::Pending;
+                         }
+                     }
+@@ -91,8 +98,225 @@ where
+             }
+ 
+             try_poll!(Pin::new(&mut tls_stream).poll_flush(cx));
++
++            *progress = (tls_stream.eof, tls_stream.need_flush);
++        }
++
++        Poll::Ready(Ok(()))
++    }
++}
++
++// Legacy polling previously installed End before entering user IO. Keep its
++// unwind/drop behavior without moving a session out while the engine is polled.
++// This guard does not catch a panic or promise recovery of provider state.
++struct LegacyPollGuard<'a, IS: IoSession> {
++    state: &'a mut MidHandshake<IS>,
++    armed: bool,
++}
++
++impl<IS: IoSession> Drop for LegacyPollGuard<'_, IS> {
++    fn drop(&mut self) {
++        if !self.armed {
++            return;
++        }
++
++        match mem::replace(self.state, MidHandshake::End) {
++            MidHandshake::Handshaking(stream) => drop(stream),
++            MidHandshake::SendAlert { io, alert, error } => {
++                drop(error);
++                drop(alert);
++                drop(io);
++            }
++            MidHandshake::Error { io, error } => {
++                drop(error);
++                drop(io);
++            }
++            MidHandshake::End => {}
++        }
++    }
++}
++
++impl<IS, SD> Future for MidHandshake<IS>
++where
++    IS: IoSession + Unpin,
++    IS::Io: AsyncRead + AsyncWrite + Unpin,
++    IS::Session: DerefMut + Deref<Target = ConnectionCommon<SD>> + Unpin,
++    SD: SideData,
++{
++    type Output = Result<IS, (io::Error, IS::Io)>;
++
++    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
++        let this = self.get_mut();
++        // Legacy futures never retained the temporary record-loop EOF flag.
++        // Leave that behavior unchanged while sharing the resident engine.
++        let result = {
++            let mut guard = LegacyPollGuard {
++                state: &mut *this,
++                armed: true,
++            };
++            let mut progress = (false, false);
++            let result = guard.state.poll_handshake(cx, &mut progress);
++            guard.armed = false;
++            match result {
++                Poll::Pending => return Poll::Pending,
++                Poll::Ready(result) => result,
++            }
++        };
++
++        match (mem::replace(this, Self::End), result) {
++            (Self::Handshaking(stream), Ok(())) => Poll::Ready(Ok(stream)),
++            (Self::Handshaking(stream), Err(Some(error))) => {
++                Poll::Ready(Err((error, stream.into_io())))
++            }
++            (Self::SendAlert { io, error, .. } | Self::Error { io, error }, Err(None)) => {
++                Poll::Ready(Err((error, io)))
++            }
++            _ => panic!("unexpected polling after handshake"),
+         }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use std::cell::Cell;
++    use std::rc::Rc;
++    use std::sync::Arc;
++    use std::task::Wake;
++
++    use tokio::io::ReadBuf;
++
++    use super::*;
++
++    struct NoopWake;
++
++    impl Wake for NoopWake {
++        fn wake(self: Arc<Self>) {}
++    }
++
++    struct UntouchedIo(Rc<Cell<usize>>);
++
++    impl Drop for UntouchedIo {
++        fn drop(&mut self) {
++            self.0.set(self.0.get() + 1);
++        }
++    }
++
++    impl AsyncRead for UntouchedIo {
++        fn poll_read(
++            self: Pin<&mut Self>,
++            _: &mut Context<'_>,
++            _: &mut ReadBuf<'_>,
++        ) -> Poll<io::Result<()>> {
++            panic!("initialization failure must not read IO")
++        }
++    }
++
++    impl AsyncWrite for UntouchedIo {
++        fn poll_write(
++            self: Pin<&mut Self>,
++            _: &mut Context<'_>,
++            _: &[u8],
++        ) -> Poll<io::Result<usize>> {
++            panic!("initialization failure must not write IO")
++        }
++
++        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
++            panic!("initialization failure must not flush IO")
++        }
++
++        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
++            panic!("initialization failure must not shut down IO")
++        }
++    }
++
++    #[test]
++    fn borrowed_initial_error_keeps_original_variant_and_cause_resident() {
++        let drops = Rc::new(Cell::new(0));
++        let mut handshake: MidHandshake<crate::server::TlsStream<UntouchedIo>> =
++            MidHandshake::Error {
++                io: UntouchedIo(drops.clone()),
++                error: io::Error::new(io::ErrorKind::InvalidInput, "original initialization"),
++            };
++        let (original_io, original_error) = match &handshake {
++            MidHandshake::Error { io, error } => {
++                (io as *const UntouchedIo, error as *const io::Error)
++            }
++            _ => unreachable!(),
++        };
++        let waker = Arc::new(NoopWake).into();
++        let mut cx = Context::from_waker(&waker);
++        let mut progress = (false, false);
++
++        assert!(matches!(
++            handshake.poll_handshake(&mut cx, &mut progress),
++            Poll::Ready(Err(None)),
++        ));
++
++        match &handshake {
++            MidHandshake::Error { io, error } => {
++                assert_eq!(io as *const UntouchedIo, original_io);
++                assert_eq!(error as *const io::Error, original_error);
++                assert_eq!(error.to_string(), "original initialization");
++            }
++            _ => panic!("borrowed polling must not consume the original variant"),
++        }
++        assert_eq!(drops.get(), 0);
++    }
++
++    #[test]
++    fn legacy_initial_error_returns_original_io_once_and_finishes() {
++        let drops = Rc::new(Cell::new(0));
++        let mut handshake: MidHandshake<crate::server::TlsStream<UntouchedIo>> =
++            MidHandshake::Error {
++                io: UntouchedIo(drops.clone()),
++                error: io::Error::new(io::ErrorKind::InvalidInput, "original initialization"),
++            };
++        let waker = Arc::new(NoopWake).into();
++        let mut cx = Context::from_waker(&waker);
++
++        let (error, io) = match Pin::new(&mut handshake).poll(&mut cx) {
++            Poll::Ready(Err(parts)) => parts,
++            _ => panic!("legacy initialization failure must complete"),
++        };
++
++        assert!(matches!(handshake, MidHandshake::End));
++        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
++        assert_eq!(error.to_string(), "original initialization");
++        assert_eq!(drops.get(), 0);
++        drop(io);
++        assert_eq!(drops.get(), 1);
++    }
++
++    #[test]
++    #[should_panic(expected = "unexpected polling after handshake")]
++    fn legacy_end_preserves_post_completion_panic() {
++        let mut handshake: MidHandshake<crate::server::TlsStream<UntouchedIo>> =
++            MidHandshake::End;
++        let waker = Arc::new(NoopWake).into();
++        let mut cx = Context::from_waker(&waker);
++
++        let _ = Pin::new(&mut handshake).poll(&mut cx);
++    }
++
++    #[test]
++    fn unchanged_client_session_type_uses_same_legacy_error_output() {
++        let drops = Rc::new(Cell::new(0));
++        let mut handshake: MidHandshake<crate::client::TlsStream<UntouchedIo>> =
++            MidHandshake::Error {
++                io: UntouchedIo(drops.clone()),
++                error: io::Error::new(io::ErrorKind::InvalidInput, "client initialization"),
++            };
++        let waker = Arc::new(NoopWake).into();
++        let mut cx = Context::from_waker(&waker);
++
++        let (error, io) = match Pin::new(&mut handshake).poll(&mut cx) {
++            Poll::Ready(Err(parts)) => parts,
++            _ => panic!("the actual client session type must keep its legacy error output"),
++        };
+ 
+-        Poll::Ready(Ok(stream))
++        assert_eq!(error.to_string(), "client initialization");
++        assert_eq!(drops.get(), 0);
++        drop(io);
++        assert_eq!(drops.get(), 1);
+     }
+ }
+diff --git a/src/server.rs b/src/server.rs
+index e8cada38ee..3adb9e9bbe 100644
+--- a/src/server.rs
++++ b/src/server.rs
+@@ -27,6 +27,19 @@ impl From<Arc<ServerConfig>> for TlsAcceptor {
+ }
+ 
+ impl TlsAcceptor {
++    /// Starts a server handshake whose actual state remains owned on failure.
++    ///
++    /// The configuration and session construction are the same as [`Self::accept`].
++    /// Polls borrow the returned owner; cancelling a future that merely borrows it
++    /// does not drop its transport or TLS session. Dropping the owner still does.
++    #[inline]
++    pub fn accept_retained<IO>(&self, stream: IO) -> RetainedAccept<IO>
++    where
++        IO: AsyncRead + AsyncWrite + Unpin,
++    {
++        self.accept(stream).into_retained()
++    }
++
+     #[inline]
+     pub fn accept<IO>(&self, stream: IO) -> Accept<IO>
+     where
+@@ -254,6 +267,19 @@ where
+ pub struct Accept<IO>(MidHandshake<TlsStream<IO>>);
+ 
+ impl<IO> Accept<IO> {
++    /// Retains the actual handshake state from this point onward.
++    ///
++    /// This also supports the existing lazy/configured accept path. It cannot
++    /// recover state already discarded by earlier polls of the legacy future.
++    pub fn into_retained(self) -> RetainedAccept<IO> {
++        RetainedAccept {
++            inner: self.0,
++            error: None,
++            failed: false,
++            progress: (false, false),
++        }
++    }
++
+     #[inline]
+     pub fn into_fallible(self) -> FallibleAccept<IO> {
+         FallibleAccept(self.0)
+@@ -299,6 +325,124 @@ impl<IO: AsyncRead + AsyncWrite + Unpin> Future for FallibleAccept<IO> {
+     }
+ }
+ 
++/// A terminal failure marker whose original cause remains in [`RetainedAccept`].
++///
++/// The marker carries no replacement error or reconstructed transport. Inspect
++/// the owning handshake's [`RetainedAccept::error`] for the actual first cause.
++#[derive(Clone, Copy, Debug, Eq, PartialEq)]
++pub struct RetainedAcceptFailure;
++
++/// A server handshake retaining its original transport and TLS state on failure.
++///
++/// Unlike [`Accept`], this is not an owning future. [`Self::poll_accept`] borrows
++/// it, so an outer driver may be cancelled without discarding the resident owner.
++/// Pending and failed sessions remain available through read-only borrows. A
++/// successful poll moves the sole completed stream out exactly once.
++///
++/// An initialization failure retains the original IO and cause, and the lazy
++/// accept error path also retains its actual accepted alert. Neither had a
++/// `ServerConnection` to retain. This does not recover bytes or TLS state already
++/// consumed/discarded inside rustls, provide an unwind-recovery guarantee, or
++/// register the owner against application cancellation. Dropping it drops IO.
++#[must_use = "the retained handshake owns its transport until success or explicit drop"]
++pub struct RetainedAccept<IO> {
++    inner: MidHandshake<TlsStream<IO>>,
++    error: Option<io::Error>,
++    failed: bool,
++    // Actual record-loop observations: EOF and whether flushing is still needed.
++    progress: (bool, bool),
++}
++
++impl<IO> RetainedAccept<IO> {
++    /// Borrows the original transport while the handshake remains resident.
++    pub fn get_ref(&self) -> Option<&IO> {
++        match &self.inner {
++            MidHandshake::Handshaking(stream) => Some(stream.get_ref().0),
++            MidHandshake::SendAlert { io, .. } | MidHandshake::Error { io, .. } => Some(io),
++            MidHandshake::End => None,
++        }
++    }
++
++    /// Borrows the actual pending or failed TLS stream, if construction succeeded.
++    pub fn tls_stream(&self) -> Option<&TlsStream<IO>> {
++        match &self.inner {
++            MidHandshake::Handshaking(stream) => Some(stream),
++            _ => None,
++        }
++    }
++
++    /// Borrows the original first cause after terminal failure.
++    ///
++    /// Repeated failed polls do not replace this error or perform more IO.
++    pub fn error(&self) -> Option<&io::Error> {
++        if !self.failed {
++            return None;
++        }
++
++        match &self.error {
++            Some(error) => Some(error),
++            None => match &self.inner {
++                MidHandshake::SendAlert { error, .. } | MidHandshake::Error { error, .. } => {
++                    Some(error)
++                }
++                _ => None,
++            },
++        }
++    }
++
++    /// Reports the last EOF flag observed by the actual TLS record loop.
++    ///
++    /// Initialization/accepted-alert paths have no such loop and report false.
++    pub fn handshake_eof(&self) -> bool {
++        self.progress.0
++    }
++
++    /// Reports the last flush flag observed by the actual TLS record loop.
++    ///
++    /// This is bookkeeping, not a promise that all ciphertext has been sent.
++    pub fn handshake_need_flush(&self) -> bool {
++        self.progress.1
++    }
++}
++
++impl<IO: AsyncRead + AsyncWrite + Unpin> RetainedAccept<IO> {
++    /// Drives the shared handshake engine while borrowing its resident state.
++    ///
++    /// # Errors
++    ///
++    /// Returns a marker on initialization, alert-write, record or flush failure.
++    /// The first actual cause remains borrowed through [`Self::error`]; the TLS
++    /// session, IO and alert (where present) remain owned here. Further polls
++    /// return the same marker without retrying IO or renewing the handshake.
++    ///
++    /// # Panics
++    ///
++    /// Panics if called after a successful poll moved out the completed stream,
++    /// as the legacy handshake future does. Provider/IO panics are not recovered.
++    pub fn poll_accept(
++        self: Pin<&mut Self>,
++        cx: &mut Context<'_>,
++    ) -> Poll<Result<TlsStream<IO>, RetainedAcceptFailure>> {
++        let this = self.get_mut();
++        if this.failed {
++            return Poll::Ready(Err(RetainedAcceptFailure));
++        }
++
++        match this.inner.poll_handshake(cx, &mut this.progress) {
++            Poll::Pending => Poll::Pending,
++            Poll::Ready(Err(error)) => {
++                this.error = error;
++                this.failed = true;
++                Poll::Ready(Err(RetainedAcceptFailure))
++            }
++            Poll::Ready(Ok(())) => match std::mem::replace(&mut this.inner, MidHandshake::End) {
++                MidHandshake::Handshaking(stream) => Poll::Ready(Ok(stream)),
++                _ => panic!("unexpected polling after handshake"),
++            },
++        }
++    }
++}
++
+ /// A wrapper around an underlying raw stream which implements the TLS or SSL
+ /// protocol.
+ #[derive(Debug)]
+@@ -479,3 +623,618 @@ where
+         self.get_ref().0.as_raw_socket()
+     }
+ }
++
++#[cfg(all(test, any(feature = "aws_lc_rs", feature = "ring")))]
++mod retained_tests {
++    use std::cell::Cell;
++    use std::fmt;
++    use std::rc::Rc;
++    use std::task::{Wake, Waker};
++
++    use rustls::pki_types::{PrivatePkcs8KeyDer, ServerName};
++    use rustls::server::{ClientHello, ResolvesServerCert};
++    use rustls::{ClientConfig, ClientConnection, RootCertStore};
++
++    use super::*;
++
++    struct NoopWake;
++
++    impl Wake for NoopWake {
++        fn wake(self: Arc<Self>) {}
++    }
++
++    fn waker() -> Waker {
++        Arc::new(NoopWake).into()
++    }
++
++    #[derive(Debug)]
++    struct ErrorToken(Arc<()>);
++
++    impl fmt::Display for ErrorToken {
++        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++            f.write_str("original test cause")
++        }
++    }
++
++    impl std::error::Error for ErrorToken {}
++
++    fn original_error() -> (io::Error, Arc<()>) {
++        let token = Arc::new(());
++        (
++            io::Error::new(io::ErrorKind::Other, ErrorToken(token.clone())),
++            token,
++        )
++    }
++
++    fn assert_original_error(error: &io::Error, token: &Arc<()>) {
++        let cause = error
++            .get_ref()
++            .unwrap()
++            .downcast_ref::<ErrorToken>()
++            .unwrap();
++        assert!(Arc::ptr_eq(&cause.0, token));
++    }
++
++    #[derive(Clone, Default)]
++    struct Counts {
++        reads: Rc<Cell<usize>>,
++        writes: Rc<Cell<usize>>,
++        flushes: Rc<Cell<usize>>,
++        drops: Rc<Cell<usize>>,
++    }
++
++    #[derive(Clone, Copy)]
++    enum WriteMode {
++        Ready,
++        Pending,
++        Failed,
++    }
++
++    struct TestIo {
++        counts: Counts,
++        input: Vec<u8>,
++        offset: usize,
++        eof: bool,
++        panic_read: bool,
++        read_error: Option<io::Error>,
++        flush_error: Option<io::Error>,
++        write_mode: Rc<Cell<WriteMode>>,
++        flush_mode: Rc<Cell<WriteMode>>,
++    }
++
++    impl TestIo {
++        fn pending() -> Self {
++            Self {
++                counts: Counts::default(),
++                input: Vec::new(),
++                offset: 0,
++                eof: false,
++                panic_read: false,
++                read_error: None,
++                flush_error: None,
++                write_mode: Rc::new(Cell::new(WriteMode::Ready)),
++                flush_mode: Rc::new(Cell::new(WriteMode::Ready)),
++            }
++        }
++    }
++
++    impl Drop for TestIo {
++        fn drop(&mut self) {
++            self.counts.drops.set(self.counts.drops.get() + 1);
++        }
++    }
++
++    impl AsyncRead for TestIo {
++        fn poll_read(
++            self: Pin<&mut Self>,
++            _: &mut Context<'_>,
++            buf: &mut ReadBuf<'_>,
++        ) -> Poll<io::Result<()>> {
++            let this = self.get_mut();
++            this.counts.reads.set(this.counts.reads.get() + 1);
++            assert!(!this.panic_read, "test IO read panic");
++            if let Some(error) = this.read_error.take() {
++                return Poll::Ready(Err(error));
++            }
++
++            if this.offset < this.input.len() {
++                let count = buf.remaining().min(this.input.len() - this.offset);
++                buf.put_slice(&this.input[this.offset..this.offset + count]);
++                this.offset += count;
++                return Poll::Ready(Ok(()));
++            }
++
++            if this.eof {
++                Poll::Ready(Ok(()))
++            } else {
++                Poll::Pending
++            }
++        }
++    }
++
++    impl AsyncWrite for TestIo {
++        fn poll_write(
++            self: Pin<&mut Self>,
++            _: &mut Context<'_>,
++            bytes: &[u8],
++        ) -> Poll<io::Result<usize>> {
++            let this = self.get_mut();
++            this.counts.writes.set(this.counts.writes.get() + 1);
++            match this.write_mode.get() {
++                WriteMode::Ready => Poll::Ready(Ok(bytes.len())),
++                WriteMode::Pending => Poll::Pending,
++                WriteMode::Failed => Poll::Ready(Err(io::Error::new(
++                    io::ErrorKind::BrokenPipe,
++                    "secondary alert write",
++                ))),
++            }
++        }
++
++        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
++            let this = self.get_mut();
++            this.counts.flushes.set(this.counts.flushes.get() + 1);
++            match this.flush_mode.get() {
++                WriteMode::Ready => Poll::Ready(Ok(())),
++                WriteMode::Pending => Poll::Pending,
++                WriteMode::Failed => Poll::Ready(Err(this.flush_error.take().unwrap())),
++            }
++        }
++
++        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
++            Poll::Ready(Ok(()))
++        }
++    }
++
++    #[derive(Debug)]
++    struct NoCertificate;
++
++    impl ResolvesServerCert for NoCertificate {
++        fn resolve(&self, _: ClientHello<'_>) -> Option<Arc<rustls::sign::CertifiedKey>> {
++            None
++        }
++    }
++
++    fn provider() -> Arc<rustls::crypto::CryptoProvider> {
++        #[cfg(feature = "aws_lc_rs")]
++        let provider = rustls::crypto::aws_lc_rs::default_provider();
++        #[cfg(all(not(feature = "aws_lc_rs"), feature = "ring"))]
++        let provider = rustls::crypto::ring::default_provider();
++
++        Arc::new(provider)
++    }
++
++    fn acceptor() -> TlsAcceptor {
++        Arc::new(
++            ServerConfig::builder_with_provider(provider())
++                .with_safe_default_protocol_versions()
++                .unwrap()
++                .with_no_client_auth()
++                .with_cert_resolver(Arc::new(NoCertificate)),
++        )
++        .into()
++    }
++
++    fn configs() -> (ServerConfig, ClientConfig) {
++        let certified = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
++        let certificate = certified.cert.der().clone();
++        let key = PrivatePkcs8KeyDer::from(certified.signing_key.serialize_der());
++        let server = ServerConfig::builder_with_provider(provider())
++            .with_safe_default_protocol_versions()
++            .unwrap()
++            .with_no_client_auth()
++            .with_single_cert(vec![certificate.clone()], key.into())
++            .unwrap();
++
++        let mut roots = RootCertStore::empty();
++        roots.add(certificate).unwrap();
++        let client = ClientConfig::builder_with_provider(provider())
++            .with_safe_default_protocol_versions()
++            .unwrap()
++            .with_root_certificates(roots)
++            .with_no_client_auth();
++
++        (server, client)
++    }
++
++    fn client_hello() -> (ServerConfig, Vec<u8>) {
++        let (server, client) = configs();
++        let mut client = ClientConnection::new(
++            Arc::new(client),
++            ServerName::try_from("localhost").unwrap(),
++        )
++        .unwrap();
++        let mut bytes = Vec::new();
++        client.write_tls(&mut bytes).unwrap();
++        (server, bytes)
++    }
++
++    #[test]
++    fn unpolled_borrowed_driver_does_not_drop_original_transport() {
++        let io = TestIo::pending();
++        let counts = io.counts.clone();
++        let mut owner = acceptor().accept_retained(io);
++        let original = owner.get_ref().unwrap() as *const TestIo;
++
++        let driver = std::future::poll_fn(|cx| Pin::new(&mut owner).poll_accept(cx));
++        drop(driver);
++
++        assert_eq!(owner.get_ref().unwrap() as *const TestIo, original);
++        assert_eq!(counts.reads.get(), 0);
++        assert_eq!(counts.drops.get(), 0);
++        drop(owner);
++        assert_eq!(counts.drops.get(), 1);
++    }
++
++    #[test]
++    fn pending_driver_cancellation_keeps_same_io_and_server_connection() {
++        let io = TestIo::pending();
++        let counts = io.counts.clone();
++        let mut owner = acceptor().accept_retained(io);
++        let original_io = owner.get_ref().unwrap() as *const TestIo;
++        let original_session = owner.tls_stream().unwrap().get_ref().1 as *const ServerConnection;
++        let waker = waker();
++        let mut cx = Context::from_waker(&waker);
++
++        let mut driver = Box::pin(std::future::poll_fn(|cx| {
++            Pin::new(&mut owner).poll_accept(cx)
++        }));
++        assert!(driver.as_mut().poll(&mut cx).is_pending());
++        drop(driver);
++
++        assert_eq!(owner.get_ref().unwrap() as *const TestIo, original_io);
++        assert_eq!(
++            owner.tls_stream().unwrap().get_ref().1 as *const ServerConnection,
++            original_session,
++        );
++        assert!(owner.error().is_none());
++        assert_eq!(counts.drops.get(), 0);
++    }
++
++    #[test]
++    fn record_failure_retains_exact_first_cause_and_stops_further_io() {
++        let (error, token) = original_error();
++        let mut io = TestIo::pending();
++        io.read_error = Some(error);
++        let counts = io.counts.clone();
++        let mut owner = acceptor().accept_retained(io);
++        let original_io = owner.get_ref().unwrap() as *const TestIo;
++        let original_session = owner.tls_stream().unwrap().get_ref().1 as *const ServerConnection;
++        let waker = waker();
++        let mut cx = Context::from_waker(&waker);
++
++        assert!(matches!(
++            Pin::new(&mut owner).poll_accept(&mut cx),
++            Poll::Ready(Err(RetainedAcceptFailure)),
++        ));
++        let first = owner.error().unwrap() as *const io::Error;
++        assert_original_error(owner.error().unwrap(), &token);
++        let reads = counts.reads.get();
++
++        assert!(matches!(
++            Pin::new(&mut owner).poll_accept(&mut cx),
++            Poll::Ready(Err(RetainedAcceptFailure)),
++        ));
++        assert_eq!(owner.error().unwrap() as *const io::Error, first);
++        assert_eq!(owner.get_ref().unwrap() as *const TestIo, original_io);
++        assert_eq!(
++            owner.tls_stream().unwrap().get_ref().1 as *const ServerConnection,
++            original_session,
++        );
++        assert_eq!(counts.reads.get(), reads);
++        assert_eq!(counts.drops.get(), 0);
++        drop(owner);
++        assert_eq!(counts.drops.get(), 1);
++    }
++
++    #[test]
++    fn actual_record_eof_remains_observable_after_failure() {
++        let mut io = TestIo::pending();
++        io.eof = true;
++        let mut owner = acceptor().accept_retained(io);
++        let waker = waker();
++        let mut cx = Context::from_waker(&waker);
++
++        assert!(matches!(
++            Pin::new(&mut owner).poll_accept(&mut cx),
++            Poll::Ready(Err(RetainedAcceptFailure)),
++        ));
++
++        assert!(owner.handshake_eof());
++        assert_eq!(owner.error().unwrap().kind(), io::ErrorKind::UnexpectedEof);
++        assert_eq!(owner.error().unwrap().to_string(), "tls handshake eof");
++        assert!(owner.tls_stream().is_some());
++    }
++
++    #[test]
++    fn actual_record_flush_failure_keeps_cause_and_flush_progress() {
++        let (server, input) = client_hello();
++        let (error, token) = original_error();
++        let mut io = TestIo::pending();
++        io.input = input;
++        io.flush_error = Some(error);
++        io.flush_mode.set(WriteMode::Failed);
++        let counts = io.counts.clone();
++        let mut owner = TlsAcceptor::from(Arc::new(server)).accept_retained(io);
++        let waker = waker();
++        let mut cx = Context::from_waker(&waker);
++
++        assert!(matches!(
++            Pin::new(&mut owner).poll_accept(&mut cx),
++            Poll::Ready(Err(RetainedAcceptFailure)),
++        ));
++
++        assert!(counts.writes.get() > 0);
++        assert!(counts.flushes.get() > 0);
++        assert!(owner.handshake_need_flush());
++        assert_original_error(owner.error().unwrap(), &token);
++        assert!(owner.tls_stream().is_some());
++    }
++
++    #[test]
++    fn pending_flush_and_original_tls_owner_survive_driver_cancellation() {
++        let (server, input) = client_hello();
++        let mut io = TestIo::pending();
++        io.input = input;
++        io.flush_mode.set(WriteMode::Pending);
++        let counts = io.counts.clone();
++        let mut owner = TlsAcceptor::from(Arc::new(server)).accept_retained(io);
++        let original = owner.get_ref().unwrap() as *const TestIo;
++        let waker = waker();
++        let mut cx = Context::from_waker(&waker);
++
++        let mut driver = Box::pin(std::future::poll_fn(|cx| {
++            Pin::new(&mut owner).poll_accept(cx)
++        }));
++        assert!(driver.as_mut().poll(&mut cx).is_pending());
++        drop(driver);
++
++        assert_eq!(owner.get_ref().unwrap() as *const TestIo, original);
++        assert!(owner.handshake_need_flush());
++        assert!(owner.error().is_none());
++        assert!(counts.flushes.get() > 0);
++        assert_eq!(counts.drops.get(), 0);
++    }
++
++    #[test]
++    fn initialization_failure_borrows_original_error_without_constructing_tls_state() {
++        let io = TestIo::pending();
++        let counts = io.counts.clone();
++        let (error, token) = original_error();
++        let mut owner = Accept(MidHandshake::Error { io, error }).into_retained();
++        let original = match &owner.inner {
++            MidHandshake::Error { error, .. } => error as *const io::Error,
++            _ => unreachable!(),
++        };
++        let waker = waker();
++        let mut cx = Context::from_waker(&waker);
++
++        assert!(matches!(
++            Pin::new(&mut owner).poll_accept(&mut cx),
++            Poll::Ready(Err(RetainedAcceptFailure)),
++        ));
++
++        assert_eq!(owner.error().unwrap() as *const io::Error, original);
++        assert_original_error(owner.error().unwrap(), &token);
++        assert!(owner.tls_stream().is_none());
++        assert!(owner.get_ref().is_some());
++        assert_eq!(counts.reads.get(), 0);
++    }
++
++    #[test]
++    fn accept_retained_keeps_actual_server_connection_construction_error() {
++        let mut config = ServerConfig::builder_with_provider(provider())
++            .with_safe_default_protocol_versions()
++            .unwrap()
++            .with_no_client_auth()
++            .with_cert_resolver(Arc::new(NoCertificate));
++        config.max_fragment_size = Some(1);
++        let io = TestIo::pending();
++        let counts = io.counts.clone();
++        let mut owner = TlsAcceptor::from(Arc::new(config)).accept_retained(io);
++        let original = match &owner.inner {
++            MidHandshake::Error { error, .. } => error as *const io::Error,
++            _ => panic!("invalid fragment size must fail actual session construction"),
++        };
++        let waker = waker();
++        let mut cx = Context::from_waker(&waker);
++
++        assert!(matches!(
++            Pin::new(&mut owner).poll_accept(&mut cx),
++            Poll::Ready(Err(RetainedAcceptFailure)),
++        ));
++
++        assert_eq!(owner.error().unwrap() as *const io::Error, original);
++        assert_eq!(owner.error().unwrap().kind(), io::ErrorKind::Other);
++        assert!(owner.tls_stream().is_none());
++        assert!(owner.get_ref().is_some());
++        assert_eq!(counts.reads.get(), 0);
++        assert_eq!(counts.writes.get(), 0);
++        assert_eq!(counts.drops.get(), 0);
++    }
++
++    #[test]
++    fn lazy_alert_failure_retains_alert_and_primary_cause_after_secondary_write_error() {
++        let (_, hello) = client_hello();
++        let mut accepted = rustls::server::Acceptor::default();
++        accepted.read_tls(&mut &hello[..]).unwrap();
++        let accepted = accepted.accept().unwrap().unwrap();
++        let io = TestIo::pending();
++        io.write_mode.set(WriteMode::Pending);
++        let write_mode = io.write_mode.clone();
++        let counts = io.counts.clone();
++        let mut owner = StartHandshake::from_parts(accepted, io)
++            .into_stream(acceptor().config().clone())
++            .into_retained();
++        let cause = match &owner.inner {
++            MidHandshake::SendAlert { error, .. } => error as *const io::Error,
++            _ => panic!("missing certificate must retain the actual accepted alert"),
++        };
++        let waker = waker();
++        let mut cx = Context::from_waker(&waker);
++
++        assert!(Pin::new(&mut owner).poll_accept(&mut cx).is_pending());
++        write_mode.set(WriteMode::Failed);
++        assert!(matches!(
++            Pin::new(&mut owner).poll_accept(&mut cx),
++            Poll::Ready(Err(RetainedAcceptFailure)),
++        ));
++
++        assert_eq!(owner.error().unwrap() as *const io::Error, cause);
++        assert_eq!(owner.error().unwrap().kind(), io::ErrorKind::InvalidData);
++        assert!(matches!(owner.inner, MidHandshake::SendAlert { .. }));
++        let writes = counts.writes.get();
++        assert!(matches!(
++            Pin::new(&mut owner).poll_accept(&mut cx),
++            Poll::Ready(Err(RetainedAcceptFailure)),
++        ));
++        assert_eq!(counts.writes.get(), writes);
++        assert_eq!(counts.drops.get(), 0);
++    }
++
++    #[test]
++    fn legacy_accept_drops_io_on_error_and_fallible_accept_returns_it() {
++        let io = TestIo::pending();
++        let counts = io.counts.clone();
++        let (error, token) = original_error();
++        let mut accept = Accept(MidHandshake::Error { io, error });
++        let waker = waker();
++        let mut cx = Context::from_waker(&waker);
++
++        let error = match Pin::new(&mut accept).poll(&mut cx) {
++            Poll::Ready(Err(error)) => error,
++            _ => panic!("legacy initialization error must complete"),
++        };
++        assert_original_error(&error, &token);
++        assert_eq!(counts.drops.get(), 1);
++
++        let io = TestIo::pending();
++        let counts = io.counts.clone();
++        let (error, token) = original_error();
++        let mut accept = Accept(MidHandshake::Error { io, error }).into_fallible();
++        let (error, io) = match Pin::new(&mut accept).poll(&mut cx) {
++            Poll::Ready(Err(parts)) => parts,
++            _ => panic!("fallible initialization error must return original IO"),
++        };
++        assert_original_error(&error, &token);
++        assert_eq!(counts.drops.get(), 0);
++        drop(io);
++        assert_eq!(counts.drops.get(), 1);
++    }
++
++    #[test]
++    fn caught_legacy_io_panic_preserves_end_state_and_original_drop() {
++        let mut io = TestIo::pending();
++        io.panic_read = true;
++        let counts = io.counts.clone();
++        let mut accept = acceptor().accept(io);
++        let waker = waker();
++        let mut cx = Context::from_waker(&waker);
++
++        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++            let _ = Pin::new(&mut accept).poll(&mut cx);
++        }));
++
++        assert!(panic.is_err());
++        assert!(accept.get_ref().is_none());
++        assert!(matches!(accept.0, MidHandshake::End));
++        assert_eq!(counts.drops.get(), 1);
++        drop(accept);
++        assert_eq!(counts.drops.get(), 1);
++    }
++
++    struct PeerIo {
++        client: ClientConnection,
++        output: Vec<u8>,
++        offset: usize,
++        drops: Rc<Cell<usize>>,
++    }
++
++    impl Drop for PeerIo {
++        fn drop(&mut self) {
++            self.drops.set(self.drops.get() + 1);
++        }
++    }
++
++    impl AsyncRead for PeerIo {
++        fn poll_read(
++            self: Pin<&mut Self>,
++            _: &mut Context<'_>,
++            buf: &mut ReadBuf<'_>,
++        ) -> Poll<io::Result<()>> {
++            let this = self.get_mut();
++            if this.offset == this.output.len() {
++                this.output.clear();
++                this.offset = 0;
++                this.client.write_tls(&mut this.output).unwrap();
++            }
++            if this.output.is_empty() {
++                return Poll::Pending;
++            }
++
++            let count = buf.remaining().min(this.output.len() - this.offset);
++            buf.put_slice(&this.output[this.offset..this.offset + count]);
++            this.offset += count;
++            Poll::Ready(Ok(()))
++        }
++    }
++
++    impl AsyncWrite for PeerIo {
++        fn poll_write(
++            self: Pin<&mut Self>,
++            _: &mut Context<'_>,
++            bytes: &[u8],
++        ) -> Poll<io::Result<usize>> {
++            let this = self.get_mut();
++            let mut remaining = bytes;
++            while !remaining.is_empty() {
++                let consumed = this.client.read_tls(&mut remaining).unwrap();
++                assert!(consumed > 0);
++                this.client.process_new_packets().unwrap();
++            }
++            Poll::Ready(Ok(bytes.len()))
++        }
++
++        fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
++            Poll::Ready(Ok(()))
++        }
++
++        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
++            Poll::Ready(Ok(()))
++        }
++    }
++
++    #[test]
++    fn genuine_in_memory_tls_success_moves_the_sole_completed_stream() {
++        let (server, client) = configs();
++        let drops = Rc::new(Cell::new(0));
++        let io = PeerIo {
++            client: ClientConnection::new(
++                Arc::new(client),
++                ServerName::try_from("localhost").unwrap(),
++            )
++            .unwrap(),
++            output: Vec::new(),
++            offset: 0,
++            drops: drops.clone(),
++        };
++        let mut owner = TlsAcceptor::from(Arc::new(server)).accept_retained(io);
++        let waker = waker();
++        let mut cx = Context::from_waker(&waker);
++
++        let stream = match Pin::new(&mut owner).poll_accept(&mut cx) {
++            Poll::Ready(Ok(stream)) => stream,
++            _ => panic!("real in-memory TLS peers must complete the shared engine"),
++        };
++
++        assert!(!stream.get_ref().1.is_handshaking());
++        assert!(!stream.get_ref().0.client.is_handshaking());
++        assert!(owner.get_ref().is_none());
++        assert!(owner.tls_stream().is_none());
++        assert!(owner.error().is_none());
++        assert_eq!(drops.get(), 0);
++        drop(owner);
++        assert_eq!(drops.get(), 0);
++        drop(stream);
++        assert_eq!(drops.get(), 1);
++    }
++}

@@ -27,6 +27,16 @@
   ...
 }: let
   cfg = config.aos.filesystems;
+  protectedSandboxNetworkRoots =
+    config.aos.security.selinux.protectedSandboxNetworkRoots.enable;
+  protectedSandboxRoots =
+    protectedSandboxNetworkRoots
+    || config.aos.sandbox.controllerService.method46TpmFloor.required
+    || config.aos.sandbox.storageBroker.method46TpmFloor.required;
+  varRootContext =
+    config.aos.security.selinux.protectedSandboxNetworkRoots._varRootContext;
+  varRootContextOption =
+    lib.optionalString protectedSandboxRoots ",rootcontext=${varRootContext}";
 
   # OpenZFS is an out-of-tree module, so its build is bound to one exact
   # kernel. `aos.boot.storage` overrides this when the immutable image slots
@@ -57,7 +67,7 @@
       if cfg.rootReadOnly
       then "ro"
       else "rw"
-    },relatime  0  ${
+    },relatime,nodev  0  ${
       if cfg.rootFsType == "erofs"
       then "0"
       else "1"
@@ -80,7 +90,7 @@
         # systemd adopts that live mount; this entry names the root-disk
         # partition, which exists in every topology, so the generated device
         # dependency is always satisfiable.
-        /dev/disk/by-partlabel/var  /var  ext4  rw,relatime,nosuid,nodev  0  2
+        /dev/disk/by-partlabel/var  /var  ext4  rw,relatime,nosuid,nodev${varRootContextOption}  0  2
       ''
     )
     ""

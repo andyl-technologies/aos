@@ -1,0 +1,17 @@
+diff --git a/include/uapi/linux/prctl.h b/include/uapi/linux/prctl.h
+--- a/include/uapi/linux/prctl.h
++++ b/include/uapi/linux/prctl.h
+@@ -407,5 +407,13 @@
+ #define PR_GET_CFI	80
+ #define PR_SET_CFI	81
++/*
++ * AOS Linux 7.2.3 private ABI. The restriction is per-thread, inherited by
++ * children and across exec, and cannot be cleared. SET accepts only arg2=1
++ * and zero in arg3-arg5. GET accepts zero in arg2-arg5 and returns 0 or 1.
++ * Bump and audit these numbers if upstream allocates either value.
++ */
++#define PR_SET_AOS_NO_SETID	82
++#define PR_GET_AOS_NO_SETID	83
+ /*
+  * Forward-edge CFI variants (excluding ARM64 BTI, which has its own
+  * prctl()s).

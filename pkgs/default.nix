@@ -556,14 +556,48 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       }
     );
 
-  fetchCargoVendor = args:
-    lib.fetchCargoVendor (
+  # The existing path-returning producer is the sole workspace identity. It
+  # depends on source filtering/string helpers, never on this vendor derivation.
+  canonicalWorkspaceSource = import ./tools/aos/_workspace-source.nix {inherit lib;};
+  workspaceRegistryPatches = let
+    recipe = builtins.fromJSON (builtins.readFile ./tools/aos/cargo-patches/registry-source-patches.json);
+    resolvePatch = record: let
+      components = lib.splitString "/" record.patch;
+      safePath =
+        builtins.isString record.patch
+        && lib.hasPrefix "pkgs/tools/aos/cargo-patches/" record.patch
+        && builtins.match "[A-Za-z0-9._/-]+" record.patch != null
+        && builtins.all (part: part != "" && part != "." && part != "..") components;
+    in
+      lib.throwIfNot safePath "workspace registry patch path is outside its fixed source directory"
+      (record // {patch = ../. + "/${record.patch}";});
+  in
+    lib.throwIfNot (builtins.isList recipe && recipe != [])
+    "canonical workspace requires its nonempty frozen registry patch recipe"
+    (builtins.map resolvePatch recipe);
+
+  fetchCargoVendor = args: let
+    canonicalSource = args.src == canonicalWorkspaceSource;
+    registryPatches =
+      if canonicalSource
+      then workspaceRegistryPatches
+      else args.registryPatches or [];
+    conflictingOverride =
+      canonicalSource
+      && args ? registryPatches
+      && args.registryPatches != workspaceRegistryPatches;
+  in
+    lib.throwIfNot (!conflictingOverride)
+    "canonical workspace registry source patches cannot be overridden or disabled"
+    (lib.fetchCargoVendor (
       args
       // {
         cargo = resolvedBuildPackages.rust;
         python3 = resolvedBuildPackages.python3;
         git = resolvedBuildPackages.git;
         caCertificates = resolvedBuildPackages.ca-certificates;
+        inherit registryPatches;
+        patchTool = stdenv.patch;
         inherit bootstrapTools;
         extraPaths = [
           stdenv.coreutils
@@ -577,7 +611,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         # explicit caller override without imposing one on every subprocess.
         extraLibPaths = args.extraLibPaths or [];
       }
-    );
+    ));
 
   fetchGoModules = args:
     lib.fetchGoModules (
@@ -1202,7 +1236,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   packageArgumentScope =
     self
     // {inherit firmwarePackages;}
-    // lib.optionalAttrs stdenv.isCross (
+    // lib.optionalAttrs (stdenv.hostPlatform.isDarwin || stdenv.isCross) (
       builtins.listToAttrs (
         builtins.map (name: {
           inherit name;
@@ -1460,7 +1494,19 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     "aos-boot-identity"
     "aos-ebpf-lsm-policy"
     "aos-ebpf-net-policy"
+    "aos-namespace-inspector-manager-query"
+    "aos-sandbox-network-lease-gate"
+    "aos-sandbox-network-lease-gate-loader"
+    "aos-sandbox-kernel-export-deny"
+    "aos-sandbox-kernel-export-owner"
+    "aos-sandbox-kernel-export-ownerd"
+    "aos-sandbox-network-observer"
+    "aos-selinux-runtime-roots"
+    "aos-sandbox-zfs-worker"
+    "aos-sandboxd"
+    "aos-sandbox-ownershipd"
     "aos-hub"
+    "aos-storaged"
     "aos-hub-cloudflare"
     "aos-hub-console-dist"
     "aos-hub-dialect-tests"
@@ -1473,6 +1519,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     "aos-release-signer"
     "aos-secret-reference-test"
     "aos-selinux-run"
+    "aos-selinux-stage0"
     "aos-service-root"
     "aos-system-image-e2e-fixture"
     "aos-test-agent"
@@ -1673,6 +1720,12 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       };
     }
     // discoveredPackages
+    # The underscore-prefixed recipe deliberately stays outside package
+    # discovery: this is a native build-machine runner, not target inventory.
+    # Cross package sets consume it only through buildPackages.
+    // lib.optionalAttrs (!stdenv.isCross && stdenv.hostPlatform.isLinux) {
+      qemu-aarch64-linux-user = callPackage ./emulation/_qemu-aarch64-linux-user.nix {};
+    }
     // {
       # --- Explicit overrides for packages needing non-standard arguments ---
       # GLib bootstraps GObject Introspection, while downstream consumers need
@@ -1696,6 +1749,33 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         callPackage ./kernel/linux.nix {
           inherit linuxSource extraConfig;
           enforceRequiredConfig = false;
+        };
+      # The immutable SELinux gate needs negative subjects whose loaded and
+      # expected policy bytes differ. Keep that construction explicit so the
+      # deployed package remains the no-argument discovered derivation.
+      aosSelinuxStage0With = arguments:
+        callPackage ./security/aos-selinux-stage0.nix arguments;
+      aosSelinuxRuntimeRootsWith = arguments:
+        callPackage ./security/aos-selinux-runtime-roots.nix arguments;
+      aosSelinuxProductionPolicyWith = arguments:
+        callPackage ./security/aos-selinux-production-policy.nix arguments;
+      aosNormalRootStartupProfileWith = arguments:
+        callPackage ./security/_aos-normal-root-profile.nix arguments;
+      aosNixOfflineStartupProfileWith = arguments:
+        callPackage ./security/_aos-nix-offline-startup-profile.nix arguments;
+      aosSelinuxKernelPolicyReadbackWith = arguments:
+        callPackage ./security/aos-selinux-kernel-policy-readback.nix arguments;
+      aosSelinuxKernelPolicyReadbackForKernel = kernel:
+        callPackage ./security/aos-selinux-kernel-policy-readback.nix {
+          linux = kernel;
+        };
+      aosSelinuxRuntimeRootsForKernel = kernel:
+        callPackage ./security/aos-selinux-runtime-roots.nix {
+          aos-selinux-kernel-policy-readback = self.aosSelinuxKernelPolicyReadbackForKernel kernel;
+        };
+      aosMountExecutableCarrierForKernel = kernel:
+        callPackage ./security/_aos-mount-executable-carrier.nix {
+          linux = kernel;
         };
       linux-headers = callPackage ./kernel/linux-headers.nix {inherit linuxSource;};
       zfsForKernel = kernel:
@@ -1910,60 +1990,62 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
           passthru.evidenceSources = stdenv.glibc.passthru.evidenceSources;
         };
       # Native package sets retain the final stdenv tools. Cross package roots
-      # must be actual target builds; scheduler-native tools remain available
-      # only through buildPackages and build-dependency splicing.
+      # must be actual target builds; build-machine tools remain available only
+      # through buildPackages and build-dependency splicing. Keep the explicit
+      # Darwin condition because Darwin always uses discovered target packages,
+      # independently of how a future native Darwin stdenv reports isCross.
       bash = withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.bash
         else withBootstrapPublication "bash"
       );
       coreutils = withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.coreutils
         else withBootstrapPublication "coreutils"
       );
       gnumake = withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.gnumake
         else withBootstrapPublication "gnumake"
       );
       sed = withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.sed
         else withBootstrapPublication "sed"
       );
       grep = withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.grep
         else withBootstrapPublication "grep"
       );
       findutils = withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.findutils
         else withBootstrapPublication "findutils"
       );
       gawk = withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.gawk
         else withBootstrapPublication "gawk"
       );
       diffutils = withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.diffutils
         else withBootstrapPublication "diffutils"
       );
       tar = withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.tar
         else withBootstrapPublication "tar"
       );
       gzip = withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.gzip
         else withBootstrapPublication "gzip"
       );
       patch = withDefaultMaintainers (
-        if stdenv.isCross
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then discoveredPackages.patch
         else withBootstrapPublication "patch"
       );

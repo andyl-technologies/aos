@@ -14,11 +14,81 @@
   ...
 }: let
   cfg = config.aos.security.selinux;
+  immutableStage0 = cfg.bootMode == "immutable-stage0";
+  protectedSandboxNetworkRoots = cfg.protectedSandboxNetworkRoots.enable;
   policyName = cfg.policy;
   refpolicy = pkgs.refpolicy;
+  viewPreparers = [
+    {
+      package = config.aos.sandbox.policyAuthority._preparerPackage;
+      program = "aos-sandbox-cache-journal-view";
+      role = "cache";
+    }
+    {
+      package = config.aos.sandbox.cacheSignerView._preparerPackage;
+      program = "aos-sandbox-cache-signer-views";
+      role = "cache";
+    }
+    {
+      package = config.aos.sandbox.cacheSignerView._stopPackage;
+      program = "aos-sandbox-cache-signer-views-stop";
+      role = "cache";
+    }
+    {
+      package = config.aos.sandbox.sourceSignerView._preparerPackage;
+      program = "aos-sandbox-source-signer-view";
+      role = "source";
+    }
+  ];
+  # Exact script outputs contain the image's real UID/GID values. Their
+  # interpreter/tool paths do not depend on this policy, avoiding a cycle.
+  productionPolicy = pkgs.aosSelinuxProductionPolicyWith {
+    inherit viewPreparers homeContextAliases;
+    gitReadDelegation = config.aos.sandbox.controllerService.gitReadInspection.enable;
+  };
+  canonicalPolicyPath = "${productionPolicy}/etc/selinux/aos/policy/policy.33";
+  # selinuxfs serializes the loaded policydb; its bytes are not the input file.
+  # Bind the exact expected image to the selected deployment kernel.
+  canonicalReadback = pkgs.aosSelinuxKernelPolicyReadbackWith {
+    linux = config.system.build.kernel;
+    aos-selinux-production-policy = productionPolicy;
+  };
+  canonicalReadbackPath = "${canonicalReadback}/policy.33";
+  productionAdmissionUnit = "aos-selinux-stage0-hold.target";
+  selectedStage0 = config.aos.boot.initrd.stage0;
+  controllerFloorRequired = config.aos.sandbox.controllerService.method46TpmFloor.required;
+  storageFloorRequired = config.aos.sandbox.storageBroker.method46TpmFloor.required;
+  ownerFloorRequired = controllerFloorRequired || storageFloorRequired;
+  runtimeRootsProvisioner =
+    if immutableStage0
+    then
+      pkgs.aosSelinuxRuntimeRootsWith {
+        controllerUid = config.aos.sandbox.controller.uid;
+        controllerGid = config.aos.sandbox.controller.gid;
+        inherit controllerFloorRequired storageFloorRequired;
+        sourceViewRequired = config.aos.sandbox.sourceSignerView.enable;
+        cacheViewRequired = config.aos.sandbox.policyAuthority.enable;
+        cacheSignerViewRequired = config.aos.sandbox.cacheSignerView.enable;
+        viewZfsState = config.aos.filesystems.zfs.enable && config.aos.filesystems.zfs.systemState;
+        viewZfsSource = "${config.aos.filesystems.zfs.poolName}/var/lib";
+        aos-selinux-production-policy = productionPolicy;
+        expectedPolicy = canonicalReadbackPath;
+        expectedPolicyKernel = config.system.build.kernel;
+      }
+    else pkgs.aos-selinux-runtime-roots;
+  strictKernelConfig = builtins.readFile ../../pkgs/kernel/config/selinux-immutable.config;
   semodule = "${pkgs.policycoreutils}/sbin/semodule";
   loadPolicy = "${pkgs.policycoreutils}/sbin/load_policy";
   setenforce = "${pkgs.libselinux}/sbin/setenforce";
+
+  countKernelParameter = name:
+    lib.length (
+      lib.filter (
+        parameter:
+          parameter == name || lib.hasPrefix "${name}=" parameter
+      )
+      config.aos.boot.kernelParams
+    );
 
   # AOS-authored SELinux module shipped alongside the upstream refpolicy.
   #
@@ -308,104 +378,353 @@ in {
         all files have correct security contexts.
       '';
     };
+
+    bootMode = lib.mkOption {
+      type = lib.types.enum [
+        "legacy"
+        "immutable-stage0"
+      ];
+      default = "legacy";
+      description = ''
+        Policy admission path. Legacy compiles a mutable module store after
+        local filesystems mount. Immutable-stage0 loads the kernel-matched
+        policy from a signed static PID 1 before labeled stage-1 systemd.
+      '';
+    };
+
+    _qualificationAdmissionRelease = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      internal = true;
+      description = "Allows signed test images to replace the production admission hold with the normal initrd target.";
+    };
+
+    _runtimeRootsProvisioner = lib.mkOption {
+      type = lib.types.package;
+      internal = true;
+      readOnly = true;
+      default = runtimeRootsProvisioner;
+      description = "Same immutable fixed runtime-root image used by stage 0 and both existing preparation routes.";
+    };
+
+    _productionPolicy = lib.mkOption {
+      type = lib.types.package;
+      internal = true;
+      readOnly = true;
+      default = productionPolicy;
+      description = "Exact configuration-selected policy whose package runs the effective matrix checker; this path is not a live proof token.";
+    };
+
+    _canonicalReadback = lib.mkOption {
+      type = lib.types.package;
+      internal = true;
+      readOnly = true;
+      default = canonicalReadback;
+      description = "Same selected-policy canonical serialization generated by the actual deployment kernel.";
+    };
+
+    protectedSandboxNetworkRoots = {
+      enable = lib.mkEnableOption ''
+        the fixed SELinux-labeled sandbox Network state-root topology
+      '';
+
+      _varRootContext = lib.mkOption {
+        type = lib.types.str;
+        default = "system_u:object_r:var_t";
+        internal = true;
+        readOnly = true;
+        description = "Exact non-MLS SELinux context shared by every protected /var mount path.";
+      };
+    };
   };
 
-  config = lib.mkIf cfg.enable {
-    system.checks.selinux = {
-      description = "SELinux checks";
-      checks = [
+  config = lib.mkMerge [
+    {
+      assertions = [
         {
-          name = "selinuxfs";
-          description = "/sys/fs/selinux is present";
-          script = ''
-            vm.succeed("test -d /sys/fs/selinux")
-          '';
+          assertion = cfg.enable || !immutableStage0;
+          message = "immutable SELinux stage 0 requires aos.security.selinux.enable.";
         }
         {
-          name = "home-context-aliases";
-          description = "the state-volume home directories alias their FHS paths";
-          script = ''
-            subs = vm.succeed("cat /etc/selinux/${policyName}/contexts/files/file_contexts.subs_dist")
-            assert "/var/home /home" in subs, subs
-            assert "/var/roothome /root" in subs, subs
-          '';
+          assertion = !ownerFloorRequired || (immutableStage0 && cfg.enable && cfg.mode == "enforcing" && !(config.aos.filesystems.zfs.enable && config.aos.filesystems.zfs.systemState));
+          message = "required TPM owner-root preparation currently requires immutable enforcing SELinux and the existing exact ext4 /var substrate (ZFS data pools are unaffected)";
         }
         {
-          name = "enforce-file";
-          description = "SELinux enforce file exists";
-          script = ''
-            vm.succeed("test -f /sys/fs/selinux/enforce")
-          '';
+          assertion = !protectedSandboxNetworkRoots || cfg.enable;
+          message = "protected sandbox Network roots require SELinux.";
+        }
+        {
+          assertion = !protectedSandboxNetworkRoots || immutableStage0;
+          message = "protected sandbox Network roots require immutable SELinux stage 0.";
+        }
+        {
+          assertion = !protectedSandboxNetworkRoots || cfg.mode == "enforcing";
+          message = "protected sandbox Network roots require enforcing SELinux.";
+        }
+        {
+          assertion = !protectedSandboxNetworkRoots || cfg.policy == "aos";
+          message = "protected sandbox Network roots require the kernel-matched aos policy.";
+        }
+        {
+          assertion = !protectedSandboxNetworkRoots || config.aos.sandbox.networkBroker.enable;
+          message = "protected sandbox Network roots require the Network broker.";
+        }
+        {
+          assertion = !protectedSandboxNetworkRoots || !config.aos.filesystems.zfs.enable;
+          message = "protected sandbox Network roots currently require the ext4 /var substrate.";
+        }
+        {
+          assertion =
+            !cfg._qualificationAdmissionRelease
+            || config.aos.image.allowTestArtifacts;
+          message = "SELinux admission release is restricted to test-artifact images.";
         }
       ];
-    };
+    }
 
-    environment.etc = {
-      # /etc/selinux/config — main SELinux configuration file.
-      # Read by libselinux at boot and by selinux-policy-load.service.
-      "selinux/config" = {
-        text = ''
-          # /etc/selinux/config — generated by modules/security/selinux.nix
-          # SELinux mode: enforcing, permissive, or disabled
-          SELINUX=${cfg.mode}
-
-          # SELinux policy name
-          SELINUXTYPE=${cfg.policy}
-        '';
+    (lib.mkIf cfg.enable {
+      system.checks.selinux = {
+        description = "SELinux checks";
+        checks = [
+          {
+            name = "selinuxfs";
+            description = "/sys/fs/selinux is present";
+            script = ''
+              vm.succeed("test -d /sys/fs/selinux")
+            '';
+          }
+          {
+            name = "home-context-aliases";
+            description = "the state-volume home directories alias their FHS paths";
+            script = ''
+              subs = vm.succeed("cat /etc/selinux/${policyName}/contexts/files/file_contexts.subs_dist")
+              assert "/var/home /home" in subs, subs
+              assert "/var/roothome /root" in subs, subs
+            '';
+          }
+          {
+            name = "enforce-file";
+            description = "SELinux enforce file exists";
+            script = ''
+              vm.succeed("test -f /sys/fs/selinux/enforce")
+            '';
+          }
+        ];
       };
 
-      "selinux/semanage.conf".text = semanageConfText;
-      "selinux/${policyName}/contexts".source = "${contexts}";
-    };
+      # /etc/selinux/config is common to both paths. The legacy service reads
+      # it after local-fs; strict stage 0 embeds the same selected identity.
+      environment.etc."selinux/config".text = ''
+        # /etc/selinux/config — generated by modules/security/selinux.nix
+        SELINUX=${cfg.mode}
+        SELINUXTYPE=${cfg.policy}
+      '';
+    })
 
-    systemd.services = {
-      # Load the SELinux policy early in boot.
-      # This must run before any confined services start.
-      "selinux-policy-load" = {
-        description = "Load SELinux Policy";
-        wantedBy = ["sysinit.target"];
-        before = [
-          "sysinit.target"
-          "systemd-tmpfiles-setup.service"
-        ];
-        after = ["local-fs.target"];
-        unitConfig.ConditionSecurity = "selinux";
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-          ExecStart = "${selinuxPolicyLoad}/bin/aos-selinux-load-policy";
+    (lib.mkIf (cfg.enable && !immutableStage0) {
+      environment.etc = {
+        "selinux/semanage.conf".text = semanageConfText;
+        "selinux/${policyName}/contexts".source = "${contexts}";
+      };
+
+      systemd.services = {
+        # Compatibility path: compile and load a mutable module store after
+        # local filesystems. Immutable stage 0 structurally excludes it.
+        "selinux-policy-load" = {
+          description = "Load SELinux Policy";
+          wantedBy = ["sysinit.target"];
+          before = [
+            "sysinit.target"
+            "systemd-tmpfiles-setup.service"
+          ];
+          after = ["local-fs.target"];
+          unitConfig.ConditionSecurity = "selinux";
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            ExecStart = "${selinuxPolicyLoad}/bin/aos-selinux-load-policy";
+          };
+        };
+
+        "selinux-autorelabel" = lib.mkIf cfg.autorelabel {
+          description = "SELinux Filesystem Relabeling";
+          wantedBy = ["sysinit.target"];
+          before = ["sysinit.target"];
+          after = [
+            "selinux-policy-load.service"
+            "local-fs.target"
+          ];
+          requires = ["selinux-policy-load.service"];
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            ExecCondition = "${pkgs.coreutils}/bin/test -f /.autorelabel";
+            ExecStart = "${pkgs.policycoreutils}/sbin/fixfiles -f -F relabel";
+            ExecStartPost = "${pkgs.coreutils}/bin/rm -f /.autorelabel";
+          };
         };
       };
 
-      # Filesystem relabeling service.
-      # Runs on first boot or when /.autorelabel exists.
-      "selinux-autorelabel" = lib.mkIf cfg.autorelabel {
-        description = "SELinux Filesystem Relabeling";
-        wantedBy = ["sysinit.target"];
-        before = ["sysinit.target"];
-        after = [
-          "selinux-policy-load.service"
-          "local-fs.target"
-        ];
-        requires = ["selinux-policy-load.service"];
-        serviceConfig = {
-          Type = "oneshot";
-          RemainAfterExit = true;
-          # Only relabel if the marker file exists.
-          ExecCondition = "${pkgs.coreutils}/bin/test -f /.autorelabel";
-          ExecStart = "${pkgs.policycoreutils}/sbin/fixfiles -f -F relabel";
-          ExecStartPost = "${pkgs.coreutils}/bin/rm -f /.autorelabel";
+      aos.boot.kernelParams = [
+        "selinux=1"
+        "security=selinux"
+        "enforcing=0"
+      ];
+    })
+
+    (lib.mkIf (cfg.enable && immutableStage0) {
+      assertions = [
+        {
+          assertion = cfg.mode == "enforcing";
+          message = "immutable SELinux stage 0 requires enforcing mode.";
+        }
+        {
+          assertion = cfg.policy == "aos";
+          message = "immutable SELinux stage 0 requires the kernel-matched aos policy.";
+        }
+        {
+          assertion = !cfg.autorelabel;
+          message = "immutable SELinux stage 0 forbids runtime autorelabeling.";
+        }
+        {
+          assertion = config.aos.security.verity.enable;
+          message = "immutable SELinux stage 0 requires dm-verity root verification.";
+        }
+        {
+          assertion = config.aos.boot.secureBoot.enable;
+          message = "immutable SELinux stage 0 requires a signed Secure Boot image.";
+        }
+        {
+          assertion = config.aos.boot.secureBoot.lockdown.enable;
+          message = "immutable SELinux stage 0 requires the lockdown kernel.";
+        }
+        {
+          assertion = config.aos.boot.initrd.enable;
+          message = "immutable SELinux stage 0 requires the systemd initrd.";
+        }
+        {
+          assertion =
+            countKernelParameter "selinux"
+            == 1
+            && builtins.elem "selinux=1" config.aos.boot.kernelParams;
+          message = "immutable SELinux stage 0 requires exactly one selinux=1 parameter.";
+        }
+        {
+          assertion =
+            countKernelParameter "security"
+            == 1
+            && builtins.elem "security=selinux" config.aos.boot.kernelParams;
+          message = "immutable SELinux stage 0 requires exactly one security=selinux parameter.";
+        }
+        {
+          assertion =
+            countKernelParameter "enforcing"
+            == 1
+            && builtins.elem "enforcing=1" config.aos.boot.kernelParams;
+          message = "immutable SELinux stage 0 requires exactly one enforcing=1 parameter.";
+        }
+        {
+          assertion =
+            countKernelParameter "aos.selinux.root_handoff"
+            == 1
+            && builtins.elem "aos.selinux.root_handoff=1" config.aos.boot.kernelParams;
+          message = "immutable SELinux stage 0 requires exactly one aos.selinux.root_handoff=1 parameter.";
+        }
+        {
+          assertion =
+            countKernelParameter "rootflags"
+            == 1
+            && builtins.elem "rootflags=nodev" config.aos.boot.kernelParams;
+          message = "immutable SELinux stage 0 requires exactly one rootflags=nodev parameter.";
+        }
+        {
+          assertion = selectedStage0 != null && (selectedStage0.passthru.loadedPolicy or null) == canonicalPolicyPath;
+          message = "immutable SELinux stage 0 must load the canonical production policy.";
+        }
+        {
+          assertion = selectedStage0 != null && (selectedStage0.passthru.expectedPolicy or null) == canonicalReadbackPath;
+          message = "immutable SELinux stage 0 must authenticate the selected kernel's canonical policy readback.";
+        }
+        {
+          assertion = selectedStage0 != null && (selectedStage0.passthru.expectedPolicyKernel or null) == config.system.build.kernel;
+          message = "immutable SELinux stage 0 policy readback must bind the selected deployment kernel.";
+        }
+        {
+          assertion = selectedStage0 != null && (selectedStage0.passthru.immutablePolicy or null) == productionPolicy;
+          message = "immutable SELinux stage 0 must identify the canonical immutable policy derivation.";
+        }
+        {
+          assertion =
+            selectedStage0
+            != null
+            && (
+              (selectedStage0.passthru.admissionUnit or null)
+              == productionAdmissionUnit
+              || (
+                cfg._qualificationAdmissionRelease
+                && config.aos.image.allowTestArtifacts
+                && (selectedStage0.passthru.admissionUnit or null) == ""
+              )
+            );
+          message = "immutable SELinux stage 0 must retain the production admission hold target.";
+        }
+        {
+          assertion = selectedStage0 != null && (selectedStage0.passthru.runtimeRootsProvisioner or null) == runtimeRootsProvisioner;
+          message = "immutable SELinux stage 0 must authenticate the canonical runtime-root provisioner.";
+        }
+        {
+          assertion = config.aos.security.selinux._runtimeRootsProvisioner == runtimeRootsProvisioner && (runtimeRootsProvisioner.passthru.expectedPolicy or null) == canonicalReadbackPath && (runtimeRootsProvisioner.passthru.expectedPolicyReadback or null) == canonicalReadbackPath && (runtimeRootsProvisioner.passthru.expectedPolicyKernel or null) == config.system.build.kernel;
+          message = "all immutable runtime-root preparation routes must use the selected-kernel canonical readback image, never the input policy or a substituted preparation image.";
+        }
+        {
+          assertion = selectedStage0 != null && (selectedStage0.passthru.qualificationPostPinGate or null) == "";
+          message = "immutable SELinux stage 0 forbids the qualification post-pin gate in production composition.";
+        }
+      ];
+
+      aos.security.selinux = {
+        mode = lib.mkDefault "enforcing";
+        policy = lib.mkDefault "aos";
+        autorelabel = lib.mkDefault false;
+      };
+
+      aos.boot.kernelParams = [
+        "selinux=1"
+        "security=selinux"
+        "enforcing=1"
+        "aos.selinux.root_handoff=1"
+        "rootflags=nodev"
+      ];
+      aos.boot.initrd.stage0 = pkgs.aosSelinuxStage0With {
+        aos-selinux-production-policy = productionPolicy;
+        aos-selinux-runtime-roots = runtimeRootsProvisioner;
+        expectedPolicy = canonicalReadbackPath;
+        expectedPolicyKernel = config.system.build.kernel;
+      };
+      aos.kernel._extraConfigFragments = [strictKernelConfig];
+
+      # Keep production admission closed until the signed-boot VM matrix has
+      # qualified the EROFS guard, complete runtime-closure pins, descriptor
+      # custody, and daemon-reexec path. The qualification fixture selects a
+      # normal initrd target through its own stage0 build; it does not weaken
+      # this production target.
+      boot.initrd.systemd.targets."aos-selinux-stage0-hold" = {
+        description = "AOS immutable SELinux stage-0 hold";
+        unitConfig = {
+          DefaultDependencies = "no";
+          Conflicts = "initrd-root-fs.target initrd-switch-root.target";
         };
       };
-    };
 
-    # Ensure SELinux kernel parameters are present in the boot config.
-    # The boot module handles the actual cmdline; we just declare what
-    # we need here and the system compositor merges it.
-    aos.boot.kernelParams = [
-      "selinux=1"
-      "security=selinux"
-      "enforcing=0"
-    ];
-  };
+      system.build.immutableSelinuxPolicy = productionPolicy;
+      environment.etc."selinux/aos".source = "${productionPolicy}/etc/selinux/aos";
+      # The switch-root guard bind-pins its authenticated empty file over a
+      # regular /etc inode. The default environment.etc symlink cannot serve
+      # as that mount target and must never be followed before custody.
+      environment.etc."ld.so.preload" = {
+        text = "";
+        mode = "0644";
+      };
+    })
+  ];
 }

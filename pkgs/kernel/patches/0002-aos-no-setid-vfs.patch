@@ -1,0 +1,242 @@
+diff --git a/fs/namei.c b/fs/namei.c
+--- a/fs/namei.c
++++ b/fs/namei.c
+@@ -24,6 +24,7 @@
+ #include <linux/namei.h>
+ #include <linux/pagemap.h>
+ #include <linux/sched/mm.h>
++#include <linux/sched.h>
+ #include <linux/fsnotify.h>
+ #include <linux/personality.h>
+ #include <linux/security.h>
+@@ -4128,7 +4129,7 @@
+  * vfs_prepare_mode - prepare the mode to be used for a new inode
+  * @idmap:	idmap of the mount the inode was found from
+  * @dir:	parent directory of the new inode
+- * @mode:	mode of the new inode
++ * @mode:	requested mode of the new inode, replaced with the prepared mode
+  * @mask_perms:	allowed permission by the vfs
+  * @type:	type of file to be created
+  *
+@@ -4145,23 +4146,27 @@
+  * filesystem can deal with receiving S_IFDIR from the vfs before we enforce a
+  * non-zero type.
+  *
+- * Returns: mode to be passed to the filesystem
++ * Returns: 0 on success, -EPERM if the one-way set-ID guard rejects the mode
+  */
+-static inline umode_t vfs_prepare_mode(struct mnt_idmap *idmap,
+-				       const struct inode *dir, umode_t mode,
+-				       umode_t mask_perms, umode_t type)
++static inline int vfs_prepare_mode(struct mnt_idmap *idmap,
++				   const struct inode *dir, umode_t *mode,
++				   umode_t mask_perms, umode_t type)
+ {
+-	mode = mode_strip_sgid(idmap, dir, mode);
+-	mode = mode_strip_umask(dir, mode);
++	/* Keep the raw request visible before SGID or umask stripping. */
++	if (task_aos_no_setid(current) && (*mode & (S_ISUID | S_ISGID)))
++		return -EPERM;
++
++	*mode = mode_strip_sgid(idmap, dir, *mode);
++	*mode = mode_strip_umask(dir, *mode);
+ 
+ 	/*
+ 	 * Apply the vfs mandated allowed permission mask and set the type of
+ 	 * file to be created before we call into the filesystem.
+ 	 */
+-	mode &= (mask_perms & ~S_IFMT);
+-	mode |= (type & S_IFMT);
++	*mode &= (mask_perms & ~S_IFMT);
++	*mode |= (type & S_IFMT);
+ 
+-	return mode;
++	return 0;
+ }
+ 
+ /**
+@@ -4192,7 +4197,9 @@
+ 	if (!dir->i_op->create)
+ 		return -EACCES;	/* shouldn't it be ENOSYS? */
+ 
+-	mode = vfs_prepare_mode(idmap, dir, mode, S_IALLUGO, S_IFREG);
++	error = vfs_prepare_mode(idmap, dir, &mode, S_IALLUGO, S_IFREG);
++	if (error)
++		return error;
+ 	error = security_inode_create(dir, dentry, mode);
+ 	if (error)
+ 		return error;
+@@ -4215,6 +4222,9 @@
+ 	if (error)
+ 		return error;
+ 
++	if (task_aos_no_setid(current) && (mode & (S_ISUID | S_ISGID)))
++		return -EPERM;
++
+ 	mode &= S_IALLUGO;
+ 	mode |= S_IFREG;
+ 	error = security_inode_create(dir, dentry, mode);
+@@ -4459,7 +4469,9 @@
+ 	if (open_flag & O_CREAT) {
+ 		if (open_flag & O_EXCL)
+ 			open_flag &= ~O_TRUNC;
+-		mode = vfs_prepare_mode(idmap, dir->d_inode, mode, mode, mode);
++		error = vfs_prepare_mode(idmap, dir->d_inode, &mode, mode, mode);
++		if (error)
++			goto out_dput;
+ 		if (likely(got_write))
+ 			create_error = may_o_create(idmap, &nd->path,
+ 						    dentry, mode);
+@@ -4746,12 +4758,14 @@
+ 		return error;
+ 	if (!dir->i_op->tmpfile)
+ 		return -EOPNOTSUPP;
++	error = vfs_prepare_mode(idmap, dir, &mode, mode, mode);
++	if (error)
++		return error;
+ 	child = d_alloc(parentpath->dentry, &slash_name);
+ 	if (unlikely(!child))
+ 		return -ENOMEM;
+ 	file->__f_path.mnt = parentpath->mnt;
+ 	file->__f_path.dentry = child;
+-	mode = vfs_prepare_mode(idmap, dir, mode, mode, mode);
+ 	error = dir->i_op->tmpfile(idmap, dir, file, mode);
+ 	dput(child);
+ 	if (file->f_mode & FMODE_OPENED)
+@@ -5042,8 +5056,11 @@
+ 	idmap = mnt_idmap(path->mnt);
+ 
+ 	if (dir_inode->i_op->atomic_open) {
++		create_error = vfs_prepare_mode(idmap, dir_inode, &mode,
++						 S_IALLUGO, S_IFREG);
++		if (create_error)
++			return ERR_PTR(create_error);
+ 		path->dentry = dir;
+-		mode = vfs_prepare_mode(idmap, dir_inode, mode, S_IALLUGO, S_IFREG);
+ 
+ 		create_error = may_o_create(idmap, path, dentry, mode);
+ 		if (create_error)
+@@ -5119,7 +5136,9 @@
+ 	if (!dir->i_op->mknod)
+ 		return -EPERM;
+ 
+-	mode = vfs_prepare_mode(idmap, dir, mode, mode, mode);
++	error = vfs_prepare_mode(idmap, dir, &mode, mode, mode);
++	if (error)
++		return error;
+ 	error = devcgroup_inode_mknod(mode, dev);
+ 	if (error)
+ 		return error;
+@@ -5260,7 +5279,13 @@
+ 	if (!dir->i_op->mkdir)
+ 		goto err;
+ 
+-	mode = vfs_prepare_mode(idmap, dir, mode, S_IRWXUGO | S_ISVTX, 0);
++	/* inode_init_owner and ZFS inherit SGID from the parent directory. */
++	if (task_aos_no_setid(current) && (dir->i_mode & S_ISGID))
++		goto err;
++
++	error = vfs_prepare_mode(idmap, dir, &mode, S_IRWXUGO | S_ISVTX, 0);
++	if (error)
++		goto err;
+ 	error = security_inode_mkdir(dir, dentry, mode);
+ 	if (error)
+ 		goto err;
+diff --git a/fs/open.c b/fs/open.c
+--- a/fs/open.c
++++ b/fs/open.c
+@@ -17,6 +17,7 @@
+ #include <linux/capability.h>
+ #include <linux/securebits.h>
+ #include <linux/security.h>
++#include <linux/sched.h>
+ #include <linux/mount.h>
+ #include <linux/fcntl.h>
+ #include <linux/slab.h>
+@@ -1190,6 +1191,10 @@
+ 	if (WILL_CREATE(flags)) {
+ 		if (how->mode & ~S_IALLUGO)
+ 			return -EINVAL;
++		/* openat2's mode is copied before this shared open path runs. */
++		if (task_aos_no_setid(current) &&
++		    (how->mode & (S_ISUID | S_ISGID)))
++			return -EPERM;
+ 		op->mode = how->mode | S_IFREG;
+ 	} else {
+ 		if (how->mode != 0)
+diff --git a/fs/attr.c b/fs/attr.c
+--- a/fs/attr.c
++++ b/fs/attr.c
+@@ -11,6 +11,7 @@
+ #include <linux/mm.h>
+ #include <linux/string.h>
+ #include <linux/sched/signal.h>
++#include <linux/sched.h>
+ #include <linux/capability.h>
+ #include <linux/fsnotify.h>
+ #include <linux/fcntl.h>
+@@ -434,6 +435,10 @@
+ 	unsigned int ia_valid = attr->ia_valid;
+ 
+ 	WARN_ON_ONCE(!inode_is_locked(inode));
++	/* Reject mode-bearing changes before a filesystem can apply them. */
++	if (task_aos_no_setid(current) && (ia_valid & ATTR_MODE) &&
++	    (attr->ia_mode & (S_ISUID | S_ISGID)))
++		return -EPERM;
+ 
+ 	error = may_setattr(idmap, inode, ia_valid);
+ 	if (error)
+diff --git a/kernel/sys.c b/kernel/sys.c
+--- a/kernel/sys.c
++++ b/kernel/sys.c
+@@ -2713,6 +2713,16 @@
+ 		if (arg2 || arg3 || arg4 || arg5)
+ 			return -EINVAL;
+ 		return task_no_new_privs(current) ? 1 : 0;
++	case PR_SET_AOS_NO_SETID:
++		if (arg2 != 1 || arg3 || arg4 || arg5)
++			return -EINVAL;
++
++		task_set_aos_no_setid(current);
++		break;
++	case PR_GET_AOS_NO_SETID:
++		if (arg2 || arg3 || arg4 || arg5)
++			return -EINVAL;
++		return task_aos_no_setid(current) ? 1 : 0;
+ 	case PR_GET_THP_DISABLE:
+ 		error = prctl_get_thp_disable(arg2, arg3, arg4, arg5);
+ 		break;
+diff --git a/kernel/fork.c b/kernel/fork.c
+--- a/kernel/fork.c
++++ b/kernel/fork.c
+@@ -2483,6 +2483,9 @@
+ 	 * before holding sighand lock.
+ 	 */
+ 	copy_seccomp(p);
++	/* Keep the one-way mode guard even if a child changes credentials. */
++	if (task_aos_no_setid(current))
++		task_set_aos_no_setid(p);
+ 
+ 	if (clone_flags & CLONE_NNP)
+ 		task_set_no_new_privs(p);
+diff --git a/include/linux/sched.h b/include/linux/sched.h
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -1863,6 +1863,7 @@
+ #define PFA_SPEC_IB_DISABLE		5	/* Indirect branch speculation restricted */
+ #define PFA_SPEC_IB_FORCE_DISABLE	6	/* Indirect branch speculation permanently restricted */
+ #define PFA_SPEC_SSB_NOEXEC		7	/* Speculative Store Bypass clear on execve() */
++#define PFA_AOS_NO_SETID		8	/* Set-ID creation and mode changes are forbidden. */
+ 
+ #define TASK_PFA_TEST(name, func)					\
+ 	static inline bool task_##func(struct task_struct *p)		\
+@@ -1879,6 +1880,9 @@
+ TASK_PFA_TEST(NO_NEW_PRIVS, no_new_privs)
+ TASK_PFA_SET(NO_NEW_PRIVS, no_new_privs)
+ 
++TASK_PFA_TEST(AOS_NO_SETID, aos_no_setid)
++TASK_PFA_SET(AOS_NO_SETID, aos_no_setid)
++
+ TASK_PFA_TEST(SPREAD_PAGE, spread_page)
+ TASK_PFA_SET(SPREAD_PAGE, spread_page)
+ TASK_PFA_CLEAR(SPREAD_PAGE, spread_page)

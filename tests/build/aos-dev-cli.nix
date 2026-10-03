@@ -9,6 +9,7 @@ pkgs.mkDerivation {
     pkgs.findutils
     pkgs.gawk
     pkgs.grep
+    pkgs.nix
     pkgs.sed
     pkgs.util-linux
   ];
@@ -17,6 +18,8 @@ pkgs.mkDerivation {
       name = "check";
       script = ''
         ${pkgs.bash}/bin/bash "$src/tools/dev/tests/cli.bash" "$src" "$TMPDIR/aos-dev-test"
+        ${pkgs.bash}/bin/bash "$src/tools/dev/tests/targets-eval.bash" "$src" "${pkgs.nix}/bin/nix" "$TMPDIR/targets-eval-test"
+        ${pkgs.bash}/bin/bash "$src/tools/dev/tests/cargo-target-writable.bash" "$src" "$TMPDIR/cargo-target-test"
         mkdir -p "$out"
         echo PASS > "$out/result"
       '';

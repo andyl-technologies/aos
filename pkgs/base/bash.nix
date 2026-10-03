@@ -13,6 +13,14 @@
 }: let
   sourceVersion = "5.3";
   version = "${sourceVersion}p15";
+  src = fetchurl {
+    urls = ["https://mirrors.kernel.org/gnu/bash/bash-${sourceVersion}.tar.gz"];
+    hash = "1fii1xaxbng9x0klxmxkm0xhmycngfz72jsgyrna4sgqcmlxhp0d";
+  };
+  sourceRecipe = builtins.path {
+    path = ./bash.nix;
+    name = "bash.nix";
+  };
 
   bashPatch = number: hash:
     fetchurl {
@@ -40,37 +48,34 @@
 in
   mkDerivation {
     pname = "bash";
-    inherit version;
-
-    src = fetchurl {
-      urls = ["https://mirrors.kernel.org/gnu/bash/bash-${sourceVersion}.tar.gz"];
-      hash = "1fii1xaxbng9x0klxmxkm0xhmycngfz72jsgyrna4sgqcmlxhp0d";
-    };
+    inherit version src;
 
     buildDeps = [m4 flex bison autoconf automake texinfo gnumake];
+    # Recursive consumers race the generated builtins on highly parallel hosts.
+    enableParallelBuilding = false;
     runtimeDeps =
       if stdenv.hostPlatform.isDarwin
       then [ncurses]
       else [];
-    postPatch =
-      ''
-        # GNU Bash's official patches are authored for -p0 from the unpacked
-        # source directory, unlike the repository's usual -p1 patches.
-        ${builtins.concatStringsSep "\n" (map (patch: "patch --batch -p0 < ${patch}") bashPatches)}
+    postPatch = ''
+      # GNU Bash's official patches are authored for -p0 from the unpacked
+      # source directory, unlike the repository's usual -p1 patches.
+      ${builtins.concatStringsSep "\n" (map (patch: "patch --batch -p0 < ${patch}") bashPatches)}
 
-        # Configure is generated with a host /bin/sh shebang. Run it through the
-        # AOS stdenv shell instead of the sandbox host shell.
-        sed -i '1c#!${stdenv.shell}' configure
-      ''
-      + (
-        if stdenv.isCross
+      # Configure is generated with a host /bin/sh shebang. Run it through the
+      # AOS stdenv shell instead of the sandbox host shell.
+      sed -i '1c#!${stdenv.shell}' configure
+
+      ${
+        if stdenv.hostPlatform.isDarwin || stdenv.isCross
         then ''
-          # tparam.c calls write(2) but relies on an implicit declaration, which
-          # current target compilers reject while cross-building Bash.
+          # tparam.c calls write(2) but relies on an implicit declaration. Modern
+          # target compilers reject that while cross-compiling Bash.
           sed -i '/#include <config.h>/a#include <unistd.h>' lib/termcap/tparam.c
         ''
         else ""
-      );
+      }
+    '';
     preConfigure =
       if stdenv.isCross && stdenv.hostPlatform.isDarwin
       then ''
@@ -121,6 +126,12 @@ in
         -e 's|^SHELL = .*|SHELL = bash|' \
         "$out/lib/bash/Makefile.inc"
     '';
+
+    passthru = {
+      appliedPatches = bashPatches;
+      sourceRecipes = [sourceRecipe];
+      evidenceSources = [src sourceRecipe] ++ bashPatches;
+    };
 
     meta = {
       description = "GNU Bourne-Again SHell";

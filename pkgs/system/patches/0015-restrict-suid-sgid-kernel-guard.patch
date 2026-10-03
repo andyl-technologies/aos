@@ -1,0 +1,91 @@
+diff --git a/src/core/exec-invoke.c b/src/core/exec-invoke.c
+--- a/src/core/exec-invoke.c
++++ b/src/core/exec-invoke.c
+@@ -100,6 +100,18 @@
+ #define PROJ_ID_MAX UINT32_C(4294967294)
+ #define PROJ_ID_CLAMP_INTO_QUOTA_RANGE(id) ((uint32_t) ((id) % (PROJ_ID_MAX - PROJ_ID_MIN + 1)) + PROJ_ID_MIN)
+ 
++/* Keep these AOS prctl values available while the matching kernel headers are built. */
++#ifndef PR_SET_AOS_NO_SETID
++#define PR_SET_AOS_NO_SETID 82
++#endif
++#ifndef PR_GET_AOS_NO_SETID
++#define PR_GET_AOS_NO_SETID 83
++#endif
++
++#if PR_SET_AOS_NO_SETID != 82 || PR_GET_AOS_NO_SETID != 83
++#error "AOS no-set-ID prctl values do not match the pinned kernel ABI"
++#endif
++
+ static int flag_fds(
+                 const int fds[],
+                 size_t n_socket_fds,
+@@ -1571,6 +1583,27 @@
+         return context_has_seccomp(c);
+ }
+ 
++static int apply_aos_no_setid(const ExecContext *c) {
++        int enabled;
++
++        assert(c);
++
++        if (!c->restrict_suid_sgid)
++                return 0;
++
++        /* This is inherited through exec, so the indirect openat2 mode is checked by the kernel. */
++        if (prctl(PR_SET_AOS_NO_SETID, 1UL, 0UL, 0UL, 0UL) < 0)
++                return -errno;
++
++        enabled = prctl(PR_GET_AOS_NO_SETID, 0UL, 0UL, 0UL, 0UL);
++        if (enabled < 0)
++                return -errno;
++        if (enabled != 1)
++                return -EOPNOTSUPP;
++
++        return 0;
++}
++
+ #if HAVE_SECCOMP
+ 
+ static bool seccomp_allows_drop_privileges(const ExecContext *c) {
+@@ -6484,6 +6517,12 @@
+                                 return log_error_errno(errno, "Failed to disable new privileges: %m");
+                         }
+ 
++                r = apply_aos_no_setid(context);
++                if (r < 0) {
++                        *exit_status = EXIT_SECCOMP;
++                        return log_error_errno(r, "Failed to enable AOS no-set-ID guard for RestrictSUIDSGID=: %m");
++                }
++
+ #if HAVE_SECCOMP
+                 r = apply_address_families(context, params);
+                 if (r < 0) {
+diff --git a/src/shared/seccomp-util.c b/src/shared/seccomp-util.c
+--- a/src/shared/seccomp-util.c
++++ b/src/shared/seccomp-util.c
+@@ -2380,24 +2380,6 @@
+         else
+                 any = true;
+ 
+-#if defined(__SNR_openat2)
+-        /* The new openat2() system call can't be filtered sensibly, since it moves the flags parameter into
+-         * an indirect structure. Let's block it entirely for now. That should be a reasonably OK thing to do
+-         * for now, since openat2() is very new and code generally needs fallback logic anyway to be
+-         * compatible with kernels that are not absolutely recent. We would normally return EPERM for a
+-         * policy check, but this isn't strictly a policy check. Instead, we return ENOSYS to force programs
+-         * to call open() or openat() instead. We can properly enforce policy for those functions. */
+-        r = sym_seccomp_rule_add_exact(
+-                        seccomp,
+-                        SCMP_ACT_ERRNO(ENOSYS),
+-                        SCMP_SYS(openat2),
+-                        0);
+-        if (r < 0)
+-                log_debug_errno(r, "Failed to add filter for openat2: %m");
+-        else
+-                any = true;
+-#endif
+-
+         r = sym_seccomp_rule_add_exact(
+                         seccomp,
+                         SCMP_ACT_ERRNO(EPERM),

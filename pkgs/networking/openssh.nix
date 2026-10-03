@@ -3,6 +3,7 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  patch,
   linux-pam,
   libxcrypt,
   openpam,
@@ -24,7 +25,13 @@ in
       hash = "sha256-1E0oqDnqna+WnMaRUP3lmRCys5Nh2tgaO9bL0ZIY2xE=";
     };
 
-    buildDeps = [gnumake];
+    buildDeps =
+      [gnumake]
+      ++ (
+        if stdenv.hostPlatform.isLinux
+        then [patch]
+        else []
+      );
     runtimeDeps =
       [
         (
@@ -50,6 +57,26 @@ in
         script = ''
           tar xf $src
           cd openssh-${version}
+          ${
+            if stdenv.hostPlatform.isLinux
+            then ''
+              # Fixed, default-off original-ticket monitor/relay extension.
+              # Only the existing Guest owner can join a held consume cut.
+              ${patch}/bin/patch -p1 < ${./openssh-patches/0001-fixed-attach-monitor-v2.patch}
+              ${patch}/bin/patch -p1 < ${./openssh-patches/0002-fixed-confined-relay-v3.patch}
+              ${patch}/bin/patch -p1 < ${./openssh-patches/0003-original-terminal-status-v4.patch}
+              ${patch}/bin/patch -p1 < ${./openssh-patches/0004-original-held-controls-v5.patch}
+              ${patch}/bin/patch --fuzz=0 -p1 < ${./openssh-patches/0005-shared-session-client-link.patch}
+              cp ${./openssh-patches/aos-attach-monitor.c} aos-attach-monitor.c
+              cp ${./openssh-patches/aos-attach-monitor.h} aos-attach-monitor.h
+              cp ${./openssh-patches/aos-attach-confinement.c} aos-attach-confinement.c
+              cp ${./openssh-patches/aos-attach-confinement.h} aos-attach-confinement.h
+              cp ${./openssh-patches/aos-attach-relay.c} aos-attach-relay.c
+              cp ${./openssh-patches/aos-attach-relay.h} aos-attach-relay.h
+              cp ${./openssh-patches/aos-attach-client.c} aos-attach-client.c
+            ''
+            else ""
+          }
         '';
       }
       {

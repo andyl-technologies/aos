@@ -24,20 +24,23 @@
   # libmount/src/hook_mount.c:547-548). Required by the apm-side
   # stage-2 /etc swap (spec v12 §7.1 Phase B).
   version = "2.42.3";
+  src = fetchurl {
+    urls = [
+      "https://cdn.kernel.org/pub/linux/utils/util-linux/v2.42/util-linux-${version}.tar.xz"
+    ];
+    hash = "sha256-Zqx8DnJSeOsrA54xBPLJERk0HZQbQbrHooXGlflAvVc=";
+  };
+  sourceRecipe = builtins.path {
+    path = ./util-linux.nix;
+    name = "util-linux.nix";
+  };
 in
   mkDerivation {
     pname = "util-linux";
-    inherit version;
+    inherit version src;
     # Mounting filesystems does not require the optional Python bindings.
     # Keep those bindings available without retaining Python in boot images.
     outputs = ["out" "python"];
-
-    src = fetchurl {
-      urls = [
-        "https://cdn.kernel.org/pub/linux/utils/util-linux/v2.42/util-linux-${version}.tar.xz"
-      ];
-      hash = "sha256-Zqx8DnJSeOsrA54xBPLJERk0HZQbQbrHooXGlflAvVc=";
-    };
 
     buildDeps = [
       gnumake
@@ -168,6 +171,12 @@ in
           }
         '';
       };
+    };
+
+    # This recipe carries the hook_idmap source correction applied at unpack.
+    passthru = {
+      sourceRecipes = [sourceRecipe];
+      evidenceSources = [src sourceRecipe];
     };
 
     meta = {

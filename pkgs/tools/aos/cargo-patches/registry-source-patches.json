@@ -1,0 +1,72 @@
+[
+  {
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "name": "tokio",
+    "version": "1.52.3",
+    "archiveSha256": "8fc7f01b389ac15039e4dc9531aa973a135d7a4135281b12d7c1bc79fd57fffe",
+    "patch": "pkgs/tools/aos/cargo-patches/tokio-1.52.3-retained-unix-listener.patch",
+    "patchSha256": "84e62b2dd20e201add5a7131c9b8c151126aee9ca258ea986820628aaeafabe9",
+    "files": [
+      {
+        "path": "src/io/poll_evented.rs",
+        "beforeSha256": "334619a06d840de8d5d7037bee6d6f48accf5e8e1252460841637a512fa233f8",
+        "afterSha256": "6ca87da6e9825be00e7f160fe20d192b8f6b42b1ec1b84574a6377a0721c1cce"
+      },
+      {
+        "path": "src/net/mod.rs",
+        "beforeSha256": "94c29a12212dfdbedc9dc8067156670f4590e2e4184a47fdfe8aa6f2b22b8765",
+        "afterSha256": "7660f367171a4cbea20f2b56435f6dff6405a3ae1e5edee6d7e6e4fd46e99a5d"
+      },
+      {
+        "path": "src/net/unix/listener.rs",
+        "beforeSha256": "6fc204b8b70f667af73d014586bf09329222de03d345c36bcae21d38362eacfb",
+        "afterSha256": "3e78d78ebf1a154535e935c23367f6c2bfdef516690270d0100d4f5731296fc2"
+      }
+    ]
+  },
+  {
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "name": "tokio-rustls",
+    "version": "0.26.4",
+    "archiveSha256": "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61",
+    "patch": "pkgs/tools/aos/cargo-patches/tokio-rustls-0.26.4-retained-accept.patch",
+    "patchSha256": "e2ef9ecdfdc073d1a36491e33ed7811f892d5142b60c9bc12201516e65896c18",
+    "files": [
+      {
+        "path": "src/common/handshake.rs",
+        "beforeSha256": "ddda50c649b261afc37f740a1d85372ca731bbf27e26c26ad0d2bf71434a6415",
+        "afterSha256": "b771e5180f66e770b4c79722ec5d864ecce113b70e5774087aab0939d3c9204a"
+      },
+      {
+        "path": "src/server.rs",
+        "beforeSha256": "8aae1fb57ff7563d10b7b3416da5d4fc7a9edfe3d2f4406bd1faecf240ee3e5c",
+        "afterSha256": "21ca8c213d8898a008bee5fa504b0005b3988ddf1372073c9656f94f7d18f87a"
+      }
+    ]
+  },
+  {
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "name": "zbus",
+    "version": "5.15.0",
+    "archiveSha256": "c3bcbf15c8708d7fc1be0c993622e0a5cbd5e8b52bfa40afa4c3e0cd8d724ac1",
+    "patch": "pkgs/tools/aos/cargo-patches/zbus-5.15.0-zero-incoming-fds.patch",
+    "patchSha256": "60cdba93bb59267cff3d30eeec5ebe19da980388ed3267333462e4e768ed6c6c",
+    "files": [
+      {
+        "path": "src/connection/builder.rs",
+        "beforeSha256": "57b4875499c6543d528bcc6badc3dc40736fcdff28fd07d7ec3da106ba46a0b0",
+        "afterSha256": "688d6ca92a1398e234bcfc38d742befe307990b19a2c28af18b83d9cd4aae034"
+      },
+      {
+        "path": "src/connection/socket/mod.rs",
+        "beforeSha256": "68894b3e46d5635eababd236e412247964717d662628801bf1f1297bdd512388",
+        "afterSha256": "94141d322099e281ef2a21285bd95b9c1fb0124e1d6987be0329d09d377d0a78"
+      },
+      {
+        "path": "src/connection/socket/unix.rs",
+        "beforeSha256": "2874cd10639951c02322d0ce544039332146ad945c707cebeb1e2ff7a59dfdb7",
+        "afterSha256": "a3600faa4ad1d54ec2ef0de8a14b67b4b25c1132aa905f6983f4220641455d58"
+      }
+    ]
+  }
+]

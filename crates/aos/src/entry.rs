@@ -252,9 +252,9 @@ fn printer(
 /// Dispatch the parsed CLI to the matching command implementation.
 ///
 /// Commands that need no Nix installation (`completions`, `serve`, `token`,
-/// `package`, `cache`) are handled before the [`NixRunner`] is constructed, so
-/// they work even when `nix` is absent or the working directory is not a repo
-/// root.
+/// `package`, `cache`, `sandbox`) are handled before the [`NixRunner`] is
+/// constructed, so they work even when `nix` is absent or the working
+/// directory is not a repository root.
 async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
     validate_container_runtime(&cli.command)?;
     // Shell completions can be generated without a Nix installation or
@@ -324,6 +324,12 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
     // constructs Nix lazily only for definition list/show/build operations.
     if let Commands::Container { command } = &cli.command {
         return commands::container::run(command, printer).await;
+    }
+
+    // Sandbox requests use local completion or controller discovery paths and
+    // do not require a repository checkout or a local Nix installation.
+    if let Commands::Sandbox(args) = &cli.command {
+        return commands::sandbox::run(cli, args).await;
     }
 
     // Local VM runs use downloaded artifacts and host-side QEMU tools.
@@ -436,6 +442,7 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
         Commands::Hub { .. } => unreachable!(),
         Commands::Image { .. } => unreachable!(),
         Commands::Container { .. } => unreachable!(),
+        Commands::Sandbox(_) => unreachable!(),
         Commands::Vm { .. } => unreachable!(),
         Commands::LanguageServer { .. } => unreachable!(),
     }
@@ -479,6 +486,9 @@ fn validate_runtime(command: &Commands, runtime: Option<&OsStr>) -> Result<()> {
 /// Maps an `anyhow::Error` to an appropriate exit code while printing a
 /// user-facing message.
 fn handle_error(printer: &Printer, err: anyhow::Error) -> i32 {
+    if let Some(status) = err.downcast_ref::<commands::sandbox::SandboxAttachExitCode>() {
+        return status.0;
+    }
     // Walk the error chain looking for a typed AosError so we can pick the
     // right exit code.
     if let Some(aos_err) = err.downcast_ref::<AosError>() {
@@ -558,6 +568,22 @@ mod tests {
                 "portable command should remain available: {args:?}"
             );
         }
+    }
+
+    #[test]
+    fn sandbox_commands_are_part_of_the_public_cli() {
+        let get = parse(&[
+            "aos",
+            "sandbox",
+            "get",
+            "--resource",
+            "sandbox",
+            "01010101010101010101010101010101",
+        ]);
+        let capabilities = parse(&["aos", "sandbox", "capabilities", "public-api"]);
+
+        assert!(matches!(get.command, Commands::Sandbox(_)));
+        assert!(matches!(capabilities.command, Commands::Sandbox(_)));
     }
 
     #[test]

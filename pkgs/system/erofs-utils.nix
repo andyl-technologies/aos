@@ -48,6 +48,7 @@ in
       ];
       hash = "sha256-fRNaolUDJqWs8g9TxRiupaiQABXOUHAAROQPgYwx3YA=";
     };
+    patches = [./erofs-patches/0001-dump-exact-xattr.patch];
 
     buildDeps = [
       gnumake

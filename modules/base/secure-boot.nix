@@ -25,6 +25,11 @@
   ...
 }: let
   cfg = config.aos.boot.secureBoot;
+  protectedVar =
+    config.aos.security.selinux.protectedSandboxNetworkRoots.enable
+    || config.aos.sandbox.controllerService.method46TpmFloor.required
+    || config.aos.sandbox.storageBroker.method46TpmFloor.required;
+  varRootContext = config.aos.security.selinux.protectedSandboxNetworkRoots._varRootContext;
   externalFinalization = cfg.externalFinalization.enable;
   frozenArtifacts = config.aos.config.frozenArtifacts;
   configArtifacts = config.aos.config.artifacts;
@@ -76,7 +81,7 @@
     then "/nonexistent/aos-secure-boot-auth"
     else cfg._effectiveEnrollAuthDir;
 
-  # Lockdown deployment kernel (phase 2). The reproducible base kernel
+  # Lockdown deployment kernel configuration (phase 2). The reproducible base kernel
   # deliberately omits lockdown + module signing (they require a
   # non-public key — pkgs/kernel/config/security.config). Here we build
   # a deployment variant via the kernel's extraConfig hook: lockdown LSM
@@ -85,9 +90,9 @@
   # kernel hot-reload path keeps working under lockdown. The store-path
   # in CONFIG_MODULE_SIG_KEY carries string context, so the key
   # derivation becomes a build input automatically.
-  # pkgs.linuxWith (not pkgs.linux.override) — extraConfig is a linux.nix
-  # function arg the inherited override can't reach (see pkgs/default.nix).
-  lockdownKernel = pkgs.linuxWith ''
+  # modules/base/kernel.nix combines this with any other deployment fragment
+  # and calls pkgs.linuxWith exactly once.
+  lockdownKernelConfig = ''
     CONFIG_SECURITY_LOCKDOWN_LSM=y
     CONFIG_SECURITY_LOCKDOWN_LSM_EARLY=y
     CONFIG_LOCK_DOWN_IN_EFI_SECURE_BOOT=y
@@ -409,7 +414,10 @@ in {
           else cfg.enrollAuthDir;
         lockdown._effectiveModuleSigningCert =
           if externalFinalization
-          then "${configArtifacts.module-signing-certificate-public}/certificate.pem"
+          then
+            if frozenArtifacts ? "module-signing-certificate-public"
+            then "${configArtifacts.module-signing-certificate-public}/certificate.pem"
+            else "${moduleCertificateSource}/certificate.pem"
           else cfg.lockdown.moduleSigningCert;
       };
       assertions = [
@@ -477,10 +485,9 @@ in {
         }
       ];
 
-      # Swap in the lockdown kernel. The base sets system.build.kernel
-      # with normal priority, so mkForce is required to replace it. The
-      # initrd and UKI are built from this kernel's (signed) modules.
-      system.build.kernel = lib.mkForce lockdownKernel;
+      # The kernel module composes every deployment fragment into one build,
+      # so immutable SELinux cannot be lost behind a competing mkForce.
+      aos.kernel._extraConfigFragments = [lockdownKernelConfig];
 
       # Belt-and-suspenders cmdline: lockdown auto-engages under SB but
       # this pins the mode; module.sig_enforce reinforces MODULE_SIG_FORCE.
@@ -629,11 +636,36 @@ in {
             [ -e "$1" ]
           }
 
-          # The inner filesystem of a sealed volume. Tool defaults are the
-          # intended defaults; both detect md stripe geometry on an array.
+          ${lib.optionalString protectedVar ''
+            require_var_label() {
+              if [ "$("$blkid" -p -s TYPE -o value "$1")" != ext4 ]; then
+                klog "protected /var must carry ext4"
+                return 1
+              fi
+              var_label=$(${pkgs.e2fsprogs}/sbin/debugfs \
+                -R 'ea_get / security.selinux' "$1" 2>/dev/null) || return 1
+              if [ "$var_label" != 'security.selinux (23) = "${varRootContext}"' ]; then
+                klog "protected /var root lacks its durable exact SELinux label"
+                return 1
+              fi
+            }
+          ''}
+
+          # The inner filesystem of a sealed volume. Tool defaults detect md
+          # stripe geometry; only protected /var receives a durable root label.
           make_filesystem() {
             case "$1" in
-              ext4) "$mkfs" -q -L "$2" "$3" ;;
+              ext4)
+                ${lib.optionalString protectedVar ''
+                  if [ "$4" = var ]; then
+                    "$mkfs" -q -L "$2" -E root_selinux=${varRootContext} "$3"
+                    sync "$3"
+                    require_var_label "$3"
+                    return 0
+                  fi
+                ''}
+                "$mkfs" -q -L "$2" "$3"
+                ;;
               xfs) "$mkfs_xfs" -q -L "$2" "$3" ;;
               *) klog "unsupported filesystem $1 for $3"; return 1 ;;
             esac
@@ -690,7 +722,7 @@ in {
             "$cs" luksFormat --type luks2 --batch-mode \
               --label "$label" --subsystem aos-volume "$dev" "$keyf"
             "$cs" open "$dev" "$name" --key-file "$keyf"
-            make_filesystem "$filesystem" "$label" "/dev/mapper/$name"
+            make_filesystem "$filesystem" "$label" "/dev/mapper/$name" "$name"
             "$enroll" --unlock-key-file="$keyf" \
               --tpm2-device=auto \
               --tpm2-public-key="$pub" \
@@ -729,6 +761,12 @@ in {
             dev=$2
             label=$3
             filesystem=$4
+            ${lib.optionalString protectedVar ''
+              if [ "$name" = var ] && { [ "$filesystem" != ext4 ] || [ "$label" != var ]; }; then
+                klog "protected /var requires its exact ext4 volume identity"
+                exit 1
+              fi
+            ''}
             if ! wait_for "$dev"; then
               klog "$dev for $name absent after wait; skipping"
               return 0
@@ -736,10 +774,29 @@ in {
             klog "$name device ready: $dev isLuks=$("$cs" isLuks "$dev" && echo Y || echo N)"
             if "$cs" isLuks "$dev"; then
               unlock_volume "$name" "$dev"
+              ${lib.optionalString protectedVar ''
+                if [ "$name" = var ]; then
+                  require_var_label /dev/mapper/var
+                fi
+              ''}
               return 0
             fi
 
-            fs_type=$("$blkid" -p -s TYPE -o value "$dev" 2>/dev/null || true)
+            fs_status=0
+            fs_type=$("$blkid" -p -s TYPE -o value "$dev" 2>/dev/null) || fs_status=$?
+            ${lib.optionalString protectedVar ''
+              if [ "$name" = var ]; then
+                case "$fs_status" in
+                  0)
+                    [ -n "$fs_type" ] || { klog "protected /var signature probe returned no type"; exit 1; }
+                    ;;
+                  2)
+                    [ -z "$fs_type" ] || { klog "protected /var signature probe is inconsistent"; exit 1; }
+                    ;;
+                  *) klog "cannot establish the protected /var filesystem signature"; exit 1 ;;
+                esac
+              fi
+            ''}
             if [ "$sb" != "1" ]; then
               if [ "$name" != var ]; then
                 klog "SB not enforcing yet — $name stays raw until the first enforcing boot"
@@ -755,7 +812,7 @@ in {
               case "$fs_type" in
                 "")
                   klog "SB not enforcing yet — formatting plain ext4 /var (sealed once enforcing)"
-                  "$mkfs" -q -L "$label" "$dev"
+                  make_filesystem ext4 "$label" "$dev" "$name"
                   ;;
                 ext4)
                   klog "SB not enforcing yet — preserving existing plain ext4 /var"
@@ -765,6 +822,11 @@ in {
                   exit 1
                   ;;
               esac
+              ${lib.optionalString protectedVar ''
+                # Preserve Setup Mode state only after checking its durable
+                # label; never relabel an existing plaintext filesystem.
+                require_var_label "$dev"
+              ''}
               return 0
             fi
 
@@ -777,6 +839,15 @@ in {
               exit 1
             fi
             if [ "$name" = var ]; then
+              ${lib.optionalString protectedVar ''
+                # Only our exact plaintext Setup Mode filesystem is disposable.
+                # A foreign signature must not be erased by the LUKS transition.
+                case "$fs_type" in
+                  "") ;;
+                  ext4) require_var_label "$dev" ;;
+                  *) klog "refusing to seal protected /var carrying $fs_type"; exit 1 ;;
+                esac
+              ''}
               seal_volume "$name" "$dev" "$label" "$filesystem" "$var_recovery_key"
             else
               seal_volume "$name" "$dev" "$label" "$filesystem" "$volume_recovery_dir/$name.key"
@@ -795,8 +866,8 @@ in {
             # No plan this boot (metadata unavailable after commit). The
             # system-state volume is found by its fixed identities; every
             # other sealed volume announces itself through the aos-volume
-            # LUKS2 subsystem tag written when it was sealed. Nothing is
-            # created on this path.
+            # LUKS2 subsystem tag written when it was sealed. Other volumes
+            # only unlock here; fixed /var retains its Setup Mode transition.
             var_dev=""
             for candidate in /dev/md/var /dev/disk/by-partlabel/var; do
               if [ -e "$candidate" ]; then var_dev="$candidate"; break; fi

@@ -1,0 +1,73 @@
+/(nix|nix\.lower)/store/[a-z0-9]{32}-aos-sandbox-hostd-[^/]+/bin/aos-sandbox-hostd -- system_u:object_r:aos_sandbox_host_exec_t
+/(nix|nix\.lower)/store/[a-z0-9]{32}-systemd-[^/]+/bin/systemd-nspawn -- system_u:object_r:aos_nspawn_exec_t
+/(nix|nix\.lower)/store/@AOS_NETD_BASENAME_REGEX@/bin/aos-netd -- system_u:object_r:aos_sandbox_network_publisher_exec_t
+/(nix|nix\.lower)/store/@AOS_NETD_BASENAME_REGEX@/bin/aos-sandbox-network-namespace-inspector -- system_u:object_r:aos_sandbox_namespace_inspector_exec_t
+/(nix|nix\.lower)/store/@AOS_NETD_BASENAME_REGEX@/bin/aos-sandbox-network-lifecycle-worker -- system_u:object_r:aos_sandbox_network_lifecycle_worker_exec_t
+/(nix|nix\.lower)/store/@AOS_FUSE_WORKER_BASENAME_REGEX@/bin/aos-filesystem-fuse-worker -- system_u:object_r:aos_filesystem_fuse_worker_exec_t
+/(nix|nix\.lower)/store/@AOS_ZFS_WORKER_BASENAME_REGEX@/bin/aos-sandbox-guest-root-publisher -- system_u:object_r:aos_sandbox_guest_root_publisher_exec_t
+/(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandboxd -- system_u:object_r:aos_sandbox_controller_exec_t
+/(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-git-gateway -- system_u:object_r:aos_sandbox_git_gateway_exec_t
+/(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-nix-floor-provision -- system_u:object_r:aos_nix_offline_prepare_exec_t
+/(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-policy-authorityd -- system_u:object_r:aos_sandbox_policy_authority_exec_t
+/(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-source-signerd -- system_u:object_r:aos_sandbox_source_signer_exec_t
+/(nix|nix\.lower)/store/@AOS_CONTROLLER_BASENAME_REGEX@/bin/aos-sandbox-cache-signerd -- system_u:object_r:aos_sandbox_cache_signer_exec_t
+/(nix|nix\.lower)/store/@AOS_VIEW_TOOLS_BASENAME_REGEX@/libexec/(bash|stat|mkdir|chown|findmnt|mount|umount) -- system_u:object_r:aos_sandbox_view_preparer_tool_exec_t
+/(nix|nix\.lower)/store/@AOS_STORAGE_BASENAME_REGEX@/bin/aos-storaged -- system_u:object_r:aos_sandbox_storage_exec_t
+/(nix|nix\.lower)/store/@AOS_TPM_HELPER_BASENAME_REGEX@/libexec/aos-method46-tpm-helper -- system_u:object_r:aos_method46_helper_exec_t
+/dev/tpmrm0 -c system_u:object_r:aos_method46_tpm_device_t
+/(nix|nix\.lower)/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-aos-nix-offline-tpm-helper-5/libexec/aos-nix-offline-tpm-helper -- system_u:object_r:aos_nix_offline_tpm_helper_exec_t
+# These public immutable inputs are not signer secrets or runtime authority.
+/(nix|nix\.lower)/store/@AOS_SYSTEMD_BASENAME_REGEX@/share/aos/backend-policy-artifact-v2 -- system_u:object_r:etc_t
+/(nix|nix\.lower)/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-aos-normal-root-startup-profile-1/(profile\.json|effective-policy\.tsv|source-policy\.33) -- system_u:object_r:aos_sandbox_policy_authority_profile_t
+/(nix|nix\.lower)/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-aos-nix-offline-startup-profile-3/(profile\.json|effective-policy\.tsv|source-policy\.33) -- system_u:object_r:aos_nix_offline_prepare_profile_t
+/(nix|nix\.lower)/store/[a-z0-9]{32}-aos-selinux-runtime-roots-[^/]+/bin/aos-selinux-runtime-roots -- system_u:object_r:aos_sandbox_runtime_roots_exec_t
+/usr/lib/systemd/aos-selinux-root-handoff -- system_u:object_r:init_exec_t
+/usr/lib/systemd/aos-selinux-runtime-roots-handoff -- system_u:object_r:aos_sandbox_runtime_roots_handoff_exec_t
+/usr/lib/systemd/aos-empty-ld-so-preload -- system_u:object_r:lib_t
+# Refpolicy has no safe labels for these immutable stage-1 symlinks.
+/init -l system_u:object_r:init_exec_t
+/usr -l system_u:object_r:usr_t
+/aos-registration -- system_u:object_r:etc_t
+/aos-toplevel -l system_u:object_r:etc_t
+/root -d system_u:object_r:user_home_dir_t
+/root(/.*)? system_u:object_r:user_home_t
+/run/current-system -l system_u:object_r:var_run_t
+/run/etc -d system_u:object_r:var_run_t
+/var/lib/aos/sandbox -d system_u:object_r:aos_sandbox_view_parent_t
+/var/lib/aos/sandbox-nix-floor-provision -d system_u:object_r:aos_nix_offline_prepare_state_t
+/var/lib/aos/sandbox-nix-floor-provision/(installation\.lock|candidate-private-v3|candidate-public-v3|approved-job-v3|approved-effect-v4|approved-recovery-v4|provisioning-v4\.journal(\.lock)?) -- system_u:object_r:aos_nix_offline_prepare_state_t
+/run/credentials/aos-sandbox-nix-floor-provision\.service -d system_u:object_r:aos_nix_offline_prepare_credential_t
+/run/credentials/aos-sandbox-nix-floor-provision\.service/(node-id|nix-floor-provision-approval-public-key-v3|nix-fixed-domain-pins-v2|nix-floor-owner-hierarchy-auth-v4) -- system_u:object_r:aos_nix_offline_prepare_credential_t
+/var/lib/aos/sandbox/source-evidence -d system_u:object_r:aos_sandbox_policy_authority_state_t
+/var/lib/aos/sandbox/source-evidence/git-authority-v1\.journal(\.lock|\.compact\.tmp)? -- system_u:object_r:aos_sandbox_policy_authority_state_t
+/var/lib/aos/sandbox/source-domains(/.*)? system_u:object_r:aos_sandbox_source_journal_t
+/var/lib/aos/sandbox/cache-residency-journals(/.*)? system_u:object_r:aos_sandbox_cache_journal_t
+/var/lib/aos/sandbox/cache-residency-objects(/.*)? system_u:object_r:aos_sandbox_cache_object_t
+/run/aos/sandbox-source-signer-journal -d system_u:object_r:aos_sandbox_source_view_mount_t
+/run/aos/sandbox-policy-cache-journals -d system_u:object_r:aos_sandbox_cache_view_mount_t
+/run/aos/sandbox-cache-signer-(journals|objects) -d system_u:object_r:aos_sandbox_cache_view_mount_t
+/run/aos/sandbox-source-signerd\.sock -s system_u:object_r:aos_sandbox_source_signer_socket_t
+/run/aos/sandbox-cache-signerd\.sock -s system_u:object_r:aos_sandbox_cache_signer_socket_t
+/run/credentials/aos-sandbox-source-signerd\.service(/.*)? system_u:object_r:aos_sandbox_source_signer_credential_t
+/run/credentials/aos-sandbox-cache-signerd\.service(/.*)? system_u:object_r:aos_sandbox_cache_signer_credential_t
+/run/credentials/aos-sandbox-policy-authorityd\.service(/.*)? system_u:object_r:aos_sandbox_policy_authority_credential_t
+/run/credentials/aos-sandboxd\.service(/.*)? system_u:object_r:aos_sandbox_controller_credential_t
+/var/lib/aos/sandbox-storage-credential-sources -d system_u:object_r:aos_sandbox_storage_credential_source_t
+/var/lib/aos/sandbox-storage-credential-sources/(storage-zfs-hold-key-v1|operator-recovery-controller-public-key-v1|operator-recovery-storage-owner-key-v1) -- system_u:object_r:aos_sandbox_storage_credential_source_t
+/run/credentials/aos-storaged\.service -d system_u:object_r:aos_sandbox_storage_credential_t
+/run/credentials/aos-storaged\.service/(storage-zfs-hold-key-v1|operator-recovery-controller-public-key-v1|operator-recovery-storage-owner-key-v1) -- system_u:object_r:aos_sandbox_storage_credential_t
+/run/credentials/aos-sandbox-git-gateway\.service(/.*)? system_u:object_r:aos_sandbox_git_gateway_credential_t
+/sysroot -d system_u:object_r:root_t
+
+/var/lib/aos/sandbox-network -d system_u:object_r:aos_sandbox_network_root_t
+/var/lib/aos/sandbox-network/broker-state(/.*)? system_u:object_r:aos_sandbox_network_state_t
+/var/lib/aos/sandbox-network/namespace-inspector -d system_u:object_r:aos_sandbox_network_store_t
+/var/lib/aos/sandbox-network/namespace-inspector/expected-staging -d system_u:object_r:aos_sandbox_network_expected_staging_t
+/var/lib/aos/sandbox-network/namespace-inspector/expected-staging/\.aosni-expected-[0-9a-f]{64} -- system_u:object_r:aos_sandbox_network_expected_record_t
+/var/lib/aos/sandbox-network/namespace-inspector/expected-final -d system_u:object_r:aos_sandbox_network_expected_final_t
+/var/lib/aos/sandbox-network/namespace-inspector/expected-final/aosni-expected-[0-9a-f]{64} -- system_u:object_r:aos_sandbox_network_expected_record_t
+
+/var/lib/aos/sandbox-network/namespace-inspector/spent-staging -d system_u:object_r:aos_sandbox_network_spent_staging_t
+/var/lib/aos/sandbox-network/namespace-inspector/spent-staging/\.aosni-spent-[0-9a-f]{64} -- system_u:object_r:aos_sandbox_network_spent_record_t
+/var/lib/aos/sandbox-network/namespace-inspector/spent-final -d system_u:object_r:aos_sandbox_network_spent_final_t
+/var/lib/aos/sandbox-network/namespace-inspector/spent-final/aosni-spent-[0-9a-f]{64} -- system_u:object_r:aos_sandbox_network_spent_record_t

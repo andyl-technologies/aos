@@ -1,0 +1,23 @@
+[package]
+name = "aos-sandbox-service-journal-probe"
+version = "0.0.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[dependencies]
+aos-sandbox = { workspace = true, features = ["cache-physical-join-vm-fixture", "project-negative-recovery-vm-fixture"] }
+aos-sandbox-core.workspace = true
+aos-sandbox-broker-session-security.workspace = true
+aos-sandbox-linux.workspace = true
+aos-sandbox-source-provider.workspace = true
+aos-sandbox-source-provider-ledger.workspace = true
+aos-sandbox-source-provider-protocol.workspace = true
+aos-sandbox-source-provider-security.workspace = true
+ed25519-dalek.workspace = true
+rustix = { workspace = true, features = ["fs", "net", "process"] }
+serde_json.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true

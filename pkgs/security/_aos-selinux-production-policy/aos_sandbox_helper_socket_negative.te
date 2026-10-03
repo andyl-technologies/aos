@@ -1,0 +1,26 @@
+module aos_sandbox_helper_socket_negative 1.0;
+
+require {
+    type aos_method46_controller_helper_t;
+    type aos_method46_storage_helper_t;
+    type init_t;
+    class unix_stream_socket connect;
+}
+
+# Both axes include an ordinary domain alongside the inherited-only helpers.
+# The unchanged wildcard deny must expand this grant even when default-off.
+attribute aos_sandbox_negative_helper_socket_sources;
+typeattribute init_t aos_sandbox_negative_helper_socket_sources;
+typeattribute aos_method46_controller_helper_t aos_sandbox_negative_helper_socket_sources;
+typeattribute aos_method46_storage_helper_t aos_sandbox_negative_helper_socket_sources;
+
+attribute aos_sandbox_negative_helper_socket_targets;
+typeattribute init_t aos_sandbox_negative_helper_socket_targets;
+typeattribute aos_method46_controller_helper_t aos_sandbox_negative_helper_socket_targets;
+typeattribute aos_method46_storage_helper_t aos_sandbox_negative_helper_socket_targets;
+
+bool aos_sandbox_negative_helper_socket_enabled false;
+
+if (aos_sandbox_negative_helper_socket_enabled) {
+    allow aos_sandbox_negative_helper_socket_sources aos_sandbox_negative_helper_socket_targets:unix_stream_socket connect;
+}

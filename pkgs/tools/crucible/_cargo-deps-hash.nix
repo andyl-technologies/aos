@@ -1,2 +1,4 @@
-# Fixed-output hash for the vendored crates/Cargo.lock dependency set.
-"sha256-6FU3M+iwF2iVd+nl7JvCC6r2oGz4Yq1PWOqBC2nBqDQ="
+# Shared workspace vendor staging hash: Cargo.lock plus external source archives.
+# The complete lockfile is copied into staging, so local dependency edits also
+# require refreshing this recursive hash even when external pins are unchanged.
+"sha256-c6rtjOAYqRNYvToyYa6B5y653LERFPkMkuVHJKhKpjg="

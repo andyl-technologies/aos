@@ -129,5 +129,29 @@ in {
         d /var/log/journal 2755 root systemd-journal -
       '';
     };
+
+    # The initrd and real root have different machine IDs. The stage-2 journal
+    # directory must exist before journald starts: RestrictSUIDSGID= installs
+    # AOS's no-set-ID guard, which forbids mkdir below the SGID journal root.
+    systemd.services.aos-journald-runtime-prep = {
+      description = "Prepare the current machine's runtime journal directory";
+      before = ["systemd-journald.service"];
+      unitConfig.DefaultDependencies = "no";
+      serviceConfig = {
+        Type = "oneshot";
+        # %% defers machine-ID expansion to tmpfiles after switch-root.
+        ExecStart = ''${pkgs.systemd}/bin/systemd-tmpfiles --create --inline "d /run/log/journal 2755 root systemd-journal -" "d /run/log/journal/%%m 2750 root systemd-journal -"'';
+        NoNewPrivileges = true;
+        ProtectSystem = "strict";
+        # /run always exists; /run/log/journal may not yet exist on a fresh boot.
+        ReadWritePaths = ["/run"];
+      };
+    };
+
+    systemd.services.systemd-journald = {
+      overrideStrategy = "asDropin";
+      requires = ["aos-journald-runtime-prep.service"];
+      after = ["aos-journald-runtime-prep.service"];
+    };
   };
 }

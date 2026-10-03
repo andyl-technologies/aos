@@ -199,6 +199,7 @@
       label = "aos-root";
       fsType = rootFsType;
       erofsCompressionLevel = system.config.aos.image.erofsCompressionLevel;
+      erofsDeduplication = system.config.aos.image.erofsDeduplication;
       extraClosures = system.config.aos.image.hostConfigClosures;
       kernelModulePackages = system.config.aos.kernel.modulePackages;
       firmwarePackages =

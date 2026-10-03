@@ -56,6 +56,17 @@
   # without ZFS.
   zfsState = config.aos.filesystems.zfs.enable && config.aos.filesystems.zfs.systemState;
   zfsPackage = config.aos.filesystems.zfs.package;
+  protectedSandboxNetworkRoots =
+    config.aos.security.selinux.protectedSandboxNetworkRoots.enable;
+  protectedSandboxOwnerRoots =
+    config.aos.sandbox.controllerService.method46TpmFloor.required
+    || config.aos.sandbox.storageBroker.method46TpmFloor.required;
+  protectedSandboxRoots = protectedSandboxNetworkRoots || protectedSandboxOwnerRoots;
+  varRootContext =
+    config.aos.security.selinux.protectedSandboxNetworkRoots._varRootContext;
+  varRootContextOption =
+    lib.optionalString protectedSandboxRoots ",rootcontext=${varRootContext}";
+  runtimeRootsExecutable = "${config.aos.security.selinux._runtimeRootsProvisioner}/bin/aos-selinux-runtime-roots";
   recoveryEnabledJson =
     if config.aos.boot.recovery.enable
     then "true"
@@ -168,14 +179,50 @@
               echo "mount-var: refusing $var_dev with filesystem type ''${fs_type:-none}; expected ext4" >&2
               exit 1
             fi
-            mount -o nosuid,nodev "$var_dev" /sysroot/var
+            ${lib.optionalString protectedSandboxRoots ''
+              # rootcontext is only the mount handoff. It cannot substitute
+              # for the durable inode label established by the format owner.
+              var_label=$(${pkgs.e2fsprogs}/sbin/debugfs \
+                -R 'ea_get / security.selinux' "$var_dev" 2>/dev/null) || {
+                echo "mount-var: cannot read the protected /var root label" >&2
+                exit 1
+              }
+              if [ "$var_label" != 'security.selinux (23) = "${varRootContext}"' ]; then
+                echo "mount-var: protected /var lacks its durable exact root label" >&2
+                exit 1
+              fi
+            ''}
+            mount -o nosuid,nodev${varRootContextOption} "$var_dev" /sysroot/var
           fi
         fi
-        # Standard /var subdirectories expected by systemd and daemons.
-        # /var/srv backs the /srv bind mount that data volumes mount under
-        # (modules/services/storage-topology.nix); it must exist before
-        # local-fs.target, earlier than tmpfiles runs.
-        mkdir -p /sysroot/var/{log,lib,tmp,srv}
+        ${
+          if protectedSandboxRoots
+          then ''
+            # Establish the exact /var and /var/lib base before anything can
+            # create a generically labeled state directory beneath it.
+            /sysroot/usr/lib/systemd/aos-selinux-root-handoff \
+              --launch-runtime-roots ${runtimeRootsExecutable} \
+              --root /sysroot --prepare-var-base
+
+            ${lib.optionalString protectedSandboxOwnerRoots ''
+              # Same existing boot setup owner; no daemon credential copying,
+              # NV/journal creation, repair or new provisioning service.
+              /sysroot/usr/lib/systemd/aos-selinux-root-handoff \
+                --launch-runtime-roots ${runtimeRootsExecutable} \
+                --root /sysroot --prepare-sandbox-owner-roots
+            ''}
+
+            # The protected base phase already created /var/lib, so the
+            # generic mkdir cannot bypass its exact label and metadata checks.
+            mkdir -p /sysroot/var/{log,tmp,srv}
+          ''
+          else ''
+            # Standard /var subdirectories expected by systemd and daemons.
+            mkdir -p /sysroot/var/{log,lib,tmp,srv}
+          ''
+        }
+        # /var/srv backs the /srv bind mount before local-fs.target; the
+        # protected base phase above must precede its generic creation.
         # Backing directories for the /root and /home bind mounts
         # (modules/base/homes.nix). Both always exist so a host can enable
         # persistent homes from host.nix without a new image; either may

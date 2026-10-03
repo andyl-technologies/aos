@@ -1,0 +1,98 @@
+# Original PTY/setup, resize and signals through the retained privileged monitor.
+# Applied after 0001..0003 to the exact pinned OpenSSH10.5p1 source.
+diff --git a/monitor.c b/monitor.c
+--- a/monitor.c
++++ b/monitor.c
+@@ -220,6 +220,7 @@
+ struct mon_table mon_dispatch_postauth20[] = {
+ 	{AOS_ATTACH_RELAY_REQUEST, MON_ONCE, aos_attach_monitor_relay},
+ 	{AOS_ATTACH_TERMINAL_REQUEST, MON_ONCE, aos_attach_monitor_terminal},
++	{AOS_ATTACH_CONTROL_REQUEST, 0, aos_attach_monitor_control},
+     {MONITOR_REQ_STATE, MON_ONCE, mm_answer_state},
+ #ifdef WITH_OPENSSL
+     {MONITOR_REQ_MODULI, 0, mm_answer_moduli},
+@@ -438,6 +439,8 @@
+ 	    options.aos_attach_monitor_v2);
+ 	monitor_permit(mon_dispatch, AOS_ATTACH_TERMINAL_REQUEST,
+ 	    options.aos_attach_monitor_v2);
++	monitor_permit(mon_dispatch, AOS_ATTACH_CONTROL_REQUEST,
++	    options.aos_attach_monitor_v2);
+ 
+ 	/* Permit requests for moduli and signatures */
+ 	monitor_permit(mon_dispatch, MONITOR_REQ_STATE, 1);
+diff --git a/session.h b/session.h
+--- a/session.h
++++ b/session.h
+@@ -43,6 +43,7 @@
+ 	/* tty */
+ 	char	*term;
+ 	int	ptyfd, ttyfd, ptymaster;
++	int	aos_original_pty;
+ 	u_int	row, col, xpixel, ypixel;
+ 	char	tty[TTYSZ];
+ 
+diff --git a/session.c b/session.c
+--- a/session.c
++++ b/session.c
+@@ -1882,6 +1882,12 @@ session_window_change_req(struct ssh *ssh, Session *s)
+ 	    (r = sshpkt_get_u32(ssh, &s->ypixel)) != 0 ||
+ 	    (r = sshpkt_get_end(ssh)) != 0)
+ 		sshpkt_fatal(ssh, r, "%s: parse packet", __func__);
++	if (options.aos_attach_monitor_v2) {
++		if (!s->aos_original_pty || s->pid <= 0)
++			return 0;
++		return aos_attach_original_resize(s->row, s->col,
++		    s->xpixel, s->ypixel);
++	}
+ 	pty_change_window_size(s->ptyfd, s->row, s->col, s->xpixel, s->ypixel);
+ 	return 1;
+ }
+@@ -1890,4 +1896,6 @@ session_pty_req(struct ssh *ssh, Session *s)
+ {
+ 	int r;
++	const u_char *original_modes;
++	size_t original_modes_length;
+ 
+ 	if (!auth_opts->permit_pty_flag || !options.permit_tty) {
+@@ -1900,5 +1909,7 @@ session_pty_req(struct ssh *ssh, Session *s)
+ 		return 0;
+ 	}
++	if (options.aos_attach_monitor_v2 && s->aos_original_pty)
++		return 0;
+ 
+ 	if ((r = sshpkt_get_cstring(ssh, &s->term, NULL)) != 0 ||
+ 	    (r = sshpkt_get_u32(ssh, &s->col)) != 0 ||
+@@ -1908,6 +1919,21 @@ session_pty_req(struct ssh *ssh, Session *s)
+ 	    (r = sshpkt_get_u32(ssh, &s->ypixel)) != 0)
+ 		sshpkt_fatal(ssh, r, "%s: parse packet", __func__);
+ 
++	if (options.aos_attach_monitor_v2) {
++		/* No intermediate sshd PTY or new execution environment. The actual
++		 * original Guest owner applies modes before relay descriptor access. */
++		if ((r = sshpkt_get_string_direct(ssh, &original_modes,
++		    &original_modes_length)) != 0 || (r = sshpkt_get_end(ssh)) != 0)
++			sshpkt_fatal(ssh, r, "%s: parse packet", __func__);
++		r = aos_attach_original_pty(s->term, s->row, s->col,
++		    s->xpixel, s->ypixel, original_modes, original_modes_length);
++		free(s->term);
++		s->term = NULL;
++		if (r == 1)
++			s->aos_original_pty = 1;
++		return r;
++	}
++
+ 	if (strcmp(s->term, "") == 0) {
+ 		free(s->term);
+ 		s->term = NULL;
+@@ -2150,6 +2176,11 @@ session_signal_req(struct ssh *ssh, Session *s)
+ 		error_f("no pid for session %d", s->self);
+ 		goto out;
+ 	}
++	if (options.aos_attach_monitor_v2) {
++		/* No relay-selected PID/PGID or legacy forced-command killpg. */
++		success = aos_attach_original_signal(sig);
++		goto out;
++	}
+ 	if (s->forced || s->is_subsystem) {
+ 		error_f("refusing to send signal %s to %s session",
+ 		    signame, s->forced ? "forced-command" : "subsystem");

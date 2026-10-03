@@ -1,0 +1,356 @@
+syntax = "proto3";
+
+package aos.sandbox.coordinator.v1;
+
+// This package is the private, independently versioned coordinator/node
+// compatibility domain. It is not part of the public sandbox control API.
+
+enum SemanticKind {
+  SEMANTIC_KIND_UNSPECIFIED = 0;
+  SEMANTIC_KIND_GET_CAPABILITIES_REQUEST = 1;
+  SEMANTIC_KIND_GET_CAPABILITIES_RESPONSE = 2;
+  SEMANTIC_KIND_RECONCILE_ASSIGNMENT_REQUEST = 3;
+  SEMANTIC_KIND_RECONCILE_ASSIGNMENT_RESPONSE = 4;
+  SEMANTIC_KIND_RELIST_ASSIGNMENTS_REQUEST = 5;
+  SEMANTIC_KIND_RELIST_ASSIGNMENTS_RESPONSE = 6;
+  SEMANTIC_KIND_RECONCILE_DRAIN_REQUEST = 7;
+  SEMANTIC_KIND_RECONCILE_DRAIN_RESPONSE = 8;
+  SEMANTIC_KIND_BEGIN_SNAPSHOT_TRANSFER_REQUEST = 9;
+  SEMANTIC_KIND_BEGIN_SNAPSHOT_TRANSFER_RESPONSE = 10;
+  SEMANTIC_KIND_SNAPSHOT_CHUNK_REQUEST = 11;
+  SEMANTIC_KIND_SNAPSHOT_CHUNK_RESPONSE = 12;
+  SEMANTIC_KIND_SNAPSHOT_DEPENDENCY_REQUEST = 13;
+  SEMANTIC_KIND_SNAPSHOT_DEPENDENCY_RESPONSE = 14;
+  SEMANTIC_KIND_WATCH_REQUEST = 15;
+  SEMANTIC_KIND_WATCH_RESPONSE = 16;
+  SEMANTIC_KIND_WATCH_CAPABILITY_EVENT = 17;
+  SEMANTIC_KIND_WATCH_ASSIGNMENT_EVENT = 18;
+  SEMANTIC_KIND_WATCH_DRAIN_EVENT = 19;
+}
+
+message ProtocolVersion {
+  uint32 major = 1;
+  uint32 minor = 2;
+}
+
+message CompatibilityWindow {
+  ProtocolVersion minimum_reader = 1;
+  ProtocolVersion writer = 2;
+}
+
+message SemanticEnvelope {
+  ProtocolVersion schema = 1;
+  CompatibilityWindow compatibility = 2;
+  SemanticKind kind = 3;
+
+  oneof body {
+    GetCapabilitiesRequest get_capabilities_request = 10;
+    GetCapabilitiesResponse get_capabilities_response = 11;
+    ReconcileAssignmentRequest reconcile_assignment_request = 12;
+    ReconcileAssignmentResponse reconcile_assignment_response = 13;
+    RelistAssignmentsRequest relist_assignments_request = 14;
+    RelistAssignmentsResponse relist_assignments_response = 15;
+    ReconcileDrainRequest reconcile_drain_request = 16;
+    ReconcileDrainResponse reconcile_drain_response = 17;
+    BeginSnapshotTransferRequest begin_snapshot_transfer_request = 18;
+    BeginSnapshotTransferResponse begin_snapshot_transfer_response = 19;
+    SnapshotChunkRequest snapshot_chunk_request = 20;
+    SnapshotChunkResponse snapshot_chunk_response = 21;
+    SnapshotDependencyRequest snapshot_dependency_request = 22;
+    SnapshotDependencyResponse snapshot_dependency_response = 23;
+    WatchRequest watch_request = 24;
+    WatchResponse watch_response = 25;
+    WatchEvent watch_event = 26;
+  }
+}
+
+message Version { uint32 major = 1; uint32 minor = 2; }
+message Feature { string namespace = 1; uint32 major = 2; uint32 minor = 3; }
+message Descriptor { string media_type = 1; string digest = 2; uint64 encoded_size = 3; }
+message Lineage {
+  bytes boot = 1; string digest = 2; uint64 generation = 3;
+  bytes predecessor_boot = 4; optional string predecessor_digest = 5;
+}
+
+enum Admission { ADMISSION_UNSPECIFIED = 0; ACCEPTING = 1; CORDONED = 2; DRAINING = 3; }
+enum NodeProtocol {
+  NODE_PROTOCOL_UNSPECIFIED = 0; COORDINATOR_NODE = 1; HOST_BROKER = 2;
+  STORAGE_BROKER = 3; MOUNT_BROKER = 4; NETWORK_BROKER = 5; GUARDIAN = 6;
+  GUEST_AGENT = 7; SNAPSHOT_TRANSFER = 8;
+}
+message ProtocolOffer { NodeProtocol protocol = 1; Version maximum_version = 2; }
+message ProbeEvidence {
+  string probe_set_digest = 1; string conformance_profile_digest = 2;
+  Version conformance_version = 3; uint64 conformance_generation = 4;
+}
+enum CapabilityFactKind {
+  CAPABILITY_FACT_KIND_UNSPECIFIED = 0;
+  CAPABILITY_FACT_NSPAWN_VERSION = 1; CAPABILITY_FACT_FUSE = 2;
+  CAPABILITY_FACT_MOUNT_OBSERVATION = 3; CAPABILITY_FACT_KVM = 4;
+  CAPABILITY_FACT_SECCOMP = 5; CAPABILITY_FACT_USER_NAMESPACES = 6;
+  CAPABILITY_FACT_NEW_MOUNT_API = 7; CAPABILITY_FACT_IDMAPPED_MOUNTS = 8;
+  CAPABILITY_FACT_ZFS_POOL = 9; CAPABILITY_FACT_OVERLAY = 10;
+  CAPABILITY_FACT_CGROUP_V2 = 11; CAPABILITY_FACT_SNAPSHOT_TRANSFER = 12;
+  CAPABILITY_FACT_POSIX_ACL = 13; CAPABILITY_FACT_ABSOLUTE_SYMLINK = 14;
+  CAPABILITY_FACT_PARENT_ESCAPE_SYMLINK = 15; CAPABILITY_FACT_BROKER_LEDGER = 16;
+  CAPABILITY_FACT_SIGNED_PLAN_LEASE = 17; CAPABILITY_FACT_NODE_BOUNDED_SHARED_RESIDENCY = 18;
+  CAPABILITY_FACT_HARD_ISOLATED_RESIDENCY = 19; CAPABILITY_FACT_GUEST_QUIESCE = 20;
+  CAPABILITY_FACT_STORAGE_QUIESCE = 21; CAPABILITY_FACT_BROKER_SESSION = 22;
+}
+message CapabilityFact {
+  CapabilityFactKind kind = 1; optional string digest = 2; optional uint32 major = 3;
+  optional uint32 minor = 4; optional uint32 patch = 5; optional bool passthrough = 6;
+}
+message CapabilitySnapshot {
+  string node = 1; Lineage lineage = 2; uint64 sequence = 3;
+  repeated Feature features = 4; repeated CapabilityFact facts = 5;
+  repeated ProtocolOffer protocols = 6; repeated uint64 allocatable = 7;
+  repeated uint64 reserved = 8; Admission admission = 9; ProbeEvidence probe_evidence = 10;
+}
+message CapabilityBinding {
+  string node = 1; Lineage lineage = 2; uint64 sequence = 3;
+  string evidence_binding_digest = 4; string canonical_frame_digest = 5;
+  uint32 canonical_frame_bytes = 6; uint64 coordinator_epoch = 7;
+  uint64 authenticated_at_unix_seconds = 8; uint64 valid_until_unix_seconds = 9;
+  string audience_digest = 10; string disclosure_domain_digest = 11;
+  string carrier_binding_digest = 12; string replay_fence = 13;
+}
+enum DesiredLifecycle {
+  DESIRED_LIFECYCLE_UNSPECIFIED = 0; RUNNING = 1; SUSPENDED_MEMORY_RESIDENT = 2;
+  SUSPENDED_HIBERNATE = 3; STOPPED = 4; DELETED = 5;
+}
+message AssignmentIntent {
+  AssignmentManifest assignment = 1;
+  DesiredLifecycle desired_lifecycle = 2;
+  CapabilityBinding selected_capability = 3;
+  string assignment_digest = 4;
+}
+message AssignmentManifest {
+  string sandbox = 1; string project = 2; repeated string ancestors = 3;
+  string incarnation = 4; string node = 5; uint64 epoch = 6;
+  uint64 desired_generation = 7; uint64 namespace_generation = 8;
+  Descriptor sandbox_spec = 9; Descriptor policy = 10;
+  Descriptor environment = 11; Descriptor root_view = 12;
+  repeated Descriptor source_commitments = 13;
+  string resource_commitment = 14; repeated uint64 reservations = 15;
+  repeated Feature required_features = 16;
+}
+enum AssignmentPhase {
+  ASSIGNMENT_PHASE_UNSPECIFIED = 0; PROPOSED = 1; ACCEPTED = 2; ARMING = 3;
+  ACTIVE = 4; ASSIGNMENT_DRAINING = 5; FENCED = 6; RELEASED = 7; FAILED = 8;
+}
+enum AssignmentReason {
+  ASSIGNMENT_REASON_UNSPECIFIED = 0; REASON_NONE = 1; AWAITING_CONTENT = 2;
+  AWAITING_CAPACITY = 3; CAPABILITY_DRIFT = 4; AWAITING_OWNERSHIP_AUTHORITY = 5;
+  AWAITING_GUARDIAN = 6; OWNERSHIP_FENCED = 7; INVENTORY_INCOMPLETE = 8;
+  RESIDUAL_STATE = 9; MISSING_DEPENDENCY = 10; NODE_OPERATION_FAILED = 11;
+}
+message AssignmentObservation {
+  string sandbox = 1; string incarnation = 2; uint64 epoch = 3;
+  uint64 desired_generation = 4; string assignment_digest = 5; uint64 sequence = 6;
+  AssignmentPhase phase = 7; optional DesiredLifecycle realized_lifecycle = 8;
+  AssignmentReason reason = 9; uint64 observed_at_unix_seconds = 10;
+}
+
+enum DrainMode { DRAIN_MODE_UNSPECIFIED = 0; CORDON_ONLY = 1; EVACUATE = 2; DECOMMISSION = 3; }
+enum DrainStrategy {
+  DRAIN_STRATEGY_UNSPECIFIED = 0; SNAPSHOT_STOP_AND_REPLACE = 1;
+  STOP_AND_REPLACE = 2; STOP_IN_PLACE = 3; LEAVE_STOPPED = 4;
+}
+message DrainAssignmentPlan {
+  string sandbox = 1; string incarnation = 2; uint64 epoch = 3;
+  uint64 desired_generation = 4; string assignment_digest = 5; DrainStrategy strategy = 6;
+}
+message DrainDirective {
+  string operation = 1; string node = 2; uint64 generation = 3; DrainMode mode = 4;
+  uint64 accepted_at_unix_seconds = 5; optional uint64 deadline_unix_seconds = 6;
+  repeated DrainAssignmentPlan assignments = 7;
+}
+enum DrainPhase {
+  DRAIN_PHASE_UNSPECIFIED = 0; REQUESTED = 1; DRAIN_CORDONED = 2;
+  DRAINING_ASSIGNMENTS = 3; CONTAINED = 4; READY_FOR_REASSIGNMENT = 5;
+  COMPLETE = 6; BLOCKED = 7;
+}
+enum DrainProgress {
+  DRAIN_PROGRESS_UNSPECIFIED = 0; PENDING = 1; PREPARING = 2; STOPPING = 3;
+  PROGRESS_CONTAINED = 4; PROGRESS_RELEASED = 5; PROGRESS_BLOCKED = 6;
+}
+enum DrainBlockReason {
+  DRAIN_BLOCK_UNSPECIFIED = 0; SNAPSHOT_UNAVAILABLE = 1; DRAIN_MISSING_DEPENDENCY = 2;
+  OWNERSHIP_AUTHORITY_UNAVAILABLE = 3; CONTAINMENT_UNCONFIRMED = 4;
+  DRAIN_RESIDUAL_STATE = 5; DESTINATION_UNAVAILABLE = 6;
+}
+message DrainAssignmentObservation {
+  string sandbox = 1; string incarnation = 2; uint64 epoch = 3;
+  uint64 desired_generation = 4; string assignment_digest = 5;
+  DrainProgressValue progress = 6;
+}
+message DrainProgressValue { DrainProgress state = 1; optional DrainBlockReason reason = 2; }
+message DrainObservation {
+  string operation = 1; uint64 generation = 2; uint64 sequence = 3;
+  DrainPhase phase = 4; repeated DrainAssignmentObservation assignments = 5;
+  uint64 observed_at_unix_seconds = 6;
+}
+
+message WatchBinding {
+  uint64 coordinator_epoch = 1; uint64 history_floor_sequence = 2;
+  string history_floor_event_uid = 3; uint64 bootstrap_watermark = 4;
+  string query_digest = 5; string authorization_digest = 6;
+  string audience_digest = 7; string disclosure_domain_digest = 8;
+  Version schema_minimum = 9; Version schema_maximum = 10;
+}
+message WatchCursor {
+  string node = 1; Lineage lineage = 2; WatchBinding binding = 3;
+  uint64 event_sequence = 4; string last_event_uid = 5;
+}
+message SnapshotIdentity {
+  string operation = 1; string project = 2; string sandbox = 3; string incarnation = 4;
+  uint64 assignment_epoch = 5; uint64 desired_generation = 6;
+  string assignment_digest = 7; string snapshot = 8; string source_node = 9;
+  string destination_node = 10; string storage_domain_digest = 11;
+  string audience_digest = 12; string disclosure_domain_digest = 13;
+  string manifest_digest = 14;
+}
+message SnapshotChunk {
+  uint32 index = 1; uint64 offset = 2; uint32 length = 3; string digest = 4;
+}
+message SnapshotManifest {
+  SnapshotIdentity identity = 1; Version version = 2; Descriptor root = 3;
+  repeated SnapshotChunk chunks = 4; repeated Descriptor dependencies = 5;
+  repeated Feature required_features = 6;
+}
+message SnapshotResume {
+  SnapshotIdentity identity = 1; uint32 next_chunk = 2; string verified_prefix_digest = 3;
+}
+message SnapshotChunkRange { SnapshotIdentity identity = 1; SnapshotChunk chunk = 2; }
+message SnapshotDependencyRange {
+  SnapshotIdentity identity = 1; Descriptor dependency = 2; uint64 offset = 3; uint32 length = 4;
+}
+message AssignmentInventory {
+  WatchCursor cursor = 1; CapabilitySnapshot capabilities = 2;
+  uint64 observation_sequence = 3; repeated AssignmentObservation assignments = 4;
+}
+
+message GetCapabilitiesRequest {}
+message GetCapabilitiesResponse { CapabilitySnapshot snapshot = 1; }
+message ReconcileAssignmentRequest { AssignmentIntent intent = 1; }
+message ReconcileAssignmentResponse { AssignmentObservation observation = 1; }
+message RelistAssignmentsRequest { WatchBinding binding = 1; }
+message RelistAssignmentsResponse { AssignmentInventory inventory = 1; }
+message ReconcileDrainRequest { DrainDirective directive = 1; }
+message ReconcileDrainResponse { DrainObservation observation = 1; }
+message BeginSnapshotTransferRequest { SnapshotManifest manifest = 1; SnapshotResume resume = 2; }
+message BeginSnapshotTransferResponse { SnapshotIdentity identity = 1; uint32 next_chunk = 2; }
+message SnapshotChunkRequest { SnapshotChunkRange request = 1; }
+message SnapshotChunkResponse { SnapshotIdentity identity = 1; uint32 index = 2; bytes data = 3; }
+message SnapshotDependencyRequest { SnapshotDependencyRange request = 1; }
+message SnapshotDependencyResponse {
+  SnapshotIdentity identity = 1; Descriptor dependency = 2; uint64 offset = 3;
+  bytes data = 4;
+}
+message WatchRequest { WatchCursor after = 1; uint32 maximum_events = 2; }
+message WatchEvent {
+  WatchCursor cursor = 1; string predecessor_event_uid = 2;
+  oneof body { CapabilitySnapshot capability = 10; AssignmentObservation assignment = 11; DrainObservation drain = 12; }
+}
+message WatchResponse { repeated WatchEvent events = 1; WatchBinding cursor_gap = 2; }
+
+message AuthenticatedSessionBinding {
+  bytes node_uid = 1;
+  bytes node_boot_uid = 2;
+  uint64 node_boot_generation = 3;
+  bytes channel_binding_sha256 = 4;
+  bytes audience_sha256 = 5;
+  bytes disclosure_domain_sha256 = 6;
+  uint64 coordinator_epoch = 7;
+  uint64 authenticated_at_unix_seconds = 8;
+  uint64 valid_until_unix_seconds = 9;
+  ProtocolVersion protocol = 10;
+  uint32 maximum_request_bytes = 11;
+  uint32 maximum_response_bytes = 12;
+  bytes replay_fence_sha256 = 13;
+  bytes lineage_sha256 = 14;
+  bytes predecessor_boot_uid = 15;
+  bytes predecessor_lineage_sha256 = 16;
+  SemanticEncoding semantic_encoding = 17;
+}
+
+enum SemanticEncoding {
+  SEMANTIC_ENCODING_UNSPECIFIED = 0;
+  SEMANTIC_ENCODING_PROTOBUF_V1 = 1;
+  SEMANTIC_ENCODING_LEGACY_JSON_V1 = 2;
+}
+
+message CoordinatorNodeRequest {
+  bytes request_uid = 1;
+  AuthenticatedSessionBinding session = 2;
+  SemanticEnvelope semantic = 3;
+}
+
+message CoordinatorNodeResponse {
+  bytes request_uid = 1;
+  AuthenticatedSessionBinding session = 2;
+  SemanticEnvelope semantic = 3;
+}
+
+message AssignmentLease {
+  bytes sandbox_uid = 1;
+  bytes incarnation_uid = 2;
+  uint64 assignment_epoch = 3;
+  bytes assignment_sha256 = 4;
+  bytes node_uid = 5;
+  uint64 generation = 6;
+  int64 issued_at_unix_seconds = 7;
+  int64 expires_at_unix_seconds = 8;
+  uint64 maximum_clock_skew_seconds = 9;
+  bytes renewal_nonce = 10;
+  bytes canonical_lease = 11;
+  bytes canonical_signature = 12;
+  bytes canonical_receipt = 13;
+  bytes canonical_receipt_signature = 14;
+}
+
+message SnapshotTransferEffect {
+  bytes transfer_sha256 = 1;
+  oneof artifact {
+    SnapshotChunkEffect chunk = 2;
+    SnapshotDependencyEffect dependency = 3;
+  }
+  bytes bytes_sha256 = 4;
+  uint32 byte_count = 5;
+  bytes idempotency_uid = 6;
+}
+
+message SnapshotChunkEffect { uint32 index = 1; }
+message SnapshotDependencyEffect { uint64 offset = 1; }
+
+message SnapshotTransferRecovery {
+  SnapshotTransferEffect expected = 1;
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_ABSENT = 1;
+    STATUS_COMMITTED = 2;
+    STATUS_CONFLICT = 3;
+    STATUS_UNKNOWN = 4;
+  }
+  Status status = 2;
+  bytes observed_bytes_sha256 = 3;
+}
+
+message OrderedWatchRequest {
+  WatchCursor cursor = 1;
+  uint32 maximum_events = 2;
+}
+
+message OrderedWatchBatch {
+  repeated WatchEvent events = 1;
+  WatchCursor next_cursor = 2;
+  WatchBinding resync_binding = 3;
+}
+
+// Code generation for this service is dormant. No router registers it and no
+// listener or readiness advertisement is introduced by this package.
+service CoordinatorNode {
+  rpc Exchange(CoordinatorNodeRequest) returns (CoordinatorNodeResponse);
+  rpc Watch(OrderedWatchRequest) returns (stream OrderedWatchBatch);
+}

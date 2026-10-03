@@ -261,6 +261,56 @@
       builtins.filter (cell: cell.platform == platform) (packageByName name).platforms
     ))
     .decision;
+
+  immutableRecipe = path:
+    builtins.path {
+      inherit path;
+      name = builtins.baseNameOf (toString path);
+    };
+  nativeToolRecipes = map immutableRecipe [
+    ../../stdenv/toolchains/gcc16/default.nix
+    ../../stdenv/toolchains/gcc16/manifest.nix
+    ../../stdenv/toolchains/lib/mk-manifest-tools.nix
+    ../../stdenv/toolchains/lib/mk-autotools-tool.nix
+    ../../stdenv/toolchains/lib/finalize-native.nix
+    ../../stdenv/toolchains/lib/with-runtime-shell.nix
+    ../../stdenv/toolchains/lib/source-script-filter.nix
+    ../../stdenv/tier-stdenv.nix
+    ../../stdenv/phases.nix
+    ../../stdenv/runtime-scripts.sh
+    ../../stdenv/filter-output-scripts.pl
+    ../../stdenv/filter-runtime-scripts.pl
+  ];
+  nativeToolImages = !pkgs.stdenv.hostPlatform.isDarwin && !pkgs.stdenv.isCross;
+  viewToolImagesSupported = support.supportsTarget pkgs.stdenv.hostPlatform.system "aos-sandbox-view-preparer-tools";
+  bashRecipes =
+    if nativeToolImages
+    then nativeToolRecipes
+    else [(immutableRecipe ../../pkgs/base/bash.nix)];
+  coreutilsRecipes =
+    if nativeToolImages
+    then nativeToolRecipes
+    else [(immutableRecipe ../../pkgs/base/coreutils.nix)];
+  utilLinuxRecipe = immutableRecipe ../../pkgs/tools/util-linux.nix;
+  bashPatches = pkgs.bash.passthru.appliedPatches;
+  sourceStorePaths = sources:
+    builtins.attrNames (builtins.listToAttrs (map (source: {
+        name = builtins.unsafeDiscardStringContext (toString source);
+        value = true;
+      })
+      sources));
+  expectedViewToolSources =
+    [
+      pkgs.bash.src
+      pkgs.coreutils.src
+      pkgs.util-linux.src
+      (immutableRecipe ../../pkgs/security/aos-sandbox-view-preparer-tools.nix)
+      utilLinuxRecipe
+    ]
+    ++ bashPatches
+    ++ bashRecipes
+    ++ coreutilsRecipes;
+
   # A deferred Linux platform blocks every eligible cell with one reviewed
   # reason; every other eligible cell is unblocked.
   deferred = platform: builtins.elem platform support.deferredPlatforms;
@@ -271,6 +321,7 @@
 in
   assert support.validate packageNames;
   assert support.validateHelpers helperFiles;
+  assert support.helperInventory."security/_openssl-output-check.nix" == "cross-build-helper";
   assert support.validateExpressions packageExpressions;
   assert support.validateResources excludedResources;
   assert requiredPresent;
@@ -295,6 +346,15 @@ in
     nestedSourceRoot
   ];
   assert releaseSourcesComplete;
+  # Source evidence is an exact producer closure, not a nonempty archive list.
+  assert builtins.length bashPatches == 15;
+  assert builtins.length (sourceStorePaths bashPatches) == 15;
+  assert sourceStorePaths pkgs.bash.passthru.sourceRecipes == sourceStorePaths bashRecipes;
+  assert sourceStorePaths pkgs.bash.passthru.evidenceSources == sourceStorePaths ([pkgs.bash.src] ++ bashPatches ++ bashRecipes);
+  assert !nativeToolImages || sourceStorePaths pkgs.coreutils.passthru.evidenceSources == sourceStorePaths ([pkgs.coreutils.src] ++ coreutilsRecipes);
+  # Unsupported targets must not force Linux-only dependencies or release roots.
+  assert !viewToolImagesSupported || sourceStorePaths pkgs.util-linux.passthru.evidenceSources == sourceStorePaths [pkgs.util-linux.src utilLinuxRecipe];
+  assert !viewToolImagesSupported || (releasePackageByName "aos-sandbox-view-preparer-tools").source_store_paths == sourceStorePaths expectedViewToolSources;
   assert configuredPackage.configuration.module_artifact
   == "package/k3s-worker/${pkgs.stdenv.hostPlatform.system}/config";
   assert configuredPackage.configuration.evaluation_base_artifact
@@ -356,6 +416,14 @@ in
   assert (decisionFor "systemd" "x86_64-linux").state == "eligible";
   assert (decisionFor "systemd" "x86_64-linux").blockers == [];
   assert (decisionFor "systemd" "aarch64-darwin").state == "not-applicable";
+  assert builtins.all (system:
+    support.supportsTarget system "aos-sandbox-view-preparer-tools"
+    && (decisionFor "aos-sandbox-view-preparer-tools" system).state == "eligible")
+  ["x86_64-linux" "aarch64-linux"];
+  assert builtins.all (system:
+    !(support.supportsTarget system "aos-sandbox-view-preparer-tools")
+    && (decisionFor "aos-sandbox-view-preparer-tools" system).rule == "package-linux-interface/v1")
+  support.darwinSystems;
   assert (decisionFor "iperf3" "x86_64-linux").state == "eligible";
   assert (decisionFor "iperf3" "x86_64-darwin").rule == "package-linux-interface/v1";
   assert (decisionFor "pango" "aarch64-darwin").rule == "package-darwin-release-scope/v1";

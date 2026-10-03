@@ -1,0 +1,596 @@
+--- a/src/connection/builder.rs
++++ b/src/connection/builder.rs
+@@ -89,6 +89,8 @@
+     request_name_flags: BitFlags<RequestNameFlags>,
+     method_timeout: Option<std::time::Duration>,
+     user_id: Option<u32>,
++    #[cfg(all(target_os = "linux", feature = "tokio"))]
++    reject_incoming_unix_fds: bool,
+ }
+ 
+ impl<'a> Builder<'a> {
+@@ -102,6 +104,23 @@
+         Ok(Self::new(Target::Address(Address::system()?)))
+     }
+ 
++    /// Rejects incoming ancillary control before authentication and message reads.
++    ///
++    /// This Linux/Tokio client restriction uses zero receive control capacity.
++    /// Truncated or unexpected control is a terminal `InvalidData` I/O error;
++    /// later reads remain fenced. It also disables Unix-FD negotiation. It is
++    /// a transport restriction, not peer identity, custody or authority.
++    ///
++    /// Only Unix-stream and Unix-address client targets are supported. Building
++    /// a server, custom, pre-authenticated or other transport returns
++    /// [`Error::Unsupported`] before connecting the target.
++    #[cfg(all(target_os = "linux", feature = "tokio"))]
++    pub fn reject_incoming_unix_fds(mut self) -> Self {
++        self.reject_incoming_unix_fds = true;
++
++        self
++    }
++
+     /// Create a builder for an IBus connection.
+     ///
+     /// IBus (Intelligent Input Bus) is an input method framework. This method creates a builder
+@@ -601,6 +620,8 @@
+             request_name_flags: BitFlags::default(),
+             method_timeout: None,
+             user_id: None,
++            #[cfg(all(target_os = "linux", feature = "tokio"))]
++            reject_incoming_unix_fds: false,
+         }
+     }
+ 
+@@ -678,6 +699,9 @@
+     }
+ 
+     async fn target_connect(&mut self) -> Result<(BoxedSplit, Option<OwnedGuid>, bool)> {
++        #[cfg(all(target_os = "linux", feature = "tokio"))]
++        self.require_incoming_fd_target()?;
++
+         let mut authenticated = false;
+         let mut guid = None;
+         // SAFETY: `self.target` is always `Some` from the beginning and this method is only called
+@@ -686,7 +710,7 @@
+             #[cfg(not(feature = "tokio"))]
+             Target::UnixStream(stream) => Async::new(stream)?.into(),
+             #[cfg(all(unix, feature = "tokio"))]
+-            Target::UnixStream(stream) => stream.into(),
++            Target::UnixStream(stream) => self.unix_stream_split(stream),
+             #[cfg(not(feature = "tokio"))]
+             Target::TcpStream(stream) => Async::new(stream)?.into(),
+             #[cfg(feature = "tokio")]
+@@ -698,8 +722,10 @@
+             Target::Address(address) => {
+                 guid = address.guid().map(|g| g.to_owned().into());
+                 match address.connect().await? {
+-                    #[cfg(any(unix, not(feature = "tokio")))]
++                    #[cfg(not(feature = "tokio"))]
+                     address::transport::Stream::Unix(stream) => stream.into(),
++                    #[cfg(all(unix, feature = "tokio"))]
++                    address::transport::Stream::Unix(stream) => self.unix_stream_split(stream),
+                     #[cfg(unix)]
+                     address::transport::Stream::Unixexec(stream) => stream.into(),
+                     address::transport::Stream::Tcp(stream) => stream.into(),
+@@ -720,6 +746,113 @@
+ 
+         Ok((split, guid, authenticated))
+     }
++
++    #[cfg(all(target_os = "linux", feature = "tokio"))]
++    fn require_incoming_fd_target(&self) -> Result<()> {
++        if !self.reject_incoming_unix_fds {
++            return Ok(());
++        }
++        if self.guid.is_some() {
++            return Err(Error::Unsupported);
++        }
++
++        match self.target.as_ref() {
++            Some(Target::UnixStream(_)) => Ok(()),
++            Some(Target::Address(address))
++                if matches!(address.transport(), address::transport::Transport::Unix(_)) =>
++            {
++                Ok(())
++            }
++            _ => Err(Error::Unsupported),
++        }
++    }
++
++    #[cfg(all(unix, feature = "tokio"))]
++    fn unix_stream_split(&self, stream: UnixStream) -> BoxedSplit {
++        #[cfg(target_os = "linux")]
++        if self.reject_incoming_unix_fds {
++            return super::socket::split_reject_incoming_unix_fds(stream);
++        }
++
++        stream.into()
++    }
++}
++
++#[cfg(all(test, target_os = "linux", feature = "tokio"))]
++mod incoming_fd_tests {
++    use super::*;
++
++    #[test]
++    fn default_builder_preserves_legacy_transport_selection() {
++        let builder = Builder::address("tcp:host=localhost,port=1234").unwrap();
++
++        assert!(!builder.reject_incoming_unix_fds);
++        assert!(builder.require_incoming_fd_target().is_ok());
++    }
++
++    #[test]
++    fn restricted_builder_accepts_only_unix_addresses_before_connect() {
++        let builder = Builder::address("unix:path=/run/dbus/system_bus_socket")
++            .unwrap()
++            .reject_incoming_unix_fds();
++
++        assert!(builder.require_incoming_fd_target().is_ok());
++        assert!(builder.target.is_some());
++
++        for address in [
++            "tcp:host=localhost,port=1234",
++            "unixexec:path=/does-not-exist",
++        ] {
++            let builder = Builder::address(address)
++                .unwrap()
++                .reject_incoming_unix_fds();
++
++            assert!(matches!(
++                builder.require_incoming_fd_target(),
++                Err(Error::Unsupported)
++            ));
++            assert!(builder.target.is_some());
++        }
++    }
++
++    #[cfg(feature = "p2p")]
++    #[test]
++    fn restricted_builder_rejects_server_and_pre_authenticated_targets() {
++        let guid = "0123456789abcdef0123456789abcdef";
++        let server = Builder::address("unix:path=/run/dbus/system_bus_socket")
++            .unwrap()
++            .p2p()
++            .server(guid)
++            .unwrap()
++            .reject_incoming_unix_fds();
++
++        assert!(matches!(
++            server.require_incoming_fd_target(),
++            Err(Error::Unsupported)
++        ));
++
++        let (socket, _) = super::super::socket::Channel::pair();
++        let pre_authenticated = Builder::authenticated_socket(socket, guid)
++            .unwrap()
++            .reject_incoming_unix_fds();
++
++        assert!(matches!(
++            pre_authenticated.require_incoming_fd_target(),
++            Err(Error::Unsupported)
++        ));
++    }
++
++    #[cfg(feature = "p2p")]
++    #[test]
++    fn restricted_builder_rejects_custom_sockets() {
++        let (socket, _) = super::super::socket::Channel::pair();
++        let builder = Builder::socket(socket).reject_incoming_unix_fds();
++
++        assert!(matches!(
++            builder.require_incoming_fd_target(),
++            Err(Error::Unsupported)
++        ));
++    }
+ }
+ 
+ /// Start the internal executor thread.
+--- a/src/connection/socket/mod.rs
++++ b/src/connection/socket/mod.rs
+@@ -12,6 +12,8 @@
+ pub(crate) use command::Command;
+ mod tcp;
+ mod unix;
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++pub(super) use unix::split_reject_incoming_unix_fds;
+ mod vsock;
+ 
+ #[cfg(not(feature = "tokio"))]
+--- a/src/connection/socket/unix.rs
++++ b/src/connection/socket/unix.rs
+@@ -129,26 +129,7 @@
+ #[async_trait::async_trait]
+ impl super::ReadHalf for tokio::net::unix::OwnedReadHalf {
+     async fn recvmsg(&mut self, buf: &mut [u8]) -> super::RecvmsgResult {
+-        let stream = self.as_ref();
+-        poll_fn(|cx| {
+-            loop {
+-                match stream.try_io(tokio::io::Interest::READABLE, || {
+-                    // We use own custom function for reading because we need to receive file
+-                    // descriptors too.
+-                    fd_recvmsg(stream.as_fd(), buf)
+-                }) {
+-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+-                        match stream.poll_read_ready(cx) {
+-                            Poll::Pending => return Poll::Pending,
+-                            Poll::Ready(res) => res?,
+-                        }
+-                    }
+-                    v => return Poll::Ready(v),
+-                }
+-            }
+-        })
+-        .await
++        tokio_recvmsg(self.as_ref(), buf, TokioReceiveDisposition::legacy()).await
+     }
+ 
+     /// Supports passing file descriptors.
+@@ -162,6 +143,136 @@
+ }
+ 
+ #[cfg(all(unix, feature = "tokio"))]
++struct TokioReceiveDisposition<'a> {
++    control: IncomingControl,
++    failed: Option<&'a mut bool>,
++}
++
++#[cfg(all(unix, feature = "tokio"))]
++impl<'a> TokioReceiveDisposition<'a> {
++    fn legacy() -> Self {
++        Self {
++            control: IncomingControl::Legacy,
++            failed: None,
++        }
++    }
++
++    #[cfg(target_os = "linux")]
++    fn reject_incoming(failed: &'a mut bool) -> Self {
++        Self {
++            control: IncomingControl::RejectIncoming,
++            failed: Some(failed),
++        }
++    }
++
++    fn control(&self) -> IncomingControl {
++        self.control
++    }
++
++    fn require_open(&self) -> std::io::Result<()> {
++        #[cfg(target_os = "linux")]
++        if self.failed.as_deref() == Some(&true) {
++            return Err(IncomingControlError::Fenced.into_io());
++        }
++
++        Ok(())
++    }
++
++    fn retain_terminal(&mut self, _result: &super::RecvmsgResult) {
++        #[cfg(target_os = "linux")]
++        if let (Some(failed), Err(error)) = (self.failed.as_deref_mut(), _result) {
++            if error
++                .get_ref()
++                .is_some_and(|source| source.is::<IncomingControlError>())
++            {
++                *failed = true;
++            }
++        }
++    }
++}
++
++// Both recipes use the original Tokio readiness/syscall/retry engine.
++#[cfg(all(unix, feature = "tokio"))]
++async fn tokio_recvmsg(
++    stream: &tokio::net::UnixStream,
++    buf: &mut [u8],
++    mut disposition: TokioReceiveDisposition<'_>,
++) -> super::RecvmsgResult {
++    disposition.require_open()?;
++
++    poll_fn(|cx| {
++        loop {
++            match stream.try_io(tokio::io::Interest::READABLE, || {
++                // We use own custom function for reading because we need to receive file
++                // descriptors too.
++                match disposition.control() {
++                    IncomingControl::Legacy => fd_recvmsg(stream.as_fd(), buf),
++                    #[cfg(target_os = "linux")]
++                    IncomingControl::RejectIncoming => {
++                        fd_recvmsg_with_control(stream.as_fd(), buf, IncomingControl::RejectIncoming)
++                    }
++                }
++            }) {
++                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
++                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
++                    match stream.poll_read_ready(cx) {
++                        Poll::Pending => return Poll::Pending,
++                        Poll::Ready(res) => res?,
++                    }
++                }
++                v => {
++                    disposition.retain_terminal(&v);
++
++                    return Poll::Ready(v);
++                }
++            }
++        }
++    })
++    .await
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++#[derive(Debug)]
++struct RejectIncomingUnixReadHalf {
++    read: tokio::net::unix::OwnedReadHalf,
++    failed: bool,
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++#[async_trait::async_trait]
++impl super::ReadHalf for RejectIncomingUnixReadHalf {
++    async fn recvmsg(&mut self, buf: &mut [u8]) -> super::RecvmsgResult {
++        tokio_recvmsg(
++            self.read.as_ref(),
++            buf,
++            TokioReceiveDisposition::reject_incoming(&mut self.failed),
++        )
++        .await
++    }
++
++    async fn peer_credentials(&mut self) -> std::io::Result<crate::fdo::ConnectionCredentials> {
++        get_unix_peer_creds(self.read.as_ref()).await
++    }
++}
++
++// This private split is installed before AUTH and survives the Hello handoff.
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++pub(crate) fn split_reject_incoming_unix_fds(
++    stream: tokio::net::UnixStream,
++) -> super::BoxedSplit {
++    let (read, write) = stream.into_split();
++    let split: super::BoxedSplit = super::Split::new(
++        Box::new(RejectIncomingUnixReadHalf {
++            read,
++            failed: false,
++        }),
++        Box::new(write),
++    );
++
++    split
++}
++
++#[cfg(all(unix, feature = "tokio"))]
+ #[async_trait::async_trait]
+ impl super::WriteHalf for tokio::net::unix::OwnedWriteHalf {
+     async fn sendmsg(
+@@ -275,21 +386,120 @@
+ 
+ #[cfg(unix)]
+ fn fd_recvmsg(fd: BorrowedFd<'_>, buffer: &mut [u8]) -> std::io::Result<(usize, Vec<OwnedFd>)> {
++    fd_recvmsg_with_control(fd, buffer, IncomingControl::Legacy)
++}
++
++#[cfg(unix)]
++#[derive(Clone, Copy)]
++enum IncomingControl {
++    Legacy,
++    #[cfg(all(target_os = "linux", feature = "tokio"))]
++    RejectIncoming,
++}
++
++#[cfg(unix)]
++impl IncomingControl {
++    fn capacity(self) -> usize {
++        match self {
++            Self::Legacy => rustix::cmsg_space!(ScmRights(FDS_MAX)),
++            #[cfg(all(target_os = "linux", feature = "tokio"))]
++            Self::RejectIncoming => 0,
++        }
++    }
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++#[derive(Debug, Eq, PartialEq)]
++enum IncomingControlError {
++    Truncated,
++    Unexpected,
++    Fenced,
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++impl std::fmt::Display for IncomingControlError {
++    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        formatter.write_str(match self {
++            Self::Truncated => "incoming ancillary control was truncated",
++            Self::Unexpected => "incoming ancillary control is forbidden",
++            Self::Fenced => "incoming ancillary control reader is fenced",
++        })
++    }
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++impl std::error::Error for IncomingControlError {}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++impl IncomingControlError {
++    fn into_io(self) -> std::io::Error {
++        std::io::Error::new(std::io::ErrorKind::InvalidData, self)
++    }
++}
++
++#[cfg(unix)]
++fn fd_recvmsg_with_control(
++    fd: BorrowedFd<'_>,
++    buffer: &mut [u8],
++    control: IncomingControl,
++) -> std::io::Result<(usize, Vec<OwnedFd>)> {
+     use std::mem::MaybeUninit;
+ 
+     let mut iov = [IoSliceMut::new(buffer)];
+     let mut cmsg_buffer = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(FDS_MAX))];
+-    let mut ancillary = RecvAncillaryBuffer::new(&mut cmsg_buffer);
++    let control_storage = &mut cmsg_buffer[..control.capacity()];
++    let mut ancillary = RecvAncillaryBuffer::new(control_storage);
+ 
+     let msg = recvmsg(fd, &mut iov, &mut ancillary, RecvFlags::empty())?;
++    // Selected rejection happens before EOF and before any FD escapes this call.
++    #[cfg(all(target_os = "linux", feature = "tokio"))]
++    let selected_fds = if matches!(control, IncomingControl::RejectIncoming) {
++        require_untruncated_control(msg.flags)?;
++        Some(collect_received_fds(&mut ancillary, control)?)
++    } else {
++        None
++    };
++
+     if msg.bytes == 0 {
+         return Err(std::io::Error::new(
+             std::io::ErrorKind::BrokenPipe,
+             "failed to read from socket",
+         ));
+     }
++    #[cfg(all(target_os = "linux", feature = "tokio"))]
++    if let Some(fds) = selected_fds {
++        return Ok((msg.bytes, fds));
++    }
++
++    let fds = collect_received_fds(&mut ancillary, control)?;
++    Ok((msg.bytes, fds))
++}
++
++#[cfg(all(target_os = "linux", feature = "tokio"))]
++fn require_untruncated_control(flags: rustix::net::ReturnFlags) -> std::io::Result<()> {
++    if flags.contains(rustix::net::ReturnFlags::CTRUNC) {
++        return Err(IncomingControlError::Truncated.into_io());
++    }
++
++    Ok(())
++}
++
++// This is the original ancillary parser, with one closed rejection disposition.
++#[cfg(unix)]
++fn collect_received_fds(
++    ancillary: &mut RecvAncillaryBuffer<'_>,
++    control: IncomingControl,
++) -> std::io::Result<Vec<OwnedFd>> {
+     let mut fds = vec![];
+     for msg in ancillary.drain() {
++        #[cfg(all(target_os = "linux", feature = "tokio"))]
++        if matches!(control, IncomingControl::RejectIncoming) {
++            // Dropping this message and the outer ancillary buffer releases all
++            // adopted rights before the error reaches authentication or a queue.
++            drop(msg);
++            return Err(IncomingControlError::Unexpected.into_io());
++        }
++
+         match msg {
+             RecvAncillaryMessage::ScmRights(iter) => {
+                 fds.extend(iter);
+@@ -308,7 +518,7 @@
+             }
+         }
+     }
+-    Ok((msg.bytes, fds))
++    Ok(fds)
+ }
+ 
+ #[cfg(unix)]
+@@ -528,3 +738,97 @@
+         Ok(ret as usize)
+     }
+ }
++
++#[cfg(all(test, target_os = "linux", feature = "tokio"))]
++mod incoming_control_tests {
++    use super::*;
++
++    #[test]
++    fn restricted_control_capacity_is_zero_not_one_fd() {
++        assert_eq!(IncomingControl::RejectIncoming.capacity(), 0);
++        assert_eq!(
++            IncomingControl::Legacy.capacity(),
++            rustix::cmsg_space!(ScmRights(FDS_MAX))
++        );
++    }
++
++    #[test]
++    fn control_truncation_is_typed_terminal_invalid_data() {
++        let error = require_untruncated_control(rustix::net::ReturnFlags::CTRUNC)
++            .unwrap_err();
++
++        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
++        assert_eq!(
++            error
++                .get_ref()
++                .unwrap()
++                .downcast_ref::<IncomingControlError>(),
++            Some(&IncomingControlError::Truncated)
++        );
++        assert!(require_untruncated_control(rustix::net::ReturnFlags::empty()).is_ok());
++    }
++
++    #[test]
++    fn terminal_control_error_fences_later_reads_without_replacing_original() {
++        for cause in [
++            IncomingControlError::Truncated,
++            IncomingControlError::Unexpected,
++        ] {
++            let mut failed = false;
++            let mut disposition = TokioReceiveDisposition::reject_incoming(&mut failed);
++            let result = Err(cause.into_io());
++
++            disposition.retain_terminal(&result);
++            let later = disposition.require_open().unwrap_err();
++
++            assert_eq!(later.kind(), std::io::ErrorKind::InvalidData);
++            assert_eq!(
++                later
++                    .get_ref()
++                    .unwrap()
++                    .downcast_ref::<IncomingControlError>(),
++                Some(&IncomingControlError::Fenced)
++            );
++            assert!(
++                result
++                    .as_ref()
++                    .unwrap_err()
++                    .get_ref()
++                    .unwrap()
++                    .is::<IncomingControlError>()
++            );
++
++            disposition.retain_terminal(&Ok((1, vec![])));
++            assert!(disposition.require_open().is_err());
++        }
++    }
++
++    #[test]
++    fn native_retry_and_other_io_causes_are_not_control_rejections() {
++        for kind in [
++            std::io::ErrorKind::Interrupted,
++            std::io::ErrorKind::WouldBlock,
++            std::io::ErrorKind::BrokenPipe,
++        ] {
++            let mut failed = false;
++            let mut disposition = TokioReceiveDisposition::reject_incoming(&mut failed);
++            let result = Err(std::io::Error::from(kind));
++
++            disposition.retain_terminal(&result);
++
++            assert!(disposition.require_open().is_ok());
++            assert_eq!(result.unwrap_err().kind(), kind);
++        }
++    }
++
++    #[test]
++    fn empty_control_uses_same_parser_and_returns_no_fds() {
++        let mut storage = [];
++        let mut ancillary = RecvAncillaryBuffer::new(&mut storage);
++
++        let fds = collect_received_fds(&mut ancillary, IncomingControl::RejectIncoming)
++            .unwrap();
++
++        assert!(fds.is_empty());
++    }
++}
