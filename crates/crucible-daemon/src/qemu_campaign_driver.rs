@@ -75,8 +75,7 @@ use network_fault_boundary::{
     discover_initial_network_fault_choice, discover_quantum_network_fault_choice,
 };
 use observation_candidate::{
-    build_observation_candidate, build_observation_candidate_with_supplemental,
-    campaign_measurements, property_verdicts,
+    build_observation_candidate, build_observation_candidate_with_supplemental, project_boundary,
 };
 use resume_progress::report_first_restored_guest_marker;
 use selection_projection::{
@@ -2548,102 +2547,6 @@ fn check_pending_assertions(
     checker
         .check_run(pending.input.scenario().properties(), &pending.event_log)
         .map_err(Into::into)
-}
-
-fn project_boundary(
-    mut pending: QemuFreshPendingObservation,
-    project_stop: bool,
-    supplemental_oracle: Option<(&dyn GuardedCampaignFindingOracle, ContentId)>,
-) -> Result<QemuBoundaryProjection, QemuFreshModeledDriverError> {
-    validate_live_network_preselection(&pending)?;
-    let timeout = retain_modeled_timeout(&mut pending)?;
-    let report = check_pending_assertions(&pending)?;
-    let supplemental = supplemental_oracle
-        .map(|(oracle, source)| {
-            oracle
-                .evaluate(&pending.configuration)
-                .map(|evaluation| evaluation.map(|evaluation| (evaluation, source)))
-        })
-        .transpose()
-        .map_err(QemuFreshModeledDriverError::SupplementalFinding)?
-        .flatten();
-    if let Some((evaluation, _)) = &supplemental
-        && !report
-            .outcomes()
-            .iter()
-            .any(|outcome| outcome.assertion.name == evaluation.property())
-    {
-        return Err(QemuFreshModeledDriverError::ScenarioMismatch);
-    }
-    let properties = property_verdicts(&report, supplemental.as_ref())?;
-    let mut failures: Vec<_> = report
-        .violations()
-        .iter()
-        .cloned()
-        .map(FailurePropertyViolationRecord::new)
-        .map(FailureClusterReportFailure::property)
-        .collect();
-    if let Some((evaluation, _)) = &supplemental {
-        failures.retain(|failure| {
-            !matches!(
-                failure,
-                FailureClusterReportFailure::Property(record)
-                    if record.violation.assertion.name == evaluation.property()
-            )
-        });
-        failures.push(FailureClusterReportFailure::property(
-            FailurePropertyViolationRecord::new(evaluation.violation().clone()),
-        ));
-    }
-    if let Some(timeout) = timeout {
-        failures.push(FailureClusterReportFailure::timeout(timeout));
-    }
-
-    let scenario_artifact = encode_crucible_scenario_artifact(pending.input.scenario())?;
-    if scenario_artifact.id()? != pending.input.lineage().scenario_content()
-        || scenario_artifact.scenario() != pending.input.lineage().scenario()
-    {
-        return Err(QemuFreshModeledDriverError::ScenarioMismatch);
-    }
-    let child = encode_crucible_configuration_artifact(
-        &scenario_artifact,
-        &pending.configuration.schedule,
-    )?;
-    let measurement_publication = campaign_measurements(&pending, child.configuration())?;
-    let (measurement_evidence, _, measurements) = measurement_publication.into_parts();
-    let mut stop = project_stop
-        .then(|| stop_outcome(pending.stop, &report))
-        .transpose()?;
-    if report.verdict().failures().is_empty()
-        && let Some((evaluation, _)) = &supplemental
-        && let Some(stop) = &mut stop
-    {
-        *stop = StopOutcome::AssertionFailure(evaluation.property().to_owned());
-    }
-    let coverage = coverage_projection(&pending.event_log)?;
-    let discovered_choices = pending.discoveries.into_values().collect::<Vec<_>>();
-    let discovered_ids = discovered_choices
-        .iter()
-        .map(|discovery| discovery.opportunity().id())
-        .collect::<Result<BTreeSet<_>, _>>()?;
-    let produced_selections = produced_selections_after_start(
-        pending.input.start().configuration(),
-        &pending.configuration,
-        &discovered_ids,
-    )?;
-    Ok(QemuBoundaryProjection {
-        input: pending.input,
-        child,
-        measurement_evidence,
-        measurements,
-        properties,
-        failures,
-        coverage,
-        discovered_choices,
-        discovered_ids,
-        produced_selections,
-        stop,
-    })
 }
 
 fn retain_modeled_timeout(

@@ -244,6 +244,39 @@ pub(crate) fn record_execution_phase_diagnostic(stage: &str, details: std::fmt::
     }
 }
 
+/// Computes diagnostic details only after admission to the existing bounded budget.
+///
+/// The closure must inspect owned public data without acquiring runtime locks.
+/// Neither formatting nor a failed stderr write changes the execution result.
+pub(crate) fn record_execution_phase_diagnostic_lazy(
+    stage: &str,
+    details: impl FnOnce() -> String,
+) {
+    write_execution_phase_diagnostic_lazy(
+        admit_materialization_diagnostic(),
+        stage,
+        details,
+        || std::io::stderr().lock(),
+    );
+}
+
+fn write_execution_phase_diagnostic_lazy<W: std::io::Write>(
+    admitted: bool,
+    stage: &str,
+    details: impl FnOnce() -> String,
+    writer: impl FnOnce() -> W,
+) {
+    if !admitted {
+        return;
+    }
+
+    let details = details();
+    let _ = writeln!(
+        writer(),
+        "CRUCIBLE-EXECUTION-PHASE-V1 stage={stage} {details}"
+    );
+}
+
 fn admit_materialization_diagnostic() -> bool {
     let limit = *MATERIALIZATION_DIAGNOSTIC_LIMIT.get_or_init(|| {
         std::env::var("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS")
@@ -963,6 +996,40 @@ fn map_runner_failure<E>(
 #[cfg(test)]
 mod exact_source_tests {
     use super::*;
+
+    #[test]
+    fn lazy_phase_notice_skips_unadmitted_work_and_preserves_failed_writes() {
+        write_execution_phase_diagnostic_lazy(
+            false,
+            "disabled",
+            || panic!("disabled notice computed details"),
+            || -> std::io::Sink { panic!("disabled notice opened sink") },
+        );
+
+        let mut bytes = Vec::new();
+        write_execution_phase_diagnostic_lazy(
+            true,
+            "seal-test",
+            || "events=3".into(),
+            || &mut bytes,
+        );
+        assert_eq!(
+            bytes,
+            b"CRUCIBLE-EXECUTION-PHASE-V1 stage=seal-test events=3\n"
+        );
+
+        struct ClosedSink;
+        impl std::io::Write for ClosedSink {
+            fn write(&mut self, _bytes: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        // An unavailable diagnostic sink must not replace the canonical result.
+        write_execution_phase_diagnostic_lazy(true, "closed", || "events=3".into(), || ClosedSink);
+    }
 
     struct QuarantineProbe {
         quarantined: bool,
