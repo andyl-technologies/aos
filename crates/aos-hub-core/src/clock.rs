@@ -4,8 +4,10 @@
 //! timestamps. On a native build that is `std::time::SystemTime`; on the
 //! Cloudflare Worker (`wasm32-unknown-unknown`) `SystemTime::now()` is
 //! unavailable and panics, so this module reads the host JS clock through
-//! `js_sys::Date::now()` instead (RFC-0004 Phase 5). Callers use the single
-//! [`now_unix_secs`] entry point and never branch on the target themselves.
+//! `js_sys::Date::now()` instead (RFC-0004 Phase 5). Business timestamps use
+//! [`now_unix_secs`]. The fallible internal observation
+//! timestamp preserves Native microsecond precision and uses the same host clock
+//! safely on the Worker; callers never branch on the target themselves.
 
 /// The current Unix time in whole seconds.
 ///
@@ -27,6 +29,31 @@ pub fn now_unix_secs() -> i64 {
         // `Date.now()` is milliseconds since the Unix epoch as an f64; the
         // Workers runtime provides it. Truncate to whole seconds.
         (js_sys::Date::now() / 1000.0) as i64
+    }
+}
+
+/// Returns an observational Unix timestamp in microseconds when the clock is valid.
+///
+/// Native observations retain the system clock's microsecond precision. Worker
+/// observations reflect the host JavaScript clock's millisecond resolution.
+/// This timestamp supplies no clock qualification or execution authority.
+#[must_use]
+pub(crate) fn observation_unix_micros() -> Option<u128> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|duration| duration.as_micros())
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let millis = js_sys::Date::now();
+        // JavaScript dates are bounded to this exact integer millisecond range.
+        if !millis.is_finite() || !(0.0..=8_640_000_000_000_000.0).contains(&millis) {
+            return None;
+        }
+        Some((millis as u128) * 1000)
     }
 }
 
@@ -104,5 +131,23 @@ impl Instant {
     pub fn elapsed(&self) -> std::time::Duration {
         let ms = (js_sys::Date::now() - self.start_ms).max(0.0);
         std::time::Duration::from_millis(ms as u64)
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    #[test]
+    fn observation_timestamp_retains_native_microsecond_precision() {
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_micros();
+        let observed = super::observation_unix_micros().unwrap();
+        let after = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_micros();
+
+        assert!((before..=after).contains(&observed));
     }
 }

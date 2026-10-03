@@ -11,8 +11,6 @@ use std::future::Future;
 #[cfg(not(target_arch = "wasm32"))]
 use std::io;
 use std::sync::OnceLock;
-#[cfg(not(target_arch = "wasm32"))]
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
@@ -131,17 +129,17 @@ pub fn record_existing_outcome(kind: &'static str, accepted: bool, context: &imp
         );
         let mut hash = BoundedContextHash::default();
         let hashed = serde_json::to_writer(&mut hash, context);
-        let now = SystemTime::now().duration_since(UNIX_EPOCH);
+        let now = crate::clock::observation_unix_micros();
         // Do not hold a mutable task-local borrow while invoking a serializer.
         // The collector only appends the completed bounded hash afterwards.
         let mut observations = value.borrow_mut();
         match (known, hashed, now) {
-            (true, Ok(()), Ok(now)) if observations.checks.len() < MAX_CHECKS => {
+            (true, Ok(()), Some(now)) if observations.checks.len() < MAX_CHECKS => {
                 observations.checks.push(IngressCheckedContext {
                     kind,
                     accepted,
                     checked_context_sha256: hex::encode(hash.digest.finalize()),
-                    observed_at_unix_micros: now.as_micros().to_string(),
+                    observed_at_unix_micros: now.to_string(),
                 });
             }
             _ => observations.incomplete = true,

@@ -266,17 +266,16 @@ async fn external_capability_minimum_refuses_empty_before_any_retained_sql_plan(
         dependency_phase: DirectDependencyPhase::Content,
         transfer_mode: DirectTransferMode::DirectRequired,
     };
+    let envelope = DirectLogicalRequestEnvelope {
+        context: context(&origin, 5),
+        request: DirectUploadLogicalRequest::Admission {
+            intents: vec![intent.clone()],
+        },
+    };
+    // Dispatch cannot precede the request's issue time when setup crosses a second.
+    let dispatch_now = current_time().unwrap();
     let reply = service
-        .dispatch(
-            &claims,
-            &DirectLogicalRequestEnvelope {
-                context: context(&origin, 5),
-                request: DirectUploadLogicalRequest::Admission {
-                    intents: vec![intent.clone()],
-                },
-            },
-            now as i64,
-        )
+        .dispatch(&claims, &envelope, dispatch_now as i64)
         .await
         .unwrap();
     assert!(reply.admissions.is_empty());

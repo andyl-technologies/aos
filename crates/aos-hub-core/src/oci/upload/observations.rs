@@ -151,7 +151,8 @@ pub(super) fn external_admission(
         return;
     }
     let encoded = (|| -> anyhow::Result<String> {
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?;
+        let now = crate::clock::observation_unix_micros()
+            .ok_or_else(|| anyhow::anyhow!("observation clock is unavailable"))?;
         let observation = AdmissionObservation {
             version: 1,
             phase,
@@ -160,7 +161,7 @@ pub(super) fn external_admission(
             writer_sha256: canonical_digest(&permit.request.original.writer)?,
             upload_original_sha256: canonical_digest(&permit.request.original.upload)?,
             profile_digest: permit.request.original.profile_digest.clone(),
-            completed_at_unix_micros: now.as_micros().to_string(),
+            completed_at_unix_micros: now.to_string(),
         };
         Ok(serde_json::to_string(&observation)?)
     })();
