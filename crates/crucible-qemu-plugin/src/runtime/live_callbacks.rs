@@ -54,6 +54,7 @@ use super::{
     worker_quiescence::LiveWorkerQuiescence,
 };
 
+mod checkpoint_stop_witness;
 mod control_callback_witness;
 pub(super) use control_callback_witness::ControlCallbackWitness;
 mod devices;
@@ -834,6 +835,7 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     control_boundary_dispatch_generation: AtomicU32,
     control_boundary_defer_diagnostic_generation: AtomicU64,
     pub(super) control_callback_witness: Arc<ControlCallbackWitness>,
+    stop_caller_witness: checkpoint_stop_witness::StopCallerWitness,
     idle_advance_completion_active: AtomicBool,
     last_icount: AtomicU64,
     logical_restore_continuation_generation: AtomicU32,
@@ -1212,6 +1214,9 @@ impl LiveVcpuTimeCallbackState {
         )?);
         #[cfg(test)]
         let sim_tick_observed = None;
+        let control_callback_witness = Arc::new(ControlCallbackWitness::from_env());
+        let stop_caller_witness =
+            checkpoint_stop_witness::StopCallerWitness::new(control_callback_witness.is_enabled());
         Ok(Self {
             quiescence,
             teardown_router,
@@ -1241,7 +1246,8 @@ impl LiveVcpuTimeCallbackState {
             fault_command_pump_active: AtomicBool::new(false),
             control_boundary_dispatch_generation: AtomicU32::new(u32::MAX),
             control_boundary_defer_diagnostic_generation: AtomicU64::new(u64::MAX),
-            control_callback_witness: Arc::new(ControlCallbackWitness::from_env()),
+            control_callback_witness,
+            stop_caller_witness,
             idle_advance_completion_active: AtomicBool::new(false),
             last_icount: AtomicU64::new(snapshot.current_icount),
             logical_restore_continuation_generation: AtomicU32::new(0),
@@ -1930,6 +1936,11 @@ impl LiveVcpuTimeCallbackState {
                     ceiling_icount,
                 });
             }
+            let boundary = match kind {
+                DeferredVmstopKind::Selectable => "selectable-sim-publication",
+                DeferredVmstopKind::CampaignMarker => "campaign-marker-sim-publication",
+            };
+            self.notice_claimed_stop(boundary, raw_icount, current_icount);
             if kind == DeferredVmstopKind::Selectable {
                 rebind_selectable_pending_boundary(raw_icount, current_icount).map_err(
                     |source| LiveVcpuTimeCallbackError::WhiteboxCallback {
@@ -1945,10 +1956,6 @@ impl LiveVcpuTimeCallbackState {
             .map_err(|source| LiveVcpuTimeCallbackError::PublishPause { source })?;
             self.last_raw_icount.store(raw_icount, Ordering::Release);
             self.last_icount.store(current_icount, Ordering::Release);
-            let boundary = match kind {
-                DeferredVmstopKind::Selectable => "selectable-sim-publication",
-                DeferredVmstopKind::CampaignMarker => "campaign-marker-sim-publication",
-            };
             self.request_checkpoint_vmstop(boundary)
         })();
         if let Err(error) = result {

@@ -95,7 +95,15 @@ impl LiveVcpuTimeCallbackState {
         boundary: &'static str,
         original: Option<network_output_stop::RetainedNetworkOutputStop>,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
+        let notice = self.capture_stop_caller(
+            boundary,
+            original
+                .as_ref()
+                .map(|stop| (stop.raw_icount, stop.logical_icount)),
+        );
+        self.notice_stop_before(notice);
         let status = (self.request_vmstop)();
+        self.notice_stop_after(notice, status);
         if let Some(original) = original {
             original.observe_admission(status);
         }
