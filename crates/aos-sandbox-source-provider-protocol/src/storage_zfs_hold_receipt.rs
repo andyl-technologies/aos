@@ -40,6 +40,82 @@ const MAXIMUM_VALIDITY_SECONDS: i64 = 60;
 pub const SIGNED_STORAGE_ZFS_HOLD_RECEIPT_BYTES_V1: usize =
     SUBJECT_BYTES + SIGNER_BYTES + SIGNATURE_BYTES;
 
+/// Bounds the existing canonical public AOSZHV01 enrollment image.
+pub const STORAGE_ZFS_HOLD_ENROLLMENT_BYTES_V1: usize = 160;
+
+/// Identifies the original enrollment decoder's ordered refusal categories.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum StorageZfsHoldEnrollmentErrorV1 {
+    /// The magic, version or reserved bytes differ.
+    #[error("ZFS hold verifier header")]
+    Header,
+    /// The public-key field cannot be decoded.
+    #[error("ZFS hold verifier key")]
+    Key,
+    /// The public-key digest differs from the exact key bytes.
+    #[error("ZFS hold verifier key digest")]
+    KeyDigest,
+    /// The dedicated signer tuple is noncanonical.
+    #[error("ZFS hold verifier signer")]
+    Signer,
+    /// The key is malformed or weak for strict Ed25519 signature verification.
+    #[error("ZFS hold verifier public key")]
+    PublicKey,
+    /// A fixed field cannot be decoded in full.
+    #[error("ZFS hold verifier truncated")]
+    Truncated,
+}
+
+/// Decodes public enrollment DATA without establishing its protected origin.
+///
+/// The owning consumer must independently authenticate these exact bytes and
+/// their role, epoch and currentness. This function opens no file and grants
+/// no Session, signing, floor, receipt acceptance or Storage effect authority.
+///
+/// ```text
+/// AOSZHV01 | version:u16be=1 | reserved[6]=0 | authority[56] |
+/// key-id[16] | key-generation:u64be | public-key[32] | sha256(key)[32]
+/// ```
+///
+/// # Errors
+///
+/// Rejects the header, key digest, signer and key in their original order.
+pub fn decode_storage_zfs_hold_enrollment_v1(
+    bytes: &[u8; STORAGE_ZFS_HOLD_ENROLLMENT_BYTES_V1],
+) -> Result<StorageZfsHoldVerifierV1, StorageZfsHoldEnrollmentErrorV1> {
+    use StorageZfsHoldEnrollmentErrorV1 as Error;
+
+    if bytes[..8] != *b"AOSZHV01"
+        || bytes[8..10] != 1_u16.to_be_bytes()
+        || bytes[10..16] != [0; 6]
+    {
+        return Err(Error::Header);
+    }
+    let public_key: [u8; 32] = bytes[96..128].try_into().map_err(|_| Error::Key)?;
+    if Sha256::digest(public_key).as_slice() != &bytes[128..160] {
+        return Err(Error::KeyDigest);
+    }
+
+    let signer = StorageZfsHoldSignerV1::new(
+        enrollment_array(bytes, 16)?,
+        u64::from_be_bytes(enrollment_array(bytes, 32)?),
+        ObjectDigest::from_bytes(enrollment_array(bytes, 40)?),
+        enrollment_array(bytes, 72)?,
+        u64::from_be_bytes(enrollment_array(bytes, 88)?),
+    )
+    .map_err(|_| Error::Signer)?;
+    StorageZfsHoldVerifierV1::new(signer, public_key).map_err(|_| Error::PublicKey)
+}
+
+fn enrollment_array<const N: usize>(
+    bytes: &[u8; STORAGE_ZFS_HOLD_ENROLLMENT_BYTES_V1],
+    offset: usize,
+) -> Result<[u8; N], StorageZfsHoldEnrollmentErrorV1> {
+    bytes[offset..offset + N]
+        .try_into()
+        .map_err(|_| StorageZfsHoldEnrollmentErrorV1::Truncated)
+}
+
 /// Rejects malformed, unauthenticated, stale, or mismatched hold receipts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum StorageZfsHoldReceiptErrorV1 {

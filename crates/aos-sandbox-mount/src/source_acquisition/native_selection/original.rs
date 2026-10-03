@@ -33,6 +33,9 @@ use crate::source_acquisition::{
 mod pending;
 use pending::OriginalNativePendingFlightV5;
 
+mod positive;
+use positive::OriginalNativePositiveFlightV5;
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Stage {
     BeginQuery,
@@ -79,6 +82,7 @@ pub(in crate::source_acquisition) struct OriginalNativeAcquireFlightV5 {
     acquire_send_attempted: bool,
     sent: Option<SentMountProviderRequestV2>,
     pending: OriginalNativePendingFlightV5,
+    positive: OriginalNativePositiveFlightV5,
 }
 
 /// Fails the genuine original flight and actual Session on returned error or unwind.
@@ -162,6 +166,7 @@ impl OriginalNativeAcquireFlightV5 {
             acquire_send_attempted: false,
             sent: None,
             pending: OriginalNativePendingFlightV5::new(),
+            positive: OriginalNativePositiveFlightV5::new(),
         }
     }
 

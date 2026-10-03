@@ -16,6 +16,9 @@ use helpers::*;
 #[path = "outcome/receive.rs"]
 mod receive;
 
+pub(in crate::handshake::mount_request) use receive::verified_source_root_profile;
+pub(in crate::handshake::mount_request) use receive::finish_source_root_verification;
+
 fn startup_adoption_capability(
     prepared: crate::PreparedStartupMountSourceAdoptionV2,
 ) -> Result<crate::RecoveredRetainedMountSourceRootV2, crate::PreparedStartupMountSourceAdoptionV2>
@@ -1372,6 +1375,45 @@ impl CurrentRootMountSourceProviderSessionV1 {
             aos_sandbox_source_provider_protocol::SourceRootObservationV1,
         >,
     ) -> Result<VerifiedMountProviderOutcomeV2, SourceProviderSecurityError> {
+        self.verify_provider_outcome_bytes_inner_v5(
+            catalog_journal,
+            authorization,
+            canonical_response,
+            source_root_observation,
+            None,
+        )
+    }
+
+    // This branch prepares CAS DATA only. The actual received owner must still
+    // join the protected phase3 readback before any Root acceptance is signed.
+    pub(super) fn check_original_complete_bytes_v5(
+        &mut self,
+        authorization: &AuthorizedMountProviderOutcomeV2,
+        retained: &native_pending::OriginalNativeReceivedOutcomeV5,
+        observation: aos_sandbox_source_provider_protocol::SourceRootObservationV1,
+    ) -> Result<VerifiedMountProviderOutcomeV2, SourceProviderSecurityError> {
+        let record = retained
+            .original_complete_record_v5()
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        self.verify_provider_outcome_bytes_inner_v5(
+            None,
+            authorization,
+            record.payload.clone(),
+            Some(observation),
+            Some(retained),
+        )
+    }
+
+    fn verify_provider_outcome_bytes_inner_v5(
+        &mut self,
+        catalog_journal: Option<&aos_sandbox::ProtectedJournalAuthority<'_>>,
+        authorization: &AuthorizedMountProviderOutcomeV2,
+        canonical_response: Vec<u8>,
+        source_root_observation: Option<
+            aos_sandbox_source_provider_protocol::SourceRootObservationV1,
+        >,
+        original_complete: Option<&native_pending::OriginalNativeReceivedOutcomeV5>,
+    ) -> Result<VerifiedMountProviderOutcomeV2, SourceProviderSecurityError> {
         self.revalidate()?;
         self.require_native_outcome_authorization_v3(authorization)?;
         let verification_started = super::current_unix_seconds()?;
@@ -1976,11 +2018,21 @@ impl CurrentRootMountSourceProviderSessionV1 {
                 anchor
             }
         };
-        native_catalog::require_native_completion_barrier(
-            authorization.native_outcome.is_some()
-                && status.status() == SourceProviderStatus::Complete,
-        )
-        .map_err(|error| self.poison(error))?;
+        match original_complete {
+            None => native_catalog::require_native_completion_barrier(
+                authorization.native_outcome.is_some()
+                    && status.status() == SourceProviderStatus::Complete,
+            )
+            .map_err(|error| self.poison(error))?,
+            Some(retained) => {
+                retained.require_checked_complete_basis_v5(
+                    authorization,
+                    &canonical_response,
+                    source_root_observation,
+                    status.status(),
+                )?;
+            }
+        }
         Ok(VerifiedMountProviderOutcomeV2 {
             canonical_response,
             native_outcome: native_catalog::retain_original_outcome_owner(

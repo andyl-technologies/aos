@@ -19,11 +19,12 @@ enum PendingStage {
     PrepareAppend,
     Commit,
     Complete,
+    Positive,
 }
 
 pub(super) struct OriginalNativePendingFlightV5 {
     stage: PendingStage,
-    received: Option<OriginalNativeReceivedOutcomeV5>,
+    pub(super) received: Option<OriginalNativeReceivedOutcomeV5>,
     owners: Option<JournalTransaction>,
     tentative: Option<SourceAcquisitionTableV2>,
     append: Option<PreparedOriginalRootAppendV5>,
@@ -44,7 +45,7 @@ impl OriginalNativePendingFlightV5 {
 }
 
 impl OriginalNativeAcquireFlightV5 {
-    /// Advances only actual original zero-FD Pending; positive paths stay closed.
+    /// Dispatches the same parked first record into Pending or local acceptance.
     pub(in crate::source_acquisition) fn advance_pending(
         &mut self,
         table: &mut SourceAcquisitionTableV2,
@@ -77,6 +78,9 @@ impl OriginalNativeAcquireFlightV5 {
         session: &mut CurrentRootMountSourceProviderSessionV1,
         sent: &SentProviderQueryV2,
     ) -> Result<bool> {
+        if self.pending.stage == PendingStage::Positive {
+            return self.advance_positive(table, native_index, writer, session, sent);
+        }
         let phase1 = self
             .root1_append
             .as_ref()
@@ -91,7 +95,7 @@ impl OriginalNativeAcquireFlightV5 {
             PendingStage::Receive => {
                 Self::install(table, native_index, writer, phase1)?;
                 if !session
-                    .advance_original_native_outcome_receive_v5(
+                    .advance_original_native_first_receive_v5(
                         writer,
                         phase1,
                         authorization,
@@ -99,6 +103,12 @@ impl OriginalNativeAcquireFlightV5 {
                     )
                     .map_err(|_| state_error("original Pending receive is retained/closed"))?
                 {
+                    return Ok(false);
+                }
+                if self.pending.received.as_ref()
+                    .is_some_and(OriginalNativeReceivedOutcomeV5::has_original_held_v5)
+                {
+                    self.pending.stage = PendingStage::Positive;
                     return Ok(false);
                 }
                 self.pending.stage = PendingStage::PrepareOwners;
@@ -227,6 +237,7 @@ impl OriginalNativeAcquireFlightV5 {
                     .map_err(|_| state_error("original Pending completed cut lost currentness"))?;
                 return Ok(true);
             }
+            PendingStage::Positive => return Err(state_error("original positive dispatch changed")),
         }
 
         Ok(self.pending.stage == PendingStage::Complete)

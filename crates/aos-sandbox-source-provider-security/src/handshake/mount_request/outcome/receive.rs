@@ -7,6 +7,22 @@ use crate::source_root_snapshot::SourceRootObservationProfileV1;
 use aos_sandbox_linux::inventory::ReadOnlyDirectorySnapshot;
 
 impl CurrentRootMountSourceProviderSessionV1 {
+    // Shares only the existing snapshot projection, not another physical read.
+    pub(crate) fn original_physical_observation_v5(
+        snapshot: &ReadOnlyDirectorySnapshot,
+    ) -> Result<aos_sandbox_source_provider_protocol::SourceRootObservationV1, SourceProviderSecurityError> {
+        aos_sandbox_source_provider_protocol::SourceRootObservationV1::new(
+            snapshot.boot_id,
+            snapshot.device,
+            snapshot.inode,
+            snapshot.mount_id.get(),
+            true,
+            true,
+            true,
+        )
+        .map_err(|_| SourceProviderSecurityError::DescriptorObservation)
+    }
+
     /// Advances one descriptor-free Inventory reply on the separate provider channel.
     ///
     /// The retained authorization names the exact signed request and response
@@ -213,17 +229,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
         // existing verifier authenticates the full outcome against these facts.
         let expected_snapshot = ReadOnlyDirectorySnapshot::capture(descriptor.as_fd())
             .map_err(|_| self.poison(SourceProviderSecurityError::DescriptorObservation))?;
-        let physical_observation =
-            aos_sandbox_source_provider_protocol::SourceRootObservationV1::new(
-                expected_snapshot.boot_id,
-                expected_snapshot.device,
-                expected_snapshot.inode,
-                expected_snapshot.mount_id.get(),
-                true,
-                true,
-                true,
-            )
-            .map_err(|_| self.poison(SourceProviderSecurityError::DescriptorObservation))?;
+        let physical_observation = Self::original_physical_observation_v5(&expected_snapshot)
+            .map_err(|error| self.poison(error))?;
         self.require_complete_acquire_association(
             authorization.session_binding,
             socket_cookie,
@@ -284,7 +291,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
     }
 }
 
-fn verified_source_root_profile(
+pub(in crate::handshake::mount_request) fn verified_source_root_profile(
     verified: &VerifiedMountProviderOutcomeV2,
 ) -> Result<SourceRootObservationProfileV1, SourceProviderSecurityError> {
     let response = decode_acquire_response(&verified.canonical_response)
@@ -304,7 +311,7 @@ fn verified_source_root_profile(
     })
 }
 
-fn finish_source_root_verification(
+pub(in crate::handshake::mount_request) fn finish_source_root_verification(
     verified: &mut VerifiedMountProviderOutcomeV2,
     authorization: &AuthorizedMountProviderOutcomeV2,
     original_lease_expiry: i64,
