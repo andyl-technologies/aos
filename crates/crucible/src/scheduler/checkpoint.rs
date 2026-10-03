@@ -216,7 +216,7 @@ impl From<&EventLog> for EventLogWire {
             segment_dependencies: log.segment_dependencies.clone(),
             bytes: log.offset.bytes,
             events: log.offset.events,
-            condition_entries: log.condition_entries.clone(),
+            condition_entries: log.retained_entries().to_vec(),
             condition_base_events: log.condition_base_events,
         }
     }
@@ -677,7 +677,9 @@ fn restore_event_log(
         return Err(SingleSchedulerCheckpointError::EventLog);
     }
     let condition_prefix = if checkpoint.condition_entries.is_empty() {
-        ConditionEventLogPrefix::genesis().with_event_log_offset(offset)
+        ConditionEventLogPrefix::genesis()
+            .with_base_sequence(checkpoint.condition_base_events)
+            .with_event_log_offset(offset)
     } else {
         ConditionEventLogPrefix::from_scheduler_event_log_entries_with_base_sequence(
             checkpoint.condition_entries.clone(),
@@ -691,7 +693,6 @@ fn restore_event_log(
     log.offset = offset;
     log.bytes = offset.bytes;
     log.events = offset.events;
-    log.condition_entries = checkpoint.condition_entries.clone();
     log.condition_base_events = checkpoint.condition_base_events;
     log.condition_prefix = condition_prefix;
     Ok(())
