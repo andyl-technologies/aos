@@ -2140,6 +2140,13 @@ is added rather than editing history.
     current defaults. Identity domains, evaluator profile, media types,
     requirement IDs, gate names and draft version remain unchanged. The
     extension is registered before T1's encoding freeze.
+  - **Reviewed witnesses:** The additive recorded-property section in
+    `reference/golden-vectors.md` supplies 21 complete contexts (including
+    unchanged version-one/two sentinels), 22 enclosing recipe/preimage/lookup
+    key models and 70 independently assembled format-negative inputs. Every
+    preceding reference byte is preserved. These ordinary claims establish
+    no registration, historical association, executable evaluator or authority;
+    implementations must still execute their owning codec comparisons.
   - **Affects:** ALG-38, PROP-4/30, PROV-14/16, DRV-21/22 and TEST-1 to
     TEST-3. Pure codecs and independent complete field/recipe-key witnesses
     remain required. Historical association, fresh evaluator binding and

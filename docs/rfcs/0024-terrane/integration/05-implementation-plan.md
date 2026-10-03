@@ -254,6 +254,18 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   It fails explicitly while the primitive generator, owning templates and
   reviewed normative publication are absent. No runtime association or task
   completion follows from this pure format prerequisite.
+  The reviewed codec candidate now passes parent combined qualification: all
+  597 core tests with zero skips (run
+  `c4309cc9-1fb6-4640-a839-6d28436ff83f`), strict core Clippy/rustdoc, both
+  mandatory formatters and the actual selector, merge, no-std and property
+  checks. Its full current-trunk aggregate still exits 1 at the legacy-state
+  compatibility assertion in `index-generation-manifest`; no task merges or
+  checkbox advancement follow. D-107's reviewed independent witnesses now
+  publish 113 complete wires (21 contexts, 22 recipes and 70 format negatives),
+  preserving all previous golden bytes. The complete golden gate additionally
+  requires their owning suite and a 30-section inventory; published-input and
+  combined qualification remain pending. Fresh historical association,
+  prefix-preserving policy evaluation and native propagation remain required.
   — satisfies ALG-15 to ALG-21, ALG-28 to ALG-39;
   `checks.terrane.gates.algebra-merge`, `checks.terrane.gates.algebra-fork`.
 - [ ] **T-PROP-1** Property resolution, types, boundary properties,

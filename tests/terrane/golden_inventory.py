@@ -49,6 +49,8 @@ SECTIONS = {
         ((0, 75, 75), ("recipe-context",)),
     "Owner-bound index and occurrence-carrier field witnesses":
         ((0, 176, 176), ("index",)),
+    "Recorded property trust context field witnesses":
+        ((0, 113, 113), ("recorded-context",)),
 }
 
 # These two sections contain only fixture metadata and reproduction instructions.

@@ -19,6 +19,7 @@
     prefix = "prefix-models.nix";
     publication = "publication-vectors.nix";
     recipe-context = "recipe-context-models.nix";
+    recorded-context = "recorded-context-models.nix";
     reconciliation = "reconciliation-models.nix";
     refs = "refs-models.nix";
     retirement = "retirement-models.nix";
