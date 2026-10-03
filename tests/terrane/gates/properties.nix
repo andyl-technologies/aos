@@ -3,6 +3,11 @@
     cargo test --frozen --offline -p terrane-core --lib ${filter} > "$TMPDIR/test.log"
     python3 -c 'import pathlib, re, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit(not re.search(r"test result: ok\. [1-9][0-9]* passed; 0 failed", output))' "$TMPDIR/test.log"
   '';
+
+  runNativeTest = name: ''
+    cargo test --frozen --offline -p terrane --no-default-features --features tokio,surface-sdk --lib ${name} -- --exact > "$TMPDIR/test.log"
+    python3 -c 'import pathlib, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit("test result: ok. 1 passed; 0 failed" not in output or "test " + sys.argv[2] + " ... ok" not in output)' "$TMPDIR/test.log" "${name}"
+  '';
 in {
   property-resolution = sourceGate "property-resolution" ''
     cd crates
@@ -27,6 +32,9 @@ in {
     ${runTests "provenance::root_context::snapshot::tests::snapshot_recorded_revisions_follow_full_and_parent_graft_paths -- --exact"}
     ${runTests "provenance::root_context::snapshot::tests::snapshot_recorded_revisions_reject_untrusted_names_and_placement -- --exact"}
     ${runTests "provenance::root_context::snapshot::tests::authoring_plans_use_explicit_recorded_property_context -- --exact"}
+    ${runNativeTest "guard::recorded_properties::tests::explicit_read_configuration_refuses_missing_view_root_and_mode_mismatches"}
+    ${runNativeTest "guard::recorded_properties::tests::retained_read_configuration_preserves_fixed_graft_interpretations"}
+    ${runNativeTest "guard::recorded_properties::tests::selected_read_configuration_constructs_checked_recorded_evaluators"}
     printf 'PASS: closed registry and view-path property resolution\n' > "$out/result"
   '';
 

@@ -145,8 +145,12 @@ checked view/root evidence and actual recipe rebinding; the new owned table
 retains caller configuration without authenticating its justification.
 Reviewed recorded-fold candidate `7f859c34bf33` passes all 606 core tests with
 zero skips, strict Clippy/rustdoc, its augmented merge gate, selector and no-std
-gates, and both formatters. Parent combined candidate `eaa190b4577b` is running
-the mandatory checks. The core case qualifies original-view binding through
+gates, and both formatters. Parent combined candidate `eaa190b4577b` passes
+both formatters and its actual merge, selector and no-std gates, plus the
+complete golden gate (19 owning suites and 30-section inventory). Its aggregate
+exits 1 at `store-idempotent-put`: physical-exclusion admission returns
+`Unsupported`. These results precede the new native interpretation cases.
+The core case qualifies original-view binding through
 exclusion preprocessing and fresh recipe replay; all incoming deltas are
 excluded, so it does not newly qualify conflict-policy winner selection or
 changed-domain preprocessing. Native historical sourcing and full native fold
@@ -320,8 +324,9 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   legacy contexts and inconsistent replay evidence refuse actual binding.
   Every incoming delta is excluded, so this case qualifies preprocessing and
   binding replay, without newly qualifying conflict-policy winner selection,
-  graft traversal or changed-domain preprocessing. Parent combined checks are
-  running; native historical sourcing and full native propagation remain open.
+  graft traversal or changed-domain preprocessing. Parent combined task checks
+  and formatters pass; its aggregate exits 1 at physical-exclusion admission.
+  Native historical sourcing and full native propagation remain open.
   — satisfies ALG-15 to ALG-21, ALG-28 to ALG-39;
   `checks.terrane.gates.algebra-merge`, `checks.terrane.gates.algebra-fork`.
 - [ ] **T-PROP-1** Property resolution, types, boundary properties,
@@ -426,6 +431,17 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   caller's justification, recover historical configuration, or grant authority.
   Native installation, snapshot propagation and live-policy separation remain
   subsequent obligations, with no task checkbox or freeze advancement.
+  The next immutable-read prerequisite installs the caller's owned table in a
+  deliberate legacy or recorded Guard mode, selects against the actually
+  checked view/root and retains that selection in its snapshot. Guard path
+  resolution and both repository read evaluators must use that one retained
+  interpretation. Explicit missing mappings and cross-mode or conflicting
+  snapshot configurations must refuse, including snapshots from another Guard.
+  Three exact native configuration/fence/checked-evaluator cases are mandatory
+  in `property-resolution`. Their implementation remains isolated; ordinary
+  configuration tests cannot qualify native historical verification, live ACL
+  changes, merge propagation or original-policy admission. Those integrations
+  remain separate requirements before T-PROP-1 or T-PROV-1 can complete.
   — satisfies TREE-14,
   PROP-1 to PROP-30;
   `checks.terrane.gates.property-resolution`,
