@@ -188,9 +188,14 @@ committed profile rather than replacing it with the image's initial selection.
 
 ## Supplement `host.nix` at runtime
 
-Runtime modules layer local operator intent over the authenticated platform
-`host.nix`; they never overwrite or copy it. AOS discovers safe `.nix` files
-recursively beneath `/var/lib/aos/config/modules.d`, snapshots the complete
+Runtime modules compose local operator intent with the retained platform modules.
+On the first edit, APM initializes an absent worktree from the committed operator
+sources, including boot-delivered `host.nix` and its relative imports. An existing
+worktree, including an intentionally empty one, remains authoritative. Use
+`apm config replace host.nix ./host.nix` to edit that boot configuration.
+
+AOS discovers safe `.nix` files recursively beneath
+`/var/lib/aos/config/modules.d`, snapshots the complete
 tree into the Nix store, and passes every public entrypoint directly to the
 same module evaluator. Names beginning with `_` are private helper files and
 directories: public modules may import them, but AOS does not evaluate them as
