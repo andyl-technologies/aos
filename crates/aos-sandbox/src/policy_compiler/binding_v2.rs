@@ -97,6 +97,7 @@ pub use producer::{
     propose_closed_current_create_explicit_policy_binding_v2,
     propose_closed_current_create_policy_binding_v2,
 };
+pub(super) use producer::{ClosedCreateProposalFieldViewV2, encode_closed_proposal_fields};
 pub use source_terminal::{
     CLOSED_SOURCE_TERMINAL_RECORD_BYTES_V1, ClosedSourceTerminalClaimV1,
     ClosedSourceTerminalRecordV1,
@@ -168,6 +169,43 @@ pub(super) struct ClosedPolicyRootBindingV2 {
 }
 
 impl ClosedPolicyRootBindingV2 {
+    // This decoder projection is unbranded DATA. Q04's Root owner separately
+    // verifies the pinned Controller packet and genuine same-flight gen1 cut
+    // before these fields enter the shared compiler/proposal recipe.
+    pub(in crate::policy_compiler) fn q04_decode(
+        bytes: &[u8],
+    ) -> Result<Self, PolicyCompilerJournalErrorV1> {
+        Self::decode(bytes)
+    }
+
+    pub(in crate::policy_compiler) fn q04_compilation_commitments(
+        &self,
+    ) -> (ObjectDigest, ObjectDigest) {
+        (self.normalized_input, self.candidate)
+    }
+
+    pub(in crate::policy_compiler) fn q04_fields<'fields>(
+        &'fields self,
+        source_commitment: &'fields ObjectDigest,
+    ) -> ClosedCreateProposalFieldViewV2<'fields> {
+        ClosedCreateProposalFieldViewV2 {
+            source_commitment,
+            operation: &self.operation,
+            operation_revision: &self.operation_revision,
+            accepted_generation: &self.accepted_generation,
+            sandbox: &self.sandbox,
+            project: &self.project,
+            projection_revision: &self.projection_revision,
+            publisher_generation: &self.publisher_generation,
+            publisher_head: &self.publisher_head,
+            cache_domain_head: &self.cache_domain_head,
+            revocation_head: &self.revocation_head,
+            ancestry: &self.ancestry_head,
+            physical_partition: &self.physical_partition,
+            physical_cache: &self.physical_cache_head,
+        }
+    }
+
     fn canonical(&self) -> bool {
         self.issuer_owner != [0; 16]
             && self.project.as_bytes() != &[0; 16]
@@ -906,7 +944,178 @@ pub struct ClosedPolicyRootSessionV2<'journal> {
     postcommit: Option<ProtectedJournalSnapshot>,
 }
 
+// Reservation is comparison DATA. It owns the sole existing Stage encoding,
+// not a Root lease or permission to commit after the original cut changes.
+pub(super) struct Q04RootStageRecipeV1 {
+    project: ProjectId,
+    staged: StagedClosedPolicyRootBaseV2,
+    prior: Option<Vec<u8>>,
+    cut: ObjectDigest,
+    record: [u8; 96],
+    transaction: JournalTransaction,
+}
+
+impl Q04RootStageRecipeV1 {
+    pub(super) const fn project(&self) -> ProjectId {
+        self.project
+    }
+
+    pub(super) const fn staged(&self) -> StagedClosedPolicyRootBaseV2 {
+        self.staged
+    }
+
+    pub(super) const fn cut(&self) -> ObjectDigest {
+        self.cut
+    }
+
+    pub(super) const fn transaction(&self) -> &JournalTransaction {
+        &self.transaction
+    }
+
+    // The actual Q04 Root history has already proved the complete original
+    // before-state and every intervening self-append. This checks its sole
+    // reserved Stage row without restaging, renewing, or constructing a V8
+    // proof. Ordinary Stage/CAS entry points retain their existing checks.
+    pub(super) fn require_original_row(
+        &self,
+        journal: &Journal,
+        committed: bool,
+    ) -> Result<(), PolicyCompilerJournalErrorV1> {
+        let expected = if committed { Some(self.record.as_slice()) } else { self.prior.as_deref() };
+        if journal.get(RecordNamespace::DesiredState, STAGE_KEY) != expected {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        Ok(())
+    }
+
+    // Capacity DATA reuses the sole old binding/head/hold record encoders.
+    // It has no commit method or signer proof; the live Root action must
+    // independently rejoin its real staged CAS base and held owners.
+    pub(super) fn q04_binding_capacity_records(
+        &self,
+        proposed: &[u8],
+    ) -> Result<(Vec<JournalRecord>, JournalRecord), PolicyCompilerJournalErrorV1> {
+        let binding = ClosedPolicyRootBindingV2::decode(proposed)?;
+        let base = self.staged.base();
+        if binding.project != self.project
+            || binding.issuer_owner != base.issuer_owner()
+            || binding.root_predecessor != base.predecessor()
+            || binding.root_generation != base.next_generation()
+            || binding.handoff_epoch != base.next_generation()
+            || binding.barrier_epoch != base.next_generation()
+            || binding.deployment_signer_generation != base.deployment_signer_generation()
+            || binding.project_signer_generation != base.project_signer_generation()
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        let key = binding.key()?;
+        let head = closed_policy_binding_digest_v2(proposed)?;
+        let held = RootBindingHoldV1 {
+            issuer_owner: binding.issuer_owner, binding: head,
+            epoch: binding.handoff_epoch, held: true,
+        };
+        let records = vec![
+            JournalRecord::put(RecordNamespace::DesiredState, key, proposed.to_vec()),
+            JournalRecord::put(RecordNamespace::DesiredState, ROOT_BINDING_HEAD_KEY.to_vec(), head.as_bytes().to_vec()),
+            JournalRecord::put(RecordNamespace::DesiredState, HOLD_KEY.to_vec(), held.encode()?.to_vec()),
+        ];
+        let released = JournalRecord::put(
+            RecordNamespace::DesiredState, HOLD_KEY.to_vec(),
+            RootBindingHoldV1 { held: false, ..held }.encode()?.to_vec(),
+        );
+        Ok((records, released))
+    }
+
+    // The prehold transfer encodes the actual once-reserved base and Stage
+    // fields. Its separate record cut is not the B664-derived signer cut.
+    pub(super) fn preview_fields(&self) -> [u8; 128] {
+        let base = self.staged.base();
+        let mut fields = [0; 128];
+        fields[..16].copy_from_slice(&base.issuer_owner());
+        fields[16..48].copy_from_slice(base.predecessor().as_bytes());
+        fields[48..56].copy_from_slice(&base.next_generation().to_be_bytes());
+        fields[56..64].copy_from_slice(&base.deployment_signer_generation().to_be_bytes());
+        fields[64..72].copy_from_slice(&base.project_signer_generation().to_be_bytes());
+        fields[72..88].copy_from_slice(&self.staged.challenge());
+        fields[88..96].copy_from_slice(&self.staged.issue_epoch().to_be_bytes());
+        fields[96..128].copy_from_slice(self.cut.as_bytes());
+        fields
+    }
+}
+
 impl ClosedPolicyRootSessionV2<'_> {
+    // The challenge is the actual original gen1 Root owner's once-selected
+    // nonce. There is deliberately no entropy callback or fallback here.
+    pub(super) fn q04_preview_stage(
+        &self,
+        original_nonce: [u8; 16],
+    ) -> Result<Q04RootStageRecipeV1, PolicyCompilerJournalErrorV1> {
+        if self.postcommit.is_some() {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        let (predecessor, next_generation, count) = current_root_binding_chain(&self.authority)?;
+        if count >= MAXIMUM_POLICY_BINDINGS
+            || current_hold(&self.authority, predecessor, next_generation, count)?
+                .is_some_and(|hold| hold.held)
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        let base = self.current_base()?;
+        let prior = self.authority.get(STAGE_KEY)?;
+        let (prior_epoch, prior_nonce) = STAGE_CODEC
+            .read_prior(prior)
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        let issue_epoch = prior_epoch
+            .checked_add(1)
+            .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+        if original_nonce == [0; 16] || original_nonce == prior_nonce {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+
+        let cut = self.identity.stage_cut(base);
+        if cut.as_bytes() == &[0; 32] {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        let record = STAGE_CODEC.encode(issue_epoch, original_nonce, cut);
+        let transaction = STAGE_CODEC.transaction(record)?;
+        self.authority
+            .preflight_transactions(std::slice::from_ref(&transaction))?;
+
+        Ok(Q04RootStageRecipeV1 {
+            project: self.identity.project,
+            staged: StagedClosedPolicyRootBaseV2 {
+                base,
+                challenge: original_nonce,
+                issue_epoch,
+            },
+            prior: prior.map(<[u8]>::to_vec),
+            cut,
+            record,
+            transaction,
+        })
+    }
+
+    // Repeat the real before-state checks without sampling or advancing the
+    // nonce. A permitted intervening Q04 claim does not waive these names.
+    pub(super) fn q04_require_stage_recipe(
+        &self,
+        recipe: &Q04RootStageRecipeV1,
+        original_nonce: [u8; 16],
+    ) -> Result<(), PolicyCompilerJournalErrorV1> {
+        let current = self.q04_preview_stage(original_nonce)?;
+        if current.project != recipe.project
+            || current.staged != recipe.staged
+            || current.prior != recipe.prior
+            || current.cut != recipe.cut
+            || current.record != recipe.record
+            || current.transaction.id() != recipe.transaction.id()
+            || current.transaction.records() != recipe.transaction.records()
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        Ok(())
+    }
+
     /// Reads the current root CAS base under the same held writer.
     ///
     /// # Errors
@@ -1860,6 +2069,42 @@ fn with_closed_policy_binding_session_in_journal_v2<R>(
     controller_gid: u32,
     exchange: impl FnOnce(&mut ClosedPolicyRootSessionV2<'_>) -> R,
 ) -> Result<R, PolicyCompilerJournalErrorV1> {
+    let mut session = closed_policy_binding_session_in_journal_v2(
+        journal,
+        expected_deployment_packet,
+        deployment_signer_generation,
+        deployment_key,
+        project_head,
+        project_record,
+        project_signer_generation,
+        project_key,
+        controller_uid,
+        controller_gid,
+    )?;
+    let result = exchange(&mut session);
+    let snapshot = session
+        .postcommit
+        .as_ref()
+        .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+    session.authority.validate_snapshot_for_effect(snapshot)?;
+    Ok(result)
+}
+
+// Both the old effectful exchange and Q04's nonissuing preview use this same
+// fixed-record/pin/identity admission. It does not open another Root writer.
+#[allow(clippy::too_many_arguments)]
+fn closed_policy_binding_session_in_journal_v2<'journal>(
+    journal: &'journal mut Journal,
+    expected_deployment_packet: &[u8],
+    deployment_signer_generation: u64,
+    deployment_key: &VerifyingKey,
+    project_head: RootProjectHeadFieldsV2,
+    project_record: Option<(&[u8], &[u8])>,
+    project_signer_generation: u64,
+    project_key: &VerifyingKey,
+    controller_uid: u32,
+    controller_gid: u32,
+) -> Result<ClosedPolicyRootSessionV2<'journal>, PolicyCompilerJournalErrorV1> {
     if controller_uid == 0 || controller_gid == 0 {
         return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
     }
@@ -1921,18 +2166,57 @@ fn with_closed_policy_binding_session_in_journal_v2<R>(
         project_signer_generation,
         issuer_owner,
     };
-    let mut session = ClosedPolicyRootSessionV2 {
+    Ok(ClosedPolicyRootSessionV2 {
         authority,
         identity,
         postcommit: None,
-    };
-    let result = exchange(&mut session);
-    let snapshot = session
-        .postcommit
-        .as_ref()
-        .ok_or(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
-    session.authority.validate_snapshot_for_effect(snapshot)?;
-    Ok(result)
+    })
+}
+
+// The actual Root owner supplies its already-held journal and fixed signed
+// credentials. The returned Stage recipe is DATA and cannot publish or commit.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn q04_preview_stage_in_journal_v1(
+    journal: &mut Journal,
+    expected_deployment_packet: &[u8],
+    deployment_signer_generation: u64,
+    deployment_key: &VerifyingKey,
+    project_packet: &[u8],
+    project_input: &[u8],
+    project_signer_generation: u64,
+    project_key: &VerifyingKey,
+    controller_uid: u32,
+    controller_gid: u32,
+    now_unix_seconds: i64,
+    original_nonce: [u8; 16],
+) -> Result<Q04RootStageRecipeV1, PolicyCompilerJournalErrorV1> {
+    let verified = verify_signed_project_policy_source_v2(
+        project_packet,
+        project_input,
+        project_key,
+        now_unix_seconds,
+    )
+    .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?;
+    let head = verified.head();
+    if head.deployment_signer_generation() != deployment_signer_generation
+        || head.project_signer_generation() != project_signer_generation
+    {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+
+    let session = closed_policy_binding_session_in_journal_v2(
+        journal,
+        expected_deployment_packet,
+        deployment_signer_generation,
+        deployment_key,
+        head.into(),
+        Some((project_packet, project_input)),
+        project_signer_generation,
+        project_key,
+        controller_uid,
+        controller_gid,
+    )?;
+    session.q04_preview_stage(original_nonce)
 }
 
 fn current_root_binding_chain(
@@ -2715,6 +2999,88 @@ mod tests {
         binding.barrier_epoch = 1;
         binding.handoff_epoch = 1;
         binding
+    }
+
+    #[test]
+    fn q04_stage_issue_epoch_is_not_the_binding_handoff_epoch() {
+        // Pure canonical DATA only: a prior failed Stage does not advance the
+        // actual binding chain and does not supply any live owner or lease.
+        let binding = cas_fixture();
+        let proposed = binding.encode().unwrap();
+        let base = ClosedPolicyRootCasBaseV2::from_untrusted_remote_fields(
+            binding.issuer_owner,
+            binding.root_predecessor,
+            binding.root_generation,
+            binding.deployment_signer_generation,
+            binding.project_signer_generation,
+        )
+        .unwrap();
+        let original_nonce = [37; 16];
+        let staged = StagedClosedPolicyRootBaseV2::from_untrusted_remote_fields(
+            base,
+            original_nonce,
+            9,
+        )
+        .unwrap();
+        let conflated = StagedClosedPolicyRootBaseV2::from_untrusted_remote_fields(
+            base,
+            original_nonce,
+            binding.handoff_epoch,
+        )
+        .unwrap();
+
+        let record = STAGE_CODEC.encode(9, original_nonce, identity(&binding).stage_cut(base));
+        let challenge = staged_closed_policy_signer_challenge_v2(staged, &proposed).unwrap();
+        let wrong = staged_closed_policy_signer_challenge_v2(conflated, &proposed).unwrap();
+
+        assert_eq!(STAGE_CODEC.read_prior(Some(&record)), Some((9, original_nonce)));
+        assert_eq!(staged.issue_epoch(), 9);
+        assert_eq!(staged.base().next_generation(), 1);
+        assert_eq!(binding.handoff_epoch, 1);
+        assert_eq!(challenge.nonce(), original_nonce);
+        assert_ne!(challenge.cut(), wrong.cut());
+        assert_eq!(STAGE_CODEC.transaction(record).unwrap().records().len(), 1);
+    }
+
+    #[test]
+    fn q04_prerequisite_generation_uses_handoff_not_source_or_stage_revision() {
+        // Pure codecs/constructors, not a real chain, owner or current floor.
+        let mut binding = cas_fixture();
+        binding.root_predecessor = ObjectDigest::from_bytes([31; 32]);
+        binding.root_generation = 3;
+        binding.barrier_epoch = 3;
+        binding.handoff_epoch = 3;
+        let base = ClosedPolicyRootCasBaseV2::from_untrusted_remote_fields(
+            binding.issuer_owner,
+            binding.root_predecessor,
+            binding.root_generation,
+            binding.deployment_signer_generation,
+            binding.project_signer_generation,
+        ).unwrap();
+        let staged = StagedClosedPolicyRootBaseV2::from_untrusted_remote_fields(
+            base, [37; 16], 9,
+        ).unwrap();
+        let tuple = |generation| super::super::PolicyPublicationPrerequisitesV1::new(
+            binding.ancestry_head,
+            binding.compiler_head,
+            binding.cache_domain_head,
+            binding.revocation_head,
+            generation,
+        ).unwrap();
+
+        let actual = tuple(staged.base().next_generation());
+        let conflated_stage = tuple(staged.issue_epoch());
+        let conflated_source = tuple(1);
+        let canonical = ClosedPolicyRootBindingV2::decode(&binding.encode().unwrap()).unwrap();
+
+        assert_eq!(actual.generation(), 3);
+        assert_eq!(actual.generation(), canonical.handoff_epoch);
+        assert_eq!(actual.generation(), canonical.barrier_epoch);
+        assert_eq!(actual.generation(), canonical.root_generation);
+        assert_ne!(actual.generation(), staged.issue_epoch());
+        assert_ne!(actual.generation(), 1);
+        assert_ne!(actual.digest(), conflated_stage.digest());
+        assert_ne!(actual.digest(), conflated_source.digest());
     }
 
     pub(super) fn matching_cache_hold(binding: &ClosedPolicyRootBindingV2) -> CachePolicyHoldV1 {

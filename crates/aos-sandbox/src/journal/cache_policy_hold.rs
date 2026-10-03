@@ -28,6 +28,11 @@ use aos_sandbox_core::{ObjectDigest, ProjectId};
 use sha2::{Digest as _, Sha256};
 
 use crate::policy_compiler::RootV8SettledGrantV1;
+#[cfg(target_os = "linux")]
+use crate::policy_compiler::create_q04::{
+    CACHE_PENDING_KEY, Q04CutIdentityV1, Q04PendingOwnerV1, Q04PendingRecordV1,
+    Q04TransactionOwnerV1,
+};
 
 use super::{
     Journal, JournalError, JournalLimits, JournalRecord, JournalTransaction,
@@ -257,6 +262,13 @@ impl CachePolicyHoldV1 {
         ))
     }
 
+    // Comparison DATA from the same canonical hold encoder. Actual native
+    // membership and the original owner loan still prove any live release.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn q04_released_record_digest(self) -> Result<ObjectDigest, JournalError> {
+        Self { held: false, ..self }.record_digest()
+    }
+
     fn validate(self) -> Result<(), JournalError> {
         if self.project.as_bytes() == &[0; 16]
             || self.partition.as_bytes() == &[0; 32]
@@ -423,9 +435,84 @@ fn v8_settlement_preflight_transaction(
     )
 }
 
-fn current_state(journal: &mut Journal) -> Result<CachePolicyHoldStateV1, JournalError> {
+struct CachePolicyHoldReadbackV1 {
+    legacy: CachePolicyHoldStateV1,
+    #[cfg(target_os = "linux")]
+    q04_pending: Option<Q04PendingRecordV1>,
+}
+
+// Writer capture and Root's read-only terminal observation reconstruct the
+// same canonical pending rows and native records. The latter supplies only
+// independently compared DATA and can never call a mutable gate.
+#[cfg(target_os = "linux")]
+struct Q04CacheHoldRecipeBodiesV1 {
+    held_marker: Q04PendingRecordV1,
+    released_marker: Q04PendingRecordV1,
+    transactions: [JournalTransaction; 3],
+}
+
+#[cfg(target_os = "linux")]
+fn q04_hold_recipe_bodies(
+    identity: &Q04CutIdentityV1,
+    names: super::ProtectedJournalNamesV1,
+    held: CachePolicyHoldV1,
+    release_authorization: ObjectDigest,
+) -> Result<Q04CacheHoldRecipeBodiesV1, crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+    use crate::policy_compiler::create_q04::{CreateQ04ErrorV1, PENDING_BYTES};
+
+    if !held.is_held() || held.project() != identity.project()
+        || held.binding() != identity.binding() || held.epoch() != identity.epoch()
+        || release_authorization.as_bytes() == &[0; 32]
+    {
+        return Err(CreateQ04ErrorV1::ChangedCut);
+    }
+    let released = CachePolicyHoldV1 { held: false, ..held };
+    let owner_recipe = ObjectDigest::from_bytes(
+        Sha256::new()
+            .chain_update(b"aos.sandbox.create-q04.cache-before-owner-recipe.v1\0")
+            .chain_update(names.to_bytes())
+            .chain_update(held.encode()?)
+            .chain_update(released.encode()?)
+            .finalize()
+            .into(),
+    );
+    let mut body = [0; PENDING_BYTES];
+    body[16..48].copy_from_slice(identity.digest().as_bytes());
+    body[48..64].copy_from_slice(&identity.nonce());
+    body[64..96].copy_from_slice(identity.binding().as_bytes());
+    body[96..104].copy_from_slice(&identity.epoch().to_be_bytes());
+    body[104..136].copy_from_slice(held.record_digest()?.as_bytes());
+    body[136..168].copy_from_slice(released.record_digest()?.as_bytes());
+    body[200..232].copy_from_slice(owner_recipe.as_bytes());
+    let held_marker = Q04PendingRecordV1::from_body(Q04PendingOwnerV1::Cache, 1, body)?;
+    body[168..200].copy_from_slice(release_authorization.as_bytes());
+    let released_marker = Q04PendingRecordV1::from_body(Q04PendingOwnerV1::Cache, 2, body)?;
+    released_marker.require_release_of(&held_marker)?;
+
+    let acquire = q04_transaction(identity, 1, owner_recipe, vec![
+        JournalRecord::put(RecordNamespace::DesiredState, HOLD_KEY.to_vec(), held.encode()?.to_vec()),
+        JournalRecord::put(RecordNamespace::DesiredState, CACHE_PENDING_KEY.to_vec(), held_marker.bytes().to_vec()),
+    ])?;
+    let release = q04_transaction(identity, 2, held_marker.digest(), vec![
+        JournalRecord::put(RecordNamespace::DesiredState, HOLD_KEY.to_vec(), released.encode()?.to_vec()),
+        JournalRecord::put(RecordNamespace::DesiredState, CACHE_PENDING_KEY.to_vec(), released_marker.bytes().to_vec()),
+    ])?;
+    let clear = q04_transaction(identity, 3, released_marker.digest(), vec![
+        JournalRecord::delete(RecordNamespace::DesiredState, CACHE_PENDING_KEY.to_vec()),
+    ])?;
+    Ok(Q04CacheHoldRecipeBodiesV1 {
+        held_marker, released_marker, transactions: [acquire, release, clear],
+    })
+}
+
+fn current_full_state(journal: &mut Journal) -> Result<CachePolicyHoldReadbackV1, JournalError> {
     let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
-    let mut records = authority.records()?;
+    decode_full_state(authority.records()?)
+}
+
+fn decode_full_state<'records>(
+    mut records: impl Iterator<Item = (&'records [u8], &'records [u8])>,
+) -> Result<CachePolicyHoldReadbackV1, JournalError> {
     if records.next() != Some((GENESIS_KEY, GENESIS)) {
         return Err(JournalError::ProtectedBoundary);
     }
@@ -434,8 +521,15 @@ fn current_state(journal: &mut Journal) -> Result<CachePolicyHoldStateV1, Journa
         Some(_) => return Err(JournalError::ProtectedBoundary),
         None => None,
     };
+    #[cfg(target_os = "linux")]
+    let mut q04_pending = None;
     let v8_pending = match records.next() {
         Some((V8_PENDING_KEY, value)) => Some(CachePolicyV8PendingSettlementV1::decode(value)?),
+        #[cfg(target_os = "linux")]
+        Some((CACHE_PENDING_KEY, value)) => {
+            q04_pending = Some(Q04PendingRecordV1::decode(Q04PendingOwnerV1::Cache, value)?);
+            None
+        }
         Some(_) => return Err(JournalError::ProtectedBoundary),
         None => None,
     };
@@ -445,11 +539,271 @@ fn current_state(journal: &mut Journal) -> Result<CachePolicyHoldStateV1, Journa
     if let Some(pending) = v8_pending {
         pending.validate_for(hold.ok_or(JournalError::ProtectedBoundary)?)?;
     }
-    Ok(CachePolicyHoldStateV1 { hold, v8_pending })
+    #[cfg(target_os = "linux")]
+    if let Some(marker) = &q04_pending {
+        let row = hold.ok_or(JournalError::ProtectedBoundary)?;
+        let held = CachePolicyHoldV1 { held: true, ..row };
+        let released = CachePolicyHoldV1 { held: false, ..row };
+        if marker.is_held() != row.is_held()
+            || marker.bytes()[64..96] != *row.binding().as_bytes()
+            || marker.bytes()[96..104] != row.epoch().to_be_bytes()
+            || marker.bytes()[104..136] != *held.record_digest()?.as_bytes()
+            || marker.bytes()[136..168] != *released.record_digest()?.as_bytes()
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+    }
+    Ok(CachePolicyHoldReadbackV1 {
+        legacy: CachePolicyHoldStateV1 { hold, v8_pending },
+        #[cfg(target_os = "linux")]
+        q04_pending,
+    })
+}
+
+fn current_state(journal: &mut Journal) -> Result<CachePolicyHoldStateV1, JournalError> {
+    let state = current_full_state(journal)?;
+    #[cfg(target_os = "linux")]
+    if state.q04_pending.is_some() {
+        // All legacy/V8 mutation and settlement adapters stay closed to the
+        // distinct Q04 purpose, including exact cold replay.
+        return Err(JournalError::ProtectedBoundary);
+    }
+    Ok(state.legacy)
 }
 
 fn current(journal: &mut Journal) -> Result<Option<CachePolicyHoldV1>, JournalError> {
-    Ok(current_state(journal)?.hold)
+    let state = current_full_state(journal)?;
+    #[cfg(target_os = "linux")]
+    if state.q04_pending.as_ref().is_some_and(|marker| !marker.is_held()) {
+        // Ordinary unheld/mutation checks cannot ignore a released-pending
+        // Q04 row. The held row remains observable by the existing signer.
+        return Err(JournalError::ProtectedBoundary);
+    }
+    Ok(state.legacy.hold)
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn require_q04_ordinary_boundary(
+    state: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    transaction: &JournalTransaction,
+) -> Result<(), JournalError> {
+    let writes_marker = transaction.records().iter().any(|record| {
+        record.namespace() == RecordNamespace::DesiredState && record.key() == CACHE_PENDING_KEY
+    });
+    let has_marker = state.keys().any(|(namespace, key)| {
+        *namespace == RecordNamespace::DesiredState && key == CACHE_PENDING_KEY
+    });
+    if writes_marker || has_marker {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    Ok(())
+}
+
+// This complete suffix is inert DATA. It does not supply the physical flock,
+// clock guard, live Root release/settlement or the in-cut Cache clearance loan.
+#[cfg(target_os = "linux")]
+pub(crate) struct CacheQ04TransactionRecipesV1<'cut> {
+    identity: &'cut Q04CutIdentityV1,
+    uid: u32,
+    names: super::ProtectedJournalNamesV1,
+    original_next: u64,
+    release_authorization: Option<ObjectDigest>,
+    prior: Option<CachePolicyHoldV1>,
+    held: CachePolicyHoldV1,
+    held_marker: Q04PendingRecordV1,
+    released_marker: Q04PendingRecordV1,
+    transactions: [JournalTransaction; 3],
+}
+
+#[cfg(target_os = "linux")]
+impl<'cut> CacheQ04TransactionRecipesV1<'cut> {
+    pub(crate) fn capture(
+        journal: &mut Journal,
+        ledger: &crate::reconciler::OriginalQ04ControllerLedgerV1,
+        identity: &'cut Q04CutIdentityV1,
+        selected: crate::cache_residency::CurrentProjectPhysicalCacheHeadV1,
+    ) -> Result<Self, crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
+
+        ledger.require_identity(identity)?;
+        let uid = journal.protected_owner_uid()?;
+        journal.require_protected_named_location(
+            Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT), NAME, uid, hold_limits(),
+        )?;
+        let before = current_state(journal)?;
+        if before.hold.is_some_and(CachePolicyHoldV1::is_held)
+            || before.v8_pending.is_some()
+            || selected.project() != identity.project()
+        {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        let names = journal.protected_writer_physical_names_v1()?;
+        let original_next = journal.snapshot_sequence();
+        let held = CachePolicyHoldV1::new(
+            selected.project(), selected.partition().digest(), selected.head(),
+            identity.binding(), identity.epoch(),
+        )?;
+        let bodies = q04_hold_recipe_bodies(
+            identity, names, held,
+            crate::policy_compiler::create_q04::lower_release_capacity_shape(identity),
+        )?;
+        let recipes = Self {
+            identity, uid, names, original_next, release_authorization: None,
+            prior: before.hold, held,
+            held_marker: bodies.held_marker,
+            released_marker: bodies.released_marker,
+            transactions: bodies.transactions,
+        };
+        recipes.require_fixed_journal(journal)?;
+        recipes.require_prefix(&journal.state, 0)?;
+        Ok(recipes)
+    }
+
+    pub(crate) fn transactions(&self) -> &[JournalTransaction; 3] {
+        &self.transactions
+    }
+
+    pub(crate) fn identity(&self) -> &Q04CutIdentityV1 {
+        self.identity
+    }
+
+    pub(crate) fn original_next(&self) -> u64 {
+        self.original_next
+    }
+
+    pub(crate) fn release_authorization(&self) -> Option<ObjectDigest> {
+        self.release_authorization
+    }
+
+    pub(crate) fn bind_observed_release(
+        &mut self,
+        journal: &mut Journal,
+        root: &crate::policy_compiler::create_q04::OriginalQ04RootCacheLoanV1<'_, '_, '_>,
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
+
+        if self.release_authorization.is_some() || !std::ptr::eq(self.identity, root.identity()) {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        let release = root.release_phase()?.digest();
+        root.require_lower_transition(1, Some(release))?;
+        self.require_fixed_journal(journal)?;
+        self.require_prefix(&journal.state, 1)?;
+        journal.require_q04_native_recipe_prefix_v1(&self.transactions[..1], self.original_next)?;
+        let bodies = q04_hold_recipe_bodies(self.identity, self.names, self.held, release)?;
+        if bodies.held_marker != self.held_marker || bodies.transactions[0] != self.transactions[0] {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        self.released_marker = bodies.released_marker;
+        self.transactions = bodies.transactions;
+        self.release_authorization = Some(release);
+        journal.preflight_cache_q04_remaining_v1(self, 1)?;
+        self.require_fixed_journal(journal)?;
+        root.require_lower_transition(1, Some(release))
+    }
+
+    pub(crate) fn clear_recipe_digest(
+        &self,
+    ) -> Result<ObjectDigest, crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        if self.release_authorization.is_none() {
+            return Err(crate::policy_compiler::create_q04::CreateQ04ErrorV1::ChangedCut);
+        }
+        super::q04_lower_clear_native_digest_v1(
+            self.identity, Q04TransactionOwnerV1::Cache, self.names,
+            self.original_next.checked_add(8).ok_or(JournalError::SequenceExhausted)?,
+            &self.transactions[2],
+        )
+    }
+
+    pub(crate) fn terminal_hold(&self, phase: super::Q04CacheTerminalPhaseV1) -> CachePolicyHoldV1 {
+        match phase {
+            super::Q04CacheTerminalPhaseV1::Held => self.held,
+            super::Q04CacheTerminalPhaseV1::Released | super::Q04CacheTerminalPhaseV1::Cleared => {
+                CachePolicyHoldV1 { held: false, ..self.held }
+            }
+        }
+    }
+
+    pub(crate) fn require_fixed_journal(&self, journal: &Journal) -> Result<(), JournalError> {
+        journal.require_protected_named_location(
+            Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT), NAME, self.uid, hold_limits(),
+        )?;
+        if journal.protected_writer_physical_names_v1()? != self.names {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn require_prefix(
+        &self,
+        state: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+        committed: usize,
+    ) -> Result<(), JournalError> {
+        if state.keys().any(|(namespace, _)| *namespace != RecordNamespace::DesiredState) {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        let readback = decode_full_state(state.iter().map(|((_, key), value)| {
+            (key.as_slice(), value.as_slice())
+        }))?;
+        if readback.legacy.v8_pending.is_some() {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        let released = CachePolicyHoldV1 { held: false, ..self.held };
+        let matches = match committed {
+            0 => readback.legacy.hold == self.prior && readback.q04_pending.is_none(),
+            1 => readback.legacy.hold == Some(self.held)
+                && readback.q04_pending.as_ref() == Some(&self.held_marker),
+            2 => readback.legacy.hold == Some(released)
+                && readback.q04_pending.as_ref() == Some(&self.released_marker),
+            3 => readback.legacy.hold == Some(released) && readback.q04_pending.is_none(),
+            _ => false,
+        };
+        if !matches {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn q04_clear_recipe_digest_data(
+    identity: &Q04CutIdentityV1,
+    names: super::ProtectedJournalNamesV1,
+    original_next: u64,
+    held: CachePolicyHoldV1,
+    release_authorization: ObjectDigest,
+) -> Result<ObjectDigest, crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+    let bodies = q04_hold_recipe_bodies(identity, names, held, release_authorization)?;
+    super::q04_lower_clear_native_digest_v1(
+        identity, Q04TransactionOwnerV1::Cache, names,
+        original_next.checked_add(8).ok_or(JournalError::SequenceExhausted)?,
+        &bodies.transactions[2],
+    )
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn require_q04_transition(
+    state: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    transaction: &JournalTransaction,
+    recipes: &CacheQ04TransactionRecipesV1<'_>,
+    index: usize,
+) -> Result<(), JournalError> {
+    if recipes.transactions().get(index) != Some(transaction) {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    recipes.require_prefix(state, index)
+}
+
+#[cfg(target_os = "linux")]
+fn q04_transaction(
+    identity: &Q04CutIdentityV1,
+    phase: u8,
+    predecessor: ObjectDigest,
+    records: Vec<JournalRecord>,
+) -> Result<JournalTransaction, JournalError> {
+    JournalTransaction::new(
+        Q04TransactionOwnerV1::Cache.transaction_id(identity, phase, predecessor)?, records,
+    )
 }
 
 fn v8_released_pair(
@@ -479,6 +833,48 @@ pub(super) fn require_valid_compaction(journal: &mut Journal) -> Result<(), Jour
 }
 
 impl ReadOnlyProtectedJournal {
+    // Only the distinct Root terminal DATA path selects this position. The
+    // same pending decoder and recipe builder validate the actual released
+    // row; the whole native suffix starts at the original signed prehold NEXT.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn q04_terminal_cache_policy_hold(
+        &mut self,
+        identity: &Q04CutIdentityV1,
+        phase: super::Q04CacheTerminalPhaseV1,
+        original_names: super::ProtectedJournalNamesV1,
+        original_next: u64,
+        held: CachePolicyHoldV1,
+        release_authorization: ObjectDigest,
+    ) -> Result<CachePolicyHoldV1, crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
+
+        if self.witness.name != NAME || self.physical_names_v1() != original_names
+            || matches!(phase, super::Q04CacheTerminalPhaseV1::Held)
+        {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        self.check_named_currentness()?;
+        let bodies = q04_hold_recipe_bodies(identity, original_names, held, release_authorization)?;
+        let current = current_full_state(&mut self.journal)?;
+        let released = CachePolicyHoldV1 { held: false, ..held };
+        if current.legacy.v8_pending.is_some() || current.legacy.hold != Some(released)
+            || match phase {
+                super::Q04CacheTerminalPhaseV1::Released => {
+                    current.q04_pending.as_ref() != Some(&bodies.released_marker)
+                }
+                super::Q04CacheTerminalPhaseV1::Cleared => current.q04_pending.is_some(),
+                super::Q04CacheTerminalPhaseV1::Held => true,
+            }
+        {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        self.journal.require_q04_native_recipe_prefix_v1(
+            &bodies.transactions[..phase.prefix()], original_next,
+        )?;
+        self.check_named_currentness()?;
+        Ok(released)
+    }
+
     /// Returns only an active, canonical hold from the fixed read-only name.
     pub(crate) fn held_cache_policy_hold(&mut self) -> Result<CachePolicyHoldV1, JournalError> {
         if self.witness.name != NAME {
@@ -491,6 +887,32 @@ impl ReadOnlyProtectedJournal {
 }
 
 impl Journal {
+    // Prepare observes the actual existing writer without granting a hold or
+    // accepting a pending terminal row. Full native replay is checked by the
+    // borrowing Journal engine before and after this materialized comparison.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn require_q04_cache_prepare_v1(
+        &self,
+    ) -> Result<Option<CachePolicyHoldV1>, JournalError> {
+        let uid = self.protected_owner_uid()?;
+        self.require_protected_named_location(
+            Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT), NAME, uid, hold_limits(),
+        )?;
+        let state = decode_full_state(self.state.iter().map(|((namespace, key), value)| {
+            (*namespace, key.as_slice(), value.as_slice())
+        }).filter_map(|(namespace, key, value)| {
+            (namespace == RecordNamespace::DesiredState).then_some((key, value))
+        }))?;
+        if self.state.keys().any(|(namespace, _)| *namespace != RecordNamespace::DesiredState)
+            || state.legacy.hold.is_some_and(CachePolicyHoldV1::is_held)
+            || state.legacy.v8_pending.is_some()
+            || state.q04_pending.is_some()
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(state.legacy.hold)
+    }
+
     /// Reads an active Cache hold while retaining its protected writer lock.
     ///
     /// # Errors

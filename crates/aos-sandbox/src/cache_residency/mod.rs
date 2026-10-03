@@ -34,6 +34,13 @@ pub mod pin;
 mod protected_journal;
 mod protected_owner;
 pub(crate) use protected_owner::PROTECTED_CACHE_ROOT;
+#[cfg(target_os = "linux")]
+pub(crate) use protected_owner::{
+    OriginalQ04CacheClearanceLoanV1, OriginalQ04CacheOwnerCutV1,
+    Q04CachePrepareReadbackV1,
+    Q04RootCacheTerminalOutcomeV1, Q04RootCacheTerminalRequestV1,
+    replay_fixed_root_q04_terminal_cache_journals_v1,
+};
 mod public_pin;
 pub mod read_authority;
 pub mod recovery;

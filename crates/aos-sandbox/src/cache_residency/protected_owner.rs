@@ -56,12 +56,19 @@ mod initialization;
 pub(super) mod project_usage;
 mod provisioning;
 mod root_read_only;
+#[cfg(target_os = "linux")]
+pub(crate) use root_read_only::{
+    Q04RootCacheTerminalOutcomeV1, Q04RootCacheTerminalRequestV1,
+    replay_fixed_root_q04_terminal_cache_journals_v1,
+};
 mod writer_readback;
 
 pub use pin_lookup::PublicLogicalPinAcquisitionCommitV1;
 #[cfg(target_os = "linux")]
 use pin_lookup::ResidentCachePinMutationV1;
 pub use initialization::{CacheResidentInitializationV1, CacheResidentUnavailableV1};
+#[cfg(target_os = "linux")]
+pub(crate) use initialization::{OriginalQ04CacheClearanceLoanV1, OriginalQ04CacheOwnerCutV1};
 pub use project_usage::{
     CacheProjectUsageLoanV1, CacheProjectUsageObservationErrorV1, CacheProjectUsagePartitionV1,
 };
@@ -77,6 +84,8 @@ pub use root_read_only::{
 };
 #[cfg(target_os = "linux")]
 pub use writer_readback::CacheResidencyWriterReadbackV2;
+#[cfg(target_os = "linux")]
+pub(crate) use writer_readback::Q04CachePrepareReadbackV1;
 #[cfg(target_os = "linux")]
 pub(crate) use writer_readback::CacheV8SettledClearV1;
 
@@ -2601,6 +2610,23 @@ pub(in crate::cache_residency) struct CacheClockWriterReadbackGuard<'clock> {
 }
 
 impl CacheClockWriterReadbackGuard<'_> {
+    #[cfg(target_os = "linux")]
+    pub(in crate::cache_residency) fn q04_prepare_coordinates(
+        &self,
+        hold: &Journal,
+    ) -> Result<(crate::journal::ProtectedJournalNamesV1, u64), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        self.revalidate()?;
+        let state = self.clock.state.lock()
+            .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        let journal = state.journal.as_ref().ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        self.clock.check_named_journal(journal)?;
+        journal.validate_protected_writer_name_witness(&self.witness)?;
+        journal.preflight_q04_cache_read_only_base_v1(hold)?;
+        let coordinates = (journal.protected_writer_physical_names_v1()?, journal.snapshot_sequence());
+        journal.validate_protected_writer_name_witness(&self.witness)?;
+        Ok(coordinates)
+    }
+
     /// Samples the original clock without reopening its held writer.
     ///
     /// # Errors

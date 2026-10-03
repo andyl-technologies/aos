@@ -26,9 +26,10 @@ use rustix::fs::{AtFlags, FileType, FlockOperation, Mode, OFlags, RenameFlags};
 use sha2::{Digest as _, Sha256};
 
 use super::owner_readback::{
-    CLOSED_CACHE_OWNER_READBACK_BYTES_V1, CacheOwnerReadbackChallengeV1, CacheOwnerReadbackErrorV1,
+    CLOSED_CACHE_OWNER_READBACK_BYTES_V1, CLOSED_CACHE_OWNER_READBACK_BYTES_V2,
+    CacheOwnerReadbackChallengeV1, CacheOwnerReadbackErrorV1,
     CacheOwnerReadbackFieldsV1, VerifiedClosedCacheOwnerReadbackV2, cache_owner_limits_digest_v1,
-    sign_closed_cache_owner_readback_v1,
+    sign_closed_cache_owner_readback_v1, sign_closed_cache_owner_readback_v2,
 };
 use super::{
     AuthorizedLookupKey, CacheAuthorityOwner, CachePinId, CacheReservationV1,
@@ -635,6 +636,33 @@ impl CacheOwnerHeldSnapshotV1<'_> {
             sign_closed_cache_owner_readback_v1(fields, challenge, signer_generation, signing_key)?;
         self.revalidate()?;
         Ok(bytes)
+    }
+
+    // The original Q04 initializer joins the protected writers separately and
+    // parks this complete signing result before its physical/native/clock
+    // postchecks. In particular, a postcheck cannot erase an actual signature.
+    #[cfg(target_os = "linux")]
+    pub(in crate::cache_residency) fn sign_original_q04_readback_v2(
+        &self,
+        readback: &super::protected_owner::CacheResidencyWriterReadbackV2,
+        challenge: CacheOwnerReadbackChallengeV1,
+        signer_generation: u64,
+        signing_key: &ed25519_dalek::SigningKey,
+    ) -> Result<[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2], CacheOwnerReadbackErrorV1> {
+        self.revalidate()?;
+        let fields = self.readback_fields()?;
+        let manifest = self.manifest_identity
+            .map(|identity| (identity.device, identity.inode));
+
+        sign_closed_cache_owner_readback_v2(
+            fields,
+            manifest,
+            readback.hold(),
+            readback.quota_digest(),
+            challenge,
+            signer_generation,
+            signing_key,
+        )
     }
 
     fn readback_fields(&self) -> Result<CacheOwnerReadbackFieldsV1, CacheOwnerReadbackErrorV1> {

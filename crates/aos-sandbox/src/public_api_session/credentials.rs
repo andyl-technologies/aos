@@ -39,6 +39,15 @@ const SOURCE_GENESIS_PACKET_NAMES: [&str; 2] = [
 ];
 const NIX_OWNER_DIRECTORY: &str = "/run/credentials/aos-sandbox-nixd.service";
 const NIX_CONTROLLER_DIRECTORY: &str = "/run/credentials/aos-sandboxd.service";
+const Q04_CONTROLLER_NAMES: [&str; 6] = [
+    "controller-hold-signing-key",
+    "controller-hold-public-key",
+    "cache-owner-readback-signing-key",
+    "cache-owner-readback-public-key",
+    "deployment-public-key",
+    "project-public-key",
+];
+const Q04_CONTROLLER_LENGTHS: [u64; 6] = [32, 80, 32, 80, 80, 80];
 const NIX_PUBLIC_NAMES: [&str; 12] = [
     "nix-recipe-issuer-v2",
     "nix-fixed-domain-pins-v2",
@@ -1198,69 +1207,86 @@ impl ControllerNixPublicCredentialCustodyV1 {
 
     fn observe_originals(&mut self) -> CredentialResult<()> {
         let uid = self.uid.ok_or_else(credential_state_rejected)?;
-        if rustix::process::geteuid().as_raw() != uid {
-            return Err(ControllerNixPublicCredentialErrorV1::rejected(
-                CredentialFailureClass::Stale,
-                CredentialOperation::DirectoryProvenance,
-            ));
-        }
-        recheck_credential_ancestors(&self.ancestors, uid)?;
-        open_directory_with_custody(
-            Path::new(NIX_CONTROLLER_DIRECTORY),
+        observe_controller_credential_readback(
             uid,
-            &mut DirectoryCustody::Resident(&mut self.readback.ancestors),
-        )?;
-        for (original, named) in self
-            .ancestors
-            .slots
-            .iter()
-            .zip(&self.readback.ancestors.slots)
-        {
-            if original.identity != named.identity {
-                return Err(ControllerNixPublicCredentialErrorV1::rejected(
-                    CredentialFailureClass::Stale,
-                    CredentialOperation::DirectoryProvenance,
-                ));
-            }
-        }
+            &NIX_PUBLIC_NAMES,
+            &[MAXIMUM_CREDENTIAL_BYTES; 12],
+            &mut self.originals,
+            &self.ancestors,
+            &mut self.readback,
+        )
+    }
+}
 
-        let directory = self.readback.ancestors.directory()?;
-        for (index, name) in NIX_PUBLIC_NAMES.iter().enumerate() {
-            let original = &mut self.originals[index];
-            observe_credential_readback(
-                original,
-                &mut self.readback.original_bytes[index],
-                &mut self.readback.named[index],
-                directory,
-                name,
-                uid,
-                CredentialReadProfile::Ordinary(MAXIMUM_CREDENTIAL_BYTES),
-            )?;
-        }
-
-        // These are descriptor bookends of a bounded local observation, not an
-        // atomic filesystem snapshot or external Source/Session currentness.
-        for (original, named) in self.originals.iter().zip(&self.readback.named) {
-            let public = original.public.as_ref().ok_or_else(credential_state_rejected)?;
-            recheck_credential_file(
-                original.read.file.as_ref().ok_or_else(credential_state_rejected)?,
-                public.file_identity,
-            )?;
-            recheck_credential_file(
-                named.file.as_ref().ok_or_else(credential_state_rejected)?,
-                public.file_identity,
-            )?;
-        }
-        recheck_credential_ancestors(&self.ancestors, uid)?;
-        recheck_credential_ancestors(&self.readback.ancestors, uid)?;
-        if rustix::process::geteuid().as_raw() != uid {
+fn observe_controller_credential_readback<const COUNT: usize>(
+    uid: u32,
+    names: &[&str; COUNT],
+    maximum_bytes: &[u64; COUNT],
+    originals: &mut [OriginalControllerCredential; COUNT],
+    ancestors: &CredentialAncestors,
+    readback: &mut CredentialReadback<COUNT>,
+) -> CredentialResult<()> {
+    if rustix::process::geteuid().as_raw() != uid {
+        return Err(ControllerNixPublicCredentialErrorV1::rejected(
+            CredentialFailureClass::Stale,
+            CredentialOperation::DirectoryProvenance,
+        ));
+    }
+    recheck_credential_ancestors(ancestors, uid)?;
+    open_directory_with_custody(
+        Path::new(NIX_CONTROLLER_DIRECTORY),
+        uid,
+        &mut DirectoryCustody::Resident(&mut readback.ancestors),
+    )?;
+    for (original, named) in ancestors
+        .slots
+        .iter()
+        .zip(&readback.ancestors.slots)
+    {
+        if original.identity != named.identity {
             return Err(ControllerNixPublicCredentialErrorV1::rejected(
                 CredentialFailureClass::Stale,
                 CredentialOperation::DirectoryProvenance,
             ));
         }
-        Ok(())
     }
+
+    let directory = readback.ancestors.directory()?;
+    for (index, name) in names.iter().enumerate() {
+        let original = &mut originals[index];
+        observe_credential_readback(
+            original,
+            &mut readback.original_bytes[index],
+            &mut readback.named[index],
+            directory,
+            name,
+            uid,
+            CredentialReadProfile::Ordinary(maximum_bytes[index]),
+        )?;
+    }
+
+    // These are descriptor bookends of a bounded local observation, not an
+    // atomic filesystem snapshot or external Source/Session currentness.
+    for (original, named) in originals.iter().zip(&readback.named) {
+        let public = original.public.as_ref().ok_or_else(credential_state_rejected)?;
+        recheck_credential_file(
+            original.read.file.as_ref().ok_or_else(credential_state_rejected)?,
+            public.file_identity,
+        )?;
+        recheck_credential_file(
+            named.file.as_ref().ok_or_else(credential_state_rejected)?,
+            public.file_identity,
+        )?;
+    }
+    recheck_credential_ancestors(ancestors, uid)?;
+    recheck_credential_ancestors(&readback.ancestors, uid)?;
+    if rustix::process::geteuid().as_raw() != uid {
+        return Err(ControllerNixPublicCredentialErrorV1::rejected(
+            CredentialFailureClass::Stale,
+            CredentialOperation::DirectoryProvenance,
+        ));
+    }
+    Ok(())
 }
 
 fn observe_credential_readback(
@@ -1573,6 +1599,264 @@ fn publisher_read_profile(index: usize) -> CredentialReadProfile {
         1 => CredentialReadProfile::PublisherPolicy,
         2 => CredentialReadProfile::Ordinary(32),
         _ => CredentialReadProfile::Ordinary(645),
+    }
+}
+
+
+/// Retains the original local credential failure or role-codec failure.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ControllerQ04CredentialErrorV1 {
+    /// The common fixed directory/read engine failed with its original cause.
+    #[error(transparent)]
+    Credential(#[from] ControllerNixPublicCredentialErrorV1),
+    /// The genuine Controller-only role pin rejected its canonical bytes.
+    #[error(transparent)]
+    Role(#[from] crate::policy_compiler::ControllerHoldReadbackErrorV1),
+    /// The existing Cache-purpose pin rejected its canonical bytes.
+    #[error(transparent)]
+    CacheRole(#[from] crate::cache_residency::CacheOwnerReadbackErrorV1),
+}
+
+/// Keeps both existing Controller and Cache role pairs in the selected owner.
+///
+/// This is only fixed credential custody. It supplies no Controller writer,
+/// startup admission, Root pin, current cut or authority to publish. The caller
+/// parks it before capture and retains it through all original-flight checks.
+pub(crate) struct ControllerQ04CredentialCustodyV1 {
+    originals: [OriginalControllerCredential; 6],
+    ancestors: CredentialAncestors,
+    readback: CredentialReadback<6>,
+    uid: Option<u32>,
+    phase: ControllerCredentialPhase,
+    failure: Option<ControllerQ04CredentialErrorV1>,
+    signer: Option<ed25519_dalek::SigningKey>,
+    pin: Option<crate::policy_compiler::PinnedControllerHoldSignerV1>,
+    cache_signer: Option<ed25519_dalek::SigningKey>,
+    cache_pin: Option<crate::cache_residency::PinnedCacheOwnerReadbackSignerV1>,
+    deployment_pin: Option<(u64, ed25519_dalek::VerifyingKey)>,
+    project_pin: Option<(u64, ed25519_dalek::VerifyingKey)>,
+}
+
+impl std::fmt::Debug for ControllerQ04CredentialCustodyV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ControllerQ04CredentialCustodyV1(<resident fixed role pairs>)")
+    }
+}
+
+impl ControllerQ04CredentialCustodyV1 {
+    /// Creates empty original slots without I/O, authority or key extraction.
+    pub(crate) fn new() -> Self {
+        Self {
+            originals: std::array::from_fn(|_| OriginalControllerCredential {
+                public: None,
+                read: CredentialReadSlot::new(),
+            }),
+            ancestors: CredentialAncestors::new(),
+            readback: CredentialReadback::new(),
+            uid: None,
+            phase: ControllerCredentialPhase::Fresh,
+            failure: None,
+            signer: None,
+            pin: None,
+            cache_signer: None,
+            cache_pin: None,
+            deployment_pin: None,
+            project_pin: None,
+        }
+    }
+
+    /// Reads only the two existing fixed secrets and their separate role pins.
+    ///
+    /// # Errors
+    ///
+    /// Permanently refuses a repeated capture, unsafe or changed originals,
+    /// partial pair, I/O failure, foreign role, or mismatching signing key.
+    pub(crate) fn capture(&mut self) -> Result<(), &ControllerQ04CredentialErrorV1> {
+        if self.phase != ControllerCredentialPhase::Fresh {
+            return self.finish(Err(credential_state_rejected().into()));
+        }
+
+        self.phase = ControllerCredentialPhase::Closed;
+        self.uid = Some(rustix::process::geteuid().as_raw());
+        let result = self.capture_pair();
+        self.finish(result)
+    }
+
+    /// Brackets use with the same original files and their fixed named bindings.
+    ///
+    /// # Errors
+    ///
+    /// An interrupted, failed or fenced owner never reopens. The original typed
+    /// cause and partial observations remain resident in this same owner.
+    pub(crate) fn recheck(&mut self) -> Result<(), &ControllerQ04CredentialErrorV1> {
+        if self.phase != ControllerCredentialPhase::Ready {
+            return self.finish(Err(credential_state_rejected().into()));
+        }
+
+        self.phase = ControllerCredentialPhase::Closed;
+        self.readback = CredentialReadback::new();
+        let result = self.observe_pair();
+        self.finish(result)
+    }
+
+    /// Borrows the checked existing role only while original local custody is ready.
+    ///
+    /// This loan does no I/O and cannot overlap mutable named readback. Root
+    /// still independently verifies the real role pin and original held cut.
+    pub(crate) fn signer(&self) -> Option<(u64, &ed25519_dalek::SigningKey)> {
+        if self.phase != ControllerCredentialPhase::Ready {
+            return None;
+        }
+        Some((self.pin.as_ref()?.generation(), self.signer.as_ref()?))
+    }
+
+    /// Borrows the distinct existing Cache role under the same ready originals.
+    pub(crate) fn cache_signer(&self) -> Option<(u64, &ed25519_dalek::SigningKey)> {
+        if self.phase != ControllerCredentialPhase::Ready {
+            return None;
+        }
+        Some((self.cache_pin.as_ref()?.generation(), self.cache_signer.as_ref()?))
+    }
+
+    // These are only the original fixed policy verifier loans, not Root's
+    // role/currentness admission. The same credential walker owns their FDs.
+    pub(crate) fn policy_pins(
+        &self,
+    ) -> Option<((u64, &ed25519_dalek::VerifyingKey), (u64, &ed25519_dalek::VerifyingKey))> {
+        if self.phase != ControllerCredentialPhase::Ready {
+            return None;
+        }
+        let (deployment_generation, deployment) = self.deployment_pin.as_ref()?;
+        let (project_generation, project) = self.project_pin.as_ref()?;
+        Some(((*deployment_generation, deployment), (*project_generation, project)))
+    }
+
+    /// Keeps all originals but permanently denies later signing loans.
+    pub(crate) fn fence(&mut self) {
+        self.phase = ControllerCredentialPhase::Closed;
+    }
+
+    /// Borrows the first failure without extracting any original resources.
+    pub(crate) fn failure(&self) -> Option<&ControllerQ04CredentialErrorV1> {
+        self.failure.as_ref()
+    }
+
+    fn finish(
+        &mut self,
+        result: Result<(), ControllerQ04CredentialErrorV1>,
+    ) -> Result<(), &ControllerQ04CredentialErrorV1> {
+        match result {
+            Ok(()) => {
+                self.phase = ControllerCredentialPhase::Ready;
+                Ok(())
+            }
+            Err(error) => {
+                self.phase = ControllerCredentialPhase::Closed;
+                Err(self.failure.get_or_insert(error))
+            }
+        }
+    }
+
+    fn capture_pair(&mut self) -> Result<(), ControllerQ04CredentialErrorV1> {
+        let uid = self.uid.ok_or_else(credential_state_rejected)?;
+        open_directory_with_custody(
+            Path::new(NIX_CONTROLLER_DIRECTORY),
+            uid,
+            &mut DirectoryCustody::Resident(&mut self.ancestors),
+        )?;
+        let directory = self.ancestors.directory()?;
+        let directory_identity = self.ancestors.slots[3]
+            .identity
+            .ok_or_else(credential_state_rejected)?;
+
+        for (index, name) in Q04_CONTROLLER_NAMES.iter().enumerate() {
+            let original = &mut self.originals[index];
+            let observed = open_read_credential(
+                directory,
+                name,
+                uid,
+                Q04_CONTROLLER_LENGTHS[index],
+                &mut original.read,
+            )?;
+            let file_identity = require_present_credential(observed)?;
+            if original.read.bytes.as_ref().map(|bytes| bytes.len())
+                != Some(Q04_CONTROLLER_LENGTHS[index] as usize)
+            {
+                return Err(credential_state_rejected().into());
+            }
+
+            let path = PathBuf::from(NIX_CONTROLLER_DIRECTORY);
+            let bytes = original.read.bytes.take().ok_or_else(credential_state_rejected)?;
+            original.public = Some(PinnedSystemdCredential {
+                name: *name,
+                path,
+                uid,
+                directory_identity,
+                file_identity,
+                bytes,
+                exact_bytes: Some(Q04_CONTROLLER_LENGTHS[index]),
+            });
+        }
+        self.observe_pair()?;
+
+        let pin_bytes = self.originals[1].public.as_ref()
+            .ok_or_else(credential_state_rejected)?.bytes();
+        self.pin = Some(crate::policy_compiler::PinnedControllerHoldSignerV1::decode(pin_bytes)?);
+        let seed_bytes = self.originals[0].public.as_ref()
+            .ok_or_else(credential_state_rejected)?.bytes();
+        let seed = Zeroizing::new(<[u8; 32]>::try_from(seed_bytes)
+            .map_err(|_| credential_state_rejected())?);
+        self.signer = Some(ed25519_dalek::SigningKey::from_bytes(&seed));
+        if self.pin.as_ref().map(|pin| pin.verifying_key())
+            != self.signer.as_ref().map(|signer| signer.verifying_key()).as_ref()
+        {
+            return Err(credential_state_rejected().into());
+        }
+
+        let cache_pin_bytes = self.originals[3].public.as_ref()
+            .ok_or_else(credential_state_rejected)?.bytes();
+        self.cache_pin = Some(crate::cache_residency::PinnedCacheOwnerReadbackSignerV1::decode(
+            cache_pin_bytes,
+        )?);
+        let cache_seed_bytes = self.originals[2].public.as_ref()
+            .ok_or_else(credential_state_rejected)?.bytes();
+        let cache_seed = Zeroizing::new(<[u8; 32]>::try_from(cache_seed_bytes)
+            .map_err(|_| credential_state_rejected())?);
+        self.cache_signer = Some(ed25519_dalek::SigningKey::from_bytes(&cache_seed));
+        if self.cache_pin.as_ref().map(|pin| pin.verifying_key())
+            != self.cache_signer.as_ref().map(|signer| signer.verifying_key()).as_ref()
+            || self.cache_signer.as_ref().map(|signer| signer.verifying_key())
+                == self.signer.as_ref().map(|signer| signer.verifying_key())
+        {
+            return Err(credential_state_rejected().into());
+        }
+
+        // Reuse the existing common role frame decoder with the exact old
+        // Security policy-role magic/domains, never a second credential codec.
+        let deployment_bytes = self.originals[4].public.as_ref()
+            .ok_or_else(credential_state_rejected)?.bytes();
+        self.deployment_pin = Some(crate::role_credential::decode_role_credential(
+            deployment_bytes, b"AOSPDK01", b"aos.sandbox.policy-deployment-verifier.v1\0",
+        ).ok_or_else(credential_state_rejected)?);
+        let project_bytes = self.originals[5].public.as_ref()
+            .ok_or_else(credential_state_rejected)?.bytes();
+        self.project_pin = Some(crate::role_credential::decode_role_credential(
+            project_bytes, b"AOSPPK01", b"aos.sandbox.policy-project-verifier.v1\0",
+        ).ok_or_else(credential_state_rejected)?);
+        Ok(())
+    }
+
+    fn observe_pair(&mut self) -> Result<(), ControllerQ04CredentialErrorV1> {
+        let uid = self.uid.ok_or_else(credential_state_rejected)?;
+        observe_controller_credential_readback(
+            uid,
+            &Q04_CONTROLLER_NAMES,
+            &Q04_CONTROLLER_LENGTHS,
+            &mut self.originals,
+            &self.ancestors,
+            &mut self.readback,
+        )?;
+        Ok(())
     }
 }
 

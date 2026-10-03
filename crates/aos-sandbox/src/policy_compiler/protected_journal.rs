@@ -24,10 +24,11 @@ use aos_sandbox_core::{
 };
 use sha2::{Digest as _, Sha256};
 
-use crate::journal::{Journal, JournalError, RecordNamespace};
+use crate::journal::{CacheMutationGateV1, Journal, JournalError, RecordNamespace};
 use crate::lifecycle::protected_journal_adapter::{
     AppliedDomainTransactionV1, DomainCommitOutcomeV1, DomainOutcomeUnknownV1,
-    DomainPostcommitCapabilityV1, DomainRecoveryV1, PreparedDomainTransactionV1,
+    DomainPostcommitCapabilityV1, DomainRecoveryV1, DomainRetainedCommitFailureV1,
+    PreparedDomainTransactionV1, RetainedCommitFailureV1,
     ProtectedDomainEnvelopeV1, ProtectedDomainJournalErrorV1, ProtectedDomainJournalV1,
     ProtectedDomainKeyV1, ProtectedDomainProjectionV1, ProtectedDomainSchemaV1,
     ProtectedDomainSnapshotV1, ProtectedRecordRoleV1, ProtectedReducerPhaseV1,
@@ -511,7 +512,181 @@ pub(crate) struct VerifiedPolicyPublicationV1 {
     prerequisites: PolicyPublicationPrerequisitesV1,
 }
 
+// This view carries encoder inputs, not the verified brand or a commit right.
+// Q04 needs the three TX-independent bodies before choosing its native TXID.
+struct PublicationBodyFieldsV1<'data> {
+    project: ProjectId,
+    sandbox: SandboxId,
+    normalized_input: ObjectDigest,
+    candidate: &'data CompiledPolicyCandidateV1,
+    prerequisites: &'data PolicyPublicationPrerequisitesV1,
+}
+
+// The three independent bodies are retained verbatim until envelope planning.
+// This recipe is deliberately unbranded and has no publication/commit method.
+pub(super) struct Q04IndependentPublicationRecipeV1 {
+    project: ProjectId,
+    sandbox: SandboxId,
+    normalized_input: ObjectDigest,
+    candidate_digest: ObjectDigest,
+    prerequisites: PolicyPublicationPrerequisitesV1,
+    candidate_key: PolicyCompilerJournalKeyV1,
+    diagnostics_key: PolicyCompilerJournalKeyV1,
+    current_key: PolicyCompilerJournalKeyV1,
+    candidate_body: Vec<u8>,
+    diagnostics_body: Vec<u8>,
+    current_body: Vec<u8>,
+    diagnostics_digest: ObjectDigest,
+    before: ObjectDigest,
+    recipe: ObjectDigest,
+}
+
+impl Q04IndependentPublicationRecipeV1 {
+    // Pure shared encoders, with no replay validator, Journal or publication
+    // brand. Root separately proves actual vacancy before calling this stage;
+    // Controller only compares its reconstructed bytes with the same reply.
+    fn encode(
+        fields: PublicationBodyFieldsV1<'_>,
+        canonical_diagnostics: &[u8],
+        candidate_key: PolicyCompilerJournalKeyV1,
+        diagnostics_key: PolicyCompilerJournalKeyV1,
+    ) -> Result<Self, PolicyCompilerJournalErrorV1> {
+        let PublicationBodyFieldsV1 {
+            project, sandbox, normalized_input, candidate, prerequisites,
+        } = fields;
+        let candidate_digest = candidate.commitment().digest();
+        let diagnostics_body = encode_diagnostics_payload(
+            project, sandbox, candidate_digest, canonical_diagnostics,
+        )?;
+        let diagnostics_digest = digest_bytes(DIAGNOSTICS_DOMAIN, &diagnostics_body);
+        let candidate_body = encode_candidate_payload(
+            1, PublicationBodyFieldsV1 { project, sandbox, normalized_input, candidate, prerequisites },
+            diagnostics_digest,
+        )?;
+        let current_key = policy_current_key(project, sandbox)?;
+        let current_body = encode_current_payload(
+            project, sandbox, 1, candidate_digest, normalized_input, diagnostics_digest, prerequisites,
+        );
+        let current_key_length = u32::try_from(current_key.as_bytes().len())
+            .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
+        let before = ObjectDigest::from_bytes(Sha256::new()
+            .chain_update(b"aos.sandbox.create-q04.policy-before-cas.v1\0")
+            .chain_update(current_key_length.to_be_bytes())
+            .chain_update(current_key.as_bytes()).chain_update([0])
+            .chain_update(1_u64.to_be_bytes()).finalize().into());
+        let mut digest = Sha256::new()
+            .chain_update(b"aos.sandbox.create-q04.pre-envelope-publication-recipe.v1\0")
+            .chain_update(1_u64.to_be_bytes()).chain_update([3]);
+        for (kind, key, body) in [
+            (1_u8, &candidate_key, candidate_body.as_slice()),
+            (2, &diagnostics_key, diagnostics_body.as_slice()),
+            (4, &current_key, current_body.as_slice()),
+        ] {
+            let key_length = u32::try_from(key.as_bytes().len())
+                .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
+            let body_length = u32::try_from(body.len())
+                .map_err(|_| PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
+            digest.update([kind]);
+            digest.update(key_length.to_be_bytes());
+            digest.update(key.as_bytes());
+            digest.update(body_length.to_be_bytes());
+            digest.update(body);
+        }
+        Ok(Self {
+            project, sandbox, normalized_input, candidate_digest, prerequisites: prerequisites.clone(),
+            candidate_key, diagnostics_key, current_key, candidate_body, diagnostics_body,
+            current_body, diagnostics_digest, before, recipe: ObjectDigest::from_bytes(digest.finalize().into()),
+        })
+    }
+
+    pub(super) const fn before_digest(&self) -> ObjectDigest {
+        self.before
+    }
+
+    pub(super) const fn recipe_digest(&self) -> ObjectDigest {
+        self.recipe
+    }
+
+    pub(super) fn initial_transaction_id(
+        &self,
+        precut: ObjectDigest,
+        reserved_nonce: [u8; 16],
+    ) -> Result<[u8; 16], PolicyCompilerJournalErrorV1> {
+        if precut.as_bytes() == &[0; 32] || reserved_nonce == [0; 16] {
+            return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
+        }
+        let digest = Sha256::new()
+            .chain_update(b"aos.sandbox.create-q04.publication-transaction-id.v1\0")
+            .chain_update(precut.as_bytes())
+            .chain_update(reserved_nonce)
+            .chain_update(self.recipe.as_bytes())
+            .finalize();
+        let mut transaction = [0; 16];
+        transaction.copy_from_slice(&digest[..16]);
+        if transaction == [0; 16] {
+            return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
+        }
+        Ok(transaction)
+    }
+}
+
+pub(super) fn q04_independent_publication_data_v1(
+    input: &PolicyCompilerInputV1,
+    candidate: &CompiledPolicyCandidateV1,
+    prerequisites: &PolicyPublicationPrerequisitesV1,
+) -> Result<Q04IndependentPublicationRecipeV1, PolicyCompilerJournalErrorV1> {
+    let project = input.project().project();
+    let sandbox = input.sandbox();
+    let normalized_input = normalized_policy_input_digest_v1(input)?;
+    let diagnostics = super::model::canonical_bytes(DIAGNOSTICS_DOMAIN, candidate.explanation())?;
+    if candidate.authority_status() != CandidateAuthorityV1::NonAuthoritativeAncestry {
+        return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+    }
+    let candidate_digest = candidate.commitment().digest();
+    let candidate_key = policy_key(PolicyCompilerJournalRecordKindV1::Candidate, project, sandbox, candidate_digest)?;
+    let diagnostics_key = policy_key(PolicyCompilerJournalRecordKindV1::Diagnostics, project, sandbox, candidate_digest)?;
+    Q04IndependentPublicationRecipeV1::encode(
+        PublicationBodyFieldsV1 { project, sandbox, normalized_input, candidate, prerequisites },
+        &diagnostics, candidate_key, diagnostics_key,
+    )
+}
+
+// Capacity is comparison DATA from the actual adapter. In particular, this
+// wrapper cannot be passed to commit and cannot manufacture Verified inputs.
+pub(super) struct Q04PublicationCapacityV1 {
+    inner: PreparedDomainTransactionV1<PolicyCompilerJournalSchemaV1>,
+    current_envelope: ObjectDigest,
+}
+
+impl Q04PublicationCapacityV1 {
+    pub(super) const fn transaction_id(&self) -> [u8; 16] {
+        self.inner.transaction_id()
+    }
+
+    pub(super) const fn transaction_digest(&self) -> ObjectDigest {
+        self.inner.transaction_digest()
+    }
+
+    pub(super) fn journal_records(&self) -> &[crate::journal::JournalRecord] {
+        self.inner.journal_records()
+    }
+
+    pub(super) const fn current_envelope_digest(&self) -> ObjectDigest {
+        self.current_envelope
+    }
+}
+
 impl VerifiedPolicyPublicationV1 {
+    fn body_fields(&self) -> PublicationBodyFieldsV1<'_> {
+        PublicationBodyFieldsV1 {
+            project: self.project,
+            sandbox: self.sandbox,
+            normalized_input: self.normalized_input,
+            candidate: &self.candidate,
+            prerequisites: &self.prerequisites,
+        }
+    }
+
     /// Authenticates the exact compiler output and complete diagnostic record.
     ///
     /// # Errors
@@ -563,6 +738,74 @@ impl VerifiedPolicyPublicationV1 {
 pub struct PreparedPolicyPublicationV1 {
     inner: PreparedDomainTransactionV1<PolicyCompilerJournalSchemaV1>,
     prerequisites: PolicyPublicationPrerequisitesV1,
+}
+
+// This move-only local position is parked in the actual Root attempt before
+// invoking the strict adapter. No returned token crosses an unowned postcheck
+// interval, and a failed prerequisite check leaves the original plan intact.
+pub(super) struct Q04PolicyPublicationAttemptV1 {
+    prerequisites: PolicyPublicationPrerequisitesV1,
+    prepared: Option<PreparedDomainTransactionV1<PolicyCompilerJournalSchemaV1>>,
+    returned: Option<Result<
+        DomainCommitOutcomeV1<PolicyCompilerJournalSchemaV1>,
+        DomainRetainedCommitFailureV1<PolicyCompilerJournalSchemaV1>,
+    >>,
+    applied: Option<AppliedDomainTransactionV1<PolicyCompilerJournalSchemaV1>>,
+    pending: Option<DomainOutcomeUnknownV1<PolicyCompilerJournalSchemaV1>>,
+}
+
+impl Q04PolicyPublicationAttemptV1 {
+    pub(super) fn park(prepared: PreparedPolicyPublicationV1) -> Self {
+        Self {
+            prerequisites: prepared.prerequisites,
+            prepared: Some(prepared.inner),
+            returned: None,
+            applied: None,
+            pending: None,
+        }
+    }
+
+    pub(super) fn applied(
+        &self,
+    ) -> Option<&AppliedDomainTransactionV1<PolicyCompilerJournalSchemaV1>> {
+        self.applied.as_ref()
+    }
+
+    fn classify_returned(&mut self) -> Result<(), PolicyCompilerJournalErrorV1> {
+        if self.applied.is_some() || self.pending.is_some() || self.prepared.is_some() {
+            return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
+        }
+        let returned = self.returned.take()
+            .ok_or(PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
+        match returned {
+            Ok(DomainCommitOutcomeV1::Applied(applied)) => {
+                self.applied = Some(applied);
+                Ok(())
+            }
+            Ok(DomainCommitOutcomeV1::OutcomeUnknown { pending, cause }) => {
+                self.pending = Some(pending);
+                Err(ProtectedDomainJournalErrorV1::from(cause).into())
+            }
+            Err(RetainedCommitFailureV1::BeforeJournalAppend { prepared, cause }) => {
+                self.prepared = Some(prepared);
+                Err(cause.into())
+            }
+            Err(RetainedCommitFailureV1::AfterAppendReadback { pending, cause }
+                | RetainedCommitFailureV1::AfterAppendSealing { pending, cause }) => {
+                self.pending = Some(pending);
+                Err(cause.into())
+            }
+        }
+    }
+}
+
+// Replayed comparison DATA for Root's same held policy-state writer. This is
+// neither a postcommit capability nor a replacement for the resident actual
+// strict-commit outcome, original native prefix, floor and clock loans.
+pub(super) struct Q04PolicyPublicationReadbackV1 {
+    pub(super) sequence: u64,
+    pub(super) transaction: ObjectDigest,
+    pub(super) current: ObjectDigest,
 }
 
 /// Retains an exact policy publication after ambiguous durability.
@@ -772,6 +1015,210 @@ impl<'journal> PolicyCompilerProtectedJournalV1<'journal> {
         Ok(self.inner.snapshot()?)
     }
 
+    // Q04 alone requests Current before Effect. Legacy plan_publication keeps
+    // its original dependent encoder/allocation/error order below.
+    pub(super) fn q04_independent_recipe(
+        &self,
+        input: &PolicyCompilerInputV1,
+        candidate: &CompiledPolicyCandidateV1,
+        prerequisites: &PolicyPublicationPrerequisitesV1,
+    ) -> Result<Q04IndependentPublicationRecipeV1, PolicyCompilerJournalErrorV1> {
+        let project = input.project().project();
+        let sandbox = input.sandbox();
+        let normalized_input = normalized_policy_input_digest_v1(input)?;
+        let canonical_diagnostics =
+            super::model::canonical_bytes(DIAGNOSTICS_DOMAIN, candidate.explanation())?;
+        if candidate.authority_status() != CandidateAuthorityV1::NonAuthoritativeAncestry
+            || !self.validator.contains(prerequisites)
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+
+        let projection = self.replay()?;
+        if current_policy_head(&projection, project, sandbox, &self.validator)?.is_some() {
+            return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
+        }
+        let candidate_digest = candidate.commitment().digest();
+        let candidate_key = policy_key(
+            PolicyCompilerJournalRecordKindV1::Candidate,
+            project,
+            sandbox,
+            candidate_digest,
+        )?;
+        let diagnostics_key = policy_key(
+            PolicyCompilerJournalRecordKindV1::Diagnostics,
+            project,
+            sandbox,
+            candidate_digest,
+        )?;
+        if projection.records().iter().any(|record| {
+            record.key() == &candidate_key || record.key() == &diagnostics_key
+        }) {
+            return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
+        }
+
+        Q04IndependentPublicationRecipeV1::encode(
+            PublicationBodyFieldsV1 { project, sandbox, normalized_input, candidate, prerequisites },
+            &canonical_diagnostics, candidate_key, diagnostics_key,
+        )
+    }
+
+    pub(super) fn q04_capacity_plan(
+        &self,
+        transaction_id: [u8; 16],
+        recipe: Q04IndependentPublicationRecipeV1,
+        input: &PolicyCompilerInputV1,
+        candidate: &CompiledPolicyCandidateV1,
+        prerequisites: &PolicyPublicationPrerequisitesV1,
+    ) -> Result<Q04PublicationCapacityV1, PolicyCompilerJournalErrorV1> {
+        let project = input.project().project();
+        let sandbox = input.sandbox();
+        let normalized_input = normalized_policy_input_digest_v1(input)?;
+        if !self.validator.contains(prerequisites)
+            || recipe.project != project
+            || recipe.sandbox != sandbox
+            || recipe.normalized_input != normalized_input
+            || recipe.candidate_digest != candidate.commitment().digest()
+            || &recipe.prerequisites != prerequisites
+        {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        let effect = encode_effect_payload(
+            transaction_id,
+            1,
+            PublicationBodyFieldsV1 {
+                project,
+                sandbox,
+                normalized_input,
+                candidate,
+                prerequisites,
+            },
+            recipe.diagnostics_digest,
+        )?;
+        let mut successors = vec![
+            policy_reducer_envelope(
+                recipe.candidate_key,
+                1,
+                None,
+                &recipe.candidate_body,
+                &self.validator,
+            )?,
+            policy_reducer_envelope(
+                recipe.diagnostics_key,
+                1,
+                None,
+                &recipe.diagnostics_body,
+                &self.validator,
+            )?,
+            policy_reducer_envelope(
+                policy_effect_key(project, sandbox, transaction_id)?,
+                1,
+                None,
+                &effect,
+                &self.validator,
+            )?,
+        ];
+        let current = policy_reducer_envelope(
+            recipe.current_key,
+            1,
+            None,
+            &recipe.current_body,
+            &self.validator,
+        )?;
+        // This is the exact existing Current envelope digest, not a hash of
+        // its body or the adapter's durable-member wrapper.
+        let current_envelope = current.digest();
+        successors.push(current);
+        Ok(Q04PublicationCapacityV1 {
+            inner: self.inner.plan(transaction_id, successors)?,
+            current_envelope,
+        })
+    }
+
+    pub(super) fn q04_current_plan(
+        &self,
+        transaction_id: [u8; 16],
+        verified: VerifiedPolicyPublicationV1,
+        capacity: &Q04PublicationCapacityV1,
+    ) -> Result<PreparedPolicyPublicationV1, PolicyCompilerJournalErrorV1> {
+        let prepared = self.plan_publication(transaction_id, 1, verified)?;
+        if prepared.inner.transaction_id() != capacity.inner.transaction_id()
+            || prepared.inner.journal_records() != capacity.inner.journal_records()
+            || prepared.inner.transaction_digest() != capacity.inner.transaction_digest()
+        {
+            return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
+        }
+        Ok(prepared)
+    }
+
+    // The accepted Cache19 adapter supplies this strict entry point. Ordinary
+    // here selects the existing policy-state commit engine, not permission to
+    // bypass an active Cache hold or to refresh a stale publication snapshot.
+    pub(super) fn q04_commit_original(
+        &mut self,
+        attempt: &mut Q04PolicyPublicationAttemptV1,
+        verifier: &impl PolicyPublicationVerifierV1,
+    ) -> Result<(), PolicyCompilerJournalErrorV1> {
+        if attempt.prepared.is_none() || attempt.returned.is_some()
+            || attempt.applied.is_some() || attempt.pending.is_some()
+        {
+            return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
+        }
+        let Q04PolicyPublicationAttemptV1 { prerequisites, prepared, returned, .. } = attempt;
+        let invoked = verifier.while_prerequisites_current(prerequisites, || {
+            let Some(original) = prepared.take() else {
+                return false;
+            };
+            *returned = Some(self.inner.commit_strict_with_original_cache_gate_v1(
+                original, CacheMutationGateV1::Ordinary,
+            ));
+            true
+        });
+        if invoked != Some(true) {
+            return Err(PolicyCompilerJournalErrorV1::UnauthenticatedCandidate);
+        }
+        // The full actual result was parked before classification. Moving its
+        // typed cause out never discards Prepared/Pending or substitutes a
+        // synthetic readback error for the original durability failure.
+        attempt.classify_returned()
+    }
+
+    pub(super) fn q04_observe_original_publication(
+        &self,
+        attempt: &Q04PolicyPublicationAttemptV1,
+        capacity: &Q04PublicationCapacityV1,
+    ) -> Result<Q04PolicyPublicationReadbackV1, PolicyCompilerJournalErrorV1> {
+        let applied = attempt.applied()
+            .ok_or(PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
+        let projection = self.replay()?;
+        let snapshot = self.inner.snapshot()?;
+        let transaction = projection.transactions().iter()
+            .find(|transaction| transaction.transaction_id() == capacity.transaction_id())
+            .ok_or(PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
+        let current = transaction.records().iter()
+            .find(|record| record.key().kind() == PolicyCompilerJournalRecordKindV1::Current)
+            .ok_or(PolicyCompilerJournalErrorV1::NonCanonicalPublication)?;
+        // The old applied snapshot's scalars are comparison DATA here. This
+        // newly borrowed adapter does not adopt its old instance brand. Root
+        // separately retains that real outcome and proves the same original
+        // Journal/native file before and after this fresh complete replay.
+        if transaction.records().len() != 4
+            || transaction.transaction_digest() != capacity.transaction_digest()
+            || applied.transaction_digest() != capacity.transaction_digest()
+            || snapshot.journal_sequence() != applied.snapshot().journal_sequence()
+            || snapshot.projection_root() != applied.snapshot().projection_root()
+            || current.digest() != capacity.current_envelope_digest()
+        {
+            return Err(PolicyCompilerJournalErrorV1::NonCanonicalPublication);
+        }
+        self.inner.revalidate_snapshot(&snapshot)?;
+        Ok(Q04PolicyPublicationReadbackV1 {
+            sequence: snapshot.journal_sequence(),
+            transaction: transaction.transaction_digest(),
+            current: current.digest(),
+        })
+    }
+
     /// Plans one complete immediate-successor policy publication.
     ///
     /// # Errors
@@ -831,9 +1278,14 @@ impl<'journal> PolicyCompilerProtectedJournalV1<'journal> {
         )?;
         let diagnostics_digest = digest_bytes(DIAGNOSTICS_DOMAIN, &diagnostics_payload);
         let candidate_payload =
-            encode_candidate_payload(generation, &verified, diagnostics_digest)?;
+            encode_candidate_payload(generation, verified.body_fields(), diagnostics_digest)?;
         let effect_payload =
-            encode_effect_payload(transaction_id, generation, &verified, diagnostics_digest)?;
+            encode_effect_payload(
+                transaction_id,
+                generation,
+                verified.body_fields(),
+                diagnostics_digest,
+            )?;
         let mut successors = vec![
             policy_reducer_envelope(candidate_key, 1, None, &candidate_payload, &self.validator)?,
             policy_reducer_envelope(
@@ -1925,7 +2377,7 @@ fn output_descriptors(
 
 fn encode_candidate_payload(
     generation: u64,
-    verified: &VerifiedPolicyPublicationV1,
+    verified: PublicationBodyFieldsV1<'_>,
     diagnostics: ObjectDigest,
 ) -> Result<Vec<u8>, PolicyCompilerJournalErrorV1> {
     let portable = verified.candidate.portable();
@@ -1955,7 +2407,7 @@ fn encode_candidate_payload(
     bytes.extend_from_slice(verified.normalized_input.as_bytes());
     bytes.extend_from_slice(diagnostics.as_bytes());
     bytes.extend_from_slice(verified.prerequisites.digest().as_bytes());
-    append_prerequisite_tuple(&mut bytes, &verified.prerequisites);
+    append_prerequisite_tuple(&mut bytes, verified.prerequisites);
     bytes.extend_from_slice(&generation.to_be_bytes());
     for (media_code, expected_media, descriptor) in output_descriptors(portable) {
         if descriptor.media_type().as_str() != expected_media.as_str() {
@@ -2029,7 +2481,7 @@ fn validate_canonical_diagnostics(bytes: &[u8]) -> Result<(), PolicyCompilerJour
 fn encode_effect_payload(
     transaction_id: [u8; 16],
     generation: u64,
-    verified: &VerifiedPolicyPublicationV1,
+    verified: PublicationBodyFieldsV1<'_>,
     diagnostics: ObjectDigest,
 ) -> Result<Vec<u8>, PolicyCompilerJournalErrorV1> {
     let portable = verified.candidate.portable();
@@ -2043,7 +2495,7 @@ fn encode_effect_payload(
     bytes.extend_from_slice(verified.normalized_input.as_bytes());
     bytes.extend_from_slice(diagnostics.as_bytes());
     bytes.extend_from_slice(verified.prerequisites.digest().as_bytes());
-    append_prerequisite_tuple(&mut bytes, &verified.prerequisites);
+    append_prerequisite_tuple(&mut bytes, verified.prerequisites);
     bytes.extend_from_slice(&generation.to_be_bytes());
     bytes.push(PolicyEffectStateV1::Prepared as u8);
     bytes.extend_from_slice(&[0; 32]);

@@ -156,6 +156,14 @@ impl VerifiedSignedProjectPolicySourceV2 {
         self.revocation
     }
 
+    // This borrowed recipe exposes only already verified canonical choices.
+    // Root must independently supply its real authenticated current binding;
+    // neither this view nor its output admits or authorizes a project source.
+    #[cfg(target_os = "linux")]
+    pub(super) const fn q04_layer_recipe(&self) -> Q04SignedProjectLayerRecipeV1<'_> {
+        Q04SignedProjectLayerRecipeV1 { source: self }
+    }
+
     /// Checks a proposed compiler layer against the signed explicit choices.
     ///
     /// This does not authenticate the candidate's cache-domain verifier or
@@ -175,6 +183,28 @@ impl VerifiedSignedProjectPolicySourceV2 {
             && candidate.grants().is_empty()
             && candidate.namespace_rules().is_empty()
             && candidate.advisory_actions().is_empty()
+    }
+}
+
+// Borrowed signed-input DATA, not an admitted project or current owner token.
+#[cfg(target_os = "linux")]
+pub(super) struct Q04SignedProjectLayerRecipeV1<'signed> {
+    source: &'signed VerifiedSignedProjectPolicySourceV2,
+}
+
+#[cfg(target_os = "linux")]
+impl Q04SignedProjectLayerRecipeV1<'_> {
+    pub(super) fn materialize_with_authenticated_binding(
+        &self,
+        binding: AuthenticatedCacheDomainV1,
+    ) -> Result<PolicyLayerV1, PolicyDeploymentHeadErrorV1> {
+        if binding.domain() != self.source.cache_domain
+            || binding.binding() != CacheDomainBindingV1::Project(self.source.head.project())
+        {
+            return Err(PolicyDeploymentHeadErrorV1::InvalidHead);
+        }
+
+        explicit_layer_with_authenticated_binding(self.source, binding)
     }
 }
 
@@ -565,6 +595,13 @@ pub(super) fn current_explicit_layer(
         &CurrentPublisherDomainVerifierV2,
     )
     .map_err(|_| PolicyDeploymentHeadErrorV1::InvalidHead)?;
+    explicit_layer_with_authenticated_binding(verified, binding)
+}
+
+fn explicit_layer_with_authenticated_binding(
+    verified: &VerifiedSignedProjectPolicySourceV2,
+    binding: AuthenticatedCacheDomainV1,
+) -> Result<PolicyLayerV1, PolicyDeploymentHeadErrorV1> {
     PolicyLayerV1::new(
         Vec::new(),
         verified.inherited_layer.resources().clone(),

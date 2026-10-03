@@ -121,6 +121,167 @@ pub(super) fn validate_current(
     Ok(current)
 }
 
+// This context owns no mutable authority session. Its fields are private and
+// its only action is the fixed full terminal replay/selection below. The
+// original initialization owns every writer while these short loans exist.
+#[cfg(target_os = "linux")]
+struct Q04BorrowedCacheTerminalReadbackV1<'original, 'journal, 'cut> {
+    authority: &'original ProtectedJournalAuthority<'journal>,
+    state: &'original mut Journal,
+    source: &'original ProtectedCacheResidencyReplayAuthorityV1,
+    clock: &'original CacheClockWriterReadbackGuard<'original>,
+    position: Q04BorrowedCacheReadPositionV1<'original, 'cut>,
+    snapshot: ProtectedJournalSnapshot,
+    partitions: BTreeMap<ObjectDigest, CacheResidencyReplayPartitionEvidenceV1>,
+    view: VerifiedCacheAuthorityViewV1,
+}
+
+#[cfg(target_os = "linux")]
+enum Q04BorrowedCacheReadPositionV1<'original, 'cut> {
+    Prepare {
+        native: crate::journal::Q04CachePrepareNativeLoanV1<'original>,
+        project: ProjectId,
+    },
+    Terminal {
+        native: crate::journal::Q04CacheTerminalNativeLoanV1<'original, 'original, 'cut>,
+        root: &'original crate::policy_compiler::create_q04::OriginalQ04RootCacheLoanV1<'original, 'original, 'cut>,
+    },
+}
+
+#[cfg(target_os = "linux")]
+impl Q04BorrowedCacheReadPositionV1<'_, '_> {
+    fn require_current(
+        &mut self,
+        state: &Journal,
+        authority: &ProtectedJournalAuthority<'_>,
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        match self {
+            Self::Prepare { native, .. } => native.require_current(state, authority),
+            Self::Terminal { native, .. } => native.require_current(state, authority),
+        }
+    }
+
+    fn root_bookend(&self) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        match self {
+            Self::Prepare { .. } => Ok(()),
+            Self::Terminal { root, .. } => root.recheck(),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+enum Q04CacheReadRequestV1<'original, 'cut> {
+    Prepare(ProjectId),
+    Terminal {
+        root: &'original crate::policy_compiler::create_q04::OriginalQ04RootCacheLoanV1<'original, 'original, 'cut>,
+        recipes: &'original crate::journal::CacheQ04TransactionRecipesV1<'cut>,
+        phase: crate::journal::Q04CacheTerminalPhaseV1,
+    },
+}
+
+#[cfg(target_os = "linux")]
+enum Q04CacheReadDestinationV1<'resident> {
+    Prepare(&'resident mut Option<Result<super::super::Q04CachePrepareReadbackV1, crate::policy_compiler::create_q04::CreateQ04ErrorV1>>),
+    Terminal(&'resident mut Option<Result<super::super::CacheResidencyWriterReadbackV2, crate::policy_compiler::create_q04::CreateQ04ErrorV1>>),
+}
+
+#[cfg(target_os = "linux")]
+impl Q04CacheReadDestinationV1<'_> {
+    fn vacant_for(&self, request: &Q04CacheReadRequestV1<'_, '_>) -> bool {
+        match (self, request) {
+            (Self::Prepare(destination), Q04CacheReadRequestV1::Prepare(_)) => destination.is_none(),
+            (Self::Terminal(destination), Q04CacheReadRequestV1::Terminal { .. }) => destination.is_none(),
+            _ => false,
+        }
+    }
+
+    // The returned replay/result is transformed and immediately parked in
+    // the actual initializer's destination, before any currentness postcheck.
+    fn capture(
+        &mut self,
+        returned: Result<Vec<CacheRecoveryInventoryV1>, crate::policy_compiler::create_q04::CreateQ04ErrorV1>,
+        position: &Q04BorrowedCacheReadPositionV1<'_, '_>,
+        physical: super::super::CacheOwnerLimitsV1,
+    ) {
+        match (self, position) {
+            (Self::Prepare(destination), Q04BorrowedCacheReadPositionV1::Prepare { project, .. }) => {
+                **destination = Some(returned.and_then(|inventories| {
+                    let readback = super::super::Q04CachePrepareReadbackV1::from_current_inventories(*project, inventories)?;
+                    readback.require_physical_limits(physical)?;
+                    Ok(readback)
+                }));
+            }
+            (Self::Terminal(destination), Q04BorrowedCacheReadPositionV1::Terminal { native, .. }) => {
+                **destination = Some(returned.and_then(|inventories| {
+                    let readback = super::super::CacheResidencyWriterReadbackV2::from_original_q04_inventories(
+                        native.hold(), inventories, native.identity(),
+                    )?;
+                    readback.require_original_q04_physical_limits(physical)?;
+                    Ok(readback)
+                }));
+            }
+            _ => {}
+        }
+    }
+
+    fn retain_first_error(&mut self, first: &mut Option<crate::policy_compiler::create_q04::CreateQ04ErrorV1>) {
+        macro_rules! retain {
+            ($destination:expr) => {
+                if matches!($destination, Some(Err(_))) {
+                    match $destination.take() {
+                        Some(Err(cause)) => { first.get_or_insert(cause); }
+                        returned => { **$destination = returned; }
+                    }
+                }
+            };
+        }
+        match self {
+            Self::Prepare(destination) => retain!(destination),
+            Self::Terminal(destination) => retain!(destination),
+        }
+    }
+
+    fn succeeded(&self) -> bool {
+        match self {
+            Self::Prepare(destination) => matches!(destination.as_ref(), Some(Ok(_))),
+            Self::Terminal(destination) => matches!(destination.as_ref(), Some(Ok(_))),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Q04BorrowedCacheTerminalReadbackV1<'_, '_, '_> {
+    fn recheck(&mut self) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        self.authority.validate_snapshot_for_effect(&self.snapshot)?;
+        self.position.require_current(self.state, self.authority)?;
+        self.clock.require_time_authority(&self.source.current_time)?;
+        let partitions = self.source.partitions.lock()
+            .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        if *partitions != self.partitions {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+        }
+        drop(partitions);
+
+        let owner = CacheAuthorityOwner::new(
+            self.authority, self.source.owner_scope, self.source.maximum_record_bytes,
+        ).map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+        validate_current(&owner, &[], &self.view, self.clock.current_unix_seconds()?)?;
+        self.position.require_current(self.state, self.authority)?;
+        self.clock.revalidate()?;
+        self.position.root_bookend()
+    }
+
+    fn reconstruct(
+        &mut self,
+    ) -> Result<Vec<CacheRecoveryInventoryV1>, crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        self.recheck()?;
+        let projection = CacheResidencyProtectedJournalV1::claim(
+            self.state, self.view.validator.clone(),
+        )?.replay()?;
+        Ok(reconstruct_cache_history(projection.records(), &self.view.validator)?)
+    }
+}
+
 /// Borrows original journals/clock; it exposes neither a claim nor an issuer.
 ///
 /// The callback's result is outside its quantified borrow. This compile-fail
@@ -437,6 +598,170 @@ impl RetainedCacheAuthoritySessionV1<'_, '_, '_, '_> {
 }
 
 impl ProtectedCacheResidencyReplayAuthorityV1 {
+    #[cfg(target_os = "linux")]
+    pub(in crate::cache_residency) fn q04_prepare_target_coordinates_v1(
+        &self,
+        state: &Journal,
+        hold: &Journal,
+        clock: &CacheClockWriterReadbackGuard<'_>,
+    ) -> Result<[(crate::journal::ProtectedJournalNamesV1, u64); 3], crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        clock.require_time_authority(&self.current_time)?;
+        let journal = self.journal.lock()
+            .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        clock.require_cache_targets(state, &journal)?;
+        state.preflight_q04_cache_read_only_base_v1(hold)?;
+        journal.preflight_q04_cache_read_only_base_v1(hold)?;
+        let coordinates = [
+            (clock.q04_prepare_coordinates(hold)?),
+            (journal.protected_writer_physical_names_v1()?, journal.snapshot_sequence()),
+            (state.protected_writer_physical_names_v1()?, state.snapshot_sequence()),
+        ];
+        clock.require_cache_targets(state, &journal)?;
+        clock.revalidate()?;
+        Ok(coordinates)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(in crate::cache_residency) fn require_q04_original_cache_targets_v1(
+        &self,
+        state: &Journal,
+        clock: &CacheClockWriterReadbackGuard<'_>,
+    ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+        clock.require_time_authority(&self.current_time)?;
+        let journal = self.journal.lock()
+            .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        clock.require_cache_targets(state, &journal)?;
+        clock.revalidate()
+    }
+
+    // This is a fixed resident destination, not a caller-selected callback or
+    // a mutable authority-session constructor. Only initialization uses it.
+    // The complete result is parked before native/clock/physical postchecks.
+    #[cfg(target_os = "linux")]
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::cache_residency) fn capture_borrowed_q04_terminal_readback_v1(
+        &self,
+        state: &mut Journal,
+        hold: &mut Journal,
+        clock: &CacheClockWriterReadbackGuard<'_>,
+        root: &crate::policy_compiler::create_q04::OriginalQ04RootCacheLoanV1<'_, '_, '_>,
+        recipes: &crate::journal::CacheQ04TransactionRecipesV1<'_>,
+        phase: crate::journal::Q04CacheTerminalPhaseV1,
+        physical: &super::super::DormantCacheOwnerV1,
+        destination: &mut Option<Result<super::super::CacheResidencyWriterReadbackV2, crate::policy_compiler::create_q04::CreateQ04ErrorV1>>,
+        first: &mut Option<crate::policy_compiler::create_q04::CreateQ04ErrorV1>,
+        postcheck: &mut Option<crate::policy_compiler::create_q04::CreateQ04ErrorV1>,
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        self.capture_borrowed_q04_readback_v1(
+            state, hold, clock, Q04CacheReadRequestV1::Terminal { root, recipes, phase },
+            physical, Q04CacheReadDestinationV1::Terminal(destination), first, postcheck,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::cache_residency) fn capture_borrowed_q04_prepare_readback_v1(
+        &self,
+        state: &mut Journal,
+        hold: &mut Journal,
+        clock: &CacheClockWriterReadbackGuard<'_>,
+        project: ProjectId,
+        physical: &super::super::DormantCacheOwnerV1,
+        destination: &mut Option<Result<super::super::Q04CachePrepareReadbackV1, crate::policy_compiler::create_q04::CreateQ04ErrorV1>>,
+        first: &mut Option<crate::policy_compiler::create_q04::CreateQ04ErrorV1>,
+        postcheck: &mut Option<crate::policy_compiler::create_q04::CreateQ04ErrorV1>,
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        self.capture_borrowed_q04_readback_v1(
+            state, hold, clock, Q04CacheReadRequestV1::Prepare(project), physical,
+            Q04CacheReadDestinationV1::Prepare(destination), first, postcheck,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    #[allow(clippy::too_many_arguments)]
+    fn capture_borrowed_q04_readback_v1(
+        &self,
+        state: &mut Journal,
+        hold: &mut Journal,
+        clock: &CacheClockWriterReadbackGuard<'_>,
+        request: Q04CacheReadRequestV1<'_, '_>,
+        physical: &super::super::DormantCacheOwnerV1,
+        mut destination: Q04CacheReadDestinationV1<'_>,
+        first: &mut Option<crate::policy_compiler::create_q04::CreateQ04ErrorV1>,
+        postcheck: &mut Option<crate::policy_compiler::create_q04::CreateQ04ErrorV1>,
+    ) -> Result<(), crate::policy_compiler::create_q04::CreateQ04ErrorV1> {
+        use crate::policy_compiler::create_q04::CreateQ04ErrorV1;
+
+        if !destination.vacant_for(&request) || first.is_some() || postcheck.is_some() {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        match &request {
+            Q04CacheReadRequestV1::Prepare(project) if project.as_bytes() == &[0; 16] => {
+                return Err(CreateQ04ErrorV1::ChangedCut);
+            }
+            Q04CacheReadRequestV1::Terminal { root, recipes, .. } => {
+                if !std::ptr::eq(root.identity(), recipes.identity()) {
+                    return Err(CreateQ04ErrorV1::ChangedCut);
+                }
+                root.recheck()?;
+            }
+            _ => {}
+        }
+        clock.require_time_authority(&self.current_time)?;
+        let physical_snapshot = physical.held_snapshot()?;
+        let mut journal = self.journal.lock()
+            .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        clock.require_cache_targets(state, &journal)?;
+        if physical_snapshot.owner_uid() != hold.protected_owner_uid()? {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        let position = match request {
+            Q04CacheReadRequestV1::Prepare(project) => Q04BorrowedCacheReadPositionV1::Prepare {
+                native: Journal::borrow_q04_cache_prepare_native_v1(state, &journal, hold)?,
+                project,
+            },
+            Q04CacheReadRequestV1::Terminal { root, recipes, phase } => Q04BorrowedCacheReadPositionV1::Terminal {
+                native: Journal::borrow_q04_cache_terminal_native_v1(state, &journal, hold, recipes, phase)?,
+                root,
+            },
+        };
+        let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
+        let snapshot = authority.snapshot()?;
+        let partitions = self.partitions.lock()
+            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?.clone();
+        let owner = CacheAuthorityOwner::new(&authority, self.owner_scope, self.maximum_record_bytes)
+            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+        let view = verify_replay(
+            &authority, &owner, self.owner_scope, self.limits, &partitions, Vec::new(),
+            clock.current_unix_seconds()?,
+        )?;
+        drop(owner);
+        let mut context = Q04BorrowedCacheTerminalReadbackV1 {
+            authority: &authority, state, source: self, clock, position,
+            snapshot, partitions, view,
+        };
+
+        let returned = context.reconstruct();
+        destination.capture(returned, &context.position, physical.limits());
+        destination.retain_first_error(first);
+        if let Err(cause) = context.recheck() {
+            postcheck.get_or_insert(cause);
+        }
+        if let Err(cause) = physical_snapshot.revalidate() {
+            postcheck.get_or_insert(cause.into());
+        }
+        if let Err(cause) = clock.revalidate() {
+            postcheck.get_or_insert(cause.into());
+        }
+        if let Err(cause) = context.position.root_bookend() {
+            postcheck.get_or_insert(cause);
+        }
+        if first.is_some() || postcheck.is_some() || !destination.succeeded() {
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        Ok(())
+    }
+
     /// Establishes a dormant same-held cut, not a positive post-Root continuation.
     ///
     /// # Errors

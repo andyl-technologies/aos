@@ -8,6 +8,8 @@
 //! method and must match the retained AOSCOB01 reservation exactly.
 //! V5 retains nonauthorizing project-admission history in the existing Create
 //! Effect; V3 without that metadata remains valid but cannot retire Root history.
+//! V6 appends an exact Applying-only Q04 policy-admission subgate. Ordinary
+//! reconciliation cannot consume it as a completed public Create.
 
 use aos_proto::aos::sandbox::local::v1::{
     ApplyAtomicStorageSnapshotRequest, ApplyMountRequest, ApplyNetworkRequest, ApplyRuntimeRequest,
@@ -37,6 +39,7 @@ const EFFECT_VERSION: u8 = 2;
 const CONTROLLER_EFFECT_VERSION: u8 = 3;
 pub(super) const RESERVED_OBSERVE_EFFECT_VERSION: u8 = 4;
 pub(super) const CONTROLLER_PROJECT_EFFECT_VERSION: u8 = 5;
+const CONTROLLER_Q04_EFFECT_VERSION: u8 = 6;
 const AUTHORITY_BOUND_FLAG: u8 = 1;
 const MAXIMUM_DISPATCH_PACKET_BYTES: usize = MAXIMUM_REQUEST_BYTES;
 const BODY_DIGEST_DOMAIN: &[u8] = b"aos.sandbox.effect-body.v1\0";
@@ -1339,6 +1342,37 @@ pub(super) struct EffectLedgerRecord {
 }
 
 pub(super) fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, ReconcilerError> {
+    encode_effect_with_q04(record, None)
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn encode_q04_effect(
+    record: &EffectLedgerRecord,
+    gate: &crate::policy_compiler::create_q04::Q04EffectSubgateV1,
+) -> Result<Vec<u8>, ReconcilerError> {
+    require_q04_effect_shape(record)?;
+    encode_effect_with_q04(record, Some(gate.bytes()))
+}
+
+#[cfg(target_os = "linux")]
+fn require_q04_effect_shape(record: &EffectLedgerRecord) -> Result<(), ReconcilerError> {
+    if record.plan.domain != EffectDomain::Controller
+        || record.plan.controller_method
+            != Some(crate::controller_query::PublicOperationMethodV1::CreateSandbox)
+        || record.plan.method.is_some()
+        || record.plan.authority.is_some()
+        || record.dispatch.is_some()
+        || !matches!(record.state, EffectState::Applying { .. })
+    {
+        return Err(ReconcilerError::CorruptLedger("invalid Q04 policy-subgate Effect"));
+    }
+    Ok(())
+}
+
+fn encode_effect_with_q04(
+    record: &EffectLedgerRecord,
+    q04_gate: Option<&[u8]>,
+) -> Result<Vec<u8>, ReconcilerError> {
     let (state, attempt, receipt, diagnostic) = state_parts(&record.state);
     validate_lengths(&record.plan, receipt, diagnostic)?;
     if let Some(metadata) = &record.project_admission {
@@ -1391,7 +1425,9 @@ pub(super) fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, Reco
     } else {
         0
     };
-    let version = if record.plan.is_reserved_observe() {
+    let version = if q04_gate.is_some() {
+        CONTROLLER_Q04_EFFECT_VERSION
+    } else if record.plan.is_reserved_observe() {
         RESERVED_OBSERVE_EFFECT_VERSION
     } else if record.project_admission.is_some() {
         CONTROLLER_PROJECT_EFFECT_VERSION
@@ -1412,6 +1448,8 @@ pub(super) fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, Reco
         LEGACY_EFFECT_VERSION | RESERVED_OBSERVE_EFFECT_VERSION
     ) {
         18
+    } else if version == CONTROLLER_Q04_EFFECT_VERSION {
+        30
     } else if version == CONTROLLER_PROJECT_EFFECT_VERSION {
         26
     } else {
@@ -1423,7 +1461,8 @@ pub(super) fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, Reco
             + record.plan.request.len()
             + receipt.len()
             + diagnostic.len()
-            + metadata_bytes.as_ref().map_or(0, Vec::len),
+            + metadata_bytes.as_ref().map_or(0, Vec::len)
+            + q04_gate.map_or(0, <[u8]>::len),
     );
     bytes.push(version);
     bytes.push(record.plan.domain as u8);
@@ -1445,7 +1484,7 @@ pub(super) fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, Reco
         bytes.extend_from_slice(&(method as i32).to_be_bytes());
     } else if matches!(
         version,
-        CONTROLLER_EFFECT_VERSION | CONTROLLER_PROJECT_EFFECT_VERSION
+        CONTROLLER_EFFECT_VERSION | CONTROLLER_PROJECT_EFFECT_VERSION | CONTROLLER_Q04_EFFECT_VERSION
     ) {
         let method = record
             .plan
@@ -1455,7 +1494,18 @@ pub(super) fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, Reco
             ))?;
         bytes.extend_from_slice(&i32::from(method.record_code()).to_be_bytes());
     }
-    if let Some(metadata) = &metadata_bytes {
+    if let Some(gate) = q04_gate {
+        bytes.extend_from_slice(
+            &u32::try_from(metadata_bytes.as_ref().map_or(0, Vec::len))
+                .map_err(|_| ReconcilerError::InvalidPlan("project metadata exceeds bounds"))?
+                .to_be_bytes(),
+        );
+        bytes.extend_from_slice(
+            &u32::try_from(gate.len())
+                .map_err(|_| ReconcilerError::InvalidPlan("Q04 gate exceeds bounds"))?
+                .to_be_bytes(),
+        );
+    } else if let Some(metadata) = &metadata_bytes {
         bytes.extend_from_slice(
             &u32::try_from(metadata.len())
                 .map_err(|_| ReconcilerError::InvalidPlan("project metadata exceeds bounds"))?
@@ -1519,10 +1569,36 @@ pub(super) fn encode_effect(record: &EffectLedgerRecord) -> Result<Vec<u8>, Reco
     if let Some(metadata) = metadata_bytes {
         bytes.extend_from_slice(&metadata);
     }
+    if let Some(gate) = q04_gate {
+        bytes.extend_from_slice(gate);
+    }
     Ok(bytes)
 }
 
 pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, ReconcilerError> {
+    decode_effect_with_extensions(bytes).map(|decoded| decoded.record)
+}
+
+struct DecodedEffectWithExtensions {
+    record: EffectLedgerRecord,
+    #[cfg(target_os = "linux")]
+    q04: Option<crate::policy_compiler::create_q04::Q04EffectSubgateV1>,
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn decode_effect_with_q04(
+    bytes: &[u8],
+) -> Result<
+    (EffectLedgerRecord, Option<crate::policy_compiler::create_q04::Q04EffectSubgateV1>),
+    ReconcilerError,
+> {
+    let decoded = decode_effect_with_extensions(bytes)?;
+    Ok((decoded.record, decoded.q04))
+}
+
+fn decode_effect_with_extensions(
+    bytes: &[u8],
+) -> Result<DecodedEffectWithExtensions, ReconcilerError> {
     if bytes.len() < 18
         || !matches!(
             bytes[0],
@@ -1531,6 +1607,7 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
                 | CONTROLLER_EFFECT_VERSION
                 | RESERVED_OBSERVE_EFFECT_VERSION
                 | CONTROLLER_PROJECT_EFFECT_VERSION
+                | CONTROLLER_Q04_EFFECT_VERSION
         )
         || !matches!(bytes[3], 0 | AUTHORITY_BOUND_FLAG)
     {
@@ -1574,7 +1651,9 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
     };
     let controller_method = if matches!(
         bytes[0],
-        CONTROLLER_EFFECT_VERSION | CONTROLLER_PROJECT_EFFECT_VERSION
+        CONTROLLER_EFFECT_VERSION
+            | CONTROLLER_PROJECT_EFFECT_VERSION
+            | CONTROLLER_Q04_EFFECT_VERSION
     ) {
         let method_code = i32::from_be_bytes(take_array(bytes, &mut cursor)?);
         let method_code = u8::try_from(method_code)
@@ -1587,11 +1666,29 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
     } else {
         None
     };
-    let metadata_length = if bytes[0] == CONTROLLER_PROJECT_EFFECT_VERSION {
+    let metadata_length = if matches!(
+        bytes[0],
+        CONTROLLER_PROJECT_EFFECT_VERSION | CONTROLLER_Q04_EFFECT_VERSION
+    ) {
         u32::from_be_bytes(take_array(bytes, &mut cursor)?) as usize
     } else {
         0
     };
+    let q04_length = if bytes[0] == CONTROLLER_Q04_EFFECT_VERSION {
+        u32::from_be_bytes(take_array(bytes, &mut cursor)?) as usize
+    } else {
+        0
+    };
+    if bytes[0] == CONTROLLER_Q04_EFFECT_VERSION {
+        #[cfg(not(target_os = "linux"))]
+        return Err(ReconcilerError::CorruptLedger(
+            "Q04 requires original Linux custody",
+        ));
+        #[cfg(target_os = "linux")]
+        if q04_length != crate::policy_compiler::create_q04::GATE_BYTES {
+            return Err(ReconcilerError::CorruptLedger("invalid Q04 gate length"));
+        }
+    }
     if metadata_length > MAXIMUM_RECORD_BYTES
         || (bytes[0] == CONTROLLER_PROJECT_EFFECT_VERSION && metadata_length == 0)
     {
@@ -1747,6 +1844,7 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
         .and_then(|n| n.checked_add(receipt_length))
         .and_then(|n| n.checked_add(diagnostic_length))
         .and_then(|n| n.checked_add(metadata_length))
+        .and_then(|n| n.checked_add(q04_length))
         .ok_or(ReconcilerError::CorruptLedger("effect length overflow"))?;
     if expected != bytes.len()
         || request_length == 0
@@ -1793,8 +1891,9 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
         })?;
     }
     let state = decode_state(state_code, attempt, receipt, diagnostic)?;
-    let project_admission = if bytes[0] == CONTROLLER_PROJECT_EFFECT_VERSION {
-        let metadata = ProjectAdmissionMetadata::decode(&bytes[diagnostic_end..])?;
+    let metadata_end = diagnostic_end + metadata_length;
+    let project_admission = if metadata_length != 0 {
+        let metadata = ProjectAdmissionMetadata::decode(&bytes[diagnostic_end..metadata_end])?;
         validate_project_metadata_shape(
             &EffectPlan {
                 domain,
@@ -1845,7 +1944,7 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
             "effect dispatch does not match authority state",
         ));
     }
-    Ok(EffectLedgerRecord {
+    let record = EffectLedgerRecord {
         plan: EffectPlan {
             domain,
             method,
@@ -1856,7 +1955,35 @@ pub(super) fn decode_effect(bytes: &[u8]) -> Result<EffectLedgerRecord, Reconcil
         state,
         dispatch,
         project_admission,
+    };
+    #[cfg(target_os = "linux")]
+    let q04 = if bytes[0] == CONTROLLER_Q04_EFFECT_VERSION {
+        require_q04_effect_shape(&record)?;
+        Some(
+            crate::policy_compiler::create_q04::Q04EffectSubgateV1::decode(&bytes[metadata_end..])
+                .map_err(|_| ReconcilerError::CorruptLedger("invalid Q04 policy-subgate record"))?,
+        )
+    } else {
+        None
+    };
+    Ok(DecodedEffectWithExtensions {
+        record,
+        #[cfg(target_os = "linux")]
+        q04,
     })
+}
+
+// The ordinary record intentionally keeps its old construction API. A caller
+// needing Q04 history must read this companion from the SAME complete row;
+// decoding either value is not held-owner or publication authority.
+#[cfg(target_os = "linux")]
+pub(super) fn q04_effect_subgate(
+    bytes: &[u8],
+) -> Result<Option<crate::policy_compiler::create_q04::Q04EffectSubgateV1>, ReconcilerError> {
+    if bytes.first() != Some(&CONTROLLER_Q04_EFFECT_VERSION) {
+        return Ok(None);
+    }
+    Ok(decode_effect_with_extensions(bytes)?.q04)
 }
 
 fn validate_project_metadata_shape(

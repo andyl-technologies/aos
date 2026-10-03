@@ -20,6 +20,8 @@
     else null;
   cacheSignerView = brokers.cacheSignerView or {enable = false;};
   sourceSignerView = brokers.sourceSignerView or {enable = false;};
+  cacheSignerService = brokers.cacheSignerService or {enable = false;};
+  sourceSignerService = brokers.sourceSignerService or {enable = false;};
   brokerSession = import ./_broker-session-credentials.nix {inherit lib pkgs;};
   brokerSessionEndpoints = map (endpoint:
     endpoint
@@ -161,6 +163,12 @@
     "controller-source-successor-admin-seed-v2:/run/credentials/@system/controller-source-successor-admin-seed-v2"
     "controller-source-successor-intent-v2:/run/credentials/@system/controller-source-successor-intent-v2"
   ];
+  q04PolicyCredentials = lib.optionals (cfg.createQ04PolicySubgate.enable
+    && policyAuthority.credentials.deploymentPublicKey != null
+    && policyAuthority.credentials.projectPublicKey != null) [
+    "deployment-public-key:/run/credentials/@system/${policyAuthority.credentials.deploymentPublicKey}"
+    "project-public-key:/run/credentials/@system/${policyAuthority.credentials.projectPublicKey}"
+  ];
 in {
   options.aos.sandbox.controllerService = {
     enable = lib.mkEnableOption "the production unprivileged sandbox node controller";
@@ -168,6 +176,8 @@ in {
     publicApi.enable = lib.mkEnableOption "the registered mutual-TLS controller API on /run/aos/sandboxd/public.sock";
 
     sourceSuccessorIssuance.enable = lib.mkEnableOption "the exclusive one-shot first Source successor issuer; never the Source mutation consumer";
+
+    createQ04PolicySubgate.enable = lib.mkEnableOption "the same-original gen1 Create policy-admission subgate; Create and its Effect remain pending";
 
     publisherIngress.enable = lib.mkEnableOption "the exact-process project publisher registration channel; publication effects remain unavailable";
 
@@ -333,6 +343,30 @@ in {
         {
           assertion = cfg.credentials.nodeId != null;
           message = "aos.sandbox.controllerService.credentials.nodeId is required";
+        }
+        {
+          assertion = !cfg.createQ04PolicySubgate.enable
+            || (!cfg.sourceSuccessorIssuance.enable && normalRootProfile != null
+              && cfg.package == pkgs.aos-sandboxd
+              && cacheSignerView.enable && sourceSignerView.enable
+              && cacheSignerService.enable && sourceSignerService.enable);
+          message = "Q04 policy subgate requires the genuine selected normal-Root profile and both existing signer views/services; it is not issue mode or public Create activation";
+        }
+        {
+          assertion = !cfg.createQ04PolicySubgate.enable
+            || !cfg.gitUploadBootstrap.enable;
+          message = "original Q04 freshness cannot share the previously initialized Git bootstrap Cache owner";
+        }
+        {
+          assertion = !cfg.createQ04PolicySubgate.enable
+            || (cfg.credentials.controllerHoldSigningKey != null
+              && cfg.credentials.controllerHoldPublicKey != null
+              && cfg.credentials.cacheOwnerReadbackSigningKey != null
+              && cfg.credentials.cacheOwnerReadbackPublicKey != null
+              && policyAuthority.credentials.deploymentPublicKey != null
+              && policyAuthority.credentials.projectPublicKey != null
+              && policyAuthority.credentials.sourceHoldPublicKey != null);
+          message = "Q04 policy subgate requires the original independent Controller/Cache role pairs and Root deployment/project/Source public pins";
         }
         {
           assertion =
@@ -598,6 +632,7 @@ in {
           "${cfg.package}/bin/aos-sandboxd ${toString controller.uid} ${toString controller.gid}"
           + lib.optionalString cfg.publicApi.enable " --public-api"
           + lib.optionalString cfg.publisherIngress.enable " --publisher-ingress"
+          + lib.optionalString cfg.createQ04PolicySubgate.enable " --create-q04-policy-subgate"
           + lib.optionalString cfg.gitUploadBootstrap.enable " --git-upload-bootstrap"
           + lib.optionalString cfg.gitReadInspection.enable " --git-read-inspection=${toString config.aos.sandbox.gitGatewayTransport.uid}:${toString config.aos.sandbox.gitGatewayTransport.gid}"
           + lib.optionalString cfg.sourceSuccessorIssuance.enable " --issue-source-successor";
@@ -630,6 +665,7 @@ in {
           ++ projectAuthorizationIssuerCredential
           ++ controllerSourceTreeSeedIssuerCredential
           ++ sourceGenesisPacketCredentials
+          ++ q04PolicyCredentials
           ++ sourceSuccessorCredentials;
         Restart = if cfg.sourceSuccessorIssuance.enable then "no" else "on-failure";
         RestartSec = "2s";

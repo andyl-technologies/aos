@@ -132,6 +132,31 @@ pub struct CurrentCreatePolicyBarrierHeadsV2 {
 }
 
 impl CurrentCreatePolicyBarrierHeadsV2 {
+    // The original completed flight and complete Cache Prepare replay are
+    // borrowed here. The returned heads remain comparison DATA, not a new
+    // currentness producer or a substitute for either held owner.
+    #[cfg(target_os = "linux")]
+    pub(super) fn from_original_q04_prepare(
+        controller: &crate::hierarchy::controller_genesis::HeldControllerSourceGenesisV1<'_>,
+        source: &crate::hierarchy::source_genesis::HeldSourceTreeGenesisObservationV1<'_>,
+        inventory: &crate::hierarchy::protected_journal::RetainedTreeInventoryDataV1<'_>,
+        root: &super::source_genesis_root::CompletedRootSourceGenesisFloorV1<'_, '_>,
+        cache: &crate::cache_residency::Q04CachePrepareReadbackV1,
+    ) -> Result<Self, super::create_q04::CreateQ04ErrorV1> {
+        consume_completed_gen1_ancestry_v1(controller, source, inventory, root)?;
+        let selected = cache.selected();
+        if selected.project() != root.floor().project() {
+            return Err(super::create_q04::CreateQ04ErrorV1::ChangedCut);
+        }
+        let result = Self {
+            ancestry: root.floor().tree_head(),
+            physical_partition: selected.partition().digest(),
+            physical_cache: selected.head(),
+        };
+        consume_completed_gen1_ancestry_v1(controller, source, inventory, root)?;
+        Ok(result)
+    }
+
     /// Returns the current protected source-domain ancestry head.
     #[must_use]
     pub const fn ancestry(self) -> ObjectDigest {
@@ -175,6 +200,29 @@ pub struct CurrentCreateProjectPolicySourceV1 {
 }
 
 impl CurrentCreateProjectPolicySourceV1 {
+    #[cfg(target_os = "linux")]
+    pub(super) fn q04_proposal_fields<'fields>(
+        &'fields self,
+        heads: &'fields CurrentCreatePolicyBarrierHeadsV2,
+    ) -> super::binding_v2::ClosedCreateProposalFieldViewV2<'fields> {
+        super::binding_v2::ClosedCreateProposalFieldViewV2 {
+            source_commitment: &self.commitment,
+            operation: &self.operation,
+            operation_revision: &self.operation_revision,
+            accepted_generation: &self.accepted_generation,
+            sandbox: &self.sandbox,
+            project: &self.project,
+            projection_revision: &self.projection_revision,
+            publisher_generation: &self.policy_generation,
+            publisher_head: &self.policy_digest,
+            cache_domain_head: &self.cache_domain_head,
+            revocation_head: &self.revocation_head,
+            ancestry: &heads.ancestry,
+            physical_partition: &heads.physical_partition,
+            physical_cache: &heads.physical_cache,
+        }
+    }
+
     pub(crate) fn historical_heads(&self) -> HistoricalCreateProjectSourceHeadsV1 {
         HistoricalCreateProjectSourceHeadsV1 {
             projection_revision: self.projection_revision,
@@ -474,16 +522,12 @@ pub fn checked_parentless_create_policy_draft_v2(
 
     let normalized_input = normalized_policy_input_digest_v1(input)
         .map_err(|_| CurrentCreatePolicySourceErrorV1::NotCurrent)?;
-    Ok(ObjectDigest::from_bytes(
-        Sha256::new()
-            .chain_update(EXPLICIT_DRAFT_DOMAIN)
-            .chain_update(source.commitment.as_bytes())
-            .chain_update(project_head.packet_digest().as_bytes())
-            .chain_update(project_head.input_digest().as_bytes())
-            .chain_update(prerequisites.digest().as_bytes())
-            .chain_update(normalized_input.as_bytes())
-            .finalize()
-            .into(),
+    Ok(parentless_explicit_draft_digest_v2(
+        source.commitment,
+        project_head.packet_digest(),
+        project_head.input_digest(),
+        prerequisites.digest(),
+        normalized_input,
     ))
 }
 
@@ -535,17 +579,36 @@ pub fn checked_parentless_create_verified_policy_draft_v2(
 
     let normalized_input = normalized_policy_input_digest_v1(input)
         .map_err(|_| CurrentCreatePolicySourceErrorV1::NotCurrent)?;
-    Ok(ObjectDigest::from_bytes(
+    Ok(parentless_explicit_draft_digest_v2(
+        source.commitment,
+        project_head.packet_digest(),
+        project_head.input_digest(),
+        prerequisites.digest(),
+        normalized_input,
+    ))
+}
+
+// This digest recipe is comparison DATA. Both old V2 callers perform their
+// original checks first; Root's Q04 caller must separately rejoin its actual
+// signed current/held owners before borrowing these same authenticated fields.
+pub(super) fn parentless_explicit_draft_digest_v2(
+    source: ObjectDigest,
+    project_packet: ObjectDigest,
+    project_input: ObjectDigest,
+    prerequisites: ObjectDigest,
+    normalized_input: ObjectDigest,
+) -> ObjectDigest {
+    ObjectDigest::from_bytes(
         Sha256::new()
             .chain_update(EXPLICIT_DRAFT_DOMAIN)
-            .chain_update(source.commitment.as_bytes())
-            .chain_update(project_head.packet_digest().as_bytes())
-            .chain_update(project_head.input_digest().as_bytes())
-            .chain_update(prerequisites.digest().as_bytes())
+            .chain_update(source.as_bytes())
+            .chain_update(project_packet.as_bytes())
+            .chain_update(project_input.as_bytes())
+            .chain_update(prerequisites.as_bytes())
             .chain_update(normalized_input.as_bytes())
             .finalize()
             .into(),
-    ))
+    )
 }
 
 fn request_is_inherited(input: &PolicyCompilerInputV1) -> bool {
@@ -828,9 +891,31 @@ pub fn current_parentless_create_compiler_input_v1(
         current_create_input_time()?,
     )?;
     let relation = AuthenticatedSandboxProjectRelationV1::from_current_create_source(&source)?;
-    let project = ProjectPolicyInputV1::new(source.project(), project_layer)?;
+    let input = parentless_create_input_from_authenticated_layers_v1(
+        relation, project_layer, deployment,
+    )?;
+
+    validate_current_create_controller_journal_v1(journal)?;
+    let current = current_parentless_create_project_source_v1(journal, operation, sandbox)?;
+    if current.commitment() != source.commitment() {
+        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent.into());
+    }
+    require_create_input_sources(&current, deployment_head, deployment, signed_project)?;
+    Ok(input)
+}
+
+// Both producers supply already authenticated model inputs. This helper only
+// shares the unchanged constructor/allocation sequence; it checks no owner,
+// admits no source and supplies no publication brand or effect right.
+#[cfg(target_os = "linux")]
+pub(super) fn parentless_create_input_from_authenticated_layers_v1(
+    relation: AuthenticatedSandboxProjectRelationV1,
+    project_layer: PolicyLayerV1,
+    deployment: &PolicyDeploymentSourcesV1,
+) -> Result<PolicyCompilerInputV1, CurrentCreateCompilerInputErrorV1> {
+    let project = ProjectPolicyInputV1::new(relation.project(), project_layer)?;
     let request = RequestPolicyInputV1::new(inherited_create_request_layer()?)?;
-    let input = PolicyCompilerInputV1::new(
+    Ok(PolicyCompilerInputV1::new(
         relation,
         deployment.node().clone(),
         deployment.site().clone(),
@@ -841,15 +926,7 @@ pub fn current_parentless_create_compiler_input_v1(
         deployment.destinations().clone(),
         deployment.backend().clone(),
         PolicyCompilerLimitsV1::DEFAULT,
-    )?;
-
-    validate_current_create_controller_journal_v1(journal)?;
-    let current = current_parentless_create_project_source_v1(journal, operation, sandbox)?;
-    if current.commitment() != source.commitment() {
-        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent.into());
-    }
-    require_create_input_sources(&current, deployment_head, deployment, signed_project)?;
-    Ok(input)
+    )?)
 }
 
 #[cfg(target_os = "linux")]

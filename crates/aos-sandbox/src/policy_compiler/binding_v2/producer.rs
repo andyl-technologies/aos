@@ -133,6 +133,26 @@ pub fn propose_closed_current_create_explicit_policy_binding_v2(
     )
 }
 
+// This borrowed view contains only comparison fields already selected by a
+// caller's real owner engine. It is not a Controller source, brand or permission
+// to publish. Root constructs it only after its independent original-cut join.
+pub(in crate::policy_compiler) struct ClosedCreateProposalFieldViewV2<'cut> {
+    pub(in crate::policy_compiler) source_commitment: &'cut ObjectDigest,
+    pub(in crate::policy_compiler) operation: &'cut aos_sandbox_core::OperationId,
+    pub(in crate::policy_compiler) operation_revision: &'cut ObjectDigest,
+    pub(in crate::policy_compiler) accepted_generation: &'cut u64,
+    pub(in crate::policy_compiler) sandbox: &'cut aos_sandbox_core::SandboxId,
+    pub(in crate::policy_compiler) project: &'cut aos_sandbox_core::ProjectId,
+    pub(in crate::policy_compiler) projection_revision: &'cut ObjectDigest,
+    pub(in crate::policy_compiler) publisher_generation: &'cut u64,
+    pub(in crate::policy_compiler) publisher_head: &'cut ObjectDigest,
+    pub(in crate::policy_compiler) cache_domain_head: &'cut ObjectDigest,
+    pub(in crate::policy_compiler) revocation_head: &'cut ObjectDigest,
+    pub(in crate::policy_compiler) ancestry: &'cut ObjectDigest,
+    pub(in crate::policy_compiler) physical_partition: &'cut ObjectDigest,
+    pub(in crate::policy_compiler) physical_cache: &'cut ObjectDigest,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn encode_closed_proposal(
     source: &CurrentCreateProjectPolicySourceV1,
@@ -149,14 +169,67 @@ fn encode_closed_proposal(
         .map_err(|_| PolicyCompilerJournalErrorV1::UnauthenticatedCandidate)?
         .commitment()
         .digest();
+
+    // No allocation, check, effect or user-defined drop is introduced here.
+    // The old source and held-head getters supply the same encoder fields.
+    let source_commitment = source.commitment();
+    let operation = source.operation();
+    let operation_revision = source.operation_revision();
+    let accepted_generation = source.accepted_generation();
+    let sandbox = source.sandbox();
+    let project = source.project();
+    let projection_revision = source.projection_revision();
+    let publisher_generation = source.policy_generation();
+    let publisher_head = source.policy_digest();
+    let cache_domain_head = source.cache_domain_head();
+    let revocation_head = source.revocation_head();
+    let ancestry = heads.ancestry();
+    let physical_partition = heads.physical_partition();
+    let physical_cache = heads.physical_cache();
+    let fields = ClosedCreateProposalFieldViewV2 {
+        source_commitment: &source_commitment,
+        operation: &operation,
+        operation_revision: &operation_revision,
+        accepted_generation: &accepted_generation,
+        sandbox: &sandbox,
+        project: &project,
+        projection_revision: &projection_revision,
+        publisher_generation: &publisher_generation,
+        publisher_head: &publisher_head,
+        cache_domain_head: &cache_domain_head,
+        revocation_head: &revocation_head,
+        ancestry: &ancestry,
+        physical_partition: &physical_partition,
+        physical_cache: &physical_cache,
+    };
+    encode_closed_proposal_fields(
+        &fields, project_packet, project_input, deployment_head,
+        normalized_input, candidate, root_base, checked_draft,
+    )
+}
+
+// Q04 may borrow its already compiled candidate/input commitments here only
+// after its actual Root/current-owner verifier rechecks the full original cut.
+// This sole serializer/barrier/effect recipe remains comparison DATA.
+#[allow(clippy::too_many_arguments)]
+pub(in crate::policy_compiler) fn encode_closed_proposal_fields(
+    fields: &ClosedCreateProposalFieldViewV2<'_>,
+    project_packet: ObjectDigest,
+    project_input: ObjectDigest,
+    deployment_head: PolicyDeploymentHeadV1,
+    normalized_input: ObjectDigest,
+    candidate: ObjectDigest,
+    root_base: ClosedPolicyRootCasBaseV2,
+    checked_draft: ObjectDigest,
+) -> Result<Vec<u8>, PolicyCompilerJournalErrorV1> {
     let barrier_head = ObjectDigest::from_bytes(
         Sha256::new()
             .chain_update(BARRIER_DOMAIN)
-            .chain_update(source.commitment().as_bytes())
+            .chain_update(fields.source_commitment.as_bytes())
             .chain_update(checked_draft.as_bytes())
-            .chain_update(heads.ancestry().as_bytes())
-            .chain_update(heads.physical_partition().as_bytes())
-            .chain_update(heads.physical_cache().as_bytes())
+            .chain_update(fields.ancestry.as_bytes())
+            .chain_update(fields.physical_partition.as_bytes())
+            .chain_update(fields.physical_cache.as_bytes())
             .chain_update(project_packet.as_bytes())
             .chain_update(deployment_head.packet_digest().as_bytes())
             .chain_update(normalized_input.as_bytes())
@@ -170,8 +243,8 @@ fn encode_closed_proposal(
     // generation cannot reuse it for the same accepted Create.
     let effect_digest = Sha256::new()
         .chain_update(EFFECT_TRANSACTION_DOMAIN)
-        .chain_update(source.operation().as_bytes())
-        .chain_update(source.operation_revision().as_bytes())
+        .chain_update(fields.operation.as_bytes())
+        .chain_update(fields.operation_revision.as_bytes())
         .chain_update(normalized_input.as_bytes())
         .chain_update(candidate.as_bytes())
         .finalize();
@@ -181,22 +254,22 @@ fn encode_closed_proposal(
 
     ClosedPolicyRootBindingV2 {
         issuer_owner: root_base.issuer_owner(),
-        project: source.project(),
-        sandbox: source.sandbox(),
-        operation: source.operation(),
-        operation_revision: source.operation_revision(),
-        accepted_generation: source.accepted_generation(),
-        projection_revision: source.projection_revision(),
-        publisher_generation: source.policy_generation(),
-        publisher_head: source.policy_digest(),
+        project: *fields.project,
+        sandbox: *fields.sandbox,
+        operation: *fields.operation,
+        operation_revision: *fields.operation_revision,
+        accepted_generation: *fields.accepted_generation,
+        projection_revision: *fields.projection_revision,
+        publisher_generation: *fields.publisher_generation,
+        publisher_head: *fields.publisher_head,
         project_policy_head: project_packet,
         project_policy_input: project_input,
-        ancestry_head: heads.ancestry(),
+        ancestry_head: *fields.ancestry,
         compiler_head: deployment_head.packet_digest(),
-        cache_domain_head: source.cache_domain_head(),
-        revocation_head: source.revocation_head(),
-        physical_partition: heads.physical_partition(),
-        physical_cache_head: heads.physical_cache(),
+        cache_domain_head: *fields.cache_domain_head,
+        revocation_head: *fields.revocation_head,
+        physical_partition: *fields.physical_partition,
+        physical_cache_head: *fields.physical_cache,
         normalized_input,
         candidate,
         project_signer_generation: root_base.project_signer_generation(),
