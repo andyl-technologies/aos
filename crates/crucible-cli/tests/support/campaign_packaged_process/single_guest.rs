@@ -112,17 +112,17 @@ fn run_single_guest(materialization: bool) -> Result<(), Box<dyn Error>> {
     known = guest_choice::attempt_states(&fixture)?
         .into_keys()
         .collect();
-    guest_choice::submit_choice(
-        &fixture,
-        &quanta_choice,
-        "u64:7",
+
+    // Named stops match guest marker names, not event-graph trigger IDs.
+    let selected_stop = format!(
+        "boundary:{}",
         if materialization {
-            "boundary:single.selected"
+            SELECTED_MARKER
         } else {
-            "boundary:single.complete"
-        },
-        0x82,
-    )?;
+            COMPLETION_MARKER
+        }
+    );
+    guest_choice::submit_choice(&fixture, &quanta_choice, "u64:7", &selected_stop, 0x82)?;
     let (selected, selection) = wait_for_observation(
         &fixture,
         &mut service,
@@ -133,7 +133,7 @@ fn run_single_guest(materialization: bool) -> Result<(), Box<dyn Error>> {
     )?;
     assert_eq!(selection["selection"]["value"], "u64:7");
     if materialization {
-        require_bounded_boundary(&selection, "boundary:single.selected")?;
+        require_bounded_boundary(&selection, &selected_stop)?;
     } else {
         assert_eq!(selection["observation"]["stop"], "terminal-success");
     }
@@ -296,6 +296,7 @@ fn capture_and_restore(
     stage("restore-selected-guest-state");
     let known = guest_choice::attempt_states(fixture)?.into_keys().collect();
     let head = campaign_status(fixture)?;
+    let completion_stop = format!("boundary:{COMPLETION_MARKER}");
     let selected = run_json(
         connected_campaign(fixture).args([
             "select-capture",
@@ -307,7 +308,7 @@ fn capture_and_restore(
             "--command",
             &"84".repeat(32),
             "--stop",
-            "boundary:single.complete",
+            &completion_stop,
         ]),
         "select saved one-guest continuation",
     )?;
@@ -514,14 +515,14 @@ fn waiting_progress_forwards_bounded_runtime_frontier_and_boot_evidence() {
 #[test]
 fn bounded_boundary_success_preserves_primary_and_physical_progress() {
     for primary in [
-        "next-choice",
-        "boundary:single.selected",
-        "boundary:single.complete",
+        String::from("next-choice"),
+        format!("boundary:{SELECTED_MARKER}"),
+        format!("boundary:{COMPLETION_MARKER}"),
     ] {
         let stop =
             format!("bounded-primary-reached:{primary}:frontier-ps=553189141800:quanta=2213");
         assert_eq!(
-            bounded_boundary_progress(&stop, primary),
+            bounded_boundary_progress(&stop, &primary),
             Some((553_189_141_800, 2213))
         );
     }
