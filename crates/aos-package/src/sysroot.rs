@@ -1,5 +1,5 @@
-//! System sysroot management (`apm install --system`, `apm upgrade --system`,
-//! `apm rollback --system`).
+//! System sysroot management (`apm image install`, `apm image upgrade`,
+//! `apm config rollback`).
 //!
 //! A sysroot package is a regular package with `sysroot = true` whose metadata
 //! names both a system toplevel and an authenticated raw OTA payload. Installing
@@ -508,7 +508,7 @@ pub async fn install_system(
     printer: &Printer,
 ) -> Result<()> {
     if packages.len() != 1 {
-        bail!("--system install requires exactly one package name");
+        bail!("image installation requires exactly one package name");
     }
     let pkg_name = &packages[0];
 
@@ -3033,49 +3033,49 @@ where
     Ok(())
 }
 
-/// Check whether a package's closure is contained within the current sysroot.
+/// Checks whether a package root and its references are provided by the running image.
 ///
-/// Returns `Some((sysroot_name, sysroot_version))` if every reference in
-/// `pkg_refs` is already provided by the active sysroot's closure (in which
-/// case a user-scope install would be redundant), `None` otherwise. All
-/// failure modes — no system generation, unreadable state, unloadable
-/// registries — degrade to `None` rather than erroring, since this is a
-/// best-effort advisory check.
+/// Returns the image name and version only when the package root itself and
+/// every dependency are in that image's recorded closure. Missing image
+/// authority or registry metadata conservatively returns `None`.
 pub fn check_sysroot_containment(
-    pkg_refs: &[String],
+    package: &PackageMeta,
     config: &ApmConfig,
 ) -> Option<(String, String)> {
-    let current = match running_image_generation() {
-        Ok(image) => image,
-        Err(_) => return None,
-    };
+    let current = running_image_generation().ok()?;
+    let registries = load_registries(config).ok()?;
+    let image_hash = store_path_hash(&current.toplevel);
+    let package_hash = store_path_hash(&package.store_path);
 
-    // Load registries to get the sysroot package's references.
-    let registries = match load_registries(config) {
-        Ok(r) => r,
-        Err(_) => return None,
-    };
+    for registry in registries.registries() {
+        // A registry's latest image can differ from the image actually running.
+        let Some(image) = registry.get_by_hash(image_hash) else {
+            continue;
+        };
+        if !image.sysroot {
+            continue;
+        }
 
-    for reg in registries.registries() {
-        if let Some(meta) = reg.packages.get(&current.package_name) {
-            if meta.sysroot {
-                let sysroot_refs: HashSet<&str> =
-                    meta.references.iter().map(|s| s.as_str()).collect();
-                // Also add the sysroot's own hash.
-                let sysroot_hash = store_path_hash(&meta.store_path);
-                let mut full_refs = sysroot_refs;
-                full_refs.insert(sysroot_hash);
-
-                // Check if all of the package's references are in the sysroot.
-                let all_contained = pkg_refs.iter().all(|r| full_refs.contains(r.as_str()));
-                if all_contained {
-                    return Some((current.package_name.clone(), current.version.clone()));
-                }
-            }
+        let mut image_refs: HashSet<&str> = image.references.iter().map(String::as_str).collect();
+        image_refs.insert(image_hash);
+        if package_closure_is_contained(package_hash, &package.references, &image_refs) {
+            return Some((current.package_name.clone(), current.version.clone()));
         }
     }
 
     None
+}
+
+// Dependency containment alone can falsely classify any leaf package as base-provided.
+fn package_closure_is_contained(
+    package_hash: &str,
+    references: &[String],
+    image_refs: &HashSet<&str>,
+) -> bool {
+    image_refs.contains(package_hash)
+        && references
+            .iter()
+            .all(|reference| image_refs.contains(reference.as_str()))
 }
 
 /// Show sysroot-specific information for `apm show <pkg>`.
@@ -5562,6 +5562,29 @@ fn days_to_ymd(days: i64) -> (i32, u32, u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sysroot_containment_requires_the_package_root_and_all_dependencies() {
+        let image_refs = HashSet::from(["base-tool", "libc"]);
+
+        assert!(!package_closure_is_contained("new-leaf", &[], &image_refs));
+        assert!(!package_closure_is_contained(
+            "new-tool",
+            &["libc".into()],
+            &image_refs
+        ));
+        assert!(package_closure_is_contained("base-tool", &[], &image_refs));
+        assert!(package_closure_is_contained(
+            "base-tool",
+            &["libc".into()],
+            &image_refs
+        ));
+        assert!(!package_closure_is_contained(
+            "base-tool",
+            &["missing-lib".into()],
+            &image_refs
+        ));
+    }
 
     #[test]
     fn parses_only_complete_pem_certificate_sets() {

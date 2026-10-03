@@ -136,7 +136,7 @@
       # Put generation two outside `--keep 1` while making it current. The
       # retention contract keeps both it and the numerically latest gen four.
       target.succeed(
-          f"{APM} rollback --system --generation {second}", timeout=300
+          f"{APM} config rollback --generation {second}", timeout=300
       )
       assert current_generation() == second
       target.succeed('test "$(cat /etc/config-generation-gc-generation)" = two')
@@ -179,7 +179,7 @@
       # A retained config generation remains a complete rollback artifact
       # after GC: direct activation materializes its exact /etc lower.
       target.succeed(
-          f"{APM} rollback --system --generation {fourth}", timeout=300
+          f"{APM} config rollback --generation {fourth}", timeout=300
       )
       assert current_generation() == fourth
       target.succeed('test "$(cat /etc/config-generation-gc-generation)" = four')
