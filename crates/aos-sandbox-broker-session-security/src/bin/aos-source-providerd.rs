@@ -256,9 +256,8 @@ fn serve_authenticated_ingress() -> Result<(), SourceProviderDaemonErrorV1> {
     }
 }
 
-// Both closed routes adopt the same original table before any observer or
-// runtime thread. This is the sole existing activation engine, not an FD
-// constructor or permission derived from the selected argument.
+// Ordinary serving keeps its original activation adoption recipe. Selected
+// serving captures the exclusive complete INITIAL table below instead.
 fn adopt_fixed_ingress()
     -> Result<ProductionSourceProviderIngressV1, SourceProviderDaemonErrorV1>
 {
@@ -272,15 +271,24 @@ fn serve_selected_authenticated_ingress() -> Result<(), SourceProviderDaemonErro
         return Err(SourceProviderDaemonErrorV1::Identity);
     }
 
-    let mut ingress = adopt_fixed_ingress()?;
-    loop {
-        let deadline = production_deadline_after(ACCEPT_TIMEOUT)?;
-        match ingress.accept_selected_pending_owner(deadline) {
-            Ok(original) => serve_selected_original(&ingress, original),
-            Err(ProductionSourceProviderIngressErrorV1::Activation(
-                ProductionBrokerSessionActivationErrorV1::Deadline,
-            )) => continue,
-            Err(error) => return Err(error.into()),
+    let mut ingress = ProductionSourceProviderIngressV1::new_selected_initial();
+    // SAFETY: serving entry remains single-threaded, no other FD owner or
+    // runtime exists, and the same INITIAL scanner exclusively adopts0/1/2/3.
+    if unsafe { ingress.capture_selected_initial_once() }.is_err() {
+        terminate_selected_ingress(&mut ingress);
+    }
+    let deadline_result = production_deadline_after(ACCEPT_TIMEOUT);
+    let deadline = match &deadline_result {
+        Ok(deadline) => *deadline,
+        _ => terminate_selected_ingress(&mut ingress),
+    };
+    match ingress.accept_selected_pending_owner(deadline) {
+        Ok(original) => serve_selected_original(&mut ingress, original),
+        Err(cause) => {
+            // The returned outer marker remains alongside real nested native
+            // custody until intentional death. No failed selected accept retries.
+            let _cause = cause;
+            terminate_selected_ingress(&mut ingress)
         }
     }
 }
@@ -288,28 +296,41 @@ fn serve_selected_authenticated_ingress() -> Result<(), SourceProviderDaemonErro
 // The genuine accepted socket is already in this value before role, protected
 // file, catalog, Journal or HELLO effects. Returned failures remain nested in
 // that same owner. No selected error enters the consuming legacy route.
+struct SelectedSourceDaemonFlightV1<'owner> {
+    ingress: &'owner mut ProductionSourceProviderIngressV1,
+    original: ProductionSelectedSourceProviderOriginalV1,
+}
+
+impl Drop for SelectedSourceDaemonFlightV1<'_> {
+    fn drop(&mut self) {
+        self.ingress.end_selected_initial();
+        self.original.end_original();
+    }
+}
+
 fn serve_selected_original(
-    ingress: &ProductionSourceProviderIngressV1,
-    mut original: ProductionSelectedSourceProviderOriginalV1,
+    ingress: &mut ProductionSourceProviderIngressV1,
+    original: ProductionSelectedSourceProviderOriginalV1,
 ) -> ! {
-    if original.open_once(ingress).is_err() {
-        terminate_selected_original(&mut original);
+    let mut flight = SelectedSourceDaemonFlightV1 { ingress, original };
+    if flight.original.open_once(flight.ingress).is_err() {
+        terminate_selected_original(flight.ingress, &mut flight.original);
     }
 
     loop {
-        match original.advance_opening(ingress) {
+        match flight.original.advance_opening(flight.ingress) {
             Ok(FixedSelectedProviderProgressV1::Pending) => {
                 std::thread::sleep(Duration::from_millis(2));
             }
             Ok(FixedSelectedProviderProgressV1::OriginalCurrent) => break,
-            Err(_) => terminate_selected_original(&mut original),
+            Err(_) => terminate_selected_original(flight.ingress, &mut flight.original),
         }
     }
 
     let mut paired = false;
     loop {
         if !paired {
-            match original.advance_original_ingress(ingress) {
+            match flight.original.advance_original_ingress(flight.ingress) {
                 Ok(FixedProviderIngressProgressV1::Pending)
                 | Ok(FixedProviderIngressProgressV1::CatalogReplied)
                 | Ok(FixedProviderIngressProgressV1::OriginalRootPreparedRetained) => {}
@@ -319,19 +340,19 @@ fn serve_selected_original(
                     paired = true;
                 }
                 Ok(_) => {
-                    terminate_selected_original(&mut original);
+                    terminate_selected_original(flight.ingress, &mut flight.original);
                 }
-                Err(_) => terminate_selected_original(&mut original),
+                Err(_) => terminate_selected_original(flight.ingress, &mut flight.original),
             }
         } else {
-            match original.advance_original_native_completion(ingress) {
+            match flight.original.advance_original_native_completion(flight.ingress) {
                 Ok(FixedProviderOriginalCompletionProgressV5::Pending)
                 | Ok(FixedProviderOriginalCompletionProgressV5::CompleteCommitted)
                 | Ok(FixedProviderOriginalCompletionProgressV5::HeldStored)
                 | Ok(FixedProviderOriginalCompletionProgressV5::ProviderHeldSent)
                 | Ok(FixedProviderOriginalCompletionProgressV5::CompleteSent) => {}
                 Ok(FixedProviderOriginalCompletionProgressV5::Closed)
-                | Err(_) => terminate_selected_original(&mut original),
+                | Err(_) => terminate_selected_original(flight.ingress, &mut flight.original),
             }
         }
 
@@ -339,7 +360,17 @@ fn serve_selected_original(
     }
 }
 
-fn terminate_selected_original(original: &mut ProductionSelectedSourceProviderOriginalV1) -> ! {
+fn terminate_selected_ingress(ingress: &mut ProductionSourceProviderIngressV1) -> ! {
+    ingress.end_selected_initial();
+    eprintln!("aos-source-providerd: selected Source INITIAL failed");
+    std::process::exit(1)
+}
+
+fn terminate_selected_original(
+    ingress: &mut ProductionSourceProviderIngressV1,
+    original: &mut ProductionSelectedSourceProviderOriginalV1,
+) -> ! {
+    ingress.end_selected_initial();
     original.end_original();
     // No raw body, key, path, FD or remote error string is emitted. The actual
     // owning first cause is still in `original` during this diagnostic and

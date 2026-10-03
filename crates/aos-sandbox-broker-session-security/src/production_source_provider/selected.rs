@@ -346,12 +346,14 @@ pub struct ProductionSelectedSourceProviderOriginalV1 {
 
 struct SelectedSourceOriginalBoundaryV1<'owner> {
     owner: &'owner mut ProductionSelectedSourceProviderOriginalV1,
+    ingress: &'owner mut ProductionSourceProviderIngressV1,
     completed: bool,
 }
 
 impl Drop for SelectedSourceOriginalBoundaryV1<'_> {
     fn drop(&mut self) {
         if !self.completed {
+            self.ingress.end_selected_initial();
             self.owner.end_original();
         }
     }
@@ -379,21 +381,22 @@ impl ProductionSelectedSourceProviderOriginalV1 {
     ///
     /// Permanently ends the original queue and lends its retained first cause.
     /// It neither retries failed admission nor reopens catalog/Journal state.
-    pub fn open_once(&mut self, ingress: &ProductionSourceProviderIngressV1)
+    pub fn open_once(&mut self, ingress: &mut ProductionSourceProviderIngressV1)
         -> Result<(), ProductionSelectedSourceProviderFailureRefV1<'_>>
     {
         {
             let mut boundary = SelectedSourceOriginalBoundaryV1 {
                 owner: self,
+                ingress,
                 completed: false,
             };
-            boundary.owner.open_inner(ingress);
+            boundary.owner.open_inner(boundary.ingress);
             boundary.completed = boundary.owner.failure().is_none() && !boundary.owner.ended;
         }
         self.finish_step()
     }
 
-    fn open_inner(&mut self, ingress: &ProductionSourceProviderIngressV1) {
+    fn open_inner(&mut self, ingress: &mut ProductionSourceProviderIngressV1) {
         if self.failure().is_none() && !self.ended {
             if self.attempted {
                 self.first_failure = Some(ProductionSourceProviderIngressErrorV1::Catalog(
@@ -423,15 +426,16 @@ impl ProductionSelectedSourceProviderOriginalV1 {
     ///
     /// Refuses stale listener, deadline, catalog or genuine opening. Every
     /// completed owner is parked before subsequent bookends can fail.
-    pub fn advance_opening(&mut self, ingress: &ProductionSourceProviderIngressV1)
+    pub fn advance_opening(&mut self, ingress: &mut ProductionSourceProviderIngressV1)
         -> Result<FixedSelectedProviderProgressV1, ProductionSelectedSourceProviderFailureRefV1<'_>>
     {
         let progress = {
             let mut boundary = SelectedSourceOriginalBoundaryV1 {
                 owner: self,
+                ingress,
                 completed: false,
             };
-            let progress = boundary.owner.advance_opening_inner(ingress);
+            let progress = boundary.owner.advance_opening_inner(boundary.ingress);
             boundary.completed = boundary.owner.failure().is_none() && !boundary.owner.ended;
             progress
         };
@@ -441,7 +445,7 @@ impl ProductionSelectedSourceProviderOriginalV1 {
 
     fn advance_opening_inner(
         &mut self,
-        ingress: &ProductionSourceProviderIngressV1,
+        ingress: &mut ProductionSourceProviderIngressV1,
     ) -> FixedSelectedProviderProgressV1 {
         let mut progress = FixedSelectedProviderProgressV1::Pending;
         if self.failure().is_none() && !self.ended {
@@ -450,7 +454,11 @@ impl ProductionSelectedSourceProviderOriginalV1 {
                     "selected opening was not attempted",
                 ));
             } else if self.owner.is_some() {
-                progress = FixedSelectedProviderProgressV1::OriginalCurrent;
+                if let Err(cause) = ingress.check_initial_only(self.deadline) {
+                    self.first_failure = Some(cause);
+                } else {
+                    progress = FixedSelectedProviderProgressV1::OriginalCurrent;
+                }
             } else if let Err(error) = self.check_opening_boundary(ingress)
                 .and_then(|()| self.catalog.recheck())
             {
@@ -495,15 +503,16 @@ impl ProductionSelectedSourceProviderOriginalV1 {
     ///
     /// Ends changed listener/catalog or failed original custody permanently,
     /// retaining the whole original owner and every returned rejected packet.
-    pub fn advance_original_ingress(&mut self, ingress: &ProductionSourceProviderIngressV1)
+    pub fn advance_original_ingress(&mut self, ingress: &mut ProductionSourceProviderIngressV1)
         -> Result<FixedProviderIngressProgressV1, ProductionSelectedSourceProviderFailureRefV1<'_>>
     {
         let progress = {
             let mut boundary = SelectedSourceOriginalBoundaryV1 {
                 owner: self,
+                ingress,
                 completed: false,
             };
-            let progress = boundary.owner.advance_original_ingress_inner(ingress);
+            let progress = boundary.owner.advance_original_ingress_inner(boundary.ingress);
             boundary.completed = progress.is_some()
                 && boundary.owner.failure().is_none() && !boundary.owner.ended;
             progress
@@ -516,7 +525,7 @@ impl ProductionSelectedSourceProviderOriginalV1 {
 
     fn advance_original_ingress_inner(
         &mut self,
-        ingress: &ProductionSourceProviderIngressV1,
+        ingress: &mut ProductionSourceProviderIngressV1,
     ) -> Option<FixedProviderIngressProgressV1> {
         if self.failure().is_none() && !self.ended {
             if let Err(error) = self.check_opening_boundary(ingress)
@@ -560,7 +569,7 @@ impl ProductionSelectedSourceProviderOriginalV1 {
     /// owner extraction, replacement Session, signing epoch or resend is admitted.
     pub fn advance_original_native_completion(
         &mut self,
-        ingress: &ProductionSourceProviderIngressV1,
+        ingress: &mut ProductionSourceProviderIngressV1,
     ) -> Result<
         FixedProviderOriginalCompletionProgressV5,
         ProductionSelectedSourceProviderFailureRefV1<'_>,
@@ -568,9 +577,10 @@ impl ProductionSelectedSourceProviderOriginalV1 {
         let progress = {
             let mut boundary = SelectedSourceOriginalBoundaryV1 {
                 owner: self,
+                ingress,
                 completed: false,
             };
-            let progress = boundary.owner.advance_original_completion_inner(ingress);
+            let progress = boundary.owner.advance_original_completion_inner(boundary.ingress);
             boundary.completed = progress.is_some()
                 && boundary.owner.failure().is_none() && !boundary.owner.ended;
             progress
@@ -583,7 +593,7 @@ impl ProductionSelectedSourceProviderOriginalV1 {
 
     fn advance_original_completion_inner(
         &mut self,
-        ingress: &ProductionSourceProviderIngressV1,
+        ingress: &mut ProductionSourceProviderIngressV1,
     ) -> Option<FixedProviderOriginalCompletionProgressV5> {
         if self.failure().is_some() || self.ended {
             return None;
@@ -638,17 +648,18 @@ impl ProductionSelectedSourceProviderOriginalV1 {
     /// original queue. A failed or unwound wait cannot be re-entered.
     pub fn recheck_original_wait(
         &mut self,
-        ingress: &ProductionSourceProviderIngressV1,
+        ingress: &mut ProductionSourceProviderIngressV1,
     ) -> Result<(), ProductionSelectedSourceProviderFailureRefV1<'_>> {
         {
             let mut boundary = SelectedSourceOriginalBoundaryV1 {
                 owner: self,
+                ingress,
                 completed: false,
             };
             if boundary.owner.failure().is_none() && !boundary.owner.ended {
-                let checked = boundary.owner.check_opening_boundary(ingress)
+                let checked = boundary.owner.check_opening_boundary(boundary.ingress)
                     .and_then(|()| boundary.owner.catalog.recheck())
-                    .and_then(|()| boundary.owner.check_opening_boundary(ingress));
+                    .and_then(|()| boundary.owner.check_opening_boundary(boundary.ingress));
                 if let Err(error) = checked {
                     boundary.owner.first_failure = Some(error);
                 }
@@ -658,12 +669,10 @@ impl ProductionSelectedSourceProviderOriginalV1 {
         self.finish_step()
     }
 
-    fn check_opening_boundary(&self, ingress: &ProductionSourceProviderIngressV1)
+    fn check_opening_boundary(&self, ingress: &mut ProductionSourceProviderIngressV1)
         -> Result<(), ProductionSourceProviderIngressErrorV1>
     {
-        remaining_duration(self.deadline)?;
-        ingress.listener.validate_current()?;
-        Ok(())
+        ingress.check_selected_boundary(self.deadline)
     }
 
     /// Lends actual retained failure custody without any observation or retry.
