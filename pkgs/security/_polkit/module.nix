@@ -54,7 +54,7 @@
       memory_pressure_adjustment = 0;
       permit_realtime = false;
       permit_elevated_file_identity = false;
-      process_visibility = "self";
+      process_visibility = "all";
       operation_architectures = ["native"];
       operation_allow = [];
       operation_deny = [];
@@ -140,12 +140,12 @@
       filesystem = "read-only-system";
       home_access = "inaccessible";
       network = "none";
-      process_visibility = "private";
+      process_visibility = "host";
       termination_scope = "all-processes";
       temporary_directory = "private";
       devices = [];
       host_paths = [];
-      permit_core_dumps = false;
+      permit_core_dumps = true;
     };
     resources = {
       locked_memory_bytes = {

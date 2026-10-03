@@ -31,7 +31,7 @@ let
         value = artifact name;
       })
       names);
-  evaluated = lib.evalPackageModules {
+  evaluationArgs = {
     scope = ["test" "native-daemons"];
     packageModules = [
       (record "aos-runtime-checks" ../../pkgs/system/_aos-runtime-checks {})
@@ -104,6 +104,7 @@ let
       }
     ];
   };
+  evaluated = lib.evalPackageModules evaluationArgs;
   nodes = builtins.attrValues evaluated.deployment.graph.nodes;
   services = builtins.filter (node: builtins.elem "serviceManagement" node.identity) nodes;
   inputFiles = evaluated.config.aos.abilities.configuration.operations.file.effects;
@@ -141,6 +142,29 @@ let
   opksshLogId = builtins.head (builtins.attrNames (lib.filterAttrs (_: node: builtins.elem "opkssh-log" node.identity) opkssh.deployment.graph.nodes));
   opksshSshNode = builtins.head (builtins.filter (node: builtins.elem "serviceManagement" node.identity && builtins.elem "ssh" node.identity) (builtins.attrValues opkssh.deployment.graph.nodes));
 in {
+  dynamicStorageHasOneOwner = assert builtins.all
+  (name:
+    evaluated.config.aos.services.${name}.identity.ephemeral
+    && builtins.all (mount: mount.ownership == "service-identity" && mount.directory_mode != null)
+    evaluated.config.aos.services.${name}.storage.mounts)
+  ["nginx" "envoy.main" "etcd.main"];
+  assert !(builtins.any
+    (node:
+      builtins.elem "filesystem" node.identity
+      && builtins.elem node.owner ["nginx" "envoy" "etcd"])
+    nodes); true;
+  staticStorageKeepsProviderPermissions = assert builtins.all
+  (mount: mount.ownership == "provider" && mount.directory_mode == null)
+  evaluated.config.aos.services."openldap.main".storage.mounts;
+  assert evaluated.config.aos.abilities.filesystem.operations.directory.effects.openldap-data.input.mode == "0700";
+  assert evaluated.config.aos.abilities.filesystem.operations.directory.effects.openldap-data.input.owner != null; true;
+  nginxPathsRejectEscapes = assert builtins.all (root:
+    !(builtins.tryEval (builtins.deepSeq
+      (lib.evalPackageModules (evaluationArgs // {operatorModules = evaluationArgs.operatorModules ++ [{aos.services.nginx.virtualHosts.default.root = lib.mkForce root;}];})).deployment.graph
+      true)).success)
+  ["/outside" "../outside" "www/../outside" "www//outside" "www/./outside"]; true;
+  nginxPathsRemainLexical = assert lib.hasInfix "/var/lib/aos-pkg-nginx/www" (lib.concatStringsSep "" inputFiles.nginx.input.fragments);
+  assert lib.hasInfix "/run/aos-pkg-nginx/nginx.pid" (lib.concatStringsSep "" inputFiles.nginx.input.fragments); true;
   exposeProfilesReturnPermissionDenied = assert builtins.all (name: evaluated.config.aos.services.${name}.policy.hardening.denied_operation_action == "return-permission-denied") ["nginx" "openldap.main" "envoy.main" "etcd.main"]; true;
   chronyPreservesBlacklistWithoutBaseAllowlist = assert evaluated.config.aos.services.chrony.policy.hardening.operation_profile == "privileged";
   assert evaluated.config.aos.services.chrony.policy.hardening.denied_operation_action == "kill-process";
@@ -172,7 +196,7 @@ in {
   assert lib.hasSuffix "/bin/tailscaled" (builtins.head evaluated.config.aos.services.tailscale.lifecycle.start).executable.path; true;
   materializedStructuredPaths = assert inputFiles.etcd.input.format == "json";
   assert inputFiles.envoy.input.format == "json";
-  assert (inputFiles.etcd.input.value."data-dir"._type or null) != null; true;
+  assert inputFiles.etcd.input.value."data-dir" == "/var/lib/aos-pkg-etcd"; true;
   protectedCredentialContents = assert inputFiles.openldap.input.mode == "0600";
   assert builtins.any (fragment: builtins.isAttrs fragment && fragment ? credentialPath) inputFiles.openldap.input.fragments; true;
 }

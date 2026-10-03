@@ -46,7 +46,6 @@
   patchelf,
   bootstrapTools,
   service-management,
-  aos-filesystem-provider,
 }: let
   version = "1.37.0";
   isCross = stdenv.isCross;
@@ -1170,7 +1169,7 @@ in
     bazel = buildBazel;
     jdk = buildJdk;
     module = ./_envoy;
-    moduleDeps = [service-management aos-filesystem-provider];
+    moduleDeps = [service-management];
 
     inherit tools;
     caCertificates = buildCaCertificates;

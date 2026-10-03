@@ -53,6 +53,7 @@
     filesystemFirewallDependencies = import ../fleet/native-reference-domain-graphs.nix {inherit lib pkgs;};
     databaseConsumers = import ./database-consumers.nix;
     runtimeChecks = import ./runtime-checks.nix;
+    optionalServiceBaseline = import ./optional-service-baseline.nix {inherit lib pkgs;};
     referenceNginx = import ./reference-nginx.nix;
     platformPackages = import ./platform-packages.nix;
     nativeOperationMatrix = import ./native-operation-matrix.nix;

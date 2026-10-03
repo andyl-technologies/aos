@@ -9,7 +9,6 @@
   zlib,
   stdenv,
   service-management,
-  aos-filesystem-provider,
 }: let
   version = "1.31.5";
   linkerOptions =
@@ -226,7 +225,7 @@ in
     ];
 
     module = ./_nginx;
-    moduleDeps = [service-management aos-filesystem-provider];
+    moduleDeps = [service-management];
 
     meta = {
       description = "nginx — high-performance HTTP and reverse proxy server";

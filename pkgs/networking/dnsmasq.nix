@@ -17,7 +17,6 @@
   libnfnetlink,
   nftables,
   service-management,
-  aos-filesystem-provider,
 }: let
   version = "2.93";
 in
@@ -104,7 +103,7 @@ in
     propagatedDeps = [];
 
     module = ./_dnsmasq;
-    moduleDeps = [aos-runtime-checks service-management aos-filesystem-provider nftables];
+    moduleDeps = [aos-runtime-checks service-management nftables];
 
     phases = [
       {

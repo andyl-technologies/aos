@@ -38,10 +38,10 @@
       lock_execution_personality = false;
       writable_executable_memory = true;
       isolation_domains = [];
-      network_families = ["ipv4" "ipv6" "route-control" "raw-packet" "local"];
+      network_families = [];
       memory_pressure_adjustment = 0;
       permit_realtime = true;
-      permit_elevated_file_identity = false;
+      permit_elevated_file_identity = true;
       process_visibility = "all";
       operation_architectures = [];
       operation_allow = [];
@@ -131,7 +131,7 @@
         }
       ];
       host_paths = [];
-      permit_core_dumps = false;
+      permit_core_dumps = true;
     };
   };
 in {

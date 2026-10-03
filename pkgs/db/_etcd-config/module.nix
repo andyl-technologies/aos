@@ -74,7 +74,7 @@
   serverConfigFor = clientTls: peerTls:
     {
       name = cfg.name;
-      "data-dir" = operations.filesystem.operations.directory.effects.etcd-data.outputs.path;
+      "data-dir" = "/var/lib/aos-pkg-etcd";
       "listen-client-urls" = lib.concatStringsSep "," cfg.client.listenUrls;
       "advertise-client-urls" = lib.concatStringsSep "," cfg.client.advertiseUrls;
       "listen-peer-urls" = lib.concatStringsSep "," cfg.peer.listenUrls;
@@ -137,8 +137,8 @@
         privileges = [];
       };
       resource_control_delegation = false;
-      resource_control_access = "read-only";
-      device_access_scope = "shared";
+      resource_control_access = "private";
+      device_access_scope = "private";
       host_clock_mutation = false;
       host_name_mutation = false;
       operating_system_log_access = false;
@@ -147,18 +147,19 @@
       lock_execution_personality = true;
       writable_executable_memory = false;
       isolation_domains = [];
-      network_families = ["ipv4" "ipv6" "local"];
+      isolation_domain_creation = "denied";
+      network_families = ["ipv4" "ipv6" "local" "route-control"];
       memory_pressure_adjustment = 0;
       permit_realtime = false;
       permit_elevated_file_identity = false;
-      process_visibility = "all";
-      security_label = "aos-pkg-etcd";
-      operation_architectures = [];
+      process_visibility = "self";
+      process_filesystem_scope = "processes";
+      operation_architectures = ["native"];
       operation_allow = [];
       operation_deny = [];
       denied_operation_action = "return-permission-denied";
       operation_profile = "restricted";
-      isolated_identity_mapping = "none";
+      isolated_identity_mapping = "identity";
     };
     service = "etcd";
     lifecycle = {
@@ -211,13 +212,17 @@
     storage.mounts = [
       {
         name = "data";
-        source = operations.filesystem.operations.directory.effects.etcd-data.outputs.path;
+        source = "/var/lib/aos-pkg-etcd";
+        ownership = "service-identity";
         access = "read-write";
+        directory_mode = "0700";
       }
       {
         name = "runtime";
-        source = operations.filesystem.operations.directory.effects.etcd-runtime.outputs.path;
+        source = "/run/aos-pkg-etcd";
+        ownership = "service-identity";
         access = "read-write";
+        directory_mode = "0750";
       }
     ];
     logging = {
@@ -234,13 +239,24 @@
     isolation = {
       privilege = "unprivileged";
       filesystem = "read-only-system";
+      home_access = "inaccessible";
       network = "host";
-      process_visibility = "host";
+      process_visibility = "private";
       termination_scope = "all-processes";
-      temporary_directory = "private";
+      temporary_directory = "disconnected";
+      temporary_filesystems = [
+        {
+          path = "/tmp";
+          read_only = false;
+        }
+        {
+          path = "/var/tmp";
+          read_only = false;
+        }
+      ];
       devices = [];
       host_paths = [];
-      permit_core_dumps = false;
+      permit_core_dumps = true;
     };
     resources.open_files = {
       kind = "maximum";
@@ -439,19 +455,6 @@ in {
     }
     (lib.mkIf enabled {
       aos.abilities = {
-        filesystem.operations.directory.effects = {
-          etcd-data = {
-            lifetime = "persistent";
-            input = {
-              path = "/var/lib/aos-pkg-etcd";
-              mode = "0700";
-            };
-          };
-          etcd-runtime.input = {
-            path = "/run/aos-pkg-etcd";
-            mode = "0750";
-          };
-        };
         network.operations.ready.effects.etcd.input = {
           scope = "address-configured";
           families = ["ipv4" "ipv6"];

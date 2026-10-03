@@ -169,13 +169,22 @@
     if condition
     then fragments
     else [];
-  statePath = operations.filesystem.operations.directory.effects.nginx-state.outputs.path;
-  viewName = base: relativePath: "nginx-${base}-${builtins.substring 0 16 (builtins.hashString "sha256" relativePath)}";
+  storagePaths = {
+    state = "/var/lib/aos-pkg-nginx";
+    runtime = "/run/aos-pkg-nginx";
+    logs = "/var/log/aos-pkg-nginx";
+  };
+  validRelativePath = path:
+    path
+    != ""
+    && builtins.all (part: part != "" && part != "." && part != "..") (lib.splitString "/" path);
   pathWithin = {
     base,
     relativePath,
   }:
-    operations.filesystem.operations.view.effects.${viewName base relativePath}.outputs.path;
+    if validRelativePath relativePath
+    then "${storagePaths.${base}}/${relativePath}"
+    else throw "nginx document paths must be normalized relative paths within managed state";
   documentPath = relativePath:
     pathWithin {
       base = "state";
@@ -399,21 +408,6 @@
     builtins.map (host: host.root) (builtins.attrValues virtualHosts)
     ++ lib.concatMap (host: builtins.filter (value: value != null) (builtins.map (location: location.root) (builtins.attrValues host.locations))) (builtins.attrValues virtualHosts)
   );
-  viewRequests =
-    [
-      {
-        base = "runtime";
-        relativePath = "nginx.pid";
-      }
-      {
-        base = "logs";
-        relativePath = "access.log";
-      }
-    ]
-    ++ builtins.map (relativePath: {
-      base = "state";
-      inherit relativePath;
-    }) (lib.unique (documentRoots ++ ["client_body" "proxy" "fastcgi" "uwsgi" "scgi"]));
   command = arguments: {
     executable = {
       path = "${package}/bin/nginx";
@@ -432,8 +426,8 @@
         privileges = ["bind-privileged-network-port"];
       };
       resource_control_delegation = false;
-      resource_control_access = "read-only";
-      device_access_scope = "shared";
+      resource_control_access = "private";
+      device_access_scope = "private";
       host_clock_mutation = false;
       host_name_mutation = false;
       operating_system_log_access = false;
@@ -442,18 +436,19 @@
       lock_execution_personality = true;
       writable_executable_memory = false;
       isolation_domains = [];
-      network_families = ["ipv4" "ipv6" "local"];
+      isolation_domain_creation = "denied";
+      network_families = ["ipv4" "ipv6" "local" "route-control"];
       memory_pressure_adjustment = 0;
       permit_realtime = false;
       permit_elevated_file_identity = false;
-      process_visibility = "all";
-      security_label = "aos-pkg-nginx";
-      operation_architectures = [];
+      process_visibility = "self";
+      process_filesystem_scope = "processes";
+      operation_architectures = ["native"];
       operation_allow = [];
       operation_deny = [];
       denied_operation_action = "return-permission-denied";
       operation_profile = "system-service";
-      isolated_identity_mapping = "none";
+      isolated_identity_mapping = "identity";
     };
     service = "nginx";
     lifecycle = {
@@ -500,18 +495,24 @@
     storage.mounts = [
       {
         name = "runtime";
-        source = operations.filesystem.operations.directory.effects.nginx-runtime.outputs.path;
+        source = storagePaths.runtime;
+        ownership = "service-identity";
         access = "read-write";
+        directory_mode = "0750";
       }
       {
         name = "state";
-        source = operations.filesystem.operations.directory.effects.nginx-state.outputs.path;
+        source = storagePaths.state;
+        ownership = "service-identity";
         access = "read-write";
+        directory_mode = "0750";
       }
       {
         name = "logs";
-        source = operations.filesystem.operations.directory.effects.nginx-logs.outputs.path;
+        source = storagePaths.logs;
+        ownership = "service-identity";
         access = "read-write";
+        directory_mode = "0750";
       }
     ];
     logging = {
@@ -528,17 +529,24 @@
     isolation = {
       privilege = "unprivileged";
       filesystem = "read-only-system";
+      home_access = "inaccessible";
       network = "host";
-      process_visibility = "host";
+      process_visibility = "private";
       termination_scope = "all-processes";
-      temporary_directory = "private";
+      temporary_directory = "disconnected";
+      temporary_filesystems = [
+        {
+          path = "/tmp";
+          read_only = false;
+        }
+        {
+          path = "/var/tmp";
+          read_only = false;
+        }
+      ];
       devices = [];
       host_paths = [];
-      permit_core_dumps = false;
-    };
-    resources.open_files = {
-      kind = "maximum";
-      value = 65536;
+      permit_core_dumps = true;
     };
   };
 in {
@@ -637,6 +645,10 @@ in {
 
       assertions = [
         {
+          assertion = builtins.all validRelativePath documentRoots;
+          message = "nginx document roots must be normalized relative paths without absolute or parent components";
+        }
+        {
           assertion = !cfg.enable || cfg.virtualHosts != {};
           message = "aos.services.nginx.enable requires at least one virtual host";
         }
@@ -674,34 +686,6 @@ in {
     }
     (lib.mkIf cfg.enable {
       aos.abilities = {
-        filesystem.operations.directory.effects = {
-          nginx-runtime.input = {
-            path = "/run/aos-pkg-nginx";
-            mode = "0750";
-          };
-          nginx-state = {
-            lifetime = "persistent";
-            input = {
-              path = "/var/lib/aos-pkg-nginx";
-              mode = "0750";
-            };
-          };
-          nginx-logs = {
-            lifetime = "persistent";
-            input = {
-              path = "/var/log/aos-pkg-nginx";
-              mode = "0750";
-            };
-          };
-        };
-        filesystem.operations.view.effects = builtins.listToAttrs (builtins.map (view: {
-            name = viewName view.base view.relativePath;
-            value.input = {
-              sourcePath = operations.filesystem.operations.directory.effects."nginx-${view.base}".outputs.path;
-              inherit (view) relativePath;
-            };
-          })
-          viewRequests);
         credential.operations.deliver.effects = lib.optionalAttrs usesTls {
           nginx-tls-certificate.input = tlsCredentials.certificate;
           nginx-tls-private-key.input = tlsCredentials.privateKey;

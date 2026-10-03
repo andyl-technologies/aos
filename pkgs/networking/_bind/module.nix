@@ -35,8 +35,8 @@
     };
     ignore_failure = false;
   };
-  statePath = operations.filesystem.operations.directory.effects.bind-state.outputs.path;
-  runtimePath = operations.filesystem.operations.directory.effects.bind-runtime.outputs.path;
+  statePath = "/var/lib/aos-pkg-bind";
+  runtimePath = "/run/aos-pkg-bind";
   configurationPath = operations.configuration.operations.file.effects.bind.outputs.path;
   renderAddresses = values:
     if values == []
@@ -98,22 +98,22 @@
         privileges = ["bind-privileged-network-port"];
       };
       resource_control_delegation = false;
-      resource_control_access = "read-only";
+      resource_control_access = "host";
       device_access_scope = "shared";
-      host_clock_mutation = false;
-      host_name_mutation = false;
-      operating_system_log_access = false;
-      operating_system_extension_access = false;
-      operating_system_tunable_access = false;
-      lock_execution_personality = true;
-      writable_executable_memory = false;
+      host_clock_mutation = true;
+      host_name_mutation = true;
+      operating_system_log_access = true;
+      operating_system_extension_access = true;
+      operating_system_tunable_access = true;
+      lock_execution_personality = false;
+      writable_executable_memory = true;
       isolation_domains = [];
-      network_families = ["ipv4" "ipv6" "local"];
+      network_families = [];
       memory_pressure_adjustment = 0;
-      permit_realtime = false;
-      permit_elevated_file_identity = false;
+      permit_realtime = true;
+      permit_elevated_file_identity = true;
       process_visibility = "all";
-      security_label = "aos-pkg-bind";
+      security_label = null;
       operation_architectures = [];
       operation_allow = [];
       operation_deny = [];
@@ -173,12 +173,14 @@
         source = statePath;
         access = "read-write";
         ownership = "service-identity";
+        directory_mode = "0750";
       }
       {
         name = "runtime";
         source = runtimePath;
         access = "read-write";
         ownership = "service-identity";
+        directory_mode = "0750";
       }
     ];
     logging = {
@@ -202,7 +204,7 @@
       temporary_directory = "private";
       devices = [];
       host_paths = [];
-      permit_core_dumps = false;
+      permit_core_dumps = true;
     };
   };
 in {
@@ -257,19 +259,6 @@ in {
     (lib.mkIf cfg.enable {
       system.checks.bind = import ./runtime-tests.nix {inherit cfg;};
       aos.abilities = {
-        filesystem.operations.directory.effects = {
-          bind-state = {
-            lifetime = "persistent";
-            input = {
-              path = "/var/lib/aos-pkg-bind";
-              mode = "0750";
-            };
-          };
-          bind-runtime.input = {
-            path = "/run/aos-pkg-bind";
-            mode = "0750";
-          };
-        };
         configuration.operations.file.effects.bind.input = {
           path = "/etc/aos/packages/bind/named.conf";
           fragments = configurationFragments;

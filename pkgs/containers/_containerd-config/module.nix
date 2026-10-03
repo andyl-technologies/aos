@@ -71,29 +71,8 @@
   service = {
     policy.hardening = {
       allow_privilege_escalation = true;
-      ambient_privileges = [
-        "change-file-ownership"
-        "create-device-node"
-        "administer-network"
-        "raw-network"
-        "change-group-identity"
-        "change-user-identity"
-        "administer-host"
-        "change-root-directory"
-      ];
-      privilege_bounds = {
-        kind = "restricted";
-        privileges = [
-          "change-file-ownership"
-          "create-device-node"
-          "administer-network"
-          "raw-network"
-          "change-group-identity"
-          "change-user-identity"
-          "administer-host"
-          "change-root-directory"
-        ];
-      };
+      ambient_privileges = [];
+      privilege_bounds.kind = "unrestricted";
       resource_control_delegation = true;
       resource_control_access = "host";
       device_access_scope = "shared";
@@ -105,12 +84,11 @@
       lock_execution_personality = false;
       writable_executable_memory = true;
       isolation_domains = [];
-      network_families = ["ipv4" "ipv6" "route-control" "raw-packet" "local"];
+      network_families = [];
       memory_pressure_adjustment = -999;
       permit_realtime = true;
       permit_elevated_file_identity = true;
       process_visibility = "all";
-      security_label = "aos-pkg-containerd";
       operation_architectures = [];
       operation_allow = [];
       operation_deny = [];

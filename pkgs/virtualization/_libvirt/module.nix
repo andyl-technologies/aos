@@ -167,6 +167,11 @@
     // {
       policy.hardening = declaration.hardening;
     };
+  daemonResources.open_files = {
+    kind = "range";
+    soft = 1024;
+    hard = 524288;
+  };
   daemon = {
     name,
     entryPoint,
@@ -185,6 +190,7 @@
     isolation ? hostIsolation,
     hardening ? hostHardening,
     identity ? null,
+    resources ? daemonResources,
   }:
     service {
       service = name;
@@ -243,7 +249,7 @@
         inherit sockets;
         service_dependencies = socketDependencies;
       };
-      inherit isolation identity;
+      inherit isolation identity resources;
       hardening = hardening;
     };
   searchPath = builtins.map (name: dependencies.${name}.path) [
@@ -283,7 +289,7 @@
       // {
         filesystem = "read-only-software";
         network = "private";
-        permit_core_dumps = false;
+        permit_core_dumps = true;
       };
     hardening =
       hostHardening
@@ -292,6 +298,7 @@
           kind = "restricted";
           privileges = ["bypass-file-access" "bypass-file-read-search"];
         };
+        memory_pressure_adjustment = -900;
         resource_control_access = "read-only";
         device_access_scope = "private";
         operating_system_extension_access = false;
@@ -341,6 +348,7 @@
     };
   };
   virtlockd = daemon {
+    hardening = hostHardening // {memory_pressure_adjustment = -900;};
     name = "virtlockd";
     entryPoint = "sbin/virtlockd";
     description = "Libvirt locking daemon";
@@ -374,6 +382,14 @@
     entryPoint = "sbin/libvirtd";
     arguments = ["--timeout" "120"];
     description = "Libvirt legacy monolithic daemon";
+    resources =
+      daemonResources
+      // {
+        locked_memory_bytes = {
+          kind = "maximum";
+          value = 67108864;
+        };
+      };
     reloadSignal = "HUP";
     reloadCompletion = "notification";
     inherit searchPath;
