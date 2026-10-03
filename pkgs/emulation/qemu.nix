@@ -1678,7 +1678,7 @@ in
               for name in (
                   "net-output-stop", "lifecycle-projection", "control-deferred",
                   "control-observer", "control-delivery",
-                  "stopped-control-rearm", "template-control-drain",
+                  "stopped-control-rearm", "template-control-drain", "net-stop-chain",
               ):
                   with (source_root / f"{name}.result").open("w") as result:
                       subprocess.run([
@@ -1690,7 +1690,7 @@ in
               PYTHON
               cat net-output-stop.result lifecycle-projection.result \
                 control-deferred.result control-observer.result control-delivery.result \
-                stopped-control-rearm.result template-control-drain.result
+                stopped-control-rearm.result template-control-drain.result net-stop-chain.result
               grep -Fxq 'PASS production TX/stop/clock/RR: batches, race, completion settlement, paused ack, explicit retry' \
                 net-output-stop.result
               grep -Fxq 'PASS lifecycle production encode/rebind: full save retained, canonical custody independence, guest frontier sensitivity, invalid rebind refusal' \
@@ -1705,6 +1705,8 @@ in
                 stopped-control-rearm.result
               grep -Fxq 'PASS production template control drain: original FD, callback return, connection lifetime, exact coordinate, failure refusal' \
                 template-control-drain.result
+              grep -Fxq 'admitted-stop status=0 raw=17 after=17 next_tb_entered=0 high=-1' \
+                net-stop-chain.result
               build/tests/unit/test-vmstate --tap \
                 -p /vmstate/subsection/prefix-boundary
               QTEST_QEMU_BINARY="$PWD/build/qemu-system-x86_64" \
@@ -4204,7 +4206,7 @@ in
                 "$out/share/aos/crucible/procfd-flags.compile-command.json"
               for name in net-output-stop lifecycle-projection control-deferred \
                 control-observer control-delivery stopped-control-rearm \
-                template-control-drain; do
+                template-control-drain net-stop-chain; do
                 install -m 644 "$name.result" \
                   "$out/share/aos/crucible/$name.result"
                 install -m 644 "$name-proof/compile-command.json" \
