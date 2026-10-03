@@ -792,22 +792,16 @@ where
         let result = match request.action() {
             CampaignSavepointAction::Capture { command, attempt } => {
                 let source = self.repository.load_attempt(*attempt)?;
-                if !source.stop().accepts_next_choice() {
-                    return Err(CampaignRepositoryError::InvalidRequest {
-                        reason: "savepoint source must stop at a pending choice",
-                    }
-                    .into());
-                }
                 let (observation, _) = self.repository.attempt_observation_with_proof(
                     head.snapshot().roots().observations,
                     *attempt,
                 )?;
                 if !observation
                     .as_ref()
-                    .is_some_and(|value| value.stop().reached_next_choice())
+                    .is_some_and(|value| value.stop().reaches(source.stop()))
                 {
                     return Err(CampaignRepositoryError::InvalidRequest {
-                        reason: "savepoint source has no completed next-choice observation",
+                        reason: "savepoint source has no observation reaching its declared stop",
                     }
                     .into());
                 }
@@ -931,9 +925,9 @@ where
                 let observation = observation.ok_or(CampaignRepositoryError::Integrity {
                     reason: "selected capture source observation is absent",
                 })?;
-                if !observation.stop().reached_next_choice() {
+                if !observation.stop().reaches(source.stop()) {
                     return Err(CampaignRepositoryError::Integrity {
-                        reason: "selected capture source did not reach a pending choice",
+                        reason: "selected capture source did not reach its declared stop",
                     }
                     .into());
                 }
