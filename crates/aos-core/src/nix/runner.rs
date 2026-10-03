@@ -21,6 +21,9 @@ use std::env;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
+use std::thread;
 
 use anyhow::{Context, Result};
 
@@ -383,16 +386,39 @@ impl NixRunner {
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
-    /// Realizes exact derivation paths in bounded command-line batches.
+    /// Realizes exact derivation paths, or repeat-builds them with `check`.
     ///
-    /// With `check` set, Nix rebuilds already-realized derivations and fails
-    /// when any output is not byte-for-byte reproducible.
+    /// Without `check`, derivations are passed to as few
+    /// `nix-store --realise --keep-going` invocations as the command-line
+    /// budget allows, so a typical release of a few thousand derivations runs
+    /// as one invocation and Nix schedules builds against its own job limit
+    /// and the dependency graph. Fixed-count batches would add a barrier at
+    /// every boundary, leaving the machine idle behind the slowest derivation
+    /// of each batch.
+    ///
+    /// With `check`, Nix rebuilds already-realized derivations and fails when
+    /// any output is not byte-for-byte reproducible. Each derivation is
+    /// checked in its own `nix-store --realise --keep-going --check` process,
+    /// with a bounded number (currently 32) running at a time. Separate
+    /// processes are required for parallelism: within one invocation Nix
+    /// reuses a check goal as the input goal of any dependent target, so
+    /// checks serialize along dependency chains. The inputs were realized by
+    /// a preceding normal pass, so independent check processes never wait for
+    /// one another.
+    ///
+    /// Both modes keep going after a failure so that one failing or
+    /// nondeterministic derivation does not hide the others.
     ///
     /// # Errors
     ///
-    /// Returns an error for an empty or non-store derivation path, or when a
-    /// `nix-store --realise` batch fails. Nix's check-mode nondeterminism exit
-    /// status is preserved as a build failure.
+    /// Returns an error for an empty or non-store derivation path before any
+    /// command runs. Without `check`, returns the first failing batch's
+    /// [`AosError::NixBuild`] after every batch has run, with context naming
+    /// the number of failed batches when there is more than one. With
+    /// `check`, returns [`AosError::NixBuild`] after every derivation has been
+    /// checked, naming each derivation whose check failed together with its
+    /// exit status and the tail of its captured stderr. Nix's check-mode
+    /// nondeterminism exit status is preserved as a build failure.
     pub fn realise_derivations(&self, derivations: &[PathBuf], check: bool) -> Result<()> {
         for derivation in derivations {
             let text = derivation.to_string_lossy();
@@ -400,15 +426,70 @@ impl NixRunner {
                 anyhow::bail!("invalid exact derivation path: {text}");
             }
         }
-        for batch in derivations.chunks(128) {
-            let mut arguments = vec!["--realise".to_string()];
-            if check {
-                arguments.push("--check".to_string());
-            }
-            arguments.extend(batch.iter().map(|path| path.to_string_lossy().into_owned()));
-            self.run_nix("nix-store", &arguments)?;
+
+        if check {
+            self.check_derivations_independently(derivations)
+        } else {
+            self.realise_derivation_batches(derivations)
         }
-        Ok(())
+    }
+
+    /// Realizes derivations in command-line-bounded `nix-store` batches.
+    fn realise_derivation_batches(&self, derivations: &[PathBuf]) -> Result<()> {
+        let batches = batches_by_argument_bytes(derivations, REALISE_ARGUMENT_BYTE_BUDGET);
+        let batch_count = batches.len();
+
+        // Run every batch even after a failure so that all failing
+        // derivations are reported in one pass.
+        let mut failures = Vec::new();
+        for batch in batches {
+            let mut arguments = vec!["--realise".to_string(), "--keep-going".to_string()];
+            arguments.extend(batch.iter().map(|path| path.to_string_lossy().into_owned()));
+
+            if let Err(error) = self.run_nix("nix-store", &arguments) {
+                failures.push(error);
+            }
+        }
+
+        let failure_count = failures.len();
+        match failures.into_iter().next() {
+            None => Ok(()),
+            Some(first) if batch_count == 1 => Err(first),
+            Some(first) => Err(first.context(format!(
+                "nix-store --realise failed in {failure_count} of {batch_count} batches"
+            ))),
+        }
+    }
+
+    /// Repeat-builds each derivation in its own `nix-store --check` process.
+    ///
+    /// Outside quiet mode `run_nix` replays each failing process's stderr as
+    /// it finishes, so defects are visible during a long pass; the returned
+    /// error repeats them together once every check has run.
+    fn check_derivations_independently(&self, derivations: &[PathBuf]) -> Result<()> {
+        let failures = run_with_bounded_workers(derivations, CHECK_WORKERS, |derivation| {
+            let arguments = vec![
+                "--realise".to_string(),
+                "--keep-going".to_string(),
+                "--check".to_string(),
+                derivation.to_string_lossy().into_owned(),
+            ];
+            self.run_nix("nix-store", &arguments)
+                .map(drop)
+                .map_err(|error| CheckFailure::from_error(derivation, &error))
+        });
+
+        let Some(first) = failures.first() else {
+            return Ok(());
+        };
+        let exit_code = first.1.exit_code.unwrap_or(-1);
+        let failures: Vec<_> = failures.into_iter().map(|(_, failure)| failure).collect();
+
+        Err(AosError::NixBuild {
+            exit_code,
+            stderr: check_failure_report(&failures, derivations.len()),
+        }
+        .into())
     }
 
     /// Returns Nix JSON path information for exact realized store paths.
@@ -784,6 +865,158 @@ fn strip_nix_output_selector(path: &str) -> &str {
         .map_or(path, |(derivation, _)| derivation)
 }
 
+/// Maximum command-line bytes of derivation paths in one `nix-store --realise`.
+///
+/// Linux limits the combined size of arguments and environment (`ARG_MAX`,
+/// commonly 2 MiB) and each single argument to 128 KiB. One MiB of path
+/// bytes leaves ample room for the environment while still fitting roughly
+/// sixteen thousand `/nix/store/<hash>-<name>.drv` paths per invocation.
+const REALISE_ARGUMENT_BYTE_BUDGET: usize = 1024 * 1024;
+
+/// Splits `paths` into consecutive batches whose argument bytes fit `budget`.
+///
+/// Each path costs its byte length plus the NUL terminator `execve` stores
+/// after it. A path that alone exceeds the budget still gets its own batch,
+/// so every path appears in exactly one batch and order is preserved. Empty
+/// input yields no batches.
+fn batches_by_argument_bytes(paths: &[PathBuf], budget: usize) -> Vec<&[PathBuf]> {
+    let mut batches = Vec::new();
+    let mut start = 0;
+    let mut batch_bytes = 0;
+
+    for (index, path) in paths.iter().enumerate() {
+        let argument_bytes = path.as_os_str().len() + 1;
+
+        // Close the current batch when this path would overflow it. A batch
+        // never closes empty, which keeps oversized paths in their own batch.
+        if index > start && batch_bytes + argument_bytes > budget {
+            batches.push(&paths[start..index]);
+            start = index;
+            batch_bytes = 0;
+        }
+        batch_bytes += argument_bytes;
+    }
+
+    if start < paths.len() {
+        batches.push(&paths[start..]);
+    }
+    batches
+}
+
+/// Maximum concurrent `nix-store --check` processes in a repeat-build pass.
+///
+/// Each process asks the Nix daemon for one rebuild, so this bounds the
+/// number of simultaneous check builds independently of `max-jobs`.
+const CHECK_WORKERS: usize = 32;
+
+/// Number of trailing stderr lines kept for each failed check.
+const CHECK_STDERR_TAIL_LINES: usize = 20;
+
+/// One derivation whose `nix-store --realise --check` process failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CheckFailure {
+    derivation: PathBuf,
+    /// Exit status of `nix-store`, or `None` when it could not be run.
+    exit_code: Option<i32>,
+    /// Captured stderr tail, or the spawn error when there is no status.
+    detail: String,
+}
+
+impl CheckFailure {
+    /// Records a failed check from the error returned by `run_nix`.
+    ///
+    /// The captured stderr is empty when it was already streamed live at
+    /// high verbosity; the derivation and exit status are still reported.
+    fn from_error(derivation: &Path, error: &anyhow::Error) -> Self {
+        let (exit_code, detail) = match error.downcast_ref::<AosError>() {
+            Some(AosError::NixBuild { exit_code, stderr }) => (
+                Some(*exit_code),
+                stderr_tail(stderr, CHECK_STDERR_TAIL_LINES),
+            ),
+            _ => (None, format!("{error:#}")),
+        };
+
+        Self {
+            derivation: derivation.to_path_buf(),
+            exit_code,
+            detail,
+        }
+    }
+}
+
+/// Returns the last `lines` lines of `stderr`, ignoring trailing blank lines.
+fn stderr_tail(stderr: &str, lines: usize) -> String {
+    let all: Vec<_> = stderr.trim_end().lines().collect();
+    let start = all.len().saturating_sub(lines);
+    all[start..].join("\n")
+}
+
+/// Formats every failed check into one fail-closed error report.
+fn check_failure_report(failures: &[CheckFailure], checked: usize) -> String {
+    let mut report = format!(
+        "{} of {checked} derivations failed nix-store --realise --check:",
+        failures.len()
+    );
+
+    for failure in failures {
+        let status = match failure.exit_code {
+            Some(code) => format!("exit code {code}"),
+            None => "not run".to_string(),
+        };
+        report.push_str(&format!("\n  {} ({status})", failure.derivation.display()));
+
+        for line in failure.detail.lines() {
+            report.push_str("\n    ");
+            report.push_str(line);
+        }
+    }
+    report
+}
+
+/// Runs `task` on every item with at most `workers` concurrent threads.
+///
+/// Workers pull the next unclaimed index from a shared counter, so a slow
+/// item never holds back the others. Every item runs exactly once, even
+/// after failures. Failures are returned with their item index, sorted by
+/// index so reports do not depend on thread scheduling. A `workers` of zero
+/// is treated as one.
+fn run_with_bounded_workers<T, E, F>(items: &[T], workers: usize, task: F) -> Vec<(usize, E)>
+where
+    T: Sync,
+    E: Send,
+    F: Fn(&T) -> Result<(), E> + Sync,
+{
+    let worker_count = workers.max(1).min(items.len());
+    let next_index = AtomicUsize::new(0);
+    let (sender, receiver) = mpsc::channel();
+
+    thread::scope(|scope| {
+        for _ in 0..worker_count {
+            let sender = sender.clone();
+            let next_index = &next_index;
+            let task = &task;
+
+            scope.spawn(move || {
+                loop {
+                    let index = next_index.fetch_add(1, Ordering::Relaxed);
+                    let Some(item) = items.get(index) else {
+                        break;
+                    };
+                    if let Err(error) = task(item) {
+                        // The receiver outlives the scope, so sending cannot fail.
+                        let _ = sender.send((index, error));
+                    }
+                }
+            });
+        }
+    });
+    drop(sender);
+
+    let mut failures: Vec<_> = receiver.into_iter().collect();
+    failures.sort_by_key(|(index, _)| *index);
+    failures
+}
+
 /// Returns the Nix function used to select platform-supported target roots.
 fn target_packages_expression() -> &'static str {
     "{ defaultNix, target }: let aos = import (builtins.toPath defaultNix) { crossSystem = target; }; in builtins.attrValues (aos.pkgs.targetPackagesFor target)"
@@ -791,7 +1024,173 @@ fn target_packages_expression() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{add_cross_system_arg, strip_nix_output_selector, target_packages_expression};
+    use std::path::{Path, PathBuf};
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::thread;
+    use std::time::Duration;
+
+    use super::{
+        CheckFailure, add_cross_system_arg, batches_by_argument_bytes, check_failure_report,
+        run_with_bounded_workers, stderr_tail, strip_nix_output_selector,
+        target_packages_expression,
+    };
+
+    /// Builds a store-like derivation path of exactly `length` bytes.
+    fn derivation_of_length(length: usize) -> PathBuf {
+        let prefix = "/nix/store/";
+        let suffix = ".drv";
+        let name = "x".repeat(length - prefix.len() - suffix.len());
+        PathBuf::from(format!("{prefix}{name}{suffix}"))
+    }
+
+    #[test]
+    fn argument_batches_of_empty_input_are_empty() {
+        let batches = batches_by_argument_bytes(&[], 1024);
+
+        assert!(batches.is_empty());
+    }
+
+    #[test]
+    fn argument_batches_keep_paths_under_budget_together() {
+        let paths: Vec<_> = (0..3000).map(|_| derivation_of_length(64)).collect();
+
+        let batches = batches_by_argument_bytes(&paths, super::REALISE_ARGUMENT_BYTE_BUDGET);
+
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].len(), paths.len());
+    }
+
+    #[test]
+    fn argument_batches_split_when_budget_is_exceeded() {
+        // Each path costs 20 bytes including its NUL terminator, so a
+        // 50-byte budget fits two paths per batch.
+        let paths: Vec<_> = (0..5).map(|_| derivation_of_length(19)).collect();
+
+        let batches = batches_by_argument_bytes(&paths, 50);
+
+        let lengths: Vec<_> = batches.iter().map(|batch| batch.len()).collect();
+        assert_eq!(lengths, [2, 2, 1]);
+        assert_eq!(batches.concat(), paths);
+    }
+
+    #[test]
+    fn argument_batches_count_the_terminator_at_the_boundary() {
+        // Two 19-byte paths cost exactly 40 bytes and fit; a 39-byte budget
+        // does not fit both.
+        let paths = vec![derivation_of_length(19), derivation_of_length(19)];
+
+        assert_eq!(batches_by_argument_bytes(&paths, 40).len(), 1);
+        assert_eq!(batches_by_argument_bytes(&paths, 39).len(), 2);
+    }
+
+    #[test]
+    fn argument_batches_isolate_a_path_larger_than_the_budget() {
+        let paths = vec![
+            derivation_of_length(20),
+            derivation_of_length(200),
+            derivation_of_length(20),
+        ];
+
+        let batches = batches_by_argument_bytes(&paths, 100);
+
+        let lengths: Vec<_> = batches.iter().map(|batch| batch.len()).collect();
+        assert_eq!(lengths, [1, 1, 1]);
+        assert_eq!(batches[1], &paths[1..2]);
+    }
+
+    #[test]
+    fn bounded_workers_run_every_item_once_and_keep_going() {
+        let items: Vec<usize> = (0..100).collect();
+        let seen = Mutex::new(Vec::new());
+
+        let failures = run_with_bounded_workers(&items, 8, |item| {
+            seen.lock().expect("lock").push(*item);
+            if item % 10 == 3 { Err(*item) } else { Ok(()) }
+        });
+
+        let mut seen = seen.into_inner().expect("lock");
+        seen.sort_unstable();
+        assert_eq!(seen, items);
+        let failed: Vec<_> = failures.iter().map(|(_, item)| *item).collect();
+        assert_eq!(failed, [3, 13, 23, 33, 43, 53, 63, 73, 83, 93]);
+        assert!(failures.iter().all(|(index, item)| index == item));
+    }
+
+    #[test]
+    fn bounded_workers_never_exceed_the_limit() {
+        let items = vec![(); 24];
+        let running = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+
+        let failures = run_with_bounded_workers(&items, 4, |_| {
+            let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(now, Ordering::SeqCst);
+            thread::sleep(Duration::from_millis(5));
+            running.fetch_sub(1, Ordering::SeqCst);
+            Ok::<(), ()>(())
+        });
+
+        assert!(failures.is_empty());
+        let peak = peak.load(Ordering::SeqCst);
+        assert!((1..=4).contains(&peak), "peak concurrency was {peak}");
+    }
+
+    #[test]
+    fn bounded_workers_handle_empty_input_and_zero_workers() {
+        let empty: [u8; 0] = [];
+        assert!(run_with_bounded_workers(&empty, 4, |_| Err(())).is_empty());
+
+        let failures = run_with_bounded_workers(&[1, 2], 0, |item| Err(*item));
+        assert_eq!(failures, [(0, 1), (1, 2)]);
+    }
+
+    #[test]
+    fn stderr_tail_keeps_only_the_last_lines() {
+        assert_eq!(stderr_tail("a\nb\nc\nd\n\n", 2), "c\nd");
+        assert_eq!(stderr_tail("only\n", 5), "only");
+        assert_eq!(stderr_tail("", 5), "");
+    }
+
+    #[test]
+    fn check_failures_from_nix_build_errors_keep_status_and_tail() {
+        let error = anyhow::Error::from(crate::error::AosError::NixBuild {
+            exit_code: 104,
+            stderr: "building\nerror: may not be deterministic\n".to_string(),
+        });
+
+        let failure = CheckFailure::from_error(Path::new("/nix/store/a-x.drv"), &error);
+
+        assert_eq!(failure.exit_code, Some(104));
+        assert_eq!(failure.detail, "building\nerror: may not be deterministic");
+    }
+
+    #[test]
+    fn check_failure_report_names_every_failed_derivation() {
+        let failures = [
+            CheckFailure {
+                derivation: PathBuf::from("/nix/store/a-x.drv"),
+                exit_code: Some(104),
+                detail: "error: may not be deterministic".to_string(),
+            },
+            CheckFailure {
+                derivation: PathBuf::from("/nix/store/b-y.drv"),
+                exit_code: None,
+                detail: "failed to spawn nix-store".to_string(),
+            },
+        ];
+
+        let report = check_failure_report(&failures, 1960);
+
+        assert_eq!(
+            report,
+            "2 of 1960 derivations failed nix-store --realise --check:\n  \
+             /nix/store/a-x.drv (exit code 104)\n    \
+             error: may not be deterministic\n  \
+             /nix/store/b-y.drv (not run)\n    \
+             failed to spawn nix-store"
+        );
+    }
 
     #[test]
     fn cross_system_argument_uses_canonical_nix_spelling() {
