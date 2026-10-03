@@ -2068,6 +2068,45 @@ is added rather than editing history.
     attribute-revision compatibility. Independent generator reproduction and
     owning-codec checks remain mandatory; this correction completes no task.
 
+- **[D-106] Distinguish format rejection from contextual index refusal.**
+  - **Status:** Decided (2026-10-02)
+  - **Decision:** Clarify TEST-1's negative-vector contract by retaining
+    exact independent wire reproduction and owning-decoder rejection for
+    malformed formats, while requiring declared role, revision, placement
+    and source context for contextual controls. A generic-valid Node remains
+    valid data even when its selected current carrier role or source
+    relationship is invalid. Relationship tests recompute changed Node
+    identities and update auxiliary references before asserting refusal.
+    Complete immutable objects retain their registered descriptors; bare
+    fields and detached recipe lookup keys do not acquire content descriptors.
+    Publish the independently assembled owner-binding, key, recipe and
+    occurrence-carrier field witnesses with their explicit refusal scopes.
+  - **Rationale:** TEST-1 previously required a format decoder to reject
+    every explicit negative. DRV-30 and D-104 preserve historical generic
+    Nodes whose bytes cannot establish a completed carrier. A valid Node
+    containing the wrong route remains valid generic data; only its declared
+    source relationship is false. Requiring generic rejection would violate
+    that compatibility rule, while accepting it as a current carrier would
+    violate DRV-30. A stale digest failure proves neither relationship.
+    Independent field witnesses also fill TEST-2's missing index-format
+    coverage without claiming operational qualification.
+  - **Alternatives considered:** Reject historical generic Nodes (rejected:
+    changes retained meanings); require only an encoder failure (rejected:
+    cannot exercise independently supplied wire input); silently drop
+    contextual negatives (rejected: loses role and exhaustive source
+    coverage); rely on stale hashes (rejected: bypasses the relationship).
+  - **Compatibility:** No encoding, identity, media type, profile, registry,
+    interface or existing golden byte changes. All existing malformed
+    format-negative assertions remain required. The complete previous
+    reference is preserved before the additive section. Draft version,
+    requirement IDs and gate names remain unchanged. Generic validity and
+    typed contextual validity remain separate; neither grants authority.
+  - **Affects:** TEST-1 to TEST-3, TREE-25/35, PROP-29 to PROP-31 and
+    DRV-25 to DRV-30. Owning codecs and exhaustive pure source/route/gap
+    checks remain required. Current producer and policy validation, native
+    dispatch, indexed lookup, incremental maintenance and runtime complexity
+    remain unqualified; this decision completes no task or milestone.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

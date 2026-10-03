@@ -418,6 +418,31 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   oversized local key. This supplements the primitive byte/identity audit;
   it does not qualify owning codecs, large canonical boundaries, current
   policy, authority or the still-unpublished normative index corpus.
+  D-106 publishes the additive index field corpus and corrects TEST-1's
+  distinction between malformed format inputs and explicit contextual
+  controls. All 176 named wires have complete independent field or raw
+  assembly models: 104 positive and 72 negative. The 88 immutable positives
+  include 86 Nodes, one complete historical Commit and one actual Chunk;
+  seven detached recipe keys remain lookup data without content descriptors.
+  Independent parent and read-only review audits reproduce those identities,
+  descriptors and expanded entries, verify all control source-owner contexts
+  and preserve the entire previous 2,624,962-byte reference prefix exactly.
+  The reviewed inventory assigns the new section to the mandatory index
+  consumer, bringing the reference to 29 sections and 18 owning suites.
+  This publishes witnesses without qualifying their owning execution: the
+  checked-in generator and seven exact consumer groups remain pending.
+  Current policy, producer checks, runtime lookup, incremental maintenance,
+  native behavior and the full T1 aggregate remain unqualified. No task
+  checkbox or milestone status advances.
+  The publication prerequisite passes the actual registry-completeness
+  check, source-built 29-section inventory and both mandatory formatters.
+  Removing the index owning dependency makes that inventory refuse. The
+  requested index reference check exits 1 explicitly on absent fixtures.
+  Its current trunk aggregate exits 1 because `core-fuzz` cannot find the
+  `format_properties` target on this trunk source; the implementation remains
+  on the unpublished qualification branch. This is the observed aggregate
+  failure, not a new native or backend result. Owning index reproduction and
+  combined qualification remain pending before formal task merges.
   The shared property gate now requires the exact owning-root binding case;
   its absence must fail rather than qualify the new registry entry from old
   property tests. D-104 additionally requires exact role/placement and semantic

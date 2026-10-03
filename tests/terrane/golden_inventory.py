@@ -47,6 +47,8 @@ SECTIONS = {
     "Consumed-lineage record field witnesses": ((0, 191, 191), ("lineage",)),
     "Outer recipe domain and trust field witnesses":
         ((0, 75, 75), ("recipe-context",)),
+    "Owner-bound index and occurrence-carrier field witnesses":
+        ((0, 176, 176), ("index",)),
 }
 
 # These two sections contain only fixture metadata and reproduction instructions.
