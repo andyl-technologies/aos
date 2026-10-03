@@ -93,6 +93,7 @@ fn property_values(name: PropertyName, value: u64) -> Vec<Vec<u8>> {
                 "elf", "shebang", "ar", "zstd", "gzip", "tar", "text", "other",
             ]),
         ]),
+        IndexGaps => values.extend([text(&format!("{value:064x}")), text(&"f".repeat(64))]),
         IndexRoots => {
             values.push(vec![0xa0]);
             let mut roots = vec![];
@@ -164,7 +165,8 @@ fn registered_properties_cover_closed_vocabularies_quantities_and_inheritance_bi
                     value: &bytes,
                 };
                 if (*name == PropertyName::Acl && inherit == Some(false))
-                    || (*name == PropertyName::IndexRoots && inherit != Some(false))
+                    || (matches!(*name, PropertyName::IndexRoots | PropertyName::IndexGaps)
+                        && inherit != Some(false))
                 {
                     assert!(properties::validate_property(&property).is_err());
                     continue;

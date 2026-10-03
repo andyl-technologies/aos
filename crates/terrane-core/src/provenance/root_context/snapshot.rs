@@ -34,6 +34,7 @@ enum PolicyValue {
     Boolean(bool),
     Names(Vec<String>),
     IndexRoots(Vec<(String, Digest)>),
+    IndexGaps(Digest),
     Ttl(u64),
     Count(u64),
     Quota(u64, u64),
@@ -58,6 +59,7 @@ impl From<&Value<'_>> for PolicyValue {
                     .map(|binding| (binding.attribute.to_string(), binding.node))
                     .collect(),
             ),
+            Value::IndexGaps(gap) => Self::IndexGaps(gap.node()),
             Value::Ttl(value) => Self::Ttl(*value),
             Value::Count(value) => Self::Count(*value),
             Value::Quota { root, principal } => Self::Quota(*root, *principal),
@@ -221,8 +223,10 @@ fn state(
         Some(Value::Text(domain)) => (*domain).to_string(),
         _ => return Err(Rejected),
     };
+    // Auxiliary gap pointers have no namespace policy value or default.
     let effective = PropertyName::ALL
         .iter()
+        .filter(|name| **name != PropertyName::IndexGaps)
         .map(|name| Ok((*name, PolicyValue::from(policy.get(*name).ok_or(Rejected)?))))
         .collect::<Result<Vec<_>, Rejected>>()?;
     let local = layers
@@ -359,5 +363,36 @@ pub(super) fn at_path(
         };
         root = child;
         overrides = properties;
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::indexing::carrier::GapBinding;
+
+    #[test]
+    fn namespace_snapshot_has_complete_policy_without_auxiliary_gap_default() {
+        let defaults = Defaults {
+            store: "local",
+            home: "local",
+            private_domain: "private:test",
+        };
+        let root = state([1; 32], Vec::new(), &[Vec::new()], defaults).unwrap();
+        assert_eq!(root.effective.len(), PropertyName::ALL.len() - 1);
+        assert!(
+            !root
+                .effective
+                .iter()
+                .any(|(name, _)| *name == PropertyName::IndexGaps)
+        );
+
+        let binding = GapBinding::new([2; 32]).encode_binding();
+        let layers = [vec![Property {
+            name: "index-gaps",
+            value: &binding,
+        }]];
+        assert!(state([1; 32], Vec::new(), &layers, defaults).is_err());
     }
 }

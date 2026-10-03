@@ -48,9 +48,12 @@ fn file() -> Entry<'static> {
 #[test]
 fn resolution_registry_defaults_and_path_overrides() {
     let default = resolve(&[], defaults()).expect("defaults");
-    assert_eq!(PropertyName::ALL.len(), 34);
+    assert_eq!(PropertyName::ALL.len(), 35);
     for name in PropertyName::ALL {
-        assert!(default.get(*name).is_some());
+        assert_eq!(
+            default.get(*name).is_some(),
+            *name != PropertyName::IndexGaps
+        );
         assert_eq!(PropertyName::parse(name.as_str()), Ok(*name));
     }
     assert_eq!(default.domain(), Ok(Domain::Private("root")));

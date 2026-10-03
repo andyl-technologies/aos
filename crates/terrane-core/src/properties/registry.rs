@@ -11,7 +11,7 @@
 
 use super::{Defaults, Domain, Error};
 use crate::cbor::Decoder;
-use crate::indexing::IndexRoots;
+use crate::indexing::{IndexRoots, carrier::GapBinding};
 use crate::tree_format::Property;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -87,6 +87,7 @@ property_names! {
     OnRelease => ("on-release", Realization), Acl => ("acl", Authority),
     Hashes => ("hashes", Requirement), Classify => ("classify", Requirement),
     Index => ("index", Requirement), IndexRoots => ("index-roots", Requirement),
+    IndexGaps => ("index-gaps", Requirement),
     StrictAttrs => ("strict-attrs", Requirement),
 }
 
@@ -103,6 +104,8 @@ pub enum Value<'a> {
     Names(Vec<&'a str>),
     /// Noninherited index Node bindings belonging only to the current root.
     IndexRoots(IndexRoots<'a>),
+    /// A structural auxiliary pointer with no namespace policy or default.
+    IndexGaps(GapBinding),
     /// A TTL in seconds.
     Ttl(u64),
     /// A reflog entry count.
@@ -183,6 +186,14 @@ pub fn validate_property<'a>(property: &Property<'a>) -> Result<(PropertyName, V
     let name = PropertyName::parse(property.name)?;
     if property.value.len() > 65536 {
         return Err(Error::Limit);
+    }
+    if name == PropertyName::IndexGaps {
+        let gap = GapBinding::decode_binding(property.value).map_err(|error| match error {
+            crate::indexing::Error::Cbor(error) => Error::Cbor(error),
+            crate::indexing::Error::Limit => Error::Limit,
+            _ => Error::InvalidValue,
+        })?;
+        return Ok((name, Value::IndexGaps(gap)));
     }
     if name == PropertyName::IndexRoots {
         let roots = IndexRoots::decode_binding(property.value).map_err(|error| match error {

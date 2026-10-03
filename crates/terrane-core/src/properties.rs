@@ -201,6 +201,14 @@ pub fn resolve_with_registry<'a>(
     let mut values = registry::defaults(defaults)?;
     let mut wipe_set = false;
     for (position, layer) in path.iter().enumerate() {
+        // Auxiliary index metadata never participates in namespace policy.
+        if layer
+            .properties
+            .iter()
+            .any(|property| property.name == "index-gaps")
+        {
+            return Err(Error::InvalidValue);
+        }
         validate_preserved_map(layer.properties, later_registered)?;
         validate_graft_overrides(layer.overrides, later_registered)?;
         // A graft-local override replaces the whole binding, including its
@@ -257,6 +265,12 @@ pub fn resolve_with_registry<'a>(
 /// # Errors
 /// Rejects unknown names, duplicate names, oversized maps, or invalid values.
 pub fn validate_map(properties: &[Property<'_>]) -> Result<(), Error> {
+    if properties
+        .iter()
+        .any(|property| property.name == "index-gaps")
+    {
+        return Err(Error::InvalidValue);
+    }
     let mut bytes = 0usize;
     for property in properties {
         if property.name.is_empty() || property.name.len() > 255 {
@@ -297,7 +311,7 @@ pub fn validate_graft_overrides(
 ) -> Result<(), Error> {
     if properties
         .iter()
-        .any(|property| property.name == PropertyName::IndexRoots.as_str())
+        .any(|property| matches!(property.name, "index-roots" | "index-gaps"))
     {
         return Err(Error::InvalidValue);
     }
