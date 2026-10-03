@@ -78,6 +78,7 @@ in {
     ${runTest "refs::codec::recipe_tests::commit_recipe_codec_preserves_registered_and_other_encodings"}
     ${runTest "refs::codec::recipe_tests::commit_recipe_codec_rejects_invalid_registered_arguments"}
     ${runTest "algebra::trust::recorded_context_tests::trusted_recorded_context_recipe_keys_bind_complete_interpretations"}
+    ${runTest "provenance::trust::recorded_evaluation_tests::fold::recorded_fold_replays_original_view_interpretations_before_recipe_rebinding"}
     printf 'PASS: pure merge, fold bindings, conflict policies and verified recipes\n' > "$out/result"
   '';
 

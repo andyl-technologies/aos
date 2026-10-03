@@ -295,6 +295,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   supplied caller configuration and existing verified views; decoded context
   claims and current defaults cannot supply the association. These cases and
   native propagation remain pending, with no task or freeze advancement.
+  The merge gate additionally requires executable version-three fold replay:
+  freshly checked signed inputs must retain their independently supplied
+  original view/root interpretations after exclusions change the incoming
+  physical root, then rebind the decoded complete recipe. Missing or changed
+  original associations and inconsistent replay inputs must refuse. The new
+  exact owning case remains pending; published fold models and legacy fold
+  cases alone do not qualify this obligation or native historical sourcing.
   — satisfies ALG-15 to ALG-21, ALG-28 to ALG-39;
   `checks.terrane.gates.algebra-merge`, `checks.terrane.gates.algebra-fork`.
 - [ ] **T-PROP-1** Property resolution, types, boundary properties,
