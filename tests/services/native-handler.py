@@ -297,6 +297,75 @@ class NativeHandlerTests(unittest.TestCase):
                 updated.service("remove")
             self.assertEqual(originals, {name: (projected_service_units / name).read_bytes() for name in originals})
 
+    def test_completed_bootstrap_projection_is_readopted_after_coldboot(self):
+        for owner, bootstrap in [("ability", True), ("manager", False), ("image", False)]:
+            with self.subTest(owner=owner), tempfile.TemporaryDirectory() as root:
+                value, rendered, initial, calls, originals = self.projected_service(root)
+                value.update(activation_owner=owner, bootstrap=bootstrap)
+                initial.service("apply")
+                self.assertFalse(initial.receipt["pending"])
+                self.assertEqual(initial.receipt["image_units"], {})
+
+                for name in rendered["units"]:
+                    leaf = initial.unit_directory / name
+                    leaf.unlink()
+                    leaf.symlink_to(projected_service_units / name)
+                before = list(calls)
+                recovered = handler_module.Handler(
+                    initial.invocation, "unused", initial.unit_directory, initial.state_directory,
+                )
+                recovered.manager = active_bus_manager(calls)
+
+                self.assertEqual(recovered.service("observe")["status"], "current")
+                self.assertFalse(any(call[0] in {"start", "restart", "reload-or-restart"} for call in calls[len(before):]))
+                recovered.service("apply")
+
+                for name in rendered["units"]:
+                    self.assertFalse((recovered.unit_directory / name).is_symlink())
+                    self.assertEqual((recovered.unit_directory / name).read_bytes(), originals[name])
+                self.assertEqual(recovered.receipt["image_units"], {})
+                self.assertEqual(recovered.service("observe")["status"], "current")
+
+    def test_completed_projection_refuses_unproven_receipt_or_alias(self):
+        for change in ("pending", "pending-target", "removing", "dispatching", "receipt-kind", "receipt-hash", "ineligible", "foreign-target", "desired-hash"):
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as root:
+                value, rendered, initial, calls, originals = self.projected_service(root)
+                initial.service("apply")
+                name = rendered["resource"]
+                leaf = initial.unit_directory / name
+                leaf.unlink()
+                leaf.symlink_to(projected_service_units / name)
+
+                if change in {"pending", "removing", "dispatching"}:
+                    initial.save(dict(initial.receipt, **{change: True}))
+                elif change == "pending-target":
+                    initial.save(dict(initial.receipt, pending=True, image_units={name: {
+                        "target": str(projected_service_units / name),
+                        "digest": initial.receipt["units"][name],
+                    }}))
+                    leaf.unlink()
+                    leaf.symlink_to(projected_service_units / "different.service")
+                elif change == "receipt-kind":
+                    initial.save(dict(initial.receipt, kind="not-service"))
+                elif change == "receipt-hash":
+                    initial.save(dict(initial.receipt, units=dict(initial.receipt["units"], **{name: "0" * 64})))
+                elif change == "ineligible":
+                    value.update(bootstrap=False, activation_owner="ability")
+                elif change == "desired-hash":
+                    value["lifecycle"]["description"] = "Different desired definition"
+                else:
+                    foreign = Path(root) / "foreign.service"
+                    foreign.write_bytes(originals[name])
+                    leaf.unlink()
+                    leaf.symlink_to(foreign)
+                saved_receipt = initial.receipt_path.read_bytes()
+
+                self.assertEqual(initial.service("observe")["status"], "indeterminate")
+                with self.assertRaises((ValueError, OSError)):
+                    initial.service("apply")
+                self.assertEqual(initial.receipt_path.read_bytes(), saved_receipt)
+                self.assertTrue(leaf.is_symlink())
+
     def test_image_projection_rejects_unselected_mutable_and_changed_aliases(self):
         with tempfile.TemporaryDirectory() as root:
             value, rendered, initial, calls, originals = self.projected_service(root)
@@ -333,8 +402,11 @@ class NativeHandlerTests(unittest.TestCase):
             saved_receipt = initial.receipt_path.read_bytes()
             leaf.unlink()
             leaf.symlink_to(projected_service_units / main)
+            # Ordinary services cannot adopt even a matching immutable alias
+            # over a definition already owned by their completed receipt.
+            initial.value = dict(initial.value, bootstrap=False, activation_owner="ability")
             for action in ["apply", "remove"]:
-                with self.subTest(action=action), self.assertRaisesRegex(ValueError, "replaced by an external link"):
+                with self.subTest(action=action), self.assertRaisesRegex(ValueError, "no authenticated image projection"):
                     initial.service(action)
             self.assertEqual(initial.service("observe")["status"], "indeterminate")
             self.assertEqual(initial.receipt_path.read_bytes(), saved_receipt)

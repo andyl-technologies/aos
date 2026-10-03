@@ -606,14 +606,24 @@ class Handler(ConfigurationHandler):
             path = self.unit_directory / name
             if not path.is_symlink() or name in custody:
                 continue
-            if name in owned_names:
-                raise ValueError("owned service definition was replaced by an external link")
             if not eligible:
                 raise ValueError("service definition has no authenticated image projection")
             target = os.readlink(path)
             actual = image_unit_digest(target)
             if actual != expected:
                 raise ValueError("image service definition conflicts with authenticated rendered content")
+            if name in owned_names:
+                completed_projection = (
+                    receipt.get("kind") == "service"
+                    and not receipt.get("pending")
+                    and not receipt.get("removing")
+                    and not receipt.get("dispatching")
+                    and receipt.get("units", {}).get(name) == actual
+                )
+                if not completed_projection:
+                    raise ValueError("owned service definition was replaced by an external link")
+                # Coldboot loses the volatile regular /etc leaf. Re-adopt only
+                # an immutable projection matching both receipt and desired bytes.
             custody[name] = {"target": target, "digest": actual}
         return custody
 
