@@ -258,18 +258,28 @@
     ));
 
   # Diagnostic guests retain the ordinary AOS runtime and boot identity CLI.
-  # Use the established qualification closure allowance and the measured initrd
-  # bound locally; production defaults and the other image budgets stay intact.
+  # Use the established qualification closure allowance and measured initrd bound.
+  # Per-role raw download limits retain the complete disk; production defaults and
+  # the remaining image budgets stay intact.
   qualificationImageBudget = {
+    rawDownloadMiB,
+    recoveryBundleMiB,
+  }: {
     aos.image.budgets = {
       maxRuntimeClosureMiB = 912;
       maxInitrdMiB = 144;
+      maxDownloadMiB = lib.mkForce rawDownloadMiB;
+      # Recovery bundles retain their existing allowance independently of raw disks.
+      maxRecoveryBundleMiB = lib.mkForce recoveryBundleMiB;
     };
   };
 
   nativeSystem = fixture.hubSystem.extendModules {
     modules = [
-      qualificationImageBudget
+      (qualificationImageBudget {
+        rawDownloadMiB = 896;
+        recoveryBundleMiB = 816;
+      })
       {
         # Native also retains the full Hub server and initializer payload.
         aos.image.budgets.maxRuntimeClosureMiB = lib.mkForce 1024;
@@ -334,7 +344,10 @@
 
   edgeSystem = mkSystem [
     ../../systems/server-test.nix
-    qualificationImageBudget
+    (qualificationImageBudget {
+      rawDownloadMiB = 864;
+      recoveryBundleMiB = 800;
+    })
     {
       aos.security.pki.certificates = [caCertificate s3CaCertificate];
       aos.firewall.allowedTCP = [443] ++ lib.optionals externalDirect [8453 4643 4644 4673 4674];
@@ -344,7 +357,10 @@
   ];
   clientSystem = mkSystem [
     ../../systems/server-test.nix
-    qualificationImageBudget
+    (qualificationImageBudget {
+      rawDownloadMiB = 864;
+      recoveryBundleMiB = 800;
+    })
     {
       aos.security.pki.certificates = [caCertificate s3CaCertificate];
       aos.kernel.modules = ["9pnet_virtio" "9p"];
