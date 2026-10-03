@@ -760,4 +760,134 @@ mod tests {
         assert!(!has_pending_deployment(&profile.path).unwrap());
         assert!(!profile.path.join("deployment").exists());
     }
+
+    #[test]
+    fn retained_export_preserves_exact_committed_scope_without_effect_dispatch() {
+        let temporary = tempfile::tempdir().unwrap();
+        let profile = Profile::open_at(temporary.path().into(), ProfileScope::User).unwrap();
+        let generation = profile.new_generation().unwrap();
+        let desired = deployment();
+        let mut consumer =
+            ProfileDeployment::open(&profile, Store::default(), journal_limits()).unwrap();
+        consumer
+            .apply(&desired, &generation, &CancellationToken::default())
+            .unwrap();
+        drop(consumer);
+        let journals = [
+            profile.path.join("deployment/generations.journal"),
+            profile.path.join("deployment/effects.journal"),
+        ];
+        let before: Vec<_> = journals
+            .iter()
+            .map(|path| fs::read(path).unwrap())
+            .collect();
+
+        let bytes = crate::deployment::retained::export(&profile.path).unwrap();
+
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+            json!({
+                "schema":"aos.package.retained-effects", "scope":desired.scope(), "effects":[]
+            })
+        );
+        assert_eq!(
+            profile.current_generation().unwrap().unwrap().number,
+            generation.number
+        );
+        assert_eq!(
+            journals
+                .iter()
+                .map(|path| fs::read(path).unwrap())
+                .collect::<Vec<_>>(),
+            before
+        );
+    }
+
+    #[test]
+    fn retained_export_uses_committed_publication_without_repairing_current_link() {
+        let temporary = tempfile::tempdir().unwrap();
+        let profile = Profile::open_at(temporary.path().into(), ProfileScope::User).unwrap();
+        let first = profile.new_generation().unwrap();
+        let committed = profile.new_generation().unwrap();
+        let mut consumer =
+            ProfileDeployment::open(&profile, Store::default(), journal_limits()).unwrap();
+        consumer
+            .apply(&deployment(), &committed, &CancellationToken::default())
+            .unwrap();
+        drop(consumer);
+        profile.switch_to(&first).unwrap();
+        let current = profile.path.join("current");
+        let stale = fs::read_link(&current).unwrap();
+
+        let with_stale_link = crate::deployment::retained::export(&profile.path).unwrap();
+        assert_eq!(fs::read_link(&current).unwrap(), stale);
+        fs::remove_file(&current).unwrap();
+        let with_missing_link = crate::deployment::retained::export(&profile.path).unwrap();
+
+        assert_eq!(with_stale_link, with_missing_link);
+        assert!(!current.exists());
+        assert_eq!(
+            current_committed_generation(&profile.path).unwrap(),
+            Some(committed.number)
+        );
+    }
+
+    #[test]
+    fn retained_export_rejects_missing_or_corrupt_publications_without_repair() {
+        for record in [
+            "deployment/publications/1.json",
+            "gen-1/native-deployment.json",
+        ] {
+            for missing in [true, false] {
+                let temporary = tempfile::tempdir().unwrap();
+                let profile =
+                    Profile::open_at(temporary.path().into(), ProfileScope::User).unwrap();
+                let generation = profile.new_generation().unwrap();
+                let mut consumer =
+                    ProfileDeployment::open(&profile, Store::default(), journal_limits()).unwrap();
+                consumer
+                    .apply(&deployment(), &generation, &CancellationToken::default())
+                    .unwrap();
+                drop(consumer);
+                let path = profile.path.join(record);
+                if missing {
+                    fs::remove_file(&path).unwrap();
+                } else {
+                    fs::write(&path, b"corrupt publication").unwrap();
+                }
+                let journals = [
+                    profile.path.join("deployment/generations.journal"),
+                    profile.path.join("deployment/effects.journal"),
+                ];
+                let before: Vec<_> = journals
+                    .iter()
+                    .map(|path| fs::read(path).unwrap())
+                    .collect();
+                let current = fs::read_link(profile.path.join("current")).unwrap();
+
+                assert!(
+                    crate::deployment::retained::export(&profile.path).is_err(),
+                    "{record}, missing={missing}"
+                );
+
+                assert_eq!(
+                    journals
+                        .iter()
+                        .map(|path| fs::read(path).unwrap())
+                        .collect::<Vec<_>>(),
+                    before
+                );
+                assert_eq!(
+                    fs::read_link(profile.path.join("current")).unwrap(),
+                    current
+                );
+                if missing {
+                    assert!(!path.exists());
+                } else {
+                    assert_eq!(fs::read(path).unwrap(), b"corrupt publication");
+                }
+                assert!(!profile.path.join("deployment/registry-admissions").exists());
+            }
+        }
+    }
 }

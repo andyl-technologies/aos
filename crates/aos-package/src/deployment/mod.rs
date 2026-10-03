@@ -15,6 +15,7 @@ pub mod handler;
 pub mod model;
 pub mod nix;
 pub(crate) mod process;
+pub(crate) mod retained;
 pub mod retention;
 pub(crate) mod source_views;
 pub mod transaction;

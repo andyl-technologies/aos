@@ -264,6 +264,13 @@ pub enum PackageCommand {
     /// Hidden: verify durable completion of a native deployment.
     #[command(name = "verify-deployment", hide = true)]
     VerifyDeployment(native_deployment::NativeDeploymentArgs),
+    /// Hidden: export authenticated retained native effect authority.
+    #[command(name = "deployment-retained-effects", hide = true)]
+    DeploymentRetainedEffects {
+        /// Read this package profile's native journals.
+        #[arg(long)]
+        profile: PathBuf,
+    },
     /// Hidden: read an explicitly selected committed native profile result.
     #[command(name = "deployment-result", hide = true)]
     DeploymentResult {
@@ -913,6 +920,7 @@ impl PackageCommand {
             PackageCommand::ApplyDeployment(..)
                 | PackageCommand::VerifyDeployment(..)
                 | PackageCommand::DeploymentCurrent { .. }
+                | PackageCommand::DeploymentRetainedEffects { .. }
                 | PackageCommand::DeploymentResult { .. }
         )
     }
@@ -930,6 +938,7 @@ impl PackageCommand {
             PackageCommand::ApplyDeployment(..)
             | PackageCommand::VerifyDeployment(..)
             | PackageCommand::DeploymentCurrent { .. }
+            | PackageCommand::DeploymentRetainedEffects { .. }
             | PackageCommand::DeploymentResult { .. } => Portable,
             PackageCommand::Switch { .. } => AosRoot,
             PackageCommand::Install { .. }
@@ -2824,6 +2833,11 @@ pub async fn run(
         println!("{}", serde_json::json!({"generation": generation}));
         return Ok(());
     }
+    if let PackageCommand::DeploymentRetainedEffects { profile } = command {
+        let bytes = deployment::retained::export(profile)?;
+        println!("{}", std::str::from_utf8(&bytes)?);
+        return Ok(());
+    }
     if let PackageCommand::DeploymentResult {
         profile,
         generation,
@@ -3218,6 +3232,7 @@ pub async fn run(
         PackageCommand::ApplyDeployment(..)
         | PackageCommand::VerifyDeployment(..)
         | PackageCommand::DeploymentCurrent { .. }
+        | PackageCommand::DeploymentRetainedEffects { .. }
         | PackageCommand::DeploymentResult { .. } => {
             unreachable!("Native deployment is handled before ApmConfig::load")
         }

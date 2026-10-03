@@ -611,6 +611,15 @@ mod tests {
         ])
         .expect("native retained-result command should parse");
 
+        let retained = ApmCli::try_parse_from([
+            "apm",
+            "deployment-retained-effects",
+            "--profile",
+            "/var/lib/profiles/system",
+        ])
+        .expect("native retained authority command should parse");
+
+        assert!(retained.command.is_runtime_internal());
         assert!(current.command.is_runtime_internal());
         assert!(matches!(
             result.command,

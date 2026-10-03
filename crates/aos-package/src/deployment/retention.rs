@@ -26,6 +26,41 @@ pub trait ArtifactAdmission {
     fn admit(&mut self, root: &str) -> Result<()>;
 }
 
+/// Verifies existing effect roots without creating roots or executing handlers.
+///
+/// Admission remains bound to the original authenticated artifact. Every
+/// process effect must also retain its own exact recovery root, even when
+/// several effects share the same artifact.
+///
+/// # Errors
+/// Returns an error for an unavailable retention directory, a missing or
+/// substituted effect root, or an artifact rejected by its original admission.
+pub fn verify_retained_handlers<A: ArtifactAdmission>(
+    directory: &Path,
+    effects: &[&Effect],
+    admission: &mut A,
+) -> Result<()> {
+    ensure!(
+        std::fs::symlink_metadata(directory)?.file_type().is_dir(),
+        "handler retention directory is not a real directory"
+    );
+    let mut admitted = BTreeSet::new();
+    for effect in effects {
+        if let Handler::Process { artifact, .. } = &effect.handler {
+            let key = NixStore::<A>::effect_key(effect, artifact)?;
+            let link = directory.join(Sha256Digest::of_bytes(key.as_bytes()).hex());
+            ensure!(
+                std::fs::read_link(&link)? == Path::new(artifact),
+                "retained handler root differs from its original artifact"
+            );
+            if admitted.insert(artifact) {
+                admission.admit(artifact)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Roots admitted artifacts through an explicitly selected Nix store executable.
 pub struct NixStore<A> {
     executable: PathBuf,
@@ -329,6 +364,127 @@ esac
             )
             .hex(),
         )
+    }
+
+    #[test]
+    fn retained_verification_checks_every_root_and_deduplicates_admission_per_call() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut store, old, new) = fixture(directory.path());
+        let first = effect("first", &old);
+        let second = effect("second", &old);
+        let replacement = effect("first", &new);
+        store
+            .retain_batch(&[&first, &second, &replacement])
+            .unwrap();
+        store.admission.calls.lock().unwrap().clear();
+
+        for expected_calls in [2, 4] {
+            verify_retained_handlers(
+                &store.directory,
+                &[&first, &second, &replacement],
+                &mut store.admission,
+            )
+            .unwrap();
+            assert_eq!(store.admission.calls.lock().unwrap().len(), expected_calls);
+            for (effect, artifact) in [(&first, &old), (&second, &old), (&replacement, &new)] {
+                assert_eq!(
+                    std::fs::read_link(root_link(&store, effect, artifact)).unwrap(),
+                    Path::new(artifact)
+                );
+            }
+            assert_eq!(std::fs::read_dir(&store.directory).unwrap().count(), 3);
+        }
+        assert_eq!(
+            *store.admission.calls.lock().unwrap(),
+            [old.clone(), new.clone(), old, new]
+        );
+    }
+
+    #[test]
+    fn retained_verification_never_creates_or_repairs_missing_and_substituted_roots() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut store, old, new) = fixture(directory.path());
+        let first = effect("first", &old);
+        let second = effect("second", &old);
+        store.retain_batch(&[&first, &second]).unwrap();
+        let second_link = root_link(&store, &second, &old);
+        std::fs::remove_file(&second_link).unwrap();
+        store.admission.calls.lock().unwrap().clear();
+
+        assert!(
+            verify_retained_handlers(&store.directory, &[&first, &second], &mut store.admission)
+                .is_err()
+        );
+        assert!(std::fs::symlink_metadata(&second_link).is_err());
+        assert_eq!(std::fs::read_dir(&store.directory).unwrap().count(), 1);
+        assert_eq!(*store.admission.calls.lock().unwrap(), [old.clone()]);
+
+        std::os::unix::fs::symlink(&new, &second_link).unwrap();
+        store.admission.calls.lock().unwrap().clear();
+        assert!(
+            verify_retained_handlers(&store.directory, &[&first, &second], &mut store.admission)
+                .is_err()
+        );
+        assert_eq!(std::fs::read_link(&second_link).unwrap(), Path::new(&new));
+        assert_eq!(*store.admission.calls.lock().unwrap(), [old.clone()]);
+        std::fs::remove_file(&second_link).unwrap();
+        std::fs::write(&second_link, b"foreign regular file").unwrap();
+        assert!(
+            verify_retained_handlers(&store.directory, &[&second], &mut store.admission).is_err()
+        );
+        assert_eq!(
+            std::fs::read(&second_link).unwrap(),
+            b"foreign regular file"
+        );
+        assert_eq!(
+            std::fs::read_link(root_link(&store, &first, &old)).unwrap(),
+            Path::new(&old)
+        );
+    }
+
+    #[test]
+    fn retained_verification_rejects_missing_or_aliased_directories_without_admission() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut store, old, _) = fixture(directory.path());
+        let first = effect("first", &old);
+        store.retain_batch(&[&first]).unwrap();
+        store.admission.calls.lock().unwrap().clear();
+        let absent = directory.path().join("absent");
+        assert!(verify_retained_handlers(&absent, &[&first], &mut store.admission).is_err());
+        assert!(!absent.exists());
+        let alias = directory.path().join("aliased-roots");
+        std::os::unix::fs::symlink(&store.directory, &alias).unwrap();
+        assert!(verify_retained_handlers(&alias, &[&first], &mut store.admission).is_err());
+        assert_eq!(std::fs::read_link(alias).unwrap(), store.directory);
+        assert!(store.admission.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn retained_verification_rechecks_original_artifact_evidence_without_changing_roots() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut store, old, _) = fixture(directory.path());
+        let first = effect("first", &old);
+        store.retain_batch(&[&first]).unwrap();
+        store.admission.calls.lock().unwrap().clear();
+        std::fs::write(&store.admission.members[&old], b"changed").unwrap();
+
+        assert!(
+            verify_retained_handlers(&store.directory, &[&first], &mut store.admission)
+                .unwrap_err()
+                .to_string()
+                .contains("artifact changed")
+        );
+
+        assert_eq!(*store.admission.calls.lock().unwrap(), [old.clone()]);
+        assert_eq!(
+            std::fs::read_link(root_link(&store, &first, &old)).unwrap(),
+            Path::new(&old)
+        );
+        assert_eq!(
+            std::fs::read(&store.admission.members[&old]).unwrap(),
+            b"changed"
+        );
+        assert_eq!(std::fs::read_dir(&store.directory).unwrap().count(), 1);
     }
 
     #[test]

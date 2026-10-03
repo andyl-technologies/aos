@@ -16,6 +16,9 @@ use serde_json::{Value, json};
 
 use super::{atomic_write, normalized_path, read_regular, state_path};
 
+mod restore;
+pub(crate) use restore::restore;
+
 const LIMIT: u64 = 16_777_216;
 
 #[derive(Clone, Deserialize, Serialize, PartialEq)]

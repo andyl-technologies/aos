@@ -10,6 +10,7 @@ systemd-parser-tests = []
 [dependencies]
 anyhow.workspace = true
 aos-ability-runtime.workspace = true
+aos-ability-plan.workspace = true
 aos-contract.workspace = true
 aos-release.workspace = true
 aos-boot-identity.workspace = true

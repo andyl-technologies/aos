@@ -307,9 +307,9 @@
     dependencies =
       emptyDependencies
       // {
-        after = [hostStageReceivedReadiness localFilesystemsReadiness];
+        after = [hostStageReceivedReadiness localFilesystemsReadiness "aos-identity-restoration.service"];
         before = [multiUserReadiness];
-        requires = [hostStageReceivedReadiness localFilesystemsReadiness];
+        requires = [hostStageReceivedReadiness localFilesystemsReadiness "aos-identity-restoration.service"];
         required_by = [multiUserReadiness];
       };
   };
@@ -593,6 +593,53 @@
   ];
   handoffInitrdServices = [initrdController initrdHandoffBarrier initrdStoreHandoff];
   handoffHostServices = [hostStoreSeed hostReceiver] ++ lib.optional (!controlPlaneEnabled) hostController;
+  identityRestorationBase = handoffService {
+    key = "aos-identity-restoration";
+    description = "Restore retained receipt-owned local identities before host activation";
+    activationOwner = "manager";
+    arguments = [];
+    dependencies =
+      emptyDependencies
+      // {
+        after = [localFilesystemsReadiness hostStoreReadiness];
+        requires = [localFilesystemsReadiness hostStoreReadiness];
+        before = lib.optional (hostActivatorService != null) (serviceResource (
+          if controlPlaneEnabled
+          then "aos-activate"
+          else "aos-ability-host-controller"
+        ));
+        required_by = lib.optional (hostActivatorService != null) (serviceResource (
+          if controlPlaneEnabled
+          then "aos-activate"
+          else "aos-ability-host-controller"
+        ));
+      };
+  };
+  identityRestoration =
+    identityRestorationBase
+    // {
+      bootstrap = true;
+      lifecycle =
+        identityRestorationBase.lifecycle
+        // {
+          start = [
+            {
+              executable = {
+                path = "${dependencies.bash.path}/bin/bash";
+                arguments = [
+                  "-c"
+                  ''
+                    set -euo pipefail
+                    ${dependencies.aos.outputs.packageRuntime}/bin/aos-package-runtime deployment-retained-effects --profile /var/lib/profiles/system |
+                      ${dependencies.systemd.path}/bin/aos-systemd-native-resources restore-identities
+                  ''
+                ];
+              };
+              ignore_failure = false;
+            }
+          ];
+        };
+    };
   handoffPreparationResources =
     builtins.sort
     (left: right: builtins.toJSON left < builtins.toJSON right)
@@ -716,12 +763,12 @@ in {
         (serviceConfigsFor initrdStage baseServices)
         // (serviceConfigsFor (initrdStage && cfg.enable) substrateServices)
         // (serviceConfigsFor (initrdStage && cfg.handoffEnabled) handoffInitrdServices)
-        // (serviceConfigsFor (hostStage && cfg.handoffEnabled) handoffHostServices);
+        // (serviceConfigsFor (hostStage && cfg.handoffEnabled) (handoffHostServices ++ [identityRestoration]));
     }
     (lib.mkIf (hostStage && cfg.handoffEnabled && controlPlaneEnabled) {
       aos.services."control-plane.aos-activate".dependencies = {
-        after = lib.mkAfter [hostStageReceivedReadiness localFilesystemsReadiness];
-        requires = lib.mkAfter [hostStageReceivedReadiness localFilesystemsReadiness];
+        after = lib.mkAfter [hostStageReceivedReadiness localFilesystemsReadiness "aos-identity-restoration.service"];
+        requires = lib.mkAfter [hostStageReceivedReadiness localFilesystemsReadiness "aos-identity-restoration.service"];
         before = lib.mkAfter [multiUserReadiness];
         required_by = lib.mkAfter [multiUserReadiness];
       };

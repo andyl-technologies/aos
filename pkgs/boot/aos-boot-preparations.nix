@@ -4,6 +4,7 @@
   mkDerivation,
   rust,
   aos,
+  systemd,
   nix,
   service-management,
   aos-boot-storage,
@@ -49,6 +50,7 @@ in
     buildDeps = [rust];
     runtimeDeps = [
       nix
+      systemd
       aos-configuration-lower
       packageRuntime
       bash

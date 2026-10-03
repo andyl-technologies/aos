@@ -291,6 +291,22 @@ Recovery resumes pending work before accepting a new generation.
 under a shared lock. Its snapshot cannot create or repair journals and retains
 the lock while callers inspect associated profile publications.
 
+`ActivationInspection::retained_effects` supplies original completed invocations
+and checked results without promoting pending work. These private records are
+excluded from ordinary inspection JSON. The private package runtime exports them
+only after validating the paired journals, committed publication, original
+artifact admission, and each independent effect root. Export is read-only;
+missing roots are errors, rather than an invitation to recreate them.
+
+Boot preparation composes an ordinary manager-owned service before either host
+activator. It passes the generic retained export to the selected identity backend.
+That backend validates the complete receipt-owned account projection before
+publishing any database changes and preserves foreign rows. Package-specific
+restoration stays in the backend; the shared package runtime does not interpret
+identity operations. Persistent configuration files similarly carry their exact
+file-effect identity, lifetime, bytes, mode, and owner into later immutable lower
+generations until an explicit retirement supplies the removal decision.
+
 Committed generations retain their documents and results for inspection and
 rollback. Rollback applies a retained desired document as a new transaction;
 handlers reconcile it with current state. `prune` journals removal of an older

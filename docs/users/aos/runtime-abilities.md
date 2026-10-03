@@ -647,6 +647,13 @@ inventory. Keeping a completed retirement declaration in later generations is a
 no-op; an unknown identity is rejected. Removing a
 package or pruning a generation alone does not retire persistent state.
 
+Persistence also applies across reboot. Configuration-file generations carry
+retained persistent file contents and ownership until explicit retirement.
+Before host activation, the selected identity backend restores its receipt-owned
+accounts from checked retained effect records, including accounts whose package
+has been removed. Existing foreign account rows remain intact; conflicting or
+incomplete ownership records stop restoration before account changes.
+
 Reconfiguration prepares a new desired document. Handlers receive previous
 state when inputs or implementations change. Interrupted mutations are observed
 before retry. Effect completion and generation commit are separately durable;
