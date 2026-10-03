@@ -262,7 +262,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   remains joint with T-DRV-2. Previous property behavior stays qualified,
   but does not qualify PROP-29. D-102 fixes immutable recorded property
   vocabularies under PROP-30; its pure compatibility check is joint with
-  T-DRV-3 before combined requalification. — satisfies TREE-14,
+  T-DRV-3 before combined requalification. Reviewing the actual resolver
+  exposes a remaining PROP-4/PROP-30 gap: compiled later names currently
+  receive validation or behavior under historical recorded revisions.
+  The shared resolution gate now also requires three exact cases for inert
+  later names, revision-specific defaults and graft placement, and refusal
+  of unknown revisions or unregistered extensions. Their pure resolver
+  implementation is pending on an isolated task branch; codec vocabulary
+  checks alone do not qualify this behavior or native caller propagation.
+  — satisfies TREE-14,
   PROP-1 to PROP-30;
   `checks.terrane.gates.property-resolution`,
   `checks.terrane.gates.property-required-attrs`,
