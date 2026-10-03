@@ -39,6 +39,7 @@ The atomic integration patch creates these QEMU source files:
 | `plugins/crucible-fault-clock.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-fault-accelerator.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-idle-wait.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-stop-context.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `target/arm/crucible-register.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `target/i386/crucible-register.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/tcg/plugins/crucible-register.c` | GPL-2.0-or-later | Explicit SPDX identifier |
@@ -53,9 +54,11 @@ The atomic integration patch creates these QEMU source files:
 | `tests/qtest/crucible-exact-tb-exit.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-hot-fork-child.c` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-child-file-refusal.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-aio-fork-custody.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-procfd-flags.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-net-output-stop.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-net-stop-chain.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-stop-context.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-control-deferred.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-control-observer.py` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-control-delivery.py` | GPL-2.0-or-later | Explicit SPDX identifier |

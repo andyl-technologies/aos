@@ -1,19 +1,29 @@
-From a52c56e31bfbf61dba4ff646fa8744f0f4d9f58c Mon Sep 17 00:00:00 2001
+From 1a711b829b6f82134554891b011daab817cce310 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Fri, 2 Oct 2026 17:31:13 -0700
-Subject: [PATCH] Implement deterministic simulation and exact stop ownership
+Date: Fri, 2 Oct 2026 19:59:29 -0700
+Subject: [PATCH] Integrate deterministic execution and private fork I/O
+ custody
 
 Retain versioned process control, deterministic virtual coordinates,
-private child resources, and canonical guest-state projection.
-Template preparation drains the original registered reader and waits
-for native callback completion before admitting subsystem barriers.
-Connection lifetime, stopped-owner generation, exact picosecond time,
-and descriptor failures remain fail-closed.
+private child resources, and canonical guest-state projection. Drain
+the original registered reader and native callback before admitting
+template barriers. Preserve stopped-owner generation, exact time,
+connection lifetime, and descriptor failure refusal.
 
-Mirror opted-in deduplicated control delivery witnesses to stderr.
-End the TCG chain after an admitted exact stop on the running current
-CPU while preserving asynchronous runstate transitions and ordinary
-RR wake behavior. Retain bounded production-body regressions.
+End an admitted current-CPU stop at the TCG chain while retaining the
+asynchronous runstate transition. Reconstruct each child's private
+Linux epoll backend under the original authenticated fork barrier,
+preserving active and standby modes and the parent's kernel object.
+Validate retained handler membership and inherited descriptor identity
+before starting child workers.
+
+Observe stop admission, publication, rearm refusal, and original wake
+reader outcomes only under the existing delivery trace opt-in. Keep
+unowned architecture and unlocked runstate fields unavailable, retain
+late generations, and preserve native operation and error semantics.
+Carry production-body regressions and explicit causal negatives.
+Declare extracted public entry points with their original types so
+configured prototype diagnostics remain enforced in the fork fixture.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -3467,10 +3477,10 @@ index 0000000000000000000000000000000000000000..64a0a5db661128340846bd948505d7aa
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..a275ca08dcd3e2dac446db74924cc10f8563eb8d 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..74db6aa69f72efd9d3c94613ae04842d4713200e 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -27,45 +27,1806 @@
+@@ -27,45 +27,1812 @@
  #include "qemu/lockable.h"
  #include "system/tcg.h"
  #include "system/replay.h"
@@ -4043,6 +4053,12 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a275ca08dcd3e2dac446db74924cc10f
 +    bool emitted;
 +} rr_control_delivery_trace_seen[ARRAY_SIZE(rr_control_delivery_trace_phases)];
 +static pid_t rr_control_delivery_trace_pid;
++
++bool rr_crucible_sim_control_delivery_trace_enabled(void)
++{
++    return rr_crucible_sim_mode() &&
++        trace_event_get_state_backends(TRACE_CRUCIBLE_SIM_RR_CONTROL_DELIVERY);
++}
 +
 +void rr_crucible_sim_trace_control_delivery(const char *phase,
 +                                           uint64_t request_generation,
@@ -5296,7 +5312,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a275ca08dcd3e2dac446db74924cc10f
  }
  
  /* Kick the currently round-robin scheduled vCPU to next */
-@@ -84,18 +1845,30 @@ static void rr_kick_next_cpu(void)
+@@ -84,18 +1851,30 @@ static void rr_kick_next_cpu(void)
  
  static void rr_kick_thread(void *opaque)
  {
@@ -5329,7 +5345,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a275ca08dcd3e2dac446db74924cc10f
      }
  }
  
-@@ -110,15 +1883,131 @@ static void rr_wait_io_event(void)
+@@ -110,15 +1889,131 @@ static void rr_wait_io_event(void)
  {
      CPUState *cpu;
  
@@ -5463,7 +5479,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a275ca08dcd3e2dac446db74924cc10f
      }
  }
  
-@@ -140,6 +2029,18 @@ static void rr_deal_with_unplugged_cpus(void)
+@@ -140,6 +2035,18 @@ static void rr_deal_with_unplugged_cpus(void)
  
  static void rr_force_rcu(Notifier *notify, void *data)
  {
@@ -5482,7 +5498,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a275ca08dcd3e2dac446db74924cc10f
      rr_kick_next_cpu();
  }
  
-@@ -184,6 +2085,8 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -184,6 +2091,8 @@ static void *rr_cpu_thread_fn(void *arg)
      CPUState *cpu = arg;
  
      assert(tcg_enabled());
@@ -5491,7 +5507,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a275ca08dcd3e2dac446db74924cc10f
      rcu_register_thread();
      force_rcu.notify = rr_force_rcu;
      rcu_add_force_rcu_notifier(&force_rcu);
-@@ -204,41 +2107,199 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -204,41 +2113,199 @@ static void *rr_cpu_thread_fn(void *arg)
          /* process any pending work */
          CPU_FOREACH(cpu) {
              current_cpu = cpu;
@@ -5709,7 +5725,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a275ca08dcd3e2dac446db74924cc10f
  
          if (icount_enabled()) {
              int cpu_count = rr_cpu_count();
-@@ -254,11 +2315,31 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -254,11 +2321,31 @@ static void *rr_cpu_thread_fn(void *arg)
              cpu_budget = icount_percpu_budget(cpu_count);
          }
  
@@ -5742,7 +5758,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a275ca08dcd3e2dac446db74924cc10f
  
          while (cpu && cpu_work_list_empty(cpu)) {
              /*
-@@ -276,28 +2357,123 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -276,28 +2363,123 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
@@ -5881,7 +5897,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a275ca08dcd3e2dac446db74924cc10f
              } else if (cpu->stop) {
                  if (cpu->unplug) {
                      cpu = CPU_NEXT(cpu);
-@@ -305,11 +2481,137 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -305,11 +2487,137 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -6021,7 +6037,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a275ca08dcd3e2dac446db74924cc10f
      }
  
      g_assert_not_reached();
-@@ -318,13 +2620,34 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -318,13 +2626,34 @@ static void *rr_cpu_thread_fn(void *arg)
  void rr_start_vcpu_thread(CPUState *cpu)
  {
      char thread_name[VCPU_THREAD_NAME_SIZE];
@@ -6059,10 +6075,10 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a275ca08dcd3e2dac446db74924cc10f
          single_tcg_cpu_thread = cpu->thread;
  
 diff --git a/accel/tcg/tcg-accel-ops-rr.h b/accel/tcg/tcg-accel-ops-rr.h
-index 2a76a296127e81edc61f45a59785a89705daae90..12a6bd9ccbd7eafd0cca3dad7b0d46782877fed2 100644
+index 2a76a296127e81edc61f45a59785a89705daae90..6838434940bdc20cd6b71bc9fb3a78b9a91f6e4f 100644
 --- a/accel/tcg/tcg-accel-ops-rr.h
 +++ b/accel/tcg/tcg-accel-ops-rr.h
-@@ -10,12 +10,240 @@
+@@ -10,12 +10,243 @@
  #ifndef TCG_ACCEL_OPS_RR_H
  #define TCG_ACCEL_OPS_RR_H
  
@@ -6283,6 +6299,9 @@ index 2a76a296127e81edc61f45a59785a89705daae90..12a6bd9ccbd7eafd0cca3dad7b0d4678
 +                                             uint64_t complete_generation,
 +                                             uintptr_t schedule_token);
 +/* Observe delivery without changing control ownership or canonical state. */
++/* Uses the existing explicitly enabled delivery diagnostic event. */
++bool rr_crucible_sim_control_delivery_trace_enabled(void);
++
 +void rr_crucible_sim_trace_control_delivery(const char *phase,
 +                                           uint64_t request_generation,
 +                                           uint64_t ack_generation,
@@ -60325,7 +60344,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..3ccf8615b0e87c58b038b7b9e4ea9872
   * qemu_plugin_scoreboard_new() - alloc a new scoreboard
   *
 diff --git a/include/qemu/aio.h b/include/qemu/aio.h
-index e65e90093a73aa3f917361ee6b543a6c0fed94fa..9f4ec00fd3e2b8afd8e79eea0dea56a6ad644a2e 100644
+index e65e90093a73aa3f917361ee6b543a6c0fed94fa..f289348cd06a6b88ca219d312403386776d22974 100644
 --- a/include/qemu/aio.h
 +++ b/include/qemu/aio.h
 @@ -18,6 +18,7 @@
@@ -60336,7 +60355,7 @@ index e65e90093a73aa3f917361ee6b543a6c0fed94fa..9f4ec00fd3e2b8afd8e79eea0dea56a6
  #include "qemu/queue.h"
  #include "qemu/event_notifier.h"
  #include "qemu/lockcnt.h"
-@@ -334,10 +335,120 @@ struct AioContext {
+@@ -334,10 +335,132 @@ struct AioContext {
  
      const FDMonOps *fdmon_ops;
  
@@ -60390,6 +60409,18 @@ index e65e90093a73aa3f917361ee6b543a6c0fed94fa..9f4ec00fd3e2b8afd8e79eea0dea56a6
 + */
 +bool qemu_aio_hot_fork_prepare_thread_pools(Error **errp);
 +bool qemu_aio_hot_fork_thread_pools_empty(void);
++
++/* Rebuild retained epoll kernel custody after child descriptor replacement,
++ * before starting workers, under the exact original async transaction. */
++int qemu_aio_hot_fork_reconstruct_child_epoll(
++    const QemuAsyncWorkerHotForkRetainedTransaction *transaction,
++    const int *retained_fds, size_t retained_count);
++
++#ifdef CONFIG_POSIX
++/* Internal per-context operation; the registry caller proves child custody. */
++int aio_context_reconstruct_child_epoll(
++    AioContext *ctx, const int *retained_fds, size_t retained_count);
++#endif
 +
 +#define QEMU_AIO_HANDLER_HOT_FORK_INVENTORY_MAX 65536
 +
@@ -60457,7 +60488,7 @@ index e65e90093a73aa3f917361ee6b543a6c0fed94fa..9f4ec00fd3e2b8afd8e79eea0dea56a6
  /**
   * aio_context_new: Allocate a new AioContext.
   *
-@@ -430,6 +541,16 @@ QEMUBH *aio_bh_new_full(AioContext *ctx, QEMUBHFunc *cb, void *opaque,
+@@ -430,6 +553,16 @@ QEMUBH *aio_bh_new_full(AioContext *ctx, QEMUBHFunc *cb, void *opaque,
   */
  void aio_notify(AioContext *ctx);
  
@@ -61399,10 +61430,10 @@ index 0000000000000000000000000000000000000000..4b8f7d11a929f46414f1d1bb57a3b27d
 +#endif
 diff --git a/include/qemu/crucible-hot-fork-child.h b/include/qemu/crucible-hot-fork-child.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..38093e6a5ca5af8873353e9e723814d3a8aa02b1
+index 0000000000000000000000000000000000000000..af115a7c8f106667ceca6af7304a72e39f0c1a6e
 --- /dev/null
 +++ b/include/qemu/crucible-hot-fork-child.h
-@@ -0,0 +1,419 @@
+@@ -0,0 +1,423 @@
 +/*
 + * Crucible hot-fork child resource disposition helpers
 + *
@@ -61484,11 +61515,15 @@ index 0000000000000000000000000000000000000000..38093e6a5ca5af8873353e9e723814d3
 +    QemuCrucibleHotForkRuntimeTransaction *transaction,
 +    const QemuCrucibleHotForkDescriptorTableTransaction *descriptors);
 +/*
-+ * Start the deferred worker after descriptor disposition, before other hooks.
++ * Reconstruct child-private AIO backend custody, then start the deferred
++ * worker after descriptor disposition and before other hooks. The caller
++ * borrows the verified, strictly sorted final retained descriptor list for
++ * this synchronous call; no list pointer is retained.
 + */
 +int qemu_crucible_hot_fork_start_child_runtime(
 +    QemuCrucibleHotForkRuntimeTransaction *transaction,
-+    const QemuCrucibleHotForkDescriptorTableTransaction *descriptors);
++    const QemuCrucibleHotForkDescriptorTableTransaction *descriptors,
++    const int *retained_fds, size_t retained_fd_count);
 +/* Release copied async work after plugin reconstruction, before child QMP. */
 +int qemu_crucible_hot_fork_finish_child_runtime(
 +    QemuCrucibleHotForkRuntimeTransaction *transaction,
@@ -75133,10 +75168,10 @@ index 9e9941fe73e77a7b3bcc3ca1ab7ad4bec58f0151..66e2d8cd64d01e2304aa51675bfe4959
  
  static int net_slirp_init(NetClientState *peer, const char *model,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fbf905cd63e4cc109748b379f4209f6ad6547c2c..47ef346a18de8d6b1683c4328e5a064e3797dcd7 100644
+index fbf905cd63e4cc109748b379f4209f6ad6547c2c..b39c70b6bc715d42ad83a896b72b602d2efd1eaf 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
-@@ -11,12 +11,39 @@
+@@ -11,12 +11,40 @@
   */
  
  #include "qemu/osdep.h"
@@ -75173,10 +75208,11 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..47ef346a18de8d6b1683c4328e5a064e
 +#include "system/cpu-timers.h"
 +#include "system/crucible-sim-preemption.h"
 +#include "system/tcg.h"
++#include "crucible-stop-context.h"
  
  /*
   * In system mode we cannot trace the binary being executed so the
-@@ -101,14 +128,916 @@ const char *qemu_plugin_hwaddr_device_name(const struct qemu_plugin_hwaddr *h)
+@@ -101,14 +129,917 @@ const char *qemu_plugin_hwaddr_device_name(const struct qemu_plugin_hwaddr *h)
   */
  static bool has_control;
  static Error *migration_blocker;
@@ -76049,6 +76085,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..47ef346a18de8d6b1683c4328e5a064e
 +static void qemu_plugin_rearm_deferred_control_boundary(void);
 +static bool qemu_plugin_quiesced_control_boundary_available(void);
 +static void qemu_plugin_trace_control_delivery(const char *phase);
++static void qemu_plugin_trace_stop_context(CrucibleStopContextPhase phase);
 +
 +static uintptr_t qemu_plugin_control_boundary_schedule_sequence;
 +static uintptr_t qemu_plugin_control_boundary_scheduled;
@@ -76096,7 +76133,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..47ef346a18de8d6b1683c4328e5a064e
          return &has_control;
      }
      return NULL;
-@@ -123,9 +1052,1823 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
+@@ -123,9 +1054,1903 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
  void qemu_plugin_update_ns(const void *handle, int64_t new_time)
  {
      if (handle == &has_control) {
@@ -76550,9 +76587,19 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..47ef346a18de8d6b1683c4328e5a064e
 +static void qemu_plugin_rearm_deferred_control_boundary(void)
 +{
 +    g_assert(bql_locked());
-+    if (!qatomic_load_acquire(&qemu_plugin_control_boundary_deferred) ||
-+        !first_cpu || qemu_force_shutdown_requested() ||
-+        qatomic_load_acquire(&qemu_plugin_time_advance_pending)) {
++    if (!qatomic_load_acquire(&qemu_plugin_control_boundary_deferred)) {
++        return;
++    }
++    if (!first_cpu) {
++        qemu_plugin_trace_stop_context(CRUCIBLE_STOP_REARM_NO_CPU);
++        return;
++    }
++    if (qemu_force_shutdown_requested()) {
++        qemu_plugin_trace_stop_context(CRUCIBLE_STOP_REARM_SHUTDOWN);
++        return;
++    }
++    if (qatomic_load_acquire(&qemu_plugin_time_advance_pending)) {
++        qemu_plugin_trace_stop_context(CRUCIBLE_STOP_REARM_ADVANCE);
 +        return;
 +    }
 +    qemu_plugin_trace_control_delivery("rearm");
@@ -76567,6 +76614,8 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..47ef346a18de8d6b1683c4328e5a064e
 +        } else {
 +            qemu_plugin_schedule_control_boundary();
 +        }
++    } else {
++        qemu_plugin_trace_stop_context(CRUCIBLE_STOP_REARM_NO_OWNER);
 +    }
 +}
 +
@@ -76828,6 +76877,66 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..47ef346a18de8d6b1683c4328e5a064e
 +    QEMU_PLUGIN_CRUCIBLE_VMSTOP_RESUME_PENDING,
 +};
 +
++/* Never samples a clock or another executing CPU's architecture state. */
++static void qemu_plugin_trace_stop_context(CrucibleStopContextPhase phase)
++{
++    CrucibleStopContext context;
++    CPUState *cpu = NULL;
++    const char *scope = NULL;
++    int saved_errno;
++
++    if (!rr_crucible_sim_control_delivery_trace_enabled()) {
++        return;
++    }
++    /* Ordinary idle-time/control epochs are outside this stop diagnostic. */
++    if (phase >= CRUCIBLE_STOP_REARM_NO_CPU &&
++        phase <= CRUCIBLE_STOP_REARM_NO_OWNER &&
++        !qemu_plugin_crucible_vmstop_pending()) {
++        return;
++    }
++    saved_errno = errno;
++    context = (CrucibleStopContext) {
++        .generation = qatomic_read(&qemu_plugin_crucible_vmstop_generation_value),
++        .request = qatomic_load_acquire(&qemu_plugin_rr_control_request_generation),
++        .ack = qatomic_load_acquire(&qemu_plugin_rr_control_ack_generation),
++        .complete = qatomic_load_acquire(&qemu_plugin_rr_control_complete_generation),
++        .state = qatomic_read(&qemu_plugin_crucible_vmstop_state),
++        .runstate = "unavailable",
++        .flush = qatomic_read(&qemu_plugin_crucible_vmstop_flush_result),
++        .fd = qatomic_read(&qemu_plugin_wake_fd),
++        .shutdown = "unavailable",
++        .advance = qatomic_load_acquire(&qemu_plugin_time_advance_pending),
++        .cpu = "scope=unavailable pc=unavailable",
++    };
++    if (bql_locked()) {
++        g_snprintf(context.runstate, sizeof(context.runstate), "%u", runstate_get());
++        g_snprintf(context.shutdown, sizeof(context.shutdown), "%u",
++                   qemu_force_shutdown_requested());
++    }
++    if (bql_locked() && current_cpu &&
++        qemu_plugin_crucible_exact_boundary_depth > 0) {
++        cpu = current_cpu;
++        scope = "callback";
++    } else if (bql_locked() && first_cpu &&
++               qemu_plugin_crucible_vmstop_quiesced() &&
++               runstate_check(RUN_STATE_PAUSED) && first_cpu->stopped &&
++               !qatomic_read(&first_cpu->running)) {
++        cpu = first_cpu;
++        scope = "stopped";
++    }
++    if (cpu) {
++        g_snprintf(context.cpu, sizeof(context.cpu),
++            "scope=%s cpu=%d running=%d stop=%d stopped=%d halted=%u"
++            " high=%d low=%u next=0x%x budget=%" PRId64 " pc=0x%" PRIx64,
++            scope, cpu->cpu_index, cpu->running, cpu->stop, cpu->stopped,
++            cpu->halted, (int16_t)cpu->neg.icount_decr.u16.high,
++            cpu->neg.icount_decr.u16.low, cpu->cflags_next_tb,
++            cpu->icount_budget, (uint64_t)cpu->cc->get_pc(cpu));
++    }
++    crucible_stop_context_emit(phase, &context);
++    errno = saved_errno;
++}
++
 +static int qemu_plugin_crucible_vmstop_begin(void)
 +{
 +    if (icount_enabled() != ICOUNT_PRECISE ||
@@ -76883,6 +76992,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..47ef346a18de8d6b1683c4328e5a064e
 +         */
 +        tcg_kick_vcpu_thread(current_cpu);
 +    }
++    qemu_plugin_trace_stop_context(CRUCIBLE_STOP_ASYNC_ADMITTED);
 +    return 0;
 +}
 +
@@ -76902,6 +77012,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..47ef346a18de8d6b1683c4328e5a064e
 +     * above because a synchronous block drain would recurse into their own
 +     * in-flight coroutine.
 +     */
++    qemu_plugin_trace_stop_context(CRUCIBLE_STOP_CONTROL_ADMITTED);
 +    status = vm_stop(RUN_STATE_PAUSED);
 +    if (status != 0) {
 +        qatomic_set(&qemu_plugin_crucible_vmstop_state,
@@ -77041,6 +77152,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..47ef346a18de8d6b1683c4328e5a064e
 +        qatomic_cmpxchg(&qemu_plugin_crucible_vmstop_state,
 +                        QEMU_PLUGIN_CRUCIBLE_VMSTOP_ADMITTED,
 +                        QEMU_PLUGIN_CRUCIBLE_VMSTOP_STOPPED);
++        qemu_plugin_trace_stop_context(CRUCIBLE_STOP_PUBLISHED);
 +        qemu_plugin_rearm_deferred_control_boundary();
 +        qemu_plugin_control_drain_notify();
 +    }
@@ -77187,6 +77299,9 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..47ef346a18de8d6b1683c4328e5a064e
 +                notifier_list_notify(&qemu_plugin_wake_notifiers,
 +                                     (void *)(intptr_t)QEMU_PLUGIN_WAKE_EVENT_DRAINED);
 +            }
++            if (drained && qemu_plugin_crucible_vmstop_pending()) {
++                qemu_plugin_trace_stop_context(CRUCIBLE_STOP_READER_DRAINED);
++            }
 +            if (single_threaded_rr &&
 +                qemu_plugin_crucible_vmstop_quiesced()) {
 +                qemu_plugin_trace_control_delivery("wake-stopped");
@@ -77214,6 +77329,8 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..47ef346a18de8d6b1683c4328e5a064e
 +            }
 +            return;
 +        }
++        qemu_plugin_trace_stop_context(ret == 0 ? CRUCIBLE_STOP_READER_EOF :
++                                                 CRUCIBLE_STOP_READER_ERROR);
 +        if (ret == 0) {
 +            error_report("Crucible plugin wake fd %d reached EOF", fd);
 +        } else {
@@ -116453,6 +116570,110 @@ index 0000000000000000000000000000000000000000..e8d98a0beb68a58aed72e673fb28070c
 +    *witness = state->witness;
 +    return 0;
 +}
+diff --git a/plugins/crucible-stop-context.h b/plugins/crucible-stop-context.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..a6505f56ae310e902e678903407476bad61bbc23
+--- /dev/null
++++ b/plugins/crucible-stop-context.h
+@@ -0,0 +1,98 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++/* Bounded advisory stop diagnostics; no field grants native ownership. */
++#ifndef CRUCIBLE_STOP_CONTEXT_H
++#define CRUCIBLE_STOP_CONTEXT_H
++
++typedef enum CrucibleStopContextPhase {
++    CRUCIBLE_STOP_ASYNC_ADMITTED,
++    CRUCIBLE_STOP_CONTROL_ADMITTED,
++    CRUCIBLE_STOP_PUBLISHED,
++    CRUCIBLE_STOP_REARM_NO_CPU,
++    CRUCIBLE_STOP_REARM_SHUTDOWN,
++    CRUCIBLE_STOP_REARM_ADVANCE,
++    CRUCIBLE_STOP_REARM_NO_OWNER,
++    CRUCIBLE_STOP_READER_DRAINED,
++    CRUCIBLE_STOP_READER_EOF,
++    CRUCIBLE_STOP_READER_ERROR,
++    CRUCIBLE_STOP_CONTEXT_PHASE_COUNT,
++} CrucibleStopContextPhase;
++
++typedef struct CrucibleStopContext {
++    uint64_t generation, request, ack, complete;
++    unsigned int state;
++    char runstate[12];
++    int flush, fd;
++    char shutdown[12];
++    bool advance;
++    /* PC and instruction-budget fields are absent without original ownership. */
++    char cpu[192];
++} CrucibleStopContext;
++
++static const char *const crucible_stop_context_phases[] = {
++    "async-admitted", "control-admitted", "stopped", "rearm-no-cpu",
++    "rearm-shutdown", "rearm-advance", "rearm-no-owner", "reader-drained",
++    "reader-eof", "reader-error",
++};
++
++static struct {
++    uint64_t generation, request;
++    bool emitted;
++} crucible_stop_context_seen[CRUCIBLE_STOP_CONTEXT_PHASE_COUNT];
++static pid_t crucible_stop_context_pid;
++
++/* Fixed phase caches retain late generations without an exhausted global cap.
++ * One phase emits at most once per advancing stop/request epoch under BQL;
++ * concurrent advisory claims can emit bounded duplicates. Fork resets only
++ * this diagnostic cache. The original retained stream has its own byte cap.
++ */
++static void crucible_stop_context_emit(CrucibleStopContextPhase phase,
++                                       const CrucibleStopContext *context)
++{
++    uint64_t previous;
++    pid_t pid = getpid();
++    bool emit;
++    char row[512];
++    int length, saved_errno = errno;
++
++    if (qatomic_read(&crucible_stop_context_pid) != pid) {
++        for (unsigned int index = 0;
++             index < CRUCIBLE_STOP_CONTEXT_PHASE_COUNT; index++) {
++            qatomic_set(&crucible_stop_context_seen[index].generation, 0);
++            qatomic_set(&crucible_stop_context_seen[index].request, 0);
++            qatomic_set(&crucible_stop_context_seen[index].emitted, false);
++        }
++        qatomic_set(&crucible_stop_context_pid, pid);
++    }
++    emit = !qatomic_xchg(&crucible_stop_context_seen[phase].emitted, true);
++    previous = qatomic_read(&crucible_stop_context_seen[phase].generation);
++    if (context->generation > previous &&
++        qatomic_cmpxchg(&crucible_stop_context_seen[phase].generation,
++                       previous, context->generation) == previous) {
++        emit = true;
++    }
++    previous = qatomic_read(&crucible_stop_context_seen[phase].request);
++    if (context->request > previous &&
++        qatomic_cmpxchg(&crucible_stop_context_seen[phase].request,
++                       previous, context->request) == previous) {
++        emit = true;
++    }
++    if (!emit) {
++        return;
++    }
++
++    length = g_snprintf(row, sizeof(row),
++        "CRUCIBLE-NATIVE-STOP-CONTEXT-V1 phase=%s pid=%" PRId64
++        " gen=%" PRIu64 " request=%" PRIu64 " ack=%" PRIu64
++        " complete=%" PRIu64 " state=%u runstate=%s flush=%d"
++        " shutdown=%s advance=%d fd=%d %s coord=unavailable\n",
++        crucible_stop_context_phases[phase], (int64_t)pid,
++        context->generation, context->request, context->ack, context->complete,
++        context->state, context->runstate, context->flush, context->shutdown,
++        context->advance, context->fd, context->cpu);
++    if (length > 0 && length < (int)sizeof(row)) {
++        (void)fwrite(row, length, 1, stderr);
++    }
++    errno = saved_errno;
++}
++
++#endif
 diff --git a/plugins/loader.c b/plugins/loader.c
 index b10ebe8cc050e5dc436aaf62f04adc5f9eae5fd1..269bbde2f8324b8fa39facba65dc12456ef50103 100644
 --- a/plugins/loader.c
@@ -123544,10 +123765,10 @@ index 0000000000000000000000000000000000000000..4e8139a03068c787129ac83196cd0cd8
 +}
 diff --git a/system/crucible-hot-fork-plugin-child.c b/system/crucible-hot-fork-plugin-child.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..ca14cb74dec55ff9bef5d7360cdec1540ae50723
+index 0000000000000000000000000000000000000000..ee238ae13c65df24dceeac9a6c6fff8ccbcb5944
 --- /dev/null
 +++ b/system/crucible-hot-fork-plugin-child.c
-@@ -0,0 +1,2278 @@
+@@ -0,0 +1,2282 @@
 +/*
 + * Crucible registered plugin fork-child reinitializer
 + *
@@ -125436,6 +125657,7 @@ index 0000000000000000000000000000000000000000..ca14cb74dec55ff9bef5d7360cdec154
 +typedef struct QemuCrucibleHotForkChildSubsystemReinitializers {
 +    QemuCrucibleHotForkRuntimeTransaction *runtime;
 +    QemuCrucibleHotForkDescriptorTableTransaction *descriptors;
++    QemuCrucibleHotForkChildResourcePlan *resources;
 +    QemuCrucibleHotForkPluginChildReinitializer *plugin;
 +    QemuCrucibleHotForkQmpChildReinitializer *qmp;
 +    QemuCrucibleHotForkConsoleChildReinitializer *console;
@@ -125449,7 +125671,9 @@ index 0000000000000000000000000000000000000000..ca14cb74dec55ff9bef5d7360cdec154
 +    qemu_crucible_hot_fork_note_child_detail(3);
 +    if (reinitializers->runtime) {
 +        result = qemu_crucible_hot_fork_start_child_runtime(
-+            reinitializers->runtime, reinitializers->descriptors);
++            reinitializers->runtime, reinitializers->descriptors,
++            reinitializers->resources->retained_fds,
++            reinitializers->resources->retained_fd_count);
 +        if (result != 0) {
 +            return result;
 +        }
@@ -125492,6 +125716,7 @@ index 0000000000000000000000000000000000000000..ca14cb74dec55ff9bef5d7360cdec154
 +    QemuCrucibleHotForkChildSubsystemReinitializers reinitializers = {
 +        .runtime = runtime,
 +        .descriptors = transaction,
++        .resources = resources,
 +        .plugin = plugin_reinitializer,
 +        .qmp = qmp_reinitializer,
 +        .console = console_reinitializer,
@@ -152731,6 +152956,681 @@ index 0000000000000000000000000000000000000000..b0522d7ecc1acfddf400f671a89967e5
 +                    test_ahci_rejects_ide_and_invalid_ncq);
 +    return g_test_run();
 +}
+diff --git a/tests/unit/test-crucible-aio-fork-custody.py b/tests/unit/test-crucible-aio-fork-custody.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..72fc11653613c99eabce0c7de40f446f36f7b90a
+--- /dev/null
++++ b/tests/unit/test-crucible-aio-fork-custody.py
+@@ -0,0 +1,669 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise selected FD-monitor bodies with real forked endpoint replacement.
++
++The kernel descriptors, fork, dup3, epoll and GLib source are real. AIO handler
++storage, its single-thread list lock and the registered reader are explicit
++providers; this is not a linked QEMU or guest execution test.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import shlex
++import subprocess
++
++
++ROOT = Path(__file__).resolve().parents[2]
++
++
++def without_includes(path):
++    return "\n".join(line for line in path.read_text().splitlines()
++                     if not line.startswith("#include"))
++
++
++def definition(source, signature):
++    start = source.index(signature)
++    brace = source.index("{", start)
++    depth = 1
++    end = brace + 1
++    while depth:
++        depth += (source[end] == "{") - (source[end] == "}")
++        end += 1
++    return source[start:end]
++
++
++PRELUDE = r"""
++#include <assert.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <limits.h>
++#include <poll.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/epoll.h>
++#include <sys/eventfd.h>
++#include <sys/wait.h>
++#include <unistd.h>
++#include <glib.h>
++#include "qemu/queue.h"
++#include "qemu/crucible-hot-fork-async.h"
++
++#define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
++#define QLIST_FOREACH_RCU QLIST_FOREACH
++typedef struct AioHandler AioHandler;
++typedef struct AioContext AioContext;
++typedef struct QemuCrucibleHotForkRuntimeTransaction
++    QemuCrucibleHotForkRuntimeTransaction;
++typedef struct QemuCrucibleHotForkDescriptorTableTransaction
++    QemuCrucibleHotForkDescriptorTableTransaction;
++typedef void IOHandler(void *);
++typedef QLIST_HEAD(, AioHandler) AioHandlerList;
++typedef struct Notifier { void (*notify)(struct Notifier *, void *); } Notifier;
++typedef struct FDMonOps {
++    void (*update)(AioContext *, AioHandler *, AioHandler *);
++    int (*wait)(AioContext *, AioHandlerList *, int64_t);
++    bool (*need_wait)(AioContext *);
++    void (*gsource_prepare)(AioContext *);
++    bool (*gsource_check)(AioContext *);
++    void (*gsource_dispatch)(AioContext *, AioHandlerList *);
++} FDMonOps;
++
++/* Keep the original public declarations for the configured warning set. */
++int aio_context_reconstruct_child_epoll(
++    AioContext *ctx, const int *retained_fds, size_t retained_count);
++int qemu_aio_hot_fork_reconstruct_child_epoll(
++    const QemuAsyncWorkerHotForkRetainedTransaction *transaction,
++    const int *retained_fds, size_t retained_count);
++int qemu_crucible_hot_fork_start_child_runtime(
++    QemuCrucibleHotForkRuntimeTransaction *transaction,
++    const QemuCrucibleHotForkDescriptorTableTransaction *descriptors,
++    const int *retained_fds, size_t retained_fd_count);
++int qemu_plugin_register_wake_fd(int fd);
++
++struct AioHandler {
++    GPollFD pfd;
++    IOHandler *io_read, *io_write;
++    void *opaque;
++    QLIST_ENTRY(AioHandler) node, node_ready, node_deleted;
++};
++
++struct AioContext {
++    GSource source;
++    AioHandlerList aio_handlers;
++    const FDMonOps *fdmon_ops;
++    int epollfd;
++    void *epollfd_tag;
++    unsigned list_lock;
++    QTAILQ_ENTRY(AioContext) crucible_hot_fork_node;
++};
++
++/* This fixture has one execution thread per process and no list mutation
++ * during dispatch. These providers do not certify concurrent AIO locking. */
++static void qemu_lockcnt_inc(unsigned *count) { ++*count; }
++static void qemu_lockcnt_dec(unsigned *count) { assert(*count); --*count; }
++static bool qemu_lockcnt_dec_if_lock(unsigned *count)
++{
++    if (*count != 1) { return false; }
++    --*count;
++    return true;
++}
++static void qemu_lockcnt_inc_and_unlock(unsigned *count) { ++*count; }
++static unsigned context_lock_calls;
++static void qemu_lockcnt_lock(unsigned *count)
++{
++    assert(*count == 0);
++    *count = 1;
++    ++context_lock_calls;
++}
++static void qemu_lockcnt_unlock(unsigned *count)
++{
++    assert(*count == 1);
++    *count = 0;
++}
++static void qemu_thread_atexit_add(Notifier *notifier) { (void)notifier; }
++static bool aio_poll_disabled(AioContext *ctx) { (void)ctx; return true; }
++static int qemu_poll_ns(GPollFD *descriptors, unsigned count, int64_t timeout)
++{
++    assert(timeout == 0);
++    return g_poll(descriptors, count, 0);
++}
++static void aio_add_ready_handler(AioHandlerList *ready, AioHandler *node,
++                                  int revents)
++{
++    node->pfd.revents |= revents;
++    if (!QLIST_IS_INSERTED(node, node_ready)) {
++        QLIST_INSERT_HEAD(ready, node, node_ready);
++    }
++}
++extern const FDMonOps fdmon_poll_ops;
++static void fdmon_poll_downgrade(AioContext *ctx);
++static bool fdmon_epoll_try_upgrade(AioContext *ctx, unsigned count);
++"""
++
++# Public entry points become local only to compose both original C files in
++# one translation unit. Their parameter lists and function bodies stay exact.
++VISIBILITY = {
++    "void fdmon_poll_downgrade(": "static void fdmon_poll_downgrade(",
++    "void fdmon_epoll_disable(": "static void fdmon_epoll_disable(",
++    "bool fdmon_epoll_try_upgrade(": "static bool fdmon_epoll_try_upgrade(",
++    "void fdmon_epoll_setup(": "static void fdmon_epoll_setup(",
++    "int fdmon_epoll_reconstruct_child(": "static int fdmon_epoll_reconstruct_child(",
++}
++
++PROVIDERS = r"""
++static AioContext *main_context;
++static int qemu_plugin_wake_fd = -1;
++static unsigned reader_calls, invalidations;
++#define qatomic_read(pointer) (*(pointer))
++#define qatomic_set(pointer, value) (*(pointer) = (value))
++static AioContext *qemu_get_aio_context(void) { return main_context; }
++static void qemu_plugin_control_drain_invalidate(void) { ++invalidations; }
++
++/* Descriptor-read provider: it consumes the real registered eventfd but
++ * does not model a protocol acknowledgement, RR callback or guest. */
++static void qemu_plugin_wake_fd_read(void *opaque)
++{
++    uint64_t value;
++    int fd = (int)(intptr_t)opaque;
++
++    assert(read(fd, &value, sizeof(value)) == sizeof(value));
++    assert(value == 1);
++    ++reader_calls;
++}
++
++/* Handler-storage provider uses the selected backend's real update operation.
++ * Replacement reproduces the old/new numeric-FD inputs of aio_set_fd_handler. */
++static void aio_set_fd_handler(AioContext *ctx, int fd, IOHandler *io_read,
++                               IOHandler *io_write, void *io_poll,
++                               void *io_poll_ready, void *opaque)
++{
++    AioHandler *old = NULL, *node;
++
++    assert(io_poll == NULL && io_poll_ready == NULL);
++    QLIST_FOREACH(node, &ctx->aio_handlers, node) {
++        if (node->pfd.fd == fd) { old = node; break; }
++    }
++    node = g_new0(AioHandler, 1);
++    node->pfd.fd = fd;
++    node->pfd.events = G_IO_IN | G_IO_HUP | G_IO_ERR;
++    node->io_read = io_read;
++    node->io_write = io_write;
++    node->opaque = opaque;
++    QLIST_INSERT_HEAD(&ctx->aio_handlers, node, node);
++    ctx->fdmon_ops->update(ctx, old, node);
++    if (old) { QLIST_REMOVE(old, node); g_free(old); }
++}
++
++static gboolean source_prepare(GSource *source, gint *timeout)
++{
++    AioContext *ctx = (AioContext *)source;
++
++    *timeout = -1;
++    ctx->fdmon_ops->gsource_prepare(ctx);
++    return false;
++}
++static gboolean source_check(GSource *source)
++{
++    AioContext *ctx = (AioContext *)source;
++    return ctx->fdmon_ops->gsource_check(ctx);
++}
++static gboolean source_dispatch(GSource *source, GSourceFunc callback,
++                                gpointer opaque)
++{
++    AioContext *ctx = (AioContext *)source;
++    AioHandlerList ready = QLIST_HEAD_INITIALIZER(ready);
++    AioHandler *node;
++
++    assert(callback == NULL && opaque == NULL);
++    ctx->fdmon_ops->gsource_dispatch(ctx, &ready);
++    while ((node = QLIST_FIRST(&ready))) {
++        QLIST_REMOVE(node, node_ready);
++        node->pfd.revents = 0;
++        node->io_read(node->opaque);
++    }
++    return true;
++}
++static GSourceFuncs source_functions = {
++    .prepare = source_prepare, .check = source_check,
++    .dispatch = source_dispatch,
++};
++"""
++
++AUTHORITIES = r"""
++static QTAILQ_HEAD(, AioContext) crucible_hot_fork_aio_contexts =
++    QTAILQ_HEAD_INITIALIZER(crucible_hot_fork_aio_contexts);
++static bool crucible_hot_fork_aio_lock;
++static int crucible_hot_fork_async_worker_transaction_active = 1;
++static QemuAsyncWorkerHotForkBarrierInventory fixture_barrier;
++
++/* Admission/barrier inventory providers are controlled negative inputs. The
++ * actual registry and per-context wrapper bodies enforce their real checks. */
++static int64_t qemu_get_thread_id(void) { return getpid(); }
++void qemu_async_worker_hot_fork_barrier(
++    QemuAsyncWorkerHotForkBarrierOperation operation,
++    QemuAsyncWorkerHotForkBarrierInventory *inventory)
++{
++    assert(operation == QEMU_ASYNC_WORKER_HOT_FORK_BARRIER_QUERY);
++    *inventory = fixture_barrier;
++}
++static void fixture_registry_lock(bool *lock)
++{
++    assert(!*lock);
++    *lock = true;
++}
++static void fixture_registry_unlock(bool **lock)
++{
++    assert(**lock);
++    **lock = false;
++}
++#define QEMU_LOCK_GUARD(lock) \
++    bool *fixture_guard __attribute__((cleanup(fixture_registry_unlock))) = \
++        (fixture_registry_lock(lock), (lock))
++"""
++
++MAIN = r"""
++typedef enum Refusal {
++    REFUSAL_NONE,
++    REFUSAL_CLOSED_BACKEND,
++    REFUSAL_RETAINED_BAD_HANDLER,
++    REFUSAL_UNRETAINED_HANDLER,
++    REFUSAL_STALE_BARRIER,
++    REFUSAL_PARENT_TRANSACTION,
++    REFUSAL_BAD_LIST,
++    REFUSAL_ACTIVE_ABSENT,
++    REFUSAL_STANDBY_ABSENT,
++    REFUSAL_BARRIER_OWNER,
++    REFUSAL_BARRIER_OPEN,
++    REFUSAL_BARRIER_BUSY,
++    REFUSAL_RELEASED_TRANSACTION,
++    REFUSAL_CHILD_PHASE,
++    REFUSAL_WORKER_START,
++    REFUSAL_UNPOLLABLE_HANDLER,
++} Refusal;
++
++static int compare_fd(const void *left, const void *right)
++{
++    int a = *(const int *)left;
++    int b = *(const int *)right;
++    return (a > b) - (a < b);
++}
++
++static void run_case(const char *name, bool upgrade, bool reconstruct,
++                     bool future_upgrade, Refusal refusal)
++{
++    int endpoints[64], retained[65], replacement;
++    size_t retained_count = ARRAY_SIZE(retained);
++    AioHandlerList ready = QLIST_HEAD_INITIALIZER(ready);
++    GMainContext *loop = g_main_context_new();
++    AioContext *ctx = (AioContext *)g_source_new(&source_functions, sizeof(*ctx));
++    QemuAsyncWorkerHotForkRetainedTransaction transaction = {
++        .barrier_generation = 7,
++        .barrier_owner_thread_id = getpid(),
++        .parent_process_id = getpid(),
++        .parent_thread_id = getpid(),
++        .active = true,
++    };
++    QemuCrucibleHotForkRuntimeTransaction runtime = {
++        .rcu.parent_process_id = getpid(),
++        .active = true, .async_retained = true, .child_prepared = true,
++    };
++    GPollFD inherited_poll[128];
++    int priority, timeout, poll_count;
++    pid_t child;
++    int status;
++
++    QLIST_INIT(&ctx->aio_handlers);
++    QTAILQ_INIT(&crucible_hot_fork_aio_contexts);
++    QTAILQ_INSERT_TAIL(&crucible_hot_fork_aio_contexts, ctx,
++                       crucible_hot_fork_node);
++    fixture_barrier = (QemuAsyncWorkerHotForkBarrierInventory) {
++        .held = true, .quiescent = true, .generation = 7,
++        .owner_thread_id = getpid(),
++    };
++    ctx->fdmon_ops = &fdmon_poll_ops;
++    ctx->epollfd = -1;
++    main_context = ctx;
++    qemu_plugin_wake_fd = -1;
++    reader_calls = 0;
++    invalidations = 0;
++    context_lock_calls = 0;
++    fdmon_epoll_setup(ctx);
++    assert(ctx->epollfd >= 0);
++    retained[0] = ctx->epollfd;
++
++    for (unsigned index = 0; index < ARRAY_SIZE(endpoints); ++index) {
++        endpoints[index] = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
++        assert(endpoints[index] >= 0);
++        retained[index + 1] = endpoints[index];
++        if (index == 0) {
++            assert(qemu_plugin_register_wake_fd(endpoints[index]) == 0);
++        } else {
++            aio_set_fd_handler(ctx, endpoints[index], qemu_plugin_wake_fd_read,
++                               NULL, NULL, NULL,
++                               (void *)(intptr_t)endpoints[index]);
++        }
++    }
++    qsort(retained, retained_count, sizeof(retained[0]), compare_fd);
++    g_source_attach(&ctx->source, loop);
++    if (upgrade) {
++        ctx->list_lock = 1;
++        assert(fdmon_poll_wait(ctx, &ready, 0) == 0);
++        assert(QLIST_EMPTY(&ready));
++        assert(ctx->fdmon_ops == &fdmon_epoll_ops);
++        ctx->list_lock = 0;
++    }
++
++    replacement = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
++    assert(replacement >= 0 && replacement != endpoints[0]);
++    /* Match the carrier's POLL_OK fork point: the GLib query predates the
++     * fork and reconstruction, while check/dispatch consumes its old array. */
++    assert(g_main_context_acquire(loop));
++    g_main_context_prepare(loop, &priority);
++    poll_count = g_main_context_query(loop, priority, &timeout, inherited_poll,
++                                      ARRAY_SIZE(inherited_poll));
++    assert(poll_count >= 0 && poll_count <= ARRAY_SIZE(inherited_poll));
++    assert(g_poll(inherited_poll, poll_count, 0) >= 0);
++    fflush(NULL);
++    child = fork();
++    assert(child >= 0);
++    if (child == 0) {
++        QemuCrucibleHotForkDescriptorTableTransaction descriptors = {
++            .parent_pid = getppid(), .child_pid = getpid(),
++            .descriptors_applied = true,
++        };
++        uint64_t value = 1;
++        int original_backend = ctx->epollfd;
++        void *original_tag = ctx->epollfd_tag;
++        const FDMonOps *original_ops = ctx->fdmon_ops;
++        int expected_error = 0;
++
++        assert(dup3(replacement, endpoints[0], O_CLOEXEC) == endpoints[0]);
++        assert(close(replacement) == 0);
++        assert(qemu_plugin_register_wake_fd(endpoints[0]) == 0);
++        assert(invalidations == 1);
++        if (refusal == REFUSAL_CLOSED_BACKEND) {
++            assert(close(original_backend) == 0);
++            expected_error = -EBADF;
++        } else if (refusal == REFUSAL_RETAINED_BAD_HANDLER) {
++            assert(close(endpoints[1]) == 0);
++            expected_error = -EBADF;
++        } else if (refusal == REFUSAL_UNRETAINED_HANDLER) {
++            for (size_t index = 0; index < retained_count; ++index) {
++                if (retained[index] == endpoints[1]) {
++                    memmove(&retained[index], &retained[index + 1],
++                            (retained_count - index - 1) * sizeof(retained[0]));
++                    --retained_count;
++                    break;
++                }
++            }
++            expected_error = -EPERM;
++        } else if (refusal == REFUSAL_STALE_BARRIER) {
++            ++transaction.barrier_generation;
++            expected_error = -EPERM;
++        } else if (refusal == REFUSAL_PARENT_TRANSACTION) {
++            transaction.parent_process_id = getpid();
++            expected_error = -EPERM;
++        } else if (refusal == REFUSAL_BAD_LIST) {
++            retained[1] = retained[0];
++            expected_error = -EINVAL;
++        }
++
++        if (refusal == REFUSAL_ACTIVE_ABSENT ||
++            refusal == REFUSAL_STANDBY_ABSENT) {
++            assert(close(ctx->epollfd) == 0);
++            ctx->epollfd = -1;
++            original_backend = -1;
++            expected_error = upgrade ? -EPROTO : 0;
++        } else if (refusal == REFUSAL_BARRIER_OWNER) {
++            ++fixture_barrier.owner_thread_id;
++            expected_error = -EPERM;
++        } else if (refusal == REFUSAL_BARRIER_OPEN) {
++            fixture_barrier.held = false;
++            expected_error = -EPERM;
++        } else if (refusal == REFUSAL_BARRIER_BUSY) {
++            fixture_barrier.quiescent = false;
++            expected_error = -EPERM;
++        } else if (refusal == REFUSAL_RELEASED_TRANSACTION) {
++            transaction.child_released = true;
++            expected_error = -EPERM;
++        } else if (refusal == REFUSAL_CHILD_PHASE) {
++            runtime.child_prepared = false;
++            expected_error = -EINVAL;
++        } else if (refusal == REFUSAL_WORKER_START) {
++            fixture_worker_result = -EIO;
++            expected_error = -EIO;
++        }
++        if (refusal == REFUSAL_UNPOLLABLE_HANDLER) {
++            FILE *regular = tmpfile();
++            assert(regular);
++            assert(dup3(fileno(regular), endpoints[1], O_CLOEXEC) == endpoints[1]);
++            assert(fclose(regular) == 0);
++            expected_error = -EPERM;
++        }
++        runtime.async = transaction;
++        fixture_original_backend = original_backend;
++        fixture_standby_absent = refusal == REFUSAL_STANDBY_ABSENT;
++        if (reconstruct) {
++            int result = qemu_crucible_hot_fork_start_child_runtime(
++                &runtime, &descriptors, retained, retained_count);
++
++            assert(result == expected_error);
++            assert(!crucible_hot_fork_aio_lock && ctx->list_lock == 0);
++            if (expected_error) {
++                assert(!runtime.child_workers_started);
++                if (refusal == REFUSAL_WORKER_START) {
++                    assert(fixture_worker_calls == 1);
++                    assert(ctx->epollfd != original_backend);
++                    _exit(0);
++                }
++                assert(fixture_worker_calls == 0);
++                assert(ctx->epollfd == original_backend);
++                assert(ctx->epollfd_tag == original_tag);
++                assert(ctx->fdmon_ops == original_ops);
++                if (refusal == REFUSAL_CLOSED_BACKEND) {
++                    /* Allocation after refusal reuses the closed number.
++                     * A second call must reject its different kernel kind
++                     * without closing that unrelated live eventfd. */
++                    int reused = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
++                    assert(reused == original_backend);
++                    assert(qemu_aio_hot_fork_reconstruct_child_epoll(
++                        &transaction, retained, retained_count) == -ESTALE);
++                    assert(fcntl(reused, F_GETFD) >= 0);
++                }
++                _exit(0);
++            }
++            assert(context_lock_calls == 1);
++            assert(fixture_worker_calls == 1 && runtime.child_workers_started);
++            if (fixture_standby_absent) {
++                assert(ctx->epollfd == -1);
++            } else {
++                assert(ctx->epollfd != original_backend);
++            }
++            assert(ctx->fdmon_ops == original_ops);
++        }
++        if (future_upgrade) {
++            ctx->list_lock = 1;
++            assert(fdmon_poll_wait(ctx, &ready, 0) == 0);
++            assert(QLIST_EMPTY(&ready));
++            assert(ctx->fdmon_ops == &fdmon_epoll_ops);
++            ctx->list_lock = 0;
++        }
++        assert(write(endpoints[0], &value, sizeof(value)) == sizeof(value));
++        if (g_main_context_check(loop, priority, inherited_poll, poll_count)) {
++            g_main_context_dispatch(loop);
++        }
++        g_main_context_release(loop);
++        for (unsigned pass = 0; pass < 3; ++pass) {
++            g_main_context_iteration(loop, false);
++        }
++        bool expected = !upgrade || reconstruct;
++        assert(reader_calls == (expected ? 1 : 0));
++        if (!expected) {
++            struct pollfd direct = { .fd = endpoints[0], .events = POLLIN };
++            assert(poll(&direct, 1, 0) == 1 && (direct.revents & POLLIN));
++            assert(ctx->fdmon_ops == &fdmon_epoll_ops);
++        }
++        _exit(0);
++    }
++    assert(waitpid(child, &status, 0) == child);
++    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
++    assert(ctx->fdmon_ops == (upgrade ? &fdmon_epoll_ops : &fdmon_poll_ops));
++    if (future_upgrade) {
++        ctx->list_lock = 1;
++        assert(fdmon_poll_wait(ctx, &ready, 0) == 0);
++        assert(QLIST_EMPTY(&ready));
++        assert(ctx->fdmon_ops == &fdmon_epoll_ops);
++        ctx->list_lock = 0;
++    }
++    if (g_main_context_check(loop, priority, inherited_poll, poll_count)) {
++        g_main_context_dispatch(loop);
++    }
++    g_main_context_release(loop);
++    uint64_t parent_value = 1;
++    assert(write(endpoints[0], &parent_value, sizeof(parent_value)) ==
++           sizeof(parent_value));
++    for (unsigned pass = 0; pass < 3; ++pass) {
++        g_main_context_iteration(loop, false);
++    }
++    assert(reader_calls == 1);
++    printf("PASS %s; parent endpoint/backend intact\n", name);
++    fflush(stdout);
++
++    g_source_destroy(&ctx->source);
++    if (ctx->epollfd >= 0) { close(ctx->epollfd); }
++    for (unsigned index = 0; index < ARRAY_SIZE(endpoints); ++index) {
++        close(endpoints[index]);
++    }
++    close(replacement);
++    AioHandler *node;
++    while ((node = QLIST_FIRST(&ctx->aio_handlers))) {
++        QLIST_REMOVE(node, node);
++        g_free(node);
++    }
++    QTAILQ_REMOVE(&crucible_hot_fork_aio_contexts, ctx, crucible_hot_fork_node);
++    g_source_unref(&ctx->source);
++    g_main_context_unref(loop);
++}
++
++int main(void)
++{
++    run_case("poll replacement", false, false, false, REFUSAL_NONE);
++    run_case("epoll baseline remains unread", true, false, false, REFUSAL_NONE);
++    run_case("private active epoll delivers", true, true, false, REFUSAL_NONE);
++    run_case("private standby/future upgrade delivers", false, true, true, REFUSAL_NONE);
++    run_case("closed backend / live wrong-kind reuse refuses", true, true, false,
++             REFUSAL_CLOSED_BACKEND);
++    run_case("retained invalid handler refuses", true, true, false,
++             REFUSAL_RETAINED_BAD_HANDLER);
++    run_case("unretained active handler refuses", true, true, false,
++             REFUSAL_UNRETAINED_HANDLER);
++    run_case("standby unretained handler refuses", false, true, false,
++             REFUSAL_UNRETAINED_HANDLER);
++    run_case("stale barrier refuses", true, true, false, REFUSAL_STALE_BARRIER);
++    run_case("parent transaction refuses", true, true, false,
++             REFUSAL_PARENT_TRANSACTION);
++    run_case("unsorted/duplicate retained list refuses", true, true, false,
++             REFUSAL_BAD_LIST);
++    run_case("active absent backend refuses", true, true, false,
++             REFUSAL_ACTIVE_ABSENT);
++    run_case("absent standby remains poll", false, true, false,
++             REFUSAL_STANDBY_ABSENT);
++    run_case("foreign barrier owner refuses", true, true, false,
++             REFUSAL_BARRIER_OWNER);
++    run_case("open barrier refuses", true, true, false, REFUSAL_BARRIER_OPEN);
++    run_case("busy barrier refuses", true, true, false, REFUSAL_BARRIER_BUSY);
++    run_case("released transaction refuses", true, true, false,
++             REFUSAL_RELEASED_TRANSACTION);
++    run_case("unprepared child refuses", true, true, false, REFUSAL_CHILD_PHASE);
++    run_case("worker refusal propagates after backend reconstruction", true,
++             true, false, REFUSAL_WORKER_START);
++    run_case("kernel registration refusal preserves original backend", true,
++             true, false, REFUSAL_UNPOLLABLE_HANDLER);
++    return 0;
++}
++"""
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--omit-refresh", action="store_true",
++                        help="Remove the actual child backend reconstruction call")
++    args = parser.parse_args()
++    args.output_dir.mkdir(parents=True, exist_ok=True)
++
++    poll_body = without_includes(ROOT / "util/fdmon-poll.c")
++    epoll_body = without_includes(ROOT / "util/fdmon-epoll.c")
++    for before, after in VISIBILITY.items():
++        poll_body = poll_body.replace(before, after)
++        epoll_body = epoll_body.replace(before, after)
++    registration = definition((ROOT / "plugins/api-system.c").read_text(),
++                              "int qemu_plugin_register_wake_fd(int fd)")
++    source = args.output_dir / "aio-fork-custody.c"
++    executable = args.output_dir / "aio-fork-custody"
++    exercise = MAIN
++    wrapper = definition((ROOT / "util/aio-posix.c").read_text(),
++                         "int aio_context_reconstruct_child_epoll(")
++    if args.omit_refresh:
++        wrapper = wrapper.replace(
++            "result = fdmon_epoll_reconstruct_child(ctx, retained_fds, retained_count);",
++            "result = 0;")
++    registry = definition((ROOT / "util/async.c").read_text(),
++                          "int qemu_aio_hot_fork_reconstruct_child_epoll(")
++    bounds = "\n".join(line for path in ["include/qemu/aio.h", "include/qemu/crucible-hot-fork-child.h"]
++                       for line in (ROOT / path).read_text().splitlines()
++                       if line.startswith("#define QEMU_AIO_HOT_FORK_INVENTORY_MAX ")
++                       or line.startswith("#define QEMU_CRUCIBLE_HOT_FORK_MAX_RETAINED_DESCRIPTORS "))
++    child_header = (ROOT / "include/qemu/crucible-hot-fork-child.h").read_text()
++    types = ""
++    for name in ["QemuCrucibleHotForkRuntimeTransaction",
++                 "QemuCrucibleHotForkDescriptorTableTransaction"]:
++        body = definition(child_header, "typedef struct " + name + " {")
++        types += body + " " + name + ";\n"
++    worker_provider = r"""
++/* RCU/thread storage and start are explicit providers. The actual runtime
++ * entry body must rebuild backend custody before invoking this worker. */
++typedef struct QemuRcuHotForkTransaction { pid_t parent_process_id; }
++    QemuRcuHotForkTransaction;
++typedef struct QemuThreadHotForkRegistryTransaction { int unused; }
++    QemuThreadHotForkRegistryTransaction;
++""" + types + r"""
++static unsigned fixture_worker_calls;
++static int fixture_worker_result, fixture_original_backend;
++static bool fixture_standby_absent;
++static int qemu_rcu_hot_fork_start_child_worker(QemuRcuHotForkTransaction *rcu)
++{
++    assert(rcu->parent_process_id == getppid());
++    assert(fixture_barrier.held && fixture_barrier.quiescent);
++    assert(!crucible_hot_fork_aio_lock && main_context->list_lock == 0);
++    assert(fixture_standby_absent ? main_context->epollfd == -1 :
++           main_context->epollfd != fixture_original_backend);
++    ++fixture_worker_calls;
++    return fixture_worker_result;
++}
++"""
++    start_worker = definition((ROOT / "util/crucible-hot-fork-child.c").read_text(),
++                              "int qemu_crucible_hot_fork_start_child_runtime(")
++    source.write_text(PRELUDE + "\n" + bounds + "\n#define CONFIG_POSIX 1\n"
++                      + epoll_body + poll_body + PROVIDERS + AUTHORITIES
++                      + wrapper + registry + worker_provider + start_worker + registration + exercise)
++    command = shlex.split(os.environ.get("CC", "cc"))
++    command += shlex.split(os.environ.get("CFLAGS", ""))
++    # Keep the configured QEMU warning set: adding -Wextra diagnoses unused
++    # parameters and signed loops in these unchanged production bodies.
++    command += ["-std=gnu11", "-Wall", "-Werror",
++                "-Wno-unused-function", "-I" + str(ROOT / "include"),
++                str(source), "-o", str(executable)]
++    command += shlex.split(os.environ.get("LDFLAGS", ""))
++    (args.output_dir / "compile-command.json").write_text(
++        json.dumps(command, indent=2) + "\n")
++    subprocess.run(command, check=True)
++    subprocess.run([str(executable)], check=True, timeout=15)
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-apic-timer-wide-clock.c b/tests/unit/test-crucible-apic-timer-wide-clock.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..387a4be7096bbc4208a63d0a84db7473b302dbc9
@@ -166843,10 +167743,10 @@ index 0000000000000000000000000000000000000000..826f34e7c26bdac48f2dab1190635991
 +}
 diff --git a/tests/unit/test-crucible-net-output-stop.py b/tests/unit/test-crucible-net-output-stop.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..1181665cdeb21727e1d01024f3a523efdd4ccaee
+index 0000000000000000000000000000000000000000..bddd4d55d60bed1dca29cdd58c4ebebf6f82a2bb
 --- /dev/null
 +++ b/tests/unit/test-crucible-net-output-stop.py
-@@ -0,0 +1,665 @@
+@@ -0,0 +1,675 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise production TX, VM-stop, clock completion, and RR parking bodies.
 +
@@ -167030,6 +167930,16 @@ index 0000000000000000000000000000000000000000..1181665cdeb21727e1d01024f3a523ef
 +{
 +    device_effects++;
 +}
++
++/* This fixture has no enabled diagnostic backend; admission remains real. */
++enum {
++    CRUCIBLE_STOP_ASYNC_ADMITTED, CRUCIBLE_STOP_CONTROL_ADMITTED,
++    CRUCIBLE_STOP_PUBLISHED, CRUCIBLE_STOP_REARM_NO_CPU,
++    CRUCIBLE_STOP_REARM_SHUTDOWN, CRUCIBLE_STOP_REARM_ADVANCE,
++    CRUCIBLE_STOP_REARM_NO_OWNER, CRUCIBLE_STOP_READER_DRAINED,
++    CRUCIBLE_STOP_READER_EOF, CRUCIBLE_STOP_READER_ERROR,
++};
++static void qemu_plugin_trace_stop_context(int phase) { }
 +
 +static bool bql_locked(void) { return locked; }
 +static int icount_enabled(void) { return count_mode; }
@@ -167514,10 +168424,10 @@ index 0000000000000000000000000000000000000000..1181665cdeb21727e1d01024f3a523ef
 +    main()
 diff --git a/tests/unit/test-crucible-net-stop-chain.py b/tests/unit/test-crucible-net-stop-chain.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..1c47524b7ea7fb9b24f1a6d4191102457cbeb7a6
+index 0000000000000000000000000000000000000000..82814bc08fb1dee688a8350fcfdc220f019318ca
 --- /dev/null
 +++ b/tests/unit/test-crucible-net-stop-chain.py
-@@ -0,0 +1,466 @@
+@@ -0,0 +1,476 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise native stop admission through the actual next-TB decrementer gate.
 +
@@ -167610,6 +168520,16 @@ index 0000000000000000000000000000000000000000..1c47524b7ea7fb9b24f1a6d419110245
 +typedef int (*qemu_plugin_net_tx_cb_t)(const uint8_t *, size_t, uint64_t, void *);
 +static qemu_plugin_net_tx_cb_t crucible_net_tx_cb;
 +static void *crucible_net_tx_userdata;
++
++/* This fixture has no enabled diagnostic backend; admission remains real. */
++enum {
++    CRUCIBLE_STOP_ASYNC_ADMITTED, CRUCIBLE_STOP_CONTROL_ADMITTED,
++    CRUCIBLE_STOP_PUBLISHED, CRUCIBLE_STOP_REARM_NO_CPU,
++    CRUCIBLE_STOP_REARM_SHUTDOWN, CRUCIBLE_STOP_REARM_ADVANCE,
++    CRUCIBLE_STOP_REARM_NO_OWNER, CRUCIBLE_STOP_READER_DRAINED,
++    CRUCIBLE_STOP_READER_EOF, CRUCIBLE_STOP_READER_ERROR,
++};
++static void qemu_plugin_trace_stop_context(int phase) { }
 +
 +static bool bql_locked(void) { return locked; }
 +static int icount_enabled(void) { return count_mode; }
@@ -175076,6 +175996,413 @@ index 0000000000000000000000000000000000000000..99c5e4e0e5e6c2b1687a34c93c5d3c2d
 +    g_test_add_func("/sparc/ordinary", test_ordinary);
 +    return g_test_run();
 +}
+diff --git a/tests/unit/test-crucible-stop-context.py b/tests/unit/test-crucible-stop-context.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..a7546c1a4f519aa6ec667fa017a33a699037ba2e
+--- /dev/null
++++ b/tests/unit/test-crucible-stop-context.py
+@@ -0,0 +1,401 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise original stop, rearm and registered reader diagnostic call sites.
++
++Native function bodies and the formatter execute with real nonblocking pipe
++reads and stdio errors. CPU architecture, BQL ownership and scheduling are
++explicit providers; this fixture does not execute a guest or translated TB.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import runpy
++import shlex
++import subprocess
++
++ROOT = Path(__file__).resolve().parents[2]
++definition = runpy.run_path(str(Path(__file__).with_name(
++    "test-crucible-net-output-stop.py")))["definition"]
++
++PRELUDE = r"""
++#include <errno.h>
++#include <fcntl.h>
++#include <inttypes.h>
++#include <limits.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++#include <unistd.h>
++#include <glib.h>
++#include "qemu/typedefs.h"
++#define qemu_build_assert(condition) _Static_assert(condition, #condition)
++#include "qemu/atomic.h"
++#define TRACE_CRUCIBLE_SIM_RR_CONTROL_DELIVERY 1
++#define ICOUNT_PRECISE 1
++#define QEMU_PLUGIN_WAKE_EVENT_DRAINED 1
++#define QEMU_PLUGIN_WAKE_EVENT_FAILED 2
++#define SHUTDOWN_CAUSE_HOST_ERROR 1
++#define CPU_FOREACH(value) for ((value) = first_cpu; (value); (value) = NULL)
++
++static bool enabled, sim = true, locked = true, shutdown_requested;
++static pid_t fixture_pid = 100;
++#define getpid() fixture_pid
++static bool rr_crucible_sim_mode(void) { return sim; }
++static bool trace_event_get_state_backends(int event) { return enabled; }
++static bool bql_locked(void) { return locked; }
++static bool qemu_force_shutdown_requested(void)
++{
++    g_assert_true(locked);
++    return shutdown_requested;
++}
++static int icount_enabled(void) { return ICOUNT_PRECISE; }
++static bool qemu_plugin_crucible_single_threaded_rr(void) { return true; }
++enum { RUN_STATE_PAUSED = 4, RUN_STATE_RUNNING = 9 };
++static unsigned int runstate = RUN_STATE_RUNNING;
++static unsigned int runstate_get(void)
++{
++    g_assert_true(locked);
++    return runstate;
++}
++static bool runstate_check(int state) { return runstate == state; }
++static bool runstate_is_running(void) { return runstate == RUN_STATE_RUNNING; }
++enum {
++    QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE,
++    QEMU_PLUGIN_CRUCIBLE_VMSTOP_ADMITTED,
++    QEMU_PLUGIN_CRUCIBLE_VMSTOP_STOPPED,
++    QEMU_PLUGIN_CRUCIBLE_VMSTOP_RESUME_PENDING,
++};
++typedef struct CPUClass {
++    uint64_t (*get_pc)(CPUState *cpu);
++} CPUClass;
++struct CPUState {
++    CPUClass *cc;
++    int cpu_index;
++    bool running, stop, stopped, unplug;
++    uint32_t halted, cflags_next_tb;
++    int64_t icount_budget;
++    struct { union {
++        uint32_t u32;
++        struct { uint16_t low, high; } u16;
++    } icount_decr; } neg;
++};
++static CPUState cpu, *first_cpu = &cpu, *current_cpu;
++static unsigned int pc_reads, native_requests, native_kicks;
++static unsigned int schedules, request_calls, notifications, errors, unregisters;
++static uint64_t pc_value = 0x1234;
++static uint64_t get_pc(CPUState *target)
++{
++    g_assert_true(target == current_cpu || (!target->running && target->stopped));
++    pc_reads++;
++    return pc_value;
++}
++static CPUClass cpu_class = { get_pc };
++static int qemu_plugin_crucible_vmstop_state;
++static int qemu_plugin_crucible_vmstop_flush_result;
++static uint64_t qemu_plugin_crucible_vmstop_generation_value;
++static bool qemu_plugin_crucible_vmstop_cold_admitted;
++static unsigned int qemu_plugin_crucible_exact_boundary_depth;
++static int qemu_plugin_time_advance_pending;
++static uint64_t qemu_plugin_rr_control_request_generation;
++static uint64_t qemu_plugin_rr_control_ack_generation;
++static uint64_t qemu_plugin_rr_control_complete_generation;
++static uintptr_t qemu_plugin_control_boundary_scheduled;
++static bool qemu_plugin_control_boundary_deferred;
++static int qemu_plugin_wake_fd = -1;
++static int qemu_plugin_wake_notifiers;
++static void qemu_system_vmstop_request_prepare(void) { }
++static void qemu_system_vmstop_request(int state) { native_requests++; }
++static void cpu_stop_current(void) { if (current_cpu) { current_cpu->stop = true; } }
++static void tcg_kick_vcpu_thread(CPUState *target)
++{
++    native_kicks++;
++    target->neg.icount_decr.u16.high = UINT16_MAX;
++}
++static void qemu_plugin_schedule_control_boundary(void) { schedules++; }
++static bool qemu_plugin_crucible_rr_control_boundary_pending(void) { return false; }
++static void qemu_plugin_request_rr_control_boundary(void) { request_calls++; }
++static void qemu_plugin_trace_control_delivery(const char *phase) { }
++static void qemu_plugin_trace_rr_control_boundary_state(const char *phase) { }
++static void qemu_plugin_control_drain_notify(void) { notifications++; }
++static bool qemu_plugin_release_control_boundary_schedule(uintptr_t token)
++{
++    qemu_plugin_control_boundary_scheduled = 0;
++    return true;
++}
++static void notifier_list_notify(int *list, void *event) { notifications++; }
++static void qemu_plugin_unregister_wake_fd(int fd)
++{
++    unregisters++;
++    qemu_plugin_wake_fd = -1;
++}
++static void qemu_system_shutdown_request(int reason) { shutdown_requested = true; }
++static void qemu_cpu_kick(CPUState *target) { native_kicks++; }
++#define error_report(...) ((void)errors++)
++static bool qemu_plugin_crucible_vmstop_pending(void);
++static bool qemu_plugin_crucible_vmstop_quiesced(void);
++static bool qemu_plugin_quiesced_control_boundary_available(void);
++static void qemu_plugin_rearm_deferred_control_boundary(void);
++
++static char rows[1024][512];
++static unsigned int row_count, write_attempts;
++static bool closed_stderr;
++static int sink_errno;
++static size_t capture_write(const void *row, size_t size, size_t count, FILE *sink)
++{
++    g_assert_true(sink == stderr);
++    g_assert_cmpuint(size, <, 512);
++    write_attempts++;
++    if (closed_stderr) {
++        size_t result = fwrite(row, size, count, sink);
++        sink_errno = errno;
++        return result;
++    }
++    g_assert_cmpuint(row_count, <, G_N_ELEMENTS(rows));
++    memcpy(rows[row_count], row, size);
++    rows[row_count++][size] = 0;
++    return count;
++}
++#define fwrite capture_write
++"""
++
++CHECKS = r"""
++static const char *latest(void)
++{
++    g_assert_cmpuint(row_count, >, 0);
++    return rows[row_count - 1];
++}
++
++int main(void)
++{
++    unsigned int before, before_pc, before_kicks, before_requests;
++    int descriptors[2], saved_stderr, observed_errno;
++    uint64_t wake = 1;
++
++    cpu = (CPUState) { .cc = &cpu_class, .running = true, .cpu_index = 5,
++        .icount_budget = 91, .neg.icount_decr.u16.low = 74 };
++    current_cpu = &cpu;
++    qemu_plugin_crucible_exact_boundary_depth = 1;
++    g_assert_cmpint(qemu_plugin_crucible_vmstop_admit_internal(), ==, 0);
++    g_assert_cmpuint(native_requests, ==, 1);
++    g_assert_cmpuint(native_kicks, ==, 1);
++    g_assert_cmpuint(pc_reads, ==, 0);
++    g_assert_cmpuint(write_attempts, ==, 0);
++    g_assert_cmpint(crucible_stop_context_pid, ==, 0);
++    g_assert_cmpint(cpu.neg.icount_decr.u16.high, ==, UINT16_MAX);
++
++    enabled = true;
++    sim = false;
++    qemu_plugin_trace_stop_context(CRUCIBLE_STOP_PUBLISHED);
++    g_assert_cmpuint(write_attempts, ==, 0);
++    g_assert_cmpuint(pc_reads, ==, 0);
++    sim = true;
++    locked = false;
++    qemu_plugin_trace_stop_context(CRUCIBLE_STOP_PUBLISHED);
++    g_assert_nonnull(strstr(latest(), "runstate=unavailable"));
++    g_assert_nonnull(strstr(latest(), "shutdown=unavailable"));
++    g_assert_nonnull(strstr(latest(), "scope=unavailable pc=unavailable"));
++    g_assert_cmpuint(pc_reads, ==, 0);
++    locked = true;
++    qemu_plugin_crucible_vmstop_state = QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE;
++    g_assert_cmpint(qemu_plugin_crucible_vmstop_admit_internal(), ==, 0);
++    g_assert_nonnull(strstr(latest(), "phase=async-admitted pid=100 gen=2"));
++    g_assert_nonnull(strstr(latest(), "scope=callback cpu=5"));
++    g_assert_nonnull(strstr(latest(), "high=-1 low=74"));
++    g_assert_nonnull(strstr(latest(), "pc=0x1234 coord=unavailable"));
++    g_assert_cmpuint(pc_reads, ==, 1);
++    before = row_count;
++    before_kicks = native_kicks;
++    before_requests = native_requests;
++    g_assert_cmpint(qemu_plugin_crucible_vmstop_admit_internal(), ==, -EALREADY);
++    g_assert_cmpuint(row_count, ==, before);
++    g_assert_cmpuint(native_kicks, ==, before_kicks);
++    g_assert_cmpuint(native_requests, ==, before_requests);
++
++    /* A genuinely different thread's running CPU is never sampled. */
++    current_cpu = NULL;
++    runstate = RUN_STATE_PAUSED;
++    cpu.stopped = true;
++    before_pc = pc_reads;
++    qemu_plugin_crucible_vmstop_request_stopped(0);
++    g_assert_cmpuint(pc_reads, ==, before_pc);
++    g_assert_nonnull(strstr(latest(), "scope=unavailable pc=unavailable"));
++    g_assert_cmpint(qemu_plugin_crucible_vmstop_state, ==,
++                    QEMU_PLUGIN_CRUCIBLE_VMSTOP_STOPPED);
++    cpu.running = false;
++    qemu_plugin_rr_control_request_generation++;
++    qemu_plugin_trace_stop_context(CRUCIBLE_STOP_PUBLISHED);
++    g_assert_nonnull(strstr(latest(), "scope=stopped cpu=5"));
++    before = row_count;
++    for (unsigned int index = 0; index < 20; index++) {
++        qemu_plugin_trace_stop_context(CRUCIBLE_STOP_PUBLISHED);
++    }
++    g_assert_cmpuint(row_count, ==, before);
++
++    /* Original rearm reasons and scheduling results are retained exactly. */
++    qemu_plugin_control_boundary_deferred = true;
++    before = row_count;
++    qemu_plugin_crucible_vmstop_state = QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE;
++    qemu_plugin_time_advance_pending = 1;
++    qemu_plugin_rearm_deferred_control_boundary();
++    g_assert_cmpuint(row_count, ==, before);
++    qemu_plugin_time_advance_pending = 0;
++    qemu_plugin_crucible_vmstop_state = QEMU_PLUGIN_CRUCIBLE_VMSTOP_STOPPED;
++    first_cpu = NULL;
++    qemu_plugin_rearm_deferred_control_boundary();
++    g_assert_nonnull(strstr(latest(), "phase=rearm-no-cpu"));
++    first_cpu = &cpu;
++    shutdown_requested = true;
++    qemu_plugin_rearm_deferred_control_boundary();
++    g_assert_nonnull(strstr(latest(), "phase=rearm-shutdown"));
++    shutdown_requested = false;
++    qemu_plugin_time_advance_pending = 1;
++    qemu_plugin_rearm_deferred_control_boundary();
++    g_assert_nonnull(strstr(latest(), "phase=rearm-advance"));
++    qemu_plugin_time_advance_pending = 0;
++    runstate = RUN_STATE_RUNNING;
++    qemu_plugin_rearm_deferred_control_boundary();
++    g_assert_nonnull(strstr(latest(), "phase=rearm-no-owner"));
++    g_assert_cmpuint(schedules, ==, 0);
++    g_assert_cmpuint(request_calls, ==, 0);
++    runstate = RUN_STATE_PAUSED;
++    cpu.stop = false; /* The original CPU park consumes the stop flag. */
++    qemu_plugin_rearm_deferred_control_boundary();
++    g_assert_cmpuint(schedules, ==, 1);
++
++    /* The actual reader consumes one original wake, then handles real EOF. */
++    g_assert_cmpint(pipe2(descriptors, O_NONBLOCK), ==, 0);
++    qemu_plugin_wake_fd = descriptors[0];
++    before = row_count;
++    qemu_plugin_wake_fd_read((void *)(intptr_t)descriptors[0]);
++    g_assert_cmpuint(row_count, ==, before);
++    g_assert_cmpint(write(descriptors[1], &wake, sizeof(wake)), ==, sizeof(wake));
++    qemu_plugin_wake_fd_read((void *)(intptr_t)descriptors[0]);
++    g_assert_nonnull(strstr(latest(), "phase=reader-drained"));
++    g_assert_true(qemu_plugin_control_boundary_deferred);
++    g_assert_cmpint(close(descriptors[1]), ==, 0);
++    qemu_plugin_wake_fd_read((void *)(intptr_t)descriptors[0]);
++    g_assert_nonnull(strstr(latest(), "phase=reader-eof"));
++    g_assert_cmpuint(errors, ==, 1);
++    g_assert_cmpuint(unregisters, ==, 1);
++    g_assert_true(shutdown_requested);
++    g_assert_cmpint(close(descriptors[0]), ==, 0);
++    qemu_plugin_wake_fd = descriptors[0];
++    qemu_plugin_wake_fd_read((void *)(intptr_t)descriptors[0]);
++    g_assert_nonnull(strstr(latest(), "phase=reader-error"));
++    g_assert_cmpuint(errors, ==, 2);
++    g_assert_cmpuint(unregisters, ==, 2);
++
++    /* Late epochs do not exhaust a global budget, and fork starts fresh. */
++    for (uint64_t generation = 3; generation <= 400; generation++) {
++        qemu_plugin_crucible_vmstop_generation_value = generation;
++        qemu_plugin_trace_stop_context(CRUCIBLE_STOP_PUBLISHED);
++    }
++    g_assert_nonnull(strstr(latest(), "gen=400"));
++    fixture_pid = 200;
++    qemu_plugin_crucible_vmstop_generation_value = 0;
++    qemu_plugin_rr_control_request_generation = 0;
++    qemu_plugin_trace_stop_context(CRUCIBLE_STOP_PUBLISHED);
++    g_assert_nonnull(strstr(latest(), "pid=200 gen=0"));
++
++    /* Maximal valid scalar widths remain one complete bounded row. */
++    current_cpu = &cpu;
++    cpu.cpu_index = INT_MAX;
++    cpu.halted = UINT32_MAX;
++    cpu.cflags_next_tb = UINT32_MAX;
++    cpu.icount_budget = INT64_MIN;
++    cpu.neg.icount_decr.u16.low = UINT16_MAX;
++    cpu.neg.icount_decr.u16.high = 0x8000;
++    pc_value = UINT64_MAX;
++    qemu_plugin_crucible_vmstop_generation_value = UINT64_MAX;
++    qemu_plugin_rr_control_request_generation = UINT64_MAX;
++    qemu_plugin_rr_control_ack_generation = UINT64_MAX;
++    qemu_plugin_rr_control_complete_generation = UINT64_MAX;
++    qemu_plugin_crucible_vmstop_flush_result = INT_MIN;
++    qemu_plugin_wake_fd = INT_MAX;
++    fixture_pid = INT_MAX;
++    qemu_plugin_trace_stop_context(CRUCIBLE_STOP_CONTROL_ADMITTED);
++    g_assert_nonnull(strstr(latest(), "complete=18446744073709551615"));
++    g_assert_nonnull(strstr(latest(), "pc=0xffffffffffffffff coord=unavailable\n"));
++    g_assert_cmpuint(strlen(latest()), <, 512);
++
++    /* Real EBADF is advisory and preserves original errno and stop intent. */
++    g_assert_cmpint(setvbuf(stderr, NULL, _IONBF, 0), ==, 0);
++    saved_stderr = dup(STDERR_FILENO);
++    g_assert_cmpint(saved_stderr, >=, 0);
++    g_assert_cmpint(close(STDERR_FILENO), ==, 0);
++    closed_stderr = true;
++    before = row_count;
++    before_requests = native_requests;
++    qemu_plugin_crucible_vmstop_state = QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE;
++    qemu_plugin_crucible_vmstop_generation_value = 400;
++    cpu.running = true;
++    errno = ERANGE;
++    g_assert_cmpint(qemu_plugin_crucible_vmstop_admit_internal(), ==, 0);
++    observed_errno = errno;
++    g_assert_cmpint(dup2(saved_stderr, STDERR_FILENO), ==, STDERR_FILENO);
++    g_assert_cmpint(close(saved_stderr), ==, 0);
++    g_assert_cmpint(sink_errno, ==, EBADF);
++    g_assert_cmpint(observed_errno, ==, ERANGE);
++    g_assert_true(ferror(stderr));
++    clearerr(stderr);
++    g_assert_cmpuint(row_count, ==, before);
++    g_assert_cmpuint(native_requests, ==, before_requests + 1);
++    g_assert_cmpuint(qemu_plugin_crucible_vmstop_generation_value, ==, 401);
++    g_assert_cmpuint(qemu_plugin_rr_control_ack_generation, ==, UINT64_MAX);
++    g_assert_cmpint(qemu_plugin_crucible_vmstop_state, ==,
++                    QEMU_PLUGIN_CRUCIBLE_VMSTOP_ADMITTED);
++    puts("PASS native stop context: default off; original admitted/rejected SDK; "
++         "owned CPU; real reader/EOF; rearm reasons; late/fork/bounds; advisory EBADF");
++    return 0;
++}
++"""
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--negative-control", choices=["disabled", "ownership", "dedup"])
++    arguments = parser.parse_args()
++    arguments.output_dir.mkdir(parents=True, exist_ok=True)
++    api = (ROOT / "plugins/api-system.c").read_text()
++    rr = (ROOT / "accel/tcg/tcg-accel-ops-rr.c").read_text()
++    leaf = (ROOT / "plugins/crucible-stop-context.h").read_text()
++    production = definition(rr, "bool rr_crucible_sim_control_delivery_trace_enabled(void)")
++    production += "\n" + leaf
++    production += "\n\n".join(definition(api, signature) for signature in [
++        "static void qemu_plugin_trace_stop_context(CrucibleStopContextPhase phase)\n{",
++        "static int qemu_plugin_crucible_vmstop_begin(void)",
++        "int qemu_plugin_crucible_vmstop_admit_internal(void)",
++        "bool qemu_plugin_crucible_vmstop_pending(void)",
++        "bool qemu_plugin_crucible_vmstop_quiesced(void)",
++        "static bool qemu_plugin_quiesced_control_boundary_available(void)\n{",
++        "static void qemu_plugin_rearm_deferred_control_boundary(void)\n{",
++        "void qemu_plugin_crucible_vmstop_request_stopped(int flush_status)",
++        "void qemu_plugin_crucible_rr_control_boundary_defer(void)",
++        "static void qemu_plugin_wake_fd_read(void *opaque)\n{",
++    ])
++    if arguments.negative_control == "disabled":
++        production = production.replace(
++            "    if (!rr_crucible_sim_control_delivery_trace_enabled()) {\n        return;\n    }",
++            "    (void)rr_crucible_sim_control_delivery_trace_enabled();", 1)
++    elif arguments.negative_control == "ownership":
++        production = production.replace("!qatomic_read(&first_cpu->running)", "true", 1)
++    elif arguments.negative_control == "dedup":
++        production = production.replace("    if (!emit) {\n        return;\n    }", "    (void)emit;", 1)
++    generated = arguments.output_dir / "stop-context.c"
++    generated.write_text(PRELUDE + production + CHECKS)
++    binary = arguments.output_dir / "stop-context"
++    command = [os.environ.get("CC", "cc"), *shlex.split(os.environ.get("CFLAGS", "")),
++               "-Wno-missing-prototypes", "-Wno-unused-function", "-Wno-unused-variable",
++               str(generated), "-o", str(binary),
++               *shlex.split(os.environ.get("LDFLAGS", ""))]
++    (arguments.output_dir / "compile-command.json").write_text(
++        json.dumps({"cwd": os.getcwd(), "argv": command}, indent=2) + "\n")
++    subprocess.run(command, check=True)
++    subprocess.run([str(binary)], cwd=arguments.output_dir, check=True)
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-stopped-control-rearm.py b/tests/unit/test-crucible-stopped-control-rearm.py
 new file mode 100644
 index 0000000000000000000000000000000000000000..814fd7b675996aafc922110a64b2058ddffa882e
@@ -178463,7 +179790,7 @@ index b82622c8645d9ae13f9b399346c73937cda8e51f..23627a47dbddd052827a70e966f5d340
      }
  }
 diff --git a/util/aio-posix.c b/util/aio-posix.c
-index df1c213ce568d071596cc8586fe07408190af588..770e0c9a42bfcf9c1287b5eb99b42f9672df1cba 100644
+index df1c213ce568d071596cc8586fe07408190af588..71c024430408ac54249fa10f59c8b74669852746 100644
 --- a/util/aio-posix.c
 +++ b/util/aio-posix.c
 @@ -28,6 +28,138 @@
@@ -178831,15 +180158,28 @@ index df1c213ce568d071596cc8586fe07408190af588..770e0c9a42bfcf9c1287b5eb99b42f96
  #ifdef CONFIG_LINUX_IO_URING
      fdmon_io_uring_destroy(ctx);
  #endif
-@@ -803,6 +985,7 @@ void aio_context_destroy(AioContext *ctx)
+@@ -803,6 +985,20 @@ void aio_context_destroy(AioContext *ctx)
      qemu_lockcnt_unlock(&ctx->list_lock);
  
      aio_free_deleted_handlers(ctx);
 +    qemu_async_worker_hot_fork_admission_end();
++}
++
++int aio_context_reconstruct_child_epoll(
++    AioContext *ctx, const int *retained_fds, size_t retained_count)
++{
++    int result;
++
++    /* Admission remains closed under the original retained barrier. The
++     * child lifecycle caller authenticates it before reaching this helper. */
++    qemu_lockcnt_lock(&ctx->list_lock);
++    result = fdmon_epoll_reconstruct_child(ctx, retained_fds, retained_count);
++    qemu_lockcnt_unlock(&ctx->list_lock);
++    return result;
  }
  
  void aio_context_set_poll_params(AioContext *ctx, int64_t max_ns,
-@@ -811,6 +994,7 @@ void aio_context_set_poll_params(AioContext *ctx, int64_t max_ns,
+@@ -811,6 +1007,7 @@ void aio_context_set_poll_params(AioContext *ctx, int64_t max_ns,
  {
      AioHandler *node;
  
@@ -178847,7 +180187,7 @@ index df1c213ce568d071596cc8586fe07408190af588..770e0c9a42bfcf9c1287b5eb99b42f96
      qemu_lockcnt_inc(&ctx->list_lock);
      QLIST_FOREACH(node, &ctx->aio_handlers, node) {
          node->poll.ns = 0;
-@@ -827,10 +1011,12 @@ void aio_context_set_poll_params(AioContext *ctx, int64_t max_ns,
+@@ -827,10 +1024,12 @@ void aio_context_set_poll_params(AioContext *ctx, int64_t max_ns,
      ctx->poll_ns = 0;
  
      aio_notify(ctx);
@@ -178860,7 +180200,7 @@ index df1c213ce568d071596cc8586fe07408190af588..770e0c9a42bfcf9c1287b5eb99b42f96
      /*
       * No thread synchronization here, it doesn't matter if an incorrect value
       * is used once.
-@@ -838,6 +1024,7 @@ void aio_context_set_aio_params(AioContext *ctx, int64_t max_batch)
+@@ -838,6 +1037,7 @@ void aio_context_set_aio_params(AioContext *ctx, int64_t max_batch)
      ctx->aio_max_batch = max_batch;
  
      aio_notify(ctx);
@@ -178869,7 +180209,7 @@ index df1c213ce568d071596cc8586fe07408190af588..770e0c9a42bfcf9c1287b5eb99b42f96
  
  #ifdef CONFIG_LINUX_IO_URING
 diff --git a/util/aio-posix.h b/util/aio-posix.h
-index cd459bbbaedaa4e1facb57dc31807b2da1e69eb3..0dd20437cd280fc1b4056a2872c0d0283111c7fd 100644
+index cd459bbbaedaa4e1facb57dc31807b2da1e69eb3..2dd5c83436562e7947ead7c3066eadd58fd885a9 100644
 --- a/util/aio-posix.h
 +++ b/util/aio-posix.h
 @@ -41,6 +41,11 @@ struct AioHandler {
@@ -178884,6 +180224,30 @@ index cd459bbbaedaa4e1facb57dc31807b2da1e69eb3..0dd20437cd280fc1b4056a2872c0d028
  };
  
  /* Add a handler to a ready list */
+@@ -56,6 +61,10 @@ void fdmon_poll_downgrade(AioContext *ctx);
+ bool fdmon_epoll_try_upgrade(AioContext *ctx, unsigned npfd);
+ void fdmon_epoll_setup(AioContext *ctx);
+ 
++/* Called only in the authenticated, quiescent child with list_lock held. */
++int fdmon_epoll_reconstruct_child(
++    AioContext *ctx, const int *retained_fds, size_t retained_count);
++
+ /* list_lock must be held */
+ void fdmon_epoll_disable(AioContext *ctx);
+ #else
+@@ -71,6 +80,12 @@ static inline void fdmon_epoll_setup(AioContext *ctx)
+ static inline void fdmon_epoll_disable(AioContext *ctx)
+ {
+ }
++
++static inline int fdmon_epoll_reconstruct_child(
++    AioContext *ctx, const int *retained_fds, size_t retained_count)
++{
++    return 0;
++}
+ #endif /* !CONFIG_EPOLL */
+ 
+ #ifdef CONFIG_LINUX_IO_URING
 diff --git a/util/aio-win32.c b/util/aio-win32.c
 index 1985843233efa577ce4c0228856514daa2830549..22dd5695d7f4409c79abf7546600cfca18ada42e 100644
 --- a/util/aio-win32.c
@@ -178906,15 +180270,16 @@ index 1985843233efa577ce4c0228856514daa2830549..22dd5695d7f4409c79abf7546600cfca
  }
  
 diff --git a/util/async.c b/util/async.c
-index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da3308171205953349 100644
+index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a3cde5942c40dd956450ec122e9cf2ae4d2bd3db 100644
 --- a/util/async.c
 +++ b/util/async.c
-@@ -31,14 +31,187 @@
+@@ -31,14 +31,188 @@
  #include "qemu/main-loop.h"
  #include "qemu/mem-reentrancy.h"
  #include "qemu/atomic.h"
 +#include "qemu/cutils.h"
  #include "qemu/lockcnt.h"
++#include "qemu/crucible-hot-fork-child.h"
  #include "qemu/rcu_queue.h"
 +#include "qemu/sys_membarrier.h"
  #include "block/raw-aio.h"
@@ -179097,7 +180462,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
  /***********************************************************/
  /* bottom halves (can be seen as timers which expire ASAP) */
  
-@@ -68,21 +241,363 @@ struct QEMUBH {
+@@ -68,21 +242,417 @@ struct QEMUBH {
      QSLIST_ENTRY(QEMUBH) next;
      unsigned flags;
      MemReentrancyGuard *reentrancy_guard;
@@ -179440,6 +180805,60 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
 +    return 0;
 +}
 +
++int qemu_aio_hot_fork_reconstruct_child_epoll(
++    const QemuAsyncWorkerHotForkRetainedTransaction *transaction,
++    const int *retained_fds, size_t retained_count)
++{
++#ifndef CONFIG_POSIX
++    return -ENOTSUP;
++#else
++    QemuAsyncWorkerHotForkBarrierInventory inventory;
++    AioContext *ctx;
++    size_t count = 0;
++    int result = 0;
++
++    if (!retained_fds || retained_count == 0 ||
++        retained_count > QEMU_CRUCIBLE_HOT_FORK_MAX_RETAINED_DESCRIPTORS) {
++        return -EINVAL;
++    }
++    for (size_t index = 0; index < retained_count; index++) {
++        if (retained_fds[index] < 0 ||
++            (index != 0 && retained_fds[index - 1] >= retained_fds[index])) {
++            return -EINVAL;
++        }
++    }
++    if (!transaction || !transaction->active || transaction->child_released ||
++        transaction->parent_process_id <= 1 ||
++        transaction->parent_process_id != getppid() ||
++        transaction->parent_process_id == getpid() ||
++        qemu_get_thread_id() != getpid() ||
++        !qatomic_read(&crucible_hot_fork_async_worker_transaction_active)) {
++        return -EPERM;
++    }
++    qemu_async_worker_hot_fork_barrier(
++        QEMU_ASYNC_WORKER_HOT_FORK_BARRIER_QUERY, &inventory);
++    if (!inventory.held || !inventory.quiescent ||
++        inventory.generation != transaction->barrier_generation ||
++        inventory.owner_thread_id != transaction->barrier_owner_thread_id) {
++        return -EPERM;
++    }
++
++    QEMU_LOCK_GUARD(&crucible_hot_fork_aio_lock);
++    QTAILQ_FOREACH(ctx, &crucible_hot_fork_aio_contexts,
++                   crucible_hot_fork_node) {
++        if (++count > QEMU_AIO_HOT_FORK_INVENTORY_MAX) {
++            return -E2BIG;
++        }
++        result = aio_context_reconstruct_child_epoll(
++            ctx, retained_fds, retained_count);
++        if (result < 0) {
++            return result;
++        }
++    }
++    return result;
++#endif
++}
++
  /* Called concurrently from any thread */
  static void aio_bh_enqueue(QEMUBH *bh, unsigned new_flags)
  {
@@ -179461,7 +180880,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
          /*
           * At this point the bottom half becomes visible to aio_bh_poll().
           * This insertion thus synchronizes with QSLIST_MOVE_ATOMIC in
-@@ -105,6 +620,7 @@ static void aio_bh_enqueue(QEMUBH *bh, unsigned new_flags)
+@@ -105,6 +675,7 @@ static void aio_bh_enqueue(QEMUBH *bh, unsigned new_flags)
           */
          icount_notify_exit();
      }
@@ -179469,7 +180888,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
  }
  
  /* Only called from aio_bh_poll() and aio_ctx_finalize() */
-@@ -122,8 +638,11 @@ static QEMUBH *aio_bh_dequeue(BHList *head, unsigned *flags)
+@@ -122,8 +693,11 @@ static QEMUBH *aio_bh_dequeue(BHList *head, unsigned *flags)
       * Synchronizes with qatomic_fetch_or() in aio_bh_enqueue(), ensuring that
       * the removal finishes before BH_PENDING is reset.
       */
@@ -179481,7 +180900,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
      return bh;
  }
  
-@@ -131,20 +650,27 @@ void aio_bh_schedule_oneshot_full(AioContext *ctx, QEMUBHFunc *cb,
+@@ -131,20 +705,27 @@ void aio_bh_schedule_oneshot_full(AioContext *ctx, QEMUBHFunc *cb,
                                    void *opaque, const char *name)
  {
      QEMUBH *bh;
@@ -179509,7 +180928,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
      bh = g_new(QEMUBH, 1);
      *bh = (QEMUBH){
          .ctx = ctx,
-@@ -152,7 +678,10 @@ QEMUBH *aio_bh_new_full(AioContext *ctx, QEMUBHFunc *cb, void *opaque,
+@@ -152,7 +733,10 @@ QEMUBH *aio_bh_new_full(AioContext *ctx, QEMUBHFunc *cb, void *opaque,
          .opaque = opaque,
          .name = name,
          .reentrancy_guard = reentrancy_guard,
@@ -179520,7 +180939,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
      return bh;
  }
  
-@@ -160,8 +689,11 @@ void aio_bh_call(QEMUBH *bh)
+@@ -160,8 +744,11 @@ void aio_bh_call(QEMUBH *bh)
  {
      bool last_engaged_in_io = false;
  
@@ -179532,7 +180951,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
      if (reentrancy_guard) {
          last_engaged_in_io = reentrancy_guard->engaged_in_io;
          if (reentrancy_guard->engaged_in_io) {
-@@ -170,11 +702,21 @@ void aio_bh_call(QEMUBH *bh)
+@@ -170,11 +757,21 @@ void aio_bh_call(QEMUBH *bh)
          reentrancy_guard->engaged_in_io = true;
      }
  
@@ -179554,7 +180973,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
  }
  
  /* Multiple occurrences of aio_bh_poll cannot be called concurrently. */
-@@ -184,6 +726,10 @@ int aio_bh_poll(AioContext *ctx)
+@@ -184,6 +781,10 @@ int aio_bh_poll(AioContext *ctx)
      BHListSlice *s;
      int ret = 0;
  
@@ -179565,7 +180984,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
      /* Synchronizes with QSLIST_INSERT_HEAD_ATOMIC in aio_bh_enqueue().  */
      QSLIST_MOVE_ATOMIC(&slice.bh_list, &ctx->bh_list);
  
-@@ -220,10 +766,11 @@ int aio_bh_poll(AioContext *ctx)
+@@ -220,10 +821,11 @@ int aio_bh_poll(AioContext *ctx)
              aio_bh_call(bh);
          }
          if (flags & (BH_DELETED | BH_ONESHOT)) {
@@ -179578,7 +180997,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
      return ret;
  }
  
-@@ -241,7 +788,13 @@ void qemu_bh_schedule(QEMUBH *bh)
+@@ -241,7 +843,13 @@ void qemu_bh_schedule(QEMUBH *bh)
   */
  void qemu_bh_cancel(QEMUBH *bh)
  {
@@ -179593,7 +181012,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
  }
  
  /* This func is async.The bottom half will do the delete action at the finial
-@@ -305,6 +858,12 @@ static gboolean
+@@ -305,6 +913,12 @@ static gboolean
  aio_ctx_prepare(GSource *source, gint    *timeout)
  {
      AioContext *ctx = (AioContext *) source;
@@ -179606,7 +181025,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
  
      qatomic_set(&ctx->notify_me, qatomic_read(&ctx->notify_me) | 1);
  
-@@ -322,7 +881,9 @@ aio_ctx_prepare(GSource *source, gint    *timeout)
+@@ -322,7 +936,9 @@ aio_ctx_prepare(GSource *source, gint    *timeout)
          *timeout = 0;
      }
  
@@ -179617,7 +181036,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
  }
  
  static gboolean
-@@ -331,6 +892,11 @@ aio_ctx_check(GSource *source)
+@@ -331,6 +947,11 @@ aio_ctx_check(GSource *source)
      AioContext *ctx = (AioContext *) source;
      QEMUBH *bh;
      BHListSlice *s;
@@ -179629,7 +181048,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
  
      /* Finish computing the timeout before clearing the flag.  */
      qatomic_store_release(&ctx->notify_me, qatomic_read(&ctx->notify_me) & ~1);
-@@ -339,7 +905,8 @@ aio_ctx_check(GSource *source)
+@@ -339,7 +960,8 @@ aio_ctx_check(GSource *source)
      QSLIST_FOREACH_RCU(bh, &ctx->bh_list, next) {
          int flags = qatomic_load_acquire(&bh->flags);
          if ((flags & (BH_SCHEDULED | BH_DELETED)) == BH_SCHEDULED) {
@@ -179639,7 +181058,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
          }
      }
  
-@@ -347,11 +914,15 @@ aio_ctx_check(GSource *source)
+@@ -347,11 +969,15 @@ aio_ctx_check(GSource *source)
          QSLIST_FOREACH_RCU(bh, &s->bh_list, next) {
              int flags = qatomic_load_acquire(&bh->flags);
              if ((flags & (BH_SCHEDULED | BH_DELETED)) == BH_SCHEDULED) {
@@ -179657,7 +181076,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
  }
  
  static gboolean
-@@ -362,7 +933,14 @@ aio_ctx_dispatch(GSource     *source,
+@@ -362,7 +988,14 @@ aio_ctx_dispatch(GSource     *source,
      AioContext *ctx = (AioContext *) source;
  
      assert(callback == NULL);
@@ -179672,7 +181091,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
      return true;
  }
  
-@@ -377,6 +955,8 @@ aio_ctx_finalize(GSource *source)
+@@ -377,6 +1010,8 @@ aio_ctx_finalize(GSource *source)
          return;
      }
  
@@ -179681,7 +181100,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
      thread_pool_free_aio(ctx->thread_pool);
  
  #ifdef CONFIG_LINUX_AIO
-@@ -409,7 +989,7 @@ aio_ctx_finalize(GSource *source)
+@@ -409,7 +1044,7 @@ aio_ctx_finalize(GSource *source)
              abort();
          }
  
@@ -179690,7 +181109,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
      }
  
      aio_set_event_notifier(ctx, &ctx->notifier, NULL, NULL, NULL);
-@@ -420,38 +1000,115 @@ aio_ctx_finalize(GSource *source)
+@@ -420,38 +1055,115 @@ aio_ctx_finalize(GSource *source)
      aio_context_destroy(ctx);
      /* aio_context_destroy() still needs the lock */
      qemu_lockcnt_destroy(&ctx->list_lock);
@@ -179810,7 +181229,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
      return ctx->linux_aio;
  }
  
-@@ -464,6 +1121,12 @@ LinuxAioState *aio_get_linux_aio(AioContext *ctx)
+@@ -464,6 +1176,12 @@ LinuxAioState *aio_get_linux_aio(AioContext *ctx)
  
  void aio_notify(AioContext *ctx)
  {
@@ -179823,7 +181242,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
      /*
       * Write e.g. ctx->bh_list before writing ctx->notified.  Pairs with
       * smp_mb() in aio_notify_accept().
-@@ -481,6 +1144,13 @@ void aio_notify(AioContext *ctx)
+@@ -481,6 +1199,13 @@ void aio_notify(AioContext *ctx)
      }
  }
  
@@ -179837,7 +181256,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
  void aio_notify_accept(AioContext *ctx)
  {
      qatomic_set(&ctx->notified, false);
-@@ -545,6 +1215,7 @@ static void co_schedule_bh_cb(void *opaque)
+@@ -545,6 +1270,7 @@ static void co_schedule_bh_cb(void *opaque)
  
          /* Protected by write barrier in qemu_aio_coroutine_enter */
          qatomic_set(&co->scheduled, NULL);
@@ -179845,7 +181264,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
          qemu_aio_coroutine_enter(ctx, co);
      }
  }
-@@ -555,6 +1226,8 @@ AioContext *aio_context_new(Error **errp)
+@@ -555,6 +1281,8 @@ AioContext *aio_context_new(Error **errp)
      int ret;
      AioContext *ctx;
  
@@ -179854,7 +181273,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
      /*
       * ctx is freed by g_source_unref() (e.g. aio_context_unref()). ctx's
       * resources are freed as follows:
-@@ -582,6 +1255,7 @@ AioContext *aio_context_new(Error **errp)
+@@ -582,6 +1310,7 @@ AioContext *aio_context_new(Error **errp)
       * you add any new resources to AioContext, it's probably best to acquire
       * them before aio_context_setup().
       */
@@ -179862,7 +181281,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
      if (!aio_context_setup(ctx, errp)) {
          event_notifier_cleanup(&ctx->notifier);
          goto fail;
-@@ -617,17 +1291,21 @@ AioContext *aio_context_new(Error **errp)
+@@ -617,17 +1346,21 @@ AioContext *aio_context_new(Error **errp)
      ctx->thread_pool_max = THREAD_POOL_MAX_THREADS_DEFAULT;
  
      register_aiocontext(ctx);
@@ -179884,7 +181303,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
      trace_aio_co_schedule(ctx, co);
      const char *scheduled = qatomic_cmpxchg(&co->scheduled, NULL,
                                             __func__);
-@@ -638,6 +1316,7 @@ void aio_co_schedule(AioContext *ctx, Coroutine *co)
+@@ -638,6 +1371,7 @@ void aio_co_schedule(AioContext *ctx, Coroutine *co)
                  __func__, scheduled);
          abort();
      }
@@ -179892,7 +181311,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
  
      /* The coroutine might run and release the last ctx reference before we
       * invoke qemu_bh_schedule().  Take a reference to keep ctx alive until
-@@ -650,6 +1329,7 @@ void aio_co_schedule(AioContext *ctx, Coroutine *co)
+@@ -650,6 +1384,7 @@ void aio_co_schedule(AioContext *ctx, Coroutine *co)
      qemu_bh_schedule(ctx->co_schedule_bh);
  
      aio_context_unref(ctx);
@@ -179900,7 +181319,7 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
  }
  
  typedef struct AioCoRescheduleSelf {
-@@ -740,6 +1420,7 @@ void qemu_set_current_aio_context(AioContext *ctx)
+@@ -740,6 +1475,7 @@ void qemu_set_current_aio_context(AioContext *ctx)
  {
      assert(!get_my_aiocontext());
      set_my_aiocontext(ctx);
@@ -179910,10 +181329,10 @@ index 741fcfd6a7aa42300ad721840791b2cf2b5cbf15..a9ea4d04d345fb4cb54145da33081712
  void aio_context_set_thread_pool_params(AioContext *ctx, int64_t min,
 diff --git a/util/crucible-hot-fork-child.c b/util/crucible-hot-fork-child.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..5f70f85adcf9054eede4d2f2f23ba52cc9eafb36
+index 0000000000000000000000000000000000000000..e7eee6cdc9d8a4c33a3545864fd8b1931a7d29ae
 --- /dev/null
 +++ b/util/crucible-hot-fork-child.c
-@@ -0,0 +1,1294 @@
+@@ -0,0 +1,1303 @@
 +/*
 + * Crucible hot-fork child resource disposition helpers
 + *
@@ -179927,6 +181346,7 @@ index 0000000000000000000000000000000000000000..5f70f85adcf9054eede4d2f2f23ba52c
 +#include <sys/syscall.h>
 +
 +#include "qemu/crucible-hot-fork-child.h"
++#include "qemu/aio.h"
 +
 +/* Composed description of the step and basis that last blocked a runtime. */
 +static char qemu_crucible_hot_fork_runtime_blocker[320];
@@ -180123,7 +181543,8 @@ index 0000000000000000000000000000000000000000..5f70f85adcf9054eede4d2f2f23ba52c
 +
 +int qemu_crucible_hot_fork_start_child_runtime(
 +    QemuCrucibleHotForkRuntimeTransaction *transaction,
-+    const QemuCrucibleHotForkDescriptorTableTransaction *descriptors)
++    const QemuCrucibleHotForkDescriptorTableTransaction *descriptors,
++    const int *retained_fds, size_t retained_fd_count)
 +{
 +    int result;
 +
@@ -180139,6 +181560,13 @@ index 0000000000000000000000000000000000000000..5f70f85adcf9054eede4d2f2f23ba52c
 +        return -EINVAL;
 +    }
 +
++    if (transaction->async_retained) {
++        result = qemu_aio_hot_fork_reconstruct_child_epoll(
++            &transaction->async, retained_fds, retained_fd_count);
++        if (result < 0) {
++            return result;
++        }
++    }
 +    result = qemu_rcu_hot_fork_start_child_worker(&transaction->rcu);
 +    if (result < 0) {
 +        return result;
@@ -181207,6 +182635,121 @@ index 0000000000000000000000000000000000000000..5f70f85adcf9054eede4d2f2f23ba52c
 +    qemu_crucible_hot_fork_note_child_detail(8);
 +    return qemu_crucible_hot_fork_verify_mapping_table(
 +        transaction, shared_mappings, shared_mapping_count);
++}
+diff --git a/util/fdmon-epoll.c b/util/fdmon-epoll.c
+index 61118e1ee644360eb936f2a89f2d0a6a7706b2f3..b46734137788f99b684079d6a8cc3458f9327402 100644
+--- a/util/fdmon-epoll.c
++++ b/util/fdmon-epoll.c
+@@ -179,3 +179,110 @@ void fdmon_epoll_setup(AioContext *ctx)
+         fprintf(stderr, "Failed to create epoll instance: %s", strerror(errno));
+     }
+ }
++
++static bool fdmon_epoll_child_fd_retained(
++    int fd, const int *retained_fds, size_t retained_count)
++{
++    size_t lower = 0;
++    size_t upper = retained_count;
++
++    while (lower < upper) {
++        size_t middle = lower + (upper - lower) / 2;
++
++        if (retained_fds[middle] < fd) {
++            lower = middle + 1;
++        } else {
++            upper = middle;
++        }
++    }
++    return lower < retained_count && retained_fds[lower] == fd;
++}
++
++int fdmon_epoll_reconstruct_child(
++    AioContext *ctx, const int *retained_fds, size_t retained_count)
++{
++    AioHandler *node;
++    bool active = ctx->fdmon_ops == &fdmon_epoll_ops;
++    char descriptor_path[64];
++    char descriptor_kind[32];
++    ssize_t kind_length;
++    int private_fd;
++
++    if ((active && !ctx->epollfd_tag) ||
++        (!active && ctx->epollfd_tag)) {
++        return -EPROTO;
++    }
++    QLIST_FOREACH_RCU(node, &ctx->aio_handlers, node) {
++        if (QLIST_IS_INSERTED(node, node_deleted) || !node->pfd.events) {
++            continue;
++        }
++        /* These nodes remain eligible for later polling and upgrades. Only
++         * their original owners may dispose them; omission is not disposal. */
++        if (!fdmon_epoll_child_fd_retained(node->pfd.fd, retained_fds,
++                                         retained_count)) {
++            return -EPERM;
++        }
++        if (fcntl(node->pfd.fd, F_GETFD) < 0) {
++            return -errno;
++        }
++    }
++    if (ctx->epollfd < 0) {
++        return active ? -EPROTO : 0;
++    }
++    /* The verified descriptor table retains this FD. Refuse a closed one
++     * before allocation can reuse its number and conceal missing custody. */
++    if (fcntl(ctx->epollfd, F_GETFD) < 0) {
++        return -errno;
++    }
++    if (!fdmon_epoll_child_fd_retained(ctx->epollfd, retained_fds,
++                                     retained_count)) {
++        return -EPERM;
++    }
++    snprintf(descriptor_path, sizeof(descriptor_path),
++             "/proc/self/fd/%d", ctx->epollfd);
++    kind_length = readlink(descriptor_path, descriptor_kind,
++                           sizeof(descriptor_kind) - 1);
++    if (kind_length < 0) {
++        return -errno;
++    }
++    descriptor_kind[kind_length] = '\0';
++    if (strcmp(descriptor_kind, "anon_inode:[eventpoll]") != 0) {
++        return -ESTALE;
++    }
++    private_fd = epoll_create1(EPOLL_CLOEXEC);
++    if (private_fd < 0) {
++        return -errno;
++    }
++
++    if (active) {
++        QLIST_FOREACH_RCU(node, &ctx->aio_handlers, node) {
++            struct epoll_event event;
++
++            if (QLIST_IS_INSERTED(node, node_deleted) || !node->pfd.events) {
++                continue;
++            }
++            event = (struct epoll_event) {
++                .data.ptr = node,
++                .events = epoll_events_from_pfd(node->pfd.events),
++            };
++            if (epoll_ctl(private_fd, EPOLL_CTL_ADD, node->pfd.fd, &event)) {
++                int result = -errno;
++
++                close(private_fd);
++                return result;
++            }
++        }
++    }
++
++    /* The inherited epoll object belongs to both processes. Never update or
++     * disable it: close only this child's reference and replace its local tag.
++     * A poll context also needs a private standby FD for its future upgrade. */
++    if (ctx->epollfd_tag) {
++        g_source_remove_unix_fd(&ctx->source, ctx->epollfd_tag);
++    }
++    close(ctx->epollfd);
++    ctx->epollfd = private_fd;
++    ctx->epollfd_tag = active ?
++        g_source_add_unix_fd(&ctx->source, private_fd, G_IO_IN) : NULL;
++    return 0;
 +}
 diff --git a/util/guest-random.c b/util/guest-random.c
 index 33607d5ff24d0ace1ddec5fc90dc11235234d866..13bf69f128e31c939a2594d0ca21f07174762fe1 100644
