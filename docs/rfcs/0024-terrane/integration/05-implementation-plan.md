@@ -274,6 +274,21 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   resolver case after all preceding property and carrier cases pass. Shared
   registry completeness and both mandatory formatters pass. This is a
   prerequisite, not resolver qualification or a task merge.
+  The reviewed pure resolver candidate now takes an explicit validated
+  recorded-revision context. Trusted later names receive canonical-only
+  preservation and remain outside effective policy, including spellings
+  recognized by compiled newer validators. Independent tests bind the exact
+  33/34/35-name behavioral vocabularies, 33/34 namespace defaults, owner-local
+  bindings and revision-specific placement while preserving inheritance,
+  domain, wipe and depth rules. Parent qualification of the unpublished
+  combined source passes all 589 core tests with zero skipped (Nextest run
+  `a0f75e14-c11a-48ba-aa24-f064a500d656`), core/native builds, strict core
+  Clippy/rustdoc, all three property gates, `core-no-std`, both pure
+  index/registry checks and both mandatory formatters. Its actual current
+  aggregate exits 1 through the newly mandatory index witness suite's missing
+  fixtures. Historical core/native callers still need recorded-context
+  propagation; the previous native disclosure failures are not qualified by
+  this run. No candidate task merges onto the trunk or advances a checkbox.
   — satisfies TREE-14,
   PROP-1 to PROP-30;
   `checks.terrane.gates.property-resolution`,
@@ -395,6 +410,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   The requested `integration.index-reference-models` check exits 1 explicitly
   on its missing owning fixtures. Shared registry completeness and both
   mandatory formatters pass; no format or task is qualified by the scaffold.
+  A separate independent finite field-model audit reproduces all four complete
+  owner/primary/route/gap relationships and refuses all 32 scoped contextual
+  controls. Repeated grafts retain their distinct occurrences, one object
+  retains present and missing routes, zero candidates retain gaps, and 17
+  local hops retain a 4,355-byte composed occurrence without creating an
+  oversized local key. This supplements the primitive byte/identity audit;
+  it does not qualify owning codecs, large canonical boundaries, current
+  policy, authority or the still-unpublished normative index corpus.
   The shared property gate now requires the exact owning-root binding case;
   its absence must fail rather than qualify the new registry entry from old
   property tests. D-104 additionally requires exact role/placement and semantic
