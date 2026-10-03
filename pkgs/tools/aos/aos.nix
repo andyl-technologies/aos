@@ -232,6 +232,7 @@ in
     inherit cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
     cargoNextest = true;
+    nextestFlags = "--no-fail-fast";
     # Compilation still uses every allocated build core. Bound concurrent test
     # processes separately so loopback servers and SQLite workers retain enough
     # scheduler time to satisfy their production-sized deadlines on large hosts.
