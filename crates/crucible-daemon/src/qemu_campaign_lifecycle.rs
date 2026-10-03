@@ -1720,7 +1720,7 @@ impl QemuFreshStartMaterialization {
         QemuAttemptStartReplayProof::from_reached_boundary(configuration, &self.event_log)
     }
 
-    /// Returns the actual scheduler configuration restored from a physical checkpoint.
+    /// Returns the scheduler configuration after restoration and authenticated start replay.
     #[must_use]
     pub(crate) const fn restored_configuration(&self) -> Option<&Configuration> {
         self.restored_configuration.as_ref()
@@ -2398,6 +2398,7 @@ pub(crate) fn materialize_start_from<F, D>(
     )?;
     append_start_replay_events(&mut replay, &initial_selection_entries)?;
     if current == *target {
+        replay.restored_configuration = Some(current);
         return Ok(replay);
     }
 
@@ -2521,6 +2522,7 @@ pub(crate) fn materialize_start_from<F, D>(
         replay.terminal_quiescence = outcome.scheduler_quiescence;
         current = next;
         if current == *target {
+            replay.restored_configuration = Some(current);
             replay.terminal_verdict = terminal;
             return Ok(replay);
         }

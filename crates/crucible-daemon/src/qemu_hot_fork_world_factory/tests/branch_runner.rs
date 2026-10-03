@@ -270,6 +270,114 @@ fn run_branch_through_hot_world_runner(input: CrucibleAttemptExecution, expect_g
 }
 
 #[test]
+fn restored_guest_branch_drives_the_selected_configuration_after_replay() {
+    assert_restored_branch_drives_selected_configuration(true);
+}
+
+#[test]
+fn restored_branch_drives_the_selected_configuration_after_quantum_replay() {
+    assert_restored_branch_drives_selected_configuration(false);
+}
+
+fn assert_restored_branch_drives_selected_configuration(guest: bool) {
+    let declaration = guest_selectable_declaration();
+    let input = if guest {
+        branch_execution_input(
+            declaration.source().clone(),
+            declaration.domain().clone(),
+            declaration.default().clone(),
+            ChoiceValue::Boolean(true),
+            declaration.name(),
+        )
+    } else {
+        branch_execution_input(
+            ChoiceSource::Scheduler {
+                producer: String::from("restored-branch"),
+            },
+            ChoiceDomain::Boolean(BooleanDomain::new(1).expect("scheduler branch domain")),
+            ChoiceValue::Boolean(false),
+            ChoiceValue::Boolean(true),
+            "scheduler.restored-branch",
+        )
+    };
+    let replay_quanta = u64::from(!guest);
+    let input = CrucibleAttemptExecution::from_test_parts(
+        input.lineage().clone(),
+        input.scenario().clone(),
+        Attempt::new(
+            input.attempt().start(),
+            input.attempt().path(),
+            StopCondition::ExecutionQuanta(replay_quanta + 1),
+        )
+        .expect("one-quantum branch attempt"),
+        input.path().clone(),
+        input.start().clone(),
+    );
+    let context = execution_context(&input, 0x87);
+    let observations = BranchReplayObservations::new();
+    let mut factory = BranchReplayLifecycleFactory {
+        observations: observations.clone(),
+    };
+    let QemuHotForkWorldLifecycleStart::Started(mut lifecycle) = factory
+        .try_start(&input, &context)
+        .expect("restored parent")
+    else {
+        panic!("branch fixture must restore the parent")
+    };
+    let crate::CrucibleResolvedAttemptStart::Branch {
+        parent, selected, ..
+    } = input.start()
+    else {
+        panic!("branch fixture must contain a selection")
+    };
+    let restored = lifecycle.start_materialization().expect("captured parent");
+    assert_eq!(restored.restored_configuration(), Some(parent));
+
+    let materialization = crate::qemu_campaign_lifecycle::materialize_start_from::<
+        Infallible,
+        crate::QemuFreshModeledDriverError,
+    >(
+        &mut lifecycle,
+        &input,
+        parent.clone(),
+        selected,
+        &context,
+        restored,
+    )
+    .expect("authenticated selectable replay");
+    assert_eq!(&lifecycle.configuration, selected);
+    assert_eq!(lifecycle.completed_quanta, replay_quanta);
+    assert_eq!(
+        observations
+            .guest_replies
+            .lock()
+            .expect("guest replies")
+            .len(),
+        usize::from(guest)
+    );
+
+    let mut facade = QemuFreshAttemptLifecycle::new(&mut lifecycle);
+    let outcome = QemuFreshModeledDriver::new()
+        .drive(&mut facade, &input, &context, materialization)
+        .expect("first post-selection quantum must use the selected configuration");
+    assert!(matches!(outcome, QemuFreshDriveOutcome::Observation(_)));
+    assert_eq!(lifecycle.completed_quanta, replay_quanta + 1);
+    let mut expected_requests = if guest {
+        Vec::new()
+    } else {
+        vec![parent.clone()]
+    };
+    expected_requests.push(selected.clone());
+    assert_eq!(
+        *observations
+            .replay_requests
+            .lock()
+            .expect("quantum requests"),
+        expected_requests
+    );
+}
+
+#[test]
 fn hot_world_runner_honors_an_inherited_quantum_boundary_without_driving() {
     let completed_quanta = 3;
     let stop = StopCondition::ExecutionQuanta(completed_quanta);
