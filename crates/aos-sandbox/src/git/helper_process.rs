@@ -1,4 +1,4 @@
-//! One-shot, nonauthorizing execution of four fixed Git inspection verbs.
+//! One-shot, nonauthorizing fixed Git inspection and upload mechanics.
 //!
 //! The attempt retains original images, command bytes, sealed inputs and both
 //! captured streams while the shared supervisor consumes safe duplicates. A
@@ -31,17 +31,35 @@ use super::GitObjectFormatV1;
 mod plan;
 mod driven;
 pub(super) use driven::wait_for_process_turn_v1;
-pub(super) use plan::{GitHelperInspectionV1, GitHelperLimitsV1};
-use plan::{GitHelperPlanErrorV1, PLAN_BYTES};
+pub(super) use plan::{GitHelperInspectionV1, GitHelperLimitsV1, GitHelperUploadV1};
+use plan::{GitHelperPlanErrorV1, GitHelperRecipeV1, PLAN_BYTES};
+
+/// Keeps the old owned input or a loan of the original request allocation.
+/// Borrowed input cannot outlive either its original allocation or directory.
+enum GitHelperInputV1<'original> {
+    Owned(Vec<u8>),
+    Borrowed(&'original [u8]),
+}
+
+impl std::ops::Deref for GitHelperInputV1<'_> {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        match self {
+            Self::Owned(bytes) => bytes,
+            Self::Borrowed(bytes) => bytes,
+        }
+    }
+}
 
 /// Holds every original and observation for one irreversible mechanical attempt.
 pub(super) struct GitHelperAttemptCustodyV1<'directory> {
     images: FixedGitHelperImagesV1,
     directory: &'directory BeneathRoot,
-    verb: GitHelperInspectionV1,
+    verb: GitHelperRecipeV1,
     format: GitObjectFormatV1,
     limits: GitHelperLimitsV1,
-    input: Vec<u8>,
+    input: GitHelperInputV1<'directory>,
     plan_bytes: Option<[u8; PLAN_BYTES]>,
     plan_original: Option<SealedReadOnlyCredential>,
     input_original: Option<SealedReadOnlyCredential>,
@@ -62,6 +80,47 @@ impl<'directory> GitHelperAttemptCustodyV1<'directory> {
         format: GitObjectFormatV1,
         limits: GitHelperLimitsV1,
         input: Vec<u8>,
+    ) -> Self {
+        Self::assemble(
+            images,
+            directory,
+            GitHelperRecipeV1::Inspection(verb),
+            format,
+            limits,
+            GitHelperInputV1::Owned(input),
+        )
+    }
+
+    /// Parks an original upload or advertisement borrow before any setup gate.
+    ///
+    /// This is mechanical custody only. The caller must retain the genuine
+    /// read grant, immutable export and original session/cut separately. Neither
+    /// a directory loan nor request bytes create an authorized Git backend.
+    pub(super) fn new_upload(
+        images: FixedGitHelperImagesV1,
+        directory: &'directory BeneathRoot,
+        upload: GitHelperUploadV1,
+        format: GitObjectFormatV1,
+        limits: GitHelperLimitsV1,
+        input: &'directory [u8],
+    ) -> Self {
+        Self::assemble(
+            images,
+            directory,
+            GitHelperRecipeV1::Upload(upload),
+            format,
+            limits,
+            GitHelperInputV1::Borrowed(input),
+        )
+    }
+
+    fn assemble(
+        images: FixedGitHelperImagesV1,
+        directory: &'directory BeneathRoot,
+        verb: GitHelperRecipeV1,
+        format: GitObjectFormatV1,
+        limits: GitHelperLimitsV1,
+        input: GitHelperInputV1<'directory>,
     ) -> Self {
         Self {
             images,
@@ -110,7 +169,7 @@ impl<'directory> GitHelperAttemptCustodyV1<'directory> {
     ) -> Result<(), GitHelperErrorV1> {
         driven::check_cut(cut)?;
         self.images.recheck().map_err(GitHelperErrorV1::Image)?;
-        let bytes = plan::encode(
+        let bytes = plan::encode_recipe(
             self.verb,
             self.format,
             self.limits,
@@ -317,5 +376,31 @@ mod tests {
         assert!(attempted);
         assert!(!claim_attempt(&mut attempted));
         assert!(!claim_attempt(&mut attempted));
+    }
+
+    #[test]
+    fn owned_input_keeps_the_original_allocation() {
+        let bytes = vec![0x31, 0x72];
+        let pointer = bytes.as_ptr();
+        let capacity = bytes.capacity();
+
+        let input = GitHelperInputV1::Owned(bytes);
+
+        assert_eq!(input.as_ptr(), pointer);
+        assert_eq!(&*input, &[0x31, 0x72]);
+        let GitHelperInputV1::Owned(original) = input else {
+            panic!("owned input changed storage kind");
+        };
+        assert_eq!(original.capacity(), capacity);
+    }
+
+    #[test]
+    fn borrowed_input_is_the_same_original_slice() {
+        let original = [0x31, 0x72];
+
+        let input = GitHelperInputV1::Borrowed(&original);
+
+        assert_eq!(input.as_ptr(), original.as_ptr());
+        assert_eq!(&*input, &original);
     }
 }

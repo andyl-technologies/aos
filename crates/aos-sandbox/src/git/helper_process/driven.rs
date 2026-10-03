@@ -11,7 +11,8 @@ use std::task::Poll;
 
 use aos_sandbox_linux::process::{
     FixedProcessBoottimeCutV1, FixedProcessCaptureV1, FixedProcessDrivenCauseV1,
-    FixedProcessDrivenDebtV1, FixedProcessDrivenInputsV1, FixedProcessDrivenProgressV1,
+    FixedProcessDrivenDebtV1, FixedProcessDrivenInputsV1, FixedProcessDrivenPartsV1,
+    FixedProcessDrivenProgressV1,
     FixedProcessDrivenSessionV1, FixedProcessPreparedInvocationV1, FixedProcessRequest,
     FixedProcessWaitViewV1, prepare_fixed_process_driven_invocation_v1,
 };
@@ -28,6 +29,7 @@ pub(super) struct GitDrivenPreparationV1 {
     stdin: Option<OwnedFd>,
     inherited: Vec<OwnedFd>,
     session: Option<FixedProcessDrivenSessionV1>,
+    ended: Option<Result<FixedProcessDrivenPartsV1, FixedProcessDrivenSessionV1>>,
     interrupted: Option<GitDrivenInterruptionV1>,
 }
 
@@ -62,14 +64,23 @@ impl GitDrivenPreparationV1 {
             stdin: None,
             inherited: Vec::new(),
             session: None,
+            ended: None,
             interrupted: None,
+        }
+    }
+
+    fn original_session(&self) -> Option<&FixedProcessDrivenSessionV1> {
+        match &self.ended {
+            Some(Err(session)) => Some(session),
+            Some(Ok(_)) => None,
+            None => self.session.as_ref(),
         }
     }
 }
 
 impl GitHelperAttemptCustodyV1<'_> {
     /// Creates one prearmed output-only driving future, not Git authorization.
-    /// The existing E0 inspection plan/limits remain the only helper recipe.
+    /// Closed inspection/upload recipes share the existing E0 plan and limits.
     /// This convenience future has no protected caller gate and must not be
     /// treated as an authorized Git effect driver. A later genuine caller uses
     /// lower advance_once plus the shared wait adapter with its own bookends.
@@ -209,6 +220,42 @@ impl GitHelperAttemptCustodyV1<'_> {
         Ok(())
     }
 
+    /// Parks the complete lower transfer Result before inspecting success.
+    ///
+    /// Refusal retains the SAME live or debt-bearing session in the Result's
+    /// Err slot; it is never dropped, reinserted or retried. Successful transfer
+    /// keeps both buffers, observations, outcome, first cause and cleanup debt
+    /// together. No status or bytes are converted into settlement or Drain.
+    ///
+    /// # Errors
+    /// Refuses absent/repeated transfer or a lower session that is not Ended.
+    /// Lower refusal keeps its exact original owner resident, not a clone.
+    pub(in crate::git) fn retain_ended_parts(&mut self) -> Result<(), GitHelperDrivenFailedV1> {
+        let Some(state) = &mut self.driven else {
+            return Err(GitHelperDrivenFailedV1);
+        };
+        if state.ended.is_some() {
+            return Err(GitHelperDrivenFailedV1);
+        }
+        let Some(session) = state.session.take() else {
+            return Err(GitHelperDrivenFailedV1);
+        };
+
+        // No fallible bookend or classification lies between the move and this
+        // whole original Result slot, including the original owner on refusal.
+        state.ended = Some(session.into_ended_parts());
+
+        match state.ended.as_ref() {
+            Some(Ok(_)) => Ok(()),
+            _ => Err(GitHelperDrivenFailedV1),
+        }
+    }
+
+    /// Borrows every ended historical part; none is split or consumed here.
+    pub(in crate::git) fn ended_parts(&self) -> Option<&FixedProcessDrivenPartsV1> {
+        self.driven.as_ref()?.ended.as_ref()?.as_ref().ok()
+    }
+
     /// Borrows the same first setup/drive cause, never a synthesized IO error.
     pub(in crate::git) fn driven_cause(&self) -> Option<GitHelperDrivenCauseV1<'_>> {
         if let Some(error) = &self.first_error {
@@ -216,7 +263,11 @@ impl GitHelperAttemptCustodyV1<'_> {
         }
 
         let state = self.driven.as_ref()?;
-        if let Some(cause) = state.session.as_ref().and_then(|session| session.cause()) {
+        let cause = match &state.ended {
+            Some(Ok(parts)) => parts.cause.as_ref(),
+            _ => state.original_session().and_then(|session| session.cause()),
+        };
+        if let Some(cause) = cause {
             return Some(GitHelperDrivenCauseV1::Drive(cause));
         }
 
@@ -227,13 +278,18 @@ impl GitHelperAttemptCustodyV1<'_> {
     }
 
     /// Borrows whole original lower capture DATA without copying output.
+    /// After successful whole-parts transfer, use ended_parts instead.
     pub(in crate::git) fn driven_capture(&self) -> Option<&FixedProcessCaptureV1> {
-        self.driven.as_ref()?.session.as_ref()?.capture()
+        self.driven.as_ref()?.original_session()?.capture()
     }
 
     /// Borrows independent original lower cleanup debt.
     pub(in crate::git) fn driven_cleanup_debt(&self) -> Option<&FixedProcessDrivenDebtV1> {
-        self.driven.as_ref()?.session.as_ref()?.cleanup_debt()
+        let state = self.driven.as_ref()?;
+        match &state.ended {
+            Some(Ok(parts)) => parts.cleanup_debt.as_ref(),
+            _ => state.original_session()?.cleanup_debt(),
+        }
     }
 }
 
@@ -309,5 +365,16 @@ mod tests {
     #[test]
     fn legacy_preparation_has_no_selected_clock_check() {
         assert!(check_cut(None).is_ok());
+    }
+
+    #[test]
+    fn empty_preparation_has_no_session_or_ended_parts() {
+        let cut = FixedProcessBoottimeCutV1::new(1).unwrap();
+
+        let state = GitDrivenPreparationV1::new(cut);
+
+        assert!(state.original_session().is_none());
+        assert!(state.ended.is_none());
+        assert!(state.interrupted.is_none());
     }
 }
