@@ -308,6 +308,22 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   open and no task or milestone advances.
   Shared registry completeness and both mandatory formatters pass for this
   inventory prerequisite; those checks do not qualify the missing cases.
+  The reviewed snapshot candidate now carries that explicit recorded context
+  through full enumeration, selected paths, ancestor-prefix resolution and
+  unsigned planning. Its first-parent regression uses ordinary immutable
+  Commit records through the same private read-only branch as the public
+  history wrapper; it checks both change sides, first-parent selection,
+  missing-parent refusal and unchanged ownership rules without manufacturing
+  verified history. All four changed snapshot error contracts are documented.
+  Parent qualification of the unpublished combined source passes all 593 core
+  tests with zero skips (Nextest run `fecdd45b-9727-4309-aa8e-8d219e0d36fe`),
+  strict core Clippy/rustdoc, both mandatory formatters, property resolution
+  including all four exact snapshot cases, and the complete golden gate.
+  Its actual current-trunk aggregate exits 1 in `prov-disclosure-boundary`:
+  the required native key-window/current-revocation, safe-index current-producer
+  and whiteout/public-baseline cases are absent. These pure results do not
+  qualify that native boundary or historical view/context associations.
+  T-PROP-1, formal task merges and T1 remain open.
   — satisfies TREE-14,
   PROP-1 to PROP-30;
   `checks.terrane.gates.property-resolution`,
