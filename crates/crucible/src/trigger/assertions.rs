@@ -1127,7 +1127,25 @@ pub struct HostAssertionEvaluator {
     code_points: BTreeMap<(NodeId, CodePoint), ResolvedCodePoint>,
     mem_places: BTreeMap<(NodeId, MemPlace), ResolvedMemPlace>,
     terminal_quiescence: Option<SchedulerQuiescence>,
-    last_prefix: Option<ConditionEventLogPrefix>,
+    last_position: Option<HostAssertionPrefixPosition>,
+}
+
+// Deadline crossing needs only the prior point; checkpoint binding needs its
+// offset. Retaining the full checked history here would copy it on every live
+// observation even though evaluation uses the newly supplied prefix's facts.
+#[derive(Clone, Copy, Debug)]
+struct HostAssertionPrefixPosition {
+    point: EventEvaluationPoint,
+    offset: EventLogOffset,
+}
+
+impl HostAssertionPrefixPosition {
+    fn from_prefix(prefix: &ConditionEventLogPrefix) -> Self {
+        Self {
+            point: prefix.point(),
+            offset: prefix.event_log_offset(),
+        }
+    }
 }
 
 const HOST_ASSERTION_CHECKPOINT_MAGIC: &[u8] = b"crucible.host-assertion-continuation.v2\0";
@@ -1189,10 +1207,7 @@ impl HostAssertionEvaluator {
                     .map(Predicate::to_compact_binary)
                     .collect(),
                 terminal_quiescence: self.terminal_quiescence.clone(),
-                last_prefix: self
-                    .last_prefix
-                    .as_ref()
-                    .map(ConditionEventLogPrefix::event_log_offset),
+                last_prefix: self.last_position.map(|position| position.offset),
             },
         }
     }
@@ -1285,7 +1300,10 @@ impl HostAssertionEvaluatorCheckpoint {
         staged.guest_marker_states = self.wire.guest_marker_states.clone();
         staged.once_latches = once_latches;
         staged.terminal_quiescence = self.wire.terminal_quiescence.clone();
-        staged.last_prefix = self.wire.last_prefix.map(|_| current_prefix.clone());
+        staged.last_position = self
+            .wire
+            .last_prefix
+            .map(|_| HostAssertionPrefixPosition::from_prefix(current_prefix));
         *evaluator = staged;
         Ok(())
     }
@@ -1354,7 +1372,7 @@ impl HostAssertionEvaluator {
             code_points: BTreeMap::new(),
             mem_places: BTreeMap::new(),
             terminal_quiescence: None,
-            last_prefix: None,
+            last_position: None,
         }
     }
 
@@ -1448,7 +1466,7 @@ impl HostAssertionEvaluator {
             prefix,
             &self.white_box_policies,
         ));
-        self.last_prefix = Some(prefix.clone());
+        self.last_position = Some(HostAssertionPrefixPosition::from_prefix(prefix));
         sort_host_assertion_outcomes(&mut outcomes);
         outcomes
     }
@@ -1482,10 +1500,10 @@ impl HostAssertionEvaluator {
     where
         O: HostAssertionOracle + ?Sized,
     {
-        let Some(previous_prefix) = self.last_prefix.clone() else {
+        let Some(previous_position) = self.last_position else {
             return Vec::new();
         };
-        let previous_at = previous_prefix.point().at().ticks;
+        let previous_at = previous_position.point.at().ticks;
         let next_at = prefix.point().at().ticks;
         if next_at <= previous_at {
             return Vec::new();
