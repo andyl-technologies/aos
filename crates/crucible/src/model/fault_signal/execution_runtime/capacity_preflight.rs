@@ -310,7 +310,7 @@ mod tests {
         let plan = test_plan();
         let seed = ContentHash::from_bytes(b"borrowed-capacity-wire-equivalence");
         let coordinate = FaultCoordinate {
-            virtual_nanos: 0,
+            virtual_ticks: 0,
             retired_instructions: None,
         };
         let mut runtime = FaultExecutionRuntime::new(

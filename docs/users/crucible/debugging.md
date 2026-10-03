@@ -65,12 +65,12 @@ keywords:
 ```text
 continue
 pause
-step                  alias: step-quantum
+step-quantum
 step-event
 step-assertion
 step-timer
 step-duration
-save                  alias: create-savepoint
+create-savepoint
 fork
 query
 stop
@@ -88,14 +88,9 @@ the response. An interactive terminal therefore does not require a separate EOF
 after `stop`.
 
 The current parser accepts only the keyword; it does not parse payloads for a
-duration, query selector, savepoint label, or fork override. Use the
-top-level `save`, `resume`, and `fork` commands for parameterized workflows and
+duration, query selector, or savepoint label. Use the
+top-level `save` and `resume` commands for parameterized workflows and
 put deterministic fault behavior in the scenario's signal graph and bindings.
-
-An interactive live-QEMU `fork` is intentionally transient: its final report
-retains checkpoint and oracle evidence but marks its reproduction artifact
-`status=not-captured`. Run a non-interactive fork to produce a replayable child
-artifact.
 
 For a bounded inspection session, pipe commands explicitly:
 
@@ -109,10 +104,19 @@ scenario has an independent terminal condition.
 
 ## Live status
 
-`run`, `resume`, and `fork` accept `--watch`. It adds session status updates to
-the backend's collected run evidence. Table output prints collected updates as
+`run` and `resume` accept `--watch`. It adds live Campaign and attempt status
+updates to the backend's collected run evidence. Table output prints collected updates as
 human-readable `run-watch` lines. JSON and JSONL remain canonical event-log
 renderings and do not add a separate non-canonical status stream.
+
+The non-interactive local-QEMU `run` path reports authenticated campaign
+snapshots instead of session summaries. Each collected status retains the
+campaign name, exact snapshot identity, lifecycle state, scheduler frontier,
+absolute quantum coordinate, and any observation incorporated at that head.
+The CLI's synchronous backend contract buffers these statuses until the
+guarded owner returns; it does not promise terminal output before completion.
+A successful scenario-default run retains at most 65,540 status frames under
+the owner's fixed choice bound.
 
 ## Debug command
 
@@ -226,6 +230,23 @@ available at subsequent scheduler boundaries.
 `--allow-mutate` only authorizes the explicit `fork-debug` verb. It does not
 fork by itself, and mutation or operator-controlled execution remains rejected
 until that whole-world non-canonical branch has been created.
+
+For a retained campaign finding, `campaign debug ... --writable` performs that
+fork as one owner-backed operation before opening the relay. The lifecycle
+registry keeps the finding proof, exact checkpoint, private runtime resources,
+and non-canonical branch identity for the complete session lifetime. The
+printed `id:epoch:seed` can therefore be reused by later `debug --session`
+commands; disconnecting GDB does not discard the derivative. Without
+`--writable`, campaign debug remains exclusive and read-only.
+
+Campaign-owned sessions survive daemon restart through the campaign owner's
+bounded durable inventory. Restart reauthenticates the original snapshot-bound
+finding proof and exact checkpoint before creating a replacement lifecycle
+session. Use the ordinary session list to obtain its new `id:epoch:seed` and
+the ordinary session destroy operation to remove both the live session and its
+durable inventory entry. Recovery returns to the authenticated canonical
+checkpoint read-only. A prior non-canonical branch is ephemeral and must be
+forked again after restart.
 
 The shipped debug fixture keeps the guest agent inactive on canonical execution.
 Its content-addressed launch includes a fixed activation-only port and a single

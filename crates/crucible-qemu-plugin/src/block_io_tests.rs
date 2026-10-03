@@ -7,6 +7,9 @@ use crucible_shmem::{KIND_VM, RegionConfig, RegionLayout, ReservedExecutorSlot};
 #[path = "block_io_tests/resource_limits.rs"]
 mod resource_limits;
 
+#[path = "block_io_tests/inbound_head.rs"]
+mod inbound_head;
+
 #[test]
 fn transport_continuation_round_trips_allocator_and_exact_history() {
     let source = PluginBlockIo::new(2, 8, 9);
@@ -490,7 +493,7 @@ fn block_poll_rejects_wrong_response_source_and_releases_freeze_token() {
 }
 
 #[test]
-fn block_poll_guest_completion_failure_still_releases_freeze_token() {
+fn block_poll_guest_completion_failure_retains_original_head_and_token() {
     let slot = NodeSlot::new(KIND_VM);
     let mut freeze = PluginDeviceIoFreeze::new();
     let block = PluginBlockIo::new(2, 8, 9);
@@ -511,30 +514,188 @@ fn block_poll_guest_completion_failure_still_releases_freeze_token() {
         ..RecordingCompletion::default()
     };
 
-    let error = match block.poll_response(&mut freeze, &slot, &inbound, &mut completion, 90, token)
+    let token = match block.poll_response(&mut freeze, &slot, &inbound, &mut completion, 90, token)
     {
-        Ok(_) => panic!("guest completion failure should be returned"),
-        Err(error) => error,
-    };
-    match error {
-        BlockIoError::GuestCompletion {
-            request_id: 0,
-            release,
-            source,
-        } => {
-            assert_eq!(release.pending_requests(), 0);
-            assert_eq!(release.outcome(), crate::DeviceIoRequestOutcome::Completed);
+        Ok(BlockPoll::Retry { token, source }) => {
             assert_eq!(
                 source,
-                BlockGuestCompletionError::new("guest completion failure")
+                BlockIoError::GuestCompletion {
+                    request_id: 0,
+                    source: BlockGuestCompletionError::new("guest completion failure"),
+                }
             );
+            token
         }
-        other => panic!("guest failure should be guest completion error: {other:?}"),
-    }
+        other => panic!("guest completion failure must retain custody: {other:?}"),
+    };
+    assert_eq!(inbound_header.read_index(), 0);
+    assert_eq!(freeze.pending_requests(), 1);
+    assert_eq!(slot.snapshot().device_io_active, 1);
+    assert!(completion.responses.is_empty());
+
+    completion.fail_message = None;
+    assert!(matches!(
+        block.poll_response(&mut freeze, &slot, &inbound, &mut completion, 90, token),
+        Ok(BlockPoll::Completed { .. })
+    ));
     assert_eq!(inbound_header.read_index(), 1);
     assert_eq!(freeze.pending_requests(), 0);
-    assert_eq!(slot.snapshot().device_io_active, 0);
-    assert!(completion.responses.is_empty());
+    assert_eq!(completion.responses.len(), 1);
+}
+
+#[test]
+fn block_poll_retries_held_consumer_without_duplicate_guest_delivery() {
+    let slot = NodeSlot::new(KIND_VM);
+    let mut freeze = PluginDeviceIoFreeze::new();
+    let block = PluginBlockIo::new(2, 8, 9);
+    let outbound_header = RingHeader::new();
+    let mut outbound_entries = empty_entries(4);
+    let mut outbound = outbound_ring(8, 2, &outbound_header, &mut outbound_entries);
+    let token = submit_read(&block, &mut freeze, &slot, &mut outbound, 77).into_token();
+    let inbound_header = RingHeader::new();
+    let mut inbound_entries = empty_entries(4);
+    enqueue(
+        &inbound_header,
+        &mut inbound_entries,
+        response_frame(90, 0, b"abcd"),
+    );
+    let inbound = inbound_ring(9, 2, &inbound_header, &inbound_entries);
+    let mut completion = HoldBlockConsumerOnDelivery {
+        ring: &inbound_header,
+        delivered: 0,
+    };
+    let continuation = block
+        .encode_transport_continuation()
+        .unwrap_or_else(|error| panic!("unstaged continuation should encode: {error}"));
+
+    let token = match block.poll_response(&mut freeze, &slot, &inbound, &mut completion, 90, token)
+    {
+        Ok(BlockPoll::Retry {
+            token,
+            source:
+                BlockIoError::RingDequeue {
+                    source: SpscRingError::ConsumerBarrierHeld,
+                    ..
+                },
+        }) => token,
+        other => panic!("held consumer must retain original block token: {other:?}"),
+    };
+    assert_eq!(completion.delivered, 1);
+    assert_eq!(inbound_header.read_index(), 0);
+    assert_eq!(freeze.pending_requests(), 1);
+    assert_eq!(block.pending_delivery_len(token.identity()), Some(4));
+    assert!(matches!(
+        block.encode_transport_continuation(),
+        Err(BlockIoError::InvalidTransportContinuation {
+            reason: "block response delivery is pending ring settlement",
+        })
+    ));
+    assert!(matches!(
+        block.restore_transport_continuation(&continuation, 0, 1),
+        Err(BlockIoError::InvalidTransportContinuation {
+            reason: "block response delivery is pending ring settlement",
+        })
+    ));
+
+    assert!(!inbound_header.release_hot_fork_consumers().held());
+    assert!(matches!(
+        block.poll_response(&mut freeze, &slot, &inbound, &mut completion, 90, token),
+        Ok(BlockPoll::Completed { .. })
+    ));
+    assert_eq!(completion.delivered, 1);
+    assert_eq!(inbound_header.read_index(), 1);
+    assert_eq!(freeze.pending_requests(), 0);
+    assert_eq!(
+        block.pending_delivery_len(BlockRequestIdentity::new(0, 0)),
+        None
+    );
+    assert!(block.encode_transport_continuation().is_ok());
+}
+
+#[test]
+fn block_poll_quarantines_disappeared_head_after_guest_delivery() {
+    let slot = NodeSlot::new(KIND_VM);
+    let mut freeze = PluginDeviceIoFreeze::new();
+    let block = PluginBlockIo::new(2, 8, 9);
+    let outbound_header = RingHeader::new();
+    let mut outbound_entries = empty_entries(4);
+    let mut outbound = outbound_ring(8, 2, &outbound_header, &mut outbound_entries);
+    let token = submit_read(&block, &mut freeze, &slot, &mut outbound, 77).into_token();
+    let inbound_header = RingHeader::new();
+    let mut inbound_entries = empty_entries(4);
+    enqueue(
+        &inbound_header,
+        &mut inbound_entries,
+        response_frame(90, 0, b"abcd"),
+    );
+    let inbound = inbound_ring(9, 2, &inbound_header, &inbound_entries);
+    let mut completion = StealBlockConsumerOnDelivery {
+        ring: &inbound_header,
+        entries: &inbound_entries,
+        delivered: 0,
+    };
+
+    let token = match block.poll_response(&mut freeze, &slot, &inbound, &mut completion, 90, token)
+    {
+        Ok(BlockPoll::Quarantined {
+            token,
+            source: BlockIoError::DequeuedUnexpectedFrame { actual: None, .. },
+        }) => token,
+        other => panic!("disappeared delivered head must quarantine: {other:?}"),
+    };
+    assert!(matches!(
+        block.poll_response(&mut freeze, &slot, &inbound, &mut completion, 90, token),
+        Ok(BlockPoll::Quarantined { .. })
+    ));
+    assert_eq!(completion.delivered, 1);
+    assert_eq!(freeze.pending_requests(), 1);
+}
+
+#[test]
+fn block_poll_quarantines_changed_head_after_delivery_barrier() {
+    let slot = NodeSlot::new(KIND_VM);
+    let mut freeze = PluginDeviceIoFreeze::new();
+    let block = PluginBlockIo::new(2, 8, 9);
+    let outbound_header = RingHeader::new();
+    let mut outbound_entries = empty_entries(4);
+    let mut outbound = outbound_ring(8, 2, &outbound_header, &mut outbound_entries);
+    let token = submit_read(&block, &mut freeze, &slot, &mut outbound, 77).into_token();
+    let inbound_header = RingHeader::new();
+    let mut inbound_entries = empty_entries(4);
+    enqueue(
+        &inbound_header,
+        &mut inbound_entries,
+        response_frame(90, 0, b"abcd"),
+    );
+    let inbound = inbound_ring(9, 2, &inbound_header, &inbound_entries);
+    let mut completion = HoldBlockConsumerOnDelivery {
+        ring: &inbound_header,
+        delivered: 0,
+    };
+    let token = match block.poll_response(&mut freeze, &slot, &inbound, &mut completion, 90, token)
+    {
+        Ok(BlockPoll::Retry { token, .. }) => token,
+        other => panic!("delivery barrier must retain original token: {other:?}"),
+    };
+    assert!(!inbound_header.release_hot_fork_consumers().held());
+    inbound_entries[0] = response_frame(90, 0, b"wxyz");
+    let changed = inbound_ring(9, 2, &inbound_header, &inbound_entries);
+
+    let token = match block.poll_response(&mut freeze, &slot, &changed, &mut completion, 90, token)
+    {
+        Ok(BlockPoll::Quarantined {
+            token,
+            source: BlockIoError::DequeuedUnexpectedFrame { .. },
+        }) => token,
+        other => panic!("changed delivered head must quarantine: {other:?}"),
+    };
+    assert!(matches!(
+        block.poll_response(&mut freeze, &slot, &changed, &mut completion, 90, token),
+        Ok(BlockPoll::Quarantined { .. })
+    ));
+    assert_eq!(completion.delivered, 1);
+    assert_eq!(inbound_header.read_index(), 0);
+    assert_eq!(freeze.pending_requests(), 1);
 }
 
 #[test]
@@ -665,8 +826,45 @@ impl BlockGuestCompletion for RecordingCompletion {
     }
 }
 
+struct HoldBlockConsumerOnDelivery<'a> {
+    ring: &'a RingHeader,
+    delivered: usize,
+}
+
+impl BlockGuestCompletion for HoldBlockConsumerOnDelivery<'_> {
+    fn complete_block_response(
+        &mut self,
+        _response: &BlockResponse,
+    ) -> Result<(), BlockGuestCompletionError> {
+        self.delivered += 1;
+        assert!(self.ring.hold_hot_fork_consumers().quiescent());
+        Ok(())
+    }
+}
+
+struct StealBlockConsumerOnDelivery<'a> {
+    ring: &'a RingHeader,
+    entries: &'a [FrameEntry],
+    delivered: usize,
+}
+
+impl BlockGuestCompletion for StealBlockConsumerOnDelivery<'_> {
+    fn complete_block_response(
+        &mut self,
+        _response: &BlockResponse,
+    ) -> Result<(), BlockGuestCompletionError> {
+        self.delivered += 1;
+        let removed = self
+            .ring
+            .dequeue(self.entries)
+            .unwrap_or_else(|error| panic!("test consumer should dequeue: {error}"));
+        assert!(removed.is_some());
+        Ok(())
+    }
+}
+
 fn layout() -> RegionLayout {
-    match RegionLayout::for_config(RegionConfig::new(2, 4, 0)) {
+    match RegionLayout::for_config(RegionConfig::new(2, 4)) {
         Ok(layout) => layout,
         Err(error) => panic!("layout should be valid: {error}"),
     }

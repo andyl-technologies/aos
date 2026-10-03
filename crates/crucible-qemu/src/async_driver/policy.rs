@@ -16,7 +16,15 @@ impl QemuAsyncDriverPolicy {
             qmp_command_timeout,
             process_event_timeout,
             advance_completion_timeout,
+            unbounded_advance_completion: false,
         }
+    }
+
+    /// Renews advance polling slices for campaigns without a host watchdog.
+    #[must_use]
+    pub const fn with_unbounded_advance_completion(mut self) -> Self {
+        self.unbounded_advance_completion = true;
+        self
     }
 
     /// Returns a small nonzero policy for unit tests.

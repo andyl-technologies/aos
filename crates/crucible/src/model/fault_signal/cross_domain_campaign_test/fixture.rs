@@ -233,7 +233,7 @@ fn observability() -> BindingObservabilityPolicy {
 
 pub(super) fn campaign_coordinate() -> FaultCoordinate {
     FaultCoordinate {
-        virtual_nanos: CAMPAIGN_COORDINATE,
+        virtual_ticks: CAMPAIGN_COORDINATE,
         retired_instructions: None,
     }
 }
@@ -251,7 +251,6 @@ pub(super) fn campaign_scenario() -> ScenarioDefForm {
         },
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: 2,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,

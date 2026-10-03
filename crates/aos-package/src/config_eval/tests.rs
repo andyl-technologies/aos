@@ -20,6 +20,48 @@ use crate::types::{
     ConfigModuleMeta, ConfigOutputMeta, ModuleAbiCompat, OwnedRoot, RootContribution,
 };
 
+#[test]
+fn explicit_eval_store_keeps_canonical_paths_in_an_isolated_local_root() {
+    let mut command = Command::new("nix-store");
+    configure_eval_nix_command(
+        &mut command,
+        Some(OsStr::new(
+            "local?root=/tmp/aos-config-eval-test/store-root",
+        )),
+    )
+    .expect("explicit local-root evaluator store is valid");
+
+    let bindings = command.get_envs().collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        bindings.get(OsStr::new("NIX_REMOTE")),
+        Some(&Some(OsStr::new(
+            "local?root=/tmp/aos-config-eval-test/store-root"
+        )))
+    );
+    for name in ["NIX_STORE_DIR", "NIX_STATE_DIR", "NIX_LOG_DIR"] {
+        assert_eq!(bindings.get(OsStr::new(name)), Some(&None));
+    }
+}
+
+#[test]
+fn explicit_eval_store_rejects_daemons_and_host_or_ambiguous_roots() {
+    for uri in [
+        "daemon",
+        "local",
+        "local?root=/",
+        "local?root=/nix/store",
+        "local?root=relative",
+        "local?root=/tmp/../nix",
+        "local?root=/tmp/eval&store=/nix/store",
+    ] {
+        let mut command = Command::new("nix-store");
+        assert!(
+            configure_eval_nix_command(&mut command, Some(OsStr::new(uri))).is_err(),
+            "accepted unsafe evaluator store {uri}"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------

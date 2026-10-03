@@ -108,7 +108,11 @@ pub(crate) fn replay_machine_readable_trace_entries(
             &mut entries,
             "replay_live_qemu",
             format!(
-                "validation=passed producer={} reproduced_status={} reproduced_outcome={} terminal_configuration={} event_stream={} fingerprint_stream={} controls={}",
+                "validation=passed owner={} producer={} reproduced_status={} reproduced_outcome={} terminal_configuration={} event_stream={} fingerprint_stream={} controls={}",
+                match live.execution_owner {
+                    RunExecutionOwner::Session => "session",
+                    RunExecutionOwner::Campaign => "campaign",
+                },
                 live.producer,
                 live.terminal_status,
                 live.terminal_outcome,
@@ -118,6 +122,24 @@ pub(crate) fn replay_machine_readable_trace_entries(
                 live.controls
             ),
         );
+        if let Some(preemption) = live.host_scheduler_preemption {
+            entries.push(CanonicalLogEntry {
+                sequence: entries.len() as u64,
+                virtual_time_ticks: entries
+                    .last()
+                    .map(|entry| entry.virtual_time_ticks.saturating_add(1))
+                    .unwrap_or(0),
+                node: String::from("host"),
+                kind: String::from("bounded_scheduler_preemption"),
+                summary: format!(
+                    "profile=replay applied={} pending_quantum_certified={} perturbations={} requested_stopped_ms={}",
+                    preemption.applied,
+                    preemption.pending_quantum_certified,
+                    preemption.perturbations,
+                    preemption.requested_stopped_milliseconds
+                ),
+            });
+        }
     }
     if let Some(check) = &report.check {
         push_replay_trace_entry(

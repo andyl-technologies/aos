@@ -41,7 +41,7 @@ Predicates are structured `kind` tables or one of the named DSL strings.
 | Predicate | True when | Required inputs |
 |---|---|---|
 | `at` | Virtual time equals a coordinate | `at_ticks` |
-| `after` | A duration elapsed since an event last fired | `duration_nanos`, event `of` |
+| `after` | An exact picosecond duration elapsed since an event last fired | `duration_ticks`, event `of` |
 | `timer` | Named relative timer fires | `name` |
 | `network_match` | A delivered frame matches | nested frame predicate, optional link |
 | `console_match` | Captured serial output matches | node, deterministic regex |

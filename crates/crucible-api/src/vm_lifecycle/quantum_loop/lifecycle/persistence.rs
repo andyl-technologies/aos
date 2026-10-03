@@ -370,7 +370,7 @@ impl ProductionVmLifecycleLoop {
         Ok(())
     }
 
-    pub(super) fn reserve_lifecycle_state_encoding(
+    pub(in crate::vm_lifecycle) fn reserve_lifecycle_state_encoding(
         &mut self,
         limits: FaultResourceLimits,
         runtime_event_records: u64,
@@ -573,10 +573,9 @@ mod tests {
             destination: &mut destination,
         };
 
-        let error = writer
-            .write_all(b"four")
-            .err()
-            .unwrap_or_else(|| panic!("write beyond reserved journal storage must fail"));
+        let Some(error) = writer.write_all(b"four").err() else {
+            panic!("write beyond reserved journal storage must fail");
+        };
 
         assert_eq!(error.kind(), std::io::ErrorKind::WriteZero);
         assert!(writer.destination.is_empty());

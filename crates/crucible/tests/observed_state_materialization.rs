@@ -5,12 +5,12 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    AppRandomDecision, BackendInput, ConditionEvaluationError, ConditionEvaluationPass,
-    ConditionLeaf, ConditionLeafOracle, ContentHash, Decision, DeliveryOrderDecision, EventKey,
-    Icount, IrqVector, NodeId, ObservableEvent, ObservedOrderingFact, OverrideDecision,
-    PreemptionDecision, PreemptionKind, RngDecision, RngStreamId, ScheduledEvent,
-    ScheduledEventKey, ScheduledEventPayload, SchedulerEvaluationBoundaryKind,
-    SchedulerEventLogPayload, SchedulerNodeId, SchedulingNodeKind, VcpuId, VirtualTime,
+    BackendInput, ConditionEvaluationError, ConditionEvaluationPass, ConditionLeaf,
+    ConditionLeafOracle, ContentHash, Decision, DeliveryOrderDecision, EventKey, IrqVector, NodeId,
+    ObservableEvent, ObservedOrderingFact, OverrideDecision, PreemptionDecision, PreemptionKind,
+    RngDecision, RngStreamId, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload,
+    SchedulerEvaluationBoundaryKind, SchedulerEventLogPayload, SchedulerNodeId, SchedulingNodeKind,
+    VcpuId, VirtualTime,
 };
 
 #[test]
@@ -65,7 +65,7 @@ fn observed_state_materializes_only_checked_event_log_prefix() {
             time(6),
             SchedulerEventLogPayload::Decision(Decision::Preemption(PreemptionDecision {
                 node: node("db-0"),
-                at: Icount { retired: 6 },
+                at: crucible::SimInstant { ticks: 6 },
                 kind: PreemptionKind::InterruptAt {
                     target_vcpu: VcpuId { index: 0 },
                     irq: IrqVector { vector: 33 },
@@ -75,11 +75,8 @@ fn observed_state_materializes_only_checked_event_log_prefix() {
         payload_entry(
             6,
             time(6),
-            SchedulerEventLogPayload::Decision(Decision::AppRandom(AppRandomDecision {
-                node: node("db-0"),
+            SchedulerEventLogPayload::Decision(Decision::RngDraw(RngDecision {
                 stream: RngStreamId::from_name("ignored-app-random"),
-                request_id: 99,
-                width: 32,
                 value: 0x1234_5678,
             })),
         ),
@@ -110,7 +107,10 @@ fn observed_state_materializes_only_checked_event_log_prefix() {
     let expected_observable_events = state.observable_events().to_vec();
     let expected_ordering_facts = state.ordering_facts().to_vec();
 
+    let borrowed = ConditionEvaluationPass::from_log_prefix_ref(&prefix, NoLeaves);
     let pass = ConditionEvaluationPass::from_log_prefix(prefix, NoLeaves);
+    assert_eq!(borrowed.point(), pass.point());
+    assert_eq!(borrowed.observed_state(), pass.observed_state());
     assert_eq!(
         pass.observed_state().observable_events(),
         expected_observable_events.as_slice()
@@ -122,6 +122,107 @@ fn observed_state_materializes_only_checked_event_log_prefix() {
 }
 
 #[test]
+fn borrowed_projection_preserves_event_timer_and_once_histories() {
+    use crucible::{
+        Action, Condition, Event, EventGraph, EventGraphState, EventId, SimDuration, TimerId,
+        TriggerActionApplication,
+    };
+
+    let anchor = EventId::from_name("anchor");
+    let timer = TimerId {
+        name: String::from("finish"),
+    };
+    let initial = EventGraph::new(vec![Event::once(
+        anchor.clone(),
+        Some(Condition::at(time(3))),
+        Action::arm_timer(timer.clone(), SimDuration { ticks: 10 }),
+    )])
+    .expect("initial graph should validate");
+    let initial_prefix = crucible::ConditionEventLogPrefix::from_evaluation_boundary(
+        0,
+        time(3),
+        SchedulerEvaluationBoundaryKind::Quantum,
+    )
+    .expect("initial boundary should validate");
+    let mut initial_pass = ConditionEvaluationPass::from_log_prefix(initial_prefix, NoLeaves);
+    let initial_firings = initial_pass.evaluate_event_graph(&initial, &mut EventGraphState::new());
+    let firing = initial_firings.as_slice()[0].clone();
+    let prefix = crucible::test_support::condition_prefix_from_scheduler_entries_for_test(vec![
+        payload_entry(0, time(3), SchedulerEventLogPayload::TriggerFired(firing)),
+        payload_entry(
+            1,
+            time(3),
+            SchedulerEventLogPayload::TriggerActionApplied(TriggerActionApplication {
+                sequence: 0,
+                event: anchor.clone(),
+                at: time(3),
+                path: Vec::new(),
+                action: Action::arm_timer(timer.clone(), SimDuration { ticks: 10 }),
+            }),
+        ),
+        boundary_entry(2, time(13)),
+    ])
+    .expect("runtime facts should form a checked prefix");
+    let once = Condition::Once {
+        predicate: Box::new(Condition::at(time(13))),
+    };
+    let conditions = [
+        (
+            Condition::after(SimDuration { ticks: 10 }, anchor.clone()),
+            true,
+        ),
+        (Condition::after(SimDuration { ticks: 11 }, anchor), false),
+        (Condition::timer(timer), true),
+        (
+            Condition::timer(TimerId {
+                name: String::from("absent"),
+            }),
+            false,
+        ),
+        (once.clone(), true),
+    ];
+    let mut owned = ConditionEvaluationPass::from_log_prefix(prefix.clone(), NoLeaves);
+    let mut borrowed = ConditionEvaluationPass::from_log_prefix_ref(&prefix, NoLeaves);
+
+    assert_eq!(borrowed.point(), owned.point());
+    assert_eq!(borrowed.observed_state(), owned.observed_state());
+    for (condition, expected) in conditions {
+        assert_eq!(owned.evaluate_assertion_condition(&condition), expected);
+        assert_eq!(borrowed.evaluate_assertion_condition(&condition), expected);
+    }
+    assert_eq!(borrowed.once_latches(), &[Condition::at(time(13))]);
+    assert_eq!(borrowed.once_latches(), owned.once_latches());
+
+    let graph = EventGraph::new(vec![Event::once(
+        EventId::from_name("finish"),
+        Some(once.clone()),
+        Action::Pass,
+    )])
+    .expect("completion graph should validate");
+    let mut owned_state = EventGraphState::new();
+    let mut borrowed_state = EventGraphState::new();
+    let borrowed_firings = borrowed.evaluate_event_graph(&graph, &mut borrowed_state);
+    let owned_firings = owned.evaluate_event_graph(&graph, &mut owned_state);
+    assert_eq!(borrowed_firings.len(), 1);
+    assert_eq!(borrowed_firings.as_slice()[0].action(), &Action::Pass);
+    assert_eq!(borrowed_firings, owned_firings);
+    assert_eq!(
+        borrowed_state.to_compact_binary(),
+        owned_state.to_compact_binary()
+    );
+
+    let later = crucible::ConditionEventLogPrefix::from_evaluation_boundary(
+        0,
+        time(14),
+        SchedulerEvaluationBoundaryKind::Quantum,
+    )
+    .expect("later boundary should validate");
+    let mut restored = ConditionEvaluationPass::from_log_prefix_ref(&later, NoLeaves)
+        .with_once_latches(borrowed.once_latches().to_vec());
+    assert!(restored.evaluate_assertion_condition(&once));
+}
+
+#[test]
 fn fault_evidence_does_not_expose_internal_state_to_assertion_predicates() {
     use crucible::model::{FaultCoordinate, FaultObservation, FaultObservationKind};
 
@@ -129,7 +230,7 @@ fn fault_evidence_does_not_expose_internal_state_to_assertion_predicates() {
         semantic_version: 1,
         kind: FaultObservationKind::EffectApplied,
         coordinate: FaultCoordinate {
-            virtual_nanos: 5,
+            virtual_ticks: 5,
             retired_instructions: Some(5),
         },
         binding: None,
@@ -193,11 +294,11 @@ fn observed_state_implementation_avoids_host_time_and_unordered_maps() {
     let observed_state_block = trigger_source
         .split("pub struct ObservedState")
         .nth(1)
-        .and_then(|tail| {
-            tail.split("pub fn lint_host_assertion_harness_source")
-                .next()
-        })
         .expect("observed-state implementation block should be present");
+    let host_oracle_source = include_str!("../src/trigger/conditions/host_oracle.rs");
+    let (host_oracle_block, _) = host_oracle_source
+        .split_once("pub fn lint_host_assertion_harness_source")
+        .expect("host-oracle lint boundary should be present");
 
     for forbidden in [
         "HashMap",
@@ -207,10 +308,12 @@ fn observed_state_implementation_avoids_host_time_and_unordered_maps() {
         "std::time",
         "thread::",
     ] {
-        assert!(
-            !observed_state_block.contains(forbidden),
-            "observed-state materialization must not use `{forbidden}`"
-        );
+        for block in [observed_state_block, host_oracle_block] {
+            assert!(
+                !block.contains(forbidden),
+                "observed-state materialization and host oracles must not use `{forbidden}`"
+            );
+        }
     }
 }
 
@@ -253,11 +356,15 @@ fn scheduled_event_key(
     producer: &str,
     sequence: u64,
 ) -> ScheduledEventKey {
-    ScheduledEventKey::from_parts(
-        time(virtual_time),
-        scheduler_node(consumer),
+    ScheduledEventKey::new(
+        crucible::SharedTimelineKey {
+            virtual_time: crucible::SimInstant {
+                ticks: (time(virtual_time)).ticks,
+            },
+            node: scheduler_node(consumer),
+            sequence,
+        },
         scheduler_node(producer),
-        sequence,
     )
 }
 

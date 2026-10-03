@@ -48,8 +48,8 @@ pub(super) fn encode_golden_state(state: &GoldenState) -> Vec<u8> {
     );
     write_u32(
         &mut bytes,
-        REGION_HEADER_ICOUNT_SHIFT_OFFSET,
-        state.region.icount_shift,
+        REGION_HEADER_TICKS_PER_NS_OFFSET,
+        state.region.ticks_per_ns,
     );
     write_u8(
         &mut bytes,
@@ -119,18 +119,28 @@ pub(super) fn encode_golden_state(state: &GoldenState) -> Vec<u8> {
     );
     write_u64(
         &mut bytes,
-        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_AT_ICOUNT_OFFSET,
-        state.node.preemption_at_icount,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER_OFFSET,
+        state.node.control_boundary_fault_command_frontier,
+    );
+    write_u32(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET,
+        state.node.control_boundary_capture_request,
     );
     write_u64(
         &mut bytes,
-        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_DEADLINE_ICOUNT_OFFSET,
-        state.node.preemption_deadline_icount,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_AT_TICK_OFFSET,
+        state.node.preemption_at_tick,
     );
     write_u64(
         &mut bytes,
-        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_CEILING_ICOUNT_OFFSET,
-        state.node.preemption_ceiling_icount,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_DEADLINE_TICK_OFFSET,
+        state.node.preemption_deadline_tick,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_CEILING_TICK_OFFSET,
+        state.node.preemption_ceiling_tick,
     );
     write_u32(
         &mut bytes,
@@ -177,6 +187,51 @@ pub(super) fn encode_golden_state(state: &GoldenState) -> Vec<u8> {
         GOLDEN_NODE_SLOT_BASE + NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET,
         state.node.logical_time_restore_ack,
     );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET,
+        state.node.timer_witness_generation,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_DEADLINE_PS_OFFSET,
+        state.node.timer_witness_deadline_ps,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_DEADLINE_TICK_OFFSET,
+        state.node.timer_witness_deadline_tick,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_ARMED_RAW_ICOUNT_OFFSET,
+        state.node.timer_witness_armed_raw_icount,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_PS_OFFSET,
+        state.node.timer_witness_fired_expire_ps,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_PS_OFFSET,
+        state.node.timer_witness_fired_virtual_ps,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_RAW_ICOUNT_OFFSET,
+        state.node.timer_witness_fired_raw_icount,
+    );
+    write_u32(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_COMPLETED_OFFSET,
+        state.node.timer_witness_completed,
+    );
+    write_u32(
+        &mut bytes,
+        GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_RESERVED_OFFSET,
+        state.node.timer_witness_reserved,
+    );
 
     write_u64(
         &mut bytes,
@@ -187,6 +242,11 @@ pub(super) fn encode_golden_state(state: &GoldenState) -> Vec<u8> {
         &mut bytes,
         GOLDEN_RING_HEADER_BASE + RING_HEADER_WRITE_IDX_OFFSET,
         state.ring.write_idx,
+    );
+    write_u64(
+        &mut bytes,
+        GOLDEN_RING_HEADER_BASE + RING_HEADER_PRODUCER_STATE_OFFSET,
+        state.ring.producer_state,
     );
 
     write_u64(

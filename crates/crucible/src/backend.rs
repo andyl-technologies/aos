@@ -6,12 +6,33 @@
 
 use crate::model::{FaultObjectId, FaultPhase};
 use crate::{
-    Checkpoint, ContentHash, Decision, Icount, NodeId, ObservableEvent, PreemptionDecision,
-    VirtualTime,
+    BackendRngEvidence, Checkpoint, ContentHash, Icount, NodeId, ObservableEvent,
+    PreemptionDecision, VirtualTime,
 };
 use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 mod error;
+mod io_inventory;
 pub use error::BackendError;
+pub use io_inventory::{
+    BackendIoComputedReply, BackendIoInventory, BackendIoInventoryAuthority, BackendIoNativeCap,
+    BackendIoNativeCaps, BackendIoQueueSnapshot,
+};
+
+/// Selects the implemented execution contract before scheduler dispatch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BackendDispatchContract {
+    /// Requires independently retained native Source admission and inventory.
+    PhysicalSource,
+    /// Executes exact scheduler ceilings through control protocol version 3.
+    ///
+    /// The installed backend retains and services its real queues. Scheduler
+    /// admissions bind actor planning only and do not grant native Source
+    /// authority. Each completed RUN ends at its published bounded ceiling or
+    /// an authenticated earlier physical stop. Incoming producer lookahead
+    /// bounds completed ceilings strictly before possible delivery; windows
+    /// without a positive representable safe tick are refused.
+    ControlV3,
+}
 
 /// A VM backend boundary declared by the engine.
 pub trait Backend {
@@ -80,6 +101,75 @@ pub trait Backend {
 /// intentionally does not require [`Send`] because concrete QEMU adapters may
 /// wrap thread-affine channel and process-runtime handles.
 pub trait SimulationBackend {
+    /// Observes an original received Group under complete held Source input.
+    ///
+    /// # Errors
+    ///
+    /// Refuses unavailable receipt custody, physical ownership or coverage.
+    /// The default is unsupported and never infers a Group from copied bytes.
+    fn observe_device_group_opportunity(
+        &mut self,
+        _node: &NodeId,
+    ) -> Result<Option<crate::BackendDeviceGroupObservation>, BackendError> {
+        Err(BackendError::Unsupported {
+            capability: "observe_device_group_opportunity",
+        })
+    }
+
+    /// Reauthenticates both original Group observation owners and physical facts.
+    ///
+    /// # Errors
+    ///
+    /// Refuses different Source or receive custody, changed physical process,
+    /// mapping, paired GRID, input enumeration or opportunity. The default
+    /// cannot acknowledge physical authority supplied by a shape constructor.
+    fn device_group_opportunity_current(
+        &mut self,
+        _observation: &crate::BackendDeviceGroupObservation,
+    ) -> Result<(), BackendError> {
+        Err(BackendError::Unsupported {
+            capability: "device_group_opportunity_current",
+        })
+    }
+
+    /// Queues the exact original scheduler selection as command13.
+    ///
+    /// Success records queued publication only, not native acceptance or release.
+    /// An uncertain attempt retains its original command and selection so retry
+    /// recovers the same actual ACK without replaying publication. Such a retry
+    /// authenticates its pending association even after physical Held ends.
+    ///
+    /// # Errors
+    ///
+    /// The default refuses. Implementations reject unavailable original physical
+    /// ownership on first publication, foreign selection or pending command,
+    /// changed mapping, and any unresolved queued acknowledgement.
+    fn queue_device_group_selection(
+        &mut self,
+        _prepared: &crate::PreparedDeviceGroupSelection,
+    ) -> Result<(), BackendError> {
+        Err(BackendError::Unsupported {
+            capability: "queue_device_group_selection",
+        })
+    }
+
+    /// Returns the positively selected execution contract.
+    ///
+    /// Unclassified backends require genuine native Source admission. A
+    /// versioned control backend selects its installed protocol explicitly;
+    /// refusal or missing observations never change this contract.
+    fn dispatch_contract(&self) -> BackendDispatchContract {
+        BackendDispatchContract::PhysicalSource
+    }
+
+    /// Returns the implemented owner of complete I/O queue observations.
+    ///
+    /// Operational and unclassified backends require physical Source-backed
+    /// observation. Pure model adapters explicitly select scheduler-owned queues.
+    fn io_inventory_authority(&self) -> BackendIoInventoryAuthority {
+        BackendIoInventoryAuthority::PhysicalSource
+    }
+
     /// Advances backend nodes toward `ceiling`.
     ///
     /// # Errors
@@ -107,6 +197,166 @@ pub trait SimulationBackend {
         self.step_to(ceiling)
     }
 
+    /// Executes one scheduler-owned RUN with its frozen inputs and exact bounds.
+    ///
+    /// Operational backends must authenticate their independent physical
+    /// identity and native execution permission. The default refuses; model
+    /// backends may explicitly delegate to their modeled step implementation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError::Unsupported`] without effects when the backend
+    /// has no admission implementation, or its operational execution error.
+    fn step_node_with_admission(
+        &mut self,
+        admission: &crate::PreparedRunAdmission,
+    ) -> Result<crate::BackendRunResult, BackendError> {
+        let _ = admission;
+        Err(BackendError::Unsupported {
+            capability: "step_node_with_admission",
+        })
+    }
+
+    /// Stages an actual due input under the backend's retained input-stop owner.
+    ///
+    /// This never opens a legacy RUN or publishes an ordinary completion.
+    ///
+    /// # Errors
+    ///
+    /// The default refuses without effects. Operational implementations reject
+    /// foreign owners, non-input effects and coordinates differing from the stop.
+    fn stage_input_boundary_effect(
+        &mut self,
+        boundary: &crate::BackendRunInputBoundary,
+        delivery_key: &crate::ScheduledEventKey,
+        effect: &BackendEffect,
+        at: VirtualTime,
+    ) -> Result<(), BackendError> {
+        let _ = (boundary, delivery_key, effect, at);
+        Err(BackendError::Unsupported {
+            capability: "stage_input_boundary_effect",
+        })
+    }
+
+    /// Stages a concrete scheduler I/O completion at its retained input stop.
+    ///
+    /// Removing a modeled device queue entry does not prove consumption by a
+    /// physical service ring. Operational adapters must authenticate the exact
+    /// event source and key against their retained owner and delivery ledger.
+    ///
+    /// # Errors
+    ///
+    /// The default refuses without effects. Implementations reject unsupported
+    /// sources, foreign owners and coordinates differing from the fixed stop.
+    fn stage_input_boundary_io_completion(
+        &mut self,
+        boundary: &crate::BackendRunInputBoundary,
+        delivery_key: &crate::ScheduledEventKey,
+        completion: &crate::IoCompletion,
+        at: VirtualTime,
+    ) -> Result<(), BackendError> {
+        let _ = (boundary, delivery_key, completion, at);
+        Err(BackendError::Unsupported {
+            capability: "stage_input_boundary_io_completion",
+        })
+    }
+
+    /// Stages a due input under an independently authenticated internal stop.
+    ///
+    /// # Errors
+    ///
+    /// The default refuses. An operational backend must own a genuine fixed-T
+    /// stopped consumer; a dispatch coordinate alone grants no delivery access.
+    fn stage_dispatch_boundary_effect(
+        &mut self,
+        boundary: &crate::BackendRunDispatchBoundary,
+        delivery_key: &crate::ScheduledEventKey,
+        effect: &BackendEffect,
+        at: VirtualTime,
+    ) -> Result<(), BackendError> {
+        let _ = (boundary, delivery_key, effect, at);
+        Err(BackendError::Unsupported {
+            capability: "stage_dispatch_boundary_effect",
+        })
+    }
+
+    /// Publishes one exact physical I/O response at a retained internal stop.
+    ///
+    /// # Errors
+    ///
+    /// The default refuses. The actual queue source and native stopped consumer
+    /// must be independently authenticated before any response publication.
+    fn stage_dispatch_boundary_io_completion(
+        &mut self,
+        boundary: &crate::BackendRunDispatchBoundary,
+        delivery_key: &crate::ScheduledEventKey,
+        completion: &crate::IoCompletion,
+        at: VirtualTime,
+    ) -> Result<(), BackendError> {
+        let _ = (boundary, delivery_key, completion, at);
+        Err(BackendError::Unsupported {
+            capability: "stage_dispatch_boundary_io_completion",
+        })
+    }
+
+    /// Settles an exact scheduler-owned due batch without guest execution.
+    ///
+    /// Implementations retain their genuine stopped Source, directed inbox
+    /// prefix and consumer through partial outcomes. Published requires the
+    /// actual unchanged GRID, source reseal and completed publication witness.
+    ///
+    /// # Errors
+    ///
+    /// The default refuses. A scalar owner or receipt echo alone never permits
+    /// fixed-input publication.
+    fn settle_fixed_input(
+        &mut self,
+        prepared: &crate::PreparedHostFixedInput,
+    ) -> Result<crate::BackendFixedInputResult, BackendError> {
+        let _ = prepared;
+        Err(BackendError::Unsupported {
+            capability: "settle_fixed_input",
+        })
+    }
+
+    /// Observes complete physical queues before the initial scheduler PICK.
+    ///
+    /// Operational implementations require the genuine installed Setup/STOP
+    /// source and current full clock/grid/census. Ready identity alone is not
+    /// a fence. No request or response may be consumed by this observation.
+    ///
+    /// # Errors
+    ///
+    /// Refuses an absent, stale, foreign or incomplete source. The default is
+    /// unsupported and never manufactures an empty inventory.
+    fn observe_node_io_inventory(
+        &mut self,
+        _node: &NodeId,
+    ) -> Result<BackendIoInventory, BackendError> {
+        Err(BackendError::Unsupported {
+            capability: "observe_node_io_inventory",
+        })
+    }
+
+    /// Observes real queues under the exact retained physical RUN owner.
+    ///
+    /// This covers refreshed input and cap negotiations. The backend joins its
+    /// accepted command, current stopped receipt and full GRID before and after
+    /// observation; the caller's admission is only the equality binding.
+    ///
+    /// # Errors
+    ///
+    /// Refuses stale admissions, missing source ownership or changing queues.
+    /// The default is unsupported without effects.
+    fn observe_run_io_inventory(
+        &mut self,
+        _admission: &crate::PreparedRunAdmission,
+    ) -> Result<BackendIoInventory, BackendError> {
+        Err(BackendError::Unsupported {
+            capability: "observe_run_io_inventory",
+        })
+    }
+
     /// Drains observations produced by the last completed backend step.
     ///
     /// Live adapters use a bounded transport whose consumer is read only after
@@ -122,9 +372,10 @@ pub trait SimulationBackend {
         Ok(Vec::new())
     }
 
-    /// Drains causal decisions produced by synchronous backend callbacks.
+    /// Drains typed RNG evidence produced by synchronous backend callbacks.
     ///
-    /// The authoritative scheduler validates and appends these decisions before
+    /// The authoritative scheduler validates and converts this evidence into
+    /// canonical RNG-draw and selection decisions before
     /// it admits observational events or begins another step. Backends without
     /// a causal callback transport return an empty batch.
     ///
@@ -132,7 +383,7 @@ pub trait SimulationBackend {
     ///
     /// Returns a [`BackendError`] when the causal transport is corrupt or
     /// cannot be drained completely at the completed boundary.
-    fn drain_causal_decisions(&mut self) -> Result<Vec<Decision>, BackendError> {
+    fn drain_rng_evidence(&mut self) -> Result<Vec<BackendRngEvidence>, BackendError> {
         Ok(Vec::new())
     }
 
@@ -325,6 +576,27 @@ pub struct ExecutionFingerprint {
     pub hash: ContentHash,
 }
 
+/// Authenticated reason that one physical backend RUN returned control.
+///
+/// This host-side observation does not authorize a selectable reply or prove
+/// that a requested preemption was applied. Unclassified pauses cannot supply
+/// the evidence required for an early scheduler continuation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BackendPhysicalStop {
+    /// The backend completed the requested execution horizon.
+    Horizon,
+    /// The low-level backend reported a pause without a more specific witness.
+    UnclassifiedPause,
+    /// An idle backend has an authenticated wake beyond the requested ceiling.
+    Idle,
+    /// A fresh network output ended the RUN before further guest execution.
+    NetworkOutput,
+    /// A guest selectable request remains paused until an explicit host reply.
+    GuestSelectable,
+    /// A campaign marker retains the guest at its exact physical boundary.
+    CampaignMarker,
+}
+
 /// Observation returned by [`SimulationBackend::step_to`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StepObservation {
@@ -333,12 +605,17 @@ pub struct StepObservation {
     /// Scheduler-safe frontier established before returning control.
     ///
     /// This normally equals the backend's physical instruction count. A
-    /// backend that parks earlier with a proven exact wake strictly beyond the
-    /// requested ceiling may report the requested ceiling here while retaining
-    /// the physical park point in [`AdvanceOutcome::Paused`].
+    /// backend that parks earlier because it has a proven exact wake strictly
+    /// beyond the requested ceiling may report that ceiling while retaining the
+    /// physical park point in [`AdvanceOutcome::Paused`]. A guest selectable or
+    /// campaign marker always reports its authenticated physical pause tick.
     pub reached: VirtualTime,
     /// Low-level backend advancement result.
     pub outcome: AdvanceOutcome,
+    /// Independently authenticated physical reason for returning control.
+    pub physical_stop: BackendPhysicalStop,
+    /// Native commands proven applied during this step's paired completion.
+    pub applied_preemptions: Vec<PreemptionDecision>,
 }
 
 impl StepObservation {
@@ -349,10 +626,16 @@ impl StepObservation {
             AdvanceOutcome::ReachedHorizon => ceiling,
             AdvanceOutcome::Paused { at } => VirtualTime { ticks: at.retired },
         };
+        let physical_stop = match outcome {
+            AdvanceOutcome::ReachedHorizon => BackendPhysicalStop::Horizon,
+            AdvanceOutcome::Paused { .. } => BackendPhysicalStop::UnclassifiedPause,
+        };
         Self {
             requested_ceiling: ceiling,
             reached,
             outcome,
+            physical_stop,
+            applied_preemptions: Vec::new(),
         }
     }
 }

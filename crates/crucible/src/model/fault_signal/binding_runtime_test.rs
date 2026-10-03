@@ -256,7 +256,7 @@ fn constant_program(value: SignalValue, shape: SignalShape) -> SignalProgram {
     .unwrap_or_else(|error| panic!("invalid test signal program: {error}"))
 }
 
-fn event_program(schema: &str, payload: Vec<u8>, nanos: u64) -> SignalProgram {
+fn event_program(schema: &str, payload: Vec<u8>, ticks: u64) -> SignalProgram {
     let output = signal_id("output");
     let schema = signal_id(schema);
     SignalProgram::new(
@@ -273,7 +273,7 @@ fn event_program(schema: &str, payload: Vec<u8>, nanos: u64) -> SignalProgram {
             kind: SignalNodeKind::Source(SignalSourceSpecification::EventSequence {
                 events: vec![SignalPoint {
                     coordinate: SignalCoordinate::Event {
-                        parent: Box::new(SignalCoordinate::VirtualTime { nanos }),
+                        parent: Box::new(SignalCoordinate::VirtualTime { ticks }),
                         sequence: 0,
                     },
                     sequence: 0,
@@ -338,9 +338,9 @@ fn forwarder_lifecycle_effect(lifetime: EffectLifetime) -> EffectRequest {
     .unwrap_or_else(|error| panic!("invalid lifecycle effect: {error}"))
 }
 
-fn coordinate(nanos: u64) -> FaultCoordinate {
+fn coordinate(ticks: u64) -> FaultCoordinate {
     FaultCoordinate {
-        virtual_nanos: nanos,
+        virtual_ticks: ticks,
         retired_instructions: None,
     }
 }
@@ -610,17 +610,57 @@ fn finite_binding_search_choices_replay_once_and_reject_unused_overrides() {
     assert_eq!(choice.candidate_count, 2);
     assert_eq!(choice.selected_index, Some(1));
     assert!(!choice.overridden);
+    assert_eq!(
+        choice.candidate_semantics,
+        BindingSearchCandidateSemantics::Parameter {
+            parameter: MappedEffectParameter::DurationNanos,
+            candidates: [10_u64, 20]
+                .into_iter()
+                .map(|duration| {
+                    ContentHash::from_canonical_material(
+                        "crucible.search-parameter-candidate.v1",
+                        &format!("parameter=duration-nanos;value=duration_nanos:{duration}"),
+                    )
+                })
+                .collect(),
+        }
+    );
 
     let overrides: BTreeMap<SearchChoiceId, SearchOverride> = [(
         choice.id,
         SearchOverride {
             candidate_index: 0,
             candidates_digest: choice.candidates_digest,
+            candidate: choice
+                .candidate_semantics
+                .candidate(0)
+                .unwrap_or_else(|| panic!("fixture candidate must exist")),
             parent_branch: Some(ContentHash::from_bytes(b"search-parent")),
         },
     )]
     .into_iter()
     .collect();
+
+    let mut wrong_semantics = overrides.clone();
+    wrong_semantics
+        .get_mut(&choice.id)
+        .unwrap_or_else(|| panic!("fixture override must exist"))
+        .candidate = BindingSearchCandidate::Transition(ContentHash::from_bytes(b"wrong-kind"));
+    let mut rejected = FaultBindingRuntime::new_with_search_overrides(
+        &program,
+        vec![binding.clone()],
+        &NoArtifacts,
+        SignalBoundarySnapshot::default(),
+        seed,
+        FaultResourceLimits::default(),
+        wrong_semantics,
+    )
+    .unwrap_or_else(|error| panic!("invalid mismatch runtime: {error}"));
+    assert!(matches!(
+        rejected.evaluate_boundary(coordinate(0), 0, &mut AcceptActions::default()),
+        Err(BindingRuntimeError::SearchChoice)
+    ));
+
     let mut replay = FaultBindingRuntime::new_with_search_overrides(
         &program,
         vec![binding.clone()],
@@ -947,11 +987,12 @@ fn sampled_inactive_event_checkpoint_restores_before_event() {
         .evaluate_boundary(coordinate(1), 0, &mut AcceptActions::default())
         .unwrap_or_else(|error| panic!("inactive event sample failed: {error}"));
     assert!(before_event.actions.is_empty());
+    assert_eq!(before_event.next_wakeup_ticks, Some(7));
     let checkpoint = runtime
         .checkpoint()
         .unwrap_or_else(|error| panic!("inactive event checkpoint failed: {error}"));
 
-    let restored = FaultBindingRuntime::restore(
+    let mut restored = FaultBindingRuntime::restore(
         &program,
         vec![binding],
         &NoArtifacts,
@@ -962,6 +1003,17 @@ fn sampled_inactive_event_checkpoint_restores_before_event() {
     .unwrap_or_else(|error| panic!("inactive event checkpoint should restore: {error}"));
     assert_eq!(restored.states(), runtime.states());
     assert_eq!(restored.active(), runtime.active());
+    let repeated = restored
+        .evaluate_boundary(coordinate(1), 0, &mut AcceptActions::default())
+        .unwrap_or_else(|error| panic!("restored wakeup evaluation failed: {error}"));
+    assert!(repeated.actions.is_empty());
+    assert_eq!(repeated.next_wakeup_ticks, Some(7));
+
+    let fired = restored
+        .evaluate_boundary(coordinate(7), 0, &mut AcceptActions::default())
+        .unwrap_or_else(|error| panic!("restored event evaluation failed: {error}"));
+    assert_eq!(fired.actions.len(), 1);
+    assert_eq!(fired.next_wakeup_ticks, None);
 }
 
 #[test]
@@ -1308,7 +1360,7 @@ fn threshold_residence_matures_only_at_the_declared_boundary() {
         5,
     );
     let mut state = BindingRuntimeState::default();
-    for now in [0, 4] {
+    for now in [0, 4_999] {
         let decision = map_binding(
             &binding,
             &[SignalValue::U64(12)],
@@ -1324,7 +1376,7 @@ fn threshold_residence_matures_only_at_the_declared_boundary() {
         &binding,
         &[SignalValue::U64(12)],
         &mut state,
-        5,
+        5_000,
         None,
         ContentHash::default(),
     )
@@ -1401,7 +1453,7 @@ fn fat_checkpoint_restore_matches_uninterrupted_continuation() {
         .bindings
         .get_mut(&object_id("binding-checkpoint"))
         .unwrap_or_else(|| panic!("checkpoint must contain binding state"))
-        .last_sample_nanos = Some(u64::MAX);
+        .last_sample_ticks = Some(u64::MAX);
     assert!(matches!(
         FaultBindingRuntime::restore(
             &program,
@@ -1434,47 +1486,5 @@ fn fat_checkpoint_restore_matches_uninterrupted_continuation() {
     assert_eq!(restored.active(), uninterrupted.active());
 }
 
-#[test]
-fn service_profile_identity_includes_named_physical_input_contracts() {
-    let value = SignalValue::U64(42);
-    let distance = ResolvedMappingOutput::ServiceProfile {
-        service_profile: object_id("physical-input-profile"),
-        input_contracts: vec![ServiceProfileInput {
-            role: object_id("distance"),
-            shape: SignalShape::new(SignalValueType::U64, SignalUnit::Millimetres, 0)
-                .unwrap_or_else(|error| panic!("distance shape: {error}")),
-        }],
-        inputs: vec![value.clone()],
-    };
-    let count = ResolvedMappingOutput::ServiceProfile {
-        service_profile: object_id("physical-input-profile"),
-        input_contracts: vec![ServiceProfileInput {
-            role: object_id("count"),
-            shape: SignalShape::new(SignalValueType::U64, SignalUnit::Dimensionless, 0)
-                .unwrap_or_else(|error| panic!("count shape: {error}")),
-        }],
-        inputs: vec![value],
-    };
-    let range = ResolvedMappingOutput::ServiceProfile {
-        service_profile: object_id("physical-input-profile"),
-        input_contracts: vec![ServiceProfileInput {
-            role: object_id("range"),
-            shape: SignalShape::new(SignalValueType::U64, SignalUnit::Millimetres, 0)
-                .unwrap_or_else(|error| panic!("range shape: {error}")),
-        }],
-        inputs: vec![SignalValue::U64(42)],
-    };
-
-    let distance_digest = resolved_mapping_output_digest(&distance, FaultResourceLimits::default())
-        .unwrap_or_else(|error| panic!("distance digest: {error}"));
-    assert_ne!(
-        distance_digest,
-        resolved_mapping_output_digest(&count, FaultResourceLimits::default())
-            .unwrap_or_else(|error| panic!("count digest: {error}")),
-    );
-    assert_ne!(
-        distance_digest,
-        resolved_mapping_output_digest(&range, FaultResourceLimits::default())
-            .unwrap_or_else(|error| panic!("range digest: {error}")),
-    );
-}
+#[path = "binding_runtime/service_profile.rs"]
+mod service_profile;

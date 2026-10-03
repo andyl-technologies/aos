@@ -4,16 +4,19 @@ use serde::{Deserialize, Serialize};
 
 use super::*;
 
-const MAGIC: &[u8] = b"crucible.single-scheduler-continuation.v2\0";
-const MAX_BYTES: usize = 1_610_612_736;
+const MAGIC: &[u8] = b"crucible.single-scheduler-continuation.v6\0";
+/// Maximum canonical byte length of one complete single-scheduler continuation.
+pub const MAX_SINGLE_SCHEDULER_CHECKPOINT_BYTES: usize =
+    MAX_SINGLE_SCHEDULER_CHECKPOINT_PAYLOAD_BYTES + MAGIC.len();
+const MAX_SINGLE_SCHEDULER_CHECKPOINT_PAYLOAD_BYTES: usize = 1_610_612_736;
 
 /// Complete mutable continuation of one admitted scheduler.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SingleSchedulerCheckpoint {
     wire: SingleSchedulerWire,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SingleSchedulerWire {
     scenario: ContentHash,
@@ -27,6 +30,9 @@ struct SingleSchedulerWire {
     network_state: Vec<u8>,
     device_state: Vec<(String, Vec<Vec<u8>>)>,
     pending_events: Vec<ScheduledEvent>,
+    imported_io: BTreeMap<NodeId, super::io_inventory::ImportedIoNode>,
+    fixed_input_generation: u64,
+    settled_fixed_input_events: Vec<ScheduledEvent>,
     run_subdivision_policies: Vec<SchedulerRunSubdivisionPolicy>,
     run_subdivision_records: Vec<SchedulerRunSubdivisionRecord>,
     preemption_requests: Vec<PreemptionDecision>,
@@ -36,7 +42,7 @@ struct SingleSchedulerWire {
     control_inbox: Vec<ControlOperation>,
     decision_seed: [u8; 32],
     decision_rng_cursor: DecisionRngState,
-    branch_network_choices: Vec<OverrideDecision>,
+    branch_network_choices: Vec<SelectionDecision>,
     search_frontiers: Vec<SearchRuntimeFrontierWire>,
     event_log: EventLogWire,
     trigger_actions: TriggerActionState,
@@ -50,7 +56,7 @@ struct SingleSchedulerWire {
     last_topology_recompute: bool,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RuntimeNodeWire {
     id: SchedulerNodeId,
@@ -63,7 +69,7 @@ struct RuntimeNodeWire {
     vcpu_idle_states: Vec<SchedulerVcpuIdleState>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EventLogWire {
     prefix: ContentHash,
@@ -75,7 +81,7 @@ struct EventLogWire {
     condition_base_events: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SearchRuntimeFrontierWire {
     scenario: ContentHash,
@@ -92,7 +98,10 @@ impl SingleScheduler {
     /// Returns [`SingleSchedulerCheckpointError`] if a device or network owner
     /// cannot encode its independently validated continuation.
     pub fn checkpoint(&self) -> Result<SingleSchedulerCheckpoint, SingleSchedulerCheckpointError> {
-        if self.lock_held {
+        if self.lock_held
+            || self.fixed_input_in_progress
+            || !self.app_random_branch_selections.is_empty()
+        {
             return Err(SingleSchedulerCheckpointError::Transient);
         }
         let device_state = self
@@ -116,14 +125,17 @@ impl SingleScheduler {
                 scenario: self.configuration.def.id(),
                 schedule: self.configuration.schedule.to_compact_binary(),
                 quantum_budget: self.quantum_budget,
-                time_limit: self.time_limit.nanos,
-                branch_frontier_cap: self.branch_frontier_cap.map(|cap| cap.nanos),
-                rendezvous_interval: self.rendezvous.interval().map(|value| value.nanos),
+                time_limit: self.time_limit.ticks,
+                branch_frontier_cap: self.branch_frontier_cap.map(|cap| cap.ticks),
+                rendezvous_interval: self.rendezvous.interval().map(|value| value.ticks),
                 nodes: self.nodes.iter().map(RuntimeNodeWire::from).collect(),
                 scheduler_state: self.materialized_scheduler_state().to_compact_binary(),
                 network_state,
                 device_state,
                 pending_events: self.pending_events.clone(),
+                imported_io: self.imported_io.clone(),
+                fixed_input_generation: self.fixed_input_generation,
+                settled_fixed_input_events: self.settled_fixed_input_events.clone(),
                 run_subdivision_policies: self.run_subdivision_policies.clone(),
                 run_subdivision_records: self.run_subdivision_records.clone(),
                 preemption_requests: self.preemption_requests.clone(),
@@ -204,7 +216,7 @@ impl From<&EventLog> for EventLogWire {
             segment_dependencies: log.segment_dependencies.clone(),
             bytes: log.offset.bytes,
             events: log.offset.events,
-            condition_entries: log.condition_entries.clone(),
+            condition_entries: log.retained_entries().to_vec(),
             condition_base_events: log.condition_base_events,
         }
     }
@@ -229,6 +241,12 @@ impl From<&SearchRuntimeFrontier> for SearchRuntimeFrontierWire {
 }
 
 impl SingleSchedulerCheckpoint {
+    /// Returns the immutable scenario identity owning this continuation.
+    #[must_use]
+    pub const fn scenario(&self) -> ContentHash {
+        self.wire.scenario
+    }
+
     /// Reconstructs the checkpoint configuration against an authenticated scenario.
     ///
     /// # Errors
@@ -255,6 +273,52 @@ impl SingleSchedulerCheckpoint {
     pub const fn frontier(&self) -> VirtualTime {
         VirtualTime {
             ticks: self.wire.frontier,
+        }
+    }
+
+    /// Returns the absolute scheduler-quantum coordinate retained at this boundary.
+    #[must_use]
+    pub const fn quanta(&self) -> u64 {
+        self.wire.quanta
+    }
+
+    /// Returns a VM's unchanged physical ready-point counter at logical epoch zero.
+    ///
+    /// A nonzero boot counter may own genesis. This requires exact equality
+    /// with the retained mapping anchor, rather than a rounded projection.
+    /// Returns `None` for an absent VM or a counter or anchor beyond genesis.
+    #[must_use]
+    pub fn epoch_ready_point_counter_for_node(&self, node: &NodeId) -> Option<NodeCounter> {
+        let retained = self.wire.nodes.iter().find(|retained| {
+            retained.id.node == *node && retained.id.kind == SchedulingNodeKind::Vm
+        })?;
+        (retained.counter == retained.time_mapping.anchor_counter.ticks
+            && retained.time_mapping.anchor_time == SimInstant::EPOCH)
+            .then_some(NodeCounter {
+                ticks: retained.counter,
+            })
+    }
+
+    /// Returns the scheduler-state projection retained at this boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SingleSchedulerCheckpointError::State`] if the internally
+    /// retained scheduler projection is malformed. Canonically decoded and
+    /// locally captured checkpoints have already passed this validation.
+    pub fn scheduler_state(&self) -> Result<SchedulerState, SingleSchedulerCheckpointError> {
+        SchedulerState::from_compact_binary(&self.wire.scheduler_state)
+            .map_err(|_| SingleSchedulerCheckpointError::State)
+    }
+
+    /// Returns the exact unified event-log boundary retained by this continuation.
+    #[must_use]
+    pub fn event_log_offset(&self) -> EventLogOffset {
+        EventLogOffset {
+            prefix: self.wire.event_log.prefix,
+            appended_segment: self.wire.event_log.appended_segment,
+            bytes: self.wire.event_log.bytes,
+            events: self.wire.event_log.events,
         }
     }
 
@@ -285,6 +349,27 @@ impl SingleSchedulerCheckpoint {
         &self.wire.event_log.segment_dependencies
     }
 
+    /// Returns the exact event entries retained for condition and evidence replay.
+    ///
+    /// A scheduler created at run genesis retains a zero-based complete prefix.
+    /// A continuation reconstructed from an offset-only source may instead
+    /// retain a suffix whose first sequence is reported by
+    /// [`Self::retained_event_log_base_events`]. Callers that require complete
+    /// run evidence must reject a nonzero base or load the authenticated prior
+    /// segment closure before interpreting this slice as the whole run.
+    #[must_use]
+    pub fn retained_event_log_entries(&self) -> &[SchedulerEventLogEntry] {
+        &self.wire.event_log.condition_entries
+    }
+
+    /// Returns the dense sequence preceding the retained event-entry suffix.
+    ///
+    /// Zero means [`Self::retained_event_log_entries`] starts at run genesis.
+    #[must_use]
+    pub const fn retained_event_log_base_events(&self) -> u64 {
+        self.wire.event_log.condition_base_events
+    }
+
     /// Encodes the complete scheduler continuation canonically.
     ///
     /// # Errors
@@ -295,7 +380,7 @@ impl SingleSchedulerCheckpoint {
         let mut payload = Vec::new();
         ciborium::ser::into_writer(&self.wire, &mut payload)
             .map_err(|_| SingleSchedulerCheckpointError::Malformed)?;
-        if payload.len() > MAX_BYTES {
+        if payload.len() > MAX_SINGLE_SCHEDULER_CHECKPOINT_PAYLOAD_BYTES {
             return Err(SingleSchedulerCheckpointError::Limit);
         }
         let mut bytes = Vec::with_capacity(MAGIC.len() + payload.len());
@@ -314,7 +399,7 @@ impl SingleSchedulerCheckpoint {
         let payload = bytes
             .strip_prefix(MAGIC)
             .ok_or(SingleSchedulerCheckpointError::Version)?;
-        if payload.len() > MAX_BYTES {
+        if payload.len() > MAX_SINGLE_SCHEDULER_CHECKPOINT_PAYLOAD_BYTES {
             return Err(SingleSchedulerCheckpointError::Limit);
         }
         let wire: SingleSchedulerWire = ciborium::de::from_reader(payload)
@@ -353,6 +438,9 @@ impl SingleSchedulerCheckpoint {
         &self,
         scheduler: &mut SingleScheduler,
     ) -> Result<(), SingleSchedulerCheckpointError> {
+        if scheduler.fixed_input_in_progress {
+            return Err(SingleSchedulerCheckpointError::Transient);
+        }
         validate_wire(&self.wire)?;
         if scheduler.configuration.def.id() != self.wire.scenario {
             return Err(SingleSchedulerCheckpointError::Configuration);
@@ -381,14 +469,17 @@ impl SingleSchedulerCheckpoint {
         staged.configuration = configuration;
         staged.quantum_budget = self.wire.quantum_budget;
         staged.time_limit = SimInstant {
-            nanos: self.wire.time_limit,
+            ticks: self.wire.time_limit,
         };
         staged.branch_frontier_cap = self
             .wire
             .branch_frontier_cap
-            .map(|nanos| SimInstant { nanos });
+            .map(|nanos| SimInstant { ticks: nanos });
+        // An attempt stop belongs to the active caller, not the captured
+        // scheduler continuation. A resumed attempt installs its own stop.
+        staged.attempt_stop_frontier_cap = None;
         staged.rendezvous = match self.wire.rendezvous_interval {
-            Some(nanos) => SchedulerRendezvous::every(SimDuration { nanos })
+            Some(nanos) => SchedulerRendezvous::every(SimDuration { ticks: nanos })
                 .map_err(|_| SingleSchedulerCheckpointError::State)?,
             None => SchedulerRendezvous::disabled(),
         };
@@ -402,17 +493,21 @@ impl SingleSchedulerCheckpoint {
         staged.control_admissions = self.wire.control_admissions.clone();
         staged.control_applications = self.wire.control_applications.clone();
         staged.pending_events = self.wire.pending_events.clone();
+        staged.imported_io = self.wire.imported_io.clone();
+        staged.fixed_input_generation = self.wire.fixed_input_generation;
+        staged.settled_fixed_input_events = self.wire.settled_fixed_input_events.clone();
         staged.event_sequences = state.event_sequences;
         staged.world_network_decisions = state.pending_device_decisions;
         staged.device_horizons = state
             .horizons
             .into_iter()
-            .map(|(node, time)| (node, SimInstant { nanos: time.ticks }))
+            .map(|(node, time)| (node, SimInstant { ticks: time.ticks }))
             .collect();
         staged.control_inbox = self.wire.control_inbox.clone();
         staged.decision_seed = Seed::from_bytes(self.wire.decision_seed);
         staged.decision_rng_cursor = self.wire.decision_rng_cursor.clone();
         staged.branch_network_choices = self.wire.branch_network_choices.clone();
+        staged.app_random_branch_selections.clear();
         staged.search_frontiers = search_frontiers;
         staged.trigger_actions = self.wire.trigger_actions.clone();
         staged.frontier = VirtualTime {
@@ -427,6 +522,9 @@ impl SingleSchedulerCheckpoint {
         staged.lock_held = false;
         staged.last_advance = self.wire.last_advance.clone();
         staged.last_topology_recompute = self.wire.last_topology_recompute;
+        staged
+            .validate_imported_io_ledger()
+            .map_err(|_| SingleSchedulerCheckpointError::State)?;
 
         let projected = staged.materialized_scheduler_state();
         if projected
@@ -453,6 +551,46 @@ fn validate_wire(wire: &SingleSchedulerWire) -> Result<(), SingleSchedulerCheckp
             .any(|pair| pair[0].key >= pair[1].key)
     {
         return Err(SingleSchedulerCheckpointError::State);
+    }
+    if wire
+        .settled_fixed_input_events
+        .windows(2)
+        .any(|pair| pair[0].key >= pair[1].key)
+        || wire.settled_fixed_input_events.iter().any(|settled| {
+            wire.pending_events
+                .iter()
+                .any(|pending| pending.key == settled.key)
+        })
+    {
+        return Err(SingleSchedulerCheckpointError::State);
+    }
+    for event in wire
+        .pending_events
+        .iter()
+        .chain(&wire.settled_fixed_input_events)
+    {
+        if let ScheduledEventPayload::IoCompletion(completion) = &event.payload {
+            let target = wire
+                .nodes
+                .iter()
+                .find(|node| {
+                    node.id.node == completion.target && node.id.kind == SchedulingNodeKind::Vm
+                })
+                .ok_or(SingleSchedulerCheckpointError::State)?;
+            let delivery_time = target
+                .time_mapping
+                .logical_time(NodeCounter {
+                    ticks: completion.source_delivery.delivery_icount,
+                })
+                .map_err(|_| SingleSchedulerCheckpointError::State)?;
+            if delivery_time != completion.delivery_tick
+                || event.key.virtual_time().ticks != delivery_time.ticks
+                || event.key.producer() != &completion.sub_node
+                || event.key.consumer() != &target.id
+            {
+                return Err(SingleSchedulerCheckpointError::State);
+            }
+        }
     }
     if wire.event_log.events < wire.event_log.condition_base_events {
         return Err(SingleSchedulerCheckpointError::EventLog);
@@ -539,7 +677,9 @@ fn restore_event_log(
         return Err(SingleSchedulerCheckpointError::EventLog);
     }
     let condition_prefix = if checkpoint.condition_entries.is_empty() {
-        ConditionEventLogPrefix::genesis().with_event_log_offset(offset)
+        ConditionEventLogPrefix::genesis()
+            .with_base_sequence(checkpoint.condition_base_events)
+            .with_event_log_offset(offset)
     } else {
         ConditionEventLogPrefix::from_scheduler_event_log_entries_with_base_sequence(
             checkpoint.condition_entries.clone(),
@@ -553,7 +693,6 @@ fn restore_event_log(
     log.offset = offset;
     log.bytes = offset.bytes;
     log.events = offset.events;
-    log.condition_entries = checkpoint.condition_entries.clone();
     log.condition_base_events = checkpoint.condition_base_events;
     log.condition_prefix = condition_prefix;
     Ok(())
@@ -630,4 +769,83 @@ pub enum SingleSchedulerCheckpointError {
     /// The accepted representation is not byte-canonical.
     #[error("noncanonical single-scheduler checkpoint")]
     Noncanonical,
+}
+
+#[cfg(test)]
+mod epoch_ready_point_tests {
+    use super::*;
+
+    #[test]
+    fn epoch_ready_point_counter_requires_exact_vm_anchor() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let source = crate::crash_restart_scenario()?.scenario;
+        let node = source
+            .world()
+            .vm_nodes()
+            .iter()
+            .next()
+            .ok_or("missing VM")?
+            .id
+            .clone();
+        let scenario = SchedulerLivenessScenario::from_runnable_world(
+            "nonzero-ready-point",
+            4,
+            SimInstant { ticks: 100 },
+            37,
+            source.world(),
+        )
+        .with_scenario_def(source.scenario_def());
+        let scheduler = SingleScheduler::new(scenario)?;
+        let bytes = scheduler.checkpoint()?.canonical_bytes()?;
+        let checkpoint = SingleSchedulerCheckpoint::from_canonical_bytes(&bytes)?;
+
+        assert_eq!(checkpoint.frontier().ticks, 0);
+        assert_eq!(checkpoint.quanta(), 0);
+        assert_eq!(
+            checkpoint.epoch_ready_point_counter_for_node(&node),
+            Some(NodeCounter { ticks: 37 }),
+        );
+        let retained_index = checkpoint
+            .wire
+            .nodes
+            .iter()
+            .position(|retained| {
+                retained.id.node == node && retained.id.kind == SchedulingNodeKind::Vm
+            })
+            .ok_or("missing retained VM")?;
+
+        let mut drifted_counter = checkpoint.clone();
+        drifted_counter.wire.nodes[retained_index].counter += 1;
+        assert_eq!(
+            drifted_counter.epoch_ready_point_counter_for_node(&node),
+            None
+        );
+
+        let mut drifted_anchor = checkpoint.clone();
+        drifted_anchor.wire.nodes[retained_index]
+            .time_mapping
+            .anchor_counter
+            .ticks += 1;
+        assert_eq!(
+            drifted_anchor.epoch_ready_point_counter_for_node(&node),
+            None
+        );
+
+        let mut later_anchor = checkpoint.clone();
+        later_anchor.wire.nodes[retained_index]
+            .time_mapping
+            .anchor_time = SimInstant { ticks: 1 };
+        assert_eq!(later_anchor.epoch_ready_point_counter_for_node(&node), None);
+
+        let mut non_vm = checkpoint;
+        non_vm.wire.nodes[retained_index].id.kind = SchedulingNodeKind::Disk;
+        assert_eq!(non_vm.epoch_ready_point_counter_for_node(&node), None);
+        assert_eq!(
+            non_vm.epoch_ready_point_counter_for_node(&NodeId {
+                name: "absent".into()
+            }),
+            None,
+        );
+        Ok(())
+    }
 }

@@ -15,14 +15,14 @@
 //! one or more draws in this fixed sequence.
 //!
 //! ```text
-//! resolve(frame, t_emit_ns, draws):
-//!   delivery_ns  = t_emit_ns + effective_latency_ns        // base, clamped to floor (IO-33)
-//!   delivery_ns += serialization_delay_ns(len, bandwidth)  // bandwidth (integer ns, no float)
-//!   delivery_ns += draw(jitter)  % (jitter_window_ns + 1)  // jitter   (seeded, shift later)
-//!   delivery_ns += draw(reorder) % (reorder_window_ns + 1) // reorder  (seeded, shift later)
+//! resolve(frame, t_emit_tick, draws):
+//!   delivery_tick  = t_emit_tick + effective_latency_ticks        // base, clamped to floor (IO-33)
+//!   delivery_tick += serialization_delay_ticks(len, bandwidth)  // bandwidth (exact ticks, no float)
+//!   delivery_tick += draw(jitter)  % (jitter_window_ticks + 1)  // jitter   (seeded, shift later)
+//!   delivery_tick += draw(reorder) % (reorder_window_ticks + 1) // reorder  (seeded, shift later)
 //!   if loss      and any draw(loss)  < loss_num/loss_den    : DROP (no delivery)
 //!   if duplicate and draw(dup)       < dup_num/dup_den      : emit a 2nd copy at
-//!                                                             delivery_ns + dup_gap_ns
+//!                                                             delivery_tick + duplicate_gap_ticks
 //!   if corrupt   and draw(corrupt)   < corrupt_num/cor_den  : mutate payload
 //! ```
 //!
@@ -33,7 +33,7 @@
 //! transform functions are owned by [`crate::fault`] and re-exported here so the
 //! block, 9p, and network sub-nodes apply one taxonomy ([IO-25], [IO-26]).
 
-pub use crate::fault::{Probability, corrupt_payload, jitter_shift_ns, reorder_shift_ns};
+pub use crate::fault::{Probability, corrupt_payload, jitter_shift_ticks, reorder_shift_ticks};
 
 /// A deterministic payload mutation applied when the link corruption decision fires.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,7 +73,7 @@ impl LinkCorruptionStrategy {
 /// The effective fault table for a directed network link.
 ///
 /// Holds every fault parameter the link applies at RESOLVE. All fields are
-/// integer nanoseconds or exact-fraction probabilities; no floating point
+/// exact ticks or exact-fraction probabilities; no floating point
 /// appears anywhere ([IO-24]). A default table is fault-free: zero windows, zero
 /// bandwidth limit (unlimited), and never-firing probabilities, so the link
 /// delivers at exactly the base latency.
@@ -86,25 +86,25 @@ pub struct LinkFaults {
     /// Whether this directed link is partitioned and drops every frame.
     pub partitioned: bool,
 
-    /// Extra fixed latency added to every frame, in virtual nanoseconds.
+    /// Extra fixed latency added to every frame, in exact virtual ticks.
     ///
     /// A latency fault that *raises* the effective latency is honored as-is (it
     /// only widens lookahead, [IO-33]); a fault that would *lower* the link below
     /// its floor is clamped by [`super::link::NetLink`], never applied here.
-    pub added_latency_ns: u64,
+    pub added_latency_ticks: u64,
 
-    /// The upper bound (inclusive) of the seeded jitter window, in ns.
+    /// The upper bound (inclusive) of the seeded jitter window, in ticks.
     ///
-    /// Jitter shifts a frame later by `draw % (jitter_window_ns + 1)` ([IO-20]).
+    /// Jitter shifts a frame later by `draw % (jitter_window_ticks + 1)` ([IO-20]).
     /// A window of zero is no jitter.
-    pub jitter_window_ns: u64,
+    pub jitter_window_ticks: u64,
 
-    /// The upper bound (inclusive) of the seeded reorder window, in ns.
+    /// The upper bound (inclusive) of the seeded reorder window, in ticks.
     ///
-    /// Reorder shifts a frame later by `draw % (reorder_window_ns + 1)`,
+    /// Reorder shifts a frame later by `draw % (reorder_window_ticks + 1)`,
     /// potentially past a sibling frame ([IO-20]). The shift is checked against
     /// the consumer's frontier by [`super::link::NetLink`] ([IO-34]).
-    pub reorder_window_ns: u64,
+    pub reorder_window_ticks: u64,
 
     /// Active serialization-rate caps in bits per virtual second.
     ///
@@ -126,11 +126,11 @@ pub struct LinkFaults {
     /// The probability a frame is duplicated (a second copy is emitted).
     pub duplicate: Probability,
 
-    /// The fixed gap, in ns, between an original and its duplicate's delivery.
+    /// The fixed gap, in ticks, between an original and its duplicate's delivery.
     ///
-    /// The duplicate is delivered at `delivery_ns + duplicate_gap_ns`, so the two
+    /// The duplicate is delivered at `delivery_tick + duplicate_gap_ticks`, so the two
     /// copies never collide on the same icount and the order is deterministic.
-    pub duplicate_gap_ns: u64,
+    pub duplicate_gap_ticks: u64,
 
     /// The probability a frame's payload is corrupted (bits flipped).
     pub corrupt: Probability,
@@ -156,7 +156,7 @@ impl LinkFaults {
     /// change it either.
     #[must_use]
     pub fn affects_latency(&self) -> bool {
-        self.added_latency_ns != 0
+        self.added_latency_ticks != 0
     }
 
     /// Returns the total serialization delay from every active bandwidth cap.
@@ -165,7 +165,7 @@ impl LinkFaults {
     /// bandwidth faults therefore add their delays rather than replacing each
     /// other.
     #[must_use]
-    pub fn serialization_delay_ns(&self, len_bytes: u64) -> u64 {
+    pub fn serialization_delay_ticks(&self, len_bytes: u64) -> u64 {
         self.bandwidth_bits_per_sec
             .iter()
             .copied()
@@ -232,12 +232,13 @@ pub(super) fn checked_serialization_delay_bits_per_sec(
     if bits_per_sec == 0 {
         return None;
     }
-    let nanos = u128::from(len_bytes)
+    let ticks = u128::from(len_bytes)
         .checked_mul(8)?
-        .checked_mul(1_000_000_000_u128)?;
+        .checked_mul(1_000_000_000_u128)?
+        .checked_mul(u128::from(crucible_shmem::TICKS_PER_NS))?;
     let denominator = u128::from(bits_per_sec);
-    let nanos = nanos.checked_add(denominator.checked_sub(1)?)? / denominator;
-    u64::try_from(nanos).ok()
+    let ticks = ticks.checked_add(denominator.checked_sub(1)?)? / denominator;
+    u64::try_from(ticks).ok()
 }
 
 #[cfg(test)]
@@ -267,13 +268,13 @@ mod tests {
     #[test]
     fn jitter_and_reorder_shifts_stay_within_window() {
         for draw in [0u64, 1, 7, 99, u64::MAX] {
-            assert!(jitter_shift_ns(draw, 16) <= 16);
-            assert!(reorder_shift_ns(draw, 1000) <= 1000);
+            assert!(jitter_shift_ticks(draw, 16) <= 16);
+            assert!(reorder_shift_ticks(draw, 1000) <= 1000);
         }
-        assert_eq!(jitter_shift_ns(123, 0), 0);
-        assert_eq!(reorder_shift_ns(123, 0), 0);
+        assert_eq!(jitter_shift_ticks(123, 0), 0);
+        assert_eq!(reorder_shift_ticks(123, 0), 0);
         // Determinism: same draw => same shift.
-        assert_eq!(jitter_shift_ns(42, 16), jitter_shift_ns(42, 16));
+        assert_eq!(jitter_shift_ticks(42, 16), jitter_shift_ticks(42, 16));
     }
 
     #[test]
@@ -305,17 +306,17 @@ mod tests {
         f.partitioned = true;
         f.loss = Probability::ALWAYS;
         f.duplicate = Probability::ALWAYS;
-        f.duplicate_gap_ns = 5;
+        f.duplicate_gap_ticks = 5;
         f.corrupt = Probability::ALWAYS;
         f.corruption_strategies = vec![LinkCorruptionStrategy::BitFlip { max_bits: 3 }];
-        f.jitter_window_ns = 5;
-        f.reorder_window_ns = 7;
+        f.jitter_window_ticks = 5;
+        f.reorder_window_ticks = 7;
         f.bandwidth_bits_per_sec.push(10_000);
         assert!(
             !f.affects_latency(),
             "faults whose minimum added delay is zero do not raise the conservative bound"
         );
-        f.added_latency_ns = 1;
+        f.added_latency_ticks = 1;
         assert!(f.affects_latency());
     }
 
@@ -327,6 +328,9 @@ mod tests {
             16_000, // 100 bytes => 50_000_000 ns
         ];
 
-        assert_eq!(faults.serialization_delay_ns(100), 150_000_000);
+        assert_eq!(
+            faults.serialization_delay_ticks(100),
+            150_000_000 * crucible_shmem::TICKS_PER_NS
+        );
     }
 }

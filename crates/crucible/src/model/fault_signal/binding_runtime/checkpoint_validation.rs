@@ -89,19 +89,19 @@ pub(super) fn validate_binding_checkpoint(
             .bindings
             .get(binding.id())
             .ok_or(BindingRuntimeError::CheckpointState)?;
-        if state.pending_activation.is_some() != state.pending_since_nanos.is_some() {
+        if state.pending_activation.is_some() != state.pending_since_ticks.is_some() {
             return Err(BindingRuntimeError::CheckpointState);
         }
-        if state.last_sample_nanos.is_some() != state.last_sample_identity.is_some()
-            || state.last_sample_nanos.is_some_and(|nanos| {
+        if state.last_sample_ticks.is_some() != state.last_sample_identity.is_some()
+            || state.last_sample_ticks.is_some_and(|ticks| {
                 checkpoint
                     .scheduler_cursor
-                    .is_none_or(|cursor| nanos > cursor.virtual_nanos)
+                    .is_none_or(|cursor| ticks > cursor.virtual_ticks)
             })
-            || state.pending_since_nanos.is_some_and(|nanos| {
+            || state.pending_since_ticks.is_some_and(|ticks| {
                 checkpoint
                     .scheduler_cursor
-                    .is_none_or(|cursor| nanos > cursor.virtual_nanos)
+                    .is_none_or(|cursor| ticks > cursor.virtual_ticks)
             })
             || checkpoint.scheduler_cursor.is_none()
                 && (state.sample_count != 0
@@ -195,7 +195,7 @@ pub(super) fn validate_binding_checkpoint(
             || consumed.identity == ContentHash::default()
             || checkpoint.scheduler_cursor.is_none_or(|cursor| {
                 FaultSchedulerCursor {
-                    virtual_nanos: consumed.coordinate.virtual_nanos,
+                    virtual_ticks: consumed.coordinate.virtual_ticks,
                     same_coordinate_sequence: consumed.same_coordinate_sequence,
                 } > cursor
             })

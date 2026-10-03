@@ -31,7 +31,7 @@ fn job(sequence: u64, operation: BlockOp, bytes: u64) -> BlockServiceJob {
         sequence,
         operation,
         bytes,
-        admitted_nanos: 0,
+        admitted_ticks: 0,
     }
 }
 
@@ -51,10 +51,36 @@ fn cumulative_busy_epoch_has_no_per_request_rounding_drift() {
         .admit(job(3, BlockOp::Read, 1), &[service])
         .unwrap_or_else(|error| panic!("third job should admit: {error}"));
 
-    assert_eq!(state.next_completion_nanos(), Some(333_333_334));
-    assert_eq!(state.advance_to(333_333_334).unwrap_or_default().len(), 1);
-    assert_eq!(state.next_completion_nanos(), Some(666_666_667));
-    assert_eq!(state.advance_to(1_000_000_000).unwrap_or_default().len(), 2);
+    assert_eq!(state.next_completion_ticks(), Some(333_333_333_334));
+    assert_eq!(
+        state.advance_to(333_333_333_334).unwrap_or_default().len(),
+        1
+    );
+    assert_eq!(state.next_completion_ticks(), Some(666_666_666_667));
+    assert_eq!(
+        state
+            .advance_to(1_000_000_000_000)
+            .unwrap_or_default()
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn service_duration_preserves_admission_tick_phase() {
+    let mut state = BlockServiceState::default();
+    let mut admitted = job(1, BlockOp::Read, 1);
+    admitted.admitted_ticks = 7;
+
+    state
+        .admit(admitted, &[rule(BlockServiceDiscipline::Fifo)])
+        .unwrap_or_else(|error| panic!("fractional admission should succeed: {error}"));
+    assert_eq!(state.next_completion_ticks(), Some(1_007));
+    assert!(state.advance_to(1_006).unwrap_or_default().is_empty());
+    assert_eq!(
+        state.advance_to(1_007).unwrap_or_default()[0].finished_ticks,
+        1_007
+    );
 }
 
 #[test]
@@ -71,11 +97,11 @@ fn strict_priority_reorders_only_requests_waiting_behind_active_work() {
         .admit(job(3, BlockOp::Write, 1), &[service])
         .unwrap_or_else(|error| panic!("queued write should admit: {error}"));
 
-    let first = state.advance_to(10).unwrap_or_default();
+    let first = state.advance_to(10_000).unwrap_or_default();
     assert_eq!(first[0].sequence, 1);
-    let second = state.advance_to(11).unwrap_or_default();
+    let second = state.advance_to(11_000).unwrap_or_default();
     assert_eq!(second[0].sequence, 3);
-    let third = state.advance_to(12).unwrap_or_default();
+    let third = state.advance_to(12_000).unwrap_or_default();
     assert_eq!(third[0].sequence, 2);
 }
 
@@ -96,7 +122,7 @@ fn weighted_round_robin_uses_canonical_class_weights() {
             .admit(job(sequence, operation, 1), std::slice::from_ref(&service))
             .unwrap_or_else(|error| panic!("queued job should admit: {error}"));
     }
-    let completed = state.advance_to(10).unwrap_or_default();
+    let completed = state.advance_to(10_000).unwrap_or_default();
     assert_eq!(
         completed
             .iter()

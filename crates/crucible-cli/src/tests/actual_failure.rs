@@ -44,11 +44,14 @@ fn cli_non_passing_run_artifact_captures_actual_run_evidence() -> Result<(), Box
     let expected_decisions = terminal_configuration.schedule.len();
     let report = RunWorkflowReport {
         status: BackendCommandStatus::Failed,
+        execution_owner: RunExecutionOwner::Session,
+        campaign_replay_closure: None,
         created_state: String::from("paused"),
         final_state: String::from("stopped"),
         outcome: Some(OutcomeKind::Failed),
         terminal_savepoint: None,
         terminal_configuration: Some(terminal_configuration),
+        final_snapshot: None,
         final_frontier_ticks: 17,
         final_quanta: 2,
         budget_timed_out: false,
@@ -65,6 +68,7 @@ fn cli_non_passing_run_artifact_captures_actual_run_evidence() -> Result<(), Box
         }],
         resolved_effect_trace: None,
         acknowledged_commands: vec![SessionCommandKind::Start, SessionCommandKind::Continue],
+        reproduction_commands: Vec::new(),
         watch_statuses: Vec::new(),
     };
     let outcome = finish_run_workflow_outcome(

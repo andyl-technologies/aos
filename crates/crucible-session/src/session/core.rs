@@ -67,6 +67,24 @@ pub fn drive_engine_quantum<L: QuantumLoop>(
     quantum_loop.drive_quantum(request)
 }
 
+/// Drives one bounded host-concurrent engine round through the L4 boundary.
+///
+/// The underlying loop must keep scheduler state speculative until all
+/// scheduler-fixed backend RUNs complete, then publish their outcomes in
+/// canonical order.
+///
+/// # Errors
+///
+/// Returns [`SchedulerError`] when planning, backend execution, or canonical
+/// completion fails.
+pub fn drive_engine_concurrent_quantum<L: crucible::ConcurrentQuantumLoop>(
+    quantum_loop: &mut L,
+    request: QuantumRequest,
+    max_host_workers: usize,
+) -> Result<crucible::SchedulerConcurrentQuantumOutcome, SchedulerError> {
+    quantum_loop.drive_concurrent_quantum(request, max_host_workers)
+}
+
 /// Explicit run state for the Crucible engine.
 ///
 /// The closed state set is the control-plane contract from RFC-0010 §10:
@@ -421,7 +439,9 @@ pub enum StepMode {
 impl StepMode {
     /// Default deterministic duration used to include [`Self::Duration`] in
     /// closed-vocabulary tests.
-    pub const DEFAULT_DURATION: SimDuration = SimDuration { nanos: 1 };
+    pub const DEFAULT_DURATION: SimDuration = SimDuration {
+        ticks: crucible::SIM_TICKS_PER_NS,
+    };
 
     /// The closed forward step-mode set.
     pub const ALL: [Self; 5] = [
@@ -457,7 +477,7 @@ impl ActiveStep {
     pub(super) fn new(mode: StepMode, start_frontier: VirtualTime) -> Self {
         let target_frontier = match mode {
             StepMode::Duration(duration) => Some(VirtualTime {
-                ticks: start_frontier.ticks.saturating_add(duration.nanos),
+                ticks: start_frontier.ticks.saturating_add(duration.ticks),
             }),
             StepMode::Quantum | StepMode::Event | StepMode::Assertion | StepMode::Timer => None,
         };

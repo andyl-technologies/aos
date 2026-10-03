@@ -8,6 +8,7 @@
   meson,
   ninja,
   python3,
+  patch,
   libffi,
   pcre2,
   zlib,
@@ -24,11 +25,18 @@
   majorMinor = builtins.concatStringsSep "." (
     builtins.genList (i: builtins.elemAt (builtins.split "\\." version) (i * 2)) 2
   );
+  # The image stack uses upstream's new nanosecond ready-time and concurrent
+  # source lifetime implementation. Its native fence patch must preserve those
+  # interfaces rather than projecting the 2.82 implementation onto them.
+  crucibleMainContextPatch =
+    if version == "2.89.4"
+    then ./glib-crucible-main-context-2.89.patch
+    else ./glib-crucible-main-context.patch;
 in
   mkDerivation {
     pname = "glib";
     inherit version;
-    outputs = ["out" "dev" "tools"];
+    outputs = ["out" "dev" "tools" "source"];
 
     src = fetchurl {
       urls = [
@@ -44,6 +52,7 @@ in
         meson
         ninja
         python3
+        patch
       ]
       ++ lib.optional enableIntrospection gobject-introspection;
     runtimeDeps =
@@ -69,7 +78,10 @@ in
         # visible to both GLib itself and downstream consumers.
         if stdenv.hostPlatform.isDarwin
         then [gettext]
-        else []
+        # gio-2.0.pc exposes util-linux's mount.pc as a private requirement.
+        # pkg-config validates it even for dynamic consumers, so propagate the
+        # metadata provider with GLib's development interface.
+        else [util-linux]
       );
     # The installed generators retain their Python interpreter in the tools
     # output. Keep that reference during the generic runtime scrub. The image
@@ -77,232 +89,259 @@ in
     # the runtime library output.
     nukeRefsKeep = [python3];
 
-    phases = [
-      {
-        name = "unpack";
-        script =
-          ''
-            tar xf $src
-            cd glib-${version}
-          ''
-          + (
-            if stdenv.hostPlatform.isDarwin
-            then ''
-              # Upstream nests the deployment-target probe under its legacy
-              # Carbon probe. The public SDK provides Carbon's header-only
-              # keyboard constants, but deliberately has no linkable legacy
-              # Carbon framework, while AvailabilityMacros still makes
-              # giomodule.c reference the 10.9+ notification backend. Our
-              # minimum target is 11.0, so keep the matching Cocoa
-              # implementation in libgio.
-              sed -i \
-                's/    if glib_have_os_x_9_or_later/    if true/' \
-                gio/meson.build
-
-              # Carbon.h is intentionally a header-only compatibility
-              # surface for consumers of the legacy keyboard constants. It
-              # does not imply that the removed Carbon framework is linkable.
-              # Upstream treats a successful header compile as proof of the
-              # framework and later makes the framework dependency required;
-              # keep its probe result aligned with the SDK's actual ABI.
-              sed -i \
-                "/name : 'Mac OS X Carbon support')/a\\  glib_have_carbon = false" \
-                meson.build
-
-              # Meson links GLib and GIO with the C driver after compiling
-              # their Cocoa sources separately. Unlike a combined
-              # Objective-C link, that driver does not add libobjc
-              # automatically, so declare the runtime alongside the Apple
-              # frameworks which use it in both libraries.
-              sed -i \
-                's/platform_deps += \[framework_dep\]/platform_deps += [framework_dep, objcc.find_library('"'"'objc'"'"')]/' \
-                glib/meson.build gio/meson.build
+    phases =
+      [
+        {
+          name = "unpack";
+          script =
             ''
-            else ""
-          )
-          + ''
-            # Meson executes source-tree generators during the build, so their
-            # shebangs must name native Python until installation is complete.
-            nativePython=$(command -v python3)
-            find . -type f -name '*.py' | while read f; do
-              if head -1 "$f" | grep -q '^#!'; then
-                sed -i "1s|#!/usr/bin/env python3|#!$nativePython|" "$f"
-                sed -i "1s|#!/usr/bin/python3|#!$nativePython|" "$f"
+              tar xf $src
+              cd glib-${version}
+              patch --batch -p1 < ${crucibleMainContextPatch}
+            ''
+            + (
+              if stdenv.hostPlatform.isDarwin
+              then ''
+                # Upstream nests the deployment-target probe under its legacy
+                # Carbon probe. The public SDK provides Carbon's header-only
+                # keyboard constants, but deliberately has no linkable legacy
+                # Carbon framework, while AvailabilityMacros still makes
+                # giomodule.c reference the 10.9+ notification backend. Our
+                # minimum target is 11.0, so keep the matching Cocoa
+                # implementation in libgio.
+                sed -i \
+                  's/    if glib_have_os_x_9_or_later/    if true/' \
+                  gio/meson.build
+
+                # Carbon.h is intentionally a header-only compatibility
+                # surface for consumers of the legacy keyboard constants. It
+                # does not imply that the removed Carbon framework is linkable.
+                # Upstream treats a successful header compile as proof of the
+                # framework and later makes the framework dependency required;
+                # keep its probe result aligned with the SDK's actual ABI.
+                sed -i \
+                  "/name : 'Mac OS X Carbon support')/a\\  glib_have_carbon = false" \
+                  meson.build
+
+                # Meson links GLib and GIO with the C driver after compiling
+                # their Cocoa sources separately. Unlike a combined
+                # Objective-C link, that driver does not add libobjc
+                # automatically, so declare the runtime alongside the Apple
+                # frameworks which use it in both libraries.
+                sed -i \
+                  's/platform_deps += \[framework_dep\]/platform_deps += [framework_dep, objcc.find_library('"'"'objc'"'"')]/' \
+                  glib/meson.build gio/meson.build
+              ''
+              else ""
+            )
+            + ''
+              # Meson executes source-tree generators during the build, so their
+              # shebangs must name native Python until installation is complete.
+              nativePython=$(command -v python3)
+              find . -type f -name '*.py' | while read f; do
+                if head -1 "$f" | grep -q '^#!'; then
+                  sed -i "1s|#!/usr/bin/env python3|#!$nativePython|" "$f"
+                  sed -i "1s|#!/usr/bin/python3|#!$nativePython|" "$f"
+                fi
+              done
+            '';
+        }
+        {
+          name = "configure";
+          script =
+            lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
+              # Meson records explicit linker flags in every target, including
+              # GLib's shared libraries whose dependencies load transitively.
+              export LDFLAGS="$NIX_LDFLAGS ''${LDFLAGS:-}"
+            ''
+            + lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux && enableIntrospection) ''
+              # The scanner runs on the build machine but links a target dumper.
+              # Keep its executable native while advertising target GI libraries.
+              mkdir -p .aos-introspection
+              cat > .aos-introspection/ldd-target <<'EOF'
+              #!${buildPackages.bash}/bin/bash
+              exec ${stdenv.glibc}/lib/${stdenv.hostPlatform.dynamicLinker} --list "$@"
+              EOF
+              cat > .aos-introspection/g-ir-scanner <<EOF
+              #!${buildPackages.bash}/bin/bash
+              exec ${buildPackages.gobject-introspection}/bin/g-ir-scanner --use-ldd-wrapper="$PWD/.aos-introspection/ldd-target" "\$@"
+              EOF
+              chmod 0755 .aos-introspection/ldd-target .aos-introspection/g-ir-scanner
+              cp ${gobject-introspection}/lib/pkgconfig/gobject-introspection-1.0.pc \
+                .aos-introspection/gobject-introspection-1.0.pc
+              # The target scanner library was built against bootstrap GLib, but
+              # this replacement GLib cannot resolve its own not-yet-installed
+              # pkg-config files. Meson's in-tree GLib dependencies already
+              # supply those headers and libraries to the GIR targets.
+              test "$(grep -Ec '^Requires: glib-2\.0 .*gobject-2\.0 ' \
+                .aos-introspection/gobject-introspection-1.0.pc)" -eq 1
+              sed -i '/^Requires: glib-2\.0 .*gobject-2\.0 /d' \
+                .aos-introspection/gobject-introspection-1.0.pc
+              sed -i \
+                -e "s|^g_ir_scanner=.*|g_ir_scanner=$PWD/.aos-introspection/g-ir-scanner|" \
+                -e 's|^g_ir_compiler=.*|g_ir_compiler=${buildPackages.gobject-introspection}/bin/g-ir-compiler|' \
+                .aos-introspection/gobject-introspection-1.0.pc
+              export PKG_CONFIG_PATH="$PWD/.aos-introspection:$PKG_CONFIG_PATH"
+            ''
+            + ''
+              meson setup build \
+                $mesonFlags \
+                --prefix=$out \
+                --buildtype=release \
+                -Dselinux=disabled \
+                -Dxattr=false \
+                -Dlibmount=${
+                if stdenv.hostPlatform.isDarwin
+                then "disabled"
+                else "enabled"
+              } \
+                -Dman-pages=disabled \
+                -Ddtrace=disabled \
+                -Dsystemtap=disabled \
+                -Ddocumentation=false \
+                -Dintrospection=${
+                if enableIntrospection
+                then "enabled"
+                else "disabled"
+              } \
+                -Dinstalled_tests=false \
+                -Dnls=disabled \
+                -Doss_fuzz=disabled \
+                -Dglib_checks=true \
+                -Dglib_assert=false \
+                -Dtests=false
+            '';
+        }
+        {
+          name = "build";
+          script = ''
+            # Meson records its Python module invocation in build.ninja, not the
+            # environment-setting launcher used during setup.
+            PYTHONPATH=${buildPackages.meson}/lib/python3/site-packages \
+              ninja -C build -j$NIX_BUILD_CORES
+          '';
+        }
+        {
+          name = "install";
+          script = ''
+            PYTHONPATH=${buildPackages.meson}/lib/python3/site-packages \
+              ninja -C build install
+
+            # Keep libraries and their libexec runtime helpers together so GIO
+            # can resolve gio-launch-desktop relative to its installed library.
+            # Python-backed generators belong to tools; headers, static archives,
+            # and package metadata belong to the development output.
+            mkdir -p "$dev/lib" "$dev/share" "$tools"
+            if [ -d "$out/include" ]; then
+              mv "$out/include" "$dev/include"
+            fi
+            for directory in pkgconfig cmake; do
+              if [ -d "$out/lib/$directory" ]; then
+                mv "$out/lib/$directory" "$dev/lib/$directory"
               fi
             done
-          '';
-      }
-      {
-        name = "configure";
-        script =
-          lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux) ''
-            # Meson records explicit linker flags in every target, including
-            # GLib's shared libraries whose dependencies load transitively.
-            export LDFLAGS="$NIX_LDFLAGS ''${LDFLAGS:-}"
-          ''
-          + lib.optionalString (stdenv.isCross && stdenv.hostPlatform.isLinux && enableIntrospection) ''
-            # The scanner runs on the build machine but links a target dumper.
-            # Keep its executable native while advertising target GI libraries.
-            mkdir -p .aos-introspection
-            cat > .aos-introspection/ldd-target <<'EOF'
-            #!${buildPackages.bash}/bin/bash
-            exec ${stdenv.glibc}/lib/${stdenv.hostPlatform.dynamicLinker} --list "$@"
-            EOF
-            cat > .aos-introspection/g-ir-scanner <<EOF
-            #!${buildPackages.bash}/bin/bash
-            exec ${buildPackages.gobject-introspection}/bin/g-ir-scanner --use-ldd-wrapper="$PWD/.aos-introspection/ldd-target" "\$@"
-            EOF
-            chmod 0755 .aos-introspection/ldd-target .aos-introspection/g-ir-scanner
-            cp ${gobject-introspection}/lib/pkgconfig/gobject-introspection-1.0.pc \
-              .aos-introspection/gobject-introspection-1.0.pc
-            # The target scanner library was built against bootstrap GLib, but
-            # this replacement GLib cannot resolve its own not-yet-installed
-            # pkg-config files. Meson's in-tree GLib dependencies already
-            # supply those headers and libraries to the GIR targets.
-            test "$(grep -Ec '^Requires: glib-2\.0 .*gobject-2\.0 ' \
-              .aos-introspection/gobject-introspection-1.0.pc)" -eq 1
-            sed -i '/^Requires: glib-2\.0 .*gobject-2\.0 /d' \
-              .aos-introspection/gobject-introspection-1.0.pc
-            sed -i \
-              -e "s|^g_ir_scanner=.*|g_ir_scanner=$PWD/.aos-introspection/g-ir-scanner|" \
-              -e 's|^g_ir_compiler=.*|g_ir_compiler=${buildPackages.gobject-introspection}/bin/g-ir-compiler|' \
-              .aos-introspection/gobject-introspection-1.0.pc
-            export PKG_CONFIG_PATH="$PWD/.aos-introspection:$PKG_CONFIG_PATH"
-          ''
-          + ''
-            meson setup build \
-              $mesonFlags \
-              --prefix=$out \
-              --buildtype=release \
-              -Dselinux=disabled \
-              -Dxattr=false \
-              -Dlibmount=${
-              if stdenv.hostPlatform.isDarwin
-              then "disabled"
-              else "enabled"
-            } \
-              -Dman-pages=disabled \
-              -Ddtrace=disabled \
-              -Dsystemtap=disabled \
-              -Ddocumentation=false \
-              -Dintrospection=${
-              if enableIntrospection
-              then "enabled"
-              else "disabled"
-            } \
-              -Dinstalled_tests=false \
-              -Dnls=disabled \
-              -Doss_fuzz=disabled \
-              -Dglib_checks=true \
-              -Dglib_assert=false \
-              -Dtests=false
-          '';
-      }
-      {
-        name = "build";
-        script = ''
-          # Meson records its Python module invocation in build.ninja, not the
-          # environment-setting launcher used during setup.
-          PYTHONPATH=${buildPackages.meson}/lib/python3/site-packages \
-            ninja -C build -j$NIX_BUILD_CORES
-        '';
-      }
-      {
-        name = "install";
-        script = ''
-          PYTHONPATH=${buildPackages.meson}/lib/python3/site-packages \
-            ninja -C build install
-
-          # Keep libraries and their libexec runtime helpers together so GIO
-          # can resolve gio-launch-desktop relative to its installed library.
-          # Python-backed generators belong to tools; headers, static archives,
-          # and package metadata belong to the development output.
-          mkdir -p "$dev/lib" "$dev/share" "$tools"
-          if [ -d "$out/include" ]; then
-            mv "$out/include" "$dev/include"
-          fi
-          for directory in pkgconfig cmake; do
-            if [ -d "$out/lib/$directory" ]; then
-              mv "$out/lib/$directory" "$dev/lib/$directory"
+            find "$out/lib" -maxdepth 1 -type f \( -name '*.a' -o -name '*.la' \) \
+              -exec mv {} "$dev/lib/" \;
+            if [ -d "$out/share/aclocal" ]; then
+              mv "$out/share/aclocal" "$dev/share/aclocal"
             fi
-          done
-          find "$out/lib" -maxdepth 1 -type f \( -name '*.a' -o -name '*.la' \) \
-            -exec mv {} "$dev/lib/" \;
-          if [ -d "$out/share/aclocal" ]; then
-            mv "$out/share/aclocal" "$dev/share/aclocal"
-          fi
-          if [ -d "$out/bin" ]; then
-            mv "$out/bin" "$tools/bin"
-          fi
-          if [ -d "$out/lib/glib-2.0/include" ]; then
-            mkdir -p "$dev/lib/glib-2.0"
-            mv "$out/lib/glib-2.0/include" "$dev/lib/glib-2.0/include"
-          fi
-          for link in "$out/lib/"*.${stdenv.hostPlatform.sharedLibraryExtension}; do
-            [ -L "$link" ] || continue
-            target=$(readlink "$link")
-            name=$(basename "$link")
-            rm "$link"
-            ln -s "$out/lib/$target" "$dev/lib/$name"
-          done
-          if [ -d "$out/share/glib-2.0/codegen" ]; then
-            mkdir -p "$tools/share/glib-2.0"
-            mv "$out/share/glib-2.0/codegen" "$tools/share/glib-2.0/codegen"
-          fi
-          for directory in glib-2.0/gdb glib-2.0/valgrind gdb; do
-            if [ -d "$out/share/$directory" ]; then
-              mkdir -p "$dev/share/$(dirname "$directory")"
-              mv "$out/share/$directory" "$dev/share/$directory"
+            if [ -d "$out/bin" ]; then
+              mv "$out/bin" "$tools/bin"
             fi
-          done
-          if [ -d "$out/share/bash-completion" ]; then
-            mkdir -p "$tools/share"
-            mv "$out/share/bash-completion" "$tools/share/bash-completion"
-          fi
-
-          # Consumers need the unversioned linker symlinks in dev before any
-          # other GLib on their library search path; libdir still names runtime.
-          for pc in "$dev/lib/pkgconfig/"*.pc; do
-            [ -e "$pc" ] || continue
-            sed -i \
-              -e "s|^prefix=.*|prefix=$dev|" \
-              -e "s|^libdir=.*|libdir=$out/lib|" \
-              -e "s|^includedir=.*|includedir=$dev/include|" \
-              -e "s|^bindir=.*|bindir=$tools/bin|" \
-              -e "s|^Libs: |Libs: -L$dev/lib |" \
-              "$pc"
-          done
-          sed -i \
-            -e "s|\''${libdir}/glib-2.0/include|$dev/lib/glib-2.0/include|g" \
-            "$dev/lib/pkgconfig/glib-2.0.pc"
-          sed -i \
-            -e "s|^schemasdir=.*|schemasdir=$out/share/glib-2.0/schemas|" \
-            -e "s|^dtdsdir=.*|dtdsdir=$out/share/glib-2.0/dtds|" \
-            "$dev/lib/pkgconfig/gio-2.0.pc"
-
-          nativePythonRoot=$(dirname "$(dirname "$(command -v python3)")")
-          pythonRefs=$PWD/glib-python-refs
-          for root in "$out" "$dev" "$tools"; do
-            : > "$pythonRefs"
-            grep -IrlZ -F "$nativePythonRoot" "$root" \
-              > "$pythonRefs" 2>/dev/null || true
-            if [ -s "$pythonRefs" ]; then
-              xargs -0 -r sed -i "s|$nativePythonRoot|${python3}|g" \
-                < "$pythonRefs"
+            if [ -d "$out/lib/glib-2.0/include" ]; then
+              mkdir -p "$dev/lib/glib-2.0"
+              mv "$out/lib/glib-2.0/include" "$dev/lib/glib-2.0/include"
             fi
-          done
-          ${
-            if stdenv.hostPlatform.isDarwin
-            then ''
-              if [ -f "$tools/bin/glib-gettextize" ]; then
-                sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$tools/bin/glib-gettextize"
+            for link in "$out/lib/"*.${stdenv.hostPlatform.sharedLibraryExtension}; do
+              [ -L "$link" ] || continue
+              target=$(readlink "$link")
+              name=$(basename "$link")
+              rm "$link"
+              ln -s "$out/lib/$target" "$dev/lib/$name"
+            done
+            if [ -d "$out/share/glib-2.0/codegen" ]; then
+              mkdir -p "$tools/share/glib-2.0"
+              mv "$out/share/glib-2.0/codegen" "$tools/share/glib-2.0/codegen"
+            fi
+            for directory in glib-2.0/gdb glib-2.0/valgrind gdb; do
+              if [ -d "$out/share/$directory" ]; then
+                mkdir -p "$dev/share/$(dirname "$directory")"
+                mv "$out/share/$directory" "$dev/share/$directory"
               fi
-            ''
-            else ""
-          }
+            done
+            if [ -d "$out/share/bash-completion" ]; then
+              mkdir -p "$tools/share"
+              mv "$out/share/bash-completion" "$tools/share/bash-completion"
+            fi
+
+            # Consumers need the unversioned linker symlinks in dev before any
+            # other GLib on their library search path; libdir still names runtime.
+            for pc in "$dev/lib/pkgconfig/"*.pc; do
+              [ -e "$pc" ] || continue
+              sed -i \
+                -e "s|^prefix=.*|prefix=$dev|" \
+                -e "s|^libdir=.*|libdir=$out/lib|" \
+                -e "s|^includedir=.*|includedir=$dev/include|" \
+                -e "s|^bindir=.*|bindir=$tools/bin|" \
+                -e "s|^Libs: |Libs: -L$dev/lib |" \
+                "$pc"
+            done
+            sed -i \
+              -e "s|\''${libdir}/glib-2.0/include|$dev/lib/glib-2.0/include|g" \
+              "$dev/lib/pkgconfig/glib-2.0.pc"
+            sed -i \
+              -e "s|^schemasdir=.*|schemasdir=$out/share/glib-2.0/schemas|" \
+              -e "s|^dtdsdir=.*|dtdsdir=$out/share/glib-2.0/dtds|" \
+              "$dev/lib/pkgconfig/gio-2.0.pc"
+
+            # Co-retain the complete upstream source, exact modifications and
+            # AOS build recipe with every redistributed patched runtime library.
+            mkdir -p "$source/tests" "$out/nix-support"
+            cp "$src" "$source/glib-upstream-source.tar.xz"
+            cp ${crucibleMainContextPatch} "$source/glib-crucible-main-context.patch"
+            cp ${./glib-crucible-main-context-2.89.patch} "$source/glib-crucible-main-context-2.89.patch"
+            cp ${./glib.nix} "$source/glib.nix"
+            cp ${./tests/glib-crucible-main-context.c} "$source/tests/glib-crucible-main-context.c"
+            cp COPYING "$source/COPYING"
+            sed -e "s|$out|@OUT@|g" -e "s|$dev|@DEV@|g" \
+              -e "s|$tools|@TOOLS@|g" -e "s|$source|@SOURCE@|g" \
+              build/meson-info/intro-buildoptions.json > "$source/build-options.json"
+            printf '%s\n' "$source" > "$out/nix-support/glib-corresponding-source"
+
+            nativePythonRoot=$(dirname "$(dirname "$(command -v python3)")")
+            pythonRefs=$PWD/glib-python-refs
+            for root in "$out" "$dev" "$tools"; do
+              : > "$pythonRefs"
+              grep -IrlZ -F "$nativePythonRoot" "$root" \
+                > "$pythonRefs" 2>/dev/null || true
+              if [ -s "$pythonRefs" ]; then
+                xargs -0 -r sed -i "s|$nativePythonRoot|${python3}|g" \
+                  < "$pythonRefs"
+              fi
+            done
+            ${
+              if stdenv.hostPlatform.isDarwin
+              then ''
+                if [ -f "$tools/bin/glib-gettextize" ]; then
+                  sed -i "1s|^#!.*|#!${bash}/bin/bash|" "$tools/bin/glib-gettextize"
+                fi
+              ''
+              else ""
+            }
+          '';
+        }
+      ]
+      ++ lib.optional (!stdenv.isCross && stdenv.hostPlatform.isLinux) {
+        name = "crucible-main-context-regression";
+        script = ''
+          gcc -std=gnu11 -Wall -Wextra -Werror -Wno-unused-parameter \
+            -I"$dev/include/glib-2.0" -I"$dev/lib/glib-2.0/include" \
+            ${./tests/glib-crucible-main-context.c} \
+            "$out/lib/libglib-2.0.so.0" -Wl,-rpath,"$out/lib" -pthread \
+            -o glib-crucible-main-context-test
+          ./glib-crucible-main-context-test
         '';
-      }
-    ];
+      };
 
     meta = {
       description = "glib — GLib core library providing data structures, type system, and event loop";

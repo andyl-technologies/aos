@@ -13,6 +13,8 @@ mod actual_failure;
 mod graph_support;
 #[path = "tests/replay_artifact.rs"]
 mod replay_artifact;
+#[path = "tests/reproduction_footer.rs"]
+mod reproduction_footer;
 #[path = "tests/state_workflows.rs"]
 mod state_workflows;
 #[path = "tests/surface.rs"]
@@ -22,6 +24,34 @@ mod verify_dispatch;
 
 use graph_support::*;
 use surface::*;
+
+#[derive(Debug)]
+struct TerminalCampaignFailure;
+
+impl fmt::Display for TerminalCampaignFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("terminal attempt evaluation failed")
+    }
+}
+
+impl Error for TerminalCampaignFailure {}
+
+#[derive(Debug)]
+struct JoinedCampaignFailure {
+    source: TerminalCampaignFailure,
+}
+
+impl fmt::Display for JoinedCampaignFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("canonical campaign runtime stopped unexpectedly")
+    }
+}
+
+impl Error for JoinedCampaignFailure {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.source)
+    }
+}
 
 fn coverage_event_frame(
     sequence: u64,
@@ -38,8 +68,9 @@ fn coverage_event_frame(
             sequence,
             at: crucible_api::OpenSetEventTime {
                 virtual_time_ticks: sequence,
-                icount_retired: sequence,
-                icount_node: Some(String::from("vm-0")),
+                stamp_tick: sequence,
+                stamp_retired: Some(sequence),
+                stamp_node: Some(String::from("vm-0")),
             },
             source: crucible_api::OpenSetEventSource::Node {
                 node: String::from("vm-0"),
@@ -109,4 +140,30 @@ fn malformed_streamed_coverage_fails_loudly() {
         .expect_err("missing block_len must reject the coverage frame");
 
     assert!(error.to_string().contains("block_len"));
+}
+
+#[test]
+fn joined_campaign_failure_survives_lifecycle_shutdown_error() {
+    let lifecycle = Err(campaign_service_stopped_error(None));
+    let campaign = Err(campaign_service_join_error(&JoinedCampaignFailure {
+        source: TerminalCampaignFailure,
+    }));
+
+    let error = combine_lifecycle_and_campaign_results(lifecycle, campaign)
+        .expect_err("both joined service failures should propagate");
+
+    assert_eq!(
+        error.to_string(),
+        "campaign service stopped unexpectedly; campaign service error: canonical campaign runtime stopped unexpectedly; caused by: terminal attempt evaluation failed"
+    );
+}
+
+#[test]
+fn unexpected_campaign_stop_reports_checkpoint_promotion_failure_phase() {
+    let error = campaign_service_stopped_error_with_promotion_failures(Some((3, 1, 2)));
+
+    assert_eq!(
+        error.to_string(),
+        "campaign service stopped unexpectedly; checkpoint promotions failed=3 preparation_terminal=1 publication_terminal_reverted=2"
+    );
 }

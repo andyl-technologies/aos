@@ -14,7 +14,7 @@ pub struct RegionHeader {
     ring_data_off: AtomicU64,
     entry_stride: AtomicU64,
     region_size: AtomicU64,
-    icount_shift: AtomicU32,
+    ticks_per_ns: AtomicU32,
     pause_requested: AtomicU8,
     shutdown_requested: AtomicU8,
     _control_padding: [u8; 2],
@@ -34,7 +34,7 @@ impl Clone for RegionHeader {
             ring_data_off: AtomicU64::new(self.ring_data_off.load(Ordering::Acquire)),
             entry_stride: AtomicU64::new(self.entry_stride.load(Ordering::Acquire)),
             region_size: AtomicU64::new(self.region_size.load(Ordering::Acquire)),
-            icount_shift: AtomicU32::new(self.icount_shift.load(Ordering::Acquire)),
+            ticks_per_ns: AtomicU32::new(self.ticks_per_ns.load(Ordering::Acquire)),
             pause_requested: AtomicU8::new(self.pause_requested.load(Ordering::Acquire)),
             shutdown_requested: AtomicU8::new(self.shutdown_requested.load(Ordering::Acquire)),
             _control_padding: [0; 2],
@@ -70,9 +70,9 @@ pub const REGION_HEADER_ENTRY_STRIDE_OFFSET: usize =
 /// Byte offset of [`RegionHeader`]'s total region-size field.
 pub const REGION_HEADER_REGION_SIZE_OFFSET: usize =
     core::mem::offset_of!(RegionHeader, region_size);
-/// Byte offset of [`RegionHeader`]'s fixed icount-shift field.
-pub const REGION_HEADER_ICOUNT_SHIFT_OFFSET: usize =
-    core::mem::offset_of!(RegionHeader, icount_shift);
+/// Byte offset of [`RegionHeader`]'s fixed ticks-per-nanosecond field.
+pub const REGION_HEADER_TICKS_PER_NS_OFFSET: usize =
+    core::mem::offset_of!(RegionHeader, ticks_per_ns);
 /// Byte offset of [`RegionHeader`]'s coordinated-pause flag.
 pub const REGION_HEADER_PAUSE_REQUESTED_OFFSET: usize =
     core::mem::offset_of!(RegionHeader, pause_requested);
@@ -101,7 +101,7 @@ const _: () = assert!(REGION_HEADER_RING_HDR_OFF_OFFSET == 24);
 const _: () = assert!(REGION_HEADER_RING_DATA_OFF_OFFSET == 32);
 const _: () = assert!(REGION_HEADER_ENTRY_STRIDE_OFFSET == 40);
 const _: () = assert!(REGION_HEADER_REGION_SIZE_OFFSET == 48);
-const _: () = assert!(REGION_HEADER_ICOUNT_SHIFT_OFFSET == 56);
+const _: () = assert!(REGION_HEADER_TICKS_PER_NS_OFFSET == 56);
 const _: () = assert!(REGION_HEADER_PAUSE_REQUESTED_OFFSET == 60);
 const _: () = assert!(REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET == 61);
 const _: () = assert!(REGION_HEADER_CONTROL_PADDING_OFFSET == 62);
@@ -124,7 +124,7 @@ impl RegionHeader {
             ring_data_off: AtomicU64::new(layout.ring_data_off),
             entry_stride: AtomicU64::new(layout.entry_stride),
             region_size: AtomicU64::new(layout.region_size),
-            icount_shift: AtomicU32::new(layout.icount_shift),
+            ticks_per_ns: AtomicU32::new(layout.ticks_per_ns),
             pause_requested: AtomicU8::new(0),
             shutdown_requested: AtomicU8::new(0),
             _control_padding: [0; 2],
@@ -146,7 +146,7 @@ impl RegionHeader {
             ring_data_off: self.ring_data_off.load(Ordering::Acquire),
             entry_stride: self.entry_stride.load(Ordering::Acquire),
             region_size: self.region_size.load(Ordering::Acquire),
-            icount_shift: self.icount_shift.load(Ordering::Acquire),
+            ticks_per_ns: self.ticks_per_ns.load(Ordering::Acquire),
             pause_requested: self.pause_requested.load(Ordering::Acquire),
             shutdown_requested: self.shutdown_requested.load(Ordering::Acquire),
             fault_payload_arena_bytes: self.fault_payload_arena_bytes.load(Ordering::Acquire),
@@ -270,8 +270,8 @@ pub struct RegionHeaderSnapshot {
     pub entry_stride: u64,
     /// The total mapped region size in bytes.
     pub region_size: u64,
-    /// The fixed icount shift used to derive virtual nanoseconds.
-    pub icount_shift: u32,
+    /// The fixed number of logical ticks in one virtual nanosecond.
+    pub ticks_per_ns: u32,
     /// Nonzero when the scheduler requested a coordinated pause.
     pub pause_requested: u8,
     /// Nonzero when the scheduler requested shutdown.
@@ -334,6 +334,13 @@ pub(super) fn validate_setup_region_header_and_layout(
         return Err(RegionSetupValidationError::AbiVersionMismatch {
             actual: snapshot.abi_version,
             expected: ABI_VERSION,
+        });
+    }
+
+    if snapshot.ticks_per_ns != TICKS_PER_NS as u32 {
+        return Err(RegionSetupValidationError::TicksPerNsMismatch {
+            actual: snapshot.ticks_per_ns,
+            expected: TICKS_PER_NS as u32,
         });
     }
 

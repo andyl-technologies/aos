@@ -3485,7 +3485,9 @@ mod tests {
     async fn registry_home_escapes_and_links() {
         let registry = registry();
         let caches = [("https://cache.example".into(), 40)];
-        let setup = setup(&registry, "http://127.0.0.1:8420/demo", &caches);
+        let cache_key = "demo-cache:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        let setup = setup(&registry, "http://127.0.0.1:8420/demo", &caches)
+            .with_nix_cache_public_keys(vec![cache_key.into()]);
         let html = registry_home(
             &registry,
             None,
@@ -3512,6 +3514,10 @@ mod tests {
         // One canonical registry URL serves Git, AOS, and stock-Nix clients;
         // physical cache routes remain visible in the signed topology table.
         assert!(html.contains("substituters = http://127.0.0.1:8420/demo"));
+        assert!(
+            html.contains(&format!("trusted-public-keys = {cache_key}")),
+            "{html}"
+        );
         assert!(html.contains("--trust-key demo:Ed25519:AAAA"));
         // Unvalidated caches say so; the health page is linked.
         assert!(!html.contains("not yet validated"));

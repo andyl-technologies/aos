@@ -4,7 +4,7 @@ use super::*;
 
 /// One immutable guest-visible clock source.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FaultClockCapabilityRowV1 {
+pub struct FaultClockCapabilityRowV2 {
     /// Stable source identity used by clock targets.
     pub id: String,
     /// QEMU subsystem that implements the source and related timers.
@@ -29,9 +29,11 @@ pub struct FaultClockCapabilityRowV1 {
     pub vmstate: bool,
     /// Required default handling for a value that moves backward.
     pub monotonicity: u8,
+    /// Guest-state-derived calendar epoch in nanoseconds, zero for other sources.
+    pub epoch_ns: i64,
 }
 
-impl FaultClockCapabilityRowV1 {
+impl FaultClockCapabilityRowV2 {
     fn validate(&self) -> Result<(), FaultAbiError> {
         let clock_read = 1_u64 << (28 - 1);
         let arm = 1_u64 << (29 - 1);
@@ -54,6 +56,7 @@ impl FaultClockCapabilityRowV1 {
                 != (self.model_phase_mask & arm != 0 && self.model_phase_mask & fire != 0))
             || !self.vmstate
             || !(1..=3).contains(&self.monotonicity)
+            || (!matches!(self.source_kind, 2 | 8) && self.epoch_ns != 0)
         {
             return Err(FaultAbiError::CapabilityInvariant);
         }
@@ -66,7 +69,7 @@ impl FaultClockCapabilityRowV1 {
             u16::try_from(self.id.len()).map_err(|_| FaultAbiError::CapabilityInvariant)?;
         let implementation_len = u16::try_from(self.implementation.len())
             .map_err(|_| FaultAbiError::CapabilityInvariant)?;
-        let row_len = FAULT_CLOCK_ROW_HEADER_V1_BYTES
+        let row_len = FAULT_CLOCK_ROW_HEADER_V2_BYTES
             .checked_add(self.id.len())
             .and_then(|length| length.checked_add(self.implementation.len()))
             .and_then(|length| u32::try_from(length).ok())
@@ -86,6 +89,7 @@ impl FaultClockCapabilityRowV1 {
         output.extend_from_slice(&id_len.to_le_bytes());
         output.extend_from_slice(&implementation_len.to_le_bytes());
         output.extend_from_slice(&row_len.to_le_bytes());
+        output.extend_from_slice(&self.epoch_ns.to_le_bytes());
         output.extend_from_slice(self.id.as_bytes());
         output.extend_from_slice(self.implementation.as_bytes());
         Ok(())
@@ -94,14 +98,14 @@ impl FaultClockCapabilityRowV1 {
 
 /// Exact guest-clock manifest for one realized QEMU machine.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FaultClockCapabilityManifestV1 {
+pub struct FaultClockCapabilityManifestV2 {
     /// Architecture scope shared by every source.
     pub architecture: FaultCapabilityScope,
     /// Canonically ordered guest-visible sources.
-    pub rows: Vec<FaultClockCapabilityRowV1>,
+    pub rows: Vec<FaultClockCapabilityRowV2>,
 }
 
-impl FaultClockCapabilityManifestV1 {
+impl FaultClockCapabilityManifestV2 {
     /// Encodes a canonical self-authenticating guest-clock manifest.
     ///
     /// # Errors
@@ -132,15 +136,15 @@ impl FaultClockCapabilityManifestV1 {
             }
             row.encode(&mut body)?;
         }
-        if FAULT_CLOCK_MANIFEST_HEADER_V1_BYTES
+        if FAULT_CLOCK_MANIFEST_HEADER_V2_BYTES
             .checked_add(body.len())
             .is_none_or(|length| length > crate::HARD_FAULT_PAYLOAD_BYTES as usize)
         {
             return Err(FaultAbiError::PayloadLimit);
         }
-        let mut output = Vec::with_capacity(FAULT_CLOCK_MANIFEST_HEADER_V1_BYTES + body.len());
-        output.extend_from_slice(&FAULT_CLOCK_MANIFEST_MAGIC_V1);
-        output.extend_from_slice(&FAULT_CLOCK_MANIFEST_VERSION_V1.to_le_bytes());
+        let mut output = Vec::with_capacity(FAULT_CLOCK_MANIFEST_HEADER_V2_BYTES + body.len());
+        output.extend_from_slice(&FAULT_CLOCK_MANIFEST_MAGIC_V2);
+        output.extend_from_slice(&FAULT_CLOCK_MANIFEST_VERSION_V2.to_le_bytes());
         output.extend_from_slice(&(self.architecture as u16).to_le_bytes());
         output.extend_from_slice(&0_u32.to_le_bytes());
         output.extend_from_slice(
@@ -165,13 +169,13 @@ impl FaultClockCapabilityManifestV1 {
     /// Returns [`FaultAbiError`] for malformed framing, digest, source
     /// fields, ordering, architecture, or noncanonical bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, FaultAbiError> {
-        if bytes.len() < FAULT_CLOCK_MANIFEST_HEADER_V1_BYTES
+        if bytes.len() < FAULT_CLOCK_MANIFEST_HEADER_V2_BYTES
             || bytes.len() > crate::HARD_FAULT_PAYLOAD_BYTES as usize
-            || bytes[..8] != FAULT_CLOCK_MANIFEST_MAGIC_V1
+            || bytes[..8] != FAULT_CLOCK_MANIFEST_MAGIC_V2
         {
             return Err(FaultAbiError::HeaderLength);
         }
-        if u16_at(bytes, 8)? != FAULT_CLOCK_MANIFEST_VERSION_V1 || u32_at(bytes, 12)? != 0 {
+        if u16_at(bytes, 8)? != FAULT_CLOCK_MANIFEST_VERSION_V2 || u32_at(bytes, 12)? != 0 {
             return Err(FaultAbiError::Version);
         }
         let architecture = FaultCapabilityScope::from_u16(u16_at(bytes, 10)?)?;
@@ -182,23 +186,23 @@ impl FaultClockCapabilityManifestV1 {
         if row_count == 0
             || row_count > HARD_FAULT_TARGET_MANIFEST_ROWS
             || bytes.len()
-                != FAULT_CLOCK_MANIFEST_HEADER_V1_BYTES
+                != FAULT_CLOCK_MANIFEST_HEADER_V2_BYTES
                     .checked_add(body_len)
                     .ok_or(FaultAbiError::PayloadLimit)?
         {
             return Err(FaultAbiError::HeaderLength);
         }
-        let body = &bytes[FAULT_CLOCK_MANIFEST_HEADER_V1_BYTES..];
+        let body = &bytes[FAULT_CLOCK_MANIFEST_HEADER_V2_BYTES..];
         if bytes[24..56] != *blake3::hash(body).as_bytes() {
             return Err(FaultAbiError::PayloadDigest);
         }
         let mut offset = 0;
         let mut rows = Vec::with_capacity(row_count);
         for _ in 0..row_count {
-            if body.len().saturating_sub(offset) < FAULT_CLOCK_ROW_HEADER_V1_BYTES {
+            if body.len().saturating_sub(offset) < FAULT_CLOCK_ROW_HEADER_V2_BYTES {
                 return Err(FaultAbiError::HeaderLength);
             }
-            let header = &body[offset..offset + FAULT_CLOCK_ROW_HEADER_V1_BYTES];
+            let header = &body[offset..offset + FAULT_CLOCK_ROW_HEADER_V2_BYTES];
             if u16_at(header, 6)? != 0 || header[42..48] != [0; 6] {
                 return Err(FaultAbiError::ReservedNonzero);
             }
@@ -207,7 +211,7 @@ impl FaultClockCapabilityManifestV1 {
             let row_len = usize::try_from(u32_at(header, 52)?)
                 .map_err(|_| FaultAbiError::CapabilityInvariant)?;
             if row_len
-                != FAULT_CLOCK_ROW_HEADER_V1_BYTES
+                != FAULT_CLOCK_ROW_HEADER_V2_BYTES
                     .checked_add(id_len)
                     .and_then(|length| length.checked_add(implementation_len))
                     .ok_or(FaultAbiError::CapabilityInvariant)?
@@ -215,10 +219,10 @@ impl FaultClockCapabilityManifestV1 {
             {
                 return Err(FaultAbiError::HeaderLength);
             }
-            let mut cursor = offset + FAULT_CLOCK_ROW_HEADER_V1_BYTES;
+            let mut cursor = offset + FAULT_CLOCK_ROW_HEADER_V2_BYTES;
             let id = take_text(body, &mut cursor, id_len)?;
             let implementation = take_text(body, &mut cursor, implementation_len)?;
-            let row = FaultClockCapabilityRowV1 {
+            let row = FaultClockCapabilityRowV2 {
                 id,
                 implementation,
                 source_kind: u16_at(header, 0)?,
@@ -231,6 +235,7 @@ impl FaultClockCapabilityManifestV1 {
                 model_phase_mask: u64_at(header, 32)?,
                 vmstate: bool_at(header, 40)?,
                 monotonicity: header[41],
+                epoch_ns: u64_at(header, 56)? as i64,
             };
             row.validate()?;
             rows.push(row);

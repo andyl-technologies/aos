@@ -47,12 +47,12 @@ impl LiveWhiteboxMarkerShmemProducer {
 
     pub(super) fn record(
         &mut self,
-        current_icount: u64,
+        tick_ps: u64,
         vcpu_index: u32,
         kind: u16,
         payload: &[u8],
     ) -> Result<(), WhiteboxMarkerSinkError> {
-        let entry = WhiteboxMarkerEntry::new(current_icount, vcpu_index, kind, payload)
+        let entry = WhiteboxMarkerEntry::new(tick_ps, vcpu_index, kind, payload)
             .map_err(|error| WhiteboxMarkerSinkError::new(error.to_string()))?;
         let (header, entries) = self.ring_parts();
         header
@@ -69,11 +69,35 @@ impl LiveWhiteboxMarkerShmemProducer {
 
 pub(super) struct LiveMarkerSink {
     pub(super) output: LiveWhiteboxMarkerShmemProducer,
+    callback_coordinate: Option<(u64, u64)>,
 }
 
 impl LiveMarkerSink {
     pub(super) const fn new(output: LiveWhiteboxMarkerShmemProducer) -> Self {
-        Self { output }
+        Self {
+            output,
+            callback_coordinate: None,
+        }
+    }
+
+    pub(super) fn bind_callback_coordinate(&mut self, raw_icount: u64, tick_ps: u64) {
+        self.callback_coordinate = Some((raw_icount, tick_ps));
+    }
+
+    pub(super) fn clear_callback_coordinate(&mut self) {
+        self.callback_coordinate = None;
+    }
+
+    fn tick_for_raw_marker(&self, marker_raw_icount: u64) -> Result<u64, WhiteboxMarkerSinkError> {
+        match self.callback_coordinate {
+            Some((raw_icount, tick_ps)) if raw_icount == marker_raw_icount => Ok(tick_ps),
+            Some(_) => Err(WhiteboxMarkerSinkError::new(
+                "white-box marker raw coordinate differs from its callback",
+            )),
+            None => Err(WhiteboxMarkerSinkError::new(
+                "white-box marker has no observed simulation coordinate",
+            )),
+        }
     }
 }
 
@@ -82,8 +106,9 @@ impl WhiteboxMarkerSink for LiveMarkerSink {
         &mut self,
         marker: &WhiteboxMarker,
     ) -> Result<(), WhiteboxMarkerSinkError> {
+        let tick_ps = self.tick_for_raw_marker(marker.marker_icount())?;
         self.output.record(
-            marker.marker_icount(),
+            tick_ps,
             marker.vcpu_index(),
             marker.kind(),
             marker.payload(),
@@ -101,6 +126,29 @@ impl WhiteboxMarkerSink for LiveMarkerSink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_marker_sink_requires_matching_observed_tick() {
+        let header = RingHeader::new();
+        let mut entries = vec![WhiteboxMarkerEntry::default()];
+        // SAFETY: the test retains the ring storage for the sink's full lifetime.
+        let output = unsafe {
+            LiveWhiteboxMarkerShmemProducer::from_raw_parts(
+                std::ptr::from_ref(&header),
+                entries.as_mut_ptr(),
+                entries.len(),
+            )
+        };
+        let mut sink = LiveMarkerSink::new(output);
+        assert!(sink.tick_for_raw_marker(100).is_err());
+
+        sink.bind_callback_coordinate(100, 1_000_037);
+        assert_eq!(sink.tick_for_raw_marker(100), Ok(1_000_037));
+        assert!(sink.tick_for_raw_marker(101).is_err());
+
+        sink.clear_callback_coordinate();
+        assert!(sink.tick_for_raw_marker(100).is_err());
+    }
 
     #[test]
     fn live_marker_producer_publishes_exact_entry_to_shmem() {

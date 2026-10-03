@@ -49,29 +49,123 @@ pub(super) fn checklist_state_needle_failures(path: &Path, content: &str) -> Vec
 }
 
 pub(super) fn terminal_outcome_construction_failures(content: &str) -> Vec<String> {
+    let tokens = tokenize(&scrub_comments_and_strings(content));
+    let patterns = terminal_matches_pattern_ranges(&tokens);
+    let functions = terminal_function_ranges(&tokens);
     let mut failures = Vec::new();
-    let mut in_stop_path = false;
-    let mut brace_depth = 0_i64;
 
-    for (index, line) in content.lines().enumerate() {
-        if line.contains("fn enter_stopped(") {
-            in_stop_path = true;
+    for (index, token) in tokens.iter().enumerate() {
+        if token.kind.as_ident() != Some("Outcome")
+            || !terminal_token_is_punct(&tokens, index + 1, ':')
+            || !terminal_token_is_punct(&tokens, index + 2, ':')
+            || patterns.iter().any(|range| range.contains(&index))
+        {
+            continue;
         }
-        if line.contains("Outcome::") && !in_stop_path {
+
+        let owner = functions
+            .iter()
+            .rev()
+            .find(|(_, range)| range.contains(&index))
+            .map(|(name, _)| *name);
+        // Actor failures must still become terminal if checkpoint capture fails.
+        // That pre-existing Engine fallback may publish only a crash outcome.
+        let actor_crash = owner == Some("stop_after_actor_crash")
+            && tokens
+                .get(index + 3)
+                .and_then(|token| token.kind.as_ident())
+                == Some("Crashed");
+        if owner != Some("enter_stopped") && !actor_crash {
             failures.push(format!(
-                "line {} constructs a terminal Outcome outside enter_stopped",
-                index + 1
+                "line {} constructs a terminal Outcome outside enter_stopped or the Engine actor-crash fallback",
+                token.line
             ));
-        }
-        if in_stop_path {
-            brace_depth += line.matches('{').count() as i64;
-            brace_depth -= line.matches('}').count() as i64;
-            if brace_depth == 0 && line.contains('}') {
-                in_stop_path = false;
-            }
         }
     }
     failures
+}
+
+fn terminal_token_is_punct(tokens: &[Token], index: usize, punctuation: char) -> bool {
+    tokens
+        .get(index)
+        .is_some_and(|token| token.kind == TokenKind::Punct(punctuation))
+}
+
+fn terminal_function_ranges(tokens: &[Token]) -> Vec<(&str, std::ops::Range<usize>)> {
+    let mut functions = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
+        if token.kind.as_ident() != Some("fn") {
+            continue;
+        }
+        let Some(name) = tokens
+            .get(index + 1)
+            .and_then(|token| token.kind.as_ident())
+        else {
+            continue;
+        };
+        let Some(start) = (index + 2..tokens.len()).find(|offset| {
+            terminal_token_is_punct(tokens, *offset, '{')
+                || terminal_token_is_punct(tokens, *offset, ';')
+        }) else {
+            continue;
+        };
+        if terminal_token_is_punct(tokens, start, ';') {
+            continue;
+        }
+        let mut depth = 0usize;
+        for end in start..tokens.len() {
+            if terminal_token_is_punct(tokens, end, '{') {
+                depth += 1;
+            } else if terminal_token_is_punct(tokens, end, '}') {
+                depth -= 1;
+                if depth == 0 {
+                    functions.push((name, start..end + 1));
+                    break;
+                }
+            }
+        }
+    }
+    functions
+}
+
+/// Identifies only matches! patterns, excluding the evaluated input and guard.
+fn terminal_matches_pattern_ranges(tokens: &[Token]) -> Vec<std::ops::Range<usize>> {
+    let mut patterns = Vec::new();
+    for (index, token) in tokens.iter().enumerate() {
+        if token.kind.as_ident() != Some("matches")
+            || !terminal_token_is_punct(tokens, index + 1, '!')
+        {
+            continue;
+        }
+        let closing = match tokens.get(index + 2).map(|token| &token.kind) {
+            Some(TokenKind::Punct('(')) => ')',
+            Some(TokenKind::Punct('[')) => ']',
+            Some(TokenKind::Punct('{')) => '}',
+            _ => continue,
+        };
+        let mut depth = 1usize;
+        let mut pattern_start = None;
+        for offset in index + 3..tokens.len() {
+            if depth == 1
+                && (terminal_token_is_punct(tokens, offset, closing)
+                    || tokens[offset].kind.as_ident() == Some("if"))
+            {
+                if let Some(start) = pattern_start {
+                    patterns.push(start..offset);
+                }
+                break;
+            }
+            if depth == 1 && terminal_token_is_punct(tokens, offset, ',') {
+                pattern_start.get_or_insert(offset + 1);
+            }
+            match tokens[offset].kind {
+                TokenKind::Punct('(' | '{' | '[') => depth += 1,
+                TokenKind::Punct(')' | '}' | ']') => depth -= 1,
+                _ => {}
+            }
+        }
+    }
+    patterns
 }
 
 fn missing_source_label_failures(repo: &Path, check: &Path, content: &str) -> Vec<String> {

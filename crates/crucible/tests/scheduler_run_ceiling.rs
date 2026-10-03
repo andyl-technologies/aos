@@ -7,7 +7,7 @@
 use crucible::{
     ExactLocalEvent, NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest,
     SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
-    SchedulingNodeKind, Shift, SimDuration, SimInstant, SingleScheduler, VirtualTime,
+    SchedulingNodeKind, SimDuration, SimInstant, SingleScheduler, VirtualTime,
 };
 
 #[cfg(feature = "test-double")]
@@ -20,16 +20,15 @@ use crucible_shmem::{
 fn run_publishes_one_max_advance_ceiling_for_selected_node() {
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "run-ceiling-single-publication",
-        shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![scenario_node(
             "runner",
             0,
             SchedulerNodeActivity::Runnable,
             finite_lookahead(10),
             ExactLocalEvent::TimerDeadline {
-                virtual_time: SimInstant { nanos: 4 },
+                virtual_time: SimInstant { ticks: 4 },
             },
         )],
         Vec::new(),
@@ -47,16 +46,15 @@ fn run_publishes_one_max_advance_ceiling_for_selected_node() {
     assert_eq!(publication.node, scheduler_node("runner"));
     assert_eq!(publication.current_icount, NodeCounter { ticks: 0 });
     assert_eq!(publication.max_advance_icount, 4);
-    assert_eq!(publication.target_time, SimInstant { nanos: 4 });
+    assert_eq!(publication.target_time, SimInstant { ticks: 4 });
 }
 
 #[test]
 fn each_run_gets_one_ceiling_and_no_intermediate_publication() {
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "run-ceiling-one-per-run",
-        shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![
             scenario_node(
                 "node-a",
@@ -101,9 +99,8 @@ fn each_run_gets_one_ceiling_and_no_intermediate_publication() {
 fn control_only_quantum_publishes_no_run_ceiling() {
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "run-ceiling-control-only",
-        shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![scenario_node(
             "idle",
             0,
@@ -130,9 +127,8 @@ fn control_only_quantum_publishes_no_run_ceiling() {
 fn run_consumes_the_published_ceiling_as_its_target() {
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "run-ceiling-consumed-target",
-        shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![scenario_node(
             "runner",
             2,
@@ -162,9 +158,8 @@ fn run_consumes_the_published_ceiling_as_its_target() {
 fn published_ceiling_converts_to_and_publishes_through_shmem_abi() {
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "run-ceiling-shmem-abi",
-        shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![scenario_node(
             "runner",
             0,
@@ -182,10 +177,16 @@ fn published_ceiling_converts_to_and_publishes_through_shmem_abi() {
         .expect("publication should authorize as a shmem ceiling");
     let slot = NodeSlot::new(KIND_VM);
 
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .expect("slot should accept the scheduler ceiling");
 
-    assert_eq!(slot.load_node_ceiling(), publication.max_advance_icount);
+    assert_eq!(
+        slot.load_scheduler_advance(),
+        Ok((
+            publication.max_advance_icount,
+            crucible_shmem::AdvanceStopCondition::Ceiling
+        ))
+    );
 }
 
 #[test]
@@ -193,9 +194,8 @@ fn published_ceiling_converts_to_and_publishes_through_shmem_abi() {
 fn published_ceiling_writes_pending_inputs_before_futex_wake() {
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "run-ceiling-shmem-input-before-wake",
-        shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![scenario_node(
             "runner",
             0,
@@ -209,7 +209,7 @@ fn published_ceiling_writes_pending_inputs_before_futex_wake() {
     let _outcome = drive_one_quantum(&mut scheduler);
     let publication = &scheduler.run_ceiling_publications()[0];
     let mut region =
-        RegionAllocation::new_model(RegionConfig::new(1, 2, 0)).expect("region model should build");
+        RegionAllocation::new_model(RegionConfig::new(1, 2)).expect("region model should build");
     let dst_slot = 0;
     let src_slot = SLOT_NET_ROUTER as u32;
     let input = frame(6, src_slot, 1, b"ready");
@@ -268,11 +268,7 @@ fn scheduler_node(name: &str) -> SchedulerNodeId {
 }
 
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {
-    NetworkLookahead::Finite(SimDuration { nanos })
-}
-
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
+    NetworkLookahead::Finite(SimDuration { ticks: nanos })
 }
 
 #[cfg(feature = "test-double")]

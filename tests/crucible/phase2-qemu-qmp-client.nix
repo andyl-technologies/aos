@@ -9,9 +9,10 @@
 
   qemuCargo = builtins.readFile ../../crates/crucible-qemu/Cargo.toml;
   qemuLib = builtins.readFile ../../crates/crucible-qemu/src/lib.rs;
-  qmpLib = builtins.readFile ../../crates/crucible-qemu/src/qmp.rs;
-  qmpSnapshotTag = builtins.readFile ../../crates/crucible-qemu/src/qmp/snapshot_tag.rs;
-  qmpSurface = qmpLib + qmpSnapshotTag;
+  qmpSurface = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-qemu/src/qmp.rs;
+  };
   qmpTest = builtins.readFile ../../crates/crucible-qemu/tests/qmp.rs;
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -27,8 +28,8 @@
         needle = "**[QEMU-19]** The host MUST provide a typed QMP client";
       }
       {
-        label = "QEMU-20 snapshot tag requirement";
-        needle = "QMP snapshot tag MUST be derived from the checkpoint's content address";
+        label = "QEMU-20 version-nine checkpoint requirement";
+        needle = "Production checkpoints MUST capture and restore complete\n  version-nine state";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/Cargo.toml" qemuCargo [
@@ -50,10 +51,6 @@
         label = "qmp job poll policy export";
         needle = "QmpJobPollPolicy";
       }
-      {
-        label = "snapshot tag export";
-        needle = "QmpSnapshotTag";
-      }
     ]
     ++ failuresFor "crates/crucible-qemu/src/qmp*.rs" qmpSurface [
       {
@@ -69,20 +66,32 @@
         needle = "pub fn connect";
       }
       {
-        label = "savevm API";
-        needle = "pub fn savevm";
+        label = "contained savevm primitive";
+        needle = "pub(crate) fn savevm";
       }
       {
-        label = "loadvm API";
-        needle = "pub fn loadvm";
+        label = "contained exact restore primitive";
+        needle = "pub(crate) fn restore_exact_checkpoint";
       }
       {
         label = "snapshot delete API";
-        needle = "pub fn delete_snapshot";
+        needle = "pub(crate) fn delete_snapshot";
       }
       {
         label = "quit API";
         needle = "pub fn quit";
+      }
+      {
+        label = "hot-fork plugin barrier hold API";
+        needle = "pub fn hold_hot_fork_plugin_barrier";
+      }
+      {
+        label = "hot-fork plugin barrier query API";
+        needle = "pub fn query_hot_fork_plugin_barrier";
+      }
+      {
+        label = "hot-fork plugin barrier release API";
+        needle = "pub fn release_hot_fork_plugin_barrier";
       }
       {
         label = "query-jobs wire command";
@@ -91,10 +100,6 @@
       {
         label = "snapshot-save wire command";
         needle = "QMP_SNAPSHOT_SAVE_COMMAND";
-      }
-      {
-        label = "snapshot-load wire command";
-        needle = "QMP_SNAPSHOT_LOAD_COMMAND";
       }
       {
         label = "snapshot-delete wire command";
@@ -122,7 +127,7 @@
       }
       {
         label = "connect with job poll policy";
-        needle = "connect_with_job_poll_policy";
+        needle = "connect_with_policies";
       }
       {
         label = "real job poll interval";
@@ -158,6 +163,14 @@
         label = "stringly checkpoint address conversion";
         needle = "address." + "as_ref()";
       }
+      {
+        label = "public monolithic VMState load API";
+        needle = "pub fn " + "loadvm";
+      }
+      {
+        label = "monolithic VMState load wire command";
+        needle = "QMP_SNAPSHOT_" + "LOAD_COMMAND";
+      }
     ]
     ++ failuresFor "crates/crucible-qemu/tests/qmp.rs" qmpTest [
       {
@@ -165,40 +178,12 @@
         needle = "qmp_connect_reads_greeting_and_negotiates_capabilities";
       }
       {
-        label = "snapshot command tag test";
-        needle = "savevm_uses_snapshot_save_with_checkpoint_derived_tag";
+        label = "hot-fork plugin barrier command test";
+        needle = "hot_fork_plugin_barrier_holds_queries_and_releases_oob";
       }
       {
-        label = "content hash tag derivation test";
-        needle = "snapshot_tags_are_derived_from_checkpoint_content_hash";
-      }
-      {
-        label = "loadvm quit test";
-        needle = "loadvm_and_quit_are_typed_qmp_commands";
-      }
-      {
-        label = "snapshot delete test";
-        needle = "snapshot_delete_uses_the_same_tag_and_vmstate_device";
-      }
-      {
-        label = "event skipping test";
-        needle = "qmp_client_skips_async_events_until_command_return";
-      }
-      {
-        label = "snapshot job error test";
-        needle = "qmp_snapshot_job_error_is_typed_result_error";
-      }
-      {
-        label = "snapshot job polling test";
-        needle = "qmp_snapshot_job_polling_waits_until_concluded";
-      }
-      {
-        label = "snapshot job timeout test";
-        needle = "qmp_snapshot_job_timeout_is_typed_result_error";
-      }
-      {
-        label = "typed error test";
-        needle = "qmp_error_response_is_typed_result_error";
+        label = "hot-fork plugin barrier malformed-response test";
+        needle = "hot_fork_plugin_barrier_rejects_malformed_or_wrong_action_state";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -276,8 +261,12 @@ in
             check_scope=task-level
             related_gates=gate:control-responsive,gate:replay-oracle,gate:content-address
             rust_test=crucible-qemu::qmp
-            commands=qmp_capabilities,snapshot-save,snapshot-load,snapshot-delete,query-jobs,quit
-            public_api=connect,savevm,loadvm,delete_snapshot,quit
+            commands=qmp_capabilities,snapshot-save,crucible-checkpoint-restore,snapshot-delete,query-jobs,crucible-hot-fork-plugin-barrier,crucible-hot-fork-rcu-barrier,crucible-hot-fork-async-worker-barrier,crucible-hot-fork-block-barrier,crucible-hot-fork-template,crucible-hot-fork-private-rings,query-crucible-hot-fork-plugin-resource-inventory,quit
+            client_api=connect-with-policies-and-typed-bounded-commands
+            capabilities=oob-required
+            aio_handler_transport=exec-oob
+            block_backend_transport=exec-oob
+            bottom_half_transport=exec-oob
             async_events=skipped-until-return-or-error
             errors=typed-result
             snapshot_tag=checkpoint-content-address-derived

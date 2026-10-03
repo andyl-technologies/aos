@@ -11,6 +11,7 @@
   nodeLib = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible-qemu/src/node.rs;
+    siblingTests = true;
   };
   qemuSpec = builtins.readFile ../../docs/rfcs/0010-crucible/10-qemu-integration.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -74,6 +75,10 @@
     ]
     ++ failuresFor "crates/crucible-qemu/src/node.rs" nodeLib [
       {
+        label = "native QMP save failure reaps the indeterminate process";
+        needle = "qemu_node_terminates_after_indeterminate_qmp_save_failure";
+      }
+      {
         label = "QemuNode wrapper";
         needle = "pub struct QemuNode {";
       }
@@ -131,7 +136,7 @@
       }
       {
         label = "QMP machine control trait";
-        needle = "pub trait QemuQmpMachineControlChannel";
+        needle = "pub(crate) trait QemuQmpMachineControlChannel";
       }
       {
         label = "backend implementation";
@@ -216,10 +221,6 @@
         needle = "pub const fn child(&self)";
       }
       {
-        label = "public child/channel decomposition escape hatch";
-        needle = "pub fn into_parts";
-      }
-      {
         label = "node child clone implementation";
         needle = "impl Clone for QemuNodeChild";
       }
@@ -248,10 +249,6 @@
       {
         label = "shmem failure test";
         needle = "qemu_node_reports_shmem_failures_as_backend_rejections";
-      }
-      {
-        label = "QMP failure test";
-        needle = "qemu_node_terminates_after_indeterminate_qmp_save_failure";
       }
       {
         label = "plugin shutdown failure test";
@@ -372,7 +369,7 @@ in
             hot_path=shared-memory-only
             backend_interface=synchronous
             spawn_fd_passing=covered-by-T-QEMU-7
-            per_quantum_flow=deferred-to-T-QEMU-12
+            per_quantum_flow=shared-memory-start-poll-finish
             child_process_tool=coreutils-sleep
             RESULT
           '';

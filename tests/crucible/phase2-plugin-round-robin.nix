@@ -2,8 +2,8 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginRoundRobin",
-  taskIds ? ["T-PLUG-24"],
-  openTaskIds ? [],
+  taskIds ? [],
+  openTaskIds ? ["T-PLUG-24"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -291,7 +291,7 @@ in
             tasks=${taskList}
             open_tasks=${openTaskList}
             status=partial
-            rr_switch_quantum=fixed-node-icount
+            rr_switch_quantum=fixed-retired-instructions
             vcpu_rotation=fixed-ascending
             halt_tracking=per-vcpu-all-halted
             idle_wake_icount=min-armed-vcpu-deadline

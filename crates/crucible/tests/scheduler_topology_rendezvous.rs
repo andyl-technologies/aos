@@ -8,8 +8,8 @@ use crucible::{
     ExactLocalEvent, NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest,
     SchedulerLivenessScenario, SchedulerLookaheadEdge, SchedulerLookaheadEdgeEndpoint,
     SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulerTopologyChange,
-    SchedulerTopologyChangeTrigger, SchedulingNodeKind, Shift, SimDuration, SimInstant,
-    SingleScheduler, VirtualTime,
+    SchedulerTopologyChangeTrigger, SchedulingNodeKind, SimDuration, SimInstant, SingleScheduler,
+    VirtualTime,
 };
 
 #[test]
@@ -205,10 +205,12 @@ fn ready_timed_change_keeps_sequence_order_with_immediate_change() {
     let mut scheduler = SingleScheduler::new(scenario).expect("scenario should build");
 
     drive_one_quantum(&mut scheduler);
-    scheduler.queue_topology_change(SchedulerTopologyChange::heal(
-        2,
-        vec![edge(&producer, &consumer, 6)],
-    ));
+    scheduler
+        .schedule_topology_change(SchedulerTopologyChange::heal(
+            2,
+            vec![edge(&producer, &consumer, 6)],
+        ))
+        .expect("future topology change should enqueue");
 
     drive_one_quantum(&mut scheduler);
 
@@ -289,14 +291,7 @@ fn timed_topology_change_waits_until_all_nodes_reach_activation() {
 }
 
 fn base_scenario(material: &str, nodes: Vec<SchedulerScenarioNode>) -> SchedulerLivenessScenario {
-    SchedulerLivenessScenario::from_canonical_material(
-        material,
-        shift(0),
-        8,
-        instant(40),
-        nodes,
-        Vec::new(),
-    )
+    SchedulerLivenessScenario::from_canonical_material(material, 8, instant(40), nodes, Vec::new())
 }
 
 fn drive_one_quantum(scheduler: &mut SingleScheduler) -> crucible::QuantumOutcome {
@@ -351,13 +346,9 @@ fn finite_lookahead(nanos: u64) -> NetworkLookahead {
 }
 
 fn duration(nanos: u64) -> SimDuration {
-    SimDuration { nanos }
+    SimDuration { ticks: nanos }
 }
 
 fn instant(nanos: u64) -> SimInstant {
-    SimInstant { nanos }
-}
-
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
+    SimInstant { ticks: nanos }
 }

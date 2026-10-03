@@ -482,10 +482,14 @@ exactly. This section is the full algorithm.
 ### 8.9.1 PICK
 
 - **[SCHED-25]** **PICK** MUST select the node with the **global-minimum
-  horizon**, breaking ties by ascending `node_id` (a stable, content-addressed
-  identity), so PICK is a total, deterministic order over nodes. The selected
-  node is the one that can advance furthest-soonest without crossing any
-  unresolved cross-node dependency. *Gate:* `gate:scheduler-liveness`,
+  horizon** that has a positive representable counter advance, breaking ties by
+  ascending `node_id` (a stable, content-addressed identity), so PICK is a total,
+  deterministic order over executable RUNs. An unrepresentable sub-tick candidate
+  may be deferred behind a representable candidate at the same horizon because it
+  has no RUN to order. It MUST NOT be bypassed for a later horizon; if every
+  candidate at the global minimum is unrepresentable, the scheduler fails loudly.
+  The selected node is the one that can advance furthest-soonest without crossing
+  any unresolved cross-node dependency. *Gate:* `gate:scheduler-liveness`,
   `gate:layer1-injection`. *Spec:* §8.9.1; routes [INV-3], [INV-8].
 
 - **[SCHED-44]** PICK's global-minimum-horizon argmin MUST be taken over a single
@@ -676,13 +680,12 @@ is illustrative ([CONV-1], 00).
 
 ## 8.10 Integration with virtual time / icount and the shmem ceiling
 
-- **[SCHED-34]** The scheduler MUST treat each node's clock as icount-derived
-  per [`09-virtual-time-icount.md`](09-virtual-time-icount.md): it converts a
-  horizon virtual time to a per-node icount via the fixed shift (`ns = icount <<
-  shift`, using the [TIME-4] ceil map — a node must never stop before a deadline)
-  and publishes *that icount* as the node's max-advance ceiling. All
-  horizon arithmetic is in virtual time; all per-node ceilings are in icount; the
-  conversion is the fixed shift and nothing else. *Gate:*
+- **[SCHED-34]** The scheduler MUST treat each node's clock as exact logical
+  ticks per [`09-virtual-time-icount.md`](09-virtual-time-icount.md). Horizon,
+  local deadline, conservative upper bound, published max-advance ceiling, and
+  reached coordinate MUST retain the same tick scale and idle-jump phase.
+  A nanosecond floor/ceil conversion MUST NOT change an authorization boundary.
+  Raw retired instructions remain separate architectural evidence. *Gate:*
   `gate:layer0-determinism`, `gate:single-vm-fingerprint`. *Spec:* §8.10;
   forward-ref [`09-virtual-time-icount.md`](09-virtual-time-icount.md); routes
   [INV-4], [DET-8].
@@ -691,9 +694,12 @@ is illustrative ([CONV-1], 00).
   shared-memory **per-node max-advance ceiling + futex wake** mechanism of
   [`13-shmem-abi.md`](13-shmem-abi.md): it writes the ceiling, the node runs to it
   and blocks, and the scheduler wakes the node (futex) when a new ceiling or a
-  due input warrants. The scheduler MUST publish a ceiling that lets a node run to
-  its full horizon — never an artificially small slice — so idle and predictable
-  spans are crossed in one RUN, not many. *Gate:* `gate:single-vm-fingerprint`,
+  due input warrants. The scheduler MUST publish a ceiling that lets a node use
+  its full representable safe range: an aligned or exact horizon is crossed in one
+  RUN, while an unaligned conservative horizon stops at the greatest counter that
+  does not pass the bound. It MUST fail loudly instead of publishing a zero-progress
+  RUN when a positive conservative interval contains no counter boundary and no
+  equal-horizon peer has a representable advance. *Gate:* `gate:single-vm-fingerprint`,
   `gate:scheduler-liveness`. *Spec:* §8.10; forward-ref
   [`13-shmem-abi.md`](13-shmem-abi.md); routes [INV-4], [DET-13].
 
@@ -801,8 +807,9 @@ satisfy before it may touch this path.
 
 A concrete trace makes the horizon rule and the frequency/exactness decoupling
 tangible. Two VM nodes `A` and `B`, a bidirectional link of latency `L = 1 ms`
-(so `lookahead(A) = lookahead(B) = 1 ms`), shift fixed so 1 ms is a known icount.
-`A` has a guest timer due at virtual time `0.4 ms`; `B` is computing and will send
+(so `lookahead(A) = lookahead(B) = 1 ms`), with 1 ms equal to exactly
+8,000,000 logical ticks. `A` has a guest timer due at virtual time `0.4 ms`;
+`B` is computing and will send
 a frame to `A` at its virtual time `2.3 ms`. The rendezvous frequency is set to
 `100 ms` (a coarse perf knob).
 
@@ -972,13 +979,12 @@ application of explorer-supplied preemption decisions
   Completed by `checks.crucible.phase3.schedulerConservativePdes`: the scheduler
   now extracts unresolved cross-node `BackendInput` dependencies, authorizes each
   requested advance through a conservative-PDES guard, rejects rollback requests,
-  clamps the authorized target to the earliest future cross-node dependency, and
-  fails loudly if icount-ceiling conversion would round a dependency cap past the
-  conservative boundary. The focused tests cover safe targets before a dependency,
+  clamps the authorized target to the earliest future cross-node dependency in
+  exact ticks. The focused tests cover safe targets before a dependency,
   dependency clamping, rollback rejection, cross-node-only dependency extraction,
-  the live `SingleScheduler` stop-at-dependency path, an unaligned nonzero-shift
-  ceiling-overshoot regression, and the current fail-loud behavior for already-due
-  unresolved dependencies. Full horizon composition remains T-SCHED-5, and
+  the live `SingleScheduler` stop-at-dependency path, phase-preserving progress
+  under an unaligned idle jump, fail-loud sub-tick exhaustion, and the current fail-loud
+  behavior for already-due unresolved dependencies. Full horizon composition remains T-SCHED-5, and
   already-due RESOLVE delivery / late-delivery localization remains T-SCHED-16 and
   T-SCHED-18.
 - [x] **T-SCHED-4** Implement and test the liveness guarantee: the
@@ -1122,7 +1128,7 @@ application of explorer-supplied preemption decisions
   idle-wake icount, and halted or done nodes project to `+∞` and are never
   selected. Candidate ordering remains `(effective_horizon, node_id, virtual_time,
   input index)`, so equal projected horizons tie by stable scheduler-node id. RUN
-  converts the selected target with the fixed-shift icount ceiling and preserves
+  publishes the selected exact-tick ceiling and preserves
   the conservative overshoot guard so a selected node never advances past its
   horizon. The focused regressions cover mixed RUNNING/IDLE/Halted/DONE
   projection, node-id ties after projection, terminal-node quiescence, all-infinite
@@ -1209,30 +1215,28 @@ application of explorer-supplied preemption decisions
   resolved-event count as a placeholder. Focused regressions cover happening
   before-decision ordering, stable content hashes across replay, prefix/sequence
   advancement across quanta, and liveness-report determinism.
-- [x] **T-SCHED-20** Convert horizon virtual times to per-node icount ceilings
-  via the fixed shift and integrate with the virtual-time/icount module. —
+- [x] **T-SCHED-20** Publish exact logical-tick horizons as per-node ceilings
+  and integrate with the virtual-time module. —
   satisfies [SCHED-34]; spec §8.10.
   Completed by `checks.crucible.phase3.schedulerIcountCeiling`.
-  `SharedTimeline::max_advance_icount_for_horizon` now owns the SCHED-34/TIME-4
-  boundary: scheduler horizon arithmetic remains in virtual time, while RUN
-  publications convert the selected horizon through the fixed-shift ceil map into
-  the shmem ABI `max_advance_icount`. Conservative virtual-time caps still reject
-  a ceil projection that would cross the cap, while exact local wake/deadline
-  horizons may command the first instruction boundary at or after the deadline.
-  `SchedulerRunCeilingPublication` records the fixed shift used for the
-  conversion. Focused regressions cover exact-local, aligned network-lookahead,
-  unaligned conservative rejection, and idle-wake horizons with nonzero shifts so
-  floor rounding or raw-virtual-time ceilings fail loudly.
+  `SharedTimeline` and its anchored node-time projections own the SCHED-34/TIME-4
+  boundary: scheduler horizon arithmetic, local wakes, conservative caps, and
+  RUN publications retain exact ticks into the shmem ABI `max_advance_icount`.
+  A positive sub-tick interval fails before RUN; equal-target selection never
+  skips the global minimum. `SchedulerRunCeilingPublication` records the fixed
+  1000-tick-per-nanosecond scale. Focused regressions cover aligned and
+  unaligned local deadlines, conservative caps, exact idle-jump phase, and fail-loud sub-tick
+  windows.
 - [x] **T-SCHED-21** Implement the ceiling-write + futex-wake ordering so a woken
   plugin observes a consistent `(ceiling, pending-inputs)` snapshot (wake after
   inbox write). — satisfies [SCHED-35], [SCHED-36]; spec §8.10.
   Completed by `checks.crucible.phase3.schedulerWakeOrdering`.
-  `RegionAllocation::publish_scheduler_inputs_and_ceiling` is now the typed
+  `RegionAllocation::publish_scheduler_inputs_and_advance` is now the typed
   shmem handoff for RUN publication: it prevalidates the destination slot and
   inbox capacity, release-publishes every pending input frame to the directed
   inbox, release-publishes the node ceiling, and only then increments the
   non-private futex wake word, preserving wake after inbox write.
-  `NodeSlot::publish_scheduler_inbox_and_ceiling` gives production adapters the
+  `NodeSlot::publish_scheduler_inbox_and_advance` gives production adapters the
   same borrowed-ring ordering, and the QEMU RUN hot path now publishes through
   that helper; QEMU inbound frame wakeups use it with a nonempty pending-input
   batch and the currently published ceiling. `SchedulerRunCeilingPublication`
@@ -1253,13 +1257,13 @@ application of explorer-supplied preemption decisions
   recomputes every runtime node's `NetworkLookahead` from the new
   `SchedulerLookaheadGraph`, records per-node `SchedulerTopologyLookaheadUpdate`
   evidence, and treats topology-only recomputes as scheduler progress.
-  The runtime `queue_topology_change` APIs on `SingleScheduler` and
-  `SchedulerActorHandle` let fault/heal/latency handlers enqueue those changes
-  after construction. `SingleScheduler::authorize_cross_node_send` freezes
+  `SingleScheduler::schedule_topology_change` lets fault, heal, and latency
+  handlers enqueue those changes after construction.
+  `SingleScheduler::authorize_cross_node_send` freezes
   cross-node sends while a topology change is pending, then authorizes sends only
   against the current effective edge set and topology epoch; SimDouble and QEMU outbound emission paths require an explicit scheduler send authorizer
   before writing or draining VM-to-router frames. Focused regressions cover lowered latency before PICK,
-  runtime and actor queueing, pending-change send freeze/unfreeze, no delivery
+  runtime scheduling, pending-change send freeze/unfreeze, no delivery
   of an in-flight frame under a stale horizon, topology-only liveness progress,
   and sim/QEMU outbound authorization.
 - [x] **T-SCHED-23** Model partition/heal as effective-edge removal/restoration
@@ -1303,15 +1307,16 @@ application of explorer-supplied preemption decisions
   serial and concurrent runs are bit-identical via `gate:e2e-determinism`. —
   satisfies [SCHED-40], [SCHED-41]; spec §8.12.
   Completed by `checks.crucible.phase3.schedulerConcurrency`.
-  `ConcurrentQuantumLoop` adds a bounded concurrent RUN set that selects a
-  deterministic `SchedulerConcurrentRunSet` from the same horizon candidates as
-  serial PICK. The run set is bounded by `max_host_workers`, each candidate's
-  conservative lookahead target, and a common-frontier/same-target filter so a
-  skewed peer is not over-admitted past a possible dependency; zero worker
-  budgets fail loudly. The concurrent path publishes the selected ceilings before host dispatch, advances the chosen
-  nodes, then serializes each completion through RESOLVE/EMIT/STEP on the single
-  scheduler. Focused regressions cover worker-bound run-set selection, invalid
-  worker-budget rejection, skewed-peer exclusion, and a serial-vs-concurrent
+  `ConcurrentQuantumLoop` adds a concurrent RUN set that selects every
+  deterministic `SchedulerConcurrentRunSet` candidate admitted by the same
+  horizon calculation as serial PICK. Conservative lookahead and a
+  common-frontier/same-target filter prevent a skewed peer from advancing past a
+  possible dependency. Host worker count belongs only to backend dispatch and
+  cannot change the semantic RUN set. The concurrent path publishes the
+  selected ceilings before host dispatch, advances the chosen nodes in bounded
+  batches, then serializes each completion through RESOLVE/EMIT/STEP on the
+  single scheduler. Focused regressions cover worker-independent run-set
+  selection, skewed-peer exclusion, and a serial-vs-concurrent
   comparison proving the same intermediate frontiers, final configuration,
   frontier, event-log offset, and event-log entry hashes for simultaneous due
   inputs. This is the scheduler-side proof used by `gate:e2e-determinism`;

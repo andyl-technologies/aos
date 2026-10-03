@@ -8,8 +8,15 @@ use crucible::{
     Checkpoint, CheckpointKind, Configuration, ControlOperation, ControlOperationKind, Decision,
     DeliveryOrderDecision, EventKey, GenesisCheckpoint, NodeId, QuantumLoop, QuantumOutcome,
     QuantumRequest, ScenarioDef, SchedulerError, SchedulerNodeId, SchedulingNodeKind, Seed,
-    TemporalGraph, VirtualTime, step,
+    TemporalGraph, VirtualTime, try_step,
 };
+
+fn accepted_step(configuration: &Configuration, decision: Decision) -> Configuration {
+    match try_step(configuration, decision) {
+        Ok(configuration) => configuration,
+        Err(error) => panic!("test configuration step should be accepted: {error}"),
+    }
+}
 use crucible_session::{
     EXPLORATION_LIFECYCLE_RESPONSE_BOUND_QUANTA, Engine, EngineState, EventLogCursor,
     ExplorationLifecycleCommand, ExplorationLifecycleDriver, LiveSnapshot, LiveStateKind, Outcome,
@@ -296,7 +303,7 @@ impl QuantumLoop for AppendingLoop {
     fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
         self.quanta = self.quanta.saturating_add(1);
         let decision = generated_decision(self.quanta);
-        let configuration = step(&request.configuration, decision.clone());
+        let configuration = accepted_step(&request.configuration, decision.clone());
         record_control_operations(&self.observed_control, &request.control);
         let entry = test_event_log_entry(self.event_log_events, self.quanta);
         let event_log_entries = vec![entry.clone()];
@@ -312,6 +319,7 @@ impl QuantumLoop for AppendingLoop {
                 .map(|operation| resolved_control_operation(self.quanta, operation))
                 .collect(),
             decisions: vec![decision],
+            discovered_choices: Vec::new(),
             event_log_entries,
             event_log_segment_bytes: vec![b'x'],
             event_log_segment_text: String::from("x"),
@@ -410,11 +418,13 @@ fn resolved_control_operation(
 ) -> crucible::ScheduledEvent {
     let node = scheduler_node("control-plane");
     crucible::ScheduledEvent {
-        key: crucible::ScheduledEventKey::from_parts(
-            VirtualTime { ticks: sequence },
-            node.clone(),
+        key: crucible::ScheduledEventKey::new(
+            crucible::SharedTimelineKey {
+                virtual_time: crucible::SimInstant { ticks: sequence },
+                node: node.clone(),
+                sequence: operation.sequence,
+            },
             node,
-            operation.sequence,
         ),
         payload: crucible::ScheduledEventPayload::Control(operation),
     }

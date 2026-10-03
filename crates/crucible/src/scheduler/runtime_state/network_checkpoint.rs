@@ -67,7 +67,7 @@ impl SchedulerNetworkCheckpoint {
             write_scheduler_network_string(&mut bytes, &link.name)?;
             bytes.extend_from_slice(&position.to_le_bytes());
         }
-        match self.signal_fault_wakeup_nanos {
+        match self.signal_fault_wakeup_ticks {
             Some(wakeup) => {
                 bytes.push(1);
                 bytes.extend_from_slice(&wakeup.to_le_bytes());
@@ -156,7 +156,7 @@ impl SchedulerNetworkCheckpoint {
             let position = reader.u64("RNG position")?;
             rng_positions.push((link, position));
         }
-        let signal_fault_wakeup_nanos = match reader.byte("fault wakeup tag")? {
+        let signal_fault_wakeup_ticks = match reader.byte("fault wakeup tag")? {
             0 => None,
             1 => Some(reader.u64("fault wakeup")?),
             _ => {
@@ -169,7 +169,7 @@ impl SchedulerNetworkCheckpoint {
         let checkpoint = Self {
             links,
             rng_positions,
-            signal_fault_wakeup_nanos,
+            signal_fault_wakeup_ticks,
         };
         validate_scheduler_network_checkpoint(&checkpoint)?;
         if checkpoint.canonical_bytes_with_limit(maximum)?.as_slice() != bytes {
@@ -179,7 +179,7 @@ impl SchedulerNetworkCheckpoint {
     }
 }
 
-const SCHEDULER_NETWORK_CHECKPOINT_MAGIC: &[u8] = b"crucible.scheduler-network.v1\0";
+const SCHEDULER_NETWORK_CHECKPOINT_MAGIC: &[u8] = b"crucible.scheduler-network.v2\0";
 const HARD_SCHEDULER_NETWORK_LINKS: usize = 65_536;
 const HARD_SCHEDULER_NETWORK_BLOB_BYTES: usize = 1 << 30;
 const HARD_SCHEDULER_NETWORK_NAME_BYTES: usize = 4_096;
@@ -242,7 +242,7 @@ fn scheduler_network_encoded_length(
         scheduler_network_add_length(&mut length, size_of::<u64>(), configured)?;
     }
     scheduler_network_add_length(&mut length, size_of::<u8>(), configured)?;
-    if checkpoint.signal_fault_wakeup_nanos.is_some() {
+    if checkpoint.signal_fault_wakeup_ticks.is_some() {
         scheduler_network_add_length(&mut length, size_of::<u64>(), configured)?;
     }
     Ok(length)

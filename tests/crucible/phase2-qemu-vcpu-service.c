@@ -135,7 +135,7 @@ static void validate_window(const struct qemu_plugin_crucible_fault_event *event
     if (event->command_kind != CRUCIBLE_FAULT_COMMAND_CPU_SERVICE ||
         event->outcome != CRUCIBLE_FAULT_EVENT_OUTCOME_APPLIED ||
         evidence_len != SERVICE_EVIDENCE_BYTES ||
-        memcmp(evidence, "CRUCVCS1", 8) != 0 ||
+        memcmp(evidence, "CRUCVCS2", 8) != 0 ||
         get_u32(evidence + 8) != 0 ||
         get_u64(evidence + 16) != observed_windows + 1 ||
         get_u64(evidence + 24) != numerator ||
@@ -151,6 +151,7 @@ static void validate_window(const struct qemu_plugin_crucible_fault_event *event
         get_u64(evidence + 128) != credit ||
         get_u64(evidence + 136) != 0 ||
         get_u64(evidence + 144) != 0 ||
+        get_u64(evidence + 112) != event->observed_icount ||
         get_u32(evidence + 184) != 0 ||
         get_u32(evidence + 188) != 0) {
         fail("service-window evidence does not match the exact credit model");
@@ -158,8 +159,11 @@ static void validate_window(const struct qemu_plugin_crucible_fault_event *event
     virtual_before = get_u64(evidence + 88);
     virtual_after = get_u64(evidence + 96);
     if (virtual_after < virtual_before ||
-        virtual_after - virtual_before != quantum - credit) {
-        fail("denied service was not translated to exact shift-zero virtual time");
+        virtual_after != event->observed_tick ||
+        (__uint128_t)(virtual_after - virtual_before) !=
+            (__uint128_t)(quantum - credit) *
+                CRUCIBLE_SHMEM_TICKS_PER_INSTRUCTION) {
+        fail("denied instructions did not advance exact modeled ticks");
     }
     expected_remainder = next_remainder;
     observed_windows++;
@@ -235,12 +239,18 @@ static void completion(void *opaque)
     }
 }
 
-static void tcg_exec(unsigned int cpu_index, uint64_t icount, void *opaque)
+static void tb_exec(unsigned int cpu_index, void *opaque)
 {
     (void)cpu_index;
-    (void)icount;
     (void)opaque;
     poll_events();
+}
+
+static void tb_translate(struct qemu_plugin_tb *tb, void *opaque)
+{
+    (void)opaque;
+    qemu_plugin_register_vcpu_tb_exec_cb(
+        tb, tb_exec, QEMU_PLUGIN_CB_NO_REGS, NULL);
 }
 
 static void at_exit(void *opaque)
@@ -321,7 +331,7 @@ QEMU_PLUGIN_EXPORT int qemu_plugin_install(qemu_plugin_id_t id,
     command.target_icount = 64;
     command.authorization_ceiling_icount = command.target_icount;
     qemu_plugin_register_crucible_fault_completion_cb(completion, NULL);
-    qemu_plugin_register_tcg_exec_cb(tcg_exec, NULL);
+    qemu_plugin_register_vcpu_tb_trans_cb(id, tb_translate, NULL);
     qemu_plugin_register_atexit_cb(id, at_exit, NULL);
     if (qemu_plugin_crucible_fault_submit(&command, payload, payload_len) != 0) {
         fail("QEMU rejected the service preparation");

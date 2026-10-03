@@ -80,7 +80,7 @@
       }
       {
         label = "frame protocol version";
-        needle = "pub const WHITEBOX_DOORBELL_PROTOCOL_VERSION: u16 = 2;";
+        needle = "pub const WHITEBOX_DOORBELL_PROTOCOL_VERSION: u16 = 3;";
       }
       {
         label = "frame header length";

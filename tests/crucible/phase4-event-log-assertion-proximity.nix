@@ -97,12 +97,8 @@
         needle = "String::from(\"quantifier\")";
       }
       {
-        label = "assertion proximity report append API";
-        needle = "pub fn append_assertion_proximity_events";
-      }
-      {
-        label = "report append reads report proximities";
-        needle = "report.proximities().iter()";
+        label = "generic observable event append API";
+        needle = "pub fn append_observable_events";
       }
       {
         label = "assertion proximity is observational";
@@ -119,11 +115,11 @@
         needle = "pub fn with_assertion_proximity_from_event_log";
       }
       {
-        label = "graph cache stamps proximity from event log";
-        needle = "pub fn cache_snapshot_with_event_log_assertion_proximity";
+        label = "graph cache accepts typed checkpoint feedback";
+        needle = "pub fn cache_snapshot(";
       }
       {
-        label = "graph cache uses proximity projection API";
+        label = "checkpoint derives proximity through projection API";
         needle = "crate::scheduler::assertion_proximity_fingerprint_from_event_log(entries)";
       }
       {
@@ -170,7 +166,7 @@
       }
       {
         label = "assertion proximity catalog class test";
-        needle = "(\"assertion_proximity\", EventClass::Observational)";
+        needle = "(\"assertion_proximity\", SchedulerEventLogClass::Observational)";
       }
     ]
     ++ failuresFor "crates/crucible/tests/event_log_assertion_proximity.rs" proximityTest [
@@ -199,6 +195,10 @@
         needle = "scheduler_appends_report_proximities_to_unified_event_log";
       }
       {
+        label = "report append reads report proximities";
+        needle = "report.proximities().iter()";
+      }
+      {
         label = "lossless distance serialization assertion";
         needle = "event_payload.attribute.distance.value.type=u128";
       }
@@ -224,11 +224,11 @@
       }
       {
         label = "observational class assertion";
-        needle = "EventClass::Observational";
+        needle = "SchedulerEventLogClass::Observational";
       }
       {
-        label = "event-log-only graph cache API";
-        needle = "cache_snapshot_with_event_log_assertion_proximity";
+        label = "typed checkpoint enters canonical graph cache";
+        needle = "checkpoint.with_assertion_proximity_from_event_log(&proximity_log)";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

@@ -42,15 +42,21 @@
   };
   resolves = reference: let
     components = lib.drop 1 (lib.splitString "." reference);
-    go = value: remaining:
-      if remaining == []
+    go = value: remaining: let
+      attempted = builtins.tryEval value;
+    in
+      if !attempted.success
+      # Evaluation failures are reported by `walk`; they must not abort or be
+      # misclassified as unresolved documentation references here.
+      then true
+      else if remaining == []
       then true
       else let
         name = builtins.head remaining;
       in
-        builtins.isAttrs value
-        && builtins.hasAttr name value
-        && go value.${name} (builtins.tail remaining);
+        builtins.isAttrs attempted.value
+        && builtins.hasAttr name attempted.value
+        && go attempted.value.${name} (builtins.tail remaining);
   in
     go checkTree components;
   missingReferences = lib.filter (reference: !(resolves reference)) references;
@@ -70,18 +76,19 @@
     walk "checks.crucible" crucibleChecks
     ++ walk "checks.fleet" fleetChecks;
 
-  patchSeries = import ../../pkgs/emulation/qemu-patches/_series.nix;
-  patchCount = builtins.length patchSeries.patchFiles;
+  atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
   patchDoc = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
-  patchCountMarker = "The carried series contains **${toString patchCount} patches**.";
-  patchCountFailures =
-    lib.optional (!(lib.hasInfix patchCountMarker patchDoc))
-    "docs/rfcs/0010-crucible/11-qemu-patches.md: missing current patch-count marker `${patchCountMarker}`";
+  atomicPatchMarker = "The shipped integration contains **one atomic final-state patch**.";
+  patchContractFailures =
+    lib.optional (!(builtins.pathExists (../../pkgs/emulation/qemu-patches + "/${atomicPatch.file}")))
+    "pkgs/emulation/qemu-patches/_atomic-patch.nix: atomic patch artifact is absent"
+    ++ lib.optional (!(lib.hasInfix atomicPatchMarker patchDoc))
+    "docs/rfcs/0010-crucible/11-qemu-patches.md: missing current atomic-patch marker `${atomicPatchMarker}`";
 
   failures =
     map (reference: "unresolvable check reference `${reference}`") missingReferences
     ++ map (path: "check does not evaluate `${path}`") evaluationFailures
-    ++ patchCountFailures;
+    ++ patchContractFailures;
 in
   if failures != []
   then throw "Crucible reference-integrity check failed:\n${builtins.concatStringsSep "\n" failures}"
@@ -102,11 +109,13 @@ in
               printf 'resolved_reference_count=%s\n' "$REFERENCE_COUNT"
               printf 'evaluated_check_tree=true\n'
               printf 'task_metadata_state_consistency=true\n'
-              printf 'qemu_patch_count=%s\n' "$PATCH_COUNT"
+              printf 'qemu_atomic_patch=%s\n' "$ATOMIC_PATCH"
+              printf 'qemu_atomic_patch_hash=%s\n' "$ATOMIC_PATCH_HASH"
             } > "$out/result"
           '';
         }
       ];
       REFERENCE_COUNT = toString (builtins.length references);
-      PATCH_COUNT = toString patchCount;
+      ATOMIC_PATCH = atomicPatch.file;
+      ATOMIC_PATCH_HASH = atomicPatch.sha256;
     }

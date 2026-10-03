@@ -295,7 +295,7 @@
     ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargets [
       {
         label = "campaign-continuity gate target implemented";
-        needle = "gate: \"gate:campaign-continuity\",\n        package: \"crucible-cas\",\n        test_target: \"gate_campaign_continuity\",\n        required_features: &[],\n        placeholder: false,";
+        needle = "gate: \"gate:campaign-continuity\",\n        package: \"crucible-cas\",\n        test_target: \"gate_campaign_continuity\",\n        required_features: &[],";
       }
     ]
     ++ failuresFor "crates/crucible-harness/tests/gate_target_mapping.rs" gateTargetMappingTest [
@@ -321,13 +321,13 @@
       }
       {
         label = "crucible-cas layer";
-        needle = "\"crucible\" | \"crucible-cas\" => Some(Layer::L3)";
+        needle = "\"crucible\" | \"crucible-cas\" | \"crucible-campaign\" => Some(Layer::L3)";
       }
     ]
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
       {
         label = "phase1 target lint includes campaign continuity";
-        needle = "gate = \"gate:campaign-continuity\";\n      package = \"crucible-cas\";\n      testTarget = \"gate_campaign_continuity\";\n      requiredFeatures = [];\n      placeholder = false;";
+        needle = "gate = \"gate:campaign-continuity\";\n      package = \"crucible-cas\";\n      testTarget = \"gate_campaign_continuity\";\n      requiredFeatures = [];";
       }
     ]
     ++ failuresFor "tests/crucible/phase1-testing-standards.nix" phase1TestingStandards [
@@ -445,6 +445,8 @@ in
     pkgs.mkDerivation {
       pname = "crucible-phase7-campaign-continuity";
       version = "0";
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      runtimeDeps = [pkgs.sqlite];
       src = crucibleSrc;
 
       buildDeps =
@@ -452,6 +454,9 @@ in
           pkgs.coreutils
           pkgs.rust
           pkgs.sed
+
+          pkgs.pkg-config
+          pkgs.sqlite
         ]
         ++ dependencies;
 

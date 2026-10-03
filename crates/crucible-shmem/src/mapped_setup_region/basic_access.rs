@@ -4,13 +4,37 @@ use super::*;
 
 impl MappedSetupRegion {
     pub(super) fn base_ptr(&self) -> *mut u8 {
+        // SAFETY: `getpid` has no pointer preconditions and cannot fail.
+        // `MADV_DONTFORK` removes the source mapping while the Rust owner is
+        // copied into the child. Dereferencing its retained address before the
+        // exact-address child install would be memory-unsafe, so fail closed.
+        if self.mapping_process_id != unsafe { libc::getpid() } {
+            std::process::abort();
+        }
         self.address as *mut u8
+    }
+
+    /// Returns the process-local start address reserved for this mapping.
+    ///
+    /// The address remains meaningful after `MADV_DONTFORK` removes the source
+    /// VMA from a fork child, but callers must not dereference it until the
+    /// authenticated child mapping has been installed. This accessor exposes
+    /// geometry only and does not assert that the VMA is currently present.
+    #[must_use]
+    pub const fn mapping_start(&self) -> usize {
+        self.address
     }
 
     /// Returns the mapped length supplied by the control-protocol `Setup` frame.
     #[must_use]
     pub const fn region_len(&self) -> u64 {
         self.region_len
+    }
+
+    /// Returns the descriptor identity retained immediately before mapping.
+    #[must_use]
+    pub const fn backing_identity(&self) -> SetupRegionBackingIdentity {
+        self.backing_identity
     }
 
     /// Borrows the mapped region header for cross-process atomic operations.
@@ -276,6 +300,56 @@ impl MappedSetupRegion {
             )
         };
         Ok(MappedWhiteboxMarkerRingMut {
+            vm_slot,
+            header,
+            entries,
+        })
+    }
+
+    /// Borrows one VM's dedicated host-to-plugin selectable-reply ring.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MappedSetupRegionAccessError`] when the mapped header is
+    /// invalid, `vm_slot` does not name a logical VM, or the reply segment is
+    /// out of bounds or misaligned.
+    pub fn selectable_reply_ring_mut(
+        &mut self,
+        vm_slot: u32,
+    ) -> Result<MappedSelectableReplyRingMut<'_>, MappedSetupRegionAccessError> {
+        let layout = self
+            .layout()
+            .map_err(|source| MappedSetupRegionAccessError::Header { source })?;
+        if vm_slot >= layout.selectable_reply_ring_count {
+            return Err(MappedSetupRegionAccessError::UnknownWhiteboxMarkerRing {
+                vm_slot,
+                vm_node_count: layout.vm_node_count,
+            });
+        }
+        let header_offset = mapped_selectable_reply_ring_header_offset(layout, self.len, vm_slot)?;
+        let entries_offset =
+            mapped_selectable_reply_ring_entries_offset(layout, self.len, vm_slot)?;
+        let entry_count =
+            usize::try_from(layout.selectable_reply_queue_capacity).map_err(|_error| {
+                MappedSetupRegionAccessError::SegmentOffsetOverflow {
+                    segment: "selectable reply entry",
+                    index: vm_slot,
+                }
+            })?;
+        let base = self.base_ptr();
+        // SAFETY: the selectable-reply offset helpers validate the complete
+        // typed ranges and alignment inside this owned mapping. Each VM owns a
+        // disjoint single-entry ring and the mapping borrow prevents aliasing.
+        let (header, entries) = unsafe {
+            (
+                &*base.add(header_offset).cast::<RingHeader>(),
+                core::slice::from_raw_parts_mut(
+                    base.add(entries_offset).cast::<WhiteboxMarkerEntry>(),
+                    entry_count,
+                ),
+            )
+        };
+        Ok(MappedSelectableReplyRingMut {
             vm_slot,
             header,
             entries,

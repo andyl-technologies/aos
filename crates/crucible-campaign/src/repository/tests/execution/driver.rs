@@ -1,0 +1,928 @@
+//! Executor driver lifecycle and response validation tests.
+
+use super::*;
+use crate::{
+    FindingExactRetention, FindingExactRetentionDisposition, FindingExactRetentionIncomplete,
+};
+
+#[cfg(feature = "destructive-recovery-faults")]
+use std::{
+    fs::OpenOptions,
+    io::Write,
+    path::{Path, PathBuf},
+};
+
+#[cfg(feature = "destructive-recovery-faults")]
+use crucible_cas::content_store::{DirectoryBlobBackend, DirectoryRefBackend};
+
+#[cfg(feature = "destructive-recovery-faults")]
+const COORDINATOR_FAULT_CHILD_ENVIRONMENT: &str =
+    "CRUCIBLE_DESTRUCTIVE_RECOVERY_COORDINATOR_FAULT_CHILD";
+
+#[cfg(feature = "destructive-recovery-faults")]
+const COORDINATOR_FAULT_ROOT_ENVIRONMENT: &str =
+    "CRUCIBLE_DESTRUCTIVE_RECOVERY_COORDINATOR_FAULT_ROOT";
+
+#[cfg(feature = "destructive-recovery-faults")]
+const DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT: &str = "CRUCIBLE_DESTRUCTIVE_RECOVERY_TRIGGER";
+
+#[cfg(feature = "destructive-recovery-faults")]
+const COORDINATOR_BEFORE_OBSERVATION_COMMIT_TRIGGER: &str =
+    "crucible.destructive-recovery.coordinator-before-observation-commit";
+
+#[cfg(feature = "destructive-recovery-faults")]
+const COORDINATOR_FAULT_TEST_NAME: &str = "repository::tests::execution::driver::coordinator_fault_before_observation_commit_recovers_exactly_once";
+
+#[cfg(feature = "destructive-recovery-faults")]
+const DESTRUCTIVE_RECOVERY_FAULT_EXIT_CODE: i32 = 86;
+
+#[cfg(feature = "destructive-recovery-faults")]
+const DURABLE_EXECUTOR_COMPLETION_FILE: &str = "executor-completion";
+
+#[cfg(feature = "destructive-recovery-faults")]
+const DURABLE_EXECUTOR_REQUEST_JOURNAL: &str = "executor-request-journal";
+
+#[cfg(feature = "destructive-recovery-faults")]
+struct DurableCompletedExecutor {
+    root: PathBuf,
+    requests: Vec<SubmitAttemptRequest>,
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+impl ExecutorService for DurableCompletedExecutor {
+    type Error = &'static str;
+
+    fn submit_attempt(
+        &mut self,
+        request: &SubmitAttemptRequest,
+    ) -> Result<SubmitAttemptResponse, Self::Error> {
+        self.requests.push(request.clone());
+
+        let journal_path = self.root.join(DURABLE_EXECUTOR_REQUEST_JOURNAL);
+        let mut journal = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(journal_path)
+            .map_err(|_| "open durable executor request journal")?;
+        writeln!(journal, "{:?} {}", request.assignment(), request.attempt())
+            .map_err(|_| "encode durable executor request")?;
+        journal
+            .sync_all()
+            .map_err(|_| "sync durable executor request")?;
+
+        let observation = std::fs::read_to_string(self.root.join(DURABLE_EXECUTOR_COMPLETION_FILE))
+            .map_err(|_| "read durable executor completion")?;
+        let observation = ObservationId::parse(observation.trim())
+            .map_err(|_| "decode durable executor completion")?;
+        SubmitAttemptResponse::new(
+            request,
+            SubmitAttemptDisposition::AlreadyCompleted { observation },
+        )
+        .map_err(|_| "encode durable completed response")
+    }
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+impl ExecutorStatusService for DurableCompletedExecutor {
+    fn get_attempt_execution(
+        &mut self,
+        _request: &GetAttemptExecutionRequest,
+    ) -> Result<GetAttemptExecutionResponse, Self::Error> {
+        Err("durable completion must resolve during submission")
+    }
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+impl ExecutorResumeService for DurableCompletedExecutor {
+    fn resume_attempt_execution(
+        &mut self,
+        _request: &ResumeAttemptExecutionRequest,
+    ) -> Result<ResumeAttemptExecutionResponse, Self::Error> {
+        Err("durable completion must not require resume")
+    }
+}
+
+#[test]
+fn claimable_attempt_pages_are_bounded_snapshot_bound_and_restart_rebuildable() {
+    fn collect(
+        repository: &CampaignRepository,
+        name: &str,
+        scan_limit: usize,
+    ) -> (CampaignSnapshotId, Vec<AttemptId>) {
+        let mut cursor = None;
+        let mut snapshot = None;
+        let mut attempts = Vec::new();
+        loop {
+            let page = repository
+                .project_claimable_attempts(name, cursor, scan_limit)
+                .expect("project claimable attempts");
+            assert!(page.scanned_entries() <= scan_limit);
+            if let Some(expected) = snapshot {
+                assert_eq!(page.snapshot(), expected);
+            } else {
+                snapshot = Some(page.snapshot());
+            }
+            attempts.extend_from_slice(page.attempts());
+            cursor = page.next();
+            if cursor.is_none() {
+                break;
+            }
+        }
+        (snapshot.expect("at least one page"), attempts)
+    }
+
+    let (repository, lineage, policy) = fixture();
+    let (_, admitted, observation) =
+        admitted_observation_fixture(&repository, &lineage, &policy, "claimable-attempts");
+
+    assert_eq!(
+        DaemonEpoch::from_bytes([0; 16]),
+        Err(CampaignCodecError::InvalidValue {
+            reason: "daemon epoch is all zero"
+        })
+    );
+    let first_epoch = DaemonEpoch::from_bytes([1; 16]).expect("first daemon epoch");
+    assert!(matches!(
+        AttemptQueue::new(first_epoch, 0),
+        Err(AttemptQueueError::ZeroCapacity)
+    ));
+    let claimable_page = repository
+        .project_claimable_attempts("claimable-attempts", None, 10_000)
+        .expect("claimable page before completion");
+    let mut queue = AttemptQueue::new(first_epoch, 1).expect("bounded attempt queue");
+    let first_slot = WorkerSlotId::new(0);
+    let first_reservation = queue
+        .reserve_from_page(&claimable_page, first_slot)
+        .expect("reserve first attempt")
+        .expect("claimable attempt");
+    assert_eq!(first_reservation.attempt(), admitted.attempt);
+    assert_eq!(first_reservation.daemon_epoch(), first_epoch);
+    assert_eq!(first_reservation.worker_slot(), first_slot);
+    assert_eq!(first_reservation.generation(), 1);
+    assert_eq!(
+        queue
+            .reserve_from_page(&claimable_page, first_slot)
+            .expect("repeat exact slot reservation"),
+        Some(first_reservation)
+    );
+    assert_eq!(queue.reservation_count(), 1);
+
+    queue
+        .release(first_reservation)
+        .expect("release exact reservation");
+    let second_reservation = queue
+        .reserve_from_page(&claimable_page, WorkerSlotId::new(1))
+        .expect("reserve after release")
+        .expect("claimable attempt after release");
+    assert_eq!(second_reservation.generation(), 2);
+
+    let second_epoch = DaemonEpoch::from_bytes([2; 16]).expect("second daemon epoch");
+    let mut restarted_queue = AttemptQueue::new(second_epoch, 1).expect("restarted attempt queue");
+    assert_eq!(
+        restarted_queue.release(second_reservation),
+        Err(AttemptQueueError::ReservationMismatch)
+    );
+    let restarted_reservation = restarted_queue
+        .reserve_from_page(&claimable_page, WorkerSlotId::new(0))
+        .expect("reserve in new daemon epoch")
+        .expect("claimable attempt in new daemon epoch");
+    assert_eq!(restarted_reservation.daemon_epoch(), second_epoch);
+    assert_eq!(restarted_reservation.generation(), 1);
+
+    let (small_snapshot, small) = collect(&repository, "claimable-attempts", 1);
+    let (large_snapshot, large) = collect(&repository, "claimable-attempts", 10_000);
+    assert_eq!(small_snapshot, admitted.new_snapshot);
+    assert_eq!(large_snapshot, admitted.new_snapshot);
+    assert_eq!(small, vec![admitted.attempt]);
+    assert_eq!(large, small);
+
+    let stale_cursor = repository
+        .project_claimable_attempts("claimable-attempts", None, 1)
+        .expect("first bounded queue page")
+        .next()
+        .expect("accounting root spans multiple one-entry pages");
+    let observed = repository
+        .publish_observation("claimable-attempts", admitted.new_snapshot, &observation)
+        .expect("publish canonical observation");
+    assert!(matches!(
+        repository.project_claimable_attempts(
+            "claimable-attempts",
+            Some(stale_cursor),
+            1,
+        ),
+        Err(CampaignRepositoryError::Stale { expected, current })
+            if expected == admitted.new_snapshot && current == observed.new_snapshot
+    ));
+
+    let (rebuilt_snapshot, rebuilt) = collect(&repository, "claimable-attempts", 3);
+    assert_eq!(rebuilt_snapshot, observed.new_snapshot);
+    assert!(rebuilt.is_empty());
+    let restarted = CampaignRepository::new(repository.blobs.clone(), repository.refs.clone());
+    let (restart_snapshot, restart_claimable) = collect(&restarted, "claimable-attempts", 2);
+    assert_eq!(restart_snapshot, observed.new_snapshot);
+    assert_eq!(restart_claimable, rebuilt);
+    let completed_page = restarted
+        .project_claimable_attempts("claimable-attempts", None, 10_000)
+        .expect("post-completion page");
+    let third_epoch = DaemonEpoch::from_bytes([3; 16]).expect("third daemon epoch");
+    let mut completed_queue = AttemptQueue::new(third_epoch, 1).expect("post-completion queue");
+    assert_eq!(
+        completed_queue
+            .reserve_from_page(&completed_page, WorkerSlotId::new(0))
+            .expect("post-completion reservation attempt"),
+        None
+    );
+}
+
+#[test]
+fn private_target_executor_ignores_inherited_claimable_attempts() {
+    let (repository, lineage, policy) = fixture();
+    let (_, inherited, _) =
+        admitted_observation_fixture(&repository, &lineage, &policy, "private-source");
+    let source = repository.head("private-source").expect("source head");
+    let derived = repository
+        .derive_campaign(
+            "private-source",
+            source.snapshot_id(),
+            "private-target",
+            None,
+        )
+        .expect("derive private campaign");
+
+    let request = branch_request(
+        &repository,
+        &lineage,
+        lineage.genesis_content(),
+        lineage.genesis(),
+        "private-target-choice",
+    );
+    let requested = repository
+        .submit_known_branch_request("private-target", derived.new_snapshot, &request)
+        .expect("submit private request");
+    let proposal = finite_proposal(
+        &request,
+        &policy,
+        &repository.head("private-target").expect("requested head"),
+        ChoiceValue::Boolean(false),
+        1,
+    );
+    let proposed = repository
+        .issue_proposal("private-target", requested.new_snapshot, &proposal)
+        .expect("issue private proposal");
+    let (selection, path, attempt) = branch_attempt(&repository, &request, &proposal);
+    let admitted = repository
+        .admit_proposal(
+            "private-target",
+            proposed.new_snapshot,
+            proposed.proposal,
+            &selection,
+            &path,
+            &attempt,
+        )
+        .expect("admit private attempt");
+    repository
+        .apply_control(
+            "private-target",
+            &command(
+                "private-target-resume",
+                admitted.new_snapshot,
+                CampaignControlAction::Resume,
+            ),
+        )
+        .expect("run private campaign");
+
+    let claimable = repository
+        .project_claimable_attempts("private-target", None, 10_000)
+        .expect("inherited and private attempts");
+    assert!(claimable.attempts().contains(&inherited.attempt));
+    assert!(claimable.attempts().contains(&admitted.attempt));
+    let target = repository
+        .project_target_claimable_attempt("private-target", admitted.attempt)
+        .expect("target projection");
+    assert_eq!(target.attempts(), &[admitted.attempt]);
+
+    let repository = Arc::new(repository);
+    let resources =
+        AttemptResourceLimits::new(2, 512 * 1024 * 1024, 0, 50_000).expect("executor limits");
+    let mut driver = CampaignExecutorDriver::new(
+        repository,
+        ExecutorClient::new(DeferringExecutor {
+            requests: Vec::new(),
+        }),
+        DaemonEpoch::from_bytes([0xa2; 16]).expect("daemon epoch"),
+        1,
+        resources,
+        ExecutionRetentionIntent::RetainOnFailure,
+        10_000,
+    )
+    .expect("executor driver")
+    .for_private_target_attempt(admitted.attempt);
+    driver
+        .step("private-target", WorkerSlotId::new(0))
+        .expect("submit private target");
+    let service = driver.into_executor().into_inner();
+    assert_eq!(service.requests.len(), 1);
+    assert_eq!(service.requests[0].attempt(), admitted.attempt);
+}
+
+#[test]
+fn campaign_executor_driver_incorporates_completion_and_rebuilds_after_restart() {
+    let (repository, lineage, policy) = fixture();
+    let (_, admitted, observation) =
+        admitted_observation_fixture(&repository, &lineage, &policy, "executor-driver-completion");
+    let observation_id = observation.id().expect("observation id");
+    assert_eq!(
+        repository
+            .put_observation(&observation)
+            .expect("publish executor observation body"),
+        observation_id.content_id()
+    );
+    let fingerprint = CampaignHash::derive("test-finding", b"executor driver completion");
+    let original = repository
+        .publish_reproduction_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            observation.child(),
+            observation.child_content(),
+            fingerprint,
+            1,
+            b"executor driver original reproduction".to_vec(),
+        )
+        .expect("publish original reproduction");
+    let final_state = CampaignHash::derive("test-finding", b"executor driver final state");
+    let minimization = FindingMinimizationEvidence::new(
+        original,
+        3,
+        b"executor-driver-test-policy".to_vec(),
+        Vec::new(),
+        final_state,
+    )
+    .expect("minimization evidence");
+    let minimized = repository
+        .publish_minimized_reproduction_artifact(
+            lineage.scenario(),
+            lineage.scenario_content(),
+            observation.child(),
+            observation.child_content(),
+            fingerprint,
+            1,
+            b"executor driver original reproduction".to_vec(),
+            minimization.clone(),
+        )
+        .expect("publish minimized reproduction");
+    let signature = FindingSignature::new(
+        FindingKind::Divergence,
+        fingerprint,
+        None,
+        "qemu.replay-divergence".to_owned(),
+        Some(FindingTarget::Configuration(observation.child_content())),
+        BTreeSet::from([observation.properties().content_id()]),
+    )
+    .expect("finding signature");
+    let signature_minimization = FindingSignatureMinimizationEvidence::new(
+        &signature,
+        &minimization,
+        vec![Some(signature.clone())],
+        vec![Some(signature.clone())],
+    )
+    .expect("signature minimization evidence");
+    let retention_basis = repository
+        .attempt_retention_policy_basis_at(admitted.new_snapshot, admitted.attempt)
+        .expect("retention policy basis");
+    let exact_retention = FindingExactRetention::new(
+        retention_basis.snapshot(),
+        retention_basis.policy(),
+        retention_basis.admission(),
+        0,
+        FindingExactRetentionDisposition::Incomplete(
+            FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
+        ),
+    )
+    .expect("incomplete exact retention");
+    let bundle = FindingCandidateBundle::new_with_exact_retention(
+        crate::FindingCandidateCore::new(
+            observation_id,
+            signature,
+            original,
+            minimized,
+            signature_minimization,
+            FindingExactPins::default(),
+        ),
+        None,
+        exact_retention,
+    )
+    .expect("finding candidate bundle");
+    let finding_candidate = repository
+        .publish_finding_candidate_bundle(&bundle)
+        .expect("publish finding candidate bundle");
+    let resume = command(
+        "executor-driver-resume",
+        admitted.new_snapshot,
+        CampaignControlAction::Resume,
+    );
+    let running = repository
+        .apply_control("executor-driver-completion", &resume)
+        .expect("start campaign");
+    let repository = Arc::new(repository);
+    let resources =
+        AttemptResourceLimits::new(2, 512 * 1024 * 1024, 0, 50_000).expect("executor limits");
+    let service = CompletingExecutor {
+        requests: Vec::new(),
+        status_requests: Vec::new(),
+        execution: ExecutionId::from_bytes([0x91; 16]).expect("execution"),
+        observation: observation_id,
+        finding_candidate: Some(finding_candidate),
+    };
+    let mut driver = CampaignExecutorDriver::new(
+        repository.clone(),
+        ExecutorClient::new(service),
+        DaemonEpoch::from_bytes([0x92; 16]).expect("daemon epoch"),
+        1,
+        resources,
+        ExecutionRetentionIntent::RetainOnFailure,
+        10_000,
+    )
+    .expect("executor driver");
+
+    assert!(matches!(
+        driver
+            .step("executor-driver-completion", WorkerSlotId::new(0))
+            .expect("accept assignment"),
+        CampaignExecutorStepOutcome::Running {
+            attempt,
+            newly_accepted: true,
+            ..
+        } if attempt == admitted.attempt
+    ));
+    assert_eq!(driver.reservation_count(), 1);
+    let incorporated = driver
+        .step("executor-driver-completion", WorkerSlotId::new(0))
+        .expect("incorporate completion");
+    let CampaignExecutorStepOutcome::Incorporated(incorporated) = incorporated else {
+        panic!("expected incorporated completion");
+    };
+    let observation_result = incorporated.observation_result();
+    assert_eq!(observation_result.prior_snapshot, running.new_snapshot);
+    assert_eq!(observation_result.observation, observation_id);
+    let observation_snapshot = repository
+        .read_snapshot(observation_result.new_snapshot.content_id())
+        .expect("observation-only snapshot");
+    let final_snapshot = repository
+        .read_snapshot(incorporated.final_snapshot().content_id())
+        .expect("finding completion snapshot");
+    assert_ne!(
+        final_snapshot.snapshot.roots().findings,
+        observation_snapshot.snapshot.roots().findings
+    );
+    assert_eq!(
+        repository
+            .head("executor-driver-completion")
+            .expect("completion head")
+            .snapshot_id(),
+        incorporated.final_snapshot()
+    );
+    assert_eq!(driver.reservation_count(), 0);
+    let service = driver.into_executor().into_inner();
+    assert_eq!(service.requests.len(), 1);
+    assert_eq!(service.status_requests.len(), 1);
+    assert_eq!(
+        service.status_requests[0].execution_basis(),
+        service.requests[0].execution_basis_digest()
+    );
+    assert_eq!(service.status_requests[0].execution(), service.execution);
+
+    let restarted_repository = Arc::new(CampaignRepository::new(
+        repository.blobs.clone(),
+        repository.refs.clone(),
+    ));
+    let mut restarted = CampaignExecutorDriver::new(
+        restarted_repository,
+        ExecutorClient::new(RejectingExecutor {
+            reason: ExecutorRejection::Incompatible,
+        }),
+        DaemonEpoch::from_bytes([0x93; 16]).expect("restart epoch"),
+        1,
+        resources,
+        ExecutionRetentionIntent::RetainOnFailure,
+        1,
+    )
+    .expect("restarted executor driver");
+    loop {
+        match restarted
+            .step("executor-driver-completion", WorkerSlotId::new(0))
+            .expect("restart projection")
+        {
+            CampaignExecutorStepOutcome::ScanPending { .. }
+            | CampaignExecutorStepOutcome::CaptureScanPending { .. } => {}
+            CampaignExecutorStepOutcome::Idle { snapshot } => {
+                assert_eq!(snapshot, incorporated.final_snapshot());
+                break;
+            }
+            outcome => panic!("unexpected restarted driver outcome: {outcome:?}"),
+        }
+    }
+    assert_eq!(restarted.reservation_count(), 0);
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+#[test]
+fn coordinator_fault_before_observation_commit_recovers_exactly_once() {
+    if std::env::var_os(COORDINATOR_FAULT_CHILD_ENVIRONMENT).is_some() {
+        run_coordinator_fault_child();
+        panic!("coordinator fault hook returned without terminating the process");
+    }
+
+    let temporary = tempfile::tempdir().expect("persistent coordinator fault fixture");
+    let repository = persistent_fault_repository(temporary.path());
+    let (repository, lineage, policy) = initialize_fixture(repository);
+    let (_, admitted, observation) = admitted_observation_fixture(
+        &repository,
+        &lineage,
+        &policy,
+        "coordinator-observation-commit-fault",
+    );
+    let observation_id = observation.id().expect("observation id");
+    repository
+        .put_observation(&observation)
+        .expect("persist executor observation body");
+    std::fs::write(
+        temporary.path().join(DURABLE_EXECUTOR_COMPLETION_FILE),
+        observation_id.to_text(),
+    )
+    .expect("persist executor completion fact");
+    let resume = command(
+        "coordinator-observation-commit-fault-resume",
+        admitted.new_snapshot,
+        CampaignControlAction::Resume,
+    );
+    let running = repository
+        .apply_control("coordinator-observation-commit-fault", &resume)
+        .expect("start persistent campaign");
+    drop(repository);
+
+    let child = std::process::Command::new(std::env::current_exe().expect("current test binary"))
+        .arg("--exact")
+        .arg(COORDINATOR_FAULT_TEST_NAME)
+        .arg("--nocapture")
+        .env(COORDINATOR_FAULT_CHILD_ENVIRONMENT, "1")
+        .env(COORDINATOR_FAULT_ROOT_ENVIRONMENT, temporary.path())
+        .env(
+            DESTRUCTIVE_RECOVERY_TRIGGER_ENVIRONMENT,
+            COORDINATOR_BEFORE_OBSERVATION_COMMIT_TRIGGER,
+        )
+        .output()
+        .expect("run coordinator fault child");
+    assert_eq!(
+        child.status.code(),
+        Some(DESTRUCTIVE_RECOVERY_FAULT_EXIT_CODE),
+        "fault child did not terminate at the publication boundary:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr),
+    );
+
+    let repository = Arc::new(persistent_fault_repository(temporary.path()));
+    let post_fault_head = repository
+        .head("coordinator-observation-commit-fault")
+        .expect("head after coordinator fault");
+    assert_eq!(post_fault_head.snapshot_id(), running.new_snapshot);
+    assert_eq!(
+        repository
+            .merkle
+            .get(
+                post_fault_head.snapshot().roots().observations,
+                map_key_content("observations.attempt", admitted.attempt.content_id()),
+            )
+            .expect("observation lookup after coordinator fault"),
+        None,
+    );
+    let claimable = repository
+        .project_claimable_attempts(
+            "coordinator-observation-commit-fault",
+            None,
+            MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS,
+        )
+        .expect("claimable attempt after coordinator fault");
+    assert!(claimable.attempts().contains(&admitted.attempt));
+
+    let resources =
+        AttemptResourceLimits::new(2, 512 * 1024 * 1024, 0, 50_000).expect("executor limits");
+    let service = DurableCompletedExecutor {
+        root: temporary.path().to_path_buf(),
+        requests: Vec::new(),
+    };
+    let mut restarted = CampaignExecutorDriver::new(
+        Arc::clone(&repository),
+        ExecutorClient::new(service),
+        DaemonEpoch::from_bytes([0xa4; 16]).expect("restart daemon epoch"),
+        1,
+        resources,
+        ExecutionRetentionIntent::RetainOnFailure,
+        MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS,
+    )
+    .expect("restarted executor driver");
+    let incorporated = restarted
+        .step("coordinator-observation-commit-fault", WorkerSlotId::new(0))
+        .expect("resubmit and incorporate durable completion after coordinator restart");
+    let CampaignExecutorStepOutcome::Incorporated(incorporated) = incorporated else {
+        panic!("restarted coordinator did not incorporate the durable completion");
+    };
+    assert_eq!(
+        incorporated.observation_result().prior_snapshot,
+        running.new_snapshot
+    );
+    assert_eq!(
+        incorporated.observation_result().observation,
+        observation_id
+    );
+    assert_eq!(restarted.reservation_count(), 0);
+
+    let service = restarted.into_executor().into_inner();
+    assert_eq!(service.requests.len(), 1);
+    let journal = std::fs::read_to_string(temporary.path().join(DURABLE_EXECUTOR_REQUEST_JOURNAL))
+        .expect("read durable executor request journal");
+    let requests = journal.lines().collect::<Vec<_>>();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].ends_with(&admitted.attempt.to_text()));
+    assert!(requests[1].ends_with(&admitted.attempt.to_text()));
+    assert_ne!(requests[0], requests[1]);
+    let replay = repository
+        .publish_observation(
+            "coordinator-observation-commit-fault",
+            running.new_snapshot,
+            &observation,
+        )
+        .expect("replay recovered observation");
+    assert!(replay.replayed);
+    assert_eq!(replay.new_snapshot, incorporated.final_snapshot());
+    assert_eq!(
+        repository
+            .head("coordinator-observation-commit-fault")
+            .expect("head after observation replay")
+            .snapshot_id(),
+        incorporated.final_snapshot(),
+    );
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+fn run_coordinator_fault_child() {
+    let root = std::env::var_os(COORDINATOR_FAULT_ROOT_ENVIRONMENT)
+        .map(std::path::PathBuf::from)
+        .expect("coordinator fault fixture root");
+    let repository = Arc::new(persistent_fault_repository(&root));
+    let resources =
+        AttemptResourceLimits::new(2, 512 * 1024 * 1024, 0, 50_000).expect("executor limits");
+    let service = DurableCompletedExecutor {
+        root,
+        requests: Vec::new(),
+    };
+    let mut driver = CampaignExecutorDriver::new(
+        repository,
+        ExecutorClient::new(service),
+        DaemonEpoch::from_bytes([0xa2; 16]).expect("fault daemon epoch"),
+        1,
+        resources,
+        ExecutionRetentionIntent::RetainOnFailure,
+        MAX_ATTEMPT_QUEUE_SCAN_PAGE_ITEMS,
+    )
+    .expect("faulting executor driver");
+    let _ = driver.step("coordinator-observation-commit-fault", WorkerSlotId::new(0));
+}
+
+#[cfg(feature = "destructive-recovery-faults")]
+fn persistent_fault_repository(root: &Path) -> CampaignRepository {
+    CampaignRepository::new(
+        Arc::new(DirectoryBlobBackend::new(
+            "coordinator-fault-fixture",
+            root.join("objects"),
+        )),
+        Arc::new(DirectoryRefBackend::new(root.join("authority"))),
+    )
+}
+
+#[test]
+fn campaign_executor_driver_closes_terminal_failure_without_reassignment() {
+    let (repository, lineage, policy) = fixture();
+    let (_, admitted, _) = admitted_observation_fixture(
+        &repository,
+        &lineage,
+        &policy,
+        "executor-driver-terminal-failure",
+    );
+    repository
+        .apply_control(
+            "executor-driver-terminal-failure",
+            &command(
+                "executor-driver-terminal-failure-resume",
+                admitted.new_snapshot,
+                CampaignControlAction::Resume,
+            ),
+        )
+        .expect("start campaign");
+    let repository = Arc::new(repository);
+    let resources =
+        AttemptResourceLimits::new(2, 512 * 1024 * 1024, 0, 50_000).expect("executor limits");
+    let service = TerminalExecutor {
+        requests: Vec::new(),
+        status_requests: Vec::new(),
+        execution: ExecutionId::from_bytes([0x93; 16]).expect("execution"),
+    };
+    let mut driver = CampaignExecutorDriver::new(
+        Arc::clone(&repository),
+        ExecutorClient::new(service),
+        DaemonEpoch::from_bytes([0x94; 16]).expect("daemon epoch"),
+        1,
+        resources,
+        ExecutionRetentionIntent::RetainOnFailure,
+        10_000,
+    )
+    .expect("executor driver");
+
+    assert!(matches!(
+        driver
+            .step("executor-driver-terminal-failure", WorkerSlotId::new(0))
+            .expect("accept assignment"),
+        CampaignExecutorStepOutcome::Running {
+            attempt,
+            newly_accepted: true,
+            ..
+        } if attempt == admitted.attempt
+    ));
+    let closed = driver
+        .step("executor-driver-terminal-failure", WorkerSlotId::new(0))
+        .expect("close terminal attempt");
+    let CampaignExecutorStepOutcome::Closed(closed) = closed else {
+        panic!("terminal failure should close the attempt");
+    };
+    assert_eq!(closed.attempt, admitted.attempt);
+    assert_eq!(
+        closed.disposition,
+        NonModeledAttemptDisposition::TerminalWorkerFailure
+    );
+    assert_eq!(driver.reservation_count(), 0);
+
+    loop {
+        match driver
+            .step("executor-driver-terminal-failure", WorkerSlotId::new(0))
+            .expect("settle closed campaign")
+        {
+            CampaignExecutorStepOutcome::ScanPending { .. }
+            | CampaignExecutorStepOutcome::CaptureScanPending { .. } => {}
+            CampaignExecutorStepOutcome::Idle { snapshot } => {
+                assert_eq!(snapshot, closed.new_snapshot);
+                break;
+            }
+            outcome => panic!("closed attempt must not be assigned again: {outcome:?}"),
+        }
+    }
+
+    let service = driver.into_executor().into_inner();
+    assert_eq!(service.requests.len(), 1);
+    assert_eq!(service.status_requests.len(), 1);
+    assert_eq!(
+        repository
+            .head("executor-driver-terminal-failure")
+            .expect("closed campaign head")
+            .snapshot_id(),
+        closed.new_snapshot
+    );
+
+    let mut restarted = CampaignExecutorDriver::new(
+        Arc::clone(&repository),
+        ExecutorClient::new(TerminalExecutor {
+            requests: Vec::new(),
+            status_requests: Vec::new(),
+            execution: ExecutionId::from_bytes([0x95; 16]).expect("restart execution"),
+        }),
+        DaemonEpoch::from_bytes([0x96; 16]).expect("restart epoch"),
+        1,
+        resources,
+        ExecutionRetentionIntent::RetainOnFailure,
+        1,
+    )
+    .expect("restart executor driver");
+    loop {
+        match restarted
+            .step("executor-driver-terminal-failure", WorkerSlotId::new(0))
+            .expect("rebuild closed campaign")
+        {
+            CampaignExecutorStepOutcome::ScanPending { .. }
+            | CampaignExecutorStepOutcome::CaptureScanPending { .. } => {}
+            CampaignExecutorStepOutcome::Idle { snapshot } => {
+                assert_eq!(snapshot, closed.new_snapshot);
+                break;
+            }
+            outcome => panic!("restart must preserve terminal closure: {outcome:?}"),
+        }
+    }
+    let restarted_service = restarted.into_executor().into_inner();
+    assert!(restarted_service.requests.is_empty());
+    assert!(restarted_service.status_requests.is_empty());
+    let replay = repository
+        .close_attempt_non_modeled(
+            "executor-driver-terminal-failure",
+            closed.new_snapshot,
+            admitted.attempt,
+            NonModeledAttemptDisposition::TerminalWorkerFailure,
+        )
+        .expect("restart preserves the exact terminal closure reason");
+    assert!(replay.replayed);
+    assert_eq!(replay.disposition, closed.disposition);
+}
+
+#[test]
+fn campaign_executor_driver_cancels_exact_execution_and_releases_retryable_attempt() {
+    let (repository, lineage, policy) = fixture();
+    let (_, admitted, _) = admitted_observation_fixture(
+        &repository,
+        &lineage,
+        &policy,
+        "executor-driver-cancellation",
+    );
+    let running = repository
+        .apply_control(
+            "executor-driver-cancellation",
+            &command(
+                "executor-driver-cancellation-resume",
+                admitted.new_snapshot,
+                CampaignControlAction::Resume,
+            ),
+        )
+        .expect("resume campaign");
+    let repository = Arc::new(repository);
+    let execution = ExecutionId::from_bytes([0x95; 16]).expect("execution");
+    let resources = AttemptResourceLimits::new(1, 256 * 1024 * 1024, 0, 10_000).expect("resources");
+    let mut driver = CampaignExecutorDriver::new(
+        Arc::clone(&repository),
+        ExecutorClient::new(CancellableExecutor {
+            execution,
+            cancel_requests: Vec::new(),
+        }),
+        DaemonEpoch::from_bytes([0x96; 16]).expect("daemon epoch"),
+        1,
+        resources,
+        ExecutionRetentionIntent::Discard,
+        10_000,
+    )
+    .expect("executor driver");
+    assert!(matches!(
+        driver
+            .step("executor-driver-cancellation", WorkerSlotId::new(0))
+            .expect("accept execution"),
+        CampaignExecutorStepOutcome::Running {
+            attempt,
+            execution: accepted,
+            newly_accepted: true,
+        } if attempt == admitted.attempt && accepted == execution
+    ));
+
+    let paused = repository
+        .apply_control(
+            "executor-driver-cancellation",
+            &command(
+                "executor-driver-cancellation-pause",
+                running.new_snapshot,
+                CampaignControlAction::Pause(crate::ActiveAttemptPolicy::CancelAndRetry),
+            ),
+        )
+        .expect("pause campaign");
+    let (_, lifecycle) = repository
+        .head_with_lifecycle("executor-driver-cancellation")
+        .expect("paused lifecycle");
+    assert_eq!(lifecycle.state(), CampaignState::Paused);
+    assert_eq!(
+        lifecycle.active_attempt_policy(),
+        Some(crate::ActiveAttemptPolicy::CancelAndRetry)
+    );
+
+    assert_eq!(
+        driver
+            .cancel_one("executor-driver-cancellation")
+            .expect("cancel exact execution"),
+        CampaignExecutorCancelOutcome::Canceled {
+            attempt: admitted.attempt,
+            execution,
+            already_canceled: false,
+        }
+    );
+    assert_eq!(driver.reservation_count(), 0);
+    let service = driver.into_executor().into_inner();
+    assert_eq!(service.cancel_requests.len(), 1);
+    assert_eq!(service.cancel_requests[0].execution(), execution);
+    assert_eq!(service.cancel_requests[0].attempt(), admitted.attempt);
+    assert_eq!(
+        repository
+            .project_claimable_attempts("executor-driver-cancellation", None, 10_000)
+            .expect("canceled attempt remains claimable")
+            .attempts(),
+        &[admitted.attempt]
+    );
+    assert_eq!(
+        repository
+            .head("executor-driver-cancellation")
+            .expect("unchanged paused head")
+            .snapshot_id(),
+        paused.new_snapshot
+    );
+}
+
+mod validation;

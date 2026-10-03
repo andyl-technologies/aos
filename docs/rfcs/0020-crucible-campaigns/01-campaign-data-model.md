@@ -1,0 +1,1183 @@
+# 01 — Campaign data model and lifecycle
+
+The campaign model uses immutable content under one mutable user-visible ref.
+Its authoritative state is a set of facts and their Merkle projections; mutable
+daemon queues and iterator objects are rebuildable indexes.
+
+## 01.1 Identity hierarchy
+
+Every stored campaign record has exactly one identity: a record-specific typed
+wrapper around the generic `ContentId` of its complete canonical content
+envelope. There is no second logical hash that can disagree with the storage
+identity. The formulas below describe the semantic fields encoded in each
+record body; the actual hash input also contains the envelope version, schema
+name and version, exact sorted child-reference table, and body framing defined
+in §06.1.
+
+```text
+ScenarioDefId = H(world, plan, properties, measurements, selectables, seed)
+
+ConfigurationId = H(ScenarioDefId, Schedule)
+
+CampaignLineageId = H(
+  ScenarioDefId,
+  ScenarioArtifactId,
+  GenesisConfigurationId,
+  ConfigurationArtifactId,
+  CrucibleVersion,
+  QemuBuildAndAtomicPatch,
+  ProtocolVersions
+)
+
+CampaignPolicyId = H(canonical CampaignPolicy)
+
+CampaignSnapshotId = H(canonical CampaignSnapshot)
+
+CampaignViewId = H(canonical CampaignPlanningView)
+
+PlannerInvocationId = H(
+  PlannerEngineId,
+  PolicyArtifactId,
+  CampaignPolicyId,
+  PlannerStateId,
+  CampaignViewId,
+  PlanningScanPage,
+  PlanningBudget
+)
+```
+
+`CampaignHash` and semantic wrappers such as `ConfigurationId`,
+`BranchPointId`, and `BranchEdgeId` identify values derived from other
+canonical records. They are not independently stored record identities. Stored
+objects such as policies, snapshots, facts, choice domains, opportunities,
+selections, planner artifacts, and Merkle nodes use typed `ContentId` wrappers.
+Presentation-independent choice-domain semantics have a separate explicitly
+named `ChoiceDomainSemanticId`; selectable declarations and runtime
+opportunities similarly expose `SelectableSemanticId` and
+`ChoiceOpportunitySemanticId`. Their stored `*Id` values remain exact typed
+`ContentId` wrappers and therefore cover presentation metadata too. Semantic
+branch-point and edge derivation uses the explicitly named semantic IDs, while
+storage closure and provenance retain the exact IDs.
+
+The public textual and canonical-binary form of a stored-record ID includes its
+exact registered schema tag as well as the generic `ContentId`. A policy-family
+content ID cannot therefore be parsed or decoded as a planner-state,
+planner-engine, or candidate-generator ID merely because those records share an
+`ObjectKind`. The underlying generic content ID becomes authoritative only
+after the named envelope is loaded and authenticated as the claimed record
+schema.
+
+The normative owner, version, object-kind domain, and compatibility gates for
+every format introduced here are frozen in
+[`schema-registry.tsv`](schema-registry.tsv). Adding or changing a format
+requires updating that registry and its executable completeness check.
+
+The human campaign name is not an identity component. It is a mutable reference
+such as `network-recovery -> CampaignSnapshotId`.
+
+`CampaignLineage` carries both semantic scenario/genesis identities and exact
+typed content references to owned `ScenarioArtifact` and
+`ConfigurationArtifact` records. The scenario record binds its semantic
+`ScenarioDefId` and execution-model schema to the exact canonical payload. The
+configuration record binds its semantic `ConfigurationId`, its
+`ScenarioDefId`, and the exact `ScenarioArtifactId` to its canonical payload.
+Repository reads resolve these records and recheck every cross-record binding;
+validation is not limited to the campaign-creation path.
+
+Finding reproduction uses the same exact-artifact rule. The current schema-v2
+`ReproductionArtifact` binds semantic and exact scenario/configuration
+identities, a stable failure fingerprint, verifier-checked self-contained
+execution-model bytes, its original reproduction, the exact minimization
+policy, bounded candidate history, and the final replayed state. The current
+schema-v4 `Finding` binds its normalized signature, representative and
+occurrence observations, reproduction artifacts, authenticated first-seen
+parent snapshot, role-tagged exact checkpoint retention, and the authenticated
+candidate bundle and occurrence set. Repository admission verifies those
+relationships and fails closed on any other schema version. A broad finding
+content ID is not authoritative until its envelope schema and complete child
+table are authenticated.
+
+Campaign creation inserts the exact genesis configuration artifact into the
+canonical graph and corpus keys, publishes any candidate-generator closure,
+and verifies the complete snapshot closure before advancing the name. A
+semantic digest without the corresponding reachable bytes is not a readable
+campaign. Noncurrent scenario/configuration blobs are rejected before import;
+bytes are never guessed to be a current record from their shape.
+
+- **[CMOD-10]** A policy revision MUST NOT change existing configuration IDs.
+  Every proposal MUST name the policy revision that issued it.
+- **[CMOD-11]** A QEMU, Crucible, guest protocol, shared-memory protocol, scenario
+  schema, or exact-closure change MUST begin a new lineage. Admission rejects
+  every noncurrent representation.
+
+## 01.2 Campaign policy
+
+```rust,illustrative
+pub struct CampaignPolicy {
+    pub schema_version: u32,
+    pub scenario: ScenarioRef,
+    pub campaign_seed: Seed,
+    pub mode: CampaignMode,
+    pub choice_policies: Vec<ChoicePolicy>,
+    pub explorer: ExplorerPolicy,
+    pub objectives: Vec<Objective>,
+    pub guidance: Vec<GuidanceWeight>,
+    pub stop_conditions: Vec<NamedStopCondition>,
+    pub attempt_timeout_policy: Option<CampaignAttemptTimeoutPolicy>,
+    pub fairness: FairnessPolicy,
+    pub retention: RetentionPolicy,
+}
+
+pub enum CampaignMode {
+    Strict,
+    Streaming,
+    Statistical,
+}
+```
+
+`Strict` records and commits planner inputs in deterministic attempt order so
+the campaign proposal sequence can be re-derived. `Streaming` incorporates
+completed observations as they arrive and promises branch/finding
+reproducibility rather than arrival-order-independent campaign evolution.
+`Statistical` enforces the sampling and weighting restrictions in §03.8.
+The mode is fixed for one campaign ref because it selects the observation-fold
+and reproducibility contract. Steering may activate another policy only with
+the same mode; changing mode requires deriving a new campaign.
+
+An optional attempt timeout bounds the requested stop by positive absolute
+virtual-time and/or completed-scheduler-quantum coordinates from scenario
+genesis. The first modeled bound reached produces a typed timeout observation;
+terminal and assertion outcomes take precedence, and virtual time wins a
+same-quantum tie between bounds. The policy may also name an optional finite
+host completion watchdog. Its wall-clock expiry aborts the assignment as an
+infrastructure failure and cannot become a modeled timeout or finding.
+An authenticated branch request carries the active policy's modeled bound in
+its canonical stop, including requests authored through the CLI.
+
+Resource placement is not policy. Worker count, memory limits, CPU affinity,
+host names, store endpoint, and cache inventory are daemon configuration.
+Budgets are immutable grants recorded in campaign accounting so a long-lived
+campaign can receive more work without changing its original identity.
+
+## 01.3 Campaign snapshot
+
+```rust,illustrative
+pub struct CampaignSnapshot {
+    pub schema_version: u32,
+    pub parent: Option<CampaignSnapshotId>,
+    pub lineage: CampaignLineageId,
+    pub active_policy: CampaignPolicyId,
+    pub graph_root: ContentId,
+    pub exploration_root: ContentId,
+    pub observations_root: ContentId,
+    pub corpus_root: ContentId,
+    pub coverage_root: ContentId,
+    pub findings_root: ContentId,
+    pub pins_root: ContentId,
+    pub accounting_root: ContentId,
+    pub coordination_root: ContentId,
+    pub transition: Option<CampaignFactId>,
+    pub budget_ledger: CampaignBudgetLedgerId,
+}
+```
+
+The current snapshot requires the current budget-ledger child after the
+transition field. The version-3 ledger appends `ContentId` roots for the
+request-spending and request-admissions Merkle maps. The spending map's outer map
+indexes request identities; each value is a nested map from semantic attempt
+identity to the exact execution-basis admission. Additional causes and
+discovery admissions do not spend a request-local attempt. The nested root's
+authenticated entry count gives exact local spending without scanning campaign
+history. The admissions map indexes each request's proposal identities to its
+execution-basis and additional-cause admissions, so a proof-bearing public page
+can find every cause of a convergent attempt. Genesis requires both canonical
+empty maps. Successors derive spending updates from newly added dense global
+admissions and cause updates from newly admitted proposals; validation recomputes
+both roots without publishing objects. Ordinary runtime accepts only the current
+ledger contract.
+
+Snapshot ancestry for one campaign ref is linear in this RFC because exactly
+one coordinator owns that ref. `derive` creates another named ref whose first
+owned snapshot is an audited successor of the exact source snapshot; it does
+not create a multi-parent merge commit or mutate the source ref. Immutable facts may be
+shared by any number of refs without giving more than one writer authority over
+any ref. A non-genesis snapshot names exactly one `transition` fact that caused
+the parent-to-child change; a genesis snapshot has neither parent nor
+transition. This direct edge makes lifecycle history independently auditable
+without inferring causality from changed projection roots.
+
+Reading a snapshot replays its transition contract, rather than merely checking
+that all named objects exist. Each successor preserves lineage, changes only
+the roots permitted by its typed transition, proves its active-policy delta,
+and reconstructs the exact affected Merkle entries. Lifecycle actions are then
+folded from genesis in forward order. Genesis has canonical empty roots outside
+the graph/corpus, and those two roots contain exactly the lineage's typed
+genesis configuration at their canonical keys. A transition family whose owner
+codec and replay projection are not implemented fails closed on import.
+
+The roots name immutable canonical maps or sets:
+
+| Root | Contents |
+| --- | --- |
+| `graph_root` | Configurations, branch points, schedule edges, and graph metadata. |
+| `exploration_root` | Branch requests, proposals, and candidate-source specifications. |
+| `observations_root` | Canonical attempt results, retained determinism conflicts, measurements, properties, coverage projections, paths, and causal evidence. |
+| `corpus_root` | Retained configurations and reproduction artifacts worth further mutation. |
+| `coverage_root` | Grow-only set of canonical coverage-projection records; their deterministic identity union is derived. |
+| `findings_root` | Failure signatures, clusters, minimization products, and reproduction artifacts. |
+| `pins_root` | User and policy retention decisions for configurations and exact closures. |
+| `accounting_root` | Budget grants, consumed attempts, modeled completion counts, policy activation, pause/resume, and operator commands. |
+| `coordination_root` | Durable coordinator progress, planner-step identity/replay indexes, and other authenticated control-plane state excluded from semantic planner input. |
+
+The nine-root layout is the sole current `crucible.campaign.snapshot` schema
+v3. Every other snapshot body or envelope version is rejected.
+`coordination_root` exists so recording a paginated
+planner step does not change the immutable planning view that the next page
+must resume.
+
+Expansion-state, frontier, statistics, and status objects are rebuildable
+projections over these authoritative roots. A snapshot may name an optional
+authenticated projection cache through non-authoritative acceleration metadata,
+but deleting every such cache cannot make the snapshot unreadable or alter its
+semantic value.
+
+- **[CMOD-12]** Every snapshot root MUST name an immutable object whose children
+  are discoverable without listing the backing store.
+- **[CMOD-13]** Advancing a campaign name MUST be a compare-and-swap from one
+  snapshot ID to another. Objects MUST be published and authenticated before the
+  ref is advanced.
+- **[CMOD-14]** A snapshot MUST be readable without any daemon-local queue,
+  reservation, PID, socket, hot-fork handle, or filesystem path.
+
+Each canonical object is wrapped in the generic child-bearing envelope from
+§06.1. Record-specific constructors derive the child table from the decoded
+body and reject missing, extra, duplicated, or wrongly role-tagged references.
+Generic storage, transfer, retention, and garbage-collection code can therefore
+walk every closure without importing campaign record types, while the campaign
+codec remains responsible for the stronger record-specific correspondence.
+
+## 01.4 Campaign facts
+
+```rust,illustrative
+pub enum CampaignFact {
+    ChoiceOpportunityDiscovered {
+        parent: ConfigurationArtifactId,
+        branch_point: BranchPointId,
+        opportunity: ChoiceOpportunityId,
+    },
+    BranchRequestAccepted {
+        request: BranchRequestId,
+        summary: BranchAcceptanceSummary,
+    },
+    PlannerAdvanced(PlannerStepId),
+    ProposalIssued(ProposalId),
+    AttemptAdmitted(AttemptAdmissionId),
+    AttemptClosed {
+        attempt: AttemptId,
+        ordinal: AdmissionOrdinal,
+        disposition: NonModeledAttemptDisposition,
+    },
+    ObservationPublished(ObservationId),
+    ObservationCredited(ObservationId),
+    FindingPublished(FindingId),
+    ObjectiveEvaluationPublished(ObjectiveEvaluationId),
+    PolicyActivated(PolicyActivation),
+    BudgetGranted(BudgetGrant),
+    ControlRequested(ControlRequest),
+    PinChanged(PinChange),
+    PinCommandAccepted(PinRequest),
+    CampaignDerived(CampaignDerivation),
+    DiscoveryRequested(DiscoveryRequest),
+    SavepointCaptureRequested(SavepointCaptureRequest),
+    SavepointCaptureResolved(SavepointCaptureResolution),
+}
+```
+
+`NonModeledAttemptDisposition` distinguishes operator cancellation, permanent
+executor incompatibility, invalid input, authorization denial, and terminal
+worker failure. A terminal worker failure is an operational quarantine: it
+closes the admitted ordinal without manufacturing an observation or modeled
+stop outcome. The current campaign-fact schema v15 encodes every disposition.
+
+New branch-request transitions use `BranchRequestAccepted`. Its immutable
+summary records the validated addressable source cardinality, the existing
+semantic edges and remaining candidates within the request's proposal-visible
+window, and the request's proposal and attempt limits. Counts are exact when
+the source owner can prove a total and inclusive ranges otherwise. Source
+cardinality is distinct from the proposal window: the latter is capped by the
+request proposal limit, while generators whose definition incorporates that
+limit may also have a limit-bounded source cardinality.
+
+Publishing a valid `ChoiceOpportunity` body does not make it campaign
+knowledge. The graph owner admits it only through an exact
+`ChoiceOpportunityDiscovered` transition or as a discovered choice in a
+canonical observation. Both paths authenticate the complete declaration and
+domain closure and bind the opportunity to the campaign scenario and exact
+parent-derived branch point. A branch request must find the exact opportunity
+under its domain-separated `(BranchPointId, ChoiceOpportunityId)` graph key;
+backing-store presence, global opportunity membership, an arbitrary Merkle key,
+or a caller-supplied subset root is insufficient. The current campaign-fact
+schema v15 binds the explicit discovery parent and branch point.
+
+`CampaignDerived` names the exact source snapshot and policy active in the new
+child. Its successor preserves lineage and every semantic root, changes only
+the coordination root by adding the ordinary authenticated parent-result
+locator, and sets its parent to that source. A supplied replacement policy must
+have the same scenario and campaign mode; policy publication and target-ref
+creation are one owner transaction. Exact retries resolve the first derived
+snapshot from the target history even after later target mutations. They are
+bound to that target's most recent founding derivation edge; a locator inherited
+from an ancestor derived campaign cannot replay as the child ref's own result.
+Campaign facts use schema v15. Every current transition variant has one exact
+encoding under that schema, including observation crediting, pin commands,
+objective publication, branch-request acceptance, discovery, terminal worker
+failure, and savepoint capture. Any other fact schema or a mismatched envelope
+version is rejected before transition validation.
+
+The pin owner resolves command replay before staleness. An exact retry returns
+the first accepted parent/child snapshot pair; reuse of the command ID with a
+different `PinRequest` fails closed. The configuration must already occur in
+the parent's authenticated graph. Acceptance inserts the v15 fact under both
+`accounting.command(command_id)` and `pins.configuration(configuration_id)`;
+unpinning writes a `retention = None` tombstone at the same pin key rather than
+deleting historical intent. Imported and restarted histories recompute these
+two exact root deltas and the ordinary parent-result locator.
+
+The objective owner derives
+`H("crucible.campaign-objective-evaluation.v1", policy_content_id_text ||
+observation_content_id_text)` and maps it to the exact evaluation ID in
+`roots.observations`. The policy must be active and the observation must own its
+attempt's canonical observation key in the parent snapshot. The owner validates
+the evaluation's policy contract, child configuration, property filtering, and
+exact scalar recomputation before its first write. The successor changes only
+`roots.observations` and the ordinary parent-result coordination locator.
+Exact-evaluation replay resolves before staleness after later mutations; a
+different evaluation for the same `(policy, observation)` basis fails closed.
+Import and restart validation recompute the same key, basis, and two root
+deltas.
+
+The language-neutral canonical field order is:
+
+```text
+PinRequestV1 = command_id | expected_snapshot | PinChangeV1
+PinChangeV1 = configuration_id | optional(thin | exact) |
+              nfc_reason_utf8_0_to_4096_bytes
+pin_request_digest =
+  H("crucible.campaign-pin-request.v1", canonical(PinRequestV1))
+```
+
+The optional retention field uses absence for removal. The reason rejects NUL,
+non-NFC text, and encoded content beyond 4,096 bytes.
+
+Savepoint capture uses the following exact field order:
+
+```text
+SavepointCaptureRequestV1 = command_id | expected_snapshot | attempt_id |
+                            configuration_artifact_id | configuration_id |
+                            stop_condition | nfc_reason_utf8_0_to_4096_bytes
+SavepointCaptureResolutionV1 = command_id | expected_snapshot |
+                               capture_request_fact_id |
+                               ready | canceled | failed | discarded
+CampaignFactV14(SavepointCaptureRequested) =
+    14:u32be | 18:u8 | SavepointCaptureRequestV1
+CampaignFactV14(SavepointCaptureResolved) =
+    14:u32be | 19:u8 | SavepointCaptureResolutionV1
+```
+
+The request references an existing immutable attempt and authenticates its exact
+starting configuration and declared stop. It does not admit the attempt, spend
+proposal or attempt budget, advance the semantic frontier, or change
+`roots.pins`. Its fact ID owns a distinct operational execution scope. The
+executor materializes the attempt start, drives to the declared stop, and
+captures that reached boundary without publishing a semantic observation. Thus
+two attempts with one semantic starting configuration and different stops retain
+different physical paused sources. A ready resolution records that the scoped ledger reached an
+authenticated durable pause. A later discarded resolution authorizes explicit
+release of that source; canceled and failed resolutions close captures that
+never became selectable. The assignment ledger remains the physical GC root
+until discard or a chosen-source continuation completes its explicit handoff.
+
+> **Implementation status.** The coordinator has a bounded, restart-rebuildable
+> capture queue, and the QEMU runner drives scoped requests to their declared
+> stop before capturing and independently replay-validating the reached
+> configuration, scheduler coordinate, and dense event prefix. Ready, canceled,
+> failed, and discarded resolutions are supported. A ready capture remains a
+> physical GC root until its selected continuation, durable debug session, or
+> noncanonical branch completes the explicit ownership handoff. Focused tests
+> cover scoped routing, queue fairness and head changes, quiet q100/q200
+> boundary distinction, pre-write promotion, restart recovery, and selected
+> continuation handoff.
+
+Facts are immutable and carry causal references. They may be represented in
+persistent Merkle maps rather than replayed from a flat log. A projection cache
+may summarize them, but the facts remain sufficient to rebuild it.
+
+`AttemptClosed` records the admitted attempt, its global ordinal, and an
+explicit non-modeled disposition such as accepted operator cancellation,
+permanent incompatibility, invalid input, or authorization refusal. Retriable
+operational failure does not close an ordinal. This is the only non-observation
+path that can close strict ordering, and it cannot be interpreted as a modeled
+timeout, crash, or assertion result.
+In strict mode both an accepted observation and `AttemptClosed` advance the
+same admission-completion sequence owner. Its value is therefore a typed
+`Observation` or `AttemptClosed` fact, and the next completion must carry the
+immediately following global admission ordinal. Separate per-attempt and
+per-ordinal disposition indexes make closure replay and claim filtering
+independent of ancestry scans.
+
+`PlannerStep` makes adaptation explicit:
+
+```rust,illustrative
+pub struct CampaignPlanningView {
+    pub graph_root: ContentId,
+    pub exploration_root: ContentId,
+    pub observations_root: ContentId,
+    pub corpus_root: ContentId,
+    pub coverage_root: ContentId,
+    pub findings_root: ContentId,
+    pub accounting_root: ContentId,
+}
+```
+
+The planning view contains every canonical input permitted to affect proposal
+order. It deliberately excludes pins, coordinator bookkeeping, physical
+retention, materializations, store placement, and operational state. A policy
+that uses finding retention or debugging state must first model the relevant
+semantic fact in one of the included roots; it cannot observe a physical pin or
+coordination index implicitly.
+
+```rust,illustrative
+pub struct PlannerInvocation {
+    pub engine: PlannerEngineId,
+    pub policy_artifact: PolicyArtifactId,
+    pub policy: CampaignPolicyId,
+    pub planner_state: PlannerStateId,
+    pub input_view: CampaignViewId,
+    pub scan_page: PlanningScanPage,
+    pub budget: PlanningBudget,
+}
+
+pub struct PlanningScanPage {
+    pub after: Option<PlanningScanPosition>,
+    pub limit: u32,
+    pub positions: Vec<PlanningScanPosition>,
+    pub complete: bool,
+    pub input_bytes: u64,
+}
+
+pub struct PlannerStep {
+    pub parent: Option<PlannerStepId>,
+    pub invocation: PlannerInvocationId,
+    pub request: RetainedPlannerRequestId,
+    pub request_digest: CampaignHash,
+    pub policy: CampaignPolicyId,
+    pub engine: PlannerEngineId,
+    pub policy_artifact: PolicyArtifactId,
+    pub input_view: CampaignViewId,
+    pub disposition: PlannerDisposition,
+    pub next_state: PlannerStateId,
+    pub usage_claim: PlanningUsage,
+    pub coordinator_accounting: PlanningAccounting,
+    pub score_evidence: GuidanceEvidence,
+}
+
+pub enum PlannerDisposition {
+    ContinueScan { cursor: PlanningScanCursor },
+    Issue {
+        selected: PlanningScanPosition,
+        issued_branch_requests: Vec<BranchRequestId>,
+        issued_proposals: Vec<ProposalId>,
+    },
+    NoWork,
+}
+
+pub struct PlanningAccounting {
+    pub branch_requests: u64,
+    pub proposals: u64,
+    pub attempts: u64,
+    pub deduplicated: u64,
+    pub input_objects: u64,
+    pub input_bytes: u64,
+    pub fuel: u64,
+}
+
+pub struct PlannerCandidateGuidance {
+    pub input_view: CampaignViewId,
+    pub policy: CampaignPolicyId,
+    pub position: PlanningScanPosition,
+    pub domain: ChoiceDomainId,
+    pub domain_semantics: ChoiceDomainSemanticId,
+    pub value: ChoiceValue,
+    pub ordinal: u64,
+    pub edge: BranchEdgeId,
+    pub statistics: PuctEdgeStatistics,
+    pub novelty_events: u64,
+    pub objective_reward_micros: i64,
+    pub finding_events: BTreeMap<FindingKind, u64>,
+}
+```
+
+The current `PlannerInvocation` schema binds the exact coordinator-served continuation
+page. Positions are strictly increasing after the authenticated `after`
+position and name canonical branch-request bodies in `input_view`. A
+non-complete page contains exactly `limit` positions; `complete` is true only
+when owner recomputation reaches EOF. `input_objects` is the position count and
+`input_bytes` is the checked sum of canonical served request-body bytes. Every
+noncurrent invocation schema is rejected rather than assigned implicit fields.
+
+`input_view` is the complete immutable semantic pre-step basis. Naming only the
+observation root is insufficient because fairness, prior proposals, stop
+conditions, and budget consumption can all affect the next proposal. Naming the
+whole snapshot would be too broad because a storage-tier or pin change must not
+perturb strict proposal order. The post-step snapshot includes the accepted
+planner step, preserving an acyclic history. `ContinueScan` is bound to the
+same immutable `input_view` and emits no semantic outputs; `NoWork` likewise
+records a completed scan without inventing a selected source. `Issue` alone
+names a selected continuation and accepted output IDs. Output IDs are unique,
+`attempts + deduplicated == proposals`, and the branch-request/proposal counts
+match the accepted lists. Accounting is recomputed by the coordinator from
+accepted outputs and measured bounded input execution; a planner's retained
+`usage_claim` is diagnostic only. The coordinator records planner-step,
+invocation-result, and current-head indexes as one exact `coordination_root`
+delta. The sole current schema v4 commits both a
+`crucible.campaign.retained-planner-request` schema-v1 record and the
+domain-separated digest of its exact canonical `PlannerRequestV3` body. The
+retained record is a distinct Policy-kind envelope whose children name the
+stored invocation, direct basis, expected snapshot, and every bundled object;
+import validation decodes that record and recomputes the digest. This makes the
+by-value interpretation bundle auditable even when two requests share one
+`PlannerInvocationId`. Standalone step loading cannot prove the request's
+snapshot precondition and therefore requires the exact owning snapshot. The
+complete layout is registered as
+`crucible.campaign.planner-step` schema v4. Noncurrent envelopes and typed IDs
+are rejected rather than reinterpreted under the current field order.
+
+`PlannerCandidateGuidance` is the schema-v2, at-most-64-KiB owner projection
+used by PUCT engine version 6. Its exact envelope children are
+the input view, active policy, served branch request, and exact choice domain.
+It repeats the offer tuple plus authenticated semantic edge and decomposed PUCT
+statistics so an authority-free planner can validate and score the record using
+the request's by-value policy. An accepted retained request stores every
+guidance envelope as a child. Local acceptance, restart, and imported-snapshot
+validation reconstruct the exact records from the owning snapshot; a
+structurally canonical substituted score, semantic domain, reward count, or
+offer tuple fails closed.
+The current guidance schema includes `objective_reward_micros` after
+`novelty_events`; it is the
+owner-derived signed scalar-objective sum for that edge. Guidance with any
+other schema is rejected rather than reinterpreted with an implicit reward.
+
+`ContinueScan` is accepted only for a non-complete served page and its cursor
+must equal that page's last position. `NoWork` is accepted only for a complete
+page. A first scan, or a scan after the semantic view changes, starts at
+`None`; a same-view page after `ContinueScan` starts at exactly the prior
+accepted cursor. A same-view `NoWork` closes that scan and cannot be reopened.
+The coordinator derives this start from the authenticated planner head and
+recomputes the entire page from the named view at acceptance and on
+imported-snapshot validation; therefore a result cannot skip an authoritative
+key, invent EOF, or substitute different input accounting.
+
+- **[CMOD-15]** Every adaptive proposal MUST be reachable from a planner step
+  that names the complete planning view, engine and policy artifact, policy,
+  explicit planning budget, selected candidate source, coordinator-computed
+  accounting result, and evidence used to produce it.
+- **[CMOD-16]** Rebuilding projections from the same facts MUST produce the same
+  canonical frontier, statistics, and reports. Projection caches that disagree
+  are corrupt and MUST be rejected.
+
+## 01.5 Branch point, request, proposal, attempt, and observation
+
+```rust,illustrative
+pub struct BranchPoint {
+    pub id: BranchPointId,
+    pub parent: ConfigurationId,
+    pub opportunity: ChoiceOpportunityId,
+}
+
+pub struct BranchRequest {
+    pub schema_version: u32, // exact current schema v10
+    pub branch_point: BranchPointId,
+    pub parent: ConfigurationArtifactId,
+    pub opportunity: ChoiceOpportunityId,
+    pub domain: ChoiceDomainId,
+    pub source: CandidateSource,
+    pub cause: BranchRequestCause,
+    pub budget: BranchBudget,
+    pub stop: StopCondition,
+}
+
+pub enum CandidateSource {
+    Finite(FiniteCandidateSource),
+    ModeledFinite(ModeledFiniteCandidateSource),
+    ModeledGenerated(ModeledGeneratedCandidateSource),
+    Generated(CandidateGeneratorSpecId),
+    StatisticalFinite(StatisticalFiniteCandidateSource),
+    StatisticalSmc(StatisticalSmcCandidateSource),
+}
+
+pub struct FiniteCandidateSource {
+    // Private; constructed only through a nonempty, bounded validator.
+    values: CanonicalSet<ChoiceValue>,
+    // None means implicit weight one for every value.
+    prior_weights: Option<CanonicalMap<ChoiceValue, u64>>,
+}
+
+pub struct ModeledFiniteCandidateSource {
+    // Must equal the referenced opportunity's model_prior.
+    model: ProbabilityModelId,
+    // Exact positive masses resolved by the execution-model adapter.
+    prior_weights: CanonicalMap<ChoiceValue, u64>,
+}
+
+pub struct ModeledGeneratedCandidateSource {
+    // Must equal the referenced opportunity's model_prior.
+    model: ProbabilityModelId,
+    // Exact portable generator resolved by the execution-model adapter.
+    generator: CandidateGeneratorSpecId,
+}
+
+pub struct StatisticalFiniteCandidateSource {
+    pub coordinate: u64,
+    pub model: ProbabilityModelId,
+    pub values: CanonicalSet<ChoiceValue>,
+    pub target_masses: CanonicalMap<ChoiceValue, u64>,
+    pub proposal_masses: CanonicalMap<ChoiceValue, u64>,
+    pub target_total: u64,
+    pub proposal_total: u64,
+}
+
+pub struct StatisticalSmcCandidateSource {
+    pub generation: StatisticalGenerationId,
+    pub input_particle: StatisticalParticleId,
+    pub stage: u32,
+    pub slot: u32,
+    pub model: ProbabilityModelId,
+    pub values: CanonicalSet<ChoiceValue>,
+    pub target_masses: CanonicalMap<ChoiceValue, u64>,
+    pub proposal_masses: CanonicalMap<ChoiceValue, u64>,
+    pub target_total: u64,
+    pub proposal_total: u64,
+}
+
+pub struct BranchBudget {
+    pub maximum_proposals: u64,
+    pub maximum_attempts: u64,
+}
+
+pub enum BranchRequestCause {
+    Planner(PlannerInvocationId),
+    Operator(CampaignCommandId),
+    Debugger(DebugSessionId),
+    ExhaustivePolicy(CampaignPolicyId),
+    ScenarioDefault(CampaignPolicyId),
+}
+
+pub struct Proposal {
+    pub branch_point: BranchPointId,
+    pub request: BranchRequestId,
+    pub domain: ChoiceDomainId,
+    pub value: ChoiceValue,
+    pub policy: CampaignPolicyId,
+    pub planner_invocation: Option<PlannerInvocationId>,
+    pub ordinal: u64,
+    pub guidance_basis: CampaignViewId,
+}
+
+pub struct BranchEdge {
+    pub branch_point: BranchPointId,
+    pub domain: ChoiceDomainSemanticId,
+    pub value: ChoiceValue,
+}
+
+pub struct Attempt {
+    pub schema_version: u32, // exact current schema v9
+    pub start: AttemptStart,
+    pub path: BranchPathId,
+    pub stop: StopCondition,
+    pub continuation_input: Option<AttemptContinuationInput>,
+}
+
+pub enum ObservationCondition {
+    SchedulerQuiescent,
+    AssertionViolationTransition(String),
+    AnyAssertionViolationTransition,
+    SchedulerQuiescentOrExecutionQuanta {
+        execution_quanta: u64,
+    },
+}
+
+pub enum StopCondition {
+    NextChoice,
+    NamedBoundary(String),
+    VirtualTimePicoseconds(u64),
+    EventCount(u64),
+    Terminal,
+    ExecutionQuanta(u64),
+    VirtualTimeOrExecutionQuanta {
+        virtual_time_picoseconds: u64,
+        execution_quanta: u64,
+    },
+    NextChoiceOrExecutionQuanta {
+        execution_quanta: u64,
+    },
+    Observation(ObservationCondition),
+}
+
+pub enum AttemptStart {
+    Discover {
+        configuration: ConfigurationArtifactId,
+    },
+    Branch {
+        edge: BranchEdgeId,
+        parent: ConfigurationArtifactId,
+        selection: SelectionId,
+    },
+    AfterAttempt {
+        origin: AttemptId,
+        reached: ConfigurationArtifactId,
+    },
+}
+
+pub enum AttemptContinuationInput {
+    SchedulerReseed {
+        source_observation: ObservationId,
+        source_frontier_ticks: u64,
+        seed: [u8; 32],
+    },
+    SchedulerSelections {
+        source_observation: ObservationId,
+        source_frontier_ticks: u64,
+        decisions: Vec<Vec<u8>>,
+    },
+}
+
+pub struct BranchPathSegment {
+    pub branch_point: BranchPointId,
+    pub edge: BranchEdgeId,
+}
+
+pub struct BranchPath {
+    pub segments: Vec<BranchPathSegment>,
+}
+
+pub struct AttemptAdmission {
+    pub schema_version: u32, // current v3 binds every admission to retention policy
+    pub attempt: AttemptId,
+    pub role: AttemptAdmissionRole,
+    pub retention_policy: CampaignPolicyId,
+}
+
+pub enum AttemptAdmissionRole {
+    ExecutionBasis {
+        proposal: Option<ProposalId>,
+        cause: BranchRequestCause,
+        admission_ordinal: AdmissionOrdinal,
+    },
+    AdditionalCause {
+        proposal: ProposalId,
+    },
+}
+
+pub struct Observation {
+    pub schema_version: u32, // exact current schema v13
+    pub attempt: AttemptId,
+    pub child: ConfigurationId,
+    pub child_content: ConfigurationArtifactId,
+    pub path: BranchPathId,
+    pub stop: StopOutcome,
+    pub measurements: MeasurementSetId,
+    pub properties: PropertyVerdictSetId,
+    pub coverage: CoverageProjectionId,
+    pub discovered_choices: CanonicalSet<ChoiceOpportunityId>,
+    pub produced_selections: CanonicalSet<SelectionId>,
+    pub resolved_effect_trace: Option<ContentId>,
+}
+```
+
+Observation schema v14 is the sole current encoding. It carries the current
+stop outcome plus the bounded canonical set of selections produced while execution
+continued through choices discovered by that attempt. Each selection must
+resolve to exactly one of the observation's discovered opportunities, and no
+opportunity may be selected twice. The selection IDs are envelope children, so
+the accepted observation roots the complete replay closure. The combined
+discovered-opportunity and produced-selection count cannot exceed the
+envelope's 65,529 variable-child allowance. An optional schema-1 trace leaf
+retains the canonical resolved effects from the same completed attempt. Its
+content identity is an observation child; producer and public reader decode
+the bounded trace against the Crucible fault contract. Any other observation schema is
+rejected.
+
+Stop-condition tags 5 and 6 add `ExecutionQuanta` and
+`VirtualTimeOrExecutionQuanta`. Both quantum bounds are absolute scheduler
+coordinates from scenario genesis and must be nonzero; the combined form also
+requires a nonzero virtual-time deadline. They are distinct from the executor's
+operational capacity ceiling. A resumed attempt therefore evaluates them
+against the version-2 `SingleSchedulerCheckpoint.quanta` coordinate and charges
+only the suffix after that coordinate. Restored virtual-time evaluation uses
+the checkpoint's exact scheduler frontier; the last retained event timestamp
+may be earlier and is not a substitute. Terminal and assertion outcomes retain
+precedence. When virtual time and execution quanta first cross on the same
+scheduler quantum, virtual time is the reporting priority.
+
+The current policy-bounded stop uses tag 9. Campaign policies may additionally
+bind every attempt's primary stop to an
+absolute virtual-time deadline, an absolute scheduler-quantum deadline, or
+both. At least one modeled deadline is required when this policy is present.
+An optional positive u64-millisecond host completion watchdog is operational
+supervision; its expiry quarantines the attempt without an observation or
+modeled stop. A primary boundary reached before both deadlines carries proof
+of the virtual-time and quantum coordinates. A policy deadline produces a
+distinct, proof-bearing `PolicyTimeout` outcome, never a reached primary
+boundary. Terminal and assertion outcomes win first. Virtual time wins a tie
+with quanta, and either policy deadline wins a tie with the primary boundary.
+Policy timeout cannot authorize a selected continuation or statistical
+primary-stop sample. The intrinsic quantum fallback of
+`NextChoiceOrExecutionQuanta` has its own proof-bearing
+`BoundedPrimaryTimeout` outcome. It cannot authorize a selected continuation;
+a choice reached before that fallback can. Campaign logic handles an
+authenticated timeout outcome; no timer event is delivered to guest code for
+recovery.
+
+These stop tags occur only in the current enclosing records: `Attempt` v9,
+`BranchRequest` v10, `CampaignFact` v15, `Observation` v14, and discovery-service
+request v4. A noncurrent enclosing schema is rejected before interpreting the
+stop body.
+
+`BranchRequest` schema v10 encodes uniform finite, generated, explicitly
+weighted finite, modeled finite, modeled generated, statistical finite, and SMC
+sources with distinct tags. Finite mass maps are nonempty, contain at most
+4,096 entries, and name exactly the finite value set. A modeled ID must equal
+the referenced opportunity's `model_prior`; an absent or different model fails
+before request publication or import acceptance. Generated sources retain the
+generator envelope as a child and validate its implementation contract.
+`ScenarioDefault(CampaignPolicyId)` is valid only with the exact active policy,
+an enabled `admits_scenario_defaults` bit, an unweighted finite singleton equal
+to the opportunity default, and a one-proposal/one-attempt budget.
+
+Branch requests use schema v10. The current encoding admits the complete current
+source, cause, budget, and stop-condition vocabulary. Any other request schema
+is rejected before those semantics are validated.
+
+The current request schema retains exact positive target and proposal masses
+and their checked totals for statistical sources. It also admits any otherwise
+legal source and cause with an `Observation` or
+`NextChoiceOrExecutionQuanta` stop. A body whose source, cause, or stop does
+not match the current schema fails closed.
+
+`BranchPath` schema version 2 retains each `BranchPointId` beside its
+non-invertible `BranchEdgeId`. This lets a restart rebuild observation credit
+for every ancestor without an in-memory MCTS stack or a reverse hash lookup.
+The current admission owner accepts only version-2 paths. A version-2 path must
+end in the exact `(BranchPointId, BranchEdgeId)` selected
+by its request. Its prefix is empty for genesis; for a non-genesis parent, the
+prefix identity must be a member of that exact parent configuration's
+authenticated nested path set in the source snapshot's observation root.
+Canonical `ObservationCredited` incorporation adds the observation's complete
+path to its exact child configuration set. The nested set retains every path to
+a convergent configuration rather than selecting one graph parent. Direct
+admission authenticates its caller-supplied prefix. Atomic planner `Issue`
+keeps path choice outside the pure planner protocol and deterministically uses
+the member with the lowest `BranchPathId` ordering key. That member must be a
+scoped version-2 path or planner admission fails closed; imported owner
+recomputation derives the same path from the immutable parent snapshot.
+
+`BranchPointId` is the semantic digest of `(parent configuration identity,
+opportunity semantics)`. A branch request additionally carries exact parent,
+opportunity, and effective-domain object IDs so closure validation can prove
+that semantic identity before publication. `BranchEdgeId` is the digest of the
+canonical edge using `ChoiceDomainSemanticId`, so presentation-only domain
+changes do not split a semantic branch. The completed observation binds that edge
+to its authenticated child configuration in the temporal graph. Request cause
+and proposal provenance are intentionally absent from both identities. If a
+policy generator and an operator's finite request both emit the same value, both
+proposal facts remain visible but they converge on one branch edge and one
+semantic attempt when stop and other execution inputs also match. Requests with
+different stop conditions still share the edge but may admit distinct attempts.
+The semantic child identity and exact child artifact are both present: graph
+deduplication uses the former, while closure validation and replay retain the
+latter. Measurement, property, coverage, path, and discovered-choice records
+are exact children of the observation envelope.
+This is campaign-knowledge deduplication, not a loss of audit history.
+
+A finite source is bounded by the request even when the selectable's legal
+domain is enormous. For example, an operator may request `{0, 20_000, 500_000}`
+from an integer domain containing billions of values. A generated source names
+a versioned deterministic generator and derives its continuation from facts.
+Both sources are consumed lazily under `BranchBudget`; neither creates all
+attempts at request publication time.
+
+`maximum_proposals` bounds values emitted by that request, including values that
+deduplicate against prior work. `maximum_attempts` bounds new semantic attempts
+that request may cause. Attaching a new proposal cause to an already admitted
+edge consumes no attempt and never re-executes it merely to satisfy provenance.
+
+Planner cause names policy and observation basis directly rather than the
+`PlannerStepId` that records resulting proposals. This keeps the content graph
+acyclic while preserving the full causal chain.
+
+`ScenarioDefault` is distinct from adaptive planner and exhaustive-policy
+causes. It follows exactly one scenario-declared default and cannot widen that
+choice. Its policy child makes default admission replayable and fail-closed
+after import.
+
+`AttemptId` is the digest of the canonical `Attempt` semantic inputs. Executor,
+reservation generation, retry number, start time, preferred materialization,
+branch request, and
+proposal cause are excluded. Separate `AttemptAdmission` facts link every
+proposal that justified the attempt. Exactly one `ExecutionBasis` says which
+proposal spent the attempt budget and fixes statistical sampling provenance;
+later duplicates are `AdditionalCause` and cannot trigger execution or
+retroactively change estimator eligibility. A repeated attempt may produce
+identical bytes and deduplicate. If it does not, the replay oracle localizes a
+determinism defect.
+
+`AttemptAdmission` schema v3 is the sole current encoding. It binds every
+execution basis or additional cause to the policy that governs its retention.
+Any other body or envelope version is rejected.
+
+`AttemptStart::Discover` is the bootstrap form. It realizes a configuration
+until the next pending choice or terminal outcome without pretending a choice
+edge already exists. `AttemptStart::Branch` resumes a known parent opportunity
+and applies exactly one recorded selection. A discovery basis has no proposal
+but still records its command or policy cause and global `AdmissionOrdinal`.
+The ordinal belongs to campaign accounting, not `AttemptId`; strict projection
+uses it to fold completions in a stable order. `BranchPathId` authenticates the
+ordered branch-point/edge path used for guidance backpropagation. It is never
+reconstructed by choosing an arbitrary parent from a graph with shared
+descendants.
+
+- **[CMOD-17]** A proposal MUST validate its value against the named domain
+  before an attempt can be admitted.
+- **[CMOD-18]** A temporal-graph child MUST NOT be created merely because a
+  proposal exists. It is admitted after execution produces and authenticates the
+  child configuration.
+- **[CMOD-19]** Modeled timeout, crash, assertion failure, and successful stop
+  are observation outcomes. QEMU/executor loss, daemon restart, reservation
+  loss, and store
+  unavailability are operational outcomes and MUST NOT be assigned modeled
+  reward.
+## 01.6 Derived continuation state
+
+For one `BranchPointId`, the campaign projects an `ExpansionState`:
+
+```rust,illustrative
+pub struct ExpansionState {
+    pub source_snapshot: CampaignSnapshotId,
+    pub input_view: CampaignViewId,
+    pub branch_point: BranchPointId,
+    pub request_root: ContentId,
+    pub proposal_root: ContentId,
+    pub admission_root: ContentId,
+    pub observation_root: ContentId,
+    pub statistics: ExpansionStatistics,
+    pub page_after: Option<BranchRequestId>,
+    pub page_size: u32,
+    pub next_after: Option<BranchRequestId>,
+    pub continuations: CanonicalMap<BranchRequestId, ContinuationState>,
+}
+
+pub struct ExpansionCredit {
+    pub observation: ObservationId,
+    pub branch_point: BranchPointId,
+}
+
+pub struct ExpansionStatistics {
+    pub admitted_children: u64,
+    pub completed_visits: u64,
+    pub reward_sum_micros: i64,
+    pub novelty_events: u64,
+    pub findings: u64,
+}
+
+pub struct FeedbackWait {
+    completed_visits: u64,
+    required_visits: u64,
+}
+
+pub enum ContinuationState {
+    Ready,
+    WaitingForFeedback(FeedbackWait),
+    Open,
+    Exhausted,
+    Closed,
+}
+
+pub struct ContinuationProjection {
+    pub request: BranchRequestId,
+    pub branch_point: BranchPointId,
+    pub state: ContinuationState,
+}
+```
+
+`ExpansionCredit` schema version 1 is the idempotent count fact
+`CreditId = H("crucible.campaign.expansion-credit.v1",
+ObservationId || BranchPointId)`. Its envelope has the canonical observation as
+one typed child. Canonical observation publication creates exactly one credit
+for each distinct branch point in the authenticated path. Exact replay creates
+none, and a determinism-conflict observation creates none. The observation root
+maps a domain-separated branch-point anchor to a nested Merkle set whose keys
+are `CreditId` and whose values are exact expansion-credit content IDs. This
+lets restart and imported-snapshot validation recover visit counts without a
+process-local search stack or a repository listing operation.
+
+`ContinuationProjection` schema version 1 is the compact authenticated current
+state of one request. New genesis snapshots anchor one canonical empty nested
+frontier index under `exploration_root`. Each nested key is the exact
+`BranchRequestId` content digest and each value is the content ID of the
+corresponding projection. The projection body names its request as a typed
+envelope child, so closure traversal retains the authoritative request without
+store listing.
+
+New genesis also anchors `crucible.campaign.planner-scan-index.v3` under the
+exploration root. This ordered active index retains every request whose immutable
+proposal cap is unspent, including temporarily closed or unaffordable
+continuations. Two nested Merkle levels order positions by semantic branch-point
+hash and request content digest; leaf values are the exact request content IDs.
+Request transitions add positions, and a planner Issue retires its selected
+position only on the final allowed proposal ordinal. Historical membership
+remains authenticated in exploration. Cold validation recomputes every delta,
+so a lineage cannot omit an unspent request or restore a spent one.
+
+Planner page construction reads only the requested ordered window plus one
+lookahead position. Invocation closure validation reuses exact roots already
+authenticated by the current head, checks all newly supplied basis objects and
+dependencies, and retains the complete closure bound; a conservative bound
+near the limit falls back to exact union validation.
+
+The snapshot owner updates the nested index in the same transition that issues
+a request, records a proposal, admits a disposition, or accepts an atomic
+planner issue. It independently recomputes the exact old and new states during
+import and restart validation; a mismatching projection is corrupt. A finite
+request starts `Ready`, becomes `Open` while a proposal awaits disposition, and
+returns to `Ready` or becomes `Exhausted` or `Closed` from the exact admitted
+budget and source state. Generated requests start and remain `Open` at this
+checkpoint because deterministic generated-source enumeration and feedback
+ownership remain an implementation-plan gate.
+
+Snapshots without the frontier-index anchor are rejected before ordinary
+runtime admission.
+
+`FeedbackWait` is constructed only when `completed_visits < required_visits`;
+its fields are private and strict decoding enforces the same invariant. Reaching
+the threshold produces `Ready` rather than an already-eligible waiting value.
+This changes no canonical wire bytes.
+
+The current expansion-state schema binds every page to an authenticated
+campaign snapshot and its
+complete planning view. The request, proposal, and admission roots are
+homogeneous branch-point projections rebuilt by the owner from the view's
+authoritative exploration and accounting roots. They are not caller-selected
+subsets. The observation root is the exact view observation root. Every noncurrent record body or envelope is rejected without reinterpretation.
+
+A finite source's next cursor is the first unissued value in canonical request
+order. A proposal without an admission disposition leaves the continuation
+`Open`; it does not increase admitted-child statistics. When every issued
+proposal has a disposition, another value is `Ready` while proposal budget
+remains, the source is `Exhausted` only after every finite value is admitted
+or deduplicated, and it is `Closed` when proposal budget ends first. Distinct
+`ExecutionBasis` attempts contribute admitted children; `AdditionalCause`
+records do not.
+
+A generated source additionally derives its interval tree, per-arm rewards,
+and widening eligibility from observations. Adding a finite operator request
+does not close, replace, or reset any generated continuation already attached
+to the branch point.
+
+The canonical map embedded in one expansion-state page is bounded to the
+requested size, which is itself limited to 10,000. Homogeneous request indexes
+use the request content digest as their ordering key, so Merkle scan order and
+canonical `BranchRequestId` order agree. `page_after` must be authenticated as
+a member of the exact request root; a fabricated or cross-branch cursor is
+rejected. `next_after` is the last returned request only when another request
+exists. Page boundaries are excluded from planning semantics.
+
+Landing a structural canonical codec does not make a derived record admissible.
+The repository owner recomputes static `ExpansionState` pages from their source
+snapshot even after modeled observations exist. Static readiness and exhaustion
+depend only on exact proposal/admission dispositions, while the page binds the
+source view's exact observation root. `completed_visits` is the authenticated
+entry count of that branch point's nested credit set. The compact
+`ExpansionState` cache keeps reward, novelty, and finding fields neutral; the
+separate exact-snapshot PUCT projection owner folds coverage novelty and
+policy-weighted finding occurrences without trusting cached values.
+History-dependent generated requests remain fail-closed until their feedback
+owners land.
+The repository owner accepts snapshot-bound `ContinueScan`, `NoWork`, and
+finite-source `Issue` results, retains the planner claim, independently accounts
+bounded inputs and fuel, derives the parent from the authenticated planner-head
+index, and validates exact replay and imported-root deltas. `Issue` atomically
+composes the sole-writer request, proposal, deterministic attempt, admission,
+accounting, and coordination projections. Generated proposal enumeration and
+history-dependent generated proposal enumeration remain fail-closed until their
+dedicated owners land. Direct `AdmitProposal` authenticates caller-supplied
+cumulative paths, while planner `Issue` derives its canonical cumulative path
+from the same owner index. This prevents a structurally valid result from
+becoming canonical evidence before its semantic owner validator exists.
+
+## 01.7 Lifecycle
+
+A campaign lifecycle is user intent over durable state, not the lifetime of a
+daemon process:
+
+```text
+created -> running -> paused -> running -> quiescent/completed
+               \                    /
+                -> derived campaign --
+```
+
+`pause` stops new attempt issuance and chooses a declared active-attempt policy:
+drain, exact-checkpoint, or cancel-and-retry. `resume` reconstructs projections
+from the head and resumes pulling work. `complete` means a user stop condition,
+budget condition, or genuine finite exhaustion has been recorded. Additional
+budget or a policy revision may reopen a completed campaign unless the operator
+sealed it.
+
+The lifecycle projection retains the exact active-attempt policy from the
+authoritative pause transition. Ordinary sealed snapshots preserve that policy;
+only `resume` or `complete` clears it. A daemon therefore derives both the state
+and its pause behavior from one authenticated snapshot instead of consulting
+process-local intent or re-reading a moving head.
+
+- **[CMOD-20]** Pause and daemon restart MUST require no state outside the
+  campaign snapshot and reachable objects. In-flight attempts without published
+  observations become claimable again.
+- **[CMOD-21]** Steering future exploration MUST publish a new policy object and
+  activation fact. It MUST NOT rewrite prior proposals, observations, or
+  findings.
+- **[CMOD-22]** Deriving a campaign from an older snapshot or configuration
+  creates a new named ref sharing all immutable reachable objects. It MUST NOT
+  copy the object closure.
+- **[CMOD-23]** `BranchPointId` MUST identify the pair of a parent
+  `ConfigurationId` and stable `ChoiceOpportunitySemanticId`. Exact
+  presentation-bearing opportunity/declaration/domain content IDs, campaign
+  policy, request cause, candidate source, and materialization tier MUST NOT
+  enter that ID.
+- **[CMOD-24]** The semantic edge for one legal selected value at a branch point
+  MUST deduplicate regardless of whether planner, operator, debugger, or
+  exhaustive requests proposed it. Every proposal cause remains separately
+  auditable as campaign knowledge.
+- **[CMOD-25]** Creating semantic alternatives, deriving a named campaign,
+  hot-forking a QEMU realization, and mutating a debugger session MUST remain
+  distinct operations in canonical schemas, APIs, CLI output, and audit facts.
+- **[CMOD-26]** Checkpoint presence and hot-fork eligibility MUST be
+  materialization metadata. Neither may create, remove, or change a semantic
+  branch point or edge.
+- **[CMOD-27]** A finite `CandidateSource` MUST have an explicit cardinality
+  bound and validate every value before publication. Publishing a branch
+  request MUST NOT eagerly create its proposals, attempts, configurations, or
+  QEMU children.
+- **[CMOD-28]** Each admitted attempt MUST have exactly one immutable
+  `ExecutionBasis` and one globally ordered `AdmissionOrdinal`. Additional
+  request causes MUST NOT consume another attempt, change sampling provenance,
+  or trigger another execution. Conflicting execution bases or ordinals are a
+  campaign-integrity error.
+- **[CMOD-29]** Policy activation on one campaign ref MUST preserve
+  `CampaignMode`. A mode change MUST derive another campaign so existing
+  observation ordering cannot be reinterpreted. A `Streaming`-to-`Strict`
+  derivation MUST reconstruct the authenticated contiguous completion prefix,
+  preserve completed ordinals beyond any hole, and resume strict publication
+  at the first incomplete ordinal.
+- **[CMOD-30]** A choice opportunity MUST become authoritative campaign
+  knowledge only through the exact discovery owner or a canonical observation
+  owner. Branch-request acceptance MUST require its canonical graph membership
+  and MUST NOT infer authority from immutable-object presence alone.

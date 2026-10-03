@@ -33,18 +33,6 @@ pub enum LiveVcpuTimeCallbackError {
         /// Underlying mailbox publication or acknowledgement error.
         source: PreemptionMailboxError,
     },
-    /// A logical preemption icount precedes the restored raw-icount origin.
-    #[error(
-        "preemption {field} icount {logical_icount} precedes logical raw origin {logical_icount_offset}"
-    )]
-    PreemptionIcountBeforeRawOrigin {
-        /// Command field whose logical icount could not be translated.
-        field: &'static str,
-        /// Scheduler-authored logical icount.
-        logical_icount: u64,
-        /// Logical offset added to QEMU's raw retired count.
-        logical_icount_offset: u64,
-    },
     /// A process attempted more than one launch-continuation restore.
     #[error(
         "logical restore continuation generation {requested_generation} follows already-applied generation {applied_generation}"
@@ -54,6 +42,12 @@ pub enum LiveVcpuTimeCallbackError {
         applied_generation: u32,
         /// Newly requested shared-memory restore generation.
         requested_generation: u32,
+    },
+    /// The coverage producer could not reset at the authenticated restore boundary.
+    #[error("live coverage restore reset failed: {source}")]
+    CoverageRestore {
+        /// Underlying coverage reset failure.
+        source: crate::CoverageError,
     },
     /// The live white-box adapter failed preflight, registration, or dispatch.
     #[error("live white-box callback failed: {message}")]
@@ -79,11 +73,23 @@ pub enum LiveVcpuTimeCallbackError {
         /// Underlying queued-advance error.
         source: QueuedIdleAdvanceError,
     },
+    /// QEMU could not arm or authenticate the actual virtual-timer callback.
+    #[error("virtual-timer callback witness failed: {source}")]
+    VirtualTimerWitness {
+        /// Native witness failure.
+        source: crate::VirtualTimerWitnessError,
+    },
     /// The shared idle planning or scheduler wait failed.
     #[error("live idle hot-loop failed: {source}")]
     IdleHotLoop {
         /// Underlying deterministic idle-loop error.
         source: IdleHotLoopError,
+    },
+    /// QEMU rejected the callback's one-shot BQL-releasing idle wait.
+    #[error("QEMU rejected the one-shot idle wake wait with status {status:?}")]
+    IdleWakeWaitRejected {
+        /// Raw QEMU result that makes continuing this callback unsafe.
+        status: i32,
     },
     /// The mapped region could not provide the configured VM slot.
     #[error("mapped setup region cannot provide the live callback node slot")]
@@ -97,16 +103,28 @@ pub enum LiveVcpuTimeCallbackError {
         /// Underlying typed mapping error.
         source: MappedSetupRegionAccessError,
     },
-    /// `fingerprint=on` was requested but the loaded QEMU lacks the exports.
-    #[error("fingerprint sampling requested but QEMU is missing the fingerprint helper exports")]
+    /// `fingerprint=on` was requested but the loaded QEMU lacks the aggregate observer.
+    #[error(
+        "fingerprint sampling requested but QEMU is missing the aggregate fingerprint observer"
+    )]
     FingerprintCapabilityUnavailable,
     /// Capturing a boundary fingerprint sample failed.
-    #[error("{boundary} fingerprint sampling failed: {source}")]
+    #[error("{boundary} fingerprint sampling failed: {message}")]
     FingerprintSample {
         /// Callback boundary that requested the sample.
         boundary: &'static str,
-        /// Underlying plugin fingerprint sampler error.
-        source: FingerprintSamplerError,
+        /// Bounded underlying sampler diagnostic.
+        message: String,
+    },
+    /// The fingerprint slot did not match the generation bound to the control request.
+    #[error(
+        "control boundary binds fingerprint request {bound:?}, but the sample slot reports {observed:?}"
+    )]
+    ControlBoundaryCaptureRequestMismatch {
+        /// Request generation published with the control token.
+        bound: Option<u32>,
+        /// Pending generation independently visible in the fingerprint slot.
+        observed: Option<u32>,
     },
     /// The dedicated fingerprint digest worker could not be created.
     #[error("fingerprint digest worker could not start: {message}")]
@@ -123,16 +141,16 @@ pub enum LiveVcpuTimeCallbackError {
         /// Stable publication failure diagnostic.
         message: String,
     },
-    /// Terminal raw-state export setup or boundary activation failed.
-    #[error("terminal raw-state dump failed: {message}")]
-    RawStateDump {
-        /// Stable underlying raw-state export diagnostic.
-        message: String,
-    },
     /// A mapped callback ring unexpectedly had no backing entries.
     #[error("mapped callback ring {ring_index} has no backing entries")]
     MappedDirectedRingEmpty {
         /// Directed ring index without storage.
+        ring_index: u32,
+    },
+    /// The process cannot issue another unique mapped ring owner generation.
+    #[error("directed ring {ring_index} owner generation exhausted")]
+    DirectedRingOwnerGenerationExhausted {
+        /// Directed ring whose owner could not be installed.
         ring_index: u32,
     },
     /// The selected inbound ring was not the router-to-VM network ring.
@@ -184,6 +202,49 @@ pub enum LiveVcpuTimeCallbackError {
     /// QEMU re-entered the network TX callback before its prior call returned.
     #[error("live network TX callback was re-entered")]
     NetworkTxReentered,
+    /// A newer publication would replace QEMU's original TX event coordinate.
+    #[error(
+        "live network TX captured {captured_icount} but current publication is {current_icount}"
+    )]
+    NetworkTxBoundarySuperseded {
+        /// Logical coordinate of the original raw device sample.
+        captured_icount: u64,
+        /// Logical coordinate returned by the latest callback publication.
+        current_icount: u64,
+    },
+    /// Physical progress replaced an unconsumed original output stop.
+    #[error(
+        "network output stop at logical {logical_icount}/raw {raw_icount} observed logical {observed_logical_icount}/raw {observed_raw_icount} before original consumption"
+    )]
+    NetworkOutputStopProgressed {
+        /// Logical coordinate of the original output callback.
+        logical_icount: u64,
+        /// Raw coordinate of the original output callback.
+        raw_icount: u64,
+        /// Logical coordinate of the later callback.
+        observed_logical_icount: u64,
+        /// Raw coordinate of the later callback.
+        observed_raw_icount: u64,
+    },
+    /// A restore or child rebind preceded original output consumption.
+    #[error("network output stop frontier {write_index} remains unconsumed at {read_index}")]
+    NetworkOutputStopUnconsumed {
+        /// Original producer frontier retained by the output callback.
+        write_index: u64,
+        /// Current index of that same ring's consumer.
+        read_index: u64,
+    },
+    /// Another callback still owns the original output-stop transaction.
+    #[error("original network output stop is borrowed by another callback")]
+    NetworkOutputStopBorrowed,
+    /// The original producer frontier changed beyond one admitted ring batch.
+    #[error("network output frontier {write_index} changed to {observed_write_index}")]
+    NetworkOutputStopFrontierChanged {
+        /// Original write frontier retained by the prior callback.
+        write_index: u64,
+        /// Current write index of that same registered ring.
+        observed_write_index: u64,
+    },
     /// A pending timer-boundary TX batch exceeded addressable memory.
     #[error("buffered live network TX frame count overflowed")]
     BufferedNetworkTxCountOverflow,
@@ -193,12 +254,6 @@ pub enum LiveVcpuTimeCallbackError {
         /// Claimed payload length.
         payload_len: usize,
     },
-    /// The mapped icount shift cannot fit the plugin clock representation.
-    #[error("mapped setup icount shift {icount_shift} does not fit u8")]
-    IcountShiftOutOfRange {
-        /// Rejected shared-memory shift.
-        icount_shift: u32,
-    },
     /// QEMU's raw retired count cannot be reconciled with restored logical time.
     #[error("initial raw icount {raw_icount} exceeds restored logical icount {logical_icount}")]
     InitialRawIcountBeyondLogical {
@@ -207,12 +262,23 @@ pub enum LiveVcpuTimeCallbackError {
         /// Logical scheduler count restored in the shared-memory slot.
         logical_icount: u64,
     },
+    /// QEMU could not provide an authoritative simulated tick.
+    #[error("QEMU simulated tick observation is invalid: {observed_tick}")]
+    InvalidSimTickObservation {
+        /// Negative QEMU result.
+        observed_tick: i64,
+    },
+    /// QEMU's clock disagreed with an expected exact tick.
+    #[error("QEMU observed tick {observed_icount} disagrees with expected tick {target_icount}")]
+    SimTickTargetMismatch {
+        /// Exact target selected for restore or queued advance.
+        target_icount: u64,
+        /// Authoritative QEMU observation.
+        observed_icount: u64,
+    },
     /// Another live callback state pointer is already globally visible.
     #[error("live production callback state is already published")]
     CallbackStateAlreadyPublished,
-    /// QEMU invoked the global vCPU-init adapter before state publication.
-    #[error("live production callback state is unavailable")]
-    CallbackStateUnavailable,
     /// The callback observed a shutdown action without a matching acquire proof.
     #[error("shared shutdown action could not be proven from the region header")]
     SharedShutdownProofUnavailable,
@@ -286,25 +352,23 @@ pub enum LiveVcpuTimeCallbackError {
         /// Rejected logical target.
         target_icount: u64,
     },
-    /// Projecting the logical idle target to virtual nanoseconds overflowed.
-    #[error("idle advance target {target_icount} overflows at icount shift {icount_shift}")]
+    /// The logical idle target does not fit QEMU's signed tick ABI.
+    #[error("idle advance target {target_icount} exceeds QEMU's signed tick range")]
     IdleAdvanceTargetOverflow {
-        /// Logical target being projected.
+        /// Logical target being submitted.
         target_icount: u64,
-        /// Fixed icount shift.
-        icount_shift: u8,
     },
     /// The queued QEMU target does not match the logical idle target.
     #[error(
-        "idle advance target {target_icount} projects to {expected_target_virtual_ns}ns but pending request targets {pending_target_virtual_ns}ns"
+        "idle advance target {target_icount} expects tick {expected_target_tick} but pending request targets tick {pending_target_tick}"
     )]
     IdleAdvancePendingTargetMismatch {
         /// Logical target selected by the scheduler.
         target_icount: u64,
         /// Exact virtual target derived from the logical target.
-        expected_target_virtual_ns: u64,
+        expected_target_tick: u64,
         /// Target retained by the queued QEMU request.
-        pending_target_virtual_ns: u64,
+        pending_target_tick: u64,
     },
     /// QEMU rejected or mismatched the normal-main-loop completion.
     #[error("idle advance completion validation failed: {source}")]

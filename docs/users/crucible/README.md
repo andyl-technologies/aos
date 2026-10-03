@@ -33,7 +33,7 @@ State(t) = reduce(ScenarioDef, Schedule[0..t])
 
 This distinction matters operationally. A `Plan` says what may happen; a
 `Schedule` records what did happen. A checkpoint is a position in that recorded
-execution. Save, resume, fork, replay, and search all operate on the same
+execution. Save, resume, replay, and search all operate on the same
 content-addressed execution graph.
 
 ## When to use it
@@ -64,15 +64,19 @@ support guarantee.
 
 ## Build and smoke-test the package
 
-Build the complete hermetic closure from the repository root:
+From the repository root, enter the development shell with `nix develop`
+(or use the repository's direnv configuration), then build the complete suite:
 
 ```sh
-nix build .#pkg-crucible
+aos-dev build package crucible
 ```
 
 The result includes the `crucible` CLI, patched QEMU, matching plugin, Crucible
 kernel, and fixture root image. The CLI has compile-time paths to the matching
 artifacts, so a packaged invocation normally needs no discovery flags.
+`aos-dev` is the repository's source-built development entry point at
+`tools/dev/aos-dev`. The command above creates `./result`; omitting the output
+link with `--no-out-link` requires using the returned store path instead.
 
 Run the live QEMU self-test before authoring or investigating a scenario:
 
@@ -84,6 +88,22 @@ The production command runs the live QEMU gates by default. It fails closed if
 it cannot discover and validate a matched QEMU/plugin pair.
 
 ## First run
+
+Local QEMU runs require a durable `CRUCIBLE_RUN_STATE_ROOT` and a provisioned
+campaign-executor deployment. An administrator must supply the dedicated
+cgroup-v2 and ext4 project-quota roots described in
+[campaign setup](campaigns.md#start-the-single-host-owner). Building the package
+does not provision these host resources. Select the owner-only deployment file
+with `--campaign-deployment`, `CRUCIBLE_CAMPAIGN_DEPLOYMENT`, or the default
+`/etc/crucible/packaged-executor.toml`.
+
+After provisioning, set the paths for this shell:
+
+```sh
+mkdir -p .crucible/run-state
+export CRUCIBLE_RUN_STATE_ROOT="$PWD/.crucible/run-state"
+export CRUCIBLE_CAMPAIGN_DEPLOYMENT=/path/to/campaign-executor.toml
+```
 
 Run the built-in happy-path scenario with an explicit seed:
 
@@ -103,11 +123,11 @@ Other built-in inputs are:
 ```text
 builtin:partition-recovery.scn
 builtin:crash-restart.scn
-builtin:fault-campaign
+fault-campaign.fam
 ```
 
-The first three are scenarios. `builtin:fault-campaign` can also identify the
-built-in family used by `fuzz`.
+The `.scn` names identify built-in scenarios. `fault-campaign.fam` identifies
+the built-in family used by `fuzz`.
 
 ## Operational workflow
 
@@ -118,15 +138,16 @@ The usual progression is:
 3. Inspect the event log and branch on the process exit code.
 4. Use `verify` to compare independent reductions.
 5. Replay any emitted failure artifact before changing the scenario.
-6. Save, resume, or fork when investigating a particular execution prefix.
+6. Save or resume when investigating a particular execution prefix; use
+   `campaign branch` for an authenticated alternate Campaign decision.
 7. Use bounded `search` or `fuzz` only after ordinary runs are deterministic.
 8. Cluster retained findings with `triage`.
 
 ## Guide map
 
-Start with the [Nginx/Curl tutorial](quickstart.md). It builds the runtime and a
-workload guest, generates a two-node scenario through the public Rust API, and
-runs that scenario on the live QEMU backend.
+Start with the [representative-scenario quickstart](quickstart.md). It builds
+the suite, generates a three-VM nginx, curl, and I/O-probe scenario through the
+public Rust API, and installs its content-addressed I/O objects before execution.
 
 For deeper work:
 
@@ -170,11 +191,12 @@ For deeper work:
   9p, lifecycle, CPU, interrupt, memory, clock, and accelerator effects.
 - [Recorded signal inputs](recorded-signals.md) documents deterministic CSV,
   JSONL, PCAP, and PCAPNG import, provenance, storage, and runtime attachment.
-- [Fault-model migration](fault-model-migration.md) explains the required
-  one-way move to the signal-driven schema and why old plans are not translated.
 - [Reproduction and branching](reproduction.md) explains `verify`, artifacts,
-  `replay`, `save`, `resume`, and `fork`.
+  `replay`, `save`, and `resume`.
 - [Exploration](exploration.md) covers bounded search, fuzzing, and triage.
+- [Lazy campaigns](campaigns.md) covers the single-host campaign repository,
+  verified import, lifecycle control, authenticated inspection, and current
+  executor-attachment boundary.
 - [Interactive control and debugging](debugging.md) covers the current
   interactive and debugger surfaces.
 - [Daemon operation](daemon.md) documents the remote control plane and its
@@ -190,7 +212,7 @@ For deeper work:
 |---|---|---|
 | Audit whether a feature is documented | [Feature coverage](coverage.md) | Implementation registry and coverage tests |
 | Decide whether a surface is operationally supported | [Support boundaries](support.md) | [Reference](reference.md) |
-| Build and run a first workload | [Nginx/Curl tutorial](quickstart.md) | [Running Crucible](running.md) |
+| Build and run a first workload | [Representative-scenario quickstart](quickstart.md) | [Running Crucible](running.md) |
 | Generate a signal-driven scenario | [Authoring fault scenarios](authoring.md) | [Signals and bindings](reference.md#plans-signals-bindings-and-faults) |
 | Declare fault-addressable objects | [Fault topology reference](topology.md) | [Canonical scenario reference](reference.md#canonical-scenario-document) |
 | Simulate network failures | [Network faults](network-faults.md) | [Effect registry](reference.md#exhaustive-effect-registry) |

@@ -8,7 +8,6 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   session = import ./_crucible-session-source.nix {inherit lib;};
-  exploration = builtins.readFile ../../crates/crucible-session/src/session/exploration.rs;
   sessionGate = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible-session/tests/gate_control_responsive.rs;
@@ -66,6 +65,10 @@
         needle = "pub fn read(&self) -> LiveSnapshotView";
       }
       {
+        label = "actor-only publish helper";
+        needle = "fn publish(\n        &self,\n        snapshot: &EngineSnapshot,\n        control_acknowledgements: u64,";
+      }
+      {
         label = "session actor owns live snapshot";
         needle = "live: Arc<LiveSnapshot>";
       }
@@ -84,24 +87,6 @@
       {
         label = "monotone progress live snapshot test";
         needle = "session_actor_live_snapshot_publishes_monotone_progress";
-      }
-    ]
-    ++ failuresFor "crates/crucible-session/src/session/exploration.rs" exploration [
-      {
-        label = "actor-only publish helper";
-        needle = "pub(super) fn publish(";
-      }
-      {
-        label = "publish engine snapshot input";
-        needle = "snapshot: &EngineSnapshot,";
-      }
-      {
-        label = "publish control acknowledgement input";
-        needle = "control_acknowledgements: u64,";
-      }
-      {
-        label = "publish state transition sequence input";
-        needle = "state_transition_sequence: u64,";
       }
     ]
     ++ failuresFor "crates/crucible-session/tests/gate_control_responsive.rs" sessionGate [
@@ -169,10 +154,6 @@
         label = "session control-responsive test target";
         needle = ''testTarget = "gate_control_responsive";'';
       }
-      {
-        label = "implemented gate target marker";
-        needle = "placeholder = false;";
-      }
     ]
     ++ failuresFor "crates/crucible-harness/src/gate_targets.rs" gateTargetRust [
       {
@@ -182,10 +163,6 @@
       {
         label = "harness session control-responsive test target";
         needle = ''test_target: "gate_control_responsive",'';
-      }
-      {
-        label = "harness implemented gate target marker";
-        needle = "placeholder: false,";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

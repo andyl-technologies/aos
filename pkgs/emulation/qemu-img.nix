@@ -7,6 +7,7 @@
   qemu,
   glib,
   zlib,
+  zstd,
   libgcrypt,
   gnutls,
   gcc-libs,
@@ -38,7 +39,7 @@ in
     # Preserve every library linked by the copied utility during reference
     # scrubbing. Its crypto backends follow QEMU's platform configuration.
     runtimeDeps =
-      [glib zlib]
+      [glib zlib zstd]
       ++ lib.optionals (!isDarwinCross) [libgcrypt gnutls]
       ++ lib.optionals stdenv.hostPlatform.isLinux [gcc-libs bzip2];
     propagatedDeps = [];
@@ -59,6 +60,7 @@ in
               -e "$out" \
               -e ${glib} \
               -e ${zlib} \
+              -e ${zstd} \
               "$out/bin/qemu-img"
             ldid -S "$out/bin/qemu-img"
             ldid -e "$out/bin/qemu-img" >/dev/null

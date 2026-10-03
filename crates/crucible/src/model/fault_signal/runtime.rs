@@ -8,7 +8,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use super::*;
-use crate::{ChoiceTag, OverrideDecision, SchedulingPoint};
 
 mod checkpoint;
 pub(super) mod checkpoint_codec;
@@ -21,12 +20,12 @@ mod trace_codec;
 
 pub use error::FaultRuntimeError;
 pub use observation::*;
-use search::parse_search_content_hash;
+pub use search::*;
 
 /// Semantic version of runtime/checkpoint state.
-pub const FAULT_RUNTIME_STATE_VERSION: u16 = 3;
+pub const FAULT_RUNTIME_STATE_VERSION: u16 = 6;
 
-const RESOLVED_EFFECT_TRACE_MAGIC: &[u8] = b"crucible.resolved-effect-trace.v1\0";
+const RESOLVED_EFFECT_TRACE_MAGIC: &[u8] = b"crucible.resolved-effect-trace.v3\0";
 
 /// Mutable activation state for one binding.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -39,7 +38,7 @@ pub struct BindingRuntimeState {
     /// Candidate activation value during threshold residence.
     pub pending_activation: Option<bool>,
     /// Coordinate at which the pending value began residing.
-    pub pending_since_nanos: Option<u64>,
+    pub pending_since_ticks: Option<u64>,
     /// Last mapped parameter digest.
     pub mapped_parameters: Option<ContentHash>,
     /// Last mapped values required for later dynamic membership changes.
@@ -51,7 +50,7 @@ pub struct BindingRuntimeState {
     /// Last event identity consumed by an impulse mapping.
     pub last_event_identity: Option<ContentHash>,
     /// Last virtual coordinate at which this binding sampled its inputs.
-    pub last_sample_nanos: Option<u64>,
+    pub last_sample_ticks: Option<u64>,
     /// Total admitted samples, including explicit inactive results.
     pub sample_count: u64,
     /// Consecutive samples with the same canonical identity.
@@ -96,8 +95,8 @@ pub struct ConsumedOpportunityState {
 )]
 #[serde(deny_unknown_fields)]
 pub struct FaultSchedulerCursor {
-    /// Global virtual time in nanoseconds.
-    pub virtual_nanos: u64,
+    /// Global virtual time in exact logical ticks.
+    pub virtual_ticks: u64,
     /// Stable sequence among scheduler work at the same virtual time.
     pub same_coordinate_sequence: u64,
 }
@@ -167,43 +166,6 @@ pub struct BindingRuntimeCheckpoint {
     pub boundary_completed_cursor: Option<FaultSchedulerCursor>,
 }
 
-/// One finite search decision exposed by binding evaluation.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BindingSearchChoice {
-    /// Stable decision identity.
-    pub id: SearchChoiceId,
-    /// Exact candidate-set identity.
-    pub candidates_digest: ContentHash,
-    /// Number of finite candidates.
-    pub candidate_count: u32,
-    /// Chosen zero-based candidate index, or `None` for the unmodified model result.
-    pub selected_index: Option<u32>,
-    /// Whether a replay/explorer override selected the result.
-    pub overridden: bool,
-}
-
-impl BindingSearchChoice {
-    /// Materializes every finite candidate as a canonical explorer decision.
-    #[must_use]
-    pub fn override_decisions(&self, parent_branch: ContentHash) -> Vec<OverrideDecision> {
-        (0..self.candidate_count)
-            .map(|candidate_index| OverrideDecision {
-                point: SchedulingPoint {
-                    key: format!(
-                        "signal-fault/{}/{}/{}",
-                        parent_branch.to_hex(),
-                        self.id.content_hash().to_hex(),
-                        self.candidates_digest.to_hex()
-                    ),
-                },
-                choice: ChoiceTag {
-                    name: format!("candidate/{candidate_index}"),
-                },
-            })
-            .collect()
-    }
-}
-
 impl BindingRuntimeState {
     /// Advances the transition sequence and installs a new active state.
     ///
@@ -218,7 +180,7 @@ impl BindingRuntimeState {
             .ok_or(FaultRuntimeError::SequenceOverflow("binding_transition"))?;
         self.active = active;
         self.pending_activation = None;
-        self.pending_since_nanos = None;
+        self.pending_since_ticks = None;
         Ok(self.transition_sequence)
     }
 }
@@ -443,89 +405,6 @@ impl FaultCapabilityManifest {
             }
         }
         Ok(())
-    }
-}
-
-/// Identity of one finite search decision.
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
-pub struct SearchChoiceId(ContentHash);
-
-impl SearchChoiceId {
-    /// Builds the decision-domain-separated identity required for replay.
-    #[must_use]
-    pub fn new(
-        program: ContentHash,
-        binding: &FaultObjectId,
-        opportunity: Option<ContentHash>,
-        sample: ContentHash,
-        candidates: ContentHash,
-    ) -> Self {
-        let material = format!(
-            "program={};binding={};opportunity={};sample={};candidates={};",
-            program.to_hex(),
-            binding.as_str(),
-            opportunity.map_or_else(|| String::from("none"), |value| value.to_hex()),
-            sample.to_hex(),
-            candidates.to_hex()
-        );
-        Self(ContentHash::from_canonical_material(
-            "crucible.search-choice.v1",
-            &material,
-        ))
-    }
-
-    /// Returns the underlying content identity.
-    #[must_use]
-    pub const fn content_hash(self) -> ContentHash {
-        self.0
-    }
-
-    /// Restores an identity from its authenticated content hash.
-    #[must_use]
-    pub const fn from_content_hash(hash: ContentHash) -> Self {
-        Self(hash)
-    }
-}
-
-/// Concrete explorer result retained for ordinary locked replay.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SearchOverride {
-    /// Chosen zero-based candidate index.
-    pub candidate_index: u32,
-    /// Digest of the exact finite candidate set.
-    pub candidates_digest: ContentHash,
-    /// Parent branch, if this choice forked an earlier search branch.
-    pub parent_branch: Option<ContentHash>,
-}
-
-impl SearchOverride {
-    /// Decodes one canonical signal-fault explorer decision.
-    #[must_use]
-    pub fn from_override_decision(decision: &OverrideDecision) -> Option<(SearchChoiceId, Self)> {
-        let encoded = decision.point.key.strip_prefix("signal-fault/")?;
-        let (encoded_parent, encoded) = encoded.split_once('/')?;
-        let (choice_id, candidates_digest) = encoded.split_once('/')?;
-        if candidates_digest.contains('/') {
-            return None;
-        }
-        let parent_branch = parse_search_content_hash(encoded_parent)?;
-        let candidate_index = decision
-            .choice
-            .name
-            .strip_prefix("candidate/")?
-            .parse()
-            .ok()?;
-        Some((
-            SearchChoiceId::from_content_hash(parse_search_content_hash(choice_id)?),
-            Self {
-                candidate_index,
-                candidates_digest: parse_search_content_hash(candidates_digest)?,
-                parent_branch: Some(parent_branch),
-            },
-        ))
     }
 }
 
@@ -798,9 +677,14 @@ impl ResolvedEffectTrace {
                                 && first.same_coordinate_sequence == same_coordinate_sequence
                         }
                         NetworkOutcomeAlignment::OrderedTimeBucket { width_nanos } => {
-                            width_nanos != 0
-                                && first.coordinate.virtual_nanos / width_nanos
-                                    == coordinate.virtual_nanos / width_nanos
+                            if width_nanos == 0 {
+                                false
+                            } else {
+                                let width_ticks =
+                                    u128::from(width_nanos) * u128::from(SIM_TICKS_PER_NS);
+                                u128::from(first.coordinate.virtual_ticks) / width_ticks
+                                    == u128::from(coordinate.virtual_ticks) / width_ticks
+                            }
                         }
                     }
             }

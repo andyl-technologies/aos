@@ -64,7 +64,7 @@
       }
       {
         label = "hash material records RR units";
-        needle = "\"rr_switch_quantum_units=node-icount\".to_owned(),";
+        needle = "\"rr_switch_quantum_units=retired-instructions\".to_owned(),";
       }
     ]
     ++ failuresFor "crates/crucible-qemu/src/launch/validation.rs" launchValidation [
@@ -268,7 +268,7 @@ in
             rust_test=crucible-qemu::deterministic_launch
             rejected=kvm,non-tcg,missing-icount,shift-auto,mttcg,unpinned-rr-quantum,cpu-host,host-timing,host-entropy
             rr_switch_quantum=4096
-            rr_switch_quantum_units=node-icount
+            rr_switch_quantum_units=retired-instructions
             pre_spawn_validation=true
             RESULT
           '';

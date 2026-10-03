@@ -32,8 +32,9 @@ fn event(sequence: u64) -> StreamingEventFrame {
             sequence,
             at: OpenSetEventTime {
                 virtual_time_ticks: sequence,
-                icount_retired: sequence,
-                icount_node: None,
+                stamp_tick: sequence,
+                stamp_retired: None,
+                stamp_node: None,
             },
             source: OpenSetEventSource::Engine,
             level: EventLevel::Info,
@@ -41,6 +42,30 @@ fn event(sequence: u64) -> StreamingEventFrame {
             payload: OpenSetPayload::new("crucible.event.evaluation_boundary", BTreeMap::new()),
         },
     }
+}
+
+#[test]
+fn event_frame_preserves_exact_tick_and_optional_raw_witness() {
+    let wire = b"crucible.rpc/event-frame\ngeneration=1\ncursor=7\nnext-cursor=8\nsequence=7\nvirtual-time-ticks=100\nstamp-tick=107\nstamp-retired=2\nstamp-node=6e6f64652d61\nsource=engine\nlevel=info\nobservational=false\nkind=crucible.event.evaluation_boundary\n";
+    let frame = decode_streaming_event_frame(wire)
+        .unwrap_or_else(|error| panic!("exact event frame should decode: {error}"));
+    assert_eq!(frame.event.at.virtual_time_ticks, 100);
+    assert_eq!(frame.event.at.stamp_tick, 107);
+    assert_eq!(frame.event.at.stamp_retired, Some(2));
+    assert_eq!(frame.event.at.stamp_node.as_deref(), Some("node-a"));
+
+    let no_raw = String::from_utf8(wire.to_vec())
+        .unwrap_or_else(|error| panic!("fixture must be UTF-8: {error}"))
+        .replace("stamp-retired=2", "stamp-retired=none")
+        .replace("stamp-node=6e6f64652d61", "stamp-node=none");
+    let frame = decode_streaming_event_frame(no_raw.as_bytes())
+        .unwrap_or_else(|error| panic!("event without raw witness should decode: {error}"));
+    assert_eq!(frame.event.at.stamp_tick, 107);
+    assert_eq!(frame.event.at.stamp_retired, None);
+    assert_eq!(frame.event.at.stamp_node, None);
+
+    let old_wire = no_raw.replace("stamp-tick=107", "icount-retired=2");
+    assert!(decode_streaming_event_frame(old_wire.as_bytes()).is_err());
 }
 
 #[tokio::test]

@@ -40,13 +40,13 @@ pub const FAULT_INTERRUPT_MANIFEST_HEADER_V1_BYTES: usize = 56;
 /// Fixed interrupt row header length before identities and target vCPUs.
 pub const FAULT_INTERRUPT_ROW_HEADER_V1_BYTES: usize = 52;
 /// Magic prefix for a guest-clock capability manifest.
-pub const FAULT_CLOCK_MANIFEST_MAGIC_V1: [u8; 8] = *b"CRUCCLM1";
+pub const FAULT_CLOCK_MANIFEST_MAGIC_V2: [u8; 8] = *b"CRUCCLM2";
 /// Guest-clock manifest codec version.
-pub const FAULT_CLOCK_MANIFEST_VERSION_V1: u16 = 1;
+pub const FAULT_CLOCK_MANIFEST_VERSION_V2: u16 = 2;
 /// Fixed guest-clock manifest header length.
-pub const FAULT_CLOCK_MANIFEST_HEADER_V1_BYTES: usize = 56;
+pub const FAULT_CLOCK_MANIFEST_HEADER_V2_BYTES: usize = 56;
 /// Fixed guest-clock row header length before its identities.
-pub const FAULT_CLOCK_ROW_HEADER_V1_BYTES: usize = 56;
+pub const FAULT_CLOCK_ROW_HEADER_V2_BYTES: usize = 64;
 /// Magic prefix for a hardware-error capability manifest.
 pub const FAULT_HARDWARE_ERROR_MANIFEST_MAGIC_V1: [u8; 8] = *b"CRUCHWM1";
 /// Hardware-error manifest codec version.
@@ -106,7 +106,7 @@ pub enum FaultTargetManifestKind {
     Clock = 4,
     /// Realized accelerator devices, queues, jobs, memory, and fault support.
     Accelerator = 5,
-    /// Complete QEMU build, patch-series, shared-memory, and VMState identity.
+    /// Complete QEMU build, atomic-patch, shared-memory, and VMState identity.
     System = 6,
 }
 
@@ -138,7 +138,7 @@ pub struct FaultSystemCapabilityManifestV1 {
     /// Immutable emulator package build identity.
     pub emulator_build_id: [u8; 32],
     /// SHA-256 identity of the ordered carried emulator patch bytes.
-    pub emulator_patch_series_hash: [u8; 32],
+    pub emulator_atomic_patch_hash: [u8; 32],
     /// SHA-256 identity of the generated shared-memory ABI header.
     pub shmem_header_hash: [u8; 32],
 }
@@ -150,13 +150,15 @@ impl FaultSystemCapabilityManifestV1 {
     ///
     /// Returns [`FaultAbiError`] if a version, section count, or digest is invalid.
     pub fn encode(self) -> Result<[u8; FAULT_SYSTEM_MANIFEST_V1_BYTES], FaultAbiError> {
+        // Current QEMU registers ten required sections plus the unconditional
+        // CPU-memory ticket; the realized accelerator is the only extra row.
         if self.semantic_version != 1
-            || self.vmstate_format_version != 1
-            || !(9..=10).contains(&self.vmstate_section_count)
+            || self.vmstate_format_version != 2
+            || !(11..=12).contains(&self.vmstate_section_count)
             || [
                 self.vmstate_sections_sha256,
                 self.emulator_build_id,
-                self.emulator_patch_series_hash,
+                self.emulator_atomic_patch_hash,
                 self.shmem_header_hash,
             ]
             .contains(&[0; 32])
@@ -172,7 +174,7 @@ impl FaultSystemCapabilityManifestV1 {
         output[24..28].copy_from_slice(&self.vmstate_section_count.to_le_bytes());
         output[32..64].copy_from_slice(&self.vmstate_sections_sha256);
         output[64..96].copy_from_slice(&self.emulator_build_id);
-        output[96..128].copy_from_slice(&self.emulator_patch_series_hash);
+        output[96..128].copy_from_slice(&self.emulator_atomic_patch_hash);
         output[128..160].copy_from_slice(&self.shmem_header_hash);
         Ok(output)
     }
@@ -198,7 +200,7 @@ impl FaultSystemCapabilityManifestV1 {
             vmstate_section_count: u32_at(bytes, 24)?,
             vmstate_sections_sha256: array_32(bytes, 32)?,
             emulator_build_id: array_32(bytes, 64)?,
-            emulator_patch_series_hash: array_32(bytes, 96)?,
+            emulator_atomic_patch_hash: array_32(bytes, 96)?,
             shmem_header_hash: array_32(bytes, 128)?,
         };
         manifest.encode()?;

@@ -9,7 +9,9 @@
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   model = import ./_crucible-model-source.nix {inherit lib;};
+  nodeTime = builtins.readFile ../../crates/crucible/src/node_time.rs;
   icountCeilingTest = builtins.readFile ../../crates/crucible/tests/scheduler_icount_ceiling.rs;
+  runCeilingTest = builtins.readFile ../../crates/crucible/tests/scheduler_run_ceiling.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -19,134 +21,158 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/08-scheduling.md" schedulingDoc [
       {
-        label = "T-SCHED-20 completion note";
+        label = "T-SCHED-20 completion names the focused gate";
         needle = "Completed by `checks.crucible.phase3.schedulerIcountCeiling`";
       }
       {
-        label = "SCHED-34 requirement";
-        needle = "horizon virtual times to per-node icount ceilings";
+        label = "SCHED-34 requires exact logical ticks";
+        needle = "MUST treat each node's clock as exact logical";
+      }
+      {
+        label = "nanosecond rounding cannot move a ceiling";
+        needle = "A nanosecond floor/ceil conversion MUST NOT change an authorization boundary";
+      }
+      {
+        label = "RUN publication retains exact ticks";
+        needle = "RUN publications retain exact ticks into the shmem ABI `max_advance_icount`";
       }
     ]
     ++ failuresFor "crates/crucible/src/model.rs" model [
       {
-        label = "TIME-4 ceil conversion";
-        needle = "pub fn to_icount_ceil";
+        label = "one nanosecond has one thousand exact ticks";
+        needle = "pub const SIM_TICKS_PER_NS: u64 = 1_000;";
       }
       {
-        label = "ceil remainder handling";
-        needle = "u64::from(remainder != 0)";
+        label = "one retirement advances fifty exact ticks";
+        needle = "pub const SIM_TICKS_PER_INSTRUCTION: u64 = 50;";
+      }
+      {
+        label = "guest nanoseconds floor only at projection";
+        needle = "self.ticks / SIM_TICKS_PER_NS";
       }
     ]
     ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
       {
-        label = "shared timeline conversion helper";
-        needle = "pub fn max_advance_icount_for_horizon";
+        label = "exact horizon projects to a node counter";
+        needle = "pub fn max_advance_counter_for_horizon";
       }
       {
-        label = "helper uses TIME-4 ceil map";
-        needle = "horizon.to_icount_ceil(self.shift)";
+        label = "conservative horizon projects to a safe node counter";
+        needle = "pub fn max_advance_counter_for_conservative_horizon";
       }
       {
-        label = "horizon finite uses shared timeline";
-        needle = "timeline.max_advance_icount_for_horizon(virtual_time)";
+        label = "VM exact target uses anchored ceil";
+        needle = ".counter_for_logical_time_ceil(target_time)";
       }
       {
-        label = "RUN plan uses shared timeline helper";
-        needle = "node_counter_for_time_ceil(selected_runtime_node, candidate.target_time)";
+        label = "VM conservative target uses anchored floor";
+        needle = ".counter_for_logical_time_floor(target_time)";
       }
       {
-        label = "publication records fixed shift";
-        needle = "icount_shift: self.timeline.shift()";
+        label = "RUN plan distinguishes exact and conservative targets";
+        needle = "SchedulerIcountRounding::ConservativeFloor";
       }
       {
-        label = "publication exposes fixed shift";
-        needle = "pub icount_shift: Shift";
+        label = "RUN plan rejects conservative overshoot";
+        needle = "&& projected_target > candidate.target_time";
       }
       {
-        label = "strict conservative overshoot guard";
-        needle = "!candidate.allow_ceil_past_target && projected_target > candidate.target_time";
+        label = "RUN plan rejects positive zero-progress windows";
+        needle = "&& target_counter == before";
       }
       {
-        label = "later network cap guard";
-        needle = "network_cap_at";
+        label = "equal-target selection requires representable progress";
+        needle = "candidate_has_representable_advance";
       }
       {
-        label = "time limit cap guard";
-        needle = "time_limit_at";
+        label = "network ceiling limits later exact projection";
+        needle = "\"network_cap_at\"";
       }
       {
-        label = "rendezvous cap guard";
-        needle = "rendezvous_at";
+        label = "time limit bounds later exact projection";
+        needle = "\"time_limit_at\"";
       }
       {
-        label = "exact local ceil allowance";
-        needle = "horizon_source_allows_ceiling_past_target";
+        label = "rendezvous bounds later exact projection";
+        needle = "\"rendezvous_at\"";
+      }
+      {
+        label = "cross-node dependency bounds later exact projection";
+        needle = "\"dependency_at\"";
+      }
+    ]
+    ++ failuresFor "crates/crucible/src/node_time.rs" nodeTime [
+      {
+        label = "anchored exact-tick ceiling projection";
+        needle = "pub fn counter_for_logical_time_ceil";
+      }
+      {
+        label = "anchored exact-tick conservative projection";
+        needle = "pub fn counter_for_logical_time_floor";
+      }
+      {
+        label = "counter overflow rejects instead of wrapping";
+        needle = "self.anchor_counter.ticks.checked_add(delta)";
+      }
+      {
+        label = "conservative result validates its anchor";
+        needle = "let _ = self.logical_time(counter)?;";
       }
     ]
     ++ failuresFor "crates/crucible/tests/scheduler_icount_ceiling.rs" icountCeilingTest [
       {
-        label = "shared timeline direct test";
-        needle = "shared_timeline_converts_horizon_with_time4_ceil_map";
+        label = "both sides of a nanosecond remain distinct";
+        needle = "fn shared_timeline_preserves_both_sides_of_nanosecond_boundary()";
       }
       {
-        label = "exact horizon ceil test";
-        needle = "exact_horizon_publishes_ceil_icount_not_floor_or_virtual_time";
+        label = "idle jump preserves anchored phase";
+        needle = "fn idle_jump_preserves_anchored_tick_phase()";
       }
       {
-        label = "network horizon shift test";
-        needle = "network_horizon_ceiling_uses_fixed_shift_not_raw_virtual_nanoseconds";
+        label = "anchored counter bounds reject overflow";
+        needle = "fn anchored_projection_fails_closed_at_counter_bounds()";
       }
       {
-        label = "unaligned conservative reject test";
-        needle = "unaligned_conservative_horizon_rejects_ceil_overshoot";
+        label = "network lookahead uses exact ticks";
+        needle = "fn network_lookahead_uses_exact_tick_horizon()";
       }
       {
-        label = "equal exact and conservative cap reject test";
-        needle = "exact_horizon_equal_to_network_cap_rejects_conservative_overshoot";
+        label = "999 picoseconds still floors to zero nanoseconds";
+        needle = "SimInstant { ticks: 999 }.nanoseconds_floor(), 0";
       }
       {
-        label = "later network cap reject test";
-        needle = "exact_horizon_rejects_ceil_over_later_network_cap";
+        label = "1000 picoseconds projects to one nanosecond";
+        needle = "SimInstant { ticks: 1_000 }.nanoseconds_floor(), 1";
+      }
+    ]
+    ++ failuresFor "crates/crucible/tests/scheduler_run_ceiling.rs" runCeilingTest [
+      {
+        label = "one exact ceiling per selected RUN";
+        needle = "fn run_publishes_one_max_advance_ceiling_for_selected_node()";
       }
       {
-        label = "exact over dependency reject test";
-        needle = "exact_horizon_rejects_ceil_over_future_cross_node_dependency";
+        label = "control-only quantum publishes no RUN ceiling";
+        needle = "fn control_only_quantum_publishes_no_run_ceiling()";
       }
       {
-        label = "idle time-limit cap reject test";
-        needle = "idle_wake_equal_to_time_limit_rejects_ceil_overshoot";
+        label = "RUN consumes the published exact target";
+        needle = "fn run_consumes_the_published_ceiling_as_its_target()";
       }
       {
-        label = "idle rendezvous cap reject test";
-        needle = "idle_wake_equal_to_rendezvous_rejects_ceil_overshoot";
+        label = "exact ceiling reaches shared memory";
+        needle = "fn published_ceiling_converts_to_and_publishes_through_shmem_abi()";
       }
       {
-        label = "idle wake shift test";
-        needle = "idle_wake_horizon_uses_same_fixed_shift_ceiling_conversion";
+        label = "pending inputs precede the futex wake";
+        needle = "fn published_ceiling_writes_pending_inputs_before_futex_wake()";
       }
       {
-        label = "unaligned ceil assertion";
-        needle = "SimInstant { nanos: 65 }";
+        label = "published ceiling retains exact tick four";
+        needle = "publication.max_advance_icount, 4";
       }
       {
-        label = "not raw virtual nanoseconds assertion";
-        needle = "assert_ne!(\n        publication.max_advance_icount,";
-      }
-      {
-        label = "fixed shift publication assertion";
-        needle = "assert_eq!(publication.icount_shift, shift(2))";
-      }
-      {
-        label = "overshoot rejection assertion";
-        needle = "unaligned conservative horizon must not be rounded past";
-      }
-      {
-        label = "dependency overshoot assertion";
-        needle = "dependency_at=7";
-      }
-      {
-        label = "network overshoot assertion";
-        needle = "network_cap_at=7";
+        label = "published target retains exact tick four";
+        needle = "publication.target_time, SimInstant { ticks: 4 }";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -155,7 +181,7 @@
         needle = "schedulerIcountCeiling = import ./phase3-scheduler-icount-ceiling.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/tests/scheduler_icount_ceiling.rs" icountCeilingTest [
+    ++ forbiddenFor "crates/crucible/tests/scheduler ceiling" (icountCeilingTest + runCeilingTest) [
       {
         label = "ignored placeholder";
         needle = "#[ignore";
@@ -234,6 +260,7 @@ in
               --offline \
               --target-dir "$TMPDIR/crucible-scheduler-icount-ceiling-target" \
               -p crucible \
+              --features test-double \
               --test scheduler_run_ceiling \
               -- --test-threads=1
           '';
@@ -249,8 +276,9 @@ in
             tasks=${taskList}
             component=crucible-scheduler
             horizon_arithmetic=virtual-time
-            ceiling_units=icount
-            conversion=time4-ceil-fixed-shift
+            ceiling_units=exact-ticks-in-max_advance_icount
+            conversion=anchored-exact-tick-ceil-and-floor
+            shmem_publication_tests=test-double-enabled
             RESULT
           '';
         }

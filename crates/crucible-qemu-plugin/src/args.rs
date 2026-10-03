@@ -15,20 +15,17 @@ use thiserror::Error;
 
 mod app_random;
 mod resource_limits;
-mod state_dump;
 mod whitebox;
 pub use app_random::{
-    AppRandomArgsParseError, PLUGIN_ARG_APP_RANDOM_BRANCH_AFTER, PLUGIN_ARG_APP_RANDOM_BRANCH_SEED,
-    PLUGIN_ARG_APP_RANDOM_CAP, PLUGIN_ARG_APP_RANDOM_DRAW_OFFSET, PLUGIN_ARG_APP_RANDOM_NODE,
-    PLUGIN_ARG_APP_RANDOM_POSITIONS, PLUGIN_ARG_APP_RANDOM_SEED, PluginAppRandomConfig,
+    AppRandomArgsParseError, PLUGIN_ARG_APP_RANDOM_BRANCH_AFTERS,
+    PLUGIN_ARG_APP_RANDOM_BRANCH_SEEDS, PLUGIN_ARG_APP_RANDOM_CAP,
+    PLUGIN_ARG_APP_RANDOM_DRAW_OFFSET, PLUGIN_ARG_APP_RANDOM_NODE, PLUGIN_ARG_APP_RANDOM_POSITIONS,
+    PLUGIN_ARG_APP_RANDOM_SEED, PluginAppRandomConfig,
 };
 pub use resource_limits::{
     HARD_STORAGE_COMPLETED_HISTORY_EPOCHS, HARD_STORAGE_COMPLETED_HISTORY_GAPS,
     PLUGIN_ARG_STORAGE_COMPLETED_HISTORY_EPOCHS, PLUGIN_ARG_STORAGE_COMPLETED_HISTORY_GAPS,
     PluginStorageHistoryLimits,
-};
-pub use state_dump::{
-    PLUGIN_ARG_STATE_DUMP_PATH, PLUGIN_ARG_STATE_DUMP_TARGET, PluginStateDumpConfig,
 };
 pub use whitebox::{
     WHITEBOX_SETUP_AARCH64_HINT_INERT_V1, WHITEBOX_SETUP_X86_PORT_UNCLAIMED_V1,
@@ -52,12 +49,12 @@ pub const PLUGIN_ARG_WAKEFD: &str = "wakefd";
 pub const PLUGIN_ARG_WHITEBOX: &str = "whitebox";
 /// The setup-time white-box collision-validation attestation argument key.
 pub const PLUGIN_ARG_WHITEBOX_SETUP: &str = "whitebox_setup";
+/// Enables exact VMStop at the two declared network-campaign markers.
+pub const PLUGIN_ARG_CAMPAIGN_MARKER_PARKING: &str = "campaign_marker_parking";
 /// The optional coverage hook switch argument key.
 pub const PLUGIN_ARG_COVERAGE: &str = "coverage";
 /// The optional single-VM fingerprint sampling switch argument key.
 pub const PLUGIN_ARG_FINGERPRINT: &str = "fingerprint";
-/// The optional gate-only synchronous fingerprint-oracle switch argument key.
-pub const PLUGIN_ARG_FINGERPRINT_ORACLE: &str = "fingerprint_oracle";
 /// Parsed QEMU plugin launch arguments.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginArgs {
@@ -70,11 +67,10 @@ pub struct PluginArgs {
     inherited_fds: Option<PluginInheritedFds>,
     whitebox: PluginSwitch,
     whitebox_setup: Option<WhiteboxSetupAttestation>,
+    campaign_marker_parking: PluginSwitch,
     app_random: Option<PluginAppRandomConfig>,
     coverage: PluginSwitch,
     fingerprint: PluginSwitch,
-    fingerprint_oracle: PluginSwitch,
-    state_dump: Option<PluginStateDumpConfig>,
 }
 
 impl PluginArgs {
@@ -97,14 +93,14 @@ impl PluginArgs {
         let storage_history_limits = resource_limits::parse(&parsed)?;
         let whitebox = parse_optional_switch(&parsed, PLUGIN_ARG_WHITEBOX)?;
         let whitebox_setup = whitebox::parse(&parsed, whitebox)?;
+        let campaign_marker_parking =
+            parse_optional_switch(&parsed, PLUGIN_ARG_CAMPAIGN_MARKER_PARKING)?;
+        if campaign_marker_parking.is_on() && !whitebox.is_on() {
+            return Err(PluginArgsParseError::CampaignMarkerParkingRequiresWhitebox);
+        }
         let app_random = app_random::parse(&parsed, whitebox)?;
         let coverage = parse_optional_switch(&parsed, PLUGIN_ARG_COVERAGE)?;
         let fingerprint = parse_optional_switch(&parsed, PLUGIN_ARG_FINGERPRINT)?;
-        let fingerprint_oracle = parse_optional_switch(&parsed, PLUGIN_ARG_FINGERPRINT_ORACLE)?;
-        if fingerprint_oracle.is_on() && !fingerprint.is_on() {
-            return Err(PluginArgsParseError::FingerprintOracleWithoutFingerprint);
-        }
-        let state_dump = state_dump::parse(&parsed, fingerprint)?;
         let inherited_fds = parse_inherited_fds(&parsed)?;
 
         Ok(Self {
@@ -117,11 +113,10 @@ impl PluginArgs {
             inherited_fds,
             whitebox,
             whitebox_setup,
+            campaign_marker_parking,
             app_random,
             coverage,
             fingerprint,
-            fingerprint_oracle,
-            state_dump,
         })
     }
 
@@ -179,6 +174,12 @@ impl PluginArgs {
         self.whitebox_setup
     }
 
+    /// Returns whether declared network-campaign markers request native VMStop.
+    #[must_use]
+    pub const fn campaign_marker_parking(&self) -> PluginSwitch {
+        self.campaign_marker_parking
+    }
+
     /// Returns the optional seeded live app-random configuration.
     #[must_use]
     pub const fn app_random(&self) -> Option<&PluginAppRandomConfig> {
@@ -195,18 +196,6 @@ impl PluginArgs {
     #[must_use]
     pub const fn fingerprint(&self) -> PluginSwitch {
         self.fingerprint
-    }
-
-    /// Returns whether gate-only synchronous fingerprint comparison is enabled.
-    #[must_use]
-    pub const fn fingerprint_oracle(&self) -> PluginSwitch {
-        self.fingerprint_oracle
-    }
-
-    /// Returns the optional exact-boundary terminal raw-state dump request.
-    #[must_use]
-    pub const fn state_dump(&self) -> Option<&PluginStateDumpConfig> {
-        self.state_dump.as_ref()
     }
 
     /// Validates the slot against the host-advertised node count.
@@ -332,6 +321,9 @@ pub enum PluginArgsParseError {
         /// Rejected value.
         value: String,
     },
+    /// Campaign marker parking requires the white-box doorbell.
+    #[error("campaign marker parking requires white-box mode")]
+    CampaignMarkerParkingRequiresWhitebox,
     /// White-box mode was enabled without a setup collision attestation.
     #[error("white-box mode requires plugin argument `{key}`")]
     MissingWhiteboxSetup {
@@ -358,27 +350,6 @@ pub enum PluginArgsParseError {
     /// Only one of the inherited descriptor keys was supplied.
     #[error("plugin inherited descriptors require both `shmemfd` and `wakefd`")]
     IncompleteInheritedDescriptors,
-    /// Only one member of the terminal state-dump argument pair was supplied.
-    #[error("plugin terminal state dump requires both target and output path")]
-    IncompleteStateDump,
-    /// A terminal state dump was requested without fingerprint boundary sampling.
-    #[error("plugin terminal state dump requires `fingerprint=on`")]
-    StateDumpWithoutFingerprint,
-    /// The synchronous oracle was requested without fingerprint boundary sampling.
-    #[error("plugin fingerprint oracle requires `fingerprint=on`")]
-    FingerprintOracleWithoutFingerprint,
-    /// The terminal state-dump target was not a nonzero instruction count.
-    #[error("plugin state-dump target is invalid: `{value}`")]
-    InvalidStateDumpTarget {
-        /// Rejected target text.
-        value: String,
-    },
-    /// The terminal state-dump path was not an absolute comma-free path.
-    #[error("plugin state-dump path is invalid: `{value}`")]
-    InvalidStateDumpPath {
-        /// Rejected path text.
-        value: String,
-    },
     /// The slot was not within `0..node_count`.
     #[error("plugin slot {slot} is outside 0..{node_count}")]
     SlotOutOfRange {
@@ -580,12 +551,11 @@ fn is_known_key(key: &str) -> bool {
             | PLUGIN_ARG_WAKEFD
             | PLUGIN_ARG_WHITEBOX
             | PLUGIN_ARG_WHITEBOX_SETUP
+            | PLUGIN_ARG_CAMPAIGN_MARKER_PARKING
             | PLUGIN_ARG_COVERAGE
             | PLUGIN_ARG_FINGERPRINT
-            | PLUGIN_ARG_FINGERPRINT_ORACLE
     ) || app_random::is_key(key)
         || resource_limits::is_key(key)
-        || state_dump::is_key(key)
 }
 
 #[cfg(test)]

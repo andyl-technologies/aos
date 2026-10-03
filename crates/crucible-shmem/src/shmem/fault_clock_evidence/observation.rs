@@ -2,12 +2,12 @@
 
 /// Closed guest-clock observation kind.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum FaultClockObservationV1 {
+pub enum FaultClockObservationV2 {
     /// One guest-visible source read.
     Read {
-        /// Raw value normalized to nanoseconds for affine evaluation.
+        /// Raw value normalized to picoseconds for affine evaluation.
         raw_value: u64,
-        /// Transformed value normalized to nanoseconds before width handling.
+        /// Transformed value normalized to picoseconds before width handling.
         transformed_value: u64,
         /// Raw value in the architecture's register or counter domain.
         raw_architectural_value: u64,
@@ -24,7 +24,7 @@ pub enum FaultClockObservationV1 {
         /// Exact active drift numerator and denominator.
         drift_ratio: [u64; 2],
         /// Active signed offset and accumulated jump contribution.
-        additive_nanos: i64,
+        additive_ps: i64,
         /// Held value when the source is frozen, otherwise zero.
         frozen_value: u64,
         /// Whether the source reported an architectural read error.
@@ -44,29 +44,29 @@ pub enum FaultClockObservationV1 {
         /// Closed freeze-release tag, or zero while unfrozen.
         freeze_release: u32,
         /// Signed synchronization correction remaining after this read.
-        synchronization_remaining_nanos: i64,
+        synchronization_remaining_ps: i64,
     },
     /// One deterministic wander-process transition.
     Wander {
         /// Scheduler virtual time at the transition.
-        scheduler_nanos: u64,
+        scheduler_ps: u64,
         /// Raw source coordinate at the transition.
-        raw_nanos: u64,
+        raw_ps: u64,
         /// Offset before and after the transition.
         offsets: [i64; 2],
         /// Rate before and after the transition, in parts per billion.
         rates_ppb: [i64; 2],
         /// Update coordinates before and after the transition.
-        next_nanos: [u64; 2],
+        next_ps: [u64; 2],
         /// Process sequence before and after the transition.
         sequences: [u64; 2],
     },
     /// One source failure, fallback, or synchronization transition.
     SourceTransition {
         /// Scheduler virtual time at the transition.
-        scheduler_nanos: u64,
+        scheduler_ps: u64,
         /// Raw source coordinate at the transition.
-        raw_nanos: u64,
+        raw_ps: u64,
         /// Old and new closed source-state tags.
         states: [u32; 2],
         /// Source value immediately before the transition.
@@ -80,11 +80,11 @@ pub enum FaultClockObservationV1 {
         /// New fallback source identity hash.
         new_fallback: [u8; 32],
         /// Synchronization correction remaining before and after transition.
-        synchronization_remaining_nanos: [i64; 2],
+        synchronization_remaining_ps: [i64; 2],
         /// Exact synchronization slew numerator and denominator.
         synchronization_ratio: [u64; 2],
         /// Positive slew completion threshold, or zero for step correction.
-        synchronization_threshold_nanos: u64,
+        synchronization_threshold_ps: u64,
     },
     /// One timer deadline or disposition transition.
     TimerTransition {
@@ -116,7 +116,7 @@ pub enum FaultClockObservationV1 {
         /// Closed transform-kind tag.
         transform_kind: u32,
         /// Raw source coordinate.
-        raw_nanos: u64,
+        raw_ps: u64,
         /// Guest-visible value before the impulse.
         old_value: u64,
         /// Signed offset or jump parameter.
@@ -130,9 +130,9 @@ pub enum FaultClockObservationV1 {
         /// Exact active drift ratio after the impulse.
         new_drift_ratio: [u64; 2],
         /// Active offset and accumulated jumps after the impulse.
-        new_additive_nanos: i64,
+        new_additive_ps: i64,
         /// Active offset and accumulated jumps before the impulse.
-        old_additive_nanos: i64,
+        old_additive_ps: i64,
         /// Held value after the impulse when already frozen, otherwise zero.
         new_frozen_value: u64,
         /// Closed freeze-release tag after the impulse.

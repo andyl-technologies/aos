@@ -484,6 +484,13 @@ impl LiveDeviceCallbackState {
         output: &mut [u8],
     ) -> Result<i64, LiveDeviceCallbackError> {
         let identity = BlockRequestIdentity::new(epoch, request_id);
+        if self
+            .block
+            .pending_delivery_len(identity)
+            .is_some_and(|len| len > output.len())
+        {
+            return Ok(QEMU_PLUGIN_BLOCK_POLL_PENDING);
+        }
         let token =
             self.block_tokens
                 .remove(&identity)
@@ -509,41 +516,65 @@ impl LiveDeviceCallbackState {
                 self.block_tokens.insert(identity, token);
                 Ok(QEMU_PLUGIN_BLOCK_POLL_PENDING)
             }
-            BlockPoll::Completed { response, .. } => match response.status() {
-                BlockResponseStatus::Ok => {
-                    i64::try_from(response.payload().len()).map_err(|_error| {
-                        LiveDeviceCallbackError::ResponseLengthOverflow {
-                            family: "block",
-                            len: response.payload().len(),
-                        }
-                    })
+            BlockPoll::Retry { token, source } => {
+                self.block_tokens.insert(identity, token);
+                match source {
+                    BlockIoError::GuestCompletion { .. }
+                    | BlockIoError::RingDequeue {
+                        source: crucible_shmem::SpscRingError::ConsumerBarrierHeld,
+                        ..
+                    } => Ok(QEMU_PLUGIN_BLOCK_POLL_PENDING),
+                    source => Err(LiveDeviceCallbackError::Block { source }),
                 }
-                BlockResponseStatus::Error => {
-                    let errno = block_error_errno(response.error_code().map_err(|source| {
-                        LiveDeviceCallbackError::Block {
-                            source: BlockIoError::Wire { source },
-                        }
-                    })?);
-                    Ok(-(QEMU_PLUGIN_BLOCK_ERROR_BASE + errno))
+            }
+            BlockPoll::Quarantined { token, source } => {
+                self.block_tokens.insert(identity, token);
+                Err(LiveDeviceCallbackError::Block { source })
+            }
+            BlockPoll::Completed { response, .. } => {
+                if response.status() == BlockResponseStatus::Ok {
+                    let Some(destination) = output.get_mut(..response.payload().len()) else {
+                        // A successful delivery checked capacity before ring settlement.
+                        std::process::abort();
+                    };
+                    destination.copy_from_slice(response.payload());
                 }
-                BlockResponseStatus::TransportReset => {
-                    Err(LiveDeviceCallbackError::UnexpectedBlockResetPrimary {
-                        request_id: response.request_id(),
-                    })
+                match response.status() {
+                    BlockResponseStatus::Ok => {
+                        i64::try_from(response.payload().len()).map_err(|_error| {
+                            LiveDeviceCallbackError::ResponseLengthOverflow {
+                                family: "block",
+                                len: response.payload().len(),
+                            }
+                        })
+                    }
+                    BlockResponseStatus::Error => {
+                        let errno = block_error_errno(response.error_code().map_err(|source| {
+                            LiveDeviceCallbackError::Block {
+                                source: BlockIoError::Wire { source },
+                            }
+                        })?);
+                        Ok(-(QEMU_PLUGIN_BLOCK_ERROR_BASE + errno))
+                    }
+                    BlockResponseStatus::TransportReset => {
+                        Err(LiveDeviceCallbackError::UnexpectedBlockResetPrimary {
+                            request_id: response.request_id(),
+                        })
+                    }
+                    BlockResponseStatus::DuplicateIgnored
+                    | BlockResponseStatus::DuplicateProtocolError => {
+                        Err(LiveDeviceCallbackError::UnexpectedBlockDuplicatePrimary {
+                            request_id: response.request_id(),
+                        })
+                    }
+                    BlockResponseStatus::RetryPreserveId => {
+                        self.block_reissue_preserve.insert(identity);
+                        Ok(QEMU_PLUGIN_BLOCK_RETRY_PRESERVE_ID)
+                    }
+                    BlockResponseStatus::RetryNewId => Ok(QEMU_PLUGIN_BLOCK_RETRY_NEW_ID),
+                    BlockResponseStatus::DropCompletion => Ok(QEMU_PLUGIN_BLOCK_DROP_COMPLETION),
                 }
-                BlockResponseStatus::DuplicateIgnored
-                | BlockResponseStatus::DuplicateProtocolError => {
-                    Err(LiveDeviceCallbackError::UnexpectedBlockDuplicatePrimary {
-                        request_id: response.request_id(),
-                    })
-                }
-                BlockResponseStatus::RetryPreserveId => {
-                    self.block_reissue_preserve.insert(identity);
-                    Ok(QEMU_PLUGIN_BLOCK_RETRY_PRESERVE_ID)
-                }
-                BlockResponseStatus::RetryNewId => Ok(QEMU_PLUGIN_BLOCK_RETRY_NEW_ID),
-                BlockResponseStatus::DropCompletion => Ok(QEMU_PLUGIN_BLOCK_DROP_COMPLETION),
-            },
+            }
         }
     }
 
@@ -730,6 +761,13 @@ impl LiveDeviceCallbackState {
                 observed: output.len(),
             });
         }
+        if self
+            .ninep
+            .pending_delivery_len(request_id)
+            .is_some_and(|response_len| response_len > output.len())
+        {
+            return Ok(QEMU_PLUGIN_NINEP_POLL_PENDING);
+        }
         let pending = self.ninep_tokens.remove(&request_id).ok_or(
             LiveDeviceCallbackError::UnknownRequest {
                 family: "9p",
@@ -738,18 +776,21 @@ impl LiveDeviceCallbackState {
             },
         )?;
         let inbound = self.ninep_rings.inbound.ninep_inbound();
-        let mut completion = NinePOutput { output };
-        match handle_9p_poll_callback(
-            &self.ninep,
-            &mut self.freeze,
-            slot,
-            &inbound,
-            &mut completion,
-            current_icount,
-            pending.token,
-        )
-        .map_err(|source| LiveDeviceCallbackError::NineP { source })?
-        {
+        let result = {
+            let mut completion = NinePOutput { output };
+            handle_9p_poll_callback(
+                &self.ninep,
+                &mut self.freeze,
+                slot,
+                &inbound,
+                &mut completion,
+                current_icount,
+                pending.token,
+            )
+            .map_err(|source| LiveDeviceCallbackError::NineP { source })?
+        };
+
+        match result {
             NinePPoll::NotReady { token } => {
                 self.ninep_tokens.insert(
                     request_id,
@@ -760,11 +801,48 @@ impl LiveDeviceCallbackState {
                 );
                 Ok(QEMU_PLUGIN_NINEP_POLL_PENDING)
             }
-            NinePPoll::Completed { response, .. } => i64::try_from(response.payload().len())
-                .map_err(|_error| LiveDeviceCallbackError::ResponseLengthOverflow {
-                    family: "9p",
-                    len: response.payload().len(),
-                }),
+            NinePPoll::Retry { token, source } => {
+                self.ninep_tokens.insert(
+                    request_id,
+                    PendingNinePRequest {
+                        token,
+                        response_capacity: pending.response_capacity,
+                    },
+                );
+                match source {
+                    NinePIoError::GuestCompletion { .. }
+                    | NinePIoError::RingDequeue {
+                        source: crucible_shmem::SpscRingError::ConsumerBarrierHeld,
+                        ..
+                    } => Ok(QEMU_PLUGIN_NINEP_POLL_PENDING),
+                    source => Err(LiveDeviceCallbackError::NineP { source }),
+                }
+            }
+            NinePPoll::Quarantined { token, source } => {
+                self.ninep_tokens.insert(
+                    request_id,
+                    PendingNinePRequest {
+                        token,
+                        response_capacity: pending.response_capacity,
+                    },
+                );
+                Err(LiveDeviceCallbackError::NineP { source })
+            }
+            NinePPoll::Completed { response, .. } => {
+                let payload = response.payload();
+                let Some(destination) = output.get_mut(..payload.len()) else {
+                    // Every successful delivery checked the current buffer
+                    // before the irreversible ring and freeze settlement.
+                    std::process::abort();
+                };
+                destination.copy_from_slice(payload);
+                i64::try_from(payload.len()).map_err(|_error| {
+                    LiveDeviceCallbackError::ResponseLengthOverflow {
+                        family: "9p",
+                        len: payload.len(),
+                    }
+                })
+            }
         }
     }
 
@@ -827,8 +905,9 @@ impl StableDirectedRingHandle {
 
     fn block_inbound(&self) -> BlockInboundRing<'_> {
         let (header, entries) = self.ring_parts();
-        BlockInboundRing::new(
+        BlockInboundRing::registered(
             self.descriptor.index,
+            self.owner_generation,
             self.descriptor.src_slot,
             self.descriptor.dst_slot,
             header,
@@ -850,8 +929,9 @@ impl StableDirectedRingHandle {
 
     fn ninep_inbound(&self) -> NinePInboundRing<'_> {
         let (header, entries) = self.ring_parts();
-        NinePInboundRing::new(
+        NinePInboundRing::registered(
             self.descriptor.index,
+            self.owner_generation,
             self.descriptor.src_slot,
             self.descriptor.dst_slot,
             header,
@@ -972,6 +1052,30 @@ fn block_request(
 }
 
 impl LiveVcpuTimeCallbackState {
+    pub(in crate::runtime) fn rebind_hot_fork_process_generation(
+        &mut self,
+        parent: u64,
+        child: u64,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        let devices = self.devices.as_mut().ok_or_else(|| {
+            LiveVcpuTimeCallbackError::live_device(LiveDeviceCallbackError::StateUnavailable)
+        })?;
+        let devices = devices.get_mut().map_err(|_poisoned| {
+            LiveVcpuTimeCallbackError::live_device(LiveDeviceCallbackError::StatePoisoned)
+        })?;
+        if devices.accelerator_generation != parent || parent.checked_add(1) != Some(child) {
+            return Err(LiveVcpuTimeCallbackError::live_device(
+                LiveDeviceCallbackError::ProcessGeneration {
+                    expected_parent: devices.accelerator_generation,
+                    supplied_parent: parent,
+                    supplied_child: child,
+                },
+            ));
+        }
+        devices.accelerator_generation = child;
+        Ok(())
+    }
+
     fn lock_devices(
         &self,
     ) -> Result<MutexGuard<'_, LiveDeviceCallbackState>, LiveVcpuTimeCallbackError> {
@@ -1637,6 +1741,18 @@ unsafe fn output_buffer<'a>(
 /// A live block or 9p callback registration/dispatch error.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum LiveDeviceCallbackError {
+    /// A fork-child generation did not exactly advance the live device owner.
+    #[error(
+        "fork-child process generation expected parent {expected_parent}, supplied parent {supplied_parent}, child {supplied_child}"
+    )]
+    ProcessGeneration {
+        /// Generation currently retained by the callback owner.
+        expected_parent: u64,
+        /// Parent generation supplied by the child plan.
+        supplied_parent: u64,
+        /// Child generation supplied by the child plan.
+        supplied_child: u64,
+    },
     /// An accelerator shared-memory operation failed.
     #[error("accelerator shared-memory operation failed: {source}")]
     AcceleratorRing {

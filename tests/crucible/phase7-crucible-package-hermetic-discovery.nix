@@ -153,7 +153,7 @@
       }
       {
         label = "patched QEMU marker validation";
-        needle = "qemu_crucible_patches_applied";
+        needle = "qemu_crucible_atomic_patch_applied";
       }
       {
         label = "plugin support marker validation";

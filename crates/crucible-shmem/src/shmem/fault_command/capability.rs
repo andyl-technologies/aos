@@ -17,7 +17,7 @@ pub struct FaultCapabilityRowV1 {
     pub maximum_payload_bytes: u32,
     /// Maximum pending commands of this kind.
     pub maximum_pending_commands: u32,
-    /// Required patch-series feature bits.
+    /// Required atomic-patch feature bits.
     pub required_feature_bits: u64,
     /// Digest of the public capability name and payload schema.
     pub capability_hash: [u8; 32],

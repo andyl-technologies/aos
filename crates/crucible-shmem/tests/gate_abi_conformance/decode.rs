@@ -48,7 +48,7 @@ pub(super) fn decode_golden_state(bytes: &[u8]) -> Result<GoldenState, String> {
             ring_data_off: read_u64(bytes, REGION_HEADER_RING_DATA_OFF_OFFSET),
             entry_stride: read_u64(bytes, REGION_HEADER_ENTRY_STRIDE_OFFSET),
             region_size: read_u64(bytes, REGION_HEADER_REGION_SIZE_OFFSET),
-            icount_shift: read_u32(bytes, REGION_HEADER_ICOUNT_SHIFT_OFFSET),
+            ticks_per_ns: read_u32(bytes, REGION_HEADER_TICKS_PER_NS_OFFSET),
             pause_requested: read_u8(bytes, REGION_HEADER_PAUSE_REQUESTED_OFFSET),
             shutdown_requested: read_u8(bytes, REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET),
             fault_payload_arena_bytes: read_u32(
@@ -82,17 +82,25 @@ pub(super) fn decode_golden_state(bytes: &[u8]) -> Result<GoldenState, String> {
                 bytes,
                 GOLDEN_NODE_SLOT_BASE + NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET,
             ),
-            preemption_at_icount: read_u64(
+            control_boundary_fault_command_frontier: read_u64(
                 bytes,
-                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_AT_ICOUNT_OFFSET,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER_OFFSET,
             ),
-            preemption_deadline_icount: read_u64(
+            control_boundary_capture_request: read_u32(
                 bytes,
-                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_DEADLINE_ICOUNT_OFFSET,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET,
             ),
-            preemption_ceiling_icount: read_u64(
+            preemption_at_tick: read_u64(
                 bytes,
-                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_CEILING_ICOUNT_OFFSET,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_AT_TICK_OFFSET,
+            ),
+            preemption_deadline_tick: read_u64(
+                bytes,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_DEADLINE_TICK_OFFSET,
+            ),
+            preemption_ceiling_tick: read_u64(
+                bytes,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_PREEMPTION_CEILING_TICK_OFFSET,
             ),
             preemption_published_sequence: read_u32(
                 bytes,
@@ -130,12 +138,52 @@ pub(super) fn decode_golden_state(bytes: &[u8]) -> Result<GoldenState, String> {
                 bytes,
                 GOLDEN_NODE_SLOT_BASE + NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET,
             ),
+            timer_witness_generation: read_u64(
+                bytes,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET,
+            ),
+            timer_witness_deadline_ps: read_u64(
+                bytes,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_DEADLINE_PS_OFFSET,
+            ),
+            timer_witness_deadline_tick: read_u64(
+                bytes,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_DEADLINE_TICK_OFFSET,
+            ),
+            timer_witness_armed_raw_icount: read_u64(
+                bytes,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_ARMED_RAW_ICOUNT_OFFSET,
+            ),
+            timer_witness_fired_expire_ps: read_u64(
+                bytes,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_PS_OFFSET,
+            ),
+            timer_witness_fired_virtual_ps: read_u64(
+                bytes,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_PS_OFFSET,
+            ),
+            timer_witness_fired_raw_icount: read_u64(
+                bytes,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_FIRED_RAW_ICOUNT_OFFSET,
+            ),
+            timer_witness_completed: read_u32(
+                bytes,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_COMPLETED_OFFSET,
+            ),
+            timer_witness_reserved: read_u32(
+                bytes,
+                GOLDEN_NODE_SLOT_BASE + NODE_SLOT_TIMER_WITNESS_RESERVED_OFFSET,
+            ),
         },
         ring: RingHeaderState {
             read_idx: read_u64(bytes, GOLDEN_RING_HEADER_BASE + RING_HEADER_READ_IDX_OFFSET),
             write_idx: read_u64(
                 bytes,
                 GOLDEN_RING_HEADER_BASE + RING_HEADER_WRITE_IDX_OFFSET,
+            ),
+            producer_state: read_u64(
+                bytes,
+                GOLDEN_RING_HEADER_BASE + RING_HEADER_PRODUCER_STATE_OFFSET,
             ),
         },
         frame: FrameEntryState {

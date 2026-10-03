@@ -7,16 +7,13 @@
 use std::error::Error;
 
 use crucible::{
-    ChoiceTag, Configuration, ContentHash, Decision, EngineError, FleetEquivalenceReport,
+    Configuration, ContentHash, Decision, EngineError, FleetEquivalenceReport,
     FleetWorkStealingConfig, GenesisCheckpoint, Icount, MaterializationPolicy,
-    MaterializationTrigger, NodeId, NodeTemplate, OverrideDecision, Plan, Properties, ReadyPoint,
-    RngDecision, RngStreamId, ScenarioDefForm, SchedulingPoint, SearchBudget, SearchFailureOracle,
-    SearchFrontierChoices, SearchStrategy, Seed, SimDouble, SimDoubleConfig,
-    SimDoubleHostScheduleEvent, SimulationBackend, TemporalGraph, VirtualTime, WhiteBoxPolicy,
-    World, WorldNode, bake, try_step,
+    MaterializationTrigger, NodeId, NodeTemplate, Plan, Properties, ReadyPoint, ScenarioDefForm,
+    SearchBudget, SearchFailureOracle, SearchFrontierChoices, SearchStrategy, Seed, TemporalGraph,
+    WhiteBoxPolicy, World, WorldNode, bake, try_step,
 };
 use crucible_harness::adversarial::{canonical_host_adversary_matrix, run_profiled_tasks};
-use crucible_protocol::{CONTROL_PROTOCOL_VERSION, HostMsg, control_encode_host_msg};
 
 #[test]
 fn gate_fleet_equivalence_matches_single_host_finding_set_and_artifacts()
@@ -77,9 +74,8 @@ fn gate_fleet_equivalence_matches_single_host_finding_set_and_artifacts()
 }
 
 #[test]
-fn gate_fleet_equivalence_drives_simdouble_fleet_under_adversarial_host_profiles()
+fn gate_fleet_equivalence_drives_work_stealing_fleet_under_adversarial_host_profiles()
 -> Result<(), Box<dyn Error>> {
-    let config = FleetWorkStealingConfig::new(SearchBudget::new(4), 4, Seed::from_u64(0xdce8));
     let profiles = canonical_host_adversary_matrix();
     assert!(
         profiles.len() > 1,
@@ -88,24 +84,31 @@ fn gate_fleet_equivalence_drives_simdouble_fleet_under_adversarial_host_profiles
 
     let mut baseline = None;
     for profile in profiles {
-        let witnesses = run_profiled_tasks(*profile, config.host_count() as usize, |task| {
-            let mut backend = ready_sim_double();
-            let horizon = VirtualTime {
-                ticks: 100 + (task.index as u64 * 17),
-            };
-            SimulationBackend::step_to(&mut backend, horizon)
-                .unwrap_or_else(|error| panic!("SimDouble fleet host should advance: {error}"));
-            SimDoubleFleetWitness {
-                host_index: task.index,
-                reached: horizon.ticks,
-                schedule: backend.host_observable_schedule().to_vec(),
-            }
+        let witnesses = run_profiled_tasks(*profile, 4, |task| {
+            let mut fixture = fleet_equivalence_fixture()
+                .unwrap_or_else(|error| panic!("fleet fixture should build: {error}"));
+            let config = FleetWorkStealingConfig::new(
+                SearchBudget::new(4),
+                4,
+                Seed::from_u64(0xdce8_0000 + task.index as u64),
+            );
+            fixture
+                .graph
+                .search_with_work_stealing_fleet(
+                    &fixture.scenario,
+                    &fixture.root,
+                    config,
+                    MaterializationPolicy::thin_only(),
+                    MaterializationTrigger::Cold,
+                    &SearchFailureOracle::none(),
+                )
+                .unwrap_or_else(|error| panic!("fleet search should complete: {error}"))
         })?;
 
         if let Some(baseline) = &baseline {
             assert_eq!(
                 baseline, &witnesses,
-                "profile {} changed SimDouble fleet witness",
+                "profile {} changed the work-stealing fleet witness",
                 profile.name
             );
         } else {
@@ -114,8 +117,13 @@ fn gate_fleet_equivalence_drives_simdouble_fleet_under_adversarial_host_profiles
     }
 
     let baseline = baseline.ok_or("adversarial profile matrix must not be empty")?;
-    assert_eq!(baseline.len(), config.host_count() as usize);
-    assert!(baseline.iter().all(|witness| !witness.schedule.is_empty()));
+    assert_eq!(baseline.len(), 4);
+    assert!(baseline.iter().all(|run| run.exhausted));
+    assert!(
+        baseline
+            .iter()
+            .all(|run| run.claims.iter().any(|claim| claim.host_index != 0))
+    );
 
     Ok(())
 }
@@ -218,7 +226,7 @@ fn fleet_equivalence_fixture() -> Result<FleetEquivalenceFixture, EngineError> {
     )?;
     let scenario_def = scenario.scenario_def();
     let root = Configuration::genesis(scenario_def.clone());
-    let root_decisions = fleet_root_decisions();
+    let root_decisions = fleet_root_decisions()?;
     let baked = bake_with_search_frontier_choices(&world, root_decisions.clone())?;
     let graph = TemporalGraph::empty().with_baked_genesis(&scenario_def, baked)?;
     let mut children = Vec::new();
@@ -248,7 +256,8 @@ fn bake_with_search_frontier_choices(
         },
     )?;
     let mut scheduler = state.scheduler.clone();
-    scheduler.search_frontier = SearchFrontierChoices::from_decisions(decisions);
+    scheduler.search_frontier =
+        SearchFrontierChoices::from_decision_sequences(decisions.into_iter().map(std::iter::once));
     baked.checkpoint.state = Some(
         crucible::MaterializedState::from_components_with_event_log_segments(
             state.vm_snapshots.clone(),
@@ -280,74 +289,25 @@ fn single_node_world(label: &str) -> Result<World, EngineError> {
         },
         white_box: WhiteBoxPolicy::Disabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
     }])
 }
 
-fn fleet_root_decisions() -> Vec<Decision> {
-    vec![
-        rng_decision("fleet-equivalence/packet-loss", 1),
-        rng_decision("fleet-equivalence/decision-rng", 0xdce8_0001),
-        override_decision("fleet-equivalence/scheduler-point", "fleet-choice"),
+fn fleet_root_decisions() -> Result<Vec<Decision>, EngineError> {
+    [
+        "fleet-equivalence-packet-loss",
+        "fleet-equivalence-decision-rng",
+        "fleet-equivalence-scheduler-point",
     ]
-}
-
-fn rng_decision(stream: impl Into<String>, value: u64) -> Decision {
-    Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name(stream),
-        value,
-    })
-}
-
-fn override_decision(point: impl Into<String>, choice: impl Into<String>) -> Decision {
-    Decision::Override(OverrideDecision {
-        point: SchedulingPoint { key: point.into() },
-        choice: ChoiceTag {
-            name: choice.into(),
-        },
-    })
+    .into_iter()
+    .map(crucible::test_support::typed_search_decision_for_test)
+    .collect()
 }
 
 fn node_id(name: impl Into<String>) -> NodeId {
     NodeId { name: name.into() }
-}
-
-fn ready_sim_double() -> SimDouble {
-    let mut backend = SimDouble::new(SimDoubleConfig::default())
-        .unwrap_or_else(|error| panic!("SimDouble fleet backend should build: {error}"));
-    complete_sim_double_setup(&mut backend);
-    backend
-}
-
-fn complete_sim_double_setup(backend: &mut SimDouble) {
-    let hello_ack = control_encode_host_msg(&HostMsg::HelloAck {
-        proto_version: CONTROL_PROTOCOL_VERSION,
-        abi_version: backend.shmem_header_snapshot().abi_version,
-        slot_index: 0,
-        node_count: backend.shmem_layout().node_count,
-    });
-    backend
-        .accept_host_control_frame(&hello_ack)
-        .unwrap_or_else(|error| panic!("SimDouble hello acknowledgement should succeed: {error}"));
-
-    let setup = control_encode_host_msg(&HostMsg::Setup {
-        region_len: backend.shmem_layout().region_size,
-    });
-    match backend.accept_host_control_frame(&setup) {
-        Ok(Some(_setup_ack)) => {}
-        Ok(None) => panic!("SimDouble setup should return a setup acknowledgement"),
-        Err(error) => panic!("SimDouble setup should succeed: {error}"),
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct SimDoubleFleetWitness {
-    host_index: usize,
-    reached: u64,
-    schedule: Vec<SimDoubleHostScheduleEvent>,
 }
 
 struct FleetEquivalenceFixture {

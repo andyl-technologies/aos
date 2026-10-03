@@ -29,7 +29,11 @@ pub(crate) fn write_replay_report_human(
     if let Some(live) = &report.live_qemu {
         writeln!(
             output,
-            "crucible: replay live-qemu validation=passed producer={} reproduced_status={} reproduced_outcome={} terminal_configuration={} event_stream={} fingerprint_stream={} controls={}",
+            "crucible: replay live-qemu validation=passed owner={} producer={} reproduced_status={} reproduced_outcome={} terminal_configuration={} event_stream={} fingerprint_stream={} controls={}",
+            match live.execution_owner {
+                RunExecutionOwner::Session => "session",
+                RunExecutionOwner::Campaign => "campaign",
+            },
             live.producer,
             live.terminal_status,
             live.terminal_outcome,
@@ -38,6 +42,16 @@ pub(crate) fn write_replay_report_human(
             live.fingerprint_stream_digest,
             live.controls
         )?;
+        if let Some(preemption) = live.host_scheduler_preemption {
+            writeln!(
+                output,
+                "crucible: replay bounded-scheduler-preemption applied={} pending_quantum_certified={} perturbations={} requested_stopped_ms={}",
+                preemption.applied,
+                preemption.pending_quantum_certified,
+                preemption.perturbations,
+                preemption.requested_stopped_milliseconds
+            )?;
+        }
     }
     if let Some(check) = &report.check {
         match &check.mismatch {

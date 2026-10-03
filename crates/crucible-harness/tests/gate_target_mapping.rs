@@ -7,9 +7,40 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crucible_harness::campaign_gates::find_campaign_gate;
 use crucible_harness::find_gate;
 use crucible_harness::gate_targets::{GateTargetSpec, gate_targets};
 use toml::Value;
+
+struct ImplementedGateTestModel {
+    package: &'static str,
+    test_target: &'static str,
+    gate_entry_point: &'static str,
+    ignored_process_helpers: &'static [&'static str],
+}
+
+// Process helpers are test-harness entry points, but they must never replace
+// the runnable test that exercises the gate under normal Cargo invocation.
+const IMPLEMENTED_GATE_TEST_MODELS: &[ImplementedGateTestModel] = &[
+    ImplementedGateTestModel {
+        package: "crucible-daemon",
+        test_target: "gate_campaign_component_contract",
+        gate_entry_point: "same_campaign_survives_direct_rpc_and_independent_component_restarts",
+        ignored_process_helpers: &["coordinator_process_helper", "executor_process_helper"],
+    },
+    ImplementedGateTestModel {
+        package: "crucible-campaign",
+        test_target: "gate_campaign_cold_continuity",
+        gate_entry_point: "campaign_cold_continuity_survives_pause_restart_archive_restore_and_resume",
+        ignored_process_helpers: &["continuity_process_helper"],
+    },
+    ImplementedGateTestModel {
+        package: "crucible",
+        test_target: "gate_campaign_replay",
+        gate_entry_point: "offline_rich_finding_replays_without_campaign_store",
+        ignored_process_helpers: &["offline_campaign_replay_consumer"],
+    },
+];
 
 #[test]
 fn per_layer_gates_have_named_isolable_test_targets() -> Result<(), Box<dyn Error>> {
@@ -27,7 +58,7 @@ fn per_layer_gates_have_named_isolable_test_targets() -> Result<(), Box<dyn Erro
             continue;
         }
 
-        if find_gate(target.gate).is_none() {
+        if find_gate(target.gate).is_none() && find_campaign_gate(target.gate).is_none() {
             failures.push(format!(
                 "{}:{} references unknown canonical gate {}",
                 target.package, target.test_target, target.gate
@@ -49,56 +80,48 @@ fn per_layer_gates_have_named_isolable_test_targets() -> Result<(), Box<dyn Erro
         }
 
         let content = fs::read_to_string(&test_path)?;
-        if target.placeholder {
-            if !content.contains("#[ignore") || !content.contains("panic!") {
+        failures.extend(implemented_gate_test_failures(
+            target,
+            &content,
+            &display_repo_path(&test_path, &root),
+        ));
+
+        // Every feature-gated integration target must declare each feature in
+        // its `[[test]]` entry and pin an explicit path so default workspace
+        // test discovery cannot compile it under the wrong feature set.
+        for required_feature in target.required_features {
+            if !manifest_test_target_requires_feature(
+                &fs::read_to_string(&manifest_path)?.parse()?,
+                target.test_target,
+                required_feature,
+            ) {
                 failures.push(format!(
-                    "{}: placeholder gate target must be ignored and fail when explicitly run",
-                    display_repo_path(&test_path, &root)
+                    "{}:{} Cargo manifest must set required-features containing {:?}",
+                    target.package, target.test_target, required_feature
                 ));
             }
-        } else if content.contains("#[ignore") {
+        }
+
+        if !target.required_features.is_empty()
+            && !manifest_test_target_has_path(
+                &fs::read_to_string(&manifest_path)?.parse()?,
+                target.test_target,
+                &format!("tests/{}.rs", target.test_target),
+            )
+        {
             failures.push(format!(
-                "{}: implemented gate target must not be ignored",
-                display_repo_path(&test_path, &root)
+                "{}:{} Cargo manifest must set path = \"tests/{}.rs\"",
+                target.package, target.test_target, target.test_target
             ));
         }
 
-        // Feature-gated `crucible` gate targets (those that exercise the
-        // `test-double` backend) must declare the feature both in the registry and
-        // in their `[[test]]` manifest entry, and pin an explicit path so the
-        // target is isolable. Crucible-side gate targets that run under default
-        // features (the real-simulator determinism gates) are auto-discovered and
-        // exempt.
+        // The `crucible` SimDouble gates specifically require test-double.
         let requires_test_double = crucible_gate_target_requires_test_double(target);
         if requires_test_double && target.required_features != ["test-double"].as_slice() {
             failures.push(format!(
                 "{}:{} must run with --features test-double",
                 target.package, target.test_target
             ));
-        }
-
-        if requires_test_double {
-            if !manifest_test_target_requires_feature(
-                &fs::read_to_string(&manifest_path)?.parse()?,
-                target.test_target,
-                "test-double",
-            ) {
-                failures.push(format!(
-                    "{}:{} Cargo manifest must set required-features = [\"test-double\"]",
-                    target.package, target.test_target
-                ));
-            }
-
-            if !manifest_test_target_has_path(
-                &fs::read_to_string(&manifest_path)?.parse()?,
-                target.test_target,
-                &format!("tests/{}.rs", target.test_target),
-            ) {
-                failures.push(format!(
-                    "{}:{} Cargo manifest must set path = \"tests/{}.rs\"",
-                    target.package, target.test_target, target.test_target
-                ));
-            }
         }
     }
 
@@ -131,33 +154,18 @@ fn crate_structure_gate_targets_match_rfc_table() {
             ),
             (
                 "gate:layer0-determinism",
-                "crucible-sim",
-                "gate_layer0_determinism"
-            ),
-            (
-                "gate:layer0-determinism",
-                "crucible-assert",
-                "gate_layer0_determinism"
-            ),
-            (
-                "gate:layer0-determinism",
-                "crucible",
-                "gate_layer0_determinism"
-            ),
-            (
-                "gate:single-vm-fingerprint",
-                "crucible",
-                "gate_single_vm_fingerprint"
+                "crucible-qemu",
+                "deterministic_launch"
             ),
             (
                 "gate:single-vm-fingerprint",
                 "crucible-qemu",
-                "gate_single_vm_fingerprint"
+                "deterministic_launch"
             ),
             (
                 "gate:single-vm-fingerprint",
                 "crucible-qemu-plugin",
-                "gate_single_vm_fingerprint"
+                "gate_patch_microtests"
             ),
             (
                 "gate:single-vm-fingerprint",
@@ -218,9 +226,80 @@ fn crate_structure_gate_targets_match_rfc_table() {
                 "gate_content_address"
             ),
             (
+                "gate:campaign-model",
+                "crucible-campaign",
+                "gate_campaign_model"
+            ),
+            (
+                "gate:campaign-gate-matrix",
+                "crucible-harness",
+                "campaign_gate_matrix_inventory"
+            ),
+            (
+                "gate:campaign-release-acceptance",
+                "crucible-harness",
+                "campaign_release_acceptance"
+            ),
+            (
+                "gate:campaign-replay",
+                "crucible-campaign",
+                "gate_campaign_replay"
+            ),
+            ("gate:campaign-replay", "crucible", "gate_campaign_replay"),
+            (
+                "gate:campaign-statistics",
+                "crucible-campaign",
+                "gate_campaign_statistics"
+            ),
+            (
+                "gate:branch-point-model",
+                "crucible-campaign",
+                "gate_branch_point_model"
+            ),
+            (
+                "gate:lazy-frontier",
+                "crucible-campaign",
+                "gate_lazy_frontier"
+            ),
+            (
+                "gate:attempt-idempotence",
+                "crucible-campaign",
+                "gate_attempt_idempotence"
+            ),
+            (
+                "gate:campaign-mutation-scaling",
+                "crucible-campaign",
+                "gate_campaign_mutation_scaling"
+            ),
+            (
+                "gate:campaign-store-equivalence",
+                "crucible-cas",
+                "gate_campaign_store_equivalence"
+            ),
+            (
+                "gate:campaign-store-composition",
+                "crucible-cas",
+                "gate_campaign_store_composition"
+            ),
+            (
+                "gate:campaign-store-composition",
+                "crucible-cli",
+                "gate_campaign_store_composition"
+            ),
+            (
+                "gate:campaign-component-contract",
+                "crucible-daemon",
+                "gate_campaign_component_contract"
+            ),
+            (
+                "gate:campaign-cold-continuity",
+                "crucible-campaign",
+                "gate_campaign_cold_continuity"
+            ),
+            (
                 "gate:scheduler-liveness",
-                "crucible",
-                "gate_scheduler_liveness"
+                "crucible-qemu",
+                "deterministic_launch"
             ),
             (
                 "gate:control-responsive",
@@ -237,7 +316,7 @@ fn crate_structure_gate_targets_match_rfc_table() {
                 "crucible-daemon",
                 "gate_control_responsive"
             ),
-            ("gate:any-guest", "crucible-qemu", "gate_any_guest"),
+            ("gate:any-guest", "crucible-qemu", "deterministic_launch"),
             ("gate:qemu-inert", "crucible-qemu", "gate_qemu_inert"),
             ("gate:qemu-inert", "crucible-qemu-plugin", "gate_qemu_inert"),
             (
@@ -296,6 +375,11 @@ fn crate_structure_gate_targets_match_rfc_table() {
                 "gate_campaign_continuity"
             ),
             (
+                "gate:typed-choice",
+                "crucible-campaign",
+                "gate_typed_choice"
+            ),
+            (
                 "gate:signal-fault-system",
                 "crucible",
                 "gate_signal_fault_system"
@@ -313,25 +397,26 @@ fn mapping_regression_failures() -> Vec<String> {
             package: "crucible",
             test_target: "gate_replay_oracle",
             required_features: &[],
-            placeholder: true,
         },
         GateTargetSpec {
             gate: "gate:harness-lint",
             package: "crucible-harness",
             test_target: "harness_lint",
             required_features: &[],
-            placeholder: false,
         },
         GateTargetSpec {
             gate: "gate:unknown",
             package: "crucible-harness",
             test_target: "unknown_gate",
             required_features: &[],
-            placeholder: true,
         },
     ];
 
-    let feature_findings = synthetic_mapping_failures(&targets, &BTreeMap::new());
+    let ignored_implemented_target = BTreeMap::from([(
+        ("crucible-harness", "harness_lint"),
+        "#[test]\n#[ignore]\nfn harness_lint_gate() {}",
+    )]);
+    let feature_findings = synthetic_mapping_failures(&targets, &ignored_implemented_target);
     if !feature_findings
         .iter()
         .any(|finding| finding.contains("--features test-double"))
@@ -374,6 +459,131 @@ fn mapping_regression_failures() -> Vec<String> {
         failures.push("gate-target mapping regression failed to reject unknown gate".to_string());
     }
 
+    let component_target = GateTargetSpec {
+        gate: "gate:campaign-component-contract",
+        package: "crucible-daemon",
+        test_target: "gate_campaign_component_contract",
+        required_features: &[],
+    };
+    let runnable_component_gate = r#"
+        #[test]
+        fn same_campaign_survives_direct_rpc_and_independent_component_restarts() {}
+
+        #[test]
+        #[ignore = "spawned process helper"]
+        fn coordinator_process_helper() {}
+
+        #[test]
+        #[ignore = "spawned process helper"]
+        fn executor_process_helper() {}
+    "#;
+    let runnable_findings = implemented_gate_test_failures(
+        &component_target,
+        runnable_component_gate,
+        "synthetic component gate",
+    );
+    if !runnable_findings.is_empty() {
+        failures.push(format!(
+            "gate-target mapping regression rejected modeled process helpers: {}",
+            runnable_findings.join(", ")
+        ));
+    }
+
+    let ignored_entry_point = runnable_component_gate.replace(
+        "#[test]\n        fn same_campaign_survives",
+        "#[test]\n        #[ignore]\n        fn same_campaign_survives",
+    );
+    if !implemented_gate_test_failures(
+        &component_target,
+        &ignored_entry_point,
+        "synthetic component gate",
+    )
+    .iter()
+    .any(|finding| finding.contains("gate entry point") && finding.contains("must not be ignored"))
+    {
+        failures.push(
+            "gate-target mapping regression failed to reject ignored component gate entry point"
+                .to_string(),
+        );
+    }
+
+    let unmodeled_helper = format!(
+        "{runnable_component_gate}\n#[test]\n#[ignore]\nfn unmodeled_process_helper() {{}}"
+    );
+    if !implemented_gate_test_failures(
+        &component_target,
+        &unmodeled_helper,
+        "synthetic component gate",
+    )
+    .iter()
+    .any(|finding| finding.contains("unmodeled_process_helper"))
+    {
+        failures.push(
+            "gate-target mapping regression failed to reject an unmodeled ignored helper"
+                .to_string(),
+        );
+    }
+
+    let replay_target = GateTargetSpec {
+        gate: "gate:campaign-replay",
+        package: "crucible",
+        test_target: "gate_campaign_replay",
+        required_features: &[],
+    };
+    let runnable_replay_gate = r#"
+        #[test]
+        fn offline_rich_finding_replays_without_campaign_store() {}
+
+        #[test]
+        #[ignore = "spawned process helper"]
+        fn offline_campaign_replay_consumer() {}
+    "#;
+    let runnable_findings = implemented_gate_test_failures(
+        &replay_target,
+        runnable_replay_gate,
+        "synthetic campaign replay gate",
+    );
+    if !runnable_findings.is_empty() {
+        failures.push(format!(
+            "gate-target mapping regression rejected modeled process helper: {}",
+            runnable_findings.join(", ")
+        ));
+    }
+
+    let ignored_entry_point = runnable_replay_gate.replace(
+        "#[test]\n        fn offline_rich_finding",
+        "#[test]\n        #[ignore]\n        fn offline_rich_finding",
+    );
+    if !implemented_gate_test_failures(
+        &replay_target,
+        &ignored_entry_point,
+        "synthetic campaign replay gate",
+    )
+    .iter()
+    .any(|finding| finding.contains("gate entry point") && finding.contains("must not be ignored"))
+    {
+        failures.push(
+            "gate-target mapping regression failed to reject ignored replay gate entry point"
+                .to_string(),
+        );
+    }
+
+    let unmodeled_helper =
+        format!("{runnable_replay_gate}\n#[test]\n#[ignore]\nfn unmodeled_process_helper() {{}}");
+    if !implemented_gate_test_failures(
+        &replay_target,
+        &unmodeled_helper,
+        "synthetic campaign replay gate",
+    )
+    .iter()
+    .any(|finding| finding.contains("unmodeled_process_helper"))
+    {
+        failures.push(
+            "campaign replay mapping regression failed to reject an unmodeled ignored helper"
+                .to_string(),
+        );
+    }
+
     failures
 }
 
@@ -384,7 +594,7 @@ fn synthetic_mapping_failures(
     let mut failures = Vec::new();
 
     for target in targets {
-        if find_gate(target.gate).is_none() {
+        if find_gate(target.gate).is_none() && find_campaign_gate(target.gate).is_none() {
             failures.push(format!(
                 "{}:{} references unknown canonical gate {}",
                 target.package, target.test_target, target.gate
@@ -408,20 +618,12 @@ fn synthetic_mapping_failures(
             ));
         }
         if let Some(content) = file_contents.get(&(target.package, target.test_target)) {
-            if target.placeholder {
-                if !content.contains("#[ignore") || !content.contains("panic!") {
-                    failures.push(format!(
-                        "{}:{} placeholder gate target must be ignored and fail when explicitly run",
-                        target.package, target.test_target
-                    ));
-                }
-            } else if content.contains("#[ignore") {
-                failures.push(format!(
-                    "{}:{} implemented gate target must not be ignored",
-                    target.package, target.test_target
-                ));
-            }
-        } else if !target.placeholder {
+            failures.extend(implemented_gate_test_failures(
+                target,
+                content,
+                &format!("{}:{}", target.package, target.test_target),
+            ));
+        } else {
             failures.push(format!(
                 "{}:{} implemented gate target must not be ignored",
                 target.package, target.test_target
@@ -432,18 +634,116 @@ fn synthetic_mapping_failures(
     failures
 }
 
+fn implemented_gate_test_failures(
+    target: &GateTargetSpec,
+    content: &str,
+    subject: &str,
+) -> Vec<String> {
+    let Some(model) = IMPLEMENTED_GATE_TEST_MODELS
+        .iter()
+        .find(|model| model.package == target.package && model.test_target == target.test_target)
+    else {
+        return content
+            .contains("#[ignore")
+            .then(|| format!("{subject}: implemented gate target must not be ignored"))
+            .into_iter()
+            .collect();
+    };
+
+    let tests = integration_test_functions(content);
+    let mut failures = Vec::new();
+
+    match tests.get(model.gate_entry_point) {
+        Some(false) => {}
+        Some(true) => failures.push(format!(
+            "{subject}: implemented gate entry point `{}` must not be ignored",
+            model.gate_entry_point
+        )),
+        None => failures.push(format!(
+            "{subject}: must declare runnable gate entry point `{}`",
+            model.gate_entry_point
+        )),
+    }
+
+    for helper in model.ignored_process_helpers {
+        match tests.get(*helper) {
+            Some(true) => {}
+            Some(false) => failures.push(format!(
+                "{subject}: process helper `{helper}` must remain ignored"
+            )),
+            None => failures.push(format!(
+                "{subject}: missing modeled process helper `{helper}`"
+            )),
+        }
+    }
+
+    for (name, ignored) in &tests {
+        if *ignored && !model.ignored_process_helpers.contains(&name.as_str()) {
+            failures.push(format!(
+                "{subject}: ignored test `{name}` is not a modeled process helper"
+            ));
+        }
+    }
+
+    let ignored_attribute_count = content.match_indices("#[ignore").count();
+    let ignored_test_count = tests.values().filter(|ignored| **ignored).count();
+    if ignored_attribute_count != ignored_test_count {
+        failures.push(format!(
+            "{subject}: contains an ignored attribute outside a modeled test function"
+        ));
+    }
+
+    failures
+}
+
+fn integration_test_functions(content: &str) -> BTreeMap<String, bool> {
+    // Rustfmt emits test attributes and signatures one per line. Keeping this
+    // parser narrow makes an unparsed `ignore` fail the raw-count check above.
+    let mut tests = BTreeMap::new();
+    let mut has_test_attribute = false;
+    let mut has_ignore_attribute = false;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line == "#[test]" {
+            has_test_attribute = true;
+            has_ignore_attribute = false;
+            continue;
+        }
+        if !has_test_attribute {
+            continue;
+        }
+        if line.starts_with("#[ignore") {
+            has_ignore_attribute = true;
+            continue;
+        }
+        if line.starts_with("#[") || line.is_empty() || line.starts_with("//") {
+            continue;
+        }
+
+        if let Some(signature) = line
+            .strip_prefix("fn ")
+            .or_else(|| line.strip_prefix("async fn "))
+            && let Some((name, _)) = signature.split_once('(')
+        {
+            tests.insert(name.trim().to_string(), has_ignore_attribute);
+        }
+
+        has_test_attribute = false;
+        has_ignore_attribute = false;
+    }
+
+    tests
+}
+
 fn crucible_gate_target_requires_test_double(target: &GateTargetSpec) -> bool {
     target.package == "crucible"
         && matches!(
             target.gate,
-            "gate:layer0-determinism"
-                | "gate:single-vm-fingerprint"
+            "gate:single-vm-fingerprint"
                 | "gate:abi-conformance"
                 | "gate:replay-oracle"
-                | "gate:content-address"
-                | "gate:scheduler-liveness"
                 | "gate:e2e-determinism"
-                | "gate:fleet-equivalence"
         )
 }
 

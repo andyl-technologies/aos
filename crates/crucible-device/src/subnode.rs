@@ -16,7 +16,7 @@
 //!
 //! The COMPUTE-then-DELIVER split is the crux ([IO-2], [IO-31]): on
 //! [`IoCore::process_inbox`], each arrived request is COMPUTEd *now* and its
-//! `delivery_icount = ceil_ns_to_icount(virtual_ns(request_icount) + latency)`
+//! `delivery_icount = request_icount + latency_ns * TICKS_PER_NS`
 //! is fixed; the response then sits in the in-flight queue, *invisible* until
 //! [`IoCore::advance_to`] moves the clock to its delivery icount. Host COMPUTE
 //! wall-clock never enters the delivery icount or any payload byte.
@@ -25,7 +25,7 @@
 //! process_inbox(device):                              (COMPUTE)
 //!   for each request:
 //!     (status, payload) = device.compute(request)     -- host FS/overlay now
-//!     delivery = ceil_ns_to_icount(vt(t) + latency)    -- pure virtual time
+//!     delivery = t + latency_ns * TICKS_PER_NS          -- exact tick arithmetic
 //!     inflight.insert(PendingResponse{ delivery, .. }) (PENDING)
 //! next_exact_local_event() = inflight head delivery    (scheduler reads this)
 //! advance_to(limit):                                   (DELIVER)
@@ -42,7 +42,9 @@ use crucible_shmem::{
     FrameDeliveryKey, FrameEntry, NodeSlot, RingHeader, SpscRingError, WakeAction,
 };
 
-use crate::backpressure::{BackpressureState, BoundedQueue, PushError};
+use std::num::NonZeroU64;
+
+use crate::backpressure::{BackpressureState, BoundedQueue};
 use crate::clock::VirtualClock;
 use crate::error::DeviceError;
 use crate::inflight::{InflightQueue, PendingResponse};
@@ -50,7 +52,11 @@ use crate::request::{ComputedResponse, LatencyModel, Request, Response};
 
 mod frame;
 mod io_core_private;
+mod queue_revision;
+mod selected_delivery;
 mod snapshot;
+pub use queue_revision::IoRequestEnqueueFailure;
+pub use selected_delivery::SelectedDeliveryOutcome;
 
 use frame::{frame_from_pending_response, request_from_frame};
 pub use snapshot::{
@@ -126,6 +132,9 @@ pub struct IoCore {
     src_node: u32,
     /// The next per-request sequence number, for deterministic tie-breaking.
     next_seq: u32,
+    // Persisted owner revision of all queue transactions, distinct from the
+    // response sequence that identifies one computed reply.
+    queue_revision: NonZeroU64,
 }
 
 /// A captured, restorable snapshot of an [`IoCore`]'s deterministic state.
@@ -146,12 +155,14 @@ pub struct IoCore {
 pub struct IoCoreSnapshot {
     /// The sub-node's current icount at snapshot time.
     pub current_icount: u64,
-    /// The fixed virtual-time shift in bits.
-    pub shift_bits: u8,
+    /// Fixed logical ticks per virtual nanosecond.
+    pub ticks_per_ns: u32,
     /// The sub-node's source-node id.
     pub src_node: u32,
     /// The next per-request sequence number.
     pub next_seq: u32,
+    /// Checked queue-owner revision, restored exactly across fork and replay.
+    pub queue_revision: NonZeroU64,
     /// The inbound-ring capacity in entries.
     pub inbox_capacity: u64,
     /// The outbound-ring capacity in entries.
@@ -165,26 +176,25 @@ pub struct IoCoreSnapshot {
 }
 
 impl IoCore {
-    /// Creates an I/O core with the given clock shift, node id, and ring sizes.
+    /// Creates an I/O core with the fixed clock scale, node id, and ring sizes.
     ///
     /// # Errors
     ///
-    /// Returns [`DeviceError::Clock`] when `shift_bits >= 64`, and
-    /// [`DeviceError::RingFull`] (the capacity-shape rejection) when either ring
+    /// Returns [`DeviceError::RingFull`] when either ring
     /// capacity is zero or not a power of two.
     pub fn new(
-        shift_bits: u8,
         src_node: u32,
         inbox_capacity: u64,
         outbox_capacity: u64,
     ) -> Result<Self, DeviceError> {
         Ok(Self {
-            clock: VirtualClock::new(shift_bits)?,
+            clock: VirtualClock::new(),
             inbox: BoundedQueue::new(inbox_capacity)?,
             outbox: BoundedQueue::new(outbox_capacity)?,
             inflight: InflightQueue::new(),
             src_node,
             next_seq: 0,
+            queue_revision: NonZeroU64::MIN,
         })
     }
 
@@ -192,12 +202,6 @@ impl IoCore {
     #[must_use]
     pub fn current_icount(&self) -> u64 {
         self.clock.current_icount()
-    }
-
-    /// Returns the fixed virtual-time shift in bits.
-    #[must_use]
-    pub fn shift_bits(&self) -> u8 {
-        self.clock.shift_bits()
     }
 
     /// Returns the producer's inbound backpressure condition.
@@ -241,23 +245,35 @@ impl IoCore {
     /// Returns the discarded responses in deterministic delivery order. Crash
     /// fault handling uses this to void a node's in-flight I/O without advancing
     /// the device clock or making any response visible.
-    pub fn discard_inflight(&mut self) -> Vec<PendingResponse> {
-        self.inflight.drain_all()
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DeviceError::IoQueueRevisionExhausted`] before discarding any response.
+    pub fn discard_inflight(&mut self) -> Result<Vec<PendingResponse>, DeviceError> {
+        if self.inflight.is_empty() {
+            return Ok(Vec::new());
+        }
+        let revision = self.next_queue_revision()?;
+        self.queue_revision = revision;
+        Ok(self.inflight.drain_all())
     }
 
-    /// Removes every computed response for a device-owned transactional rewrite.
-    pub(crate) fn take_inflight(&mut self) -> Vec<PendingResponse> {
-        self.inflight.drain_all()
-    }
-
-    /// Reinstalls responses after a device-owned transactional rewrite.
+    /// Atomically replaces the computed queue after a device-owned rewrite.
     pub(crate) fn replace_inflight(
         &mut self,
         responses: impl IntoIterator<Item = PendingResponse>,
-    ) {
+    ) -> Result<(), DeviceError> {
+        let responses = responses.into_iter().collect::<Vec<_>>();
+        if self.inflight.entries() == responses {
+            return Ok(());
+        }
+        let revision = self.next_queue_revision()?;
+        self.queue_revision = revision;
+        let _replaced = self.inflight.drain_all();
         for response in responses {
             self.inflight.insert(response);
         }
+        Ok(())
     }
 
     /// Advances the clock and publishes at most one due response locally.
@@ -270,6 +286,7 @@ impl IoCore {
         &mut self,
         limit: u64,
     ) -> Result<Option<PendingResponse>, DeviceError> {
+        let revision = self.next_queue_revision()?;
         self.clock.advance_to(limit)?;
         let mut due = self.inflight.drain_due(limit).into_iter();
         let Some(pending) = due.next() else {
@@ -278,10 +295,15 @@ impl IoCore {
         let observed = pending.clone();
         if let Err(rejected) = self.outbox.push(pending) {
             self.inflight.insert(rejected.into_item());
-            self.replace_inflight(due);
+            for remaining in due {
+                self.inflight.insert(remaining);
+            }
             return Ok(None);
         }
-        self.replace_inflight(due);
+        self.queue_revision = revision;
+        for remaining in due {
+            self.inflight.insert(remaining);
+        }
         Ok(Some(observed))
     }
 
@@ -296,6 +318,7 @@ impl IoCore {
         outbox_entries: &mut [FrameEntry],
         _consumer_slot: &NodeSlot,
     ) -> Result<Option<PendingResponse>, DeviceError> {
+        let revision = self.next_queue_revision()?;
         self.clock.advance_to(limit)?;
         let mut due = self.inflight.drain_due(limit).into_iter();
         let Some(pending) = due.next() else {
@@ -304,24 +327,24 @@ impl IoCore {
         let frame = match frame_from_pending_response(&pending) {
             Ok(frame) => frame,
             Err(error) => {
-                self.inflight.insert(pending);
-                self.replace_inflight(due);
+                self.requeue_pending(pending, due);
                 return Err(error);
             }
         };
         match outbox.enqueue(outbox_entries, &frame) {
             Ok(()) => {
-                self.replace_inflight(due);
+                self.queue_revision = revision;
+                for remaining in due {
+                    self.inflight.insert(remaining);
+                }
                 Ok(Some(pending))
             }
             Err(SpscRingError::QueueFull { .. }) => {
-                self.inflight.insert(pending);
-                self.replace_inflight(due);
+                self.requeue_pending(pending, due);
                 Ok(None)
             }
             Err(error) => {
-                self.inflight.insert(pending);
-                self.replace_inflight(due);
+                self.requeue_pending(pending, due);
                 Err(DeviceError::from(error))
             }
         }
@@ -338,26 +361,28 @@ impl IoCore {
     /// Returns [`DeviceError::ResponseSequenceOverflow`] if the canonical
     /// completion-order sequence is exhausted.
     pub fn schedule_response_now(&mut self, response: Response) -> Result<(), DeviceError> {
+        self.check_response_sequence_capacity(1)?;
+        let revision = self.next_queue_revision()?;
         let delivery_icount = self.clock.current_icount();
+        self.queue_revision = revision;
         self.insert_computed_response(delivery_icount, response)
     }
 
     /// Schedules a fully computed response from an exact virtual-time boundary.
     ///
     /// Device-owned service queues use this after real work completes. The
-    /// computed response's dynamic latency and duplicate gaps are applied from
-    /// `base_completion_nanos`, then converted with the core's fixed clock.
+    /// computed response's exact tick delays are added to `base_completion_tick`.
     ///
     /// # Errors
     ///
     /// Returns [`DeviceError`] for invalid response shape, time/sequence
     /// overflow, or a completion that would be inserted in the past.
-    pub(crate) fn schedule_computed_response_at_nanos(
+    pub(crate) fn schedule_computed_response_at_tick(
         &mut self,
-        base_completion_nanos: u64,
+        base_completion_tick: u64,
         computed: ComputedResponse,
     ) -> Result<(), DeviceError> {
-        self.insert_computed_at_nanos(base_completion_nanos, computed)
+        self.insert_computed_at_tick(base_completion_tick, computed)
     }
 
     /// Enqueues a request into the inbound ring (the ARRIVE step).
@@ -367,19 +392,32 @@ impl IoCore {
     ///
     /// # Errors
     ///
-    /// Returns [`PushError`] (carrying the rejected request) when the inbound
+    /// Returns [`IoRequestEnqueueFailure`] carrying the rejected request when the inbound
     /// ring is full; the producer must block at its boundary and re-push the
     /// handed-back request after the device drains the inbox ([IO-32]). The
-    /// request is not consumed.
-    pub fn enqueue_request(&mut self, request: Request) -> Result<(), PushError<Request>> {
-        self.inbox.push(request)
+    /// request is not consumed. Revision exhaustion refuses before enqueue.
+    pub fn enqueue_request(&mut self, request: Request) -> Result<(), IoRequestEnqueueFailure> {
+        let revision = match self.next_queue_revision() {
+            Ok(revision) => revision,
+            Err(source) => return Err(IoRequestEnqueueFailure { request, source }),
+        };
+        self.inbox
+            .push(request)
+            .map_err(|rejected| IoRequestEnqueueFailure {
+                source: DeviceError::RingFull {
+                    capacity: rejected.capacity,
+                },
+                request: rejected.item,
+            })?;
+        self.queue_revision = revision;
+        Ok(())
     }
 
     /// COMPUTEs every pending request and inserts each response in flight.
     ///
     /// For each inbound request this drives `device.compute` (the host-access
-    /// COMPUTE step) and fixes `delivery_icount = ceil_ns_to_icount(
-    /// virtual_ns(request_icount) + latency_ns(request))` ([IO-2]). The response
+    /// COMPUTE step) and adds the modeled latency to the exact request tick
+    /// ([IO-2]). The response
     /// is inserted into the delivery-ordered in-flight queue; it stays invisible
     /// until [`IoCore::advance_to`] reaches its delivery icount.
     ///
@@ -503,15 +541,12 @@ impl IoCore {
 
     /// Computes the exact delivery icount for a request under a latency model.
     ///
-    /// `delivery_icount = ceil_ns_to_icount(virtual_ns(request_icount) + latency)`
-    /// — a pure function of the request icount, the modeled latency, and the
-    /// fixed shift ([IO-2], [IO-22]).
+    /// `delivery_icount = request_icount + latency_ns * TICKS_PER_NS`, preserving
+    /// the request tick's fractional phase ([IO-2], [IO-22]).
     ///
     /// # Errors
     ///
-    /// Returns [`DeviceError::CompletionOverflow`] when the nanosecond sum
-    /// overflows `u64`, and [`DeviceError::Clock`] / [`DeviceError::IcountOverflow`]
-    /// when a virtual-time conversion fails.
+    /// Returns [`DeviceError::CompletionOverflow`] when the tick sum overflows.
     pub fn compute_delivery_icount<L>(
         &self,
         request: &Request,
@@ -520,16 +555,8 @@ impl IoCore {
     where
         L: LatencyModel,
     {
-        let base_ns = self.clock.virtual_ns(request.request_icount)?;
-        let latency_ns = latency.latency_ns(request);
-        let completion_ns =
-            base_ns
-                .checked_add(latency_ns)
-                .ok_or(DeviceError::CompletionOverflow {
-                    request_icount: request.request_icount,
-                    latency_ns,
-                })?;
-        self.clock.ceil_ns_to_icount(completion_ns)
+        self.clock
+            .add_ns(request.request_icount, latency.latency_ns(request))
     }
 
     /// Returns the in-flight head's delivery icount: the next exact local event.
@@ -558,6 +585,7 @@ impl IoCore {
     /// Returns [`DeviceError::ClockRegression`] when `limit` is below the current
     /// icount.
     pub fn advance_to(&mut self, limit: u64) -> Result<usize, DeviceError> {
+        let revision = self.next_queue_revision()?;
         self.clock.advance_to(limit)?;
         let due = self.inflight.drain_due(limit);
         let mut delivered = 0;
@@ -568,7 +596,10 @@ impl IoCore {
             // a `PushError` would only arise from a logic error, in which case
             // the handed-back item is re-queued in flight (never dropped).
             match self.outbox.push(pending) {
-                Ok(()) => delivered += 1,
+                Ok(()) => {
+                    self.queue_revision = revision;
+                    delivered += 1;
+                }
                 Err(rejected) => {
                     // Outbound ring full: stop at this boundary, keep the rest in
                     // flight at their exact delivery icounts (never drop/reorder).
@@ -612,6 +643,12 @@ impl IoCore {
         outbox_entries: &mut [FrameEntry],
         consumer_slot: &NodeSlot,
     ) -> Result<ShmemDeliveryResult, ShmemDeliveryFailure> {
+        let revision = self
+            .next_queue_revision()
+            .map_err(|source| ShmemDeliveryFailure {
+                published: 0,
+                source,
+            })?;
         self.clock
             .advance_to(limit)
             .map_err(|source| ShmemDeliveryFailure {
@@ -633,7 +670,10 @@ impl IoCore {
                 }
             };
             match outbox.enqueue(outbox_entries, &frame) {
-                Ok(()) => delivered += 1,
+                Ok(()) => {
+                    self.queue_revision = revision;
+                    delivered += 1;
+                }
                 Err(SpscRingError::QueueFull { .. }) => {
                     self.requeue_pending(pending, remaining);
                     break;
@@ -687,8 +727,17 @@ impl IoCore {
     /// Returns responses in the deterministic delivery order they were made
     /// visible. Popping frees an outbound slot, waking a backpressured producer
     /// ([IO-32]).
-    pub fn pop_response(&mut self) -> Option<PendingResponse> {
-        self.outbox.pop()
+    /// # Errors
+    ///
+    /// Returns [`DeviceError::IoQueueRevisionExhausted`] before consuming a response.
+    pub fn pop_response(&mut self) -> Result<Option<PendingResponse>, DeviceError> {
+        if self.outbox.live() == 0 {
+            return Ok(None);
+        }
+        let revision = self.next_queue_revision()?;
+        let response = self.outbox.pop();
+        self.queue_revision = revision;
+        Ok(response)
     }
 
     /// Dequeues one shared-memory frame and wakes the producer if a slot was freed.
@@ -729,9 +778,10 @@ impl IoCore {
     pub fn snapshot(&self) -> IoCoreSnapshot {
         IoCoreSnapshot {
             current_icount: self.clock.current_icount(),
-            shift_bits: self.clock.shift_bits(),
+            ticks_per_ns: crucible_shmem::TICKS_PER_NS as u32,
             src_node: self.src_node,
             next_seq: self.next_seq,
+            queue_revision: self.queue_revision,
             inbox_capacity: self.inbox.capacity(),
             outbox_capacity: self.outbox.capacity(),
             inbox: self.inbox.iter().cloned().collect(),
@@ -744,13 +794,19 @@ impl IoCore {
     ///
     /// # Errors
     ///
-    /// Returns [`DeviceError::Clock`] when the snapshot's shift is invalid,
+    /// Returns [`DeviceError::ClockScaleMismatch`] when the snapshot's scale differs,
     /// [`DeviceError::RingFull`] when a ring capacity is not a power of two, and
     /// [`DeviceError::ClockRegression`] is impossible here (the clock is set
     /// directly). A ring whose captured contents exceed its capacity is rejected
     /// with [`DeviceError::RingFull`].
     pub fn restore(snapshot: &IoCoreSnapshot) -> Result<Self, DeviceError> {
-        let mut clock = VirtualClock::new(snapshot.shift_bits)?;
+        if snapshot.ticks_per_ns != crucible_shmem::TICKS_PER_NS as u32 {
+            return Err(DeviceError::ClockScaleMismatch {
+                actual: snapshot.ticks_per_ns,
+                expected: crucible_shmem::TICKS_PER_NS as u32,
+            });
+        }
+        let mut clock = VirtualClock::new();
         clock.advance_to(snapshot.current_icount)?;
 
         let mut inbox = BoundedQueue::new(snapshot.inbox_capacity)?;
@@ -783,6 +839,7 @@ impl IoCore {
             inflight,
             src_node: snapshot.src_node,
             next_seq: snapshot.next_seq,
+            queue_revision: snapshot.queue_revision,
         })
     }
 }

@@ -7,41 +7,95 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
+  model = import ./_crucible-model-source.nix {inherit lib;};
+  defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-  signalTests = import ./_rust-module-source.nix {
-    inherit lib;
-    entry = ../../crates/crucible/src/model/fault_signal/plan_test.rs;
-  };
   failures =
-    failuresFor "crates/crucible/src/model/fault_signal/plan_test.rs" signalTests [
+    failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
       {
-        label = "duplicate identity admission";
-        needle = "one_plan_level_graph_is_required_and_duplicates_fail_closed";
+        label = "T-SPAT-20 completion names signal plan admission";
+        needle = "rejects missing programs, duplicate identities, invalid selectors";
       }
       {
-        label = "complete signal layer identity";
-        needle = "outer_plan_identity_commits_to_the_complete_fault_layer";
+        label = "T-SPAT-20 completion names terminal gate";
+        needle = "`checks.crucible.phase7.gates.signalFaultSystem`";
       }
       {
-        label = "closed TOML contracts";
-        needle = "singleton_signal_alias_canonicalizes_and_closed_tables_reject_unknowns";
+        label = "T-SPAT-20 completion names resource ceilings";
+        needle = "exceeded resource ceilings before hashing or execution";
       }
       {
-        label = "world target validation";
-        needle = "compact_plan_rejects_resolved_targets_absent_from_decode_world";
-      }
-      {
-        label = "complete binding codec";
-        needle = "plan_binary_round_trips_a_complete_binding_contract";
+        label = "T-SPAT-20 completion names typed time";
+        needle = "Typed signal coordinates prevent negative time";
       }
     ]
-    ++ failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
+    ++ failuresFor "crates/crucible/src/model.rs" model [
       {
-        label = "current signal admission specification";
-        needle = "undeclared targets, incompatible mapping types";
+        label = "typed unsigned virtual time";
+        needle = "pub struct VirtualTime";
+      }
+      {
+        label = "virtual time tick is u64";
+        needle = "pub ticks: u64";
+      }
+      {
+        label = "fault signal plan admission constructor";
+        needle = "pub fn new(\n        mut programs: Vec<SignalProgram>,";
+      }
+      {
+        label = "duplicate programs rejected";
+        needle = "FaultSignalPlanError::DuplicateProgram";
+      }
+      {
+        label = "duplicate bindings rejected";
+        needle = "FaultSignalPlanError::DuplicateBinding";
+      }
+      {
+        label = "bindings cannot reference missing programs";
+        needle = "FaultSignalPlanError::MissingProgram";
+      }
+      {
+        label = "hard program ceiling enforced";
+        needle = "HARD_FAULT_SIGNAL_PROGRAM_LIMIT";
+      }
+      {
+        label = "bindings canonicalized before hashing";
+        needle = "bindings.sort_by(|left, right| left.id().cmp(right.id()))";
+      }
+      {
+        label = "world admission validates fault signals";
+        needle = ".validate_for_world(world)";
+      }
+    ]
+    ++ failuresFor "crates/crucible/src/model.rs" model [
+      {
+        label = "focused duplicate and graph-count admission test";
+        needle = "fn one_plan_level_graph_is_required_and_duplicates_fail_closed()";
+      }
+      {
+        label = "wire admission validates versions and identities";
+        needle = "fn wire_admission_rejects_versions_missing_programs_and_duplicate_contracts()";
+      }
+      {
+        label = "wire decoding reenters scalar and selector validation";
+        needle = "fn wire_decode_reenters_identity_scalar_and_selector_validation()";
+      }
+      {
+        label = "world validation rejects invalid wakeups";
+        needle = "fn world_validation_rejects_unrepresentable_binding_wakeups()";
+      }
+      {
+        label = "compact decode validates world targets";
+        needle = "fn compact_plan_rejects_resolved_targets_absent_from_decode_world()";
+      }
+    ]
+    ++ failuresFor "tests/crucible/default.nix" defaultChecks [
+      {
+        label = "phase1 exposes spatial plan validation check";
+        needle = "spatialPlanValidation = import ./phase1-spatial-plan-validation.nix";
       }
     ];
 in
@@ -99,7 +153,7 @@ in
               --manifest-path crates/Cargo.toml \
               -p crucible \
               --lib \
-              model::fault_signal::plan_test:: \
+              fault_signal::plan_test \
               -- --test-threads=1
           '';
         }
@@ -113,10 +167,10 @@ in
             check=${attrPath}
             tasks=${builtins.concatStringsSep "," taskIds}
             component=plan-validation
-            signal_plan_admission=validated
-            unknown_fields=rejected
-            world_targets=validated
-            canonical_binding_codecs=validated
+            signal_programs=single-graph-duplicate-checked
+            bindings=canonical-world-validated
+            selectors=typed-and-world-owned
+            resource_ceilings=pre-hash
             RESULT
           '';
         }

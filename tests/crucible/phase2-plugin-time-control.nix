@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginTimeControl",
-  taskIds ? ["T-PLUG-4"],
+  taskIds ? [],
   openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -14,6 +14,7 @@
   pluginRegistration = import ./_qemu-plugin-registration-source.nix {inherit lib;};
   pluginSetup = import ./_qemu-plugin-setup-source.nix {inherit lib;};
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
+  qemuPatch = builtins.readFile ../../pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch;
   pluginSpec = builtins.readFile ../../docs/rfcs/0010-crucible/12-qemu-plugin.md;
   qemuPatchSpec = builtins.readFile ../../docs/rfcs/0010-crucible/11-qemu-patches.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -87,8 +88,8 @@
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
       {
-        label = "T-PLUG-4 live completion evidence";
-        needle = "Completed by `checks.crucible.phase2.qemuLivePluginQuantum`";
+        label = "T-PLUG-4 production-flight completion";
+        needle = "Completed by `checks.crucible.phase2.qemuPluginTimeControl`";
       }
       {
         label = "plugin clock ownership";
@@ -110,7 +111,7 @@
       }
       {
         label = "queued virtual-time advance symbol spec";
-        needle = "qemu_plugin_advance_time_ns";
+        needle = "qemu_plugin_advance_time_ticks";
       }
       {
         label = "time-advance completion registration symbol spec";
@@ -119,6 +120,20 @@
       {
         label = "time-control predicate spec";
         needle = "qemu_plugin_has_time_control";
+      }
+      {
+        label = "AArch64 sim PMU capability restriction";
+        needle = "The supported AArch64 sim profile explicitly selects `pmu=off`";
+      }
+    ]
+    ++ failuresFor "pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch" qemuPatch [
+      {
+        label = "exported time-control predicate";
+        needle = "QEMU_PLUGIN_API\n+bool qemu_plugin_has_time_control(void);";
+      }
+      {
+        label = "exported virtual-clock update";
+        needle = "QEMU_PLUGIN_API\n void qemu_plugin_update_ns(const void *handle, int64_t time);";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/lib.rs" pluginLib [
@@ -152,11 +167,7 @@
       }
       {
         label = "queued advance symbol";
-        needle = "pub const QEMU_PLUGIN_ADVANCE_TIME_NS_SYMBOL: &str =";
-      }
-      {
-        label = "time-control predicate symbol";
-        needle = "pub const QEMU_PLUGIN_HAS_TIME_CONTROL_SYMBOL: &str = \"qemu_plugin_has_time_control\";";
+        needle = "pub const QEMU_PLUGIN_ADVANCE_TIME_TICKS_SYMBOL: &str =";
       }
       {
         label = "time-control ownership token";
@@ -314,7 +325,7 @@ in
             status=partial
             owner=PluginTimeControlOwnership
             request_symbol=qemu_plugin_request_time_control
-            advance_symbol=qemu_plugin_advance_time_ns
+            advance_symbol=qemu_plugin_advance_time_ticks
             completion_symbol=qemu_plugin_register_time_advance_cb
             predicate_symbol=qemu_plugin_has_time_control
             advance_sources=guest-instructions,scheduler-authorized-idle-jump

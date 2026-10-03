@@ -499,7 +499,7 @@ impl RpcService {
             Ok(_) => return upload_unknown(),
             Err(_) => return unavailable_response("upload status is unavailable", false),
         };
-        if upload.state != "active" {
+        if !matches!(upload.state.as_str(), "active" | "cancelled") {
             return upload_error(
                 StatusCode::CONFLICT,
                 DistributionErrorCode::BlobUploadInvalid,
@@ -510,14 +510,20 @@ impl RpcService {
             Ok(chunks) => chunks,
             Err(_) => return unavailable_response("upload state is unavailable", false),
         };
-        let cancelled = self
-            .db
-            .cancel_oci_upload(upload_id, owner, owner, upload.resource_version, now())
-            .await;
-        let cancelled = match cancelled {
-            Ok(cancelled) => cancelled,
-            Err(_) => {
-                return unavailable_response("upload cancellation could not be committed", false);
+        // A committed DELETE may lose its response. Preserve terminal ownership
+        // and retry pending cleanup without releasing quota a second time.
+        let cancelled = if upload.state == "cancelled" {
+            upload
+        } else {
+            match self
+                .db
+                .cancel_oci_upload(upload_id, owner, owner, upload.resource_version, now())
+                .await
+            {
+                Ok(cancelled) => cancelled,
+                Err(_) => {
+                    return unavailable_response("upload cancellation could not be committed", false);
+                }
             }
         };
 
@@ -530,16 +536,17 @@ impl RpcService {
             upload: cancelled,
             chunks,
         };
-        if let Err(error) =
-            cleanup_upload_staging(&self.db, self.surface_write.as_ref(), &cleanup, now()).await
-        {
-            tracing::warn!(
-                upload_id,
-                %error,
-                "cancelled OCI upload left staging cleanup pending"
-            );
+        if cleanup.upload.cleanup_state != "complete" {
+            if let Err(error) =
+                cleanup_upload_staging(&self.db, self.surface_write.as_ref(), &cleanup, now()).await
+            {
+                tracing::warn!(
+                    upload_id,
+                    %error,
+                    "cancelled OCI upload left staging cleanup pending"
+                );
+            }
         }
-
         let mut response = StatusCode::NO_CONTENT.into_response();
         add_distribution_version(&mut response);
         response

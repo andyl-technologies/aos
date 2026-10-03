@@ -234,7 +234,7 @@ fn event_graph_action_spine_names_specified_control_actions() {
     let actions = vec![
         Action::ArmTimer {
             name: timer("recover-after"),
-            after: SimDuration { nanos: 30 },
+            after: SimDuration { ticks: 30 },
         },
         Action::CancelTimer {
             name: timer("recover-after"),

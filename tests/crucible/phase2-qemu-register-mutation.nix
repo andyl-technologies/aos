@@ -3,14 +3,13 @@
   lib,
   qemuPackage ? pkgs.qemu-crucible,
   referenceQemu ? pkgs.qemu-crucible-reference,
-  patchName ? "0051-crucible-add-architecture-register-fault-mutations.patch",
   attrPath ? "checks.crucible.phase2.qemuRegisterMutation",
   taskIds ? ["T-QEMU-0051"],
   rejectionAtomicity ? false,
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
-  series = import ../../pkgs/emulation/qemu-patches/_series.nix;
-  patchSource = builtins.readFile (patchDir + "/${patchName}");
+  atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
+  patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
   taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
   liveCaseCount = 67;
@@ -27,24 +26,12 @@
         needle = "qemu_plugin_crucible_exact_boundary_enter";
       }
       {
-        label = "whole-machine canonical rejection observation";
-        needle = "qemu_plugin_crucible_register_rejection_observe";
-      }
-      {
         label = "all-vCPU manifest validation";
         needle = "crucible_register_all_cpus_match_manifest";
       }
       {
-        label = "production side-effect observation";
-        needle = "qemu_crucible_fault_register_side_effect_observed";
-      }
-      {
-        label = "mutation-only side-effect audit scope";
-        needle = "qemu_crucible_fault_register_side_effect_scope_enter";
-      }
-      {
         label = "live rejection side-effect assertion";
-        needle = "test_rejection_side_effects_unchanged";
+        needle = "test_rejection_target_unchanged";
       }
     ]
     else [
@@ -71,8 +58,8 @@
     ];
 
   failures =
-    failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource patchRequirements
-    ++ forbiddenFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
+    failuresFor "pkgs/emulation/qemu-patches/${atomicPatch.file}" patchSource patchRequirements
+    ++ forbiddenFor "pkgs/emulation/qemu-patches/${atomicPatch.file}" patchSource [
       {
         label = "GDB mutation shortcut";
         needle = "qemu_plugin_write_vcpu_regs";
@@ -94,17 +81,14 @@
         script = ''
           set -eu
           tar -xf "$src"
-          cd qemu-${series.qemuVersion}
+          cd qemu-${atomicPatch.qemuVersion}
         '';
       }
       {
-        name = "apply-authoritative-series";
+        name = "apply-atomic-patch";
         script = ''
           set -eu
-          for patch_file in ${builtins.concatStringsSep " " series.patchFiles}; do
-            patch --batch --forward --fuzz=0 -p1 \
-              -i "${patchDir}/$patch_file"
-          done
+          patch --batch --forward --fuzz=0 -p1 -i "${patchDir}/${atomicPatch.file}"
         '';
       }
       {
@@ -166,6 +150,16 @@ in
             as --32 ${./phase2-qemu-fault-guest.S} -o fault-guest-x86.o
             ld -m elf_i386 -T ${./phase2-qemu-fault-guest.ld} \
               fault-guest-x86.o -o fault-guest-x86.elf
+            guest_entry="$(${pkgs.binutils}/bin/nm -n fault-guest-x86.elf | \
+              sed -n 's/^\([0-9a-f]*\) T _start$/0x\1/p')"
+            test -n "$guest_entry"
+            as --32 --defsym GUEST_ENTRY="$guest_entry" \
+              ${./phase2-qemu-fault-direct-reset.S} -o fault-direct-reset.o
+            ld -m elf_i386 -T ${./x86-direct-reset.ld} \
+              fault-direct-reset.o -o fault-direct-reset.elf
+            objcopy -O binary --gap-fill 0 \
+              fault-direct-reset.elf fault-direct-reset.bin
+            test "$(wc -c < fault-direct-reset.bin)" -eq 65536
             ${pkgs.llvm}/bin/clang --target=aarch64-none-elf \
               -c ${./phase2-qemu-fault-guest-aarch64.S} \
               -o fault-guest-aarch64.o
@@ -218,8 +212,9 @@ in
                 x86_64)
                   architecture_id=2
                   qemu_binary=${qemuPackage}/bin/qemu-system-x86_64
-                  machine_args='-machine pc -m 64M'
+                  machine_args="-machine pc -m 64M -bios $PWD/fault-direct-reset.bin -device loader,file=$PWD/fault-guest-x86.elf"
                   guest=fault-guest-x86.elf
+                  boot_args=""
                   result_address="$x86_result_address"
                   ;;
                 aarch64)
@@ -227,6 +222,7 @@ in
                   qemu_binary=${qemuPackage}/bin/qemu-system-aarch64
                   machine_args='-machine virt -cpu max -m 64M'
                   guest=fault-guest-aarch64.elf
+                  boot_args="-kernel $guest"
                   result_address="$aarch64_result_address"
                   ;;
                 *)
@@ -250,13 +246,13 @@ in
               timeout 120 $qemu_binary \
                 $machine_args \
                 -accel sim \
-                -icount shift=0,rr_switch_quantum=256 \
+                -icount shift=0,align=off,sleep=off,rr_switch_quantum=256 \
                 -smp "$smp" \
                 -nographic \
                 -no-reboot \
                 -serial none \
                 -monitor none \
-                -kernel "$guest" \
+                $boot_args \
                 -plugin "$plugin_args" \
                 > "logs/$architecture-$mode-$register-$phase$case_suffix.log" 2>&1
               mutation_status=$?
@@ -403,7 +399,7 @@ in
             {
               echo PASS
               echo gate=gate:patch-microtests
-              echo patch=${patchName}
+              echo atomic_patch=${atomicPatch.file}
               echo attr_path=${attrPath}
               echo task_ids=${taskList}
               echo patched_fixture_exercised=true

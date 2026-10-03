@@ -48,7 +48,6 @@ fn ready_node(name: &str) -> WorldNode {
         ready_point: ReadyPoint::FixedIcount { icount: icount(1) },
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -292,11 +291,11 @@ fn violation_reproduction_bisection_reports_first_differing_causal_entry() {
 
     assert_eq!(divergence.artifact, artifact_id);
     assert_eq!(divergence.first_different_prefix_len, 1);
-    assert_eq!(divergence.first_different_icount, Some(icount(0)));
+    assert_eq!(divergence.first_different_icount, None);
     assert_eq!(location, request_location);
     assert_eq!(location.raw_index, 0);
     assert_eq!(location.at.node.as_ref(), None);
-    assert_eq!(location.at.icount, icount(0));
+    assert_eq!(location.at.tick, crucible::SimInstant { ticks: 0 });
     assert_eq!(&location.source, &EventSource::Engine);
     assert_eq!(location.kind.as_str(), "rng_draw");
     assert_eq!(

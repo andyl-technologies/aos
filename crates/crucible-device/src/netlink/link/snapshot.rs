@@ -16,14 +16,14 @@ use codec_support::*;
 pub struct LinkSnapshot {
     /// The link's current (consumer-frontier) icount at snapshot time.
     pub current_icount: u64,
-    /// The fixed virtual-time shift in bits.
-    pub shift_bits: u8,
+    /// Fixed logical ticks per virtual nanosecond.
+    pub ticks_per_ns: u32,
     /// The source node id stamped into delivery keys.
     pub src_node: u32,
-    /// The link's base latency in virtual nanoseconds.
-    pub base_latency_ns: u64,
+    /// The link's base latency in exact virtual ticks.
+    pub base_latency_ticks: u64,
     /// The strictly-positive minimum link-latency floor.
-    pub floor_ns: u64,
+    pub floor_ticks: u64,
     /// The effective fault table active at snapshot time.
     pub faults: LinkFaults,
     /// The next per-frame sequence number.
@@ -76,14 +76,14 @@ impl LinkSnapshot {
         })?;
         bytes.extend_from_slice(LINK_SNAPSHOT_MAGIC);
         put_link_u64(&mut bytes, self.current_icount);
-        bytes.push(self.shift_bits);
+        put_link_u32(&mut bytes, self.ticks_per_ns);
         put_link_u32(&mut bytes, self.src_node);
-        put_link_u64(&mut bytes, self.base_latency_ns);
-        put_link_u64(&mut bytes, self.floor_ns);
+        put_link_u64(&mut bytes, self.base_latency_ticks);
+        put_link_u64(&mut bytes, self.floor_ticks);
         bytes.push(u8::from(self.faults.partitioned));
-        put_link_u64(&mut bytes, self.faults.added_latency_ns);
-        put_link_u64(&mut bytes, self.faults.jitter_window_ns);
-        put_link_u64(&mut bytes, self.faults.reorder_window_ns);
+        put_link_u64(&mut bytes, self.faults.added_latency_ticks);
+        put_link_u64(&mut bytes, self.faults.jitter_window_ticks);
+        put_link_u64(&mut bytes, self.faults.reorder_window_ticks);
         write_link_count(&mut bytes, self.faults.bandwidth_bits_per_sec.len())?;
         for value in &self.faults.bandwidth_bits_per_sec {
             put_link_u64(&mut bytes, *value);
@@ -94,7 +94,7 @@ impl LinkSnapshot {
             write_probability(&mut bytes, *probability);
         }
         write_probability(&mut bytes, self.faults.duplicate);
-        put_link_u64(&mut bytes, self.faults.duplicate_gap_ns);
+        put_link_u64(&mut bytes, self.faults.duplicate_gap_ticks);
         write_probability(&mut bytes, self.faults.corrupt);
         write_link_count(&mut bytes, self.faults.corruption_strategies.len())?;
         for strategy in &self.faults.corruption_strategies {
@@ -182,14 +182,14 @@ impl LinkSnapshot {
         }
         let mut reader = LinkSnapshotReader::new(bytes)?;
         let current_icount = reader.u64("current icount")?;
-        let shift_bits = reader.byte("shift bits")?;
+        let ticks_per_ns = reader.u32("ticks per ns")?;
         let src_node = reader.u32("source node")?;
-        let base_latency_ns = reader.u64("base latency")?;
-        let floor_ns = reader.u64("latency floor")?;
+        let base_latency_ticks = reader.u64("base latency")?;
+        let floor_ticks = reader.u64("latency floor")?;
         let partitioned = reader.boolean("partitioned")?;
-        let added_latency_ns = reader.u64("added latency")?;
-        let jitter_window_ns = reader.u64("jitter window")?;
-        let reorder_window_ns = reader.u64("reorder window")?;
+        let added_latency_ticks = reader.u64("added latency")?;
+        let jitter_window_ticks = reader.u64("jitter window")?;
+        let reorder_window_ticks = reader.u64("reorder window")?;
         let bandwidth_count = reader.count("bandwidth caps")?;
         let mut bandwidth_bits_per_sec = link_snapshot_vector("bandwidth caps", bandwidth_count)?;
         for _ in 0..bandwidth_count {
@@ -203,7 +203,7 @@ impl LinkSnapshot {
             additional_loss.push(reader.probability("additional loss probability")?);
         }
         let duplicate = reader.probability("duplicate probability")?;
-        let duplicate_gap_ns = reader.u64("duplicate gap")?;
+        let duplicate_gap_ticks = reader.u64("duplicate gap")?;
         let corrupt = reader.probability("corruption probability")?;
         let corruption_count = reader.count("corruption strategies")?;
         let mut corruption_strategies =
@@ -259,20 +259,20 @@ impl LinkSnapshot {
         reader.finish()?;
         let snapshot = Self {
             current_icount,
-            shift_bits,
+            ticks_per_ns,
             src_node,
-            base_latency_ns,
-            floor_ns,
+            base_latency_ticks,
+            floor_ticks,
             faults: LinkFaults {
                 partitioned,
-                added_latency_ns,
-                jitter_window_ns,
-                reorder_window_ns,
+                added_latency_ticks,
+                jitter_window_ticks,
+                reorder_window_ticks,
                 bandwidth_bits_per_sec,
                 loss,
                 additional_loss,
                 duplicate,
-                duplicate_gap_ns,
+                duplicate_gap_ticks,
                 corrupt,
                 corruption_strategies,
             },
@@ -289,7 +289,7 @@ impl LinkSnapshot {
     }
 }
 
-const LINK_SNAPSHOT_MAGIC: &[u8] = b"crucible.link-snapshot.v1\0";
+const LINK_SNAPSHOT_MAGIC: &[u8] = b"crucible.link-snapshot.v4\0";
 const HARD_LINK_SNAPSHOT_ENTRIES: usize = 65_536;
 const HARD_LINK_SNAPSHOT_BYTES: usize = 1 << 30;
 
@@ -380,17 +380,21 @@ fn validate_link_snapshot(snapshot: &LinkSnapshot) -> Result<(), LinkSnapshotCod
     {
         return Err(LinkSnapshotCodecError::Noncanonical);
     }
-    if snapshot.floor_ns == 0 || snapshot.base_latency_ns < snapshot.floor_ns {
+    if snapshot.floor_ticks == 0 || snapshot.base_latency_ticks < snapshot.floor_ticks {
         return Err(LinkSnapshotCodecError::Device(
             DeviceError::LinkLatencyBelowFloor {
-                base_latency_ns: snapshot.base_latency_ns,
-                floor_ns: snapshot.floor_ns,
+                base_latency_ticks: snapshot.base_latency_ticks,
+                floor_ticks: snapshot.floor_ticks,
             }
             .to_string(),
         ));
     }
-    let mut clock = VirtualClock::new(snapshot.shift_bits)
-        .map_err(|error| LinkSnapshotCodecError::Device(error.to_string()))?;
+    if snapshot.ticks_per_ns != crucible_shmem::TICKS_PER_NS as u32 {
+        return Err(LinkSnapshotCodecError::Device(
+            "snapshot ticks per nanosecond differs from fixed scale".to_owned(),
+        ));
+    }
+    let mut clock = VirtualClock::new();
     clock
         .advance_to(snapshot.current_icount)
         .map_err(|error| LinkSnapshotCodecError::Device(error.to_string()))?;

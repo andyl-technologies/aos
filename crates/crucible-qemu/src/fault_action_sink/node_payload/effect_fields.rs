@@ -171,12 +171,12 @@ pub(super) fn effect_fields(
             json_field(P4, process)?,
         ],
         NodeEffectSpecification::MemoryService {
-            latency_nanos,
+            latency_picoseconds,
             bandwidth_bytes_per_second,
             operations_per_second,
             sharing_scope,
         } => vec![
-            NodeFaultFieldV1::u64(P1, *latency_nanos),
+            NodeFaultFieldV1::u64(P1, *latency_picoseconds),
             NodeFaultFieldV1::boolean(P2, bandwidth_bytes_per_second.is_some()),
             NodeFaultFieldV1::u64(
                 P3,

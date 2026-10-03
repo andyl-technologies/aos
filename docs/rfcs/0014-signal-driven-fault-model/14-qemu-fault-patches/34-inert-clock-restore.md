@@ -1,4 +1,4 @@
-# Patch 0083: preserve inert clocks across restore
+# Capability task 0083 — Preserve inert clocks across restore
 
 ## Capability
 
@@ -17,7 +17,7 @@ value, a non-healthy source state, or an in-progress synchronization. Those
 sources continue through the existing deterministic rearm callback after their
 authenticated clock state commits.
 
-## Failure closed by this patch
+## Failure closed by this capability
 
 QEMU device `post_load` callbacks and the aggregate Crucible fault section are
 separate entries in the VMState stream. Their load order means a timer callback
@@ -31,7 +31,7 @@ Skipping all restore-time clock maintenance would be incorrect. A source with
 an effective transform must reproject its guest deadline into the restored
 scheduler coordinate. In addition, the internal wander timer must always be
 rearmed or deleted so same-process rollback cannot retain a pending transition
-from state newer than the loaded checkpoint. The patch therefore defers both
+from state newer than the loaded checkpoint. The atomic patch therefore defers both
 operations until the entire outermost VMState load succeeds. A failed load
 clears the transaction guard without rearming partially restored state.
 
@@ -73,7 +73,7 @@ corresponding-source license inventory.
 
 ## Acceptance
 
-The per-patch contract consumes the production live-network gate rather than a
+The capability contract consumes the production live-network gate rather than a
 mock timer. That gate boots two real x86 QEMU nodes, exchanges packets, captures
 an exact checkpoint with an empty fault plan, cleanly terminates both original
 processes, restores both nodes into fresh processes, and requires the first
@@ -81,9 +81,8 @@ restored quantum and the remaining exchange to complete deterministically. Its
 failure path also remains bounded: a QEMU exit is reported as a typed node crash
 rather than an unbounded scheduler wait.
 
-The aggregate patch-series and regeneration gates additionally require the
-isolated patch to apply at the recorded stack position, the signed patch-branch
-commit and tree to match `_series.nix`, and the corresponding-source bundle to
+The atomic-patch regeneration gate requires the signed commit and tree to
+match the integration manifest and the corresponding-source bundle to
 regenerate byte-for-byte. Existing live guest-clock mutation gates remain the
 positive control for active source rearming. The implementation task is
 `T-QEMU-0083`.

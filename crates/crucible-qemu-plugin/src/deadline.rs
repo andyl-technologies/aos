@@ -1,58 +1,39 @@
 //! Exact virtual-clock deadline introspection.
 //!
-//! The raw QEMU plugin export returns a nanosecond deadline from
+//! The raw QEMU plugin export returns a picosecond deadline from
 //! `QEMU_CLOCK_VIRTUAL`. This module models the fail-closed policy around that
-//! export: the capability is required, realtime and host-clock sources are
-//! rejected, and overshoot-and-correct is never an accepted fallback.
+//! export. The capability is required and every query reads the virtual clock;
+//! there is no alternate clock or fallback policy.
 
 use thiserror::Error;
 
 /// The required QEMU plugin extension symbol for exact timer deadlines.
-pub const QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL: &str = "qemu_plugin_clock_deadline_ns";
+pub const QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL: &str = "qemu_plugin_clock_deadline_ps";
 
 /// QEMU's exact virtual-clock deadline function.
 ///
 /// The patched QEMU plugin API exports this symbol as a no-argument function
-/// returning either the absolute `QEMU_CLOCK_VIRTUAL` deadline in nanoseconds or
-/// a negative sentinel when no virtual-clock timer is armed.
+/// returning the absolute `QEMU_CLOCK_VIRTUAL` deadline in picoseconds, `-1`
+/// when no virtual-clock timer is armed, or `-2` when an armed deadline cannot
+/// be represented.
 pub type QemuClockDeadlineFn = extern "C" fn() -> i64;
-
-/// The QEMU clock source used for a deadline query.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ClockDeadlineSource {
-    /// The icount-derived virtual clock.
-    QemuClockVirtual,
-    /// QEMU realtime clock, which would reintroduce host timing.
-    QemuClockRealtime,
-    /// QEMU host clock, which would reintroduce host timing.
-    QemuClockHost,
-}
-
-/// The fallback policy for an unavailable exact deadline capability.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum DeadlineFallbackPolicy {
-    /// Fails the run loudly when the exact capability is unavailable.
-    FailClosed,
-    /// Guesses a wake point and corrects after observing whether the timer fired.
-    OvershootAndCorrect,
-}
 
 /// A validated exact-deadline report from QEMU.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ExactDeadlineReport {
     /// No virtual-clock guest timer is armed.
     NoArmedTimer,
-    /// A virtual-clock guest timer is armed at this virtual nanosecond.
+    /// A virtual-clock guest timer is armed at this virtual picosecond.
     Armed {
-        /// The exact virtual nanosecond deadline from `QEMU_CLOCK_VIRTUAL`.
-        deadline_ns: u64,
+        /// The exact virtual picosecond deadline from `QEMU_CLOCK_VIRTUAL`.
+        deadline_ps: u64,
     },
 }
 
 /// Required plugin-side handle for exact virtual-clock deadline introspection.
 #[derive(Clone, Copy, Debug)]
 pub struct ExactDeadlineReader {
-    clock_deadline_ns: QemuClockDeadlineFn,
+    clock_deadline_ps: QemuClockDeadlineFn,
 }
 
 impl ExactDeadlineReader {
@@ -61,30 +42,37 @@ impl ExactDeadlineReader {
     /// # Errors
     ///
     /// Returns [`ExactDeadlineError::CapabilityUnavailable`] when the
-    /// `qemu_plugin_clock_deadline_ns` export was not resolved. This is the
+    /// `qemu_plugin_clock_deadline_ps` export was not resolved. This is the
     /// fail-closed registration path for [PLUG-15].
     pub fn require(
-        clock_deadline_ns: Option<QemuClockDeadlineFn>,
+        clock_deadline_ps: Option<QemuClockDeadlineFn>,
     ) -> Result<Self, ExactDeadlineError> {
-        let Some(clock_deadline_ns) = clock_deadline_ns else {
+        let Some(clock_deadline_ps) = clock_deadline_ps else {
             return Err(ExactDeadlineError::CapabilityUnavailable {
                 symbol: QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL,
             });
         };
 
-        ExactDeadlineIntrospection::required().validate()?;
-        Ok(Self { clock_deadline_ns })
+        Ok(Self { clock_deadline_ps })
     }
 
     /// Reads the next exact virtual-clock deadline from QEMU.
     ///
     /// # Errors
     ///
-    /// Returns [`ExactDeadlineError`] if the required exact-deadline policy is
-    /// invalid. The reader is constructed only by [`Self::require`], so this path
-    /// cannot silently degrade to overshoot-and-correct.
+    /// Returns [`ExactDeadlineError::UnrepresentableDeadline`] when QEMU cannot
+    /// represent an armed deadline, or
+    /// [`ExactDeadlineError::UnexpectedDeadlineSentinel`] for any other negative
+    /// value. Only `-1` means no timer is armed.
     pub fn read_next_deadline(&self) -> Result<ExactDeadlineReport, ExactDeadlineError> {
-        ExactDeadlineIntrospection::required().report((self.clock_deadline_ns)())
+        match (self.clock_deadline_ps)() {
+            -1 => Ok(ExactDeadlineReport::NoArmedTimer),
+            -2 => Err(ExactDeadlineError::UnrepresentableDeadline),
+            deadline_ps if deadline_ps >= 0 => Ok(ExactDeadlineReport::Armed {
+                deadline_ps: deadline_ps as u64,
+            }),
+            value => Err(ExactDeadlineError::UnexpectedDeadlineSentinel { value }),
+        }
     }
 }
 
@@ -138,7 +126,7 @@ pub fn aggregate_multi_vcpu_deadline(
         return Err(ExactDeadlineError::EmptyVcpuDeadlineSet);
     }
 
-    let mut min_deadline_ns: Option<u64> = None;
+    let mut min_deadline_ps: Option<u64> = None;
     for (index, report) in reports.iter().enumerate() {
         if report.vcpu_id >= vcpu_count {
             return Err(ExactDeadlineError::VcpuDeadlineOutOfRange {
@@ -155,10 +143,10 @@ pub fn aggregate_multi_vcpu_deadline(
             });
         }
 
-        if let ExactDeadlineReport::Armed { deadline_ns } = report.report {
-            min_deadline_ns = Some(match min_deadline_ns {
-                Some(current) => current.min(deadline_ns),
-                None => deadline_ns,
+        if let ExactDeadlineReport::Armed { deadline_ps } = report.report {
+            min_deadline_ps = Some(match min_deadline_ps {
+                Some(current) => current.min(deadline_ps),
+                None => deadline_ps,
             });
         }
     }
@@ -169,81 +157,10 @@ pub fn aggregate_multi_vcpu_deadline(
         }
     }
 
-    Ok(match min_deadline_ns {
-        Some(deadline_ns) => ExactDeadlineReport::Armed { deadline_ns },
+    Ok(match min_deadline_ps {
+        Some(deadline_ps) => ExactDeadlineReport::Armed { deadline_ps },
         None => ExactDeadlineReport::NoArmedTimer,
     })
-}
-
-/// A policy and capability check for exact deadline introspection.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ExactDeadlineIntrospection {
-    capability_available: bool,
-    clock_source: ClockDeadlineSource,
-    fallback_policy: DeadlineFallbackPolicy,
-}
-
-impl ExactDeadlineIntrospection {
-    /// Builds an exact-deadline introspection policy.
-    #[must_use]
-    pub fn new(
-        capability_available: bool,
-        clock_source: ClockDeadlineSource,
-        fallback_policy: DeadlineFallbackPolicy,
-    ) -> Self {
-        Self {
-            capability_available,
-            clock_source,
-            fallback_policy,
-        }
-    }
-
-    /// Returns the required fail-closed virtual-clock policy.
-    #[must_use]
-    pub fn required() -> Self {
-        Self::new(
-            true,
-            ClockDeadlineSource::QemuClockVirtual,
-            DeadlineFallbackPolicy::FailClosed,
-        )
-    }
-
-    /// Validates that exact deadline introspection can be used.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ExactDeadlineError`] when the exact deadline capability is
-    /// unavailable, the query would read a non-virtual QEMU clock, or the policy
-    /// permits overshoot-and-correct.
-    pub fn validate(self) -> Result<(), ExactDeadlineError> {
-        if self.fallback_policy == DeadlineFallbackPolicy::OvershootAndCorrect {
-            return Err(ExactDeadlineError::OvershootFallbackForbidden);
-        }
-        if !self.capability_available {
-            return Err(ExactDeadlineError::CapabilityUnavailable {
-                symbol: QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL,
-            });
-        }
-        if self.clock_source != ClockDeadlineSource::QemuClockVirtual {
-            return Err(ExactDeadlineError::NonVirtualClockSource {
-                clock_source: self.clock_source,
-            });
-        }
-        Ok(())
-    }
-
-    /// Converts a raw QEMU deadline return value into a validated report.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ExactDeadlineError`] when [`Self::validate`] fails.
-    pub fn report(self, raw_deadline_ns: i64) -> Result<ExactDeadlineReport, ExactDeadlineError> {
-        self.validate()?;
-        match u64::try_from(raw_deadline_ns) {
-            Ok(deadline_ns) => Ok(ExactDeadlineReport::Armed { deadline_ns }),
-            Err(_) => Ok(ExactDeadlineReport::NoArmedTimer),
-        }
-    }
 }
 
 /// An exact deadline introspection error.
@@ -255,15 +172,15 @@ pub enum ExactDeadlineError {
         /// The missing QEMU plugin symbol.
         symbol: &'static str,
     },
-    /// The deadline query would read a non-virtual QEMU clock.
-    #[error("deadline query must use QEMU_CLOCK_VIRTUAL, got {clock_source:?}")]
-    NonVirtualClockSource {
-        /// The rejected clock source.
-        clock_source: ClockDeadlineSource,
+    /// An armed virtual-clock deadline cannot be represented by the QEMU API.
+    #[error("QEMU exact deadline is outside the representable picosecond range")]
+    UnrepresentableDeadline,
+    /// The QEMU deadline export returned a negative value outside its protocol.
+    #[error("QEMU exact deadline export returned unexpected sentinel {value}")]
+    UnexpectedDeadlineSentinel {
+        /// The unsupported negative sentinel.
+        value: i64,
     },
-    /// Overshoot-and-correct fallback was requested.
-    #[error("overshoot-and-correct fallback is forbidden for exact deadlines")]
-    OvershootFallbackForbidden,
     /// A multi-vCPU deadline aggregation was requested for zero vCPUs.
     #[error("multi-vCPU deadline aggregation requires a non-zero vCPU count")]
     ZeroVcpuDeadlineCount,
@@ -297,20 +214,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exact_deadline_reports_virtual_timer_deadlines() {
-        let introspection = ExactDeadlineIntrospection::required();
-
-        assert_eq!(
-            introspection.report(4096),
-            Ok(ExactDeadlineReport::Armed { deadline_ns: 4096 })
-        );
-        assert_eq!(
-            introspection.report(-1),
-            Ok(ExactDeadlineReport::NoArmedTimer)
-        );
-    }
-
-    #[test]
     fn exact_deadline_reader_requires_qemu_clock_deadline_symbol() {
         let Err(error) = ExactDeadlineReader::require(None) else {
             panic!("missing deadline symbol should fail closed");
@@ -332,7 +235,7 @@ mod tests {
         };
         assert_eq!(
             reader.read_next_deadline(),
-            Ok(ExactDeadlineReport::Armed { deadline_ns: 2048 })
+            Ok(ExactDeadlineReport::Armed { deadline_ps: 2048 })
         );
 
         let no_timer_reader = match ExactDeadlineReader::require(Some(test_no_armed_deadline)) {
@@ -346,65 +249,34 @@ mod tests {
     }
 
     #[test]
-    fn exact_deadline_fails_when_capability_is_missing() {
-        let introspection = ExactDeadlineIntrospection::new(
-            false,
-            ClockDeadlineSource::QemuClockVirtual,
-            DeadlineFallbackPolicy::FailClosed,
-        );
-
+    fn exact_deadline_reader_rejects_unrepresentable_and_unknown_sentinels() {
+        let overflow_reader = ExactDeadlineReader::require(Some(test_overflow_deadline))
+            .unwrap_or_else(|error| panic!("resolved deadline symbol should be accepted: {error}"));
         assert_eq!(
-            introspection.report(4096),
-            Err(ExactDeadlineError::CapabilityUnavailable {
-                symbol: QEMU_PLUGIN_CLOCK_DEADLINE_SYMBOL,
-            })
-        );
-    }
-
-    #[test]
-    fn exact_deadline_rejects_realtime_and_host_clock_sources() {
-        for source in [
-            ClockDeadlineSource::QemuClockRealtime,
-            ClockDeadlineSource::QemuClockHost,
-        ] {
-            let introspection =
-                ExactDeadlineIntrospection::new(true, source, DeadlineFallbackPolicy::FailClosed);
-
-            assert_eq!(
-                introspection.report(4096),
-                Err(ExactDeadlineError::NonVirtualClockSource {
-                    clock_source: source,
-                })
-            );
-        }
-    }
-
-    #[test]
-    fn exact_deadline_rejects_overshoot_and_correct_fallback() {
-        let introspection = ExactDeadlineIntrospection::new(
-            true,
-            ClockDeadlineSource::QemuClockVirtual,
-            DeadlineFallbackPolicy::OvershootAndCorrect,
+            overflow_reader.read_next_deadline(),
+            Err(ExactDeadlineError::UnrepresentableDeadline)
         );
 
+        let unknown_reader = ExactDeadlineReader::require(Some(test_unknown_deadline))
+            .unwrap_or_else(|error| panic!("resolved deadline symbol should be accepted: {error}"));
         assert_eq!(
-            introspection.report(4096),
-            Err(ExactDeadlineError::OvershootFallbackForbidden)
+            unknown_reader.read_next_deadline(),
+            Err(ExactDeadlineError::UnexpectedDeadlineSentinel { value: -3 })
         );
     }
 
     #[test]
     fn multi_vcpu_deadline_uses_minimum_armed_virtual_deadline() {
         let reports = [
-            PerVcpuDeadlineReport::new(2, ExactDeadlineReport::Armed { deadline_ns: 90 }),
+            PerVcpuDeadlineReport::new(2, ExactDeadlineReport::Armed { deadline_ps: 90 }),
             PerVcpuDeadlineReport::new(0, ExactDeadlineReport::NoArmedTimer),
-            PerVcpuDeadlineReport::new(1, ExactDeadlineReport::Armed { deadline_ns: 40 }),
-            PerVcpuDeadlineReport::new(3, ExactDeadlineReport::Armed { deadline_ns: 70 }),
+            PerVcpuDeadlineReport::new(1, ExactDeadlineReport::Armed { deadline_ps: 40 }),
+            PerVcpuDeadlineReport::new(3, ExactDeadlineReport::Armed { deadline_ps: 70 }),
         ];
 
         assert_eq!(
             aggregate_multi_vcpu_deadline(4, &reports),
-            Ok(ExactDeadlineReport::Armed { deadline_ns: 40 })
+            Ok(ExactDeadlineReport::Armed { deadline_ps: 40 })
         );
     }
 
@@ -424,8 +296,8 @@ mod tests {
     #[test]
     fn multi_vcpu_deadline_rejects_duplicate_vcpu_reports() {
         let reports = [
-            PerVcpuDeadlineReport::new(0, ExactDeadlineReport::Armed { deadline_ns: 90 }),
-            PerVcpuDeadlineReport::new(0, ExactDeadlineReport::Armed { deadline_ns: 40 }),
+            PerVcpuDeadlineReport::new(0, ExactDeadlineReport::Armed { deadline_ps: 90 }),
+            PerVcpuDeadlineReport::new(0, ExactDeadlineReport::Armed { deadline_ps: 40 }),
         ];
 
         assert_eq!(
@@ -446,7 +318,7 @@ mod tests {
     fn multi_vcpu_deadline_rejects_zero_expected_vcpus() {
         let reports = [PerVcpuDeadlineReport::new(
             0,
-            ExactDeadlineReport::Armed { deadline_ns: 40 },
+            ExactDeadlineReport::Armed { deadline_ps: 40 },
         )];
 
         assert_eq!(
@@ -458,8 +330,8 @@ mod tests {
     #[test]
     fn multi_vcpu_deadline_rejects_out_of_range_vcpu_reports() {
         let reports = [
-            PerVcpuDeadlineReport::new(0, ExactDeadlineReport::Armed { deadline_ns: 90 }),
-            PerVcpuDeadlineReport::new(2, ExactDeadlineReport::Armed { deadline_ns: 40 }),
+            PerVcpuDeadlineReport::new(0, ExactDeadlineReport::Armed { deadline_ps: 90 }),
+            PerVcpuDeadlineReport::new(2, ExactDeadlineReport::Armed { deadline_ps: 40 }),
         ];
 
         assert_eq!(
@@ -474,9 +346,9 @@ mod tests {
     #[test]
     fn multi_vcpu_deadline_rejects_incomplete_vcpu_report_sets() {
         let reports = [
-            PerVcpuDeadlineReport::new(0, ExactDeadlineReport::Armed { deadline_ns: 90 }),
-            PerVcpuDeadlineReport::new(1, ExactDeadlineReport::Armed { deadline_ns: 40 }),
-            PerVcpuDeadlineReport::new(3, ExactDeadlineReport::Armed { deadline_ns: 70 }),
+            PerVcpuDeadlineReport::new(0, ExactDeadlineReport::Armed { deadline_ps: 90 }),
+            PerVcpuDeadlineReport::new(1, ExactDeadlineReport::Armed { deadline_ps: 40 }),
+            PerVcpuDeadlineReport::new(3, ExactDeadlineReport::Armed { deadline_ps: 70 }),
         ];
 
         assert_eq!(
@@ -491,5 +363,13 @@ mod tests {
 
     extern "C" fn test_no_armed_deadline() -> i64 {
         -1
+    }
+
+    extern "C" fn test_overflow_deadline() -> i64 {
+        -2
+    }
+
+    extern "C" fn test_unknown_deadline() -> i64 {
+        -3
     }
 }

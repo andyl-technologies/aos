@@ -38,9 +38,7 @@ impl BlockDevice {
         let uniform = Request::new(request_icount, request.request_id, wire);
         self.core
             .enqueue_request(uniform)
-            .map_err(|rejected| DeviceError::RingFull {
-                capacity: rejected.capacity,
-            })?;
+            .map_err(|rejected| rejected.source)?;
         // Borrow split: process_inbox needs `&mut self.core` and `&mut device`
         // simultaneously, so serve through a detached server view.
         Self::process_pending(
@@ -149,36 +147,37 @@ impl BlockDevice {
         &mut self,
         request_icount: u64,
     ) -> Result<(), DeviceError> {
-        let now_nanos = icount_to_virtual_ns(request_icount, self.core.shift_bits())?;
-        self.reject_advance_past_unresolved_execution(now_nanos)?;
+        let now_ticks = request_icount;
+        self.reject_advance_past_unresolved_execution(now_ticks)?;
         let mut next_faults = self.storage_faults.clone();
         let mut next_overlay = self.overlay.clone();
         let mut next_core = self.core.clone();
         let mut released =
-            next_faults.advance_service_to(&self.base, &mut next_overlay, now_nanos)?;
+            next_faults.advance_service_to(&self.base, &mut next_overlay, now_ticks)?;
         released.extend(next_faults.resume_execution_to(
             &self.base,
             &mut next_overlay,
-            now_nanos,
+            now_ticks,
         )?);
         released.extend(next_faults.resume_request_persistence_to(
             &self.base,
             &mut next_overlay,
-            now_nanos,
+            now_ticks,
         )?);
-        released.extend(next_faults.resume_delivery_to(now_nanos)?);
+        released.extend(next_faults.resume_delivery_to(now_ticks)?);
         for released in released {
             let latency_nanos = self
                 .latency
                 .latency_for(released.request.op, released.request.count);
-            let base_completion_nanos = released.finished_nanos.checked_add(latency_nanos).ok_or(
-                DeviceError::CompletionOverflow {
+            let base_completion_ticks = released
+                .finished_ticks
+                .checked_add(crate::ns_to_tick(latency_nanos)?)
+                .ok_or(DeviceError::CompletionOverflow {
                     request_icount: released.request_icount,
                     latency_ns: latency_nanos,
-                },
-            )?;
+                })?;
             next_core
-                .schedule_computed_response_at_nanos(base_completion_nanos, released.computed)?;
+                .schedule_computed_response_at_tick(base_completion_ticks, released.computed)?;
         }
         self.storage_faults = next_faults;
         self.overlay = next_overlay;
@@ -194,22 +193,23 @@ impl BlockDevice {
         delivered_icount: u64,
     ) -> Result<PreparedBlockTransportReset, DeviceError> {
         let mut next_faults = storage_faults.clone();
-        let delivered_nanos = icount_to_virtual_ns(delivered_icount, core.shift_bits())?;
+        let delivered_ticks = delivered_icount;
         let emulator_virtual_limit = i64::MAX as u64;
-        if delivered_nanos > emulator_virtual_limit
+        if delivered_ticks > emulator_virtual_limit
             || reset.recovery_nanos > emulator_virtual_limit
-            || delivered_nanos
-                .checked_add(reset.recovery_nanos)
+            || delivered_ticks
+                .checked_add(crate::ns_to_tick(reset.recovery_nanos)?)
                 .is_none_or(|deadline| deadline > emulator_virtual_limit)
         {
             return Err(DeviceError::InvalidBlockFaultDirective {
                 reason: "block transport recovery exceeds QEMU virtual-clock range",
             });
         }
-        let immediate = next_faults.apply_transport_reset(reset, delivered_nanos)?;
+        let immediate = next_faults.apply_transport_reset(reset, delivered_ticks)?;
         core.check_response_sequence_capacity(immediate.len())?;
 
         let mut inflight = Vec::with_capacity(core.inflight_len().saturating_sub(1));
+        let mut rewrites_remaining = false;
         for mut pending in core.take_inflight_from_snapshot() {
             if pending.key == event.key {
                 continue;
@@ -242,11 +242,21 @@ impl BlockDevice {
                             )
                         }
                     };
-                    pending.response = block_response_to_uniform_device(&replacement)?;
+                    let replacement = block_response_to_uniform_device(&replacement)?;
+                    rewrites_remaining |= replacement != pending.response;
+                    pending.response = replacement;
                 }
             }
             inflight.push(pending);
         }
+        // The selected reset is published before this rewrite commits. Reserve
+        // the whole queue transaction budget before that irreversible publication.
+        let transactions = immediate
+            .len()
+            .checked_add(1)
+            .and_then(|count| count.checked_add(usize::from(rewrites_remaining)))
+            .ok_or(DeviceError::IoQueueRevisionExhausted)?;
+        core.check_queue_revision_capacity(transactions)?;
         Ok(PreparedBlockTransportReset {
             storage_faults: next_faults,
             inflight,
@@ -259,8 +269,9 @@ impl BlockDevice {
         storage_faults: &mut BlockFaultState,
         prepared: PreparedBlockTransportReset,
     ) -> Result<(), DeviceError> {
-        let _discarded = core.take_inflight();
-        core.replace_inflight(prepared.inflight);
+        core.check_queue_rewrite_capacity(&prepared.inflight, prepared.immediate.len())?;
+        core.check_response_sequence_capacity(prepared.immediate.len())?;
+        core.replace_inflight(prepared.inflight)?;
         *storage_faults = prepared.storage_faults;
         for response in prepared.immediate {
             core.schedule_response_now(response)?;
@@ -380,31 +391,31 @@ impl BlockDevice {
     /// Returns [`DeviceError::ClockRegression`] when `limit` is below the current
     /// icount.
     pub fn advance_to(&mut self, limit: u64) -> Result<usize, DeviceError> {
-        let now_nanos = icount_to_virtual_ns(limit, self.core.shift_bits())?;
-        self.reject_advance_past_unresolved_execution(now_nanos)?;
+        let now_ticks = limit;
+        self.reject_advance_past_unresolved_execution(now_ticks)?;
         let mut next_faults = self.storage_faults.clone();
         let mut next_overlay = self.overlay.clone();
         let mut next_core = self.core.clone();
         let mut released =
-            next_faults.advance_service_to(&self.base, &mut next_overlay, now_nanos)?;
+            next_faults.advance_service_to(&self.base, &mut next_overlay, now_ticks)?;
         released.extend(next_faults.resume_execution_to(
             &self.base,
             &mut next_overlay,
-            now_nanos,
+            now_ticks,
         )?);
         released.extend(next_faults.resume_request_persistence_to(
             &self.base,
             &mut next_overlay,
-            now_nanos,
+            now_ticks,
         )?);
-        released.extend(next_faults.resume_delivery_to(now_nanos)?);
+        released.extend(next_faults.resume_delivery_to(now_ticks)?);
         for released in released {
-            let base_completion_nanos = released
-                .finished_nanos
-                .checked_add(
+            let base_completion_ticks = released
+                .finished_ticks
+                .checked_add(crate::ns_to_tick(
                     self.latency
                         .latency_for(released.request.op, released.request.count),
-                )
+                )?)
                 .ok_or(DeviceError::CompletionOverflow {
                     request_icount: released.request_icount,
                     latency_ns: self
@@ -412,7 +423,7 @@ impl BlockDevice {
                         .latency_for(released.request.op, released.request.count),
                 })?;
             next_core
-                .schedule_computed_response_at_nanos(base_completion_nanos, released.computed)?;
+                .schedule_computed_response_at_tick(base_completion_ticks, released.computed)?;
         }
         let delivered = Self::deliver_local_with_resets(&mut next_core, &mut next_faults, limit)?;
         self.storage_faults = next_faults;
@@ -439,36 +450,37 @@ impl BlockDevice {
         outbox_entries: &mut [FrameEntry],
         consumer_slot: &NodeSlot,
     ) -> Result<ShmemDeliveryResult, DeviceError> {
-        let now_nanos = icount_to_virtual_ns(limit, self.core.shift_bits())?;
-        self.reject_advance_past_unresolved_execution(now_nanos)?;
+        let now_ticks = limit;
+        self.reject_advance_past_unresolved_execution(now_ticks)?;
         let mut next_faults = self.storage_faults.clone();
         let mut next_overlay = self.overlay.clone();
         let mut next_core = self.core.clone();
         let mut released =
-            next_faults.advance_service_to(&self.base, &mut next_overlay, now_nanos)?;
+            next_faults.advance_service_to(&self.base, &mut next_overlay, now_ticks)?;
         released.extend(next_faults.resume_execution_to(
             &self.base,
             &mut next_overlay,
-            now_nanos,
+            now_ticks,
         )?);
         released.extend(next_faults.resume_request_persistence_to(
             &self.base,
             &mut next_overlay,
-            now_nanos,
+            now_ticks,
         )?);
-        released.extend(next_faults.resume_delivery_to(now_nanos)?);
+        released.extend(next_faults.resume_delivery_to(now_ticks)?);
         for released in released {
             let latency_nanos = self
                 .latency
                 .latency_for(released.request.op, released.request.count);
-            let base_completion_nanos = released.finished_nanos.checked_add(latency_nanos).ok_or(
-                DeviceError::CompletionOverflow {
+            let base_completion_ticks = released
+                .finished_ticks
+                .checked_add(crate::ns_to_tick(latency_nanos)?)
+                .ok_or(DeviceError::CompletionOverflow {
                     request_icount: released.request_icount,
                     latency_ns: latency_nanos,
-                },
-            )?;
+                })?;
             next_core
-                .schedule_computed_response_at_nanos(base_completion_nanos, released.computed)?;
+                .schedule_computed_response_at_tick(base_completion_ticks, released.computed)?;
         }
         self.storage_faults = next_faults;
         self.overlay = next_overlay;
@@ -485,32 +497,32 @@ impl BlockDevice {
 
     pub(super) fn reject_advance_past_unresolved_execution(
         &self,
-        requested_nanos: u64,
+        requested_ticks: u64,
     ) -> Result<(), DeviceError> {
-        if let Some(ready_nanos) = self.storage_faults.next_execution_deadline_nanos()
-            && ready_nanos < requested_nanos
+        if let Some(ready_ticks) = self.storage_faults.next_execution_deadline_ticks()
+            && ready_ticks < requested_ticks
         {
             return Err(DeviceError::UnresolvedBlockFaultOpportunity {
-                ready_nanos,
-                requested_nanos,
+                ready_ticks,
+                requested_ticks,
             });
         }
-        if let Some(ready_nanos) = self
+        if let Some(ready_ticks) = self
             .storage_faults
-            .next_request_persistence_deadline_nanos()
-            && ready_nanos < requested_nanos
+            .next_request_persistence_deadline_ticks()
+            && ready_ticks < requested_ticks
         {
             return Err(DeviceError::UnresolvedBlockFaultOpportunity {
-                ready_nanos,
-                requested_nanos,
+                ready_ticks,
+                requested_ticks,
             });
         }
-        if let Some(ready_nanos) = self.storage_faults.next_delivery_deadline_nanos()
-            && ready_nanos < requested_nanos
+        if let Some(ready_ticks) = self.storage_faults.next_delivery_deadline_ticks()
+            && ready_ticks < requested_ticks
         {
             return Err(DeviceError::UnresolvedBlockFaultOpportunity {
-                ready_nanos,
-                requested_nanos,
+                ready_ticks,
+                requested_ticks,
             });
         }
         Ok(())
@@ -529,7 +541,7 @@ impl BlockDevice {
     /// can surface only if the outbound ring was restored from an untrusted
     /// snapshot whose bytes were not produced by this codec.
     pub fn next_response(&mut self) -> Result<Option<BlockResponse>, DeviceError> {
-        match self.core.pop_response() {
+        match self.core.pop_response()? {
             Some(pending) => {
                 let decoded =
                     BlockResponse::decode(&pending.response.payload).map_err(DeviceError::Codec)?;

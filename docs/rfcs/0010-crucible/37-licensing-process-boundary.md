@@ -84,7 +84,7 @@ existing race-free protocol exposes a reliable waiter state.
   `gate:license-boundary`, `gate:abi-conformance`. *Spec:* §37.2.
 
 - **[BOUND-7]** The normative field semantics, byte layout, ordering rules, and
-  compatibility policy MUST be public. Rust definitions may remain the
+  versioning policy MUST be public. Rust definitions may remain the
   mechanically checked source used to generate the C view, but no semantic
   contract may exist only in Rust or QEMU implementation internals. An
   independent peer built from the specification and golden vectors MUST be able
@@ -95,8 +95,8 @@ existing race-free protocol exposes a reliable waiter state.
 
 - **[BOUND-8]** Every incompatible control frame, shared-memory field, layout,
   atomic-ordering, or semantic change MUST bump the applicable ABI major version
-  and fail closed against the old peer. Compatible additions require an explicit
-  minor version or feature bit. The change MUST regenerate both language views
+  and fail closed against every noncurrent peer. Any addition requires an
+  explicit version or feature bit. The change MUST regenerate both language views
   and golden vectors. *Gate:* `gate:license-boundary`,
   `gate:abi-conformance`. *Spec:* §37.3.
 

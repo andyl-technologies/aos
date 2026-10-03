@@ -26,6 +26,16 @@ impl DebugAuthorizationPolicy {
         Self::default()
     }
 
+    /// Reports whether any transport principal has an authorized debugger role.
+    ///
+    /// Daemons use this immutable startup-time policy snapshot to decide
+    /// whether their production runtimes must retain exact debugger replay
+    /// evidence. Role grants are not mutated after the daemon begins serving.
+    #[must_use]
+    pub fn admits_debugging(&self) -> bool {
+        !self.certificate_roles.is_empty() || self.trusted_unauthenticated_role.is_some()
+    }
+
     /// Grants a role to one lowercase SHA-256 certificate fingerprint.
     ///
     /// # Errors
@@ -110,6 +120,7 @@ mod tests {
     #[test]
     fn policy_denies_unknown_and_noncanonical_principals() {
         let mut policy = DebugAuthorizationPolicy::deny_all();
+        assert!(!policy.admits_debugging());
         assert_eq!(
             policy.grant_certificate_role("AB", DebugRole::observer()),
             Err(DebugAuthorizationPolicyError::InvalidCertificateFingerprint)
@@ -133,6 +144,7 @@ mod tests {
         policy
             .grant_certificate_role(identity.certificate_sha256(), controller.clone())
             .unwrap_or_else(|error| panic!("valid fingerprint should be accepted: {error}"));
+        assert!(policy.admits_debugging());
         policy.grant_trusted_unauthenticated_role(DebugRole::observer());
         assert_eq!(policy.role_for(Some(&identity)), Ok(&controller));
         assert_eq!(policy.role_for(None), Ok(&DebugRole::observer()));
@@ -140,5 +152,13 @@ mod tests {
             policy.grant_certificate_role(identity.certificate_sha256(), DebugRole::observer()),
             Err(DebugAuthorizationPolicyError::DuplicateCertificateFingerprint)
         );
+    }
+
+    #[test]
+    fn trusted_unauthenticated_role_admits_debugging_by_itself() {
+        let mut policy = DebugAuthorizationPolicy::deny_all();
+        policy.grant_trusted_unauthenticated_role(DebugRole::observer());
+
+        assert!(policy.admits_debugging());
     }
 }

@@ -13,18 +13,16 @@ const PLUGIN_ARG_SHMEMFD: &str = "shmemfd";
 const PLUGIN_ARG_WAKEFD: &str = "wakefd";
 const PLUGIN_ARG_WHITEBOX: &str = "whitebox";
 const PLUGIN_ARG_WHITEBOX_SETUP: &str = "whitebox_setup";
+const PLUGIN_ARG_CAMPAIGN_MARKER_PARKING: &str = "campaign_marker_parking";
 const PLUGIN_ARG_APP_RANDOM_SEED: &str = "app_random_seed";
 const PLUGIN_ARG_APP_RANDOM_CAP: &str = "app_random_cap";
 const PLUGIN_ARG_APP_RANDOM_NODE: &str = "app_random_node";
-const PLUGIN_ARG_APP_RANDOM_BRANCH_SEED: &str = "app_random_branch_seed";
-const PLUGIN_ARG_APP_RANDOM_BRANCH_AFTER: &str = "app_random_branch_after";
+const PLUGIN_ARG_APP_RANDOM_BRANCH_SEEDS: &str = "app_random_branch_seeds";
+const PLUGIN_ARG_APP_RANDOM_BRANCH_AFTERS: &str = "app_random_branch_afters";
 const PLUGIN_ARG_APP_RANDOM_DRAW_OFFSET: &str = "app_random_draw_offset";
 const PLUGIN_ARG_APP_RANDOM_POSITIONS: &str = "app_random_positions";
 const PLUGIN_ARG_COVERAGE: &str = "coverage";
 const PLUGIN_ARG_FINGERPRINT: &str = "fingerprint";
-const PLUGIN_ARG_FINGERPRINT_ORACLE: &str = "fingerprint_oracle";
-const PLUGIN_ARG_STATE_DUMP_TARGET: &str = "state_dump_target";
-const PLUGIN_ARG_STATE_DUMP_PATH: &str = "state_dump_path";
 
 /// Plugin descriptors inherited at fixed child fd numbers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,8 +53,6 @@ pub enum QemuLaunchPluginSwitch {
 /// Seed and bound passed to the production plugin's app-random doorbell.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuLaunchAppRandomConfig {
-    /// Low 64-bit compatibility projection of the complete scenario seed.
-    pub scenario_seed: u64,
     authoritative_seed: Seed,
     /// Derived L0 decision-RNG root consumed by the synchronous plugin adapter.
     pub decision_rng_root_seed: u64,
@@ -64,61 +60,35 @@ pub struct QemuLaunchAppRandomConfig {
     pub draw_cap: u64,
     /// Canonical scheduler node name used in the name-hashed stream identity.
     pub node_name: String,
-    /// Optional derived decision-RNG root for a forked future.
-    pub branch_decision_rng_root_seed: Option<u64>,
-    branch_seed: Option<Seed>,
-    /// Number of this node's prefix draws served before the branch seed applies.
-    pub branch_after_draws: Option<u64>,
+    branch_reseeds: Vec<(Seed, u64)>,
     /// Node-local draws already consumed before this process launches.
     pub draw_offset: u64,
-    /// Per-stream positions already consumed before this process launches.
+    /// Active-seed stream positions, distinct from the global node draw offset.
     pub stream_positions: BTreeMap<String, u64>,
+    /// Immutable node-local campaign selections supplied during setup.
+    branch_plan: crucible_protocol::app_random_branch_plan::AppRandomBranchPlan,
 }
 
 impl QemuLaunchAppRandomConfig {
-    /// Builds a complete live app-random launch configuration.
-    #[must_use]
-    pub fn new(root_seed: u64, draw_cap: u64, node_name: impl Into<String>) -> Self {
-        Self::from_seed(Seed::from_u64(root_seed), draw_cap, node_name)
-    }
-
     /// Builds a live app-random launch configuration from the complete scenario seed.
     #[must_use]
     pub fn from_seed(seed: Seed, draw_cap: u64, node_name: impl Into<String>) -> Self {
-        let seed_bytes = seed.bytes();
-        let mut scenario_seed = [0_u8; 8];
-        scenario_seed.copy_from_slice(&seed_bytes[..8]);
         Self {
-            scenario_seed: u64::from_le_bytes(scenario_seed),
             authoritative_seed: seed,
             decision_rng_root_seed: seed.decision_rng_root_seed(),
             draw_cap,
             node_name: node_name.into(),
-            branch_decision_rng_root_seed: None,
-            branch_seed: None,
-            branch_after_draws: None,
+            branch_reseeds: Vec::new(),
             draw_offset: 0,
             stream_positions: BTreeMap::new(),
+            branch_plan: crucible_protocol::app_random_branch_plan::AppRandomBranchPlan::default(),
         }
     }
 
-    /// Returns this configuration with an exact app-random branch boundary.
-    ///
-    /// The plugin serves `prefix_draws` requests from the scenario seed, then
-    /// clears every node-local stream and serves all later requests from
-    /// `branch_seed` at cursor zero.
+    /// Returns this configuration with ordered branch seeds and exact draw boundaries.
     #[must_use]
-    pub fn with_branch_reseed(mut self, branch_seed: u64, prefix_draws: u64) -> Self {
-        self = self.with_branch_seed(Seed::from_u64(branch_seed), prefix_draws);
-        self
-    }
-
-    /// Returns this configuration with a complete branch seed at an exact boundary.
-    #[must_use]
-    pub fn with_branch_seed(mut self, branch_seed: Seed, prefix_draws: u64) -> Self {
-        self.branch_decision_rng_root_seed = Some(branch_seed.decision_rng_root_seed());
-        self.branch_seed = Some(branch_seed);
-        self.branch_after_draws = Some(prefix_draws);
+    pub fn with_branch_seed_sequence(mut self, reseeds: Vec<(Seed, u64)>) -> Self {
+        self.branch_reseeds = reseeds;
         self
     }
 
@@ -128,10 +98,10 @@ impl QemuLaunchAppRandomConfig {
         self.authoritative_seed
     }
 
-    /// Returns the complete optional branch seed retained for host-side validation.
+    /// Returns the ordered fork seeds and exact node-local draw boundaries.
     #[must_use]
-    pub(crate) const fn branch_seed(&self) -> Option<Seed> {
-        self.branch_seed
+    pub fn branch_seed_sequence(&self) -> &[(Seed, u64)] {
+        &self.branch_reseeds
     }
 
     /// Returns this configuration with authoritative continuation cursors.
@@ -148,6 +118,24 @@ impl QemuLaunchAppRandomConfig {
         self.draw_offset = draw_offset;
         self.stream_positions = stream_positions;
         self
+    }
+
+    /// Returns this configuration with an immutable campaign branch plan.
+    #[must_use]
+    pub fn with_branch_plan(
+        mut self,
+        branch_plan: crucible_protocol::app_random_branch_plan::AppRandomBranchPlan,
+    ) -> Self {
+        self.branch_plan = branch_plan;
+        self
+    }
+
+    /// Returns the immutable campaign branch plan for this node generation.
+    #[must_use]
+    pub const fn branch_plan(
+        &self,
+    ) -> &crucible_protocol::app_random_branch_plan::AppRandomBranchPlan {
+        &self.branch_plan
     }
 }
 
@@ -172,11 +160,12 @@ pub struct QemuLaunchPluginConfig {
     storage_completed_history_gaps: u64,
     whitebox: QemuLaunchPluginSwitch,
     whitebox_setup: Option<QemuWhiteboxSetupValidation>,
+    campaign_marker_parking: QemuLaunchPluginSwitch,
     app_random: Option<QemuLaunchAppRandomConfig>,
+    selectable_catalog_plan:
+        Option<crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan>,
     coverage: QemuLaunchPluginSwitch,
     fingerprint: QemuLaunchPluginSwitch,
-    fingerprint_oracle: QemuLaunchPluginSwitch,
-    state_dump: Option<(u64, String)>,
 }
 
 impl QemuLaunchPluginConfig {
@@ -195,11 +184,11 @@ impl QemuLaunchPluginConfig {
             storage_completed_history_gaps: resource_limits.storage_completed_history_gaps,
             whitebox: QemuLaunchPluginSwitch::Off,
             whitebox_setup: None,
+            campaign_marker_parking: QemuLaunchPluginSwitch::Off,
             app_random: None,
+            selectable_catalog_plan: None,
             coverage: QemuLaunchPluginSwitch::Off,
             fingerprint: QemuLaunchPluginSwitch::Off,
-            fingerprint_oracle: QemuLaunchPluginSwitch::Off,
-            state_dump: None,
         }
     }
 
@@ -276,10 +265,27 @@ impl QemuLaunchPluginConfig {
         self
     }
 
+    /// Enables VMStop at the two declared network-campaign marker names.
+    #[must_use]
+    pub fn with_campaign_marker_parking(mut self) -> Self {
+        self.campaign_marker_parking = QemuLaunchPluginSwitch::On;
+        self
+    }
+
     /// Returns a config carrying the seeded live app-random decision source.
     #[must_use]
     pub fn with_app_random(mut self, config: QemuLaunchAppRandomConfig) -> Self {
         self.app_random = Some(config);
+        self
+    }
+
+    /// Returns a config carrying the launch-authenticated guest-selectable catalog.
+    #[must_use]
+    pub fn with_selectable_catalog_plan(
+        mut self,
+        plan: crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan,
+    ) -> Self {
+        self.selectable_catalog_plan = Some(plan);
         self
     }
 
@@ -298,27 +304,6 @@ impl QemuLaunchPluginConfig {
     #[must_use]
     pub fn with_fingerprint(mut self, fingerprint: QemuLaunchPluginSwitch) -> Self {
         self.fingerprint = fingerprint;
-        self
-    }
-
-    /// Returns a config with gate-only synchronous fingerprint comparison set.
-    ///
-    /// This switch deliberately retains the old vCPU-thread digest only as an
-    /// acceptance oracle. Production launches leave it off.
-    #[must_use]
-    pub fn with_fingerprint_oracle(mut self, oracle: QemuLaunchPluginSwitch) -> Self {
-        self.fingerprint_oracle = oracle;
-        self
-    }
-
-    /// Returns a config that terminally exports full raw state at `target_icount`.
-    #[must_use]
-    pub fn with_terminal_state_dump(
-        mut self,
-        target_icount: u64,
-        output_path: impl Into<String>,
-    ) -> Self {
-        self.state_dump = Some((target_icount, output_path.into()));
         self
     }
 
@@ -352,25 +337,41 @@ impl QemuLaunchPluginConfig {
         self.coverage
     }
 
+    /// Returns the immutable app-random plan passed during setup.
+    #[must_use]
+    pub fn app_random_branch_plan(
+        &self,
+    ) -> &crucible_protocol::app_random_branch_plan::AppRandomBranchPlan {
+        match &self.app_random {
+            Some(config) => config.branch_plan(),
+            None => empty_app_random_branch_plan(),
+        }
+    }
+
+    /// Returns the immutable guest-selectable catalog plan passed during setup.
+    #[must_use]
+    pub fn selectable_catalog_plan(
+        &self,
+    ) -> &crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan {
+        match &self.selectable_catalog_plan {
+            Some(plan) => plan,
+            None => empty_selectable_catalog_plan(),
+        }
+    }
+
+    /// Returns the complete process-neutral plugin setup plan.
+    #[must_use]
+    pub fn plugin_setup_plan(&self) -> crucible_protocol::plugin_setup_plan::PluginSetupPlan {
+        crucible_protocol::plugin_setup_plan::PluginSetupPlan::new(
+            self.app_random_branch_plan().clone(),
+            self.selectable_catalog_plan().clone(),
+        )
+    }
+
     /// Returns the single-VM fingerprint sampling switch passed to the plugin.
     #[must_use]
     pub const fn fingerprint(&self) -> QemuLaunchPluginSwitch {
         self.fingerprint
-    }
-
-    /// Returns the gate-only synchronous fingerprint-oracle switch.
-    #[must_use]
-    pub const fn fingerprint_oracle(&self) -> QemuLaunchPluginSwitch {
-        self.fingerprint_oracle
-    }
-
-    /// Returns the fixed inherited setup descriptors.
-    #[must_use]
-    pub const fn inherited_fds(&self) -> QemuLaunchInheritedFds {
-        QemuLaunchInheritedFds {
-            shmem_fd: FIXED_PLUGIN_SHMEM_FD,
-            wake_fd: FIXED_PLUGIN_WAKE_FD,
-        }
     }
 
     /// Returns the raw plugin argument string passed after the plugin path.
@@ -404,6 +405,9 @@ impl QemuLaunchPluginConfig {
             format!("{PLUGIN_ARG_WHITEBOX}={}", self.whitebox),
             format!("{PLUGIN_ARG_COVERAGE}={}", self.coverage),
         ];
+        if self.campaign_marker_parking == QemuLaunchPluginSwitch::On {
+            args.push(format!("{PLUGIN_ARG_CAMPAIGN_MARKER_PARKING}=on"));
+        }
         if self.whitebox == QemuLaunchPluginSwitch::On
             && let Some(validation) = self.whitebox_setup.as_ref()
         {
@@ -425,14 +429,21 @@ impl QemuLaunchPluginConfig {
                 "{PLUGIN_ARG_APP_RANDOM_NODE}={}",
                 app_random.node_name
             ));
-            if let (Some(branch_seed), Some(branch_after)) = (
-                app_random.branch_decision_rng_root_seed,
-                app_random.branch_after_draws,
-            ) {
-                args.push(format!("{PLUGIN_ARG_APP_RANDOM_BRANCH_SEED}={branch_seed}"));
-                args.push(format!(
-                    "{PLUGIN_ARG_APP_RANDOM_BRANCH_AFTER}={branch_after}"
-                ));
+            if !app_random.branch_reseeds.is_empty() {
+                let seeds = app_random
+                    .branch_reseeds
+                    .iter()
+                    .map(|(seed, _)| seed.decision_rng_root_seed().to_string())
+                    .collect::<Vec<_>>()
+                    .join(";");
+                let afters = app_random
+                    .branch_reseeds
+                    .iter()
+                    .map(|(_, after)| after.to_string())
+                    .collect::<Vec<_>>()
+                    .join(";");
+                args.push(format!("{PLUGIN_ARG_APP_RANDOM_BRANCH_SEEDS}={seeds}"));
+                args.push(format!("{PLUGIN_ARG_APP_RANDOM_BRANCH_AFTERS}={afters}"));
             }
             if app_random.draw_offset != 0 {
                 args.push(format!(
@@ -453,22 +464,12 @@ impl QemuLaunchPluginConfig {
         if self.fingerprint == QemuLaunchPluginSwitch::On {
             args.push(format!("{PLUGIN_ARG_FINGERPRINT}={}", self.fingerprint));
         }
-        if self.fingerprint_oracle == QemuLaunchPluginSwitch::On {
-            args.push(format!(
-                "{PLUGIN_ARG_FINGERPRINT_ORACLE}={}",
-                self.fingerprint_oracle
-            ));
-        }
-        if let Some((target_icount, output_path)) = &self.state_dump {
-            args.push(format!("{PLUGIN_ARG_STATE_DUMP_TARGET}={target_icount}"));
-            args.push(format!("{PLUGIN_ARG_STATE_DUMP_PATH}={output_path}"));
-        }
         args.join(",")
     }
 
     /// Returns the complete QEMU `-plugin` option value.
     #[must_use]
-    pub fn qemu_plugin_argument(&self) -> String {
+    pub(super) fn qemu_plugin_argument(&self) -> String {
         format!("{},{}", self.plugin_path, self.plugin_args_raw())
     }
 
@@ -504,6 +505,17 @@ impl QemuLaunchPluginConfig {
                 return Err(QemuLaunchCommandError::WhiteboxSetupValidationWhileDisabled);
             }
         }
+        if self.campaign_marker_parking == QemuLaunchPluginSwitch::On
+            && self.whitebox != QemuLaunchPluginSwitch::On
+        {
+            return Err(QemuLaunchCommandError::CampaignMarkerParkingWhileWhiteboxDisabled);
+        }
+        if self.selectable_catalog_plan.as_ref().is_some_and(|plan| {
+            plan != &crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan::default()
+        }) && self.whitebox != QemuLaunchPluginSwitch::On
+        {
+            return Err(QemuLaunchCommandError::SelectableCatalogWhileWhiteboxDisabled);
+        }
         if let Some(app_random) = &self.app_random {
             if self.whitebox != QemuLaunchPluginSwitch::On {
                 return Err(QemuLaunchCommandError::AppRandomWhileWhiteboxDisabled);
@@ -512,11 +524,14 @@ impl QemuLaunchPluginConfig {
             if app_random.node_name.contains(',') || app_random.node_name.contains('=') {
                 return Err(QemuLaunchCommandError::InvalidAppRandomNodeName);
             }
-            if app_random.branch_decision_rng_root_seed.is_some()
-                != app_random.branch_after_draws.is_some()
+            if app_random
+                .branch_reseeds
+                .iter()
+                .any(|(_, after)| *after > app_random.draw_cap)
                 || app_random
-                    .branch_after_draws
-                    .is_some_and(|after| after > app_random.draw_cap)
+                    .branch_reseeds
+                    .windows(2)
+                    .any(|pair| pair[0].1 > pair[1].1)
             {
                 return Err(QemuLaunchCommandError::InvalidAppRandomBranchConfiguration);
             }
@@ -525,28 +540,47 @@ impl QemuLaunchPluginConfig {
                 .values()
                 .try_fold(0_u64, |sum, draws| sum.checked_add(*draws));
             if app_random.draw_offset > app_random.draw_cap
-                || position_draws != Some(app_random.draw_offset)
+                || position_draws.is_none_or(|draws| draws > app_random.draw_offset)
                 || app_random
-                    .branch_after_draws
-                    .is_some_and(|after| after < app_random.draw_offset)
+                    .branch_reseeds
+                    .iter()
+                    .any(|(_, after)| *after < app_random.draw_offset)
             {
                 return Err(QemuLaunchCommandError::InvalidAppRandomContinuationConfiguration);
             }
-        }
-        if let Some((target_icount, output_path)) = &self.state_dump {
-            if self.fingerprint != QemuLaunchPluginSwitch::On || *target_icount == 0 {
-                return Err(QemuLaunchCommandError::InvalidStateDumpConfiguration);
-            }
-            validate_launch_text(PLUGIN_ARG_STATE_DUMP_PATH, output_path)?;
-            if !output_path.starts_with('/')
-                || output_path.contains(',')
-                || output_path.contains('=')
+            if app_random
+                .branch_plan
+                .entries()
+                .iter()
+                .any(|entry| {
+                    entry.draw_index() >= app_random.draw_cap
+                        || !crucible_protocol::app_random_transport::app_random_stream_name_belongs_to_node(
+                            entry.stream_name(),
+                            &app_random.node_name,
+                        )
+                })
             {
-                return Err(QemuLaunchCommandError::InvalidStateDumpConfiguration);
+                return Err(QemuLaunchCommandError::InvalidAppRandomBranchConfiguration);
             }
         }
         Ok(())
     }
+}
+
+fn empty_app_random_branch_plan()
+-> &'static crucible_protocol::app_random_branch_plan::AppRandomBranchPlan {
+    static EMPTY: std::sync::OnceLock<
+        crucible_protocol::app_random_branch_plan::AppRandomBranchPlan,
+    > = std::sync::OnceLock::new();
+    EMPTY.get_or_init(Default::default)
+}
+
+fn empty_selectable_catalog_plan()
+-> &'static crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan {
+    static EMPTY: std::sync::OnceLock<
+        crucible_protocol::selectable_catalog_plan::SelectableCatalogPlan,
+    > = std::sync::OnceLock::new();
+    EMPTY.get_or_init(Default::default)
 }
 
 fn validate_plugin_resource_limit(

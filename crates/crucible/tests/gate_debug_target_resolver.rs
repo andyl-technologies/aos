@@ -12,12 +12,12 @@ use crucible::test_support::{
 };
 use crucible::{
     AssertionId, AssertionPhase, ChoiceTag, Configuration, DebugAttachRequest,
-    DebugDivergenceCoordinate, DebugFailureFooterCommand, DebugTargetResolverRequest,
-    DebugTargetSelector, EngineError, EventAttributeValue, EventDiagnosticPayload, EventLevel,
-    EventLogCausalDivergencePoint, EventLogIcountStamp, EventPayload, EventSource, Icount, NodeId,
-    NodeTemplate, ObservableEvent, OverrideDecision, ReadyPoint, SchedulerEventLogClass,
-    SchedulerEventLogPayload, SchedulingPoint, TemporalGraph, VirtualTime, VmArchitecture,
-    WhiteBoxPolicy, World, WorldNode, bake, try_step,
+    DebugDivergenceCoordinate, DebugTargetResolverRequest, DebugTargetSelector, EngineError,
+    EventAttributeValue, EventDiagnosticPayload, EventLevel, EventLogCausalDivergencePoint,
+    EventLogTickStamp, EventPayload, EventSource, Icount, NodeId, NodeTemplate, ObservableEvent,
+    OverrideDecision, ReadyPoint, SchedulerEventLogClass, SchedulerEventLogPayload,
+    SchedulingPoint, TemporalGraph, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode,
+    bake, try_step,
 };
 
 #[test]
@@ -84,14 +84,12 @@ fn debug_target_resolver_accepts_all_t_dbg_7_selectors() -> Result<(), Box<dyn E
 
     let by_failure = graph.debug_resolve_target(
         &DebugTargetResolverRequest::new(third.clone(), DebugTargetSelector::at_failure())
-            .with_event_coordinate(9, second.clone())
-            .with_failure_footer_artifact("./.crucible/repro-first-failure.crucible"),
+            .with_event_coordinate(9, second.clone()),
         &event_log,
     )?;
     assert_eq!(by_failure.failure_event_sequence, Some(9));
     assert_eq!(by_failure.target_configuration, second.id());
     assert!(by_failure.proves_debug_target_resolution());
-    assert!(by_failure.has_copy_pasteable_at_failure_footer());
     assert_eq!(
         graph
             .debug_goto(&attach, &by_failure.goto_request)?
@@ -121,9 +119,10 @@ fn debug_target_resolver_accepts_all_t_dbg_7_selectors() -> Result<(), Box<dyn E
 
     let divergence_point = EventLogCausalDivergencePoint {
         raw_index: 1,
-        at: EventLogIcountStamp {
+        at: EventLogTickStamp {
             node: Some(node_id("guest-a")),
-            icount: Icount { retired: 102 },
+            tick: crucible::SimInstant { ticks: 102 },
+            retired: Some(Icount { retired: 102 }),
         },
         source: EventSource::Node {
             node: node_id("guest-a"),
@@ -176,13 +175,6 @@ fn debug_target_resolver_accepts_all_t_dbg_7_selectors() -> Result<(), Box<dyn E
         rounded_divergence,
         EngineError::DebugTimeTravelCoordinateNotFound { .. }
     ));
-
-    let quoted_footer = DebugFailureFooterCommand::new("./artifact dir/repro 'one'.crucible");
-    assert_eq!(
-        quoted_footer.debug_command,
-        "crucible debug './artifact dir/repro '\\''one'\\''.crucible' --at-failure"
-    );
-    assert!(quoted_footer.is_copy_pasteable_at_failure());
 
     Ok(())
 }
@@ -242,7 +234,6 @@ fn single_node_world(label: &str) -> Result<World, EngineError> {
         },
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,

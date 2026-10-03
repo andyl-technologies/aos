@@ -12,7 +12,9 @@ pub(super) fn run_integrated_adaptive_campaign_gate() -> Result<(), Box<dyn Erro
     )?;
     let scenario = scenario_form.scenario_def();
     let root = Configuration::genesis(scenario.clone());
-    let decisions = (0..3).map(guidance_decision).collect::<Vec<_>>();
+    let decisions = (0..3)
+        .map(guidance_decision)
+        .collect::<Result<Vec<_>, _>>()?;
     let children = decisions
         .iter()
         .cloned()

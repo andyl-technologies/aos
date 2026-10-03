@@ -29,8 +29,12 @@ pub(super) fn finalize_staged_result(
         .ok_or(FaultActionCommitError::Fatal(
             FaultRuntimeError::IncompleteAdapterState,
         ))?;
+    if result.observation.coordinate.virtual_ticks != coordinate {
+        return Err(FaultActionCommitError::Fatal(
+            FaultRuntimeError::AdapterActionMismatch,
+        ));
+    }
     result.precondition = Some(precondition);
-    result.observation.coordinate.retired_instructions = Some(coordinate);
     result.observation.evidence = evidence;
     Ok(())
 }
@@ -184,7 +188,7 @@ pub(super) fn typed_node_application_evidence_hash(
 }
 
 pub(super) fn result_evidence_hash(
-    header: &crucible_shmem::FaultResultHeaderV1,
+    header: &crucible_shmem::FaultResultHeaderV2,
     payload: &[u8],
 ) -> ContentHash {
     let mut hasher = blake3::Hasher::new();
@@ -196,7 +200,7 @@ pub(super) fn result_evidence_hash(
 }
 
 pub(super) fn verify_qemu_evidence_hash(
-    header: &crucible_shmem::FaultResultHeaderV1,
+    header: &crucible_shmem::FaultResultHeaderV2,
     payload: &[u8],
 ) -> Result<(), FaultActionCommitError> {
     let observed: [u8; 32] = Sha256::digest(payload).into();

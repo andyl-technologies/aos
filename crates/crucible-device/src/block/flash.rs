@@ -51,7 +51,7 @@ impl BlockFlashState {
     pub fn program_registered(
         &mut self,
         request: &BlockRequest,
-        now_nanos: u64,
+        now_ticks: u64,
         device_length: u64,
         contributors: &[[u8; 32]],
     ) -> Result<BlockFlashMutationOutcome, DeviceError> {
@@ -67,7 +67,7 @@ impl BlockFlashState {
                     .ok_or_else(|| invalid("flash contributor is not registered"))
             })
             .collect::<Result<Vec<_>, DeviceError>>()?;
-        self.program(request, now_nanos, device_length, &rules)
+        self.program(request, now_ticks, device_length, &rules)
     }
 
     /// Validates checkpointed keys, immutable rules, and sparse-state bounds.
@@ -126,7 +126,7 @@ impl BlockFlashState {
     pub fn program(
         &mut self,
         request: &BlockRequest,
-        now_nanos: u64,
+        now_ticks: u64,
         device_length: u64,
         rules: &[ResolvedBlockFlashRule],
     ) -> Result<BlockFlashMutationOutcome, DeviceError> {
@@ -201,7 +201,7 @@ impl BlockFlashState {
             let first_page = request.offset / rule.program_page_bytes;
             let last_page = programmed_end.saturating_sub(1) / rule.program_page_bytes;
             for page in first_page..=last_page {
-                insert_page(continuation, page, now_nanos)?;
+                insert_page(continuation, page, now_ticks)?;
                 let page_start = page.saturating_mul(rule.program_page_bytes);
                 let clear_start = page_start.max(request.offset);
                 let clear_end = page_start
@@ -249,7 +249,7 @@ impl BlockFlashState {
         request_count: u32,
         fragment_offset: u64,
         fragment_bytes: &[u8],
-        now_nanos: u64,
+        now_ticks: u64,
         device_length: u64,
         contributors: &[[u8; 32]],
     ) -> Result<BlockFlashMutationOutcome, DeviceError> {
@@ -332,7 +332,7 @@ impl BlockFlashState {
                             .erase_count
                             .checked_add(1)
                             .ok_or_else(|| invalid("flash erase count overflow"))?;
-                        state.last_erase_nanos = now_nanos;
+                        state.last_erase_ticks = now_ticks;
                         let decision = BlockFlashEraseDecision {
                             applied_prefix_bytes,
                             failed: attempt_failed,
@@ -388,7 +388,7 @@ impl BlockFlashState {
     pub fn read(
         &mut self,
         request: &BlockRequest,
-        now_nanos: u64,
+        now_ticks: u64,
         device_length: u64,
         rules: &[ResolvedBlockFlashRule],
         bytes: &mut [u8],
@@ -415,7 +415,7 @@ impl BlockFlashState {
             let first_page = request.offset / rule.program_page_bytes;
             let last_page = request_end.saturating_sub(1) / rule.program_page_bytes;
             for page in first_page..=last_page {
-                let (programmed_nanos, disturb_due) = {
+                let (programmed_ticks, disturb_due) = {
                     let state = continuation.pages.entry(page).or_default();
                     state.reads_since_disturb = state
                         .reads_since_disturb
@@ -425,7 +425,7 @@ impl BlockFlashState {
                     if disturb_due {
                         state.reads_since_disturb = 0;
                     }
-                    (state.programmed_nanos, disturb_due)
+                    (state.programmed_ticks, disturb_due)
                 };
                 let erase_block =
                     page.saturating_mul(rule.program_page_bytes) / rule.erase_block_bytes;
@@ -438,7 +438,9 @@ impl BlockFlashState {
                     .wear_age_nanos
                     .saturating_mul(erase_count)
                     .saturating_add(rule.retention.minimum_age_nanos);
-                if now_nanos.saturating_sub(programmed_nanos) >= eligible_age {
+                if now_ticks.saturating_sub(programmed_ticks)
+                    >= eligible_age.saturating_mul(crucible_shmem::TICKS_PER_NS)
+                {
                     mutate_page(
                         continuation,
                         rule,

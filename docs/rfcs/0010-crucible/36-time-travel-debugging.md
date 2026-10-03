@@ -112,15 +112,16 @@ To attach a debugger, Crucible does exactly what every other realization does: i
 `instantiate`s a configuration (05 §5). The operator names a coordinate (§36.6); the
 session resolves it to a checkpoint configuration in the temporal graph (07); the
 node's QEMU child is brought up at that configuration via the priority-ordered
-`instantiate` branches (loadvm an exact fat snapshot, else replay from the nearest
-fat ancestor, else baked-genesis-load-plus-replay — 10 §10.5). The result is a live,
+`instantiate` branches (version-nine descriptor-backed exact restore, else replay
+from the nearest retained ancestor, else baked-genesis-load-plus-replay — 10
+§10.5). The result is a live,
 controllable runtime sitting at a precise `(def, schedule)` / icount coordinate,
 indistinguishable from any other instantiated runtime — because it *is* one.
 
 - **[DBG-4]** A debug attach MUST be an `instantiate` (05 §5) of the checkpoint
   configuration the operator's coordinate resolves to (§36.6), realized by the same
-  priority-ordered branches as any other realization (exact-snapshot loadvm,
-  ancestor-replay, baked-genesis-plus-replay — 10 §10.5). The attached runtime MUST
+  priority-ordered branches as any other realization (version-nine descriptor-backed
+  exact restore, ancestor replay, baked-genesis-plus-replay — 10 §10.5). The attached runtime MUST
   be an ordinary instantiated runtime distinguished only by its configuration; there
   MUST be no debug-specific realization path. *Gate:* `gate:replay-oracle`. *Spec:*
   §36.2.1; cross-ref 05 §5, 10 §10.5.
@@ -144,7 +145,7 @@ the node's machine, and nothing else.
   ──────────────────────────────────────────────────────────────────────────────
   1. plugin-IPC control  handshake + Quit only            (silent during a run)  14
   2. shared-memory data  ceiling/clock/frame rings + futex/eventfd wake objects  13
-  3. QMP                 out-of-band machine control: savevm/loadvm/quit         10 §10.4
+  3. QMP                 checkpoint capture / v9 descriptor restore / quit       10 §10.4
   4. gdbstub (DEBUG)     out-of-band debugger packets: read/write/bp/step        THIS FILE
                          carries NO per-quantum timing, NO frame data, NO order  ([SHM-2])
 ```
@@ -448,8 +449,9 @@ the cadence; only latency does.
   cache decision that never changes any node's denoted state (07 [TEMP-14],
   [TEMP-26], 05 [EXEC-30]), eviction of an opportunistic fat checkpoint MUST always
   be safe, and debugging correctness MUST NOT depend on the cadence — only latency.
-  Until the savevm-completeness spike (S3, 30 §30.4) is green, opportunistic
-  checkpoints MUST default to thin/replay (§36.9). *Gate:* `gate:replay-oracle`.
+  Opportunistic fat checkpoints MUST use the version-nine descriptor protocol;
+  an incomplete or unsealed descriptor set is rejected, after which the caller
+  may explicitly select thin replay (§36.9). *Gate:* `gate:replay-oracle`.
   *Spec:* §36.4.4; cross-ref 07 §4, 30 §30.4.
 
 ---
@@ -611,12 +613,6 @@ bisector already pins a divergence to a precise icount-stamped event-log coordin
 bisecting resolver share this path, localizing any divergence by bisection before
 handing the debugger a replay-oracle-checked coordinate.
 
-And the loop closes with triage ergonomics: a **non-passing run's failure footer**
-(the CLI's failure rendering, 23 §4) MUST print a **copy-pasteable
-`crucible debug <artifact> --at-failure`** command, so a developer goes from "it
-failed" to "I'm sitting in a debugger at the failure" in one paste — the debugging
-analogue of the `crucible replay` repro command (23 [CLI-10]).
-
 - **[DBG-27]** The debug target resolver MUST accept, and resolve to a checkpoint
   configuration / virtual-time coordinate the attach (§36.2) realizes: `--at
   <icount|vtime>` (a per-node icount or world virtual time, 09); `--at-event <seq>`
@@ -630,12 +626,6 @@ analogue of the `crucible replay` repro command (23 [CLI-10]).
   pins a divergence to a precise icount-stamped event-log coordinate ([OBS-28]), the
   resolver MUST consume it without translation. *Gate:* `gate:divergence-bisect`,
   `gate:replay-oracle`. *Spec:* §36.6; cross-ref 24, 19 §19.6.2.
-
-- **[DBG-29]** A non-passing run's failure footer (23 §4) MUST print a
-  copy-pasteable **`crucible debug <artifact> --at-failure`** command (the debugging
-  analogue of the `crucible replay` repro command, 23 [CLI-10]), so an operator goes
-  from a reported failure to an attached debugger at the failure point in one paste.
-  *Gate:* `gate:e2e-determinism`. *Spec:* §36.6; cross-ref 23 §4, [CLI-10].
 
 ---
 
@@ -713,7 +703,7 @@ the CLI catalogue in [`23-cli.md`](23-cli.md)**.
 
   TARGET (choose one)
     <artifact>            a reproduction artifact (06 §7.1) to attach to
-    <savepoint>           a savepoint / checkpoint hash (07)
+    <savepoint>           a current portable savepoint handle (07)
     --session <id:epoch:seed>  attach to a running session via the daemon (21);
                                seed is 64 lowercase hexadecimal digits
 
@@ -1028,8 +1018,8 @@ instances.
 The shipped suite includes GNU GDB built hermetically from source using AOS
 packages. Live debugger gates first establish the x86_64 path, then require the
 same attach/read/breakpoint/reposition/run-control and guest-introspection contract
-on aarch64. Architecture support is not complete while either required live gate
-uses a model double or fallback.
+on aarch64. Architecture support is complete only when both required gates capture
+direct live evidence for the full contract.
 
 The suite interface can retain two architecture-specific guest closures: a
 native x86_64 kernel/root image and an AArch64 kernel/root image. The wrapper
@@ -1078,20 +1068,19 @@ subsequences are byte-identical, and gdb stepping advances icount by exactly the
 stepped instructions with no time-control perturbation. *Fail:* any divergence — the
 gdbstub leaked into icount or time control.
 
-**Until green — the conservative default.** Until this spike is green, the debug
-surface MUST default to **read-only plus Crucible-driven step/reverse-step**, with
-**gdb single-step disabled** (the operator steps via Crucible's deterministic step
-verbs, §36.4.2, not via the raw gdbstub single-step), so no gdbstub operation can
-perturb virtual time.
+**Current policy.** The debug surface defaults to **read-only plus
+Crucible-driven step/reverse-step**. Raw gdbstub single-step is outside the
+supported surface; the operator steps through Crucible's deterministic verbs
+(§36.4.2), so gdbstub operations cannot independently advance virtual time.
 
 - **[DBG-36]** Crucible MUST treat "does attaching/stepping the gdbstub disturb the
   node's `-icount`, icount bias, or the plugin's time control?" as a **SPIKE** (also
   recorded in [`30-risks-spikes.md`](30-risks-spikes.md)): a throwaway measurement
   comparing attached vs un-attached fingerprint sequences and causal subsequences
-  (30 §30.2), and gdb single-step icount exactness. Until the spike is green, the
-  debug surface MUST default to **read-only plus Crucible-driven step/reverse-step
-  with gdb single-step disabled**, so no gdbstub operation can advance virtual time
-  outside the deterministic step machinery ([DBG-8]). *Gate:*
+  (30 §30.2). The supported surface MUST remain **read-only plus Crucible-driven
+  step/reverse-step** and MUST reject raw gdbstub single-step, so no gdbstub
+  operation can advance virtual time outside the deterministic step machinery
+  ([DBG-8]). *Gate:*
   `gate:layer0-determinism`, `gate:e2e-determinism`. *Spec:* §36.10.1; cross-ref 30
   §30.2.
 
@@ -1186,8 +1175,8 @@ GUEST INTROSPECTION (§36.9.3–§36.9.4): explicit whole-world non-canonical fo
   default, and may be recorded only explicitly. Hermetic GNU GDB; required live
   x86_64 then aarch64 gates.
 
-SPIKE (§36.10): does attaching/stepping the gdbstub disturb icount or time control?
-  Until green: read-only + Crucible-driven step, gdb single-step disabled. Plus:
+VALIDATION (§36.10): attaching and reading through the gdbstub must remain neutral;
+  run control uses Crucible-driven step and excludes raw gdb single-step. Plus:
   multi-vCPU coherence, gate-enforced read/mutate boundary, reverse-step latency,
   snapshot-completeness (default thin/replay until S3 green), DWARF out of scope.
 ```
@@ -1271,10 +1260,10 @@ peer-credential completion remain open in T-DBG-11.
   resulting runtime together with an explicit four-channel debug boundary:
   plugin-IPC, shared memory, QMP, and a mediated gdbstub. The QEMU launch builder
   adds a validated `-gdb` endpoint only for debug launches, and the
-  `QemuGdbstubProxy` binds the operator `--gdb-listen` address, connects to
-  QEMU's raw gdbstub endpoint, and forwards debugger bytes outside the scheduler
-  hot path. The tests assert both the four-channel contract and local proxy
-  mediation, with no per-quantum timing or frame payload. The packaged
+  lifecycle debug gateway binds an owner-only Unix operator socket and connects
+  to QEMU's private raw gdbstub endpoint outside the scheduler hot path. The
+  tests assert the four-channel contract and private gateway mediation, with no
+  per-quantum timing or frame payload. The packaged
   `crucible debug` route additionally requires a successful live QEMU/plugin
   boot and reports its protocol/ABI/icount/fingerprint proof before exposing the
   mediated debug plan.
@@ -1310,10 +1299,10 @@ peer-credential completion remain open in T-DBG-11.
   gdbstub as a QEMU hardware breakpoint when available, and returns
   `EngineError::DebugBreakpointRequiresAllowMutate` with `--allow-mutate` guidance
   when the request has no canonical mechanism. The gate asserts the report never
-  mutates guest memory, never uses a memory patch, the proxy rewrites real `Z0`
-  software-breakpoint packets to `Z1` hardware-breakpoint packets, and the proxy
-  refuses `Z0` locally when no hardware breakpoint mechanism is available.
-  The live CLI route composes this proxy policy with hermetic QEMU/plugin
+  mutates guest memory or uses a memory patch, and the gateway rewrites real
+  `Z0` software-breakpoint packets to `Z1` hardware-breakpoint packets. A QEMU
+  refusal is forwarded to the debugger without trying a guest-memory trap.
+  The live CLI route composes this gateway policy with hermetic QEMU/plugin
   execution; it never enables raw gdb single-step or a guest-memory trap patch.
 - [x] **T-DBG-4** Implement `goto` as restore-nearest-checkpoint-≤-T-then-replay (the
   ancestor-replay branch of `instantiate`), reverse-step grains mirroring the forward
@@ -1378,20 +1367,14 @@ peer-credential completion remain open in T-DBG-11.
   `(seed, scenario, schedule)` artifacts. Completion remains open until the session
   and CLI expose the explicit transition and prove that forbidden requests never
   fork as a side effect.
-- [x] **T-DBG-7** Implement the debug target resolver (`--at`, `--at-event`,
+- [ ] **T-DBG-7** Implement the debug target resolver (`--at`, `--at-event`,
   `--at-failure` = first assertion-violation point, `--at-checkpoint`), accept a
   divergence-bisection `(node, icount, kind)` coordinate directly as a goto target,
-  and emit a copy-pasteable `crucible debug <artifact> --at-failure` in the failure
-  footer (23 §4). — satisfies [DBG-27], [DBG-28], [DBG-29]; spec §36.6.
-  Completed by `checks.crucible.phase6.debugTargetResolver`:
-  `TemporalGraph::debug_resolve_target` accepts direct `--at` coordinates,
-  event-log `--at-event` sequences, `--at-failure` by scanning for the first
-  assertion-state violation, `--at-checkpoint` content addresses, and node-local
-  divergence-bisection coordinates, then returns the `DebugGotoRequest` consumed by
-  restore-plus-replay `debug_goto`. `DebugFailureFooterCommand` centralizes the
-  copy-pasteable `crucible debug <artifact> --at-failure` footer and the CLI failure
-  artifact writer uses it.
-- [x] **T-DBG-8** Implement the `crucible debug` CLI surface (also added to 23) as a
+  and accepts `--at-failure` as an explicit target. — satisfies [DBG-27], [DBG-28];
+  spec §36.6.
+  Completion requires executable coverage through the current authenticated
+  daemon Session owner.
+- [ ] **T-DBG-8** Implement the `crucible debug` CLI surface (also added to 23) as a
   thin wrapper holding no debug state — coordinate + debug-control flags
   (`--read-only` default, `--allow-mutate`, `--node`, `--gdb-listen`,
   `--checkpoint-stride`) and verbs attach-gdb/fork-debug/goto/reverse-step/reverse-continue
@@ -1402,41 +1385,10 @@ peer-credential completion remain open in T-DBG-11.
   read/mutate boundary. — satisfies [DBG-7], [DBG-30], [DBG-31], [DBG-32], [DBG-33],
   [DBG-34], [DBG-35], [DBG-36], [DBG-37], [DBG-38], [DBG-39], [DBG-40]; spec §36.7,
   §36.8, §36.9, §36.10.
-  Completed under `checks.crucible.phase6.debugCliSurface`:
-  `crucible debug` now parses artifact/savepoint and `--session` targets plus
-  `--at`, `--at-event`, `--at-failure`, `--at-checkpoint`, `--node`,
-  `--gdb-listen`, `--read-only`, `--allow-mutate`, `--checkpoint-stride`, and the
-  attach-gdb/goto/reverse-step/reverse-continue verbs. The CLI planner records only
-  delegated session commands and mediated gdbstub-proxy operations, defaults
-  artifacts to `--at-failure`, savepoints to their checkpoint coordinate, and
-  sessions to the current coordinate, realizes reverse-step through the debug
-  reverse-step/goto restore-plus-replay path rather than unsupported forward session
-  step modes, proves that the CLI holds no debugger state, defaults to read-only
-  inspection, exposes the no
-  symbol server policy, requires coherent multi-vCPU gdb threads, and keeps raw gdb
-  single-step disabled. The daemonless local route fails with exit `4` before a
-  generic QEMU admission probe because its instantiate/replay executor remains
-  open under T-DBG-9/T-DBG-10; it never returns a successful planned-only result.
-  The remote unary client now implements an
-  explicit `fork-debug` plus argv `exec`, interactive `pty`, and configured
-  in-guest `ssh` byte bridging. The fork RPC requires the transport-derived
-  controller to hold `control`, `mutate`, and `shell`, records a typed
-  guest-introspection trigger/action on the whole-world branch, and every guest
-  record is rejected while the session remains canonical. Authenticated remote
-  `goto`, `reverse-step`, and `reverse-continue` send only operator intent under
-  the exclusive controller lease. The actor overwrites caller state with its
-  current configuration, checked scheduler-event prefix, and
-  event-to-schedule-prefix map before invoking the existing
-  replay-oracle-checked time-travel path. Each schedule-matching causal decision
-  advances that map to its exact prefix, quantum boundaries bind the completed
-  configuration, and other records retain the deterministic
-  scheduler boundary at which forward stepping would expose them. A per-session
-  operation gate prevents controller release or reassignment between lease
-  authorization and actor completion. Checkpoint-only resume inputs do not carry
-  the historical event log, so reverse event-like operations fail explicitly at
-  the actor's resume-history floor while instruction and coordinate `goto`
-  remain available. The CLI accepts the closed reverse grain set and
-  `quiescent`, `at:<ticks>`, or canonical compact-binary 17a conditions.
+  The authenticated remote Session client implements explicit `fork-debug`,
+  GDB relay, argv `exec`, interactive `pty`, and configured in-guest `ssh`
+  byte bridging. The fork RPC requires the transport-derived controller to hold
+  `control`, `mutate`, and `shell`. A focused Session-only gate is required.
 - [x] **T-DBG-9** Replace the Apache-side one-QEMU proxy with the standalone GPL
   debugger gateway, a stable asynchronous GDB listener, bounded fail-closed RSP
   parsing, and scheduler-routed `continue`/`step`/`vCont`. Prove split/coalesced
@@ -1463,7 +1415,7 @@ peer-credential completion remain open in T-DBG-11.
   gateway prepare/hydrate/commit, verified endpoint/generation evidence, rollback
   before promotion, and stable GDB state across goto/reverse/fork. — satisfies
   [DBG-14]–[DBG-19], [DBG-41]; spec §36.4, §36.9.1.
-  In progress: the production lifecycle replays two independent whole-world
+  Completed: the production lifecycle replays two independent whole-world
   candidates to the exact scheduler/event-log/node-counter target, requires both
   candidates to agree, and compares the selected candidate with original live
   fingerprints sealed to the graph's complete `RuntimeState`. The standalone
@@ -1472,14 +1424,10 @@ peer-credential completion remain open in T-DBG-11.
   selected worlds or nodes until gateway termination is observed; successful
   promotion transfers gateway ownership before revoking the retired world's
   scheduler authority, and cleanup evidence does not claim an unobserved reap.
-  An earlier 2026-08 manual production-daemon pass landed two distinct requested
-  virtual times on the same schedule-empty configuration identity and could not
-  reverse from either event/schedule history. Completion therefore also requires
-  operator-visible landed runtime-coordinate evidence and a live fixture with
-  non-empty recorded reverse history; configuration identity alone is not
-  sufficient proof of a successful distinct landing. The API and CLI now return
-  requested and landed configuration/event/scheduler/node-icount evidence as
-  separate typed fields and retain an inclusive exact event cursor. The manual
+  The API and CLI return requested and landed
+  configuration/event/scheduler/node-icount evidence as separate typed fields
+  and retain an inclusive exact event cursor, so schedule-empty configuration
+  identity never substitutes for a distinct landed runtime coordinate. The manual
   acceptance runner generates its scenario from the
   packaged kernel and root-image BLAKE3 identities, enables fail-closed asset
   reference validation, creates non-empty live history, and compares the full
@@ -1518,7 +1466,7 @@ peer-credential completion remain open in T-DBG-11.
   principal on every operation. Authenticated attach allocates a daemon-loopback
   stable gateway, and the CLI exposes it through a bounded client-side loopback
   relay over HTTP/2 while retaining and finally releasing the controller lease.
-  RPC ABI v5 adds caller-owned acquisition tokens and daemon-side holder
+  Current RPC ABI v6 uses caller-owned acquisition tokens and daemon-side holder
   identities: a lost-response retry reuses one token/holder, while concurrent
   commands and a long-lived relay hold separate
   references to the same principal/generation, and only the final release clears
@@ -1605,7 +1553,7 @@ peer-credential completion remain open in T-DBG-11.
   commands, and guest exec/PTY/SSH workflows are documented for operators.
 - [x] **T-DBG-14** Pass live x86_64 and aarch64 gates for read-only neutrality,
   hardware breakpoints, scheduler run control, atomic runtime replacement, stable
-  GDB, and guest exec/PTY/SSH introspection without model doubles or fallback. Update S14 and the
+  GDB, and guest exec/PTY/SSH introspection with direct exact/live evidence. Update S14 and the
   decision register only from captured live evidence. — satisfies [DBG-36],
   [DBG-41], [DBG-42], [DBG-47]; spec §36.9.4, §36.10.1.
   Completed: `checks.crucible.phase7.debuggerLiveArchitectures` boots the

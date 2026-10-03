@@ -52,7 +52,7 @@ fn flap_action() -> ResolvedBindingAction {
         transition_sequence: 7,
         opportunity: None,
         coordinate: FaultCoordinate {
-            virtual_nanos: 100,
+            virtual_ticks: 100,
             retired_instructions: None,
         },
         cause: BindingActionCause::Signal,
@@ -85,7 +85,7 @@ fn negotiated_mode_action() -> ResolvedBindingAction {
         transition_sequence: 8,
         opportunity: None,
         coordinate: FaultCoordinate {
-            virtual_nanos: 100,
+            virtual_ticks: 100,
             retired_instructions: None,
         },
         cause: BindingActionCause::Signal,
@@ -146,7 +146,7 @@ fn forwarder_action(
         transition_sequence: 1,
         opportunity: None,
         coordinate: FaultCoordinate {
-            virtual_nanos: 100,
+            virtual_ticks: 100,
             retired_instructions: None,
         },
         cause: BindingActionCause::Signal,
@@ -185,7 +185,7 @@ fn association_action(policy: FaultObjectId, scores: [i64; 2]) -> ResolvedBindin
         transition_sequence: 1,
         opportunity: None,
         coordinate: FaultCoordinate {
-            virtual_nanos: 0,
+            virtual_ticks: 0,
             retired_instructions: None,
         },
         cause: BindingActionCause::Signal,
@@ -268,7 +268,7 @@ fn control_service_action_with(
         transition_sequence: 1,
         opportunity: None,
         coordinate: FaultCoordinate {
-            virtual_nanos: 0,
+            virtual_ticks: 0,
             retired_instructions: None,
         },
         cause: BindingActionCause::Signal,
@@ -302,7 +302,7 @@ fn route_transition_action(binding: &str, new_route: &str) -> ResolvedBindingAct
         transition_sequence: 1,
         opportunity: None,
         coordinate: FaultCoordinate {
-            virtual_nanos: 0,
+            virtual_ticks: 0,
             retired_instructions: None,
         },
         cause: BindingActionCause::Signal,
@@ -396,7 +396,7 @@ fn route_replacement_action() -> ResolvedBindingAction {
         transition_sequence: 1,
         opportunity: Some(ContentHash::from_bytes(b"control-opportunity")),
         coordinate: FaultCoordinate {
-            virtual_nanos: 10,
+            virtual_ticks: 10,
             retired_instructions: None,
         },
         cause: BindingActionCause::Opportunity {

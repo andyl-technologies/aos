@@ -17,7 +17,7 @@ impl BlockDevice {
         &mut self,
         request_id: u32,
         request_sequence: u64,
-        admitted_nanos: u64,
+        admitted_ticks: u64,
         destination_offset: u64,
         bytes: Vec<u8>,
     ) -> Result<(BlockCompletionDurability, u64), DeviceError> {
@@ -26,7 +26,7 @@ impl BlockDevice {
             &mut self.overlay,
             request_id,
             request_sequence,
-            admitted_nanos,
+            admitted_ticks,
             destination_offset,
             bytes,
         )
@@ -46,14 +46,14 @@ impl BlockDevice {
     pub fn apply_storage_external_mutation(
         &mut self,
         request_sequence: u64,
-        admitted_nanos: u64,
+        admitted_ticks: u64,
         request: BlockRequest,
     ) -> Result<(BlockCompletionDurability, u64), DeviceError> {
         self.storage_faults.apply_external_mutation(
             &self.base,
             &mut self.overlay,
             request_sequence,
-            admitted_nanos,
+            admitted_ticks,
             request,
         )
     }
@@ -69,10 +69,10 @@ impl BlockDevice {
         member: u16,
         start_byte: u64,
         bytes: Vec<u8>,
-        dirty_nanos: u64,
+        dirty_ticks: u64,
     ) -> Result<(), DeviceError> {
         let mut next = self.storage_faults.clone();
-        next.record_array_dirty_range(member, start_byte, bytes, dirty_nanos)?;
+        next.record_array_dirty_range(member, start_byte, bytes, dirty_ticks)?;
         self.storage_faults = next;
         Ok(())
     }
@@ -84,14 +84,14 @@ impl BlockDevice {
     /// Returns [`DeviceError`] for invalid service parameters or overflow.
     pub fn next_storage_array_rebuild_opportunity(
         &mut self,
-        now_nanos: u64,
+        now_ticks: u64,
         chunk_bytes: u64,
         bytes_per_second: u64,
         operations_per_second: Option<u64>,
     ) -> Result<Option<super::super::fault::BlockArrayRebuildOpportunity>, DeviceError> {
         let mut next = self.storage_faults.clone();
         let opportunity = next.next_array_rebuild_opportunity(
-            now_nanos,
+            now_ticks,
             chunk_bytes,
             bytes_per_second,
             operations_per_second,
@@ -134,11 +134,11 @@ impl BlockDevice {
     /// matches the checkpointed scheduler continuation.
     pub fn pause_storage_array_rebuild(
         &mut self,
-        now_nanos: u64,
+        now_ticks: u64,
         opportunity: &super::super::fault::BlockArrayRebuildOpportunity,
     ) -> Result<(), DeviceError> {
         self.storage_faults
-            .pause_array_rebuild(now_nanos, opportunity)
+            .pause_array_rebuild(now_ticks, opportunity)
     }
 
     /// Resolves the logical bytes produced by a successful external discard.

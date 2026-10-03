@@ -33,7 +33,7 @@ pub(in super::super) fn ready_point_material(ready_point: &ReadyPoint) -> String
             format!("ready_point=fixed-icount\nready_icount={}", icount.retired)
         }
         ReadyPoint::NetworkIdle { window } => {
-            format!("ready_point=network-idle\nidle_window_ns={}", window.nanos)
+            format!("ready_point=network-idle\nidle_window_ns={}", window.ticks)
         }
         ReadyPoint::ConsoleMarker { marker } => format!(
             "ready_point=console-marker\nmarker_len={}\nmarker={marker}",

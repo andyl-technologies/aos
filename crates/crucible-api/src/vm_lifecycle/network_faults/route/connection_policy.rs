@@ -43,7 +43,7 @@ pub(in super::super) fn apply_network_connection_state(
                 let victim = table
                     .iter()
                     .min_by_key(|(identity, entry)| {
-                        (entry.last_used_nanos, entry.created_by, **identity)
+                        (entry.last_used_ticks, entry.created_by, **identity)
                     })
                     .map(|(identity, _entry)| *identity)
                     .ok_or_else(|| {
@@ -93,16 +93,16 @@ pub(in super::super) fn apply_network_connection_state(
             transition_sequence: action.transition_sequence,
         },
         created_by: opportunity.id(),
-        last_used_nanos: opportunity.coordinate().virtual_nanos,
+        last_used_ticks: opportunity.coordinate().virtual_ticks,
     });
-    entry.last_used_nanos = opportunity.coordinate().virtual_nanos;
+    entry.last_used_ticks = opportunity.coordinate().virtual_ticks;
     advance_network_state_machine(
         &mut entry.machine,
         topology,
         state_machine,
         transition_event,
         action,
-        opportunity.coordinate().virtual_nanos,
+        opportunity.coordinate().virtual_ticks,
     )
 }
 

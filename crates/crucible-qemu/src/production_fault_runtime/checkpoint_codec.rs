@@ -29,7 +29,7 @@ mod resource;
 use preflight::preflight_checkpoint_payload;
 use resource::*;
 
-const MAGIC: &[u8] = b"crucible.production-fault-runtime.v6\0";
+const MAGIC: &[u8] = b"crucible.production-fault-runtime.v7\0";
 const MAX_BYTES: u64 = HARD_FAT_CHECKPOINT_BYTES;
 const MAX_EVENT_RECORDS: u64 = 1_073_741_824;
 
@@ -282,9 +282,9 @@ impl ProductionFaultRuntimeCheckpoint {
         let checkpoint = Self {
             runtime,
             host,
-            qemu_fingerprints: wire.qemu_fingerprints,
-            qemu_fault_sequences: wire.qemu_fault_sequences,
-            qemu_fault_event_sequences: wire.qemu_fault_event_sequences,
+            qemu_fingerprints: std::sync::Arc::new(wire.qemu_fingerprints),
+            qemu_fault_sequences: std::sync::Arc::new(wire.qemu_fault_sequences),
+            qemu_fault_event_sequences: std::sync::Arc::new(wire.qemu_fault_event_sequences),
             qemu_issued_actions: wire.qemu_issued_actions,
             qemu_action_commits: wire.qemu_action_commits,
             qemu_active_rule_ids: wire.qemu_active_rule_ids,
@@ -503,7 +503,7 @@ fn validate_checkpoint(
     .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Invalid)?;
     validate_pending_qemu_event_sequences(
         &checkpoint.pending_qemu_events,
-        &checkpoint.qemu_fault_event_sequences,
+        checkpoint.qemu_fault_event_sequences.as_ref(),
     )
     .map_err(|_| ProductionFaultRuntimeCheckpointCodecError::Invalid)?;
     validate_production_record_state(

@@ -54,29 +54,15 @@ pub(in crate::launch) fn unique_comma_value<'a>(
     option: &'static str,
     key: &'static str,
 ) -> Result<Option<&'a str>, QemuPreSpawnLaunchValidationError> {
-    unique_comma_value_any(value, option, &[key], key)
-}
-
-pub(super) fn unique_comma_value_any<'a>(
-    value: &'a str,
-    option: &'static str,
-    keys: &[&'static str],
-    key_label: &'static str,
-) -> Result<Option<&'a str>, QemuPreSpawnLaunchValidationError> {
     let mut matched = None;
     for part in value.split(',') {
         let part = part.trim();
-        for key in keys {
-            if let Some(sub_value) = part
-                .strip_prefix(key)
-                .and_then(|suffix| suffix.strip_prefix('='))
-                && matched.replace(sub_value).is_some()
-            {
-                return Err(QemuPreSpawnLaunchValidationError::DuplicateSubOption {
-                    option,
-                    key: key_label,
-                });
-            }
+        if let Some(sub_value) = part
+            .strip_prefix(key)
+            .and_then(|suffix| suffix.strip_prefix('='))
+            && matched.replace(sub_value).is_some()
+        {
+            return Err(QemuPreSpawnLaunchValidationError::DuplicateSubOption { option, key });
         }
     }
     Ok(matched)

@@ -1,0 +1,81 @@
+# Five-node Envoy network guest
+
+`nix build .#crucible-envoy-network-guest` builds one immutable `root.ext4` for
+all five Crucible VMs. Each VM boots the AOS Linux kernel with this command
+line, where `NAME` is one of `router-a`, `router-b`, `router-c`, `traffic-west`,
+or `traffic-east`:
+
+```text
+root=/dev/vda rw init=/init console=ttyS0 noapic nolapic network.role=NAME network.fixture=worked-recovery crucible.choice-free-boot=envoy-network-v2
+```
+
+The worked-network scenario passes the required `-icount shift=0` launch argument.
+Under the patched `sim` clock, each retired guest instruction advances virtual
+time by 50 picoseconds. The choice-free boot
+capability applies only to this exact topology and command line.
+
+The QEMU world must give each VM a branch-private writable overlay of the immutable
+image. This is the same root-image arrangement as the packaged Crucible flights.
+
+The modeled fabric has these bidirectional links:
+
+```text
+traffic-west -- router-a -- router-b -- router-c -- traffic-east
+                   \_________________________/
+```
+
+All nodes use one NIC on `10.77.0.0/24`, with addresses `.1` through `.5` in
+the order west, A, B, C, east. Envoy A normally proxies through B; B proxies
+through C; C proxies to nginx on east. Envoy A has C as a health-checked backup.
+The east response echoes its request sequence and the route-hop headers that
+the three Envoys inserted. West sends continuous concurrent requests and checks
+each response against its sequence and permitted path.
+
+Router A registers one `recovery.response` group through the public
+`crucible-guest` CLI. Its complete tuple contains `recovery.strategy`,
+`recovery.hold_down_us`, `recovery.retry_limit`, and `recovery.fast_reroute`.
+Each disruption receives one acknowledged group reply before the guest applies
+any member. The choice changes its live Envoy route,
+backup availability, retry policy, restart, or hold-down time. The explicit
+`unsafe_short_circuit` strategy returns a successful response from A without
+reaching east; west reports it as a `forbidden-destination-delivery` finding.
+West reports request failures, per-request identity violations, repeated route
+hops, and concurrent response-completion inversions. Completion inversions are
+application observations; packet-order claims need the modeled fabric's own
+evidence.
+
+The campaign materializer must bind its typed environment fault choices to
+Crucible's modeled network adapters and deliver the RFC-0014 fault signal at
+the transport boundary. The guest image does not inject host-side faults.
+
+The guest-to-guest readiness channel terminates at A's port 9090 on the modeled
+fabric. West, B, and C contact A directly; east sends readiness through C's
+`/control/` Envoy route over the A-C link because east has no direct A link.
+Every VM emits `fault.transport.ready` after local readiness: east checks nginx,
+B and C check their Envoy route, and west confirms the full A-B-C-east path.
+Both fault-ready phases use guest events so QEMU retains a physical VMStop
+proof for each marker; west's earlier `network.converged` remains a semantic
+marker that ends the fixture's choice-free boot prefix.
+After the host releases that boundary and replies with the atomic recovery
+tuple, router A makes a bounded direct request to B before changing its route.
+That request traverses A-B and B-C, giving a selected primary-link fault a
+real packet on which to apply; `fault.transport.primary-probed` marks the
+completed attempt. The same sequence uses `fault.followup.primary-probed` for
+the second response.
+West announces convergence before emitting its marker; B, C, and east
+acknowledge the boundary to A before their markers, and A emits last. This
+ordering lets each VM park at its marker without interrupting the convergence
+check. West keeps sending requests while
+A receives and applies the first recovery group, then begins the 120-request
+measurement window. West commits the measurement and sends `followup-ready`
+before its marker; B, C, and east acknowledge A before their markers, and A
+emits last. All five VMs emit `fault.followup.ready` before A requests
+the second group. The guest monitor continues traffic after
+`campaign.complete` so a retained child still has an active workload.
+
+`nix build .#crucible-envoy-network-smoke` runs AOS-built
+Envoy and nginx on loopback. It verifies the initial three-proxy route, the
+A-to-C backup after B exits, and the unsafe direct response. The smoke check
+is diagnostic only. Release acceptance requires the automated five-VM Envoy
+product gate plus the local packaged-QEMU deterministic fleet validation in
+RFC-0020 §14.

@@ -533,6 +533,14 @@
     #   nix-build -E '((import ./. {}).checks.fleet.<suite>.driverInteractive) "ssh-..."'
     testDrv
     // {
+      # Expose the exact systems baked into the VM images for identity checks.
+      machineSystems = builtins.listToAttrs (
+        map (machine: {
+          name = machine.name;
+          value = machine.system;
+        })
+        machineBuilds
+      );
       driverInteractive = sshAuthorizedKey:
         mkFleetTestInteractive {inherit spec sshAuthorizedKey;};
     };

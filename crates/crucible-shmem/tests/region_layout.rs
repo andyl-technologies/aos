@@ -9,7 +9,7 @@ use crucible_shmem::{
     COVERAGE_ENTRY_VCPU_INDEX_OFFSET, COVERAGE_QUEUE_CAPACITY, DEFAULT_FAULT_COMMAND_CAPACITY,
     DEFAULT_FAULT_PAYLOAD_ARENA_BYTES, DEFAULT_FAULT_PAYLOAD_BYTES, DEFAULT_QUEUE_CAPACITY,
     FAULT_COMMAND_SLOT_V1_BYTES, FAULT_EVENT_SLOT_V1_BYTES, FAULT_PAYLOAD_ARENA_HEADER_BYTES,
-    FAULT_RESULT_SLOT_V1_BYTES, FINGERPRINT_SAMPLE_SLOT_ALIGN, FINGERPRINT_SAMPLE_SLOT_SIZE,
+    FAULT_RESULT_SLOT_V2_BYTES, FINGERPRINT_SAMPLE_SLOT_ALIGN, FINGERPRINT_SAMPLE_SLOT_SIZE,
     FRAME_ENTRY_ALIGN, FRAME_ENTRY_DATA_OFFSET, FRAME_ENTRY_DELIVERY_ATTEMPTS_OFFSET,
     FRAME_ENTRY_DELIVERY_ICOUNT_OFFSET, FRAME_ENTRY_DELIVERY_STATE_OFFSET,
     FRAME_ENTRY_LAST_DELIVERY_ATTEMPT_ICOUNT_OFFSET, FRAME_ENTRY_LEN_OFFSET,
@@ -19,32 +19,32 @@ use crucible_shmem::{
     GUEST_INTROSPECTION_ENTRY_RESERVED_OFFSET, GUEST_INTROSPECTION_ENTRY_SEQUENCE_OFFSET,
     GUEST_INTROSPECTION_ENTRY_SIZE, GUEST_INTROSPECTION_QUEUE_CAPACITY, GuestIntrospectionEntry,
     GuestIntrospectionRingDirection, HARD_FAULT_PAYLOAD_ARENA_BYTES, KIND_9P, KIND_BLK, KIND_NET,
-    LAYOUT_TARGET_SUPPORTED, LAYOUT_TARGET_TRIPLE, MAX_NODES, MAX_VM_NODES, NODE_SLOT_ALIGN,
-    NODE_SLOT_CURRENT_ICOUNT_OFFSET, NODE_SLOT_CURRENT_NS_OFFSET,
-    NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET, NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET,
-    NODE_SLOT_IDLE_WAKE_ICOUNT_OFFSET, NODE_SLOT_KIND_OFFSET,
+    LAYOUT_TARGET_SUPPORTED, LAYOUT_TARGET_TRIPLE, MAX_NODES, MAX_VM_NODES,
+    NODE_SLOT_ADVANCE_STOP_CONDITION_OFFSET, NODE_SLOT_ALIGN, NODE_SLOT_CURRENT_ICOUNT_OFFSET,
+    NODE_SLOT_CURRENT_NS_OFFSET, NODE_SLOT_DEVICE_COMPLETION_DEADLINE_TICK_OFFSET,
+    NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET, NODE_SLOT_IDLE_WAKE_ICOUNT_OFFSET, NODE_SLOT_KIND_OFFSET,
     NODE_SLOT_LOGICAL_TIME_RAW_ICOUNT_OFFSET, NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET,
     NODE_SLOT_LOGICAL_TIME_RESTORE_REQUEST_OFFSET, NODE_SLOT_LOGICAL_TIME_RESTORE_TARGET_OFFSET,
-    NODE_SLOT_MAX_ADVANCE_ICOUNT_OFFSET, NODE_SLOT_PAD0_OFFSET, NODE_SLOT_PAD2_OFFSET,
-    NODE_SLOT_PUBLISH_GEN_OFFSET, NODE_SLOT_SIZE, NODE_SLOT_STATUS_OFFSET,
-    NODE_SLOT_WAKE_SIGNAL_OFFSET, REGION_HEADER_ABI_VERSION_OFFSET, REGION_HEADER_ALIGN,
-    REGION_HEADER_CONTROL_PADDING_OFFSET, REGION_HEADER_ENTRY_STRIDE_OFFSET,
-    REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET, REGION_HEADER_ICOUNT_SHIFT_OFFSET,
+    NODE_SLOT_MAX_ADVANCE_ICOUNT_OFFSET, NODE_SLOT_PAD2_OFFSET, NODE_SLOT_PUBLISH_GEN_OFFSET,
+    NODE_SLOT_SIZE, NODE_SLOT_STATUS_OFFSET, NODE_SLOT_WAKE_SIGNAL_OFFSET,
+    REGION_HEADER_ABI_VERSION_OFFSET, REGION_HEADER_ALIGN, REGION_HEADER_CONTROL_PADDING_OFFSET,
+    REGION_HEADER_ENTRY_STRIDE_OFFSET, REGION_HEADER_FAULT_PAYLOAD_ARENA_BYTES_OFFSET,
     REGION_HEADER_MAGIC_OFFSET, REGION_HEADER_NODE_COUNT_OFFSET,
     REGION_HEADER_PAUSE_REQUESTED_OFFSET, REGION_HEADER_QUEUE_CAPACITY_OFFSET,
     REGION_HEADER_REGION_SIZE_OFFSET, REGION_HEADER_RESERVED_OFFSET,
     REGION_HEADER_RING_COUNT_OFFSET, REGION_HEADER_RING_DATA_OFF_OFFSET,
     REGION_HEADER_RING_HDR_OFF_OFFSET, REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET, REGION_HEADER_SIZE,
-    REGION_MAGIC, RESERVED_SLOTS, RING_HEADER_ALIGN, RING_HEADER_PAD_READ_OFFSET,
-    RING_HEADER_PAD_WRITE_OFFSET, RING_HEADER_READ_IDX_OFFSET, RING_HEADER_SIZE,
+    REGION_HEADER_TICKS_PER_NS_OFFSET, REGION_MAGIC, RESERVED_SLOTS, RING_HEADER_ALIGN,
+    RING_HEADER_CONSUMER_STATE_OFFSET, RING_HEADER_PAD_READ_OFFSET, RING_HEADER_PAD_WRITE_OFFSET,
+    RING_HEADER_PRODUCER_STATE_OFFSET, RING_HEADER_READ_IDX_OFFSET, RING_HEADER_SIZE,
     RING_HEADER_WRITE_IDX_OFFSET, RegionAllocation, RegionConfig, RegionHeader,
-    RegionHeaderSnapshot, RegionLayout, RegionLayoutError, ReservedExecutorSlot, SLOT_9P_IO,
-    SLOT_BLK_IO, SLOT_NET_ROUTER, WHITEBOX_MARKER_ENTRY_ALIGN,
-    WHITEBOX_MARKER_ENTRY_CURRENT_ICOUNT_OFFSET, WHITEBOX_MARKER_ENTRY_KIND_OFFSET,
-    WHITEBOX_MARKER_ENTRY_PAYLOAD_LEN_OFFSET, WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET,
-    WHITEBOX_MARKER_ENTRY_RESERVED_OFFSET, WHITEBOX_MARKER_ENTRY_SIZE,
-    WHITEBOX_MARKER_ENTRY_VCPU_INDEX_OFFSET, WHITEBOX_MARKER_QUEUE_CAPACITY,
-    validate_layout_target,
+    RegionHeaderSnapshot, RegionLayout, RegionLayoutError, ReservedExecutorSlot,
+    SELECTABLE_REPLY_QUEUE_CAPACITY, SLOT_9P_IO, SLOT_BLK_IO, SLOT_NET_ROUTER, TICKS_PER_NS,
+    WHITEBOX_MARKER_ENTRY_ALIGN, WHITEBOX_MARKER_ENTRY_CURRENT_ICOUNT_OFFSET,
+    WHITEBOX_MARKER_ENTRY_KIND_OFFSET, WHITEBOX_MARKER_ENTRY_PAYLOAD_LEN_OFFSET,
+    WHITEBOX_MARKER_ENTRY_PAYLOAD_OFFSET, WHITEBOX_MARKER_ENTRY_RESERVED_OFFSET,
+    WHITEBOX_MARKER_ENTRY_SIZE, WHITEBOX_MARKER_ENTRY_VCPU_INDEX_OFFSET,
+    WHITEBOX_MARKER_QUEUE_CAPACITY, validate_layout_target,
 };
 
 #[cfg(all(
@@ -71,7 +71,7 @@ fn region_header_layout_matches_wire_contract() {
     assert_eq!(REGION_HEADER_RING_DATA_OFF_OFFSET, 32);
     assert_eq!(REGION_HEADER_ENTRY_STRIDE_OFFSET, 40);
     assert_eq!(REGION_HEADER_REGION_SIZE_OFFSET, 48);
-    assert_eq!(REGION_HEADER_ICOUNT_SHIFT_OFFSET, 56);
+    assert_eq!(REGION_HEADER_TICKS_PER_NS_OFFSET, 56);
     assert_eq!(REGION_HEADER_PAUSE_REQUESTED_OFFSET, 60);
     assert_eq!(REGION_HEADER_SHUTDOWN_REQUESTED_OFFSET, 61);
     assert_eq!(REGION_HEADER_CONTROL_PADDING_OFFSET, 62);
@@ -84,7 +84,7 @@ fn region_header_layout_matches_wire_contract() {
     assert_eq!(SLOT_NET_ROUTER, 31);
     assert_eq!(SLOT_BLK_IO, 30);
     assert_eq!(SLOT_9P_IO, 29);
-    assert_eq!(NODE_SLOT_SIZE, 128);
+    assert_eq!(NODE_SLOT_SIZE, 256);
     assert_eq!(NODE_SLOT_ALIGN, 128);
     assert_eq!(NODE_SLOT_CURRENT_ICOUNT_OFFSET, 0);
     assert_eq!(NODE_SLOT_CURRENT_NS_OFFSET, 8);
@@ -94,9 +94,9 @@ fn region_header_layout_matches_wire_contract() {
     assert_eq!(NODE_SLOT_STATUS_OFFSET, 36);
     assert_eq!(NODE_SLOT_KIND_OFFSET, 37);
     assert_eq!(NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET, 38);
-    assert_eq!(NODE_SLOT_PAD0_OFFSET, 39);
+    assert_eq!(NODE_SLOT_ADVANCE_STOP_CONDITION_OFFSET, 39);
     assert_eq!(NODE_SLOT_PUBLISH_GEN_OFFSET, 40);
-    assert_eq!(NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET, 48);
+    assert_eq!(NODE_SLOT_DEVICE_COMPLETION_DEADLINE_TICK_OFFSET, 48);
     assert_eq!(NODE_SLOT_PAD2_OFFSET, 97);
     assert_eq!(NODE_SLOT_LOGICAL_TIME_RAW_ICOUNT_OFFSET, 104);
     assert_eq!(NODE_SLOT_LOGICAL_TIME_RESTORE_TARGET_OFFSET, 112);
@@ -114,9 +114,11 @@ fn region_header_layout_matches_wire_contract() {
     assert_eq!(FRAME_ENTRY_SIZE, 32 + 4608);
     assert_eq!(FRAME_ENTRY_ALIGN, 8);
     assert_eq!(RING_HEADER_READ_IDX_OFFSET, 0);
-    assert_eq!(RING_HEADER_PAD_READ_OFFSET, 8);
+    assert_eq!(RING_HEADER_CONSUMER_STATE_OFFSET, 8);
+    assert_eq!(RING_HEADER_PAD_READ_OFFSET, 16);
     assert_eq!(RING_HEADER_WRITE_IDX_OFFSET, 64);
-    assert_eq!(RING_HEADER_PAD_WRITE_OFFSET, 72);
+    assert_eq!(RING_HEADER_PRODUCER_STATE_OFFSET, 72);
+    assert_eq!(RING_HEADER_PAD_WRITE_OFFSET, 80);
     assert_eq!(RING_HEADER_SIZE, 128);
     assert_eq!(RING_HEADER_ALIGN, 128);
     assert_eq!(COVERAGE_QUEUE_CAPACITY, 65_536);
@@ -149,7 +151,7 @@ fn region_header_layout_matches_wire_contract() {
 
 #[test]
 fn region_layout_computes_offsets_and_directed_rings() {
-    let layout = layout(RegionConfig::new(2, DEFAULT_QUEUE_CAPACITY, 3));
+    let layout = layout(RegionConfig::new(2, DEFAULT_QUEUE_CAPACITY));
 
     assert_eq!(layout.vm_node_count, 2);
     assert_eq!(layout.node_count, MAX_NODES as u32);
@@ -254,7 +256,7 @@ fn region_layout_computes_offsets_and_directed_rings() {
     );
     assert_eq!(
         layout.fault_result_slot_stride,
-        FAULT_RESULT_SLOT_V1_BYTES as u64
+        FAULT_RESULT_SLOT_V2_BYTES as u64
     );
     assert_eq!(
         layout.fault_result_arena_hdr_off,
@@ -328,9 +330,24 @@ fn region_layout_computes_offsets_and_directed_rings() {
             + u64::from(layout.accelerator_ring_count) * RING_HEADER_SIZE as u64
     );
     assert_eq!(
-        layout.region_size,
+        layout.selectable_reply_ring_hdr_off,
         layout.accelerator_ring_data_off
             + layout.accelerator_entry_count() * layout.accelerator_entry_stride
+    );
+    assert_eq!(layout.selectable_reply_ring_count, layout.vm_node_count);
+    assert_eq!(
+        layout.selectable_reply_queue_capacity,
+        SELECTABLE_REPLY_QUEUE_CAPACITY
+    );
+    assert_eq!(
+        layout.selectable_reply_ring_data_off,
+        layout.selectable_reply_ring_hdr_off
+            + u64::from(layout.selectable_reply_ring_count) * RING_HEADER_SIZE as u64
+    );
+    assert_eq!(
+        layout.region_size,
+        layout.selectable_reply_ring_data_off
+            + layout.selectable_reply_entry_count() * layout.selectable_reply_entry_stride
     );
     assert_eq!(
         layout.frame_entry_count(),
@@ -342,7 +359,7 @@ fn region_layout_computes_offsets_and_directed_rings() {
 fn guest_introspection_rings_are_directional_bounded_and_vm_isolated() {
     const CLOSE_RECORD: &[u8] =
         b"CRGI\x01\x00\x07\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00";
-    let mut allocation = match RegionAllocation::new_model(RegionConfig::new(2, 8, 0)) {
+    let mut allocation = match RegionAllocation::new_model(RegionConfig::new(2, 8)) {
         Ok(allocation) => allocation,
         Err(error) => panic!("guest-introspection test region should allocate: {error}"),
     };
@@ -394,7 +411,7 @@ fn guest_introspection_rings_are_directional_bounded_and_vm_isolated() {
 
 #[test]
 fn region_header_records_computed_geometry() {
-    let layout = layout(RegionConfig::new(3, 16, 7));
+    let layout = layout(RegionConfig::new(3, 16));
     let header = RegionHeader::new(layout);
 
     assert_eq!(
@@ -409,7 +426,7 @@ fn region_header_records_computed_geometry() {
             ring_data_off: layout.ring_data_off,
             entry_stride: FRAME_ENTRY_SIZE as u64,
             region_size: layout.region_size,
-            icount_shift: 7,
+            ticks_per_ns: TICKS_PER_NS as u32,
             pause_requested: 0,
             shutdown_requested: 0,
             fault_payload_arena_bytes: DEFAULT_FAULT_PAYLOAD_ARENA_BYTES,
@@ -421,28 +438,23 @@ fn region_header_records_computed_geometry() {
 #[test]
 fn region_layout_rejects_invalid_shapes() {
     assert_eq!(
-        RegionLayout::for_config(RegionConfig::new(MAX_VM_NODES as u32 + 1, 16, 0)),
+        RegionLayout::for_config(RegionConfig::new(MAX_VM_NODES as u32 + 1, 16)),
         Err(RegionLayoutError::TooManyVmNodes {
             requested: MAX_VM_NODES as u32 + 1,
             max: MAX_VM_NODES as u32,
         })
     );
     assert_eq!(
-        RegionLayout::for_config(RegionConfig::new(1, 0, 0)),
+        RegionLayout::for_config(RegionConfig::new(1, 0)),
         Err(RegionLayoutError::InvalidQueueCapacity { capacity: 0 })
     );
     assert_eq!(
-        RegionLayout::for_config(RegionConfig::new(1, 3, 0)),
+        RegionLayout::for_config(RegionConfig::new(1, 3)),
         Err(RegionLayoutError::InvalidQueueCapacity { capacity: 3 })
     );
     assert_eq!(
-        RegionLayout::for_config(RegionConfig::new(1, 8, 64)),
-        Err(RegionLayoutError::InvalidIcountShift { shift_bits: 64 })
-    );
-    assert_eq!(
         RegionLayout::for_config(
-            RegionConfig::new(1, 8, 0)
-                .with_fault_payload_arena_bytes(DEFAULT_FAULT_PAYLOAD_BYTES - 1),
+            RegionConfig::new(1, 8).with_fault_payload_arena_bytes(DEFAULT_FAULT_PAYLOAD_BYTES - 1),
         ),
         Err(RegionLayoutError::InvalidFaultPayloadArenaBytes {
             bytes: DEFAULT_FAULT_PAYLOAD_BYTES - 1,
@@ -452,7 +464,7 @@ fn region_layout_rejects_invalid_shapes() {
     );
     assert_eq!(
         RegionLayout::for_config(
-            RegionConfig::new(1, 8, 0)
+            RegionConfig::new(1, 8)
                 .with_fault_payload_arena_bytes(HARD_FAULT_PAYLOAD_ARENA_BYTES + 1),
         ),
         Err(RegionLayoutError::InvalidFaultPayloadArenaBytes {
@@ -466,7 +478,7 @@ fn region_layout_rejects_invalid_shapes() {
 #[test]
 fn region_header_round_trips_explicit_fault_payload_geometry() {
     let configured = DEFAULT_FAULT_PAYLOAD_ARENA_BYTES + 4096;
-    let layout = layout(RegionConfig::new(2, 8, 3).with_fault_payload_arena_bytes(configured));
+    let layout = layout(RegionConfig::new(2, 8).with_fault_payload_arena_bytes(configured));
     let snapshot = RegionHeader::new(layout).snapshot();
 
     assert_eq!(snapshot.fault_payload_arena_bytes, configured);
@@ -493,7 +505,7 @@ fn region_allocation_rejects_unpinned_developer_targets() {
         })
     ));
     assert!(matches!(
-        RegionAllocation::new(RegionConfig::new(1, 8, 0)),
+        RegionAllocation::new(RegionConfig::new(1, 8)),
         Err(RegionLayoutError::UnsupportedTarget { .. })
     ));
 }
@@ -511,7 +523,7 @@ fn region_allocation_initializes_slots_rings_and_storage() {
     const { assert!(LAYOUT_TARGET_SUPPORTED) };
     assert_eq!(validate_layout_target(), Ok(()));
 
-    let allocation = allocation(RegionConfig::new(2, 8, 4));
+    let allocation = allocation(RegionConfig::new(2, 8));
     let layout = allocation.layout();
 
     assert_eq!(allocation.header().snapshot().node_count, MAX_NODES as u32);
@@ -522,6 +534,14 @@ fn region_allocation_initializes_slots_rings_and_storage() {
         layout.frame_entry_count() as usize
     );
     assert_eq!(allocation.rings().len(), layout.ring_count as usize);
+    assert_eq!(
+        allocation.selectable_reply_ring_headers().len(),
+        layout.selectable_reply_ring_count as usize
+    );
+    assert_eq!(
+        allocation.selectable_reply_entries().len(),
+        layout.selectable_reply_entry_count() as usize
+    );
 
     assert_slot(&allocation, 0, KIND_VM, STATUS_IDLE);
     assert_slot(&allocation, 1, KIND_VM, STATUS_IDLE);

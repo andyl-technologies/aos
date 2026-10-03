@@ -152,7 +152,7 @@ pub(super) fn block_target_intersects_range(
 pub(super) fn retained_release_evidence(
     identity: crucible_device::block::BlockRequestIdentity,
     release: BlockRetainedRelease,
-    release_nanos: u64,
+    release_ticks: u64,
     cause: Option<ContentHash>,
 ) -> ContentHash {
     let release = match release {
@@ -160,9 +160,9 @@ pub(super) fn retained_release_evidence(
         BlockRetainedRelease::Timeout => "timeout",
     };
     ContentHash::from_canonical_material(
-        "crucible.storage-retained-release-evidence.v1",
+        "crucible.storage-retained-release-evidence.v2",
         &format!(
-            "epoch={}\nrequest_id={}\nrelease={release}\nrelease_nanos={release_nanos}\ncause={}",
+            "epoch={}\nrequest_id={}\nrelease={release}\nrelease_ticks={release_ticks}\ncause={}",
             identity.epoch,
             identity.request_id,
             cause.map_or_else(|| String::from("none"), |value| value.to_hex()),
@@ -249,6 +249,7 @@ pub(super) fn ninep_visibility_evidence(
     };
     let release = match release {
         NinepVisibilityRelease::AtNanos(nanos) => format!("at_nanos:{nanos}"),
+        NinepVisibilityRelease::AtTicks(ticks) => format!("at_ticks:{ticks}"),
         NinepVisibilityRelease::OnEvent(event) => {
             format!("on_event:{}", ContentHash { bytes: event }.to_hex(),)
         }
@@ -262,7 +263,7 @@ pub(super) fn ninep_visibility_evidence(
     let lookup =
         ninep_visibility_lookup_evidence(state.lookup_object(writer_session, object.path.as_str()));
     ContentHash::from_canonical_material(
-        "crucible.ninep-visibility-evidence.v1",
+        "crucible.ninep-visibility-evidence.v2",
         &format!(
             "action={}\nupdate_id={}\nsequence={sequence}\n{}\nscope={scope}\natomic_metadata_and_data={}\nretain_deleted_objects={}\nrelease={release}\ndata_lag_nanos={data_lag_nanos}\nwriter_session={writer_session}\ncommitted_frontier={}\nsession_frontiers={frontiers}\nlookup={lookup}",
             action.committed_state_id().to_hex(),
@@ -292,7 +293,7 @@ pub(super) fn ninep_visibility_advance_evidence(
     session: u64,
     before: (u64, u64),
     after: (u64, u64),
-    observed_nanos: u64,
+    observed_ticks: u64,
     events: &BTreeMap<[u8; 32], u64>,
     updates: &[NinepVisibilityUpdate],
     state: &NinepVisibilityState,
@@ -301,9 +302,8 @@ pub(super) fn ninep_visibility_advance_evidence(
         .iter()
         .map(|update| {
             let release = match update.release {
-                NinepVisibilityRelease::AtNanos(deadline) => {
-                    format!("deadline:{deadline}:satisfied_at:{deadline}")
-                }
+                NinepVisibilityRelease::AtNanos(deadline) => format!("absolute_ns:{deadline}"),
+                NinepVisibilityRelease::AtTicks(deadline) => format!("tick:{deadline}"),
                 NinepVisibilityRelease::OnEvent(event) => format!(
                     "event:{}:observed_at:{}",
                     ContentHash { bytes: event }.to_hex(),
@@ -324,9 +324,9 @@ pub(super) fn ninep_visibility_advance_evidence(
         .collect::<Vec<_>>()
         .join("|");
     ContentHash::from_canonical_material(
-        "crucible.ninep-visibility-advance-evidence.v1",
+        "crucible.ninep-visibility-advance-evidence.v2",
         &format!(
-            "session={session}\nobserved_nanos={observed_nanos}\nmetadata_before={}\nmetadata_after={}\ndata_before={}\ndata_after={}\nupdates={updates}",
+            "session={session}\nobserved_ticks={observed_ticks}\nmetadata_before={}\nmetadata_after={}\ndata_before={}\ndata_after={}\nupdates={updates}",
             before.0, after.0, before.1, after.1,
         ),
     )
@@ -388,9 +388,9 @@ pub(super) fn persistence_media_evidence(outcome: &BlockPersistenceMediaOutcome)
         .collect::<Vec<_>>()
         .join(",");
     ContentHash::from_canonical_material(
-        "crucible.storage-persistence-media-evidence.v1",
+        "crucible.storage-persistence-media-evidence.v2",
         &format!(
-            "sequence={}\nrequest_id={}\noperation_sequence={}\noperation={}\nrequest_digest={}\noffset={}\ncount={}\nintended_digest={}\nready_nanos={}\nexecuted_nanos={}\napplied_spans={}\nmedia_failed={}\napplied_digest={}",
+            "sequence={}\nrequest_id={}\noperation_sequence={}\noperation={}\nrequest_digest={}\noffset={}\ncount={}\nintended_digest={}\nready_ticks={}\nexecuted_ticks={}\napplied_spans={}\nmedia_failed={}\napplied_digest={}",
             outcome.opportunity.sequence,
             outcome.opportunity.request_id,
             outcome.opportunity.operation_sequence,
@@ -405,8 +405,8 @@ pub(super) fn persistence_media_evidence(outcome: &BlockPersistenceMediaOutcome)
                 bytes: outcome.opportunity.intended_digest
             }
             .to_hex(),
-            outcome.opportunity.ready_nanos,
-            outcome.executed_nanos,
+            outcome.opportunity.ready_ticks,
+            outcome.executed_ticks,
             spans,
             outcome.media_failed,
             ContentHash {
@@ -419,16 +419,16 @@ pub(super) fn persistence_media_evidence(outcome: &BlockPersistenceMediaOutcome)
 
 pub(super) fn storage_service_evidence(outcome: &BlockServiceCompletion) -> ContentHash {
     ContentHash::from_canonical_material(
-        "crucible.storage-service-evidence.v1",
+        "crucible.storage-service-evidence.v2",
         &format!(
-            "contributor={}\nsequence={}\nstarted_nanos={}\nfinished_nanos={}\nbusy_epoch_bytes={}\nbusy_epoch_operations={}",
+            "contributor={}\nsequence={}\nstarted_ticks={}\nfinished_ticks={}\nbusy_epoch_bytes={}\nbusy_epoch_operations={}",
             ContentHash {
                 bytes: outcome.contributor
             }
             .to_hex(),
             outcome.sequence,
-            outcome.started_nanos,
-            outcome.finished_nanos,
+            outcome.started_ticks,
+            outcome.finished_ticks,
             outcome.busy_epoch_bytes,
             outcome.busy_epoch_operations,
         ),
@@ -447,5 +447,5 @@ pub(super) fn mapped_ninep_test_servicer(
     shared_memory: std::os::fd::BorrowedFd<'_>,
     region_len: u64,
 ) -> Result<QemuLive9pIoServicer, impl std::error::Error> {
-    QemuLive9pIoServicer::from_shmem_fd(shared_memory, region_len, 0, 0)
+    QemuLive9pIoServicer::from_shmem_fd(shared_memory, region_len, 0)
 }

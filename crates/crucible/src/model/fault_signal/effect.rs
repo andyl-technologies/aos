@@ -427,11 +427,6 @@ impl ResolvedEffectRecord {
         {
             return Err(FaultContractError::InvalidPayload);
         }
-        if descriptor.adapter == super::FaultAdapter::Node
-            && self.coordinate.retired_instructions.is_none()
-        {
-            return Err(FaultContractError::InvalidPayload);
-        }
         Ok(())
     }
 }
@@ -472,7 +467,7 @@ mod tests {
             network_frame_key: None,
             network_producer_direction_key: None,
             coordinate: FaultCoordinate {
-                virtual_nanos: 1,
+                virtual_ticks: 1,
                 retired_instructions: None,
             },
             same_coordinate_sequence: 0,

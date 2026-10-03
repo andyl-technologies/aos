@@ -14,7 +14,10 @@ pub(crate) fn default_run_store_root(cli: &Cli) -> PathBuf {
 }
 
 pub(crate) fn plan_selftest_gates(args: &SelftestArgs) -> Result<Vec<String>, CliError> {
-    let qemu_enabled = args.with_qemu || !cfg!(any(test, feature = "test-double"));
+    #[cfg(any(test, feature = "test-double"))]
+    let qemu_enabled = args.with_qemu;
+    #[cfg(not(any(test, feature = "test-double")))]
+    let qemu_enabled = true;
     let requested = match args.gates.as_deref() {
         Some(raw) => raw.split(',').map(str::trim).collect::<Vec<_>>(),
         #[cfg(any(test, feature = "test-double"))]
@@ -139,7 +142,9 @@ pub(crate) fn verify_selftest_corpus_manifest(
 pub(crate) fn verify_selftest_fixture_by_name(
     raw_name: &str,
 ) -> Result<crucible::ExampleScenarioVerifyReport, String> {
-    let name = raw_name.strip_prefix("builtin:").unwrap_or(raw_name);
+    let name = raw_name
+        .strip_prefix("builtin:")
+        .ok_or_else(|| format!("unknown built-in scenario `{raw_name}`"))?;
     let fixture = match name {
         crucible::HAPPY_PATH_SCENARIO_NAME => {
             crucible::happy_path_scenario().map_err(|error| error.to_string())
@@ -151,7 +156,7 @@ pub(crate) fn verify_selftest_fixture_by_name(
             crucible::crash_restart_scenario().map_err(|error| error.to_string())
         }
         _ => Err(format!(
-            "unknown built-in scenario `{raw_name}`; expected {}, {}, or {}",
+            "unknown built-in scenario `{raw_name}`; expected builtin:{}, builtin:{}, or builtin:{}",
             crucible::HAPPY_PATH_SCENARIO_NAME,
             crucible::PARTITION_RECOVERY_SCENARIO_NAME,
             crucible::CRASH_RESTART_SCENARIO_NAME
@@ -220,7 +225,20 @@ pub(crate) fn export_savepoint_handle(
         .savepoint_oracle
         .as_ref()
         .ok_or_else(|| backend_error("save completed without replay-oracle proof"))?;
-    let store_report = persist_savepoint_closure_artifact(plan, savepoint, oracle)?;
+    if oracle.configuration != savepoint || oracle.fat_checkpoint != savepoint {
+        return Err(CliError::Identity(format!(
+            "savepoint checkpoint {} did not match oracle configuration {} and fat checkpoint {}",
+            format_content_hash_ref(savepoint),
+            format_content_hash_ref(oracle.configuration),
+            format_content_hash_ref(oracle.fat_checkpoint)
+        )));
+    }
+    authenticated_replay_closure(
+        plan.run_plan.scenario.scenario_form(),
+        &oracle.schedule,
+        outcome.savepoint_replay_closure.as_deref(),
+        "savepoint export",
+    )?;
     let checkpoint = format_content_hash_ref(savepoint);
     let handle = savepoint_handle_bytes(plan, &checkpoint, outcome, oracle);
     let handle_digest = content_address_bytes(&handle);
@@ -234,12 +252,6 @@ pub(crate) fn export_savepoint_handle(
         plan.label,
         path.display()
     ));
-    outcome.stdout.push(format!(
-        "save-store\tcheckpoint={checkpoint}\tartifact={}\tindex={}\tstore={}",
-        format_content_hash_ref(store_report.artifact),
-        format_content_hash_ref(store_report.index),
-        plan.store_root.display()
-    ));
     outcome.canonical_log.push(CanonicalLogEntry {
         sequence: outcome.canonical_log.len() as u64,
         virtual_time_ticks: outcome.canonical_log.len() as u64,
@@ -252,20 +264,6 @@ pub(crate) fn export_savepoint_handle(
             plan.label,
             path.display(),
             handle_digest
-        ),
-    });
-    outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
-    outcome.canonical_log.push(CanonicalLogEntry {
-        sequence: outcome.canonical_log.len() as u64,
-        virtual_time_ticks: outcome.canonical_log.len() as u64,
-        node: String::from("cli"),
-        kind: String::from("save_store_index"),
-        summary: format!(
-            "checkpoint={} artifact={} index={} store={}",
-            checkpoint,
-            format_content_hash_ref(store_report.artifact),
-            format_content_hash_ref(store_report.index),
-            plan.store_root.display()
         ),
     });
     outcome.canonical_log_digest = canonical_log_digest(&outcome.canonical_log);
@@ -362,95 +360,24 @@ fn push_save_failure_trace_entry(
     });
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct SavepointClosureStoreReport {
-    pub(crate) artifact: crucible::ContentHash,
-    pub(crate) index: crucible::ContentHash,
-}
-
-pub(crate) fn persist_savepoint_closure_artifact(
-    plan: &SaveInvocationPlan,
-    savepoint: crucible::ContentHash,
-    oracle: &SavepointOracleProof,
-) -> Result<SavepointClosureStoreReport, CliError> {
-    if oracle.configuration != savepoint || oracle.fat_checkpoint != savepoint {
-        return Err(CliError::Identity(format!(
-            "savepoint closure checkpoint {} did not match oracle configuration {} and fat checkpoint {}",
-            format_content_hash_ref(savepoint),
-            format_content_hash_ref(oracle.configuration),
-            format_content_hash_ref(oracle.fat_checkpoint)
+pub(crate) fn authenticated_replay_closure(
+    scenario: &crucible::ScenarioDefForm,
+    // crucible-lint: allow host-nondeterminism-state -- this pure validator binds caller-supplied canonical schedule evidence to its replay closure before any execution.
+    schedule: &crucible::Schedule,
+    bytes: Option<&[u8]>,
+    context: &str,
+) -> Result<crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure, CliError> {
+    let Some(bytes) = bytes else {
+        return Err(artifact_error(format!(
+            "{context} is missing its authenticated replay closure"
         )));
-    }
-    let configuration = crucible::Configuration {
-        def: plan.run_plan.scenario.scenario_def().clone(),
-        schedule: oracle.schedule.clone(),
     };
-    persist_checkpoint_closure_artifact(
-        &plan.store_root,
-        plan.run_plan.scenario.scenario_form(),
-        &configuration,
-        oracle.frontier,
-        savepoint,
-    )
-}
-
-/// Persists the replayable closure and lookup index for a terminal checkpoint.
-///
-/// # Errors
-///
-/// Returns [`CliError`] when scenario or checkpoint identities disagree, the
-/// replay artifact cannot be captured, or the DAG store cannot persist its
-/// artifact and checkpoint index.
-pub(crate) fn persist_checkpoint_closure_artifact(
-    store_root: &Path,
-    scenario_form: &crucible::ScenarioDefForm,
-    configuration: &crucible::Configuration,
-    frontier: crucible::VirtualTime,
-    savepoint: crucible::ContentHash,
-) -> Result<SavepointClosureStoreReport, CliError> {
-    if configuration.def.id() != scenario_form.scenario_def().id() {
-        return Err(CliError::Identity(format!(
-            "savepoint closure scenario {} did not match terminal configuration scenario {}",
-            scenario_form.scenario_def().id().to_hex(),
-            configuration.def.id().to_hex()
-        )));
-    }
-    if configuration.id() != savepoint {
-        return Err(CliError::Identity(format!(
-            "savepoint closure terminal configuration {} did not match checkpoint {}",
-            format_content_hash_ref(configuration.id()),
-            format_content_hash_ref(savepoint)
-        )));
-    }
-    let artifact = crucible::ReproductionArtifact::capture(scenario_form, &configuration.schedule)
-        .map_err(|error| {
-            artifact_error(format!(
-                "savepoint closure artifact capture failed for {}: {error}",
-                format_content_hash_ref(savepoint)
-            ))
-        })?;
-    let reconstructed = crucible::Configuration {
-        def: artifact.scenario_def(),
-        schedule: artifact.schedule().clone(),
-    };
-    if reconstructed.id() != savepoint {
-        return Err(CliError::Identity(format!(
-            "savepoint closure artifact reconstructed {}, expected {}",
-            format_content_hash_ref(reconstructed.id()),
-            format_content_hash_ref(savepoint)
-        )));
-    }
-    let store = crucible::LocalDagStore::new(store_root.to_path_buf());
-    let artifact_key = store
-        .put(&artifact.to_compact_binary())
-        .map_err(CliError::Store)?;
-    let index_key = store
-        .write_checkpoint_closure_index(savepoint, artifact_key, frontier)
-        .map_err(CliError::Store)?;
-    Ok(SavepointClosureStoreReport {
-        artifact: artifact_key,
-        index: index_key,
-    })
+    let closure = crucible_daemon::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_canonical_bytes(bytes)
+        .map_err(|error| artifact_error(format!("{context} replay closure is malformed: {error}")))?;
+    closure
+        .validate_for_schedule(scenario, schedule)
+        .map_err(|error| artifact_error(format!("{context} replay closure is invalid: {error}")))?;
+    Ok(closure)
 }
 
 pub(crate) fn savepoint_handle_bytes(
@@ -465,7 +392,14 @@ pub(crate) fn savepoint_handle_bytes(
     let schedule_payload = oracle.schedule.to_compact_binary();
     let frontier_ticks = oracle.frontier.ticks;
     let schedule_payload_digest = content_address_bytes(&schedule_payload);
-    artifact_line(&mut text, &["schema", SAVEPOINT_HANDLE_SCHEMA]);
+    let boundary_proof = outcome
+        .save_boundary_evidence
+        .as_ref()
+        .map(|evidence| &evidence.proof);
+    artifact_line(
+        &mut text,
+        &["schema", REPLAY_CLOSURE_SAVEPOINT_HANDLE_SCHEMA],
+    );
     artifact_line(&mut text, &["label", &plan.label]);
     artifact_line(&mut text, &["checkpoint", checkpoint]);
     artifact_line(
@@ -476,6 +410,16 @@ pub(crate) fn savepoint_handle_bytes(
             &plan.run_plan.scenario.label(),
         ],
     );
+    if let Some(replay_closure) = &outcome.savepoint_replay_closure {
+        artifact_line(
+            &mut text,
+            &[
+                "campaign-replay-closure",
+                &content_address_bytes(replay_closure),
+                &hex_bytes(replay_closure),
+            ],
+        );
+    }
     artifact_line(
         &mut text,
         &[
@@ -503,46 +447,122 @@ pub(crate) fn savepoint_handle_bytes(
         }
         None => artifact_line(&mut text, &["selector", "none"]),
     }
-    if let Some(firing) = outcome
-        .save_boundary_evidence
-        .as_ref()
-        .and_then(|evidence| evidence.breakpoint_firing.as_ref())
-    {
-        artifact_line(
-            &mut text,
-            &[
-                "boundary-proof",
-                "breakpoint",
-                &firing.id.to_string(),
-                "suspend",
-                &firing.frontier.ticks.to_string(),
-                &firing.quanta.to_string(),
-            ],
-        );
-        let predicate_payload = firing.predicate.to_compact_binary();
-        artifact_line(
-            &mut text,
-            &[
-                "boundary-predicate",
-                &content_address_bytes(&predicate_payload),
-                &hex_bytes(&predicate_payload),
-            ],
-        );
-    } else {
-        let quanta = outcome
-            .save_boundary_evidence
-            .as_ref()
-            .map_or(0, |evidence| evidence.quanta);
-        artifact_line(
-            &mut text,
-            &[
-                "boundary-proof",
-                "coordinate",
-                &frontier_ticks.to_string(),
-                &quanta.to_string(),
-            ],
-        );
-        artifact_line(&mut text, &["boundary-predicate", "none"]);
+    match boundary_proof {
+        Some(SaveBoundaryProof::Breakpoint(firing)) => {
+            artifact_line(
+                &mut text,
+                &[
+                    "boundary-proof",
+                    "breakpoint",
+                    &firing.id.to_string(),
+                    "suspend",
+                    &firing.frontier.ticks.to_string(),
+                    &firing.quanta.to_string(),
+                ],
+            );
+            let predicate_payload = firing.predicate.to_compact_binary();
+            artifact_line(
+                &mut text,
+                &[
+                    "boundary-predicate",
+                    &content_address_bytes(&predicate_payload),
+                    &hex_bytes(&predicate_payload),
+                ],
+            );
+        }
+        Some(SaveBoundaryProof::CampaignMarkerEvent {
+            sequence,
+            content_hash,
+            node,
+            retired_icount,
+            marker,
+        }) => {
+            artifact_line(
+                &mut text,
+                &[
+                    "boundary-proof",
+                    "campaign-marker-event",
+                    &sequence.to_string(),
+                    &format_content_hash_ref(*content_hash),
+                    &node.name,
+                    &retired_icount.to_string(),
+                    &frontier_ticks.to_string(),
+                    &outcome
+                        .save_boundary_evidence
+                        .as_ref()
+                        .map_or(0, |evidence| evidence.quanta)
+                        .to_string(),
+                ],
+            );
+            let predicate_payload =
+                crucible::Predicate::guest_marker(marker.clone()).to_compact_binary();
+            artifact_line(
+                &mut text,
+                &[
+                    "boundary-predicate",
+                    &content_address_bytes(&predicate_payload),
+                    &hex_bytes(&predicate_payload),
+                ],
+            );
+        }
+        Some(SaveBoundaryProof::CampaignObservation { proof, evidence }) => {
+            let proof_bytes = proof.canonical_bytes();
+            artifact_line(
+                &mut text,
+                &[
+                    "boundary-proof",
+                    "campaign-observation",
+                    &content_address_bytes(&proof_bytes),
+                    &hex_bytes(&proof_bytes),
+                    &content_address_bytes(evidence),
+                    &hex_bytes(evidence),
+                ],
+            );
+            let predicate = match proof.condition() {
+                crucible_campaign::ObservationCondition::SchedulerQuiescent => {
+                    Some(crucible::Predicate::quiescent())
+                }
+                crucible_campaign::ObservationCondition::AssertionViolationTransition(
+                    assertion,
+                ) => Some(crucible::Predicate::assertion_state(
+                    crucible::AssertionId::from_name(assertion),
+                    crucible::AssertionPhase::Violated,
+                )),
+                crucible_campaign::ObservationCondition::AnyAssertionViolationTransition
+                | crucible_campaign::ObservationCondition::SchedulerQuiescentOrExecutionQuanta {
+                    ..
+                } => None,
+            };
+            if let Some(predicate) = predicate {
+                let predicate_payload = predicate.to_compact_binary();
+                artifact_line(
+                    &mut text,
+                    &[
+                        "boundary-predicate",
+                        &content_address_bytes(&predicate_payload),
+                        &hex_bytes(&predicate_payload),
+                    ],
+                );
+            } else {
+                artifact_line(&mut text, &["boundary-predicate", "none"]);
+            }
+        }
+        Some(SaveBoundaryProof::Coordinate) | None => {
+            let quanta = outcome
+                .save_boundary_evidence
+                .as_ref()
+                .map_or(0, |evidence| evidence.quanta);
+            artifact_line(
+                &mut text,
+                &[
+                    "boundary-proof",
+                    "coordinate",
+                    &frontier_ticks.to_string(),
+                    &quanta.to_string(),
+                ],
+            );
+            artifact_line(&mut text, &["boundary-predicate", "none"]);
+        }
     }
     artifact_line(
         &mut text,
@@ -558,19 +578,10 @@ pub(crate) fn savepoint_handle_bytes(
     text.into_bytes()
 }
 
-pub(crate) fn unsupported_resume_backend_error(plan: &ResumeInvocationPlan) -> CliError {
+pub(crate) fn resume_backend_unavailable_error(plan: &ResumeInvocationPlan) -> CliError {
     backend_error(format!(
-        "resume from checkpoint {} ({}) requires remaining resume runner coverage tracked by T-CLI-10",
+        "resume from checkpoint {} ({}) has no authenticated local backend or remote daemon route",
         format_content_hash_ref(plan.savepoint.checkpoint()),
         plan.savepoint.label()
-    ))
-}
-
-pub(crate) fn unsupported_fork_backend_error(plan: &ForkInvocationPlan) -> CliError {
-    backend_error(format!(
-        "fork from checkpoint {} ({}) as branch `{}` requires the independent child checkpoint-instantiation runner tracked by T-CLI-11",
-        format_content_hash_ref(plan.source.checkpoint()),
-        plan.source.label(),
-        plan.label
     ))
 }

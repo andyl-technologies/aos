@@ -85,3 +85,27 @@ fn mock_simulation_backend_rejects_gdbstub_capability_with_typed_error() {
         }
     );
 }
+
+#[test]
+fn advance_outcome_constructor_does_not_infer_a_pause_authority() {
+    let horizon = super::StepObservation::from_advance_outcome(
+        VirtualTime { ticks: 70 },
+        super::AdvanceOutcome::ReachedHorizon,
+    );
+    assert_eq!(horizon.physical_stop, super::BackendPhysicalStop::Horizon);
+    assert_eq!(horizon.reached.ticks, 70);
+    assert!(horizon.applied_preemptions.is_empty());
+
+    let paused = super::StepObservation::from_advance_outcome(
+        VirtualTime { ticks: 70 },
+        super::AdvanceOutcome::Paused {
+            at: Icount { retired: 50 },
+        },
+    );
+    assert_eq!(
+        paused.physical_stop,
+        super::BackendPhysicalStop::UnclassifiedPause
+    );
+    assert_eq!(paused.reached.ticks, 50);
+    assert!(paused.applied_preemptions.is_empty());
+}

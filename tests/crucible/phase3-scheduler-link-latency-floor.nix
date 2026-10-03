@@ -80,7 +80,7 @@
       }
       {
         label = "world hash is computed from canonical world material";
-        needle = "fn world_content_hash(world: &World, nodes: &[WorldNodeDef], links: &[LinkDef])";
+        needle = ''ContentHash::from_canonical_material("crucible.model.world.v4", &material)'';
       }
       {
         label = "scenario hash includes world ref";
@@ -142,11 +142,11 @@
       }
       {
         label = "canonicalization hash regression";
-        needle = "canonicalization_hashes_meaning_not_authoring_spelling";
+        needle = "world_topology_hashes_nodes_and_links_canonically";
       }
       {
-        label = "canonical material preserved under authoring comments";
-        needle = "assert_eq!(parsed.canonical_bytes(), form.canonical_bytes());";
+        label = "latency floor uses current world identity domain";
+        needle = ''ContentHash::from_canonical_material("crucible.model.world.v4", &material)'';
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

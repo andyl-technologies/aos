@@ -22,7 +22,7 @@ use super::bounded_cbor::{
 mod resource;
 use resource::*;
 
-const MAGIC: &[u8] = b"crucible.qemu-host-io-checkpoint.v4\0";
+const MAGIC: &[u8] = b"crucible.qemu-host-io-checkpoint.v6\0";
 const MAX_BYTES: u64 = HARD_FAT_CHECKPOINT_BYTES;
 const MAX_PENDING_NINEP_OPPORTUNITIES: usize = 1_048_576;
 
@@ -38,6 +38,8 @@ struct HostIoWire {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct BlockWire {
+    #[serde(deserialize_with = "deserialize_world_binding")]
+    world_binding: Option<crate::QemuWorldIoBinding>,
     execution_binding: [u8; 32],
     storage_device: Option<[u8; 32]>,
     region_header: RegionHeaderWire,
@@ -53,6 +55,8 @@ struct BlockWire {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NinepWire {
+    #[serde(deserialize_with = "deserialize_world_binding")]
+    world_binding: Option<crate::QemuWorldIoBinding>,
     execution_binding: [u8; 32],
     tree: [u8; 32],
     region_header: RegionHeaderWire,
@@ -77,7 +81,7 @@ struct RegionHeaderWire {
     ring_data_off: u64,
     entry_stride: u64,
     region_size: u64,
-    icount_shift: u32,
+    ticks_per_ns: u32,
     pause_requested: u8,
     shutdown_requested: u8,
     fault_payload_arena_bytes: u32,
@@ -95,7 +99,7 @@ impl From<RegionHeaderSnapshot> for RegionHeaderWire {
             ring_data_off: header.ring_data_off,
             entry_stride: header.entry_stride,
             region_size: header.region_size,
-            icount_shift: header.icount_shift,
+            ticks_per_ns: header.ticks_per_ns,
             pause_requested: header.pause_requested,
             shutdown_requested: header.shutdown_requested,
             fault_payload_arena_bytes: header.fault_payload_arena_bytes,
@@ -115,7 +119,7 @@ impl From<RegionHeaderWire> for RegionHeaderSnapshot {
             ring_data_off: header.ring_data_off,
             entry_stride: header.entry_stride,
             region_size: header.region_size,
-            icount_shift: header.icount_shift,
+            ticks_per_ns: header.ticks_per_ns,
             pause_requested: header.pause_requested,
             shutdown_requested: header.shutdown_requested,
             fault_payload_arena_bytes: header.fault_payload_arena_bytes,
@@ -311,7 +315,9 @@ fn encode_block(
         &checkpoint.requests,
         &checkpoint.responses,
     )?;
-    if checkpoint.size_bytes != checkpoint.device.device_length
+    if checkpoint.world_binding.as_ref().is_some_and(|binding| {
+        !binding.is_block() || binding.source_node() != checkpoint.device.core.src_node
+    }) || checkpoint.size_bytes != checkpoint.device.device_length
         || checkpoint.frames_delivered > checkpoint.frames_processed
         || checkpoint
             .storage_device
@@ -320,6 +326,7 @@ fn encode_block(
         return Err(QemuHostIoCheckpointCodecError::Invalid);
     }
     Ok(BlockWire {
+        world_binding: checkpoint.world_binding.clone(),
         execution_binding: checkpoint.execution_binding.bytes,
         storage_device: checkpoint.storage_device.map(|hash| hash.bytes),
         region_header: checkpoint.region_header.into(),
@@ -357,6 +364,7 @@ fn decode_block(
     let region_header: RegionHeaderSnapshot = wire.region_header.into();
     let queue_capacity = region_header.queue_capacity as usize;
     let checkpoint = QemuLiveBlockIoServicerCheckpoint {
+        world_binding: wire.world_binding,
         execution_binding: ContentHash {
             bytes: wire.execution_binding,
         },
@@ -394,7 +402,9 @@ fn encode_ninep(
         &checkpoint.requests,
         &checkpoint.responses,
     )?;
-    if checkpoint.tree.bytes.iter().all(|byte| *byte == 0)
+    if checkpoint.world_binding.as_ref().is_some_and(|binding| {
+        binding.is_block() || binding.source_node() != checkpoint.device.core.src_node
+    }) || checkpoint.tree.bytes.iter().all(|byte| *byte == 0)
         || checkpoint.frames_delivered > checkpoint.frames_processed
         || checkpoint.pending_fault_opportunities.len() > MAX_PENDING_NINEP_OPPORTUNITIES
         || checkpoint
@@ -416,6 +426,7 @@ fn encode_ninep(
         }
     }
     Ok(NinepWire {
+        world_binding: checkpoint.world_binding.clone(),
         execution_binding: checkpoint.execution_binding.bytes,
         tree: checkpoint.tree.bytes,
         region_header: checkpoint.region_header.into(),
@@ -456,6 +467,7 @@ fn decode_ninep(
     let region_header: RegionHeaderSnapshot = wire.region_header.into();
     let queue_capacity = region_header.queue_capacity as usize;
     let checkpoint = QemuLive9pIoServicerCheckpoint {
+        world_binding: wire.world_binding,
         execution_binding: ContentHash {
             bytes: wire.execution_binding,
         },
@@ -548,4 +560,10 @@ fn encode_accelerator(
     _checkpoint: &QemuHostIoCheckpoint,
 ) -> Result<Option<BoundedVec<u8, HARD_FAT_CHECKPOINT_BYTES>>, QemuHostIoCheckpointCodecError> {
     Ok(None)
+}
+
+fn deserialize_world_binding<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<crate::QemuWorldIoBinding>, D::Error> {
+    Option::deserialize(deserializer)
 }

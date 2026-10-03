@@ -12,8 +12,8 @@ use crucible::{
 
 #[test]
 fn property_vocabulary_is_closed_and_versioned() {
-    assert_eq!(PROPERTY_SCHEMA_VERSION, 1);
-    assert_eq!(PROPERTY_SCHEMA_DOMAIN, "crucible.model.properties.v1");
+    assert_eq!(PROPERTY_SCHEMA_VERSION, 2);
+    assert_eq!(PROPERTY_SCHEMA_DOMAIN, "crucible.model.properties.v2");
     assert_eq!(PROPERTY_QUANTIFIER_COUNT, 5);
     assert_eq!(
         PropertyKind::ALL,
@@ -169,7 +169,7 @@ fn all_property_quantifiers_round_trip_through_versioned_properties_schema() {
 
     assert_eq!(from_toml, properties);
     assert_eq!(from_binary, properties);
-    assert_eq!(binary_prefix(&binary), b"crucible.properties.v1\0");
+    assert_eq!(binary_prefix(&binary), b"crucible.properties.v2\0");
 }
 
 #[test]
@@ -294,6 +294,6 @@ fn empty_world() -> World {
 }
 
 fn binary_prefix(binary: &[u8]) -> &[u8] {
-    let end = b"crucible.properties.v1\0".len();
+    let end = b"crucible.properties.v2\0".len();
     &binary[..end]
 }

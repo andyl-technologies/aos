@@ -696,11 +696,86 @@ impl EventGraphState {
         self.last_firing.get(event).copied()
     }
 
+    /// Projects the next exact time-predicate transition after a settled boundary.
+    ///
+    /// Consumed one-shot events and latched `Once` predicates need no future
+    /// wakeup. Relative deadlines use the last authenticated event firing, while
+    /// timer deadlines use the current armed-timer map. Pulse falling edges are
+    /// included so repeatable and negated predicates observe their false/true
+    /// transitions even when no guest event or rendezvous intervenes.
+    ///
+    /// The result is derived state: restore the graph, continuation, and timers
+    /// and recompute it before advancing execution. All deadlines use exact
+    /// simulation ticks.
+    ///
+    /// # Errors
+    ///
+    /// This projection is currently infallible.
+    pub fn next_evaluation_deadline(
+        &self,
+        graph: &EventGraph,
+        timer_fires: &BTreeMap<TimerId, VirtualTime>,
+        after: VirtualTime,
+    ) -> Result<Option<VirtualTime>, TimeConversionError> {
+        self.project_time_deadline(graph, timer_fires, after, true)
+    }
+
+    /// Projects the next time transition that may activate an event.
+    ///
+    /// Unlike [`Self::next_evaluation_deadline`], this excludes bookkeeping
+    /// boundaries where the complete predicate is certainly false. Keeping them
+    /// separate allows `At(t) AND Quiescent` to see an otherwise idle system at
+    /// `t`, without ending a run while a later trigger activation remains due.
+    /// Negation may activate on a pulse's falling edge. Observational leaves
+    /// remain conservatively unknown until their actual evaluation point.
+    ///
+    /// # Errors
+    ///
+    /// This projection is currently infallible.
+    pub fn next_activation_deadline(
+        &self,
+        graph: &EventGraph,
+        timer_fires: &BTreeMap<TimerId, VirtualTime>,
+        after: VirtualTime,
+    ) -> Result<Option<VirtualTime>, TimeConversionError> {
+        self.project_time_deadline(graph, timer_fires, after, false)
+    }
+
+    fn project_time_deadline(
+        &self,
+        graph: &EventGraph,
+        timer_fires: &BTreeMap<TimerId, VirtualTime>,
+        after: VirtualTime,
+        include_falling: bool,
+    ) -> Result<Option<VirtualTime>, TimeConversionError> {
+        let projection = super::deadlines::TriggerDeadlineProjection {
+            after,
+            last_firing: &self.last_firing,
+            timer_fires,
+            once_latches: &self.once_latches,
+        };
+        Ok(graph
+            .events()
+            .iter()
+            .filter(|event| {
+                event.policy != FirePolicy::Once || !self.consumed_once.contains(&event.id)
+            })
+            .filter_map(|event| event.trigger.as_ref())
+            .filter_map(|condition| {
+                if include_falling {
+                    projection.next_transition(condition, true)
+                } else {
+                    projection.next_activation(condition)
+                }
+            })
+            .min())
+    }
+
     /// Encodes the complete event-graph continuation in a versioned format.
     #[must_use]
     pub fn to_compact_binary(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
-        bytes.extend_from_slice(b"crucible.event-graph-state.v1\0");
+        bytes.extend_from_slice(b"crucible.event-graph-state.v2\0");
         write_event_graph_state_count(&mut bytes, self.consumed_once.len());
         for event in &self.consumed_once {
             write_event_graph_state_bytes(&mut bytes, event.name.as_bytes());
@@ -730,7 +805,7 @@ impl EventGraphState {
     /// truncated fields, duplicate map/set keys, invalid predicates, excessive
     /// collections, or trailing bytes.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
-        const MAGIC: &[u8] = b"crucible.event-graph-state.v1\0";
+        const MAGIC: &[u8] = b"crucible.event-graph-state.v2\0";
         if !bytes.starts_with(MAGIC) {
             return Err(event_graph_state_decode_error("binary magic mismatch"));
         }
@@ -795,11 +870,34 @@ impl EventGraphState {
     where
         E: ConditionEvaluator,
     {
+        self.evaluate_with_frontier(graph, evaluator, None)
+    }
+
+    pub(super) fn evaluate_with_frontier<E>(
+        &mut self,
+        graph: &EventGraph,
+        evaluator: &mut E,
+        frontier: Option<VirtualTime>,
+    ) -> EventFirings
+    where
+        E: ConditionEvaluator,
+    {
         let mut firings = Vec::new();
         let point = evaluator.evaluation_point();
         let event_log_offset = evaluator.event_log_offset();
         let timer_fires = evaluator.timer_fires();
         for event in graph.events() {
+            if frontier.is_some_and(|frontier| point.at() > frontier)
+                && event
+                    .trigger
+                    .as_ref()
+                    .is_some_and(super::deadlines::requires_global_time)
+            {
+                // A leading node's observation is not a global time boundary.
+                // Do not consume a one-shot, alter edge truth, or latch Once
+                // until every live node reaches the exact scheduler cap.
+                continue;
+            }
             let truth = match &event.trigger {
                 Some(condition) => {
                     let mut graph_evaluator = EventGraphConditionEvaluator {

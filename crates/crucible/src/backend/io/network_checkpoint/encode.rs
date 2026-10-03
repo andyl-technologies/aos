@@ -137,8 +137,8 @@ struct BackendNetworkPreservedAvailabilityEncodeWire<'a> {
 #[derive(Serialize)]
 struct BackendNetworkFaultCursorEncodeWire<'a> {
     completed_phases: CompletedFaultPhaseSequence<'a>,
-    not_before_nanos: u64,
-    completed_release_nanos: u64,
+    not_before_ticks: u64,
+    completed_release_ticks: u64,
     queue_opportunity: Option<ContentHash>,
     repeated_phase_effect: Option<EffectKind>,
     queue_priority: Option<u8>,
@@ -149,8 +149,8 @@ impl<'a> BackendNetworkFaultCursorEncodeWire<'a> {
     fn new(value: &'a BackendNetworkFaultCursor) -> Self {
         Self {
             completed_phases: CompletedFaultPhaseSequence(&value.completed_phases),
-            not_before_nanos: value.not_before_nanos,
-            completed_release_nanos: value.completed_release_nanos,
+            not_before_ticks: value.not_before_ticks,
+            completed_release_ticks: value.completed_release_ticks,
             queue_opportunity: value.queue_opportunity,
             repeated_phase_effect: value.repeated_phase_effect,
             queue_priority: value.queue_priority,
@@ -186,25 +186,25 @@ struct BackendNetworkCompletedFaultPhaseEncodeWire<'a> {
 
 #[derive(Serialize)]
 struct ResolvedNetworkFrameEffectsEncodeWire<'a> {
-    latency_delta_nanos: i64,
-    additional_delay_nanos: u64,
+    latency_delta_ticks: i64,
+    additional_delay_ticks: u64,
     serialization_rate_cap_bps: Option<u64>,
     serialization_accounted: bool,
     contact_services_accounted: &'a [[u8; 32]],
     drop: bool,
-    duplicate_gaps_nanos: &'a [u64],
+    duplicate_gaps_ticks: &'a [u64],
 }
 
 impl<'a> ResolvedNetworkFrameEffectsEncodeWire<'a> {
     fn new(value: &'a crucible_device::ResolvedNetworkFrameEffects) -> Self {
         Self {
-            latency_delta_nanos: value.latency_delta_nanos(),
-            additional_delay_nanos: value.additional_delay_nanos(),
+            latency_delta_ticks: value.latency_delta_ticks(),
+            additional_delay_ticks: value.additional_delay_ticks(),
             serialization_rate_cap_bps: value.serialization_rate_cap_bps(),
             serialization_accounted: value.serialization_is_accounted(),
             contact_services_accounted: value.accounted_contact_services(),
             drop: value.is_dropped(),
-            duplicate_gaps_nanos: value.duplicate_gaps_nanos(),
+            duplicate_gaps_ticks: value.duplicate_gaps_ticks(),
         }
     }
 }

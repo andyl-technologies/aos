@@ -1,4 +1,4 @@
-//! Checks that the single-scheduler boundary is explicit and L4-driven.
+//! Checks that the single-scheduler boundary is explicit and driven only by L4.
 
 #![forbid(unsafe_code)]
 
@@ -8,8 +8,13 @@ use std::path::{Path, PathBuf};
 
 use toml::Value;
 
+// crucible-lint: allow rust-allow -- This test reuses the production/test source classifiers without the unrelated line-count helper.
+#[allow(dead_code)]
+#[path = "support/source_sections.rs"]
+mod source_sections;
+
 #[test]
-fn engine_owns_quantum_loop_and_session_is_only_driver() -> Result<(), Box<dyn Error>> {
+fn engine_owns_quantum_loop_and_only_l4_drivers_advance_it() -> Result<(), Box<dyn Error>> {
     let root = workspace_root();
     let engine_lib = read_repo_file(&root, "crates/crucible/src/lib.rs")?;
     let engine_model = read_module_tree(
@@ -118,6 +123,28 @@ fn boundary_rules_reject_lower_layer_quantum_loop_ownership() {
     );
 }
 
+#[test]
+fn scheduler_scan_excludes_test_sources_but_keeps_production_calls() -> Result<(), Box<dyn Error>> {
+    let temp = tempfile::TempDir::new()?;
+    let source_dir = temp.path().join("crates/crucible-cli/src");
+    fs::create_dir_all(source_dir.join("tests"))?;
+    let call = "fn bypass(loop_: &mut dyn QuantumLoop) { loop_.drive_quantum(request); }";
+    fs::write(source_dir.join("tests/fixture.rs"), call)?;
+    fs::write(source_dir.join("terminal_tests.rs"), call)?;
+    fs::write(source_dir.join("test_support.rs"), call)?;
+    fs::write(
+        source_dir.join("fixture.rs"),
+        format!("#[cfg(test)]\n{call}"),
+    )?;
+    assert!(package_source_scheduler_ownership_findings(temp.path(), "crucible-cli")?.is_empty());
+
+    fs::write(source_dir.join("production.rs"), call)?;
+    let findings = package_source_scheduler_ownership_findings(temp.path(), "crucible-cli")?;
+    assert_eq!(findings.len(), 1);
+    assert!(findings[0].contains("must not call `drive_quantum`"));
+    Ok(())
+}
+
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -178,9 +205,12 @@ fn non_authority_scheduler_exports(root: &Path) -> Result<Vec<String>, Box<dyn E
         "crucible-device",
         "crucible-qemu",
         "crucible-qemu-plugin",
+        "crucible-debug-gateway",
         "crucible-guest",
-        "crucible-api",
-        "crucible-daemon",
+        "crucible-linux-resource",
+        "crucible-campaign",
+        "crucible-cas",
+        "crucible-s3-store",
         "crucible-cli",
     ] {
         findings.extend(package_source_scheduler_ownership_findings(root, package)?);
@@ -193,13 +223,19 @@ fn package_source_scheduler_ownership_findings(
     package: &str,
 ) -> Result<Vec<String>, Box<dyn Error>> {
     let mut findings = Vec::new();
-    let src_dir = root.join("crates").join(package).join("src");
+    let package_dir = root.join("crates").join(package);
+    let src_dir = package_dir.join("src");
     if !src_dir.is_dir() {
         return Ok(findings);
     }
 
     for path in rust_source_files(&src_dir)? {
         let source = fs::read_to_string(&path)?;
+        if source_sections::is_test_only_source(&package_dir, &path)
+            || source_sections::is_test_support_only_source(&source)
+        {
+            continue;
+        }
         findings.extend(source_scheduler_ownership_findings(package, &source));
     }
 
@@ -236,7 +272,7 @@ fn source_scheduler_ownership_findings(package: &str, source: &str) -> Vec<Strin
     }
     if source.contains(".drive_quantum(") || source.contains("QuantumLoop::drive_quantum") {
         findings.push(format!(
-            "{package} must not call `drive_quantum`; only crucible-session may drive the L3 boundary"
+            "{package} must not call `drive_quantum`; only the session, API lifecycle, or daemon execution authorities may drive the L3 boundary"
         ));
     }
     findings
@@ -244,7 +280,7 @@ fn source_scheduler_ownership_findings(package: &str, source: &str) -> Vec<Strin
 
 fn source_without_cfg_test_regions(source: &str) -> String {
     let lines = source.lines().collect::<Vec<_>>();
-    let ranges = cfg_test_line_ranges(&lines);
+    let ranges = source_sections::cfg_test_line_ranges(source);
 
     lines
         .iter()
@@ -259,53 +295,4 @@ fn source_without_cfg_test_regions(source: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-fn cfg_test_line_ranges(lines: &[&str]) -> Vec<std::ops::RangeInclusive<usize>> {
-    let mut ranges = Vec::new();
-    for index in 0..lines.len() {
-        if line_is_cfg_test(lines[index])
-            && let Some(range) = braced_item_line_range_after(lines, index + 1)
-        {
-            ranges.push(range);
-        }
-    }
-    ranges
-}
-
-fn line_is_cfg_test(line: &str) -> bool {
-    line.chars()
-        .filter(|ch| !ch.is_whitespace())
-        .collect::<String>()
-        == "#[cfg(test)]"
-}
-
-fn braced_item_line_range_after(
-    lines: &[&str],
-    start: usize,
-) -> Option<std::ops::RangeInclusive<usize>> {
-    let mut depth = 0usize;
-    let mut first_brace_line = None;
-
-    for (index, line) in lines.iter().enumerate().skip(start) {
-        for ch in line.chars() {
-            match ch {
-                '{' => {
-                    if depth == 0 {
-                        first_brace_line = Some(index + 1);
-                    }
-                    depth += 1;
-                }
-                '}' if depth > 0 => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return first_brace_line.map(|line| line..=index + 1);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    None
 }

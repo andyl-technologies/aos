@@ -23,8 +23,36 @@ pub(crate) struct BackendCommandOutcome {
     pub(crate) terminal_savepoint: Option<crucible::ContentHash>,
     pub(crate) savepoint_oracle: Option<SavepointOracleProof>,
     pub(crate) save_boundary_evidence: Option<SaveBoundaryEvidence>,
+    pub(crate) savepoint_replay_closure: Option<Vec<u8>>,
     pub(crate) reproduction_artifact: Option<Vec<u8>>,
     pub(crate) side_reproduction_artifacts: Vec<(String, Vec<u8>)>,
+    pub(crate) host_scheduler_preemption: Vec<HostSchedulerPreemptionEvidence>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HostSchedulerPreemptionEvidence {
+    pub(crate) reduction_index: usize,
+    pub(crate) run_index: usize,
+    pub(crate) host_profile: String,
+    pub(crate) applied: bool,
+    pub(crate) pending_quantum_certified: bool,
+    pub(crate) perturbations: u32,
+    pub(crate) requested_stopped_milliseconds: u64,
+}
+
+impl HostSchedulerPreemptionEvidence {
+    pub(crate) fn summary(&self) -> String {
+        format!(
+            "index={} run={} profile={} applied={} pending_quantum_certified={} perturbations={} requested_stopped_ms={}",
+            self.reduction_index,
+            self.run_index,
+            self.host_profile,
+            self.applied,
+            self.pending_quantum_certified,
+            self.perturbations,
+            self.requested_stopped_milliseconds
+        )
+    }
 }
 
 impl BackendCommandOutcome {
@@ -41,6 +69,7 @@ impl BackendCommandOutcome {
             terminal_savepoint: self.terminal_savepoint,
             savepoint_oracle: self.savepoint_oracle.clone(),
             save_boundary_evidence: self.save_boundary_evidence.clone(),
+            host_scheduler_preemption: self.host_scheduler_preemption.clone(),
         }
     }
 }
@@ -75,7 +104,7 @@ impl BackendCommandStatus {
         !matches!(self, Self::Passed)
     }
 
-    pub(crate) fn failure_slug(self) -> &'static str {
+    pub(crate) fn artifact_slug(self) -> &'static str {
         match self {
             Self::Passed => "passed",
             Self::Failed => "failed",
@@ -98,6 +127,7 @@ pub(crate) struct BackendCommandOutcomeProjection {
     pub(crate) terminal_savepoint: Option<crucible::ContentHash>,
     pub(crate) savepoint_oracle: Option<SavepointOracleProof>,
     pub(crate) save_boundary_evidence: Option<SaveBoundaryEvidence>,
+    pub(crate) host_scheduler_preemption: Vec<HostSchedulerPreemptionEvidence>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

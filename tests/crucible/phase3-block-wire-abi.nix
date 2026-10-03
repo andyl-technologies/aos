@@ -10,6 +10,7 @@
   blockIo = import ./_rust-module-source.nix {
     inherit lib;
     entry = ../../crates/crucible-qemu-plugin/src/block_io.rs;
+    siblingTests = true;
   };
   ioWireFuzz = builtins.readFile ../../crates/crucible-qemu-plugin/src/io_wire_fuzz.rs;
   pluginLib = builtins.readFile ../../crates/crucible-qemu-plugin/src/lib.rs;

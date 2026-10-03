@@ -11,7 +11,11 @@
   triageDoc = builtins.readFile ../../docs/rfcs/0010-crucible/34-failure-triage.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
-  engineLib = builtins.readFile ../../crates/crucible/src/lib.rs;
+  failureSignatureMaterial = builtins.readFile ../../crates/crucible/src/model/failure/material.rs;
+  engineLib = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
   signatureTest = builtins.readFile ../../crates/crucible/tests/gate_failure_signature.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -103,8 +107,8 @@
         needle = "failure_causal_cone_entries";
       }
       {
-        label = "property violation point validation";
-        needle = "validate_violation_point";
+        label = "replayed property violation validation";
+        needle = "validated_property_violation";
       }
       {
         label = "divergence point returns causal index";
@@ -123,8 +127,8 @@
     ]
     ++ failuresFor "crates/crucible/tests/gate_failure_signature.rs" signatureTest [
       {
-        label = "normalization regression test";
-        needle = "failure_signature_applies_t_tri_2_normalizations";
+        label = "property report-only icount and guest witness regression";
+        needle = "property_signature_excludes_report_only_icount_but_binds_guest_witness";
       }
       {
         label = "report-only icount regression";
@@ -132,11 +136,19 @@
       }
       {
         label = "icount not in key regression";
-        needle = "!replica_a_signature";
+        needle = "shifted_icount.content_hash(), base_signature.content_hash()";
       }
       {
-        label = "symmetry class regression";
-        needle = "symmetry-class:8:replicas";
+        label = "symmetric node normalization regression";
+        needle = "timeout_signature_validates_boundary_and_normalizes_symmetric_nodes";
+      }
+      {
+        label = "symmetric node equality assertion";
+        needle = "replica_a_signature.first_failing_point.faulting_node";
+      }
+      {
+        label = "recorded guest witness assertion";
+        needle = "guest_marker_witness=";
       }
       {
         label = "out-of-cone causal stability regression";
@@ -195,7 +207,7 @@
         needle = "unimplemented!";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/src/model.rs" temporalGraph [
+    ++ forbiddenFailuresFor "crates/crucible/src/model/failure/material.rs" failureSignatureMaterial [
       {
         label = "deferred causal slice";
         needle = "until the T-TRI-2 cone normalization";

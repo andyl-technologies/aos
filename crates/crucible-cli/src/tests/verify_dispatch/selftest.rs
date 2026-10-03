@@ -60,7 +60,7 @@ pub(super) fn cli_selftest_runs_builtin_example_corpus() -> Result<(), Box<dyn E
     let manifest = temp.path().join("selftest-corpus.txt");
     fs::write(
         &manifest,
-        "builtin:happy-path.scn\n# comments are ignored\ncrash-restart.scn\n",
+        "builtin:happy-path.scn\n# comments are ignored\nbuiltin:crash-restart.scn\n",
     )?;
     let manifest_cli = Cli::parse_from([
         "crucible",
@@ -87,6 +87,7 @@ pub(super) fn cli_selftest_runs_builtin_example_corpus() -> Result<(), Box<dyn E
             .iter()
             .all(|gate| gate.corpus_entries == 2)
     );
+    assert!(verify_selftest_fixture_by_name("happy-path.scn").is_err());
     dispatch(&manifest_cli)?;
 
     let (qemu, plugin) = temp_qemu_artifacts(&temp)?;

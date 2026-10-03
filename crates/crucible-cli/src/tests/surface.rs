@@ -2,6 +2,66 @@
 
 use super::*;
 
+#[test]
+fn campaign_debug_route_exposes_explicit_writable_branch_opt_in() {
+    let cli = Cli::parse_from([
+        "crucible",
+        "--daemon",
+        "https://127.0.0.1:9443",
+        "campaign",
+        "--socket",
+        "/run/crucible/campaign.sock",
+        "--principal",
+        "debugger",
+        "debug",
+        "midpoint",
+        "--snapshot",
+        "snapshot-id",
+        "--finding",
+        "finding-id",
+        "--node",
+        "vm-a",
+    ]);
+    let Commands::Campaign(campaign) = cli.command else {
+        panic!("campaign debug must remain a public campaign command");
+    };
+    let CampaignCommand::Debug(debug) = campaign.command else {
+        panic!("campaign debug must parse to its owner-backed route");
+    };
+
+    assert_eq!(debug.name, "midpoint");
+    assert_eq!(debug.node, "vm-a");
+    assert_eq!(debug.gdb_listen, "127.0.0.1:0");
+    assert!(!debug.writable);
+
+    let writable = Cli::parse_from([
+        "crucible",
+        "--daemon",
+        "https://127.0.0.1:9443",
+        "campaign",
+        "--socket",
+        "/run/crucible/campaign.sock",
+        "--principal",
+        "debugger",
+        "debug",
+        "midpoint",
+        "--snapshot",
+        "snapshot-id",
+        "--finding",
+        "finding-id",
+        "--node",
+        "vm-a",
+        "--writable",
+    ]);
+    let Commands::Campaign(campaign) = writable.command else {
+        panic!("writable campaign debug must remain a campaign command");
+    };
+    let CampaignCommand::Debug(debug) = campaign.command else {
+        panic!("writable campaign debug must use the owner-backed route");
+    };
+    assert!(debug.writable);
+}
+
 use clap::CommandFactory;
 
 pub(super) const TEST_SCENARIO: &str = "builtin:happy-path.scn";
@@ -380,8 +440,9 @@ quiescent = true
 }
 
 pub(super) fn valid_fuzz_family_toml() -> &'static str {
-    r#"schema = "crucible.scenario-family.v2"
+    r#"schema = "crucible.scenario-family.v3"
 topology_shapes = ["ring"]
+fault_densities = [0]
 
 [seed_space]
 kind = "generated"
@@ -398,65 +459,60 @@ cmdline = "cli-fuzz-family"
 "#
 }
 
+#[test]
+fn fuzz_family_authoring_uses_current_density_and_fault_plan_schema() {
+    let authored = valid_fuzz_family_toml();
+    let decoded = load_fuzz_family_toml("current fixture", authored)
+        .unwrap_or_else(|error| panic!("current family should decode: {error}"));
+    assert_eq!(decoded.space().fault_densities(), &[0]);
+
+    let old = authored.replace("crucible.scenario-family.v3", "crucible.scenario-family.v2");
+    let error = load_fuzz_family_toml("old fixture", &old)
+        .err()
+        .unwrap_or_else(|| panic!("old family schema must be rejected"));
+    assert!(error.to_string().contains("unsupported schema"));
+
+    let missing_plan = authored.replace("fault_densities = [0]", "fault_densities = [1]");
+    let error = load_fuzz_family_toml("missing plan", &missing_plan)
+        .err()
+        .unwrap_or_else(|| panic!("positive density needs a fault plan"));
+    assert!(error.to_string().contains("requires fault_plan_toml"));
+
+    let empty_plan = crucible::Plan::empty()
+        .to_canonical_toml()
+        .unwrap_or_else(|error| panic!("empty plan should serialize: {error}"));
+    let with_plan = authored.replace(
+        "fault_densities = [0]",
+        &format!("fault_densities = [0]\nfault_plan_toml = '''\n{empty_plan}\n'''"),
+    );
+    load_fuzz_family_toml("canonical empty plan", &with_plan)
+        .unwrap_or_else(|error| panic!("canonical fault plan should decode: {error}"));
+}
+
+#[test]
+fn live_qemu_fuzz_fixture_pins_a_searchable_fault_plan() {
+    let authored = include_str!("../../../../tests/crucible/fixtures/live-qemu-fuzz.family.toml");
+    let family = load_fuzz_family_toml("live QEMU fuzz fixture", authored)
+        .unwrap_or_else(|error| panic!("live QEMU fuzz family should decode: {error}"));
+    let pinned = family
+        .instantiate_sample(0)
+        .unwrap_or_else(|error| panic!("live QEMU fuzz family should pin: {error}"));
+    let bindings = pinned.form().plan().fault_signals().bindings();
+
+    assert_eq!(family.space().fault_densities(), &[1]);
+    assert_eq!(bindings.len(), 1);
+    let crucible_core::model::BindingSearchPolicy::BranchParameter { candidates, .. } =
+        bindings[0].search()
+    else {
+        panic!("live QEMU fuzz binding must expose typed parameter candidates");
+    };
+    assert_eq!(candidates.len(), 2);
+}
+
 pub(super) fn write_valid_fuzz_family(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
     let path = temp.path().join("family.toml");
     fs::write(&path, valid_fuzz_family_toml())?;
     Ok(path)
-}
-
-pub(super) fn write_signed_triage_findings_ledger(
-    dir: &Path,
-    store_root: &Path,
-    file_name: &str,
-    discovery_signature_assertion: Option<&str>,
-) -> Result<(PathBuf, crucible::FindingReproductionArtifact), Box<dyn Error>> {
-    fs::create_dir_all(dir)?;
-    let form = search_frontier_scenario_form()?;
-    let configuration = crucible::try_step(
-        &crucible::Configuration::genesis(form.scenario_def()),
-        search_frontier_decisions()
-            .into_iter()
-            .nth(1)
-            .ok_or_else(|| std::io::Error::other("missing triage fixture decision"))?,
-    )?;
-    let finding_fingerprint = crucible::ContentHash::from_bytes(b"cli triage signed finding");
-    let finding = crucible::FindingReproductionArtifact::capture(
-        crucible::FindingDiscoveryPath::StateSpaceSearch,
-        finding_fingerprint,
-        &form,
-        &configuration,
-    )?;
-    let store = crucible::LocalDagStore::new(store_root.to_path_buf());
-    let artifact = finding.store_artifact(&store)?;
-    assert_eq!(artifact, finding.artifact.id());
-
-    let assertion = "cli-triage-signed-finding";
-    let mut ledger = format!(
-        "\
-{FAILURE_TRIAGE_FINDINGS_LEDGER_SCHEMA_V2}
-finding.0.artifact={artifact}
-finding.0.discovery_path=state-space-search
-finding.0.finding_fingerprint={finding_fingerprint}
-finding.0.assertion={assertion}
-finding.0.message=CLI triage signed finding violated
-finding.0.quantifier=always
-finding.0.event_kind=assertion_state_changed
-finding.0.at_icount=8
-finding.0.at_virtual_time=8
-finding.0.node=triage-node
-finding.0.detail=synthetic signed finding evidence
-",
-        artifact = artifact.to_hex(),
-        finding_fingerprint = finding_fingerprint.to_hex()
-    );
-    if let Some(discovery_signature_assertion) = discovery_signature_assertion {
-        ledger.push_str(&format!(
-            "finding.0.discovery_signature.assertion={discovery_signature_assertion}\n"
-        ));
-    }
-    let path = dir.join(file_name);
-    fs::write(&path, ledger)?;
-    Ok((path, finding))
 }
 
 pub(super) fn search_frontier_scenario_form() -> Result<crucible::ScenarioDefForm, Box<dyn Error>> {
@@ -482,7 +538,6 @@ pub(super) fn search_frontier_world() -> Result<crucible::World, Box<dyn Error>>
         },
         white_box: crucible::WhiteBoxPolicy::Disabled,
         smp_vcpus: crucible::NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: crucible::NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -502,7 +557,6 @@ pub(super) fn search_retained_evidence_world() -> Result<crucible::World, Box<dy
         },
         white_box: crucible::WhiteBoxPolicy::Enabled,
         smp_vcpus: crucible::NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: crucible::NodeTemplate::DEFAULT_ICOUNT_SHIFT,
         kernel: None,
         root_image: None,
         initrd: None,
@@ -510,31 +564,17 @@ pub(super) fn search_retained_evidence_world() -> Result<crucible::World, Box<dy
 }
 
 pub(super) fn search_frontier_decisions() -> Vec<crucible::Decision> {
-    vec![
-        crucible::Decision::RngDraw(crucible::RngDecision {
-            stream: crucible::RngStreamId::from_name("cli-search/packet-loss"),
-            value: 1,
-        }),
-        crucible::Decision::RngDraw(crucible::RngDecision {
-            stream: crucible::RngStreamId::from_name("cli-search/decision-rng"),
-            value: 0xa5a5_5a5a,
-        }),
-        crucible::Decision::Override(crucible::OverrideDecision {
-            point: crucible::SchedulingPoint {
-                key: String::from("cli-search/scheduler-point"),
-            },
-            choice: crucible::ChoiceTag {
-                name: String::from("non-default-choice"),
-            },
-        }),
+    [
+        "cli-search/packet-loss",
+        "cli-search/decision-rng",
+        "cli-search/scheduler-point",
     ]
-}
-
-pub(super) fn write_property_selector_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
-    let form = property_selector_scenario_form()?;
-    let path = temp.path().join("property-selector-scenario.toml");
-    fs::write(&path, form.to_canonical_toml()?)?;
-    Ok(path)
+    .into_iter()
+    .map(|label| {
+        crucible_core::test_support::typed_search_decision_for_test(label)
+            .unwrap_or_else(|error| panic!("typed search fixture should build: {error}"))
+    })
+    .collect()
 }
 
 pub(super) fn property_selector_scenario_form() -> Result<crucible::ScenarioDefForm, Box<dyn Error>>
@@ -552,63 +592,6 @@ pub(super) fn property_selector_scenario_form() -> Result<crucible::ScenarioDefF
         &crucible::Plan::empty(),
         &properties,
         fixture.scenario.seed(),
-    )?)
-}
-
-pub(super) fn write_marker_selector_scenario(temp: &TempDir) -> Result<PathBuf, Box<dyn Error>> {
-    write_marker_selector_scenario_with_policy(
-        temp,
-        "marker-selector-scenario.toml",
-        crucible::WhiteBoxPolicy::Enabled,
-    )
-}
-
-pub(super) fn write_marker_selector_without_source_scenario(
-    temp: &TempDir,
-) -> Result<PathBuf, Box<dyn Error>> {
-    write_marker_selector_scenario_with_policy(
-        temp,
-        "marker-selector-no-source-scenario.toml",
-        crucible::WhiteBoxPolicy::Disabled,
-    )
-}
-
-pub(super) fn write_marker_selector_scenario_with_policy(
-    temp: &TempDir,
-    file_name: &str,
-    white_box: crucible::WhiteBoxPolicy,
-) -> Result<PathBuf, Box<dyn Error>> {
-    let form = marker_selector_scenario_form(white_box)?;
-    let path = temp.path().join(file_name);
-    fs::write(&path, form.to_canonical_toml()?)?;
-    Ok(path)
-}
-
-pub(super) fn marker_selector_scenario_form(
-    white_box: crucible::WhiteBoxPolicy,
-) -> Result<crucible::ScenarioDefForm, Box<dyn Error>> {
-    let world = crucible::World::from_nodes(vec![crucible::WorldNode {
-        id: crucible::NodeId {
-            name: String::from("marker-node"),
-        },
-        arch: crucible::NodeTemplate::DEFAULT_ARCH,
-        memory_mib: crucible::NodeTemplate::DEFAULT_MEMORY_MIB,
-        cmdline: String::from("crucible-marker-selector=1 crucible-guest-marker=phase-two-marker"),
-        ready_point: crucible::ReadyPoint::FixedIcount {
-            icount: crucible::Icount { retired: 1 },
-        },
-        white_box,
-        smp_vcpus: crucible::NodeTemplate::DEFAULT_SMP_VCPUS,
-        icount_shift: crucible::NodeTemplate::DEFAULT_ICOUNT_SHIFT,
-        kernel: None,
-        root_image: None,
-        initrd: None,
-    }])?;
-    Ok(crucible::ScenarioDefForm::from_components(
-        &world,
-        &crucible::Plan::empty(),
-        &crucible::Properties::empty(),
-        crucible::Seed::from_u64(14),
     )?)
 }
 
@@ -643,78 +626,8 @@ pub(super) fn spawn_production_lifecycle_server() -> Result<String, Box<dyn Erro
                 "crucible-cli-test-daemon",
                 Vec::new(),
                 |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
-            );
-            let _server = crucible_api::serve_lifecycle_http2(listener, control_plane).await;
-        });
-    });
-    Ok(address.to_string())
-}
-
-pub(super) fn spawn_save_recording_lifecycle_server() -> Result<String, Box<dyn Error>> {
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
-    listener.set_nonblocking(true)?;
-    let address = listener.local_addr()?;
-    std::thread::spawn(move || {
-        let runtime = match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(runtime) => runtime,
-            Err(_) => return,
-        };
-        runtime.block_on(async move {
-            let listener = match tokio::net::TcpListener::from_std(listener) {
-                Ok(listener) => listener,
-                Err(_) => return,
-            };
-            let control_plane = LifecycleControlPlane::new_with_source_factory(
-                "crucible-cli-save-selector-test-daemon",
-                Vec::new(),
-                move |_scenario: &crucible::ScenarioDef, scenario_form, _seed| {
-                    let scenario_form = scenario_form
-                        .expect("save selector daemon requires inline scenario source");
-                    SaveRecordingLifecycleLoop::new(SaveRecordingSources::from_scenario_form(
-                        scenario_form,
-                    ))
-                    .with_selector_delay_quanta(2)
-                },
-            );
-            let _server = crucible_api::serve_lifecycle_http2(listener, control_plane).await;
-        });
-    });
-    Ok(address.to_string())
-}
-
-pub(super) fn spawn_resume_recording_lifecycle_server(
-    fixture: ResumeRecordingFixture,
-    frontier: VirtualTime,
-) -> Result<String, Box<dyn Error>> {
-    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
-    listener.set_nonblocking(true)?;
-    let address = listener.local_addr()?;
-    std::thread::spawn(move || {
-        let runtime = match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(runtime) => runtime,
-            Err(_) => return,
-        };
-        runtime.block_on(async move {
-            let listener = match tokio::net::TcpListener::from_std(listener) {
-                Ok(listener) => listener,
-                Err(_) => return,
-            };
-            let control_plane = LifecycleControlPlane::new(
-                "crucible-cli-resume-test-daemon",
-                Vec::new(),
-                move |_scenario: &crucible::ScenarioDef, _seed| match fixture.clone() {
-                    ResumeRecordingFixture::None => ResumeRecordingLifecycleLoop::new(frontier),
-                    ResumeRecordingFixture::PropertyViolation { assertion } => {
-                        ResumeRecordingLifecycleLoop::with_property_violation(frontier, assertion)
-                    }
-                },
-            );
+            )
+            .with_terminal_session_retention(true);
             let _server = crucible_api::serve_lifecycle_http2(listener, control_plane).await;
         });
     });
@@ -948,7 +861,7 @@ pub(super) fn write_qemu_artifact_markers(
     fs::write(
         dir.join("qemu-build-identity.env"),
         format!(
-            "qemu_plugins_enabled=true\nqemu_crucible_patches_applied=true\nqemu_sim_capability=qemu-crucible\nqemu_patch_series_hash=sha256-test-qemu-patch-series\nqemu_shmem_abi_version={shmem_abi_version}\nqemu_shmem_abi={plugin_abi}\nqemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\nqemu_shmem_header_hash=sha256-test-shmem-header\nqemu_build_id={qemu_build_id}\n"
+            "qemu_plugins_enabled=true\nqemu_crucible_atomic_patch_applied=true\nqemu_sim_capability=qemu-crucible\nqemu_atomic_patch_hash=sha256-test-qemu-atomic-patch\nqemu_shmem_abi_version={shmem_abi_version}\nqemu_shmem_abi={plugin_abi}\nqemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\nqemu_shmem_header_hash=sha256-test-shmem-header\nqemu_build_id={qemu_build_id}\n"
         ),
     )?;
     fs::write(
@@ -974,7 +887,10 @@ pub(super) fn write_savepoint_handle_fixture(
     let scenario_payload = form.to_compact_binary();
     let schedule_payload = schedule.to_compact_binary();
     let mut text = String::new();
-    artifact_line(&mut text, &["schema", SAVEPOINT_HANDLE_SCHEMA]);
+    artifact_line(
+        &mut text,
+        &["schema", REPLAY_CLOSURE_SAVEPOINT_HANDLE_SCHEMA],
+    );
     artifact_line(&mut text, &["label", label]);
     artifact_line(
         &mut text,
@@ -998,6 +914,15 @@ pub(super) fn write_savepoint_handle_fixture(
             "schedule-payload",
             &content_address_bytes(&schedule_payload),
             &hex_bytes(&schedule_payload),
+        ],
+    );
+    let replay_closure = b"CCRC\0\0\0\x01\0\0\0\0";
+    artifact_line(
+        &mut text,
+        &[
+            "campaign-replay-closure",
+            &content_address_bytes(replay_closure),
+            &hex_bytes(replay_closure),
         ],
     );
     artifact_line(&mut text, &["frontier", &frontier_ticks.to_string()]);
@@ -1030,29 +955,6 @@ pub(super) fn write_savepoint_handle_fixture(
     let path = dir.join("resume-source.crucible-savepoint");
     fs::write(&path, text)?;
     Ok(path)
-}
-
-pub(super) fn write_checkpoint_closure_fixture(
-    store_root: &Path,
-    form: &crucible::ScenarioDefForm,
-    schedule: &Schedule,
-) -> Result<crucible::ContentHash, Box<dyn Error>> {
-    let checkpoint = crucible::Configuration {
-        def: form.scenario_def(),
-        schedule: schedule.clone(),
-    }
-    .id();
-    let artifact = crucible::ReproductionArtifact::capture(form, schedule)?;
-    let store = crucible::LocalDagStore::new(store_root.to_path_buf());
-    let artifact_key = store.put(&artifact.to_compact_binary())?;
-    let frontier = schedule.recorded_virtual_time().unwrap_or_default();
-    let index = store.write_checkpoint_closure_index(checkpoint, artifact_key, frontier)?;
-    let loaded = store.read_checkpoint_closure_index(checkpoint)?;
-    assert_eq!(loaded.checkpoint, checkpoint);
-    assert_eq!(loaded.reproduction_artifact, artifact_key);
-    assert_eq!(loaded.frontier, frontier);
-    assert!(store.exists(&index)?);
-    Ok(artifact_key)
 }
 
 pub(super) fn replay_to_savepoint_schedule(len: usize) -> Schedule {
@@ -1092,44 +994,6 @@ pub(super) fn externalized_replay_artifact_text(
     Ok(canonical_artifact_text(&decoded))
 }
 
-pub(super) fn fork_artifact_path(
-    outcome: &BackendCommandOutcome,
-) -> Result<PathBuf, Box<dyn Error>> {
-    let line = outcome
-        .stdout
-        .iter()
-        .find(|line| line.starts_with("fork-artifact\t"))
-        .ok_or("fork workflow did not emit fork-artifact line")?;
-    let path = line
-        .split('\t')
-        .find_map(|field| field.strip_prefix("path="))
-        .ok_or("fork-artifact line did not include path")?;
-    Ok(PathBuf::from(path))
-}
-
-pub(super) fn assert_fork_artifact_replays(
-    cli: &Cli,
-    outcome: &BackendCommandOutcome,
-    expected_seed: u64,
-) -> Result<(), Box<dyn Error>> {
-    let path = fork_artifact_path(outcome)?;
-    let report = replay_reproduction_artifact(
-        cli,
-        &ReplayArgs {
-            artifact: path.clone(),
-            to: None,
-            check: None,
-            bisect: None,
-        },
-    )?;
-    assert_eq!(report.path, path);
-    assert!(report.digest.starts_with(CONTENT_ADDRESS_PREFIX));
-    assert_eq!(report.seed, expected_seed);
-    assert!(report.check.is_none());
-    assert!(report.bisect.is_none());
-    Ok(())
-}
-
 pub(super) fn backend_routed_subcommand_cases() -> Vec<(CliSubcommand, Vec<&'static str>)> {
     vec![
         (CliSubcommand::Run, vec!["run", TEST_SCENARIO]),
@@ -1142,10 +1006,12 @@ pub(super) fn backend_routed_subcommand_cases() -> Vec<(CliSubcommand, Vec<&'sta
             CliSubcommand::Resume,
             vec!["resume", "blake3:test-savepoint"],
         ),
-        (CliSubcommand::Fork, vec!["fork", "blake3:test-savepoint"]),
         (CliSubcommand::Replay, vec!["replay", "case.crucible"]),
         (CliSubcommand::Search, vec!["search", TEST_SCENARIO]),
-        (CliSubcommand::Fuzz, vec!["fuzz", "builtin:fault-campaign"]),
+        (
+            CliSubcommand::Fuzz,
+            vec!["fuzz", crucible::FAULT_CAMPAIGN_FAMILY_NAME],
+        ),
         (CliSubcommand::Debug, vec!["debug", "case.crucible"]),
         (
             CliSubcommand::Serve,
@@ -1186,9 +1052,9 @@ pub(super) fn cli_skeleton_exposes_closed_subcommand_set() {
     assert_eq!(
         names,
         [
+            "campaign",
             "completions",
             "debug",
-            "fork",
             "fuzz",
             "replay",
             "resume",
@@ -1197,6 +1063,7 @@ pub(super) fn cli_skeleton_exposes_closed_subcommand_set() {
             "search",
             "selftest",
             "serve",
+            "store",
             "triage",
             "verify",
         ]
@@ -1362,7 +1229,6 @@ pub(super) fn cli_resume_help_and_version_surface_matches_rfc_copy() {
         "selftest",
         "save",
         "resume",
-        "fork",
         "replay",
         "search",
         "fuzz",
@@ -1445,19 +1311,6 @@ pub(super) fn cli_resume_help_and_version_surface_matches_rfc_copy() {
             ],
         ),
         (
-            "fork",
-            &[
-                "SAVEPOINT",
-                "--seed <u64|hex>",
-                "--override <decision=value>",
-                "--until <quiescence|virtual-time|property|stopped>",
-                "--max-virtual-time <dur>",
-                "--label <name>",
-                "--interactive",
-                "--watch",
-            ],
-        ),
-        (
             "replay",
             &[
                 "ARTIFACT",
@@ -1476,6 +1329,7 @@ pub(super) fn cli_resume_help_and_version_surface_matches_rfc_copy() {
                 "--on-violation <stop|collect>",
                 "--findings-out <path>",
                 "--schedule-named-truths <path>",
+                "--retained-evidence <path>",
             ],
         ),
         (
@@ -1533,7 +1387,7 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
         (
             "verify",
             &["scenario", "runs", "adversarial", "bisect", "compare"][..],
-            "about=Prove determinism: run N times, diff fingerprints + causal logs\nusage=Usage: crucible verify [OPTIONS] <SCENARIO|--compare <a> <b>>\nscenario=Scenario file (the canonical TOML form, 06 §6.1) or its content hash\nruns=Number of runs to compare. Default: 2\nadversarial=Run under the hostile host-condition matrix (24 §7)\nbisect=On divergence, run divergence-bisection (24 §5) and print the report\ncompare=Diff two existing reproduction artifacts instead of running\n",
+            "about=Prove determinism: run N times, diff fingerprints + causal logs\nusage=Usage: crucible verify [OPTIONS] <SCENARIO|--compare <a> <b>>\nscenario=Scenario file (the canonical TOML form, 06 §6.1) or its content hash\nruns=Number of runs to compare. Default: 2\nadversarial=Run the full hostile host scheduling, clock, core, and I/O matrix\nbisect=On divergence, run divergence-bisection (24 §5) and print the report\ncompare=Diff two existing reproduction artifacts instead of running\n",
         ),
         (
             "selftest",
@@ -1562,25 +1416,18 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "interactive",
                 "watch",
             ][..],
-            "about=Resume a run from a checkpoint or savepoint\nusage=Usage: crucible resume [OPTIONS] <SAVEPOINT>\nsavepoint=A savepoint handle / checkpoint content hash (07)\nuntil=Terminal condition, as in `run` (§6)\nmax_virtual_time=Stop with Timeout past this virtual time (20 §2)\ninteractive=Drive the resumed session interactively (as in `run`)\nwatch=Stream the live status line (20 §9)\n",
-        ),
-        (
-            "fork",
-            &[
-                "savepoint",
-                "overrides",
-                "until",
-                "max_virtual_time",
-                "label",
-                "interactive",
-                "watch",
-            ][..],
-            "about=Fork a run from a savepoint with a new seed or decision override\nusage=Usage: crucible fork [OPTIONS] <SAVEPOINT>\nsavepoint=The fork point: a savepoint handle / checkpoint hash (07)\noverrides=Override a decision at/after the fork point (05 §3). Repeatable\nuntil=Terminal condition, as in `run` (§6)\nmax_virtual_time=Stop with Timeout past this virtual time (20 §2)\nlabel=Label the forked branch\ninteractive=Drive the forked session interactively\nwatch=Stream the live status line (20 §9)\n",
+            "about=Resume a run from a checkpoint or savepoint\nusage=Usage: crucible resume [OPTIONS] <SAVEPOINT>\nsavepoint=A current portable savepoint handle (07)\nuntil=Terminal condition, as in `run` (§6)\nmax_virtual_time=Stop with Timeout past this virtual time (20 §2)\ninteractive=Drive the resumed session interactively (as in `run`)\nwatch=Stream the live status line (20 §9)\n",
         ),
         (
             "replay",
-            &["artifact", "check", "to", "bisect"][..],
-            "about=Replay a reproduction artifact, bit-identically\nusage=Usage: crucible replay [OPTIONS] <ARTIFACT>\nartifact=A reproduction artifact (06 §7.1) or its content hash\ncheck=Assert the replayed canonical log is byte-identical to this one\nto=Validate a target savepoint handle or checkpoint hash\nbisect=Bisect this artifact against another (24 §5)\n",
+            &[
+                "artifact",
+                "check",
+                "to",
+                "bisect",
+                "bounded_scheduler_preemption",
+            ][..],
+            "about=Replay a reproduction artifact, bit-identically\nusage=Usage: crucible replay [OPTIONS] <ARTIFACT>\nartifact=A reproduction artifact (06 §7.1) or its content hash\ncheck=Assert the replayed canonical log is byte-identical to this one\nto=Validate a target savepoint handle\nbisect=Bisect this artifact against another (24 §5)\nbounded_scheduler_preemption=Inject and require authenticated bounded host scheduler preemption during live QEMU replay\n",
         ),
         (
             "search",
@@ -1592,8 +1439,9 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "on_violation",
                 "findings_out",
                 "schedule_named_truths",
+                "retained_evidence",
             ][..],
-            "about=Drive state-space search over the schedule space (22)\nusage=Usage: crucible search [OPTIONS] <SCENARIO>\nscenario=Scenario file (the canonical TOML form, 06 §6.1) or its content hash\nstrategy=Frontier expansion strategy (22)\nmax_depth=Decision-depth bound\nmax_states=Budget on materialized states\non_violation=Stop at the first finding, or collect findings within the search bound\nfindings_out=Write the signed findings ledger to this path\nschedule_named_truths=Load schedule-named assertion truth data\n",
+            "about=Drive state-space search over the schedule space (22)\nusage=Usage: crucible search [OPTIONS] <SCENARIO>\nscenario=Scenario file (the canonical TOML form, 06 §6.1) or its content hash\nstrategy=Frontier expansion strategy (22)\nmax_depth=Decision-depth bound\nmax_states=Budget on materialized states\non_violation=Stop at the first finding, or collect findings within the search bound\nfindings_out=Write the signed findings ledger to this path\nschedule_named_truths=Load schedule-named assertion truth data\nretained_evidence=Load backend-retained assertion evidence\n",
         ),
         (
             "fuzz",
@@ -1614,15 +1462,36 @@ pub(super) fn cli_help_surface_matches_normalized_exact_rfc_snapshots() {
                 "listen",
                 "max_sessions",
                 "production_qemu",
-                "qemu_rendezvous_icount",
+                "qemu_rendezvous_ticks",
+                "qemu_quantum_budget",
                 "read_only",
                 "tls_cert",
                 "tls_key",
                 "client_ca",
                 "trusted_unauthenticated_bind",
                 "debug_role",
+                "campaign_socket",
+                "campaign_state",
+                "campaign_policy",
+                "campaign_store",
+                "campaign_maintenance_interval_ms",
+                "campaign_maintenance_write_back_transfers",
+                "campaign_maintenance_s3_nodes",
+                "campaign_maintenance_s3_uploads",
+                "campaign_component_authority",
+                "campaign_import_manifest",
+                "campaign_runtime",
+                "campaign_runtime_all",
+                "campaign_executor_socket",
+                "campaign_packaged_executor",
+                "campaign_socket_mode",
             ][..],
-            "about=Run the daemon hosting the API (21)\nusage=Usage: crucible serve [OPTIONS] --listen <addr>\nlisten=Address to bind the API (21) on. Required\nmax_sessions=Concurrency cap on live sessions\nproduction_qemu=Host sessions with the packaged production QEMU lifecycle\nqemu_rendezvous_icount=Cap production-QEMU RUNs at this deterministic icount interval\nread_only=Accept only read-only API calls (query/watch); no mutate\ntls_cert=Server certificate chain for authenticated remote access\ntls_key=Server private key for authenticated remote access\nclient_ca=CA certificate used to authenticate remote clients\ntrusted_unauthenticated_bind=Permit cleartext access on this explicitly trusted bind address\ndebug_role=Map a client certificate fingerprint to debugger capabilities\n",
+            "about=Run the daemon hosting the API (21)\nusage=Usage: crucible serve [OPTIONS] --listen <addr>\nlisten=Address to bind the API (21) on. Required\nmax_sessions=Concurrency cap on live sessions\nproduction_qemu=Host sessions with the packaged production QEMU lifecycle\nqemu_rendezvous_ticks=Cap production-QEMU RUNs at this exact simulation-tick interval\nqemu_quantum_budget=Limit the number of scheduler quanta in a production-QEMU session\nread_only=Accept only read-only API calls (query/watch); no mutate\ntls_cert=Server certificate chain for authenticated remote access\ntls_key=Server private key for authenticated remote access\nclient_ca=CA certificate used to authenticate remote clients\ntrusted_unauthenticated_bind=Permit cleartext access on this explicitly trusted bind address\ndebug_role=Map a client certificate fingerprint to debugger capabilities\ncampaign_socket=Host the local CampaignService on this managed Unix socket\ncampaign_state=Retain local campaign objects and refs below this existing directory\ncampaign_policy=Load the strict local campaign peer policy from this file\ncampaign_store=Load a strict composed campaign repository-store deployment\ncampaign_maintenance_interval_ms=Run bounded campaign-store maintenance at this fixed cadence\ncampaign_maintenance_write_back_transfers=Complete at most this many write-back transfers per maintenance pass\ncampaign_maintenance_s3_nodes=Visit at most this many S3 leaves per maintenance pass\ncampaign_maintenance_s3_uploads=Abort at most this many unfinished uploads per visited S3 leaf\ncampaign_component_authority=Load distinct planner/debugger component authority keys from this file\ncampaign_import_manifest=Import verified campaign creation artifacts before binding the socket\ncampaign_runtime=Attach the packaged planner and an authenticated local executor to a campaign\ncampaign_runtime_all=Attach every authenticated campaign in the bounded local catalog\ncampaign_executor_socket=Connect one attached campaign runtime to this owner-only Unix socket; repeat in runtime order unless a packaged pool shares one endpoint\ncampaign_packaged_executor=Start one scenario-catalogued packaged QEMU pool from this deployment file\ncampaign_socket_mode=Set the managed campaign socket's Unix permission bits in octal\n",
+        ),
+        (
+            "store",
+            &[][..],
+            "about=Inspect or maintain a configured content store\nusage=Usage: crucible store [OPTIONS] <COMMAND>\ncommand.status=Describe one exact admitted store graph without accessing object bytes\ncommand.ensure=Read and authenticate one complete object without repair or promotion\ncommand.verify=Authenticate every bounded physical placement in one stable generation\ncommand.gc=Plan, cancel, or apply stopped-owner campaign-store garbage collection\ncommand.transform=Plan or apply one exact physical storage transformation\ncommand.credentials=Reload and validate deployment credential capabilities\ncommand.cleanup=Reclaim unreachable incomplete physical material under a stopped owner\ncommand.repair=Repair one physical copy from an independently authenticated peer\n",
         ),
         (
             "debug",
@@ -1752,14 +1621,6 @@ pub(super) fn cli_parser_enforces_every_normatively_required_input() {
             "--until",
             "virtual-time",
         ],
-        vec!["crucible", "fork"],
-        vec![
-            "crucible",
-            "fork",
-            "blake3:missing",
-            "--until",
-            "virtual-time",
-        ],
         vec!["crucible", "search"],
         vec!["crucible", "fuzz"],
         vec!["crucible", "serve"],
@@ -1781,6 +1642,31 @@ pub(super) fn cli_parser_enforces_every_normatively_required_input() {
             "missing required input must be a usage error for {argv:?}"
         );
     }
+
+    assert!(
+        Cli::try_parse_from([
+            "crucible",
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "--campaign-socket",
+            "/tmp/campaign.sock",
+            "--campaign-state",
+            "/tmp/campaign-state",
+            "--campaign-policy",
+            "/tmp/campaign-policy",
+            "--campaign-component-authority",
+            "/tmp/component-authority",
+            "--campaign-runtime",
+            "attached",
+            "--campaign-executor-socket",
+            "/tmp/executor.sock",
+            "--campaign-packaged-executor",
+            "/tmp/executor.toml",
+        ])
+        .is_err(),
+        "packaged campaign execution must require the production QEMU backend"
+    );
 
     assert!(Cli::try_parse_from(["crucible", "verify", "--compare", "left", "right"]).is_ok());
     assert!(Cli::try_parse_from(["crucible", "fuzz", "family.toml"]).is_ok());
@@ -1836,15 +1722,6 @@ pub(super) fn cli_parser_enforces_normative_alternative_and_conflicting_inputs()
             "family.toml",
             "--family",
             "blake3:family",
-        ],
-        vec![
-            "crucible",
-            "fork",
-            "blake3:savepoint",
-            "--seed",
-            "1",
-            "--override",
-            "decision=value",
         ],
     ] {
         let error = match Cli::try_parse_from(argv.clone()) {
@@ -1944,6 +1821,65 @@ pub(super) fn cli_help_surface_rejects_unimplemented_future_flags() {
 }
 
 #[test]
+pub(super) fn trusted_serve_debugging_does_not_enable_campaign_worker_gdbstubs() {
+    let cli = Cli::parse_from([
+        "crucible",
+        "serve",
+        "--listen",
+        "127.0.0.1:0",
+        "--trusted-unauthenticated-bind",
+    ]);
+    let Commands::Serve(args) = &cli.command else {
+        panic!("expected serve command");
+    };
+    let authorization = debug_authorization_policy(args)
+        .unwrap_or_else(|error| panic!("trusted serve authorization should parse: {error}"));
+    let campaign_config = crucible_api::ProductionVmLifecycleConfig::new(
+        "/aos/bin/qemu-system-x86_64",
+        "/aos/lib/crucible-plugin.so",
+        "/aos/kernel",
+        "/aos/root.raw",
+        "/run/crucible",
+    );
+    let session_config =
+        production_session_lifecycle_config(campaign_config.clone(), &authorization);
+
+    assert!(!campaign_config.debug_gdbstubs_enabled());
+    assert!(session_config.debug_gdbstubs_enabled());
+}
+
+#[test]
+pub(super) fn mtls_serve_without_debug_roles_omits_session_fingerprints() {
+    let cli = Cli::parse_from([
+        "crucible",
+        "serve",
+        "--listen",
+        "127.0.0.1:0",
+        "--tls-cert",
+        "/run/server.pem",
+        "--tls-key",
+        "/run/server-key.pem",
+        "--client-ca",
+        "/run/ca.pem",
+    ]);
+    let Commands::Serve(args) = &cli.command else {
+        panic!("expected serve command");
+    };
+    let authorization = debug_authorization_policy(args)
+        .unwrap_or_else(|error| panic!("mTLS serve authorization should parse: {error}"));
+    let campaign_config = crucible_api::ProductionVmLifecycleConfig::new(
+        "/aos/bin/qemu-system-x86_64",
+        "/aos/lib/crucible-plugin.so",
+        "/aos/kernel",
+        "/aos/root.raw",
+        "/run/crucible",
+    );
+
+    let session_config = production_session_lifecycle_config(campaign_config, &authorization);
+    assert!(!session_config.debug_gdbstubs_enabled());
+}
+
+#[test]
 pub(super) fn cli_serve_shutdown_and_bind_errors_follow_exit_contract() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -2014,6 +1950,767 @@ pub(super) fn cli_serve_shutdown_and_bind_errors_follow_exit_contract() {
 }
 
 #[test]
+pub(super) fn cli_serve_campaign_profile_is_exact_and_restart_safe() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::os::unix::net::UnixStream;
+
+    use crucible_campaign::{
+        CampaignClient, CampaignClientError, CampaignName, CampaignPrincipal,
+        CampaignServiceFailure, GetCampaignRequest,
+    };
+    use crucible_daemon::{LoopbackCampaignService, LoopbackCampaignTimeouts};
+
+    let directory = tempfile::tempdir().expect("campaign serve directory");
+    fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("secure campaign serve directory");
+    let metadata = fs::metadata(directory.path()).expect("campaign serve metadata");
+    let socket = directory.path().join("campaign.sock");
+    let state = directory.path().join("state");
+    fs::create_dir(&state).expect("campaign state directory");
+    fs::set_permissions(&state, std::fs::Permissions::from_mode(0o700))
+        .expect("secure campaign state");
+    let policy = directory.path().join("policy.toml");
+    fs::write(
+        &policy,
+        format!(
+            r#"schema = "crucible.campaign-local-policy"
+version = 1
+
+[[bindings]]
+user_id = {}
+group_id = {}
+principal = "operator"
+
+[[grants]]
+principal = "operator"
+operation = "get-campaign"
+campaign = "*"
+"#,
+            metadata.uid(),
+            metadata.gid()
+        ),
+    )
+    .expect("campaign policy");
+    fs::set_permissions(&policy, std::fs::Permissions::from_mode(0o600))
+        .expect("secure campaign policy");
+    let component_authority = directory.path().join("component-authorities.bin");
+    let mut component_authority_bytes = Vec::from(*b"CRUCCA01");
+    component_authority_bytes.extend_from_slice(&[0x31; 32]);
+    component_authority_bytes.extend_from_slice(&[0x73; 32]);
+    fs::write(&component_authority, component_authority_bytes)
+        .expect("campaign component authority");
+    fs::set_permissions(&component_authority, std::fs::Permissions::from_mode(0o600))
+        .expect("secure component authority");
+    let scenario = crucible::happy_path_scenario()
+        .expect("happy-path scenario")
+        .scenario;
+    let scenario_path = directory.path().join("scenario.bin");
+    fs::write(&scenario_path, scenario.to_compact_binary()).expect("campaign scenario import");
+    fs::set_permissions(&scenario_path, std::fs::Permissions::from_mode(0o600))
+        .expect("secure scenario import");
+    let schedule_path = directory.path().join("schedule.bin");
+    fs::write(
+        &schedule_path,
+        crucible::Schedule::empty().to_compact_binary(),
+    )
+    .expect("campaign schedule import");
+    fs::set_permissions(&schedule_path, std::fs::Permissions::from_mode(0o600))
+        .expect("secure schedule import");
+    let manifest = directory.path().join("campaign-import.toml");
+    fs::write(
+        &manifest,
+        format!(
+            r#"schema = "crucible.campaign-import"
+version = 1
+
+[[configuration]]
+scenario = {:?}
+schedule = {:?}
+"#,
+            scenario_path, schedule_path
+        ),
+    )
+    .expect("campaign import manifest");
+    fs::set_permissions(&manifest, std::fs::Permissions::from_mode(0o600))
+        .expect("secure import manifest");
+
+    let cli = Cli::parse_from([
+        "crucible",
+        "--quiet",
+        "serve",
+        "--listen",
+        "127.0.0.1:0",
+        "--trusted-unauthenticated-bind",
+        "--campaign-socket",
+        socket.to_str().expect("socket path"),
+        "--campaign-state",
+        state.to_str().expect("state path"),
+        "--campaign-policy",
+        policy.to_str().expect("policy path"),
+        "--campaign-component-authority",
+        component_authority
+            .to_str()
+            .expect("component authority path"),
+        "--campaign-import-manifest",
+        manifest.to_str().expect("manifest path"),
+    ]);
+    let Commands::Serve(args) = &cli.command else {
+        panic!("expected serve command");
+    };
+    assert_eq!(args.campaign_socket_mode, 0o600);
+    validate_serve_invocation(args).expect("valid campaign serve profile");
+    let request = GetCampaignRequest::new(
+        CampaignPrincipal::new("operator").expect("campaign principal"),
+        CampaignName::new("absent").expect("campaign name"),
+    )
+    .expect("campaign get request");
+    let campaign_socket = socket.clone();
+    let shutdown = async move {
+        let mut attempts = 0_u16;
+        let stream = loop {
+            match UnixStream::connect(&campaign_socket) {
+                Ok(stream) => break stream,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+                    ) =>
+                {
+                    attempts = attempts.saturating_add(1);
+                    if attempts == 1_000 {
+                        return Err(serve_error("campaign test connection timed out"));
+                    }
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+                Err(error) => {
+                    return Err(serve_error(format!(
+                        "campaign test connection error: {error}"
+                    )));
+                }
+            }
+        };
+        let service =
+            LoopbackCampaignService::with_timeouts(stream, LoopbackCampaignTimeouts::default())
+                .map_err(|error| serve_error(format!("campaign test client error: {error}")))?;
+        let client = CampaignClient::new(service);
+        assert!(matches!(
+            client.get_campaign(&request),
+            Err(CampaignClientError::Service(
+                CampaignServiceFailure::NotFound
+            ))
+        ));
+        Ok(())
+    };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("campaign serve runtime");
+    runtime
+        .block_on(run_serve_invocation_until_shutdown(&cli, args, shutdown))
+        .expect("campaign and lifecycle services stop together");
+    assert!(!socket.exists());
+    assert!(state.join("objects").is_dir());
+    assert!(state.join("refs").is_dir());
+
+    runtime
+        .block_on(run_serve_invocation_until_shutdown(&cli, args, async {
+            Ok(())
+        }))
+        .expect("campaign service restarts over durable state");
+    assert!(!socket.exists());
+
+    let mut invalid_authority_bytes = Vec::from(*b"CRUCCA01");
+    invalid_authority_bytes.extend_from_slice(&[0x31; 32]);
+    invalid_authority_bytes.extend_from_slice(&[0x31; 32]);
+    fs::write(&component_authority, invalid_authority_bytes).expect("replace component authority");
+    let error = match open_local_campaign_service(args, None, None, None) {
+        Ok(_) => panic!("equal component authorities must fail before bind"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, CliError::Serve(_)));
+    assert!(
+        error
+            .to_string()
+            .contains("component-authority file is invalid")
+    );
+    assert!(!socket.exists());
+}
+
+#[test]
+pub(super) fn cli_campaign_import_failure_precedes_socket_bind() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let directory = tempfile::tempdir().expect("campaign import directory");
+    fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+        .expect("secure campaign import directory");
+    let metadata = fs::metadata(directory.path()).expect("campaign import metadata");
+    let socket = directory.path().join("campaign.sock");
+    let state = directory.path().join("state");
+    fs::create_dir(&state).expect("campaign state directory");
+    fs::set_permissions(&state, std::fs::Permissions::from_mode(0o700))
+        .expect("secure campaign state");
+    let policy = directory.path().join("policy.toml");
+    fs::write(
+        &policy,
+        format!(
+            r#"schema = "crucible.campaign-local-policy"
+version = 1
+
+[[bindings]]
+user_id = {}
+group_id = {}
+principal = "operator"
+"#,
+            metadata.uid(),
+            metadata.gid()
+        ),
+    )
+    .expect("campaign policy");
+    fs::set_permissions(&policy, std::fs::Permissions::from_mode(0o600))
+        .expect("secure campaign policy");
+    let manifest = directory.path().join("campaign-import.toml");
+    fs::write(&manifest, b"schema = [").expect("malformed import manifest");
+    fs::set_permissions(&manifest, std::fs::Permissions::from_mode(0o600))
+        .expect("secure import manifest");
+
+    let cli = Cli::parse_from([
+        "crucible",
+        "serve",
+        "--listen",
+        "127.0.0.1:0",
+        "--trusted-unauthenticated-bind",
+        "--campaign-socket",
+        socket.to_str().expect("socket path"),
+        "--campaign-state",
+        state.to_str().expect("state path"),
+        "--campaign-policy",
+        policy.to_str().expect("policy path"),
+        "--campaign-import-manifest",
+        manifest.to_str().expect("manifest path"),
+    ]);
+    let Commands::Serve(args) = &cli.command else {
+        panic!("expected serve command");
+    };
+    let error = match open_local_campaign_service(args, None, None, None) {
+        Ok(_) => panic!("malformed campaign import must fail"),
+        Err(error) => error,
+    };
+    assert!(matches!(error, CliError::Serve(_)));
+    assert!(error.to_string().contains("campaign import error"));
+    assert!(!socket.exists());
+}
+
+#[test]
+pub(super) fn cli_serve_quantum_budget_requires_production_qemu_and_positive_limit() {
+    for arguments in [
+        ["--qemu-quantum-budget", "0", "--production-qemu"],
+        ["--qemu-quantum-budget", "250000", "--read-only"],
+    ] {
+        let mut argv = vec![
+            "crucible",
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "--trusted-unauthenticated-bind",
+        ];
+        argv.extend(arguments);
+        let cli = Cli::parse_from(argv);
+        let Commands::Serve(args) = &cli.command else {
+            panic!("expected serve command");
+        };
+        assert!(matches!(
+            validate_serve_invocation(args),
+            Err(CliError::Usage(_))
+        ));
+    }
+
+    let cli = Cli::parse_from([
+        "crucible",
+        "serve",
+        "--listen",
+        "127.0.0.1:0",
+        "--trusted-unauthenticated-bind",
+        "--production-qemu",
+        "--qemu-quantum-budget",
+        "250000",
+    ]);
+    let Commands::Serve(args) = &cli.command else {
+        panic!("expected serve command");
+    };
+    validate_serve_invocation(args).expect("positive production-QEMU budget");
+}
+
+#[test]
+pub(super) fn cli_serve_campaign_profile_rejects_partial_or_invalid_input() {
+    for argv in [
+        vec![
+            "crucible",
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "--campaign-socket",
+            "/tmp/campaign.sock",
+        ],
+        vec![
+            "crucible",
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "--campaign-socket",
+            "/tmp/campaign.sock",
+            "--campaign-state",
+            "/tmp/campaign-state",
+        ],
+    ] {
+        let cli = Cli::parse_from(argv);
+        let Commands::Serve(args) = &cli.command else {
+            panic!("expected serve command");
+        };
+        assert!(matches!(
+            validate_serve_invocation(args),
+            Err(CliError::Usage(_))
+        ));
+    }
+
+    let invalid_mode = Cli::parse_from([
+        "crucible",
+        "serve",
+        "--listen",
+        "127.0.0.1:0",
+        "--campaign-socket",
+        "/tmp/campaign.sock",
+        "--campaign-state",
+        "/tmp/campaign-state",
+        "--campaign-policy",
+        "/tmp/campaign-policy",
+        "--campaign-socket-mode",
+        "000",
+    ]);
+    let Commands::Serve(args) = &invalid_mode.command else {
+        panic!("expected serve command");
+    };
+    assert!(matches!(
+        validate_serve_invocation(args),
+        Err(CliError::Usage(_))
+    ));
+    assert!(
+        Cli::try_parse_from([
+            "crucible",
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "--campaign-socket",
+            "/tmp/campaign.sock",
+            "--campaign-state",
+            "/tmp/campaign-state",
+            "--campaign-policy",
+            "/tmp/campaign-policy",
+            "--campaign-socket-mode",
+            "888",
+        ])
+        .is_err()
+    );
+
+    let invalid_maintenance = Cli::parse_from([
+        "crucible",
+        "serve",
+        "--listen",
+        "127.0.0.1:0",
+        "--trusted-unauthenticated-bind",
+        "--campaign-socket",
+        "/tmp/campaign.sock",
+        "--campaign-state",
+        "/tmp/campaign-state",
+        "--campaign-policy",
+        "/tmp/campaign-policy",
+        "--campaign-store",
+        "/tmp/campaign-store.toml",
+        "--campaign-maintenance-interval-ms",
+        "99",
+    ]);
+    let Commands::Serve(args) = &invalid_maintenance.command else {
+        panic!("expected serve command");
+    };
+    let error = validate_serve_invocation(args)
+        .expect_err("maintenance bounds must fail before deployment file I/O");
+    assert!(matches!(error, CliError::Usage(_)));
+    assert!(error.to_string().contains("outside 100ms..=24h"));
+
+    let valid_maintenance = Cli::parse_from([
+        "crucible",
+        "serve",
+        "--listen",
+        "127.0.0.1:0",
+        "--trusted-unauthenticated-bind",
+        "--campaign-socket",
+        "/tmp/campaign.sock",
+        "--campaign-state",
+        "/tmp/campaign-state",
+        "--campaign-policy",
+        "/tmp/campaign-policy",
+        "--campaign-store",
+        "/tmp/campaign-store.toml",
+        "--campaign-maintenance-interval-ms",
+        "100",
+        "--campaign-maintenance-write-back-transfers",
+        "65536",
+        "--campaign-maintenance-s3-nodes",
+        "256",
+        "--campaign-maintenance-s3-uploads",
+        "1000",
+    ]);
+    let Commands::Serve(args) = &valid_maintenance.command else {
+        panic!("expected serve command");
+    };
+    validate_serve_invocation(args).expect("maximum maintenance bounds are valid");
+    assert!(
+        Cli::try_parse_from([
+            "crucible",
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "--campaign-maintenance-s3-uploads",
+            "1",
+        ])
+        .is_err(),
+        "maintenance bounds require an explicit cadence"
+    );
+    assert!(
+        Cli::try_parse_from([
+            "crucible",
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "--read-only",
+            "--campaign-store",
+            "/tmp/campaign-store.toml",
+            "--campaign-maintenance-interval-ms",
+            "100",
+        ])
+        .is_err(),
+        "read-only service cannot schedule physical mutations"
+    );
+    assert!(
+        Cli::try_parse_from([
+            "crucible",
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "--read-only",
+            "--campaign-socket",
+            "/tmp/campaign.sock",
+            "--campaign-state",
+            "/tmp/campaign-state",
+            "--campaign-policy",
+            "/tmp/campaign-policy",
+            "--campaign-import-manifest",
+            "/tmp/campaign-import.toml",
+        ])
+        .is_err()
+    );
+
+    for argv in [
+        vec![
+            "crucible",
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "--campaign-runtime",
+            "attached",
+        ],
+        vec![
+            "crucible",
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "--campaign-executor-socket",
+            "/tmp/executor.sock",
+        ],
+        vec![
+            "crucible",
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "--read-only",
+            "--campaign-runtime",
+            "attached",
+            "--campaign-executor-socket",
+            "/tmp/executor.sock",
+        ],
+    ] {
+        assert!(
+            Cli::try_parse_from(argv).is_err(),
+            "runtime attachment must require its complete writable profile"
+        );
+    }
+
+    let invalid_campaign = Cli::parse_from([
+        "crucible",
+        "serve",
+        "--listen",
+        "127.0.0.1:0",
+        "--campaign-socket",
+        "/tmp/campaign.sock",
+        "--campaign-state",
+        "/tmp/campaign-state",
+        "--campaign-policy",
+        "/tmp/campaign-policy",
+        "--campaign-component-authority",
+        "/tmp/component-authority",
+        "--campaign-runtime",
+        "bad:name",
+        "--campaign-executor-socket",
+        "/tmp/executor.sock",
+    ]);
+    let Commands::Serve(args) = &invalid_campaign.command else {
+        panic!("expected serve command");
+    };
+    assert!(matches!(
+        validate_serve_invocation(args),
+        Err(CliError::Usage(_))
+    ));
+
+    let multiple = Cli::parse_from([
+        "crucible",
+        "serve",
+        "--listen",
+        "127.0.0.1:0",
+        "--trusted-unauthenticated-bind",
+        "--campaign-socket",
+        "/tmp/campaign.sock",
+        "--campaign-state",
+        "/tmp/campaign-state",
+        "--campaign-policy",
+        "/tmp/campaign-policy",
+        "--campaign-component-authority",
+        "/tmp/component-authority",
+        "--campaign-runtime",
+        "alpha",
+        "--campaign-executor-socket",
+        "/tmp/executor-alpha.sock",
+        "--campaign-runtime",
+        "beta",
+        "--campaign-executor-socket",
+        "/tmp/executor-beta.sock",
+    ]);
+    let Commands::Serve(args) = &multiple.command else {
+        panic!("expected serve command");
+    };
+    assert_eq!(args.campaign_runtime, ["alpha", "beta"]);
+    assert_eq!(
+        args.campaign_executor_socket,
+        [
+            PathBuf::from("/tmp/executor-alpha.sock"),
+            PathBuf::from("/tmp/executor-beta.sock")
+        ]
+    );
+    validate_serve_invocation(args).expect("two unique runtime pairs are valid");
+
+    for invalid in [
+        [
+            "--campaign-runtime",
+            "alpha",
+            "--campaign-executor-socket",
+            "/tmp/executor-alpha.sock",
+            "--campaign-runtime",
+            "beta",
+        ]
+        .as_slice(),
+        [
+            "--campaign-runtime",
+            "alpha",
+            "--campaign-executor-socket",
+            "/tmp/executor-alpha.sock",
+            "--campaign-runtime",
+            "alpha",
+            "--campaign-executor-socket",
+            "/tmp/executor-beta.sock",
+        ]
+        .as_slice(),
+    ] {
+        let mut argv = vec![
+            "crucible",
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "--trusted-unauthenticated-bind",
+            "--campaign-socket",
+            "/tmp/campaign.sock",
+            "--campaign-state",
+            "/tmp/campaign-state",
+            "--campaign-policy",
+            "/tmp/campaign-policy",
+            "--campaign-component-authority",
+            "/tmp/component-authority",
+        ];
+        argv.extend_from_slice(invalid);
+        let cli = Cli::parse_from(argv);
+        let Commands::Serve(args) = &cli.command else {
+            panic!("expected serve command");
+        };
+        assert!(matches!(
+            validate_serve_invocation(args),
+            Err(CliError::Usage(_))
+        ));
+    }
+
+    let multiple_with_packaged_executor = Cli::parse_from([
+        "crucible",
+        "serve",
+        "--listen",
+        "127.0.0.1:0",
+        "--trusted-unauthenticated-bind",
+        "--production-qemu",
+        "--campaign-socket",
+        "/tmp/campaign.sock",
+        "--campaign-state",
+        "/tmp/campaign-state",
+        "--campaign-policy",
+        "/tmp/campaign-policy",
+        "--campaign-component-authority",
+        "/tmp/component-authority",
+        "--campaign-runtime",
+        "alpha",
+        "--campaign-executor-socket",
+        "/tmp/executor-alpha.sock",
+        "--campaign-runtime",
+        "beta",
+        "--campaign-executor-socket",
+        "/tmp/executor-beta.sock",
+        "--campaign-packaged-executor",
+        "/tmp/executor-deployment.toml",
+    ]);
+    let Commands::Serve(args) = &multiple_with_packaged_executor.command else {
+        panic!("expected serve command");
+    };
+    assert!(matches!(
+        validate_serve_invocation(args),
+        Err(CliError::Usage(_))
+    ));
+
+    let shared_packaged_executor = Cli::parse_from([
+        "crucible",
+        "serve",
+        "--listen",
+        "127.0.0.1:0",
+        "--trusted-unauthenticated-bind",
+        "--production-qemu",
+        "--campaign-socket",
+        "/tmp/campaign.sock",
+        "--campaign-state",
+        "/tmp/campaign-state",
+        "--campaign-policy",
+        "/tmp/campaign-policy",
+        "--campaign-component-authority",
+        "/tmp/component-authority",
+        "--campaign-runtime",
+        "beta",
+        "--campaign-executor-socket",
+        "/tmp/shared-executor.sock",
+        "--campaign-runtime",
+        "alpha",
+        "--campaign-executor-socket",
+        "/tmp/shared-executor.sock",
+        "--campaign-packaged-executor",
+        "/tmp/executor-deployment.toml",
+    ]);
+    let Commands::Serve(args) = &shared_packaged_executor.command else {
+        panic!("expected serve command");
+    };
+    validate_serve_invocation(args).expect("shared packaged executor invocation");
+
+    let discovered_packaged_executor = Cli::parse_from([
+        "crucible",
+        "serve",
+        "--listen",
+        "127.0.0.1:0",
+        "--trusted-unauthenticated-bind",
+        "--production-qemu",
+        "--campaign-socket",
+        "/tmp/campaign.sock",
+        "--campaign-state",
+        "/tmp/campaign-state",
+        "--campaign-policy",
+        "/tmp/campaign-policy",
+        "--campaign-component-authority",
+        "/tmp/component-authority",
+        "--campaign-runtime-all",
+        "--campaign-executor-socket",
+        "/tmp/shared-executor.sock",
+        "--campaign-packaged-executor",
+        "/tmp/executor-deployment.toml",
+    ]);
+    let Commands::Serve(args) = &discovered_packaged_executor.command else {
+        panic!("expected serve command");
+    };
+    assert!(args.campaign_runtime_all);
+    validate_serve_invocation(args).expect("automatic packaged runtime discovery");
+
+    assert!(
+        Cli::try_parse_from([
+            "crucible",
+            "serve",
+            "--listen",
+            "127.0.0.1:0",
+            "--production-qemu",
+            "--campaign-socket",
+            "/tmp/campaign.sock",
+            "--campaign-state",
+            "/tmp/campaign-state",
+            "--campaign-policy",
+            "/tmp/campaign-policy",
+            "--campaign-component-authority",
+            "/tmp/component-authority",
+            "--campaign-runtime-all",
+            "--campaign-runtime",
+            "alpha",
+            "--campaign-executor-socket",
+            "/tmp/shared-executor.sock",
+            "--campaign-packaged-executor",
+            "/tmp/executor-deployment.toml",
+        ])
+        .is_err()
+    );
+}
+
+#[test]
+pub(super) fn cli_campaign_executor_socket_requires_exact_owner_mode_and_identity() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    use std::os::unix::net::UnixListener;
+
+    let directory = tempfile::tempdir().expect("executor socket directory");
+    let socket = directory.path().join("executor.sock");
+    let listener = UnixListener::bind(&socket).expect("executor listener");
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o600))
+        .expect("owner-only executor socket");
+    let endpoint = campaign_executor_endpoint(&socket).expect("executor endpoint config");
+    let stream = endpoint.connect().expect("authenticated executor socket");
+    drop(stream);
+
+    fs::set_permissions(&socket, fs::Permissions::from_mode(0o660))
+        .expect("broaden executor socket mode");
+    let endpoint = campaign_executor_endpoint(&socket).expect("executor endpoint config");
+    assert!(endpoint.connect().is_err());
+    drop(listener);
+
+    let target = directory.path().join("target.sock");
+    let _target_listener = UnixListener::bind(&target).expect("target listener");
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o600))
+        .expect("owner-only target socket");
+    let redirected = directory.path().join("redirected.sock");
+    symlink(&target, &redirected).expect("executor socket symlink");
+    let endpoint = campaign_executor_endpoint(&redirected).expect("executor endpoint config");
+    assert!(endpoint.connect().is_err());
+
+    let regular = directory.path().join("not-a-socket");
+    fs::write(&regular, b"not a socket").expect("regular file");
+    fs::set_permissions(&regular, fs::Permissions::from_mode(0o600))
+        .expect("owner-only regular file");
+    let endpoint = campaign_executor_endpoint(&regular).expect("executor endpoint config");
+    assert!(endpoint.connect().is_err());
+}
+
+#[test]
 pub(super) fn cli_thin_wrapper_maps_every_subcommand_to_session_api_or_declared_driver() {
     let cases = [
         (
@@ -2040,10 +2737,6 @@ pub(super) fn cli_thin_wrapper_maps_every_subcommand_to_session_api_or_declared_
             vec!["crucible", "resume", "blake3:test-savepoint"],
         ),
         (
-            CliSubcommand::Fork,
-            vec!["crucible", "fork", "blake3:test-savepoint"],
-        ),
-        (
             CliSubcommand::Replay,
             vec!["crucible", "replay", "case.crucible"],
         ),
@@ -2053,11 +2746,21 @@ pub(super) fn cli_thin_wrapper_maps_every_subcommand_to_session_api_or_declared_
         ),
         (
             CliSubcommand::Fuzz,
-            vec!["crucible", "fuzz", "builtin:fault-campaign"],
+            vec!["crucible", "fuzz", crucible::FAULT_CAMPAIGN_FAMILY_NAME],
         ),
         (
             CliSubcommand::Triage,
-            vec!["crucible", "triage", "findings"],
+            vec![
+                "crucible",
+                "triage",
+                "--campaign-socket",
+                "/tmp/campaign.sock",
+                "--principal",
+                "operator",
+                "findings",
+                "--snapshot",
+                "snapshot-id",
+            ],
         ),
         (
             CliSubcommand::Debug,
@@ -2066,6 +2769,23 @@ pub(super) fn cli_thin_wrapper_maps_every_subcommand_to_session_api_or_declared_
         (
             CliSubcommand::Serve,
             vec!["crucible", "serve", "--listen", "127.0.0.1:9000"],
+        ),
+        (
+            CliSubcommand::Store,
+            vec![
+                "crucible",
+                "store",
+                "gc",
+                "--state",
+                "/var/lib/crucible/campaign",
+                "--policy",
+                "/etc/crucible/campaign-policy.toml",
+                "--store",
+                "/etc/crucible/campaign-store.toml",
+                "--journal",
+                "/var/lib/crucible-maintenance/gc",
+                "plan",
+            ],
         ),
         (
             CliSubcommand::Completions,
@@ -2087,7 +2807,6 @@ pub(super) fn cli_thin_wrapper_maps_every_subcommand_to_session_api_or_declared_
         assert!(!plan.owns_canonical_run_state);
         assert!(!plan.implements_scheduler);
         assert!(!plan.implements_checkpoint_materialization);
-        assert!(!plan.implements_fork_logic);
         assert!(plan.extra_control_capabilities.is_empty());
         assert!(
             plan.session_commands
@@ -2112,6 +2831,7 @@ pub(super) fn cli_thin_wrapper_maps_every_subcommand_to_session_api_or_declared_
 
     assert_eq!(observed.len(), 13);
     assert!(observed.contains(&CliSubcommand::Run));
+    assert!(observed.contains(&CliSubcommand::Store));
     assert!(observed.contains(&CliSubcommand::Completions));
 }
 
@@ -2175,10 +2895,6 @@ pub(super) fn cli_thin_wrapper_rejects_canonical_state_or_extra_control_capabili
     let mut materializes = base.clone();
     materializes.implements_checkpoint_materialization = true;
     assert!(!materializes.proves_t_cli_2());
-
-    let mut forks = base.clone();
-    forks.implements_fork_logic = true;
-    assert!(!forks.proves_t_cli_2());
 
     let mut extra_control = base;
     extra_control
@@ -2390,7 +3106,7 @@ pub(super) fn cli_hermetic_qemu_discovery_fails_absent_or_mismatched_artifacts_w
         temp.path()
             .join("shmem-mismatch")
             .join("qemu-build-identity.env"),
-        "qemu_plugins_enabled=true\nqemu_crucible_patches_applied=true\nqemu_sim_capability=qemu-crucible\nqemu_patch_series_hash=sha256-test-qemu-patch-series\nqemu_shmem_abi_version=999\nqemu_shmem_abi=crucible-shmem-abi-v999\nqemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\nqemu_shmem_header_hash=sha256-test-shmem-header\nqemu_build_id=qemu-build-c\n",
+        "qemu_plugins_enabled=true\nqemu_crucible_atomic_patch_applied=true\nqemu_sim_capability=qemu-crucible\nqemu_atomic_patch_hash=sha256-test-qemu-atomic-patch\nqemu_shmem_abi_version=999\nqemu_shmem_abi=crucible-shmem-abi-v999\nqemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\nqemu_shmem_header_hash=sha256-test-shmem-header\nqemu_build_id=qemu-build-c\n",
     )?;
     let mismatch_cli = Cli::parse_from([
         "crucible",
@@ -2424,7 +3140,7 @@ pub(super) fn cli_hermetic_qemu_discovery_fails_absent_or_mismatched_artifacts_w
         temp.path()
             .join("shmem-version-mismatch")
             .join("qemu-build-identity.env"),
-        "qemu_plugins_enabled=true\nqemu_crucible_patches_applied=true\nqemu_sim_capability=qemu-crucible\nqemu_patch_series_hash=sha256-test-qemu-patch-series\nqemu_shmem_abi_version=999\nqemu_shmem_abi=crucible-shmem-abi-v1\nqemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\nqemu_shmem_header_hash=sha256-test-shmem-header\nqemu_build_id=qemu-build-d\n",
+        "qemu_plugins_enabled=true\nqemu_crucible_atomic_patch_applied=true\nqemu_sim_capability=qemu-crucible\nqemu_atomic_patch_hash=sha256-test-qemu-atomic-patch\nqemu_shmem_abi_version=999\nqemu_shmem_abi=crucible-shmem-abi-v998\nqemu_shmem_header=include/aos/crucible/crucible_shmem_abi.h\nqemu_shmem_header_hash=sha256-test-shmem-header\nqemu_build_id=qemu-build-d\n",
     )?;
     let mismatch_cli = Cli::parse_from([
         "crucible",
@@ -2522,8 +3238,8 @@ pub(super) fn cli_hermetic_qemu_discovery_pins_identity_into_failure_artifacts()
         content_address_bytes(b"artifact-qemu-build")
     );
     assert_eq!(
-        artifact.identity.qemu_patch_series_hash,
-        "sha256-test-qemu-patch-series"
+        artifact.identity.qemu_atomic_patch_hash,
+        "sha256-test-qemu-atomic-patch"
     );
     assert_eq!(
         artifact.identity.shmem_abi_version,
@@ -2620,7 +3336,7 @@ pub(super) fn cli_save_workflow_plans_quiescence_and_virtual_time_savepoints()
     let property = Cli::parse_from([
         String::from("crucible"),
         String::from("save"),
-        String::from("builtin:fault-campaign"),
+        format!("builtin:{}", crucible::PARTITION_RECOVERY_SCENARIO_NAME),
         String::from("--at"),
         String::from("property"),
         String::from("--property"),
@@ -2645,7 +3361,7 @@ pub(super) fn cli_save_workflow_plans_quiescence_and_virtual_time_savepoints()
     let marker = Cli::parse_from([
         String::from("crucible"),
         String::from("save"),
-        String::from("builtin:fault-campaign"),
+        format!("builtin:{}", crucible::PARTITION_RECOVERY_SCENARIO_NAME),
         String::from("--at"),
         String::from("marker"),
         String::from("--marker"),

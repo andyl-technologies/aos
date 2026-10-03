@@ -20,20 +20,19 @@ fn debug_cli_surface_contract_covers_t_dbg_8_policy() {
     assert!(contract.interactive_verbs.contains(&"reverse-continue"));
     assert!(!contract.cli_holds_debug_state);
     assert!(contract.delegates_to_session_commands);
-    assert!(contract.delegates_to_gdbstub_proxy);
+    assert!(contract.delegates_to_debug_gateway);
     assert!(
         contract
             .symbol_resolution
             .proves_no_crucible_symbol_server()
     );
     assert!(contract.multi_vcpu.proves_multi_vcpu_coherence());
-    assert!(contract.gdbstub_step.proves_s14_fallback());
     assert!(contract.read_mutate_boundary.proves_read_mutate_boundary());
     assert!(contract.reverse_latency.proves_reverse_latency_policy());
 }
 
 #[test]
-fn debug_cli_surface_contract_rejects_symbol_server_or_raw_gdb_step() {
+fn debug_cli_surface_contract_rejects_symbol_server() {
     let mut with_symbol_server = DebugCliSurfaceContract::rfc0010();
     with_symbol_server.symbol_resolution.crucible_symbol_server = true;
     assert!(
@@ -42,11 +41,4 @@ fn debug_cli_surface_contract_rejects_symbol_server_or_raw_gdb_step() {
             .proves_no_crucible_symbol_server()
     );
     assert!(!with_symbol_server.proves_t_dbg_8());
-
-    let mut with_raw_gdb_step = DebugCliSurfaceContract::rfc0010();
-    with_raw_gdb_step
-        .gdbstub_step
-        .raw_gdb_single_step_disabled_until_green = false;
-    assert!(!with_raw_gdb_step.gdbstub_step.proves_s14_fallback());
-    assert!(!with_raw_gdb_step.proves_t_dbg_8());
 }

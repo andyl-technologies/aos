@@ -5,6 +5,79 @@ use super::*;
 #[path = "engine_state/guest_introspection.rs"]
 mod guest_introspection;
 
+struct RejectingGuestWriteGatewayLoop;
+
+impl QuantumLoop for RejectingGuestWriteGatewayLoop {
+    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        DebugGdbLoop.drive_quantum(request)
+    }
+
+    fn open_gdbstub(
+        &mut self,
+        node: NodeId,
+        listen: GdbListen,
+    ) -> Result<GdbAttachInfo, SchedulerError> {
+        DebugGdbLoop.open_gdbstub(node, listen)
+    }
+
+    fn authorize_noncanonical_guest_write(&mut self) -> Result<(), SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("injected private gateway unlock failure"),
+        })
+    }
+}
+
+#[test]
+fn failed_guest_write_unlock_leaves_a_paused_noncanonical_branch() {
+    let (_, _, configuration, graph) = debug_time_travel_fixture();
+    let mut engine = Engine::new(configuration.clone(), graph, RejectingGuestWriteGatewayLoop);
+    engine
+        .apply_command(SessionCommand::Start)
+        .expect("debug session start");
+    engine
+        .apply_command(SessionCommand::AttachGdb {
+            node: node_id("guest-a"),
+            listen: gdb_listen("127.0.0.1:9000"),
+            debug_genesis: None,
+            reply: CommandReply::discard(),
+        })
+        .expect("debugger attach");
+    let request = DebugNonCanonicalBranchRequest::new(
+        configuration.clone(),
+        engine.frontier(),
+        DebugNonCanonicalBranchTrigger::GuestRegisterWrite,
+    )
+    .with_action(DebugNonCanonicalBranchAction::guest_edit(
+        crucible::DebugGuestEdit::new(
+            node_id("guest-a"),
+            crucible::DebugGuestEditKind::RegisterWrite,
+            crucible::DebugCoordinate::configuration(configuration),
+            "rax",
+            vec![1],
+        ),
+    ));
+
+    let error = engine
+        .apply_command(SessionCommand::DebugForkNonCanonical {
+            request,
+            reply: CommandReply::discard(),
+        })
+        .expect_err("gateway unlock failure must fail closed");
+
+    assert!(
+        error
+            .to_string()
+            .contains("injected private gateway unlock failure")
+    );
+    assert_eq!(engine.graph.debug_non_canonical_branch_count(), 1);
+    assert_eq!(engine.event_log_len(), 1);
+    assert!(!engine.debug_branch_required());
+    assert!(matches!(
+        engine.snapshot().state,
+        EngineState::Paused { .. }
+    ));
+}
+
 #[test]
 fn step_modes_cover_forward_vocabulary_and_reverse_grains() {
     assert_eq!(
@@ -30,7 +103,7 @@ fn step_modes_cover_forward_vocabulary_and_reverse_grains() {
         ]
     );
     assert_eq!(
-        StepMode::Duration(SimDuration { nanos: 10 }).reverse_grain(),
+        StepMode::Duration(SimDuration { ticks: 10 }).reverse_grain(),
         None,
         "duration is a forward-only step bound until the debug model has a duration grain"
     );
@@ -50,7 +123,7 @@ fn step_modes_are_expressible_as_one_shot_breakpoints() {
                     at: VirtualTime { ticks },
                 },
             ) => {
-                assert_eq!(*ticks, start.ticks.saturating_add(duration.nanos));
+                assert_eq!(*ticks, start.ticks.saturating_add(duration.ticks));
             }
             (StepMode::Quantum, Condition::Named { name, nodes }) => {
                 assert_eq!(name, "session.step.quantum");
@@ -116,7 +189,7 @@ fn engine_step_modes_complete_from_quantum_outcomes() {
         ),
         (
             25,
-            StepMode::Duration(SimDuration { nanos: 2 }),
+            StepMode::Duration(SimDuration { ticks: 2 }),
             ScriptedStepLoop::default(),
         ),
     ];
@@ -142,6 +215,7 @@ fn duration_step_uses_global_frontier_instead_of_event_timestamp() {
         advanced_node: None,
         resolved_events: Vec::new(),
         decisions: Vec::new(),
+        discovered_choices: Vec::new(),
         event_log_entries: vec![event],
         event_log_segment_bytes: Vec::new(),
         event_log_segment_text: String::new(),
@@ -150,7 +224,7 @@ fn duration_step_uses_global_frontier_instead_of_event_timestamp() {
         scheduler_quiescence: None,
     };
     let step = ActiveStep::new(
-        StepMode::Duration(SimDuration { nanos: 8 }),
+        StepMode::Duration(SimDuration { ticks: 8 }),
         VirtualTime::default(),
     );
 
@@ -1429,11 +1503,12 @@ fn control_replay_artifact_rejects_final_snapshot_mismatch() {
     let mut artifact = interactive.control_replay_artifact(initial);
     artifact.final_snapshot.event_log_len += 1;
 
-    let error = match Engine::<ControlSensitiveLoop>::replay_control_replay_artifact(
-        &artifact,
+    let mut replay_engine = Engine::new(
+        artifact.initial_configuration.clone(),
         graph_with_baked_genesis(&scenario),
         ControlSensitiveLoop::default(),
-    ) {
+    );
+    let error = match replay_engine.replay_control_replay_artifact(&artifact) {
         Ok(snapshot) => {
             panic!("final-snapshot-mismatched artifact should reject, got {snapshot:?}")
         }
@@ -1447,6 +1522,100 @@ fn control_replay_artifact_rejects_final_snapshot_mismatch() {
     assert_eq!(expected.quanta, actual.quanta);
     assert_eq!(expected.frontier, actual.frontier);
     assert_eq!(expected.configuration.id(), actual.configuration.id());
+}
+
+#[test]
+fn control_replay_reconstructs_every_step_mode_without_partial_dispatch() {
+    let scenario = generated_scenario(4_603);
+    let initial = Configuration::genesis(scenario.clone());
+    let graph = graph_with_baked_genesis(&scenario);
+
+    for mode in StepMode::ALL {
+        let mut producer = Engine::new(initial.clone(), graph.clone(), StubLoop);
+        if let Err(error) = producer.apply_command(SessionCommand::Start) {
+            panic!("{mode:?} replay producer should instantiate: {error}");
+        }
+        if let Err(error) = producer.apply_command(SessionCommand::Step { mode }) {
+            panic!("{mode:?} replay producer should accept the step: {error}");
+        }
+        let artifact = producer.control_replay_artifact(initial.clone());
+
+        let mut replay = Engine::new(initial.clone(), graph.clone(), StubLoop);
+        let snapshot = replay
+            .replay_control_replay_artifact(&artifact)
+            .unwrap_or_else(|error| panic!("{mode:?} control record should replay: {error}"));
+
+        assert_eq!(snapshot, artifact.final_snapshot);
+        assert_eq!(replay.boundary_control_log(), artifact.control_log);
+    }
+}
+
+#[tokio::test]
+async fn actor_control_replay_publishes_exact_logs_and_stays_terminal_observable() {
+    let scenario = generated_scenario(4_604);
+    let initial = Configuration::genesis(scenario.clone());
+    let mut producer = Engine::new(
+        initial.clone(),
+        graph_with_baked_genesis(&scenario),
+        ControlSensitiveLoop::default(),
+    );
+    if let Err(error) = producer.apply_command(SessionCommand::Start) {
+        panic!("interactive replay producer should instantiate: {error}");
+    }
+    if let Err(error) = producer.apply_command(SessionCommand::Continue) {
+        panic!("interactive replay producer should run: {error}");
+    }
+    if let Err(error) = producer.step_quantum() {
+        panic!("interactive replay producer should establish a boundary: {error}");
+    }
+    if let Err(error) = producer.apply_command(SessionCommand::Stop) {
+        panic!("interactive replay producer should stop: {error}");
+    }
+    let artifact = producer.control_replay_artifact(initial.clone());
+
+    let replay_engine = Engine::new(
+        initial,
+        graph_with_baked_genesis(&scenario),
+        ControlSensitiveLoop::default(),
+    );
+    let (sender, receiver) = mpsc::channel(4);
+    let actor = SessionActor::new(replay_engine, receiver)
+        .with_control_replay_artifact(&artifact)
+        .unwrap_or_else(|error| panic!("actor-owned replay should succeed: {error}"));
+    assert_eq!(
+        actor.event_log().len(),
+        u64::try_from(artifact.final_snapshot.event_log_len).unwrap_or(u64::MAX)
+    );
+    assert_eq!(actor.reproduction_log().snapshot(), artifact.control_log);
+
+    let actor_task = tokio::spawn(actor.run());
+    let (query_reply, query_receiver) = CommandReply::channel();
+    sender
+        .send(SessionCommand::Query {
+            kind: QueryKind::Snapshot,
+            reply: query_reply,
+        })
+        .await
+        .unwrap_or_else(|error| panic!("terminal snapshot query should enqueue: {error}"));
+    let QueryResult::Snapshot(snapshot) = receive_reply(query_receiver).await else {
+        panic!("terminal snapshot query returned an unexpected payload");
+    };
+    assert_eq!(*snapshot, artifact.final_snapshot);
+
+    let (stop_reply, stop_receiver) = CommandReply::channel();
+    sender
+        .send(SessionCommand::acknowledged(
+            SessionCommand::Stop,
+            stop_reply,
+        ))
+        .await
+        .unwrap_or_else(|error| panic!("terminal shutdown should enqueue: {error}"));
+    receive_reply(stop_receiver).await;
+    let report = actor_task
+        .await
+        .unwrap_or_else(|error| panic!("terminal replay actor should join: {error}"))
+        .unwrap_or_else(|error| panic!("terminal replay actor should exit cleanly: {error}"));
+    assert_eq!(report.final_snapshot, artifact.final_snapshot);
 }
 
 #[tokio::test]
@@ -2001,7 +2170,7 @@ async fn breakpoint_conditions_cover_after_and_timer_runtime_facts() {
                     event: EventId::from_name("breakpoint-timer-arm"),
                     at: VirtualTime { ticks: 1 },
                     path: Vec::new(),
-                    action: Action::arm_timer(timer.clone(), SimDuration { nanos: 1 }),
+                    action: Action::arm_timer(timer.clone(), SimDuration { ticks: 1 }),
                 }),
             ],
         ),
@@ -2011,7 +2180,7 @@ async fn breakpoint_conditions_cover_after_and_timer_runtime_facts() {
     }
 
     let after_breakpoint = BreakpointSpec {
-        predicate: Predicate::after(SimDuration { nanos: 1 }, after_event),
+        predicate: Predicate::after(SimDuration { ticks: 1 }, after_event),
         disposition: BreakpointDisposition::Trace,
         policy: BreakpointPolicy::OneShot,
     };

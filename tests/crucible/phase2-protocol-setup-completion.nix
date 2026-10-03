@@ -225,7 +225,7 @@
       }
       {
         label = "completion token returned before ready ack";
-        needle = "Ok(PluginSetupCompletion {\n        mapped_region,\n        validated_region,\n        wake_fd,\n        registered_wake_fd: None,\n    })";
+        needle = "Ok(PluginSetupCompletion {\n        mapped_region,\n        validated_region,\n        validated_layout,";
       }
       {
         label = "ready setup ack";

@@ -59,9 +59,9 @@ struct AssociationState {
     phase: AssociationPhase,
     current: Option<FaultObjectId>,
     pending: Option<FaultObjectId>,
-    pending_since_nanos: Option<u64>,
-    transfer_complete_nanos: Option<u64>,
-    next_scan_nanos: u64,
+    pending_since_ticks: Option<u64>,
+    transfer_complete_ticks: Option<u64>,
+    next_scan_ticks: u64,
     preserve_queued: bool,
     preserve_address: bool,
     transition_sequence: u64,
@@ -71,14 +71,14 @@ struct AssociationState {
 struct ControlPlaneContribution {
     service_curve: FaultObjectId,
     overflow_policy: FaultObjectId,
-    activation_nanos: u64,
+    activation_ticks: u64,
     segments: Vec<crucible::model::NetworkServiceSegment>,
     queue_bound: u64,
     overflow: crucible::model::NetworkPolicyOverflow,
     timeout_nanos: Option<u64>,
     typed_error: Option<FaultObjectId>,
     event_work_bits: u64,
-    service_cursor_nanos: u64,
+    service_cursor_ticks: u64,
     transition_sequence: u64,
 }
 
@@ -89,7 +89,7 @@ pub(super) struct QueuedNetworkControlEvent {
     pub(super) technology: FaultObjectId,
     pub(super) result_schema: FaultObjectId,
     pub(super) result_digest: ContentHash,
-    pub(super) release_nanos: u64,
+    pub(super) release_ticks: u64,
     pub(super) action: ResolvedBindingAction,
 }
 
@@ -106,7 +106,7 @@ struct ControlPlaneTargetState {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct ControlPlaneTimeout {
-    deadline_nanos: u64,
+    deadline_ticks: u64,
     action: ResolvedBindingAction,
 }
 
@@ -127,8 +127,14 @@ pub(super) struct ControlPlaneOutcome {
 impl ContactPlanState {
     fn carries_traffic(&self, now: u64) -> bool {
         self.intervals.iter().any(|interval| {
-            let open = interval.start_nanos.checked_add(interval.acquisition_nanos);
-            let teardown = interval.end_nanos.checked_sub(interval.teardown_nanos);
+            let open = interval
+                .acquisition_nanos
+                .checked_mul(crucible::model::SIM_TICKS_PER_NS)
+                .and_then(|duration| interval.start_ticks.checked_add(duration));
+            let teardown = interval
+                .teardown_nanos
+                .checked_mul(crucible::model::SIM_TICKS_PER_NS)
+                .and_then(|duration| interval.end_ticks.checked_sub(duration));
             open.is_some_and(|open| teardown.is_some_and(|teardown| open <= now && now < teardown))
         })
     }
@@ -138,10 +144,16 @@ impl ContactPlanState {
             .iter()
             .flat_map(|interval| {
                 [
-                    Some(interval.start_nanos),
-                    interval.start_nanos.checked_add(interval.acquisition_nanos),
-                    interval.end_nanos.checked_sub(interval.teardown_nanos),
-                    Some(interval.end_nanos),
+                    Some(interval.start_ticks),
+                    interval
+                        .acquisition_nanos
+                        .checked_mul(crucible::model::SIM_TICKS_PER_NS)
+                        .and_then(|duration| interval.start_ticks.checked_add(duration)),
+                    interval
+                        .teardown_nanos
+                        .checked_mul(crucible::model::SIM_TICKS_PER_NS)
+                        .and_then(|duration| interval.end_ticks.checked_sub(duration)),
+                    Some(interval.end_ticks),
                 ]
             })
             .flatten()
@@ -171,7 +183,7 @@ pub(super) struct BoundaryNetworkState {
 #[derive(Debug, Default)]
 pub(super) struct BoundaryNetworkApplication {
     /// Earliest adapter-owned timer coordinate.
-    pub(super) next_wakeup_nanos: Option<u64>,
+    pub(super) next_wakeup_ticks: Option<u64>,
     /// Targets whose queued frames must be discarded.
     pub(super) clear_queued_targets: BTreeSet<crucible::model::ResolvedFaultTarget>,
     /// Forwarders whose connection and protocol state must be discarded.
@@ -220,9 +232,11 @@ impl BoundaryNetworkState {
         now: u64,
         duration_nanos: u64,
     ) -> Result<u64, SchedulerError> {
-        let unavailable_until = now.checked_add(duration_nanos).ok_or_else(|| {
-            network_effect_application_error(action, "timed outage coordinate overflowed")
-        })?;
+        let unavailable_until = now
+            .checked_add(network_duration_ticks(duration_nanos)?)
+            .ok_or_else(|| {
+                network_effect_application_error(action, "timed outage coordinate overflowed")
+            })?;
         self.outages.insert(
             NetworkEffectStateKey::from_action(action),
             TimedOutage {
@@ -243,7 +257,7 @@ impl BoundaryNetworkState {
         downtime_nanos: u64,
     ) -> Result<u64, SchedulerError> {
         let unavailable_until = unavailable_from
-            .checked_add(downtime_nanos)
+            .checked_add(network_duration_ticks(downtime_nanos)?)
             .ok_or_else(|| SchedulerError::BoundaryViolation {
                 message: String::from("drained forwarder outage coordinate overflowed"),
             })?;
@@ -330,24 +344,24 @@ impl BoundaryNetworkState {
                 AssociationPhase::Searching => {
                     association.current.is_none()
                         && association.pending.is_none()
-                        && association.pending_since_nanos.is_none()
-                        && association.transfer_complete_nanos.is_none()
+                        && association.pending_since_ticks.is_none()
+                        && association.transfer_complete_ticks.is_none()
                 }
                 AssociationPhase::Candidate => {
                     association.pending.is_some()
-                        && association.pending_since_nanos.is_some()
-                        && association.transfer_complete_nanos.is_none()
+                        && association.pending_since_ticks.is_some()
+                        && association.transfer_complete_ticks.is_none()
                 }
                 AssociationPhase::Authenticating => {
                     association.pending.is_some()
-                        && association.pending_since_nanos.is_some()
-                        && association.transfer_complete_nanos.is_some()
+                        && association.pending_since_ticks.is_some()
+                        && association.transfer_complete_ticks.is_some()
                 }
                 AssociationPhase::Associated => {
                     association.current.is_some()
                         && association.pending.is_none()
-                        && association.pending_since_nanos.is_none()
-                        && association.transfer_complete_nanos.is_none()
+                        && association.pending_since_ticks.is_none()
+                        && association.transfer_complete_ticks.is_none()
                 }
             };
             if expected != actual
@@ -376,11 +390,11 @@ impl BoundaryNetworkState {
                     | crucible::model::ResolvedFaultTarget::NetworkAttachment { .. }
                     | crucible::model::ResolvedFaultTarget::NetworkContact { .. }
             ) || control.events.windows(2).any(|pair| {
-                (pair[0].release_nanos, pair[0].sequence)
-                    >= (pair[1].release_nanos, pair[1].sequence)
+                (pair[0].release_ticks, pair[0].sequence)
+                    >= (pair[1].release_ticks, pair[1].sequence)
             }) || control.overflow_timeouts.windows(2).any(|pair| {
-                (pair[0].deadline_nanos, pair[0].action.committed_state_id())
-                    >= (pair[1].deadline_nanos, pair[1].action.committed_state_id())
+                (pair[0].deadline_ticks, pair[0].action.committed_state_id())
+                    >= (pair[1].deadline_ticks, pair[1].action.committed_state_id())
             }) {
                 return Err(SchedulerError::BoundaryViolation {
                     message: String::from(
@@ -573,11 +587,11 @@ impl BoundaryNetworkState {
         };
         let control = self.control_planes.entry(target).or_default();
         let prior_cursor = control.contributions.get(&action.binding).map_or(
-            action.coordinate.virtual_nanos,
+            action.coordinate.virtual_ticks,
             |prior| {
                 prior
-                    .service_cursor_nanos
-                    .max(action.coordinate.virtual_nanos)
+                    .service_cursor_ticks
+                    .max(action.coordinate.virtual_ticks)
             },
         );
         let queue_bound = u64::from(queue_bound.get());
@@ -618,14 +632,14 @@ impl BoundaryNetworkState {
             ControlPlaneContribution {
                 service_curve: service_curve.clone(),
                 overflow_policy: overflow_policy.clone(),
-                activation_nanos: action.coordinate.virtual_nanos,
+                activation_ticks: action.coordinate.virtual_ticks,
                 segments: segments.as_slice().to_vec(),
                 queue_bound,
                 overflow: *disposition,
                 timeout_nanos: timeout_nanos.map(|timeout| timeout.get()),
                 typed_error: typed_error.clone(),
                 event_work_bits: event_work_bits.get(),
-                service_cursor_nanos: prior_cursor,
+                service_cursor_ticks: prior_cursor,
                 transition_sequence: action.transition_sequence,
             },
         );
@@ -726,12 +740,12 @@ impl BoundaryNetworkState {
                 }
                 crucible::model::NetworkPolicyOverflow::Timeout => {
                     let deadline = now
-                        .checked_add(timeout_nanos.ok_or_else(|| {
+                        .checked_add(network_duration_ticks(timeout_nanos.ok_or_else(|| {
                             network_effect_application_error(
                                 &action,
                                 "control timeout policy omitted its duration",
                             )
-                        })?)
+                        })?)?)
                         .ok_or_else(|| {
                             network_effect_application_error(
                                 &action,
@@ -739,41 +753,41 @@ impl BoundaryNetworkState {
                             )
                         })?;
                     control.overflow_timeouts.push(ControlPlaneTimeout {
-                        deadline_nanos: deadline,
+                        deadline_ticks: deadline,
                         action,
                     });
                     control.overflow_timeouts.sort_by(|left, right| {
-                        left.deadline_nanos
-                            .cmp(&right.deadline_nanos)
+                        left.deadline_ticks
+                            .cmp(&right.deadline_ticks)
                             .then_with(|| {
                                 left.action
                                     .committed_state_id()
                                     .cmp(&right.action.committed_state_id())
                             })
                     });
-                    application.next_wakeup_nanos =
-                        earliest_wakeup(application.next_wakeup_nanos, Some(deadline));
+                    application.next_wakeup_ticks =
+                        earliest_wakeup(application.next_wakeup_ticks, Some(deadline));
                     return Ok(true);
                 }
             }
         }
 
         let (operation, technology, result_schema, result_digest) = contract;
-        let mut release_nanos = now;
+        let mut release_ticks = now;
         for contribution in control.contributions.values_mut() {
-            let start = contribution.service_cursor_nanos.max(now);
+            let start = contribution.service_cursor_ticks.max(now);
             let finish = route::network_service_finish(
                 start,
                 contribution.event_work_bits,
                 None,
                 &[NetworkServiceCurveState {
-                    activation_nanos: contribution.activation_nanos,
+                    activation_ticks: contribution.activation_ticks,
                     segments: contribution.segments.clone(),
                 }],
                 &action,
             )?;
-            contribution.service_cursor_nanos = finish;
-            release_nanos = release_nanos.max(finish);
+            contribution.service_cursor_ticks = finish;
+            release_ticks = release_ticks.max(finish);
         }
         let sequence = control.next_sequence;
         control.next_sequence = control.next_sequence.checked_add(1).ok_or_else(|| {
@@ -785,17 +799,17 @@ impl BoundaryNetworkState {
             technology,
             result_schema,
             result_digest,
-            release_nanos,
+            release_ticks,
             action,
         });
         control.events.sort_by(|left, right| {
-            left.release_nanos
-                .cmp(&right.release_nanos)
+            left.release_ticks
+                .cmp(&right.release_ticks)
                 .then_with(|| left.sequence.cmp(&right.sequence))
         });
-        application.next_wakeup_nanos = earliest_wakeup(
-            application.next_wakeup_nanos,
-            (release_nanos > now).then_some(release_nanos),
+        application.next_wakeup_ticks = earliest_wakeup(
+            application.next_wakeup_ticks,
+            (release_ticks > now).then_some(release_ticks),
         );
         Ok(true)
     }
@@ -808,7 +822,7 @@ impl BoundaryNetworkState {
         for control in self.control_planes.values_mut() {
             let expired = control
                 .overflow_timeouts
-                .partition_point(|timeout| timeout.deadline_nanos <= now);
+                .partition_point(|timeout| timeout.deadline_ticks <= now);
             control.timed_out_events = control
                 .timed_out_events
                 .checked_add(u64::try_from(expired).map_err(|_error| {
@@ -830,7 +844,7 @@ impl BoundaryNetworkState {
                 }));
             let ready = control
                 .events
-                .partition_point(|event| event.release_nanos <= now);
+                .partition_point(|event| event.release_ticks <= now);
             application
                 .ready_control_events
                 .extend(control.events.drain(..ready));
@@ -846,8 +860,8 @@ impl BoundaryNetworkState {
         topology: &crucible::model::WorldFaultTopology,
     ) -> Result<BoundaryNetworkApplication, SchedulerError> {
         let mut application = BoundaryNetworkApplication::default();
-        self.expire(coordinate.virtual_nanos, &mut application);
-        self.drain_completed_control_work(coordinate.virtual_nanos, &mut application)?;
+        self.expire(coordinate.virtual_ticks, &mut application);
+        self.drain_completed_control_work(coordinate.virtual_ticks, &mut application)?;
         let actions = actions.into_iter().collect::<Vec<_>>();
         for action in &actions {
             if matches!(
@@ -873,7 +887,7 @@ impl BoundaryNetworkState {
                 && self.enqueue_control_event(
                     action.clone(),
                     topology,
-                    coordinate.virtual_nanos,
+                    coordinate.virtual_ticks,
                     &mut application,
                 )?
             {
@@ -907,23 +921,23 @@ impl BoundaryNetworkState {
                             network_effect_application_error(&action, "flap timeline overflowed")
                         })?;
                     let unavailable_until = coordinate
-                        .virtual_nanos
-                        .checked_add(duration)
+                        .virtual_ticks
+                        .checked_add(network_duration_ticks(duration)?)
                         .ok_or_else(|| {
                             network_effect_application_error(&action, "flap coordinate overflowed")
                         })?;
                     self.outages.insert(
                         key,
                         TimedOutage {
-                            unavailable_from: coordinate.virtual_nanos,
+                            unavailable_from: coordinate.virtual_ticks,
                             unavailable_until,
                             transition_sequence: action.transition_sequence,
                             queue_policy: crucible::model::NetworkStatePolicy::Preserve,
                             table_policy: crucible::model::NetworkStatePolicy::Preserve,
                         },
                     );
-                    application.next_wakeup_nanos =
-                        earliest_wakeup(application.next_wakeup_nanos, Some(unavailable_until));
+                    application.next_wakeup_ticks =
+                        earliest_wakeup(application.next_wakeup_ticks, Some(unavailable_until));
                 }
                 NetworkEffectSpecification::NegotiatedMode {
                     rate_bps,
@@ -933,14 +947,14 @@ impl BoundaryNetworkState {
                     training_nanos,
                 } => {
                     let usable_after = coordinate
-                        .virtual_nanos
-                        .checked_add(training_nanos.get())
+                        .virtual_ticks
+                        .checked_add(network_duration_ticks(training_nanos.get())?)
                         .ok_or_else(|| {
-                        network_effect_application_error(
-                            &action,
-                            "negotiation coordinate overflowed",
-                        )
-                    })?;
+                            network_effect_application_error(
+                                &action,
+                                "negotiation coordinate overflowed",
+                            )
+                        })?;
                     self.negotiated_modes.insert(
                         key,
                         NegotiatedModeState {
@@ -952,8 +966,8 @@ impl BoundaryNetworkState {
                             transition_sequence: action.transition_sequence,
                         },
                     );
-                    application.next_wakeup_nanos =
-                        earliest_wakeup(application.next_wakeup_nanos, Some(usable_after));
+                    application.next_wakeup_ticks =
+                        earliest_wakeup(application.next_wakeup_ticks, Some(usable_after));
                 }
                 NetworkEffectSpecification::ForwarderLifecycle {
                     downtime_nanos,
@@ -963,8 +977,8 @@ impl BoundaryNetworkState {
                 } => {
                     let queue_targets = forwarder_queue_targets(topology, &action)?;
                     let unavailable_until = coordinate
-                        .virtual_nanos
-                        .checked_add(downtime_nanos.get())
+                        .virtual_ticks
+                        .checked_add(network_duration_ticks(downtime_nanos.get())?)
                         .ok_or_else(|| {
                             network_effect_application_error(
                                 &action,
@@ -974,7 +988,7 @@ impl BoundaryNetworkState {
                     self.outages.insert(
                         key,
                         TimedOutage {
-                            unavailable_from: coordinate.virtual_nanos,
+                            unavailable_from: coordinate.virtual_ticks,
                             unavailable_until,
                             transition_sequence: action.transition_sequence,
                             queue_policy: *queue_policy,
@@ -999,8 +1013,8 @@ impl BoundaryNetworkState {
                             .clear_table_targets
                             .insert(action.target.clone());
                     }
-                    application.next_wakeup_nanos =
-                        earliest_wakeup(application.next_wakeup_nanos, Some(unavailable_until));
+                    application.next_wakeup_ticks =
+                        earliest_wakeup(application.next_wakeup_ticks, Some(unavailable_until));
                 }
                 NetworkEffectSpecification::RouteTransition {
                     old_route,
@@ -1011,14 +1025,14 @@ impl BoundaryNetworkState {
                     let convergence_nanos =
                         maximum_state_machine_delay(topology, convergence_events, &action)?;
                     let converged_after = coordinate
-                        .virtual_nanos
-                        .checked_add(convergence_nanos)
+                        .virtual_ticks
+                        .checked_add(network_duration_ticks(convergence_nanos)?)
                         .ok_or_else(|| {
-                        network_effect_application_error(
-                            &action,
-                            "route convergence coordinate overflowed",
-                        )
-                    })?;
+                            network_effect_application_error(
+                                &action,
+                                "route convergence coordinate overflowed",
+                            )
+                        })?;
                     self.route_transitions.insert(
                         key,
                         RouteTransitionState {
@@ -1036,8 +1050,8 @@ impl BoundaryNetworkState {
                             old_route: old_route.clone(),
                             policy: *in_flight_policy,
                         });
-                    application.next_wakeup_nanos =
-                        earliest_wakeup(application.next_wakeup_nanos, Some(converged_after));
+                    application.next_wakeup_ticks =
+                        earliest_wakeup(application.next_wakeup_ticks, Some(converged_after));
                 }
                 NetworkEffectSpecification::Association { policy } => {
                     let declaration =
@@ -1087,13 +1101,13 @@ impl BoundaryNetworkState {
                                 .map_or(AssociationPhase::Searching, |state| state.phase),
                             current: prior.as_ref().and_then(|state| state.current.clone()),
                             pending: prior.as_ref().and_then(|state| state.pending.clone()),
-                            pending_since_nanos: prior
+                            pending_since_ticks: prior
                                 .as_ref()
-                                .and_then(|state| state.pending_since_nanos),
-                            transfer_complete_nanos: prior
+                                .and_then(|state| state.pending_since_ticks),
+                            transfer_complete_ticks: prior
                                 .as_ref()
-                                .and_then(|state| state.transfer_complete_nanos),
-                            next_scan_nanos: coordinate.virtual_nanos,
+                                .and_then(|state| state.transfer_complete_ticks),
+                            next_scan_ticks: coordinate.virtual_ticks,
                             preserve_queued: policy_fields.preserve_queued,
                             preserve_address: policy_fields.preserve_address,
                             transition_sequence: action.transition_sequence,
@@ -1120,9 +1134,9 @@ impl BoundaryNetworkState {
                         intervals: intervals.clone(),
                         transition_sequence: action.transition_sequence,
                     };
-                    application.next_wakeup_nanos = earliest_wakeup(
-                        application.next_wakeup_nanos,
-                        state.next_boundary(coordinate.virtual_nanos),
+                    application.next_wakeup_ticks = earliest_wakeup(
+                        application.next_wakeup_ticks,
+                        state.next_boundary(coordinate.virtual_ticks),
                     );
                     self.contact_plans.insert(key, state);
                 }
@@ -1159,21 +1173,21 @@ impl BoundaryNetworkState {
             }
         }
         for control in self.control_planes.values() {
-            application.next_wakeup_nanos = earliest_wakeup(
-                application.next_wakeup_nanos,
-                control.events.first().map(|event| event.release_nanos),
+            application.next_wakeup_ticks = earliest_wakeup(
+                application.next_wakeup_ticks,
+                control.events.first().map(|event| event.release_ticks),
             );
-            application.next_wakeup_nanos = earliest_wakeup(
-                application.next_wakeup_nanos,
+            application.next_wakeup_ticks = earliest_wakeup(
+                application.next_wakeup_ticks,
                 control
                     .overflow_timeouts
                     .first()
-                    .map(|timeout| timeout.deadline_nanos),
+                    .map(|timeout| timeout.deadline_ticks),
             );
         }
         application.ready_control_events.sort_by(|left, right| {
-            left.release_nanos
-                .cmp(&right.release_nanos)
+            left.release_ticks
+                .cmp(&right.release_ticks)
                 .then_with(|| left.sequence.cmp(&right.sequence))
                 .then_with(|| {
                     left.action
@@ -1181,10 +1195,10 @@ impl BoundaryNetworkState {
                         .cmp(&right.action.committed_state_id())
                 })
         });
-        self.advance_associations(coordinate.virtual_nanos, topology, &mut application)?;
-        application.next_wakeup_nanos = earliest_wakeup(
-            application.next_wakeup_nanos,
-            self.next_wakeup_nanos(coordinate.virtual_nanos),
+        self.advance_associations(coordinate.virtual_ticks, topology, &mut application)?;
+        application.next_wakeup_ticks = earliest_wakeup(
+            application.next_wakeup_ticks,
+            self.next_wakeup_ticks(coordinate.virtual_ticks),
         );
         self.validate_bounds()?;
         Ok(application)
@@ -1335,12 +1349,12 @@ impl BoundaryNetworkState {
             };
 
             if state
-                .transfer_complete_nanos
+                .transfer_complete_ticks
                 .is_some_and(|complete| now >= complete)
             {
                 state.current = state.pending.take();
-                state.pending_since_nanos = None;
-                state.transfer_complete_nanos = None;
+                state.pending_since_ticks = None;
+                state.transfer_complete_ticks = None;
                 state.phase = if state.current.is_some() {
                     AssociationPhase::Associated
                 } else {
@@ -1348,17 +1362,17 @@ impl BoundaryNetworkState {
                 };
             }
             if state.phase == AssociationPhase::Authenticating {
-                application.next_wakeup_nanos = earliest_wakeup(
-                    application.next_wakeup_nanos,
+                application.next_wakeup_ticks = earliest_wakeup(
+                    application.next_wakeup_ticks,
                     state
-                        .transfer_complete_nanos
+                        .transfer_complete_ticks
                         .filter(|complete| *complete > now),
                 );
                 continue;
             }
-            if now < state.next_scan_nanos {
-                application.next_wakeup_nanos =
-                    earliest_wakeup(application.next_wakeup_nanos, Some(state.next_scan_nanos));
+            if now < state.next_scan_ticks {
+                application.next_wakeup_ticks =
+                    earliest_wakeup(application.next_wakeup_ticks, Some(state.next_scan_ticks));
                 continue;
             }
 
@@ -1386,19 +1400,22 @@ impl BoundaryNetworkState {
                 let candidate = best.map(|(candidate, _score)| candidate);
                 if state.pending != candidate {
                     state.pending = candidate;
-                    state.pending_since_nanos = Some(now);
+                    state.pending_since_ticks = Some(now);
                     state.phase = AssociationPhase::Candidate;
                 }
+                let residence_duration = network_duration_ticks(policy.time_to_trigger_nanos)?;
                 let residence_complete = state
-                    .pending_since_nanos
-                    .and_then(|since| since.checked_add(policy.time_to_trigger_nanos))
+                    .pending_since_ticks
+                    .and_then(|since| since.checked_add(residence_duration))
                     .ok_or_else(|| SchedulerError::BoundaryViolation {
                         message: String::from("association residence coordinate overflowed"),
                     })?;
                 if now >= residence_complete {
+                    let authentication = network_duration_ticks(policy.authentication_nanos)?;
+                    let interruption = network_duration_ticks(policy.interruption_nanos)?;
                     let transfer_complete = now
-                        .checked_add(policy.authentication_nanos)
-                        .and_then(|value| value.checked_add(policy.interruption_nanos))
+                        .checked_add(authentication)
+                        .and_then(|value| value.checked_add(interruption))
                         .ok_or_else(|| SchedulerError::BoundaryViolation {
                             message: String::from("association transfer coordinate overflowed"),
                         })?;
@@ -1412,22 +1429,22 @@ impl BoundaryNetworkState {
                     }
                     if transfer_complete == now {
                         state.current = state.pending.take();
-                        state.pending_since_nanos = None;
-                        state.transfer_complete_nanos = None;
+                        state.pending_since_ticks = None;
+                        state.transfer_complete_ticks = None;
                         state.phase = AssociationPhase::Associated;
                     } else {
                         state.phase = AssociationPhase::Authenticating;
-                        state.transfer_complete_nanos = Some(transfer_complete);
-                        application.next_wakeup_nanos =
-                            earliest_wakeup(application.next_wakeup_nanos, Some(transfer_complete));
+                        state.transfer_complete_ticks = Some(transfer_complete);
+                        application.next_wakeup_ticks =
+                            earliest_wakeup(application.next_wakeup_ticks, Some(transfer_complete));
                     }
                 } else {
-                    application.next_wakeup_nanos =
-                        earliest_wakeup(application.next_wakeup_nanos, Some(residence_complete));
+                    application.next_wakeup_ticks =
+                        earliest_wakeup(application.next_wakeup_ticks, Some(residence_complete));
                 }
             } else {
                 state.pending = None;
-                state.pending_since_nanos = None;
+                state.pending_since_ticks = None;
                 state.phase = if state.current.is_some() {
                     AssociationPhase::Associated
                 } else {
@@ -1435,13 +1452,13 @@ impl BoundaryNetworkState {
                 };
             }
             if state.phase != AssociationPhase::Authenticating {
-                state.next_scan_nanos = now
-                    .checked_add(policy.scan_interval_nanos.get())
+                state.next_scan_ticks = now
+                    .checked_add(network_duration_ticks(policy.scan_interval_nanos.get())?)
                     .ok_or_else(|| SchedulerError::BoundaryViolation {
                         message: String::from("association scan coordinate overflowed"),
                     })?;
-                application.next_wakeup_nanos =
-                    earliest_wakeup(application.next_wakeup_nanos, Some(state.next_scan_nanos));
+                application.next_wakeup_ticks =
+                    earliest_wakeup(application.next_wakeup_ticks, Some(state.next_scan_ticks));
             }
         }
         Ok(())
@@ -1490,8 +1507,8 @@ impl BoundaryNetworkState {
             material.extend_from_slice(&contact.transition_sequence.to_be_bytes());
             append_evidence_count(material, contact.intervals.len())?;
             for interval in &contact.intervals {
-                material.extend_from_slice(&interval.start_nanos.to_be_bytes());
-                material.extend_from_slice(&interval.end_nanos.to_be_bytes());
+                material.extend_from_slice(&interval.start_ticks.to_be_bytes());
+                material.extend_from_slice(&interval.end_ticks.to_be_bytes());
                 append_evidence_bytes(material, interval.source.as_str().as_bytes())?;
                 append_evidence_bytes(material, interval.destination.as_str().as_bytes())?;
                 append_evidence_bytes(material, interval.beam.as_str().as_bytes())?;
@@ -1519,17 +1536,17 @@ impl BoundaryNetworkState {
             append_optional_fault_object_id(material, association.pending.as_ref())?;
             material.extend_from_slice(
                 &association
-                    .pending_since_nanos
+                    .pending_since_ticks
                     .unwrap_or(u64::MAX)
                     .to_be_bytes(),
             );
             material.extend_from_slice(
                 &association
-                    .transfer_complete_nanos
+                    .transfer_complete_ticks
                     .unwrap_or(u64::MAX)
                     .to_be_bytes(),
             );
-            material.extend_from_slice(&association.next_scan_nanos.to_be_bytes());
+            material.extend_from_slice(&association.next_scan_ticks.to_be_bytes());
             material.push(u8::from(association.preserve_queued));
             material.push(u8::from(association.preserve_address));
             material.extend_from_slice(&association.transition_sequence.to_be_bytes());
@@ -1551,7 +1568,7 @@ impl BoundaryNetworkState {
                 append_evidence_bytes(material, binding.as_str().as_bytes())?;
                 append_evidence_bytes(material, contribution.service_curve.as_str().as_bytes())?;
                 append_evidence_bytes(material, contribution.overflow_policy.as_str().as_bytes())?;
-                material.extend_from_slice(&contribution.activation_nanos.to_be_bytes());
+                material.extend_from_slice(&contribution.activation_ticks.to_be_bytes());
                 material.extend_from_slice(&contribution.queue_bound.to_be_bytes());
                 material.push(control_overflow_tag(contribution.overflow));
                 material.extend_from_slice(
@@ -1559,7 +1576,7 @@ impl BoundaryNetworkState {
                 );
                 append_optional_fault_object_id(material, contribution.typed_error.as_ref())?;
                 material.extend_from_slice(&contribution.event_work_bits.to_be_bytes());
-                material.extend_from_slice(&contribution.service_cursor_nanos.to_be_bytes());
+                material.extend_from_slice(&contribution.service_cursor_ticks.to_be_bytes());
                 material.extend_from_slice(&contribution.transition_sequence.to_be_bytes());
                 append_evidence_count(material, contribution.segments.len())?;
                 for segment in &contribution.segments {
@@ -1573,7 +1590,7 @@ impl BoundaryNetworkState {
             }
             append_evidence_count(material, control.overflow_timeouts.len())?;
             for timeout in &control.overflow_timeouts {
-                material.extend_from_slice(&timeout.deadline_nanos.to_be_bytes());
+                material.extend_from_slice(&timeout.deadline_ticks.to_be_bytes());
                 let encoded = serde_json::to_vec(&timeout.action).map_err(|error| {
                     SchedulerError::BoundaryViolation {
                         message: format!("encode control timeout evidence: {error}"),
@@ -1595,7 +1612,7 @@ impl BoundaryNetworkState {
         });
     }
 
-    pub(super) fn next_wakeup_nanos(&self, now: u64) -> Option<u64> {
+    pub(super) fn next_wakeup_ticks(&self, now: u64) -> Option<u64> {
         self.outages
             .values()
             .flat_map(|outage| [outage.unavailable_from, outage.unavailable_until])
@@ -1614,19 +1631,19 @@ impl BoundaryNetworkState {
             .chain(self.associations.values().flat_map(|association| {
                 [
                     (association.phase != AssociationPhase::Authenticating)
-                        .then_some(association.next_scan_nanos),
-                    association.transfer_complete_nanos,
+                        .then_some(association.next_scan_ticks),
+                    association.transfer_complete_ticks,
                 ]
                 .into_iter()
                 .flatten()
             }))
             .chain(self.control_planes.values().flat_map(|control| {
                 [
-                    control.events.first().map(|event| event.release_nanos),
+                    control.events.first().map(|event| event.release_ticks),
                     control
                         .overflow_timeouts
                         .first()
-                        .map(|timeout| timeout.deadline_nanos),
+                        .map(|timeout| timeout.deadline_ticks),
                 ]
                 .into_iter()
                 .flatten()

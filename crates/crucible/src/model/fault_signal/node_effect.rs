@@ -846,8 +846,8 @@ pub enum NodeEffectSpecification {
     },
     /// Memory latency and service constraints.
     MemoryService {
-        /// Added access latency.
-        latency_nanos: u64,
+        /// Added access latency in exact virtual picoseconds.
+        latency_picoseconds: u64,
         /// Optional positive byte rate.
         bandwidth_bytes_per_second: Option<PositiveU64>,
         /// Optional positive operation service rate.
@@ -1245,11 +1245,15 @@ impl NodeEffectSpecification {
                 ..
             } if !hex_has_nonzero(flip_mask) => Err(invalid()),
             Self::MemoryService {
-                latency_nanos: 0,
+                latency_picoseconds: 0,
                 bandwidth_bytes_per_second: None,
                 operations_per_second: None,
                 ..
             } => Err(invalid()),
+            Self::MemoryService {
+                latency_picoseconds,
+                ..
+            } if *latency_picoseconds > i64::MAX as u64 => Err(invalid()),
             Self::ClockTransform {
                 mutation: ClockMutation::Drift { ratio },
                 ..

@@ -1538,10 +1538,11 @@ in
           case "$1" in
             # These workloads deliberately cross the ordinary package sandbox
             # boundary: containerd owns namespaces/cgroups, EdgeCore manages
-            # edge workloads, and each k3s role owns a Kubernetes node. Keep
-            # this an exact list so a newly unconfined package still fails the
-            # aggregate security gate until its privilege model is reviewed.
-            aos-test-agent|containerd|edgecore|k3s-combined|k3s-control-plane|k3s-worker|kubelet)
+            # edge workloads, each k3s role owns a Kubernetes node, and the
+            # multi-user Nix daemon manages root-owned stores and build users.
+            # Keep this an exact list so a newly unconfined package still fails
+            # the aggregate security gate until its privilege model is reviewed.
+            aos-test-agent|containerd|edgecore|k3s-combined|k3s-control-plane|k3s-worker|kubelet|nix-daemon)
               return 0
               ;;
             *)

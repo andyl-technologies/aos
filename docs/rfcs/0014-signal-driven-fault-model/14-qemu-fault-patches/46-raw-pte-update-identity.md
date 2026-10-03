@@ -1,8 +1,8 @@
-# 0095 - Raw PTE update identity
+# Capability task 0095 — Raw PTE update identity
 
 ## Purpose
 
-Patch `0095` separates the transient value consumed by x86 page translation
+Capability task `0095` separates the transient value consumed by x86 page translation
 from the canonical backing value used for page-table accessed and dirty
 updates. A corrected-poison fault may alter software-visible PTE bits without
 changing RAM. Using that corrected word as the cmpxchg expectation against the
@@ -26,7 +26,7 @@ are identical and the operation is equivalent to the upstream update path.
 
 ## Files and license scope
 
-The patch modifies GPL-side `target/i386/tcg/system/excp_helper.c`. It changes
+The atomic patch modifies GPL-side `target/i386/tcg/system/excp_helper.c`. It changes
 no shared-memory or control wire format and adds no QEMU file.
 
 ## Required gates
@@ -34,8 +34,8 @@ no shared-memory or control wire format and adds no QEMU file.
 1. The live x86 corrected-poison page-table case must terminate and publish one
    corrected event instead of retrying the walk.
 2. The complete x86_64 and AArch64 memory-access matrices must remain green.
-3. Patch-prefix provenance, attribution, regeneration, drop-one, ABI, and
-   license-boundary gates must pass.
+3. Atomic-patch source attribution, regeneration, pristine-QEMU negative, ABI,
+   and license-boundary gates must pass.
 
 - **[MEM-PTE-RAW-1]** Accessed and dirty updates MUST compare against the raw
   backing PTE observed before transient fault transformation.

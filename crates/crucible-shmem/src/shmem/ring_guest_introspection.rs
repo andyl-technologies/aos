@@ -1,6 +1,6 @@
 //! Bidirectional guest-introspection shared-memory entries.
 //!
-//! ABI v6 appends two SPSC rings per VM: host-to-plugin requests followed by
+//! Each VM owns two SPSC rings: host-to-plugin requests followed by
 //! plugin-to-host responses. Each entry carries one complete bounded `CRGI`
 //! protocol record as owned bytes. Ring direction supplies producer ownership;
 //! no process-private object crosses the mapping.

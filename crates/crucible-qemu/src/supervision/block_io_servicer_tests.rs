@@ -26,22 +26,22 @@ fn checkpoint_fixture() -> (fs::File, u64, QemuLiveBlockIoServicer) {
 fn checkpoint_fixture_with_latency(
     latency: BlockLatency,
 ) -> (fs::File, u64, QemuLiveBlockIoServicer) {
-    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4, 0))
+    let allocation = RegionAllocation::new_model(RegionConfig::new(1, 4))
         .unwrap_or_else(|error| panic!("allocate test region: {error}"));
     let slot = allocation
         .node_slot(0)
         .unwrap_or_else(|| panic!("test region must contain slot zero"));
     let ceiling = authorize_advance_ceiling(0, 0, None)
         .unwrap_or_else(|error| panic!("authorize test boundary: {error}"));
-    slot.publish_scheduler_ceiling(ceiling)
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("publish test ceiling: {error}"));
-    slot.publish_reached_icount(0, 0)
+    slot.publish_reached_icount(0)
         .unwrap_or_else(|error| panic!("publish test boundary: {error}"));
     allocation
         .header()
         .request_pause([slot])
         .unwrap_or_else(|error| panic!("request test checkpoint pause: {error}"));
-    slot.publish_pause_quiesced(0, 0, 0)
+    slot.publish_pause_quiesced(0, 0)
         .unwrap_or_else(|error| panic!("publish test checkpoint pause: {error}"));
     let layout = allocation.layout();
     let bytes = allocation
@@ -67,7 +67,6 @@ fn checkpoint_fixture_with_latency(
     let servicer = QemuLiveBlockIoServicer::from_shmem_fd_with_base_and_latency(
         file.as_fd(),
         layout.region_size,
-        0,
         0,
         BaseImage::new(deterministic_base_image(4096)),
         latency,
@@ -133,35 +132,13 @@ fn latency_replacement_is_retained_in_exact_checkpoint_state() {
 }
 
 #[test]
-fn deterministic_diagnostics_ignore_host_poll_cadence() {
-    let first = BlockIoDiagnosticsSnapshot {
-        frames_processed: 1,
-        write_frames_processed: 1,
-        frames_delivered: 1,
-        service_calls: 17,
-        first_request_icount: Some(0),
-        first_completion_horizon: Some(1512),
-        last_current_icount: 12_000_000,
-        max_current_icount: 12_000_000,
-        last_device_io_active: false,
-        last_idle_wake_icount: 1,
-    };
-    let second = BlockIoDiagnosticsSnapshot {
-        service_calls: 29,
-        ..first
-    };
-
-    assert_ne!(first, second);
-    assert!(first.deterministic_observation_eq(&second));
-}
-
-#[test]
 fn terminal_slot_observation_replaces_pre_consumption_device_state() {
     let diagnostics = BlockIoDiagnostics::default();
     diagnostics.record(
         10,
         true,
         20,
+        2,
         &QemuLiveBlockIoServiceStep {
             processed: 1,
             write_frames_processed: 1,
@@ -172,7 +149,7 @@ fn terminal_slot_observation_replaces_pre_consumption_device_state() {
         },
     );
 
-    diagnostics.observe_slot(30, false, 30);
+    diagnostics.observe_slot(30, false, 30, 3);
 
     let snapshot = diagnostics.snapshot();
     assert_eq!(snapshot.service_calls, 1);
@@ -180,6 +157,8 @@ fn terminal_slot_observation_replaces_pre_consumption_device_state() {
     assert_eq!(snapshot.max_current_icount, 30);
     assert!(!snapshot.last_device_io_active);
     assert_eq!(snapshot.last_idle_wake_icount, 30);
+    assert_eq!(snapshot.last_control_boundary_ack, 3);
+    assert_eq!(snapshot.last_active_control_boundary_ack, Some(2));
 }
 
 #[cfg(unix)]
@@ -261,7 +240,7 @@ fn remote_write_publishes_destination_deadline_and_wake() {
 
     fn staged_persistence(
         source: &QemuSharedBlockDevice,
-        now_nanos: u64,
+        now_ticks: u64,
     ) -> ResolvedBlockRequestPersistenceDirective {
         let request = BlockRequest::write(31, 0, vec![0xa5; 512]);
         let mut device = source
@@ -274,20 +253,20 @@ fn remote_write_publishes_destination_deadline_and_wake() {
             .require_storage_execution_opportunities()
             .unwrap_or_else(|error| panic!("require source opportunities: {error}"));
         let mut admission = ResolvedBlockFaultDirective::fault_free(&request, 4096);
-        admission.execution_nanos = now_nanos;
-        admission.persistence_admitted_nanos = now_nanos;
+        admission.execution_ticks = now_ticks;
+        admission.persistence_admitted_ticks = now_ticks;
         device
             .install_storage_fault_directive(request.identity(), admission)
             .unwrap_or_else(|error| panic!("install admission: {error}"));
         device
-            .submit(now_nanos, &request)
+            .submit(now_ticks, &request)
             .unwrap_or_else(|error| panic!("submit source write: {error}"));
         let opportunity = device
-            .next_storage_execution_opportunity(now_nanos)
+            .next_storage_execution_opportunity(now_ticks)
             .unwrap_or_else(|| panic!("execution opportunity is present"));
         let mut execution = opportunity.admission.clone();
-        execution.execution_nanos = opportunity.ready_nanos;
-        execution.persistence_admitted_nanos = opportunity.ready_nanos;
+        execution.execution_ticks = opportunity.ready_ticks;
+        execution.persistence_admitted_ticks = opportunity.ready_ticks;
         device
             .install_storage_execution_directive(ResolvedBlockExecutionDirective {
                 opportunity,
@@ -295,10 +274,10 @@ fn remote_write_publishes_destination_deadline_and_wake() {
             })
             .unwrap_or_else(|error| panic!("install execution: {error}"));
         device
-            .advance_to(now_nanos)
+            .advance_to(now_ticks)
             .unwrap_or_else(|error| panic!("advance source: {error}"));
         let opportunity = device
-            .next_storage_request_persistence_opportunity(now_nanos)
+            .next_storage_request_persistence_opportunity(now_ticks)
             .unwrap_or_else(|| panic!("persistence opportunity is present"));
         let mut directive = opportunity.resolved.clone();
         directive.write_disposition =
@@ -337,8 +316,8 @@ fn remote_write_publishes_destination_deadline_and_wake() {
     destination
         .attach_notification_wake(Arc::clone(&wake))
         .unwrap_or_else(|error| panic!("attach destination wake: {error}"));
-    let now_nanos = 64;
-    let directive = staged_persistence(&source, now_nanos);
+    let now_ticks = 64;
+    let directive = staged_persistence(&source, now_ticks);
 
     let dependency = source
         .install_cross_device_misdirected_persistence(
@@ -361,8 +340,8 @@ fn remote_write_publishes_destination_deadline_and_wake() {
             .region
             .node_slot(0)
             .unwrap_or_else(|error| panic!("read destination slot: {error}"))
-            .device_completion_deadline_icount(),
-        now_nanos
+            .device_completion_deadline_tick(),
+        now_ticks
     );
     assert_eq!(
         wake.metadata()
@@ -381,7 +360,7 @@ fn remote_write_publishes_destination_deadline_and_wake() {
             .lock()
             .unwrap_or_else(|error| panic!("lock destination persistence: {error}"));
         let opportunity = destination_device
-            .next_storage_persistence_opportunity(now_nanos)
+            .next_storage_persistence_opportunity(now_ticks)
             .unwrap_or_else(|| panic!("destination persistence opportunity is present"));
         destination_device
             .install_storage_persistence_media_directive(ResolvedBlockPersistenceMediaDirective {
@@ -390,7 +369,7 @@ fn remote_write_publishes_destination_deadline_and_wake() {
             })
             .unwrap_or_else(|error| panic!("install destination persistence: {error}"));
         destination_device
-            .advance_to(now_nanos)
+            .advance_to(now_ticks)
             .unwrap_or_else(|error| panic!("advance destination persistence: {error}"));
     }
     assert!(
@@ -406,7 +385,7 @@ fn remote_write_publishes_destination_deadline_and_wake() {
 fn multi_device_write_commits_every_member_and_orders_dependencies() {
     fn staged_persistence(
         source: &QemuSharedBlockDevice,
-        now_nanos: u64,
+        now_ticks: u64,
     ) -> ResolvedBlockRequestPersistenceDirective {
         let request = BlockRequest::write(31, 0, vec![0xa5; 512]);
         let mut device = source
@@ -426,20 +405,20 @@ fn multi_device_write_commits_every_member_and_orders_dependencies() {
             .require_storage_execution_opportunities()
             .unwrap_or_else(|error| panic!("require source opportunities: {error}"));
         let mut admission = ResolvedBlockFaultDirective::fault_free(&request, 4096);
-        admission.execution_nanos = now_nanos;
-        admission.persistence_admitted_nanos = now_nanos;
+        admission.execution_ticks = now_ticks;
+        admission.persistence_admitted_ticks = now_ticks;
         device
             .install_storage_fault_directive(request.identity(), admission)
             .unwrap_or_else(|error| panic!("install admission: {error}"));
         device
-            .submit(now_nanos, &request)
+            .submit(now_ticks, &request)
             .unwrap_or_else(|error| panic!("submit source write: {error}"));
         let opportunity = device
-            .next_storage_execution_opportunity(now_nanos)
+            .next_storage_execution_opportunity(now_ticks)
             .unwrap_or_else(|| panic!("execution opportunity is present"));
         let mut execution = opportunity.admission.clone();
-        execution.execution_nanos = opportunity.ready_nanos;
-        execution.persistence_admitted_nanos = opportunity.ready_nanos;
+        execution.execution_ticks = opportunity.ready_ticks;
+        execution.persistence_admitted_ticks = opportunity.ready_ticks;
         device
             .install_storage_execution_directive(ResolvedBlockExecutionDirective {
                 opportunity,
@@ -447,10 +426,10 @@ fn multi_device_write_commits_every_member_and_orders_dependencies() {
             })
             .unwrap_or_else(|error| panic!("install execution: {error}"));
         device
-            .advance_to(now_nanos)
+            .advance_to(now_ticks)
             .unwrap_or_else(|error| panic!("advance source: {error}"));
         let opportunity = device
-            .next_storage_request_persistence_opportunity(now_nanos)
+            .next_storage_request_persistence_opportunity(now_ticks)
             .unwrap_or_else(|| panic!("persistence opportunity is present"));
         let mut directive = opportunity.resolved.clone();
         directive.write_disposition = BlockFaultWriteDisposition::Apply;
@@ -483,8 +462,8 @@ fn multi_device_write_commits_every_member_and_orders_dependencies() {
     second
         .attach_notification_wake(Arc::new(unlinked_wake_file()))
         .unwrap_or_else(|error| panic!("attach second wake: {error}"));
-    let now_nanos = 64;
-    let mut directive = staged_persistence(&source, now_nanos);
+    let now_ticks = 64;
+    let mut directive = staged_persistence(&source, now_ticks);
     directive.directive.write_disposition = BlockFaultWriteDisposition::Apply;
     let dependencies = source
         .install_multi_device_mutation(
@@ -523,5 +502,162 @@ fn multi_device_write_commits_every_member_and_orders_dependencies() {
             .inspect_storage_visible(512, 512)
             .unwrap_or_else(|error| panic!("inspect second member: {error}")),
         vec![0x5a; 512]
+    );
+}
+
+#[cfg(unix)]
+fn declared_world_binding(device: &str) -> super::super::QemuWorldIoBinding {
+    use crucible::{
+        ContentAddressedBlobRef, ContentHash, Icount, NodeId, NodeTemplate, ReadyPoint,
+        VmArchitecture, WhiteBoxPolicy, World, WorldBlockLatency, WorldIoCoreConfig, WorldIoNode,
+        WorldNode, WorldNodeDef,
+    };
+
+    let owner = NodeId { name: "vm".into() };
+    let mut definitions = vec![WorldNodeDef::Vm(WorldNode {
+        id: owner.clone(),
+        arch: VmArchitecture::X86_64,
+        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        cmdline: String::new(),
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 0 },
+        },
+        white_box: WhiteBoxPolicy::Disabled,
+        smp_vcpus: 1,
+        kernel: None,
+        root_image: None,
+        initrd: None,
+    })];
+    for name in ["disk-a", "disk-b"] {
+        definitions.push(WorldNodeDef::Io(WorldIoNode::block(
+            NodeId { name: name.into() },
+            owner.clone(),
+            WorldIoCoreConfig::new(),
+            ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(b"base image")),
+            4096,
+            WorldBlockLatency::new(0, 0, 0, 0, 0),
+        )));
+    }
+    let world = World::from_node_defs_and_links(definitions, Vec::new())
+        .unwrap_or_else(|error| panic!("configured World: {error}"));
+    super::super::QemuWorldIoBinding::from_world(
+        &world,
+        &NodeId {
+            name: device.into(),
+        },
+    )
+    .unwrap_or_else(|error| panic!("declared queue binding: {error}"))
+}
+
+#[cfg(unix)]
+#[test]
+fn world_bound_queue_retains_original_key_through_codec_restore_and_private_clone() {
+    // The mapped pause is modeled. This tests actual host queue/codec ownership,
+    // without claiming a native Source or permission to publish a guest reply.
+    let (file, bytes, unbound) = checkpoint_fixture();
+    drop(unbound);
+    let binding = declared_world_binding("disk-b");
+    let mut source = QemuLiveBlockIoServicer::from_shmem_fd_with_base_and_latency_and_binding(
+        file.as_fd(),
+        bytes,
+        0,
+        BaseImage::new(deterministic_base_image(4096)),
+        BlockLatency::default(),
+        binding.clone(),
+    )
+    .unwrap_or_else(|error| panic!("bound constructor: {error}"));
+    source
+        .device
+        .lock()
+        .unwrap_or_else(|error| panic!("device lock: {error}"))
+        .submit(0, &crucible_device::BlockRequest::read(7, 0, 8))
+        .unwrap_or_else(|error| panic!("actual request compute: {error}"));
+    let execution = ContentHash::from_bytes(b"paired host continuation");
+    let checkpoint = source
+        .checkpoint(execution)
+        .unwrap_or_else(|error| panic!("capture actual queue: {error}"));
+    assert_eq!(checkpoint.world_binding, Some(binding.clone()));
+    assert_eq!(checkpoint.device.core.inflight.len(), 1);
+    let original = checkpoint.device.core.inflight[0].key;
+    assert_eq!(original.src_node, binding.source_node());
+
+    let mut host = crate::QemuHostIoCheckpoint::without_devices(execution);
+    host.block = Some(checkpoint.clone());
+    let encoded = host
+        .to_canonical_bytes()
+        .unwrap_or_else(|error| panic!("encode bound host state: {error}"));
+    assert!(encoded.starts_with(b"crucible.qemu-host-io-checkpoint.v6\0"));
+    let decoded = crate::QemuHostIoCheckpoint::from_canonical_bytes(&encoded, execution)
+        .unwrap_or_else(|error| panic!("decode bound host state: {error}"));
+    assert_eq!(decoded, host);
+
+    let prefix = b"crucible.qemu-host-io-checkpoint.v6\0";
+    let mut bare: ciborium::Value = ciborium::de::from_reader(&encoded[prefix.len()..])
+        .unwrap_or_else(|error| panic!("inspect current wire: {error}"));
+    let ciborium::Value::Map(fields) = &mut bare else {
+        panic!("current host wire map");
+    };
+    let (_, ciborium::Value::Map(block)) = fields
+        .iter_mut()
+        .find(|(key, _)| key == &ciborium::Value::Text("block".into()))
+        .unwrap_or_else(|| panic!("serialized real block owner"))
+    else {
+        panic!("current block wire map");
+    };
+    block.retain(|(key, _)| key != &ciborium::Value::Text("world_binding".into()));
+    let mut omitted = prefix.to_vec();
+    ciborium::ser::into_writer(&bare, &mut omitted)
+        .unwrap_or_else(|error| panic!("encode missing binding fixture: {error}"));
+    assert!(crate::QemuHostIoCheckpoint::from_canonical_bytes(&omitted, execution).is_err());
+
+    for _ in 0..2 {
+        source
+            .restore_checkpoint(execution, &checkpoint)
+            .unwrap_or_else(|error| panic!("repeated exact restore: {error}"));
+        assert_eq!(
+            source
+                .checkpoint(execution)
+                .unwrap_or_else(|error| panic!("restored actual queue: {error}")),
+            checkpoint
+        );
+    }
+    let (branch_file, branch_bytes, empty_branch) = checkpoint_fixture();
+    drop(empty_branch);
+    let mut branch = source
+        .clone_hot_fork_continuation(branch_file.as_fd(), branch_bytes, execution)
+        .unwrap_or_else(|error| panic!("private host continuation: {error}"));
+    assert_eq!(
+        branch
+            .checkpoint(execution)
+            .unwrap_or_else(|error| panic!("private queue capture: {error}")),
+        checkpoint
+    );
+    assert_eq!(
+        source
+            .checkpoint(execution)
+            .unwrap_or_else(|error| panic!("unchanged original queue: {error}")),
+        checkpoint
+    );
+
+    let other = declared_world_binding("disk-a");
+    assert_ne!(other.source_node(), binding.source_node());
+    let mut wrong = QemuLiveBlockIoServicer::from_shmem_fd_with_base_and_latency_and_binding(
+        branch_file.as_fd(),
+        branch_bytes,
+        0,
+        BaseImage::new(deterministic_base_image(4096)),
+        BlockLatency::default(),
+        other,
+    )
+    .unwrap_or_else(|error| panic!("other actual queue: {error}"));
+    let before = wrong
+        .checkpoint(execution)
+        .unwrap_or_else(|error| panic!("other queue before refusal: {error}"));
+    assert!(wrong.restore_checkpoint(execution, &checkpoint).is_err());
+    assert_eq!(
+        wrong
+            .checkpoint(execution)
+            .unwrap_or_else(|error| panic!("other queue after refusal: {error}")),
+        before
     );
 }

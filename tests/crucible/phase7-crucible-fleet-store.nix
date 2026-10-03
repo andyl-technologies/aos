@@ -11,6 +11,15 @@
     + builtins.readFile ../../crates/crucible-cas/src/cas/tests.rs;
   fleetStoreProbe = builtins.readFile ../../crates/crucible-cas/src/bin/crucible-fleet-store.rs;
   fleetStorePackage = builtins.readFile ../../pkgs/tools/crucible-fleet-store.nix;
+  # Inspect the dependency list without pinning its other members or their order.
+  fleetStoreBuildDeps =
+    builtins.match
+    ".*buildDeps[[:space:]]*=[[:space:]]*[[]([^]]*)[]].*"
+    (lib.replaceStrings ["\n" "\t"] [" " " "] fleetStorePackage);
+  hasNativeGrepBuildDep =
+    if fleetStoreBuildDeps == null
+    then false
+    else hasInfix " buildPackages.grep " (" " + builtins.head fleetStoreBuildDeps + " ");
   rootDefault = builtins.readFile ../../default.nix;
   defaultChecks = builtins.readFile ./default.nix;
   gateCiWiring = builtins.readFile ./phase7-crucible-gate-ci-wiring.nix;
@@ -136,10 +145,6 @@
         needle = ''cargoTestFlags = "-p crucible-cas";'';
       }
       {
-        label = "explicit native AOS grep dependency";
-        needle = "[buildPackages.grep]";
-      }
-      {
         label = "source build marker";
         needle = "aos_from_source=true";
       }
@@ -152,6 +157,11 @@
         needle = "dce_task=T-DCE-1";
       }
     ]
+    ++ (
+      if hasNativeGrepBuildDep
+      then []
+      else ["pkgs/tools/crucible-fleet-store.nix: missing explicit native AOS grep build dependency"]
+    )
     ++ forbiddenFor "pkgs/tools/crucible-fleet-store.nix" fleetStorePackage [
       {
         label = "host tool pattern";

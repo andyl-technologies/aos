@@ -18,49 +18,26 @@ enum {
   S2_BLOCK_STRIDE = 131072
 };
 
-static inline void
-marker_block_begin(void)
-{
-  __asm__ __volatile__(
-      ".byte 0x0f, 0x1f, 0x84, 0x00\n\t"
-      ".long 0xc0100201\n\t"
-      :
-      :
-      : "memory");
-}
+#define S2_MARKER(function_name, attributes, value) \
+  static attributes void function_name(void)       \
+  {                                                \
+    __asm__ __volatile__(                          \
+        ".byte 0x0f, 0x1f, 0x84, 0x00\n\t"       \
+        ".long " #value "\n\t"                   \
+        :                                          \
+        :                                          \
+        : "memory");                               \
+  }
 
-static inline void
-marker_block_end(void)
-{
-  __asm__ __volatile__(
-      ".byte 0x0f, 0x1f, 0x84, 0x00\n\t"
-      ".long 0xc0100202\n\t"
-      :
-      :
-      : "memory");
-}
-
-static inline void
-marker_9p_begin(void)
-{
-  __asm__ __volatile__(
-      ".byte 0x0f, 0x1f, 0x84, 0x00\n\t"
-      ".long 0xc0100901\n\t"
-      :
-      :
-      : "memory");
-}
-
-static inline void
-marker_9p_end(void)
-{
-  __asm__ __volatile__(
-      ".byte 0x0f, 0x1f, 0x84, 0x00\n\t"
-      ".long 0xc0100902\n\t"
-      :
-      :
-      : "memory");
-}
+S2_MARKER(marker_observation_enable, __attribute__((noinline)), 0xc0100001)
+S2_MARKER(marker_block_begin, inline, 0xc0100201)
+S2_MARKER(marker_block_end, inline, 0xc0100202)
+S2_MARKER(marker_block_warmup_begin, inline, 0xc0100211)
+S2_MARKER(marker_block_warmup_end, inline, 0xc0100212)
+S2_MARKER(marker_9p_begin, inline, 0xc0100901)
+S2_MARKER(marker_9p_end, inline, 0xc0100902)
+S2_MARKER(marker_9p_warmup_begin, inline, 0xc0100911)
+S2_MARKER(marker_9p_warmup_end, inline, 0xc0100912)
 
 static int
 read_exact_at(int fd, void *buffer, size_t len, off_t offset)
@@ -178,6 +155,7 @@ run_block_reads(const char *device)
     return 1;
   }
 
+  marker_block_warmup_begin();
   for (int i = 0; i < S2_BLOCK_WARMUP; i++) {
     const off_t offset = (off_t)i * S2_BLOCK_STRIDE;
     memset(buffer, 0x3c, S2_READ_SIZE);
@@ -188,6 +166,7 @@ run_block_reads(const char *device)
       return 1;
     }
   }
+  marker_block_warmup_end();
 
   puts("CRUCIBLE_S2_BLOCK_DIRECT=1");
   for (int i = 0; i < S2_OPERATIONS; i++) {
@@ -224,6 +203,7 @@ run_9p_reads(const char *root)
   uint64_t checksum = 1469598103934665603ULL;
   char path[256];
 
+  marker_9p_warmup_begin();
   for (int i = 0; i < S2_9P_WARMUP; i++) {
     if (path_for_file(path, sizeof(path), root, "warmup", i) != 0) {
       return 1;
@@ -246,6 +226,7 @@ run_9p_reads(const char *root)
     }
     close(fd);
   }
+  marker_9p_warmup_end();
 
   for (int i = 0; i < S2_OPERATIONS; i++) {
     if (path_for_file(path, sizeof(path), root, "file", i) != 0) {
@@ -292,6 +273,10 @@ main(int argc, char **argv)
     fprintf(stderr, "usage: %s BLOCK_DEVICE [NINEP_ROOT]\n", argv[0]);
     return 1;
   }
+
+  /* Keep boot outside the measured plugin callbacks.  The noinline return
+   * also gives QEMU a control-flow boundary after the reset marker. */
+  marker_observation_enable();
 
   if (run_block_reads(argv[1]) != 0) {
     return 1;

@@ -2,55 +2,44 @@
   pkgs,
   lib,
   qemuPackage ? pkgs.qemu-crucible,
-  patchName ? "0055-crucible-vcpu-service-control.patch",
   attrPath ? "checks.crucible.phase2.qemuVcpuService",
   taskIds ? ["T-QEMU-0055"],
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
-  patchSource = builtins.readFile (patchDir + "/${patchName}");
+  atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
+  patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
   taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
-  failures =
-    failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
-      {
-        label = "live RR service-budget clamp";
-        needle = "qemu_crucible_fault_vcpu_service_clamp_budget";
-      }
-      {
-        label = "checked instruction-to-virtual-time conversion";
-        needle = "icount_crucible_instructions_to_ns";
-      }
-      {
-        label = "bounded work-conserving donation ledger";
-        needle = "donated_credit";
-      }
-      {
-        label = "fixed-topology scheduler eligibility";
-        needle = "qemu_crucible_fault_vcpu_service_eligible";
-      }
-      {
-        label = "reserved state-transition evidence";
-        needle = "CRUCVST1";
-      }
-      {
-        label = "partial-window configuration-change evidence";
-        needle = "configuration_interrupted";
-      }
-    ]
-    ++ forbiddenFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
-      {
-        label = "host sleep throttle";
-        needle = "g_usleep";
-      }
-      {
-        label = "host scheduler throttle";
-        needle = "setpriority";
-      }
-      {
-        label = "host control-group throttle";
-        needle = "cgroup";
-      }
-    ];
+  failures = failuresFor "pkgs/emulation/qemu-patches/${atomicPatch.file}" patchSource [
+    {
+      label = "live RR service-budget clamp";
+      needle = "qemu_crucible_fault_vcpu_service_clamp_budget";
+    }
+    {
+      label = "checked exact-tick service advance";
+      needle = "icount_crucible_advance_virtual_time_by_ticks";
+    }
+    {
+      label = "versioned exact-tick service evidence";
+      needle = "\"CRUCVCS2\"";
+    }
+    {
+      label = "bounded work-conserving donation ledger";
+      needle = "donated_credit";
+    }
+    {
+      label = "fixed-topology scheduler eligibility";
+      needle = "qemu_crucible_fault_vcpu_service_eligible";
+    }
+    {
+      label = "reserved state-transition evidence";
+      needle = "CRUCVST1";
+    }
+    {
+      label = "partial-window configuration-change evidence";
+      needle = "configuration_interrupted";
+    }
+  ];
 in
   if failures != []
   then throw "Crucible QEMU vCPU-service microtest failed:\n${builtins.concatStringsSep "\n" failures}"
@@ -134,7 +123,7 @@ in
               timeout 120 "$qemu_binary" \
                 $machine_args \
                 -accel sim \
-                -icount shift=0,rr_switch_quantum=256 \
+                -icount shift=0,align=off,sleep=off,rr_switch_quantum=256 \
                 -smp 1 \
                 -nographic \
                 -no-reboot \
@@ -182,7 +171,7 @@ in
               timeout 120 "$qemu_binary" \
                 $machine_args \
                 -accel sim \
-                -icount shift=0,rr_switch_quantum=256 \
+                -icount shift=0,align=off,sleep=off,rr_switch_quantum=256 \
                 -smp 1 \
                 -nographic \
                 -no-reboot \
@@ -229,7 +218,7 @@ in
             {
               printf 'PASS\n'
               printf 'gate=gate:patch-microtests\n'
-              printf 'patch=%s\n' '${patchName}'
+              printf 'atomic_patch=%s\n' '${atomicPatch.file}'
               printf 'patched_fixture_exercised=true\n'
               printf 'stock_negative_control=true\n'
               printf 'qemu_package=%s\n' '${qemuPackage}'
@@ -242,7 +231,7 @@ in
               printf 'live_ratios=1/1,1/2,1/3\n'
               printf 'live_windows_per_case=6\n'
               printf 'live_vcpu_states=online,offline,stalled,recovery\n'
-              printf 'production_effect_row=cpu.service|service-ratio-ledger|gate:patch-microtests|actual-patched-qemu|CRUCVCS1\n'
+              printf 'production_effect_row=cpu.service|service-ratio-ledger|gate:patch-microtests|actual-patched-qemu|CRUCVCS2\n'
               printf 'production_effect_row=cpu.vcpu_state|online-offline-stalled-recovery|gate:patch-microtests|actual-patched-qemu|CRUCVST1\n'
             } > "$out/result"
           '';

@@ -25,6 +25,12 @@ pub enum QemuLiveHostIoRuntimeError {
         /// Underlying descriptor clone error.
         source: std::io::Error,
     },
+    /// The node's fixed network rings could not be bound.
+    #[error("bind host-I/O network rings failed: {source}")]
+    NetworkRing {
+        /// Invalid node identity, ring direction, or mapped geometry.
+        source: MappedSetupRegionAccessError,
+    },
     /// The configured poll interval was zero.
     #[error("host-I/O runtime poll interval must be nonzero")]
     ZeroPollInterval,

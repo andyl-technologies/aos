@@ -2,8 +2,7 @@
 
 use crucible::{
     AssertionId, AssertionQuantifierKind, Decision, EngineError, GenesisCheckpoint, Icount,
-    ObservableEvent, RngDecision, RngStreamId, SchedulerEventLogEntry, SearchFrontierChoices,
-    VirtualTime, World, bake,
+    ObservableEvent, SchedulerEventLogEntry, SearchFrontierChoices, VirtualTime, World, bake,
 };
 
 use super::node;
@@ -20,7 +19,8 @@ pub(super) fn bake_with_search_frontier_choices(
         },
     )?;
     let mut scheduler = state.scheduler.clone();
-    scheduler.search_frontier = SearchFrontierChoices::from_decisions(decisions);
+    scheduler.search_frontier =
+        SearchFrontierChoices::from_decision_sequences(decisions.into_iter().map(std::iter::once));
     baked.checkpoint.state = Some(
         crucible::MaterializedState::from_components_with_event_log_segments(
             state.vm_snapshots.clone(),
@@ -34,11 +34,8 @@ pub(super) fn bake_with_search_frontier_choices(
     Ok(baked)
 }
 
-pub(super) fn guidance_decision(index: u64) -> Decision {
-    Decision::RngDraw(RngDecision {
-        stream: RngStreamId::from_name(format!("guidance-{index}")),
-        value: index,
-    })
+pub(super) fn guidance_decision(index: u64) -> Result<Decision, EngineError> {
+    crucible::test_support::typed_search_decision_for_test(&format!("guidance-{index}"))
 }
 
 pub(super) fn guidance_event_log(index: u64) -> Vec<SchedulerEventLogEntry> {

@@ -9,6 +9,8 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
+  workloadTest = builtins.readFile ../../crates/crucible/tests/workload_parameterization.rs;
+  devicesTest = builtins.readFile ../../crates/crucible/tests/world_devices.rs;
   cargoManifest = builtins.readFile ../../crates/crucible/Cargo.toml;
   cargoLock = builtins.readFile ../../crates/Cargo.lock;
   defaultChecks = builtins.readFile ./default.nix;
@@ -131,32 +133,48 @@
     ]
     ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
       {
-        label = "serialization regression";
-        needle = "serializable_scenario_form_round_trips_and_rejects_host_paths";
+        label = "form re-export";
+        needle = "ScenarioDefForm";
       }
       {
-        label = "canonical TOML decode";
-        needle = "ScenarioDefForm::from_canonical_toml(&toml)";
+        label = "blob ref re-export";
+        needle = "ContentAddressedBlobRef";
       }
       {
-        label = "compact decode";
-        needle = "ScenarioDefForm::from_compact_binary(&binary)";
+        label = "focused portable node serialization test";
+        needle = "world_node_launch_inputs_are_portable_and_identity_bearing";
       }
       {
-        label = "canonical bytes preserved";
-        needle = "parsed_binary.canonical_bytes()";
-      }
-      {
-        label = "host path rejected";
+        label = "test rejects host path image refs";
         needle = "ScenarioImageReferenceNotContentAddressed";
       }
       {
-        label = "serialized scenario identity mismatch rejected";
-        needle = "ScenarioSerializedIdMismatch";
+        label = "test rejects concrete host path";
+        needle = "ContentAddressedBlobRef::parse(\"kernel\", \"/nix/store/kernel\")";
+      }
+    ]
+    ++ failuresFor "crates/crucible/tests/workload_parameterization.rs" workloadTest [
+      {
+        label = "scenario TOML round trip";
+        needle = "ScenarioDefForm::from_canonical_toml(&form.to_canonical_toml()?)?";
       }
       {
-        label = "empty world identity mismatch rejected";
-        needle = "wrong_empty_world_toml";
+        label = "scenario binary round trip";
+        needle = "ScenarioDefForm::from_compact_binary(&form.to_compact_binary())?";
+      }
+      {
+        label = "round trips preserve scenario identity";
+        needle = "assert_eq!(form.id(), binary.id());";
+      }
+    ]
+    ++ failuresFor "crates/crucible/tests/world_devices.rs" devicesTest [
+      {
+        label = "current heterogeneous scenario form round trip";
+        needle = "fn heterogeneous_nodes_are_canonical_addressed_serialized_and_rng_stable()";
+      }
+      {
+        label = "current scenario binary envelope";
+        needle = "crucible.scenario-def-form.v7";
       }
       {
         label = "truncated binary rejected";
@@ -224,7 +242,25 @@ in
               --manifest-path crates/Cargo.toml \
               -p crucible \
               --lib \
-              serializable_scenario_form_round_trips \
+              world_node_launch_inputs_are_portable_and_identity_bearing \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-spatial-serializable-form-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible \
+              --test workload_parameterization \
+              scalar_parameter_change_changes_scenario_id_and_reproduces \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-spatial-serializable-form-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible \
+              --test world_devices \
+              heterogeneous_nodes_are_canonical_addressed_serialized_and_rng_stable \
               -- --test-threads=1
           '';
         }

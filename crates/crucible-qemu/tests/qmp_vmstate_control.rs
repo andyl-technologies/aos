@@ -9,16 +9,13 @@ use std::io::{self, Cursor, Read, Write};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crucible::{Checkpoint, CheckpointKind, ContentHash};
 use crucible_qemu::{
-    QMP_CAPABILITIES_COMMAND, QMP_CONT_COMMAND, QMP_QUERY_JOBS_COMMAND, QMP_QUIT_COMMAND_NAME,
-    QMP_SNAPSHOT_LOAD_COMMAND, QMP_SNAPSHOT_SAVE_COMMAND, QemuExactSnapshotPolicy,
-    QemuQmpVmStateControlChannel, QmpCommandKind, QmpSnapshotTag, QmpTimeoutStream,
+    QMP_CONT_COMMAND, QMP_HOT_FORK_ASYNC_WORKER_BARRIER_COMMAND,
+    QMP_HOT_FORK_BLOCK_BARRIER_COMMAND, QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND,
+    QMP_HOT_FORK_RCU_BARRIER_COMMAND, QMP_HOT_FORK_TEMPLATE_COMMAND, QemuQmpVmStateControlChannel,
+    QmpHotForkBlockSnapshotBinding, QmpHotForkTemplateOutcome, QmpTimeoutStream,
 };
 use serde_json::Value;
-
-const HASH_AB_TAG: &str =
-    "crucible-abababababababababababababababababababababababababababababababab";
 
 #[test]
 fn exact_restore_resume_does_not_probe_status_before_the_next_ceiling() -> Result<(), Box<dyn Error>>
@@ -31,7 +28,7 @@ fn exact_restore_resume_does_not_probe_status_before_the_next_ceiling() -> Resul
     let written = Arc::clone(&stream.written);
     let mut control = QemuQmpVmStateControlChannel::connect(stream)?;
 
-    control.resume_after_checkpoint()?;
+    control.resume_guest_acknowledged()?;
     drop(control);
 
     let lines = written_json_lines(
@@ -45,33 +42,18 @@ fn exact_restore_resume_does_not_probe_status_before_the_next_ceiling() -> Resul
 }
 
 #[test]
-fn vmstate_control_saves_and_restores_checkpoint_tags() -> Result<(), Box<dyn Error>> {
+fn vmstate_control_forwards_plugin_barrier_operations() -> Result<(), Box<dyn Error>> {
     let stream = scripted_qmp([
         r#"{"QMP":{"version":{},"capabilities":[]}}"#,
         r#"{"return":{}}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":[{"id":"crucible-save-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":[{"id":"crucible-load-crucible-abababababababababababababababababababababababababababababababab","status":"concluded"}]}"#,
-        r#"{"return":{}}"#,
-        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":6,"generation":2,"registered":true,"manifest-consistent":true,"held":true,"teardown-closed":false,"mapping-dontfork":true,"in-flight":0,"ring-count":9,"rings-held":9,"ring-producers-in-flight":0,"ring-consumers-in-flight":0,"worker-mask":3,"parked-worker-mask":3,"pending-worker-mask":0,"worker-operations-in-flight":0,"quiescent":true}}"#,
+        r#"{"return":{"schema-version":6,"generation":3,"registered":true,"manifest-consistent":true,"held":false,"teardown-closed":false,"mapping-dontfork":false,"in-flight":0,"ring-count":9,"rings-held":0,"ring-producers-in-flight":0,"ring-consumers-in-flight":0,"worker-mask":3,"parked-worker-mask":3,"pending-worker-mask":0,"worker-operations-in-flight":0,"quiescent":false}}"#,
     ]);
     let written = Arc::clone(&stream.written);
     let mut control = QemuQmpVmStateControlChannel::connect(stream)?;
-    let checkpoint = checkpoint_with_hash_byte(0xab);
 
-    assert_eq!(
-        control.save_checkpoint_vmstate(&checkpoint)?.command,
-        QmpCommandKind::SaveVm
-    );
-    assert_eq!(
-        control
-            .restore_checkpoint_vmstate(&checkpoint, loadvm_probe_authorization())?
-            .command,
-        QmpCommandKind::LoadVm
-    );
-    assert_eq!(control.quit()?.command, QmpCommandKind::Quit);
+    assert!(control.hold_hot_fork_plugin_barrier()?.quiescent());
+    assert!(!control.release_hot_fork_plugin_barrier()?.held());
 
     drop(control);
     let lines = written_json_lines(
@@ -80,54 +62,153 @@ fn vmstate_control_saves_and_restores_checkpoint_tags() -> Result<(), Box<dyn Er
             .expect("scripted QMP write audit should remain available"),
     )?;
     assert_eq!(
-        execute_name(json_line(&lines, 0)),
-        Some(QMP_CAPABILITIES_COMMAND)
+        oob_execute_name(json_line(&lines, 1)),
+        Some(QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND)
     );
     assert_eq!(
-        execute_name(json_line(&lines, 1)),
-        Some(QMP_SNAPSHOT_SAVE_COMMAND)
-    );
-    assert_eq!(
-        json_line(&lines, 1)
-            .pointer("/arguments/tag")
-            .and_then(Value::as_str),
-        Some(HASH_AB_TAG)
-    );
-    assert_eq!(
-        execute_name(json_line(&lines, 2)),
-        Some(QMP_QUERY_JOBS_COMMAND)
-    );
-    assert_eq!(
-        execute_name(json_line(&lines, 4)),
-        Some(QMP_SNAPSHOT_LOAD_COMMAND)
-    );
-    assert_eq!(
-        json_line(&lines, 4)
-            .pointer("/arguments/tag")
-            .and_then(Value::as_str),
-        Some(HASH_AB_TAG)
-    );
-    assert_eq!(
-        execute_name(json_line(&lines, 5)),
-        Some(QMP_QUERY_JOBS_COMMAND)
-    );
-    assert_eq!(
-        execute_name(json_line(&lines, 7)),
-        Some(QMP_QUIT_COMMAND_NAME)
+        oob_execute_name(json_line(&lines, 2)),
+        Some(QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND)
     );
     Ok(())
 }
 
 #[test]
-fn vmstate_control_uses_the_public_snapshot_tag_derivation() {
-    let checkpoint = checkpoint_with_hash_byte(0xab);
-    let tag = QmpSnapshotTag::from_checkpoint(&checkpoint);
+fn vmstate_control_forwards_rcu_barrier_operations() -> Result<(), Box<dyn Error>> {
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":1,"generation":2,"owner-thread-id":44,"held":true,"complete":true,"registered-readers":2,"active-readers":0,"admissions-in-flight":0,"pending-callbacks":0,"drain-active":false,"quiescent":true}}"#,
+        r#"{"return":{"schema-version":1,"generation":3,"owner-thread-id":0,"held":false,"complete":true,"registered-readers":2,"active-readers":0,"admissions-in-flight":0,"pending-callbacks":0,"drain-active":false,"quiescent":false}}"#,
+    ]);
+    let written = Arc::clone(&stream.written);
+    let mut control = QemuQmpVmStateControlChannel::connect(stream)?;
 
-    assert_eq!(tag.as_str(), HASH_AB_TAG);
+    assert!(control.hold_hot_fork_rcu_barrier()?.quiescent());
+    assert!(!control.release_hot_fork_rcu_barrier()?.held());
+
+    drop(control);
+    let lines = written_json_lines(
+        &written
+            .lock()
+            .expect("scripted QMP write audit should remain available"),
+    )?;
+    assert_eq!(
+        oob_execute_name(json_line(&lines, 1)),
+        Some(QMP_HOT_FORK_RCU_BARRIER_COMMAND)
+    );
+    assert_eq!(
+        oob_execute_name(json_line(&lines, 2)),
+        Some(QMP_HOT_FORK_RCU_BARRIER_COMMAND)
+    );
+    Ok(())
 }
 
-fn loadvm_probe_authorization() -> crucible_qemu::QemuLoadvmCommandAuthorization {
-    QemuExactSnapshotPolicy::production().authorize_loadvm_probe()
+#[test]
+fn vmstate_control_forwards_async_worker_barrier_operations() -> Result<(), Box<dyn Error>> {
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":3,"generation":2,"owner-thread-id":44,"held":true,"complete":true,"bottom-halves-complete":true,"timers-complete":true,"admissions-in-flight":0,"bottom-half-count":4,"pending-bottom-halves":2,"scheduled-bottom-halves":1,"active-bottom-half-callbacks":0,"pending-timers":3,"active-timer-callbacks":0,"aio-context-count":2,"active-aio-polls":0,"active-aio-dispatches":0,"queued-coroutines":1,"aio-handler-count":3,"active-aio-handler-callbacks":0,"aio-contexts-complete":true,"aio-handlers-complete":true,"quiescent":true}}"#,
+        r#"{"return":{"schema-version":3,"generation":3,"owner-thread-id":0,"held":false,"complete":true,"bottom-halves-complete":true,"timers-complete":true,"admissions-in-flight":0,"bottom-half-count":4,"pending-bottom-halves":2,"scheduled-bottom-halves":1,"active-bottom-half-callbacks":0,"pending-timers":3,"active-timer-callbacks":0,"aio-context-count":2,"active-aio-polls":0,"active-aio-dispatches":0,"queued-coroutines":1,"aio-handler-count":3,"active-aio-handler-callbacks":0,"aio-contexts-complete":true,"aio-handlers-complete":true,"quiescent":false}}"#,
+    ]);
+    let written = Arc::clone(&stream.written);
+    let mut control = QemuQmpVmStateControlChannel::connect(stream)?;
+
+    assert!(control.hold_hot_fork_async_worker_barrier()?.quiescent());
+    assert!(!control.release_hot_fork_async_worker_barrier()?.held());
+
+    drop(control);
+    let lines = written_json_lines(
+        &written
+            .lock()
+            .expect("scripted QMP write audit should remain available"),
+    )?;
+    assert_eq!(
+        oob_execute_name(json_line(&lines, 1)),
+        Some(QMP_HOT_FORK_ASYNC_WORKER_BARRIER_COMMAND)
+    );
+    assert_eq!(
+        oob_execute_name(json_line(&lines, 2)),
+        Some(QMP_HOT_FORK_ASYNC_WORKER_BARRIER_COMMAND)
+    );
+    Ok(())
+}
+
+#[test]
+fn vmstate_control_forwards_block_barrier_operations() -> Result<(), Box<dyn Error>> {
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":4,"generation":2,"owner-thread-id":44,"graph-barrier-generation":1,"graph-mutation-generation":7,"held-graph-mutation-generation":7,"graph-owner-thread-id":44,"held":true,"graph-held":true,"graph-writer-active":false,"graph-waiting-writers":0,"graph-stable":true,"snapshot-generation":0,"snapshot-backend-generation":0,"snapshot-graph-mutation-generation":0,"snapshot-owner-thread-id":0,"snapshot-bound":false,"snapshot-complete":false,"snapshot-roots":[],"complete":true,"backend-count":2,"rooted-backends":1,"writable-backends":1,"writable-rooted-backends":1,"quiesced-rooted-backends":1,"in-flight":0,"quiescent":true,"snapshot-sources":{"schema-version":1,"frozen":false,"root-count":0,"node-count":0,"originally-writable-root-count":0,"originally-writable-backend-count":0}}}"#,
+        r#"{"return":{"schema-version":4,"generation":3,"owner-thread-id":0,"graph-barrier-generation":2,"graph-mutation-generation":7,"held-graph-mutation-generation":0,"graph-owner-thread-id":0,"held":false,"graph-held":false,"graph-writer-active":false,"graph-waiting-writers":0,"graph-stable":false,"snapshot-generation":0,"snapshot-backend-generation":0,"snapshot-graph-mutation-generation":0,"snapshot-owner-thread-id":0,"snapshot-bound":false,"snapshot-complete":false,"snapshot-roots":[],"complete":true,"backend-count":2,"rooted-backends":1,"writable-backends":1,"writable-rooted-backends":1,"quiesced-rooted-backends":0,"in-flight":0,"quiescent":false,"snapshot-sources":{"schema-version":1,"frozen":false,"root-count":0,"node-count":0,"originally-writable-root-count":0,"originally-writable-backend-count":0}}}"#,
+    ]);
+    let written = Arc::clone(&stream.written);
+    let mut control = QemuQmpVmStateControlChannel::connect(stream)?;
+
+    assert!(control.hold_hot_fork_block_barrier()?.quiescent());
+    assert!(!control.release_hot_fork_block_barrier()?.held());
+
+    drop(control);
+    let lines = written_json_lines(
+        &written
+            .lock()
+            .expect("scripted QMP write audit should remain available"),
+    )?;
+    assert_eq!(
+        execute_name(json_line(&lines, 1)),
+        Some(QMP_HOT_FORK_BLOCK_BARRIER_COMMAND)
+    );
+    assert_eq!(
+        execute_name(json_line(&lines, 2)),
+        Some(QMP_HOT_FORK_BLOCK_BARRIER_COMMAND)
+    );
+    Ok(())
+}
+
+#[test]
+fn vmstate_control_forwards_hot_fork_template_coordination() -> Result<(), Box<dyn Error>> {
+    let bindings = [QmpHotForkBlockSnapshotBinding::new(
+        1,
+        "drive0",
+        "overlay0",
+        "snapshot0",
+        blake3::Hash::from_bytes([0xab; 32]),
+    )?];
+    let stream = scripted_qmp([
+        r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+        r#"{"return":{}}"#,
+        r#"{"return":{"schema-version":29,"generation":3,"outcome":"blocked","failure-stage":"source-freeze","failure-detail":"source freeze failed","transaction-active":false,"required-proofs":127,"acknowledged-proofs":7,"missing-proofs":120,"plugin-barrier":{"schema-version":6,"generation":6,"registered":true,"manifest-consistent":true,"held":false,"teardown-closed":false,"mapping-dontfork":false,"in-flight":0,"ring-count":9,"rings-held":0,"ring-producers-in-flight":0,"ring-consumers-in-flight":0,"worker-mask":3,"parked-worker-mask":3,"pending-worker-mask":0,"worker-operations-in-flight":0,"quiescent":false},"rcu-barrier":{"schema-version":1,"generation":7,"owner-thread-id":0,"held":false,"complete":true,"registered-readers":2,"active-readers":0,"admissions-in-flight":0,"pending-callbacks":0,"drain-active":false,"quiescent":false},"async-worker-barrier":{"schema-version":3,"generation":7,"owner-thread-id":0,"held":false,"complete":true,"bottom-halves-complete":true,"timers-complete":true,"admissions-in-flight":0,"bottom-half-count":4,"pending-bottom-halves":2,"scheduled-bottom-halves":1,"active-bottom-half-callbacks":0,"pending-timers":3,"active-timer-callbacks":0,"aio-context-count":2,"active-aio-polls":0,"active-aio-dispatches":0,"queued-coroutines":1,"aio-handler-count":3,"active-aio-handler-callbacks":0,"aio-contexts-complete":true,"aio-handlers-complete":true,"quiescent":false},"block-barrier":{"schema-version":4,"generation":4,"owner-thread-id":0,"graph-barrier-generation":6,"graph-mutation-generation":9,"held-graph-mutation-generation":0,"graph-owner-thread-id":0,"held":false,"graph-held":false,"graph-writer-active":false,"graph-waiting-writers":0,"graph-stable":false,"snapshot-generation":0,"snapshot-backend-generation":0,"snapshot-graph-mutation-generation":0,"snapshot-owner-thread-id":0,"snapshot-bound":false,"snapshot-complete":false,"snapshot-roots":[],"complete":true,"backend-count":3,"rooted-backends":2,"writable-backends":2,"writable-rooted-backends":2,"quiesced-rooted-backends":0,"in-flight":0,"quiescent":false,"snapshot-sources":{"schema-version":1,"frozen":false,"root-count":0,"node-count":0,"originally-writable-root-count":0,"originally-writable-backend-count":0}},"resource-stage":{"schema-version":13,"template-generation":0,"private-ring-staged":false,"private-ring-generation":0,"diagnostics-staged":false,"diagnostic-generation":0,"diagnostics-resource-plan-bound":false,"qmp-staged":false,"qmp-generation":0,"qmp-resource-plan-bound":false,"console-staged":false,"console-generation":0,"console-resource-plan-bound":false,"plugin-endpoints-staged":false,"plugin-endpoint-generation":0,"plugin-private-ring-generation":0,"plugin-barrier-generation":0,"worker-mask":0,"parent-resume-worker-mask":0,"child-reinitialize-worker-mask":0,"pending-worker-mask":0,"worker-disposition-bound":false,"transaction-bound":false,"parent-process-generation":0,"child-process-generation":0,"plugin-child-plan-bound":false,"plugin-child-resource-plan-bound":false,"readiness-proof-acknowledged":false},"rollback-complete":true,"ready":false}}"#,
+    ]);
+    let written = Arc::clone(&stream.written);
+    let mut control = QemuQmpVmStateControlChannel::connect(stream)?;
+
+    let state = control.prepare_hot_fork_template(&bindings)?;
+    assert_eq!(state.outcome(), QmpHotForkTemplateOutcome::Blocked);
+    assert!(state.rollback_complete());
+
+    drop(control);
+    let lines = written_json_lines(
+        &written
+            .lock()
+            .expect("scripted QMP write audit should remain available"),
+    )?;
+    assert_eq!(
+        oob_execute_name(json_line(&lines, 1)),
+        Some(QMP_HOT_FORK_TEMPLATE_COMMAND)
+    );
+    assert_eq!(
+        json_line(&lines, 1)
+            .pointer("/arguments/action")
+            .and_then(Value::as_str),
+        Some("prepare")
+    );
+    assert_eq!(
+        json_line(&lines, 1)
+            .pointer("/arguments/block-snapshot-bindings/0/backend-name")
+            .and_then(Value::as_str),
+        Some("drive0")
+    );
+    Ok(())
 }
 
 fn scripted_qmp<const N: usize>(lines: [&str; N]) -> ScriptedQmpStream {
@@ -162,16 +243,8 @@ fn execute_name(value: &Value) -> Option<&str> {
     value.get("execute").and_then(Value::as_str)
 }
 
-fn checkpoint_with_hash_byte(byte: u8) -> Checkpoint {
-    Checkpoint::new(
-        content_hash_with_byte(byte),
-        content_hash_with_byte(byte.wrapping_add(1)),
-        CheckpointKind::Fat,
-    )
-}
-
-fn content_hash_with_byte(byte: u8) -> ContentHash {
-    ContentHash { bytes: [byte; 32] }
+fn oob_execute_name(value: &Value) -> Option<&str> {
+    value.get("exec-oob").and_then(Value::as_str)
 }
 
 #[derive(Debug)]

@@ -29,12 +29,12 @@ impl NodeSlot {
         }
 
         let (kind, arg0, arg1) = command.kind.to_wire();
-        self.preemption_at_icount
-            .store(command.at_icount, Ordering::Relaxed);
-        self.preemption_deadline_icount
-            .store(command.deadline_icount, Ordering::Relaxed);
-        self.preemption_ceiling_icount
-            .store(command.ceiling_icount, Ordering::Relaxed);
+        self.preemption_at_tick
+            .store(command.at_tick, Ordering::Relaxed);
+        self.preemption_deadline_tick
+            .store(command.deadline_tick, Ordering::Relaxed);
+        self.preemption_ceiling_tick
+            .store(command.ceiling_tick, Ordering::Relaxed);
         self.preemption_arg0.store(arg0, Ordering::Relaxed);
         self.preemption_arg1.store(arg1, Ordering::Relaxed);
         self.preemption_kind.store(kind, Ordering::Relaxed);
@@ -64,9 +64,9 @@ impl NodeSlot {
             self.preemption_arg1.load(Ordering::Relaxed),
         )?;
         let command = SchedulerPreemptionCommand {
-            at_icount: self.preemption_at_icount.load(Ordering::Relaxed),
-            deadline_icount: self.preemption_deadline_icount.load(Ordering::Relaxed),
-            ceiling_icount: self.preemption_ceiling_icount.load(Ordering::Relaxed),
+            at_tick: self.preemption_at_tick.load(Ordering::Relaxed),
+            deadline_tick: self.preemption_deadline_tick.load(Ordering::Relaxed),
+            ceiling_tick: self.preemption_ceiling_tick.load(Ordering::Relaxed),
             kind,
         };
         command.validate()?;
@@ -110,29 +110,29 @@ impl NodeSlot {
 /// Scheduler-side shape of one commanded preemption.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SchedulerPreemptionCommand {
-    /// Exact node icount at which QEMU must apply the command.
-    pub at_icount: u64,
+    /// Exact node logical tick at which QEMU must apply the command.
+    pub at_tick: u64,
     /// Inclusive lower bound authorized by the scheduler.
-    pub deadline_icount: u64,
+    pub deadline_tick: u64,
     /// Inclusive upper bound authorized by the scheduler.
-    pub ceiling_icount: u64,
+    pub ceiling_tick: u64,
     /// Command-specific vCPU switch or interrupt data.
     pub kind: SchedulerPreemptionKind,
 }
 
 impl SchedulerPreemptionCommand {
     fn validate(self) -> Result<(), PreemptionMailboxError> {
-        if self.deadline_icount > self.ceiling_icount {
+        if self.deadline_tick > self.ceiling_tick {
             return Err(PreemptionMailboxError::InvalidWindow {
-                deadline_icount: self.deadline_icount,
-                ceiling_icount: self.ceiling_icount,
+                deadline_tick: self.deadline_tick,
+                ceiling_tick: self.ceiling_tick,
             });
         }
-        if self.at_icount < self.deadline_icount || self.at_icount > self.ceiling_icount {
+        if self.at_tick < self.deadline_tick || self.at_tick > self.ceiling_tick {
             return Err(PreemptionMailboxError::CommandOutsideWindow {
-                at_icount: self.at_icount,
-                deadline_icount: self.deadline_icount,
-                ceiling_icount: self.ceiling_icount,
+                at_tick: self.at_tick,
+                deadline_tick: self.deadline_tick,
+                ceiling_tick: self.ceiling_tick,
             });
         }
         Ok(())
@@ -208,22 +208,22 @@ pub enum PreemptionMailboxError {
         consumed_sequence: u32,
     },
     /// The authorization window is reversed.
-    #[error("preemption deadline {deadline_icount} is past ceiling {ceiling_icount}")]
+    #[error("preemption deadline {deadline_tick} is past ceiling {ceiling_tick}")]
     InvalidWindow {
         /// Inclusive lower bound.
-        deadline_icount: u64,
+        deadline_tick: u64,
         /// Inclusive upper bound.
-        ceiling_icount: u64,
+        ceiling_tick: u64,
     },
-    /// The command icount is outside its inclusive authorization window.
-    #[error("preemption at {at_icount} is outside [{deadline_icount}, {ceiling_icount}]")]
+    /// The command tick is outside its inclusive authorization window.
+    #[error("preemption at {at_tick} is outside [{deadline_tick}, {ceiling_tick}]")]
     CommandOutsideWindow {
-        /// Commanded icount.
-        at_icount: u64,
+        /// Commanded tick.
+        at_tick: u64,
         /// Inclusive lower bound.
-        deadline_icount: u64,
+        deadline_tick: u64,
         /// Inclusive upper bound.
-        ceiling_icount: u64,
+        ceiling_tick: u64,
     },
     /// Shared memory carried an unknown command-kind discriminator.
     #[error("preemption mailbox contains unknown kind {kind}")]

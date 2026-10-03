@@ -99,9 +99,7 @@ pub(super) fn layout_from_setup_region_geometry(
     let layout = RegionLayout::for_config(
         RegionConfig::new(
             vm_node_count,
-            snapshot.queue_capacity,
-            snapshot.icount_shift,
-        )
+            snapshot.queue_capacity)
         .with_fault_payload_arena_bytes(snapshot.fault_payload_arena_bytes),
     )
     .map_err(|source| RegionSetupValidationError::InvalidLayout { source })?;
@@ -251,8 +249,8 @@ pub(super) fn write_region_header_bytes(
     );
     write_u32_at(
         header,
-        REGION_HEADER_ICOUNT_SHIFT_OFFSET,
-        snapshot.icount_shift,
+        REGION_HEADER_TICKS_PER_NS_OFFSET,
+        snapshot.ticks_per_ns,
     );
     write_u8_at(
         header,
@@ -303,14 +301,34 @@ pub(super) fn write_node_slot_bytes(bytes: &mut [u8], snapshot: NodeSlotSnapshot
         NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET,
         snapshot.control_boundary_ack,
     );
+    write_u64_at(
+        bytes,
+        NODE_SLOT_CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER_OFFSET,
+        snapshot.control_boundary_fault_command_frontier,
+    );
+    write_u32_at(
+        bytes,
+        NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET,
+        snapshot.control_boundary_capture_request,
+    );
 }
 
 pub(super) fn write_ring_header_bytes(bytes: &mut [u8], ring_header: &RingHeader) {
     write_u64_at(bytes, RING_HEADER_READ_IDX_OFFSET, ring_header.read_index());
     write_u64_at(
         bytes,
+        RING_HEADER_CONSUMER_STATE_OFFSET,
+        ring_header.consumer_state_raw(),
+    );
+    write_u64_at(
+        bytes,
         RING_HEADER_WRITE_IDX_OFFSET,
         ring_header.write_index(),
+    );
+    write_u64_at(
+        bytes,
+        RING_HEADER_PRODUCER_STATE_OFFSET,
+        ring_header.producer_state_raw(),
     );
 }
 

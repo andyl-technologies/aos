@@ -5,19 +5,19 @@
 
 use crate::FaultAbiError;
 
-/// Magic prefix for version-1 guest-clock evidence.
-pub const FAULT_CLOCK_EVIDENCE_MAGIC_V1: [u8; 8] = *b"CRUCLKV1";
-/// Fixed encoded length of version-1 guest-clock evidence.
-pub const FAULT_CLOCK_EVIDENCE_V1_BYTES: usize = 384;
+/// Magic prefix for version-2 guest-clock evidence.
+pub const FAULT_CLOCK_EVIDENCE_MAGIC_V2: [u8; 8] = *b"CRUCLKV2";
+/// Fixed encoded length of version-2 guest-clock evidence.
+pub const FAULT_CLOCK_EVIDENCE_V2_BYTES: usize = 384;
 
 #[path = "fault_clock_evidence/observation.rs"]
 mod observation;
 
-pub use observation::FaultClockObservationV1;
+pub use observation::FaultClockObservationV2;
 
 /// Independently decodable guest-clock fault evidence.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FaultClockEvidenceV1 {
+pub struct FaultClockEvidenceV2 {
     /// Realized source-kind tag from the admitted clock manifest.
     pub source_kind: u16,
     /// Model phase at which the observation occurred.
@@ -39,10 +39,10 @@ pub struct FaultClockEvidenceV1 {
     /// Rule opportunity sequence.
     pub opportunity: u64,
     /// Typed observation.
-    pub observation: FaultClockObservationV1,
+    pub observation: FaultClockObservationV2,
 }
 
-impl FaultClockEvidenceV1 {
+impl FaultClockEvidenceV2 {
     /// Encodes canonical fixed-width guest-clock evidence.
     ///
     /// # Errors
@@ -60,13 +60,13 @@ impl FaultClockEvidenceV1 {
             || self.after_hash == zero
             || self.manifest_sha256 == zero
             || (self.opportunity == 0
-                && !matches!(&self.observation, FaultClockObservationV1::Impulse { .. }))
+                && !matches!(&self.observation, FaultClockObservationV2::Impulse { .. }))
         {
             return Err(FaultAbiError::CapabilityInvariant);
         }
-        let mut out = vec![0_u8; FAULT_CLOCK_EVIDENCE_V1_BYTES];
-        out[..8].copy_from_slice(&FAULT_CLOCK_EVIDENCE_MAGIC_V1);
-        out[8..10].copy_from_slice(&1_u16.to_le_bytes());
+        let mut out = vec![0_u8; FAULT_CLOCK_EVIDENCE_V2_BYTES];
+        out[..8].copy_from_slice(&FAULT_CLOCK_EVIDENCE_MAGIC_V2);
+        out[8..10].copy_from_slice(&2_u16.to_le_bytes());
         out[12..14].copy_from_slice(&self.source_kind.to_le_bytes());
         out[14..16].copy_from_slice(&self.model_phase.to_le_bytes());
         out[24..32].copy_from_slice(&self.observed_icount.to_le_bytes());
@@ -78,16 +78,16 @@ impl FaultClockEvidenceV1 {
         out[192..200].copy_from_slice(&self.transform_generation.to_le_bytes());
         out[200..208].copy_from_slice(&self.opportunity.to_le_bytes());
         let record_kind = match &self.observation {
-            FaultClockObservationV1::Read { .. } => 1_u16,
-            FaultClockObservationV1::Wander { .. } => 2,
-            FaultClockObservationV1::SourceTransition { .. } => 3,
-            FaultClockObservationV1::TimerTransition { .. } => 4,
-            FaultClockObservationV1::Impulse { .. } => 5,
+            FaultClockObservationV2::Read { .. } => 1_u16,
+            FaultClockObservationV2::Wander { .. } => 2,
+            FaultClockObservationV2::SourceTransition { .. } => 3,
+            FaultClockObservationV2::TimerTransition { .. } => 4,
+            FaultClockObservationV2::Impulse { .. } => 5,
         };
         out[10..12].copy_from_slice(&record_kind.to_le_bytes());
         let body = &mut out[224..];
         match &self.observation {
-            FaultClockObservationV1::Read {
+            FaultClockObservationV2::Read {
                 raw_value,
                 transformed_value,
                 raw_architectural_value,
@@ -97,7 +97,7 @@ impl FaultClockEvidenceV1 {
                 anchor_raw,
                 anchor_value,
                 drift_ratio,
-                additive_nanos,
+                additive_ps,
                 frozen_value,
                 read_error,
                 read_opportunity,
@@ -107,7 +107,7 @@ impl FaultClockEvidenceV1 {
                 overdue_policy,
                 source_state,
                 freeze_release,
-                synchronization_remaining_nanos,
+                synchronization_remaining_ps,
             } => {
                 if *read_opportunity == 0
                     || *transform_kind > 6
@@ -132,11 +132,11 @@ impl FaultClockEvidenceV1 {
                         *anchor_value,
                         drift_ratio[0],
                         drift_ratio[1],
-                        *additive_nanos as u64,
+                        *additive_ps as u64,
                         *frozen_value,
                         *read_opportunity,
                         *contribution as u64,
-                        *synchronization_remaining_nanos as u64,
+                        *synchronization_remaining_ps as u64,
                     ],
                 );
                 body[88..92].copy_from_slice(&transform_kind.to_le_bytes());
@@ -150,51 +150,51 @@ impl FaultClockEvidenceV1 {
                 body[128..130].copy_from_slice(&source_width_bits.to_le_bytes());
                 body[130..132].copy_from_slice(&wrap_action.to_le_bytes());
             }
-            FaultClockObservationV1::Wander {
-                scheduler_nanos,
-                raw_nanos,
+            FaultClockObservationV2::Wander {
+                scheduler_ps,
+                raw_ps,
                 offsets,
                 rates_ppb,
-                next_nanos,
+                next_ps,
                 sequences,
             } => {
                 if sequences[1] <= sequences[0]
-                    || (next_nanos[1] != u64::MAX && next_nanos[1] <= next_nanos[0])
+                    || (next_ps[1] != u64::MAX && next_ps[1] <= next_ps[0])
                 {
                     return Err(FaultAbiError::CapabilityInvariant);
                 }
                 put_u64s(
                     body,
                     &[
-                        *scheduler_nanos,
-                        *raw_nanos,
+                        *scheduler_ps,
+                        *raw_ps,
                         offsets[0] as u64,
                         offsets[1] as u64,
                         rates_ppb[0] as u64,
                         rates_ppb[1] as u64,
-                        next_nanos[0],
-                        next_nanos[1],
+                        next_ps[0],
+                        next_ps[1],
                         sequences[0],
                         sequences[1],
                     ],
                 );
             }
-            FaultClockObservationV1::SourceTransition {
-                scheduler_nanos,
-                raw_nanos,
+            FaultClockObservationV2::SourceTransition {
+                scheduler_ps,
+                raw_ps,
                 states,
                 old_value,
                 new_anchor_value,
                 transition_generation,
                 old_fallback,
                 new_fallback,
-                synchronization_remaining_nanos,
+                synchronization_remaining_ps,
                 synchronization_ratio,
-                synchronization_threshold_nanos,
+                synchronization_threshold_ps,
             } => {
                 let has_slew = synchronization_ratio[0] != 0
                     || synchronization_ratio[1] != 0
-                    || *synchronization_threshold_nanos != 0;
+                    || *synchronization_threshold_ps != 0;
                 if !(1..=5).contains(&states[0])
                     || !(1..=5).contains(&states[1])
                     || *transition_generation == 0
@@ -203,16 +203,16 @@ impl FaultClockEvidenceV1 {
                     || (has_slew
                         != (synchronization_ratio[0] != 0
                             && synchronization_ratio[1] != 0
-                            && *synchronization_threshold_nanos != 0))
-                    || (!has_slew && synchronization_remaining_nanos[1] != 0)
+                            && *synchronization_threshold_ps != 0))
+                    || (!has_slew && synchronization_remaining_ps[1] != 0)
                 {
                     return Err(FaultAbiError::CapabilityInvariant);
                 }
                 put_u64s(
                     body,
                     &[
-                        *scheduler_nanos,
-                        *raw_nanos,
+                        *scheduler_ps,
+                        *raw_ps,
                         *old_value,
                         *new_anchor_value,
                         *transition_generation,
@@ -225,15 +225,15 @@ impl FaultClockEvidenceV1 {
                 put_u64s(
                     &mut body[112..],
                     &[
-                        synchronization_remaining_nanos[0] as u64,
-                        synchronization_remaining_nanos[1] as u64,
+                        synchronization_remaining_ps[0] as u64,
+                        synchronization_remaining_ps[1] as u64,
                         synchronization_ratio[0],
                         synchronization_ratio[1],
-                        *synchronization_threshold_nanos,
+                        *synchronization_threshold_ps,
                     ],
                 );
             }
-            FaultClockObservationV1::TimerTransition {
+            FaultClockObservationV2::TimerTransition {
                 role,
                 index,
                 action,
@@ -280,17 +280,17 @@ impl FaultClockEvidenceV1 {
                 body[88..96].copy_from_slice(&timer_opportunity.to_le_bytes());
                 body[96..104].copy_from_slice(&arm_sequence.to_le_bytes());
             }
-            FaultClockObservationV1::Impulse {
+            FaultClockObservationV2::Impulse {
                 transform_kind,
-                raw_nanos,
+                raw_ps,
                 old_value,
                 signed_value,
                 ratio,
                 unsigned_value,
                 new_anchor,
                 new_drift_ratio,
-                new_additive_nanos,
-                old_additive_nanos,
+                new_additive_ps,
+                old_additive_ps,
                 new_frozen_value,
                 new_freeze_release,
                 new_monotonicity,
@@ -308,10 +308,10 @@ impl FaultClockEvidenceV1 {
                     || new_drift_ratio[1] == 0
                     || match *transform_kind {
                         1 | 3 => {
-                            old_additive_nanos.checked_add(*signed_value)
-                                != Some(*new_additive_nanos)
+                            old_additive_ps.checked_add(*signed_value)
+                                != Some(*new_additive_ps)
                         }
-                        2 => old_additive_nanos != new_additive_nanos,
+                        2 => old_additive_ps != new_additive_ps,
                         _ => true,
                     }
                     || *new_freeze_release > 2
@@ -325,7 +325,7 @@ impl FaultClockEvidenceV1 {
                 put_u64s(
                     &mut body[8..],
                     &[
-                        *raw_nanos,
+                        *raw_ps,
                         *old_value,
                         *signed_value as u64,
                         ratio[0],
@@ -335,7 +335,7 @@ impl FaultClockEvidenceV1 {
                         new_anchor[1],
                         new_drift_ratio[0],
                         new_drift_ratio[1],
-                        *new_additive_nanos as u64,
+                        *new_additive_ps as u64,
                         *new_frozen_value,
                     ],
                 );
@@ -343,7 +343,7 @@ impl FaultClockEvidenceV1 {
                 body[108..112].copy_from_slice(&new_monotonicity.to_le_bytes());
                 body[112..116].copy_from_slice(&new_overdue_policy.to_le_bytes());
                 body[116..120].copy_from_slice(&new_source_state.to_le_bytes());
-                body[120..128].copy_from_slice(&(*old_additive_nanos as u64).to_le_bytes());
+                body[120..128].copy_from_slice(&(*old_additive_ps as u64).to_le_bytes());
             }
         }
         Ok(out)
@@ -355,9 +355,9 @@ impl FaultClockEvidenceV1 {
     ///
     /// Returns [`FaultAbiError`] for malformed, noncanonical, or invalid bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, FaultAbiError> {
-        if bytes.len() != FAULT_CLOCK_EVIDENCE_V1_BYTES
-            || bytes[..8] != FAULT_CLOCK_EVIDENCE_MAGIC_V1
-            || u16_at(bytes, 8)? != 1
+        if bytes.len() != FAULT_CLOCK_EVIDENCE_V2_BYTES
+            || bytes[..8] != FAULT_CLOCK_EVIDENCE_MAGIC_V2
+            || u16_at(bytes, 8)? != 2
             || bytes[16..24].iter().any(|byte| *byte != 0)
             || bytes[208..224].iter().any(|byte| *byte != 0)
         {
@@ -365,7 +365,7 @@ impl FaultClockEvidenceV1 {
         }
         let body = &bytes[224..];
         let observation = match u16_at(bytes, 10)? {
-            1 => FaultClockObservationV1::Read {
+            1 => FaultClockObservationV2::Read {
                 raw_value: u64_at(body, 0)?,
                 transformed_value: u64_at(body, 8)?,
                 raw_architectural_value: u64_at(body, 112)?,
@@ -375,11 +375,11 @@ impl FaultClockEvidenceV1 {
                 anchor_raw: u64_at(body, 16)?,
                 anchor_value: u64_at(body, 24)?,
                 drift_ratio: [u64_at(body, 32)?, u64_at(body, 40)?],
-                additive_nanos: u64_at(body, 48)? as i64,
+                additive_ps: u64_at(body, 48)? as i64,
                 frozen_value: u64_at(body, 56)?,
                 read_opportunity: u64_at(body, 64)?,
                 contribution: u64_at(body, 72)? as i64,
-                synchronization_remaining_nanos: u64_at(body, 80)? as i64,
+                synchronization_remaining_ps: u64_at(body, 80)? as i64,
                 transform_kind: u32_at(body, 88)?,
                 read_error: match u32_at(body, 92)? {
                     0 => false,
@@ -391,31 +391,31 @@ impl FaultClockEvidenceV1 {
                 source_state: u32_at(body, 104)?,
                 freeze_release: u32_at(body, 108)?,
             },
-            2 => FaultClockObservationV1::Wander {
-                scheduler_nanos: u64_at(body, 0)?,
-                raw_nanos: u64_at(body, 8)?,
+            2 => FaultClockObservationV2::Wander {
+                scheduler_ps: u64_at(body, 0)?,
+                raw_ps: u64_at(body, 8)?,
                 offsets: [u64_at(body, 16)? as i64, u64_at(body, 24)? as i64],
                 rates_ppb: [u64_at(body, 32)? as i64, u64_at(body, 40)? as i64],
-                next_nanos: [u64_at(body, 48)?, u64_at(body, 56)?],
+                next_ps: [u64_at(body, 48)?, u64_at(body, 56)?],
                 sequences: [u64_at(body, 64)?, u64_at(body, 72)?],
             },
-            3 => FaultClockObservationV1::SourceTransition {
-                scheduler_nanos: u64_at(body, 0)?,
-                raw_nanos: u64_at(body, 8)?,
+            3 => FaultClockObservationV2::SourceTransition {
+                scheduler_ps: u64_at(body, 0)?,
+                raw_ps: u64_at(body, 8)?,
                 old_value: u64_at(body, 16)?,
                 new_anchor_value: u64_at(body, 24)?,
                 transition_generation: u64_at(body, 32)?,
                 states: [u32_at(body, 40)?, u32_at(body, 44)?],
                 old_fallback: array32(body, 48)?,
                 new_fallback: array32(body, 80)?,
-                synchronization_remaining_nanos: [
+                synchronization_remaining_ps: [
                     u64_at(body, 112)? as i64,
                     u64_at(body, 120)? as i64,
                 ],
                 synchronization_ratio: [u64_at(body, 128)?, u64_at(body, 136)?],
-                synchronization_threshold_nanos: u64_at(body, 144)?,
+                synchronization_threshold_ps: u64_at(body, 144)?,
             },
-            4 => FaultClockObservationV1::TimerTransition {
+            4 => FaultClockObservationV2::TimerTransition {
                 role: u16_at(body, 0)?,
                 index: u32_at(body, 4)?,
                 action: u32_at(body, 8)?,
@@ -428,22 +428,22 @@ impl FaultClockEvidenceV1 {
                 timer_opportunity: u64_at(body, 88)?,
                 arm_sequence: u64_at(body, 96)?,
             },
-            5 => FaultClockObservationV1::Impulse {
+            5 => FaultClockObservationV2::Impulse {
                 transform_kind: u32_at(body, 0)?,
-                raw_nanos: u64_at(body, 8)?,
+                raw_ps: u64_at(body, 8)?,
                 old_value: u64_at(body, 16)?,
                 signed_value: u64_at(body, 24)? as i64,
                 ratio: [u64_at(body, 32)?, u64_at(body, 40)?],
                 unsigned_value: u64_at(body, 48)?,
                 new_anchor: [u64_at(body, 56)?, u64_at(body, 64)?],
                 new_drift_ratio: [u64_at(body, 72)?, u64_at(body, 80)?],
-                new_additive_nanos: u64_at(body, 88)? as i64,
+                new_additive_ps: u64_at(body, 88)? as i64,
                 new_frozen_value: u64_at(body, 96)?,
                 new_freeze_release: u32_at(body, 104)?,
                 new_monotonicity: u32_at(body, 108)?,
                 new_overdue_policy: u32_at(body, 112)?,
                 new_source_state: u32_at(body, 116)?,
-                old_additive_nanos: u64_at(body, 120)? as i64,
+                old_additive_ps: u64_at(body, 120)? as i64,
             },
             _ => return Err(FaultAbiError::CapabilityInvariant),
         };

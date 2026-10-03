@@ -70,7 +70,15 @@ where
     runtime
         .arm_advance_completion_fence(target.advance_completion_fence(&pending))
         .map_err(QemuAsyncDriverError::Runtime)?;
-    let wait_timeout = policy.timeout_for(QemuAsyncWait::AdvanceCompletion);
+    // Renewal is a liveness poll, not an attempt deadline. A short slice
+    // observes child exit and an authored watchdog cancellation promptly.
+    let wait_timeout = if policy.unbounded_advance_completion {
+        policy
+            .timeout_for(QemuAsyncWait::AdvanceCompletion)
+            .min(Duration::from_secs(1))
+    } else {
+        policy.timeout_for(QemuAsyncWait::AdvanceCompletion)
+    };
     let mut first_wait = true;
     let completion = loop {
         let is_initial_wait = first_wait;
@@ -89,7 +97,34 @@ where
             outcome: wait_outcome,
         });
         if wait_outcome == QemuAsyncWaitOutcome::TimedOut {
-            break None;
+            if !policy.unbounded_advance_completion {
+                break None;
+            }
+            if let Some(exit_status) = target
+                .child_exit_status()
+                .map_err(QemuAsyncDriverError::Target)?
+            {
+                async_operations.push(QemuAsyncDriverOperation::ShutdownAfterCrash);
+                let status = crash_detector.unexpected_child_exit(exit_status);
+                let shutdown = target
+                    .shutdown_after_crash()
+                    .map_err(QemuAsyncDriverError::Target)?;
+                return Ok(QemuAsyncNodeStepReport {
+                    ceiling: None,
+                    outcome: QemuAsyncNodeStepOutcome::Crashed { status, shutdown },
+                    final_state: None,
+                    inbound_frames_consumed: 0,
+                    emitted_frames: Vec::new(),
+                    yielded_before_quantum: true,
+                    yielded_after_quantum: false,
+                    hot_path_operations: Vec::new(),
+                    async_operations,
+                });
+            }
+            runtime
+                .renew_advance_completion_poll(wait_timeout)
+                .map_err(QemuAsyncDriverError::Runtime)?;
+            continue;
         }
         match target.finish_quantum(&mut pending) {
             Ok(completion) => {

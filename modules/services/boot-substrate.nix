@@ -293,6 +293,10 @@
           nodev,nosuid,metacopy=on,redirect_dir=on,lowerdir+=/sysroot/var/etc,lowerdir+=$config_lower/etc,lowerdir+=$sys/metadata,datadir+=$sys/content,upperdir=$upper_root/dir,workdir=$upper_root/work \
           /sysroot/etc
 
+        # The initrd's /run moves over the image's /run at switch-root.
+        # Publish the booted image identity in that surviving mount.
+        ln -sfnT "$toplevel" /run/current-system
+
         # Inspection symlinks (relative targets so they survive
         # switch_root). Created under the initrd's /run/etc so they
         # move into stage-2 along with the rest of /run.

@@ -20,7 +20,7 @@ use crate::{
     CoverageCallback, CoverageCapabilities, CoverageError, CoverageRegistrationPlan,
     ExactDeadlineError, ExactDeadlineReader, PluginArgs, PluginArgsParseError, PluginBootBarrier,
     PluginControlHandshake, PluginCoverage, PluginHandshakeError, PluginReadySetupAck,
-    PluginRegistrationStep, QemuAdvanceTimeNsFn, QemuClockDeadlineFn, QueuedIdleAdvance,
+    PluginRegistrationStep, QemuAdvanceTimeTicksFn, QemuClockDeadlineFn, QueuedIdleAdvance,
     QueuedIdleAdvanceError, RequiredOwnedCallbacksRegistered, TimeControlRegistrationPlan,
     perform_plugin_handshake,
 };
@@ -193,7 +193,7 @@ impl PluginRegistrationSequence {
         Ok(handshake)
     }
 
-    /// Receives and records the host `Setup` frame and its two descriptors.
+    /// Receives and records the host `Setup` frame and its three descriptors.
     ///
     /// The sequence must already have acquired QEMU time control. The method
     /// checks the registration step before reading the control socket, so an
@@ -203,7 +203,7 @@ impl PluginRegistrationSequence {
     ///
     /// Returns [`PluginRegistrationSequenceError`] when setup receive is out of
     /// order, the socket closes, the frame is malformed, or the frame carries
-    /// anything other than exactly two `SCM_RIGHTS` descriptors.
+    /// anything other than exactly three `SCM_RIGHTS` descriptors.
     #[cfg(unix)]
     pub fn receive_setup_with_descriptors<S>(
         &mut self,
@@ -315,10 +315,9 @@ impl PluginRegistrationSequence {
         &mut self,
         setup_ack: PluginReadySetupAck,
         slot: &NodeSlot,
-        icount_shift: u8,
     ) -> Result<BootBarrierRelease, PluginRegistrationSequenceError> {
         self.ensure_next_step(PluginRegistrationStep::WaitBootBarrier)?;
-        let release = PluginBootBarrier::wait(setup_ack, slot, icount_shift)
+        let release = PluginBootBarrier::wait(setup_ack, slot)
             .map_err(|source| self.fail_boot_barrier(source))?;
         self.record_step_unchecked(PluginRegistrationStep::WaitBootBarrier)?;
         Ok(release)
@@ -408,8 +407,8 @@ impl PluginRegistrationSequence {
     /// # Errors
     ///
     /// Returns [`PluginRegistrationSequenceError`] when
-    /// `qemu_plugin_clock_deadline_ns` or
-    /// `qemu_plugin_advance_time_ns` is unavailable, when
+    /// `qemu_plugin_clock_deadline_ps` or
+    /// `qemu_plugin_advance_time_ticks` is unavailable, when
     /// `coverage=on` but QEMU's stock TB translation/execution APIs are unavailable, when
     /// the registration order is wrong, or when registration has already
     /// failed.
@@ -418,15 +417,15 @@ impl PluginRegistrationSequence {
         plugin_id: crate::QemuPluginId,
         args: &PluginArgs,
         owned_callbacks: &mut RequiredOwnedCallbacksRegistered,
-        clock_deadline_ns: Option<QemuClockDeadlineFn>,
-        advance_time_ns: Option<QemuAdvanceTimeNsFn>,
+        clock_deadline_ps: Option<QemuClockDeadlineFn>,
+        advance_time_ticks: Option<QemuAdvanceTimeTicksFn>,
         coverage_capabilities: CoverageCapabilities,
     ) -> Result<PluginCallbackCapabilities, PluginRegistrationSequenceError> {
         self.register_callbacks_with_exact_deadline_inner(
             Some((plugin_id, owned_callbacks)),
             args,
-            clock_deadline_ns,
-            advance_time_ns,
+            clock_deadline_ps,
+            advance_time_ticks,
             coverage_capabilities,
         )
     }
@@ -441,15 +440,15 @@ impl PluginRegistrationSequence {
     pub(crate) fn register_callbacks_for_test(
         &mut self,
         args: &PluginArgs,
-        clock_deadline_ns: Option<QemuClockDeadlineFn>,
-        advance_time_ns: Option<QemuAdvanceTimeNsFn>,
+        clock_deadline_ps: Option<QemuClockDeadlineFn>,
+        advance_time_ticks: Option<QemuAdvanceTimeTicksFn>,
         coverage_capabilities: CoverageCapabilities,
     ) -> Result<PluginCallbackCapabilities, PluginRegistrationSequenceError> {
         self.register_callbacks_with_exact_deadline_inner(
             None,
             args,
-            clock_deadline_ns,
-            advance_time_ns,
+            clock_deadline_ps,
+            advance_time_ticks,
             coverage_capabilities,
         )
     }
@@ -458,13 +457,13 @@ impl PluginRegistrationSequence {
         &mut self,
         live_owner: Option<(crate::QemuPluginId, &mut RequiredOwnedCallbacksRegistered)>,
         args: &PluginArgs,
-        clock_deadline_ns: Option<QemuClockDeadlineFn>,
-        advance_time_ns: Option<QemuAdvanceTimeNsFn>,
+        clock_deadline_ps: Option<QemuClockDeadlineFn>,
+        advance_time_ticks: Option<QemuAdvanceTimeTicksFn>,
         coverage_capabilities: CoverageCapabilities,
     ) -> Result<PluginCallbackCapabilities, PluginRegistrationSequenceError> {
-        let exact_deadline_reader = ExactDeadlineReader::require(clock_deadline_ns)
+        let exact_deadline_reader = ExactDeadlineReader::require(clock_deadline_ps)
             .map_err(|source| self.fail_exact_deadline_capability(source))?;
-        let queued_idle_advance = QueuedIdleAdvance::require(advance_time_ns)
+        let queued_idle_advance = QueuedIdleAdvance::require(advance_time_ticks)
             .map_err(|source| self.fail_queued_idle_advance_capability(source))?;
         let coverage_registration_plan = PluginCoverage::with_default_map(args.coverage())
             .registration_plan(coverage_capabilities)
@@ -705,8 +704,10 @@ impl PluginRegistrationSequence {
 const fn setup_error_registration_step(source: &PluginSetupError) -> PluginRegistrationStep {
     match source {
         PluginSetupError::ReceiveSetup { .. } => PluginRegistrationStep::ReceiveSetup,
-        PluginSetupError::MapRegion { .. }
+        PluginSetupError::InspectSharedMemory { .. }
+        | PluginSetupError::MapRegion { .. }
         | PluginSetupError::ValidateRegion { .. }
+        | PluginSetupError::ValidatePluginSetupPlan { .. }
         | PluginSetupError::NodeCountMismatch { .. }
         | PluginSetupError::SlotOutsideRegionNodeCount { .. } => {
             PluginRegistrationStep::MapSharedMemory
@@ -721,6 +722,7 @@ const fn setup_error_registration_step(source: &PluginSetupError) -> PluginRegis
             PluginSetupFailureStage::ReceiveSetup => PluginRegistrationStep::ReceiveSetup,
             PluginSetupFailureStage::MapRegion
             | PluginSetupFailureStage::ValidateRegion
+            | PluginSetupFailureStage::ValidatePluginSetupPlan
             | PluginSetupFailureStage::CrossCheckSlot => PluginRegistrationStep::MapSharedMemory,
             PluginSetupFailureStage::ArmWakeFd | PluginSetupFailureStage::RegisterWakeFd => {
                 PluginRegistrationStep::ArmWakeFd

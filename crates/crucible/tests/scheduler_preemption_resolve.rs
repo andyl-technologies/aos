@@ -5,12 +5,12 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    BackendInput, ConcurrentQuantumLoop, Decision, EventKey, ExactLocalEvent, Icount, IrqVector,
+    BackendInput, ConcurrentQuantumLoop, Decision, EventKey, ExactLocalEvent, IrqVector,
     NetworkLookahead, NodeCounter, NodeId, PreemptionDecision, PreemptionKind, QuantumLoop,
     QuantumRequest, ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerError,
     SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerQuiescenceBlocker,
-    SchedulerScenarioNode, SchedulingNodeKind, Shift, SimDuration, SimInstant, SingleScheduler,
-    VcpuId, VirtualTime,
+    SchedulerScenarioNode, SchedulingNodeKind, SimDuration, SimInstant, SingleScheduler, VcpuId,
+    VirtualTime,
 };
 
 #[test]
@@ -22,9 +22,8 @@ fn preemption_within_window_records_decision_and_application_in_total_order() {
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "preemption-resolve-in-window",
-            shift(0),
             8,
-            SimInstant { nanos: 20 },
+            SimInstant { ticks: 20 },
             vec![scenario_node(
                 "runner",
                 0,
@@ -74,8 +73,8 @@ fn preemption_within_window_records_decision_and_application_in_total_order() {
     assert_eq!(application.sequence, 0);
     assert_eq!(application.quantum, 0);
     assert_eq!(application.decision, preemption);
-    assert_eq!(application.deadline_icount, Icount { retired: 0 });
-    assert_eq!(application.horizon_icount, Icount { retired: 8 });
+    assert_eq!(application.deadline_tick, SimInstant { ticks: 0 });
+    assert_eq!(application.horizon_tick, SimInstant { ticks: 8 });
     assert_eq!(application.ceiling, scheduler.run_ceiling_publications()[0]);
 }
 
@@ -85,9 +84,8 @@ fn preemption_at_authorized_ceiling_is_allowed() {
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "preemption-resolve-at-ceiling",
-            shift(0),
             8,
-            SimInstant { nanos: 20 },
+            SimInstant { ticks: 20 },
             vec![scenario_node(
                 "runner",
                 0,
@@ -113,9 +111,8 @@ fn preemption_waits_for_vm_node_not_same_named_subnode() {
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "preemption-resolve-vm-only",
-            shift(0),
             8,
-            SimInstant { nanos: 20 },
+            SimInstant { ticks: 20 },
             vec![
                 SchedulerScenarioNode {
                     id: SchedulerNodeId {
@@ -167,9 +164,8 @@ fn preemption_past_authorized_ceiling_fails_without_application() {
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "preemption-resolve-past-ceiling",
-            shift(0),
             8,
-            SimInstant { nanos: 20 },
+            SimInstant { ticks: 20 },
             vec![scenario_node(
                 "runner",
                 0,
@@ -204,9 +200,8 @@ fn preemption_before_deadline_fails_without_application() {
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "preemption-resolve-before-deadline",
-            shift(0),
             8,
-            SimInstant { nanos: 20 },
+            SimInstant { ticks: 20 },
             vec![scenario_node(
                 "runner",
                 5,
@@ -240,9 +235,8 @@ fn multiple_preemptions_for_one_run_fail_before_advance() {
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "preemption-resolve-one-command-per-run",
-            shift(0),
             8,
-            SimInstant { nanos: 20 },
+            SimInstant { ticks: 20 },
             vec![scenario_node(
                 "runner",
                 0,
@@ -277,9 +271,8 @@ fn concurrent_preemption_validation_is_all_or_nothing() {
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "preemption-resolve-concurrent-all-or-nothing",
-            shift(0),
             8,
-            SimInstant { nanos: 20 },
+            SimInstant { ticks: 20 },
             vec![
                 scenario_node(
                     "alpha",
@@ -302,6 +295,7 @@ fn concurrent_preemption_validation_is_all_or_nothing() {
     .expect("scenario should build");
     let before_configuration = scheduler.configuration().clone();
     let before_frontier = scheduler.frontier();
+    let before_log_offset = scheduler.event_log().offset();
 
     let error = scheduler
         .drive_concurrent_quantum(
@@ -315,9 +309,10 @@ fn concurrent_preemption_validation_is_all_or_nothing() {
 
     assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
     assert!(error.to_string().contains("outside authorized window"));
-    assert_eq!(scheduler.run_ceiling_publications().len(), 2);
+    assert!(scheduler.run_ceiling_publications().is_empty());
     assert_eq!(scheduler.configuration(), &before_configuration);
     assert_eq!(scheduler.frontier(), before_frontier);
+    assert_eq!(scheduler.event_log().offset(), before_log_offset);
     assert!(scheduler.preemption_applications().is_empty());
 }
 
@@ -326,9 +321,8 @@ fn concurrent_multiple_preemptions_for_one_run_fail_before_any_commit() {
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "preemption-resolve-concurrent-multiple-one-run",
-            shift(0),
             8,
-            SimInstant { nanos: 20 },
+            SimInstant { ticks: 20 },
             vec![
                 scenario_node(
                     "alpha",
@@ -352,6 +346,7 @@ fn concurrent_multiple_preemptions_for_one_run_fail_before_any_commit() {
     .expect("scenario should build");
     let before_configuration = scheduler.configuration().clone();
     let before_frontier = scheduler.frontier();
+    let before_log_offset = scheduler.event_log().offset();
 
     let error = scheduler
         .drive_concurrent_quantum(
@@ -365,9 +360,10 @@ fn concurrent_multiple_preemptions_for_one_run_fail_before_any_commit() {
 
     assert!(matches!(error, SchedulerError::BoundaryViolation { .. }));
     assert!(error.to_string().contains("multiple explorer preemptions"));
-    assert_eq!(scheduler.run_ceiling_publications().len(), 2);
+    assert!(scheduler.run_ceiling_publications().is_empty());
     assert_eq!(scheduler.configuration(), &before_configuration);
     assert_eq!(scheduler.frontier(), before_frontier);
+    assert_eq!(scheduler.event_log().offset(), before_log_offset);
     assert!(scheduler.preemption_applications().is_empty());
 }
 
@@ -378,9 +374,8 @@ fn concurrent_preemptions_record_in_commanded_time_order() {
     let mut scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "preemption-resolve-concurrent-total-order",
-            shift(0),
             8,
-            SimInstant { nanos: 20 },
+            SimInstant { ticks: 20 },
             vec![
                 scenario_node(
                     "alpha",
@@ -437,6 +432,8 @@ fn concurrent_preemptions_record_in_commanded_time_order() {
             .collect::<Vec<_>>(),
         vec![beta.clone(), alpha.clone()]
     );
+    // Known native commands fence each RUN at their application coordinate,
+    // so neither quantum endpoint passes a still-unpublished earlier command.
     assert_eq!(
         round
             .outcomes
@@ -446,9 +443,9 @@ fn concurrent_preemptions_record_in_commanded_time_order() {
             .collect::<Vec<_>>(),
         vec![
             VirtualTime { ticks: 2 },
-            VirtualTime { ticks: 6 },
+            VirtualTime { ticks: 2 },
             VirtualTime { ticks: 5 },
-            VirtualTime { ticks: 6 },
+            VirtualTime { ticks: 5 },
         ]
     );
 }
@@ -459,9 +456,8 @@ fn pending_preemption_blocks_quiescence_until_applied() {
     let scheduler = SingleScheduler::new(
         SchedulerLivenessScenario::from_canonical_material(
             "preemption-resolve-quiescence",
-            shift(0),
             8,
-            SimInstant { nanos: 20 },
+            SimInstant { ticks: 20 },
             vec![scenario_node(
                 "runner",
                 0,
@@ -524,7 +520,7 @@ fn interrupt_preemption(node: &str, at: u64, irq: u32) -> PreemptionDecision {
         node: NodeId {
             name: node.to_owned(),
         },
-        at: Icount { retired: at },
+        at: crucible::SimInstant { ticks: at },
         kind: PreemptionKind::InterruptAt {
             target_vcpu: VcpuId { index: 0 },
             irq: IrqVector { vector: irq },
@@ -549,13 +545,18 @@ fn backend_event(
     payload: &[u8],
 ) -> ScheduledEvent {
     ScheduledEvent {
-        key: ScheduledEventKey::from_parts(
-            VirtualTime {
-                ticks: virtual_time,
+        key: ScheduledEventKey::new(
+            crucible::SharedTimelineKey {
+                virtual_time: crucible::SimInstant {
+                    ticks: (VirtualTime {
+                        ticks: virtual_time,
+                    })
+                    .ticks,
+                },
+                node: consumer.clone(),
+                sequence,
             },
-            consumer.clone(),
             producer.clone(),
-            sequence,
         ),
         payload: ScheduledEventPayload::BackendInput(BackendInput {
             node: consumer.node.clone(),
@@ -564,10 +565,6 @@ fn backend_event(
     }
 }
 
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
-}
-
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {
-    NetworkLookahead::Finite(SimDuration { nanos })
+    NetworkLookahead::Finite(SimDuration { ticks: nanos })
 }

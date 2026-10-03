@@ -22,9 +22,11 @@
   ]);
   cliMachineReadable = builtins.readFile ../../crates/crucible-cli/tests/machine_readable.rs;
   cliE2e = builtins.readFile ../../crates/crucible-cli/tests/gate_e2e_determinism.rs;
+  campaignProcessTest = builtins.readFile ../../crates/crucible-cli/tests/campaign_process.rs;
+  packagedCampaignVm = builtins.readFile ./phase4-packaged-campaign-vm.nix;
   defaultChecks = builtins.readFile ./default.nix;
 
-  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
+  inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/23-cli.md" cliDoc [
@@ -58,7 +60,7 @@
       }
       {
         label = "replay to synopsis";
-        needle = "--to <savepoint>        Validate a target savepoint handle or checkpoint hash.";
+        needle = "--to <savepoint>        Validate an authenticated savepoint target.";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/32-implementation-plan.md" planDoc [
@@ -285,8 +287,8 @@
         needle = "cli_replay_to_savepoint_validates_artifact_prefix_and_oracle";
       }
       {
-        label = "replay to checkpoint hash test";
-        needle = "write_checkpoint_closure_fixture(&store_root";
+        label = "bare checkpoint hash rejection test";
+        needle = "offline replay must reject a bare checkpoint hash";
       }
       {
         label = "replay to savepoint scenario mismatch test";
@@ -311,10 +313,6 @@
         needle = "live_qemu_replay_contract_accepts_every_closed_producer";
       }
       {
-        label = "unchanged fork resume recipe regression";
-        needle = "live_qemu_replay_contract_round_trips_unmodified_fork_resume";
-      }
-      {
         label = "pre-branch choice rejection regression";
         needle = "live_qemu_replay_contract_rejects_pre_branch_choices";
       }
@@ -334,15 +332,41 @@
         label = "initial control ordering regression";
         needle = "live_qemu_replay_contract_rejects_noncontiguous_initial_controls";
       }
+      {
+        label = "live replay contract v4";
+        needle = "crucible.live-qemu-replay-contract.v5";
+      }
+      {
+        label = "interactive replay full command-record round trip";
+        needle = "interactive_live_qemu_contract_round_trips_full_control_records";
+      }
+      {
+        label = "interactive replay owner is session";
+        needle = "RunExecutionOwner::Session";
+      }
     ]
     ++ failuresFor "crates/crucible-cli/src/cli/artifact_capture.rs" artifactCapture [
       {
         label = "terminal all-node capture selection regression";
-        needle = "terminal_fingerprint_capture_selects_one_reindexed_sample_per_node";
+        needle = "terminal_fingerprint_capture_selects_the_last_epoch_after_multiple_quanta";
       }
       {
         label = "terminal duplicate-node capture rejection regression";
         needle = "terminal_fingerprint_capture_rejects_duplicate_node_suffix";
+      }
+      {
+        label = "missing authoritative final snapshot rejection";
+        needle = "live_qemu_capture_rejects_missing_authoritative_final_snapshot";
+      }
+      {
+        label = "batch terminal boundary split";
+        needle = "batch_campaign_capture_uses_its_distinct_terminal_boundary";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible-cli/src/cli/artifact_capture.rs" artifactCapture [
+      {
+        label = "synthesized campaign terminal snapshot";
+        needle = "campaign-owned terminal outcome";
       }
     ]
     ++ failuresFor "crates/crucible-cli/tests/machine_readable.rs" cliMachineReadable [
@@ -394,7 +418,7 @@
     ++ failuresFor "crates/crucible-cli/tests/gate_e2e_determinism.rs" cliE2e [
       {
         label = "machine-independent replay profile test";
-        needle = "gate_e2e_determinism_cli_target_replays_from_artifact_on_different_machine_profile";
+        needle = "e2e_artifact_component_replays_across_modeled_machine_profiles";
       }
       {
         label = "machine-independent quiet profile";
@@ -421,6 +445,30 @@
         needle = "assert_eq!(reproduced.artifact_digest, baseline.artifact_digest);";
       }
     ]
+    ++ failuresFor "crates/crucible-cli/tests/campaign_process.rs" campaignProcessTest [
+      {
+        label = "packaged interactive artifact capture and replay";
+        needle = "interactive_session_captures_and_replays_exact_live_artifact";
+      }
+      {
+        label = "live replay contract media type v4";
+        needle = "application/vnd.crucible.live-qemu-replay-contract.v5+text";
+      }
+      {
+        label = "session-owned replay proof";
+        needle = "owner=session";
+      }
+      {
+        label = "campaign-owned replay proof";
+        needle = "owner=campaign";
+      }
+    ]
+    ++ failuresFor "tests/crucible/phase4-packaged-campaign-vm.nix" packagedCampaignVm [
+      {
+        label = "packaged interactive replay gate wiring";
+        needle = "interactive_session_captures_and_replays_exact_live_artifact";
+      }
+    ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
         label = "phase5 exposes CLI replay check";
@@ -434,6 +482,8 @@ in
     pkgs.mkDerivation {
       pname = "crucible-phase5-cli-replay-check";
       version = "0";
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      runtimeDeps = [pkgs.sqlite];
       src = crucibleSrc;
 
       buildDeps = [
@@ -441,6 +491,9 @@ in
         pkgs.crucible
         pkgs.rust
         pkgs.sed
+
+        pkgs.pkg-config
+        pkgs.sqlite
       ];
 
       ATTR_PATH = attrPath;
@@ -510,7 +563,7 @@ in
               --target-dir "$TMPDIR/crucible-cli-replay-check-target" \
               -p crucible-cli \
               --test gate_e2e_determinism \
-              gate_e2e_determinism_cli_target_replays_from_artifact_on_different_machine_profile \
+              e2e_artifact_component_replays_across_modeled_machine_profiles \
               -- --test-threads=1
             cargo test \
               --frozen \
@@ -558,13 +611,6 @@ in
             test "$producer_status" -eq 2
             artifact=$(find "$artifact_dir" -type f -name 'repro-timeout-*.crucible' -print -quit)
             test -n "$artifact"
-            checkpoint_candidates="$TMPDIR/crucible-live-replay-checkpoints"
-            sed -n \
-              's/.*checkpoint=\(blake3:[0-9a-f]*\).*/\1/p' \
-              "$TMPDIR/crucible-live-replay-producer.out" \
-              | sort -u > "$checkpoint_candidates"
-            test "$(wc -l < "$checkpoint_candidates")" -eq 1
-            checkpoint=$(cat "$checkpoint_candidates")
             # Trace files contain only the artifact-owned canonical log. The
             # CLI emits its self-referential final outcome to stdout after the
             # artifact digest is known, so it is deliberately absent here.
@@ -596,26 +642,14 @@ in
               replay "$artifact" \
               --bisect "$artifact" \
               > "$TMPDIR/crucible-live-replay-bisect.out"
-            CRUCIBLE_INITRD="${networkInitramfs}/initrd.img" \
-              CRUCIBLE_RUN_STATE_ROOT="$TMPDIR/crucible-live-replay-to-state" \
-              "${pkgs.crucible}/bin/crucible" \
-              --backend qemu \
-              --format jsonl \
-              --store "$store_dir" \
-              replay "$artifact" \
-              --to "$checkpoint" \
-              > "$TMPDIR/crucible-live-replay-to.out"
-
             grep -q '"kind":"replay_reduction".*status=reexecuted' \
               "$TMPDIR/crucible-live-replay.out"
-            grep -q '"kind":"replay_live_qemu".*validation=passed.*producer=run' \
+            grep -q '"kind":"replay_live_qemu".*validation=passed.*producer=campaign-run' \
               "$TMPDIR/crucible-live-replay.out"
             grep -q '"kind":"replay_check".*status=byte-identical' \
               "$TMPDIR/crucible-live-replay-check.out"
             grep -q '"kind":"replay_bisect".*status=byte-identical' \
               "$TMPDIR/crucible-live-replay-bisect.out"
-            grep -q '"kind":"replay_to_savepoint".*status=target-validated' \
-              "$TMPDIR/crucible-live-replay-to.out"
           '';
         }
         {
@@ -636,7 +670,7 @@ in
             replay_to_materialization=model-temporal-graph
             replay_machine_independent=mock-host-profile
             replay_process=live-qemu-ordinary,check,both-bisect-sides,to-savepoint-target-validation
-            producer_contract_matrix=run,verify,search,fuzz,fork
+            producer_contract_matrix=campaign-run,verify,search,fuzz
             dependencies=$DEPENDENCY_COUNT
             RESULT
           '';

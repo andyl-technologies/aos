@@ -20,17 +20,20 @@ pub enum BufferedFaultResultPoll {
 ///
 /// # Errors
 ///
-/// Returns [`FaultTransportError`] for invalid capacity, corrupt indices,
-/// inconsistent reservation framing, an undersized caller buffer, or
-/// arithmetic overflow.
+/// Returns [`FaultTransportError`] when consumer admission is held, or for
+/// invalid capacity, corrupt indices, inconsistent reservation framing, an
+/// undersized caller buffer, or arithmetic overflow.
 pub fn dequeue_fault_result_with_buffer(
     ring: &RingHeader,
-    slots: &[FaultResultSlotV1],
+    slots: &[FaultResultSlotV2],
     arena_header: &FaultPayloadArenaHeader,
     arena: &[u8],
     arena_region_offset: u64,
     mut payload_buffer: Vec<u8>,
 ) -> Result<BufferedFaultResultPoll, FaultTransportError> {
+    let _consumer = ring
+        .enter_consumer()
+        .ok_or(FaultTransportError::ConsumerBarrierHeld)?;
     let Some((head, slot_index)) = consumer_ring_slot(ring, slots.len())? else {
         return Ok(BufferedFaultResultPoll::Pending(payload_buffer));
     };
@@ -44,7 +47,7 @@ pub fn dequeue_fault_result_with_buffer(
         &mut payload_buffer,
     )?;
     let command_sequence = read_raw_u64(&slot.header, FAULT_RESULT_SEQUENCE_OFFSET);
-    let decoded = FaultResultHeaderV1::decode_header(&slot.header).and_then(|header| {
+    let decoded = FaultResultHeaderV2::decode_header(&slot.header).and_then(|header| {
         validate_envelope_reservation(
             header.result_offset,
             header.result_length,
@@ -64,7 +67,7 @@ pub fn dequeue_fault_result_with_buffer(
 
     Ok(BufferedFaultResultPoll::Ready(match decoded {
         Ok(header) => DequeuedFaultResult::Valid {
-            header,
+            header: Box::new(header),
             payload: payload_buffer,
         },
         Err(error) => DequeuedFaultResult::Invalid {

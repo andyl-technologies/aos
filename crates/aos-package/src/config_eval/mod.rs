@@ -47,8 +47,9 @@ pub mod system_roots;
 mod unit_policy;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
@@ -2357,8 +2358,12 @@ fn add_fixed_input_to_store(path: &Path) -> Result<PathBuf> {
             return Ok(path.to_path_buf());
         }
     }
-    let output = std::process::Command::new("nix-store")
-        .envs(aos_core::nix::aos_management_nix_env())
+    let mut command = Command::new("nix-store");
+    configure_eval_nix_command(
+        &mut command,
+        std::env::var_os("AOS_NIX_EVAL_STORE").as_deref(),
+    )?;
+    let output = command
         .args(["--add-fixed", "sha256"])
         .arg(path)
         .output()
@@ -2421,8 +2426,12 @@ fn add_fixed_eval_host_source(path: &Path, eval_root: &Path) -> Result<PathBuf> 
         }
     }
 
-    let output = std::process::Command::new("nix-store")
-        .envs(aos_core::nix::aos_management_nix_env())
+    let mut command = Command::new("nix-store");
+    configure_eval_nix_command(
+        &mut command,
+        std::env::var_os("AOS_NIX_EVAL_STORE").as_deref(),
+    )?;
+    let output = command
         .args(["--add-fixed", "--recursive", "sha256"])
         .arg(&source)
         .output()
@@ -2449,6 +2458,46 @@ fn manifest_store_root(target: &str) -> Option<&str> {
     let suffix = target.strip_prefix("/nix/store/")?;
     let first = suffix.split('/').next()?;
     (!first.is_empty()).then_some(&target[.."/nix/store/".len() + first.len()])
+}
+
+/// Keeps evaluation commands on one explicit local-root store when configured.
+fn configure_eval_nix_command(command: &mut Command, eval_store: Option<&OsStr>) -> Result<()> {
+    command.envs(aos_core::nix::aos_management_nix_env());
+
+    if let Some(store) = eval_store {
+        let store_uri = store
+            .to_str()
+            .context("AOS_NIX_EVAL_STORE must be a UTF-8 local-root store URI")?;
+        let root = store_uri
+            .strip_prefix("local?root=")
+            .context("AOS_NIX_EVAL_STORE must select an explicit local-root store")?;
+        let root_path = Path::new(root);
+        let safe_components = root_path.components().all(|component| {
+            matches!(
+                component,
+                std::path::Component::RootDir | std::path::Component::Normal(_)
+            )
+        });
+        anyhow::ensure!(
+            root_path.is_absolute()
+                && root_path != Path::new("/")
+                && !root_path.starts_with("/nix")
+                && safe_components
+                && !root
+                    .bytes()
+                    .any(|byte| matches!(byte, b'?' | b'&' | b'#' | b'%')),
+            "AOS_NIX_EVAL_STORE must name an isolated absolute local root"
+        );
+
+        // An explicit isolated evaluator store uses canonical /nix/store
+        // names while keeping its bytes and state beneath the selected root.
+        command.env("NIX_REMOTE", store);
+        command.env_remove("NIX_STORE_DIR");
+        command.env_remove("NIX_STATE_DIR");
+        command.env_remove("NIX_LOG_DIR");
+    }
+
+    Ok(())
 }
 
 /// Re-evaluate a config-generation across an ABI boundary from its retained
@@ -2805,8 +2854,12 @@ where
 
 /// Recomputes a store path's NAR hash from its current bytes.
 fn retained_store_path_nar_hash(path: &Path) -> Result<String> {
-    let mut child = std::process::Command::new("nix-store")
-        .envs(aos_core::nix::aos_management_nix_env())
+    let mut command = Command::new("nix-store");
+    configure_eval_nix_command(
+        &mut command,
+        std::env::var_os("AOS_NIX_EVAL_STORE").as_deref(),
+    )?;
+    let mut child = command
         .arg("--dump")
         .arg(path)
         .stdout(Stdio::piped())

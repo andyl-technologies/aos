@@ -176,7 +176,7 @@ fn binding_contract_codec_is_golden_and_covers_every_top_level_field() {
         .unwrap_or_else(|error| panic!("binding encoding must succeed: {error}"));
     assert_eq!(
         golden.to_hex(),
-        "c72f522b8fc2e39d01f57a1547765eb7a5062545a33482e5940b778bd73e2d09"
+        "cfc08970da2f717c5ed926b85b51f4467121bd73f83e8aea9c6ea44a0215d441"
     );
 
     let mut mutations = Vec::new();

@@ -71,7 +71,7 @@ fn run_sequence(skew: usize) -> Vec<(u64, Vec<u8>)> {
         ok(dev.submit(t, req));
         let lim = dev.core().next_exact_local_event().unwrap_or(t);
         ok(dev.advance_to(lim));
-        while let Some(pending) = dev.core_mut().pop_response() {
+        while let Some(pending) = ok(dev.core_mut().pop_response()) {
             out.push((pending.delivery_icount(), pending.response.payload));
         }
         t = lim;
@@ -148,7 +148,7 @@ fn decode_never_panics_on_arbitrary_bytes() {
             if dev.submit(t, &bytes).is_ok() {
                 let lim = dev.core().next_exact_local_event().unwrap_or(t);
                 let _ = dev.advance_to(lim);
-                while dev.core_mut().pop_response().is_some() {}
+                while ok(dev.core_mut().pop_response()).is_some() {}
                 t = lim;
             }
         }
@@ -283,7 +283,7 @@ fn structured_fuzz_reaches_deep_decode_paths_without_panic() {
         if f.len() <= msize && dev.submit(t, &f).is_ok() {
             let lim = dev.core().next_exact_local_event().unwrap_or(t);
             let _ = dev.advance_to(lim);
-            while dev.core_mut().pop_response().is_some() {}
+            while ok(dev.core_mut().pop_response()).is_some() {}
             t = lim;
         }
     }

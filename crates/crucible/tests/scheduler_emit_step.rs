@@ -5,11 +5,11 @@
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
 use crucible::{
-    BackendInput, ContentHash, Decision, EventEvaluationKind, EventKey, ExactLocalEvent,
+    BackendInput, ContentHash, Decision, EventEvaluationKind, EventKey, ExactLocalEvent, Icount,
     NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest, ScheduledEvent,
     ScheduledEventKey, ScheduledEventPayload, SchedulerEventLogClass, SchedulerEventLogPayload,
     SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode,
-    SchedulingNodeKind, Shift, SimDuration, SimInstant, SingleScheduler, VirtualTime,
+    SchedulingNodeKind, SimDuration, SimInstant, SingleScheduler, VirtualTime,
     check_scheduler_liveness,
 };
 
@@ -22,9 +22,8 @@ fn emit_appends_resolved_happenings_before_decisions_with_dense_content_hashes()
     let second_frame = backend_event(4, &consumer, &second_producer, 2, b"second-frame");
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "emit-step-entry-order",
-        shift(0),
         8,
-        SimInstant { nanos: 30 },
+        SimInstant { ticks: 30 },
         vec![scenario_node("consumer", 0, finite_lookahead(12))],
         vec![second_frame.clone(), frame.clone()],
     );
@@ -117,9 +116,8 @@ fn step_advances_schedule_and_event_log_prefix_across_quanta() {
     let node_b = scheduler_node("node-b", SchedulingNodeKind::Vm);
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "emit-step-prefix-advance",
-        shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![
             scenario_node("node-a", 0, finite_lookahead(10)),
             scenario_node("node-b", 0, finite_lookahead(10)),
@@ -161,6 +159,72 @@ fn step_advances_schedule_and_event_log_prefix_across_quanta() {
 }
 
 #[test]
+fn resolved_backend_input_retains_physical_counter_across_later_rebase() {
+    let consumer = scheduler_node("consumer", SchedulingNodeKind::Vm);
+    let producer = scheduler_node("producer", SchedulingNodeKind::Vm);
+    let scenario = SchedulerLivenessScenario::from_canonical_material(
+        "emit-physical-frame-counter",
+        8,
+        SimInstant { ticks: 20 },
+        vec![scenario_node("consumer", 0, finite_lookahead(10))],
+        vec![
+            backend_event(3, &consumer, &producer, 1, b"before-rebase"),
+            backend_event(6, &consumer, &producer, 2, b"after-rebase"),
+        ],
+    );
+    let mut scheduler = SingleScheduler::new(scenario).expect("scenario should build");
+
+    let first = scheduler
+        .drive_quantum(QuantumRequest {
+            configuration: scheduler.configuration().clone(),
+            control: Vec::new(),
+        })
+        .expect("first frame should resolve");
+    let first_entry = &first.event_log_entries[0];
+    assert_eq!(first_entry.at(), VirtualTime { ticks: 3 });
+    assert_eq!(first_entry.time().stamp.tick, SimInstant { ticks: 3 });
+    assert_eq!(first_entry.time().stamp.node, Some(consumer.node.clone()));
+    assert_eq!(
+        first_entry.time().stamp.retired,
+        Some(Icount { retired: 3 })
+    );
+    assert!(
+        first
+            .event_log_segment_text
+            .contains("entry.at_raw_retired=3")
+    );
+
+    scheduler
+        .rebase_restarted_backend_counter(&consumer.node, NodeCounter { ticks: 100 })
+        .expect("replacement backend should rebase");
+    let second = scheduler
+        .drive_quantum(QuantumRequest {
+            configuration: scheduler.configuration().clone(),
+            control: Vec::new(),
+        })
+        .expect("second frame should resolve");
+    let second_entry = &second.event_log_entries[0];
+
+    assert_eq!(
+        first_entry.time().stamp.retired,
+        Some(Icount { retired: 3 })
+    );
+    assert_eq!(second_entry.at(), VirtualTime { ticks: 6 });
+    assert_eq!(second_entry.time().stamp.tick, SimInstant { ticks: 6 });
+    assert_eq!(second_entry.time().stamp.node, Some(consumer.node));
+    assert_eq!(
+        second_entry.time().stamp.retired,
+        Some(Icount { retired: 103 })
+    );
+    assert!(
+        second
+            .event_log_segment_text
+            .contains("entry.at_raw_retired=103")
+    );
+    assert_ne!(first_entry.content_hash(), second_entry.content_hash());
+}
+
+#[test]
 fn liveness_report_includes_deterministic_event_log_hashes() {
     let first = check_scheduler_liveness(report_scenario()).expect("first run should terminate");
     let second = check_scheduler_liveness(report_scenario()).expect("second run should terminate");
@@ -177,9 +241,8 @@ fn liveness_report_includes_deterministic_event_log_hashes() {
 fn no_progress_quantum_does_not_append_polling_boundary_entries() {
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "emit-step-no-progress-poll",
-        shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         Vec::new(),
         Vec::new(),
     ))
@@ -211,9 +274,8 @@ fn report_scenario() -> SchedulerLivenessScenario {
     let node_b = scheduler_node("node-b", SchedulingNodeKind::Vm);
     SchedulerLivenessScenario::from_canonical_material(
         "emit-step-report",
-        shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![
             scenario_node("node-a", 0, finite_lookahead(10)),
             scenario_node("node-b", 0, finite_lookahead(10)),
@@ -242,13 +304,18 @@ fn backend_event(
     payload: &[u8],
 ) -> ScheduledEvent {
     ScheduledEvent {
-        key: ScheduledEventKey::from_parts(
-            VirtualTime {
-                ticks: virtual_time,
+        key: ScheduledEventKey::new(
+            crucible::SharedTimelineKey {
+                virtual_time: crucible::SimInstant {
+                    ticks: (VirtualTime {
+                        ticks: virtual_time,
+                    })
+                    .ticks,
+                },
+                node: consumer.clone(),
+                sequence,
             },
-            consumer.clone(),
             producer.clone(),
-            sequence,
         ),
         payload: ScheduledEventPayload::BackendInput(BackendInput {
             node: consumer.node.clone(),
@@ -272,7 +339,7 @@ fn scenario_node(
 }
 
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {
-    NetworkLookahead::Finite(SimDuration { nanos })
+    NetworkLookahead::Finite(SimDuration { ticks: nanos })
 }
 
 fn scheduler_node(name: &str, kind: SchedulingNodeKind) -> SchedulerNodeId {
@@ -282,8 +349,4 @@ fn scheduler_node(name: &str, kind: SchedulingNodeKind) -> SchedulerNodeId {
         },
         kind,
     }
-}
-
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
 }

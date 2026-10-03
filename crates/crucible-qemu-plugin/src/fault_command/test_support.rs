@@ -5,10 +5,12 @@ use std::os::raw::c_int;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ptr::NonNull;
 
+use sha2::Digest as _;
+
 use crucible_shmem::{
-    FaultCommandKind, FaultCommandSlotV1, FaultEventOutcomeV1, FaultEventSlotV1,
-    FaultPayloadArenaHeader, FaultResultSlotV1, NodeFaultFieldV1, NodeFaultOperationV1,
-    NodeFaultPayloadV1, NodeFaultTargetKindV1, RingHeader, node_fault_field,
+    FaultCommandHeaderV1, FaultCommandKind, FaultCommandSlotV1, FaultEventOutcomeV1,
+    FaultEventSlotV1, FaultPayloadArenaHeader, FaultResultSlotV2, NodeFaultFieldV1,
+    NodeFaultOperationV1, NodeFaultPayloadV1, NodeFaultTargetKindV1, RingHeader, node_fault_field,
 };
 
 use super::{
@@ -19,6 +21,10 @@ use super::{
 
 thread_local! {
     pub(super) static TEST_EVENT_PENDING: std::cell::RefCell<Option<(QemuFaultEvent, Vec<u8>)>> =
+        const { std::cell::RefCell::new(None) };
+    static TEST_EVENT_NEXT: std::cell::RefCell<Option<(QemuFaultEvent, Vec<u8>)>> =
+        const { std::cell::RefCell::new(None) };
+    static TEST_DISPATCH_EVENT_PENDING: std::cell::RefCell<Option<(QemuFaultEvent, Vec<u8>)>> =
         const { std::cell::RefCell::new(None) };
 }
 
@@ -72,6 +78,9 @@ pub(super) extern "C" fn test_event_poll(
             *payload_length = pending_payload.len();
         }
         let _consumed = pending.take();
+        TEST_EVENT_NEXT.with(|next| {
+            *pending = next.borrow_mut().take();
+        });
         1
     })
 }
@@ -87,6 +96,8 @@ pub(super) fn test_result_for_command(command: QemuFaultCommand) -> QemuFaultRes
         command_sequence: command.command_sequence,
         observed_icount: command.target_icount,
         applied_icount: command.target_icount,
+        emitted_tick: command.target_tick,
+        observed_tick: command.target_tick,
         before_hash: [0; 32],
         after_hash: [0; 32],
         evidence_hash: [0; 32],
@@ -104,7 +115,7 @@ pub(crate) fn initialized_bridge(
     command_arena: &mut [u8],
     command_arena_offset: u64,
     result_ring: &RingHeader,
-    result_slots: &mut [FaultResultSlotV1],
+    result_slots: &mut [FaultResultSlotV2],
     result_arena_header: &FaultPayloadArenaHeader,
     result_arena: &mut [u8],
     result_arena_offset: u64,
@@ -178,8 +189,33 @@ pub(crate) fn initialized_bridge(
     }
 }
 
+/// Builds an interrupted service window with distinct raw and tick coordinates.
+pub(crate) fn cpu_service_event_evidence(raw_icount: u64, tick: u64) -> Vec<u8> {
+    let mut evidence = vec![0; 192];
+    evidence[..8].copy_from_slice(b"CRUCVCS2");
+    evidence[12..16].copy_from_slice(&1_u32.to_le_bytes());
+    evidence[16..24].copy_from_slice(&1_u64.to_le_bytes());
+    evidence[24..32].copy_from_slice(&1_u64.to_le_bytes());
+    evidence[32..40].copy_from_slice(&2_u64.to_le_bytes());
+    evidence[40..48].copy_from_slice(&100_u64.to_le_bytes());
+    evidence[64..72].copy_from_slice(&50_u64.to_le_bytes());
+    evidence[80..88].copy_from_slice(&50_u64.to_le_bytes());
+    evidence[88..96].copy_from_slice(&tick.to_le_bytes());
+    evidence[96..104].copy_from_slice(&tick.to_le_bytes());
+    evidence[112..120].copy_from_slice(&raw_icount.to_le_bytes());
+    evidence[120..124].copy_from_slice(&1_u32.to_le_bytes());
+    evidence[124..128].copy_from_slice(&1_u32.to_le_bytes());
+    evidence[152..160].copy_from_slice(&7_u64.to_le_bytes());
+    evidence[184..188].copy_from_slice(&2_u32.to_le_bytes());
+    evidence
+}
+
 /// Stages one authenticated QEMU occurrence event for the test ABI.
-pub(crate) fn stage_node_event(target_node_hash: [u8; 32]) -> (u64, Vec<u8>) {
+pub(crate) fn stage_node_event(
+    target_node_hash: [u8; 32],
+    observed_raw_icount: u64,
+    observed_tick: u64,
+) -> (u64, Vec<u8>) {
     let request = NodeFaultPayloadV1 {
         command_kind: FaultCommandKind::CpuService,
         operation: NodeFaultOperationV1::Upsert,
@@ -198,7 +234,7 @@ pub(crate) fn stage_node_event(target_node_hash: [u8; 32]) -> (u64, Vec<u8>) {
     }
     .encode()
     .unwrap_or_else(|error| panic!("encode pending event request: {error}"));
-    let evidence = vec![9];
+    let evidence = cpu_service_event_evidence(observed_raw_icount, observed_tick);
     let event = QemuFaultEvent {
         command_kind: FaultCommandKind::CpuService as u16,
         outcome: FaultEventOutcomeV1::Applied as u16,
@@ -207,14 +243,15 @@ pub(crate) fn stage_node_event(target_node_hash: [u8; 32]) -> (u64, Vec<u8>) {
         evidence_length: evidence.len() as u32,
         event_sequence: 99,
         rule_command_sequence: 77,
-        observed_icount: 300,
+        observed_icount: observed_raw_icount,
+        observed_tick,
         generation: 7,
         binding_hash: [2; 32],
         opportunity_hash: [8; 32],
         action_hash: [3; 32],
         target_hash: [4; 32],
-        before_hash: [5; 32],
-        after_hash: [6; 32],
+        before_hash: sha2::Sha256::digest(&evidence[..64]).into(),
+        after_hash: sha2::Sha256::digest(&evidence[..160]).into(),
     };
     let envelope = encode_test_node_event_envelope(&request, &evidence, &event, target_node_hash);
     TEST_EVENT_PENDING.with(|pending| {
@@ -223,7 +260,113 @@ pub(crate) fn stage_node_event(target_node_hash: [u8; 32]) -> (u64, Vec<u8>) {
     (event.event_sequence, evidence)
 }
 
+/// Stages two events at one raw coordinate but at distinct exact ticks.
+pub(crate) fn stage_node_event_pair(target_node_hash: [u8; 32]) {
+    let _first = stage_node_event(target_node_hash, 300, 15_000);
+    let first = TEST_EVENT_PENDING.with(|pending| pending.borrow_mut().take());
+
+    let _second = stage_node_event(target_node_hash, 300, 15_008);
+    let mut second = TEST_EVENT_PENDING
+        .with(|pending| pending.borrow_mut().take())
+        .unwrap_or_else(|| panic!("second event must be staged"));
+    second.0.event_sequence += 1;
+    TEST_EVENT_NEXT.with(|next| *next.borrow_mut() = Some(second));
+    TEST_EVENT_PENDING.with(|pending| *pending.borrow_mut() = first);
+}
+
 /// Reports whether the test QEMU ABI still owns its staged event.
 pub(crate) fn node_event_is_pending() -> bool {
     TEST_EVENT_PENDING.with(|pending| pending.borrow().is_some())
+}
+
+/// Moves one staged occurrence event into QEMU's synchronous-dispatch output.
+pub(super) fn activate_staged_dispatch_event() {
+    TEST_DISPATCH_EVENT_PENDING.with(|staged| {
+        if let Some(event) = staged.borrow_mut().take() {
+            TEST_EVENT_PENDING.with(|pending| {
+                *pending.borrow_mut() = Some(event);
+            });
+        }
+    });
+}
+
+/// Stages one occurrence event that becomes visible only during dispatch.
+pub(crate) fn stage_dispatch_event(target_node_hash: [u8; 32]) -> u64 {
+    let request = NodeFaultPayloadV1 {
+        command_kind: FaultCommandKind::CpuService,
+        operation: NodeFaultOperationV1::Upsert,
+        target_kind: NodeFaultTargetKindV1::Node,
+        model_phase: 10,
+        generation: 7,
+        action_hash: [3; 32],
+        target_hash: [4; 32],
+        schema_hash: [5; 32],
+        fields: vec![
+            NodeFaultFieldV1::bytes(node_fault_field::P1, b"CRUCJSN1[0]".to_vec()),
+            NodeFaultFieldV1::ratio(node_fault_field::P2, 1, 2),
+            NodeFaultFieldV1::u64(node_fault_field::P3, 100),
+            NodeFaultFieldV1::u32(node_fault_field::P4, 1),
+        ],
+    }
+    .encode()
+    .unwrap_or_else(|error| panic!("encode dispatch event request: {error}"));
+    let evidence = cpu_service_event_evidence(7, 350);
+    let event = QemuFaultEvent {
+        command_kind: FaultCommandKind::CpuService as u16,
+        outcome: FaultEventOutcomeV1::Applied as u16,
+        model_phase: 10,
+        target_kind: NodeFaultTargetKindV1::Node as u16,
+        evidence_length: evidence.len() as u32,
+        event_sequence: 101,
+        rule_command_sequence: 1,
+        observed_icount: 7,
+        observed_tick: 350,
+        generation: 7,
+        binding_hash: [2; 32],
+        opportunity_hash: [8; 32],
+        action_hash: [3; 32],
+        target_hash: [4; 32],
+        before_hash: sha2::Sha256::digest(&evidence[..64]).into(),
+        after_hash: sha2::Sha256::digest(&evidence[..160]).into(),
+    };
+    let envelope = encode_test_node_event_envelope(&request, &evidence, &event, target_node_hash);
+    TEST_DISPATCH_EVENT_PENDING.with(|pending| {
+        *pending.borrow_mut() = Some((event, envelope));
+    });
+    event.event_sequence
+}
+
+/// Stages one QEMU result and fingerprint mutation for synchronous dispatch.
+pub(crate) fn stage_dispatch_results(headers: &[FaultCommandHeaderV1], capture_seed: u8) {
+    let commands = headers
+        .iter()
+        .map(|header| QemuFaultCommand {
+            abi_major: header.abi_major,
+            abi_minor: header.abi_minor,
+            command_kind: header.command_kind as u16,
+            command_flags: header.command_flags,
+            phase: header.phase as u16,
+            reserved: 0,
+            semantic_version: header.semantic_version,
+            command_sequence: header.command_sequence,
+            target_node_hash: header.target_node_hash,
+            target_icount: header.target_icount / crucible_shmem::TICKS_PER_INSTRUCTION,
+            authorization_ceiling_icount: header.authorization_ceiling_icount
+                / crucible_shmem::TICKS_PER_INSTRUCTION,
+            target_tick: header.target_icount,
+            authorization_ceiling_tick: header.authorization_ceiling_icount,
+            binding_hash: header.binding_hash,
+            opportunity_hash: header.opportunity_hash,
+            expected_precondition_hash: header.expected_precondition_hash,
+        })
+        .collect();
+    super::TEST_DISPATCH_RESULT_PENDING.with(|pending| {
+        *pending.borrow_mut() = Some((commands, capture_seed));
+    });
+}
+
+/// Reports whether synchronous dispatch still owns its staged result.
+pub(crate) fn dispatch_result_is_pending() -> bool {
+    super::TEST_DISPATCH_RESULT_PENDING.with(|pending| pending.borrow().is_some())
+        || super::TEST_DISPATCH_RESULTS.with(|results| !results.borrow().is_empty())
 }

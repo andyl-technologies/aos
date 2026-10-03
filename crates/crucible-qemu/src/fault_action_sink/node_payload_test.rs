@@ -14,6 +14,124 @@ fn object_id(value: &str) -> FaultObjectId {
         .unwrap_or_else(|error| panic!("test object ID must be valid: {error}"))
 }
 
+#[test]
+fn atomic_selectors_export_actual_typed_payloads() -> Result<(), Box<dyn std::error::Error>> {
+    let mutations = [
+        (
+            "read-corrupt",
+            false,
+            true,
+            json!({"kind":"read_corrupt","parameters":{"mask":"01"}}),
+        ),
+        (
+            "read-corrupt-gva",
+            false,
+            true,
+            json!({"kind":"read_corrupt","parameters":{"mask":"01"}}),
+        ),
+        (
+            "stuck-read-write",
+            true,
+            true,
+            json!({"kind":"stuck","parameters":{"mask":"0f","value":"05"}}),
+        ),
+        (
+            "stuck-write",
+            true,
+            false,
+            json!({"kind":"stuck","parameters":{"mask":"0f","value":"05"}}),
+        ),
+        ("lost-write", true, false, json!({"kind":"lost_write"})),
+        (
+            "torn-write",
+            true,
+            false,
+            json!({"kind":"torn_write","parameters":{"selector":"0f"}}),
+        ),
+        (
+            "torn-write-atomic",
+            true,
+            false,
+            json!({"kind":"torn_write","parameters":{"selector":"0f"}}),
+        ),
+    ];
+    let output = std::env::var_os("AOS_ATOMIC_SELECTOR_OUTPUT").map(std::path::PathBuf::from);
+    if let Some(directory) = &output {
+        std::fs::create_dir_all(directory)?;
+        std::fs::write(
+            directory.join("node.hash"),
+            crate::qemu_fault_target_hash("node-a"),
+        )?;
+    }
+    for (name, write, read, mutation) in mutations {
+        let effect: NodeEffectSpecification = serde_json::from_value(json!({
+            "kind": "memory_access_transform",
+            "parameters": {
+                "range": {"start": 4096, "length": 16},
+                "accesses": {"fetch":false,"cpu_load":read,"cpu_store":write,
+                             "dma_read":false,"dma_write":false,"page_table_walk":false},
+                "violate_atomicity": name == "torn-write-atomic",
+                "mutation": mutation,
+                "occurrence": {"kind":"every"}
+            }
+        }))?;
+        effect.validate()?;
+        let specification = EffectSpecification::Node(effect);
+        let descriptor = specification.kind().descriptor();
+        let action = ResolvedBindingAction {
+            kind: BindingActionKind::UpsertPersistent,
+            binding: object_id(name),
+            target: ResolvedFaultTarget::MemoryRange {
+                node: object_id("node-a"),
+                address_space: object_id(if name.ends_with("-gva") { "gva" } else { "gpa" }),
+                guest_address: 4096,
+                vcpu: name.ends_with("-gva").then_some(0),
+                length_bytes: 16,
+            },
+            phase: descriptor.phases[0],
+            effect: Arc::new(EffectRequest::new(
+                descriptor.semantic_version,
+                EffectLifetime::Persistent,
+                specification,
+            )?),
+            mapping_output: Arc::new(ResolvedMappingOutput::Activation { active: true }),
+            mapped_digest: ContentHash { bytes: [1; 32] },
+            transition_sequence: 1,
+            opportunity: None,
+            coordinate: FaultCoordinate {
+                virtual_ticks: 1,
+                retired_instructions: Some(1),
+            },
+            cause: BindingActionCause::Signal,
+            expected_precondition: None,
+        };
+        let encoded = encode_node_action(&action, [3; 32])?;
+        let bytes = encoded.payload.encode()?;
+        assert_eq!(NodeFaultPayloadV1::decode(&bytes), Ok(encoded.payload));
+        if let Some(directory) = &output {
+            std::fs::write(directory.join(format!("{name}.bin")), bytes)?;
+            let binding = ContentHash::from_canonical_material(
+                "crucible.fault-binding.v1",
+                action.binding.as_str(),
+            );
+            std::fs::write(directory.join(format!("{name}.binding")), binding.bytes)?;
+        }
+    }
+
+    let invalid: NodeEffectSpecification = serde_json::from_value(json!({
+        "kind":"memory_access_transform", "parameters": {
+            "range":{"start":4096,"length":16},
+            "accesses":{"fetch":false,"cpu_load":false,"cpu_store":true,
+                        "dma_read":false,"dma_write":false,"page_table_walk":false},
+            "violate_atomicity":false,
+            "mutation":{"kind":"read_corrupt","parameters":{"mask":"01"}},
+            "occurrence":{"kind":"every"}
+        }
+    }))?;
+    assert!(invalid.validate().is_err());
+    Ok(())
+}
+
 fn lifecycle() -> EffectSpecification {
     EffectSpecification::Node(NodeEffectSpecification::Lifecycle {
         transition: NodeLifecycleTransition::Reset,
@@ -157,7 +275,7 @@ fn every_typed_node_effect_translates_to_its_closed_wire_schema() {
         json!({"kind":"memory_access_transform","parameters":{"range":{"start":4096,"length":64},"accesses":{"fetch":false,"cpu_load":false,"cpu_store":true,"dma_read":false,"dma_write":false,"page_table_walk":false},"violate_atomicity":true,"mutation":{"kind":"torn_write","parameters":{"selector":"0f"}},"occurrence":{"kind":"every"}}}),
         json!({"kind":"memory_ecc_event","parameters":{"target_vcpu":0,"kind":"corrected","address":4096,"syndrome":1,"bank":"bank-0","channel":"channel-0","rank":"rank-0","guest_visibility":{"kind":"telemetry_only"}}}),
         json!({"kind":"memory_region_state","parameters":{"range":{"start":4096,"length":64},"kind":"retention","process":{"kind":"retention","parameters":{"interval_nanos":100,"decay_mask":"01"}}}}),
-        json!({"kind":"memory_service","parameters":{"latency_nanos":10,"bandwidth_bytes_per_second":null,"operations_per_second":null,"sharing_scope":{"kind":"range"}}}),
+        json!({"kind":"memory_service","parameters":{"latency_picoseconds":8,"bandwidth_bytes_per_second":null,"operations_per_second":null,"sharing_scope":{"kind":"range"}}}),
         json!({"kind":"clock_transform","parameters":{"source":"clock-main","mutation":{"kind":"freeze","parameters":{"value_nanos":1000,"release":"resume_from_frozen"}},"monotonicity":"clamp_monotonic","overdue_timer_policy":"fire_at_boundary"}}),
         json!({"kind":"clock_source_state","parameters":{"sources":["clock-main"],"transition":{"kind":"failed","parameters":{"behavior":"read_error"}},"synchronization_policy":{"kind":"step"}}}),
         json!({"kind":"accelerator_lifecycle","parameters":{"device":"accelerator-0","transition":"reset","queue_policy":"clear","memory_policy":"device_reset"}}),
@@ -210,7 +328,7 @@ fn every_typed_node_effect_translates_to_its_closed_wire_schema() {
             transition_sequence: 1,
             opportunity: None,
             coordinate: FaultCoordinate {
-                virtual_nanos: 1,
+                virtual_ticks: 1,
                 retired_instructions: Some(1),
             },
             cause: BindingActionCause::Signal,
@@ -260,12 +378,46 @@ fn every_typed_node_effect_translates_to_its_closed_wire_schema() {
         if kind == crucible::model::EffectKind::CpuInstructionTransform {
             assert_eq!(encoded.payload.operation, NodeFaultOperationV1::Apply);
         }
+        if kind == crucible::model::EffectKind::MemoryService {
+            assert_eq!(encoded.payload.fields[0], NodeFaultFieldV1::u64(1, 8));
+        }
         let bytes = encoded
             .payload
             .encode()
             .unwrap_or_else(|error| panic!("{kind:?} wire schema must encode: {error}"));
         assert_eq!(NodeFaultPayloadV1::decode(&bytes), Ok(encoded.payload));
     }
+}
+
+#[test]
+fn memory_service_rejects_the_nanosecond_field() {
+    let old = json!({
+        "kind": "memory_service",
+        "parameters": {
+            "latency_nanos": 8,
+            "bandwidth_bytes_per_second": null,
+            "operations_per_second": null,
+            "sharing_scope": {"kind": "range"}
+        }
+    });
+
+    assert!(serde_json::from_value::<NodeEffectSpecification>(old).is_err());
+}
+
+#[test]
+fn memory_service_rejects_latency_beyond_the_sim_tick_limit() {
+    let effect = serde_json::from_value::<NodeEffectSpecification>(json!({
+        "kind": "memory_service",
+        "parameters": {
+            "latency_picoseconds": u64::MAX,
+            "bandwidth_bytes_per_second": null,
+            "operations_per_second": null,
+            "sharing_scope": {"kind": "range"}
+        }
+    }))
+    .unwrap_or_else(|error| panic!("typed service effect must decode: {error}"));
+
+    assert!(effect.validate().is_err());
 }
 
 #[test]
@@ -309,7 +461,7 @@ fn memory_bit_flip_rejects_authored_length_before_expanding_mask() {
         transition_sequence: 1,
         opportunity: None,
         coordinate: FaultCoordinate {
-            virtual_nanos: 1,
+            virtual_ticks: 1,
             retired_instructions: Some(1),
         },
         cause: BindingActionCause::Signal,

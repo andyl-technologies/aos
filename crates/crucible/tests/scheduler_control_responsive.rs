@@ -8,8 +8,8 @@ use crucible::{
     ControlOperation, ControlOperationKind, ExactLocalEvent, NetworkLookahead, NodeCounter, NodeId,
     QuantumRequest, SCHEDULER_CONTROL_RESPONSE_BOUND_QUANTA, ScheduledEventPayload, SchedulerActor,
     SchedulerActorHandle, SchedulerActorStateSnapshot, SchedulerLivenessScenario,
-    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, Shift,
-    SimDuration, SimInstant, VirtualTime,
+    SchedulerNodeActivity, SchedulerNodeId, SchedulerScenarioNode, SchedulingNodeKind, SimDuration,
+    SimInstant, VirtualTime,
 };
 
 #[test]
@@ -257,9 +257,8 @@ fn drive_actor_quantum(
 fn scheduler_actor(activity: SchedulerNodeActivity) -> (SchedulerActorHandle, SchedulerActor) {
     SchedulerActor::new(SchedulerLivenessScenario::from_canonical_material(
         "scheduler-control-responsive",
-        shift(0),
         8,
-        SimInstant { nanos: 12 },
+        SimInstant { ticks: 12 },
         vec![SchedulerScenarioNode {
             id: scheduler_node("node-a"),
             counter: NodeCounter { ticks: 0 },
@@ -322,10 +321,6 @@ fn scheduler_node(name: &str) -> SchedulerNodeId {
     }
 }
 
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
-}
-
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {
-    NetworkLookahead::Finite(SimDuration { nanos })
+    NetworkLookahead::Finite(SimDuration { ticks: nanos })
 }

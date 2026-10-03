@@ -27,7 +27,7 @@ use crate::backend::ExecutionFingerprint;
 use crate::scheduler::{
     ControlOperation, ControlOperationKind, EventAttributeValue, EventDiagnosticPayload,
     EventLevel, EventLogCausalDivergencePoint, EventLogCausalProjection, EventLogCoverageFeedback,
-    EventLogCoverageFeedbackConsumer, EventLogIcountStamp, EventSource, ScheduledEventPayload,
+    EventLogCoverageFeedbackConsumer, EventLogTickStamp, EventSource, ScheduledEventPayload,
     SchedulerEventLogClass, SchedulerEventLogEntry, SchedulerEventLogPayload, SchedulerQuiescence,
     coverage_fingerprint_from_event_log, event_log_causal_projection,
     recorded_assertion_log_from_schedule_for_search,
@@ -55,8 +55,9 @@ static LOCAL_DAG_STORE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub const DECISION_RNG_DEVICE_STREAM_DOMAIN: &str = "crucible.decision-rng.device-stream.v1";
 
 /// Minimum one-way logical link latency in virtual nanoseconds.
-pub const MIN_LINK_LATENCY: SimDuration = SimDuration { nanos: 1 };
-const MAX_WORLD_ICOUNT_SHIFT: u8 = 62;
+pub const MIN_LINK_LATENCY: SimDuration = SimDuration {
+    ticks: SIM_TICKS_PER_NS,
+};
 const MIN_WORLD_MEMORY_MIB: u32 = 1;
 const MAX_LINK_LOSS_MILLIONTHS: u32 = 1_000_000;
 const MAX_SCENARIO_FAMILY_SEEDS: u32 = 1_000_000;
@@ -66,7 +67,7 @@ const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x00000100000001b3;
 const SEARCH_PRIORITY_SCORE_DOMAIN: &[u8] = b"crucible.search.strategy.priority.v1";
 const COVERAGE_GUIDED_FUZZ_SAMPLE_DOMAIN: &str = "crucible.coverage-guided-fuzz.sample.v1";
-const COVERAGE_GUIDED_FUZZ_OVERRIDE_DOMAIN: &str = "crucible.coverage-guided-fuzz.override.v1";
+const COVERAGE_GUIDED_FUZZ_SELECTION_DOMAIN: &str = "crucible.coverage-guided-fuzz.selection.v1";
 const FAILURE_SIGNATURE_DOMAIN: &str = "crucible.failure-signature.v1";
 const FAILURE_SIGNATURE_KEY_DOMAIN: &str = "crucible.failure-signature.key.v1";
 const FAILURE_CAUSAL_SLICE_DOMAIN: &str = "crucible.failure-signature.causal-slice.v1";
@@ -101,10 +102,12 @@ mod family;
 mod fault_signal;
 mod material;
 mod materialized;
+mod measurement;
 mod plan_properties;
 mod reproduction;
 mod runtime;
 mod scenario;
+mod scenario_selectables;
 mod store_artifacts;
 mod temporal_graph;
 mod time;
@@ -135,10 +138,12 @@ pub use family::*;
 pub use fault_signal::*;
 use material::*;
 pub use materialized::*;
+pub use measurement::*;
 pub use plan_properties::*;
 pub use reproduction::*;
 pub use runtime::*;
 pub use scenario::*;
+pub use scenario_selectables::*;
 use store_artifacts::*;
 pub use temporal_graph::*;
 use temporal_graph::{debug_configuration_prefix, maps_equal_except_key};

@@ -370,10 +370,10 @@ in
               # file on the wrong side of the overlay (and on every
               # rebuild's $TOPLEVEL, defeating per-host persistence).
 
-              # ── 10. Symlink farm for caller-supplied packages ───────────────
+              # ── 9. Symlink farm for caller-supplied packages ────────────────
               ${symlinkFarmScript}
 
-              # ── 11. Caller-supplied postPopulate hook ──────────────────────
+              # ── 10. Caller-supplied postPopulate hook ───────────────────────
               ${postPopulate}
             '';
           }

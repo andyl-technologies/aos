@@ -7,6 +7,8 @@ publish = false
 
 [features]
 default = []
+destructive-recovery-faults = ["crucible-daemon/destructive-recovery-faults"]
+packaged-midpoint-flight = []
 test-double = ["crucible-session/test-double"]
 
 [[bin]]
@@ -18,22 +20,45 @@ name = "machine_readable"
 path = "tests/machine_readable.rs"
 required-features = ["test-double"]
 
+[[test]]
+name = "gate_campaign_store_composition"
+path = "tests/gate_campaign_store_composition.rs"
+required-features = ["test-double"]
+
 [lints]
 workspace = true
 
 [dependencies]
+aws-credential-types = { workspace = true }
+aws-sdk-s3 = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
 crucible-api = { path = "../crucible-api" }
+crucible-campaign = { path = "../crucible-campaign" }
+crucible-daemon = { path = "../crucible-daemon" }
 crucible-session = { path = "../crucible-session" }
-rustix = { workspace = true, features = ["termios"] }
+hex = { workspace = true }
+rcgen = { workspace = true }
+rustix = { workspace = true, features = ["process", "termios"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tokio-rustls = { workspace = true }
 toml = { workspace = true }
 tempfile = { workspace = true }
+url = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
+crucible-api = { path = "../crucible-api", features = ["test-support"] }
+crucible-cas = { path = "../crucible-cas" }
+crucible-core = { package = "crucible", path = "../crucible", features = ["test-support"] }
+crucible-daemon = { path = "../crucible-daemon", features = ["test-support"] }
+crucible-device = { path = "../crucible-device" }
 crucible-harness = { path = "../crucible-harness" }
+crucible-guest = { path = "../crucible-guest" }
+crucible-protocol = { path = "../crucible-protocol" }
+crucible-qemu = { path = "../crucible-qemu" }
+crucible-shmem = { path = "../crucible-shmem" }
 libc = { workspace = true }
+sha2 = { workspace = true }

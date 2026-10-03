@@ -24,9 +24,7 @@ pub(super) fn translate_lifecycle_evidence(
     if raw_observed_icount != event.observed_icount {
         return Err(FaultCommandBridgeError::EventEnvelope);
     }
-    let logical_observed_icount = raw_observed_icount
-        .checked_add(logical_icount_offset)
-        .ok_or(FaultCommandBridgeError::CoordinateOverflow)?;
+    let logical_observed_icount = raw_to_logical_tick(raw_observed_icount, logical_icount_offset)?;
     let mut translated = payload.to_vec();
     translated[LIFECYCLE_OBSERVED_ICOUNT_OFFSET..LIFECYCLE_OBSERVED_ICOUNT_OFFSET + 8]
         .copy_from_slice(&logical_observed_icount.to_le_bytes());

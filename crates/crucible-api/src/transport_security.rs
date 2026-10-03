@@ -98,6 +98,9 @@ pub fn mutual_tls_acceptor_from_pem(
     private_key_path: &Path,
     client_ca_path: &Path,
 ) -> Result<TlsAcceptor, MutualTlsServerConfigError> {
+    // Both crypto backends are enabled in the workspace; select one before
+    // rustls builds the verifier or server configuration.
+    let _ = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default();
     let certificates = load_certificates(certificate_path, "server certificate")?;
     let private_key = load_private_key(private_key_path)?;
     let client_roots = load_certificates(client_ca_path, "client CA")?;

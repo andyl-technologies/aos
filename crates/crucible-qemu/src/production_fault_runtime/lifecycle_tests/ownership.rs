@@ -92,7 +92,7 @@ fn assert_barrier(runtime: &mut ProductionFaultRuntime, nodes: &mut QemuNodeSet)
 
 const fn test_coordinate() -> FaultCoordinate {
     FaultCoordinate {
-        virtual_nanos: 0,
+        virtual_ticks: 0,
         retired_instructions: None,
     }
 }

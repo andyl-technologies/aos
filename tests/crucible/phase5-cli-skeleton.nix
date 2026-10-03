@@ -77,10 +77,6 @@
         needle = "Resume(ResumeArgs)";
       }
       {
-        label = "closed fork subcommand";
-        needle = "Fork(ForkArgs)";
-      }
-      {
         label = "closed replay subcommand";
         needle = "Replay(ReplayArgs)";
       }
@@ -94,7 +90,7 @@
       }
       {
         label = "closed triage subcommand";
-        needle = "Triage(TriageArgs)";
+        needle = "Triage(CampaignTriageRouteArgs)";
       }
       {
         label = "closed debug subcommand";
@@ -134,12 +130,17 @@ in
     pkgs.mkDerivation {
       pname = "crucible-phase5-cli-skeleton";
       version = "0";
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      runtimeDeps = [pkgs.sqlite];
       src = crucibleSrc;
 
       buildDeps = [
         pkgs.coreutils
         pkgs.rust
         pkgs.sed
+
+        pkgs.pkg-config
+        pkgs.sqlite
       ];
 
       phases = [
@@ -196,7 +197,7 @@ in
             tasks=${builtins.concatStringsSep "," taskIds}
             component=crucible-cli
             parser=clap-derive
-            subcommands=run,verify,selftest,save,resume,fork,replay,search,fuzz,triage,debug,serve,completions
+            subcommands=run,verify,selftest,save,resume,replay,search,fuzz,triage,debug,serve,campaign,store,completions
             globals=seed,backend,daemon,qemu,plugin,store,format,trace,artifact-dir,verbose,quiet
             RESULT
           '';

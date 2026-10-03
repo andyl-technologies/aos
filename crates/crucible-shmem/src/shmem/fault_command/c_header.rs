@@ -45,8 +45,8 @@ pub(crate) fn emit_fault_command_c_header(out: &mut String) {
         FAULT_COMMAND_HEADER_V1_BYTES
     );
     define!(
-        "CRUCIBLE_FAULT_RESULT_HEADER_V1_BYTES",
-        FAULT_RESULT_HEADER_V1_BYTES
+        "CRUCIBLE_FAULT_RESULT_HEADER_V2_BYTES",
+        FAULT_RESULT_HEADER_V2_BYTES
     );
     define!(
         "CRUCIBLE_FAULT_CAPABILITY_ROW_V1_BYTES",
@@ -57,8 +57,8 @@ pub(crate) fn emit_fault_command_c_header(out: &mut String) {
         FAULT_COMMAND_SLOT_V1_BYTES
     );
     define!(
-        "CRUCIBLE_FAULT_RESULT_SLOT_V1_BYTES",
-        FAULT_RESULT_SLOT_V1_BYTES
+        "CRUCIBLE_FAULT_RESULT_SLOT_V2_BYTES",
+        FAULT_RESULT_SLOT_V2_BYTES
     );
     define!(
         "CRUCIBLE_FAULT_PAYLOAD_ARENA_HEADER_BYTES",
@@ -245,6 +245,10 @@ pub(crate) fn emit_fault_command_c_header(out: &mut String) {
         (
             "CRUCIBLE_FAULT_RESULT_APPLIED_ICOUNT_OFFSET",
             FAULT_RESULT_APPLIED_ICOUNT_OFFSET,
+        ),
+        (
+            "CRUCIBLE_FAULT_RESULT_EMITTED_TICK_OFFSET",
+            FAULT_RESULT_EMITTED_TICK_OFFSET,
         ),
         (
             "CRUCIBLE_FAULT_RESULT_CAPABILITY_VERSION_OFFSET",

@@ -162,10 +162,10 @@ impl RegionAllocation {
                 "fault result slot",
                 index,
                 self.layout.fault_result_slot_off,
-                FAULT_RESULT_SLOT_V1_BYTES,
+                FAULT_RESULT_SLOT_V2_BYTES,
                 region_len,
             )?;
-            slot.write_bytes(&mut bytes[base..base + FAULT_RESULT_SLOT_V1_BYTES]);
+            slot.write_bytes(&mut bytes[base..base + FAULT_RESULT_SLOT_V2_BYTES]);
         }
         for (index, header) in self.fault_result_arena_headers.iter().enumerate() {
             let base = checked_segment_offset(
@@ -263,6 +263,30 @@ impl RegionAllocation {
             )?;
             write_guest_introspection_entry_bytes(
                 &mut bytes[base..base + GUEST_INTROSPECTION_ENTRY_SIZE],
+                entry,
+            );
+        }
+
+        for (index, ring_header) in self.selectable_reply_ring_headers.iter().enumerate() {
+            let base = checked_segment_offset(
+                "selectable reply ring header",
+                index,
+                self.layout.selectable_reply_ring_hdr_off,
+                RING_HEADER_SIZE,
+                region_len,
+            )?;
+            write_ring_header_bytes(&mut bytes[base..base + RING_HEADER_SIZE], ring_header);
+        }
+        for (index, entry) in self.selectable_reply_entries.iter().enumerate() {
+            let base = checked_segment_offset(
+                "selectable reply entry",
+                index,
+                self.layout.selectable_reply_ring_data_off,
+                WHITEBOX_MARKER_ENTRY_SIZE,
+                region_len,
+            )?;
+            write_whitebox_marker_entry_bytes(
+                &mut bytes[base..base + WHITEBOX_MARKER_ENTRY_SIZE],
                 entry,
             );
         }

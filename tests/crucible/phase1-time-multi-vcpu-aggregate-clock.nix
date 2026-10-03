@@ -2,7 +2,7 @@
   pkgs,
   lib,
   attrPath ? "checks.crucible.phase1.timeMultiVcpuAggregateClock",
-  taskIds ? ["T-TIME-9"],
+  taskIds ? [],
   openTaskIds ? [],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -24,7 +24,7 @@
   failures =
     failuresFor "crates/crucible-sim/src/contract_a.rs" contractA [
       {
-        label = "node-icount RR quantum getter";
+        label = "retired-instruction RR quantum getter";
         needle = "pub fn rr_switch_quantum(&self) -> u64";
       }
       {
@@ -40,7 +40,7 @@
         needle = "fn vcpu_for_icount(config: &ContractAConfig, aggregate_icount: u64) -> u64";
       }
       {
-        label = "RR cursor uses node-icount quantum";
+        label = "RR cursor uses retired-instruction quantum";
         needle = "(aggregate_icount / config.rr_switch_quantum) % config.vcpu_count";
       }
       {
@@ -59,7 +59,7 @@
       }
       {
         label = "RR quantum content-addressing test";
-        needle = "contract_a_rr_switch_quantum_is_content_addressed_node_icount_units";
+        needle = "contract_a_rr_switch_quantum_is_content_addressed_retired_instructions";
       }
       {
         label = "aggregate cursor proof";
@@ -196,8 +196,8 @@
         needle = "retired-instruction count across all `N` vCPUs";
       }
       {
-        label = "TIME-35 node-icount RR quantum";
-        needle = "in **node-icount units**";
+        label = "TIME-35 retired-instruction RR quantum";
+        needle = "integer number of retired instructions";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/31-decision-register.md" decisionRegister [
@@ -214,10 +214,6 @@
       {
         label = "phase1 exposes multi-vCPU aggregate clock check";
         needle = "timeMultiVcpuAggregateClock = import ./phase1-time-multi-vcpu-aggregate-clock.nix";
-      }
-      {
-        label = "layer0 gate lists T-TIME-9";
-        needle = "\"T-TIME-9\"";
       }
     ]
     ++ forbiddenFor "crates/crucible-shmem/src/lib.rs" shmemLib [
@@ -325,7 +321,7 @@ in
             node_clock_source=aggregate_retired_instructions
             per_vcpu_counts_surface=execution-fingerprint-only
             per_vcpu_shmem_fields=false
-            rr_switch_quantum_units=node-icount
+            rr_switch_quantum_units=retired-instructions
             rr_switch_quantum_content_addressed=true
             multi_vcpu_deadline=min-armed-vcpu-deadline
             RESULT

@@ -11,6 +11,13 @@ pub(super) fn property_violation_from_frames(
     for frame in frames {
         let text = std::str::from_utf8(frame)
             .map_err(|error| backend_error(format!("event frame is not UTF-8: {error}")))?;
+        if canonical_frame_value(text, "icount-retired").is_some()
+            || canonical_frame_value(text, "icount-node").is_some()
+        {
+            return Err(backend_error(
+                "event frame uses obsolete icount stamp fields",
+            ));
+        }
         if canonical_frame_value(text, "kind") != Some("crucible.event.assertion_state_changed") {
             continue;
         }
@@ -31,19 +38,34 @@ pub(super) fn property_violation_from_frames(
                 ))
             })?;
         let at_virtual_time = canonical_frame_u64(text, "virtual-time-ticks")?;
-        let at_icount = canonical_frame_u64(text, "icount-retired")?;
-        let node = match canonical_frame_value(text, "icount-node") {
-            Some("none") | None => None,
-            Some(value) => Some(crucible::NodeId {
-                name: canonical_frame_hex_string("icount-node", value)?,
+        let stamp_tick = canonical_frame_u64(text, "stamp-tick")?;
+        if at_virtual_time != stamp_tick {
+            return Err(backend_error(
+                "event frame has mismatched virtual-time and stamp ticks",
+            ));
+        }
+        let at_icount = match canonical_frame_value(text, "stamp-retired") {
+            Some("none") => None,
+            Some(value) => Some(crucible::Icount {
+                retired: value
+                    .parse()
+                    .map_err(|_| backend_error("event frame has invalid `stamp-retired`"))?,
             }),
+            None => return Err(backend_error("event frame is missing `stamp-retired`")),
+        };
+        let node = match canonical_frame_value(text, "stamp-node") {
+            Some("none") => None,
+            Some(value) => Some(crucible::NodeId {
+                name: canonical_frame_hex_string("stamp-node", value)?,
+            }),
+            None => return Err(backend_error("event frame is missing `stamp-node`")),
         };
         violations.push(crucible_model::HostAssertionViolation {
             assertion: assertion.id.clone(),
             message: assertion.message.clone(),
             quantifier: assertion.quantifier_kind(),
             event_kind: String::from("assertion_state_changed"),
-            at_icount: Some(crucible::Icount { retired: at_icount }),
+            at_icount,
             at_virtual_time: crucible::VirtualTime {
                 ticks: at_virtual_time,
             },
@@ -143,8 +165,9 @@ mod tests {
                 sequence: 4,
                 at: crucible_api::OpenSetEventTime {
                     virtual_time_ticks: 17,
-                    icount_retired: 23,
-                    icount_node: Some(String::from("fixture-node")),
+                    stamp_tick: 17,
+                    stamp_retired: Some(23),
+                    stamp_node: Some(String::from("fixture-node")),
                 },
                 source: crucible_api::OpenSetEventSource::Node {
                     node: String::from("fixture-node"),
@@ -164,7 +187,11 @@ mod tests {
         };
         let exact_frame = canonical_streaming_event_frame_bytes(&frame);
         let artifact = crucible::ContentHash::from_bytes(b"property-frame");
-        let violation = property_violation_from_frames(&scenario, &[exact_frame], artifact)?;
+        let violation = property_violation_from_frames(
+            &scenario,
+            std::slice::from_ref(&exact_frame),
+            artifact,
+        )?;
 
         assert_eq!(violation.assertion, assertion.id);
         assert_eq!(violation.quantifier, assertion.quantifier_kind());
@@ -175,6 +202,18 @@ mod tests {
             Some("fixture-node")
         );
         assert_eq!(violation.reproduction_artifact, artifact);
+
+        let mut optional_frame = frame;
+        optional_frame.event.at.stamp_retired = None;
+        let optional_frame = canonical_streaming_event_frame_bytes(&optional_frame);
+        let optional_violation =
+            property_violation_from_frames(&scenario, &[optional_frame], artifact)?;
+        assert_eq!(optional_violation.at_icount, None);
+
+        let obsolete_frame = std::str::from_utf8(&exact_frame)?
+            .replace("stamp-retired=23", "icount-retired=23")
+            .into_bytes();
+        assert!(property_violation_from_frames(&scenario, &[obsolete_frame], artifact).is_err());
         Ok(())
     }
 }

@@ -3,7 +3,9 @@
 use super::*;
 
 /// The deterministic order key for frames visible to one consumer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct FrameDeliveryKey {
     /// The consumer icount at which the frame becomes visible.
     pub delivery_icount: u64,

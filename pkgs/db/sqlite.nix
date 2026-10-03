@@ -4,13 +4,21 @@
   fetchurl,
   gnumake,
   stdenv,
+  enableStatic ? false,
 }: let
   version = "3.53.4";
   # SQLite uses a year+version encoding for the download filename
   srcVersion = "3530400";
+  staticFlag =
+    if enableStatic
+    then "--enable-static"
+    else "--disable-static";
 in
   mkDerivation {
-    pname = "sqlite";
+    pname =
+      if enableStatic
+      then "sqlite-static"
+      else "sqlite";
     inherit version;
 
     src = fetchurl {
@@ -63,7 +71,7 @@ in
               $configureFlags \
               --prefix=$out \
               --enable-shared \
-              --disable-static \
+              ${staticFlag} \
               --enable-fts5
           ''
           else ''
@@ -82,7 +90,7 @@ in
               $configureFlags \
               --prefix=$out \
               --enable-shared \
-              --disable-static \
+              ${staticFlag} \
               --enable-fts5
           '';
       }

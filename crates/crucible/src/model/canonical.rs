@@ -37,7 +37,7 @@ pub(super) fn content_hash_from_canonical_hex_bytes(domain: &str, bytes: &[u8]) 
 
 pub(super) fn configuration_hash(configuration: &Configuration) -> ContentHash {
     let mut hasher = MaterialHasher::new();
-    hasher.write_bytes(b"crucible.configuration.v1");
+    hasher.write_bytes(b"crucible.configuration.v2");
     write_content_hash(&mut hasher, &configuration.def.id());
     write_seed(&mut hasher, configuration.def.seed());
     write_schedule(&mut hasher, &configuration.schedule);
@@ -48,7 +48,7 @@ pub(super) fn configuration_hash(configuration: &Configuration) -> ContentHash {
 
 pub(super) fn schedule_hash(schedule: &Schedule) -> ContentHash {
     let mut hasher = MaterialHasher::new();
-    hasher.write_bytes(b"crucible.schedule.v1");
+    hasher.write_bytes(b"crucible.schedule.v2");
     write_schedule(&mut hasher, schedule);
     ContentHash {
         bytes: hasher.finish(),
@@ -57,7 +57,7 @@ pub(super) fn schedule_hash(schedule: &Schedule) -> ContentHash {
 
 pub(super) fn reduced_state_hash(def: &ScenarioDef, schedule: &Schedule) -> ContentHash {
     let mut hasher = MaterialHasher::new();
-    hasher.write_bytes(b"crucible.reduce.state.v1");
+    hasher.write_bytes(b"crucible.reduce.state.v2");
     write_content_hash(&mut hasher, &def.id());
     write_seed(&mut hasher, def.seed());
     write_schedule(&mut hasher, schedule);
@@ -74,7 +74,7 @@ pub(super) fn materialized_state_hash(
     event_log: EventLogOffset,
 ) -> ContentHash {
     let mut hasher = MaterialHasher::new();
-    hasher.write_bytes(b"crucible.materialized-state.v1");
+    hasher.write_bytes(b"crucible.materialized-state.v2");
     write_vm_snapshots(&mut hasher, vm_snapshots);
     write_device_overlays(&mut hasher, device_overlays);
     write_scheduler_state(&mut hasher, scheduler);
@@ -118,16 +118,25 @@ fn write_decision(hasher: &mut MaterialHasher, decision: &Decision) {
         Decision::Preemption(preemption) => {
             hasher.write_u64(3);
             hasher.write_bytes(preemption.node.name.as_bytes());
-            write_icount(hasher, preemption.at);
+            hasher.write_u64(preemption.at.ticks);
             write_preemption_kind(hasher, &preemption.kind);
         }
-        Decision::AppRandom(random) => {
-            hasher.write_u64(4);
-            hasher.write_bytes(random.node.name.as_bytes());
-            write_rng_stream_id(hasher, &random.stream);
-            hasher.write_u64(random.request_id);
-            hasher.write_u64(u64::from(random.width));
-            hasher.write_u64(random.value);
+        Decision::Selection(selection) => {
+            hasher.write_u64(5);
+            hasher.write_bytes(selection.canonical_bytes());
+            if let Some(config) = selection.preemption_config() {
+                hasher.write_u64(1);
+                hasher.write_bytes(config.node.name.as_bytes());
+                hasher.write_u64(config.deadline.ticks);
+                hasher.write_u64(config.horizon.ticks);
+                hasher.write_u64(config.step);
+                hasher.write_u64(u64::from(config.switch_from_vcpu.index));
+                hasher.write_u64(u64::from(config.switch_to_vcpu.index));
+                hasher.write_u64(u64::from(config.target_vcpu.index));
+                hasher.write_u64(u64::from(config.irq.vector));
+            } else {
+                hasher.write_u64(0);
+            }
         }
     }
 }
@@ -236,7 +245,7 @@ fn write_scheduler_lookahead_edge(
 ) {
     write_scheduler_node_id(hasher, &edge.from);
     write_scheduler_node_id(hasher, &edge.to);
-    hasher.write_u64(edge.minimum_latency.nanos);
+    hasher.write_u64(edge.minimum_latency.ticks);
 }
 
 fn write_scheduler_topology_change(
@@ -254,7 +263,7 @@ fn write_scheduler_topology_change(
     match change.activation_time {
         Some(at) => {
             hasher.write_bool(true);
-            hasher.write_u64(at.nanos);
+            hasher.write_u64(at.ticks);
         }
         None => hasher.write_bool(false),
     }
@@ -430,9 +439,7 @@ impl MaterialHasher {
 
         let (chunks, remainder) = bytes.as_chunks::<8>();
         for chunk in chunks {
-            let mut word = [0; 8];
-            word.copy_from_slice(chunk);
-            self.mix_word(u64::from_le_bytes(word));
+            self.mix_word(u64::from_le_bytes(*chunk));
         }
 
         if !remainder.is_empty() {

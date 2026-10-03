@@ -13,13 +13,13 @@ fn target() -> ResolvedFaultTarget {
 fn network_fault_cursor_retains_release_after_resuming() {
     let mut cursor = BackendNetworkFaultCursor::default();
     cursor.defer_until(41, ContentHash::from_bytes(b"queue"));
-    assert_eq!(cursor.not_before_nanos(), 41);
-    assert_eq!(cursor.release_nanos(), 41);
+    assert_eq!(cursor.not_before_ticks(), 41);
+    assert_eq!(cursor.release_ticks(), 41);
     cursor
         .complete(target(), FaultPhase::Resolve)
         .unwrap_or_else(|error| panic!("cursor should advance: {error}"));
-    assert_eq!(cursor.not_before_nanos(), 0);
-    assert_eq!(cursor.release_nanos(), 41);
+    assert_eq!(cursor.not_before_ticks(), 0);
+    assert_eq!(cursor.release_ticks(), 41);
     assert!(cursor.is_complete(&target(), FaultPhase::Resolve));
 }
 

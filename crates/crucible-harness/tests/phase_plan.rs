@@ -96,6 +96,7 @@ fn green_before_advance_requires_every_prior_phase_gate() -> Result<(), Box<dyn 
         missing_for_phase5,
         BTreeSet::from([
             "checks.crucible.phase4.gates.replayOracle",
+            "checks.crucible.phase4.gates.campaignStatistics",
             "checks.crucible.phase4.gates.e2eDeterminism",
         ])
     );
@@ -293,6 +294,13 @@ fn advanced_feature_schedule_rejects_unwrapped_default_check() {
                 && failure.kind == AdvancedFeatureScheduleFailureKind::MissingAdvanceGuard
         }),
         "synthetic unwrapped ADV check was not rejected: {failures:#?}"
+    );
+    assert!(
+        failures.iter().any(|failure| {
+            failure.task_id == "T-ADV-12"
+                && failure.kind == AdvancedFeatureScheduleFailureKind::MissingAttrPath
+        }),
+        "unwrapped ADV metadata must not borrow a nearby attrPath: {failures:#?}"
     );
     assert!(
         failures.iter().any(|failure| {

@@ -1,10 +1,27 @@
 //! Generated C ABI constants and feature declarations.
 
 use super::*;
+use crate::{TICKS_PER_INSTRUCTION, TICKS_PER_NS};
 
 pub(super) fn emit_constants(out: &mut String) {
     emit_define_u64_hex(out, "CRUCIBLE_SHMEM_REGION_MAGIC", REGION_MAGIC);
     emit_define_u32(out, "CRUCIBLE_SHMEM_ABI_VERSION", ABI_VERSION);
+    emit_define_u32(out, "CRUCIBLE_SHMEM_TICKS_PER_NS", TICKS_PER_NS as u32);
+    emit_define_u32(
+        out,
+        "CRUCIBLE_SHMEM_TICKS_PER_INSTRUCTION",
+        TICKS_PER_INSTRUCTION as u32,
+    );
+    emit_define_u8(
+        out,
+        "CRUCIBLE_SHMEM_ADVANCE_STOP_CONDITION_CEILING",
+        ADVANCE_STOP_CONDITION_CEILING,
+    );
+    emit_define_u8(
+        out,
+        "CRUCIBLE_SHMEM_ADVANCE_STOP_CONDITION_NEXT_AUTHENTICATED_IDLE",
+        ADVANCE_STOP_CONDITION_NEXT_AUTHENTICATED_IDLE,
+    );
     emit_define_usize(out, "CRUCIBLE_SHMEM_MAX_FRAME_DATA", MAX_FRAME_DATA);
     emit_define_u32(
         out,
@@ -20,6 +37,11 @@ pub(super) fn emit_constants(out: &mut String) {
         out,
         "CRUCIBLE_SHMEM_WHITEBOX_MARKER_QUEUE_CAPACITY",
         WHITEBOX_MARKER_QUEUE_CAPACITY,
+    );
+    emit_define_u32(
+        out,
+        "CRUCIBLE_SHMEM_SELECTABLE_REPLY_QUEUE_CAPACITY",
+        SELECTABLE_REPLY_QUEUE_CAPACITY,
     );
     emit_define_u32(
         out,
@@ -134,7 +156,7 @@ pub(super) fn emit_constants(out: &mut String) {
             ("RING_DATA_OFF", REGION_HEADER_RING_DATA_OFF_OFFSET),
             ("ENTRY_STRIDE", REGION_HEADER_ENTRY_STRIDE_OFFSET),
             ("REGION_SIZE", REGION_HEADER_REGION_SIZE_OFFSET),
-            ("ICOUNT_SHIFT", REGION_HEADER_ICOUNT_SHIFT_OFFSET),
+            ("TICKS_PER_NS", REGION_HEADER_TICKS_PER_NS_OFFSET),
             ("PAUSE_REQUESTED", REGION_HEADER_PAUSE_REQUESTED_OFFSET),
             (
                 "SHUTDOWN_REQUESTED",
@@ -169,27 +191,30 @@ pub(super) fn emit_constants(out: &mut String) {
             ("STATUS", NODE_SLOT_STATUS_OFFSET),
             ("KIND", NODE_SLOT_KIND_OFFSET),
             ("DEVICE_IO_ACTIVE", NODE_SLOT_DEVICE_IO_ACTIVE_OFFSET),
-            ("PAD0", NODE_SLOT_PAD0_OFFSET),
+            (
+                "ADVANCE_STOP_CONDITION",
+                NODE_SLOT_ADVANCE_STOP_CONDITION_OFFSET,
+            ),
             ("PUBLISH_GEN", NODE_SLOT_PUBLISH_GEN_OFFSET),
             (
                 "CONTROL_BOUNDARY_ACK",
                 NODE_SLOT_CONTROL_BOUNDARY_ACK_OFFSET,
             ),
             (
-                "DEVICE_COMPLETION_DEADLINE_ICOUNT",
-                NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET,
+                "DEVICE_COMPLETION_DEADLINE_TICK",
+                NODE_SLOT_DEVICE_COMPLETION_DEADLINE_TICK_OFFSET,
             ),
             (
-                "PREEMPTION_AT_ICOUNT",
-                NODE_SLOT_PREEMPTION_AT_ICOUNT_OFFSET,
+                "PREEMPTION_AT_TICK",
+                NODE_SLOT_PREEMPTION_AT_TICK_OFFSET,
             ),
             (
-                "PREEMPTION_DEADLINE_ICOUNT",
-                NODE_SLOT_PREEMPTION_DEADLINE_ICOUNT_OFFSET,
+                "PREEMPTION_DEADLINE_TICK",
+                NODE_SLOT_PREEMPTION_DEADLINE_TICK_OFFSET,
             ),
             (
-                "PREEMPTION_CEILING_ICOUNT",
-                NODE_SLOT_PREEMPTION_CEILING_ICOUNT_OFFSET,
+                "PREEMPTION_CEILING_TICK",
+                NODE_SLOT_PREEMPTION_CEILING_TICK_OFFSET,
             ),
             (
                 "PREEMPTION_PUBLISHED_SEQUENCE",
@@ -219,6 +244,56 @@ pub(super) fn emit_constants(out: &mut String) {
                 "LOGICAL_TIME_RESTORE_ACK",
                 NODE_SLOT_LOGICAL_TIME_RESTORE_ACK_OFFSET,
             ),
+            (
+                "CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER",
+                NODE_SLOT_CONTROL_BOUNDARY_FAULT_COMMAND_FRONTIER_OFFSET,
+            ),
+            (
+                "CONTROL_BOUNDARY_CAPTURE_REQUEST",
+                NODE_SLOT_CONTROL_BOUNDARY_CAPTURE_REQUEST_OFFSET,
+            ),
+            ("PAD3", NODE_SLOT_PAD3_OFFSET),
+            (
+                "TIMER_WITNESS_GENERATION",
+                NODE_SLOT_TIMER_WITNESS_GENERATION_OFFSET,
+            ),
+            (
+                "TIMER_WITNESS_DEADLINE_PS",
+                NODE_SLOT_TIMER_WITNESS_DEADLINE_PS_OFFSET,
+            ),
+            (
+                "TIMER_WITNESS_DEADLINE_TICK",
+                NODE_SLOT_TIMER_WITNESS_DEADLINE_TICK_OFFSET,
+            ),
+            (
+                "TIMER_WITNESS_ARMED_RAW_ICOUNT",
+                NODE_SLOT_TIMER_WITNESS_ARMED_RAW_ICOUNT_OFFSET,
+            ),
+            (
+                "TIMER_WITNESS_FIRED_EXPIRE_PS",
+                NODE_SLOT_TIMER_WITNESS_FIRED_EXPIRE_PS_OFFSET,
+            ),
+            (
+                "TIMER_WITNESS_FIRED_VIRTUAL_PS",
+                NODE_SLOT_TIMER_WITNESS_FIRED_VIRTUAL_PS_OFFSET,
+            ),
+            (
+                "TIMER_WITNESS_FIRED_RAW_ICOUNT",
+                NODE_SLOT_TIMER_WITNESS_FIRED_RAW_ICOUNT_OFFSET,
+            ),
+            (
+                "TIMER_WITNESS_COMPLETED",
+                NODE_SLOT_TIMER_WITNESS_COMPLETED_OFFSET,
+            ),
+            (
+                "TIMER_WITNESS_RESERVED",
+                NODE_SLOT_TIMER_WITNESS_RESERVED_OFFSET,
+            ),
+            (
+                "ADVANCE_PUBLICATION_SEQUENCE",
+                NODE_SLOT_ADVANCE_PUBLICATION_SEQUENCE_OFFSET,
+            ),
+            ("PAD4", NODE_SLOT_PAD4_OFFSET),
         ],
     );
     out.push('\n');
@@ -230,8 +305,10 @@ pub(super) fn emit_constants(out: &mut String) {
         RING_HEADER_ALIGN,
         &[
             ("READ_IDX", RING_HEADER_READ_IDX_OFFSET),
+            ("CONSUMER_STATE", RING_HEADER_CONSUMER_STATE_OFFSET),
             ("PAD_READ", RING_HEADER_PAD_READ_OFFSET),
             ("WRITE_IDX", RING_HEADER_WRITE_IDX_OFFSET),
+            ("PRODUCER_STATE", RING_HEADER_PRODUCER_STATE_OFFSET),
             ("PAD_WRITE", RING_HEADER_PAD_WRITE_OFFSET),
         ],
     );
@@ -327,7 +404,10 @@ pub(super) fn emit_constants(out: &mut String) {
         FINGERPRINT_SAMPLE_SLOT_ALIGN,
         &[
             ("GEN", FINGERPRINT_SAMPLE_SLOT_GEN_OFFSET),
-            ("RESERVED", FINGERPRINT_SAMPLE_SLOT_RESERVED_OFFSET),
+            (
+                "CAPTURE_REQUEST",
+                FINGERPRINT_SAMPLE_SLOT_CAPTURE_REQUEST_OFFSET,
+            ),
             ("WORDS", FINGERPRINT_SAMPLE_SLOT_WORDS_OFFSET),
         ],
     );

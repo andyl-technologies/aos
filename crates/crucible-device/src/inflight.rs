@@ -143,6 +143,18 @@ impl InflightQueue {
         core::mem::replace(&mut self.entries, future)
     }
 
+    pub(crate) fn pop_selected(&mut self, key: FrameDeliveryKey) -> Option<PendingResponse> {
+        if self
+            .entries
+            .first()
+            .is_some_and(|pending| pending.key == key)
+        {
+            Some(self.entries.remove(0))
+        } else {
+            None
+        }
+    }
+
     /// Removes and returns every in-flight response in delivery order.
     ///
     /// Crash fault handling uses this to void a target node's computed-but-not-

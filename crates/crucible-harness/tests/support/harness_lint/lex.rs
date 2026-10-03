@@ -24,7 +24,20 @@ pub(super) fn tokenize(content: &str) -> Vec<Token> {
         } else {
             if matches!(
                 ch,
-                ':' | '!' | '<' | '>' | '{' | '}' | '(' | ')' | ',' | '.' | '=' | ';' | '&'
+                ':' | '!'
+                    | '<'
+                    | '>'
+                    | '{'
+                    | '}'
+                    | '('
+                    | ')'
+                    | '['
+                    | ']'
+                    | ','
+                    | '.'
+                    | '='
+                    | ';'
+                    | '&'
             ) {
                 tokens.push(Token {
                     kind: TokenKind::Punct(ch),

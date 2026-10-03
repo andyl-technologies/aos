@@ -268,7 +268,18 @@ in
     # the `aos` runtime closure because maintainer commands create, inspect,
     # commit, and publish isolated Git worktrees without host tools.
     buildDeps =
-      [buildPerl buildPkgConfig buildProtobuf buildCmake buildGitMinimal buildNix buildOpenSsh buildZstd remove-references-to ca-certificates]
+      [
+        buildPerl
+        buildPkgConfig
+        buildProtobuf
+        buildCmake
+        buildGitMinimal
+        buildNix
+        buildOpenSsh
+        buildZstd
+        ca-certificates
+        remove-references-to
+      ]
       ++ lib.optionals isDarwinCross [buildPackages.aos];
     runtimeDeps =
       [openssl sqlite libssh2 zlib]
@@ -299,6 +310,10 @@ in
       export OPENSSL_NO_VENDOR=1
       export OPENSSL_STATIC=0
       export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
+      # SDK clients created by loopback HTTP tests still initialize rustls.
+      # Give them the source-built trust roots rather than builder-local roots.
+      export SSL_CERT_FILE="${ca-certificates}/etc/ssl/certs/ca-bundle.crt"
+      unset SSL_CERT_DIR
       export PROTOC="${buildProtobuf}/bin/protoc"
       export AOS_MCOPY="${mtools}/bin/mcopy"
       ${lib.optionalString (!isDarwinCross) ''export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"''}
