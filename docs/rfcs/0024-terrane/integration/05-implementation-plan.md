@@ -289,6 +289,25 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   fixtures. Historical core/native callers still need recorded-context
   propagation; the previous native disclosure failures are not qualified by
   this run. No candidate task merges onto the trunk or advances a checkbox.
+  A read-only caller audit identifies missing explicit semantic-context
+  inputs in root snapshots, trust/side-attribute domain extraction and native
+  source interpretation. Existing tree/history containers do not retain a
+  recorded property revision or trusted preservation vocabulary; current
+  defaults do not establish that association. The local initialization
+  example is a current-semantics test, not a production historical reader.
+  Snapshot enumeration also requires every compiled namespace default, which
+  would reject valid revision-1 policy after a resolver-only substitution.
+  The property gate now requires four exact pure snapshot/authoring cases:
+  recorded defaults and inert names, full/parent graft-path consistency,
+  untrusted-name/placement refusal and an explicit-context unsigned plan.
+  Their implementation must carry the selected interpretation through every
+  layer and enumerate only its namespace vocabulary while retaining raw data.
+  This prerequisite does not recover an unstated root revision or qualify
+  native configuration associations, current checks or complete propagation.
+  Implementation and combined qualification remain pending; T-PROP-1 stays
+  open and no task or milestone advances.
+  Shared registry completeness and both mandatory formatters pass for this
+  inventory prerequisite; those checks do not qualify the missing cases.
   — satisfies TREE-14,
   PROP-1 to PROP-30;
   `checks.terrane.gates.property-resolution`,

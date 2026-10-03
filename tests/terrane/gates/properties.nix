@@ -20,6 +20,10 @@ in {
     ${runTests "properties::semantics::tests::resolution_recorded_revisions_preserve_inert_later_names -- --exact"}
     ${runTests "properties::semantics::tests::resolution_revisions_bind_defaults_and_graft_placement_exactly -- --exact"}
     ${runTests "properties::semantics::tests::resolution_unknown_revisions_and_unregistered_extensions_refuse -- --exact"}
+    ${runTests "provenance::root_context::snapshot::tests::snapshot_recorded_revisions_preserve_defaults_and_inert_names -- --exact"}
+    ${runTests "provenance::root_context::snapshot::tests::snapshot_recorded_revisions_follow_full_and_parent_graft_paths -- --exact"}
+    ${runTests "provenance::root_context::snapshot::tests::snapshot_recorded_revisions_reject_untrusted_names_and_placement -- --exact"}
+    ${runTests "provenance::root_context::snapshot::tests::authoring_plans_use_explicit_recorded_property_context -- --exact"}
     printf 'PASS: closed registry and view-path property resolution\n' > "$out/result"
   '';
 
