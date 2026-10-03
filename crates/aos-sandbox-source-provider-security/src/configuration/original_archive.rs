@@ -37,6 +37,8 @@ use crate::{SourceProviderSecurityError, VerifiedCatalogPublicationV1};
 
 mod selected_input;
 pub use selected_input::ProtectedOriginalSelectedInputV1;
+mod read_only;
+pub(crate) use read_only::FixedSourcePublicArchiveReadbackV1;
 
 const DEPLOYMENT_MAGIC: &[u8; 8] = b"AOSSPD05";
 const ORIGIN_MAGIC: &[u8; 8] = b"AOSSPO05";
@@ -270,20 +272,7 @@ impl ProtectedOriginalConfigurationArchiveV5 {
         }
 
         let exact = file.exact();
-        require_header(exact, DEPLOYMENT_MAGIC, DEPLOYMENT_HEADER)?;
-        if identity != self::identity(b"aos.source.original.deployment-image.v5\0", exact) {
-            return Err(SourceProviderSecurityError::Currentness);
-        }
-        let configuration = digest_at(exact, 16)?;
-        let limits = digest_at(exact, 48)?;
-        let parts = sections(exact, DEPLOYMENT_HEADER, 80, 4)?;
-        if parts[0].len() != crate::manifest::SOURCE_PROVIDER_SECURITY_MANIFEST_BYTES
-            || parts[1].len() > crate::trust_file::MAXIMUM_SOURCE_PROVIDER_TRUST_FILE_BYTES
-            || parts[2].len() != crate::route_file::SOURCE_PROVIDER_ROUTE_FILE_BYTES
-            || parts[3].len() != crate::catalog::SIGNED_BYTES
-        {
-            return Err(SourceProviderSecurityError::Currentness);
-        }
+        let (configuration, limits, parts) = deployment_parts(exact, identity)?;
         let capture = PublicConfigurationCaptureV5 {
             manifest: parts[0].to_vec(),
             trust: parts[1].to_vec(),
@@ -612,6 +601,29 @@ fn require_cut_subject(
     Ok(())
 }
 
+// Return the same borrowed Vec used by the Source caller. Its three copied
+// public capture parts still live in that caller through final revalidation.
+fn deployment_parts(
+    exact: &[u8],
+    expected: ObjectDigest,
+) -> Result<(ObjectDigest, ObjectDigest, Vec<&[u8]>), SourceProviderSecurityError> {
+    require_header(exact, DEPLOYMENT_MAGIC, DEPLOYMENT_HEADER)?;
+    if expected != identity(b"aos.source.original.deployment-image.v5\0", exact) {
+        return Err(SourceProviderSecurityError::Currentness);
+    }
+    let configuration = digest_at(exact, 16)?;
+    let limits = digest_at(exact, 48)?;
+    let parts = sections(exact, DEPLOYMENT_HEADER, 80, 4)?;
+    if parts[0].len() != crate::manifest::SOURCE_PROVIDER_SECURITY_MANIFEST_BYTES
+        || parts[1].len() > crate::trust_file::MAXIMUM_SOURCE_PROVIDER_TRUST_FILE_BYTES
+        || parts[2].len() != crate::route_file::SOURCE_PROVIDER_ROUTE_FILE_BYTES
+        || parts[3].len() != crate::catalog::SIGNED_BYTES
+    {
+        return Err(SourceProviderSecurityError::Currentness);
+    }
+    Ok((configuration, limits, parts))
+}
+
 fn verify_archived_catalog(
     data: &ProviderConfigurationDataV5,
     bytes: &[u8],
@@ -694,14 +706,58 @@ fn identity(domain: &[u8], bytes: &[u8]) -> ObjectDigest {
 }
 
 fn filename(kind: u8, identity: ObjectDigest) -> String {
-    use std::fmt::Write as _;
-    let mut name = String::with_capacity(66);
-    name.push(char::from(kind));
-    name.push('-');
-    for byte in identity.as_bytes() {
-        let _ = write!(name, "{byte:02x}");
+    crate::protected_files::archive_filename(kind, identity)
+}
+
+#[cfg(test)]
+mod deployment_parts_tests {
+    use super::*;
+
+    fn structural_image() -> Vec<u8> {
+        let lengths = [
+            crate::manifest::SOURCE_PROVIDER_SECURITY_MANIFEST_BYTES,
+            1,
+            crate::route_file::SOURCE_PROVIDER_ROUTE_FILE_BYTES,
+            crate::catalog::SIGNED_BYTES,
+        ];
+        let mut exact = header(DEPLOYMENT_MAGIC);
+        exact.resize(80, 0);
+        for length in lengths {
+            append_length(&mut exact, length).unwrap();
+        }
+        exact.resize(DEPLOYMENT_HEADER + lengths.into_iter().sum::<usize>(), 0);
+        exact
     }
-    name
+
+    #[test]
+    fn shared_parts_borrow_the_exact_structural_image() {
+        let exact = structural_image();
+        let digest = identity(b"aos.source.original.deployment-image.v5\0", &exact);
+
+        let (_, _, parts) = deployment_parts(&exact, digest).unwrap();
+
+        assert_eq!(parts.len(), 4);
+        assert_eq!(parts[0].as_ptr(), exact[DEPLOYMENT_HEADER..].as_ptr());
+        assert_eq!(parts[3].len(), crate::catalog::SIGNED_BYTES);
+        // Structural DATA intentionally does not invoke the signature/projector
+        // engines or pretend that all-zero fields are a genuine public capture.
+    }
+
+    #[test]
+    fn wrong_identity_reserved_bytes_and_extent_refuse_shared_parts() {
+        let exact = structural_image();
+        let digest = identity(b"aos.source.original.deployment-image.v5\0", &exact);
+        assert!(deployment_parts(&exact, ObjectDigest::from_bytes([1; 32])).is_err());
+
+        let mut reserved = exact.clone();
+        reserved[10] = 1;
+        assert!(deployment_parts(&reserved, identity(b"aos.source.original.deployment-image.v5\0", &reserved)).is_err());
+
+        let mut trailing = exact.clone();
+        trailing.push(0);
+        assert!(deployment_parts(&trailing, identity(b"aos.source.original.deployment-image.v5\0", &trailing)).is_err());
+        assert!(deployment_parts(&exact[..exact.len() - 1], digest).is_err());
+    }
 }
 
 fn cut_filename(file: (u64, u64), transaction: [u8; 16], digest: [u8; 32]) -> String {
