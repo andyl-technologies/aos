@@ -22,7 +22,7 @@ in {
       memoryMiB = 4096;
       varSizeMiB = 2048;
       packages = ["aos-test-agent"];
-      extraClosures = [pkgs.aos pkgs.aos.apm pkgs.bash pkgs.coreutils pkgs.nix pkgs.util-linux];
+      extraClosures = [pkgs.aos pkgs.aos.apm pkgs.bash pkgs.coreutils pkgs.jq pkgs.nix pkgs.util-linux];
       metadata."host.nix" = ''
         { config, lib, ... }: {
           aos.getty.autologin.enable = lib.mkForce false;
@@ -49,8 +49,11 @@ in {
   scriptHelpers = ''
     import base64
     import json
+    import shlex
 
     AOS = "${pkgs.aos}/bin/aos"
+    BASH = "${pkgs.bash}/bin/bash"
+    JQ = "${pkgs.jq}/bin/jq"
     APM = "${pkgs.aos.apm}/bin/apm"
     RUNTIME = "${pkgs.aos.packageRuntime}/bin/aos-package-runtime"
     PROFILE = "/var/lib/profiles/system"
@@ -99,10 +102,35 @@ in {
         builder.succeed(f"printf '%s' '{encoded}' | base64 -d > '{path}'")
 
 
-    def journal():
-        view = json.loads(builder.succeed(
-            f"{AOS} ability journal {PROFILE}/deployment/effects.journal --format json"
+    JOURNAL_PROJECTION = """{
+        schema, liveStateVerified, transaction, pending, completed,
+        records: [.records[] | {sequence, event, transaction, dispatch}],
+        desired: (if .desired == null then null else
+            {nodes: (.desired.nodes | with_entries(.value = {identity: .value.identity}))}
+            end)
+    }"""
+    GENERATION_PROJECTION = """{
+        schema,
+        daemonEffects: [.desired.graph.nodes | to_entries[] |
+            select(.value.identity == ["profile", "system", "nix-daemon", "serviceManagement", "realize", "nix-daemon"]) |
+            .key]
+    }"""
+
+
+    def public_json(command, projection):
+        # Project only after the public CLI validates the retained document.
+        # pipefail prevents an empty jq result from hiding a failed CLI read.
+        pipeline = f"{command} | {JQ} -c {shlex.quote(projection)}"
+        return json.loads(builder.succeed(
+            f"{BASH} -o pipefail -c {shlex.quote(pipeline)}"
         ))
+
+
+    def journal():
+        view = public_json(
+            f"{AOS} ability journal {PROFILE}/deployment/effects.journal --format json",
+            JOURNAL_PROJECTION,
+        )
         assert view["schema"] == "aos.activation.inspection", view
         assert not view["liveStateVerified"], view
         return view
@@ -163,12 +191,12 @@ in {
         previous = generation()
         # The removal target graph omits the departed service. Bind its pending
         # effect to the checked committed source graph before dispatch instead.
-        committed = json.loads(builder.succeed(
-            f"{AOS} ability diagnostic {PROFILE} {previous} --audience deployment"
-        ))
+        committed = public_json(
+            f"{AOS} ability diagnostic {PROFILE} {previous} --audience deployment",
+            GENERATION_PROJECTION,
+        )
         assert committed["schema"] == "aos.package.generation.inspection", committed
-        daemon_effects = [effect for effect, node in committed["desired"]["graph"]["nodes"].items()
-                          if node["identity"] == ["profile", "system", "nix-daemon", "serviceManagement", "realize", "nix-daemon"]]
+        daemon_effects = committed["daemonEffects"]
         assert len(daemon_effects) == 1, committed
         command = f"{APM} remove nix-daemon --yes"
         exit_code, stdout, stderr = builder.execute(command, timeout=600)
