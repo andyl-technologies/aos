@@ -191,6 +191,16 @@ pub fn run_qemu_live_hot_fork_child_gate(
             "retained template query changed transaction generation",
         ));
     }
+    let source_file = source_directory
+        .open_vmstate_for_hot_fork()
+        .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
+    let graph = node
+        .query_hot_fork_source_graph(i64::from(node.process_id()), template_generation)
+        .map_err(|source| {
+            QemuLiveNodeStepGateError::node_op("authenticate retained source graph", source)
+        })?;
+    source_set::require_vmstate_graph(&graph, &source_file, source_before)?;
+    drop(source_file);
 
     // The baseline is the retained template with no child staged; every
     // child must return the source to it.
