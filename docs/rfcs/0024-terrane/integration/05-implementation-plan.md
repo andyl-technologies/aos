@@ -131,9 +131,12 @@ rustdoc. The final increment adds only the public callback panic contract;
 strict rustdoc and both required formatters pass again. Parent combined
 candidate `b7da6543b94d` passes both formatters and the actual
 `property-resolution`, `prov-selector-presets` and `core-no-std` gates,
-including all three newly mandatory association cases. Its aggregate is
-running with `--keep-going`; observed native failures are physical-exclusion
-admission and portable bucket reopen, both returning `Unsupported`.
+including all three newly mandatory association cases. Its complete golden
+gate passes all 19 owning suites and the 30-section inventory. Its aggregate
+finishes with `--keep-going` and exits 1: ten dependencies fail, including
+physical-exclusion admission and portable bucket reopen returning
+`Unsupported`, missing required native disclosure cases, and the feature
+matrix's first profile (370 pass, 23 fail out of 393; later profiles unqualified).
 These results precede the newly mandatory executable recorded-fold case.
 The prior combined candidate `93c8cf0f90b2` passes its five recorded evaluator
 gates and complete golden gate (19 owning suites and 30-section inventory).
@@ -402,9 +405,9 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   views, and refuse absent views or root mismatches. Three exact association
   cases are now mandatory in `property-resolution`; reviewed candidate
   `28e8a7b6e5b9` passes them and all 605 core tests. Parent combined
-  qualification also passes the actual property, selector and no-std gates
-  and both formatters, with the aggregate still running. The table itself
-  cannot authenticate its
+  qualification also passes the actual property, selector and no-std gates,
+  complete golden gate and both formatters. The full aggregate exits 1 with
+  ten failed dependencies. The table itself cannot authenticate its
   caller's justification, recover historical configuration, or grant authority.
   Native installation, snapshot propagation and live-policy separation remain
   subsequent obligations, with no task checkbox or freeze advancement.
