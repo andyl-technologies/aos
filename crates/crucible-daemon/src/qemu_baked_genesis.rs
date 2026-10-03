@@ -538,7 +538,7 @@ fn map_private_checkpoint_replay_failure<E: std::error::Error>(
 }
 
 /// Retains the original cause before the process-local error becomes stored text.
-fn private_checkpoint_replay_diagnostic(error: &dyn std::error::Error) -> String {
+fn private_checkpoint_replay_diagnostic<E: std::error::Error + ?Sized>(error: &E) -> String {
     let mut diagnostic = error.to_string();
     let mut source = error.source();
     // A malformed cyclic source chain must not strand promotion reconciliation.
