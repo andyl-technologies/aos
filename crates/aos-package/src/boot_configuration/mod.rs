@@ -77,7 +77,9 @@ pub fn run_from_process() -> Result<()> {
     )?;
     command.admission = command.input.join("admission.json");
     let cancellation = CancellationToken::default();
-    if let Some(number) = crate::native_deployment::resume_profile(&command, &cancellation)? {
+    if let Some(number) =
+        crate::native_deployment::recover_profile_publication(&command, &cancellation)?
+    {
         retained::verify(&command, number)?;
         return crate::native_deployment::apply(&command, &cancellation);
     }

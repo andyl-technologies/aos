@@ -216,9 +216,26 @@ impl<'a, S: DeploymentStore> ProfileDeployment<'a, S> {
         self.publish_current()
     }
 
+    /// Reconciles the committed desired state without publishing a new generation.
+    ///
+    /// Pending reconciliation resumes its original execution identity.
+    /// The existing publication and generation marker retain their identities.
+    ///
+    /// # Errors
+    /// Returns an error for absent committed state, failed admission, observation
+    /// or dispatch, inconsistent publication records, or failed link publication.
+    pub fn reconcile_current(&mut self, cancellation: &CancellationToken) -> Result<()> {
+        self.transactions.reconcile_current(cancellation)?;
+        self.publish_current()
+    }
+
     /// Borrows the authoritative committed desired deployment after recovery.
     pub fn current(&self) -> Option<&crate::deployment::transaction::Generation> {
         self.transactions.current()
+    }
+
+    pub(crate) fn pending_reconciliation(&self) -> bool {
+        self.transactions.pending_reconciliation()
     }
 
     pub(crate) fn set_observer(
@@ -485,6 +502,58 @@ mod tests {
             &resolved,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn reconciliation_preserves_publication_and_replays_after_reopening() {
+        let directory = tempfile::tempdir().unwrap();
+        let profile =
+            Profile::open_at(directory.path().join("profile"), ProfileScope::System).unwrap();
+        let generation = profile.new_generation().unwrap();
+        let cancellation = CancellationToken::default();
+        let mut consumer =
+            ProfileDeployment::open(&profile, Store::default(), JournalLimits::default()).unwrap();
+        consumer
+            .apply(&deployment(), &generation, &cancellation)
+            .unwrap();
+        let committed_sequence = consumer.current().unwrap().sequence;
+        let marker = fs::read(generation.path.join("native-deployment.json")).unwrap();
+        let publication = fs::read(consumer.publication_path(committed_sequence)).unwrap();
+        let effects_path = profile.path.join("deployment/effects.journal");
+        let before_effects = fs::read(&effects_path).unwrap();
+
+        consumer.reconcile_current(&cancellation).unwrap();
+        assert_eq!(consumer.current().unwrap().sequence, committed_sequence);
+        assert_eq!(
+            fs::read(generation.path.join("native-deployment.json")).unwrap(),
+            marker
+        );
+        assert_eq!(
+            fs::read(consumer.publication_path(committed_sequence)).unwrap(),
+            publication
+        );
+        assert_eq!(
+            profile.current_generation().unwrap().unwrap().number,
+            generation.number
+        );
+        assert!(!profile.path.join("gen-2").exists());
+        assert_ne!(fs::read(&effects_path).unwrap(), before_effects);
+        drop(consumer);
+
+        let mut reopened =
+            ProfileDeployment::open(&profile, Store::default(), JournalLimits::default()).unwrap();
+        reopened.recover(&cancellation).unwrap();
+        reopened.reconcile_current(&cancellation).unwrap();
+        assert_eq!(reopened.current().unwrap().sequence, committed_sequence);
+        drop(reopened);
+        assert_eq!(
+            current_committed_generation(&profile.path).unwrap(),
+            Some(generation.number)
+        );
+        assert_eq!(
+            fs::read(generation.path.join("native-deployment.json")).unwrap(),
+            marker
+        );
     }
 
     #[test]

@@ -140,7 +140,7 @@ async fn exercise_adoption(acquire_absent_package: bool) -> Result<()> {
     );
     crate::native_deployment::apply(&initrd, &cancellation)?;
     ensure!(
-        crate::native_deployment::resume_profile(&host, &cancellation)?.is_none(),
+        crate::native_deployment::recover_profile_publication(&host, &cancellation)?.is_none(),
         "a committed initrd must not fabricate a host generation"
     );
     let mut invalid: serde_json::Value = serde_json::from_slice(&fs::read(&fixture.binding)?)?;
@@ -171,12 +171,18 @@ async fn exercise_adoption(acquire_absent_package: bool) -> Result<()> {
         "first profile did not retain the accepted runtime source and original proof"
     );
     let original = reader::read_initial_in(&host, &initrd, &fixture.binding)?;
+    let initial_generation = profile.path.join(format!("gen-{first}"));
+    let initial_marker = fs::read(initial_generation.join("native-deployment.json"))?;
+    let initial_descriptor = fs::read_link(initial_generation.join("evaluation.json"))?;
     // Reusing the identical authority exercises the generic committed branch
     // without repeating the already completed host dispatch.
     capture::apply(&host, original, &cancellation)?;
     ensure!(
-        fs::read_to_string(fixture.state_directory.join("count"))?.trim() == "1",
-        "repeat bootstrap duplicated a one-shot host dispatch"
+        current(&profile, &executable)?.0 == first
+            && fs::read(initial_generation.join("native-deployment.json"))? == initial_marker
+            && fs::read_link(initial_generation.join("evaluation.json"))? == initial_descriptor
+            && fs::read_to_string(fixture.state_directory.join("count"))?.trim() == "1",
+        "repeat bootstrap changed the generation or duplicated a host dispatch"
     );
 
     let config = crate::config::ApmConfig {
@@ -223,15 +229,40 @@ async fn exercise_adoption(acquire_absent_package: bool) -> Result<()> {
     );
     retained::verify(&host, changed)?;
     ensure!(
-        crate::native_deployment::resume_profile(&host, &cancellation)? == Some(changed),
+        crate::native_deployment::recover_profile_publication(&host, &cancellation)?
+            == Some(changed),
         "boot recovery lost the committed operator generation"
     );
+    let changed_generation = profile.path.join(format!("gen-{changed}"));
+    let changed_marker = fs::read(changed_generation.join("native-deployment.json"))?;
+    let changed_descriptor = fs::read_link(changed_generation.join("evaluation.json"))?;
+    let unchanged_count = fs::read_to_string(fixture.state_directory.join("count"))?;
     crate::native_deployment::apply(&host, &cancellation)?;
-    let (_, rebooted) = current(&profile, &executable)?;
+    let (rebooted_generation, rebooted) = current(&profile, &executable)?;
     ensure!(
-        rebooted.runtime_configuration == operator.entrypoints
+        rebooted_generation == changed
+            && fs::read(changed_generation.join("native-deployment.json"))? == changed_marker
+            && fs::read_link(changed_generation.join("evaluation.json"))? == changed_descriptor
+            && fs::read_to_string(fixture.state_directory.join("count"))? == unchanged_count
+            && rebooted.runtime_configuration == operator.entrypoints
             && fs::read_to_string(fixture.state_directory.join("value"))? == "operator",
-        "boot replaced the operator role with image or platform metadata"
+        "unchanged boot changed the generation, dispatched again, or replaced operator sources"
+    );
+
+    // A retained receipt is insufficient after live drift: reconciliation must
+    // observe the resource and repair it without changing desired authority.
+    fs::write(fixture.state_directory.join("value"), "external-drift")?;
+    crate::native_deployment::apply(&host, &cancellation)?;
+    ensure!(
+        current(&profile, &executable)?.0 == changed
+            && fs::read(changed_generation.join("native-deployment.json"))? == changed_marker
+            && fs::read_link(changed_generation.join("evaluation.json"))? == changed_descriptor
+            && fs::read_to_string(fixture.state_directory.join("value"))? == "operator"
+            && fs::read_to_string(fixture.state_directory.join("count"))?
+                .trim()
+                .parse::<u64>()?
+                == unchanged_count.trim().parse::<u64>()? + 1,
+        "boot failed to repair live drift within the existing generation"
     );
 
     let interrupted = source(
@@ -251,7 +282,7 @@ async fn exercise_adoption(acquire_absent_package: bool) -> Result<()> {
         "interrupted side effect has no native recovery intent"
     );
     let count = fs::read_to_string(fixture.state_directory.join("count"))?;
-    let recovered = crate::native_deployment::resume_profile(&host, &cancellation)?
+    let recovered = crate::native_deployment::recover_profile_publication(&host, &cancellation)?
         .context("interrupted operator generation did not commit during recovery")?;
     ensure!(
         !crate::profile::deployment::has_pending_deployment(&profile.path)?
@@ -267,8 +298,70 @@ async fn exercise_adoption(acquire_absent_package: bool) -> Result<()> {
     );
     crate::native_deployment::apply(&host, &cancellation)?;
     ensure!(
-        fs::read_to_string(fixture.state_directory.join("count"))? == count,
-        "post-recovery boot repeated a one-shot operation"
+        current(&profile, &executable)?.0 == recovered
+            && fs::read_to_string(fixture.state_directory.join("count"))? == count,
+        "post-recovery boot changed the generation or repeated a completed operation"
+    );
+
+    let recovered_directory = profile.path.join(format!("gen-{recovered}"));
+    let recovered_marker = fs::read(recovered_directory.join("native-deployment.json"))?;
+    let recovered_descriptor = fs::read_link(recovered_directory.join("evaluation.json"))?;
+    // The committed source deliberately fails once after writing. Reset that
+    // real fixture resource and introduce drift to interrupt fresh reconciliation.
+    fs::remove_file(fixture.state_directory.join("failed-once"))?;
+    fs::write(
+        fixture.state_directory.join("value"),
+        "reconciliation-drift",
+    )?;
+    ensure!(
+        crate::native_deployment::apply(&host, &cancellation).is_err()
+            && crate::profile::deployment::has_pending_deployment(&profile.path)?,
+        "fixture did not durably interrupt reconciliation after its live side effect"
+    );
+    let effects_path = profile.path.join("deployment/effects.journal");
+    let pending_inspection = aos_ability_runtime::activation::inspect(
+        &effects_path,
+        crate::deployment::transaction::journal_limits(),
+    )?;
+    ensure!(
+        pending_inspection.pending.is_some(),
+        "interrupted reconciliation omitted its exact dispatch intent"
+    );
+    let count_after_interruption = fs::read_to_string(fixture.state_directory.join("count"))?;
+    let begin_count = pending_inspection
+        .records
+        .iter()
+        .filter(|record| record.event == "begin")
+        .count();
+    let publication = crate::native_deployment::recover_profile_publication(&host, &cancellation)?
+        .context("pending reconciliation lost its committed publication")?;
+    ensure!(
+        publication == recovered
+            && crate::profile::deployment::has_pending_deployment(&profile.path)?,
+        "publication recovery consumed the pending live reconciliation"
+    );
+    retained::verify(&host, publication)?;
+    crate::native_deployment::apply(&host, &cancellation)?;
+    let completed_inspection = aos_ability_runtime::activation::inspect(
+        &effects_path,
+        crate::deployment::transaction::journal_limits(),
+    )?;
+    ensure!(
+        current(&profile, &executable)?.0 == recovered
+            && fs::read(recovered_directory.join("native-deployment.json"))? == recovered_marker
+            && fs::read_link(recovered_directory.join("evaluation.json"))? == recovered_descriptor
+            && !crate::profile::deployment::has_pending_deployment(&profile.path)?
+            && completed_inspection.pending.is_none()
+            && completed_inspection
+                .records
+                .iter()
+                .filter(|record| record.event == "begin")
+                .count()
+                == begin_count
+            && fs::read_to_string(fixture.state_directory.join("value"))? == "interrupted"
+            && fs::read_to_string(fixture.state_directory.join("count"))?
+                == count_after_interruption,
+        "boot retry changed authority, repeated dispatch, or started an extra reconciliation"
     );
 
     if !acquire_absent_package {

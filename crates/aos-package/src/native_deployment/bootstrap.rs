@@ -106,15 +106,17 @@ pub fn apply_with_sources<A: ArtifactAdmission>(
     )
 }
 
-/// Resumes an interrupted profile transaction before a domain reads fresh sources.
+/// Recovers package publication before a domain validates committed sources.
 ///
 /// Recovery uses the retained descriptor, NAR receipts, and exact source proof
 /// from the pending generation. It does not evaluate a new image baseline.
+/// A pending live reconciliation already has a committed publication and remains
+/// untouched until source validation precedes its original attempt's recovery.
 ///
 /// # Errors
 /// Returns an error for invalid image authority, admission or journal failure,
 /// lock contention, or failed recovery effects.
-pub fn resume_profile(
+pub fn recover_profile_publication(
     command: &super::NativeDeploymentCommand,
     cancellation: &aos_ability_runtime::adapter::CancellationToken,
 ) -> Result<Option<u32>> {
@@ -153,7 +155,9 @@ pub fn resume_profile(
         crate::deployment::transaction::journal_limits(),
     )?;
     super::configure_profile_observer(&mut consumer, &profile, None, cancellation)?;
-    consumer.recover(cancellation)?;
+    if !consumer.pending_reconciliation() {
+        consumer.recover(cancellation)?;
+    }
     drop(consumer);
     crate::profile::deployment::current_committed_generation(path)
 }

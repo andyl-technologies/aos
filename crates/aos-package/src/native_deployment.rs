@@ -38,7 +38,7 @@ mod evaluate;
 
 pub use crate::native_registry::solver::{LockedEdge, ResolutionLock};
 pub use admission::{AdmissionCatalog, AdmittedRoot};
-pub use bootstrap::{SourceAuthorization, apply_with_sources, resume_profile};
+pub use bootstrap::{SourceAuthorization, apply_with_sources, recover_profile_publication};
 pub use evaluate::evaluate_input;
 pub(crate) use evaluate::{
     os_requirements, retained_declarations, validate_target_os, validated_declarations,
@@ -495,6 +495,7 @@ fn apply_profile(
     )?;
     let mut consumer = ProfileDeployment::open(&profile, store, journal_limits())?;
     configure_profile_observer(&mut consumer, &profile, None, cancellation)?;
+    let recovering_reconciliation = consumer.pending_reconciliation();
     consumer.recover(cancellation)?;
     // The image seeds an empty profile. Subsequent boots reconcile the latest
     // committed package desired state, preserving operator installs and removals.
@@ -762,6 +763,24 @@ fn apply_profile(
         admission,
     )?;
     consumer.replace_store(store);
+    configure_profile_observer_projected(
+        &mut consumer,
+        &profile,
+        Some((&source_descriptor, &deployment)),
+        projected_observer.as_ref(),
+        cancellation,
+    )?;
+    if let Some(current) = consumer.current()
+        && current.deployment.id()? == deployment.id()?
+    {
+        // Recovery already completed the original durable attempt. A fresh
+        // attempt here would repeat transaction-scoped work during that retry.
+        if recovering_reconciliation {
+            return Ok(());
+        }
+        return consumer.reconcile_current(cancellation);
+    }
+
     let generation = profile.new_generation()?;
     let staged = Profile {
         path: generation.path.clone(),
@@ -778,13 +797,6 @@ fn apply_profile(
         &aos_core::output::Printer::new(0, true, false),
     )?;
     EvaluationInputs::retain_descriptor(&source_descriptor, &generation)?;
-    configure_profile_observer_projected(
-        &mut consumer,
-        &profile,
-        Some((&source_descriptor, &deployment)),
-        projected_observer.as_ref(),
-        cancellation,
-    )?;
     consumer.apply(&deployment, &generation, cancellation)
 }
 
