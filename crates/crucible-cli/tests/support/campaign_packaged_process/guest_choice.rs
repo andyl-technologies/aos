@@ -716,6 +716,7 @@ pub(super) fn start_callback_witness_flight_service(
     fixture: &FlightFixture,
     authority: &Path,
     hot_fork_deployment: Option<&Path>,
+    stage_min_token: u32,
 ) -> Result<CampaignServiceChild, Box<dyn Error>> {
     let default_deployment = required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?;
     let deployment = hot_fork_deployment.unwrap_or(&default_deployment);
@@ -727,14 +728,14 @@ pub(super) fn start_callback_witness_flight_service(
         deployment,
         &qemu,
         &plugin,
-        FlightDiagnostics::ControlCallback,
+        FlightDiagnostics::ControlCallback { stage_min_token },
     )
 }
 
 enum FlightDiagnostics {
     Disabled,
     Materialization,
-    ControlCallback,
+    ControlCallback { stage_min_token: u32 },
 }
 
 pub(super) fn report_recent_control_callback_witness(service: &CampaignServiceChild) {

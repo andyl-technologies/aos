@@ -55,6 +55,7 @@ use super::{
 };
 
 mod checkpoint_stop_witness;
+mod control_callback_stage;
 mod control_callback_witness;
 pub(super) use control_callback_witness::ControlCallbackWitness;
 mod devices;
@@ -836,6 +837,7 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     control_boundary_defer_diagnostic_generation: AtomicU64,
     pub(super) control_callback_witness: Arc<ControlCallbackWitness>,
     stop_caller_witness: checkpoint_stop_witness::StopCallerWitness,
+    control_stage_identity: Option<control_callback_stage::ControlStageIdentity>,
     idle_advance_completion_active: AtomicBool,
     last_icount: AtomicU64,
     logical_restore_continuation_generation: AtomicU32,
@@ -1248,6 +1250,7 @@ impl LiveVcpuTimeCallbackState {
             control_boundary_defer_diagnostic_generation: AtomicU64::new(u64::MAX),
             control_callback_witness,
             stop_caller_witness,
+            control_stage_identity: None,
             idle_advance_completion_active: AtomicBool::new(false),
             last_icount: AtomicU64::new(snapshot.current_icount),
             logical_restore_continuation_generation: AtomicU32::new(0),
@@ -1701,105 +1704,6 @@ impl LiveVcpuTimeCallbackState {
         // boundary own the fingerprint.
         self.publish_current_icount_for_boundary(raw_icount, true, "vcpu-resume")?;
         PluginShmemOrdering::mark_running_after_wake(self.slot.get());
-        Ok(())
-    }
-
-    fn on_control_boundary(&self, raw_icount: u64) -> Result<(), LiveVcpuTimeCallbackError> {
-        // A stopped boundary permits the host to save VMState. RX poison is not
-        // serialized, so no checkpoint may acknowledge ambiguous ownership.
-        self.require_network_rx_commit_certain()?;
-
-        // A drained wake is an exact host-control opportunity, not a vCPU
-        // lifecycle transition. Publish before the release acknowledgement so
-        // a host acquire-load of the odd successor orders every boundary field.
-        // Halt tracking and idle publication remain owned by the real
-        // idle/resume callbacks.
-        let control_boundary = self.slot.get().snapshot();
-        if control_boundary.control_boundary_ack & 1 != 0 {
-            let _fault_pump_drained = self.pump_fault_commands(raw_icount)?;
-            return Ok(());
-        }
-
-        let control_request = control_boundary.control_boundary_ack;
-        let fault_command_frontier = control_boundary.control_boundary_fault_command_frontier;
-        let fingerprint_capture_request = match control_boundary.control_boundary_capture_request {
-            0 => None,
-            request => Some(request),
-        };
-        let observed_capture_request = self
-            .fingerprint
-            .as_ref()
-            .and_then(|fingerprint| fingerprint.slot.get().pending_capture_request_v1());
-        if observed_capture_request != fingerprint_capture_request {
-            return Err(
-                LiveVcpuTimeCallbackError::ControlBoundaryCaptureRequestMismatch {
-                    bound: fingerprint_capture_request,
-                    observed: observed_capture_request,
-                },
-            );
-        }
-
-        // The host binds this request to an immutable producer frontier. Submit
-        // exactly those commands, commit all mutations due at this coordinate,
-        // and publish every resulting record before observing machine state.
-        // Any backpressure or concurrent producer advance leaves the request
-        // outstanding without a capture, pause, or acknowledgement.
-        if !self.settle_fault_commands_at_control_boundary(
-            raw_icount,
-            control_request,
-            fault_command_frontier,
-        )? {
-            return Ok(());
-        }
-        let paused = self.publish_pause_for_boundary(
-            raw_icount,
-            true,
-            true,
-            fingerprint_capture_request,
-            "control-boundary",
-        )?;
-        if !paused {
-            self.preserve_network_output_stop(raw_icount, "control-boundary")?;
-            let current_icount = self.logical_icount_for_raw(raw_icount)?;
-            let (ceiling_icount, _) = self.scheduler_advance()?;
-            if current_icount > ceiling_icount {
-                return Err(LiveVcpuTimeCallbackError::IcountBeyondCeiling {
-                    current_icount,
-                    ceiling_icount,
-                });
-            }
-            if self.fingerprint.is_some()
-                && let Some(capture_request) = fingerprint_capture_request
-            {
-                // The main-loop callback holds the BQL after every vCPU has
-                // quiesced, making cross-vCPU register capture safe even when
-                // the serialized RR owner is intentionally absent at idle.
-                self.publish_fingerprint_sample(
-                    current_icount,
-                    "requested-control-boundary",
-                    capture_request,
-                )?;
-            }
-            PluginShmemOrdering::publish_control_boundary(
-                self.slot.get(),
-                current_icount,
-                raw_icount,
-            )
-            .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
-            self.last_raw_icount.store(raw_icount, Ordering::Release);
-            self.last_icount.store(current_icount, Ordering::Release);
-
-            // Returning from the all-halted callback for an ordinary control
-            // boundary ends that invocation without a real vCPU resume. Re-arm
-            // the plugin-side all-halted edge so the RR loop can enter a fresh
-            // idle wait and consume the next scheduler ceiling. A checkpoint
-            // pause deliberately remains armed until QEMU is resumed through
-            // the lifecycle control path.
-            self.all_halted_idle_handled.store(false, Ordering::Release);
-        }
-        PluginShmemOrdering::acknowledge_control_boundary(self.slot.get());
-        self.control_boundary_dispatch_generation
-            .store(u32::MAX, Ordering::Release);
         Ok(())
     }
 

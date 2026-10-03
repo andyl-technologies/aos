@@ -38,7 +38,8 @@ const TOKEN_VALID: u64 = 1;
 /// Diagnostic state independent of callback admission and canonical replay state.
 pub(in crate::runtime) struct ControlCallbackWitness {
     enabled: bool,
-    process_id: AtomicU32,
+    pub(super) stages: super::control_callback_stage::ControlCallbackStages,
+    pub(super) process_id: AtomicU32,
     token_and_events: AtomicU64,
     callback_sequence: AtomicU64,
     last_callback: LastObservation,
@@ -52,7 +53,14 @@ impl ControlCallbackWitness {
     }
 
     pub(super) fn from_env() -> Self {
-        Self::from_setting(std::env::var_os("CRUCIBLE_CONTROL_CALLBACK_WITNESS").as_deref())
+        let mut witness =
+            Self::from_setting(std::env::var_os("CRUCIBLE_CONTROL_CALLBACK_WITNESS").as_deref());
+        if witness.enabled {
+            witness.stages = super::control_callback_stage::ControlCallbackStages::from_setting(
+                std::env::var_os("CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN").as_deref(),
+            );
+        }
+        witness
     }
 
     fn from_setting(value: Option<&std::ffi::OsStr>) -> Self {
@@ -62,6 +70,7 @@ impl ControlCallbackWitness {
     pub(super) fn new(enabled: bool) -> Self {
         Self {
             enabled,
+            stages: super::control_callback_stage::ControlCallbackStages::from_setting(None),
             process_id: AtomicU32::new(if enabled { std::process::id() } else { 0 }),
             token_and_events: AtomicU64::new(0),
             callback_sequence: AtomicU64::new(0),
@@ -79,6 +88,7 @@ impl ControlCallbackWitness {
             // A fork child must witness its first callback even if the parent's
             // copied token/phase budget had already been exhausted.
             self.token_and_events.store(0, Ordering::Relaxed);
+            self.stages.reset();
             self.callback_sequence.store(0, Ordering::Relaxed);
             self.last_callback.clear();
             self.last_admitted.clear();
@@ -320,7 +330,7 @@ impl Event {
     }
 }
 
-struct Record {
+pub(super) struct Record {
     event: Event,
     process_id: u32,
     raw_icount: u64,
@@ -362,21 +372,37 @@ fn write_token(writer: &mut impl Write, token: Option<u32>) -> io::Result<()> {
 
 impl LiveVcpuTimeCallbackState {
     pub(super) fn control_callback_with_witness(&self, raw_icount: u64) {
-        self.run_control_callback(
+        self.run_control_callback_with_stages(
             raw_icount,
             |record| {
                 // crucible-lint: allow direct-diagnostic -- bounded opt-in records
                 // diagnose callbacks rejected before shared memory can be read.
                 let _write_result = record.write_to(&mut io::stderr().lock());
             },
+            |record| {
+                // crucible-lint: allow direct-diagnostic -- bounded opt-in stage
+                // writes must not change the original callback outcome.
+                let _write_result = record.write_to(&mut io::stderr().lock());
+            },
             |error| super::abort_live_callback(error),
         );
     }
 
+    #[cfg(test)]
     fn run_control_callback(
         &self,
         raw_icount: u64,
+        emit: impl FnMut(Record),
+        on_error: impl FnOnce(LiveVcpuTimeCallbackError),
+    ) {
+        self.run_control_callback_with_stages(raw_icount, emit, |_| {}, on_error);
+    }
+
+    pub(super) fn run_control_callback_with_stages(
+        &self,
+        raw_icount: u64,
         mut emit: impl FnMut(Record),
+        mut emit_stage: impl FnMut(super::control_callback_stage::StageRecord),
         on_error: impl FnOnce(LiveVcpuTimeCallbackError),
     ) {
         let witness = &self.control_callback_witness;
@@ -428,7 +454,11 @@ impl LiveVcpuTimeCallbackState {
             token
         });
 
-        let result = self.on_control_boundary(raw_icount);
+        let result = self.on_control_boundary_with_stages(
+            raw_icount,
+            witness.enabled.then_some(callback),
+            &mut emit_stage,
+        );
         if let Some(token_before) = token_before {
             let token_after = PluginShmemOrdering::control_boundary_token(self.slot.get());
             let event = if result.is_err() {

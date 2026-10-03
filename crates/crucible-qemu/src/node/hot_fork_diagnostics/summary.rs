@@ -5,6 +5,12 @@
 
 use std::collections::VecDeque;
 
+#[path = "checkpoint_stop.rs"]
+mod checkpoint_stop;
+
+#[path = "control_stage.rs"]
+mod control_stage;
+
 #[path = "network_output_context.rs"]
 mod network_output_context;
 
@@ -24,7 +30,9 @@ pub(super) fn control_diagnostics_summary(bytes: &[u8], child_process_id: u32) -
         let Some(line) = line.strip_suffix(b"\n") else {
             continue;
         };
-        if !line.starts_with(b"CRUCIBLE-NATIVE-STOP-CONTEXT-V1 ")
+        if !line.starts_with(b"CRUCIBLE-CHECKPOINT-STOP-V1 ")
+            && !line.starts_with(b"CRUCIBLE-CONTROL-STAGE-V1 ")
+            && !line.starts_with(b"CRUCIBLE-NATIVE-STOP-CONTEXT-V1 ")
             && !line.starts_with(b"CRUCIBLE-NETWORK-OUTPUT-CONTEXT-V1 ")
             && !line.starts_with(b"CRUCIBLE-CONTROL-CALLBACK-V1 ")
             && !line.starts_with(b"CRUCIBLE-CONTROL-LAST-V1 ")
@@ -38,7 +46,9 @@ pub(super) fn control_diagnostics_summary(bytes: &[u8], child_process_id: u32) -
                 && row
                     .bytes()
                     .all(|byte| byte == b' ' || byte.is_ascii_graphic())
-                && (native_stop_context::valid_row(row, child_process_id)
+                && (checkpoint_stop::valid_row(row, child_process_id)
+                    || control_stage::valid_row(row, child_process_id)
+                    || native_stop_context::valid_row(row, child_process_id)
                     || network_output_context::valid_row(row, child_process_id)
                     || valid_callback_row(row, child_process_id)
                     || valid_last_callback_row(row, child_process_id)
@@ -373,3 +383,7 @@ mod tests {
         assert!(summary.len() <= 32 * MAXIMUM_ROW_BYTES + 256);
     }
 }
+
+#[cfg(test)]
+#[path = "stop_notice_tests.rs"]
+mod stop_notice_tests;

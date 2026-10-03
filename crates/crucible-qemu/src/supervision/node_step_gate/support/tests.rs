@@ -6,10 +6,12 @@ use super::*;
 fn callback_witness_constructs_only_exact_admitted_child_environment_and_trace() {
     const PROBE: &str = "CRUCIBLE_CALLBACK_WITNESS_LAUNCH_PROBE";
     const WITNESS: &str = "CRUCIBLE_CONTROL_CALLBACK_WITNESS";
+    const MINIMUM: &str = "CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN";
     const TEST_NAME: &str = "supervision::node_step_gate::support::tests::callback_witness_constructs_only_exact_admitted_child_environment_and_trace";
     if std::env::var_os(PROBE).is_none() {
         let executable =
             std::env::current_exe().unwrap_or_else(|error| panic!("test executable: {error}"));
+        let mut cases = Vec::new();
         for value in [
             None,
             Some("0"),
@@ -19,30 +21,46 @@ fn callback_witness_constructs_only_exact_admitted_child_environment_and_trace()
             Some("1 "),
         ] {
             for idle in [false, true] {
-                let mut child = std::process::Command::new(&executable);
-                child
-                    .args(["--exact", TEST_NAME, "--nocapture"])
-                    .env(PROBE, "1")
-                    .env_remove(WITNESS)
-                    .env_remove("CRUCIBLE_PHASE7_IDLE_TRACE")
-                    .env("CRUCIBLE_UNADMITTED_SENTINEL", "private-host-value");
-                if let Some(value) = value {
-                    child.env(WITNESS, value);
-                }
-                if idle {
-                    child.env("CRUCIBLE_PHASE7_IDLE_TRACE", "1");
-                }
-                let output = child
-                    .output()
-                    .unwrap_or_else(|error| panic!("launch probe: {error}"));
-                assert!(
-                    output.status.success(),
-                    "witness={value:?} idle={idle}: {}{}",
-                    String::from_utf8_lossy(&output.stdout),
-                    String::from_utf8_lossy(&output.stderr)
-                );
-                assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+                cases.push((value, None, None, idle));
             }
+        }
+        for minimum in ["0", "4400", "10400", "4294967295"] {
+            cases.push((Some("1"), Some(minimum), Some(minimum), false));
+        }
+        for minimum in ["", "01", "+1", "-1", "4294967296", "4400 "] {
+            cases.push((Some("1"), Some(minimum), None, false));
+        }
+        cases.push((None, Some("4400"), None, false));
+        cases.push((Some("0"), Some("10400"), None, false));
+
+        for (value, minimum, expected_minimum, idle) in cases {
+            let mut child = std::process::Command::new(&executable);
+            child
+                .args(["--exact", TEST_NAME, "--nocapture"])
+                .env(PROBE, expected_minimum.unwrap_or("off"))
+                .env_remove(WITNESS)
+                .env_remove(MINIMUM)
+                .env_remove("CRUCIBLE_PHASE7_IDLE_TRACE")
+                .env("CRUCIBLE_UNADMITTED_SENTINEL", "private-host-value");
+            if let Some(value) = value {
+                child.env(WITNESS, value);
+            }
+            if let Some(minimum) = minimum {
+                child.env(MINIMUM, minimum);
+            }
+            if idle {
+                child.env("CRUCIBLE_PHASE7_IDLE_TRACE", "1");
+            }
+            let output = child
+                .output()
+                .unwrap_or_else(|error| panic!("launch probe: {error}"));
+            assert!(
+                output.status.success(),
+                "witness={value:?} minimum={minimum:?} idle={idle}: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
         }
         return;
     }
@@ -112,14 +130,21 @@ fn callback_witness_constructs_only_exact_admitted_child_environment_and_trace()
             .map(std::ffi::OsStr::new)
             .collect::<Vec<_>>()
     );
-    assert_eq!(
-        child.get_envs().collect::<Vec<_>>(),
-        command
-            .diagnostic_envs()
-            .iter()
-            .map(|(key, value)| (std::ffi::OsStr::new(key), Some(std::ffi::OsStr::new(value))))
-            .collect::<Vec<_>>()
-    );
+    let mut expected_environment = command
+        .diagnostic_envs()
+        .iter()
+        .map(|(key, value)| (std::ffi::OsStr::new(key), Some(std::ffi::OsStr::new(value))))
+        .collect::<Vec<_>>();
+    let expected_minimum =
+        std::env::var(PROBE).unwrap_or_else(|error| panic!("expected minimum: {error}"));
+    if expected_minimum != "off" {
+        expected_environment.push((
+            std::ffi::OsStr::new(MINIMUM),
+            Some(std::ffi::OsStr::new(&expected_minimum)),
+        ));
+    }
+    expected_environment.sort();
+    assert_eq!(child.get_envs().collect::<Vec<_>>(), expected_environment);
 
     // Execute the production command constructor against the test executable:
     // cleared ambient sentinels and the exact opt-in are verified after exec.

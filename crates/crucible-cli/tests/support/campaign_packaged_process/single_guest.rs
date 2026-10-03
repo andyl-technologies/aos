@@ -51,6 +51,7 @@ fn run_single_guest(materialization: bool) -> Result<(), Box<dyn Error>> {
         &fixture,
         &authority,
         hot_fork.as_deref(),
+        4400,
     )?;
     let mut processes = process_audit::ProcessAudit::default();
     stage("guest-start");
@@ -101,7 +102,8 @@ fn run_single_guest(materialization: bool) -> Result<(), Box<dyn Error>> {
         stage("retire-fork-source");
         service.stop()?;
         processes.verify_cleanup()?;
-        service = guest_choice::start_callback_witness_flight_service(&fixture, &authority, None)?;
+        service =
+            guest_choice::start_callback_witness_flight_service(&fixture, &authority, None, 4400)?;
         assert_eq!(
             choice_at(&fixture, &selected_recovery, "campaign.retry-quanta")?,
             quanta_choice

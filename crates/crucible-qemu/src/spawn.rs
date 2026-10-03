@@ -1116,6 +1116,18 @@ pub(crate) fn guarded_qemu_process_command(
     for (key, value) in envs {
         command.env(key, value);
     }
+    // The stage minimum is diagnostic-only and cannot escape the existing
+    // witness opt-in. Invalid or noncanonical values leave stage notices off.
+    if envs.contains(&("CRUCIBLE_CONTROL_CALLBACK_WITNESS", "1")) {
+        const STAGE_MINIMUM: &str = "CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN";
+        if let Ok(minimum) = std::env::var(STAGE_MINIMUM)
+            && minimum
+                .parse::<u32>()
+                .is_ok_and(|parsed| parsed.to_string() == minimum)
+        {
+            command.env(STAGE_MINIMUM, minimum);
+        }
+    }
     command
 }
 
