@@ -70,6 +70,9 @@ in {
     ${runCase "provenance::trust::context::tests::prov_context_selected_evidence_enforces_path_and_digest_limits"}
     ${runCase "provenance::trust::context::tests::prov_context_selected_values_and_order_require_canonical_encoding"}
     ${runCase "provenance::trust::context::tests::prov_context_rejects_truncated_and_excessive_claims"}
+    ${runCase "provenance::trust::encoding::recorded_tests::prov_recorded_context_encoder_preserves_explicit_fields_and_legacy_bytes"}
+    ${runCase "provenance::trust::context::recorded_tests::prov_recorded_context_decoder_requires_exact_revision_and_canonical_fence"}
+    ${runCase "provenance::trust::context::recorded_tests::prov_recorded_context_selected_rows_keep_existing_relationships"}
     printf 'PASS: closed trust presets and verified entry preservation\n' > "$out/result"
   '';
 }

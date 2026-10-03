@@ -374,7 +374,10 @@ fold-preprocessing = null / [
 ; ["preset", "any"], null and []; key 5 is absent. No trusted/newer authority.
 
 ; Context versions preserve exact signed view and selected attribute evidence.
-; Version 1 applies iff no selected side evidence is present for this view/domain.
+; Without an explicit recorded-property association, version 1 has no selected
+; side evidence and version 2 has its exact nonempty selected evidence.
+; Version 3 applies to each view using an explicitly associated recorded
+; interpretation, including an explicit current revision (ALG-38, PROP-30).
 provenance-trust-context = [
   1, view: digest32, domain: tstr, selector-bytes: bstr .cbor selector,
   baseline: tstr / null, min-chunk-size: uint,
@@ -382,7 +385,28 @@ provenance-trust-context = [
   2, view: digest32, domain: tstr, selector-bytes: bstr .cbor selector,
   baseline: tstr / null, min-chunk-size: uint,
   selected: bstr .cbor selected-side-evidence,
+] / [
+  3, view: digest32, domain: tstr, selector-bytes: bstr .cbor selector,
+  baseline: tstr / null, min-chunk-size: uint,
+  selected: (bstr .cbor selected-side-evidence) / null,
+  recorded: recorded-property-context,
 ]
+recorded-property-context = [
+  original-view-root: digest32,         ; before fold preprocessing, not its result
+  property-revision: uint,             ; exactly a registered PROP-30 revision
+  behavioral: [ * name ],              ; exact fixed vocabulary of that revision
+  later: [ * name ],                   ; separately registered preserve-only names
+]
+; Both name arrays sort uniquely by unsigned UTF-8 bytes and are disjoint.
+; Behavioral names equal the fixed 33/34/35-name registered vocabulary for
+; revisions 1/2/3. Later names total at most 65536 UTF-8 bytes; name bounds and
+; array/byte limits are checked before allocation (TREE-27, PROP-30).
+; Null selected evidence means absence; a present byte string contains the
+; existing nonempty selected-side-evidence schema. Empty selected rows refuse.
+; Syntax checks ordinary consistency only. Independent configuration and
+; immutable view witnesses establish the actual root and registration fence.
+; Claims cannot self-register names, imply a historical association from
+; digest/property spelling, or authorize a fallback to v1/v2 (ALG-38).
 selected-side-evidence = [ + [
   view-location: evidence-location, name: name, target-domain: tstr,
   full-view-path: key-bytes, side: side-evidence-tuple,

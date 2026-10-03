@@ -269,9 +269,25 @@ operations above.
   their complete context bytes and roots to the recipe. Serialized accepted
   commit sets or timestamps MUST NOT grant production authority. The
   `terrane-preset-any/v1` profile is an inert placeholder and MUST NOT
-  authorize either policy. Context version one MUST remain in use when no
-  side evidence is selected; version two MUST record the exact selected side
-  evidence for its immutable view and domain. *Gate:* `gate:algebra-merge`.
+  authorize either policy. A provenance context whose evaluation uses an
+  explicitly associated recorded property interpretation MUST use version
+  three, including an explicitly selected current revision. Its complete
+  configuration MUST bind the immutable view's original namespace root before
+  fold preprocessing, the recorded revision, its exact behavioral vocabulary
+  and its trusted later preservation vocabulary. The view/root association
+  and registrations MUST be checked independently of those serialized claims.
+  One justified interpretation MUST apply throughout that view's root and
+  ancestor-prefix resolution; conflicting interpretations within one view
+  MUST be rejected. Independently justified interpretations for ours and
+  theirs MAY differ. Versions one and two retain their existing encodings
+  and selection rules for contexts without that explicit association: version
+  one has no selected side evidence, and version two records the exact
+  selected evidence for its immutable view and domain. They MUST NOT stand
+  in for version three or recover a missing historical interpretation.
+  Missing, inconsistent or unsupported recorded associations MUST be rejected,
+  without falling back to those versions or to current defaults. Serialized
+  version-three claims MUST NOT grant authority or register their own later
+  names. *Gate:* `gate:algebra-merge`.
 - **[ALG-39]** Fold preprocessing MUST record the base, original incoming,
   filtered incoming, and sorted unique excluded paths. Re-evaluation MUST
   restore each excluded path from the base, or remove it when absent in the

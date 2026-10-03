@@ -77,6 +77,7 @@ in {
     ${runTest "algebra::recipe::tests::merge_recipe_preserves_policy_order"}
     ${runTest "refs::codec::recipe_tests::commit_recipe_codec_preserves_registered_and_other_encodings"}
     ${runTest "refs::codec::recipe_tests::commit_recipe_codec_rejects_invalid_registered_arguments"}
+    ${runTest "algebra::trust::recorded_context_tests::trusted_recorded_context_recipe_keys_bind_complete_interpretations"}
     printf 'PASS: pure merge, fold bindings, conflict policies and verified recipes\n' > "$out/result"
   '';
 

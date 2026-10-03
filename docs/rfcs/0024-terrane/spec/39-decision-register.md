@@ -2107,6 +2107,45 @@ is added rather than editing history.
     dispatch, indexed lookup, incremental maintenance and runtime complexity
     remain unqualified; this decision completes no task or milestone.
 
+- **[D-107] Bind recorded property interpretation in trust memo contexts.**
+  - **Status:** Decided (2026-10-02)
+  - **Decision:** Register an additive version-three provenance trust context
+    carrying the selected immutable view's original namespace root, recorded
+    property revision, exact behavioral vocabulary and separately established
+    later preservation vocabulary. It is mandatory whenever evaluation uses
+    an explicitly associated recorded interpretation, including an explicit
+    current revision. Its optional selected evidence uses the existing schema,
+    with null for absence. Interpretations apply per immutable view; ours and
+    theirs may differ when independently justified, but conflicting prefix
+    interpretations within one view refuse. Fold preprocessing does not
+    replace the original view-root association. Canonical claim decoding
+    neither establishes that association nor supplies registration or authority.
+  - **Rationale:** PROP-30 preserves fixed historical property semantics,
+    whereas ALG-38 required only context versions one and two. Neither tuple
+    binds recorded revision, vocabulary or physical-root selection. Adding
+    a resolver parameter alone could serialize distinct inert/active property
+    interpretations as the same trust configuration and recipe lookup key,
+    contrary to PROV-16 and DRV-21/22. An explicit additive tuple resolves the
+    specification's missing representation before the encoding freeze.
+  - **Alternatives considered:** Infer revision from Node bytes, property
+    spelling or today's configuration (rejected: does not recover the
+    enclosing interpretation); hide fields in selector, baseline, domain or
+    selected evidence (rejected: changes their registered schemas); bind only
+    a revision number (rejected: omits preservation vocabulary and view/root
+    association); silently accept a third tuple (rejected: violates ALG-38).
+  - **Compatibility:** Existing version-one/two encodings, field meanings,
+    selected-evidence rules, identities and golden bytes remain unchanged.
+    They do not alias the new explicit recorded interpretation. Invalid or
+    missing version-three associations cannot fall back to older tuples or
+    current defaults. Identity domains, evaluator profile, media types,
+    requirement IDs, gate names and draft version remain unchanged. The
+    extension is registered before T1's encoding freeze.
+  - **Affects:** ALG-38, PROP-4/30, PROV-14/16, DRV-21/22 and TEST-1 to
+    TEST-3. Pure codecs and independent complete field/recipe-key witnesses
+    remain required. Historical association, fresh evaluator binding and
+    native propagation remain separate obligations; no task or milestone
+    completes through this registration.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

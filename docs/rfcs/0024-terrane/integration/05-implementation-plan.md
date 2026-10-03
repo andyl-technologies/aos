@@ -241,6 +241,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   separate task branch; prior standalone recipe results do not qualify this path.
   The actual augmented gate fails on the absent first new exact target (zero
   tests); mandatory formatting passes. The requirement remains open.
+  D-107 registers additive provenance context version three under ALG-38,
+  binding explicit recorded property interpretation to each immutable view's
+  original root and complete vocabularies before fold preprocessing. Versions
+  one and two retain their existing bytes and do not supply a missing
+  historical association. The merge gate now requires an exact pure
+  complete-context/recipe-key case; its implementation and independent
+  publication remain pending. Runtime evaluator binding remains required.
   — satisfies ALG-15 to ALG-21, ALG-28 to ALG-39;
   `checks.terrane.gates.algebra-merge`, `checks.terrane.gates.algebra-fork`.
 - [ ] **T-PROP-1** Property resolution, types, boundary properties,
@@ -324,6 +331,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   and whiteout/public-baseline cases are absent. These pure results do not
   qualify that native boundary or historical view/context associations.
   T-PROP-1, formal task merges and T1 remain open.
+  The recorded-context audit also identifies ALG-38's exclusive version-one/two
+  rule as an obstacle to complete immutable memo configuration. D-107 resolves
+  that specification gap with an explicitly associated version-three tuple.
+  The selector gate now requires three exact pure field/legacy-byte, fixed
+  revision/vocabulary and selected-evidence relationship cases. Their codecs,
+  independent publication and complete caller association remain pending;
+  decoded claims cannot establish a trusted registration or current authority.
   — satisfies TREE-14,
   PROP-1 to PROP-30;
   `checks.terrane.gates.property-resolution`,
