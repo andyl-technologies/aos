@@ -54,11 +54,19 @@
       grep -q '^Sig: unapproved-1:' "/tmp/unapproved-cache/$BASIC_HASH.narinfo"
       cp "$CACHE/$BASIC_HASH.narinfo" /tmp/basic-signed.narinfo
 
+      git init --bare --object-format=sha256 /tmp/user-store-origin.git
+      git -C /tmp/user-store-origin.git symbolic-ref HEAD "refs/heads/$DEFAULT_BRANCH"
+      git -C "$REG_DIR" remote add origin /tmp/user-store-origin.git
+
       git -C "$REG_DIR" add -A
       git -C "$REG_DIR" -c gpg.format=ssh -c user.signingkey="$REGISTRY_KEY" \
         commit -S -m "Publish signed user package fixture"
-      git init --bare --object-format=sha256 /tmp/user-store-origin.git
-      git -C "$REG_DIR" remote add origin /tmp/user-store-origin.git
+
+      # Release seals TUF catalog metadata as well as the signed registry commit.
+      release_vm_package 1.0.0 --registry user-store-reg \
+        --cache-key /tmp/user-store.key --cache-url http://127.0.0.1:18096 \
+        --upload-url "file://$CACHE"
+      test -f "$REG_DIR/tuf/root.json"
       git -C "$REG_DIR" push origin "$DEFAULT_BRANCH"
 
       # Accounts own their profiles and caches; neither can write the shared store.
