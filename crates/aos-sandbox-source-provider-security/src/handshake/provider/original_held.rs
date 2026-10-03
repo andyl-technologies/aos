@@ -1,7 +1,7 @@
 //! Once-only ProviderHeld signing on the SAME genuine Source Session.
 //!
 //! The resident reservoir owns preparation, samples and the actual first cause.
-//! It does not authorize send, Root acceptance, settlement or recovery.
+//! The reservoir alone does not authorize send, Root acceptance or settlement.
 
 use super::*;
 use aos_sandbox::journal::{
@@ -14,6 +14,23 @@ use aos_sandbox_source_provider_protocol::native_held_completion::{
     witness::NativeHeldOwnerWitnessV1,
 };
 use ed25519_dalek::Signer as _;
+
+mod delivery;
+
+#[derive(Clone, Copy)]
+enum OriginalHeldBindingPurposeV5<'control> {
+    Preparation(&'control PreparedNativeHeldControlV1),
+    Delivery(&'control SignedNativeHeldControlV1, &'control [u8]),
+}
+
+impl OriginalHeldBindingPurposeV5<'_> {
+    fn prepared(&self) -> &PreparedNativeHeldControlV1 {
+        match self {
+            Self::Preparation(prepared) => prepared,
+            Self::Delivery(signed, _) => signed.prepared(),
+        }
+    }
+}
 
 #[derive(thiserror::Error)]
 enum OriginalHeldCauseV5 {
@@ -33,7 +50,7 @@ impl core::fmt::Debug for OriginalHeldCauseV5 {
     }
 }
 
-/// Owns one original Held preparation/signature attempt without wire authority.
+/// Retains one original Held signing and delivery attempt without a send permit.
 ///
 /// Only the genuine Session creates this empty reservoir. Repeat entry cannot
 /// reset that Session's purpose, even if a different reservoir is supplied.
@@ -47,6 +64,7 @@ pub struct OriginalProviderHeldSignaturesV5 {
     samples: [Option<Result<RawPairedClockSample, SourceProviderSecurityError>>; 2],
     cause: Option<OriginalHeldCauseV5>,
     postcheck_debt: Option<OriginalHeldCauseV5>,
+    delivery: delivery::OriginalHeldDeliveryV5,
 }
 
 impl OriginalProviderHeldSignaturesV5 {
@@ -61,6 +79,7 @@ impl OriginalProviderHeldSignaturesV5 {
             samples: std::array::from_fn(|_| None),
             cause: None,
             postcheck_debt: None,
+            delivery: delivery::OriginalHeldDeliveryV5::pending(),
         }
     }
 
@@ -72,6 +91,7 @@ impl OriginalProviderHeldSignaturesV5 {
                 sample.as_ref()?.as_ref().err().map(|cause| cause as _)
             }))
             .or_else(|| self.postcheck_debt.as_ref().map(|cause| cause as _))
+            .or_else(|| self.delivery.failure())
     }
 
     /// Borrows signed DATA only when this original attempt has no debt.
@@ -126,6 +146,7 @@ impl CurrentProviderIngressSessionV1 {
     pub fn close_original_held_after_failure_v5(&mut self) {
         self.custody.inner_mut().poison();
         self.failure_disposition = CurrentSessionFailureDispositionV5::OriginalHeldEnded;
+        self.carrier.end_original_delivery_if_started_v5();
     }
 
     /// Observes the actual Source carrier cookie using the existing revalidator.
@@ -170,11 +191,12 @@ impl CurrentProviderIngressSessionV1 {
         archive: &crate::ProtectedOriginalConfigurationArchiveV5,
         selected: &crate::ProtectedOriginalSelectedInputV1,
         storage: &mut crate::OriginalStorageOfferTransportV5,
-        exact: &PreparedNativeHeldControlV1,
+        purpose: OriginalHeldBindingPurposeV5<'_>,
         initial: RawPairedClockSample,
         deadline: u64,
         validity: (i64, i64),
     ) -> Result<(), OriginalHeldCauseV5> {
+        let exact = purpose.prepared();
         self.revalidate_root_prepared_carrier_v1(root)?;
         self.revalidate()?;
         physical.revalidate()?;
@@ -185,9 +207,14 @@ impl CurrentProviderIngressSessionV1 {
         let request = verified.request();
         let projection = verified.ingress_projection();
         let current = self.current_projection()?;
-        let origin = journal.original_held_signing_basis_v5(
-            readback, request.acquisition_id(), exact,
-        )?;
+        let origin = match purpose {
+            OriginalHeldBindingPurposeV5::Preparation(_) => journal.original_held_signing_basis_v5(
+                readback, request.acquisition_id(), exact,
+            )?,
+            OriginalHeldBindingPurposeV5::Delivery(signed, _) => journal.original_held_delivery_basis_v5(
+                readback, request.acquisition_id(), signed,
+            )?,
+        };
         let provenance = origin.initial_floor().original_provenance().claims();
         let acquisition_key = provenance.records[1].key();
         let acquisition_bytes = readback.rows().get(&(
@@ -276,6 +303,12 @@ impl CurrentProviderIngressSessionV1 {
         if storage.original_socket_cookie_v5()?.get() != witness.storage_local_cookie {
             return Err(SourceProviderSecurityError::SessionContinuity.into());
         }
+        if let OriginalHeldBindingPurposeV5::Delivery(_, complete) = purpose {
+            delivery::require_original_complete_delivery_v5(
+                readback, provenance.records[0].key(), &acquisition, original,
+                acquire, physical, complete,
+            )?;
+        }
         Ok(())
     }
 
@@ -329,7 +362,7 @@ impl CurrentProviderIngressSessionV1 {
             )?;
             self.require_original_held_bindings_v5(
                 journal, readback, root, acquire, physical, lease, archive, selected,
-                storage, exact, initial, deadline, validity,
+                storage, OriginalHeldBindingPurposeV5::Preparation(exact), initial, deadline, validity,
             )?;
             signatures.message = Some(exact.signature_message());
             signatures.sample(0, initial, deadline, validity)?;
@@ -356,7 +389,7 @@ impl CurrentProviderIngressSessionV1 {
                 .ok_or(SourceProviderSecurityError::SessionContinuity)?;
             self.require_original_held_bindings_v5(
                 journal, readback, root, acquire, physical, lease, archive, selected,
-                storage, exact, initial, deadline, validity,
+                storage, OriginalHeldBindingPurposeV5::Preparation(exact), initial, deadline, validity,
             )?;
             signatures.sample(1, initial, deadline, validity)
         })();

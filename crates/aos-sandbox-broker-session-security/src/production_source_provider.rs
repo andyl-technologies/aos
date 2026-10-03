@@ -264,10 +264,10 @@ impl ProductionSourceProviderIngressV1 {
         result
     }
 
-    /// Advances the SAME original pair through resident signed native Held readback.
+    /// Advances the SAME original pair through local Held and Complete transmission.
     ///
-    /// This does not deliver Complete, Provider3, SourceRoot or a relay. The
-    /// original owner and the caller's first outer cause must remain resident.
+    /// Local transmission is not Root acceptance, relay, settlement or drain.
+    /// The original owner and the first outer cause remain resident.
     ///
     /// # Errors
     ///
@@ -280,7 +280,7 @@ impl ProductionSourceProviderIngressV1 {
         let result = (|| {
             self.listener.validate_current()?;
             let (publication, rows) = self.read_current_catalog_manifest()?;
-            let progress = owner.advance_original_native_held_v5(&publication, &rows);
+            let progress = owner.advance_original_native_delivery_v5(&publication, &rows);
             self.listener.validate_current()?;
             Ok(progress)
         })();

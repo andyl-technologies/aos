@@ -165,6 +165,7 @@ pub(crate) struct InertSourceProviderCarrierV1 {
     socket: DescriptorSubjectSocket,
     poisoned: bool,
     interrupted_retries: u8,
+    original_delivery_retention: bool,
 }
 
 pub(crate) struct ClosedSourceProviderCarrierV1 {
@@ -182,6 +183,7 @@ impl InertSourceProviderCarrierV1 {
             socket,
             poisoned: false,
             interrupted_retries: 0,
+            original_delivery_retention: false,
         })
     }
 
@@ -197,6 +199,39 @@ impl InertSourceProviderCarrierV1 {
     pub(crate) fn close_owned(mut self) -> ClosedSourceProviderCarrierV1 {
         self.close();
         ClosedSourceProviderCarrierV1 { _carrier: self }
+    }
+
+    // Negative retention never opens a channel or authenticates a writer.
+    pub(crate) fn begin_original_delivery_retention_v5(&mut self) {
+        self.socket.begin_original_retention_v1();
+        self.original_delivery_retention = true;
+    }
+
+    pub(crate) fn end_original_delivery_if_started_v5(&mut self) {
+        if self.original_delivery_retention {
+            self.close();
+        }
+    }
+
+    pub(crate) fn send_original_held_retaining_v5(
+        &mut self,
+        payload: &[u8],
+    ) -> Result<(), SeqpacketError> {
+        if self.poisoned {
+            return Err(SeqpacketError::Closed);
+        }
+        self.socket.send_retaining(payload)
+    }
+
+    pub(crate) fn send_original_complete_retaining_v5(
+        &mut self,
+        payload: &[u8],
+        source_root: &OwnedFd,
+    ) -> Result<(), SeqpacketError> {
+        if self.poisoned {
+            return Err(SeqpacketError::Closed);
+        }
+        self.socket.send_with_descriptors_retaining(payload, &[source_root.as_fd()])
     }
 
     pub(crate) fn send(&mut self, payload: &[u8]) -> Result<(), CarrierFailureV1> {
