@@ -1165,6 +1165,18 @@ mod tests {
         let (tmp, _) = zstd_fixture(content);
         let download_hash = sha256_file(tmp.path()).unwrap();
         let result = DownloadResult {
+            narinfo: aos_core::nar::info::NarInfo {
+                store_path: store_path.to_string(),
+                url: "nar/fixture.nar.zst".to_string(),
+                compression: "zstd".to_string(),
+                file_hash: Some(download_hash.clone()),
+                file_size: Some(tmp.as_file().metadata().unwrap().len()),
+                nar_hash: narinfo_nar_hash.to_string(),
+                nar_size: content.len() as u64,
+                references: Vec::new(),
+                deriver: None,
+                signatures: Vec::new(),
+            },
             store_path: store_path.to_string(),
             local_path: tmp.path().to_path_buf(),
             download_hash,
