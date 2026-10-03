@@ -519,22 +519,41 @@ where
     }
 }
 
-fn map_private_checkpoint_replay_failure<E: std::fmt::Display>(
+fn map_private_checkpoint_replay_failure<E: std::error::Error>(
     failure: AttemptWorkerFailure<E>,
 ) -> QemuVmRealizationError {
     match failure {
         AttemptWorkerFailure::Retryable(error) => QemuVmRealizationError::ExecutorUnavailable {
             operation: "replay private checkpoint attempt",
-            message: error.to_string(),
+            message: private_checkpoint_replay_diagnostic(&error),
         },
         AttemptWorkerFailure::Canceled(_) => QemuVmRealizationError::Canceled {
             operation: "replay private checkpoint attempt",
         },
         AttemptWorkerFailure::Terminal(error) => QemuVmRealizationError::Executor {
             operation: "replay private checkpoint attempt",
-            message: error.to_string(),
+            message: private_checkpoint_replay_diagnostic(&error),
         },
     }
+}
+
+/// Retains the original cause before the process-local error becomes stored text.
+fn private_checkpoint_replay_diagnostic(error: &dyn std::error::Error) -> String {
+    let mut diagnostic = error.to_string();
+    let mut source = error.source();
+    // A malformed cyclic source chain must not strand promotion reconciliation.
+    for _ in 0..8 {
+        let Some(cause) = source else {
+            return diagnostic;
+        };
+        diagnostic.push_str(": ");
+        diagnostic.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    if source.is_some() {
+        diagnostic.push_str(": [additional error causes omitted]");
+    }
+    diagnostic
 }
 
 fn select_baked_catalog_entry<T>(
@@ -756,6 +775,53 @@ mod tests {
     }
 
     #[test]
+    fn private_replay_mapping_retains_lifecycle_cause_and_failure_class() {
+        fn construction_failure() -> crate::QemuFreshExecutionRunnerError<
+            crate::QemuAttemptProductionVmLifecycleError,
+            crate::QemuFreshModeledDriverError,
+        > {
+            crate::QemuFreshExecutionRunnerError::Lifecycle(
+                crate::QemuAttemptProductionVmLifecycleError::ResourceInstallation(
+                    QemuVmRealizationError::Executor {
+                        operation: "install private replay resources",
+                        message: String::from("retained attempt directory rejected"),
+                    },
+                ),
+            )
+        }
+
+        let terminal = map_private_checkpoint_replay_failure(AttemptWorkerFailure::Terminal(
+            construction_failure(),
+        ));
+        let retryable = map_private_checkpoint_replay_failure(AttemptWorkerFailure::Retryable(
+            construction_failure(),
+        ));
+        for failure in [&terminal, &retryable] {
+            let message = match failure {
+                QemuVmRealizationError::Executor { message, .. }
+                | QemuVmRealizationError::ExecutorUnavailable { message, .. } => message,
+                other => panic!("replay failure changed classification: {other}"),
+            };
+            assert!(message.starts_with("fresh production QEMU lifecycle construction failed"));
+            assert!(message.contains("install private replay resources"));
+            assert!(message.contains("retained attempt directory rejected"));
+        }
+        assert!(matches!(terminal, QemuVmRealizationError::Executor { .. }));
+        assert!(matches!(
+            retryable,
+            QemuVmRealizationError::ExecutorUnavailable { .. }
+        ));
+        assert!(matches!(
+            map_private_checkpoint_replay_failure(AttemptWorkerFailure::Canceled(
+                construction_failure()
+            )),
+            QemuVmRealizationError::Canceled {
+                operation: "replay private checkpoint attempt"
+            }
+        ));
+    }
+
+    #[test]
     fn baked_catalog_routes_by_the_complete_world_scenario_basis() {
         let world = ContentHash::from_bytes(b"shared-world");
         let first = ContentHash::from_bytes(b"first-scenario");
@@ -781,5 +847,31 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn private_replay_diagnostic_bounds_cyclic_sources() {
+        #[derive(Debug)]
+        struct CyclicSource;
+
+        impl std::fmt::Display for CyclicSource {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("cyclic cause")
+            }
+        }
+
+        impl std::error::Error for CyclicSource {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(self)
+            }
+        }
+
+        let diagnostic = private_checkpoint_replay_diagnostic(&CyclicSource);
+        assert_eq!(diagnostic.matches("cyclic cause").count(), 9);
+        assert!(diagnostic.ends_with("[additional error causes omitted]"));
+        assert_eq!(
+            private_checkpoint_replay_diagnostic(&std::io::Error::other("original refusal")),
+            "original refusal"
+        );
     }
 }
