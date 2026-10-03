@@ -217,12 +217,19 @@ impl State {
             .nodes
             .get(id)
             .ok_or_else(|| anyhow::anyhow!("unknown effect"))?;
-        let mut results: BTreeMap<_, _> = self
-            .retained
+        // The checked graph's dependency set contains every deferred reference.
+        // Project only those outputs, preserving fresh transaction precedence,
+        // rather than cloning the growing retained inventory for each dispatch.
+        let results: BTreeMap<_, _> = effect
+            .dependencies
             .iter()
-            .map(|(id, state)| (id.clone(), state.outputs.clone()))
+            .filter_map(|id| {
+                self.transaction_results
+                    .get(id)
+                    .or_else(|| self.retained.get(id).map(|state| &state.outputs))
+                    .map(|outputs| (id.clone(), outputs.clone()))
+            })
             .collect();
-        results.extend(self.transaction_results.clone());
         let input = effect.resolve_input(&results)?;
         let revision = aos_contract::Sha256Digest::of_bytes(canonical::to_vec(&(
             effect.revision.as_str(),
@@ -340,4 +347,141 @@ pub(super) fn fingerprint(graph: &CheckedModuleGraph, retire: &[String]) -> Resu
         retire,
     ))?)
     .hex())
+}
+
+#[cfg(test)]
+mod tests {
+    use aos_ability_plan::module_graph::identity_key;
+    use serde_json::json;
+
+    use super::*;
+
+    fn referenced_graph() -> (CheckedModuleGraph, String, String, String) {
+        let template = super::super::tests::graph(Some("template"), "persistent");
+        let template =
+            serde_json::to_value(template.graph().nodes.values().next().unwrap()).unwrap();
+        let identities: Vec<_> = ["first", "second", "consumer"]
+            .into_iter()
+            .map(|instance| vec!["test".to_owned(), "echo".to_owned(), instance.to_owned()])
+            .collect();
+        let keys: Vec<_> = identities
+            .iter()
+            .map(|identity| identity_key(identity).unwrap())
+            .collect();
+        let mut nodes = serde_json::Map::new();
+        for (index, identity) in identities.iter().enumerate() {
+            let mut node = template.clone();
+            node["identity"] = json!(identity);
+            node["input"] = if index == 2 {
+                json!({
+                    "first": {"_type":"aos-effect-output", "identity":identities[0], "output":"value", "schema":{"kind":"string"}},
+                    "second": {"_type":"aos-effect-output", "identity":identities[1], "output":"value", "schema":{"kind":"string"}}
+                })
+            } else {
+                json!({"value":format!("producer-{index}")})
+            };
+            if index == 2 {
+                node["input_type"] = json!({"kind":"submodule","open":false,"fields":{
+                    "first":{"kind":"string"},"second":{"kind":"string"}
+                }});
+                node["results"] = json!({"first":{"kind":"string"},"second":{"kind":"string"}});
+                node["dependencies"] = json!([keys[0], keys[1]]);
+            }
+            let mut semantic = node.as_object().unwrap().clone();
+            semantic.remove("revision");
+            semantic.remove("dependencies");
+            semantic.remove("inputs");
+            node["revision"] = json!(
+                aos_contract::Sha256Digest::of_bytes(serde_json::to_vec(&semantic).unwrap()).hex()
+            );
+            nodes.insert(keys[index].clone(), node);
+        }
+        let graph = CheckedModuleGraph::decode(
+            &serde_json::to_vec(&json!({
+                "schema":"aos.activation.graph","nodes":nodes,"order":keys
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        (graph, keys[0].clone(), keys[1].clone(), keys[2].clone())
+    }
+
+    #[test]
+    fn application_resolves_retained_and_fresh_dependencies_without_unrelated_outputs() {
+        let (graph, first, second, consumer) = referenced_graph();
+        let mut state = State {
+            active: Some(graph),
+            ..State::default()
+        };
+        for (id, value) in [(&first, "retained-first"), (&second, "retained-second")] {
+            let invocation = state.application(id).unwrap();
+            state.retained.insert(
+                id.clone(),
+                Retained {
+                    invocation,
+                    outputs: json!({"value":value}),
+                },
+            );
+        }
+        let old = state.application(&consumer).unwrap();
+        state.retained.insert(
+            consumer.clone(),
+            Retained {
+                invocation: old.clone(),
+                outputs: json!({"first":"old","second":"old"}),
+            },
+        );
+        let mut unrelated = old.clone();
+        unrelated.id = "unrelated-persistent-orphan".into();
+        state.retained.insert(
+            unrelated.id.clone(),
+            Retained {
+                invocation: unrelated,
+                outputs: json!({"large": "x".repeat(1_048_576)}),
+            },
+        );
+        state
+            .transaction_results
+            .insert(first.clone(), json!({"value":"fresh-first"}));
+        state.transaction_results.insert(
+            "unrelated-completed".into(),
+            json!({"large":"y".repeat(1_048_576)}),
+        );
+
+        let resolved = state.application(&consumer).unwrap();
+
+        assert_eq!(
+            old.input,
+            json!({"first":"retained-first","second":"retained-second"})
+        );
+        assert_eq!(
+            resolved.input,
+            json!({"first":"fresh-first","second":"retained-second"})
+        );
+        assert_eq!(resolved.previous.as_ref().unwrap().revision, old.revision);
+        assert_eq!(resolved.previous.as_ref().unwrap().input, old.input);
+        state.retained.remove("unrelated-persistent-orphan");
+        state.transaction_results.remove("unrelated-completed");
+        let without_unrelated = state.application(&consumer).unwrap();
+        assert_eq!(resolved.input, without_unrelated.input);
+        assert_eq!(resolved.revision, without_unrelated.revision);
+
+        state
+            .transaction_results
+            .insert(second, json!({"value":"retained-second"}));
+        state
+            .check(&Event::Started {
+                invocation: Box::new(resolved.clone()),
+            })
+            .unwrap();
+        let mut forged = resolved;
+        forged.input["first"] = json!("retained-first");
+        assert!(
+            state
+                .check(&Event::Started {
+                    invocation: Box::new(forged)
+                })
+                .is_err()
+        );
+    }
 }
