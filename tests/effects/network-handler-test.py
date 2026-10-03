@@ -301,6 +301,21 @@ class NativeNetworkTests(unittest.TestCase):
         self.assertIn("[Route]\nDestination=169.254.0.0/16\nScope=link", text)
         self.assertLess(text.index("DNS="), text.index("[Route]"))
 
+    def test_resolver_preserves_transport_and_local_discovery_policy(self):
+        for dnssec in ("yes", "no", "allow-downgrade"):
+            with self.subTest(dnssec=dnssec):
+                configuration = policy([])
+                configuration["resolver"]["dnssec"] = dnssec
+
+                files = handler.render(configuration)
+
+                self.assertEqual(
+                    files["etc/systemd/resolved.conf.d/50-aos-native.conf"],
+                    '[Resolve]\nDNS="192.0.2.53"\nDomains="example.test"\n'
+                    f"DNSSEC={dnssec}\nDNSOverTLS=opportunistic\n"
+                    "MulticastDNS=no\nLLMNR=no\n",
+                )
+
     def test_disabled_resolver_retains_explicit_libc_dns(self):
         configuration = policy([])
         configuration["resolver"]["enabled"] = False

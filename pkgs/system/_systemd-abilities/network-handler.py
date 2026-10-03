@@ -156,6 +156,7 @@ def render(policy):
             ipaddress.ip_address(address)
         text = "[Resolve]\nDNS=" + " ".join(value(address) for address in resolver["nameservers"]) + "\n"
         text += "Domains=" + " ".join(value(domain) for domain in resolver["search"]) + "\nDNSSEC=" + resolver["dnssec"] + "\n"
+        text += "DNSOverTLS=opportunistic\nMulticastDNS=no\nLLMNR=no\n"
         files["etc/systemd/resolved.conf.d/50-aos-native.conf"] = text
     elif resolver["nameservers"] or resolver["search"]:
         text = "".join("nameserver " + str(ipaddress.ip_address(address)) + "\n" for address in resolver["nameservers"])
