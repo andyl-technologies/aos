@@ -1,11 +1,11 @@
 //! Nix store interactions: NAR import, validity checks, and GC roots.
 //!
 //! This module is apm's boundary with the Nix store, shelling out to
-//! `nix-store` (with [`aos_management_nix_env`] so `AOS_ROOT`-relative stores work):
+//! `nix` and `nix-store` (with [`aos_management_nix_env`] for AOS store routing):
 //!
-//! - [`import_nar`] turns a downloaded `.nar.zst` plus its narinfo metadata
-//!   into a valid store path via `nix-store --import`, synthesizing the
-//!   export-format trailer (path, references, deriver) the import expects.
+//! - [`import_nar`] preserves signed narinfo metadata for ordinary users
+//!   through `nix copy` and the destination store's trusted signing policy.
+//!   Privileged AOS management retains its local export-format import.
 //! - [`filter_missing`] checks which closure members still need downloading
 //!   (`nix-store --check-validity`).
 //! - [`create_gc_roots`] / [`remove_gc_roots`] maintain the per-generation
@@ -14,6 +14,7 @@
 //! - [`closure_paths`] / [`direct_references`] query the on-disk reference
 //!   graph for removal and dependency commands.
 
+use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process::Stdio;
 
@@ -21,6 +22,7 @@ use anyhow::{Context, Result, bail};
 use tokio::process::Command;
 
 use aos_core::nar::export::ExportTrailer;
+use aos_core::nar::info::{self as narinfo, NarInfo};
 use aos_core::nix::aos_management_nix_env;
 
 use super::registry::store_path_hash;
@@ -31,49 +33,94 @@ use super::verify::verify_store_path;
 // NAR import
 // ---------------------------------------------------------------------------
 
-/// Import a compressed NAR (`.nar.zst`) into the Nix store.
+/// Imports a downloaded NAR with its complete cache metadata.
 ///
-/// The cache serves a *plain* NAR (`nix-store --dump` output), but
-/// `nix-store --import` consumes the *export* format — a NAR followed by a
-/// metadata trailer (store path, references, deriver). We reconstruct that
-/// trailer from the narinfo metadata and stream NAR + trailer into the
-/// import process.
+/// Ordinary users copy from a private temporary binary cache, preserving
+/// signatures for the destination store's trust policy. The client neither
+/// supplies trusted keys nor disables signature checks. Dependencies must
+/// already be valid in the destination store; download results are imported
+/// in dependency order.
 ///
-/// Steps:
-///   1. Decompress the `.nar.zst` file via `zstd -d` to a temporary `.nar`.
-///   2. Stream the NAR plus a synthesized `ExportTrailer` into
-///      `nix-store --import`.
-///   3. Verify the resulting store path matches `expected_store_path`.
-///   4. Clean up the temporary decompressed file.
-///
-/// `references` and `deriver` come from the narinfo. `references` may be
-/// store-path basenames or full paths; bare basenames are resolved against
-/// the active store directory.
-///
-/// Returns the imported store path on success.
+/// Privileged AOS management retains its local export import, after callers
+/// authenticate the payload through the registry's provenance policy.
 ///
 /// # Errors
 ///
-/// Returns an error if zstd decompression fails, the decompressed NAR
-/// cannot be read, `nix-store --import` fails or produces unparseable
-/// output, or the imported path differs from `expected_store_path`
-/// ([`AosError::HashMismatch`](aos_core::error::AosError::HashMismatch)).
-pub async fn import_nar(
-    nar_path: &Path,
-    expected_store_path: &str,
-    references: &[String],
-    deriver: Option<&str>,
-) -> Result<String> {
-    import_nar_with_compression(nar_path, expected_store_path, references, deriver, "zstd").await
+/// Returns an error when cache staging fails, Nix rejects the import (including
+/// missing or untrusted signatures), or a privileged export cannot be decoded.
+pub async fn import_nar(nar_path: &Path, info: &NarInfo) -> Result<String> {
+    if rustix::process::geteuid().is_root() {
+        return import_privileged_nar(
+            nar_path,
+            &info.store_path,
+            &info.references,
+            info.deriver.as_deref(),
+            &info.compression,
+        )
+        .await;
+    }
+
+    let cache = stage_import_cache(nar_path, info).await?;
+    let cache_url = url::Url::from_directory_path(cache.path())
+        .map_err(|()| anyhow::anyhow!("temporary cache path cannot be expressed as a file URL"))?;
+    let output = Command::new("nix")
+        .envs(aos_management_nix_env())
+        .args(["--extra-experimental-features", "nix-command", "copy"])
+        .arg("--from")
+        .arg(cache_url.as_str())
+        .arg("--no-recursive")
+        .arg(&info.store_path)
+        .output()
+        .await
+        .context("running nix copy from the staged NAR cache")?;
+
+    if !output.status.success() {
+        bail!(
+            "Nix rejected import of {}: {}",
+            info.store_path,
+            String::from_utf8_lossy(&output.stderr).trim(),
+        );
+    }
+
+    Ok(info.store_path.clone())
 }
 
-/// Imports a NAR using the transport encoding declared by its narinfo.
-///
-/// # Errors
-///
-/// Returns an error when the payload cannot be decoded, the encoding is
-/// unsupported, Nix rejects the import, or the imported path is unexpected.
-pub async fn import_nar_with_compression(
+/// Isolates the verified payload while retaining its signed path metadata.
+async fn stage_import_cache(nar_path: &Path, info: &NarInfo) -> Result<tempfile::TempDir> {
+    let cache = tempfile::Builder::new()
+        .prefix("apm-import-")
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .context("creating private NAR import cache")?;
+    let payload_url = "payload.nar";
+    tokio::fs::copy(nar_path, cache.path().join(payload_url))
+        .await
+        .context("staging NAR payload for import")?;
+
+    // URL is transport metadata, excluded from the signed Nix fingerprint.
+    // Keep path identity, NAR hash/size, references, and every signature intact.
+    let mut staged_info = info.clone();
+    staged_info.url = payload_url.to_owned();
+    tokio::fs::write(
+        cache
+            .path()
+            .join(format!("{}.narinfo", narinfo::store_hash(&info.store_path))),
+        narinfo::format(&staged_info),
+    )
+    .await
+    .context("staging signed narinfo for import")?;
+    tokio::fs::write(
+        cache.path().join("nix-cache-info"),
+        format!("StoreDir: {}\n", store_dir_of(&info.store_path)),
+    )
+    .await
+    .context("staging binary cache identity")?;
+
+    Ok(cache)
+}
+
+/// Keeps privileged local management compatible with registry-authenticated NARs.
+async fn import_privileged_nar(
     nar_path: &Path,
     expected_store_path: &str,
     references: &[String],
@@ -685,6 +732,65 @@ fn parse_path_lines(stdout: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn staged_import_cache_preserves_signed_metadata_and_isolates_payload() {
+        let source = TempDir::new().unwrap();
+        let payload = source.path().join("download.nar.zst");
+        std::fs::write(&payload, b"verified compressed payload").unwrap();
+        let info = NarInfo {
+            store_path: "/var/lib/aos/store/abc123-package".to_string(),
+            url: "nar/original.nar.zst".to_string(),
+            compression: "zstd".to_string(),
+            file_hash: Some("sha256:file-hash".to_string()),
+            file_size: Some(27),
+            nar_hash: "sha256:nar-hash".to_string(),
+            nar_size: 512,
+            references: vec!["dep123-library".to_string(), "abc123-package".to_string()],
+            deriver: Some("drv123-package.drv".to_string()),
+            signatures: vec![
+                "trusted.test:signature-one".to_string(),
+                "other.test:signature-two".to_string(),
+            ],
+        };
+
+        let cache = stage_import_cache(&payload, &info).await.unwrap();
+        let cached_info =
+            narinfo::parse(&std::fs::read_to_string(cache.path().join("abc123.narinfo")).unwrap())
+                .unwrap();
+        std::fs::write(&payload, b"changed after staging").unwrap();
+
+        assert_eq!(cached_info.store_path, info.store_path);
+        assert_eq!(cached_info.nar_hash, info.nar_hash);
+        assert_eq!(cached_info.nar_size, info.nar_size);
+        assert_eq!(cached_info.references, info.references);
+        assert_eq!(cached_info.deriver, info.deriver);
+        assert_eq!(cached_info.signatures, info.signatures);
+        assert_eq!(cached_info.compression, info.compression);
+        assert_eq!(cached_info.file_hash, info.file_hash);
+        assert_eq!(cached_info.file_size, info.file_size);
+        assert_eq!(cached_info.url, "payload.nar");
+        assert_eq!(
+            std::fs::read(cache.path().join(&cached_info.url)).unwrap(),
+            b"verified compressed payload",
+        );
+        assert_eq!(
+            std::fs::read_to_string(cache.path().join("nix-cache-info")).unwrap(),
+            "StoreDir: /var/lib/aos/store\n",
+        );
+        assert_eq!(
+            std::fs::metadata(cache.path())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+
+        let staged_path = cache.path().to_path_buf();
+        drop(cache);
+        assert!(!staged_path.exists());
+    }
 
     // -----------------------------------------------------------------------
     // Helper: build a PackageMeta for testing

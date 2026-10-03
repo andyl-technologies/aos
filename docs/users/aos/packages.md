@@ -17,9 +17,17 @@ separate installed copies. Different versions or builds can coexist; each
 profile selects the packages available in its environment. Registry metadata
 and download caches remain separate for each scope.
 
-Before using personal installs, ask your administrator to provision writable
-XDG directories, `/var/lib/profiles/per-user/$USER`, and access to install into
-the local store. The following commands assume that account setup is complete.
+Before using personal installs, ask your administrator to enable the multi-user
+Nix daemon, authorize the package signing keys it accepts, and provision your
+writable XDG directories and `/var/lib/profiles/per-user/$USER` profile. The
+following commands assume that account setup is complete.
+
+You do not need `sudo` for personal installs. APM asks the daemon to import
+signed packages into the protected shared store, then updates your own profile.
+The daemon checks signatures against administrator-configured keys; adding a
+personal registry does not authorize its signing keys for the whole machine.
+See [Enable personal package installs](#enable-personal-package-installs) for
+administrator setup.
 
 ## Find packages
 
@@ -228,6 +236,21 @@ apm gc --system
 
 The active generations are retained. OS-image generations are not pruned, and
 store garbage collection still covers the shared store.
+
+## Enable personal package installs
+
+An administrator must install and enable the `nix-daemon` package before
+regular accounts can import new packages into the shared store. Configure its
+`settings.allowed-users` for the accounts permitted to connect and
+`settings.trusted-public-keys` with the Nix package-signing public keys of your
+approved caches. Keep `settings.require-sigs` enabled. Ordinary package users
+need daemon access; they do not need membership in `settings.trusted-users`.
+
+The daemon's client configuration selects it for new login shells. After setup,
+log in again before using the personal commands above. The administrator must
+also create each account's writable profile directory and XDG directories.
+See `apm docs show nix-daemon --system` and
+[Configure an AOS host](configuration.md) for package configuration.
 
 ## Apply a complete package set from a file
 
