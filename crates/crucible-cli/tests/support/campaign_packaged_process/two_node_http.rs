@@ -5,6 +5,11 @@
 //! execution flight does not claim retained-source or hot-fork functionality.
 
 use super::*;
+use crucible_core::model::{
+    Aggregation, BoundarySelector, CohortPolicy, MeasurementDefinition, MeasurementDefinitions,
+    MeasurementId, MeasurementInstanceKey, MetricDefinition, MetricId, MetricSource,
+    MetricValueType, UnitId,
+};
 use crucible_core::{FramePredicate, LinkId};
 use crucible_daemon::{AttemptExecutionOrigin, AttemptRuntimeState};
 use crucible_session::engine::{LinkDef, LinkLossProbability, MarkerId};
@@ -16,6 +21,39 @@ const HTTP_STARTUP_WATCHDOG: Duration = Duration::from_secs(1800);
 const HTTP_APPLICATION_WATCHDOG: Duration = Duration::from_secs(180);
 const HTTP_RESPONSE: &[u8] = b"Crucible reached nginx\n";
 const HTTP_MARKER: &str = "http.request-response";
+const HTTP_MARKER_INSTANCE: &str = "instance-1";
+
+fn http_measurement_definitions(
+    world: &World,
+    plan: &Plan,
+) -> Result<MeasurementDefinitions, Box<dyn Error>> {
+    // The client emits this semantic marker only after validating the response
+    // body. Sealing requires its exact instance and client cohort to be declared.
+    Ok(MeasurementDefinitions::new(
+        world,
+        plan,
+        &Properties::empty(),
+        vec![MeasurementDefinition {
+            id: MeasurementId::parse(HTTP_MARKER)?,
+            begin: BoundarySelector::ScenarioReady,
+            end: BoundarySelector::GuestMarker {
+                marker: MarkerId::from_name(HTTP_MARKER),
+                instance: Some(MeasurementInstanceKey::parse(HTTP_MARKER_INSTANCE)?),
+            },
+            timeout: None,
+            cohort: CohortPolicy::All(vec![NodeId {
+                name: "curl".into(),
+            }]),
+            metrics: vec![MetricDefinition {
+                id: MetricId::parse("completion_virtual_time")?,
+                value_type: MetricValueType::UnsignedInteger,
+                unit: UnitId::parse("virtual_ticks")?,
+                source: MetricSource::VirtualTime,
+                aggregation: Aggregation::Max,
+            }],
+        }],
+    )?)
+}
 
 #[test]
 #[ignore = "requires packaged QEMU and isolated cgroup-v2/project-quota roots"]
@@ -150,8 +188,14 @@ fn compile_http_scenario(fixture: &FlightFixture) -> Result<Value, Box<dyn Error
         .action(Action::Pass)
         .build_for_world(&world)?;
     let plan = Plan::from_event_graph_for_world(&world, graph)?;
-    let scenario =
-        ScenarioDefForm::from_components(&world, &plan, &Properties::empty(), Seed::from_u64(104))?;
+    let measurements = http_measurement_definitions(&world, &plan)?;
+    let scenario = ScenarioDefForm::from_components_with_measurements(
+        &world,
+        &plan,
+        &Properties::empty(),
+        &measurements,
+        Seed::from_u64(104),
+    )?;
     let source = fixture
         ._temporary
         .path()
@@ -392,4 +436,101 @@ fn http_wait_reports_retryable_execution_failure_without_misclassifying_warnings
         first_execution_error("packaged campaign execution example completed"),
         None
     );
+}
+
+#[test]
+fn http_measurement_publication_accepts_only_the_declared_client_marker()
+-> Result<(), Box<dyn Error>> {
+    use crucible_campaign::{ConfigurationId, ScenarioDefId};
+    use crucible_core::{SchedulerEventLogEntry, model::MeasurementTerminalState};
+    use crucible_daemon::{CrucibleMeasurementError, evaluate_crucible_measurement_publication};
+
+    let client = NodeId {
+        name: "curl".into(),
+    };
+    let server = NodeId {
+        name: "nginx".into(),
+    };
+    let world = World::from_nodes(vec![WorldNode {
+        id: client.clone(),
+        arch: VmArchitecture::X86_64,
+        memory_mib: 256,
+        cmdline: "crucible.workload=httpget".into(),
+        ready_point: ReadyPoint::FixedIcount {
+            icount: Icount { retired: 0 },
+        },
+        white_box: WhiteBoxPolicy::Enabled,
+        smp_vcpus: 1,
+        kernel: None,
+        root_image: None,
+        initrd: None,
+    }])?;
+    let plan = Plan::empty();
+    let definitions = http_measurement_definitions(&world, &plan)?;
+    let form = ScenarioDefForm::from_components_with_measurements(
+        &world,
+        &plan,
+        &Properties::empty(),
+        &definitions,
+        Seed::from_u64(104),
+    )?;
+    let restored = ScenarioDefForm::from_canonical_toml(&form.to_canonical_toml()?)?;
+    assert_eq!(
+        restored.measurements().content_hash(),
+        definitions.content_hash()
+    );
+    let scenario =
+        ScenarioDefId::from_hash(CampaignHash::derive("http-measurement-test", b"scenario"));
+    let configuration = ConfigurationId::from_hash(CampaignHash::derive(
+        "http-measurement-test",
+        b"configuration",
+    ));
+    let evaluate = |definitions: &MeasurementDefinitions, node: NodeId, instance: &str| {
+        evaluate_crucible_measurement_publication(
+            scenario,
+            configuration,
+            definitions,
+            vec![SchedulerEventLogEntry::guest_semantic_marker_observation(
+                0,
+                Icount { retired: 5 },
+                node,
+                HTTP_MARKER.into(),
+                instance.into(),
+                Vec::new(),
+            )],
+            MeasurementTerminalState {
+                scenario_ready_at: Some(VirtualTime { ticks: 1 }),
+                at: VirtualTime { ticks: 5 },
+                node_icounts: BTreeMap::from([(client.clone(), Icount { retired: 5 })]),
+                scheduler_quiescent: true,
+            },
+            1024 * 1024,
+        )
+    };
+
+    let undeclared = evaluate(
+        &MeasurementDefinitions::empty(),
+        client.clone(),
+        "instance-1",
+    );
+    assert!(
+        matches!(undeclared, Err(CrucibleMeasurementError::GuestMeasurementProtocol { sequence: 0, reason }) if reason == "semantic marker `http.request-response` instance `instance-1` is not declared")
+    );
+    let accepted = evaluate(
+        restored.measurements(),
+        client.clone(),
+        HTTP_MARKER_INSTANCE,
+    )?;
+    assert_eq!(accepted.evidence().entries().len(), 1);
+
+    for refused in [
+        evaluate(&definitions, client.clone(), "instance-2"),
+        evaluate(&definitions, server, "instance-1"),
+    ] {
+        assert!(matches!(
+            refused,
+            Err(CrucibleMeasurementError::GuestMeasurementProtocol { sequence: 0, .. })
+        ));
+    }
+    Ok(())
 }
