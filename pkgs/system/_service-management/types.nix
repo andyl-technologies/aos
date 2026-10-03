@@ -8,7 +8,7 @@
   in
     lib.mkOption ({
         inherit (spec) type;
-        description = "Service ${name} setting.";
+        description = spec.description or "Service ${name} setting.";
       }
       // lib.optionalAttrs (spec ? default) {inherit (spec) default;}
       // lib.optionalAttrs (!(spec ? default) && (spec.optional or false)) {default = null;});
@@ -138,22 +138,43 @@
     minimum = 1;
     maximum = 9007199254740991;
   };
+  resourceLimitVariants = {
+    maximum = record {
+      fields = {
+        kind = lib.types.enum ["maximum"];
+        value = integer {
+          minimum = 0;
+          maximum = 9007199254740991;
+        };
+      };
+    };
+    unbounded = record {
+      fields.kind = lib.types.enum ["unbounded"];
+    };
+  };
   resourceLimit = union {
     tag = "kind";
-    variants = {
-      maximum = record {
-        fields = {
-          kind = lib.types.enum ["maximum"];
-          value = integer {
-            minimum = 0;
-            maximum = 9007199254740991;
+    variants = resourceLimitVariants;
+  };
+  processResourceLimit = union {
+    tag = "kind";
+    variants =
+      resourceLimitVariants
+      // {
+        range = record {
+          fields = {
+            kind = lib.types.enum ["range"];
+            soft = integer {
+              minimum = 0;
+              maximum = 9007199254740991;
+            };
+            hard = integer {
+              minimum = 0;
+              maximum = 9007199254740991;
+            };
           };
         };
       };
-      unbounded = record {
-        fields.kind = lib.types.enum ["unbounded"];
-      };
-    };
   };
   command = record {
     fields = {
@@ -546,10 +567,10 @@
         type = lib.types.nullOr (lib.types.strMatching "aos-pkg-[a-z0-9-]+");
         default = null;
       };
-      open_files = resourceLimit;
-      processes = resourceLimit;
+      open_files = processResourceLimit;
+      processes = processResourceLimit;
       tasks = resourceLimit;
-      locked_memory_bytes = resourceLimit;
+      locked_memory_bytes = processResourceLimit;
       memory_high_bytes = resourceLimit;
       memory_max_bytes = resourceLimit;
       memory_swap_max_bytes = resourceLimit;
@@ -680,6 +701,11 @@
       ownership = {
         type = lib.types.enum ["provider" "service-identity"];
         default = "provider";
+      };
+      directory_mode = {
+        type = lib.types.nullOr fileMode;
+        default = null;
+        description = "Creation mode when the service manager owns this directory.";
       };
     };
   };
