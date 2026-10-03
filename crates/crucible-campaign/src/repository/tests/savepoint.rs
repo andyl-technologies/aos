@@ -17,6 +17,8 @@ use crate::{
 use crucible_cas::content_store::{BackendCapabilities, ByteRange, PutReceipt};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+mod declared_stop;
+
 struct CaptureReadCountingBackend {
     inner: Arc<dyn ImmutableBlobBackend>,
     reads: AtomicUsize,

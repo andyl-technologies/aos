@@ -30,7 +30,7 @@ pub enum CampaignSavepointAction {
         command: CampaignCommandId,
         /// Ready capture request fact identifier.
         request: CampaignFactId,
-        /// Stop reached after the retained pending choice is answered.
+        /// Stop reached after the captured declared boundary.
         stop: StopCondition,
     },
 }
