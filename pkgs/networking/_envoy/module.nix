@@ -9,6 +9,7 @@
   render = import ./render.nix {inherit lib;};
   types = lib.types;
   operations = config.aos.abilities;
+  resourceGroup = operations.serviceManagement.operations.resourceGroup.effects.${package.name};
   credentialConfigured = value: (value.name != null) != (value.resource != null);
   credentialNames = [
     "tls-certificate"
@@ -206,6 +207,7 @@
     }
     cfg;
   service = {
+    resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = {
       allow_privilege_escalation = false;
       ambient_privileges = ["bind-privileged-network-port"];
@@ -485,6 +487,7 @@ in {
     }
     (lib.mkIf serviceEnabled {
       aos.abilities = {
+        serviceManagement.operations.resourceGroup.effects.${package.name}.input.name = "aos-pkg-${package.name}";
         network.operations.ready.effects.envoy.input = {
           scope = "address-configured";
           families = ["ipv4" "ipv6"];

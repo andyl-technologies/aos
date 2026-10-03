@@ -78,7 +78,7 @@ let
           }) [
             {
               name = "serviceManagement";
-              operations = ["realize"];
+              operations = ["realize" "resourceGroup"];
             }
             {
               name = "identity";
@@ -106,7 +106,7 @@ let
   };
   evaluated = lib.evalPackageModules evaluationArgs;
   nodes = builtins.attrValues evaluated.deployment.graph.nodes;
-  services = builtins.filter (node: builtins.elem "serviceManagement" node.identity) nodes;
+  services = builtins.filter (node: builtins.elem "serviceManagement" node.identity && builtins.elem "realize" node.identity) nodes;
   inputFiles = evaluated.config.aos.abilities.configuration.operations.file.effects;
   evaluateOpkssh = enabled:
     lib.evalPackageModules {
@@ -140,7 +140,7 @@ let
   opksshLog = opkssh.config.aos.abilities.filesystem.operations.entry.effects.opkssh-log;
   opksshLogNode = builtins.head (builtins.filter (node: builtins.elem "opkssh-log" node.identity) (builtins.attrValues opkssh.deployment.graph.nodes));
   opksshLogId = builtins.head (builtins.attrNames (lib.filterAttrs (_: node: builtins.elem "opkssh-log" node.identity) opkssh.deployment.graph.nodes));
-  opksshSshNode = builtins.head (builtins.filter (node: builtins.elem "serviceManagement" node.identity && builtins.elem "ssh" node.identity) (builtins.attrValues opkssh.deployment.graph.nodes));
+  opksshSshNode = builtins.head (builtins.filter (node: builtins.elem "serviceManagement" node.identity && builtins.elem "realize" node.identity && builtins.elem "ssh" node.identity) (builtins.attrValues opkssh.deployment.graph.nodes));
 in {
   dynamicStorageHasOneOwner = assert builtins.all
   (name:

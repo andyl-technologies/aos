@@ -645,6 +645,77 @@ class NativeHandlerTests(unittest.TestCase):
                 self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
                 self.assertIn("Slice: " + group + ".slice", verified.stdout)
 
+    @unittest.skipUnless(systemd_analyze, "pinned systemd-analyze executable not supplied")
+    def test_typed_resource_group_reference_authorizes_its_producer_namespace(self):
+        reference = {
+            "_type": "aos-effect-output",
+            "identity": ["test", "consumer", "serviceManagement", "resourceGroup", "root"],
+            "output": "name", "schema": {"kind": "string"},
+        }
+        for group in ["aos-pkg-consumer", "aos-pkg-consumer-builds"]:
+            with self.subTest(group=group), tempfile.TemporaryDirectory() as root:
+                value = dict(service(), resources={"resource_group": group})
+                value["lifecycle"]["start"][0]["executable"] = {
+                    "path": str(systemd_analyze), "arguments": ["--version"],
+                }
+                request = invocation("serviceManagement", "realize", value)
+                request["effect"] = {
+                    "identity": ["test", "service-management", "serviceManagement", "realize", "main"],
+                    "input": dict(value, resources={"resource_group": reference}),
+                }
+                units = Path(root) / "units"
+                instance = handler_module.Handler(request, "unused", units, Path(root) / "state")
+                instance.manager = active_bus_manager([])
+
+                result = instance.service("apply")
+                unit = units / "example.service"
+                vendor_units = systemd_analyze.parent.parent / "lib/systemd/system"
+                environment = dict(os.environ, SYSTEMD_UNIT_PATH=f"{units}:{vendor_units}",
+                                   SYSTEMD_LOG_COLOR="0", SYSTEMD_LOG_LEVEL="debug")
+                verified = subprocess.run(
+                    [str(systemd_analyze), "--man=no", "--generators=no", "verify", str(unit)],
+                    env=environment, capture_output=True, text=True, check=False,
+                )
+
+                self.assertEqual(result["resource"], "example.service")
+                self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+                self.assertIn("Slice: " + group + ".slice", verified.stdout)
+
+    def test_resource_group_reference_rejects_wrong_producer_or_resolved_name(self):
+        reference = {
+            "_type": "aos-effect-output",
+            "identity": ["test", "consumer", "serviceManagement", "resourceGroup", "root"],
+            "output": "name", "schema": {"kind": "string"},
+        }
+        invalid_references = [
+            dict(reference, _type="other"), dict(reference, output="resource"),
+            dict(reference, identity=["test", "consumer", "identity", "group", "root"]),
+            dict(reference, identity=["test", "consumer", "serviceManagement", "realize", "root"]),
+            dict(reference, identity="consumer/serviceManagement/resourceGroup/root"),
+            dict(reference, identity=["consumer", "resourceGroup", "root"]),
+            dict(reference, identity=["test", None, "serviceManagement", "resourceGroup", "root"]),
+            dict(reference, identity=["test", "../consumer", "serviceManagement", "resourceGroup", "root"]),
+            dict(reference, identity=["test", "consumer", "serviceManagement", "resourceGroup", ""]),
+        ]
+        cases = [(invalid, "aos-pkg-consumer") for invalid in invalid_references]
+        cases += [(reference, group) for group in ["aos-pkg-other", "aos-pkg-consumer2", "aos-pkg-service-management"]]
+        cases.append(("aos-pkg-consumer", "aos-pkg-consumer"))
+
+        for raw_group, group in cases:
+            with self.subTest(reference=raw_group, resolved_group=group), tempfile.TemporaryDirectory() as root:
+                value = dict(service(), resources={"resource_group": group})
+                request = invocation("serviceManagement", "realize", value)
+                request["effect"] = {
+                    "identity": ["test", "service-management", "serviceManagement", "realize", "main"],
+                    "input": dict(value, resources={"resource_group": raw_group}),
+                }
+                instance = handler_module.Handler(request, "unused", root, Path(root) / "state")
+
+                with self.assertRaises(ValueError):
+                    instance.service("apply")
+
+                self.assertFalse((Path(root) / "example.service").exists())
+
     def test_removal_guard_refusal_preserves_service_and_receipt(self):
         with tempfile.TemporaryDirectory() as root:
             value = service()

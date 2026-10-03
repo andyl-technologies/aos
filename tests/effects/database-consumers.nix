@@ -107,7 +107,7 @@ let
           }) [
             {
               name = "serviceManagement";
-              ops = ["realize"];
+              ops = ["realize" "resourceGroup"];
             }
             {
               name = "identity";
@@ -134,7 +134,7 @@ let
     ];
   };
   nodes = builtins.attrValues eval.deployment.graph.nodes;
-  services = builtins.filter (node: builtins.elem "serviceManagement" node.identity) nodes;
+  services = builtins.filter (node: builtins.elem "serviceManagement" node.identity && builtins.elem "realize" node.identity) nodes;
   files = eval.config.aos.abilities.configuration.operations.file.effects;
 in {
   exposeProfilesReturnPermissionDenied = assert builtins.all (node: node.input.policy.hardening.denied_operation_action == "return-permission-denied") (builtins.filter (node: node.input.policy != null && node.input.policy.hardening != null && node.input.policy.hardening.operation_profile == "system-service") services); true;

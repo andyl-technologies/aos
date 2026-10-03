@@ -8,6 +8,7 @@
   cfg = config.aos.services.nginx;
   types = lib.types;
   operations = config.aos.abilities;
+  resourceGroup = operations.serviceManagement.operations.resourceGroup.effects.${package.name};
   positiveInt = types.ints.between 1 9007199254740991;
   nonNegativeInt = types.ints.between 0 9007199254740991;
   httpStatus = types.ints.between 100 599;
@@ -418,6 +419,7 @@
   service = let
     configurationPath = operations.configuration.operations.file.effects.nginx.outputs.path;
   in {
+    resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = {
       allow_privilege_escalation = false;
       ambient_privileges = ["bind-privileged-network-port"];
@@ -686,6 +688,7 @@ in {
     }
     (lib.mkIf cfg.enable {
       aos.abilities = {
+        serviceManagement.operations.resourceGroup.effects.${package.name}.input.name = "aos-pkg-${package.name}";
         credential.operations.deliver.effects = lib.optionalAttrs usesTls {
           nginx-tls-certificate.input = tlsCredentials.certificate;
           nginx-tls-private-key.input = tlsCredentials.privateKey;

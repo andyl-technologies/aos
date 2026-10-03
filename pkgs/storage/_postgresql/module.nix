@@ -10,6 +10,7 @@
   anyServiceEnabled = config.aos.services."postgresql.initialize".enable || config.aos.services."postgresql.main".enable;
   types = lib.types;
   operations = config.aos.abilities;
+  resourceGroup = operations.serviceManagement.operations.resourceGroup.effects.${package.name};
   boundedText = maximum: types.strWith {maxLength = maximum;};
   checkedString = name: description: pattern: types.strMatching pattern;
   positiveInt = types.ints.between 1 9007199254740991;
@@ -334,6 +335,7 @@
     )
   ];
   initService = {
+    resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = commonHardening;
     service = "postgresql-init";
     lifecycle = {
@@ -406,6 +408,7 @@
     })
     configuredCredentials);
   mainService = {
+    resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = commonHardening;
     service = "postgresql";
     lifecycle = {
@@ -760,6 +763,7 @@ in {
     }
     (lib.mkIf anyServiceEnabled {
       aos.abilities = {
+        serviceManagement.operations.resourceGroup.effects.${package.name}.input.name = "aos-pkg-${package.name}";
         filesystem.operations.directory.effects = {
           postgresql-state = {
             lifetime = "persistent";

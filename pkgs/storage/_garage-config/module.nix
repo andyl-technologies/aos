@@ -10,6 +10,7 @@
   inherit (lib) mkOption;
   types = lib.types;
   operations = config.aos.abilities;
+  resourceGroup = operations.serviceManagement.operations.resourceGroup.effects.${package.name};
   positiveInt = types.ints.between 1 9007199254740991;
   socketAddress = types.strMatching "[^[:space:]]+";
   nonEmpty = types.strMatching ".+";
@@ -93,6 +94,7 @@
     ignore_failure = false;
   };
   service = {
+    resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = {
       allow_privilege_escalation = false;
       ambient_privileges = [];
@@ -346,6 +348,7 @@ in {
     }
     (lib.mkIf serviceEnabled {
       aos.abilities = {
+        serviceManagement.operations.resourceGroup.effects.${package.name}.input.name = "aos-pkg-${package.name}";
         identity.operations = {
           group.effects.garage.input.name = "garage";
           principal.effects.garage.input = {

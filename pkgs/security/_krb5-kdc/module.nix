@@ -15,6 +15,7 @@
   inherit (lib) mkOption;
   types = lib.types;
   operations = config.aos.abilities;
+  resourceGroup = operations.serviceManagement.operations.resourceGroup.effects.${package.name};
   directories = operations.filesystem.operations.directory.effects;
   accounts = operations.identity.operations;
   files = operations.configuration.operations.file.effects;
@@ -218,6 +219,7 @@
   };
 
   initializeService = {
+    resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = (hardening []) // {network_families = ["local"];};
     service = "initialize";
     lifecycle =
@@ -250,6 +252,7 @@
     isolation = commonIsolation // {network = "none";};
   };
   kdcService = {
+    resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = hardening ["bind-privileged-network-port"];
     service = "kdc";
     activationAfter = [operations.network.operations.ready.effects.krb5.outputs.resource];
@@ -281,6 +284,7 @@
     isolation = commonIsolation;
   };
   administrationService = {
+    resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = hardening [];
     service = "administration";
     activationAfter = [operations.network.operations.ready.effects.krb5.outputs.resource];
@@ -384,6 +388,7 @@ in {
     }
     (lib.mkIf anyServiceEnabled {
       aos.abilities = {
+        serviceManagement.operations.resourceGroup.effects.${package.name}.input.name = "aos-pkg-${package.name}";
         identity.operations = {
           group.effects.krb5.input.name = "krb5-kdc";
           principal.effects.krb5.input = {

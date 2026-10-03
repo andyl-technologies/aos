@@ -52,26 +52,32 @@
     inherit lib;
     pkgs = artifacts;
   });
+  bootstrapGroupsJSON = builtins.toJSON (lib.mapAttrsToList (_: group: group.input) (import ../bootstrap-resource-groups.nix {
+    config = stageConfig;
+    inherit lib;
+  }));
   initrdUnits =
     buildContext.runCommand "systemd-initrd-native-bootstrap" {
-      inherit bootstrapJSON;
-      passAsFile = ["bootstrapJSON"];
+      inherit bootstrapJSON bootstrapGroupsJSON;
+      passAsFile = ["bootstrapJSON" "bootstrapGroupsJSON"];
     } ''
       ${artifacts.buildPackages.systemd}/bin/aos-service-handler render --output-dir "$out" < "$bootstrapJSONPath"
+      ${artifacts.buildPackages.systemd}/bin/aos-systemd-native-resources render-resource-groups --output-dir "$out" < "$bootstrapGroupsJSONPath"
       # Keep the new output writable for its own metadata finalization.
       cp -a --no-preserve=mode ${baseUnits}/. "$out/"
     '';
   enabledNetworkEffects =
     lib.filterAttrs (_: effect: effect.enable)
     (stageConfig.aos.abilities.network.operations.configure.effects or {});
-  networkInputs = lib.mapAttrsToList (name: effect: {
-    inherit name;
-    file = buildContext.writeTextFile {
-      name = "initrd-network-${builtins.hashString "sha256" name}";
-      text = builtins.toJSON effect.input;
-    };
-  })
-  enabledNetworkEffects;
+  networkInputs =
+    lib.mapAttrsToList (name: effect: {
+      inherit name;
+      file = buildContext.writeTextFile {
+        name = "initrd-network-${builtins.hashString "sha256" name}";
+        text = builtins.toJSON effect.input;
+      };
+    })
+    enabledNetworkEffects;
   initrdNetworkDir =
     if networkInputs == []
     then null

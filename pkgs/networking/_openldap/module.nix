@@ -10,6 +10,7 @@
   inherit (lib) mkOption;
   types = lib.types;
   operations = config.aos.abilities;
+  resourceGroup = operations.serviceManagement.operations.resourceGroup.effects.${package.name};
   positiveInt = types.ints.between 1 9007199254740991;
   ldapUrl = types.strMatching "(ldap|ldaps|ldapi)://[^[:space:]]*";
   ldapUrls = types.listOf ldapUrl;
@@ -90,6 +91,7 @@
   account = operations.identity.operations.principal.effects.openldap.outputs.name;
   group = operations.identity.operations.group.effects.openldap.outputs.name;
   service = {
+    resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = {
       allow_privilege_escalation = false;
       ambient_privileges = [];
@@ -323,6 +325,7 @@ in {
     }
     (lib.mkIf serviceEnabled {
       aos.abilities = {
+        serviceManagement.operations.resourceGroup.effects.${package.name}.input.name = "aos-pkg-${package.name}";
         identity.operations = {
           group.effects.openldap.input.name = "openldap";
           principal.effects.openldap.input = {

@@ -11,6 +11,7 @@
   inherit (lib) mkOption;
   types = lib.types;
   operations = config.aos.abilities;
+  resourceGroup = operations.serviceManagement.operations.resourceGroup.effects.${package.name};
   positiveInt = types.ints.between 1 9007199254740991;
   port = types.ints.between 1 65535;
   address = types.strMatching "[A-Za-z0-9_.:-]+";
@@ -203,6 +204,7 @@
     isolated_identity_mapping = "none";
   };
   initializeService = {
+    resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = commonHardening;
     service = "mariadb-init";
     lifecycle = {
@@ -247,6 +249,7 @@
     isolation = commonIsolation;
   };
   mainService = {
+    resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = commonHardening;
     service = "mariadb";
     lifecycle = {
@@ -433,6 +436,7 @@ in {
     }
     (lib.mkIf anyServiceEnabled {
       aos.abilities = {
+        serviceManagement.operations.resourceGroup.effects.${package.name}.input.name = "aos-pkg-${package.name}";
         identity.operations = {
           group.effects.mariadb.input.name = "mariadb";
           principal.effects.mariadb.input = {

@@ -80,7 +80,9 @@
     };
     ignore_failure = false;
   };
+  resourceGroup = config.aos.abilities.serviceManagement.operations.resourceGroup.effects.${package.name};
   service = {
+    resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = {
       allow_privilege_escalation = false;
       ambient_privileges = ["administer-network" "raw-network"];
@@ -289,6 +291,7 @@ in {
     }
     (lib.mkIf config.aos.services."conntrack-tools.main".enable {
       aos.abilities = {
+        serviceManagement.operations.resourceGroup.effects.${package.name}.input.name = "aos-pkg-${package.name}";
         filesystem.operations.directory.effects = {
           conntrackd-runtime.input = {
             path = "/run/aos-pkg-conntrack-tools";

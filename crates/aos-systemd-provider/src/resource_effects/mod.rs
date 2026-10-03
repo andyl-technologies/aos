@@ -8,6 +8,7 @@ mod identity;
 mod listener;
 mod packaged_unit;
 mod unit;
+pub(crate) use unit::render_resource_groups;
 mod watchdog;
 
 use std::fs::{self, File, OpenOptions};
@@ -69,6 +70,9 @@ pub(super) async fn execute(
         ("listener", "claim") => listener::execute(invocation, action),
         ("packagedUnit", "ensure") => packaged_unit::execute(invocation, action).await,
         ("managerWatchdog", "ensure") => watchdog::execute(invocation, action).await,
+        ("serviceManagement", "resourceGroup") => {
+            unit::execute(invocation, action, "resourceGroup").await
+        }
         ("swap" | "mount" | "scheduledActivation", "ensure") => {
             unit::execute(invocation, action, ability).await
         }
