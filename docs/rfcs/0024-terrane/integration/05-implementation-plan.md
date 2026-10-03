@@ -1088,6 +1088,20 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   The actual full aggregate still fails the legacy state-1 compatibility
   assertion in `index-generation-manifest`; T1 and formal task merges remain
   open despite this stronger golden evidence.
+  The D-106 index inputs now pass full source review and their actual combined
+  published-input check: seven exact Rust groups compare independently
+  assembled complete models, 176 wires and the finite occurrence/carrier
+  relationships. Positive owner bindings use independently initialized fields
+  through the existing value construction interface before testing their
+  wrapper encoder; decoded wrapper output does not define the expected model.
+  The recipe section checker accepts exactly one separator LF before a later
+  level-two heading and still refuses extra framing or changed witness bytes.
+  On the unpublished joint candidate, the actual complete `golden-vectors`
+  gate passes all 18 mandatory owning suites and all 29 reviewed sections.
+  The index output matches all 3,141,999 published bytes, and both mandatory
+  formatters pass. This closes the immediate corpus-input failure; complete
+  current-trunk and native qualification remain required before task merges,
+  checkbox advancement or T1's encoding freeze.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
