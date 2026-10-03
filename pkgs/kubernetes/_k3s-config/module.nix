@@ -58,6 +58,7 @@
   tunables = config.aos.abilities.kernelTunables.operations.ensure.effects.settings;
   lifecycle = config.aos.abilities.serviceManagement.operations.realize.effects.k3s;
   firewall = config.aos.abilities.networkPolicy.operations.ruleset.effects.host;
+  resourceGroup = config.aos.abilities.serviceManagement.operations.resourceGroup.effects.${package.name};
   service = {
     activationAfter = [configuration.outputs.path modules.outputs.loaded tunables.outputs.values firewall.outputs.resource];
     policy.devicePolicy = {
@@ -151,6 +152,7 @@
       timeout_millis = 90000;
     };
     resources = {
+      resource_group = resourceGroup.outputs.name;
       open_files = {
         kind = "maximum";
         value = 1048576;
@@ -419,6 +421,7 @@ in {
         tunablePrerequisites = [modules.outputs.loaded];
       };
       aos.abilities = {
+        serviceManagement.operations.resourceGroup.effects.${package.name}.input.name = "aos-pkg-${package.name}";
         k3sConfiguration.operations.ensure.effects.base.input = {
           base = {
             flannel_backend = cfg.networking.flannelBackend;

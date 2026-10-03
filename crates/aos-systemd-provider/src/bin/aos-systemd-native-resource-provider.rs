@@ -34,6 +34,23 @@ async fn run() -> Result<()> {
         }
         *target = Some(arguments.next().context("missing pinned executable")?);
     };
+    if action == "render-resource-groups" {
+        if arguments.next().as_deref() != Some("--output-dir") {
+            bail!("resource group renderer requires --output-dir");
+        }
+        let output = arguments.next().context("missing output directory")?;
+        if arguments.next().is_some() {
+            bail!("unexpected resource group renderer option");
+        }
+        // The packaged wrapper supplies these pinned tools for dispatch. Seed
+        // rendering does not execute them or require a running manager.
+        let mut bytes = Vec::new();
+        std::io::stdin().take(262_145).read_to_end(&mut bytes)?;
+        if bytes.len() > 262_144 {
+            bail!("resource group seeds exceed 256 KiB");
+        }
+        return resource_effects::render_resource_groups(&bytes, std::path::Path::new(&output));
+    }
     if arguments.next().is_some() || !matches!(action.as_str(), "apply" | "remove" | "observe") {
         bail!("expected apply, remove, or observe");
     }

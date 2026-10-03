@@ -111,6 +111,7 @@
   configuration = config.aos.abilities.configuration.operations.file.effects.edgecore;
   modules = config.aos.abilities.kernelModules.operations.ensure.effects.edgecore;
   tunables = config.aos.abilities.kernelTunables.operations.ensure.effects.settings;
+  resourceGroup = config.aos.abilities.serviceManagement.operations.resourceGroup.effects.${package.name};
   service = {
     policy.devicePolicy = {
       baseline_access = "standard-runtime-devices";
@@ -210,6 +211,7 @@
       wants = [network.outputs.resource];
     };
     resources = {
+      resource_group = resourceGroup.outputs.name;
       open_files = {
         kind = "maximum";
         value = 1048576;
@@ -401,6 +403,7 @@ in {
         "net.ipv6.conf.all.forwarding" = "1";
       };
       aos.abilities = {
+        serviceManagement.operations.resourceGroup.effects.${package.name}.input.name = "aos-pkg-${package.name}";
         network.operations.ready.effects.edgecore.input = {
           scope = "address-configured";
           families = ["ipv4" "ipv6"];

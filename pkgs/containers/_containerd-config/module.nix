@@ -68,6 +68,7 @@
     };
     ignore_failure = false;
   };
+  resourceGroup = config.aos.abilities.serviceManagement.operations.resourceGroup.effects.${package.name};
   service = {
     policy.hardening = {
       allow_privilege_escalation = true;
@@ -136,6 +137,7 @@
       timeout_millis = 90000;
     };
     resources = {
+      resource_group = resourceGroup.outputs.name;
       open_files = {
         kind = "maximum";
         value = 1048576;
@@ -274,6 +276,7 @@ in {
     }
     (lib.mkIf config.aos.services.containerd.enable {
       aos.abilities = {
+        serviceManagement.operations.resourceGroup.effects.${package.name}.input.name = "aos-pkg-${package.name}";
         filesystem.operations.directory.effects = {
           containerd-root = {
             lifetime = "persistent";

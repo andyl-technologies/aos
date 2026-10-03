@@ -58,6 +58,7 @@
       "--kubeconfig"
       credential.outputs.path
     ];
+  resourceGroup = config.aos.abilities.serviceManagement.operations.resourceGroup.effects.${package.name};
   service = {
     policy.devicePolicy = {
       baseline_access = "standard-runtime-devices";
@@ -161,6 +162,7 @@
       timeout_millis = 90000;
     };
     resources = {
+      resource_group = resourceGroup.outputs.name;
       open_files = {
         kind = "maximum";
         value = 1048576;
@@ -348,6 +350,7 @@ in {
         ];
       };
       aos.abilities = {
+        serviceManagement.operations.resourceGroup.effects.${package.name}.input.name = "aos-pkg-${package.name}";
         network.operations.ready.effects.kubelet.input = {
           scope = "address-configured";
           families = ["ipv4" "ipv6"];

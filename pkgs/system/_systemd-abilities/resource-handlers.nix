@@ -1,9 +1,11 @@
 ##! Selects native systemd handlers for instance mounts, swaps, timers, and credentials.
 {
+  config,
   lib,
   package,
   ...
 }: let
+  systemConfig = config;
   program = package // {meta = (package.meta or {}) // {mainProgram = "aos-systemd-native-resources";};};
   option = type: description: lib.mkOption {inherit type description;};
   defaulted = type: default: description: lib.mkOption {inherit type default description;};
@@ -30,6 +32,21 @@
   };
 in {
   aos.abilities = {
+    serviceManagement.operations.resourceGroup = {
+      handler.program = program;
+      input = {config, ...}: {
+        options.bootstrap = lib.mkOption {
+          type = lib.types.bool;
+          internal = true;
+          readOnly = true;
+          description = "Whether an early service consumes this image-projected group.";
+        };
+        config.bootstrap = builtins.any (selected: selected.input.name == config.name) (builtins.attrValues (import ./bootstrap-resource-groups.nix {
+          config = systemConfig;
+          inherit lib;
+        }));
+      };
+    };
     swap.operations.ensure = {
       input.options = {
         name = option text "Human-readable swap description.";

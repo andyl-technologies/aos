@@ -30,7 +30,7 @@
       };
     }];
   };
-  services = builtins.filter (node: builtins.elem "serviceManagement" node.identity)
+  services = builtins.filter (node: builtins.elem "serviceManagement" node.identity && builtins.elem "realize" node.identity)
     (builtins.attrValues evaluated.deployment.graph.nodes);
   example = builtins.head (builtins.filter (node: builtins.elem "example" node.identity) services);
 in

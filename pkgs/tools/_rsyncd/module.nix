@@ -92,7 +92,9 @@
     };
     ignore_failure = false;
   };
+  resourceGroup = config.aos.abilities.serviceManagement.operations.resourceGroup.effects.${package.name};
   serviceRequestFor = withCredential: {
+    resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = {
       allow_privilege_escalation = false;
       ambient_privileges = [];
@@ -255,6 +257,7 @@ in {
     }
     (lib.mkIf serviceEnabled {
       aos.abilities = {
+        serviceManagement.operations.resourceGroup.effects.${package.name}.input.name = "aos-pkg-${package.name}";
         filesystem.operations.directory.effects =
           {
             rsyncd-state = {

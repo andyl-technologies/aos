@@ -124,7 +124,9 @@
   network = config.aos.abilities.network.operations.ready.effects.cloudcore;
   configuration = config.aos.abilities.configuration.operations.file.effects.cloudcore;
   ingress = config.aos.abilities.networkPolicy.operations.ruleset.effects.host;
+  resourceGroup = config.aos.abilities.serviceManagement.operations.resourceGroup.effects.${package.name};
   service = {
+    resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = {
       allow_privilege_escalation = false;
       ambient_privileges = [];
@@ -387,6 +389,7 @@ in {
           };
       };
       aos.abilities = {
+        serviceManagement.operations.resourceGroup.effects.${package.name}.input.name = "aos-pkg-${package.name}";
         network.operations.ready.effects.cloudcore.input = {
           scope = "address-configured";
           families = ["ipv4" "ipv6"];

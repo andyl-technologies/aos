@@ -32,12 +32,14 @@
       pkgs = managerArtifacts;
     };
     bootstrapJSON = builtins.toJSON bootstrapServices;
+    bootstrapGroupsJSON = builtins.toJSON (lib.mapAttrsToList (_: group: group.input) (import ./bootstrap-resource-groups.nix {inherit config lib;}));
     units =
       runCommand "systemd-native-bootstrap-units" {
-        inherit bootstrapJSON;
-        passAsFile = ["bootstrapJSON"];
+        inherit bootstrapJSON bootstrapGroupsJSON;
+        passAsFile = ["bootstrapJSON" "bootstrapGroupsJSON"];
       } ''
         ${pkgs.buildPackages.systemd}/bin/aos-service-handler render --output-dir "$out" < "$bootstrapJSONPath"
+        ${pkgs.buildPackages.systemd}/bin/aos-systemd-native-resources render-resource-groups --output-dir "$out" < "$bootstrapGroupsJSONPath"
         # Keep the new output writable for its own metadata finalization.
         cp -a --no-preserve=mode ${baseUnits}/. "$out/"
       '';

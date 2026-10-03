@@ -228,7 +228,31 @@ references after their producer completes and checks result types before the
 consumer runs. The parent exports the child's result without launching a second
 parent process.
 
-`input.after` in this example is service-manager policy. An effect's own `after`
+The production service-management interface also composes package resource
+groups with services. A daemon package that already declares `aos.services.nginx`
+can supply a group directly and pass its typed result into that service:
+
+```nix
+{ config, lib, package, ... }:
+let
+  operations = config.aos.abilities.serviceManagement.operations;
+  group = operations.resourceGroup.effects.${package.name};
+in {
+  config = lib.mkIf config.aos.services.nginx.enable {
+    aos.abilities.serviceManagement.operations.resourceGroup.effects.${package.name}.input.name = "aos-pkg-${package.name}";
+    aos.services.nginx.resources.resource_group = group.outputs.name;
+  };
+}
+```
+
+The package owns the group effect. The manager derives and owns the enabled
+service effect from `aos.services`; its deferred `resource_group` reference adds
+an execution dependency on the group producer. The selected handler realizes
+the group using its manager's native resource, such as a systemd slice. This
+contract belongs to the service-management package; the generic library only
+checks the typed reference and constructs the dependency edge.
+
+`input.after` in the composed-handler example is service-manager policy. An effect's own `after`
 field is an explicit activation dependency expressed using output references;
 these are different kinds of ordering.
 

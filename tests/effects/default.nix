@@ -53,6 +53,8 @@
     filesystemFirewallDependencies = import ../fleet/native-reference-domain-graphs.nix {inherit lib pkgs;};
     databaseConsumers = import ./database-consumers.nix;
     runtimeChecks = import ./runtime-checks.nix;
+    packageResourceGroups = import ./package-resource-groups.nix {inherit lib pkgs;};
+    bootstrapResourceGroups = import ./bootstrap-resource-groups.nix {inherit lib pkgs;};
     optionalServiceBaseline = import ./optional-service-baseline.nix {inherit lib pkgs;};
     referenceNginx = import ./reference-nginx.nix;
     platformPackages = import ./platform-packages.nix;

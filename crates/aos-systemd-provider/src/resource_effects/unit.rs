@@ -1,4 +1,4 @@
-//! Realizes mount, swap, and timer units with exact definitions and pinned manager jobs.
+//! Realizes mount, swap, timer, and package slice units with pinned manager jobs.
 //!
 //! Private JSON receipts retain both sides of interrupted transitions:
 //!
@@ -21,6 +21,9 @@ use super::{atomic_write, key, normalized_path, private_directory, read_regular,
 
 #[cfg(all(test, feature = "systemd-parser-tests"))]
 mod parser_tests;
+mod resource_group;
+
+pub(crate) use resource_group::render_resource_groups;
 
 const UNIT_ROOT: &str = "/etc/systemd/system";
 
@@ -45,6 +48,8 @@ struct Receipt {
     desired: Definition,
     retiring: Option<Definition>,
     complete: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    image: Option<resource_group::ImageCustody>,
 }
 
 #[derive(Deserialize)]
@@ -88,6 +93,61 @@ struct Timer {
     accuracy_millis: u64,
     #[serde(default)]
     randomized_delay_millis: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResourceGroup {
+    name: String,
+    #[serde(default = "resource_group_description")]
+    description: String,
+    #[serde(default)]
+    bootstrap: bool,
+}
+
+fn resource_group_description() -> String {
+    "Package service resource group".into()
+}
+
+fn resource_group_name(name: &str) -> Result<()> {
+    let suffix = name
+        .strip_prefix("aos-pkg-")
+        .context("resource group must use the package namespace")?;
+    ensure!(
+        !suffix.is_empty()
+            && suffix
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'),
+        "resource group name is not canonical"
+    );
+    ensure!(
+        name.len() + ".slice".len() <= 255,
+        "resource group exceeds systemd unit name limit"
+    );
+    Ok(())
+}
+
+fn checked_group(invocation: &Invocation) -> Result<()> {
+    let identity = &invocation.effect.identity;
+    ensure!(
+        identity.len() >= 4,
+        "resource group has no package owner identity"
+    );
+    let owner = &identity[identity.len() - 4];
+    ensure!(
+        owner == &invocation.effect.owner
+            && identity[identity.len() - 3] == "serviceManagement"
+            && identity[identity.len() - 2] == "resourceGroup",
+        "resource group owner differs from its authenticated effect identity"
+    );
+    let input: ResourceGroup = serde_json::from_value(invocation.input.clone())?;
+    resource_group_name(&input.name)?;
+    let namespace = format!("aos-pkg-{owner}");
+    ensure!(
+        input.name == namespace || input.name.starts_with(&format!("{namespace}-")),
+        "resource group belongs to another package namespace"
+    );
+    Ok(())
 }
 
 #[derive(Deserialize)]
@@ -161,6 +221,9 @@ fn receipt_uri(unit: &str, revision: &str) -> String {
 }
 
 fn definition(invocation: &Invocation, ability: &str) -> Result<Definition> {
+    if ability == "resourceGroup" {
+        checked_group(invocation)?;
+    }
     definition_for(
         &invocation.id,
         &invocation.revision,
@@ -172,6 +235,19 @@ fn definition(invocation: &Invocation, ability: &str) -> Result<Definition> {
 fn definition_for(id: &str, revision: &str, ability: &str, input: &Value) -> Result<Definition> {
     let mut optional_mount_source = None;
     let (unit, title, body, target, enabled, swap_source, trigger) = match ability {
+        "resourceGroup" => {
+            let input: ResourceGroup = serde_json::from_value(input.clone())?;
+            resource_group_name(&input.name)?;
+            (
+                format!("{}.slice", input.name),
+                input.description,
+                "[Slice]\n".into(),
+                "slices.target",
+                true,
+                None,
+                None,
+            )
+        }
         "swap" => {
             let input: Swap = serde_json::from_value(input.clone())?;
             let unit = path_unit(&input.source, "swap")?;
@@ -369,6 +445,21 @@ async fn manager_absent(manager: &PinnedSystemdManager, definition: &Definition)
     }
 }
 
+async fn image_manager_owned(
+    manager: &PinnedSystemdManager,
+    desired: &Definition,
+) -> Result<String> {
+    let identity = manager.unit_identity(&desired.unit).await?;
+    let (fragment, dropins) = manager
+        .unit_definition_paths_exact(&desired.unit, &identity)
+        .await?;
+    ensure!(
+        Path::new(&fragment) == unit_path(desired) && dropins.is_empty(),
+        "image group manager definition is foreign or extended"
+    );
+    Ok(identity)
+}
+
 async fn retire(manager: &PinnedSystemdManager, definition: &Definition) -> Result<()> {
     if !owned_file(definition)? {
         ensure!(
@@ -434,8 +525,62 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
         ensure!(receipt.owner == invocation.id, "unit receipt owner differs");
     }
     let manager = PinnedSystemdManager::connect().await?;
+    let group = if ability == "resourceGroup" {
+        Some(serde_json::from_value::<ResourceGroup>(
+            invocation.input.clone(),
+        )?)
+    } else {
+        None
+    };
+    let seed = group.as_ref().map(resource_group::seed_text).transpose()?;
+    if let Some(receipt) = &previous {
+        if let Some(image) = &receipt.image {
+            ensure!(
+                !receipt.complete
+                    && receipt.retiring.is_none()
+                    && receipt.desired == desired
+                    && group.as_ref().is_some_and(|input| input.bootstrap),
+                "finish pending image group conversion before changing policy"
+            );
+            resource_group::alias_at(
+                &unit_path(&desired),
+                image,
+                seed.as_deref().context("image custody is not a group")?,
+                &desired.text,
+                resource_group::read_member,
+            )?;
+        }
+    }
+    let initial_image = if previous.is_none()
+        && action != "remove"
+        && invocation.action == aos_ability_runtime::activation::Action::Apply
+    {
+        group
+            .as_ref()
+            .map(|input| {
+                resource_group::initial_at(&unit_path(&desired), input, resource_group::read_member)
+            })
+            .transpose()?
+            .flatten()
+    } else {
+        None
+    };
+    if initial_image.is_some()
+        || previous
+            .as_ref()
+            .is_some_and(|receipt| receipt.image.is_some())
+    {
+        image_manager_owned(&manager, &desired).await?;
+    }
 
     if action == "observe" {
+        if initial_image.is_some()
+            || previous
+                .as_ref()
+                .is_some_and(|receipt| receipt.image.is_some())
+        {
+            return Ok(json!({"status":"retry-safe"}));
+        }
         return Ok(
             match observe(&manager, invocation, &desired, previous.as_ref()).await {
                 Ok(value) => value,
@@ -445,6 +590,30 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
     }
     if action == "remove" {
         if let Some(receipt) = previous {
+            if let Some(image) = &receipt.image {
+                let enabled = check_link(&desired)?;
+                let identity = image_manager_owned(&manager, &desired).await?;
+                let job = manager.stop_unit_exact(&desired.unit, &identity).await?;
+                ensure!(job.result.is_done(), "image group stop failed");
+                if resource_group::alias_at(
+                    &unit_path(&desired),
+                    image,
+                    seed.as_deref().context("missing group seed")?,
+                    &desired.text,
+                    resource_group::read_member,
+                )? {
+                    fs::remove_file(unit_path(&desired))?;
+                } else if owned_file(&desired)? {
+                    fs::remove_file(unit_path(&desired))?;
+                }
+                if enabled {
+                    fs::remove_file(link_path(&desired))?;
+                }
+                fs::File::open(UNIT_ROOT)?.sync_all()?;
+                manager.daemon_reload().await?;
+                fs::remove_file(path)?;
+                return Ok(json!({}));
+            }
             if let Some(retiring) = &receipt.retiring {
                 retire(&manager, retiring).await?;
             }
@@ -481,26 +650,47 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
                 desired: desired.clone(),
                 retiring: Some(receipt.desired),
                 complete: false,
+                image: None,
             }
         }
         None => {
-            ensure!(
-                read_regular(&unit_path(&desired), 262_144)?.is_none() && !check_link(&desired)?,
-                "resource name is already owned"
-            );
-            ensure!(
-                manager_absent(&manager, &desired).await?,
-                "manager resource is already owned"
-            );
+            if initial_image.is_none() {
+                ensure!(
+                    read_regular(&unit_path(&desired), 262_144)?.is_none()
+                        && !check_link(&desired)?,
+                    "resource name is already owned"
+                );
+                ensure!(
+                    manager_absent(&manager, &desired).await?,
+                    "manager resource is already owned"
+                );
+            } else {
+                ensure!(!check_link(&desired)?, "image group has unowned enablement");
+            }
             Receipt {
                 owner: invocation.id.clone(),
                 desired: desired.clone(),
                 retiring: None,
                 complete: false,
+                image: initial_image,
             }
         }
     };
     atomic_write(&path, &serde_json::to_vec(&receipt)?, 0o600)?;
+    if let Some(image) = &receipt.image {
+        if resource_group::alias_at(
+            &unit_path(&desired),
+            image,
+            seed.as_deref().context("missing group seed")?,
+            &desired.text,
+            resource_group::read_member,
+        )? {
+            // Pending custody is durable before the alias disappears. A crash
+            // in this gap is recoverable; installing uses no-clobber below.
+            fs::remove_file(unit_path(&desired))?;
+            fs::File::open(UNIT_ROOT)?.sync_all()?;
+        }
+    }
     if let Some(retiring) = &receipt.retiring {
         retire(&manager, retiring).await?;
         receipt.retiring = None;
@@ -533,6 +723,10 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
     manager.daemon_reload().await?;
     manager.load_unit(&desired.unit).await?;
     let identity = owned_identity(&manager, &desired).await?;
+    if receipt.image.take().is_some() {
+        fs::File::open(UNIT_ROOT)?.sync_all()?;
+        atomic_write(&path, &serde_json::to_vec(&receipt)?, 0o600)?;
+    }
     let source_missing = optional_mount_source_missing(&desired)?;
     let job = if desired.enabled && !source_missing {
         Some(
@@ -597,6 +791,9 @@ fn resource_converged(
 
 fn resource_outputs(desired: &Definition, active: &aos_systemd::UnitActiveState) -> Value {
     let mut outputs = json!({"resource":desired.unit});
+    if let Some(name) = desired.unit.strip_suffix(".slice") {
+        outputs["name"] = json!(name);
+    }
     if desired.unit.ends_with(".mount") {
         outputs["state"] = json!(if !desired.enabled {
             "disabled"
@@ -726,6 +923,97 @@ async fn observe(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn group_invocation(name: &str) -> Invocation {
+        serde_json::from_value(json!({
+            "id":"package-group", "revision":"a".repeat(64), "action":"apply", "previous":null,
+            "input":{"name":name},
+            "effect":{
+                "identity":["nginx","serviceManagement","resourceGroup","workers"],
+                "owner":"nginx", "revision":"a".repeat(64), "input":{"name":name},
+                "inputs":{}, "input_type":{"kind":"submodule","open":false,"fields":{}},
+                "results":{}, "after":[], "dependencies":[], "lifetime":"persistent", "timeout_ms":1000,
+                "handler":{"kind":"process","artifact":"/nix/store/00000000000000000000000000000000-provider",
+                    "executable":"/nix/store/00000000000000000000000000000000-provider/bin/handler"}
+            }
+        })).unwrap()
+    }
+
+    #[test]
+    fn resource_group_uses_package_slice_definition_and_exact_named_outputs() {
+        for name in ["aos-pkg-nginx", "aos-pkg-nginx-workers"] {
+            let desired = definition(&group_invocation(name), "resourceGroup").unwrap();
+
+            assert_eq!(desired.unit, format!("{name}.slice"));
+            assert_eq!(desired.target, "slices.target");
+            assert!(desired.enabled);
+            assert!(
+                desired
+                    .text
+                    .starts_with("[Unit]\nDescription=Package service resource group\n")
+            );
+            assert!(desired.text.ends_with("\n\n[Slice]\n"));
+            assert!(desired.swap_source.is_none());
+            assert!(desired.trigger.is_none());
+            assert_eq!(
+                resource_outputs(&desired, &aos_systemd::UnitActiveState::Active),
+                json!({"resource":format!("{name}.slice"), "name":name})
+            );
+        }
+    }
+
+    #[test]
+    fn resource_group_rejects_foreign_names_and_owner_identity_mismatch() {
+        for name in [
+            "aos-pkg-envoy",
+            "aos-pkg-nginxother",
+            "system",
+            "aos-pkg-nginx/worker",
+            "aos-pkg-nginx.service",
+            "aos-pkg-NGINX",
+            "aos-pkg-",
+            "aos-pkg-nginx\n[Service]",
+        ] {
+            assert!(
+                definition(&group_invocation(name), "resourceGroup").is_err(),
+                "accepted {name:?}"
+            );
+        }
+        let mut invocation = group_invocation("aos-pkg-nginx");
+        invocation.effect.owner = "envoy".into();
+        assert!(definition(&invocation, "resourceGroup").is_err());
+        invocation.effect.owner = "nginx".into();
+        invocation.effect.identity.remove(0);
+        assert!(definition(&invocation, "resourceGroup").is_err());
+    }
+
+    #[test]
+    fn resource_group_description_rejects_header_injection_and_escapes_specifiers() {
+        let mut invocation = group_invocation("aos-pkg-nginx");
+        invocation.input["description"] = json!("Workers\n[Slice]\nCPUWeight=100");
+        assert!(definition(&invocation, "resourceGroup").is_err());
+        invocation.input["description"] = json!("Package workers at 50%");
+        let desired = definition(&invocation, "resourceGroup").unwrap();
+        assert!(
+            desired
+                .text
+                .contains("Description=Package workers at 50%%\n")
+        );
+        assert_eq!(desired.text.matches("[Slice]").count(), 1);
+    }
+
+    #[test]
+    fn resource_group_receipt_requires_exact_owned_definition() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("aos-pkg-nginx.slice");
+        let desired = definition(&group_invocation("aos-pkg-nginx"), "resourceGroup").unwrap();
+        assert!(!owned_file_at(&path, &desired).unwrap());
+
+        fs::write(&path, &desired.text).unwrap();
+        assert!(owned_file_at(&path, &desired).unwrap());
+        fs::write(&path, "[Slice]\nCPUWeight=100\n").unwrap();
+        assert!(owned_file_at(&path, &desired).is_err());
+    }
 
     #[test]
     fn optional_mount_reports_absence_and_retries_when_source_appears() {

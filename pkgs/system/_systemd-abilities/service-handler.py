@@ -658,7 +658,25 @@ class Handler(ConfigurationHandler):
     def service(self, action):
         group = (self.value.get("resources") or {}).get("resource_group")
         identity = self.invocation["effect"]["identity"]
-        package_group = "aos-pkg-" + identity[-4] if len(identity) >= 4 else None
+        owner = identity[-4] if len(identity) >= 4 else None
+        raw_input = self.invocation["effect"].get("input") or {}
+        reference = (raw_input.get("resources") or {}).get("resource_group")
+        if isinstance(reference, dict):
+            producer = reference.get("identity")
+            if (
+                reference.get("_type") != "aos-effect-output"
+                or reference.get("output") != "name"
+                or not isinstance(producer, list)
+                or len(producer) < 4
+                or not all(isinstance(part, str) and part for part in producer)
+                or producer[-3:-1] != ["serviceManagement", "resourceGroup"]
+                or not re.fullmatch(r"[a-z0-9-]+", producer[-4])
+            ):
+                raise ValueError("invalid service resource group output reference")
+            # The native graph authenticates this producer and materializes its
+            # declared name; the consumer may use only that producer's namespace.
+            owner = producer[-4]
+        package_group = "aos-pkg-" + owner if owner is not None else None
         owns_group = package_group is not None and (
             group == package_group or (group is not None and group.startswith(package_group + "-"))
         )

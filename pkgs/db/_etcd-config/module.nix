@@ -9,6 +9,7 @@
   inherit (lib) mkOption;
   types = lib.types;
   operations = config.aos.abilities;
+  resourceGroup = operations.serviceManagement.operations.resourceGroup.effects.${package.name};
   enabled = config.aos.services."etcd.main".enable;
   positiveInt = types.ints.between 1 9007199254740991;
   endpoint = types.strMatching "https?://[^[:space:],]+";
@@ -129,6 +130,7 @@
   };
   usedCredentials = credentialsFor cfg.client.tls.enable cfg.peer.tls.enable;
   serviceDefinition = {
+    resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = {
       allow_privilege_escalation = false;
       ambient_privileges = [];
@@ -455,6 +457,7 @@ in {
     }
     (lib.mkIf enabled {
       aos.abilities = {
+        serviceManagement.operations.resourceGroup.effects.${package.name}.input.name = "aos-pkg-${package.name}";
         network.operations.ready.effects.etcd.input = {
           scope = "address-configured";
           families = ["ipv4" "ipv6"];
