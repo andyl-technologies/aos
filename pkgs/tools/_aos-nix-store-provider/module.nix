@@ -15,7 +15,6 @@
     && lib.take 1 config.aos.activation.scope != ["container"];
   configuration = config.aos.abilities.configuration.operations.file.effects.nix-store;
   profiles = config.aos.abilities.filesystem.operations.view.effects.nix-profiles;
-  roots = config.aos.abilities.filesystem.operations.directory.effects.nix-profile-gcroots;
   bridge = config.aos.abilities.mount.operations.ensure.effects.nix-profile-gcroots;
 in {
   options.aos.nixStore = lib.mkOption {
@@ -115,20 +114,14 @@ in {
           view.effects.nix-profiles = lib.mkIf hostRuntime {
             input.sourcePath = "/var/lib/profiles";
           };
-          directory.effects.nix-profile-gcroots = lib.mkIf hostRuntime {
-            input = {
-              path = "/nix/var/nix/gcroots/aos-profiles";
-              mode = "0755";
-              owner = "root";
-              group = "root";
-            };
-          };
         };
         mount.operations.ensure.effects.nix-profile-gcroots = lib.mkIf hostRuntime {
           input = {
             name = "aos-profile-gcroots";
             source = profiles.outputs.path;
-            destination = roots.outputs.path;
+            # The mount manager creates its mountpoint. An independent directory
+            # receipt would identify the inode hidden by this bind mount.
+            destination = "/nix/var/nix/gcroots/aos-profiles";
             options = ["bind"];
           };
         };
