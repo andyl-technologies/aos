@@ -430,6 +430,15 @@ impl InertSourceProviderCarrierV1 {
         self.socket.send_with_descriptors_retaining(payload, &[source_root.as_fd()])
     }
 
+    // The owning Root receiver validates the stored control and owns its
+    // one-shot latch. This shares the existing zero-FD native send engine.
+    pub(crate) fn send_original_root_accepted_retaining_v5(
+        &mut self,
+        payload: &[u8],
+    ) -> Result<(), SeqpacketError> {
+        self.send_original_held_retaining_v5(payload)
+    }
+
     pub(crate) fn send(&mut self, payload: &[u8]) -> Result<(), CarrierFailureV1> {
         if self.poisoned {
             return Err(CarrierFailureV1::Fatal(

@@ -4,6 +4,7 @@
 //! stages. Received packets, SourceRoot FD, readonly archives, physical staging,
 //! unsigned preparation and signature remain resident on failure. Phase5 is
 //! local stored RootAccepted DATA, not an ACK, manager handoff or settled flight.
+//! Its named one-shot sender retains native output and never infers receipt.
 
 use aos_sandbox_protocol::mount_source_acquisition_state::{
     ProviderAttemptStateV2, ProviderStatusV2,
@@ -45,6 +46,9 @@ pub(super) struct OriginalPositiveProgressV5 {
     signing_preparation: Option<PreparedNativeHeldControlV1>,
     signature: Option<[u8; 64]>,
     signed: Option<SignedNativeHeldControlV1>,
+    send_attempted: bool,
+    send_payload: Option<Vec<u8>>,
+    send_result: Option<Result<(), aos_sandbox_linux::seqpacket::SeqpacketError>>,
     first_failure: Option<SourceProviderSecurityError>,
     postcheck_failure: Option<SourceProviderSecurityError>,
 }
@@ -67,6 +71,9 @@ impl OriginalPositiveProgressV5 {
             signing_preparation: None,
             signature: None,
             signed: None,
+            send_attempted: false,
+            send_payload: None,
+            send_result: None,
             first_failure: None,
             postcheck_failure: None,
         }
@@ -82,6 +89,16 @@ impl OriginalPositiveProgressV5 {
         }
         self.signature_attempted = true;
         Ok(())
+    }
+
+    // Pure purpose state only: the caller still checks the real phase5 owner.
+    fn preclaim_send(&mut self) -> Result<bool, SourceProviderSecurityError> {
+        if self.send_attempted && !matches!(self.send_result, Some(Ok(()))) {
+            return Err(SourceProviderSecurityError::SessionContinuity);
+        }
+        let already_sent = self.send_attempted;
+        self.send_attempted = true;
+        Ok(already_sent)
     }
 
     fn retain_failure(&mut self, error: SourceProviderSecurityError) {
@@ -203,6 +220,18 @@ impl OriginalNativeReceivedOutcomeV5 {
             self.positive.first_failure.as_ref(),
             self.positive.postcheck_failure.as_ref(),
         )
+    }
+
+    /// Borrows the actual one-shot Root4 native failure without observing I/O.
+    ///
+    /// A later currentness refusal stays in the separate positive postcheck
+    /// slot; it does not replace this error or turn transmission into Drain.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn original_accepted_send_failure_v5(
+        &self,
+    ) -> Option<&aos_sandbox_linux::seqpacket::SeqpacketError> {
+        self.positive.send_result.as_ref().and_then(|result| result.as_ref().err())
     }
 
     fn retain_positive_failure(&mut self, error: SourceProviderSecurityError) {
@@ -736,6 +765,110 @@ impl CurrentRootMountSourceProviderSessionV1 {
         })
     }
 
+    /// Sends the physically stored RootAccepted4 once on the original carrier.
+    ///
+    /// Every native result stays in the original received owner before the
+    /// later physical/current-role/clock checks. Successful re-entry only
+    /// rechecks that same phase5 cut; it never sends again or implies receipt.
+    ///
+    /// # Errors
+    ///
+    /// Ends the same Session on missing/stale custody, send refusal (including
+    /// EAGAIN/EINTR), or later debt. The actual native cause remains borrowable.
+    #[doc(hidden)]
+    pub fn send_original_root_accepted_v5(
+        &mut self,
+        writer: &MountOriginalNativeJournalAuthorityV5<'_>,
+        phase5: &OriginalRootProtectedReadbackV5,
+        authorization: &AuthorizedMountProviderOutcomeV2,
+        retained: &mut OriginalNativeReceivedOutcomeV5,
+    ) -> Result<bool, SourceProviderSecurityError> {
+        OriginalBoundaryV5::new(self, retained).run(|owner, retained| {
+            let retained = &mut **retained;
+            if retained.failed.get()
+                || retained.positive.first_failure.is_some()
+                || retained.positive.postcheck_failure.is_some()
+            {
+                return Err(owner.poison(SourceProviderSecurityError::SessionContinuity));
+            }
+
+            // End the possible-send purpose before preparation or observations.
+            let already_sent = match retained.positive.preclaim_send() {
+                Ok(already_sent) => already_sent,
+                Err(cause) => return Err(owner.poison(cause)),
+            };
+            let before = (|| {
+                if !already_sent {
+                    let signed = retained.positive.signed.as_ref()
+                        .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+                    retained.positive.send_payload = Some(signed.to_canonical_bytes());
+                }
+                owner.require_stored_original_accepted_v5(
+                    writer, phase5, authorization, retained,
+                )
+            })();
+            if let Err(cause) = before {
+                return owner.finish_original_positive_v5(retained, Err(cause)).map(|()| false);
+            }
+            if already_sent {
+                return Ok(true);
+            }
+
+            let Some(payload) = retained.positive.send_payload.as_ref() else {
+                return owner.finish_original_positive_v5(
+                    retained, Err(SourceProviderSecurityError::SessionContinuity),
+                ).map(|()| false);
+            };
+            retained.positive.send_result = Some(
+                owner.carrier.send_original_root_accepted_retaining_v5(payload),
+            );
+
+            // Native output is resident even if this slower observation fails.
+            let after = owner.require_stored_original_accepted_v5(
+                writer, phase5, authorization, retained,
+            );
+            if let Err(cause) = after {
+                if retained.positive.postcheck_failure.is_none() {
+                    retained.positive.postcheck_failure = Some(cause);
+                }
+            }
+            if !matches!(retained.positive.send_result, Some(Ok(())))
+                || retained.positive.postcheck_failure.is_some()
+            {
+                retained.failed.set(true);
+                return Err(owner.poison(SourceProviderSecurityError::SessionContinuity));
+            }
+            Ok(true)
+        })
+    }
+
+    fn require_stored_original_accepted_v5(
+        &mut self,
+        writer: &MountOriginalNativeJournalAuthorityV5<'_>,
+        phase5: &OriginalRootProtectedReadbackV5,
+        authorization: &AuthorizedMountProviderOutcomeV2,
+        retained: &mut OriginalNativeReceivedOutcomeV5,
+    ) -> Result<(), SourceProviderSecurityError> {
+        let sidecar = phase5.graph().sidecars().get(&phase5.attempt())
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        let signed = retained.positive.signed.as_ref()
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        let payload = retained.positive.send_payload.as_ref()
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        if sidecar.suffix().phase() != 5
+            || sidecar.suffix().prepared().is_some()
+            || sidecar.suffix().control(Kind::RootAccepted) != Some(signed)
+            || payload.len() > MAXIMUM_NATIVE_HELD_CONTROL_BYTES_V1
+            || *payload != signed.to_canonical_bytes()
+        {
+            return Err(SourceProviderSecurityError::SessionContinuity);
+        }
+        self.require_current_root_mount_record_role_v5(signed.prepared().signer())?;
+        // The shared original checks include actual conserved floor, Complete
+        // descriptor, archived Source files and paired time LAST.
+        self.require_original_positive_owner_v5(writer, phase5, authorization, retained)
+    }
+
     fn finish_original_positive_v5(
         &mut self,
         retained: &mut OriginalNativeReceivedOutcomeV5,
@@ -855,6 +988,29 @@ fn require_original_accepted_cut_v5(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attempted_send_without_native_success_never_rearms() {
+        let mut progress = OriginalPositiveProgressV5::new();
+
+        assert!(!progress.preclaim_send().unwrap());
+        assert!(progress.preclaim_send().is_err());
+        progress.send_result = Some(Err(aos_sandbox_linux::seqpacket::SeqpacketError::WouldBlock));
+
+        assert!(progress.preclaim_send().is_err());
+        assert!(matches!(progress.send_result, Some(Err(aos_sandbox_linux::seqpacket::SeqpacketError::WouldBlock))));
+    }
+
+    #[test]
+    fn successful_native_state_is_observation_not_another_send_claim() {
+        let mut progress = OriginalPositiveProgressV5::new();
+        assert!(!progress.preclaim_send().unwrap());
+        progress.send_result = Some(Ok(()));
+
+        assert!(progress.preclaim_send().unwrap());
+        assert!(progress.send_payload.is_none());
+        assert!(progress.signed.is_none());
+    }
 
     #[test]
     fn negative_signature_preclaim_is_irreversible_without_an_owner_or_output() {

@@ -306,6 +306,7 @@ fn run_selected_original_mount<W: aos_sandbox_mount::worker::MountWorker>(
     // time spent accepting is charged to this same deadline, never renewed.
     let request_deadline = production_deadline_after(REQUEST_TIMEOUT)?;
     let session = activation.accept_authenticated(accept_deadline)?;
+    let selected_startup = startup.is_some();
     let mut original = match startup {
         Some(startup) => ProductionOriginalMountCycleV1::with_selected_startup(
             session, request_deadline, startup,
@@ -313,6 +314,9 @@ fn run_selected_original_mount<W: aos_sandbox_mount::worker::MountWorker>(
         None => ProductionOriginalMountCycleV1::new(session, request_deadline),
     };
     let locally_sent = original.run_once(broker).is_ok();
+    if locally_sent && selected_startup {
+        retain_selected_original_response(&mut original, broker);
+    }
     if locally_sent {
         eprintln!("aos-sandbox-mountd: original Root1 sent; terminal continuation remains unavailable");
     } else {
@@ -476,6 +480,9 @@ fn run_selected_startup(helper_executable: String) -> ! {
         startup,
     );
     let sent = original.run_once(&mut broker).is_ok();
+    if sent {
+        retain_selected_original_response(&mut original, &mut broker);
+    }
     original.end();
     if sent {
         eprintln!("aos-sandbox-mountd: original Root1 sent; terminal continuation remains unavailable");
@@ -483,6 +490,29 @@ fn run_selected_startup(helper_executable: String) -> ! {
         eprintln!("aos-sandbox-mountd: selected original Mount cycle refused; invocation retained");
     }
     std::process::exit(1)
+}
+
+// Local send cannot reveal a remote phase7 commit. Keep the same Root task and
+// all original owners live until the original cutoff or a real negative cause.
+fn retain_selected_original_response<W: aos_sandbox_mount::worker::MountWorker>(
+    original: &mut ProductionOriginalMountCycleV1,
+    broker: &mut MountBroker<W>,
+) -> ! {
+    loop {
+        match original.advance_selected_response_once(broker) {
+            Ok(aos_sandbox_mount::broker::OriginalMountResponseProgressV5::Waiting)
+            | Ok(aos_sandbox_mount::broker::OriginalMountResponseProgressV5::PendingClosedSent)
+            | Ok(aos_sandbox_mount::broker::OriginalMountResponseProgressV5::RootAcceptedSent) => {}
+            Err(_) => {
+                original.end();
+                // Both native cause and outer debt remain resident across this
+                // bounded diagnostic. OS death is release, not queue settlement.
+                eprintln!("aos-sandbox-mountd: original response ended; invocation retained");
+                std::process::exit(1)
+            }
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
 }
 
 fn requires_source_recovery(source_provider_enabled: bool, journal: &Journal) -> bool {

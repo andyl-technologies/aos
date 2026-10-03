@@ -66,6 +66,44 @@ use crate::{MountError, Result};
 mod fuse_intent;
 mod source_custody;
 
+/// Reports local original response progress without granting a capability.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OriginalMountResponseProgressV5 {
+    /// The same original dispatcher has not locally transmitted a response.
+    Waiting,
+    /// The existing Pending branch locally sent its original RootClosed.
+    PendingClosedSent,
+    /// The same stored phase5 RootAccepted4 was locally transmitted once.
+    RootAcceptedSent,
+}
+
+/// Borrows the actual response failure still owned by the broker runtime.
+pub enum OriginalMountResponseFailureV5<'owner> {
+    /// The same zero-FD syscall returned this error before later observation debt.
+    Native(&'owner aos_sandbox_linux::seqpacket::SeqpacketError),
+    /// The actual original receiver retains a currentness or verification cause.
+    Security(&'owner aos_sandbox_source_provider_security::SourceProviderSecurityError),
+    /// A native stage retained this returned Mount error (possibly legacy prose).
+    Mount(&'owner MountError),
+}
+
+impl core::fmt::Debug for OriginalMountResponseFailureV5<'_> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("OriginalMountResponseFailureV5([resident cause])")
+    }
+}
+
+#[derive(Clone, Copy)]
+enum OriginalAdvancePurposeV5 {
+    Root1,
+    Response,
+}
+
+enum OriginalAdvanceResultV5 {
+    Root1(bool),
+    Response(OriginalMountResponseProgressV5),
+}
+
 /// Retains the independent signed-domain admission for one original Acquire.
 ///
 /// Live and the exact body remain resident before domain verification. Each
@@ -763,6 +801,57 @@ impl<W: MountWorker> MountBroker<W> {
         original: &mut OriginalMountAcquireAuthorityV1,
         session: &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
     ) -> Result<bool> {
+        match self.advance_signed_original_recipe_v5(original, session, OriginalAdvancePurposeV5::Root1)? {
+            OriginalAdvanceResultV5::Root1(finished) => Ok(finished),
+            OriginalAdvanceResultV5::Response(_) => Err(MountError::Fence("original progress purpose differs")),
+        }
+    }
+
+    /// Advances the SAME original response under its existing signed effect.
+    ///
+    /// Successful transmission retains the physical writer/runtime and all
+    /// original custody. Repeated positive waiting checks cannot resend Root4.
+    /// This is not ACK13, remote phase7, settlement or a public Acquire result.
+    ///
+    /// # Errors
+    ///
+    /// Keeps the first actual admission/runtime cause and invalidates the same
+    /// Session on missing owners, expired effect, failed receive/send or unwind.
+    pub fn advance_signed_original_response_v5(
+        &mut self,
+        original: &mut OriginalMountAcquireAuthorityV1,
+        session: &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
+    ) -> Result<OriginalMountResponseProgressV5> {
+        match self.advance_signed_original_recipe_v5(original, session, OriginalAdvancePurposeV5::Response)? {
+            OriginalAdvanceResultV5::Response(progress) => Ok(progress),
+            OriginalAdvanceResultV5::Root1(_) => Err(MountError::Fence("original progress purpose differs")),
+        }
+    }
+
+    /// Lends a resident response cause without opening or rechecking anything.
+    #[must_use]
+    pub fn original_response_failure_v5(&self) -> Option<OriginalMountResponseFailureV5<'_>> {
+        self.source_runtime.as_ref().and_then(|runtime| runtime.original_response_failure_v5())
+    }
+
+    /// Lends later Security debt separately from the first native response cause.
+    ///
+    /// The same positive receiver owns this error; borrowing it performs no
+    /// currentness observation, retry or replacement of the native result.
+    #[must_use]
+    pub fn original_response_postcheck_debt_v5(
+        &self,
+    ) -> Option<&aos_sandbox_source_provider_security::SourceProviderSecurityError> {
+        self.source_runtime.as_ref()
+            .and_then(|runtime| runtime.original_response_postcheck_debt_v5())
+    }
+
+    fn advance_signed_original_recipe_v5(
+        &mut self,
+        original: &mut OriginalMountAcquireAuthorityV1,
+        session: &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
+        purpose: OriginalAdvancePurposeV5,
+    ) -> Result<OriginalAdvanceResultV5> {
         let mut boundary = OriginalMountAuthorityBoundaryV1 {
             broker: self,
             original,
@@ -791,7 +880,14 @@ impl<W: MountWorker> MountBroker<W> {
                     original: boundary.original,
                 };
                 runtime.operate(|owner| {
-                    owner.advance_signed_original_native_acquire_v5(entry.session, &mut effect)
+                    match purpose {
+                        OriginalAdvancePurposeV5::Root1 => owner
+                            .advance_signed_original_native_acquire_v5(entry.session, &mut effect)
+                            .map(OriginalAdvanceResultV5::Root1),
+                        OriginalAdvancePurposeV5::Response => owner
+                            .advance_signed_original_response_v5(entry.session, &mut effect)
+                            .map(OriginalAdvanceResultV5::Response),
+                    }
                 })
             })();
             entry.finish(result)

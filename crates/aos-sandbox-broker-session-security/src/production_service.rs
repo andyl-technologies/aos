@@ -87,6 +87,8 @@ pub struct ProductionOriginalMountCycleV1 {
     catalog: Option<Vec<u8>>,
     selection: Option<Vec<u8>>,
     mount_result: Option<Result<bool, aos_sandbox_mount::MountError>>,
+    response_result: Option<Result<aos_sandbox_mount::broker::OriginalMountResponseProgressV5, aos_sandbox_mount::MountError>>,
+    response_postcheck_failed: bool,
     deadline_result: Option<Result<u64, crate::ProductionBrokerSessionActivationErrorV1>>,
     deadline: u64,
     attempted: bool,
@@ -196,6 +198,8 @@ impl ProductionOriginalMountCycleV1 {
             catalog: None,
             selection: None,
             mount_result: None,
+            response_result: None,
+            response_postcheck_failed: false,
             deadline_result: None,
             deadline,
             attempted: false,
@@ -240,6 +244,101 @@ impl ProductionOriginalMountCycleV1 {
         } else {
             Err(self.failure_or_ended())
         }
+    }
+
+    /// Advances a response only after this SAME selected cycle sent Root1.
+    ///
+    /// The original deadline, receipt, Root Session, signed-domain owner,
+    /// broker writer/runtime and selected kernel/image owner stay resident.
+    /// Successful local Root4 is rechecked on subsequent waiting turns; it is
+    /// never resent and does not imply remote phase7, ACK13 or settlement.
+    ///
+    /// # Errors
+    ///
+    /// Ends the original queues before lending a resident failure on missing
+    /// association, expired deadline, stale catalog/startup or native refusal.
+    pub fn advance_selected_response_once<W: aos_sandbox_mount::worker::MountWorker>(
+        &mut self,
+        broker: &mut aos_sandbox_mount::broker::MountBroker<W>,
+    ) -> Result<aos_sandbox_mount::broker::OriginalMountResponseProgressV5, ProductionOriginalMountCycleFailureV1<'_>> {
+        if self.ended || self.first_stage.is_some() || !self.attempted
+            || !self.locally_sent || self.startup.is_none()
+        {
+            self.end();
+            return Err(self.failure_or_ended());
+        }
+        let progress = {
+            let mut boundary = OriginalMountCycleBoundaryV1 {
+                owner: self,
+                completed: false,
+            };
+            let progress = boundary.owner.advance_response_inner(broker);
+            boundary.completed = progress.is_some();
+            progress
+        };
+        match progress {
+            Some(progress) => Ok(progress),
+            None => Err(self.failure_or_ended()),
+        }
+    }
+
+    fn advance_response_inner<W: aos_sandbox_mount::worker::MountWorker>(
+        &mut self,
+        broker: &mut aos_sandbox_mount::broker::MountBroker<W>,
+    ) -> Option<aos_sandbox_mount::broker::OriginalMountResponseProgressV5> {
+        if !self.bookend(broker) {
+            return None;
+        }
+        let (Some(authority), Some(session)) = (
+            self.receipt.authority_mut(), self.root.borrow_current_session(),
+        ) else {
+            self.note_failure(OriginalMountCycleStageV1::Root);
+            return None;
+        };
+        self.response_result = Some(broker.advance_signed_original_response_v5(authority, session));
+        if !matches!(self.response_result, Some(Ok(_))) {
+            self.note_failure(OriginalMountCycleStageV1::Mount);
+        }
+
+        // The action is resident before the slower outer catalog/kernel/image
+        // checks. Native failure is not replaced by their separately held debt.
+        if !self.bookend(broker) {
+            self.response_postcheck_failed = true;
+            return None;
+        }
+        self.response_result.as_ref().and_then(|result| result.as_ref().ok()).copied()
+    }
+
+    /// Borrows the actual response cause from its SAME broker runtime owner.
+    ///
+    /// This performs no observation, retry, extraction or cause cloning. The
+    /// cycle's status error and later outer bookend debt remain separate.
+    #[must_use]
+    pub fn response_failure<'owner, W: aos_sandbox_mount::worker::MountWorker>(
+        &self,
+        broker: &'owner aos_sandbox_mount::broker::MountBroker<W>,
+    ) -> Option<aos_sandbox_mount::broker::OriginalMountResponseFailureV5<'owner>> {
+        broker.original_response_failure_v5()
+    }
+
+    /// Lends an actual later outer bookend refusal without another observation.
+    #[must_use]
+    pub fn response_postcheck_debt(&self) -> Option<ProductionOriginalMountCycleFailureV1<'_>> {
+        if !self.response_postcheck_failed {
+            return None;
+        }
+        // This is the shared bookend's literal check order, not a second probe.
+        if let Some(cause) = self.deadline_result.as_ref().and_then(|result| result.as_ref().err()) {
+            return Some(ProductionOriginalMountCycleFailureV1::Deadline(cause));
+        }
+        if let Some(cause) = self.receipt.failure() {
+            return Some(ProductionOriginalMountCycleFailureV1::Receipt(cause));
+        }
+        if let Some(cause) = self.root.failure() {
+            return Some(ProductionOriginalMountCycleFailureV1::Root(cause));
+        }
+        self.startup.as_ref().and_then(|startup| startup.failure())
+            .map(ProductionOriginalMountCycleFailureV1::Startup)
     }
 
     fn check_deadline(&mut self) -> bool {
@@ -475,6 +574,7 @@ impl ProductionOriginalMountCycleV1 {
                     }
                     _ => self.mount_result.as_ref()
                         .and_then(|result| result.as_ref().err())
+                        .or_else(|| self.response_result.as_ref().and_then(|result| result.as_ref().err()))
                         .map(ProductionOriginalMountCycleFailureV1::Mount),
                 }
             }
