@@ -844,6 +844,10 @@ async fn observe(
         } else {
             ensure!(!check_link(definition)?, "orphan enablement link");
             if manager_absent(manager, definition).await? {
+                // Unit files live in the volatile /etc upper. A retained receipt
+                // can outlive them across boot; proven manager absence permits
+                // recreating the exact definition rather than claiming current.
+                needs_reload = true;
                 continue;
             }
             match manager.unit_identity(&definition.unit).await {
