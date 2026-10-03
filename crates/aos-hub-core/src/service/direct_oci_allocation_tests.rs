@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::auth::jwt::{OciRepositoryGrant, OciTokenGrant};
+use crate::db::{GrantResource, NewSurfacePlacementSpec, SurfaceTarget};
 use crate::oci::parse_start_query;
 use aos_oci_types::{RepositoryName, Sha256Digest};
 use axum::body::Body;
@@ -62,6 +63,75 @@ async fn fixture() -> Fixture {
         .await
         .unwrap();
     let registry = db.registry_by_id(registry).await.unwrap().unwrap();
+
+    // The outer Distribution route selects its writer before allocation.
+    // Establish the same reconciled deployment-owned topology as a live Hub.
+    let binding = db
+        .ensure_instance_default_binding(
+            "deployment_r2",
+            None,
+            Some(crate::binding::DEPLOYMENT_R2_ATTACHMENT),
+        )
+        .await
+        .unwrap();
+    db.grant_consumer_scope(
+        GrantResource::Binding {
+            id: binding.id,
+            stable_id: &binding.stable_id,
+        },
+        &registry.owner_scope_key,
+        "instance_default",
+        "system:test",
+        "request:allocation-handler-binding-grant",
+    )
+    .await
+    .unwrap();
+    let surface = SurfaceTarget::Registry(registry.id);
+    let placement = db
+        .create_surface_placement(&NewSurfacePlacementSpec {
+            surface,
+            name: "primary".into(),
+            binding_id: binding.id,
+            prefix: "allocation-handler/images".into(),
+            kind: "complete".into(),
+            desired_state: "active".into(),
+            hash_range: None,
+            desired_read_enabled: true,
+            read_order: 0,
+            requires_conditional_writes: false,
+        })
+        .await
+        .unwrap();
+    let placement = db
+        .observe_surface_placement(placement.id, "ready", "complete", 1)
+        .await
+        .unwrap();
+    let revision = db
+        .binding_write_state(binding.id)
+        .await
+        .unwrap()
+        .unwrap()
+        .current_write_revision
+        .unwrap();
+    db.bind_surface_placement_write_capability(placement.id, revision)
+        .await
+        .unwrap();
+    db.create_surface_write_authority(
+        surface,
+        "allocation-handler-writer",
+        placement.id,
+        placement.resource_version,
+        placement.write_spec_version,
+        revision,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        service.effective_surface_writer(surface).await.unwrap().id,
+        placement.id
+    );
+
     Fixture {
         service: Arc::new(service),
         registry,
