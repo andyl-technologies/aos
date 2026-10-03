@@ -1608,7 +1608,6 @@ pub struct EventLog {
     pub(super) offset: EventLogOffset,
     pub(super) bytes: u64,
     pub(super) events: u64,
-    pub(super) condition_entries: Vec<SchedulerEventLogEntry>,
     pub(super) condition_base_events: u64,
     pub(super) condition_prefix: ConditionEventLogPrefix,
 }
@@ -1666,9 +1665,10 @@ impl EventLog {
             offset,
             bytes: offset.bytes,
             events: offset.events,
-            condition_entries: Vec::new(),
             condition_base_events: offset.events,
-            condition_prefix: ConditionEventLogPrefix::genesis().with_event_log_offset(offset),
+            condition_prefix: ConditionEventLogPrefix::genesis()
+                .with_base_sequence(offset.events)
+                .with_event_log_offset(offset),
         }
     }
 
@@ -1692,7 +1692,7 @@ impl EventLog {
     /// complete run history.
     #[must_use]
     pub fn retained_entries(&self) -> &[SchedulerEventLogEntry] {
-        &self.condition_entries
+        self.condition_prefix.scheduler_entries()
     }
 
     /// Returns the dense event count preceding [`Self::retained_entries`].
@@ -1797,24 +1797,18 @@ impl EventLog {
             EventLogOffset::with_appended_segment(self.prefix, bytes, events, segment_hash);
         let prefix =
             scheduler_event_log_prefix_after_append(self.prefix, segment_hash, bytes, events);
-        let mut condition_entries = self.condition_entries.clone();
-        condition_entries.extend(entries.iter().cloned());
-        let condition_prefix = ConditionEventLogPrefix::from_scheduler_event_log_entries_with_base(
-            condition_entries.clone(),
-            self.condition_base_events,
-        )
-        .map_err(|error| SchedulerError::BoundaryViolation {
-            message: format!("scheduler emitted invalid condition event-log prefix: {error:?}"),
-        })?
-        .with_event_log_offset(current_offset);
+        self.condition_prefix
+            .append_scheduler_entries(entries.clone())
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("scheduler emitted invalid condition event-log prefix: {error:?}"),
+            })?;
 
         self.prefix = prefix;
         self.segment_dependencies.push(segment_hash);
         self.offset = current_offset;
         self.bytes = bytes;
         self.events = events;
-        self.condition_entries = condition_entries;
-        self.condition_prefix = condition_prefix;
+        self.condition_prefix.set_event_log_offset(current_offset);
 
         Ok(SchedulerEventLogAppend {
             entries,

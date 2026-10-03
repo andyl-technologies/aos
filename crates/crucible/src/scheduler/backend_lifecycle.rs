@@ -33,7 +33,7 @@ impl SingleScheduler {
             });
         }
         let suffix = backend_log
-            .condition_entries
+            .retained_entries()
             .iter()
             .filter(|entry| entry.sequence() >= before.events)
             .cloned()

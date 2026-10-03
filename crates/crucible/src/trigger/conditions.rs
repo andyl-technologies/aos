@@ -2,6 +2,7 @@
 
 use super::*;
 
+mod append;
 mod host_oracle;
 
 pub(crate) use host_oracle::SearchScheduleNamedPredicateHostOracle;
@@ -1075,6 +1076,7 @@ pub struct ConditionEventLogPrefix {
     pub(super) event_log_offset: EventLogOffset,
     pub(super) prefix_offsets: BTreeMap<u64, EventLogOffset>,
     pub(super) scheduler_entries: Vec<SchedulerEventLogEntry>,
+    last_black_box_observation: Option<(u64, VirtualTime)>,
     pub(super) observable_events: Vec<ObservableEvent>,
     pub(super) black_box_observation_kinds: BTreeSet<BlackBoxObservationKind>,
     pub(super) event_firings: BTreeMap<EventId, VirtualTime>,
@@ -1092,6 +1094,7 @@ impl ConditionEventLogPrefix {
             event_log_offset: EventLogOffset::default(),
             prefix_offsets: BTreeMap::new(),
             scheduler_entries: Vec::new(),
+            last_black_box_observation: None,
             observable_events: Vec::new(),
             black_box_observation_kinds: BTreeSet::new(),
             event_firings: BTreeMap::new(),
@@ -1204,94 +1207,9 @@ impl ConditionEventLogPrefix {
         entries: Vec<SchedulerEventLogEntry>,
         base_sequence: u64,
     ) -> Result<Self, ConditionEvaluationError> {
-        let Some(last) = entries.last() else {
-            return Err(ConditionEvaluationError::EmptyEventLogPrefix);
-        };
-        let point = EventEvaluationPoint::event_log_entry(last);
-        let mut observable_events = Vec::new();
-        let mut black_box_observation_kinds = BTreeSet::new();
-        let mut event_firings = BTreeMap::new();
-        let mut timer_fires = BTreeMap::new();
-        let mut ordering_facts = Vec::new();
-        let mut previous_black_box_observation: Option<&SchedulerEventLogEntry> = None;
-        for (offset, entry) in entries.iter().enumerate() {
-            let offset = u64::try_from(offset).map_err(|_| {
-                ConditionEvaluationError::NonPrefixEventLogSequence {
-                    expected: u64::MAX,
-                    actual: entry.sequence(),
-                }
-            })?;
-            let expected = base_sequence.checked_add(offset).ok_or(
-                ConditionEvaluationError::NonPrefixEventLogSequence {
-                    expected: u64::MAX,
-                    actual: entry.sequence(),
-                },
-            )?;
-            if entry.sequence() != expected {
-                return Err(ConditionEvaluationError::NonPrefixEventLogSequence {
-                    expected,
-                    actual: entry.sequence(),
-                });
-            }
-            if !entry.has_valid_content_hash() {
-                return Err(ConditionEvaluationError::InvalidEventLogEntryHash {
-                    sequence: entry.sequence(),
-                });
-            }
-            if scheduler_entry_black_box_observation_kind(entry).is_some() {
-                if let Some(previous) = previous_black_box_observation
-                    && entry.at().ticks < previous.at().ticks
-                {
-                    return Err(ConditionEvaluationError::OutOfOrderEventLogEntry {
-                        previous_sequence: previous.sequence(),
-                        previous_at: previous.at(),
-                        sequence: entry.sequence(),
-                        event_at: entry.at(),
-                    });
-                }
-                previous_black_box_observation = Some(entry);
-            }
-            if entry.at().ticks > point.at().ticks {
-                return Err(ConditionEvaluationError::FutureEventLogEntry {
-                    point: point.at(),
-                    sequence: entry.sequence(),
-                    event_at: entry.at(),
-                });
-            }
-            push_observed_state_facts(
-                entry,
-                &mut observable_events,
-                &mut black_box_observation_kinds,
-                &mut ordering_facts,
-            )?;
-            push_condition_runtime_facts(entry, &mut event_firings, &mut timer_fires);
-        }
-        Ok(Self {
-            point,
-            base_sequence,
-            event_log_offset: EventLogOffset::new(
-                ContentHash::default(),
-                0,
-                base_sequence
-                    .checked_add(u64::try_from(entries.len()).map_err(|_| {
-                        ConditionEvaluationError::NonPrefixEventLogSequence {
-                            expected: u64::MAX,
-                            actual: u64::MAX,
-                        }
-                    })?)
-                    .ok_or(ConditionEvaluationError::NonPrefixEventLogSequence {
-                        expected: u64::MAX,
-                        actual: u64::MAX,
-                    })?,
-            ),
-            prefix_offsets: BTreeMap::new(),
-            scheduler_entries: entries,
-            observable_events,
-            black_box_observation_kinds,
-            event_firings,
-            timer_fires,
-            ordering_facts,
-        })
+        let mut prefix = Self::genesis().with_base_sequence(base_sequence);
+        prefix.append_scheduler_entries(entries)?;
+        Ok(prefix)
     }
 
     pub(crate) fn with_event_log_offset(mut self, event_log_offset: EventLogOffset) -> Self {
@@ -1299,7 +1217,7 @@ impl ConditionEventLogPrefix {
         self
     }
 
-    fn with_base_sequence(mut self, base_sequence: u64) -> Self {
+    pub(crate) fn with_base_sequence(mut self, base_sequence: u64) -> Self {
         self.base_sequence = base_sequence;
         self
     }
