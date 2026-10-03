@@ -49,13 +49,18 @@ in
       previous_lower = None
 
       def propagation(path):
+          # /run is self-bound above its initial tmpfs. Query the visible
+          # mount rather than concatenating covered and active mount entries.
           return subprocess.check_output(
-              [findmnt, '--noheadings', '--output', 'PROPAGATION', '--target', path],
+              [findmnt, '--first-only', '--direction', 'backward', '--noheadings',
+               '--output', 'PROPAGATION', '--target', path],
               text=True,
           ).strip()
 
-      assert propagation('/run') == 'shared'
-      assert propagation('/run/etc') == 'shared'
+      initial_run_propagation = propagation('/run')
+      initial_etc_propagation = propagation('/run/etc')
+      assert initial_run_propagation == 'shared', ('/run', initial_run_propagation)
+      assert initial_etc_propagation == 'shared', ('/run/etc', initial_etc_propagation)
 
       def effect(program, revision):
           return {
@@ -94,8 +99,14 @@ in
               'input': value, 'outputs': lower, 'revision': revision,
           }
           assert call(mounting, 'apply', lower, revision) == {'path': '/etc'}
-          assert propagation('/run') == 'shared', 'publication changed the parent propagation'
-          assert propagation('/run/etc') == 'private', 'publication left its staging parent shared'
+          run_propagation = propagation('/run')
+          etc_propagation = propagation('/run/etc')
+          assert run_propagation == 'shared', (
+              'publication changed the parent propagation', run_propagation,
+          )
+          assert etc_propagation == 'private', (
+              'publication left its staging parent shared', etc_propagation,
+          )
           assert call(mounting, 'observe', lower, revision)['status'] == 'current'
           assert pathlib.Path('/etc/user-edit').read_text() == 'operator change\n'
           return lower
