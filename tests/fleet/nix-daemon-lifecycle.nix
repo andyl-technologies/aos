@@ -12,7 +12,7 @@ in
     testScript =
       fixture.scriptHelpers
       + ''
-        def assert_persistent_worker_policy():
+        def assert_persistent_worker_policy(expected_members):
             unit = f"/etc/systemd/system/{SLICE}"
             drop_in = f"{unit}.d/30-aos-resources.conf"
             builder.succeed(f"test -f '{unit}' && test -f '{drop_in}'")
@@ -25,7 +25,7 @@ in
 
             group_rows = builder.succeed("cat /etc/group").splitlines()
             assert [row for row in group_rows if row.startswith("nixbld:")] == [
-                "nixbld:x:30000:nixbld1,nixbld2"
+                "nixbld:x:30000:" + ",".join(expected_members)
             ], group_rows
             accounts = {
                 fields[0]: fields
@@ -132,7 +132,7 @@ in
                 assert property(SLICE, "MemorySwapMax") == "0"
                 assert_disabled()
 
-                removal_generation, daemon_effect = attempt_guarded_removal()
+                removal_generation, daemon_effect, expected_members = attempt_guarded_removal()
                 builder.succeed(f"test -r '{worker}'")
                 pending_view = journal()
                 removal = pending_view["pending"]
@@ -182,7 +182,7 @@ in
                 assert "nix-daemon" not in module_names, module_names
                 # Persistent worker resource policy and identity reservations survive
                 # package departure; the listener's enabled lifecycle does not.
-                assert_persistent_worker_policy()
+                assert_persistent_worker_policy(expected_members)
                 builder.succeed(f"test -d '{output}' && test -d /nix/store")
                 assert_disabled()
                 recovered_generation = generation()
@@ -208,7 +208,7 @@ in
             ready()
             assert generation() == recovered_generation
             builder.succeed(f"systemctl start '{SLICE}'")
-            assert_persistent_worker_policy()
+            assert_persistent_worker_policy(expected_members)
             builder.succeed(f"test -f '{output}/complete'")
             assert_disabled()
             print("Nix daemon APM lifecycle: activation, native restart, retained worker policy, disable, drained removal, and cold-boot persistence PASS")

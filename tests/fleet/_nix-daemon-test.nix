@@ -198,6 +198,22 @@ in {
         assert committed["schema"] == "aos.package.generation.inspection", committed
         daemon_effects = committed["daemonEffects"]
         assert len(daemon_effects) == 1, committed
+        # The retained exporter authenticates completed, materialized inputs.
+        # This preserves the last committed membership across package departure.
+        retained = public_json(
+            f"{RUNTIME} deployment-retained-effects --profile {PROFILE}",
+            '{schema, memberships: [.effects[] | '
+            'select(.invocation.effect.identity[-3:-1] == ["identity", "membership"] '
+            'and .invocation.input.group == "nixbld") | .invocation.input.members]}',
+        )
+        assert retained["schema"] == "aos.package.retained-effects", retained
+        memberships = retained["memberships"]
+        assert len(memberships) == 1, retained
+        expected_members = memberships[0]
+        assert isinstance(expected_members, list) and expected_members, memberships
+        assert all(isinstance(member, str) and member for member in expected_members), memberships
+        assert len(set(expected_members)) == len(expected_members), memberships
+        expected_members = sorted(expected_members)
         command = f"{APM} remove nix-daemon --system --yes"
         exit_code, stdout, stderr = builder.execute(command, timeout=600)
         result = {
@@ -208,7 +224,7 @@ in {
         assert result["exit_code"] != 0, result
         assert "identity is still running" in result["stderr"] or "workers remain" in result["stderr"], result
         assert generation() == previous
-        return previous, daemon_effects[0]
+        return previous, daemon_effects[0], expected_members
 
 
     def configuration(enabled, extra="", count=4):
