@@ -496,7 +496,9 @@ impl BranchReplayObservations {
 
 struct BranchReplayLifecycle {
     runtime_basis: AttemptExecutionRuntimeBasis,
+    configuration: Configuration,
     selected: Configuration,
+    completed_quanta: u64,
     pending_guest_request: Option<QemuNodeSelectablePendingRequest>,
     observations: BranchReplayObservations,
 }
@@ -515,6 +517,13 @@ impl QemuFreshAttemptLifecycleOwner for BranchReplayLifecycle {
         &mut self,
         request: crucible::QuantumRequest,
     ) -> Result<crucible::QuantumOutcome, crucible::SchedulerError> {
+        if request.configuration != self.configuration {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from(
+                    "quantum request configuration is not the scheduler frontier",
+                ),
+            });
+        }
         self.observations
             .replay_requests
             .lock()
@@ -525,6 +534,8 @@ impl QemuFreshAttemptLifecycleOwner for BranchReplayLifecycle {
         } else {
             self.selected.clone()
         };
+        self.configuration = configuration.clone();
+        self.completed_quanta += 1;
 
         Ok(crucible::QuantumOutcome {
             configuration,
@@ -543,7 +554,7 @@ impl QemuFreshAttemptLifecycleOwner for BranchReplayLifecycle {
     }
 
     fn completed_quanta(&self) -> u64 {
-        0
+        self.completed_quanta
     }
 
     fn terminal_verdict_for_stop(&mut self) -> Option<crucible::QuantumTerminalVerdict> {
@@ -573,12 +584,15 @@ impl QemuFreshAttemptLifecycleOwner for BranchReplayLifecycle {
 
     fn apply_selectable_reply(
         &mut self,
-        _parent: &crucible::Configuration,
+        parent: &crucible::Configuration,
         _decision: crucible::SelectionDecision,
-        _selected: &crucible::Configuration,
+        selected: &crucible::Configuration,
         _pending: &QemuNodeSelectablePendingRequest,
         reply: &crucible_protocol::SelectionReply,
     ) -> Result<Vec<crucible::SchedulerEventLogEntry>, crucible::SchedulerError> {
+        assert_eq!(parent, &self.configuration);
+        assert_eq!(selected, &self.selected);
+        self.configuration = selected.clone();
         self.observations
             .guest_replies
             .lock()
@@ -652,7 +666,15 @@ impl QemuHotForkWorldLifecycleOwner for BranchReplayLifecycle {
     fn start_materialization(
         &self,
     ) -> Result<crate::QemuFreshStartMaterialization, crucible::SchedulerError> {
-        Ok(crate::QemuFreshStartMaterialization::genesis())
+        Ok(crate::QemuFreshStartMaterialization::from_resume_parts(
+            self.configuration.clone(),
+            Vec::new(),
+            0,
+            self.completed_quanta,
+            crucible::VirtualTime::default(),
+            SchedulerQuiescence::default(),
+            None,
+        ))
     }
 
     fn reconcile_execution_disposition(
@@ -678,6 +700,7 @@ impl QemuHotForkWorldLifecycleFactory for BranchReplayLifecycleFactory {
     ) -> Result<QemuHotForkWorldLifecycleStart<Self::Lifecycle>, AttemptWorkerFailure<Self::Error>>
     {
         let crate::CrucibleResolvedAttemptStart::Branch {
+            parent,
             selection,
             selected,
             ..
@@ -696,7 +719,9 @@ impl QemuHotForkWorldLifecycleFactory for BranchReplayLifecycleFactory {
         Ok(QemuHotForkWorldLifecycleStart::Started(
             BranchReplayLifecycle {
                 runtime_basis: context.runtime_basis().expect("branch runtime basis"),
+                configuration: parent.clone(),
                 selected: selected.clone(),
+                completed_quanta: 0,
                 pending_guest_request,
                 observations: self.observations.clone(),
             },
@@ -956,11 +981,14 @@ impl QemuFreshAttemptDriver for BranchReplayDriver {
         _context: &AttemptExecutionContext,
         materialization: crate::QemuFreshStartMaterialization,
     ) -> Result<QemuFreshDriveOutcome<Self::Pending>, AttemptWorkerFailure<Self::Error>> {
-        let (events, bytes, _completed_quanta, _frontier, quiescence, verdict) =
+        let (events, bytes, completed_quanta, _frontier, quiescence, verdict) =
             materialization.into_parts();
         assert!(events.is_empty());
         assert_eq!(bytes, 0);
-        assert!(quiescence.is_none());
+        assert_eq!(
+            quiescence,
+            (completed_quanta == 0).then(SchedulerQuiescence::default)
+        );
         assert!(verdict.is_none());
         let crate::CrucibleResolvedAttemptStart::Branch { selected, .. } = input.start() else {
             panic!("branch replay driver requires a branch attempt")
