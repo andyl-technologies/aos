@@ -1,8 +1,7 @@
-From c4854018cfeaa13f0c939949a28c98c3d6d5dd34 Mon Sep 17 00:00:00 2001
+From a52c56e31bfbf61dba4ff646fa8744f0f4d9f58c Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Fri, 2 Oct 2026 14:34:23 -0700
-Subject: [PATCH] Implement deterministic simulation and checkpoint control
- ownership
+Date: Fri, 2 Oct 2026 17:31:13 -0700
+Subject: [PATCH] Implement deterministic simulation and exact stop ownership
 
 Retain versioned process control, deterministic virtual coordinates,
 private child resources, and canonical guest-state projection.
@@ -11,8 +10,10 @@ for native callback completion before admitting subsystem barriers.
 Connection lifetime, stopped-owner generation, exact picosecond time,
 and descriptor failures remain fail-closed.
 
-Mirror opted-in deduplicated control delivery witnesses to stderr and
-retain source-body regressions for control and checkpoint ownership.
+Mirror opted-in deduplicated control delivery witnesses to stderr.
+End the TCG chain after an admitted exact stop on the running current
+CPU while preserving asynchronous runstate transitions and ordinary
+RR wake behavior. Retain bounded production-body regressions.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -75132,7 +75133,7 @@ index 9e9941fe73e77a7b3bcc3ca1ab7ad4bec58f0151..66e2d8cd64d01e2304aa51675bfe4959
  
  static int net_slirp_init(NetClientState *peer, const char *model,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fbf905cd63e4cc109748b379f4209f6ad6547c2c..406868caade607e583105168a4959769344f0119 100644
+index fbf905cd63e4cc109748b379f4209f6ad6547c2c..47ef346a18de8d6b1683c4328e5a064e3797dcd7 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -11,12 +11,39 @@
@@ -76095,7 +76096,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..406868caade607e583105168a4959769
          return &has_control;
      }
      return NULL;
-@@ -123,9 +1052,1813 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
+@@ -123,9 +1052,1823 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
  void qemu_plugin_update_ns(const void *handle, int64_t new_time)
  {
      if (handle == &has_control) {
@@ -76872,6 +76873,16 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..406868caade607e583105168a4959769
 +    qemu_system_vmstop_request_prepare();
 +    qemu_system_vmstop_request(RUN_STATE_PAUSED);
 +    cpu_stop_current();
++    if (current_cpu && current_cpu->running) {
++        /*
++         * This admitted guest-coordinate stop must end the TCG chain. The
++         * generic RR kick defers host wakes until the quantum boundary and
++         * therefore does not set the decrementer exit flag. A last-I/O TB
++         * can still jump directly to another TB without testing exit_request.
++         * Request the stock TCG exit without unwinding the callback stack.
++         */
++        tcg_kick_vcpu_thread(current_cpu);
++    }
 +    return 0;
 +}
 +
@@ -154916,10 +154927,10 @@ index 0000000000000000000000000000000000000000..8d80e3052d7c9a6b187e2f7095f7ab8e
 +    main()
 diff --git a/tests/unit/test-crucible-control-deferred.py b/tests/unit/test-crucible-control-deferred.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..303dcb1ca7cc9c9529ecd8ecadd27e9fbac25660
+index 0000000000000000000000000000000000000000..5b2e165527cba0d5ca4fdefb6b987590f5177123
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-deferred.py
-@@ -0,0 +1,429 @@
+@@ -0,0 +1,428 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise control ownership across production TX stop and advance settlement.
 +
@@ -154962,7 +154973,6 @@ index 0000000000000000000000000000000000000000..303dcb1ca7cc9c9529ecd8ecadd27e9f
 +bool qemu_plugin_crucible_vmstop_cold_origin(void);
 +bool qemu_plugin_crucible_control_drain_settled(void);
 +int qemu_plugin_crucible_vmstop_flush_status(void);
-+static void tcg_kick_vcpu_thread(CPUState *target) { qemu_cpu_kick(target); }
 +static bool rr_crucible_sim_complete_wake_boundary(void) { return false; }
 +static void qemu_cond_wait_bql(void *condition) { g_assert_not_reached(); }
 +static void rr_crucible_sim_prepark(bool advance, bool control)
@@ -166833,10 +166843,10 @@ index 0000000000000000000000000000000000000000..826f34e7c26bdac48f2dab1190635991
 +}
 diff --git a/tests/unit/test-crucible-net-output-stop.py b/tests/unit/test-crucible-net-output-stop.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..047d3b9da4ef25aceb518b290285d1c8a5f9d0b9
+index 0000000000000000000000000000000000000000..1181665cdeb21727e1d01024f3a523efdd4ccaee
 --- /dev/null
 +++ b/tests/unit/test-crucible-net-output-stop.py
-@@ -0,0 +1,663 @@
+@@ -0,0 +1,665 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise production TX, VM-stop, clock completion, and RR parking bodies.
 +
@@ -167031,6 +167041,8 @@ index 0000000000000000000000000000000000000000..047d3b9da4ef25aceb518b290285d1c8
 +static bool qemu_in_vcpu_thread(void) { return current_cpu != NULL; }
 +static void cpu_exit(CPUState *target) { target->exit_request = true; }
 +static void qemu_cpu_kick(CPUState *target) { kicks++; }
++/* This legacy scheduling fixture does not execute a translated TB gate. */
++static void tcg_kick_vcpu_thread(CPUState *target) { qemu_cpu_kick(target); }
 +static void qemu_system_vmstop_request_prepare(void) { }
 +static void qemu_system_vmstop_request(RunState state) { requests++; }
 +static bool qemu_crucible_cold_stop_transaction_active(void) { return false; }
@@ -167496,6 +167508,478 @@ index 0000000000000000000000000000000000000000..047d3b9da4ef25aceb518b290285d1c8
 +        json.dumps({"cwd": os.getcwd(), "argv": command}, indent=2) + "\n")
 +    subprocess.run(command, check=True)
 +    subprocess.run([str(binary)], cwd=arguments.output_dir, check=True)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tests/unit/test-crucible-net-stop-chain.py b/tests/unit/test-crucible-net-stop-chain.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..1c47524b7ea7fb9b24f1a6d4191102457cbeb7a6
+--- /dev/null
++++ b/tests/unit/test-crucible-net-stop-chain.py
+@@ -0,0 +1,466 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise native stop admission through the actual next-TB decrementer gate.
++
++Production TX, stop, CPU-exit, RR-kick and TCG gate-generation bodies execute
++here. A small interpreter executes the emitted gate operations. Guest retirement
++after a successful gate and the patched same-page TB link are modeled; this is
++not a translated guest, NIC descriptor batch, or physical failure reproduction.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import runpy
++import shlex
++import subprocess
++
++
++ROOT = Path(__file__).resolve().parents[2]
++definition = runpy.run_path(str(Path(__file__).with_name(
++    "test-crucible-net-output-stop.py")))["definition"]
++
++PRELUDE = r"""
++#include <assert.h>
++#include <errno.h>
++#include <limits.h>
++#include <inttypes.h>
++#include <stdbool.h>
++#include <stddef.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++#include <glib.h>
++#include "qemu/typedefs.h"
++#define qemu_build_assert(condition) _Static_assert(condition, #condition)
++#include "qemu/atomic.h"
++
++#define CONFIG_PLUGIN
++#define ICOUNT_PRECISE 1
++#define CF_USE_ICOUNT 0x00002000
++#define CF_NOIRQ 0x00010000
++#define CF_NO_GOTO_TB 0x00000200
++#define CF_MEMI_ONLY 0x00001000
++#define DISAS_NEXT 0
++#define DISAS_TOO_MANY 1
++#define TB_EXIT_REQUESTED 3
++#define TCG_COND_LT 0
++#define CPU_FOREACH(value) for ((value) = first_cpu; (value); (value) = (value)->next)
++
++typedef struct CPUState {
++    struct CPUState *next;
++    bool running, stop, exit_request;
++    void *halt_cond;
++    struct {
++        union {
++            uint32_t u32;
++            struct { uint16_t low; int16_t high; } u16;
++        } icount_decr;
++        bool can_do_io;
++    } neg;
++    int64_t icount_budget, icount_extra;
++} CPUState;
++
++enum { RUN_STATE_PAUSED };
++enum {
++    QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE,
++    QEMU_PLUGIN_CRUCIBLE_VMSTOP_ADMITTED,
++    QEMU_PLUGIN_CRUCIBLE_VMSTOP_STOPPED,
++    QEMU_PLUGIN_CRUCIBLE_VMSTOP_RESUME_PENDING,
++};
++enum {
++    RR_TCG_EXEC_STARTING, RR_TCG_EXEC_STARTING_WAKE_ARMING,
++    RR_TCG_EXEC_IDLE, RR_TCG_EXEC_ACTIVE, RR_TCG_EXEC_IDLE_WAKE_ARMING,
++    RR_TCG_EXEC_IDLE_WAKE_PENDING, RR_TCG_EXEC_ACTIVE_WAKE_PENDING,
++    RR_TCG_EXEC_ACTIVE_WAKE_ARMING,
++};
++
++static CPUState cpu, *first_cpu = &cpu, *current_cpu;
++static uint64_t quantum = 1000, rr_wake_publish_generation;
++static unsigned int rr_tcg_exec_state;
++static unsigned int qemu_plugin_crucible_exact_boundary_depth;
++static unsigned int qemu_plugin_crucible_control_boundary_depth;
++static int qemu_plugin_crucible_vmstop_state;
++static int qemu_plugin_crucible_vmstop_flush_result;
++static uint64_t qemu_plugin_crucible_vmstop_generation_value;
++static unsigned stop_requests, event_notifications, halt_broadcasts;
++static bool locked = true, single_rr = true;
++static int count_mode = ICOUNT_PRECISE;
++static struct { int64_t qemu_icount; } timers_state;
++typedef int (*qemu_plugin_net_tx_cb_t)(const uint8_t *, size_t, uint64_t, void *);
++static qemu_plugin_net_tx_cb_t crucible_net_tx_cb;
++static void *crucible_net_tx_userdata;
++
++static bool bql_locked(void) { return locked; }
++static int icount_enabled(void) { return count_mode; }
++static int qemu_plugin_crucible_single_threaded_rr(void) { return single_rr; }
++static bool rr_crucible_sim_mode(void) { return single_rr; }
++static uint64_t icount_crucible_rr_switch_quantum(void) { return quantum; }
++static void icount_crucible_rr_account(CPUState *target, int64_t n) { }
++static void icount_crucible_rr_pause_handoff(CPUState *target) { }
++static void cpu_relax(void) { }
++static void qemu_cond_broadcast(void *condition) { halt_broadcasts++; }
++static void qemu_plugin_crucible_kick_idle_wait(CPUState *target) { }
++static void cpus_kick_thread(CPUState *target) { g_assert_not_reached(); }
++static void rr_crucible_sim_notify_dispatch_ceiling(void) { event_notifications++; }
++static void qemu_system_vmstop_request_prepare(void) { }
++static void qemu_system_vmstop_request(int state)
++{ g_assert_cmpint(state, ==, RUN_STATE_PAUSED); stop_requests++; }
++static int vm_stop(int state) { g_assert_not_reached(); }
++static void error_report(const char *message) { g_error("%s", message); }
++
++void rr_kick_vcpu_thread(CPUState *target);
++void tcg_kick_vcpu_thread(CPUState *target);
++void qemu_cpu_kick(CPUState *target);
++void cpu_exit(CPUState *target);
++void cpu_stop_current(void);
++static struct { void (*kick_vcpu_thread)(CPUState *); } accel_ops;
++static typeof(accel_ops) *cpus_accel = &accel_ops;
++static int64_t icount_get_raw_locked(void);
++static int64_t icount_get_raw(void) { return icount_get_raw_locked(); }
++static void icount_update_locked(CPUState *target);
++/* The fixture has one thread; the production update body owns accounting. */
++static void icount_update(CPUState *target) { icount_update_locked(target); }
++static void replay_account_executed_instructions(void) { }
++static void replay_mutex_unlock(void) { }
++static uint64_t published_raw;
++static unsigned publications;
++static void crucible_sim_shmem_publish_current_icount(uint64_t raw)
++{ published_raw = raw; publications++; }
++static bool crucible_sim_preemption_apply_due(CPUState **target) { return false; }
++static void rr_crucible_sim_wait_at_dispatch_ceiling(void) { g_assert_not_reached(); }
++
++/* A bounded IR provider records only operations emitted by gen_tb_start/end. */
++typedef struct TCGReg *TCGv_i32;
++typedef uintptr_t vaddr;
++typedef struct { int kind; int32_t value; } TCGOp;
++struct TranslationBlock { uint32_t cflags; uintptr_t pc; };
++struct DisasContextBase {
++    TranslationBlock *tb;
++    int is_jmp;
++    bool crucible_fault_boundary_exit;
++};
++static TCGOp operations[16];
++static size_t operation_count;
++static struct { void *exitreq_label; } tcg_context, *tcg_ctx = &tcg_context;
++static void *tcg_env;
++static TCGOp *append_op(int kind, int32_t value)
++{
++    g_assert_cmpuint(operation_count, <, G_N_ELEMENTS(operations));
++    operations[operation_count] = (TCGOp){kind, value};
++    return &operations[operation_count++];
++}
++static TCGv_i32 tcg_temp_new_i32(void) { return (TCGv_i32)(intptr_t)1; }
++static TCGv_i32 tcg_constant_i32(int32_t value) { return (TCGv_i32)(intptr_t)value; }
++static int tcgv_i32_arg(TCGv_i32 value) { return (intptr_t)value; }
++static void tcg_gen_ld_i32(TCGv_i32 reg, void *env, ptrdiff_t offset)
++{
++    g_assert_cmpint(offset, ==,
++                    offsetof(CPUState, neg.icount_decr.u32) - sizeof(CPUState));
++    append_op(1, 0);
++}
++static void tcg_gen_sub_i32(TCGv_i32 dest, TCGv_i32 source, TCGv_i32 value)
++{ append_op(2, (intptr_t)value); }
++static TCGOp *tcg_last_op(void) { return &operations[operation_count - 1]; }
++static void *gen_new_label(void) { return &operation_count; }
++static void tcg_gen_brcondi_i32(int condition, TCGv_i32 reg, int value, void *label)
++{
++    g_assert_cmpint(condition, ==, TCG_COND_LT);
++    g_assert_cmpint(value, ==, 0);
++    append_op(3, 0);
++}
++static void tcg_gen_st16_i32(TCGv_i32 reg, void *env, ptrdiff_t offset)
++{
++    g_assert_cmpint(offset, ==,
++                    offsetof(CPUState, neg.icount_decr.u16.low) - sizeof(CPUState));
++    append_op(4, 0);
++}
++static void tcg_set_insn_param(TCGOp *op, int index, int value)
++{ g_assert_cmpint(index, ==, 2); op->value = value; }
++static void gen_set_label(void *label) { append_op(5, 0); }
++static void tcg_gen_exit_tb(const TranslationBlock *tb, int index)
++{ g_assert_cmpint(index, ==, TB_EXIT_REQUESTED); append_op(6, 0); }
++static uint32_t tb_cflags(TranslationBlock *tb) { return tb->cflags; }
++static bool translator_is_same_page(DisasContextBase *db, uintptr_t dest)
++{ return (db->tb->pc >> 12) == (dest >> 12); }
++"""
++
++CHECKS = r"""
++static uint64_t output_raw;
++static int admission_status;
++
++static int output_callback(const uint8_t *data, size_t len, uint64_t raw, void *opaque)
++{
++    g_assert_cmpmem(data, len, "abc", 3);
++    output_raw = raw;
++    admission_status = qemu_plugin_request_vmstop();
++    return 0;
++}
++
++static void reset_case(void)
++{
++    cpu = (CPUState){.running = true, .icount_budget = 1000};
++    cpu.neg.icount_decr.u16.low = 983;
++    cpu.neg.can_do_io = true;
++    current_cpu = &cpu;
++    quantum = 1000;
++    locked = single_rr = true;
++    count_mode = ICOUNT_PRECISE;
++    timers_state.qemu_icount = 0;
++    rr_tcg_exec_state = RR_TCG_EXEC_ACTIVE;
++    rr_wake_publish_generation = 0;
++    qemu_plugin_crucible_exact_boundary_depth = 0;
++    qemu_plugin_crucible_control_boundary_depth = 0;
++    qemu_plugin_crucible_vmstop_state = QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE;
++    qemu_plugin_crucible_vmstop_generation_value = 0;
++    stop_requests = event_notifications = halt_broadcasts = 0;
++    published_raw = publications = 0;
++    crucible_net_tx_cb = output_callback;
++    accel_ops.kick_vcpu_thread = rr_kick_vcpu_thread;
++}
++
++static bool enter_chained_tb(unsigned insns)
++{
++    TranslationBlock tb = {.cflags = CF_USE_ICOUNT, .pc = 0x1000};
++    DisasContextBase db = {.tb = &tb};
++    int32_t count = 0;
++
++    operation_count = 0;
++    TCGOp *start = gen_tb_start(&db, tb.cflags);
++    gen_tb_end(&tb, tb.cflags, start, insns);
++
++    for (size_t index = 0; index < operation_count; index++) {
++        TCGOp op = operations[index];
++        switch (op.kind) {
++        case 1: count = (int32_t)cpu.neg.icount_decr.u32; break;
++        case 2: count -= op.value; break;
++        case 3: if (count < 0) { return false; } break;
++        case 4: cpu.neg.icount_decr.u16.low = (uint16_t)count; return true;
++        default: g_assert_not_reached();
++        }
++    }
++    g_assert_not_reached();
++}
++
++static void check_admitted_tx(bool expect_unfenced)
++{
++    reset_case();
++    /* Actual recompiled final-I/O flags permit chaining; the next TB is ordinary. */
++    TranslationBlock io = {
++        .cflags = CF_USE_ICOUNT | CF_MEMI_ONLY | CF_NOIRQ | 1,
++        .pc = 0x1000,
++    };
++    DisasContextBase db = {.tb = &io, .is_jmp = DISAS_NEXT};
++    g_assert_true(translator_io_start(&db));
++    g_assert_cmpint(db.is_jmp, ==, DISAS_TOO_MANY);
++    g_assert_true(translator_use_goto_tb(&db, 0x1004));
++
++    g_assert_cmpint(crucible_net_tx_submit((const uint8_t *)"abc", 3), ==, 3);
++    g_assert_cmpint(admission_status, ==, 0);
++    g_assert_cmpuint(output_raw, ==, 17);
++    g_assert_true(cpu.stop && cpu.exit_request);
++    g_assert_cmpuint(stop_requests, ==, 1);
++    g_assert_cmpuint(qemu_plugin_crucible_vmstop_generation_value, ==, 1);
++
++    bool entered = enter_chained_tb(74);
++    if (entered) {
++        /* Modeled retirement of the permitted next TB, not an executed guest. */
++        icount_update_locked(&cpu);
++    }
++    g_assert_cmpuint(output_raw, ==, 17);
++    /* Modeled TCG return; actual production accounting and publication follow. */
++    cpu.running = false;
++    icount_process_data_locked(&cpu, true);
++    CPUState *selected = &cpu;
++    g_assert_true(rr_crucible_sim_complete_dispatch_boundary(
++        &selected, timers_state.qemu_icount));
++    g_assert_cmpuint(publications, ==, 1);
++    g_assert_cmpuint(published_raw, ==, expect_unfenced ? 91 : output_raw);
++    g_assert_cmpint(entered, ==, expect_unfenced);
++    g_assert_cmpuint(timers_state.qemu_icount, ==, expect_unfenced ? 91 : 17);
++    g_assert_cmpuint(output_raw, ==, 17);
++    printf("admitted-stop status=%d raw=%" PRIu64 " after=%" PRIi64
++           " next_tb_entered=%d high=%d\n", admission_status, output_raw,
++           timers_state.qemu_icount, entered, cpu.neg.icount_decr.u16.high);
++}
++
++static void check_stock_kick(void)
++{
++    reset_case();
++    tcg_kick_vcpu_thread(&cpu);
++    g_assert_false(enter_chained_tb(74));
++    puts("stock-TCG-kick refuses next-TB gate");
++}
++
++static void check_generic_wake(void)
++{
++    reset_case();
++    qemu_cpu_kick(&cpu);
++    g_assert_false(cpu.exit_request);
++    g_assert_cmpint(cpu.neg.icount_decr.u16.high, ==, 0);
++    g_assert_cmpuint(rr_wake_publish_generation, ==, 1);
++    g_assert_true(enter_chained_tb(74));
++    cpu_exit(&cpu);
++    g_assert_true(cpu.exit_request);
++    g_assert_cmpint(cpu.neg.icount_decr.u16.high, ==, 0);
++    g_assert_true(enter_chained_tb(74));
++    puts("ordinary-RR-wake remains deferred");
++}
++
++static void check_refused_admission(void)
++{
++    reset_case();
++    g_assert_cmpint(qemu_plugin_request_vmstop(), ==, -EPERM);
++    g_assert_cmpuint(stop_requests, ==, 0);
++    g_assert_false(cpu.stop || cpu.exit_request);
++    g_assert_cmpint(cpu.neg.icount_decr.u16.high, ==, 0);
++    puts("unscoped admission preserves original refusal");
++}
++
++static void check_duplicate_admission(void)
++{
++    reset_case();
++    qemu_plugin_crucible_exact_boundary_enter();
++    qemu_plugin_crucible_vmstop_state = QEMU_PLUGIN_CRUCIBLE_VMSTOP_ADMITTED;
++    qemu_plugin_crucible_vmstop_generation_value = 7;
++
++    g_assert_cmpint(qemu_plugin_request_vmstop(), ==, -EALREADY);
++    g_assert_cmpuint(qemu_plugin_crucible_vmstop_generation_value, ==, 7);
++    g_assert_cmpuint(stop_requests, ==, 0);
++    g_assert_false(cpu.stop || cpu.exit_request);
++    g_assert_cmpint(cpu.neg.icount_decr.u16.high, ==, 0);
++    qemu_plugin_crucible_exact_boundary_leave();
++    puts("duplicate stop preserves refusal and original generation");
++}
++
++static void check_idle_context(bool main_loop)
++{
++    reset_case();
++    cpu.running = false;
++    if (main_loop) {
++        current_cpu = NULL;
++    }
++    qemu_plugin_crucible_vmstop_generation_value = 7;
++
++    g_assert_cmpint(crucible_net_tx_submit((const uint8_t *)"abc", 3), ==, 3);
++    g_assert_cmpint(admission_status, ==, 0);
++    g_assert_cmpuint(qemu_plugin_crucible_vmstop_generation_value, ==, 8);
++    g_assert_cmpuint(stop_requests, ==, 1);
++    g_assert_cmpint(cpu.neg.icount_decr.u16.high, ==, 0);
++    g_assert_cmpint(cpu.stop, ==, !main_loop);
++    g_assert_cmpuint(timers_state.qemu_icount, ==, 0);
++    printf("%s context preserves asynchronous stop without decrementer kick\n",
++           main_loop ? "main-loop" : "nonrunning-vCPU");
++}
++
++int main(int argc, char **argv)
++{
++    bool expect_unfenced = argc == 2 && strcmp(argv[1], "unfenced") == 0;
++    check_stock_kick();
++    check_generic_wake();
++    check_refused_admission();
++    check_duplicate_admission();
++    check_idle_context(true);
++    check_idle_context(false);
++    check_admitted_tx(expect_unfenced);
++    return 0;
++}
++"""
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--output-dir", required=True, type=Path)
++    parser.add_argument("--expect-unfenced", action="store_true")
++    parser.add_argument("--negative-control", choices=["remove-native-kick"])
++    arguments = parser.parse_args()
++    arguments.output_dir.mkdir(parents=True, exist_ok=True)
++
++    selections = {
++        "accel/tcg/icount-common.c": [
++            "static int64_t icount_get_executed(CPUState *cpu)",
++            "static void icount_update_locked(CPUState *cpu)",
++            "static int64_t icount_get_raw_locked(void)",
++        ],
++        "accel/tcg/tcg-accel-ops-rr.h": [
++            "static inline bool rr_crucible_sim_wake_state_is_arming(",
++            "static inline bool rr_crucible_sim_wake_try_claim(",
++            "static inline void rr_crucible_sim_wake_publish(",
++        ],
++        "accel/tcg/cpu-exec.c": ["void tcg_kick_vcpu_thread(CPUState *cpu)"],
++        "accel/tcg/tcg-accel-ops-icount.c": [
++            "static void icount_process_data_locked(CPUState *cpu,",
++        ],
++        "accel/tcg/tcg-accel-ops-rr.c": [
++            "void rr_kick_vcpu_thread(CPUState *unused)",
++        ],
++        "system/cpus.c": [
++            "void qemu_cpu_kick(CPUState *cpu)",
++            "void cpu_stop_current(void)",
++        ],
++        "hw/core/cpu-common.c": ["void cpu_exit(CPUState *cpu)"],
++        "plugins/api-system.c": [
++            "static int qemu_plugin_crucible_vmstop_begin(void)",
++            "int qemu_plugin_crucible_vmstop_admit_internal(void)",
++            "static int qemu_plugin_crucible_vmstop_at_control_boundary(void)",
++            "int qemu_plugin_request_vmstop(void)",
++            "void qemu_plugin_crucible_exact_boundary_enter(void)",
++            "void qemu_plugin_crucible_exact_boundary_leave(void)",
++            "bool qemu_plugin_crucible_vmstop_pending(void)",
++        ],
++        "net/net.c": ["static ssize_t crucible_net_tx_submit(const uint8_t *data, size_t len)"],
++        "accel/tcg/translator.c": [
++            "bool translator_io_start(DisasContextBase *db)",
++            "static TCGOp *gen_tb_start(DisasContextBase *db, uint32_t cflags)",
++            "static void gen_tb_end(const TranslationBlock *tb, uint32_t cflags,",
++            "bool translator_use_goto_tb(DisasContextBase *db, vaddr dest)",
++        ],
++    }
++    sources = {name: (ROOT / name).read_text() for name in selections}
++    production = "\n\n".join(definition(sources[name], signature)
++                              for name, signatures in selections.items()
++                              for signature in signatures)
++    production += "\n\n" + definition(
++        sources["accel/tcg/tcg-accel-ops-rr.c"],
++        "static bool rr_crucible_sim_complete_dispatch_boundary(")
++    if arguments.negative_control == "remove-native-kick":
++        original = definition(sources["plugins/api-system.c"],
++                              "int qemu_plugin_crucible_vmstop_admit_internal(void)")
++        assert original.count("        tcg_kick_vcpu_thread(current_cpu);") == 1
++        mutated = original.replace("        tcg_kick_vcpu_thread(current_cpu);", "")
++        production = production.replace(original, mutated)
++    x86 = (ROOT / "target/i386/tcg/translate.c").read_text()
++    stop = definition(x86, "static void i386_tr_tb_stop(")
++    jump = definition(x86, "static void gen_jmp_rel(DisasContext *s, MemOp ot, int diff, int tb_num)\n{")
++    assert "case DISAS_TOO_MANY:" in stop and "gen_jmp_rel_csize(dc, 0, 0);" in stop
++    assert "translator_use_goto_tb(&s->base, new_pc)" in jump
++    assert "tcg_gen_goto_tb(tb_num);" in jump
++
++    flags = (ROOT / "include/exec/translation-block.h").read_text()
++    for name, value in [("CF_USE_ICOUNT", "0x00002000"),
++                        ("CF_NOIRQ", "0x00010000"),
++                        ("CF_NO_GOTO_TB", "0x00000200"),
++                        ("CF_MEMI_ONLY", "0x00001000")]:
++        assert f"#define {name}" in flags
++        assert value in flags.split(f"#define {name}", 1)[1].splitlines()[0]
++    recompile = definition((ROOT / "accel/tcg/translate-all.c").read_text(),
++                           "void cpu_io_recompile(CPUState *cpu, uintptr_t retaddr)")
++    assert "curr_cflags(cpu) | CF_MEMI_ONLY | CF_NOIRQ | n" in recompile
++    assert "dc->jmp_opt = !((cflags & CF_NO_GOTO_TB) ||" in x86
++
++    generated = arguments.output_dir / "net-stop-chain.c"
++    generated.write_text(PRELUDE + production + CHECKS)
++    binary = arguments.output_dir / "net-stop-chain"
++    command = [os.environ.get("CC", "cc"), *shlex.split(os.environ.get("CFLAGS", "")),
++               "-Wno-missing-prototypes", "-Wno-unused-function", "-Wno-unused-variable",
++               str(generated), "-o", str(binary),
++               *shlex.split(os.environ.get("LDFLAGS", ""))]
++    (arguments.output_dir / "compile-command.json").write_text(
++        json.dumps({"cwd": os.getcwd(), "argv": command}, indent=2) + "\n")
++    subprocess.run(command, check=True)
++    subprocess.run([str(binary), *(["unfenced"] if arguments.expect_unfenced else [])],
++                   cwd=arguments.output_dir, check=True)
 +
 +
 +if __name__ == "__main__":
