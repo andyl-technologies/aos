@@ -280,6 +280,138 @@ fn provider_version_and_guard_incarnation_remain_distinct_exact_identities() {
         .is_err());
 }
 
+// Structural test material exercises the same publication/cohort constructors
+// as the runtime. It is not independently accepted provider evidence.
+fn snapshot_profile(
+    snapshot: &StorageBindingSnapshot,
+    original: &ExternalOciOriginal,
+) -> qualification::ExternalOciProfile {
+    use crate::storage_authority::{
+        canonical_digest,
+        control::StorageAuthorityPublication,
+        lease::{control::IssuerInstallation, LeaseCohort, LeaseEffect, LeasePurpose},
+        ApproveStorageAuthorityAlias, AssociateStorageAuthorityBinding,
+        AttestStorageAuthorityExclusivity, CreatePhysicalStorageAuthority,
+        SetStorageAuthorityAdmission, StorageAuthorityAdmissionState, StorageAuthorityAliasSpec,
+        StorageAuthorityCredentialMember, StorageAuthorityHost,
+    };
+
+    let executor = "oci-test-executor";
+    let authority = CreatePhysicalStorageAuthority {
+        authority_id: original.scope.physical_authority_id.clone(),
+        guard_namespace_id: original.scope.guard_namespace_id.clone(),
+        physical_resource_evidence_digest: "1".repeat(64),
+        qualification_digest: "2".repeat(64),
+        qualified_managed_prefix: snapshot.object_prefix.clone(),
+    };
+    let alias = ApproveStorageAuthorityAlias {
+        alias_id: "oci-test-alias".into(),
+        authority_id: authority.authority_id.clone(),
+        spec: StorageAuthorityAliasSpec {
+            host: StorageAuthorityHost::Dns("oci-test.example".into()),
+            port: 443,
+            bucket: snapshot.object_bucket.clone(),
+        },
+        equivalence_evidence_digest: "3".repeat(64),
+    };
+    let association = AssociateStorageAuthorityBinding {
+        association_id: "oci-test-association".into(),
+        authority_id: authority.authority_id.clone(),
+        alias_id: alias.alias_id.clone(),
+        binding_id: snapshot.binding_id,
+        binding_stable_id: snapshot.binding_stable_id.clone(),
+        binding_resource_version: snapshot.binding_resource_version,
+        binding_write_revision: original.writer.binding_write_revision.get(),
+        binding_prefix: snapshot.object_prefix.clone(),
+    };
+    let attestation = AttestStorageAuthorityExclusivity {
+        attestation_id: "oci-test-attestation".into(),
+        authority_id: authority.authority_id.clone(),
+        managed_prefix: snapshot.object_prefix.clone(),
+        qualification_digest: authority.qualification_digest.clone(),
+        provider_policy_evidence_digest: "4".repeat(64),
+        executor_identity: executor.into(),
+        credentials: snapshot
+            .credentials
+            .iter()
+            .map(|reference| StorageAuthorityCredentialMember {
+                association_id: association.association_id.clone(),
+                purpose: reference.purpose.clone(),
+                generation: reference.generation,
+                secret_version_ref: reference.secret_version_ref.clone(),
+                credential_fingerprint: reference.fingerprint.clone(),
+            })
+            .collect(),
+        valid_until: 1000,
+    };
+    let admission = SetStorageAuthorityAdmission {
+        authority_id: authority.authority_id.clone(),
+        expected_generation: 0,
+        expected_digest: None,
+        guard_namespace_id: authority.guard_namespace_id.clone(),
+        state: StorageAuthorityAdmissionState::Admitted,
+        attestation_id: Some(attestation.attestation_id.clone()),
+        association_ids: vec![association.association_id.clone()],
+    };
+    let publication = StorageAuthorityPublication {
+        authority: authority.clone(),
+        aliases: vec![alias],
+        associations: vec![association.clone()],
+        attestation: Some(attestation),
+        digest: canonical_digest(&admission).unwrap(),
+        admission,
+        generation: 1,
+    };
+    let admitted_prefix =
+        crate::keymap::r2_key(&snapshot.object_prefix, &original.writer.placement_prefix);
+    let cohort = |purpose, effects| {
+        LeaseCohort::from_publication(
+            &publication,
+            executor,
+            &association.association_id,
+            purpose,
+            &admitted_prefix,
+            effects,
+        )
+        .unwrap()
+    };
+    let profile = qualification::ExternalOciProfile {
+        issuer_installation: IssuerInstallation {
+            format_version: 1,
+            authority,
+            issuer_resource_id: "oci-test-issuer-resource".into(),
+            runtime_identity: "oci-test-issuer-runtime".into(),
+            executor_identity: executor.into(),
+        },
+        read_cohort: cohort(
+            LeasePurpose::Read,
+            vec![LeaseEffect::Head, LeaseEffect::Read],
+        ),
+        write_cohort: cohort(
+            LeasePurpose::Write,
+            vec![
+                LeaseEffect::Put,
+                LeaseEffect::MultipartCreate,
+                LeaseEffect::MultipartPart,
+                LeaseEffect::MultipartComplete,
+                LeaseEffect::MultipartAbort,
+            ],
+        ),
+        binding_spec_revision: snapshot.binding_spec_revision().unwrap(),
+        private_policy: crate::direct_upload::DirectPrivateStagePolicyRef {
+            policy_id: "oci-test-private-policy".into(),
+            policy_digest: "5".repeat(64),
+            namespace: original.scope.guard_namespace_id.clone(),
+        },
+        maximum_blob_bytes: original.upload.maximum_size,
+        maximum_chunk_bytes: MAX_EXTERNAL_OCI_CHUNK_BYTES,
+        part_bytes: EXTERNAL_OCI_PART_BYTES,
+        versionless_conditional_reads: false,
+    };
+    profile.validate().unwrap();
+    profile
+}
+
 #[test]
 fn current_protected_snapshot_cannot_change_binding_lifetime_or_prefix() {
     let mut expected = original();
@@ -298,17 +430,28 @@ fn current_protected_snapshot_cannot_change_binding_lifetime_or_prefix() {
         endpoint_port: Some(443),
         signing_region: "test-region".into(),
         access_mode: "private".into(),
-        credentials: vec![crate::storage_work::StorageCredentialReference {
-            purpose: "read".into(),
-            generation: 1,
-            secret_version_ref: "secret://oci-test/read/v1".into(),
-            fingerprint: "e".repeat(64),
-        }],
+        credentials: vec![
+            crate::storage_work::StorageCredentialReference {
+                purpose: "read".into(),
+                generation: 1,
+                secret_version_ref: "secret://oci-test/read/v1".into(),
+                fingerprint: "e".repeat(64),
+            },
+            crate::storage_work::StorageCredentialReference {
+                purpose: "write".into(),
+                generation: 1,
+                secret_version_ref: "secret://oci-test/write/v1".into(),
+                fingerprint: "f".repeat(64),
+            },
+        ],
         issued_at: 100,
         expires_at: 200,
     };
     snapshot.validate("oci-test-deployment", 110).unwrap();
     expected.binding_spec_revision = snapshot.binding_spec_revision().unwrap();
+    let profile = snapshot_profile(&snapshot, &expected);
+    expected.profile_digest = profile.digest().unwrap();
+    profile.validate_snapshot(&snapshot, 110).unwrap();
     let request = ExternalOciRequest::new(
         expected,
         snapshot.revision().unwrap(),
@@ -330,16 +473,54 @@ fn current_protected_snapshot_cannot_change_binding_lifetime_or_prefix() {
     ).unwrap();
     refreshed.validate_snapshot(&snapshot, 110).unwrap();
     assert_eq!(refreshed.original.fingerprint().unwrap(), original_digest);
+    profile.validate_snapshot(&snapshot, 110).unwrap();
+
+    // A phase pins the full current snapshot, while the retained profile pins
+    // exact reviewed credentials. Refreshing the phase cannot refresh that profile.
     snapshot.credentials[0].generation += 1;
+    assert!(refreshed.validate_snapshot(&snapshot, 110).is_err());
     let changed = ExternalOciRequest::new(
-        request.original.clone(), snapshot.revision().unwrap(),
-        original().actor, 110, 130, "f".repeat(64), OciControl::Stage,
-    ).unwrap();
-    assert!(changed.validate_snapshot(&snapshot, 110).is_err());
-    snapshot.binding_stable_id = "recreated-binding".into();
-    assert!(request.validate_snapshot(&snapshot, 110).is_err());
-    snapshot.object_prefix = "another".into();
-    assert!(request.validate_snapshot(&snapshot, 110).is_err());
+        request.original.clone(),
+        snapshot.revision().unwrap(),
+        original().actor,
+        110,
+        130,
+        "f".repeat(64),
+        OciControl::Stage,
+    )
+    .unwrap();
+    changed.validate_snapshot(&snapshot, 110).unwrap();
+    assert_eq!(changed.original.fingerprint().unwrap(), original_digest);
+    assert_eq!(
+        snapshot.binding_spec_revision().unwrap(),
+        changed.original.binding_spec_revision
+    );
+    assert!(profile.validate_snapshot(&snapshot, 110).is_err());
+
+    // Match each new phase revision so physical-identity refusals cannot be
+    // accidentally supplied by the earlier time or credential revision change.
+    let current = snapshot.clone();
+    for change in ["stable_id", "resource_version", "prefix"] {
+        let mut altered = current.clone();
+        match change {
+            "stable_id" => altered.binding_stable_id = "recreated-binding".into(),
+            "resource_version" => altered.binding_resource_version += 1,
+            "prefix" => altered.object_prefix = "another".into(),
+            _ => unreachable!(),
+        }
+        altered.validate(&request.original.deployment_id, 110).unwrap();
+        let phase = ExternalOciRequest::new(
+            request.original.clone(),
+            altered.revision().unwrap(),
+            original().actor,
+            110,
+            130,
+            "f".repeat(64),
+            OciControl::Stage,
+        )
+        .unwrap();
+        assert!(phase.validate_snapshot(&altered, 110).is_err(), "{change}");
+    }
 }
 
 #[test]
