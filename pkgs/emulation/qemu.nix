@@ -1679,6 +1679,7 @@ in
                   "net-output-stop", "lifecycle-projection", "control-deferred",
                   "control-observer", "control-delivery",
                   "stopped-control-rearm", "template-control-drain", "net-stop-chain",
+                  "aio-fork-custody", "stop-context",
               ):
                   with (source_root / f"{name}.result").open("w") as result:
                       subprocess.run([
@@ -1690,7 +1691,8 @@ in
               PYTHON
               cat net-output-stop.result lifecycle-projection.result \
                 control-deferred.result control-observer.result control-delivery.result \
-                stopped-control-rearm.result template-control-drain.result net-stop-chain.result
+                stopped-control-rearm.result template-control-drain.result net-stop-chain.result \
+                aio-fork-custody.result stop-context.result
               grep -Fxq 'PASS production TX/stop/clock/RR: batches, race, completion settlement, paused ack, explicit retry' \
                 net-output-stop.result
               grep -Fxq 'PASS lifecycle production encode/rebind: full save retained, canonical custody independence, guest frontier sensitivity, invalid rebind refusal' \
@@ -1707,6 +1709,14 @@ in
                 template-control-drain.result
               grep -Fxq 'admitted-stop status=0 raw=17 after=17 next_tb_entered=0 high=-1' \
                 net-stop-chain.result
+              test "$(grep -c '^PASS .*; parent endpoint/backend intact$' \
+                aio-fork-custody.result)" -eq 20
+              grep -Fxq 'PASS private active epoll delivers; parent endpoint/backend intact' \
+                aio-fork-custody.result
+              grep -Fxq 'PASS private standby/future upgrade delivers; parent endpoint/backend intact' \
+                aio-fork-custody.result
+              grep -Fxq 'PASS native stop context: default off; original admitted/rejected SDK; owned CPU; real reader/EOF; rearm reasons; late/fork/bounds; advisory EBADF' \
+                stop-context.result
               build/tests/unit/test-vmstate --tap \
                 -p /vmstate/subsection/prefix-boundary
               QTEST_QEMU_BINARY="$PWD/build/qemu-system-x86_64" \
@@ -4206,7 +4216,7 @@ in
                 "$out/share/aos/crucible/procfd-flags.compile-command.json"
               for name in net-output-stop lifecycle-projection control-deferred \
                 control-observer control-delivery stopped-control-rearm \
-                template-control-drain net-stop-chain; do
+                template-control-drain net-stop-chain aio-fork-custody stop-context; do
                 install -m 644 "$name.result" \
                   "$out/share/aos/crucible/$name.result"
                 install -m 644 "$name-proof/compile-command.json" \
