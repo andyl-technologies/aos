@@ -5,12 +5,16 @@
   ...
 }: let
   effects = config.aos.abilities.configuration.operations.file.effects;
-  eligible = lib.filterAttrs (_: effect:
+  declarations = lib.filterAttrs (_: effect:
     effect.enable
     && builtins.isString effect.input.path
-    && lib.hasPrefix "/etc/" effect.input.path
-    && builtins.isString effect.input.content)
+    && lib.hasPrefix "/etc/" effect.input.path)
   effects;
+  eligible = lib.filterAttrs (_: effect: builtins.isString effect.input.content) declarations;
+  fileEffect = effect: {
+    id = builtins.hashString "sha256" (builtins.toJSON effect.contract.identity);
+    inherit (effect) lifetime;
+  };
   entries =
     lib.mapAttrsToList (name: effect: {
       path = lib.removePrefix "/etc/" effect.input.path;
@@ -22,7 +26,7 @@
       };
     })
     eligible;
-  paths = map (entry: entry.path) entries;
+  paths = lib.mapAttrsToList (_: effect: lib.removePrefix "/etc/" effect.input.path) declarations;
   uniqueEntries =
     if builtins.length paths != builtins.length (lib.unique paths)
     then throw "native configuration file effects must own distinct /etc paths"
@@ -34,6 +38,12 @@ in {
     aos.configurationLower = {
       files = builtins.listToAttrs (map (entry: lib.nameValuePair entry.path entry.value) uniqueEntries);
       ownership.files = builtins.listToAttrs (map (entry: lib.nameValuePair entry.path entry.owner) uniqueEntries);
+      # The retained lower must preserve the declaring effect's lifetime when
+      # its package disappears, including after the volatile upper is lost.
+      fileEffects = builtins.listToAttrs (lib.mapAttrsToList (_: effect:
+        lib.nameValuePair (lib.removePrefix "/etc/" effect.input.path) (fileEffect effect))
+      declarations);
+      retiredEffects = config.aos.activation.retire;
     };
   };
 }

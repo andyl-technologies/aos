@@ -12,7 +12,7 @@ use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
-use crate::model::{Input, Lower};
+use crate::model::{FileLifetime, Input, Lower};
 
 /// Supplies immutable source-built tools used by lower assembly and inspection.
 pub struct Tools {
@@ -136,26 +136,31 @@ pub fn prepare(input: &Input, effect: &str, revision: &str, tools: &Tools) -> Re
     result
 }
 
-/// Preserves retired managed paths when constructing the next generation.
+/// Preserves persistent files and retired paths in the next generation.
 ///
 /// Previous checked results bind the receipt carrying the earlier path set.
-/// Whiteouts survive later updates until that path is explicitly authored again.
+/// Persistent literal files retain their contents and exact owner until explicit
+/// retirement. Whiteouts survive until that path is explicitly authored again.
 ///
 /// # Errors
 /// Returns an error when the previous lower or its retained receipt is invalid.
 pub fn inherit_removals(input: &mut Input, previous: &Lower, tools: &Tools) -> Result<()> {
     validate(previous, &previous.receipt_effect, tools)?;
     let receipt = read_receipt(Path::new(&previous.directory), &previous.receipt_effect)?;
+    inherit_previous_input(input, &receipt.input)
+}
+
+fn inherit_previous_input(input: &mut Input, previous: &Input) -> Result<()> {
+    inherit_persistent_files(input, previous)?;
     let mut removed = input
         .removed_paths
         .iter()
         .cloned()
         .collect::<std::collections::BTreeSet<_>>();
-    removed.extend(receipt.input.removed_paths.iter().cloned());
+    removed.extend(previous.removed_paths.iter().cloned());
     let desired = input.desired_paths()?;
     removed.extend(
-        receipt
-            .input
+        previous
             .desired_paths()?
             .into_iter()
             .filter(|path| !desired.contains(path)),
@@ -165,7 +170,51 @@ pub fn inherit_removals(input: &mut Input, previous: &Lower, tools: &Tools) -> R
     input.validate()
 }
 
-/// Lists paths owned or retired by a checked immutable lower.
+// Both inputs describe native declarations; the caller authenticates the prior
+// receipt before inheriting anything. A new declaration of the same identity is
+// an update, including a path or lifetime change, rather than an orphan.
+fn inherit_persistent_files(input: &mut Input, previous: &Input) -> Result<()> {
+    input.validate()?;
+    previous.validate()?;
+    let configured = input
+        .file_effects
+        .values()
+        .map(|effect| effect.id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    let retired = input
+        .retired_effects
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    let desired = input.desired_paths()?;
+    let mut inherited = input.clone();
+    for (path, effect) in &previous.file_effects {
+        if effect.lifetime != FileLifetime::Persistent
+            || configured.contains(&effect.id)
+            || retired.contains(&effect.id)
+        {
+            continue;
+        }
+        ensure!(
+            !desired.contains(path) && !input.file_effects.contains_key(path),
+            "retained persistent file has another claimant: {path}"
+        );
+        if let Some(entry @ crate::model::Entry::Text { .. }) = previous.files.get(path) {
+            inherited.files.insert(path.clone(), entry.clone());
+            inherited
+                .ownership
+                .files
+                .insert(path.clone(), previous.ownership.files[path].clone());
+        }
+        // Live nonliteral files retain their identity for upper preservation;
+        // only authenticated literal entries supply durable next-boot bytes.
+        inherited.file_effects.insert(path.clone(), effect.clone());
+    }
+    inherited.validate()?;
+    *input = inherited;
+    Ok(())
+}
+
+/// Lists paths whose previous upper entries a checked lower replaces.
 ///
 /// # Errors
 /// Returns an error for mismatched retained input or receipt evidence.
@@ -175,11 +224,21 @@ pub fn managed_paths(lower: &Lower) -> Result<Vec<String>> {
         receipt.lower == *lower,
         "managed path receipt differs from checked lower"
     );
-    Ok(receipt
-        .input
+    Ok(replaced_upper_paths(&receipt.input)?.into_iter().collect())
+}
+
+fn replaced_upper_paths(input: &Input) -> Result<std::collections::BTreeSet<String>> {
+    let persistent = input
+        .file_effects
+        .iter()
+        .filter(|(_, effect)| effect.lifetime == FileLifetime::Persistent)
+        .map(|(path, _)| path)
+        .collect::<std::collections::BTreeSet<_>>();
+    Ok(input
         .desired_paths()?
         .into_iter()
-        .chain(receipt.input.removed_paths)
+        .chain(input.removed_paths.iter().cloned())
+        .filter(|path| !persistent.contains(path))
         .collect())
 }
 
@@ -463,4 +522,195 @@ fn write_durable(path: &Path, bytes: &[u8]) -> Result<()> {
         .with_context(|| format!("writing {}", path.display()))?;
     file.sync_all()
         .with_context(|| format!("syncing {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Entry, FileEffect};
+
+    fn empty() -> Input {
+        serde_json::from_value(serde_json::json!({
+            "files": {}, "jobScripts": {}, "removedPaths": [], "baselinePaths": [],
+            "ownership": {"etcTrees": {}, "files": {}, "jobScripts": {}},
+            "storePaths": [], "retainedRoot": "/var/lib/aos/configuration-lowers"
+        }))
+        .unwrap()
+    }
+
+    fn declared(id: &str, lifetime: FileLifetime, path: &str) -> Input {
+        let mut input = empty();
+        input.files.insert(
+            path.into(),
+            Entry::Text {
+                text: "retained worker policy\n".into(),
+                mode: "0440".into(),
+            },
+        );
+        input
+            .ownership
+            .files
+            .insert(path.into(), "nix-daemon".into());
+        input.file_effects.insert(
+            path.into(),
+            FileEffect {
+                id: id.into(),
+                lifetime,
+            },
+        );
+        input
+    }
+
+    #[test]
+    fn persistent_orphan_retains_bytes_mode_owner_and_identity_across_generations() {
+        let path = "systemd/system/aos-pkg-nix-daemon-builds.slice";
+        let previous = declared(&"a".repeat(64), FileLifetime::Persistent, path);
+        let mut current = empty();
+        // Baseline absence is classified before the authenticated prior input
+        // establishes the disappeared file's persistent ownership.
+        current.baseline_paths.push(path.into());
+        current.removed_paths.push(path.into());
+
+        inherit_previous_input(&mut current, &previous).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(&current.files).unwrap(),
+            serde_json::to_value(&previous.files).unwrap()
+        );
+        assert_eq!(current.ownership.files, previous.ownership.files);
+        assert_eq!(current.file_effects, previous.file_effects);
+        assert!(!current.removed_paths.contains(&path.into()));
+        assert!(!replaced_upper_paths(&current).unwrap().contains(path));
+        let reopened: Input =
+            serde_json::from_slice(&serde_json::to_vec(&current).unwrap()).unwrap();
+        let mut following = empty();
+
+        inherit_previous_input(&mut following, &reopened).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(&following.files).unwrap(),
+            serde_json::to_value(&previous.files).unwrap()
+        );
+        assert_eq!(following.ownership.files, previous.ownership.files);
+        assert_eq!(following.file_effects, previous.file_effects);
+        assert!(following.removed_paths.is_empty());
+    }
+
+    #[test]
+    fn same_effect_moves_and_lifetime_changes_replace_instead_of_orphaning() {
+        let id = "a".repeat(64);
+        let previous = declared(&id, FileLifetime::Persistent, "app/old");
+        let mut moved = declared(&id, FileLifetime::Persistent, "app/new");
+        inherit_previous_input(&mut moved, &previous).unwrap();
+        assert!(!moved.files.contains_key("app/old"));
+        assert_eq!(moved.removed_paths, ["app/old"]);
+        assert!(moved.files.contains_key("app/new"));
+
+        let mut changed = declared(&id, FileLifetime::Instance, "app/old");
+        inherit_previous_input(&mut changed, &previous).unwrap();
+        assert_eq!(
+            changed.file_effects["app/old"].lifetime,
+            FileLifetime::Instance
+        );
+        let mut absent = empty();
+        inherit_previous_input(&mut absent, &changed).unwrap();
+        assert!(absent.files.is_empty());
+        assert_eq!(absent.removed_paths, ["app/old"]);
+    }
+
+    #[test]
+    fn same_effect_becoming_nonliteral_does_not_retain_the_old_lower_seed() {
+        let id = "a".repeat(64);
+        let previous = declared(&id, FileLifetime::Persistent, "app/old");
+        for path in ["app/old", "app/new"] {
+            let mut current = empty();
+            current.file_effects.insert(
+                path.into(),
+                FileEffect {
+                    id: id.clone(),
+                    lifetime: FileLifetime::Persistent,
+                },
+            );
+
+            inherit_previous_input(&mut current, &previous).unwrap();
+
+            assert!(current.files.is_empty());
+            assert_eq!(current.file_effects.len(), 1);
+            assert_eq!(current.removed_paths, ["app/old"]);
+        }
+    }
+
+    #[test]
+    fn nonliteral_persistent_orphan_keeps_upper_custody_without_inventing_boot_bytes() {
+        let path = "app/live";
+        let mut previous = empty();
+        previous.file_effects.insert(
+            path.into(),
+            FileEffect {
+                id: "a".repeat(64),
+                lifetime: FileLifetime::Persistent,
+            },
+        );
+        let mut current = empty();
+        current.removed_paths.push(path.into());
+
+        inherit_previous_input(&mut current, &previous).unwrap();
+
+        assert!(current.files.is_empty());
+        assert!(current.ownership.files.is_empty());
+        assert_eq!(current.file_effects, previous.file_effects);
+        assert!(!replaced_upper_paths(&current).unwrap().contains(path));
+        let mut following = empty();
+        inherit_previous_input(&mut following, &current).unwrap();
+        assert_eq!(following.file_effects, previous.file_effects);
+        assert!(following.files.is_empty());
+    }
+
+    #[test]
+    fn persistent_orphan_refuses_other_literal_and_live_claimants_without_changes() {
+        let previous = declared(&"a".repeat(64), FileLifetime::Persistent, "app/config");
+        for literal in [true, false] {
+            let mut current = declared(&"b".repeat(64), FileLifetime::Instance, "app/config");
+            if !literal {
+                current.files.clear();
+                current.ownership.files.clear();
+            }
+            let before = serde_json::to_vec(&current).unwrap();
+
+            assert!(inherit_previous_input(&mut current, &previous).is_err());
+
+            assert_eq!(serde_json::to_vec(&current).unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn explicit_retirement_whiteouts_persistent_orphans_and_allows_a_new_owner() {
+        let id = "a".repeat(64);
+        let previous = declared(&id, FileLifetime::Persistent, "app/config");
+        let mut retired = empty();
+        retired.retired_effects.push(id.clone());
+        inherit_previous_input(&mut retired, &previous).unwrap();
+        assert!(retired.files.is_empty());
+        assert!(retired.file_effects.is_empty());
+        assert_eq!(retired.removed_paths, ["app/config"]);
+        assert!(
+            replaced_upper_paths(&retired)
+                .unwrap()
+                .contains("app/config")
+        );
+
+        let mut following = empty();
+        inherit_previous_input(&mut following, &retired).unwrap();
+        assert_eq!(following.removed_paths, retired.removed_paths);
+        let mut replacement = declared(&"b".repeat(64), FileLifetime::Instance, "app/config");
+        replacement.retired_effects.push(id);
+        replacement
+            .ownership
+            .files
+            .insert("app/config".into(), "another-package".into());
+        inherit_previous_input(&mut replacement, &previous).unwrap();
+        assert_eq!(replacement.ownership.files["app/config"], "another-package");
+        assert_eq!(replacement.file_effects["app/config"].id, "b".repeat(64));
+        assert!(replacement.removed_paths.is_empty());
+    }
 }

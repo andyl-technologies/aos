@@ -450,6 +450,8 @@ mod tests {
                     mode: "0444".into(),
                 },
             )]),
+            file_effects: BTreeMap::new(),
+            retired_effects: Vec::new(),
             job_scripts: BTreeMap::from([(
                 "start".into(),
                 JobScript {

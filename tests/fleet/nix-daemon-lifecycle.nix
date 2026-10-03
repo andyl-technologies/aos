@@ -12,6 +12,31 @@ in
     testScript =
       fixture.scriptHelpers
       + ''
+        def assert_persistent_worker_policy():
+            unit = f"/etc/systemd/system/{SLICE}"
+            drop_in = f"{unit}.d/30-aos-resources.conf"
+            builder.succeed(f"test -f '{unit}' && test -f '{drop_in}'")
+            builder.succeed(f"grep -qx 'CPUQuota=200%' '{drop_in}'")
+            builder.succeed(f"grep -qx 'MemorySwapMax=0' '{drop_in}'")
+            assert property(SLICE, "FragmentPath") == unit
+            assert property(SLICE, "DropInPaths") == drop_in
+            assert_quota(2)
+            assert property(SLICE, "MemorySwapMax") == "0"
+
+            group_rows = builder.succeed("cat /etc/group").splitlines()
+            assert [row for row in group_rows if row.startswith("nixbld:")] == [
+                "nixbld:x:30000:nixbld1,nixbld2"
+            ], group_rows
+            accounts = {
+                fields[0]: fields
+                for fields in (row.split(":") for row in builder.succeed("cat /etc/passwd").splitlines())
+                if fields[0].startswith("nixbld")
+            }
+            assert set(accounts) == {f"nixbld{index}" for index in range(1, 65)}, accounts
+            for index in range(1, 65):
+                assert accounts[f"nixbld{index}"][2:4] == [str(30000 + index), "30000"], accounts
+
+
         try:
             ready()
             default_memory_high = property(SLICE, "MemoryHigh")
@@ -157,11 +182,10 @@ in
                 assert "nix-daemon" not in module_names, module_names
                 # Persistent worker resource policy and identity reservations survive
                 # package departure; the listener's enabled lifecycle does not.
-                builder.succeed("test -e /etc/systemd/system/aos-pkg-nix-daemon-builds.slice")
-                builder.succeed("grep -q '^nixbld1:x:30001:30000:' /etc/passwd")
+                assert_persistent_worker_policy()
                 builder.succeed(f"test -d '{output}' && test -d /nix/store")
                 assert_disabled()
-                print("Nix daemon APM lifecycle: activation, native restart, retained worker policy, disable, and drained removal PASS")
+                recovered_generation = generation()
             except Exception:
                 report_failure()
                 raise
@@ -177,6 +201,17 @@ in
                     f"fi; done < '{worker}'; fi",
                     timeout=20,
                 )
+
+            # A cold boot replays the committed package-free graph. Persistent
+            # files and reservations must survive even without a daemon listener.
+            builder.reboot(timeout=600)
+            ready()
+            assert generation() == recovered_generation
+            builder.succeed(f"systemctl start '{SLICE}'")
+            assert_persistent_worker_policy()
+            builder.succeed(f"test -f '{output}/complete'")
+            assert_disabled()
+            print("Nix daemon APM lifecycle: activation, native restart, retained worker policy, disable, drained removal, and cold-boot persistence PASS")
         except Exception:
             report_failure()
             raise

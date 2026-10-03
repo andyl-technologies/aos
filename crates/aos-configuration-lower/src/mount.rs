@@ -249,8 +249,16 @@ fn preserve_user_upper(lower: &Lower, destination: &Path) -> Result<()> {
         source.is_dir(),
         "previous OS configuration upper is unavailable"
     );
-    let managed = crate::lower::managed_paths(lower)?;
-    copy_user_entries(source, Path::new(""), destination, &managed)
+    // Persistent native entries keep their live upper; the immutable lower
+    // separately retains their bytes for the next boot's empty tmpfs upper.
+    let replaced = crate::lower::managed_paths(lower)?;
+    copy_user_entries(
+        source,
+        Path::new(""),
+        destination,
+        &replaced,
+        Path::new("/etc"),
+    )
 }
 
 fn copy_user_entries(
@@ -258,6 +266,7 @@ fn copy_user_entries(
     relative: &Path,
     destination: &Path,
     managed: &[String],
+    visible: &Path,
 ) -> Result<()> {
     for entry in fs::read_dir(source)? {
         let entry = entry?;
@@ -275,7 +284,7 @@ fn copy_user_entries(
         let target = destination.join(&relative);
         if metadata.is_dir() {
             fs::create_dir_all(&target)?;
-            copy_user_entries(&entry.path(), &relative, destination, managed)?;
+            copy_user_entries(&entry.path(), &relative, destination, managed, visible)?;
             fs::set_permissions(
                 &target,
                 fs::Permissions::from_mode(metadata.mode() & 0o7777),
@@ -299,7 +308,7 @@ fn copy_user_entries(
                 ensure!(metadata.is_file(), "unsupported configuration upper entry");
                 // Reading the visible file resolves overlay metacopy data from
                 // its old lower rather than copying an empty metadata inode.
-                fs::copy(Path::new("/etc").join(&relative), &target)?;
+                fs::copy(visible.join(&relative), &target)?;
                 fs::set_permissions(
                     &target,
                     fs::Permissions::from_mode(metadata.mode() & 0o7777),
@@ -309,4 +318,43 @@ fn copy_user_entries(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn persistent_upper_keeps_live_and_foreign_bytes_and_mode_while_retired_paths_drop() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("upper");
+        let visible = directory.path().join("visible");
+        let destination = directory.path().join("next");
+        for root in [&source, &visible, &destination] {
+            fs::create_dir(root).unwrap();
+        }
+        for name in ["persistent", "foreign-changed", "instance", "retired"] {
+            // Metacopy uppers retain metadata while the visible overlay supplies
+            // data. Foreign bytes must remain available to custody checks.
+            fs::write(source.join(name), "").unwrap();
+            fs::set_permissions(source.join(name), fs::Permissions::from_mode(0o440)).unwrap();
+            fs::write(visible.join(name), format!("live {name}\n")).unwrap();
+        }
+        let replaced = vec!["instance".into(), "retired".into()];
+
+        copy_user_entries(&source, Path::new(""), &destination, &replaced, &visible).unwrap();
+
+        for name in ["persistent", "foreign-changed"] {
+            assert_eq!(
+                fs::read(destination.join(name)).unwrap(),
+                fs::read(visible.join(name)).unwrap()
+            );
+            let before = fs::metadata(source.join(name)).unwrap();
+            let after = fs::metadata(destination.join(name)).unwrap();
+            assert_eq!(after.mode() & 0o7777, before.mode() & 0o7777);
+            assert_eq!((after.uid(), after.gid()), (before.uid(), before.gid()));
+        }
+        assert!(!destination.join("instance").exists());
+        assert!(!destination.join("retired").exists());
+    }
 }
