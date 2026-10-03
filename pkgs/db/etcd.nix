@@ -9,7 +9,6 @@
   go,
   stdenv,
   service-management,
-  aos-filesystem-provider,
 }: let
   version = "3.7.1";
   src = fetchurl {
@@ -138,7 +137,7 @@ in
     runtimeDeps = [];
 
     module = ./_etcd-config;
-    moduleDeps = [service-management aos-filesystem-provider];
+    moduleDeps = [service-management];
 
     phases = [
       {

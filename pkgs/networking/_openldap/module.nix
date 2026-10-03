@@ -98,8 +98,8 @@
         privileges = [];
       };
       resource_control_delegation = false;
-      resource_control_access = "read-only";
-      device_access_scope = "shared";
+      resource_control_access = "private";
+      device_access_scope = "private";
       host_clock_mutation = false;
       host_name_mutation = false;
       operating_system_log_access = false;
@@ -108,13 +108,14 @@
       lock_execution_personality = true;
       writable_executable_memory = false;
       isolation_domains = [];
-      network_families = ["ipv4" "ipv6" "local"];
+      isolation_domain_creation = "denied";
+      network_families = ["ipv4" "ipv6" "local" "route-control"];
       memory_pressure_adjustment = 0;
       permit_realtime = false;
       permit_elevated_file_identity = false;
-      process_visibility = "all";
-      security_label = "aos-pkg-openldap";
-      operation_architectures = [];
+      process_visibility = "self";
+      process_filesystem_scope = "processes";
+      operation_architectures = ["native"];
       operation_allow = [];
       operation_deny = [];
       denied_operation_action = "return-permission-denied";
@@ -206,13 +207,24 @@
     isolation = {
       privilege = "unprivileged";
       filesystem = "read-only-system";
+      home_access = "inaccessible";
       network = "host";
-      process_visibility = "host";
+      process_visibility = "private";
       termination_scope = "all-processes";
-      temporary_directory = "private";
+      temporary_directory = "disconnected";
+      temporary_filesystems = [
+        {
+          path = "/tmp";
+          read_only = false;
+        }
+        {
+          path = "/var/tmp";
+          read_only = false;
+        }
+      ];
       devices = [];
       host_paths = [];
-      permit_core_dumps = false;
+      permit_core_dumps = true;
     };
   };
 in {

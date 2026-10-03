@@ -29,7 +29,6 @@
   tzdata,
   buildPackages,
   service-management,
-  aos-filesystem-provider,
   nftables,
 }: let
   version = "9.20.27";
@@ -138,7 +137,7 @@ in
     propagatedDeps = [];
 
     module = ./_bind;
-    moduleDeps = [aos-runtime-checks service-management aos-filesystem-provider nftables];
+    moduleDeps = [aos-runtime-checks service-management nftables];
 
     phases = [
       {

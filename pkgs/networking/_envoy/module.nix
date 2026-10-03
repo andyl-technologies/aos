@@ -198,7 +198,7 @@
   adminLogEnabled = cfg.admin.enable && cfg.admin.accessLog == "service-log";
   adminLogPath =
     if adminLogEnabled
-    then operations.filesystem.operations.view.effects.envoy-admin-log.outputs.path
+    then "/var/log/aos-pkg-envoy/admin-access.log"
     else null;
   renderedBootstrap =
     render {
@@ -208,14 +208,14 @@
   service = {
     policy.hardening = {
       allow_privilege_escalation = false;
-      ambient_privileges = [];
+      ambient_privileges = ["bind-privileged-network-port"];
       privilege_bounds = {
         kind = "restricted";
         privileges = ["bind-privileged-network-port"];
       };
       resource_control_delegation = false;
-      resource_control_access = "read-only";
-      device_access_scope = "shared";
+      resource_control_access = "private";
+      device_access_scope = "private";
       host_clock_mutation = false;
       host_name_mutation = false;
       operating_system_log_access = false;
@@ -224,18 +224,19 @@
       lock_execution_personality = true;
       writable_executable_memory = false;
       isolation_domains = [];
-      network_families = ["ipv4" "ipv6" "local"];
+      isolation_domain_creation = "denied";
+      network_families = ["ipv4" "ipv6" "local" "route-control"];
       memory_pressure_adjustment = 0;
       permit_realtime = false;
       permit_elevated_file_identity = false;
-      process_visibility = "all";
-      security_label = "aos-pkg-envoy";
-      operation_architectures = [];
+      process_visibility = "self";
+      process_filesystem_scope = "processes";
+      operation_architectures = ["native"];
       operation_allow = [];
       operation_deny = [];
       denied_operation_action = "return-permission-denied";
       operation_profile = "restricted";
-      isolated_identity_mapping = "none";
+      isolated_identity_mapping = "identity";
     };
     service = "envoy";
     lifecycle = {
@@ -293,13 +294,17 @@
     storage.mounts = [
       {
         name = "state";
-        source = operations.filesystem.operations.directory.effects.envoy-state.outputs.path;
+        source = "/var/lib/aos-pkg-envoy";
+        ownership = "service-identity";
         access = "read-write";
+        directory_mode = "0755";
       }
       {
         name = "logs";
-        source = operations.filesystem.operations.directory.effects.envoy-logs.outputs.path;
+        source = "/var/log/aos-pkg-envoy";
+        ownership = "service-identity";
         access = "read-write";
+        directory_mode = "0750";
       }
     ];
     logging = {
@@ -310,19 +315,30 @@
     };
     identity = {
       supplementary_groups = [];
-      ephemeral = false;
-      file_creation_mask = "0027";
+      ephemeral = true;
+      file_creation_mask = "0022";
     };
     isolation = {
       privilege = "privileged";
       filesystem = "read-only-system";
+      home_access = "inaccessible";
       network = "host";
-      process_visibility = "host";
+      process_visibility = "private";
       termination_scope = "all-processes";
-      temporary_directory = "private";
+      temporary_directory = "disconnected";
+      temporary_filesystems = [
+        {
+          path = "/tmp";
+          read_only = false;
+        }
+        {
+          path = "/var/tmp";
+          read_only = false;
+        }
+      ];
       devices = [];
       host_paths = [];
-      permit_core_dumps = false;
+      permit_core_dumps = true;
     };
     resources.open_files = {
       kind = "maximum";
@@ -469,22 +485,6 @@ in {
     }
     (lib.mkIf serviceEnabled {
       aos.abilities = {
-        filesystem.operations.directory.effects = {
-          envoy-state = {
-            lifetime = "persistent";
-            input = {
-              path = "/var/lib/aos-pkg-envoy";
-              mode = "0750";
-            };
-          };
-          envoy-logs = {
-            lifetime = "persistent";
-            input = {
-              path = "/var/log/aos-pkg-envoy";
-              mode = "0750";
-            };
-          };
-        };
         network.operations.ready.effects.envoy.input = {
           scope = "address-configured";
           families = ["ipv4" "ipv6"];
@@ -500,12 +500,6 @@ in {
           value = renderedBootstrap;
           mode = "0444";
         };
-      };
-    })
-    (lib.mkIf (serviceEnabled && adminLogEnabled) {
-      aos.abilities.filesystem.operations.view.effects.envoy-admin-log.input = {
-        sourcePath = operations.filesystem.operations.directory.effects.envoy-logs.outputs.path;
-        relativePath = "admin-access.log";
       };
     })
   ];

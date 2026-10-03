@@ -34,8 +34,8 @@ let
   tailscale = (package "tailscale" /pkgs/networking/_tailscale [services checks]) // {runtimeDeps = map payload ["getent" "iproute2" "iptables" "procps-ng"];};
   chrony = package "chrony" /pkgs/networking/_chrony-abilities [services checks];
   firewall = package "nftables" /pkgs/networking/_nftables [checks];
-  bind = package "bind" /pkgs/networking/_bind [services filesystem firewall checks];
-  dnsmasq = package "dnsmasq" /pkgs/networking/_dnsmasq [services filesystem firewall checks];
+  bind = package "bind" /pkgs/networking/_bind [services firewall checks];
+  dnsmasq = package "dnsmasq" /pkgs/networking/_dnsmasq [services firewall checks];
   ssh = package "openssh" /pkgs/networking/_openssh [services filesystem firewall pam checks];
   audit = package "audit" /pkgs/security/_audit [services kernel checks];
   evaluate = enabled:
@@ -65,6 +65,8 @@ let
       ];
     };
   enabledConfiguration = (evaluate true).config;
+  bindService = enabledConfiguration.aos.services.bind;
+  dnsmasqService = enabledConfiguration.aos.services.dnsmasq;
   enabled = enabledConfiguration.system.checks;
   disabled = (evaluate false).config.system.checks;
   names = ["audit" "bind" "chrony" "dnsmasq" "docker" "firewall" "libvirt" "ssh" "tailscale"];
@@ -72,7 +74,64 @@ in {
   libvirtPreservesAccountIds = assert enabledConfiguration.aos.abilities.identity.operations.group.effects.libvirt-qemu.input.requested_id == 64054;
   assert enabledConfiguration.aos.abilities.identity.operations.group.effects.libvirt-access.input.requested_id == 64055;
   assert enabledConfiguration.aos.abilities.identity.operations.principal.effects.libvirt-qemu.input.requested_id == 64054; true;
-  dnsmasqPreservesHomeProtection = assert enabledConfiguration.aos.services.dnsmasq.isolation.home_access == "inaccessible"; true;
+  bindPreservesMasterHardening = let
+    policy = bindService.policy.hardening;
+  in
+    assert policy.resource_control_access == "host";
+    assert builtins.all (name: policy.${name}) [
+      "host_clock_mutation"
+      "host_name_mutation"
+      "operating_system_log_access"
+      "operating_system_extension_access"
+      "operating_system_tunable_access"
+      "writable_executable_memory"
+      "permit_realtime"
+      "permit_elevated_file_identity"
+    ];
+    assert !policy.lock_execution_personality;
+    assert !policy.allow_privilege_escalation;
+    assert policy.network_families == [] && policy.security_label == null;
+    assert policy.operation_profile == "privileged" && policy.operation_allow == [] && policy.operation_deny == []; true;
+  bindPreservesMasterIsolation = assert bindService.isolation.home_access == "inaccessible";
+  assert bindService.isolation.filesystem == "read-only-system";
+  assert bindService.isolation.temporary_directory == "private";
+  assert bindService.isolation.permit_core_dumps; true;
+  bindPreservesManagedDirectoryModes = assert builtins.map (mount: mount.name) bindService.storage.mounts == ["state" "runtime"];
+  assert builtins.map (mount: mount.source) bindService.storage.mounts == ["/var/lib/aos-pkg-bind" "/run/aos-pkg-bind"];
+  assert builtins.all (mount: mount.access == "read-write" && mount.ownership == "service-identity" && mount.directory_mode == "0750") bindService.storage.mounts; true;
+  dnsmasqPreservesMasterHardening = let
+    policy = dnsmasqService.policy.hardening;
+  in
+    assert policy.resource_control_access == "host";
+    assert builtins.all (name: policy.${name}) [
+      "host_clock_mutation"
+      "host_name_mutation"
+      "operating_system_log_access"
+      "operating_system_extension_access"
+      "operating_system_tunable_access"
+      "writable_executable_memory"
+      "permit_realtime"
+      "permit_elevated_file_identity"
+    ];
+    assert !policy.lock_execution_personality;
+    assert !policy.allow_privilege_escalation;
+    assert policy.network_families == [] && policy.security_label == null;
+    assert policy.operation_profile == "privileged" && policy.operation_allow == [] && policy.operation_deny == []; true;
+  dnsmasqPreservesMasterIsolation = assert dnsmasqService.isolation.home_access == "inaccessible";
+  assert dnsmasqService.isolation.filesystem == "read-only-system";
+  assert dnsmasqService.isolation.temporary_directory == "private";
+  assert dnsmasqService.isolation.permit_core_dumps; true;
+  dnsmasqPreservesRuntimeDirectoryMode = let
+    runtimeMount = builtins.head dnsmasqService.storage.mounts;
+  in
+    assert runtimeMount.name == "runtime" && runtimeMount.access == "read-write";
+    assert runtimeMount.source == "/run/aos-pkg-dnsmasq";
+    assert runtimeMount.ownership == "service-identity" && runtimeMount.directory_mode == "0750"; true;
+  dnsStorageHasSingleOwner = let
+    directories = enabledConfiguration.aos.abilities.filesystem.operations.directory.effects;
+  in
+    assert builtins.all (name: !(builtins.hasAttr name directories)) ["bind-state" "bind-runtime" "dnsmasq-runtime" "dnsmasq-state"];
+    assert builtins.all (effect: !(builtins.elem effect.input.path ["/var/lib/aos-pkg-bind" "/run/aos-pkg-bind" "/run/aos-pkg-dnsmasq"])) (builtins.attrValues directories); true;
   selected = assert builtins.attrNames enabled == names; true;
   preservedScripts = assert builtins.all (name: enabled.${name}.checks != [] && builtins.all (check: check.name != "" && check.script != "") enabled.${name}.checks) names; true;
   disabled = assert disabled == {}; true;

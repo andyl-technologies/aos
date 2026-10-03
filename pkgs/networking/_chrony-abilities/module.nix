@@ -132,11 +132,13 @@
       writable_executable_memory = false;
       remove_interprocess_communication = true;
       isolation_domains = ["filesystem"];
+      isolation_domain_creation = "denied";
       network_families = ["ipv4" "ipv6" "local"];
       memory_pressure_adjustment = 0;
       permit_realtime = false;
       permit_elevated_file_identity = false;
       process_visibility = "self";
+      process_filesystem_scope = "processes";
       operation_architectures = ["native"];
       operation_allow = ["change-file-ownership" "clock" "change-process-identity" "set-process-privileges"];
       operation_deny = ["cpu-emulation" "debug" "keyring" "mount" "obsolete" "privileged" "resource-control"];
@@ -246,7 +248,7 @@
           mode = "read-write";
         }
       ];
-      permit_core_dumps = false;
+      permit_core_dumps = true;
     };
   };
   boundedString = lib.types.strMatching ".+";
