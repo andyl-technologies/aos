@@ -20,6 +20,7 @@
     imageDiskMiB = 16384;
     memoryMiB = 4096;
     packages = ["aos-test-agent"];
+    extraClosures = [pkgs.jq];
     metadata."host.nix" = ''
       {
         aos.provisioning.storage.partitions.var.sizeMin = "2G";
@@ -45,6 +46,7 @@
       import json
 
       RUNTIME = "${pkgs.aos.packageRuntime}/bin/aos-package-runtime"
+      JQ = "${pkgs.jq}/bin/jq"
       PROFILE = "/var/lib/profiles/system"
 
       def wait_for_activation(machine):
@@ -56,8 +58,14 @@
           ))["generation"]
           assert isinstance(generation, int) and generation > 0, generation
           directory = f"{PROFILE}/gen-{generation}"
-          marker = json.loads(machine.succeed(f"cat {directory}/native-deployment.json"))
-          descriptor = json.loads(machine.succeed(f"cat {directory}/evaluation.json"))
+          # Parse the complete documents in the guest; send only the fields
+          # checked here over the bounded guest command transport.
+          marker = json.loads(machine.succeed(
+              f"{JQ} -c '{{profile_generation}}' {directory}/native-deployment.json"
+          ))
+          descriptor = json.loads(machine.succeed(
+              f"{JQ} -c '{{schema}}' {directory}/evaluation.json"
+          ))
           assert marker["profile_generation"] == generation, marker
           assert descriptor["schema"] == "aos.package.evaluation-input", descriptor
           machine.succeed(f"test -s {PROFILE}/deployment/generations.journal")

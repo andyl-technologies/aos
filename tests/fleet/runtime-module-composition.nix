@@ -74,6 +74,7 @@ in {
           pkgs.grep
           pkgs.jq
           pkgs.nix
+          pkgs.python3
           pkgs.util-linux
         ];
     };
@@ -93,6 +94,7 @@ in {
         pkgs.grep
         pkgs.jq
         pkgs.nix
+        pkgs.python3
         pkgs.util-linux
       ];
     packages = ["aos-test-agent" "envoy" "k3s-worker"];
@@ -105,6 +107,8 @@ in {
     '';
   };
   testScript =
+    (import ./_native-document-transport.nix {inherit pkgs;})
+    +
     # python
     ''
       import base64
@@ -159,14 +163,14 @@ in {
           return int(selected.rsplit("gen-", 1)[1])
 
       def diagnostic():
-          document = json.loads(runtime.succeed(
+          document = json.loads(native_document(
               f"{AOS} ability diagnostic {PROFILE} {current_generation()} --audience deployment"
           ))
           assert document["liveStateVerified"] is False, document
           return document
 
       def inspection():
-          document = json.loads(runtime.succeed(f"{AOS} ability journal {JOURNAL} --format json"))
+          document = json.loads(native_document(f"{AOS} ability journal {JOURNAL} --format json"))
           assert document["schema"] == "aos.activation.inspection", document
           assert document["liveStateVerified"] is False, document
           assert document["incompleteTailBytes"] == 0, document
@@ -238,7 +242,7 @@ in {
           assert records[0]["sequence"] == held["event"]["journal_sequence"], records
           assert after["pending"] is None and after["completed"] is not None, after
           assert route() == response
-          observed = [json.loads(line) for line in runtime.succeed(f"{COREUTILS}/cat {EVENTS}").splitlines()]
+          observed = [json.loads(line) for line in native_document(f"{COREUTILS}/cat {EVENTS}").splitlines()]
           matching = [event for event in observed if all(event[field] == held["event"][field] for field in NATIVE_IDENTITY_FIELDS)]
           assert [event["boundary"] for event in matching].count("dispatch-returned") == 1, matching
           RECOVERY_FINDINGS[sequence] = {

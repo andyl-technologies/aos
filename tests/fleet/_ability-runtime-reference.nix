@@ -112,6 +112,8 @@ in {
       ];
 
   testPrelude =
+    (import ./_native-document-transport.nix {inherit pkgs;})
+    +
     # python
     ''
       import base64
@@ -183,7 +185,7 @@ in {
           """Reads the desired graph from the checked committed generation."""
           target = runtime.succeed(f"{COREUTILS}/readlink {PROFILE}/current").strip()
           generation = int(target.rsplit('gen-', 1)[1])
-          diagnostic = json.loads(runtime.succeed(
+          diagnostic = json.loads(native_document(
               f"{AOS} ability diagnostic {PROFILE} {generation} --audience deployment"
           ))
           assert diagnostic["liveStateVerified"] is False, diagnostic
@@ -192,7 +194,7 @@ in {
 
       def inspect_reference_journal():
           """Reads checksum-validated native state without repair or dispatch."""
-          return json.loads(runtime.succeed(
+          return json.loads(native_document(
               f"{AOS} ability journal {PROFILE}/deployment/effects.journal --format json"
           ))
 

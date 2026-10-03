@@ -118,7 +118,7 @@ in {
       desired = current_reference_graph()
       assert desired == before["desired"], desired
       # The committed descriptor retains the ordinary admitted operator snapshot.
-      evaluation = json.loads(runtime.succeed(f"{COREUTILS}/cat {PROFILE}/current/evaluation.json"))
+      evaluation = json.loads(native_document(f"{COREUTILS}/cat {PROFILE}/current/evaluation.json"))
       assert evaluation["runtimeConfiguration"], evaluation
       for authored in evaluation["runtimeConfiguration"]:
           assert authored.startswith("/nix/store/"), authored
