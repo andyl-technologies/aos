@@ -124,6 +124,20 @@ empty `terrane` binary.
 
 ### T1 — Local repository
 
+**Status:** In progress. The reviewed combined candidate `04d50d8ac714`
+passes all 599 core tests with zero skips (Nextest run
+`98d55ce4-1ca1-446b-8e9e-477e56ce1970`), strict all-target core Clippy,
+strict rustdoc, both required formatters and seven actual gates:
+`property-resolution`, `prov-selector-presets`, `canonical-cbor`,
+`core-no-std`, `store-verify-on-get`, `store-has-batched` and
+`store-verify-on-put`. Its full current aggregate passes the earlier legacy
+index-completeness assertion, then fails `index-generation-manifest` at
+`physical_exclusion_overrides_live_rows_during_fresh_admission`:
+`publish_shards` returns `Unsupported` before the content lookup. These
+results precede the three newly mandatory recorded-evaluator cases; those
+cases, native propagation and full native qualification remain pending.
+No task merge, checkbox, milestone exit or freeze follows from this run.
+
 Deployable as: a local tool that initializes a store under a `file://`
 root, commits a directory, forks and merges branches, and checks a commit
 out to a directory through the `sdk` surface.
