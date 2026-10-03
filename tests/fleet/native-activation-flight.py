@@ -35,10 +35,9 @@ class NativeFlight:
 
 def read_bounded(path: str, maximum: int = 16 * 1024 * 1024) -> str:
     """Reads at most one byte beyond the document limit before rejecting it."""
-    contents = runtime.succeed(f"{COREUTILS}/head --bytes={maximum + 1} {shlex.quote(path)}")
-    if len(contents.encode()) > maximum:
-        raise RuntimeError("native fixture document exceeds its read bound")
-    return contents
+    return native_document(
+        f"{COREUTILS}/head --bytes={maximum + 1} {shlex.quote(path)}", maximum=maximum
+    )
 
 
 def read_json(path: str) -> Any:
@@ -134,7 +133,7 @@ def stop_interrupted(flight: NativeFlight) -> None:
 
 def inspect() -> dict[str, Any]:
     """Uses the native checksum and replay reader without repairing the journal."""
-    view = json.loads(runtime.succeed(f"{AOS} ability journal {shlex.quote(JOURNAL)} --format json"))
+    view = json.loads(native_document(f"{AOS} ability journal {shlex.quote(JOURNAL)} --format json"))
     NATIVE_EVIDENCE.checked_inspection(view)
     return view
 

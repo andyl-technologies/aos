@@ -149,10 +149,12 @@ in
                 assert any(record["event"] == "commit" and record["transaction"] == pending_view["transaction"]
                            for record in recovered_view["records"]), recovered_view
                 assert generation() != removal_generation
-                descriptor = json.loads(builder.succeed(
-                    f"cat {PROFILE}/gen-{generation()}/evaluation.json"
+                module_names = json.loads(builder.succeed(
+                    f"{JQ} -c '[.packages.modules[].name]' "
+                    f"{PROFILE}/gen-{generation()}/evaluation.json"
                 ))
-                assert all(module["name"] != "nix-daemon" for module in descriptor["packages"]["modules"]), descriptor
+                assert all(isinstance(name, str) for name in module_names), module_names
+                assert "nix-daemon" not in module_names, module_names
                 # Persistent worker resource policy and identity reservations survive
                 # package departure; the listener's enabled lifecycle does not.
                 builder.succeed("test -e /etc/systemd/system/aos-pkg-nix-daemon-builds.slice")

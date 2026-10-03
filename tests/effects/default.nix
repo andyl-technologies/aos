@@ -102,6 +102,7 @@ in
             ${pkgs.python3}/bin/python3 ${../services/native-flight-oracle.py} ${../fleet/native-reference-service-flights.py}
             ${pkgs.python3}/bin/python3 ${../fleet/native-filesystem-firewall-oracles-self-test.py} ${../fleet/native-filesystem-firewall-oracles.py}
             ${pkgs.python3}/bin/python3 ${../fleet/native-reference-filesystem-flights-self-test.py} ${../fleet/native-reference-filesystem-flights.py}
+            ${pkgs.python3}/bin/python3 ${./native-document-transport-test.py} ${../fleet/native-document-transport.py} ${../fleet/native-activation-flight.py} ${pkgs.bash}/bin/bash ${pkgs.coreutils}/bin
             ${pkgs.python3}/bin/python3 ${./managed-paths-test.py} ${../../pkgs/system/_aos-host-policy/managed-paths.py}
             ${pkgs.python3}/bin/python3 ${../build/composefs-directory-source.py} ${../../pkgs/system/build-composefs-dump.py}
             ${pkgs.python3}/bin/python3 ${./host-store-seed-test.py} ${pkgs.bash}/bin/bash ${pkgs.coreutils} ${../../pkgs/boot/_aos-boot-preparations/aos-host-store-seed.sh} ${pkgs.nix}
