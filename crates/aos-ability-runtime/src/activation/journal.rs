@@ -86,6 +86,12 @@ pub(super) struct State {
 
 impl State {
     pub fn check(&self, event: &Event) -> Result<()> {
+        self.check_event(event).map(|_| ())
+    }
+
+    // Reuse the validated graph when applying a Begin record. Inspection replays
+    // every historical graph, so decoding it again would duplicate that work.
+    fn check_event(&self, event: &Event) -> Result<Option<CheckedModuleGraph>> {
         match event {
             Event::Begin {
                 transaction,
@@ -112,6 +118,7 @@ impl State {
                         && !desired.graph().nodes.contains_key(id)),
                     "retirement must name retained or already retired, unconfigured state"
                 );
+                return Ok(Some(desired));
             }
             Event::Started { invocation } => {
                 let graph = self
@@ -203,7 +210,7 @@ impl State {
                 );
             }
         }
-        Ok(())
+        Ok(None)
     }
 
     /// Reconstructs the only application authorized by the active graph.
@@ -253,16 +260,19 @@ impl State {
     }
 
     pub fn apply(&mut self, event: &Event) -> Result<()> {
-        self.check(event)?;
+        let checked_graph = self.check_event(event)?;
         match event {
             Event::Begin {
                 transaction,
-                document,
                 retire,
+                ..
             } => {
+                let desired = checked_graph
+                    .ok_or_else(|| anyhow::anyhow!("begin without a checked graph"))?;
+
                 self.transaction = Some(transaction.clone());
                 self.sequence += 1;
-                self.active = Some(CheckedModuleGraph::decode(&canonical::to_vec(document)?)?);
+                self.active = Some(desired);
                 self.retire = retire.clone();
                 self.transaction_results.clear();
             }
@@ -404,6 +414,74 @@ mod tests {
         )
         .unwrap();
         (graph, keys[0].clone(), keys[1].clone(), keys[2].clone())
+    }
+
+    #[test]
+    fn begin_validation_rejects_invalid_records_before_mutating_state() {
+        let graph = super::super::tests::graph(Some("desired"), "persistent");
+        let document = serde_json::to_value(graph.graph()).unwrap();
+        let configured = graph.graph().nodes.keys().next().unwrap().clone();
+        let mut state = State {
+            sequence: 7,
+            retired: BTreeSet::from(["already-retired".to_owned()]),
+            ..State::default()
+        };
+        let invalid_records = [
+            Event::Begin {
+                transaction: String::new(),
+                document: document.clone(),
+                retire: vec![],
+            },
+            Event::Begin {
+                transaction: "invalid-graph".into(),
+                document: json!({}),
+                retire: vec![],
+            },
+            Event::Begin {
+                transaction: "duplicate-retirement".into(),
+                document: document.clone(),
+                retire: vec!["already-retired".into(), "already-retired".into()],
+            },
+            Event::Begin {
+                transaction: "unknown-retirement".into(),
+                document: document.clone(),
+                retire: vec!["unknown".into()],
+            },
+            Event::Begin {
+                transaction: "configured-retirement".into(),
+                document: document.clone(),
+                retire: vec![configured],
+            },
+        ];
+
+        for event in invalid_records {
+            assert!(state.check(&event).is_err());
+            assert!(state.apply(&event).is_err());
+            assert_eq!(state.sequence, 7);
+            assert!(state.active.is_none());
+            assert!(state.transaction.is_none());
+            assert!(state.retire.is_empty());
+            assert!(state.transaction_results.is_empty());
+        }
+
+        let valid = Event::Begin {
+            transaction: "checked-begin".into(),
+            document,
+            retire: vec!["already-retired".into()],
+        };
+        state.check(&valid).unwrap();
+        state.apply(&valid).unwrap();
+
+        assert_eq!(state.sequence, 8);
+        assert_eq!(state.transaction.as_deref(), Some("checked-begin"));
+        assert_eq!(state.retire, vec!["already-retired"]);
+        assert_eq!(
+            state.active.as_ref().unwrap().canonical_bytes().unwrap(),
+            graph.canonical_bytes().unwrap()
+        );
+        assert!(state.apply(&valid).is_err());
+        assert_eq!(state.sequence, 8);
+        assert_eq!(state.transaction.as_deref(), Some("checked-begin"));
     }
 
     #[test]
