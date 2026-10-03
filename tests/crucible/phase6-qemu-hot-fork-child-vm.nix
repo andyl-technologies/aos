@@ -16,7 +16,9 @@
     pname = "crucible-qemu-live-hot-fork-child";
     version = "0";
     src = source;
-    buildDeps = [pkgs.coreutils pkgs.rust pkgs.sed];
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+    buildDeps = [pkgs.coreutils pkgs.pkg-config pkgs.rust pkgs.sed pkgs.sqlite];
+    runtimeDeps = [pkgs.sqlite];
     phases = [
       {
         name = "unpack";
