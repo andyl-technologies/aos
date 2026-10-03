@@ -2,7 +2,7 @@
 #
 # This is the executable acceptance gate for the image lifecycle. It
 # publishes a real measured, dm-verity-backed raw image through a registry,
-# stages it through `apm upgrade --system` onto the inactive GPT slot, exhausts
+# stages it through `apm image upgrade` onto the inactive GPT slot, exhausts
 # its real sd-boot boot count and observes automatic fallback, retries and
 # blesses that exact image, proves boot-commit replay is idempotent, then
 # exercises explicit rollback and transition-journal crash recovery.
@@ -704,7 +704,7 @@ in {
       # -- Stage the actual inactive slot -------------------------------------
       out = target.succeed(
           "HOME=/tmp PATH=${pkgs.nix}/bin:$PATH "
-          f"{APM} upgrade --system --yes 2>&1",
+          f"{APM} image upgrade --yes 2>&1",
           timeout=1800,
       )
       print("=== stage candidate ===\n" + out)
@@ -824,7 +824,7 @@ in {
           "/var/lib/aos-test/allow-image-commit"
       )
       out = run_rebooting_apm(
-          "upgrade --system --yes --reboot", "upgrade-reboot"
+          "image upgrade --yes --reboot", "upgrade-reboot"
       )
       print("=== retry candidate with automatic reboot ===\n" + out)
       target.wait_until_succeeds(
@@ -892,7 +892,7 @@ in {
       assert_boot_read_only()
 
       # -- Explicit durable rollback to the known-good A image -----------------
-      target.succeed(f"{APM} rollback --system --image --generation 1")
+      target.succeed(f"{APM} image rollback --generation 1")
       selected = image_state()
       assert selected["running"] == retried_number, selected
       assert selected["default"] == 1, selected
@@ -961,7 +961,7 @@ in {
           "cat /proc/sys/kernel/random/boot_id"
       ).strip()
       out = run_rebooting_apm(
-          "rollback --system --image --generation 1 --drain --reboot",
+          "image rollback --generation 1 --drain --reboot",
           "rollback-drain-reboot",
       )
       print("=== drained rollback with automatic reboot ===\n" + out)

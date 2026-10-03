@@ -200,10 +200,11 @@ impl RegistrySetup {
         self
     }
 
-    fn add_command(&self) -> Option<String> {
+    fn add_command(&self, system: bool) -> Option<String> {
         let url = self.registry_url.as_deref()?;
         let mut command = format!(
-            "apm registry add {} --name {}",
+            "apm registry {}add {} --name {}",
+            if system { "--system " } else { "" },
             shell_argument(url),
             shell_argument(&self.client_name)
         );
@@ -213,19 +214,25 @@ impl RegistrySetup {
         Some(command)
     }
 
-    /// Builds an installation command whose registry is pinned to this release.
-    fn install_commands(&self, package: &str, release: Option<&str>) -> Option<String> {
+    /// Builds a package command with a registry setup in the selected scope.
+    fn package_commands(
+        &self,
+        package: &str,
+        release: Option<&str>,
+        subcommand: &str,
+        system: bool,
+    ) -> Option<String> {
         let mut selected = self.clone();
         if let Some(release) = release {
             selected.client_name = format!("{}-{release}", self.client_name);
         }
-        let mut command = selected.add_command()?;
+        let mut command = selected.add_command(system)?;
         if let Some(release) = release {
             let _ = write!(command, " --tag {}", shell_argument(release));
         }
         let _ = write!(
             command,
-            "\napm install {} --registry {}",
+            "\napm {subcommand} {} --registry {}",
             shell_argument(package),
             shell_argument(&selected.client_name)
         );
@@ -485,7 +492,7 @@ pub fn registry_home(
         body.push_str("<p class=\"warn\">The registry could not be refreshed. Published release contents are shown from the last successful index.</p>");
     }
     body.push_str("<section class=\"registry-setup\"><h2>Get started</h2>");
-    if let Some(command) = setup.add_command() {
+    if let Some(command) = setup.add_command(false) {
         let _ = write!(
             body,
             "<p>Add this registry:</p><pre>{}</pre>",
@@ -1275,7 +1282,14 @@ pub fn package_page(
     body.push_str(&table(&["field", "value"], &meta_rows));
 
     body.push_str("<h2 id=\"install\">Install</h2>\n");
-    if let Some(command) = setup.install_commands(&detail.name, snapshot) {
+    let subcommand = if detail.sysroot {
+        "image install"
+    } else {
+        "install"
+    };
+    if let Some(command) =
+        setup.package_commands(&detail.name, snapshot, subcommand, detail.sysroot)
+    {
         let instruction = if snapshot.is_some() {
             "Add a registry pinned to this release, then install:"
         } else {
@@ -2387,8 +2401,13 @@ fn image_download_commands(
     hub_url: &str,
 ) -> String {
     let apm_command = setup
-        .install_commands(&image.package, Some(&image.release))
-        .map(|command| format!("{command} --image {}", shell_argument(&image.format)));
+        .package_commands(
+            &image.package,
+            Some(&image.release),
+            "image download",
+            false,
+        )
+        .map(|command| format!("{command} --format {}", shell_argument(&image.format)));
     let mut hub_command = String::from("aos image download");
     for (flag, value) in [
         ("hub", hub_url),
@@ -3318,7 +3337,7 @@ mod tests {
             &anon(),
         );
         assert!(html.contains("Download with APM"));
-        assert!(html.contains("apm install aos-system --registry demo-2026.08 --image raw"));
+        assert!(html.contains("apm image download aos-system --registry demo-2026.08 --format raw"));
         assert!(html.contains("--tag 2026.08"));
         assert!(html.contains("Pins this release."));
         assert!(html.contains("aos image download --hub=https://hub.example --registry=demo --package=aos-system --release=2026.08 --architecture=x86_64 --format=raw"));
@@ -3551,6 +3570,38 @@ mod tests {
             refs: refs.iter().map(|r| (*r).to_string()).collect(),
             images: Vec::new(),
         }
+    }
+
+    #[test]
+    fn system_image_package_page_uses_system_registry_and_image_install() {
+        let detail = PackageDetail {
+            name: "aos-system".into(),
+            description: "Operating system image".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos".into(),
+            sysroot: true,
+            versions: Vec::new(),
+        };
+        let registry = registry();
+        let setup = setup(&registry, "https://download.example/demo", &[]);
+
+        let html = package_page(
+            &registry,
+            None,
+            &detail,
+            &[],
+            &setup,
+            &release_context("2026.08"),
+            None,
+            false,
+            Instant::now(),
+            &anon(),
+        );
+
+        assert!(html.contains("apm registry --system add https://download.example/demo/"));
+        assert!(html.contains("apm image install aos-system --registry demo-2026.08"));
+        assert!(!html.contains("apm install aos-system"));
     }
 
     #[tokio::test]

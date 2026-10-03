@@ -271,6 +271,21 @@ retaining the approved empty base commit and generation.
 Set the experimental configuration's `predecessor_bundle` to the retained
 snapshot and write the reviewed Linux image decisions to `images.json`.
 
+### Deferred platforms
+
+[`qualification/deferred-platforms.nix`](../../qualification/deferred-platforms.nix)
+lists Linux platforms a release defers; it is empty, so every edge release
+ships both Linux platforms. A listed platform ships nothing: the contract
+exports it as `deferred_platforms` (check with `aos maintain release step
+contract --registry andyl/experimental --json`), every package cell on it is
+blocked with `platform-release-deferred`, `images.json` must give its image
+cell the [blocked decision](canonical-releases.md#prepare-a-plan-request), the
+container bundle omits its manifest, and the frozen plan records all of it.
+Deferring or releasing a platform is a reviewed source change followed by a
+later edge release. The x86_64 maintainer tooling closure carries both the
+native x86_64 executor and the hosted aarch64 executor (QEMU TCG), so no extra
+machine is needed to qualify aarch64 claims.
+
 Both Hub surfaces authenticate through their `aos hub login` profiles unless
 the configuration sets `token_credential`. Only the active profile is used
 (see [Hub credentials](canonical-releases.md#hub-credentials)): sign in to

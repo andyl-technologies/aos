@@ -213,7 +213,7 @@
         pass "override dependency missing before install"
       fi
 
-      if $APM install override-root --system --registry override-reg --yes \
+      if $APM image install override-root --registry override-reg --yes \
         > /tmp/override-install.out 2>&1; then
         cat /tmp/override-install.out
         fail "apm install must reject sysroot activation without image-generation authority"

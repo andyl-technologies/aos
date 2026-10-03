@@ -296,7 +296,7 @@ in {
 
       # -- 5. Dry-run surfaces the upgrade -------------------------------
       out = target.succeed(
-          "HOME=/tmp ${pkgs.aos.apm}/bin/apm upgrade --system --dry-run 2>&1",
+          "HOME=/tmp ${pkgs.aos.apm}/bin/apm image upgrade --dry-run 2>&1",
           timeout=120,
       )
       assert "test-2" in out, f"dry-run did not surface the test-2 target: {out!r}"
@@ -304,12 +304,12 @@ in {
 
       # -- 6. Download and import succeed; missing OTA metadata is rejected ---
       target.succeed(
-          "if HOME=/tmp ${pkgs.aos.apm}/bin/apm upgrade --system --yes "
+          "if HOME=/tmp ${pkgs.aos.apm}/bin/apm image upgrade --yes "
           "> /tmp/apm-registry-upgrade.out 2>&1; then exit 1; fi",
           timeout=900,
       )
       out = target.succeed("cat /tmp/apm-registry-upgrade.out")
-      print("=== rejected apm upgrade --system output ===\n" + out)
+      print("=== rejected apm image upgrade output ===\n" + out)
       assert "Downloading" in out, (
           f"upgrade did not download anything - closure leaked onto the "
           f"target some other way: {out!r}"

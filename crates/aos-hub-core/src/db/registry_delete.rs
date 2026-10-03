@@ -249,6 +249,10 @@ impl Database {
                      WHERE registry_id = ?1)
                    AND NOT EXISTS (SELECT 1 FROM oci_gc_snapshot_lease_holds
                      WHERE registry_id = ?1)
+                   AND NOT EXISTS (SELECT 1 FROM registry_oci_namespaces
+                     WHERE registry_id = ?1 AND enabled = 1)
+                   AND NOT EXISTS (SELECT 1 FROM instance_oci_routes
+                     WHERE default_registry_id = ?1)
                    AND EXISTS (SELECT 1 FROM oci_registry_purge_fences purge_fence
                      WHERE purge_fence.registry_id = ?1 AND purge_fence.state = 'collecting'
                        AND purge_fence.registry_resource_version = ?3
@@ -510,6 +514,9 @@ impl Database {
             delete("oci_uploads", registry_id),
             delete("oci_publications", registry_id),
             delete("oci_registry_state", registry_id),
+            // The guard above proves the namespace disabled; retire its row
+            // with the registry.
+            delete("registry_oci_namespaces", registry_id),
             delete("registry_placement_publication_watermarks", registry_id),
             delete("registry_index_publication_state", registry_id),
             delete("object_placements", registry_id),

@@ -27,7 +27,7 @@ Requirement IDs here use the prefix **`STD`**. (The `CRATE` prefix is reserved b
 [`27-crate-structure.md`](27-crate-structure.md); both files share the area
 column in [`00-conventions.md`](00-conventions.md) §"Area prefixes" but this file
 numbers its requirements `STD-n`.) These standards align with the repository's
-root `CLAUDE.md` (the AOS Rust code style and documentation standard) exactly,
+root `AGENTS.md` (the AOS Rust code style and documentation standard) exactly,
 and add the Crucible-specific determinism rules on top.
 
 The spine of this file is one sentence:
@@ -43,15 +43,15 @@ The spine of this file is one sentence:
 
 ## 1. Rust quality
 
-These requirements restate the root `CLAUDE.md` Rust code style as normative
+These requirements restate the root `AGENTS.md` Rust code style as normative
 Crucible requirements so the implementation plan can cover them and a reviewer
-can cite them. Where `CLAUDE.md` and this file appear to differ, `CLAUDE.md`
+can cite them. Where `AGENTS.md` and this file appear to differ, `AGENTS.md`
 wins and the discrepancy is a defect in this file.
 
 ### 1.1 Documentation (docs.rs quality)
 
 - **[STD-1]** Every `crucible-*` crate MUST carry docs.rs-quality rustdoc to the
-  bar defined in the root `CLAUDE.md` "Rust documentation standard". Concretely:
+  bar defined in the root `AGENTS.md` "Rust documentation standard". Concretely:
   each crate's `lib.rs`/`main.rs` MUST carry a `//!` crate overview (what the
   crate does, a map of its modules, how the pieces fit); every module file MUST
   carry a `//!` header naming what the module owns and its key concepts; and a
@@ -79,11 +79,11 @@ wins and the discrepancy is a defect in this file.
 - **[STD-4]** Every fenced code block in rustdoc MUST be tagged (` ```text `,
   ` ```rust `, ` ```toml `, ` ```no_run `, or ` ```ignore `). An untagged fence
   becomes a compiled doctest in the hermetic AOS build and an untagged *format*
-  example is therefore a build failure (consistent with `CLAUDE.md` and the AOS
+  example is therefore a build failure (consistent with `AGENTS.md` and the AOS
   `pkgs.aos`/`pkgs.crucible` doc build). Runnable `# Examples` are added only
   when they compile against the public API alone; prefer `no_run`. *Spec:* §4.5.
 
-- **[STD-5]** The clap-derive caveat from `CLAUDE.md` applies to the `crucible`
+- **[STD-5]** The clap-derive caveat from `AGENTS.md` applies to the `crucible`
   CLI ([`23-cli.md`](23-cli.md)): doc comments on `#[derive(Parser/Subcommand/Args)]`
   containers and their fields become `--help` output. Container `///` docs MUST
   NOT be added (document the surrounding module instead); a field doc edit is a
@@ -254,7 +254,7 @@ buildable spec, not a slogan.
 
 Crucible needs `unsafe` in a small, sharply-bounded set of places — the shared
 memory mapping, the lock-free SPSC ring, the FFI to the QEMU plugin C ABI, and
-atomics with explicit orderings — and nowhere else. The root `CLAUDE.md` rule
+atomics with explicit orderings — and nowhere else. The root `AGENTS.md` rule
 ("avoid `unsafe` at all costs; justify and document the invariants with a
 `// SAFETY:` comment") is tightened here into a crate-level fence.
 
@@ -426,7 +426,7 @@ layer's gate and MUST NOT be "covered" from a higher layer ([HARN-3]).
   only when explicitly requested. *Spec:* §5.
 
 - **[STD-30]** **Documenting existing code is comments-only.** A docs pass MUST
-  NOT reorder, rename, or reformat code (root `CLAUDE.md`): it adds `//!`/`///`
+  NOT reorder, rename, or reformat code (root `AGENTS.md`): it adds `//!`/`///`
   and `// SAFETY:` comments only. If a doc claim contradicts the code, the doc is
   fixed to match the *observed* behavior and the discrepancy is flagged in the PR
   for separate resolution — the code is never changed in a docs pass. This keeps

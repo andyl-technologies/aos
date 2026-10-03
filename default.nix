@@ -429,6 +429,8 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   releaseQualification = import ./qualification {
     inherit lib;
     packageNames = qualificationPackageNames;
+    # The package inventory blocks exactly these platforms' cells.
+    inherit (pkgs.platformSupport) deferredPlatforms;
   };
   qualificationExecutorIdentity = "aos-${hostPlatform.system}-qualification-v1";
   qualificationReportScenario = testing.mkQualificationReportScenario {
@@ -548,11 +550,25 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   # the platform it can qualify natively. `aos release` discovers its own
   # closure and executors from this layout, so neither appears in the
   # maintainer configuration.
+  #
+  # An x86_64 Linux maintainer host also installs the hosted aarch64-linux
+  # executor: the contract qualifies aarch64 images and containers inside a
+  # QEMU TCG `virt` guest on an x86_64 host, so that executor runs natively
+  # here while its scenarios target aarch64 (the same cross evaluation the
+  # flake exposes as `qualification-executor-aarch64-linux`).
+  hostedExecutors = lib.optionalAttrs (crossSystem == null && hostPlatform.system == "x86_64-linux") {
+    aarch64-linux =
+      (import ./. {
+        inherit system;
+        crossSystem = "aarch64-linux";
+      })
+        .releaseQualificationExecutor;
+  };
   releaseTooling = import ./pkgs/tools/aos/_release-tooling.nix {
     inherit lib;
     inherit (pkgs) runCommand runtimeShell;
     aos = pkgs.aos;
-    executors = {${hostPlatform.system} = releaseQualificationExecutor;};
+    executors = {${hostPlatform.system} = releaseQualificationExecutor;} // hostedExecutors;
   };
 
   prefixAttrs = prefix: attrs:
