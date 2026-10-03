@@ -32,6 +32,9 @@ fn public_single_guest_forks_replays_and_restores() -> Result<(), Box<dyn Error>
 
 fn run_single_guest(materialization: bool) -> Result<(), Box<dyn Error>> {
     let fixture = FlightFixture::new()?;
+    if materialization {
+        grant_savepoint_permission(&fixture)?;
+    }
     let compiled = compile_single_guest(&fixture)?;
     let packaged = QemuLaunchArtifactIdentity::authenticate(
         required_path("CRUCIBLE_FLIGHT_QEMU")?,
@@ -237,6 +240,19 @@ fn choice_at(
         &json_string(&report["observation"], "child")?,
         Duration::from_secs(30),
     )
+}
+
+fn grant_savepoint_permission(fixture: &FlightFixture) -> Result<(), Box<dyn Error>> {
+    // The ordinary execution fixture stays unprivileged for exact captures.
+    // Install only this campaign's grant before the service loads its policy.
+    let mut policy = fs::OpenOptions::new()
+        .append(true)
+        .open(&fixture.peer_policy)?;
+    writeln!(
+        policy,
+        "\n[[grants]]\nprincipal = {PRINCIPAL:?}\noperation = \"campaign-savepoint\"\ncampaign = {CAMPAIGN:?}"
+    )?;
+    Ok(())
 }
 
 fn capture_and_restore(
@@ -481,6 +497,67 @@ fn stage(label: &str) {
         "single_guest_stage={label} deterministic_virtual_budget_ps={VIRTUAL_BUDGET_PS} operational_host_watchdog_s={}",
         HOST_WATCHDOG.as_secs()
     );
+}
+
+#[test]
+fn materialization_policy_authorizes_its_exact_savepoint_operation() -> Result<(), Box<dyn Error>> {
+    use crucible_campaign::{
+        CampaignAuthorizationError, CampaignHash, CampaignName, CampaignPrincipal,
+        CampaignServiceOperation,
+    };
+
+    let fixture = FlightFixture::new()?;
+    let principal = CampaignPrincipal::new(PRINCIPAL)?;
+    let campaign = CampaignName::new(CAMPAIGN)?;
+    let digest = CampaignHash::derive("single-guest-savepoint-policy-test", b"capture");
+    let original = UnixPeerCampaignPolicy::from_toml_bytes(&fs::read(&fixture.peer_policy)?)?;
+    assert_eq!(
+        original.authorize(
+            &principal,
+            CampaignServiceOperation::CampaignSavepoint,
+            &campaign,
+            digest,
+        ),
+        Err(CampaignAuthorizationError::Unauthorized)
+    );
+
+    grant_savepoint_permission(&fixture)?;
+    let policy = UnixPeerCampaignPolicy::from_toml_bytes(&fs::read(&fixture.peer_policy)?)?;
+    policy.authorize(
+        &principal,
+        CampaignServiceOperation::CampaignSavepoint,
+        &campaign,
+        digest,
+    )?;
+    for (principal, operation, campaign) in [
+        (
+            PRINCIPAL,
+            CampaignServiceOperation::CampaignSavepoint,
+            "another-campaign",
+        ),
+        (
+            "another-principal",
+            CampaignServiceOperation::CampaignSavepoint,
+            CAMPAIGN,
+        ),
+        (
+            PRINCIPAL,
+            CampaignServiceOperation::QueryCampaignFindings,
+            CAMPAIGN,
+        ),
+        (PRINCIPAL, CampaignServiceOperation::DebugCampaign, CAMPAIGN),
+    ] {
+        assert_eq!(
+            policy.authorize(
+                &CampaignPrincipal::new(principal)?,
+                operation,
+                &CampaignName::new(campaign)?,
+                digest,
+            ),
+            Err(CampaignAuthorizationError::Unauthorized)
+        );
+    }
+    Ok(())
 }
 
 #[test]
