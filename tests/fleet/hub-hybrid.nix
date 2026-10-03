@@ -271,6 +271,9 @@
     modules = [
       qualificationImageBudget
       {
+        # Native also retains the full Hub server and initializer payload.
+        aos.image.budgets.maxRuntimeClosureMiB = lib.mkForce 1024;
+
         aos.registry-hub = {
           deploymentId = "fleet-hybrid-v1";
           externalUrl = "https://aos.andyl.org";
