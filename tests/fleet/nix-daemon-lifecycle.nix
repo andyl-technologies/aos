@@ -210,6 +210,13 @@ in {
             "after_generation": after_exhaustion,
             "apply_result": degraded_result,
         }
+        # Adding a runtime module preserves the boot-delivered operator tree.
+        operator_sources = json.loads(builder.succeed(
+            f"cat {PROFILE}/gen-{after_exhaustion}/evaluation.json"
+        ))["runtimeConfiguration"]
+        assert {path.rsplit("/", 1)[-1] for path in operator_sources} == {"host.nix", "daemon.nix"}, operator_sources
+        builder.succeed("grep -q '^build-client:x:1000:1000:' /etc/passwd")
+        builder.succeed("grep -q '^tier = \"privileged\"$' /etc/aos/policy.toml")
         assert property("nix-daemon-policy.service", "Slice") == "aos-pkg-nix-daemon.slice"
         assert property("nix-daemon.service", "Slice") == SLICE
         assert property("nix-daemon-policy.service", "Result") == "success"
