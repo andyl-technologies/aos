@@ -2,12 +2,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroU32;
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd as _, OwnedFd};
 
 use aos_sandbox_linux::pidfd::{PidFd, PidFdCredentials};
 use aos_sandbox_linux::startup_fd_table::{
     ClaimedInitialProcessFdTableV1, InitialDescriptorObjectKindV1, InitialDescriptorObservationV1,
-    StartupProcessObservationV1,
+    ActivationEnvironmentHintsV1, ClaimedInitialDescriptorV1, StartupProcessObservationV1,
 };
 use aos_sandbox_protocol::mount_manager_startup::{
     ExpectedStartupDescriptorV1, MountManagerStartupCaptureV1, StartupActivationLabelV1,
@@ -118,6 +118,103 @@ pub(crate) struct StagedMountManagerStartupCaptureV1 {
     preflight: MountManagerStartupCapturePreflightV1,
 }
 
+// A closed borrowed projection of two genuine construction routes. It is not
+// a public table, descriptor factory or validator selected by a callback.
+struct StartupTableView<'owner> {
+    execution: &'owner StartupProcessObservationV1,
+    launcher: &'owner StartupProcessObservationV1,
+    descriptors: &'owner [ClaimedInitialDescriptorV1],
+    hints: &'owner ActivationEnvironmentHintsV1,
+    scanner_numbers: &'owner [u32],
+    boot_interval: (u64, u64),
+    realtime_interval: (i128, i128),
+}
+
+impl StartupTableView<'_> {
+    fn execution(&self) -> &StartupProcessObservationV1 {
+        self.execution
+    }
+
+    fn launcher(&self) -> &StartupProcessObservationV1 {
+        self.launcher
+    }
+
+    fn descriptors(&self) -> &[ClaimedInitialDescriptorV1] {
+        self.descriptors
+    }
+
+    fn activation_hints(&self) -> &ActivationEnvironmentHintsV1 {
+        self.hints
+    }
+
+    fn scanner_descriptor_numbers(&self) -> &[u32] {
+        self.scanner_numbers
+    }
+
+    fn boot_time_interval_ns(&self) -> (u64, u64) {
+        self.boot_interval
+    }
+
+    fn realtime_interval_ns(&self) -> (i128, i128) {
+        self.realtime_interval
+    }
+}
+
+enum StartupCaptureInput<'owner> {
+    Legacy(ClaimedInitialProcessFdTableV1),
+    Selected(&'owner mut super::SelectedMountStartupV2),
+}
+
+enum StartupDescriptorRelease<'owner> {
+    // The old tuple bound descriptors before sources, so failure drops sources
+    // first. This stack-only disposition preserves that post-release interval.
+    Legacy {
+        sources: Vec<StartupManagerSourcePresenceV1>,
+        descriptors: MountManagerActivationDescriptorsV1,
+    },
+    Selected(&'owner mut super::SelectedMountStartupV2),
+}
+
+impl StartupCaptureInput<'_> {
+    fn revalidate(&mut self) -> Result<(), MountManagerSourceInventoryError> {
+        match self {
+            Self::Legacy(claimed) => Ok(claimed.revalidate()?),
+            Self::Selected(owner) => owner.recheck()
+                .map_err(|_| MountManagerSourceInventoryError::InvalidCapture),
+        }
+    }
+
+    fn view(&self) -> Result<StartupTableView<'_>, MountManagerSourceInventoryError> {
+        match self {
+            Self::Legacy(claimed) => Ok(StartupTableView {
+                execution: claimed.execution(),
+                launcher: claimed.launcher(),
+                descriptors: claimed.descriptors(),
+                hints: claimed.activation_hints(),
+                scanner_numbers: claimed.scanner_descriptor_numbers(),
+                boot_interval: claimed.boot_time_interval_ns(),
+                realtime_interval: claimed.realtime_interval_ns(),
+            }),
+            Self::Selected(owner) => {
+                if !owner.is_open() {
+                    return Err(MountManagerSourceInventoryError::InvalidCapture);
+                }
+                let missing = || MountManagerSourceInventoryError::InvalidCapture;
+                let (boot_interval, realtime_interval) = owner.table.intervals().ok_or_else(missing)?;
+                Ok(StartupTableView {
+                    execution: owner.table.execution().ok_or_else(missing)?,
+                    launcher: owner.launcher().ok_or_else(missing)?,
+                    descriptors: owner.table.descriptors().ok_or_else(missing)?,
+                    hints: owner.table.activation_hints().ok_or_else(missing)?,
+                    scanner_numbers: owner.table.scanner_descriptor_numbers().ok_or_else(missing)?,
+                    boot_interval,
+                    realtime_interval,
+                })
+            }
+        }
+    }
+}
+
 /// Compatibility name for the established startup authority.
 pub type CapturedMountManagerStartupV1 = MountManagerStartupAuthorityV1;
 
@@ -188,6 +285,14 @@ impl MountManagerStartupAuthorityV1 {
 }
 
 impl StagedMountManagerStartupCaptureV1 {
+    pub(crate) fn control_policy(&self) -> &aos_sandbox_protocol::mount_manager_startup::ManagerControlPolicyWitnessV1 {
+        self.authority.control.policy()
+    }
+
+    pub(crate) fn into_admitted_authority(self) -> MountManagerStartupAuthorityV1 {
+        self.authority
+    }
+
     pub(crate) const fn capture_model(&self) -> &MountManagerStartupCaptureV1 {
         &self.capture
     }
@@ -238,7 +343,22 @@ pub(crate) fn stage_mount_manager_startup_v1(
     authority: &mut ProtectedJournalAuthority<'_>,
     claimed: ClaimedInitialProcessFdTableV1,
 ) -> Result<StagedMountManagerStartupCaptureV1, MountManagerSourceInventoryError> {
-    claimed.revalidate()?;
+    stage_mount_manager_startup_recipe(authority, StartupCaptureInput::Legacy(claimed))
+}
+
+pub(crate) fn stage_selected_mount_manager_startup_v2(
+    authority: &mut ProtectedJournalAuthority<'_>,
+    owner: &mut super::SelectedMountStartupV2,
+) -> Result<StagedMountManagerStartupCaptureV1, MountManagerSourceInventoryError> {
+    stage_mount_manager_startup_recipe(authority, StartupCaptureInput::Selected(owner))
+}
+
+fn stage_mount_manager_startup_recipe(
+    authority: &mut ProtectedJournalAuthority<'_>,
+    mut input: StartupCaptureInput<'_>,
+) -> Result<StagedMountManagerStartupCaptureV1, MountManagerSourceInventoryError> {
+    input.revalidate()?;
+    let claimed = input.view()?;
     let current_boot = claimed.execution().kernel_boot_id;
     let prepared = authority.prepare_mount_manager_startup_state_v1(current_boot)?;
     let expected = prepared.derived().expected_descriptors.clone();
@@ -384,16 +504,35 @@ pub(crate) fn stage_mount_manager_startup_v1(
     let preflight =
         authority.preflight_mount_manager_startup_capture_v1(prepared, capture.clone())?;
 
-    claimed.revalidate()?;
+    drop(claimed);
+    input.revalidate()?;
+    let claimed = input.view()?;
     validate_source_mount_read_only(&claimed, &labels)?;
-    let (descriptors, sources) =
-        release_typed_descriptors(claimed, &labels, &source_presence_projections)?;
+    drop(claimed);
+
+    // Legacy releases at its literal old interval; Selected keeps the original
+    // reservoir through the same metadata allocation before cloning its roles.
+    let release = match input {
+        StartupCaptureInput::Legacy(claimed) => {
+            let (descriptors, sources) = release_typed_descriptors(
+                claimed, &labels, &source_presence_projections,
+            )?;
+            StartupDescriptorRelease::Legacy { sources, descriptors }
+        }
+        StartupCaptureInput::Selected(owner) => StartupDescriptorRelease::Selected(owner),
+    };
     let losses = cleanup_projections
         .into_iter()
         .map(LostMountSourceCustodyV1::new)
         .collect();
     let absences =
         ReleasingSourceAbsenceBatchV1::new(terminal_projections, capture_id, capture_record_digest);
+    let (descriptors, sources) = match release {
+        StartupDescriptorRelease::Legacy { sources, descriptors } => (descriptors, sources),
+        StartupDescriptorRelease::Selected(owner) => {
+            release_selected_descriptors(owner, &labels, &source_presence_projections)?
+        }
+    };
     Ok(StagedMountManagerStartupCaptureV1 {
         authority: MountManagerStartupAuthorityV1 {
             descriptors,
@@ -635,7 +774,7 @@ fn absence_death_commitment(
 }
 
 fn derive_activation_labels(
-    claimed: &ClaimedInitialProcessFdTableV1,
+    claimed: &StartupTableView<'_>,
     expected: &[ExpectedStartupDescriptorV1],
 ) -> Result<Vec<StartupActivationLabelV1>, MountManagerSourceInventoryError> {
     let hints = claimed.activation_hints();
@@ -691,7 +830,7 @@ fn startup_source_alias_is_present(
     source_unique_mount_id: u64,
     labels: &[StartupActivationLabelV1],
     expected: &[ExpectedStartupDescriptorV1],
-    claimed: &ClaimedInitialProcessFdTableV1,
+    claimed: &StartupTableView<'_>,
 ) -> bool {
     let logical_alias = labels
         .iter()
@@ -730,7 +869,7 @@ fn canonical_u32(value: Option<&[u8]>) -> Result<u32, MountManagerSourceInventor
 }
 
 fn protocol_descriptor_table(
-    claimed: &ClaimedInitialProcessFdTableV1,
+    claimed: &StartupTableView<'_>,
     labels: &[StartupActivationLabelV1],
 ) -> Result<Vec<StartupDescriptorObservationV1>, MountManagerSourceInventoryError> {
     claimed
@@ -749,7 +888,7 @@ fn protocol_descriptor_table(
 }
 
 fn validate_source_mount_read_only(
-    claimed: &ClaimedInitialProcessFdTableV1,
+    claimed: &StartupTableView<'_>,
     labels: &[StartupActivationLabelV1],
 ) -> Result<(), MountManagerSourceInventoryError> {
     for label in labels
@@ -903,6 +1042,107 @@ fn release_typed_descriptors(
         },
         sources,
     ))
+}
+
+enum SelectedDescriptorLayout {
+    Standard(u32),
+    Mount(String),
+    Source(StartupManagerSourcePresenceProjectionV1),
+}
+
+fn release_selected_descriptors(
+    owner: &mut super::SelectedMountStartupV2,
+    labels: &[StartupActivationLabelV1],
+    source_projections: &BTreeMap<u32, StartupManagerSourcePresenceProjectionV1>,
+) -> Result<
+    (MountManagerActivationDescriptorsV1, Vec<StartupManagerSourcePresenceV1>),
+    MountManagerSourceInventoryError,
+> {
+    if !owner.descriptor_prefix.is_empty() || owner.pending_descriptor.is_some() {
+        return Err(MountManagerSourceInventoryError::InvalidCapture);
+    }
+    let entries = owner.table.descriptors()
+        .ok_or(MountManagerSourceInventoryError::InvalidCapture)?;
+    let mut layout = Vec::with_capacity(entries.len());
+    let mut listener_index = None;
+    for (index, entry) in entries.iter().enumerate() {
+        let number = entry.original_number();
+        let next = if number < 3 {
+            Some(SelectedDescriptorLayout::Standard(number))
+        } else {
+            let label = labels.iter().find(|label| label.number == number)
+                .ok_or(MountManagerSourceInventoryError::InvalidMapping)?;
+            match label.role {
+                StartupDescriptorRoleV1::Listener => {
+                    if listener_index.replace(index).is_some() {
+                        return Err(MountManagerSourceInventoryError::InvalidMapping);
+                    }
+                    None
+                }
+                StartupDescriptorRoleV1::RetainedMount => Some(SelectedDescriptorLayout::Mount(label.name.clone())),
+                StartupDescriptorRoleV1::SourceRoot => Some(SelectedDescriptorLayout::Source(
+                    source_projections.get(&number)
+                        .ok_or(MountManagerSourceInventoryError::InvalidMapping)?.clone(),
+                )),
+                StartupDescriptorRoleV1::StandardInput
+                | StartupDescriptorRoleV1::StandardOutput
+                | StartupDescriptorRoleV1::StandardError => {
+                    return Err(MountManagerSourceInventoryError::InvalidMapping);
+                }
+            }
+        };
+        if let Some(next) = next {
+            layout.push(next);
+        }
+    }
+    let listener_index = listener_index.ok_or(MountManagerSourceInventoryError::InvalidMapping)?;
+    let mut standard = Vec::with_capacity(entries.len());
+    let mut mounts = Vec::with_capacity(entries.len());
+    let mut sources = Vec::with_capacity(entries.len());
+    owner.descriptor_prefix.reserve(entries.len());
+
+    // The original table is retained for later kernel bookends. Safe clones
+    // enter the resident prefix before the next fallible operation; all names,
+    // projections and destination capacities have already been prepared.
+    for entry in entries {
+        owner.pending_descriptor = Some(
+            std::os::fd::AsFd::as_fd(entry)
+                .try_clone_to_owned()
+                .map_err(|source| aos_sandbox_linux::Error::Syscall {
+                    operation: "duplicate admitted Mount startup descriptor",
+                    source,
+                })?,
+        );
+        if owner.descriptor_prefix.len() >= owner.descriptor_prefix.capacity() {
+            return Err(MountManagerSourceInventoryError::InvalidCapture);
+        }
+        let Some(descriptor) = owner.pending_descriptor.take() else {
+            return Err(MountManagerSourceInventoryError::InvalidCapture);
+        };
+        owner.descriptor_prefix.push(descriptor);
+    }
+    if layout.len().checked_add(1) != Some(owner.descriptor_prefix.len())
+        || listener_index >= owner.descriptor_prefix.len()
+    {
+        return Err(MountManagerSourceInventoryError::InvalidCapture);
+    }
+
+    // All associations and lengths were checked before the first take. This
+    // closed assembly performs no observations, allocations or fallible calls.
+    let listener = owner.descriptor_prefix.remove(listener_index);
+    let descriptors = std::mem::take(&mut owner.descriptor_prefix);
+    for (descriptor, slot) in descriptors.into_iter().zip(layout) {
+        match slot {
+            SelectedDescriptorLayout::Standard(number) => standard.push((number, descriptor)),
+            SelectedDescriptorLayout::Mount(name) => mounts.push(MountManagerActivationDescriptorV1 {
+                name, descriptor,
+            }),
+            SelectedDescriptorLayout::Source(projection) => sources.push(
+                StartupManagerSourcePresenceV1::new(descriptor, projection),
+            ),
+        }
+    }
+    Ok((MountManagerActivationDescriptorsV1 { listener, standard, mounts }, sources))
 }
 
 fn derive_source_presence_projections(

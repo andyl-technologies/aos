@@ -6,6 +6,7 @@
 
 use std::collections::BTreeSet;
 use std::env;
+use std::os::fd::AsFd as _;
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -15,6 +16,7 @@ use aos_sandbox::journal::{Journal, JournalError, JournalLimits, RecordNamespace
 use aos_sandbox::mount_manager_startup::{
     MountManagerSourceInventoryError, MountManagerStartupJournalBorrowV1,
     MountManagerStartupProtectedOwnerV1,
+    SelectedMountStartupV2,
 };
 use aos_sandbox_broker_session_security::{
     ProductionBrokerDeadlineErrorV1, ProductionBrokerServiceErrorV1,
@@ -30,10 +32,10 @@ use aos_sandbox_linux::startup_fd_table::{
     StartupExecutableObservationV1, observe_provisioned_startup_executable,
 };
 use aos_sandbox_mount::authorization::MountAuthorityV1;
-use aos_sandbox_mount::broker::{MountBroker, preflight_recovery_state};
+use aos_sandbox_mount::broker::{MountBroker, SelectedMountBrokerStartupV2, preflight_recovery_state};
 use aos_sandbox_mount::catalog::{FileMountCatalog, PreparedMountCatalog};
 use aos_sandbox_mount::helper::PosixSpawnNamespaceHelper;
-use aos_sandbox_mount::keeper::SystemdFdStore;
+use aos_sandbox_mount::keeper::{KernelMountName, SourcePinName, SystemdFdStore};
 use aos_sandbox_mount::source_pin::recover_source_custody;
 use aos_sandbox_mount::worker::{DescriptorMountWorker, RetainedMountObservation};
 use aos_sandbox_mount::{DormantMountBrokerCompositionV1, MountError};
@@ -124,6 +126,16 @@ fn run() -> Result<(), MountDaemonErrorV1> {
         validate_fixed_root_mount_authority_v1()
             .map_err(ProductionRootMountSourceProviderErrorV1::from)?;
         return Ok(());
+    }
+
+    if matches!(arguments.as_slice(), [_, helper, source, selected]
+        if !helper.starts_with('-') && source == "--source-provider"
+            && selected == "--selected-mount-source")
+    {
+        // This closed selected entry precedes activation adoption and every
+        // runtime/thread constructor. Ordinary argument and adoption order below
+        // remains unchanged.
+        run_selected_startup(arguments[1].clone());
     }
     if arguments
         .get(1)
@@ -219,7 +231,7 @@ fn run() -> Result<(), MountDaemonErrorV1> {
     let mut broker =
         MountBroker::new_with_destination_slots(journal, worker, authority, CATALOG_ROOT, 0)?;
     if selected_mount_source {
-        run_selected_original_mount(&mut activation, &mut broker)?;
+        run_selected_original_mount(&mut activation, &mut broker, None)?;
         return Ok(());
     }
     // A disabled connector cannot recover a cold request. Enabled startup
@@ -286,17 +298,20 @@ fn run() -> Result<(), MountDaemonErrorV1> {
 fn run_selected_original_mount<W: aos_sandbox_mount::worker::MountWorker>(
     activation: &mut ProductionBrokerSessionActivationV1,
     broker: &mut MountBroker<W>,
+    startup: Option<SelectedMountStartupV2>,
 ) -> Result<(), MountDaemonErrorV1> {
-    // This branch does not replace the preceding exclusive FD-table capture.
-    // Its selected PID1-image bridge remains an actual missing prerequisite;
-    // no D-Bus image DATA or caller flag is converted into that Core proof.
     let accept_deadline = production_deadline_after(ACCEPT_TIMEOUT)?;
     // Derive the fixed cycle deadline before accepting an original. No
     // fallible clock operation may stand between receipt and resident custody;
     // time spent accepting is charged to this same deadline, never renewed.
     let request_deadline = production_deadline_after(REQUEST_TIMEOUT)?;
     let session = activation.accept_authenticated(accept_deadline)?;
-    let mut original = ProductionOriginalMountCycleV1::new(session, request_deadline);
+    let mut original = match startup {
+        Some(startup) => ProductionOriginalMountCycleV1::with_selected_startup(
+            session, request_deadline, startup,
+        ),
+        None => ProductionOriginalMountCycleV1::new(session, request_deadline),
+    };
     let locally_sent = original.run_once(broker).is_ok();
     if locally_sent {
         eprintln!("aos-sandbox-mountd: original Root1 sent; terminal continuation remains unavailable");
@@ -306,6 +321,167 @@ fn run_selected_original_mount<W: aos_sandbox_mount::worker::MountWorker>(
     // Keep the cycle, activation and sole broker runtime resident through the
     // intentional failed invocation. OS death releases them; this is not Drop,
     // queue settlement, terminal drain, BSA completion or public Acquire success.
+    std::process::exit(1)
+}
+
+fn terminate_selected_startup(startup: &mut SelectedMountStartupV2) -> ! {
+    // End before the diagnostic: stderr itself can panic. Original table and
+    // image owners remain resident through intentional process death, not Drain.
+    startup.end();
+    eprintln!("aos-sandbox-mountd: selected startup refused; original invocation retained");
+    std::process::exit(1)
+}
+
+fn run_selected_startup(helper_executable: String) -> ! {
+    let mut startup = SelectedMountStartupV2::new();
+    // SAFETY: this is the single-threaded entrypoint before any owner adopts
+    // an inherited descriptor. The shared one-shot scanner runs before D-Bus.
+    if unsafe { startup.capture_initial_once() }.is_err() {
+        terminate_selected_startup(&mut startup);
+    }
+
+    // This local terminal adapter keeps each actual returned Err in its arm
+    // while the parent originals remain resident. It does not retain prefixes
+    // which an unchanged lower constructor never returned, or fund allocations.
+    macro_rules! selected_result {
+        ($owner:ident; $expression:expr) => {
+            match $expression {
+                Ok(value) => value,
+                Err(_cause) => terminate_selected_startup(&mut $owner),
+            }
+        };
+    }
+
+    let (mut protected, _open_report) = selected_result!(startup;
+        MountManagerStartupProtectedOwnerV1::open_fixed_protected()
+    );
+    if protected.capture_selected_once(&mut startup).is_err() {
+        terminate_selected_startup(&mut startup);
+    }
+    let handoff = match protected.handoff_selected(startup) {
+        Ok(handoff) => handoff,
+        Err(mut original) => terminate_selected_startup(&mut original),
+    };
+    let (mut journal, captured, mut startup) = match handoff.into_runtime_parts() {
+        Ok(parts) => parts,
+        Err(_handoff) => {
+            // The handoff has already ended its same queues and owns every
+            // original through this failed invocation.
+            eprintln!("aos-sandbox-mountd: selected writer handoff refused; originals retained");
+            std::process::exit(1)
+        }
+    };
+    let (descriptors, sources, _losses, _absences, _control) = captured.into_parts();
+    let (listener, _standard, mounts) = descriptors.into_parts();
+
+    // Convert the genuinely admitted roles through existing kernel wrappers.
+    // Original table owners remain in startup; these typed originals are kept
+    // too, and only safe clones enter consuming lower validators.
+    let mut original_mounts = Vec::with_capacity(mounts.len());
+    for mount in mounts {
+        let name = mount.name().to_owned();
+        original_mounts.push((name, mount.into_fd()));
+    }
+    let mut original_sources = Vec::with_capacity(sources.len());
+    for source in sources {
+        original_sources.push(source.into_parts());
+    }
+    let mut retained_mounts = std::collections::BTreeMap::new();
+    for (name, descriptor) in &original_mounts {
+        let name = selected_result!(startup; KernelMountName::parse(name));
+        if retained_mounts.contains_key(&name) {
+            terminate_selected_startup(&mut startup);
+        }
+        let descriptor = selected_result!(startup; descriptor.as_fd().try_clone_to_owned());
+        let mount = selected_result!(startup;
+            aos_sandbox_linux::mount::DetachedMount::from_inherited(descriptor)
+        );
+        retained_mounts.insert(name, mount);
+    }
+    let mut source_pins = std::collections::BTreeMap::new();
+    for (descriptor, projection) in &original_sources {
+        let Some(name) = projection.expected.name.as_deref() else {
+            terminate_selected_startup(&mut startup);
+        };
+        let name = selected_result!(startup; SourcePinName::parse(name));
+        if source_pins.contains_key(&name) {
+            terminate_selected_startup(&mut startup);
+        }
+        let descriptor = selected_result!(startup; descriptor.as_fd().try_clone_to_owned());
+        let source = selected_result!(startup;
+            aos_sandbox_linux::path::ResolvedPath::from_inherited(descriptor)
+        );
+        if source.identity().file_type != aos_sandbox_linux::path::FileType::Directory {
+            terminate_selected_startup(&mut startup);
+        }
+        source_pins.insert(name, source);
+    }
+    let mut activation = selected_result!(startup;
+        ProductionBrokerSessionActivationV1::adopt_mount_listener(listener)
+    );
+    let keeper = Arc::new(selected_result!(startup; SystemdFdStore::from_environment_with_inventories(
+        retained_mounts.keys().cloned().collect(),
+        source_pins.keys().cloned().collect(),
+        MAXIMUM_RETAINED_MOUNTS,
+    )));
+    selected_result!(startup;
+        MountManagerStartupJournalBorrowV1::borrow_fixed_root_local_recovery_v4(&mut journal)
+    );
+    let kernel_boot_id = selected_result!(startup; KernelBootId::current()).into_bytes();
+    let observations = retained_mounts
+        .iter()
+        .map(|(name, mount)| RetainedMountObservation {
+            handle: name.digest(),
+            mount_id: mount.mount_id(),
+        })
+        .collect::<Vec<_>>();
+    selected_result!(startup; preflight_recovery_state(&journal, kernel_boot_id, &observations));
+    let reopened_sources = selected_result!(startup; recover_source_custody(
+        &mut journal,
+        source_pins,
+        &keeper,
+        kernel_boot_id,
+    ));
+    let catalog = PreparedMountCatalog::with_reopened_sources(
+        selected_result!(startup; FileMountCatalog::open_root_owned(CATALOG_ROOT)),
+        reopened_sources,
+    );
+    let helper = selected_result!(startup; PosixSpawnNamespaceHelper::new(helper_executable));
+    let worker = selected_result!(startup;
+        DescriptorMountWorker::new(catalog, helper, keeper, retained_mounts)
+    );
+    let Some(credential_directory) = env::var_os("CREDENTIALS_DIRECTORY") else {
+        terminate_selected_startup(&mut startup);
+    };
+    let authority = selected_result!(startup;
+        MountAuthorityV1::from_protected_directory(credential_directory)
+    );
+
+    let mut construction = SelectedMountBrokerStartupV2::new(journal, worker, authority, startup);
+    if construction.recover_once().is_err() {
+        eprintln!("aos-sandbox-mountd: selected broker recovery refused; originals retained");
+        std::process::exit(1)
+    }
+    let Some((mut broker, mut startup)) = construction.take_completed() else {
+        eprintln!("aos-sandbox-mountd: selected broker handoff refused; originals retained");
+        std::process::exit(1)
+    };
+    let accept_deadline = selected_result!(startup; production_deadline_after(ACCEPT_TIMEOUT));
+    let request_deadline = selected_result!(startup; production_deadline_after(REQUEST_TIMEOUT));
+    selected_result!(startup; broker.recheck_selected_mount_startup(&mut startup));
+    let session = selected_result!(startup; activation.accept_authenticated(accept_deadline));
+    let mut original = ProductionOriginalMountCycleV1::with_selected_startup(
+        session,
+        request_deadline,
+        startup,
+    );
+    let sent = original.run_once(&mut broker).is_ok();
+    original.end();
+    if sent {
+        eprintln!("aos-sandbox-mountd: original Root1 sent; terminal continuation remains unavailable");
+    } else {
+        eprintln!("aos-sandbox-mountd: selected original Mount cycle refused; invocation retained");
+    }
     std::process::exit(1)
 }
 

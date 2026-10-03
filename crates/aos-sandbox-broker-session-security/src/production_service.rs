@@ -71,9 +71,13 @@ pub struct ProductionMountBrokerOwnersV1<'owners> {
 /// The same fixed Root opening and delivered catalog originals remain resident
 /// through independent domain admission and the existing native runtime. This
 /// route sends no public success, completes no BSA outcome, and proves neither
-/// Ready nor terminal drain. The exclusive initial-table/PID1-image bridge,
-/// lower unreturned prefixes and allocation funding remain separate bounds.
+/// Ready nor terminal drain. The selected installed caller supplies the genuine
+/// exclusive table/PID1-image owner, which is bookended at protected crossings.
+/// The compatibility constructor supplies no such owner. Source's independent
+/// initial entry chain, lower unreturned prefixes and allocation funding remain
+/// separate functional bounds.
 pub struct ProductionOriginalMountCycleV1 {
+    startup: Option<aos_sandbox::mount_manager_startup::SelectedMountStartupV2>,
     image_attempt: Option<aos_systemd::OwnUnitPid1ImageAttemptV1>,
     image: Option<aos_systemd::CompletedOwnUnitPid1ImageV1>,
     image_runtime: Option<std::io::Result<tokio::runtime::Runtime>>,
@@ -93,6 +97,7 @@ pub struct ProductionOriginalMountCycleV1 {
 
 #[derive(Clone, Copy)]
 enum OriginalMountCycleStageV1 {
+    Startup,
     Image,
     Runtime,
     Root,
@@ -109,6 +114,8 @@ impl std::fmt::Debug for ProductionOriginalMountCycleV1 {
 
 /// Lends an original cycle's genuine first returned cause without recovery.
 pub enum ProductionOriginalMountCycleFailureV1<'owner> {
+    /// The same admitted startup owner retains the genuine kernel/image cause.
+    Startup(aos_sandbox::mount_manager_startup::SelectedMountStartupFailureRefV2<'owner>),
     /// The genuine same-unit observer retains both raw image-message prefixes.
     Image(&'owner aos_systemd::OwnUnitPid1ImageAttemptV1),
     /// Constructing the selected observation runtime returned this native error.
@@ -128,6 +135,7 @@ pub enum ProductionOriginalMountCycleFailureV1<'owner> {
 impl std::fmt::Debug for ProductionOriginalMountCycleFailureV1<'_> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(match self {
+            Self::Startup(_) => "ProductionOriginalMountCycleFailureV1::Startup",
             Self::Image(_) => "ProductionOriginalMountCycleFailureV1::Image",
             Self::Runtime(_) => "ProductionOriginalMountCycleFailureV1::Runtime",
             Self::Root(_) => "ProductionOriginalMountCycleFailureV1::Root",
@@ -156,7 +164,29 @@ impl ProductionOriginalMountCycleV1 {
     /// Parks the genuine session and original deadline without I/O.
     #[must_use]
     pub fn new(session: DormantAuthenticatedBrokerSessionV1, deadline: u64) -> Self {
+        Self::new_inner(session, deadline, None)
+    }
+
+    /// Parks the completed selected startup beside the same original request.
+    ///
+    /// This accepts only the actual move-only Core owner. It does not complete
+    /// an initial table from DATA, duplicate an image flight or grant Acquire.
+    #[must_use]
+    pub fn with_selected_startup(
+        session: DormantAuthenticatedBrokerSessionV1,
+        deadline: u64,
+        startup: aos_sandbox::mount_manager_startup::SelectedMountStartupV2,
+    ) -> Self {
+        Self::new_inner(session, deadline, Some(startup))
+    }
+
+    fn new_inner(
+        session: DormantAuthenticatedBrokerSessionV1,
+        deadline: u64,
+        startup: Option<aos_sandbox::mount_manager_startup::SelectedMountStartupV2>,
+    ) -> Self {
         Self {
+            startup,
             image_attempt: None,
             image: None,
             image_runtime: None,
@@ -227,7 +257,31 @@ impl ProductionOriginalMountCycleV1 {
         }
     }
 
-    fn bookend(&mut self) -> bool {
+    fn startup_bookend<W: aos_sandbox_mount::worker::MountWorker>(
+        &mut self,
+        broker: &mut aos_sandbox_mount::broker::MountBroker<W>,
+    ) -> bool {
+        if self.startup.is_none() {
+            return true;
+        }
+        if !self.check_deadline() {
+            return false;
+        }
+        let Some(startup) = self.startup.as_mut() else {
+            return false;
+        };
+        if broker.recheck_selected_mount_startup(startup).is_err() {
+            self.note_failure(OriginalMountCycleStageV1::Startup);
+            return false;
+        }
+        // Charge the slow fixed five-second observation to the SAME original D.
+        self.check_deadline()
+    }
+
+    fn bookend<W: aos_sandbox_mount::worker::MountWorker>(
+        &mut self,
+        broker: &mut aos_sandbox_mount::broker::MountBroker<W>,
+    ) -> bool {
         if !self.check_deadline() {
             return false;
         }
@@ -239,10 +293,18 @@ impl ProductionOriginalMountCycleV1 {
             self.note_failure(OriginalMountCycleStageV1::Root);
             return false;
         }
-        true
+        self.startup_bookend(broker)
     }
 
-    fn capture_launcher_image(&mut self) -> bool {
+    fn capture_launcher_image<W: aos_sandbox_mount::worker::MountWorker>(
+        &mut self,
+        broker: &mut aos_sandbox_mount::broker::MountBroker<W>,
+    ) -> bool {
+        if self.startup.is_some() {
+            // The actual Core producer already owns both original image
+            // Messages. Reuse it rather than accumulate a second image pair.
+            return self.startup_bookend(broker);
+        }
         // The installed caller has already completed exclusive initial-table
         // handling before entering this cycle. This observer cannot complete
         // that table or construct the missing Core executed-image bridge.
@@ -285,25 +347,51 @@ impl ProductionOriginalMountCycleV1 {
         &mut self,
         broker: &mut aos_sandbox_mount::broker::MountBroker<W>,
     ) -> bool {
+        if !self.startup_bookend(broker) {
+            return false;
+        }
         if !self.receipt.arm_original_fence() {
             self.note_failure(OriginalMountCycleStageV1::Receipt);
+            return false;
+        }
+        if !self.startup_bookend(broker) {
             return false;
         }
         if !self.check_deadline() {
             return false;
         }
-        if !self.capture_launcher_image() || !self.check_deadline() {
+        if !self.capture_launcher_image(broker) || !self.check_deadline() {
             return false;
         }
-        if self.root.connect_once().is_err() || !self.root.read_catalog_once() {
+        if !self.startup_bookend(broker) {
+            return false;
+        }
+        if self.root.connect_once().is_err() {
             self.note_failure(OriginalMountCycleStageV1::Root);
             return false;
         }
-        if self.receipt.receive_once().is_err() || self.receipt.admit_original_acquire(broker).is_err() {
+        if !self.startup_bookend(broker) {
+            return false;
+        }
+        if !self.root.read_catalog_once() {
+            self.note_failure(OriginalMountCycleStageV1::Root);
+            return false;
+        }
+        if !self.startup_bookend(broker) {
+            return false;
+        }
+        if self.receipt.receive_once().is_err() {
             self.note_failure(OriginalMountCycleStageV1::Receipt);
             return false;
         }
-        if !self.bookend() {
+        if !self.startup_bookend(broker) {
+            return false;
+        }
+        if self.receipt.admit_original_acquire(broker).is_err() {
+            self.note_failure(OriginalMountCycleStageV1::Receipt);
+            return false;
+        }
+        if !self.bookend(broker) {
             return false;
         }
         let Some((publication, catalog)) = self.root.catalog_pair() else {
@@ -314,7 +402,7 @@ impl ProductionOriginalMountCycleV1 {
         // upgraded into original custody or a hard-memory reservation here.
         self.publication = Some(publication.to_vec());
         self.catalog = Some(catalog.to_vec());
-        if !self.bookend() {
+        if !self.bookend(broker) {
             return false;
         }
 
@@ -329,12 +417,12 @@ impl ProductionOriginalMountCycleV1 {
             self.note_failure(OriginalMountCycleStageV1::Mount);
             return false;
         }
-        if !self.bookend() {
+        if !self.bookend(broker) {
             return false;
         }
 
         loop {
-            if !self.bookend() {
+            if !self.bookend(broker) {
                 return false;
             }
             let (Some(authority), Some(session)) = (self.receipt.authority_mut(), self.root.borrow_current_session()) else {
@@ -346,7 +434,7 @@ impl ProductionOriginalMountCycleV1 {
                 self.note_failure(OriginalMountCycleStageV1::Mount);
                 return false;
             }
-            if !self.bookend() {
+            if !self.bookend(broker) {
                 return false;
             }
             if matches!(self.mount_result, Some(Ok(true))) {
@@ -369,6 +457,8 @@ impl ProductionOriginalMountCycleV1 {
     #[must_use]
     pub fn failure(&self) -> Option<ProductionOriginalMountCycleFailureV1<'_>> {
         let failure = match self.first_stage {
+            Some(OriginalMountCycleStageV1::Startup) => self.startup.as_ref()
+                .and_then(|startup| startup.failure()).map(ProductionOriginalMountCycleFailureV1::Startup),
             Some(OriginalMountCycleStageV1::Image) => self.image_attempt.as_ref().map(ProductionOriginalMountCycleFailureV1::Image),
             Some(OriginalMountCycleStageV1::Runtime) => self.image_runtime.as_ref().and_then(|result| result.as_ref().err()).map(ProductionOriginalMountCycleFailureV1::Runtime),
             Some(OriginalMountCycleStageV1::Root) => self.root.failure().map(ProductionOriginalMountCycleFailureV1::Root),
@@ -401,6 +491,9 @@ impl ProductionOriginalMountCycleV1 {
     /// Ends both same-original queues before any descendant prefix drops.
     pub fn end(&mut self) {
         self.ended = true;
+        if let Some(startup) = self.startup.as_mut() {
+            startup.end();
+        }
         if let Some(image) = self.image.as_ref() {
             image.end();
         }

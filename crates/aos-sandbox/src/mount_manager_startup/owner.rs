@@ -15,7 +15,10 @@ use aos_sandbox_protocol::mount_manager_startup::{
 };
 use aos_sandbox_protocol::mount_source_acquisition_state::SourceAcquisitionRowV2;
 
-use super::authority::{StagedMountManagerStartupCaptureV1, stage_mount_manager_startup_v1};
+use super::authority::{
+    StagedMountManagerStartupCaptureV1, stage_mount_manager_startup_v1,
+    stage_selected_mount_manager_startup_v2,
+};
 use super::custody::{
     recover_fresh_manager_source_handoff_v1, recover_fresh_manager_source_presence_v1,
     recover_fresh_manager_source_removal_receipt_v1, recover_fresh_manager_source_removal_v1,
@@ -67,6 +70,58 @@ pub enum MountManagerStartupCaptureOutcomeV1 {
 /// path, basename, limit, record selector, sequence, or role input on capture.
 pub struct MountManagerStartupProtectedOwnerV1 {
     journal: Option<Journal>,
+}
+
+/// Retains the paired selected startup and same admitted fixed writer handoff.
+///
+/// The only producer is the successful fixed-owner capture path. It is not a
+/// generic journal extraction, fresh opener or descriptor-to-authority factory.
+pub struct SelectedMountStartupHandoffV2 {
+    startup: Option<super::SelectedMountStartupV2>,
+    journal: Option<Journal>,
+    authority: Option<MountManagerStartupAuthorityV1>,
+}
+
+impl SelectedMountStartupHandoffV2 {
+    /// Moves the same completed originals to the existing Mount runtime caller.
+    ///
+    /// # Errors
+    /// Returns this exact owner after failed association or fresh bookends.
+    /// Every original stays resident; no take crosses an observation or error.
+    pub fn into_runtime_parts(mut self) -> Result<
+        (Journal, MountManagerStartupAuthorityV1, super::SelectedMountStartupV2), Self,
+    > {
+        let (Some(startup), Some(journal)) = (self.startup.as_mut(), self.journal.as_mut()) else {
+            self.end();
+            return Err(self);
+        };
+        if self.authority.is_none() || startup.recheck_held_capture(journal).is_err() {
+            self.end();
+            return Err(self);
+        }
+        // All three slots were checked above. Exact restoration is still
+        // explicit: an association refusal cannot silently destroy a prefix.
+        match (self.journal.take(), self.authority.take(), self.startup.take()) {
+            (Some(journal), Some(authority), Some(startup)) => Ok((journal, authority, startup)),
+            (journal, authority, startup) => {
+                self.journal = journal;
+                self.authority = authority;
+                self.startup = startup;
+                self.end();
+                Err(self)
+            }
+        }
+    }
+
+    fn end(&mut self) {
+        if let Some(startup) = self.startup.as_mut() { startup.end(); }
+    }
+}
+
+impl Drop for SelectedMountStartupHandoffV2 {
+    fn drop(&mut self) {
+        self.end();
+    }
 }
 
 /// Borrows the sole already-open fixed Mount journal for source operations.
@@ -288,6 +343,199 @@ impl MountManagerStartupCaptureOutcomeV1 {
 }
 
 impl MountManagerStartupProtectedOwnerV1 {
+    /// Admits the genuine selected table while all returned prefixes stay resident.
+    ///
+    /// This uses the established canonical stage, append and fixed-root
+    /// ambiguity recovery. It does not open another journal or release a
+    /// descriptor on failure. Lower unreturned opener prefixes and allocation
+    /// funding remain outside this returned-owner custody boundary.
+    ///
+    /// # Errors
+    ///
+    /// Permanently ends the selected owner after any failed kernel, protected
+    /// or durability join. The first actual cause remains in that same owner.
+    pub fn capture_selected_once(
+        &mut self,
+        selected: &mut super::SelectedMountStartupV2,
+    ) -> Result<(), super::SelectedMountStartupEndedV2> {
+        let mut boundary = super::launcher::SelectedBoundary { owner: selected, completed: false };
+        let result = self.capture_selected_inner(boundary.owner);
+        boundary.completed = result.is_ok();
+        result
+    }
+
+    fn capture_selected_inner(
+        &mut self,
+        selected: &mut super::SelectedMountStartupV2,
+    ) -> Result<(), super::SelectedMountStartupEndedV2> {
+        if !selected.is_open() || selected.staged.is_some() || selected.admitted
+            || selected.commits.iter().any(Option::is_some)
+            || selected.recoveries.iter().any(Option::is_some)
+        {
+            selected.refuse_association();
+            return Err(super::SelectedMountStartupEndedV2);
+        }
+        let staged = self.current_journal().and_then(|journal| {
+            let mut authority = journal.claim_mount_manager_startup_authority()?;
+            stage_selected_mount_manager_startup_v2(&mut authority, selected)
+        });
+        match staged {
+            Ok(staged) => selected.staged = Some(staged),
+            Err(error) => {
+                selected.record_admission_failure(error);
+                return Err(super::SelectedMountStartupEndedV2);
+            }
+        }
+        let Some(staged) = selected.staged.as_ref() else {
+            selected.refuse_association();
+            return Err(super::SelectedMountStartupEndedV2);
+        };
+        selected.control_policy = Some(staged.control_policy().clone());
+
+        for index in 0..2 {
+            if selected.recheck().is_err() {
+                return Err(super::SelectedMountStartupEndedV2);
+            }
+            let result = self.current_journal().and_then(|journal| {
+                let mut authority = journal.claim_mount_manager_startup_authority()?;
+                let staged = selected.staged.as_ref()
+                    .ok_or(MountManagerSourceInventoryError::InvalidCapture)?;
+                staged.commit(&mut authority).map_err(Into::into)
+            });
+            match result {
+                Ok(receipt) => selected.commits[index] = Some(Ok(receipt)),
+                Err(MountManagerSourceInventoryError::Journal(error)) => {
+                    selected.commits[index] = Some(Err(error));
+                }
+                Err(error) => {
+                    selected.record_admission_failure(error);
+                    return Err(super::SelectedMountStartupEndedV2);
+                }
+            }
+            if let Some(Ok(receipt)) = selected.commits[index].as_ref() {
+                let Some(staged) = selected.staged.as_ref() else {
+                    selected.refuse_association();
+                    return Err(super::SelectedMountStartupEndedV2);
+                };
+                let capture = staged.capture_model();
+                if receipt.capture() != (capture.capture_sequence, capture.capture_id, capture.record_digest) {
+                    selected.refuse_association();
+                    return Err(super::SelectedMountStartupEndedV2);
+                }
+                selected.admitted = true;
+                return self.finish_selected_readback(selected);
+            }
+            let healthy = self.current_journal().map(|journal| journal.ensure_healthy().is_ok());
+            match healthy {
+                Ok(true) => {
+                    selected.record_commit_failure(index);
+                    return Err(super::SelectedMountStartupEndedV2);
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    selected.record_admission_failure(error);
+                    return Err(super::SelectedMountStartupEndedV2);
+                }
+            }
+            let Some(staged) = selected.staged.as_ref() else {
+                selected.refuse_association();
+                return Err(super::SelectedMountStartupEndedV2);
+            };
+            selected.recoveries[index] = Some(self.reopen_and_classify(staged));
+            match selected.recoveries[index].as_ref() {
+                Some(Ok(MountManagerStartupCaptureRecoveryV1::Applied)) => {
+                    selected.admitted = true;
+                    return self.finish_selected_readback(selected);
+                }
+                Some(Ok(MountManagerStartupCaptureRecoveryV1::Retry(_))) if index == 0 => {}
+                Some(Ok(MountManagerStartupCaptureRecoveryV1::Retry(_))) => {
+                    selected.record_admission_failure(MountManagerSourceInventoryError::CaptureNotCommitted);
+                    return Err(super::SelectedMountStartupEndedV2);
+                }
+                Some(Err(_)) => {
+                    selected.record_recovery_failure(index);
+                    return Err(super::SelectedMountStartupEndedV2);
+                }
+                None => {
+                    selected.refuse_association();
+                    return Err(super::SelectedMountStartupEndedV2);
+                }
+            }
+            // The retry preflight contains no descriptor owners. Its destination
+            // is checked before moving it, and replacement observes nothing.
+            let Some(staged) = selected.staged.as_mut() else {
+                selected.refuse_association();
+                return Err(super::SelectedMountStartupEndedV2);
+            };
+            if let Some(Ok(MountManagerStartupCaptureRecoveryV1::Retry(preflight))) = selected.recoveries[index].take() {
+                staged.replace_preflight(preflight);
+            } else {
+                selected.refuse_association();
+                return Err(super::SelectedMountStartupEndedV2);
+            }
+        }
+        selected.refuse_association();
+        Err(super::SelectedMountStartupEndedV2)
+    }
+
+    fn finish_selected_readback(
+        &mut self,
+        selected: &mut super::SelectedMountStartupV2,
+    ) -> Result<(), super::SelectedMountStartupEndedV2> {
+        let result = self.current_journal().and_then(|journal| selected.check_held_capture(journal));
+        if let Err(error) = result {
+            selected.record_admission_failure(error);
+            return Err(super::SelectedMountStartupEndedV2);
+        }
+        selected.recheck()
+    }
+
+    /// Pairs the admitted selected startup with the same fixed writer.
+    ///
+    /// The journal has already completed the established append/reopen/readback
+    /// recipe. No second lock or opener is created for the existing broker.
+    ///
+    /// # Errors
+    /// Returns the same selected original after refusal, while this fixed owner
+    /// retains its journal. The first cause and negative image fence persist.
+    pub fn handoff_selected(
+        &mut self,
+        mut selected: super::SelectedMountStartupV2,
+    ) -> Result<SelectedMountStartupHandoffV2, super::SelectedMountStartupV2> {
+        if !selected.admitted || selected.staged.is_none() || self.journal.is_none() {
+            selected.refuse_association();
+            return Err(selected);
+        }
+        let result = self.current_journal().and_then(|journal| {
+            selected.check_held_capture(journal)
+        });
+        if let Err(error) = result {
+            selected.record_admission_failure(error);
+            return Err(selected);
+        }
+        if selected.recheck().is_err() {
+            return Err(selected);
+        }
+        let result = self.current_journal().and_then(|journal| selected.check_held_capture(journal));
+        if let Err(error) = result {
+            selected.record_admission_failure(error);
+            return Err(selected);
+        }
+        match (self.journal.take(), selected.staged.take()) {
+            (Some(journal), Some(staged)) => Ok(SelectedMountStartupHandoffV2 {
+                startup: Some(selected),
+                journal: Some(journal),
+                authority: Some(staged.into_admitted_authority()),
+            }),
+            (journal, staged) => {
+                self.journal = journal;
+                selected.staged = staged;
+                selected.refuse_association();
+                Err(selected)
+            }
+        }
+    }
+
     /// Installs a canonical policy in the fixed protected Mount journal offline.
     ///
     /// The journal lock excludes the running Mount broker. An exact current
@@ -828,6 +1076,25 @@ fn mount_manager_journal_limits() -> JournalLimits {
         maximum_materialized_bytes: 512 * 1024 * 1024,
         maximum_materialized_records: 1_000_000,
     }
+}
+
+pub(super) fn validate_selected_capture_journal(
+    journal: &mut Journal,
+    witness: &aos_sandbox_protocol::mount_manager_startup::ManagerControlPolicyWitnessV1,
+) -> Result<(), MountManagerSourceInventoryError> {
+    journal.require_protected_location(
+        Path::new(PROTECTED_MOUNT_MANAGER_ROOT), MOUNT_MANAGER_JOURNAL, 0,
+        mount_manager_journal_limits(),
+    )?;
+    let authority = journal.claim_mount_manager_startup_authority()?;
+    let (generation, captures) = authority.validate_mount_manager_startup_replay_v1()?;
+    if generation != witness.policy_generation
+        || u64::try_from(captures).ok() != Some(witness.capture_sequence)
+    {
+        return Err(MountManagerSourceInventoryError::InvalidCapture);
+    }
+    authority.validate_manager_control_policy_witness_v1(witness, true)?;
+    Ok(())
 }
 
 #[cfg(test)]

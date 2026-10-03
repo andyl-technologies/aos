@@ -256,6 +256,7 @@ in {
         TasksMax = 64;
       } // lib.optionalAttrs cfg.sourceProviderSession.enable {
         AosOwnLauncherImage = true;
+        NonBlocking = true;
         SELinuxContext = "system_u:system_r:aos_sandbox_mount_t:s0";
       };
     };
