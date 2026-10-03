@@ -202,6 +202,24 @@ impl OriginalSourceProducerV5 {
         Ok((readback, completion, selected, offer))
     }
 
+    pub(super) fn held_delivery_parts_v5(
+        &mut self,
+    ) -> Result<(
+        &OriginalSourceProtectedReadbackV5,
+        &mut super::completion::OriginalSourceCompletionV5,
+        &aos_sandbox_source_provider_security::ProtectedOriginalSelectedInputV1,
+        &mut super::storage_offer::OriginalStorageOfferV5,
+    ), ProviderLedgerError> {
+        let readback = self.appends[OriginalProducerAppendV5::HeldStored.index()]
+            .as_ref().and_then(|append| append.readback.as_ref())
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        let completion = self.original_completion.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
+        let selected = self.selected_archive.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        let offer = self.storage_offer.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
+        Ok((readback, completion, selected, offer))
+    }
+
     pub(super) fn append_mut(
         &mut self,
         step: OriginalProducerAppendV5,

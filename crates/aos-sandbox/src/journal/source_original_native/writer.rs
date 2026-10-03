@@ -80,6 +80,11 @@ pub struct OriginalSourceProtectedReadbackV5 {
     original_held_signing_attempted: std::cell::Cell<bool>,
 }
 
+enum OriginalHeldBasisPurposeV5<'control> {
+    Preparation(&'control aos_sandbox_source_provider_protocol::native_held_completion::frame::PreparedNativeHeldControlV1),
+    Delivery(&'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1),
+}
+
 /// Binds prospective archive metadata to one held append without proving commit.
 pub struct SourceOriginalAppendSubjectV5 {
     identity: (u64, u64),
@@ -264,6 +269,34 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
         acquisition: ObjectDigest,
         exact: &aos_sandbox_source_provider_protocol::native_held_completion::frame::PreparedNativeHeldControlV1,
     ) -> Result<&SourceOriginalAdmissionDataV5, JournalError> {
+        self.original_held_basis_v5(
+            readback, acquisition, OriginalHeldBasisPurposeV5::Preparation(exact),
+        )
+    }
+
+    /// Borrows the actual current phase-six delivery basis without a send permit.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale physical custody, changed signed Held or a different
+    /// Applying, Spent, phase-five preparation or Complete companion graph.
+    pub fn original_held_delivery_basis_v5(
+        &self,
+        readback: &OriginalSourceProtectedReadbackV5,
+        acquisition: ObjectDigest,
+        signed: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+    ) -> Result<&SourceOriginalAdmissionDataV5, JournalError> {
+        self.original_held_basis_v5(
+            readback, acquisition, OriginalHeldBasisPurposeV5::Delivery(signed),
+        )
+    }
+
+    fn original_held_basis_v5(
+        &self,
+        readback: &OriginalSourceProtectedReadbackV5,
+        acquisition: ObjectDigest,
+        purpose: OriginalHeldBasisPurposeV5<'_>,
+    ) -> Result<&SourceOriginalAdmissionDataV5, JournalError> {
         use aos_sandbox_source_provider_ledger::ledger::native_held_completion::{
             SourceNativeHeldStepV1, propose_native_held_transition_v1,
         };
@@ -280,12 +313,28 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
         };
         let before = read(cut.before_rows())?;
         let after = read(cut.after_rows())?;
-        if before.suffix().phase() != 4 || after.suffix().phase() != 5
-            || after.suffix().prepared() != Some(exact)
-            || exact.kind() != NativeHeldControlKindV1::ProviderHeld
-        {
-            return Err(invalid("original Held phase5 preparation changed"));
-        }
+        let step = match purpose {
+            OriginalHeldBasisPurposeV5::Preparation(exact) => {
+                if before.suffix().phase() != 4 || after.suffix().phase() != 5
+                    || after.suffix().prepared() != Some(exact)
+                    || exact.kind() != NativeHeldControlKindV1::ProviderHeld
+                {
+                    return Err(invalid("original Held phase5 preparation changed"));
+                }
+                SourceNativeHeldStepV1::HeldPrepared
+            }
+            OriginalHeldBasisPurposeV5::Delivery(signed) => {
+                if before.suffix().phase() != 5 || after.suffix().phase() != 6
+                    || before.suffix().prepared() != Some(signed.prepared())
+                    || after.suffix().prepared().is_some()
+                    || after.suffix().control(NativeHeldControlKindV1::ProviderHeld) != Some(signed)
+                    || signed.kind() != NativeHeldControlKindV1::ProviderHeld
+                {
+                    return Err(invalid("original Held phase6 delivery changed"));
+                }
+                SourceNativeHeldStepV1::HeldStored
+            }
+        };
         let checkpoints = self.challenges.retained_rows()?;
         let spent = checkpoints.get(cut.challenge_checkpoint()
             .ok_or(invalid("original Held Spent checkpoint missing"))?)
@@ -297,7 +346,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
         }
         propose_native_held_transition_v1(
             super::owner_views(cut.before_rows()), super::owner_views(cut.after_rows()),
-            acquisition, SourceNativeHeldStepV1::HeldPrepared, Some(spent.value()),
+            acquisition, step, Some(spent.value()),
         ).map_err(|_| invalid("original Held complete before witness"))?;
         let origin = self.authority.journal.source_original_replay.origins().iter()
             .find(|origin| origin.admission_comparison().original().acquisition_id == acquisition)

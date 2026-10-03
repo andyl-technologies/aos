@@ -124,7 +124,7 @@ pub enum FixedProviderOriginalStorageOfferProgressV5 {
     Closed,
 }
 
-/// Reports only the resident original completion checkpoint, never a send permit.
+/// Reports original checkpoints and local transmission, never a send permit.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FixedProviderOriginalCompletionProgressV5 {
     /// The SAME original flight remains held before the phase-4 readback.
@@ -133,6 +133,10 @@ pub enum FixedProviderOriginalCompletionProgressV5 {
     CompleteCommitted,
     /// The same unsigned phase5 and signed phase6 were durably read back, unsent.
     HeldStored,
+    /// The exact ProviderHeld was locally sent with zero descriptors.
+    ProviderHeldSent,
+    /// Complete and the original SourceRoot were locally sent, without an ACK.
+    CompleteSent,
     /// All returned originals and the first cause remain permanently held.
     Closed,
 }

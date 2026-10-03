@@ -1,7 +1,8 @@
 //! Resident original phase5 preparation and phase6 signed Held readback.
 //!
 //! Only the hot Complete owner installs this child. Its two later appends use
-//! the same archive, challenge, floor and Journal engines; no packet is sent.
+//! the same archive, challenge, floor and Journal engines. The selected delivery
+//! adapter subsequently sends once without releasing any original owner.
 
 use super::*;
 use aos_sandbox_source_provider_protocol::native_held_completion::{
@@ -89,6 +90,161 @@ impl Drop for OriginalHeldClosureV5<'_> {
 }
 
 impl FixedProviderOwnerV1 {
+    /// Advances the hot original flight through local Held and Complete sends.
+    ///
+    /// The same resident signing reservoir owns both whole native results.
+    /// Local transmission never supplies Root acceptance, settlement or drain.
+    #[doc(hidden)]
+    pub fn advance_original_native_delivery_v5(
+        &mut self,
+        publication: &[u8],
+        rows: &[u8],
+    ) -> Progress {
+        let started = self.original_held_v5()
+            .is_ok_and(|child| child.signatures.delivery_started());
+        if !started {
+            match self.advance_original_native_held_v5(publication, rows) {
+                Progress::HeldStored => {}
+                progress => return progress,
+            }
+            // Genuine phase6 owns the empty reservoir already. Infallibly arm
+            // its SAME carrier before any new delivery observation can fail.
+            if let Some(FixedProviderOwnerStateV1::HeldReadOnly(held)) = self.state.as_mut()
+                && let Some(child) = held.original.as_mut()
+                    .and_then(|original| original.producer.as_mut())
+                    .and_then(|producer| producer.original_completion.as_mut())
+                    .and_then(|completion| completion.held.as_mut())
+            {
+                held.session.begin_original_held_delivery_v5(&mut child.signatures);
+            } else {
+                self.original_ingress.retain_producer_failure_v5(ProviderLedgerError::Unavailable.into());
+                return Progress::Closed;
+            }
+        }
+        if self.original_ingress.producer_closed_v5() {
+            return Progress::Closed;
+        }
+
+        let mut guard = OriginalHeldClosureV5 {
+            original: OriginalProducerClosureGuardV5 {
+                owner: self,
+                completed: false,
+            },
+        };
+        let _crossing = OriginalCompletionCrossingV5;
+        let progress = guard.original.owner.advance_original_delivery_inner_v5(publication, rows);
+        guard.original.completed = progress != Progress::Closed;
+        progress
+    }
+
+    fn advance_original_delivery_inner_v5(
+        &mut self,
+        publication: &[u8],
+        rows: &[u8],
+    ) -> Progress {
+        let before = (|| {
+            if self.original_ingress.borrowed_catalog_v1()? != rows {
+                return Err(ProviderLedgerError::Equivocation.into());
+            }
+            let expected = self.original_ingress.borrowed_selection_v5()?.original_publication_projection().1;
+            if publication.len() != super::super::super::CANONICAL_CATALOG_PUBLICATION_BYTES
+                || ObjectDigest::from_bytes(sha2::Sha256::digest(publication).into()) != expected
+            {
+                return Err(ProviderLedgerError::ConfigurationMismatch.into());
+            }
+            self.require_original_held_current_v5()?;
+            self.require_original_held_readback_v5(Append::HeldStored)
+        })();
+        if let Err(cause) = before {
+            if let Ok(child) = self.original_held_mut_v5() {
+                if child.failure().is_none() {
+                    child.boundary = Some(cause);
+                }
+                child.stage = HeldStageV5::Closed;
+            } else {
+                self.original_ingress.retain_producer_failure_v5(cause);
+            }
+            return Progress::Closed;
+        }
+        if self.original_held_v5().is_ok_and(|child| child.signatures.delivery_complete()) {
+            // A later observation may recheck, but never resends either packet.
+            return Progress::CompleteSent;
+        }
+
+        let action = self.send_original_held_packet_v5();
+        if let Err(cause) = action {
+            if let Ok(child) = self.original_held_mut_v5() {
+                if child.failure().is_none() {
+                    child.boundary = Some(cause);
+                }
+            } else {
+                self.original_ingress.retain_producer_failure_v5(cause);
+                return Progress::Closed;
+            }
+        }
+        // The actual native Result is already in the opaque child. These
+        // upper bookends retain separate debt, including after successful send.
+        let postcheck = self.require_original_held_current_v5()
+            .and_then(|()| self.require_original_held_readback_v5(Append::HeldStored));
+        let Ok(child) = self.original_held_mut_v5() else {
+            if let Err(cause) = postcheck {
+                self.original_ingress.retain_producer_failure_v5(cause);
+            }
+            return Progress::Closed;
+        };
+        if let Err(cause) = postcheck {
+            if child.postcheck_debt.is_none() {
+                child.postcheck_debt = Some(cause);
+            }
+        }
+        if child.failure().is_some() {
+            child.stage = HeldStageV5::Closed;
+            Progress::Closed
+        } else if child.signatures.delivery_complete() {
+            Progress::CompleteSent
+        } else if child.signatures.provider_held_sent() {
+            Progress::ProviderHeldSent
+        } else {
+            child.stage = HeldStageV5::Closed;
+            Progress::Closed
+        }
+    }
+
+    fn send_original_held_packet_v5(&mut self) -> Result<(), OriginalProducerErrorV5> {
+        let (root, acquire) = self.original_ingress.borrowed_pair_v5()?;
+        let clock = self.original_ingress.borrowed_clock_v5()?;
+        let (initial, _) = clock.original_sample_and_deadline();
+        let expiry = self.original_held_expiry_v5()?;
+        let deadline = clock.original_stage_deadline(expiry)?;
+        let Some(FixedProviderOwnerStateV1::HeldReadOnly(held)) = self.state.as_mut() else {
+            return Err(ProviderLedgerError::Unavailable.into());
+        };
+        let original = held.original.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
+        let archive = original.history.archive.as_ref().ok_or(ProviderLedgerError::Unavailable)?;
+        let producer = original.producer.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
+        let issued = producer.signed.as_ref().ok_or(ProviderLedgerError::Unavailable)?
+            .request().claims().validity().0;
+        let history = self.hold_challenges.original_history_v5()?;
+        let authority = self.journal.as_mut().ok_or(ProviderLedgerError::RuntimePoisoned)?
+            .claim_source_original_native_v5(&history)?;
+        let (readback, completion, selected, offer) = producer.held_delivery_parts_v5()?;
+        let validity = (
+            issued.max(completion.lease.as_ref().ok_or(ProviderLedgerError::Unavailable)?.validity().0),
+            expiry,
+        );
+        let physical = completion.handoff.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        let complete = completion.signatures.as_ref().ok_or(ProviderLedgerError::Unavailable)?;
+        let lease = complete.signed_lease().ok_or(ProviderLedgerError::Unavailable)?;
+        let response = complete.response().ok_or(ProviderLedgerError::Unavailable)?;
+        let child = completion.held.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
+        held.session.advance_original_held_delivery_v5(
+            &authority, readback, root, acquire, physical, lease, archive, selected,
+            offer.original_transport_v5(), response, initial, deadline, validity, &mut child.signatures,
+        );
+        Ok(())
+    }
+
     /// Advances the SAME original Complete flight to an unsent resident Held.
     ///
     /// No DATA input can start this child after restart. Stored progress does
