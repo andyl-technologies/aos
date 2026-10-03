@@ -110,6 +110,8 @@ pub mod mount_manager_source_inventory;
 #[cfg(target_os = "linux")]
 pub mod mount_manager_startup;
 #[cfg(target_os = "linux")]
+pub mod source_provider_startup;
+#[cfg(target_os = "linux")]
 pub mod mount_observation_state;
 #[cfg(target_os = "linux")]
 pub mod mount_preparation;

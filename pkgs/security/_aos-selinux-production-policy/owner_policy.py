@@ -38,6 +38,7 @@ SELECTED_LAUNCHER_IMAGE_IOCTL_CELLS = (
     ("aos_sandbox_mount_t", "init_exec_t"),
     ("aos_source_provider_t", "init_exec_t"),
     ("aos_sandbox_mount_t", "aos_sandbox_mount_exec_t"),
+    ("aos_source_provider_t", "aos_source_provider_exec_t"),
 )
 SELECTED_LAUNCHER_IMAGE_IOCTL_SELECTORS = frozenset()
 ENFORCING = (*OWNER_DOMAINS, *HELPER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE, OFFLINE_HELPER, *SELECTED_MOUNT_SOURCE_DOMAINS)
@@ -690,10 +691,7 @@ def _selected_mount_source_matrix(Access, Transition, accesses, all_roles):
         positive.extend(accesses(domain, executable, "file", (
             "entrypoint", "execute", "getattr", "map", "open", "read",
         )))
-        if domain == mount:
-            positive.append(Access(domain, executable, "file", "ioctl"))
-        else:
-            negative.append(Access(domain, executable, "file", "ioctl"))
+        positive.append(Access(domain, executable, "file", "ioctl"))
         # ELF mapping execute is not permission for another same-SID exec.
         negative.append(Access(domain, executable, "file", "execute_no_trans"))
         negative.append(Access(domain, domain, "process", "transition"))
@@ -770,6 +768,30 @@ def _selected_mount_source_matrix(Access, Transition, accesses, all_roles):
             negative.append(Access(domain, "*", "service", permission))
         for permission in ("start", "stop", "reload", "reboot", "halt"):
             negative.append(Access(domain, "*", "system", permission))
+
+    # The Source INITIAL recipe observes its own image and direct PID1 parent.
+    source_image = "aos_source_provider_exec_t"
+    positive.append(Access(source, "init_t", "process", "getattr"))
+    positive.extend(accesses(source, "init_t", "dir", (*file_read, "search")))
+    positive.extend(accesses(source, "init_t", "file", file_read))
+    negative.extend(accesses(source, source_image, "file", (
+        *file_mutate, "relabelfrom", "relabelto",
+    )))
+    for other in all_roles:
+        if other != source:
+            negative.append(Access(other, source_image, "file", "ioctl"))
+    negative.extend(accesses(source, "init_t", "process", (
+        "ptrace", "transition", "dyntransition", "setexec", "setfscreate",
+        "setsockcreate", "signal", "sigkill", "sigstop",
+    )))
+    negative.extend(accesses(source, "init_t", "file", (
+        *file_mutate, "ioctl", "execute", "execute_no_trans", "entrypoint",
+        "map", "relabelfrom", "relabelto",
+    )))
+    negative.extend(accesses(source, "init_t", "dir", (
+        *dir_mutate, "ioctl", "lock", "mounton", "relabelfrom", "relabelto",
+    )))
+    negative.extend(accesses(source, "init_t", "lnk_file", ("getattr", "read")))
 
     mount_credential = "aos_sandbox_mount_credential_t"
     for name in (

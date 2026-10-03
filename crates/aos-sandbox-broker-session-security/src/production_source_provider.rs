@@ -17,6 +17,12 @@ use std::time::Duration;
 use aos_sandbox_linux::inherited_fd::claim_systemd_activation_descriptor_range;
 use aos_sandbox_linux::path::{BeneathRoot, ResolveOptions};
 use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError};
+use aos_sandbox_linux::seqpacket::{
+    RetainedSeqpacketAdmissionErrorV1, descriptor_subject::DescriptorSubjectSocket,
+};
+use aos_sandbox::source_provider_startup::{
+    OriginalSourceStartupV1, SourceStartupEndedV1, SourceStartupFailureRefV1,
+};
 use aos_sandbox_source_provider::{
     FixedProviderCatalogProgressV1, FixedProviderIngressProgressV1, FixedProviderOpenReportV1,
     FixedProviderOwnerStatusV1, FixedProviderOwnerV1,
@@ -246,10 +252,128 @@ pub enum ProductionSourceProviderIngressErrorV1 {
 /// not authorize a session or selected resource.
 #[must_use = "retain the fixed listener while admitting provider sessions"]
 pub struct ProductionSourceProviderIngressV1 {
-    listener: RecordSubjectListener,
+    listener: SourceListenerV1,
+    selected_accept: Option<Result<DescriptorSubjectSocket, RetainedSeqpacketAdmissionErrorV1>>,
+    selected_original: Option<ProductionSelectedSourceProviderOriginalV1>,
+    selected_poll: Option<rustix::io::Result<usize>>,
+    selected_failure: Option<ProductionSourceProviderIngressErrorV1>,
+}
+
+enum SourceListenerV1 {
+    Legacy(RecordSubjectListener),
+    Selected(OriginalSourceStartupV1),
+}
+
+struct SelectedIngressBoundaryV1<'owner> {
+    ingress: &'owner mut ProductionSourceProviderIngressV1,
+    completed: bool,
+}
+
+impl Drop for SelectedIngressBoundaryV1<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.ingress.end_selected_initial();
+        }
+    }
 }
 
 impl ProductionSourceProviderIngressV1 {
+    /// Creates the inert resident destination for the selected Source INITIAL recipe.
+    #[must_use]
+    pub fn new_selected_initial() -> Self {
+        Self {
+            listener: SourceListenerV1::Selected(OriginalSourceStartupV1::new()),
+            selected_accept: None,
+            selected_original: None,
+            selected_poll: None,
+            selected_failure: None,
+        }
+    }
+
+    /// Captures and admits the selected original before runtime, files or threads.
+    ///
+    /// # Safety
+    ///
+    /// Requires the exclusive single-threaded original-entry contract of
+    /// Core's INITIAL capture, before FD3 adoption or any other descriptor owner.
+    ///
+    /// # Errors
+    ///
+    /// Permanently refuses wrong disposition, inventory, kernel/image or listener
+    /// admission. The actual typed failure stays in the SAME resident Core owner.
+    pub unsafe fn capture_selected_initial_once(&mut self) -> Result<(), SourceStartupEndedV1> {
+        let mut boundary = SelectedIngressBoundaryV1 { ingress: self, completed: false };
+        let SourceListenerV1::Selected(startup) = &mut boundary.ingress.listener else {
+            return Err(SourceStartupEndedV1);
+        };
+        // SAFETY: forwarding the caller's single-threaded original-entry
+        // contract into the SAME Core/Linux capture before any other effects.
+        unsafe { startup.capture_initial_once()? };
+        startup.admit_listener_once()?;
+        boundary.completed = true;
+        Ok(())
+    }
+
+    /// Lends the actual startup cause without observation, copying or extraction.
+    #[must_use]
+    pub fn selected_startup_failure(&self) -> Option<SourceStartupFailureRefV1<'_>> {
+        match &self.listener {
+            SourceListenerV1::Legacy(_) => None,
+            SourceListenerV1::Selected(startup) => startup.failure(),
+        }
+    }
+
+    /// Lends actual retained acceptance custody and its separate shutdown debt.
+    #[must_use]
+    pub fn selected_accept_failure(&self) -> Option<&RetainedSeqpacketAdmissionErrorV1> {
+        self.selected_accept.as_ref().and_then(|result| result.as_ref().err())
+    }
+
+    /// Borrows the first actual outer deadline/listener/currentness error.
+    #[must_use]
+    pub fn selected_failure(&self) -> Option<&ProductionSourceProviderIngressErrorV1> {
+        self.selected_failure.as_ref()
+    }
+
+    /// Borrows the native readiness outcome independently of its outer refusal.
+    #[must_use]
+    pub fn selected_poll_outcome(&self) -> Option<&rustix::io::Result<usize>> {
+        self.selected_poll.as_ref()
+    }
+
+    /// Borrows one-shot listener shutdown debt without implying settlement or Drain.
+    #[must_use]
+    pub fn selected_listener_shutdown_outcome(&self) -> Option<&rustix::io::Result<()>> {
+        match &self.listener {
+            SourceListenerV1::Legacy(_) => None,
+            SourceListenerV1::Selected(startup) => startup.listener_shutdown_outcome(),
+        }
+    }
+
+    /// Borrows the original/fresh/pending native image shutdown outcomes.
+    #[must_use]
+    pub fn selected_image_shutdown_outcomes(&self)
+        -> [(Option<&std::io::Result<()>>, Option<&std::io::Result<()>>); 3]
+    {
+        match &self.listener {
+            SourceListenerV1::Legacy(_) => [(None, None); 3],
+            SourceListenerV1::Selected(startup) => startup.image_shutdown_outcomes(),
+        }
+    }
+
+    /// Permanently ends selected startup and every parked accepted original.
+    pub fn end_selected_initial(&mut self) {
+        if let SourceListenerV1::Selected(startup) = &mut self.listener {
+            startup.end();
+        }
+        if let Some(Ok(socket)) = &mut self.selected_accept {
+            socket.close();
+        }
+        if let Some(original) = &mut self.selected_original {
+            original.end_original();
+        }
+    }
+
     /// Claims the sole named systemd listener before other descriptors are opened.
     ///
     /// # Safety
@@ -297,6 +421,7 @@ impl ProductionSourceProviderIngressV1 {
         (FixedProviderOwnerV1, FixedProviderOpenReportV1),
         ProductionSourceProviderIngressErrorV1,
     > {
+        self.legacy_listener()?;
         let socket = self.accept_fixed_candidate(deadline_boottime_nanoseconds)?;
         let catalog = read_protected_catalog_publication()?;
         FixedProviderOwnerV1::open_fixed(socket, &catalog).map_err(Into::into)
@@ -315,18 +440,89 @@ impl ProductionSourceProviderIngressV1 {
         &mut self,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<ProductionSelectedSourceProviderOriginalV1, ProductionSourceProviderIngressErrorV1> {
-        let socket = self.accept_fixed_candidate(deadline_boottime_nanoseconds)?;
-        Ok(ProductionSelectedSourceProviderOriginalV1::new(socket, deadline_boottime_nanoseconds))
+        if matches!(&self.listener, SourceListenerV1::Legacy(_)) {
+            let socket = self.accept_fixed_candidate(deadline_boottime_nanoseconds)?;
+            return Ok(ProductionSelectedSourceProviderOriginalV1::new(socket, deadline_boottime_nanoseconds));
+        }
+        let mut boundary = SelectedIngressBoundaryV1 { ingress: self, completed: false };
+        if boundary.ingress.selected_failure.is_some() || boundary.ingress.selected_accept.is_some()
+            || boundary.ingress.selected_original.is_some()
+        {
+            return Err(ProductionSourceProviderIngressErrorV1::Catalog("selected accept is ended"));
+        }
+        loop {
+            boundary.ingress.check_selected_boundary(deadline_boottime_nanoseconds)?;
+            if let Err(cause) = boundary.ingress.wait_until_ready(deadline_boottime_nanoseconds) {
+                boundary.ingress.selected_failure = Some(cause);
+                return Err(ProductionSourceProviderIngressErrorV1::Catalog("selected wait failed"));
+            }
+            boundary.ingress.check_selected_boundary(deadline_boottime_nanoseconds)?;
+            let SourceListenerV1::Selected(startup) = &mut boundary.ingress.listener else {
+                return Err(ProductionSourceProviderIngressErrorV1::Catalog("selected listener association"));
+            };
+            let listener = startup.listener_mut()
+                .map_err(|_| ProductionSourceProviderIngressErrorV1::Catalog("selected listener is ended"))?;
+            // The lower SAME acceptance/admission recipe retains its actual
+            // returned socket or failure before any subsequent startup check.
+            boundary.ingress.selected_accept = Some(listener.accept_descriptor_subject_retaining());
+            if let Some(Ok(socket)) = &mut boundary.ingress.selected_accept {
+                socket.begin_original_retention_v1();
+            }
+            let retry = boundary.ingress.selected_accept.as_ref().is_some_and(|result| {
+                result.as_ref().err().is_some_and(|failure| {
+                    !failure.retains_descriptor()
+                        && matches!(failure.cause(), SeqpacketError::WouldBlock | SeqpacketError::Interrupted)
+                })
+            });
+            if !retry && !matches!(boundary.ingress.selected_accept.as_ref(), Some(Ok(_))) {
+                // The actual acceptance cause precedes later shutdown debt.
+                // Do not run a fresh observer after a terminal native failure.
+                return Err(ProductionSourceProviderIngressErrorV1::Catalog("selected acceptance failed"));
+            }
+            boundary.ingress.check_selected_boundary(deadline_boottime_nanoseconds)?;
+            if retry {
+                // Only a nonconsuming no-descriptor result may be superseded.
+                boundary.ingress.selected_accept = None;
+                continue;
+            }
+            break;
+        }
+        // Slot association was checked before taking. The existing opening
+        // constructor has an Arc allocation/funding exclusion; there is no IO
+        // or fallible postcheck before its returned whole owner is parked.
+        match boundary.ingress.selected_accept.take() {
+            Some(Ok(socket)) => boundary.ingress.selected_original = Some(
+                ProductionSelectedSourceProviderOriginalV1::new(socket, deadline_boottime_nanoseconds),
+            ),
+            other => {
+                boundary.ingress.selected_accept = other;
+                return Err(ProductionSourceProviderIngressErrorV1::Catalog("selected socket association"));
+            }
+        }
+        boundary.ingress.check_selected_boundary(deadline_boottime_nanoseconds)?;
+        if boundary.ingress.selected_original.is_none() {
+            return Err(ProductionSourceProviderIngressErrorV1::Catalog("selected original association"));
+        }
+        match boundary.ingress.selected_original.take() {
+            Some(original) => {
+                boundary.completed = true;
+                Ok(original)
+            }
+            None => Err(ProductionSourceProviderIngressErrorV1::Catalog("selected original association")),
+        }
     }
 
     fn accept_fixed_candidate(
-        &self,
+        &mut self,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket, ProductionSourceProviderIngressErrorV1> {
         loop {
             self.wait_until_ready(deadline_boottime_nanoseconds)?;
-            self.listener.validate_current()?;
-            match self.listener.accept_descriptor_subject() {
+            let SourceListenerV1::Legacy(listener) = &mut self.listener else {
+                return Err(ProductionSourceProviderIngressErrorV1::Catalog("ordinary acceptance requires Legacy"));
+            };
+            listener.validate_current()?;
+            match listener.accept_descriptor_subject() {
                 Ok(socket) => return Ok(socket),
                 Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => continue,
                 Err(error) => return Err(error.into()),
@@ -387,7 +583,7 @@ impl ProductionSourceProviderIngressV1 {
         &self,
         owner: &mut FixedProviderOwnerV1,
     ) -> Result<FixedProviderCatalogProgressV1, ProductionSourceProviderIngressErrorV1> {
-        self.listener.validate_current()?;
+        self.legacy_listener()?.validate_current()?;
         let publication = read_protected_catalog_publication()?;
         owner
             .advance_catalog_currentness(&publication)
@@ -413,7 +609,7 @@ impl ProductionSourceProviderIngressV1 {
             );
         }
         let result = (|| {
-            self.listener.validate_current()?;
+            self.legacy_listener()?.validate_current()?;
             if owner.original_native_pair_pending() {
                 let (publication, rows) = self.read_current_catalog_manifest()?;
                 owner
@@ -447,10 +643,10 @@ impl ProductionSourceProviderIngressV1 {
         owner: &mut FixedProviderOwnerV1,
     ) -> Result<FixedProviderOriginalStorageOfferProgressV5, ProductionSourceProviderIngressErrorV1> {
         let result = (|| {
-            self.listener.validate_current()?;
+            self.legacy_listener()?.validate_current()?;
             let (publication, rows) = self.read_current_catalog_manifest()?;
             let progress = owner.advance_original_storage_offer_v5(&publication, &rows);
-            self.listener.validate_current()?;
+            self.legacy_listener()?.validate_current()?;
             Ok(progress)
         })();
         if result.is_err() {
@@ -473,10 +669,10 @@ impl ProductionSourceProviderIngressV1 {
         owner: &mut FixedProviderOwnerV1,
     ) -> Result<FixedProviderOriginalCompletionProgressV5, ProductionSourceProviderIngressErrorV1> {
         let result = (|| {
-            self.listener.validate_current()?;
+            self.legacy_listener()?.validate_current()?;
             let (publication, rows) = self.read_current_catalog_manifest()?;
             let progress = owner.advance_original_native_delivery_v5(&publication, &rows);
-            self.listener.validate_current()?;
+            self.legacy_listener()?.validate_current()?;
             Ok(progress)
         })();
         if result.is_err() {
@@ -497,7 +693,7 @@ impl ProductionSourceProviderIngressV1 {
     pub fn read_current_catalog_manifest(
         &self,
     ) -> Result<(Vec<u8>, Vec<u8>), ProductionSourceProviderIngressErrorV1> {
-        self.listener.validate_current()?;
+        self.legacy_listener()?.validate_current()?;
         let publication = read_protected_catalog_publication()?;
         let digest =
             aos_sandbox_core::ObjectDigest::from_bytes(publication[112..144].try_into().map_err(
@@ -514,11 +710,17 @@ impl ProductionSourceProviderIngressV1 {
     ) -> Result<Self, ProductionSourceProviderIngressErrorV1> {
         let listener = RecordSubjectListener::from_owned(descriptor)?;
         listener.require_local_filesystem_path(Path::new(LISTENER_PATH))?;
-        Ok(Self { listener })
+        Ok(Self {
+            listener: SourceListenerV1::Legacy(listener),
+            selected_accept: None,
+            selected_original: None,
+            selected_poll: None,
+            selected_failure: None,
+        })
     }
 
     fn wait_until_ready(
-        &self,
+        &mut self,
         deadline: u64,
     ) -> Result<(), ProductionSourceProviderIngressErrorV1> {
         let remaining = remaining_duration(deadline)?;
@@ -528,15 +730,92 @@ impl ProductionSourceProviderIngressV1 {
             tv_nsec: i64::try_from(remaining % 1_000_000_000)
                 .map_err(|_| ProductionBrokerSessionActivationErrorV1::Deadline)?,
         };
-        let mut poll_fd = [PollFd::from_borrowed_fd(
-            self.listener.as_fd(),
-            PollFlags::IN,
-        )];
+        let selected = matches!(&self.listener, SourceListenerV1::Selected(_));
+        let listener = match &mut self.listener {
+            SourceListenerV1::Legacy(listener) => listener,
+            SourceListenerV1::Selected(startup) => startup.listener_mut()
+                .map_err(|_| ProductionSourceProviderIngressErrorV1::Catalog("selected listener is ended"))?,
+        };
+        let mut poll_fd = [PollFd::from_borrowed_fd(listener.as_fd(), PollFlags::IN)];
+        if selected {
+            self.selected_poll = Some(poll(&mut poll_fd, Some(&timeout)));
+            return match self.selected_poll.as_ref() {
+                Some(Ok(0)) => Err(ProductionBrokerSessionActivationErrorV1::Deadline.into()),
+                Some(Ok(_)) | Some(Err(rustix::io::Errno::INTR)) => Ok(()),
+                _ => Err(ProductionBrokerSessionActivationErrorV1::Kernel.into()),
+            };
+        }
         match poll(&mut poll_fd, Some(&timeout)) {
             Ok(0) => Err(ProductionBrokerSessionActivationErrorV1::Deadline.into()),
             Ok(_) | Err(rustix::io::Errno::INTR) => Ok(()),
             Err(_) => Err(ProductionBrokerSessionActivationErrorV1::Kernel.into()),
         }
+    }
+
+    fn legacy_listener(&self) -> Result<&RecordSubjectListener, ProductionSourceProviderIngressErrorV1> {
+        match &self.listener {
+            SourceListenerV1::Legacy(listener) => Ok(listener),
+            SourceListenerV1::Selected(startup) => {
+                // Shared negative access can end this !Sync owner, but cannot
+                // observe, recover, lend a FD or execute a selected effect.
+                startup.end();
+                Err(ProductionSourceProviderIngressErrorV1::Catalog(
+                    "ordinary route cannot borrow selected INITIAL custody",
+                ))
+            }
+        }
+    }
+
+    pub(super) fn check_selected_boundary(&mut self, deadline: u64)
+        -> Result<(), ProductionSourceProviderIngressErrorV1>
+    {
+        if let SourceListenerV1::Legacy(listener) = &self.listener {
+            remaining_duration(deadline)?;
+            listener.validate_current()?;
+            return Ok(());
+        }
+        if self.selected_failure.is_some() {
+            return Err(ProductionSourceProviderIngressErrorV1::Catalog("selected ingress is ended"));
+        }
+        let result = (|| {
+            remaining_duration(deadline)?;
+            match &mut self.listener {
+                SourceListenerV1::Legacy(listener) => listener.validate_current()?,
+                SourceListenerV1::Selected(startup) => {
+                    startup.recheck().map_err(|_| ProductionSourceProviderIngressErrorV1::Catalog(
+                        "selected INITIAL bookend failed",
+                    ))?;
+                    // Slow image observation consumes the SAME original D.
+                    remaining_duration(deadline)?;
+                    startup.listener_mut().map_err(|_| ProductionSourceProviderIngressErrorV1::Catalog(
+                        "selected listener is ended",
+                    ))?.validate_current()?;
+                    remaining_duration(deadline)?;
+                }
+            }
+            Ok(())
+        })();
+        if let Err(cause) = result {
+            self.selected_failure = Some(cause);
+            self.end_selected_initial();
+            return Err(ProductionSourceProviderIngressErrorV1::Catalog("selected boundary failed"));
+        }
+        Ok(())
+    }
+
+    pub(super) fn check_initial_only(&mut self, deadline: u64)
+        -> Result<(), ProductionSourceProviderIngressErrorV1>
+    {
+        if matches!(&self.listener, SourceListenerV1::Selected(_)) {
+            self.check_selected_boundary(deadline)?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for ProductionSourceProviderIngressV1 {
+    fn drop(&mut self) {
+        self.end_selected_initial();
     }
 }
 

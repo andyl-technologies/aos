@@ -111,6 +111,7 @@ in {
         TasksMax = 32;
       } // lib.optionalAttrs selectedSourceMount {
         AosOwnLauncherImage = true;
+        NonBlocking = true;
         SELinuxContext = "system_u:system_r:aos_source_provider_t:s0";
       };
     };

@@ -594,6 +594,9 @@ allow init_t aos_source_provider_exec_t:file { execute getattr map open read };
 allow init_t aos_source_provider_t:process transition;
 allow init_t aos_source_provider_t:process2 nnp_transition;
 allow aos_source_provider_t aos_source_provider_exec_t:file { entrypoint execute getattr map open read };
+# The fixed Source startup measures its own retained image, never task memory.
+allow aos_source_provider_t aos_source_provider_exec_t:file ioctl;
+allowxperm aos_source_provider_t aos_source_provider_exec_t:file ioctl { 0x6686 };
 
 allow aos_sandbox_mount_t self:capability { sys_admin sys_chroot };
 allow { aos_sandbox_mount_t aos_source_provider_t } self:process { fork getattr getsched setrlimit sigchld signal };
@@ -627,10 +630,16 @@ allow { aos_sandbox_mount_t aos_source_provider_t } { aos_sandbox_mount_t aos_so
 
 # The activated connecting endpoint belongs to PID1, not the SCM Source task.
 # The actual attr/current observer needs these type-wide init_t reads; it does
-# not read /proc/1/exe or gain process:ptrace. Source does not inherit them.
+# not read /proc/1/exe or gain process:ptrace. Source's independent INITIAL
+# kernel-parent observation is granted separately below, not as peer authority.
 allow aos_sandbox_mount_t init_t:process getattr;
 allow aos_sandbox_mount_t init_t:dir { getattr open read search };
 allow aos_sandbox_mount_t init_t:file { getattr open read };
+
+# Direct-parent kernel observations are type-wide reads, not /proc/1/exe.
+allow aos_source_provider_t init_t:process getattr;
+allow aos_source_provider_t init_t:dir { getattr open read search };
+allow aos_source_provider_t init_t:file { getattr open read };
 
 # PID1's genuine requester/cgroup observer retains its existing trusted read
 # side under the private-root attribute. Runtime owners gain no inverse use.
