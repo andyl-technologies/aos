@@ -256,6 +256,26 @@
       linkedLibraries
       ++ lib.optionals (!isDarwinCross) [aos-fuse-transport];
   };
+
+  # Compiles every application test target, including the `tests/`
+  # integration crates that `cargo test --lib` skips, without running them.
+  # This gives a fast compile gate that does not wait on the full suite.
+  testTargets = mkCargoPackage {
+    pname = "aos-test-targets";
+    inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
+    cargoRoot = "crates";
+    cargoBuildCommands = [
+      "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${applicationTestFlags}"
+    ];
+    buildDeps =
+      [buildPerl buildPkgConfig buildProtobuf buildCmake]
+      ++ lib.optionals (!isDarwinCross) [aos-fuse-transport];
+    runtimeDeps =
+      [openssl sqlite libssh2 zlib]
+      ++ lib.optionals (!isDarwinCross) [aos-fuse-transport];
+    installBins = false;
+    doCheck = false;
+  };
 in
   mkCargoPackage {
     pname = "aos";
@@ -284,7 +304,7 @@ in
     # scheduler time to satisfy their production-sized deadlines on large hosts.
     cargoNextestMaxTestThreads = 16;
     passthru = {
-      inherit cargoArtifacts cargoDeps cargoEnv;
+      inherit cargoArtifacts cargoDeps cargoEnv testTargets;
     };
 
     # cmake builds git2's vendored libgit2 from source. OpenSSL, SQLite, and

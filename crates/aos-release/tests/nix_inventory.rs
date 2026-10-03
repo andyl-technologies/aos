@@ -2,6 +2,7 @@
 //!
 //! This opt-in integration check needs the repository's Nix evaluator and its
 //! source inputs. It does not realize packages or generate a release plan.
+//! Platforms the qualification contract defers must arrive fully blocked.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -77,6 +78,25 @@ fn source_inventory_materializes_the_linux_release_and_retains_platform_blockers
             .flat_map(|package| &package.platforms)
             .filter(|cell| cell.platform == platform)
             .collect::<Vec<_>>();
+
+        // A deferred platform ships nothing: the inventory blocks every
+        // eligible cell with the shared deferral reason instead.
+        if contract.is_deferred(platform) {
+            assert!(cells.iter().all(|cell| match &cell.decision {
+                MatrixCell::Artifact { .. } => false,
+                MatrixCell::NotApplicable { .. } => true,
+                MatrixCell::Blocked { required_work, .. } => {
+                    required_work.ends_with(": platform-release-deferred")
+                }
+            }));
+            assert!(
+                cells
+                    .iter()
+                    .any(|cell| matches!(cell.decision, MatrixCell::Blocked { .. }))
+            );
+            continue;
+        }
+
         assert!(
             cells
                 .iter()
@@ -88,6 +108,11 @@ fn source_inventory_materializes_the_linux_release_and_retains_platform_blockers
                 .any(|cell| matches!(cell.decision, MatrixCell::Blocked { .. }))
         );
     }
+    assert!(
+        Platform::LINUX
+            .into_iter()
+            .any(|platform| !contract.is_deferred(platform))
+    );
     assert!(
         packages
             .iter()

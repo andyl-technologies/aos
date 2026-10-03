@@ -429,6 +429,8 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   releaseQualification = import ./qualification {
     inherit lib;
     packageNames = qualificationPackageNames;
+    # The package inventory blocks exactly these platforms' cells.
+    inherit (pkgs.platformSupport) deferredPlatforms;
   };
   qualificationExecutorIdentity = "aos-${hostPlatform.system}-qualification-v1";
   qualificationReportScenario = testing.mkQualificationReportScenario {
@@ -1475,6 +1477,7 @@ in rec {
     rust = {
       cargo-artifacts = import ./tests/cargo-artifacts {inherit pkgs;};
       aos = pkgs.aos;
+      aos-test-targets = pkgs.aos.passthru.testTargets;
       crucible-controller = pkgs.crucible-controller;
       crucible-qemu-plugin = pkgs.crucible-qemu-plugin;
       crucible-guest = pkgs.crucible-guest;

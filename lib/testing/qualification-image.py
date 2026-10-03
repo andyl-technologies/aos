@@ -1134,7 +1134,7 @@ class Scenario:
             "set -eu; "
             "printf 'packages = [\"cryptsetup\", \"curl\", \"iproute2\", "
             "\"nginx\"]\\n' >/run/desired.toml; "
-            "apm install --system --from /run/desired.toml --yes",
+            "apm apply --system --from /run/desired.toml --yes",
             timeout=1200,
         )
         machine.ssh(
@@ -1350,14 +1350,14 @@ http {
             f"| grep -F 'via {gateway}'; "
             f"resolvectl dns {shlex.quote(interface)} | grep -F {shlex.quote(dns)}"
         )
-        machine.ssh(f"apm rollback --system --generation {generation_one}", timeout=600)
+        machine.ssh(f"apm config rollback --generation {generation_one}", timeout=600)
         machine.wait_for_ssh(180)
         machine.ssh("grep -Fx one /etc/qualification-generation")
         machine.ssh('test "$(cat /proc/sys/kernel/hostname)" = qualification-one')
 
         machine.ssh(
             "set -eu; printf 'packages = []\\n' >/run/desired.toml; "
-            "apm install --system --from /run/desired.toml --yes",
+            "apm apply --system --from /run/desired.toml --yes",
             timeout=600,
         )
         machine.ssh("test ! -x /bin/nginx")
@@ -1365,7 +1365,7 @@ http {
             "set -eu; "
             "printf 'packages = [\"cryptsetup\", \"curl\", \"iproute2\", "
             "\"nginx\"]\\n' >/run/desired.toml; "
-            "apm install --system --from /run/desired.toml --yes",
+            "apm apply --system --from /run/desired.toml --yes",
             timeout=1200,
         )
         machine.ssh("systemctl restart qualification-nginx.service")
@@ -1486,7 +1486,7 @@ http {
         machine.ssh(
             "set -eu; "
             "before=$(dd if=/dev/disk/by-partlabel/root-b bs=4M count=1 status=none | sha256sum); "
-            "nohup bash -c 'exec apm upgrade --system --yes' "
+            "nohup bash -c 'exec apm image upgrade --yes' "
             ">/var/lib/qualification/interrupted.log 2>&1 & pid=$!; "
             "echo $pid >/var/lib/qualification/interrupted.pid; changed=0; "
             "for attempt in $(seq 1 900); do "
@@ -1512,7 +1512,7 @@ http {
         predecessor_generation: int | None = None
         candidate_generation: int | None = None
         for _ in range(3):
-            machine.ssh("apm upgrade --system --yes", timeout=1800)
+            machine.ssh("apm image upgrade --yes", timeout=1800)
             staged = read_remote_json(machine, "/var/lib/profiles/image/state.json")
             if staged.get("pending") != staged.get("default"):
                 raise RuntimeError("candidate staging did not publish one pending default")
@@ -1552,7 +1552,7 @@ http {
             )
             if current_system["image_gen_parent"] != candidate_generation:
                 raise RuntimeError("configuration was not rebound to the running candidate")
-            machine.ssh(f"apm rollback --system --image --generation {predecessor_generation}")
+            machine.ssh(f"apm image rollback --generation {predecessor_generation}")
             machine.reboot()
             self._assert_release(machine, self.predecessor_version, "predecessor")
             rolled_back = read_remote_json(machine, "/var/lib/profiles/image/state.json")
@@ -1565,7 +1565,7 @@ http {
             self._assert_transition_data(machine)
             self.counts.update_rollback_cycles += 1
 
-        machine.ssh("apm upgrade --system --yes", timeout=1800)
+        machine.ssh("apm image upgrade --yes", timeout=1800)
         staged = read_remote_json(machine, "/var/lib/profiles/image/state.json")
         candidate_generation = staged["pending"]
         candidate = next(
@@ -1619,10 +1619,10 @@ http {
         state = read_remote_json(machine, "/var/lib/profiles/image/state.json")
         if state["running"] != candidate_generation:
             raise RuntimeError("offline-restored candidate did not boot")
-        machine.ssh(f"apm rollback --system --image --generation {predecessor_generation}")
+        machine.ssh(f"apm image rollback --generation {predecessor_generation}")
         machine.reboot()
         self._stage_registry(machine)
-        machine.ssh("apm upgrade --system --yes", timeout=1800)
+        machine.ssh("apm image upgrade --yes", timeout=1800)
         staged = read_remote_json(machine, "/var/lib/profiles/image/state.json")
         final_candidate = next(
             row

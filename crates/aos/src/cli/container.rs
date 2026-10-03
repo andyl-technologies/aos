@@ -158,7 +158,7 @@ pub enum ContainerCommand {
     Publish {
         /// Container definition name
         name: String,
-        /// AUTHORITY/REPOSITORY[:TAG|@DIGEST]
+        /// AUTHORITY/[REGISTRY-SLUG/]REPOSITORY[:TAG|@DIGEST]
         reference: String,
         /// Canonical sidecar already committed in the signed AOS release
         #[arg(long)]

@@ -93,7 +93,7 @@
     name ? "aos-disk",
     # Extra derivations whose full closures land in /nix/store on the
     # rootfs, over and above `system`'s own closure. Upgrade tests pass
-    # a second system toplevel here so `apm upgrade --system` finds its
+    # a second system toplevel here so `apm image upgrade` finds its
     # store paths already present locally (no network fetch) — see
     # lib/build/rootfs.nix's `extraClosures` and tests/fleet/
     # apm-system-upgrade.nix.

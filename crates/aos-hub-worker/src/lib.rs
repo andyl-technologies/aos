@@ -231,6 +231,38 @@ fn oci_inventory_follow_up(
         .transpose()
 }
 
+/// Follow-up topology passes one deletion wakeup may chain before the
+/// operation waits for the next scheduled topology tick.
+#[cfg(any(test, target_arch = "wasm32"))]
+const MAX_REGISTRY_DELETION_FOLLOW_UPS: u32 = 120;
+
+/// Builds the next topology pass while a registry deletion can continue.
+///
+/// Deletion operations yield between bounded steps, such as a scheduled
+/// placement scan or an inventory continuation. Each follow-up is a
+/// deterministic child of its parent, and the chain is bounded so an
+/// operation waiting on another collector falls back to the scheduled tick
+/// instead of spinning the queue.
+#[cfg(any(test, target_arch = "wasm32"))]
+fn registry_deletion_follow_up(
+    envelope: &aos_hub_core::jobs::JobEnvelope,
+    follow_up_due: bool,
+) -> anyhow::Result<Option<aos_hub_core::jobs::JobEnvelope>> {
+    let sequence = envelope
+        .continuation
+        .as_ref()
+        .map_or(0, |continuation| continuation.sequence);
+    if !follow_up_due || sequence >= MAX_REGISTRY_DELETION_FOLLOW_UPS {
+        return Ok(None);
+    }
+    envelope
+        .continued(
+            aos_hub_core::jobs::Job::RunTopologyProbes,
+            "registry-deletion".to_string(),
+        )
+        .map(Some)
+}
+
 #[cfg(any(test, target_arch = "wasm32"))]
 fn parse_oci_capability(value: Option<&str>) -> Option<bool> {
     match value {
@@ -286,7 +318,8 @@ impl RequestShardingMode {
 mod index_build_identity_tests {
     use super::{
         completed_index_outcome, oci_inventory_follow_up, parse_oci_capability,
-        registry_index_build_id, scheduled_maintenance_jobs, RequestShardingMode,
+        registry_deletion_follow_up, registry_index_build_id, scheduled_maintenance_jobs,
+        RequestShardingMode, MAX_REGISTRY_DELETION_FOLLOW_UPS,
     };
 
     #[test]
@@ -419,6 +452,33 @@ mod index_build_identity_tests {
             .iter()
             .any(|job| matches!(job, Job::ProbeOciConditionalDeletes)));
         assert!(enabled_jobs.iter().any(|job| matches!(job, Job::RunOciGc)));
+    }
+
+    #[test]
+    fn registry_deletion_follow_ups_rerun_topology_passes_within_a_bound() {
+        use aos_hub_core::jobs::{Job, JobEnvelope};
+
+        let root = JobEnvelope::new(Job::RunTopologyProbes);
+        assert!(registry_deletion_follow_up(&root, false).unwrap().is_none());
+
+        let first = registry_deletion_follow_up(&root, true).unwrap().unwrap();
+        let replay = registry_deletion_follow_up(&root, true).unwrap().unwrap();
+        assert_eq!(first, replay, "a redelivered parent must not fork the chain");
+        assert_eq!(first.job, Job::RunTopologyProbes);
+        assert_eq!(first.continuation.as_ref().unwrap().sequence, 1);
+
+        let mut last = first;
+        for _ in 1..MAX_REGISTRY_DELETION_FOLLOW_UPS {
+            last = registry_deletion_follow_up(&last, true).unwrap().unwrap();
+        }
+        assert_eq!(
+            last.continuation.as_ref().unwrap().sequence,
+            MAX_REGISTRY_DELETION_FOLLOW_UPS
+        );
+        assert!(
+            registry_deletion_follow_up(&last, true).unwrap().is_none(),
+            "a waiting deletion falls back to the scheduled topology tick"
+        );
     }
 
     #[test]
@@ -1167,6 +1227,7 @@ mod entry {
             ),
         ))
         .with_route_reservation_keyring(route_reservation_keyring)
+        .with_maintenance_jobs(Arc::new(crate::workerqueue::WorkerQueue::from_env(env)?))
         // RFC-0004 ch.14 Phase C: read-through cache hot point-key state
         // (sessions/tokens/config/routing) off the relational read path via Workers
         // KV (the `SESSIONS` namespace). When the binding is absent the
@@ -1851,7 +1912,13 @@ mod entry {
         let make = || job_backend(state, env);
         match &envelope.job {
             Job::DispatchMaintenance => run_cron(state, env, envelope).await?,
-            Job::RunTopologyProbes => run_domain_probes(make(), env).await?,
+            Job::RunTopologyProbes => {
+                // Registry deletion does not depend on domain-probe
+                // configuration, so a probe failure must not stall it.
+                let probes = run_domain_probes(make(), env).await;
+                run_registry_deletions(make(), env, envelope).await?;
+                probes?;
+            }
             Job::RecoverCacheWrites => {
                 let bucket = env.bucket(crate::handlers::bindings::R2).map_err(|error| {
                     worker::Error::RustError(format!(
@@ -2001,10 +2068,15 @@ mod entry {
                     &envelope.operation_id,
                     now_for_worker(),
                     25,
+                    // Only the controller's own canonical JSON continuation
+                    // resumes a generation. The maintenance dispatcher labels
+                    // its fan-out children with a plain cursor, which must
+                    // start a fresh bounded pass rather than fail parsing.
                     envelope
                         .continuation
                         .as_ref()
-                        .map(|continuation| continuation.cursor.as_str()),
+                        .map(|continuation| continuation.cursor.as_str())
+                        .filter(|cursor| cursor.starts_with('{')),
                     aos_hub_core::oci_inventory_controller::WORKER_OCI_INVENTORY_DISPATCH_BUDGET,
                 )
                 .await
@@ -2432,6 +2504,58 @@ mod entry {
                     "regenerate_surface is unsupported".into(),
                 ));
             }
+        }
+        Ok(())
+    }
+
+    /// Advances reviewed registry deletion operations on the Worker.
+    ///
+    /// Provider inventories use the Worker dispatch budget; a pass that can
+    /// continue immediately enqueues a bounded follow-up topology pass.
+    async fn run_registry_deletions(
+        backend: Box<dyn aos_hub_core::backend::Backend>,
+        env: &Env,
+        envelope: &aos_hub_core::jobs::JobEnvelope,
+    ) -> Result<()> {
+        let bucket = env.bucket(crate::handlers::bindings::R2).map_err(|error| {
+            worker::Error::RustError(format!("registry deletions: R2 binding missing: {error}"))
+        })?;
+        let secret_versions = crate::secretversions::from_env(env).map_err(|error| {
+            worker::Error::RustError(format!("registry deletions: secret versions: {error:#}"))
+        })?;
+        let egress = worker_egress(env)?;
+        let db = Arc::new(aos_hub_core::db::Database::attach(backend));
+        let surfaces: Arc<dyn aos_hub_core::fetch::SurfaceProvider> =
+            Arc::new(crate::surface::R2SurfaceProvider::new(
+                bucket,
+                Arc::clone(&db),
+                secret_versions,
+                egress,
+            ));
+        let stats = aos_hub_core::registry_delete_controller::RegistryDeletionController::new(
+            db,
+            surfaces,
+            "worker-registry-delete",
+            aos_hub_core::oci_inventory_controller::WORKER_OCI_INVENTORY_DISPATCH_BUDGET,
+        )
+        .run_due(5)
+        .await
+        .map_err(|error| worker::Error::RustError(format!("registry deletions: {error:#}")))?;
+        if let Some(next) = crate::registry_deletion_follow_up(envelope, stats.follow_up_due)
+            .map_err(|error| {
+                worker::Error::RustError(format!(
+                    "build registry deletion follow-up: {error:#}"
+                ))
+            })?
+        {
+            crate::workerqueue::WorkerQueue::from_env(env)?
+                .enqueue_envelopes(&[next])
+                .await
+                .map_err(|error| {
+                    worker::Error::RustError(format!(
+                        "enqueue registry deletion follow-up: {error:#}"
+                    ))
+                })?;
         }
         Ok(())
     }

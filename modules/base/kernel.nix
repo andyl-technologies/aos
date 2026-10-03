@@ -180,7 +180,7 @@ in {
     systemd.services."systemd-modules-load" = {
       overrideStrategy = "asDropin";
       serviceConfig.SuccessExitStatus = "0 1";
-      # Live in-place upgrades (`apm upgrade --system`): when a role bundle
+      # Live in-place upgrades (`apm image upgrade`): when a role bundle
       # changes the set of kernel modules, the drop-in under
       # /etc/modules-load.d/ changes; restart this oneshot to load the new
       # modules without a reboot. systemd-modules-load has no ExecReload=,

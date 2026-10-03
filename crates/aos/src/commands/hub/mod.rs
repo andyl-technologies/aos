@@ -66,6 +66,7 @@ mod pins;
 mod placement;
 pub(crate) mod publication;
 mod registry;
+mod registry_delete;
 mod route;
 mod signing_key;
 mod surface;

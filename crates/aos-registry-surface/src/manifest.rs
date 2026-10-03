@@ -1409,7 +1409,7 @@ fn has_system_location_prefix(path: &str) -> bool {
 #[serde(deny_unknown_fields)]
 pub struct SysrootImageEntry {
     /// Image format identifier (e.g. `qcow2`, `raw`), matched against
-    /// `apm install --image <FMT>`.
+    /// `apm image download NAME --format <FMT>`.
     pub format: String,
     /// Store path containing the image file.
     pub store_path: String,

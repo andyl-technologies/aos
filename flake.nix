@@ -95,8 +95,15 @@
       # through the build host's configured QEMU binfmt handler while Nix keeps
       # scheduling the derivations on x86_64.
       coordinator = aosFor coordinatorSystem;
-      platformBuilds = [
+      # The release contract and the package inventory read the same list. A
+      # deferred platform is not built at all, so its container never enters
+      # the published index.
+      deferredPlatforms = import ./qualification/deferred-platforms.nix;
+      released = system: !(builtins.elem system deferredPlatforms);
+      platformBuilds =
+        coordinator.lib.optional (released "x86_64-linux")
         coordinator.systems.${variant}.build.defaultContainer
+        ++ coordinator.lib.optional (released "aarch64-linux")
         (import ./. {
           system = coordinatorSystem;
           crossSystem = "aarch64-linux";
@@ -106,8 +113,7 @@
           variant
         }
         .build
-        .defaultContainer
-      ];
+        .defaultContainer;
       oci = import ./lib/build/oci {
         inherit (coordinator) lib;
         inherit (coordinator.pkgs) mkDerivation coreutils findutils gzip jq tar;
@@ -115,7 +121,7 @@
     in
       import ./lib/containers/multi-platform.nix {
         inherit (coordinator) lib pkgs;
-        inherit oci platformBuilds;
+        inherit oci platformBuilds deferredPlatforms;
         name = "aos";
       };
 
@@ -497,6 +503,7 @@
             eval = aos.checks.eval;
             rust-cargo-artifacts = aos.checks.rust.cargo-artifacts;
             rust-aos = aos.checks.rust.aos;
+            rust-aos-test-targets = aos.checks.rust.aos-test-targets;
             rust-crucible-controller = aos.checks.rust.crucible-controller;
             rust-crucible-qemu-plugin = aos.checks.rust.crucible-qemu-plugin;
             rust-crucible-guest = aos.checks.rust.crucible-guest;

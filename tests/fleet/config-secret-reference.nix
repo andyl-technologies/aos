@@ -324,7 +324,7 @@ in {
       target.succeed(f"""
           printf '%s' {ALPHA} > /run/credentials/@system/bootstrap-token
           chmod 0600 /run/credentials/@system/bootstrap-token
-          {APM} rollback --system --generation {first}
+          {APM} config rollback --generation {first}
       """, timeout=300)
       assert current_generation() == first
       target.succeed(f"test \"$(cat {SOURCE})\" = {ALPHA}")

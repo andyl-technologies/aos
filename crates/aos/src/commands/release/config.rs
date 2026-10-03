@@ -33,6 +33,8 @@
 //! origin = "https://aos.staging.example"
 //! identity = "staging-2026-09"
 //! receipt_keys = ["staging-publication-v1=/etc/aos-release/keys/staging-publication-v1.pub"]
+//! # Optional: without it, AOS_TOKEN, else the active `aos hub login` profile
+//! # for this origin authenticates the porcelain.
 //! token_credential = "staging-token"
 //!
 //! [surfaces.production]
@@ -78,6 +80,10 @@ pub(super) const MAINTAINER_CONFIG: &str = "aos.release.maintainer-config/v1";
 
 /// Environment variable naming an explicit maintainer configuration path.
 const CONFIG_ENVIRONMENT: &str = "AOS_RELEASE_CONFIG";
+
+/// Environment variable holding a Hub access token for surfaces without
+/// `token_credential`.
+const TOKEN_ENVIRONMENT: &str = "AOS_TOKEN";
 
 /// System-wide configuration path used when no explicit path is given.
 const SYSTEM_CONFIG_PATH: &str = "/etc/aos-release/maintainer.toml";
@@ -197,6 +203,10 @@ pub(super) struct SurfaceConfig {
     #[serde(default)]
     pub(super) receipt_keys: Vec<String>,
     /// Hub access token credential name or absolute path.
+    ///
+    /// Optional: without it the porcelain uses `AOS_TOKEN`, else the active
+    /// `aos hub login` profile for the surface origin (see
+    /// [`SurfaceConfig::token`]).
     #[serde(default)]
     pub(super) token_credential: Option<String>,
     /// AWS region for an S3 origin.
@@ -245,12 +255,28 @@ impl SurfaceConfig {
         Ok(())
     }
 
-    /// Resolves the configured Hub access token, if any.
+    /// Resolves the Hub access token the porcelain presents to this surface.
+    ///
+    /// The order is `token_credential`, then a non-empty `AOS_TOKEN`. `None`
+    /// means neither is set: the Hub client then uses the renewable
+    /// `aos hub login` profile stored for the surface origin, which must be
+    /// the active profile, exactly as the `aos hub` commands resolve it.
+    ///
+    /// # Errors
+    /// Returns an error when the configured credential cannot be read.
     pub(super) fn token(&self) -> Result<Option<String>> {
-        self.token_credential
-            .as_deref()
-            .map(resolve_credential)
-            .transpose()
+        let environment = std::env::var(TOKEN_ENVIRONMENT).ok();
+        self.token_with_environment(environment.as_deref())
+    }
+
+    /// Resolves the Hub access token against an explicit `AOS_TOKEN` value.
+    fn token_with_environment(&self, environment: Option<&str>) -> Result<Option<String>> {
+        if let Some(reference) = self.token_credential.as_deref() {
+            return resolve_credential(reference).map(Some);
+        }
+        Ok(environment
+            .filter(|token| !token.is_empty())
+            .map(str::to_owned))
     }
 
     /// Resolves static-origin transport credentials.
@@ -690,6 +716,39 @@ keys = [
                 .surfaces
                 .production
                 .require_matches(&planned)
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn hub_tokens_prefer_the_credential_then_the_environment() -> Result<()> {
+        let mut config = MaintainerConfig::parse(MINIMAL.as_bytes())?;
+        let staging = &mut config.surfaces.staging;
+
+        // Neither source: the Hub client falls back to the login profile.
+        assert_eq!(staging.token_with_environment(None)?, None);
+        assert_eq!(staging.token_with_environment(Some(""))?, None);
+        assert_eq!(
+            staging.token_with_environment(Some("environment-token"))?,
+            Some("environment-token".to_owned())
+        );
+
+        let directory = tempfile::tempdir()?;
+        let credential = directory.path().join("staging-token");
+        std::fs::write(&credential, b"  credential-token\n")?;
+        staging.token_credential = Some(credential.display().to_string());
+        assert_eq!(
+            staging.token_with_environment(Some("environment-token"))?,
+            Some("credential-token".to_owned())
+        );
+
+        // A configured but unreadable credential fails closed rather than
+        // falling through to another source.
+        staging.token_credential = Some(directory.path().join("absent").display().to_string());
+        assert!(
+            staging
+                .token_with_environment(Some("environment-token"))
                 .is_err()
         );
         Ok(())

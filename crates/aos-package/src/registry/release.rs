@@ -27,7 +27,9 @@ use crate::types::{package_name_bucket, validate_package_name, validate_registry
 pub(crate) mod artifacts;
 mod lineage;
 mod recovery;
+mod root_base;
 pub use artifacts::RegistryReleaseArtifacts;
+pub use root_base::{RootRegistryBase, inspect_root_base};
 
 /// Coordinates shared pack generation and publication after role-bound signing.
 pub struct RegistryReleaseLifecycle;
@@ -2148,10 +2150,9 @@ mod tests {
             .object_format(git2::ObjectFormat::Sha256)
             .initial_head("master");
         let repository = Repository::init_opts(path, &options)?;
-        fs::write(
-            path.join("registry.toml"),
-            b"[registry]\nname = \"andyl/main\"\n",
-        )?;
+        // The committed manifest carries the local authoring name; only the
+        // release transaction uses the canonical `SCOPE/NAME` identity.
+        fs::write(path.join("registry.toml"), b"[registry]\nname = \"main\"\n")?;
         let mut index = repository.index()?;
         index.add_all(["registry.toml"], IndexAddOption::DEFAULT, None)?;
         index.write()?;

@@ -17,6 +17,16 @@ let
     "aarch64-darwin"
   ];
 
+  # Linux platforms whose release is deferred. The qualification contract
+  # reads the same list, so a deferred platform is both blocked here and
+  # optional there; see ../qualification/deferred-platforms.nix.
+  deferredPlatforms = let
+    listed = import ../qualification/deferred-platforms.nix;
+  in
+    if builtins.all (system: builtins.elem system ["x86_64-linux" "aarch64-linux"]) listed
+    then listed
+    else throw "package platform support: only Linux platforms can be deferred";
+
   # Wave 1: target-independent inputs and small leaf packages.  These establish
   # the data and low-level library closure used by later Darwin packages.
   independentWave1 = [
@@ -1060,6 +1070,7 @@ let
     "toolchain/rust/_rust-darwin-build-tool.nix" = "cross-build-helper";
     "toolchain/rust/_rust-darwin.nix" = "cross-build-helper";
     "toolchain/rust/_rust-bootstrap.nix" = "native-build-helper";
+    "tools/aos/_release-tooling.nix" = "native-release-helper";
     "tools/aos/_tests.nix" = "native-test-helper";
     "tools/aos/_workspace-source.nix" = "target-independent-source";
     "tools/crucible/_cargo-deps-hash.nix" = "target-independent-source";
@@ -1187,7 +1198,7 @@ let
     else builtins.head matched;
 in rec {
   schema = "aos.package-platform-support/v1";
-  inherit canonicalSystems darwinSystems packageInventory helperInventory factoryInventory resourceInventory;
+  inherit canonicalSystems darwinSystems deferredPlatforms packageInventory helperInventory factoryInventory resourceInventory;
 
   packageSupport = name:
     packageInventory.${name}
@@ -1252,9 +1263,13 @@ in rec {
       # The inventory blockers track the Linux-hosted Darwin cross-build
       # roadmap. Linux realizations and public runtime qualification are
       # separate release gates, so these reasons must not block Linux planning.
+      # A deferred Linux platform instead blocks every eligible cell, which
+      # also keeps its derivations out of release evaluation below.
       blockers =
         if isDarwin system
         then entry.blockers
+        else if builtins.elem system deferredPlatforms
+        then ["platform-release-deferred"]
         else [];
     }
     else {

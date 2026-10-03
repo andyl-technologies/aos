@@ -78,17 +78,21 @@ pub(super) fn validate_requirement_floors(contract: &QualificationContract) -> R
 
 /// Requires the typed QEMU/security baseline and observation measurements.
 ///
+/// A deferred platform keeps its optional image target, and that target
+/// retains the same reviewed baseline so un-deferring cannot weaken it.
+///
 /// # Errors
-/// Returns an error when a required image target lacks its accelerator or
-/// security baseline, a per-configuration observation requirement is absent,
-/// or a cycle measurement is weaker than the release baseline.
+/// Returns an error when an image target required on a released platform, or
+/// kept on a deferred one, lacks its accelerator or security baseline, a
+/// per-configuration observation requirement is absent, or a cycle
+/// measurement is weaker than the release baseline.
 pub(super) fn validate_assurance_floors(contract: &QualificationContract) -> Result<()> {
     for (platform, accelerator) in [
         (Platform::X86_64Linux, Accelerator::Kvm),
         (Platform::Aarch64Linux, Accelerator::Tcg),
     ] {
         if !contract.targets.iter().any(|target| {
-            target.required
+            (target.required || contract.is_deferred(platform))
                 && target.platform == platform
                 && target.kind == TargetKind::Image
                 && target.environment.layers.last().is_some_and(|layer| {
