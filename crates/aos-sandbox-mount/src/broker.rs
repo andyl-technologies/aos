@@ -291,7 +291,200 @@ pub struct MountBroker<W> {
     source_runtime_failed: bool,
 }
 
+/// Retains the selected broker's actual originals throughout one recovery.
+///
+/// The fixed selected root is `/run/aos/sandbox-mount-catalog`, with owner zero.
+/// This is neither a supplied-path recovery API nor a new startup authority.
+/// Unreturned lower recovery prefixes and allocation funding remain separate.
+pub struct SelectedMountBrokerStartupV2<W> {
+    startup: Option<aos_sandbox::mount_manager_startup::SelectedMountStartupV2>,
+    authority: Option<MountAuthorityV1>,
+    worker: Option<W>,
+    journal: Option<Journal>,
+    destination_slots: Option<Option<DestinationSlotStoreV1>>,
+    completed: Option<MountBroker<W>>,
+    result: Option<Result<()>>,
+    attempted: bool,
+    ended: bool,
+    startup_failed: bool,
+}
+
+/// Borrows the actual selected recovery refusal without copying its cause.
+pub enum SelectedMountBrokerStartupFailureRefV2<'owner> {
+    /// The genuine Core owner retains the failed kernel/image/protected join.
+    Startup(aos_sandbox::mount_manager_startup::SelectedMountStartupFailureRefV2<'owner>),
+    /// The original recovery recipe returned this exact Mount error.
+    Recovery(&'owner MountError),
+    /// A missing association or unwind ended the owner before returning a cause.
+    Ended,
+}
+
+enum BrokerRecoveryOriginals<'owner, W> {
+    // Function parameters formerly dropped authority, worker, then journal on
+    // failure, after recovery locals. Preserve that order in the closed adapter.
+    Legacy {
+        authority: MountAuthorityV1,
+        worker: W,
+        journal: Journal,
+    },
+    Selected(&'owner mut SelectedMountBrokerStartupV2<W>),
+}
+
+struct SelectedBrokerBoundary<'owner, W> {
+    owner: &'owner mut SelectedMountBrokerStartupV2<W>,
+    completed: bool,
+}
+
+impl<W> Drop for SelectedBrokerBoundary<'_, W> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.owner.end();
+        }
+    }
+}
+
+impl<W> SelectedMountBrokerStartupV2<W> {
+    /// Parks the real handoff, worker and domain authority before recovery I/O.
+    #[must_use]
+    pub fn new(
+        journal: Journal,
+        worker: W,
+        authority: MountAuthorityV1,
+        startup: aos_sandbox::mount_manager_startup::SelectedMountStartupV2,
+    ) -> Self {
+        Self {
+            startup: Some(startup),
+            authority: Some(authority),
+            worker: Some(worker),
+            journal: Some(journal),
+            destination_slots: None,
+            completed: None,
+            result: None,
+            attempted: false,
+            ended: false,
+            startup_failed: false,
+        }
+    }
+
+    /// Borrows the actual terminal cause without observing or re-admitting.
+    #[must_use]
+    pub fn failure(&self) -> Option<SelectedMountBrokerStartupFailureRefV2<'_>> {
+        if self.startup_failed {
+            return self.startup.as_ref().and_then(|owner| owner.failure())
+                .map(SelectedMountBrokerStartupFailureRefV2::Startup)
+                .or(Some(SelectedMountBrokerStartupFailureRefV2::Ended));
+        }
+        self.result.as_ref().and_then(|result| result.as_ref().err())
+            .map(SelectedMountBrokerStartupFailureRefV2::Recovery)
+            .or_else(|| self.ended.then_some(SelectedMountBrokerStartupFailureRefV2::Ended))
+    }
+
+    fn end(&mut self) {
+        self.ended = true;
+        if let Some(startup) = self.startup.as_mut() {
+            startup.end();
+        }
+    }
+}
+
+impl<W: MountWorker> SelectedMountBrokerStartupV2<W> {
+    /// Runs the sole recovery recipe once under the genuine selected bookends.
+    ///
+    /// # Errors
+    /// Borrows the actual returned recovery or Core refusal. A recovery error
+    /// retains its old formatted error surface, not an invented OS error cause.
+    pub fn recover_once(&mut self) -> std::result::Result<(), SelectedMountBrokerStartupFailureRefV2<'_>> {
+        if self.attempted || self.ended {
+            self.end();
+            return Err(self.failure().unwrap_or(SelectedMountBrokerStartupFailureRefV2::Ended));
+        }
+        self.attempted = true;
+        let succeeded = {
+            let mut boundary = SelectedBrokerBoundary {
+                owner: self,
+                completed: false,
+            };
+            let owner = &mut *boundary.owner;
+            let prepared = match (owner.startup.as_mut(), owner.journal.as_mut()) {
+                (Some(startup), Some(journal)) => startup.recheck_held_capture(journal).is_ok(),
+                _ => false,
+            };
+            if !prepared {
+                owner.startup_failed = true;
+            } else {
+                owner.result = Some(MountBroker::recover_recipe(
+                    BrokerRecoveryOriginals::Selected(owner),
+                    Some((Path::new("/run/aos/sandbox-mount-catalog"), 0)),
+                ).map(|_| ()));
+                if matches!(owner.result, Some(Ok(()))) {
+                    let checked = match (owner.startup.as_mut(), owner.completed.as_mut()) {
+                        (Some(startup), Some(broker)) => broker.recheck_selected_mount_startup(startup).is_ok(),
+                        _ => false,
+                    };
+                    if !checked {
+                        owner.startup_failed = true;
+                    }
+                }
+            }
+            let succeeded = !owner.startup_failed && matches!(owner.result, Some(Ok(())));
+            boundary.completed = succeeded;
+            succeeded
+        };
+        if succeeded {
+            Ok(())
+        } else {
+            Err(self.failure().unwrap_or(SelectedMountBrokerStartupFailureRefV2::Ended))
+        }
+    }
+
+    /// Moves the paired completed broker and original Core owner exactly once.
+    ///
+    /// All slots are checked before taking; no observation or allocation occurs
+    /// between take and the returned pair. Refusal restores the same originals.
+    #[must_use]
+    pub fn take_completed(&mut self) -> Option<(
+        MountBroker<W>, aos_sandbox::mount_manager_startup::SelectedMountStartupV2,
+    )> {
+        if self.ended || !matches!(self.result, Some(Ok(())))
+            || self.completed.is_none() || self.startup.is_none()
+        {
+            self.end();
+            return None;
+        }
+        match (self.completed.take(), self.startup.take()) {
+            (Some(broker), Some(startup)) => Some((broker, startup)),
+            (broker, startup) => {
+                self.completed = broker;
+                self.startup = startup;
+                self.end();
+                None
+            }
+        }
+    }
+}
+
+impl<W> Drop for SelectedMountBrokerStartupV2<W> {
+    fn drop(&mut self) {
+        self.end();
+    }
+}
+
 impl<W: MountWorker> MountBroker<W> {
+    /// Bookends selected startup through the same protected held writer.
+    ///
+    /// This remains an observation while an original native flight is held;
+    /// it neither takes that runtime nor bypasses any admission or effect gate.
+    /// The original startup owns the kernel/image flight and its first cause.
+    ///
+    /// # Errors
+    /// Refuses ended startup or changed fixed names, capture, policy or images.
+    pub fn recheck_selected_mount_startup(
+        &mut self,
+        startup: &mut aos_sandbox::mount_manager_startup::SelectedMountStartupV2,
+    ) -> std::result::Result<(), aos_sandbox::mount_manager_startup::SelectedMountStartupEndedV2> {
+        startup.recheck_held_capture(&mut self.journal)
+    }
+
     /// Commits and reopens one independently admitted original Acquire pair.
     ///
     /// The actual Live request, body, signature intersection, sealed records
@@ -662,39 +855,107 @@ impl<W: MountWorker> MountBroker<W> {
     }
 
     fn recover(
-        mut journal: Journal,
-        mut worker: W,
+        journal: Journal,
+        worker: W,
         authority: MountAuthorityV1,
         destination_slot_root: Option<(&Path, u32)>,
     ) -> Result<Self> {
+        let completed = Self::recover_recipe(
+            BrokerRecoveryOriginals::Legacy { authority, worker, journal },
+            destination_slot_root,
+        )?;
+        completed.ok_or(MountError::Fence("legacy broker recovery did not complete"))
+    }
+
+    fn recover_recipe(
+        mut originals: BrokerRecoveryOriginals<'_, W>,
+        destination_slot_root: Option<(&Path, u32)>,
+    ) -> Result<Option<Self>> {
+        let (journal, worker) = match &mut originals {
+            BrokerRecoveryOriginals::Legacy { journal, worker, .. } => (journal, worker),
+            BrokerRecoveryOriginals::Selected(owner) => {
+                if owner.completed.is_some() || owner.destination_slots.is_some() {
+                    return Err(MountError::Fence("selected broker recovery destination is occupied"));
+                }
+                let (Some(journal), Some(worker), Some(_)) = (
+                    owner.journal.as_mut(), owner.worker.as_mut(), owner.authority.as_ref(),
+                ) else {
+                    return Err(MountError::Fence("selected broker originals are unavailable"));
+                };
+                (journal, worker)
+            }
+        };
         let kernel_boot_id = KernelBootId::current()
             .map_err(|error| MountError::State(error.to_string()))?
             .into_bytes();
         let broker_instance_id = broker_instance_id()?;
         let mut resources = MountResourceTableV1::recover(
-            &journal,
+            journal,
             MountResourceLimitsV1::default(),
             kernel_boot_id,
         )?;
-        let source_pins = SourcePinTableV1::recover(&journal, kernel_boot_id)?;
-        let fuse_reservations = FuseWorkerReservationTableV1::recover(&journal, kernel_boot_id)?;
+        let source_pins = SourcePinTableV1::recover(journal, kernel_boot_id)?;
+        let fuse_reservations = FuseWorkerReservationTableV1::recover(journal, kernel_boot_id)?;
         ensure_fuse_slots_exclude_native(&resources, &fuse_reservations)?;
         let custody = worker.custody_inventory()?;
         validate_pre_repair_state(&resources, &source_pins, kernel_boot_id, &custody)?;
 
-        fault_stale_boot_resources(&mut journal, &mut resources, kernel_boot_id)?;
+        fault_stale_boot_resources(journal, &mut resources, kernel_boot_id)?;
         fault_unverifiable_allocated_custody(
-            &mut journal,
+            journal,
             &mut resources,
             kernel_boot_id,
-            &mut worker,
+            worker,
         )?;
         validate_custody(&resources, kernel_boot_id, &worker.custody_inventory()?)?;
         source_pins.validate_resource_references(&resources)?;
         let destination_slots = destination_slot_root
-            .map(|(path, owner)| DestinationSlotStoreV1::recover(path, owner, &journal))
+            .map(|(path, owner)| DestinationSlotStoreV1::recover(path, owner, journal))
             .transpose()?;
-        Ok(Self {
+        match originals {
+            BrokerRecoveryOriginals::Legacy { journal, worker, authority } => Ok(Some(
+                Self::assemble_recovered(journal, worker, authority, resources, source_pins,
+                    fuse_reservations, kernel_boot_id, broker_instance_id, destination_slots),
+            )),
+            BrokerRecoveryOriginals::Selected(owner) => {
+                owner.destination_slots = Some(destination_slots);
+                if owner.completed.is_some() || owner.journal.is_none() || owner.worker.is_none()
+                    || owner.authority.is_none() || owner.destination_slots.is_none()
+                {
+                    return Err(MountError::Fence("selected broker recovery association changed"));
+                }
+                match (owner.journal.take(), owner.worker.take(), owner.authority.take(), owner.destination_slots.take()) {
+                    (Some(journal), Some(worker), Some(authority), Some(destination_slots)) => {
+                        owner.completed = Some(Self::assemble_recovered(journal, worker, authority,
+                            resources, source_pins, fuse_reservations, kernel_boot_id,
+                            broker_instance_id, destination_slots));
+                        Ok(None)
+                    }
+                    (journal, worker, authority, destination_slots) => {
+                        owner.journal = journal;
+                        owner.worker = worker;
+                        owner.authority = authority;
+                        owner.destination_slots = destination_slots;
+                        Err(MountError::Fence("selected broker recovery originals changed"))
+                    }
+                }
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn assemble_recovered(
+        journal: Journal,
+        worker: W,
+        authority: MountAuthorityV1,
+        resources: MountResourceTableV1,
+        source_pins: SourcePinTableV1,
+        fuse_reservations: FuseWorkerReservationTableV1,
+        kernel_boot_id: [u8; 16],
+        broker_instance_id: [u8; 16],
+        destination_slots: Option<DestinationSlotStoreV1>,
+    ) -> Self {
+        Self {
             journal,
             worker,
             resources,
@@ -706,7 +967,7 @@ impl<W: MountWorker> MountBroker<W> {
             destination_slots,
             source_runtime: None,
             source_runtime_failed: false,
-        })
+        }
     }
 
     /// Commits a first-generation FUSE reservation under Mount's journal owner.

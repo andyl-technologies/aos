@@ -1182,11 +1182,29 @@ def _check_selected_launcher_image_ioctls(setools: Any, policy: Any) -> list[str
             if str(observed) != source:
                 raise ValueError(f"selected-launcher image source is aliased: {source}")
 
+    # init_exec_t remains mandatory above. A selected-only self-image type may
+    # be absent in the default recipe; the negative native query still runs.
+    targets = tuple(dict.fromkeys(target for _, target in cells))
+    for target in targets:
+        if target == image_target:
+            continue
+        try:
+            observed = policy.lookup_type(target)
+        except setools.exception.InvalidType as error:
+            if selectors:
+                raise ValueError(
+                    f"missing selected-launcher image target: {target}"
+                ) from error
+        else:
+            if str(observed) != target:
+                raise ValueError(f"selected-launcher image target is aliased: {target}")
+
     # Regex criteria do not look up absent source types. Native indirect
     # matching still expands real attributes; never skip the default scan.
     source_pattern = (
         "^(?:" + "|".join(re.escape(source) for source, _ in cells) + ")$"
     )
+    target_pattern = "^(?:" + "|".join(re.escape(target) for target in targets) + ")$"
     permitted_pairs = set(cells) if selectors else set()
     enabled_base_pairs: set[tuple[str, str]] = set()
     enabled_selectors = {cell: set() for cell in cells}
@@ -1198,7 +1216,8 @@ def _check_selected_launcher_image_ioctls(setools: Any, policy: Any) -> list[str
             source=source_pattern,
             source_regex=True,
             source_indirect=True,
-            target=image_target,
+            target=target_pattern,
+            target_regex=True,
             target_indirect=True,
             tclass=["file"],
             perms=["ioctl"],

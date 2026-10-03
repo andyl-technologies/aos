@@ -71,6 +71,18 @@ pub(crate) fn require_fixed_worker_descriptor_numbers() -> Result<()> {
 pub unsafe fn claim_initial_process_fd_table_once(
     limits: StartupFdCaptureHardLimitsV1,
 ) -> Result<ClaimedInitialProcessFdTableV1> {
+    begin_capture()?;
+
+    let result = limits.validate().and_then(|()| {
+        // SAFETY: this function forwards its documented exclusive-ownership
+        // and single-threaded preconditions to the only raw implementation.
+        unsafe { scan::claim_initial_process_fd_table(limits) }
+    });
+    finish_capture(result.is_ok());
+    result
+}
+
+fn begin_capture() -> Result<()> {
     CAPTURE_STATE
         .compare_exchange(
             CAPTURE_FRESH,
@@ -79,19 +91,28 @@ pub unsafe fn claim_initial_process_fd_table_once(
             Ordering::Acquire,
         )
         .map_err(|_| Error::invalid("startup FD capture", "capture was already attempted"))?;
+    Ok(())
+}
 
-    let result = limits.validate().and_then(|()| {
-        // SAFETY: this function forwards its documented exclusive-ownership
-        // and single-threaded preconditions to the only raw implementation.
-        unsafe { scan::claim_initial_process_fd_table(limits) }
-    });
+fn finish_capture(succeeded: bool) {
     CAPTURE_STATE.store(
-        if result.is_ok() {
+        if succeeded {
             CAPTURE_SUCCEEDED
         } else {
             CAPTURE_POISONED
         },
         Ordering::Release,
     );
+}
+
+unsafe fn capture_selected_once(owner: &mut PendingInitialProcessFdTableV2) -> Result<()> {
+    begin_capture()?;
+    let limits = StartupFdCaptureHardLimitsV1::mount_manager();
+    let result = limits.validate().and_then(|()| {
+        // SAFETY: the selected public owner forwards the same exclusive raw
+        // table contract, before starting any observer runtime or thread.
+        unsafe { scan::capture_selected_initial_table(owner, limits) }
+    });
+    finish_capture(result.is_ok());
     result
 }

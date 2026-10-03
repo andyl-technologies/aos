@@ -542,6 +542,9 @@ allow init_t aos_sandbox_mount_exec_t:file { execute getattr map open read };
 allow init_t aos_sandbox_mount_t:process transition;
 allow init_t aos_sandbox_mount_t:process2 nnp_transition;
 allow aos_sandbox_mount_t aos_sandbox_mount_exec_t:file { entrypoint execute getattr map open read };
+# The sole startup measurer rechecks its own sealed inode, not another role.
+allow aos_sandbox_mount_t aos_sandbox_mount_exec_t:file ioctl;
+allowxperm aos_sandbox_mount_t aos_sandbox_mount_exec_t:file ioctl { 0x6686 };
 allow aos_sandbox_mount_t aos_sandbox_mount_helper_exec_t:file { execute execute_no_trans getattr map open read };
 # Only PID1 may enter an installer, after its whole fixed command/FD check.
 # Post-transition ELF mappings need execute, but same-SID invocation still

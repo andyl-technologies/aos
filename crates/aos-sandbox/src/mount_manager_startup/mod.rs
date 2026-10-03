@@ -8,11 +8,13 @@
 mod absence;
 mod authority;
 mod custody;
+mod launcher;
 mod owner;
 mod recovery;
 
 pub use absence::*;
 pub use authority::*;
 pub use custody::*;
+pub use launcher::*;
 pub use owner::*;
 pub use recovery::*;

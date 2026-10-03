@@ -30,6 +30,7 @@ SELECTED_MOUNT_SOURCE_DOMAINS = ()
 SELECTED_LAUNCHER_IMAGE_IOCTL_CELLS = (
     ("aos_sandbox_mount_t", "init_exec_t"),
     ("aos_source_provider_t", "init_exec_t"),
+    ("aos_sandbox_mount_t", "aos_sandbox_mount_exec_t"),
 )
 SELECTED_LAUNCHER_IMAGE_IOCTL_SELECTORS = frozenset()
 ENFORCING = (*OWNER_DOMAINS, *HELPER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE, *SELECTED_MOUNT_SOURCE_DOMAINS)
@@ -592,6 +593,10 @@ def _selected_mount_source_matrix(Access, Transition, accesses, all_roles):
         positive.extend(accesses(domain, executable, "file", (
             "entrypoint", "execute", "getattr", "map", "open", "read",
         )))
+        if domain == mount:
+            positive.append(Access(domain, executable, "file", "ioctl"))
+        else:
+            negative.append(Access(domain, executable, "file", "ioctl"))
         # ELF mapping execute is not permission for another same-SID exec.
         negative.append(Access(domain, executable, "file", "execute_no_trans"))
         negative.append(Access(domain, domain, "process", "transition"))

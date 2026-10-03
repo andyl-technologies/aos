@@ -4,7 +4,7 @@ use std::ffi::CString;
 use std::fs::File;
 use std::io::Read as _;
 use std::num::NonZeroU32;
-use std::os::fd::{AsFd as _, OwnedFd};
+use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::FileExt as _;
 use std::path::Path;
@@ -17,7 +17,8 @@ use crate::uapi::{self, OpenHow, RESOLVE_BENEATH, RESOLVE_NO_MAGICLINKS, RESOLVE
 use crate::{Error, Result};
 
 use super::model::{
-    RetainedStartupProcessV1, StartupExecutableObservationV1, StartupProcessObservationV1,
+    PendingProcessObservationV2, PendingStartupProcessV2, RetainedStartupProcessV1,
+    StartupExecutableObservationV1, StartupKernelProcessObservationV2, StartupProcessObservationV1,
     build_identity,
 };
 
@@ -270,45 +271,275 @@ pub(super) fn capture_current_and_launcher(
             Error::invalid("startup launcher", "current process has no direct parent")
         })?;
     let launcher = capture_process(launcher_pid, boot_id)?;
-    if execution.observation.process.parent_pid() != launcher.observation.process.pid()
-        || execution.observation.process.pid() != execution.observation.process.thread_group_id()
-        || launcher.observation.process.pid() != launcher.observation.process.thread_group_id()
+    require_process_relationship(execution.observation.process, launcher.observation.process)?;
+    Ok((execution, launcher))
+}
+
+pub(super) fn capture_selected_current_and_launcher(
+    execution: &mut PendingStartupProcessV2,
+    launcher: &mut PendingStartupProcessV2,
+    boot_id: [u8; 16],
+) -> Result<()> {
+    let current_pid = NonZeroU32::new(std::process::id())
+        .ok_or_else(|| Error::invalid("startup execution", "current PID is zero"))?;
+    capture_selected_process(execution, current_pid, boot_id, SelectedProcessImageV2::CurrentExecution)?;
+    let execution_observation = execution.execution().ok_or_else(|| {
+        Error::invalid("startup execution", "selected self capture is absent")
+    })?;
+    let launcher_pid = NonZeroU32::new(execution_observation.process.parent_pid()).ok_or_else(|| {
+        Error::invalid("startup launcher", "current process has no direct parent")
+    })?;
+    capture_selected_process(launcher, launcher_pid, boot_id, SelectedProcessImageV2::DirectParentKernelOnly)?;
+    let launcher_observation = launcher.kernel().ok_or_else(|| {
+        Error::invalid("startup launcher", "selected parent capture is absent")
+    })?;
+    require_process_relationship(execution_observation.process, launcher_observation.process)
+}
+
+fn require_process_relationship(
+    execution: crate::pidfd::PidFdProcessIdentity,
+    launcher: crate::pidfd::PidFdProcessIdentity,
+) -> Result<()> {
+    if execution.parent_pid() != launcher.pid()
+        || execution.pid() != execution.thread_group_id()
+        || launcher.pid() != launcher.thread_group_id()
     {
         return Err(Error::invalid(
             "startup launcher",
             "process/launcher relationship is not exact",
         ));
     }
-    Ok((execution, launcher))
+    Ok(())
 }
 
 pub(super) fn revalidate_process(process: &RetainedStartupProcessV1) -> Result<()> {
+    revalidate_process_recipe(
+        &process.pidfd,
+        &process.cgroup,
+        Some(&process.executable),
+        process.observation.kernel_boot_id,
+        process.observation.process,
+        process.observation.credentials,
+        process.observation.cgroup_id,
+        Some(process.observation.executable),
+        ProcessImageChecks::Legacy,
+    )
+}
+
+pub(super) fn revalidate_selected_process(process: &mut PendingStartupProcessV2) -> Result<()> {
+    let (boot, identity, credentials, cgroup_id, executable_observation) =
+        match process.observation.as_ref() {
+            Some(PendingProcessObservationV2::Execution(observation)) => (
+                observation.kernel_boot_id, observation.process, observation.credentials,
+                observation.cgroup_id, Some(observation.executable),
+            ),
+            Some(PendingProcessObservationV2::Kernel(observation)) => (
+                observation.kernel_boot_id, observation.process, observation.credentials,
+                observation.cgroup_id, None,
+            ),
+            None => return Err(Error::invalid("startup execution", "selected capture is incomplete")),
+        };
+    let pidfd = process.pidfd.as_ref().ok_or_else(|| {
+        Error::invalid("startup execution", "selected pidfd is absent")
+    })?;
+    let cgroup = process.cgroup.as_ref().ok_or_else(|| {
+        Error::invalid("startup execution", "selected cgroup is absent")
+    })?;
+    if process.executable.is_some() != executable_observation.is_some() {
+        return Err(Error::invalid("startup execution", "selected image disposition changed"));
+    }
+
+    // These are scratch/current-path owners from the previous successful
+    // observation. The admitted original executable, pidfd and cgroup stay
+    // resident. This bounded positive cleanup is not a drain assertion.
+    process.executable_scratch = None;
+    process.current_executable_scratch = None;
+    process.current_executable = None;
+    revalidate_process_recipe(
+        pidfd, cgroup, process.executable.as_ref(), boot, identity, credentials,
+        cgroup_id, executable_observation,
+        ProcessImageChecks::Selected {
+            executable_scratch: &mut process.executable_scratch,
+            current_executable: &mut process.current_executable,
+            current_scratch: &mut process.current_executable_scratch,
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn revalidate_process_recipe(
+    pidfd: &PidFd,
+    cgroup: &RetainedCgroupAnchor,
+    executable: Option<&OwnedFd>,
+    expected_boot: [u8; 16],
+    expected_identity: crate::pidfd::PidFdProcessIdentity,
+    expected_credentials: crate::pidfd::PidFdCredentials,
+    expected_cgroup: u64,
+    expected_executable: Option<StartupExecutableObservationV1>,
+    mut image_checks: ProcessImageChecks<'_>,
+) -> Result<()> {
     let before_boot = KernelBootId::current()?.into_bytes();
-    let identity = process.pidfd.process_identity()?;
-    let info = process.cgroup.verify_exact_membership(&process.pidfd)?;
-    let retained_executable = observe_executable(&process.executable)?;
-    let current_executable = observe_current_executable(identity.pid())?;
+    let identity = pidfd.process_identity()?;
+    let info = cgroup.verify_exact_membership(pidfd)?;
+    let retained_executable = executable.map(|image| image_checks.retained(image)).transpose()?;
+    let current_executable = if executable.is_some() {
+        Some(image_checks.current(identity.pid())?)
+    } else {
+        None
+    };
     let after_boot = KernelBootId::current()?.into_bytes();
-    if before_boot != process.observation.kernel_boot_id
-        || after_boot != process.observation.kernel_boot_id
-        || identity != process.observation.process
-        || info.credentials() != Some(process.observation.credentials)
-        || info.cgroup_id() != Some(process.observation.cgroup_id)
-        || process.cgroup.kernel_id() != process.observation.cgroup_id
-        || retained_executable != process.observation.executable
-        || current_executable != process.observation.executable
-        || !process.pidfd.is_alive()?
+    if before_boot != expected_boot
+        || after_boot != expected_boot
+        || identity != expected_identity
+        || info.credentials() != Some(expected_credentials)
+        || info.cgroup_id() != Some(expected_cgroup)
+        || cgroup.kernel_id() != expected_cgroup
+        || retained_executable != expected_executable
+        || current_executable != expected_executable
+        || !pidfd.is_alive()?
     {
         return Err(Error::invalid(
             "startup execution",
             "retained process identity changed",
         ));
     }
-    process.cgroup.validate_current()
+    cgroup.validate_current()
 }
 
 fn capture_process(pid: NonZeroU32, boot_id: [u8; 16]) -> Result<RetainedStartupProcessV1> {
-    let pidfd = PidFd::open(pid)?;
+    capture_process_recipe(pid, boot_id, ProcessCaptureDestination::Legacy)?
+        .ok_or_else(|| Error::invalid("startup execution", "legacy capture omitted its owner"))
+}
+
+pub(super) fn capture_selected_process(
+    process: &mut PendingStartupProcessV2,
+    pid: NonZeroU32,
+    boot_id: [u8; 16],
+    image: SelectedProcessImageV2,
+) -> Result<()> {
+    capture_process_recipe(pid, boot_id, ProcessCaptureDestination::Selected(process, image))?;
+    Ok(())
+}
+
+pub(super) enum SelectedProcessImageV2 {
+    CurrentExecution,
+    DirectParentKernelOnly,
+}
+
+enum ProcessCaptureDestination<'owner> {
+    Legacy,
+    Selected(&'owner mut PendingStartupProcessV2, SelectedProcessImageV2),
+}
+
+enum ProcessImageChecks<'owner> {
+    Legacy,
+    Selected {
+        executable_scratch: &'owner mut Option<File>,
+        current_executable: &'owner mut Option<OwnedFd>,
+        current_scratch: &'owner mut Option<File>,
+    },
+}
+
+impl ProcessImageChecks<'_> {
+    fn retained(&mut self, image: &OwnedFd) -> Result<StartupExecutableObservationV1> {
+        match self {
+            Self::Legacy => observe_executable(image),
+            Self::Selected { executable_scratch, .. } => {
+                measure_retained_image(image.as_fd(), executable_scratch)
+            }
+        }
+    }
+
+    fn current(&mut self, pid: u32) -> Result<StartupExecutableObservationV1> {
+        match self {
+            Self::Legacy => observe_current_executable(pid),
+            Self::Selected { current_executable, current_scratch, .. } => {
+                **current_executable = Some(open_process_executable(pid)?);
+                let image = current_executable.as_ref().ok_or_else(|| {
+                    Error::invalid("startup execution", "current executable is absent")
+                })?;
+                measure_retained_image(image.as_fd(), current_scratch)
+            }
+        }
+    }
+}
+
+// Each local occupies its old lexical interval in Legacy. Selected instead
+// parks the same returned original in its outer owner before the next check.
+// This private adapter neither validates a process nor constructs authority.
+pub(super) struct ReturnedProcessSlot<'owner, T> {
+    local: Option<T>,
+    resident: Option<&'owner mut Option<T>>,
+}
+
+impl<'owner, T> ReturnedProcessSlot<'owner, T> {
+    pub(super) fn park(original: T, resident: Option<&'owner mut Option<T>>) -> Self {
+        match resident {
+            Some(destination) => {
+                // The closed recipe checked every destination before its first
+                // syscall, and the exclusive borrow prevents slot mutation.
+                *destination = Some(original);
+                Self { local: None, resident: Some(destination) }
+            }
+            None => Self { local: Some(original), resident: None },
+        }
+    }
+
+    pub(super) fn original(&self) -> Result<&T> {
+        self.resident.as_ref().and_then(|slot| slot.as_ref())
+            .or(self.local.as_ref())
+            .ok_or_else(|| Error::invalid("startup execution", "original process slot is absent"))
+    }
+
+    pub(super) fn original_mut(&mut self) -> Result<&mut T> {
+        match self.resident.as_mut() {
+            Some(slot) => slot.as_mut(),
+            None => self.local.as_mut(),
+        }.ok_or_else(|| Error::invalid("startup capture", "returned original slot is absent"))
+    }
+
+    pub(super) fn into_local(mut self) -> Result<T> {
+        self.local.take().ok_or_else(|| {
+            Error::invalid("startup execution", "legacy process slot is absent")
+        })
+    }
+
+    pub(super) fn take_after_checks(mut self) -> Option<T> {
+        match self.resident.as_mut() {
+            Some(slot) => slot.take(),
+            None => self.local.take(),
+        }
+    }
+}
+
+fn capture_process_recipe(
+    pid: NonZeroU32,
+    boot_id: [u8; 16],
+    destination: ProcessCaptureDestination<'_>,
+) -> Result<Option<RetainedStartupProcessV1>> {
+    let (pidfd_destination, cgroup_destination, executable_destination, observation_destination,
+        capture_image, mut image_checks) = match destination {
+        ProcessCaptureDestination::Legacy => (None, None, None, None, true, ProcessImageChecks::Legacy),
+        ProcessCaptureDestination::Selected(process, image) => {
+            if process.pidfd.is_some() || process.cgroup.is_some()
+                || process.executable.is_some() || process.observation.is_some()
+                || process.executable_scratch.is_some() || process.current_executable.is_some()
+                || process.current_executable_scratch.is_some()
+            {
+                return Err(Error::invalid("startup execution", "selected process already attempted"));
+            }
+            (Some(&mut process.pidfd), Some(&mut process.cgroup), Some(&mut process.executable),
+                Some(&mut process.observation), matches!(image, SelectedProcessImageV2::CurrentExecution),
+                ProcessImageChecks::Selected {
+                    executable_scratch: &mut process.executable_scratch,
+                    current_executable: &mut process.current_executable,
+                    current_scratch: &mut process.current_executable_scratch,
+                })
+        }
+    };
+
+    let pidfd_owner = ReturnedProcessSlot::park(PidFd::open(pid)?, pidfd_destination);
+    let pidfd = pidfd_owner.original()?;
     let before_identity = pidfd.process_identity()?;
     let before_info = pidfd.info()?;
     let credentials = before_info
@@ -319,7 +550,8 @@ fn capture_process(pid: NonZeroU32, boot_id: [u8; 16]) -> Result<RetainedStartup
         .ok_or_else(|| Error::invalid("startup execution", "pidfd omitted cgroup ID"))?;
     let cgroup_path = read_cgroup_path(pid.get())?;
     let unit = cgroup_unit(&cgroup_path)?;
-    let cgroup = open_exact_cgroup(&cgroup_path)?;
+    let cgroup_owner = ReturnedProcessSlot::park(open_exact_cgroup(&cgroup_path)?, cgroup_destination);
+    let cgroup = cgroup_owner.original()?;
     cgroup.verify_exact_membership(&pidfd)?;
     if cgroup.kernel_id() != cgroup_id {
         return Err(Error::invalid(
@@ -328,12 +560,21 @@ fn capture_process(pid: NonZeroU32, boot_id: [u8; 16]) -> Result<RetainedStartup
         ));
     }
 
-    let executable = open_process_executable(pid.get())?;
-    let executable_observation = observe_executable(&executable)?;
+    let executable_owner = if capture_image {
+        Some(ReturnedProcessSlot::park(open_process_executable(pid.get())?, executable_destination))
+    } else {
+        None
+    };
+    let executable_observation = executable_owner.as_ref()
+        .map(|owner| image_checks.retained(owner.original()?)).transpose()?;
     cgroup.verify_exact_membership(&pidfd)?;
     let after_identity = pidfd.process_identity()?;
     let after_info = pidfd.info()?;
-    let current_executable = observe_current_executable(pid.get())?;
+    let current_executable = if capture_image {
+        Some(image_checks.current(pid.get())?)
+    } else {
+        None
+    };
     let final_boot = KernelBootId::current()?.into_bytes();
     if before_identity != after_identity
         || before_info != after_info
@@ -349,20 +590,42 @@ fn capture_process(pid: NonZeroU32, boot_id: [u8; 16]) -> Result<RetainedStartup
         ));
     }
 
-    Ok(RetainedStartupProcessV1 {
-        pidfd,
-        cgroup,
-        executable,
-        observation: StartupProcessObservationV1 {
+    let observation = match executable_observation {
+        Some(executable) => PendingProcessObservationV2::Execution(StartupProcessObservationV1 {
             kernel_boot_id: boot_id,
             process: after_identity,
             credentials,
             cgroup_id,
             cgroup_path,
             unit,
-            executable: executable_observation,
-        },
-    })
+            executable,
+        }),
+        None => PendingProcessObservationV2::Kernel(StartupKernelProcessObservationV2 {
+            kernel_boot_id: boot_id,
+            process: after_identity,
+            credentials,
+            cgroup_id,
+            cgroup_path,
+            unit,
+        }),
+    };
+    if let Some(destination) = observation_destination {
+        *destination = Some(observation);
+        return Ok(None);
+    }
+
+    let PendingProcessObservationV2::Execution(observation) = observation else {
+        return Err(Error::invalid("startup execution", "legacy execution image is absent"));
+    };
+    let executable_owner = executable_owner.ok_or_else(|| {
+        Error::invalid("startup execution", "legacy executable owner is absent")
+    })?;
+    Ok(Some(RetainedStartupProcessV1 {
+        pidfd: pidfd_owner.into_local()?,
+        cgroup: cgroup_owner.into_local()?,
+        executable: executable_owner.into_local()?,
+        observation,
+    }))
 }
 
 fn read_cgroup_path(pid: u32) -> Result<String> {
@@ -458,18 +721,56 @@ fn observe_current_executable(pid: u32) -> Result<StartupExecutableObservationV1
 }
 
 fn observe_executable(executable: &OwnedFd) -> Result<StartupExecutableObservationV1> {
+    observe_image(executable.as_fd(), ImageBuildSource::Legacy(executable))
+}
+
+pub(super) fn measure_retained_image(
+    image: BorrowedFd<'_>,
+    scratch: &mut Option<File>,
+) -> Result<StartupExecutableObservationV1> {
+    observe_image(image, ImageBuildSource::Retained(scratch))
+}
+
+enum ImageBuildSource<'owner> {
+    Legacy(&'owner OwnedFd),
+    Retained(&'owner mut Option<File>),
+}
+
+fn observe_image(
+    executable: BorrowedFd<'_>,
+    build_source: ImageBuildSource<'_>,
+) -> Result<StartupExecutableObservationV1> {
     let before = rustix::fs::fstat(executable).map_err(|source| Error::Syscall {
         operation: "fstat startup executable",
         source: source.into(),
     })?;
-    let measurement = uapi::measure_verity(executable.as_fd())?;
+    let measurement = uapi::measure_verity(executable)?;
     if measurement.algorithm != 1 || measurement.length != 32 {
         return Err(Error::invalid(
             "startup executable",
             "executable lacks the required SHA-256 fs-verity profile",
         ));
     }
-    let build_identity = read_gnu_build_id(executable)?;
+    let build_identity = match build_source {
+        ImageBuildSource::Legacy(original) => read_gnu_build_id(original)?,
+        ImageBuildSource::Retained(scratch) => {
+            if scratch.is_some() {
+                return Err(Error::invalid(
+                    "startup image measurement",
+                    "scratch descriptor is already occupied",
+                ));
+            }
+            let duplicate = executable.try_clone_to_owned().map_err(|source| Error::Syscall {
+                operation: "duplicate startup executable",
+                source,
+            })?;
+            *scratch = Some(File::from(duplicate));
+            let file = scratch.as_ref().ok_or_else(|| {
+                Error::invalid("startup image measurement", "scratch descriptor is absent")
+            })?;
+            read_gnu_build_id_file(file)?
+        }
+    };
     let after = rustix::fs::fstat(executable).map_err(|source| Error::Syscall {
         operation: "fstat startup executable",
         source: source.into(),
@@ -506,8 +807,12 @@ fn read_gnu_build_id(executable: &OwnedFd) -> Result<super::ExecutableBuildIdent
         operation: "duplicate startup executable",
         source,
     })?);
+    read_gnu_build_id_file(&file)
+}
+
+fn read_gnu_build_id_file(file: &File) -> Result<super::ExecutableBuildIdentityV1> {
     let mut header = [0; ELF_HEADER_BYTES];
-    read_exact_at(&file, &mut header, 0)?;
+    read_exact_at(file, &mut header, 0)?;
     if &header[..4] != b"\x7fELF" || header[4] != 2 || header[5] != 1 || header[6] != 1 {
         return Err(Error::invalid(
             "startup executable",
@@ -543,7 +848,7 @@ fn read_gnu_build_id(executable: &OwnedFd) -> Result<super::ExecutableBuildIdent
             .checked_add((index * entry_size) as u64)
             .ok_or_else(|| Error::invalid("startup executable", "program header overflows"))?;
         let mut program = [0; ELF_PROGRAM_HEADER_BYTES];
-        read_exact_at(&file, &mut program, offset)?;
+        read_exact_at(file, &mut program, offset)?;
         let kind = u32::from_le_bytes(
             program[..4]
                 .try_into()
@@ -569,7 +874,7 @@ fn read_gnu_build_id(executable: &OwnedFd) -> Result<super::ExecutableBuildIdent
             ));
         }
         let mut notes = vec![0; note_size];
-        read_exact_at(&file, &mut notes, note_offset)?;
+        read_exact_at(file, &mut notes, note_offset)?;
         for build_id in gnu_build_ids(&notes)? {
             if found.replace(build_id).is_some() {
                 return Err(Error::invalid(
