@@ -51,6 +51,7 @@ struct QemuResources {
     start_time_ticks: Option<u64>,
     rings: BTreeSet<(String, u64)>,
     overlays: BTreeSet<(u64, u64)>,
+    read_only_overlays: BTreeSet<(u64, u64)>,
 }
 
 impl ProcessAudit {
@@ -206,15 +207,20 @@ impl ProcessAudit {
                 continue;
             };
             // Inherited descriptors may still be present during child adoption.
-            // Count the pair only after both private resource sets are distinct.
+            // PREPARE seals the source read-only; only the child root must be writable.
+            // Both live rings and every writable file alias remain distinct.
             if let Some(reason) = fork_diagnostics::pair_refusal(source, child) {
                 self.fork_diagnostics.refusal(reason, resources.len());
                 continue;
             }
             self.private_fork = true;
             eprintln!(
-                "single_guest_live_fork source_pid={} child_pid={} source_overlays={:?} child_overlays={:?}",
-                source.pid, child.pid, source.overlays, child.overlays
+                "single_guest_live_fork source_pid={} child_pid={} source_read_only_overlay_count={} source_overlays={:?} child_overlays={:?}",
+                source.pid,
+                child.pid,
+                source.read_only_overlays.len(),
+                source.overlays,
+                child.overlays
             );
             break;
         }
@@ -373,7 +379,12 @@ fn qemu_resources_at(
         start_time_ticks,
         rings: BTreeSet::new(),
         overlays: BTreeSet::new(),
+        read_only_overlays: BTreeSet::new(),
     });
+    if !process_identity_matches(&stat, pid, parent, start_time_ticks) {
+        *incomplete = Some("process-identity-unavailable-or-stale".into());
+        return Ok(None);
+    }
     let Ok(maps) = fs::read_to_string(process.join("maps")) else {
         *incomplete = Some("maps-unreadable".into());
         return Ok(None);
@@ -394,6 +405,7 @@ fn qemu_resources_at(
         return Ok(None);
     };
     let mut overlays = BTreeSet::new();
+    let mut read_only_overlays = BTreeSet::new();
     for entry in descriptors {
         let Ok(entry) = entry else {
             *incomplete = Some("fd-entry-unreadable".into());
@@ -427,8 +439,14 @@ fn qemu_resources_at(
                 ));
                 "root-overlay descriptor omits its access flags"
             })?;
-        if flags & 0o3 == 0 {
-            continue;
+        if flags & 0o3 == 0o3 || flags & u64::from(rustix::fs::OFlags::PATH.bits()) != 0 {
+            *incomplete = Some(format!(
+                "overlay-access-mode-invalid fd={:?}",
+                entry.file_name()
+            ));
+            return Err(
+                "root-overlay descriptor is not an ordinary readable or writable file".into(),
+            );
         }
         let Ok(metadata) = fs::metadata(entry.path()) else {
             *incomplete = Some(format!(
@@ -437,18 +455,72 @@ fn qemu_resources_at(
             ));
             return Ok(None);
         };
-        overlays.insert((metadata.dev(), metadata.ino()));
-        if let Some(progress) = partial.as_mut() {
-            progress.overlays.insert((metadata.dev(), metadata.ino()));
+        if !metadata.is_file() || metadata.ino() == 0 {
+            *incomplete = Some(format!(
+                "overlay-file-identity-invalid fd={:?}",
+                entry.file_name()
+            ));
+            return Ok(None);
+        }
+        let identity = (metadata.dev(), metadata.ino());
+        if flags & 0o3 == 0 {
+            read_only_overlays.insert(identity);
+            if let Some(progress) = partial.as_mut() {
+                progress.read_only_overlays.insert(identity);
+            }
+        } else {
+            overlays.insert(identity);
+            if let Some(progress) = partial.as_mut() {
+                progress.overlays.insert(identity);
+            }
         }
     }
-    Ok(Some(QemuResources {
+    let resources = QemuResources {
         pid,
         parent,
         start_time_ticks,
         rings,
         overlays,
-    }))
+        read_only_overlays,
+    };
+    // Reject exit or PID reuse during the maps/descriptor read, before accepting
+    // the resources as one live process observation.
+    if !revalidate_process_identity(process, &resources) {
+        *incomplete = Some("process-identity-changed-during-resource-read".into());
+        return Ok(None);
+    }
+    Ok(Some(resources))
+}
+
+fn process_identity_matches(stat: &str, pid: u32, parent: u32, start: Option<u64>) -> bool {
+    let observed_pid = stat
+        .split_once(' ')
+        .and_then(|(value, _)| value.parse::<u32>().ok());
+    let Some((_, fields)) = stat.rsplit_once(") ") else {
+        return false;
+    };
+    let fields = fields.split_whitespace().collect::<Vec<_>>();
+    let observed_parent = fields.get(1).and_then(|value| value.parse::<u32>().ok());
+    let observed_start = fields.get(19).and_then(|value| value.parse::<u64>().ok());
+    pid != 0
+        && observed_pid == Some(pid)
+        && observed_parent == Some(parent)
+        && start.is_some()
+        && observed_start == start
+        && fields
+            .first()
+            .is_some_and(|state| !matches!(*state, "Z" | "X" | "x"))
+}
+
+fn revalidate_process_identity(process: &Path, resources: &QemuResources) -> bool {
+    fs::read_to_string(process.join("stat")).is_ok_and(|stat| {
+        process_identity_matches(
+            &stat,
+            resources.pid,
+            resources.parent,
+            resources.start_time_ticks,
+        )
+    })
 }
 
 #[test]

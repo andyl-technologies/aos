@@ -1,4 +1,4 @@
-//! Latest owned-process evidence for an unchanged private-fork assertion.
+//! Latest owned-process evidence for a frozen-source/private-child fork assertion.
 //!
 //! Fork sampling retains at most 8192 bytes, 32 process rows and eight identities
 //! per resource set. Omitted counts remain explicit. One failure report is allowed
@@ -65,14 +65,24 @@ impl ForkDiagnostics {
                     .iter()
                     .take(MAX_IDENTITIES)
                     .collect::<Vec<_>>();
+                let read_only_overlays = resources
+                    .read_only_overlays
+                    .iter()
+                    .take(MAX_IDENTITIES)
+                    .collect::<Vec<_>>();
                 format!(
-                    "CRUCIBLE-HOT-FORK-PAIR-RESOURCE-V1 pid={pid} parent={} start_time_ticks={:?} resource_complete={complete} ring_count={} rings={rings:?} omitted_rings={} writable_overlay_count={} writable_overlays={overlays:?} omitted_overlays={} incomplete={incomplete:?}\n",
+                    "CRUCIBLE-HOT-FORK-PAIR-RESOURCE-V1 pid={pid} parent={} start_time_ticks={:?} resource_complete={complete} ring_count={} rings={rings:?} omitted_rings={} writable_overlay_count={} writable_overlays={overlays:?} omitted_overlays={} read_only_overlay_count={} read_only_overlays={read_only_overlays:?} omitted_read_only_overlays={} incomplete={incomplete:?}\n",
                     resources.parent,
                     resources.start_time_ticks,
                     resources.rings.len(),
                     resources.rings.len().saturating_sub(MAX_IDENTITIES),
                     resources.overlays.len(),
                     resources.overlays.len().saturating_sub(MAX_IDENTITIES),
+                    resources.read_only_overlays.len(),
+                    resources
+                        .read_only_overlays
+                        .len()
+                        .saturating_sub(MAX_IDENTITIES),
                 )
             }
             None => format!(
@@ -129,18 +139,28 @@ fn bounded_ascii(value: &str, maximum: usize) -> String {
         .collect()
 }
 
-/// Names the first failed conjunct of the original full-set pair predicate.
+/// Names the first failed conjunct of the frozen-source/private-child predicate.
 pub(super) fn pair_refusal(source: &QemuResources, child: &QemuResources) -> Option<&'static str> {
-    if source.rings.is_empty() {
+    if source.pid == child.pid || child.parent != source.pid {
+        Some("source-child-process-parent-mismatch")
+    } else if source.start_time_ticks.is_none() || child.start_time_ticks.is_none() {
+        Some("source-child-process-start-time-unavailable")
+    } else if source.rings.is_empty() {
         Some("source-ring-set-empty")
     } else if child.rings.is_empty() {
         Some("child-ring-set-empty")
-    } else if source.overlays.is_empty() {
-        Some("source-writable-overlay-set-empty")
+    } else if source.read_only_overlays.is_empty() {
+        Some("source-read-only-overlay-set-empty")
     } else if child.overlays.is_empty() {
         Some("child-writable-overlay-set-empty")
     } else if !source.rings.is_disjoint(&child.rings) {
         Some("source-child-ring-sets-overlap")
+    } else if !source.read_only_overlays.is_disjoint(&source.overlays) {
+        Some("source-read-only-basis-has-writable-alias")
+    } else if !source.read_only_overlays.is_disjoint(&child.overlays) {
+        Some("child-writable-overlay-aliases-source-read-only-basis")
+    } else if !child.read_only_overlays.is_disjoint(&child.overlays) {
+        Some("child-writable-overlay-has-read-only-alias")
     } else if !source.overlays.is_disjoint(&child.overlays) {
         Some("source-child-writable-overlay-sets-overlap")
     } else {

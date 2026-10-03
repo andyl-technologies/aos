@@ -170,9 +170,14 @@ fn actual_read_only_overlay_descriptor_never_becomes_writable_evidence()
         .ok_or("complete read-only snapshot unavailable")?;
 
     assert!(observed.overlays.is_empty());
+    let metadata = read_only.metadata()?;
+    assert_eq!(
+        observed.read_only_overlays,
+        BTreeSet::from([(metadata.dev(), metadata.ino())])
+    );
     assert!(incomplete.is_none());
     assert_eq!(
-        pair_refusal(&resources(17, 81), &observed),
+        pair_refusal(&source_resources(), &observed),
         Some("child-writable-overlay-set-empty")
     );
     Ok(())
@@ -222,37 +227,184 @@ fn resources(pid: u32, inode: u64) -> QemuResources {
         start_time_ticks: Some(9),
         rings: BTreeSet::from([("00:01".into(), inode)]),
         overlays: BTreeSet::from([(2, inode)]),
+        read_only_overlays: BTreeSet::new(),
     }
 }
 
+fn source_resources() -> QemuResources {
+    let mut source = resources(17, 81);
+    source.parent = 7;
+    source.read_only_overlays = std::mem::take(&mut source.overlays);
+    source
+}
+
 #[test]
-fn unchanged_pair_predicate_requires_nonempty_and_fully_disjoint_sets() {
-    let source = resources(17, 81);
-    let child = resources(31, 83);
+fn frozen_source_pair_requires_positive_read_only_basis_and_private_child() {
+    let source = source_resources();
+    let mut child = resources(31, 83);
+    // The immutable ancestor may be shared, but never through a writable FD.
+    child
+        .read_only_overlays
+        .clone_from(&source.read_only_overlays);
     assert!(pair_refusal(&source, &child).is_none());
     for expected in [
+        "source-child-process-parent-mismatch",
+        "source-child-process-start-time-unavailable",
         "source-ring-set-empty",
         "child-ring-set-empty",
-        "source-writable-overlay-set-empty",
+        "source-read-only-overlay-set-empty",
         "child-writable-overlay-set-empty",
         "source-child-ring-sets-overlap",
+        "source-read-only-basis-has-writable-alias",
+        "child-writable-overlay-aliases-source-read-only-basis",
+        "child-writable-overlay-has-read-only-alias",
         "source-child-writable-overlay-sets-overlap",
     ] {
-        let mut source = resources(17, 81);
+        let mut source = source_resources();
         let mut child = resources(31, 83);
         match expected {
+            "source-child-process-parent-mismatch" => child.parent = 99,
+            "source-child-process-start-time-unavailable" => child.start_time_ticks = None,
             "source-ring-set-empty" => source.rings.clear(),
             "child-ring-set-empty" => child.rings.clear(),
-            "source-writable-overlay-set-empty" => source.overlays.clear(),
+            "source-read-only-overlay-set-empty" => source.read_only_overlays.clear(),
             "child-writable-overlay-set-empty" => child.overlays.clear(),
             "source-child-ring-sets-overlap" => child.rings.extend(source.rings.iter().cloned()),
+            "source-read-only-basis-has-writable-alias" => source
+                .overlays
+                .extend(source.read_only_overlays.iter().copied()),
+            "child-writable-overlay-aliases-source-read-only-basis" => child
+                .overlays
+                .extend(source.read_only_overlays.iter().copied()),
+            "child-writable-overlay-has-read-only-alias" => {
+                child.read_only_overlays.clone_from(&child.overlays)
+            }
             "source-child-writable-overlay-sets-overlap" => {
-                child.overlays.extend(source.overlays.iter().copied())
+                source.overlays.clone_from(&child.overlays)
             }
             _ => unreachable!(),
         }
         assert_eq!(pair_refusal(&source, &child), Some(expected));
     }
+}
+
+#[test]
+fn resource_reader_authenticates_real_read_only_source_and_private_writable_child()
+-> Result<(), Box<dyn Error>> {
+    use std::os::fd::AsFd;
+
+    let source_directory = tempfile::tempdir()?;
+    let child_directory = tempfile::tempdir()?;
+    process_fixture(source_directory.path(), 81)?;
+    process_fixture(child_directory.path(), 83)?;
+    let source_stat = fs::read_to_string(source_directory.path().join("stat"))?;
+    fs::write(
+        source_directory.path().join("stat"),
+        source_stat
+            .replacen("31 (", "17 (", 1)
+            .replacen("R 17", "R 7", 1),
+    )?;
+    let _source_writer = overlay_fixture(source_directory.path())?;
+    let source_file = fs::File::open(source_directory.path().join("crucible-root-overlay.qcow2"))?;
+    let flags = rustix::fs::fcntl_getfl(source_file.as_fd())?;
+    fs::write(
+        source_directory.path().join("fdinfo/42"),
+        format!("flags:\t{:o}\n", flags.bits()),
+    )?;
+    let child_file = overlay_fixture(child_directory.path())?;
+    let mut incomplete = None;
+    let mut partial = None;
+
+    let source = qemu_resources_at(17, source_directory.path(), &mut incomplete, &mut partial)?
+        .ok_or("read-only source observation unavailable")?;
+    let child = qemu_resources_at(31, child_directory.path(), &mut incomplete, &mut partial)?
+        .ok_or("writable child observation unavailable")?;
+
+    assert!(source.overlays.is_empty());
+    assert_eq!(
+        source.read_only_overlays,
+        BTreeSet::from([(source_file.metadata()?.dev(), source_file.metadata()?.ino())])
+    );
+    assert_eq!(
+        child.overlays,
+        BTreeSet::from([(child_file.metadata()?.dev(), child_file.metadata()?.ino())])
+    );
+    assert!(pair_refusal(&source, &child).is_none());
+    Ok(())
+}
+
+#[test]
+fn resource_identity_revalidation_refuses_pid_reuse_parent_change_and_exit()
+-> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    process_fixture(directory.path(), 85)?;
+    let _overlay = overlay_fixture(directory.path())?;
+    let mut incomplete = None;
+    let mut partial = None;
+    let resources = qemu_resources_at(31, directory.path(), &mut incomplete, &mut partial)?
+        .ok_or("original live identity unavailable")?;
+    let original = fs::read_to_string(directory.path().join("stat"))?;
+    for changed in [
+        original.replacen("31 (", "32 (", 1),
+        original.replacen("R 17", "R 99", 1),
+        original.replace("12345", "12346"),
+        original.replacen(") R ", ") Z ", 1),
+        original.replace("12345", "invalid"),
+    ] {
+        fs::write(directory.path().join("stat"), changed)?;
+        assert!(!revalidate_process_identity(directory.path(), &resources));
+    }
+    fs::remove_file(directory.path().join("stat"))?;
+    assert!(!revalidate_process_identity(directory.path(), &resources));
+    Ok(())
+}
+
+#[test]
+fn resource_reader_refuses_wrong_pid_missing_start_and_exited_process() -> Result<(), Box<dyn Error>>
+{
+    let directory = tempfile::tempdir()?;
+    process_fixture(directory.path(), 89)?;
+    let _overlay = overlay_fixture(directory.path())?;
+    let original = fs::read_to_string(directory.path().join("stat"))?;
+    for changed in [
+        original.replacen("31 (", "32 (", 1),
+        original.replace("12345", "invalid"),
+        original.replacen(") R ", ") Z ", 1),
+    ] {
+        fs::write(directory.path().join("stat"), changed)?;
+        let mut incomplete = None;
+        let mut partial = None;
+        assert!(qemu_resources_at(31, directory.path(), &mut incomplete, &mut partial)?.is_none());
+        assert_eq!(
+            incomplete.as_deref(),
+            Some("process-identity-unavailable-or-stale")
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn non_file_or_path_only_overlay_cannot_supply_read_only_basis() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    process_fixture(directory.path(), 87)?;
+    let _overlay = overlay_fixture(directory.path())?;
+    let mut incomplete = None;
+    let mut partial = None;
+    fs::write(
+        directory.path().join("fdinfo/42"),
+        format!("flags:\t{:o}\n", rustix::fs::OFlags::PATH.bits()),
+    )?;
+    assert!(qemu_resources_at(31, directory.path(), &mut incomplete, &mut partial).is_err());
+    fs::write(directory.path().join("fdinfo/42"), "flags:\t0\n")?;
+    fs::remove_file(directory.path().join("crucible-root-overlay.qcow2"))?;
+    fs::create_dir(directory.path().join("crucible-root-overlay.qcow2"))?;
+    assert!(qemu_resources_at(31, directory.path(), &mut incomplete, &mut partial)?.is_none());
+    assert!(
+        incomplete
+            .as_deref()
+            .is_some_and(|value| value.starts_with("overlay-file-identity-invalid"))
+    );
+    Ok(())
 }
 
 #[test]
@@ -265,6 +417,7 @@ fn snapshot_and_global_report_bounds_survive_late_replacement() {
             .map(|inode| ("device".repeat(100), inode))
             .collect();
         resource.overlays = (0..100).map(|inode| (u64::MAX, inode)).collect();
+        resource.read_only_overlays.clone_from(&resource.overlays);
         diagnostics.record(pid, Some(&resource), Some(&"incomplete".repeat(100)));
     }
     assert!(diagnostics.rows.len() <= MAX_SNAPSHOT_BYTES);
@@ -272,6 +425,7 @@ fn snapshot_and_global_report_bounds_survive_late_replacement() {
     assert_eq!(diagnostics.observed, 999);
     assert_eq!(diagnostics.incomplete, 999);
     assert!(diagnostics.rows.contains("omitted_rings=92"));
+    assert!(diagnostics.rows.contains("omitted_read_only_overlays=92"));
 
     diagnostics.begin_sample();
     diagnostics.record(4505, Some(&resources(4505, 4437)), None);
