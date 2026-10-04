@@ -39,6 +39,9 @@
         })
       ];
 
+      # Keep dependent boot jobs waiting through this intentional interruption.
+      boot.initrd.systemd.services.aos-ability-initrd-controller.serviceConfig.RestartMode = "direct";
+
       # This test endpoint must be live before the ability graph it observes runs.
       boot.initrd.systemd.services.aos-ability-initrd-interruption-observer = {
         description = "Interrupt one returned initrd ability effect";
