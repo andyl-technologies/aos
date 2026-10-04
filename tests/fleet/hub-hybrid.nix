@@ -1123,8 +1123,6 @@ in {
           }
           direct_tools["staleIndexInstallation"] = install_direct_stale_index_path(native, direct_tools)
           direct_tools["storageBoundaryInstallation"] = install_direct_storage_boundaries(native, worker, direct_tools)
-          native.succeed("systemctl restart aos-hub.service", timeout=60)
-          native.wait_for_unit("aos-hub.service", timeout=90)
           direct_producer_error = None
           try:
               run_external_direct_fleet(client, native, worker, s3, database_machine,

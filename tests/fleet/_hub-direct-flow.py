@@ -7,6 +7,7 @@ effect or failed gate stops the original flow without replay or cleanup.
 """
 
 import base64
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -36,6 +37,83 @@ def retain_direct_flow(name, value):
         output.flush()
         os.fsync(output.fileno())
     return hashlib.sha256(body).hexdigest()
+
+
+def isolated_prequalification_worker_configuration(original):
+    """Separate readiness state while preserving the selected Worker inputs."""
+    paths = {
+        "resourcePersistencePath": "/var/lib/hybrid-worker/state",
+        "namespaceObservationPath": "/var/lib/hybrid-worker/namespace-startup",
+        "queueObservationPath": "/var/lib/hybrid-worker/queue-startup",
+    }
+    if (not isinstance(original, dict)
+            or any(original.get(name) != path for name, path in paths.items())
+            or original.get("acceptanceSocketPath") != "/var/lib/hybrid-worker/acceptance-control.sock"):
+        raise ValueError("Prequalification Worker paths differ from the selected fixture")
+
+    configuration = json.loads(json.dumps(original, allow_nan=False))
+    configuration.update({
+        "resourcePersistencePath": "/var/lib/hybrid-worker/prequalification/state",
+        "namespaceObservationPath": "/var/lib/hybrid-worker/prequalification/namespace-startup",
+        "queueObservationPath": "/var/lib/hybrid-worker/prequalification/queue-startup",
+    })
+    return configuration
+
+
+@contextmanager
+def direct_prequalification_worker(native, worker, tools, original_configuration):
+    """Keep an isolated Worker alive through Native's initial readiness checks."""
+    original = read_direct_guest_file(worker, tools["python"], original_configuration, 1024 * 1024)
+    configuration = isolated_prequalification_worker_configuration(_closed_review_json(original))
+    body = json.dumps(configuration, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    installed = install_direct_guest_file(worker, tools["python"],
+        "/var/lib/hybrid-worker/prequalification/configuration.json", body)
+    process = start_direct_worker(worker, tools, installed["file"], "prequalification")
+    producer_error = None
+
+    try:
+        if process["configurationSha256"] != installed["sha256"]:
+            raise ValueError("Prequalification Worker configuration changed before observation")
+        retain_direct_flow("prequalification-worker-start.json", {
+            "version": 1, "process": process, "configuration": installed,
+            "originalConfiguration": {"file": original_configuration,
+                "sha256": hashlib.sha256(original).hexdigest(), "byteSize": len(original)},
+            "scope": "Isolated readiness epoch only; no provider or runtime qualification",
+        })
+        wait_worker_transport(worker, tools["curl"], tools["python"], True,
+            observation_label="worker-prequalification")
+        private_guest_command(native, "systemctl restart aos-hub.service", timeout=60)
+        refusal = wait_fixture_tls_response(native, tools["curl"], tools["python"],
+            tools["nativeOriginUrl"] + "/healthz", "GET", {"401"},
+            "native-prequalification-unsigned-refusal", 90)
+        if base64.b64decode(refusal["body_base64"], validate=True) != b"":
+            raise ValueError("Native unsigned transport refusal body differs")
+
+        # The original process/trust checks and independent reviews run while
+        # this epoch supplies Native's required console-capability transport.
+        yield process
+    except BaseException as error:
+        producer_error = error
+        raise
+    finally:
+        stopped = None
+        try:
+            stopped = stop_direct_worker(worker, tools["python"], process)
+            retain_direct_flow("prequalification-worker-stop.json", {
+                "version": 1, "process": process, "stop": stopped,
+                "scope": "Recorded readiness epoch disposed; its separate state is retained",
+            })
+        except Exception:
+            if producer_error is None:
+                raise
+            producer_error.add_note("Prequalification Worker cleanup evidence is incomplete")
+            try:
+                retain_direct_flow("prequalification-worker-cleanup-failure.json", {
+                    "version": 1, "process": process, "recordedStop": stopped,
+                    "cleanupComplete": stopped is not None, "retentionIncomplete": True,
+                })
+            except Exception:
+                producer_error.add_note("Private cleanup failure retention also failed")
 
 
 def direct_selected_bytes(reference, maximum_bytes):
@@ -881,16 +959,17 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
     tools = {**tools, "installedNativeExecutableSha256": artifacts["files"]["nativeHub"]["sha256"],
         "installedRuntimeArtifacts": artifacts}
     artifact_sha = retain_direct_flow("immutable-artifacts.json", artifacts)
-    native_trust = observe_direct_native_trust(native, tools, artifacts, "bootstrap")
-    initial_review = await_direct_review("external-installation-inputs", {
-        "installedArtifacts": artifact_sha, "nativeProcessTrust": native_trust,
-    }, {
-        "reviewerPublicKey", "privateStagePolicy", "providerPrefix", "providerReviewFile", "bindingPrefix",
-    })
-    inputs = initial_review["selection"]
-    shared_controls = install_direct_shared_controls(native, tools, artifacts)
-    prebody = run_direct_native_prebody_probes(native, tools, shared_controls)
-    retain_direct_flow("actual-native-prebody-window.json", prebody)
+    with direct_prequalification_worker(native, worker, tools, original_configuration):
+        native_trust = observe_direct_native_trust(native, tools, artifacts, "bootstrap")
+        initial_review = await_direct_review("external-installation-inputs", {
+            "installedArtifacts": artifact_sha, "nativeProcessTrust": native_trust,
+        }, {
+            "reviewerPublicKey", "privateStagePolicy", "providerPrefix", "providerReviewFile", "bindingPrefix",
+        })
+        inputs = initial_review["selection"]
+        shared_controls = install_direct_shared_controls(native, tools, artifacts)
+        prebody = run_direct_native_prebody_probes(native, tools, shared_controls)
+        retain_direct_flow("actual-native-prebody-window.json", prebody)
     worker_controls = initialize_direct_worker_controls(
         worker, tools["python"], tools["reviewer"], original_configuration, inputs["reviewerPublicKey"],
     )

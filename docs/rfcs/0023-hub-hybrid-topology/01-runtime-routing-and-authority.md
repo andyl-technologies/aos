@@ -163,11 +163,10 @@ request IDs, `Server-Timing`, and its own cache result for observability.
 Hybrid runs the Native Hub's shared service against Cloud SQL PostgreSQL in
 the same GCP region. A pooled connection is local to that region; a request
 does not send each SQL statement through a remote Durable Object. The Hub's
-SQL `Backend` and PostgreSQL dialect provide the foundation, but the native
-`serve` bootstrap must accept a PostgreSQL URL and configure pooling,
-migrations, health checks, and transactional job coordination. Current native
-bootstrap still opens its local SQLite file, so supporting PostgreSQL in
-the server is implementation work rather than a configuration-only change.
+SQL `Backend` and PostgreSQL dialect provide the foundation. Hybrid deployment
+uses the Native `serve` PostgreSQL bootstrap with explicit database
+initialization, pool configuration, health checks, and transactional job
+coordination. Native-only deployments may continue to use local SQLite.
 
 Several request replicas may share the service identity and database.
 Per-process memory, local filesystem, and in-process leases cannot be the
@@ -194,9 +193,10 @@ The main implementation seams in the current tree are:
 - `crates/aos-hub/src/server.rs`: keep the shared service/router and add a
   verified hybrid ingress context. Configure hybrid storage and coordination
   ports without weakening native-only operation.
-- `crates/aos-hub/src/main.rs`: add an explicit hybrid serving configuration.
-  The present `serve` bootstrap opens local SQLite and assumes local instance
-  files and in-process coordination.
+- `crates/aos-hub/src/main.rs`: configure hybrid serving with PostgreSQL,
+  stable service identities, a private Native origin, and matching Worker
+  console capabilities before opening the Native listener. Keep native-only
+  SQLite configuration separate.
 - `crates/aos-hub-core/src/backend/sqlx.rs`: use its PostgreSQL backend as
   the SQL starting point, then qualify migrations and transaction semantics
   against PostgreSQL in the complete Hub service.

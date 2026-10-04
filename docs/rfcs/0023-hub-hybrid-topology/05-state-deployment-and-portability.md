@@ -161,18 +161,24 @@ and may only restore into the same database engine and deployment identity.
 
 The initial rollout order is:
 
-1. Provision Cloud SQL, the GCP Native service, storage bindings, and separate
-   ingress and storage-work identities. Keep public routing closed.
+1. Provision Cloud SQL, the private Native origin, storage bindings, and
+   separate ingress and storage-work identities. Keep public routing closed.
 2. Initialize and migrate the database; bootstrap the root administrator and
-   configure the intended topology. Verify Native health, database reachability,
-   object-store access, and protocol compatibility.
+   configure the intended topology. Verify database reachability before
+   starting the Native service.
 3. Deploy the Worker with a private origin target and storage-work endpoint.
-   Probe internal authorization and verify it rejects direct unauthenticated
-   access, stale deployment identities, and incompatible protocol versions.
-4. Republish or restore required immutable objects, verify indexed generations
-   and public read-back, then switch the public hostname to the Worker.
-5. Exercise parallel upload, indexing, authenticated pages, downloads, and
-   failure handling at staging load before treating hybrid as production-ready.
+   Probe storage-work authorization and matching console capabilities. Verify
+   rejection of direct unauthenticated access, stale deployment identities,
+   and incompatible protocol versions.
+4. Start Native after the required Worker capabilities are available. Verify
+   authenticated Native health and ingress, object-store access, and protocol
+   compatibility; an unsigned transport refusal is not an authenticated health
+   check.
+5. Republish or restore required immutable objects, verify indexed generations
+   and read-back, and exercise parallel upload, indexing, authenticated pages,
+   downloads, and failure handling at staging load. Complete these qualification
+   steps before switching the public hostname to the Worker or treating hybrid
+   as production-ready.
 
 The production requirements in
 [RFC-0017](../0017-canonical-hub-publishing/README.md) and the
