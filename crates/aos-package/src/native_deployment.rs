@@ -987,8 +987,8 @@ pub fn apply(command: &NativeDeploymentCommand, cancellation: &CancellationToken
     )?;
     let mut transactions = Transactions::open(&command.state_directory, store, journal_limits())?;
     transactions.set_observer(observer);
-    transactions.resume(cancellation)?;
-    transactions.apply(&deployment, cancellation)?;
+    transactions.restore_retention()?;
+    transactions.converge(&deployment, cancellation)?;
     Ok(())
 }
 

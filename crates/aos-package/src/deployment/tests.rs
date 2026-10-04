@@ -270,6 +270,161 @@ fn recovers_prepared_generation_and_interrupted_pruning() {
 }
 
 #[test]
+fn convergence_preserves_generation_and_recovers_only_the_original_attempt() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::default();
+    let deployment = empty_deployment("main");
+    let cancellation = CancellationToken::default();
+    let open =
+        || Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+
+    let mut transactions = open();
+    let first = transactions.converge(&deployment, &cancellation).unwrap();
+    let unchanged = transactions.converge(&deployment, &cancellation).unwrap();
+    assert_eq!(unchanged.sequence, first.sequence);
+    assert_eq!(transactions.generations().len(), 1);
+
+    let mut state = store.0.lock().unwrap();
+    state.fail_retain_at = Some(state.retains + 1);
+    drop(state);
+    assert!(transactions.converge(&deployment, &cancellation).is_err());
+    assert!(transactions.pending().is_some());
+    drop(transactions);
+
+    let mut transactions = open();
+    let recovered = transactions.converge(&deployment, &cancellation).unwrap();
+    assert_eq!(recovered.sequence, first.sequence);
+    assert!(transactions.pending().is_none());
+    drop(transactions);
+
+    let snapshot = super::transaction::inspect(directory.path(), JournalLimits::default()).unwrap();
+    let content = deployment.id().unwrap();
+    let identities: Vec<_> = snapshot
+        .activation()
+        .records
+        .iter()
+        .filter(|record| record.event == "begin")
+        .map(|record| record.transaction.clone().unwrap())
+        .collect();
+    assert_eq!(
+        identities,
+        [
+            format!("package-1-{content}"),
+            format!("reconcile-1-1-{content}"),
+            format!("reconcile-1-2-{content}"),
+        ]
+    );
+    drop(snapshot);
+
+    let mut document: serde_json::Value =
+        serde_json::from_slice(&deployment.canonical_bytes().unwrap()).unwrap();
+    document["inputs"] = json!(["/nix/store/00000000000000000000000000000000-changed"]);
+    let changed = Deployment::decode(
+        &serde_json::to_vec(&document).unwrap(),
+        &deployment.resolved(),
+    )
+    .unwrap();
+    let mut transactions = open();
+    let published = transactions.converge(&changed, &cancellation).unwrap();
+    assert_eq!(published.sequence, 2);
+    assert_eq!(published.content, changed.id().unwrap());
+}
+
+#[test]
+fn convergence_resumes_pending_publication_without_starting_another_transaction() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::default();
+    store.0.lock().unwrap().fail_retain_at = Some(2);
+    let deployment = empty_deployment("main");
+    let cancellation = CancellationToken::default();
+    let open =
+        || Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+
+    let mut transactions = open();
+    assert!(transactions.converge(&deployment, &cancellation).is_err());
+    assert_eq!(transactions.pending_sequence(), Some(1));
+    drop(transactions);
+
+    let mut transactions = open();
+    let recovered = transactions.converge(&deployment, &cancellation).unwrap();
+    assert_eq!(recovered.sequence, 1);
+    assert!(transactions.pending().is_none());
+    assert_eq!(transactions.generations().len(), 1);
+    drop(transactions);
+
+    let snapshot = super::transaction::inspect(directory.path(), JournalLimits::default()).unwrap();
+    assert_eq!(
+        snapshot
+            .activation()
+            .records
+            .iter()
+            .filter(|record| record.event == "begin")
+            .count(),
+        1
+    );
+    assert_eq!(
+        snapshot
+            .activation()
+            .completed
+            .as_ref()
+            .unwrap()
+            .transaction,
+        format!("package-1-{}", deployment.id().unwrap())
+    );
+}
+
+#[test]
+fn restores_only_unpruned_and_pending_generation_roots_without_changing_journals() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::default();
+    let deployment = empty_deployment("main");
+    let cancellation = CancellationToken::default();
+    let open =
+        || Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+
+    let mut transactions = open();
+    transactions.apply(&deployment, &cancellation).unwrap();
+    let committed = transactions.apply(&deployment, &cancellation).unwrap();
+    transactions.prune(1).unwrap();
+    let mut state = store.0.lock().unwrap();
+    state.fail_retain_at = Some(state.retains + 2);
+    drop(state);
+    assert!(transactions.apply(&deployment, &cancellation).is_err());
+    assert_eq!(transactions.pending_sequence(), Some(3));
+    drop(transactions);
+
+    let before: Vec<_> = ["generations.journal", "effects.journal"]
+        .map(|name| std::fs::read(directory.path().join(name)).unwrap())
+        .into();
+    let mut state = store.0.lock().unwrap();
+    state.retained.clear();
+    state.fail_retain_at = Some(state.retains + 1);
+    drop(state);
+
+    let mut transactions = open();
+    assert!(transactions.restore_retention().is_err());
+    assert!(store.0.lock().unwrap().retained.is_empty());
+    transactions.restore_retention().unwrap();
+
+    let content = deployment.id().unwrap();
+    assert_eq!(
+        store.0.lock().unwrap().retained,
+        BTreeSet::from([
+            format!("package-2-{content}"),
+            format!("package-3-{content}"),
+        ])
+    );
+    assert_eq!(transactions.current().unwrap().sequence, committed.sequence);
+    assert_eq!(transactions.pending_sequence(), Some(3));
+    for (name, bytes) in ["generations.journal", "effects.journal"]
+        .into_iter()
+        .zip(before)
+    {
+        assert_eq!(std::fs::read(directory.path().join(name)).unwrap(), bytes);
+    }
+}
+
+#[test]
 fn reconciliation_without_a_committed_generation_does_not_prepare_work() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::default();

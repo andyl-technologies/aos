@@ -697,8 +697,20 @@ Boot reconciliation preserves the committed package generation, evaluation
 descriptor, and publication marker. It records a separate execution attempt
 bound to that generation's exact content, observes live resources, and repairs
 drift through the selected handlers. An interrupted attempt resumes its original
-identity. Installation, removal, reconfiguration, and rollback publish new
-package generations; replaying the same committed state at boot does not.
+identity and returns after completing that pending work, without starting a
+second transaction. Installation, removal, reconfiguration, and rollback publish
+new package generations; replaying the same committed state at boot does not.
+
+On EFI systems, initrd stores durable generation, effect-journal, and admission
+files as regular files on the boot ESP's FAT filesystem. Nix retention symlinks
+live separately on a private POSIX tmpfs mounted at the journal's `roots`
+directory for the current boot; this mount moves with `/run` through host handoff.
+Before dispatch
+or recovering a completed activation receipt, initrd application replays the
+locked journals and checks the original artifacts' NAR identities to restore
+generation, retained, pending, and release roots with their original ownership
+keys. Missing artifact bytes stop restoration; journal evidence alone does not
+recreate their payloads.
 
 On the first host activation, the image's immutable bootstrap policy says
 whether platform metadata is required. When required, the bootstrap bridge

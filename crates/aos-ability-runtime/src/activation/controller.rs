@@ -102,6 +102,7 @@ impl Activation {
                     content == &fingerprint,
                     "transaction identity reused with different content"
                 );
+                self.preflight(desired, adapter)?;
                 return Ok(outputs.clone());
             }
         }
@@ -162,6 +163,35 @@ impl Activation {
             .collect()
     }
 
+    /// Restores handler retention from the checked journal without dispatching effects.
+    ///
+    /// Callers may lose their GC-root filesystem across boot while retaining the
+    /// journal. Original artifacts must still pass admission before their exact
+    /// ownership roots can be recreated.
+    ///
+    /// # Errors
+    /// Returns an error when any active, retained, pending, or retiring handler
+    /// cannot be authenticated or retained.
+    pub fn restore_retention(&self, adapter: &mut impl ActivationAdapter) -> Result<()> {
+        let effects = self
+            .state
+            .active
+            .iter()
+            .flat_map(|graph| graph.graph().nodes.values())
+            .chain(self.retention_effects())
+            .collect::<Vec<_>>();
+        adapter.retain_batch(&effects)
+    }
+
+    fn retention_effects(&self) -> impl Iterator<Item = &aos_ability_plan::module_graph::Effect> {
+        self.state
+            .retained
+            .values()
+            .map(|state| &state.invocation.effect)
+            .chain(&self.state.releases)
+            .chain(self.state.pending.as_ref().map(|pending| &pending.effect))
+    }
+
     fn preflight(
         &self,
         graph: &CheckedModuleGraph,
@@ -171,14 +201,7 @@ impl Activation {
             .graph()
             .nodes
             .values()
-            .chain(
-                self.state
-                    .retained
-                    .values()
-                    .map(|state| &state.invocation.effect),
-            )
-            .chain(&self.state.releases)
-            .chain(self.state.pending.as_ref().map(|pending| &pending.effect))
+            .chain(self.retention_effects())
             .collect::<Vec<_>>();
         adapter.retain_batch(&effects)
     }
