@@ -26,6 +26,10 @@ EXTRA = r"""
 #include <sys/eventfd.h>
 #include "qemu/futex.h"
 
+#ifndef HAVE_FUTEX
+#error "The control continuation fixture requires QEMU's Linux futex backend"
+#endif
+
 /* Selected thread.h's futex QemuEvent representation. */
 typedef struct QemuEvent {
     unsigned value;
@@ -465,7 +469,11 @@ def main():
                              "static void rr_crucible_sim_notify_dispatch_ceiling(void)")
     arguments.output_dir.mkdir(parents=True, exist_ok=True)
     generated = arguments.output_dir / "control-continuation.c"
-    generated.write_text(prelude + EXTRA + extra + bodies + CHECKS)
+    # Native event.c obtains platform macros through osdep.h before futex.h.
+    # The bounded prelude bypasses osdep.h, so load its original config input.
+    platform = '#include "config-host.h"\n#ifndef CONFIG_LINUX\n'
+    platform += '#error "The control continuation fixture requires configured Linux"\n#endif\n'
+    generated.write_text(platform + prelude + EXTRA + extra + bodies + CHECKS)
     extraction = {
         "original_control_deferred_bodies_sha256": original_bodies_hash,
         "additional_bodies": extracted,
