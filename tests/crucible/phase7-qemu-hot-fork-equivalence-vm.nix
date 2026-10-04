@@ -5,8 +5,41 @@
   attrPath ? "checks.crucible.phase7.qemuHotForkEquivalenceVm",
   taskIds ? [],
   campaignComposition ? null,
+  caseProfile ? "full",
   testing ? import ../../lib/testing {inherit pkgs lib;},
-}: let
+}:
+assert builtins.elem caseProfile ["full" "single-guest"]; let
+  singleGuest = caseProfile == "single-guest";
+  gateStem =
+    if singleGuest
+    then "hot-fork-single-guest-equivalence"
+    else "hot-fork-equivalence";
+  singleGuestLaneGroups = [
+    "single-checkpoint-source single-thin-reference"
+    "single-replay-genesis"
+    "single-replay-oracle-reference single-replay-oracle-template"
+    "single-execution-source single-execution-target"
+    "single-exact-reference"
+    "single-exact-template-source single-exact-template-target"
+  ];
+  laneGroups =
+    if singleGuest
+    then singleGuestLaneGroups
+    else
+      [
+        "equivalence-checkpoint-source"
+        "equivalence-replay-genesis"
+        "equivalence-replay-oracle-reference equivalence-replay-oracle-template"
+        "equivalence-thin-reference"
+        "equivalence-execution-source equivalence-execution-target"
+        "equivalence-exact-reference"
+        "equivalence-exact-template-source equivalence-exact-template-target"
+      ]
+      ++ singleGuestLaneGroups
+      ++ ["preparation-failure-source"];
+  # Preserve the full profile's shell text as well as its lane order.
+  laneArguments = builtins.concatStringsSep " \\\n  " laneGroups;
+
   source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   guest = import ./_nginx-curl-http-200-guest.nix {
@@ -70,10 +103,10 @@
   cgroupRoot =
     if campaignComposition == null
     then "/sys/fs/cgroup/crucible"
-    else "/sys/fs/cgroup/crucible-phase9-hot-fork-equivalence";
+    else "/sys/fs/cgroup/crucible-phase9-${gateStem}";
   resultPath =
     if campaignComposition == null
-    then "/tmp/hot-fork-equivalence-result"
+    then "/tmp/${gateStem}-result"
     else "$out/result";
   runtimeInputs = [
     pkgs.coreutils
@@ -97,20 +130,7 @@
     mkdir ${cgroupRoot}
     echo '+cpu +memory +pids' > ${cgroupRoot}/cgroup.subtree_control
     for lane in \
-      equivalence-checkpoint-source \
-      equivalence-replay-genesis \
-      equivalence-replay-oracle-reference equivalence-replay-oracle-template \
-      equivalence-thin-reference \
-      equivalence-execution-source equivalence-execution-target \
-      equivalence-exact-reference \
-      equivalence-exact-template-source equivalence-exact-template-target \
-      single-checkpoint-source single-thin-reference \
-      single-replay-genesis \
-      single-replay-oracle-reference single-replay-oracle-template \
-      single-execution-source single-execution-target \
-      single-exact-reference \
-      single-exact-template-source single-exact-template-target \
-      preparation-failure-source; do
+      ${laneArguments}; do
       mkdir "${cgroupRoot}/$lane"
       echo '+cpu +memory +pids' \
         > "${cgroupRoot}/$lane/cgroup.subtree_control"
@@ -123,20 +143,7 @@
     ${pkgs.util-linux}/bin/mount -o loop,prjquota /tmp/attempts.img /tmp/attempts
     mkdir -m 700 /tmp/attempts/run /tmp/run-state /tmp/artifacts /tmp/checkpoints
     for lane in \
-      equivalence-checkpoint-source \
-      equivalence-replay-genesis \
-      equivalence-replay-oracle-reference equivalence-replay-oracle-template \
-      equivalence-thin-reference \
-      equivalence-execution-source equivalence-execution-target \
-      equivalence-exact-reference \
-      equivalence-exact-template-source equivalence-exact-template-target \
-      single-checkpoint-source single-thin-reference \
-      single-replay-genesis \
-      single-replay-oracle-reference single-replay-oracle-template \
-      single-execution-source single-execution-target \
-      single-exact-reference \
-      single-exact-template-source single-exact-template-target \
-      preparation-failure-source; do
+      ${laneArguments}; do
       mkdir -m 700 "/tmp/attempts/run/$lane"
     done
     ${pkgs.crucible}/bin/crucible-e2e-determinism-scenario \
@@ -203,56 +210,83 @@
       fi
     }
 
-    equivalence_case=qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_matches_thin_and_exact_from_execution_and_exact_templates
-    run_case "$equivalence_case"
-    for evidence in \
-      'application_http_status=200' \
-      'inactive_world_reactivation=true' \
-      'shared_cause=network,block,node' \
-      'ninep_fault_injection=true' \
-      'locked_fault_replay_evidence_match=true' \
-      'pre_event_queue_and_volatile_cache=true' \
-      'pre_event_exact_restore=true' \
-      'shared_effect_state_transition=true' \
-      'child_boundary_matches_capture=true' \
-      'child_suffix_matches_exact_restore=true' \
-      'child_suffix_matches_genesis_replay=true' \
-      'concurrent_live_children=2'; do
-      require_case_marker "$equivalence_case" "$evidence"
-    done
-    run_case qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_single_node_hot_fork_matches_thin_and_exact
-    run_case qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_source_preparation_failure_exposes_no_template
+    ${lib.removeSuffix "\n" (
+      if singleGuest
+      then ''
+        equivalence_case=qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_single_node_hot_fork_matches_thin_and_exact
+        run_case "$equivalence_case"
+        for evidence in \
+          'hot_fork_equivalence=true' \
+          'topology=single-node' \
+          'state=block,ninep,guest-choice,measurement'; do
+          require_case_marker "$equivalence_case" "$evidence"
+        done
 
-    printf '%s\n' \
-      'PASS' \
-      'gate=gate:hot-fork-equivalence' \
-      'factory=production-whole-world' \
-      'template_origins=execution,exact-restore' \
-      'reference_tiers=thin-replay,exact-checkpoint' \
-      'child_boundary_matches_capture=true' \
-      'child_suffix_matches_exact_restore=true' \
-      'child_suffix_matches_genesis_replay=true' \
-      'concurrent_live_children=2' \
-      'application_http_status=200' \
-      'inactive_world_reactivation=true' \
-      'shared_cause=network,block,node' \
-      'ninep_fault_injection=true' \
-      'locked_fault_replay_evidence_match=true' \
-      'pre_event_queue_and_volatile_cache=true' \
-      'pre_event_exact_restore=true' \
-      'shared_effect_state_transition=true' \
-      'topologies=single-node,multi-node' \
-      'state=network,block,ninep,guest-choice,measurement,signal,permanent-failure' \
-      'failures=source-preparation' \
-      'check=${attrPath}' \
-      'tasks=${builtins.concatStringsSep "," taskIds}' \
-      > ${resultPath}
+        printf '%s\n' \
+          'PASS' \
+          'gate=gate:hot-fork-single-guest-equivalence' \
+          'factory=production-whole-world' \
+          'template_origins=execution,exact-restore' \
+          'reference_tiers=thin-replay,exact-checkpoint' \
+          'topologies=single-node' \
+          'state=block,ninep,guest-choice,measurement' \
+          'check=${attrPath}' \
+          'tasks=${builtins.concatStringsSep "," taskIds}' \
+          > ${resultPath}
+      ''
+      else ''
+        equivalence_case=qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_matches_thin_and_exact_from_execution_and_exact_templates
+        run_case "$equivalence_case"
+        for evidence in \
+          'application_http_status=200' \
+          'inactive_world_reactivation=true' \
+          'shared_cause=network,block,node' \
+          'ninep_fault_injection=true' \
+          'locked_fault_replay_evidence_match=true' \
+          'pre_event_queue_and_volatile_cache=true' \
+          'pre_event_exact_restore=true' \
+          'shared_effect_state_transition=true' \
+          'child_boundary_matches_capture=true' \
+          'child_suffix_matches_exact_restore=true' \
+          'child_suffix_matches_genesis_replay=true' \
+          'concurrent_live_children=2'; do
+          require_case_marker "$equivalence_case" "$evidence"
+        done
+        run_case qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_single_node_hot_fork_matches_thin_and_exact
+        run_case qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_source_preparation_failure_exposes_no_template
+
+        printf '%s\n' \
+          'PASS' \
+          'gate=gate:hot-fork-equivalence' \
+          'factory=production-whole-world' \
+          'template_origins=execution,exact-restore' \
+          'reference_tiers=thin-replay,exact-checkpoint' \
+          'child_boundary_matches_capture=true' \
+          'child_suffix_matches_exact_restore=true' \
+          'child_suffix_matches_genesis_replay=true' \
+          'concurrent_live_children=2' \
+          'application_http_status=200' \
+          'inactive_world_reactivation=true' \
+          'shared_cause=network,block,node' \
+          'ninep_fault_injection=true' \
+          'locked_fault_replay_evidence_match=true' \
+          'pre_event_queue_and_volatile_cache=true' \
+          'pre_event_exact_restore=true' \
+          'shared_effect_state_transition=true' \
+          'topologies=single-node,multi-node' \
+          'state=network,block,ninep,guest-choice,measurement,signal,permanent-failure' \
+          'failures=source-preparation' \
+          'check=${attrPath}' \
+          'tasks=${builtins.concatStringsSep "," taskIds}' \
+          > ${resultPath}
+      ''
+    )}
     cat ${resultPath}
     ${pkgs.util-linux}/bin/umount /tmp/attempts
     trap - EXIT HUP INT TERM
   '';
   authoritativeGate = testing.mkVMTest {
-    name = "crucible-qemu-hot-fork-equivalence";
+    name = "crucible-qemu-${gateStem}";
     memory = 8192;
     rootfsDeps = [
       flight
@@ -275,10 +309,10 @@ in
     import ./phase9-campaign-mode-system-gate.nix {
       inherit pkgs lib testing runtimeInputs runtimeScript;
       inherit (campaignComposition) mode system;
-      gateName = "gate:hot-fork-equivalence";
+      gateName = "gate:${gateStem}";
       authoritativeAttr = attrPath;
       executionFamily = "qemu-runtime";
-      name = "hot-fork-equivalence";
+      name = gateStem;
       runtimeClosures = [
         flight
         guest
@@ -288,8 +322,8 @@ in
         pkgs.crucible-qemu-plugin
         pkgs.linux
       ];
-      # Three 30-minute cases plus a bounded 30-minute boot, setup, and
-      # evidence-retention margin.
+      # Retain the full profile's three-case budget for both profiles, including
+      # the bounded boot, setup, and evidence-retention margin.
       timeout = 7200;
       memoryMiB = 8192;
       varSizeMiB = 16384;

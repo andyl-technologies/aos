@@ -2737,6 +2737,9 @@ in rec {
       attrPath = "checks.crucible.phase7.qemuHotForkEquivalenceVm";
       taskIds = ["T-CAM-6.5" "T-CAM-7.6"];
     };
+    qemuHotForkSingleGuestEquivalenceVm = import ./phase7-qemu-hot-fork-single-guest-equivalence-vm.nix {
+      inherit pkgs lib;
+    };
     debuggerPackage = import ./phase7-debugger-package.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.debuggerPackage";
