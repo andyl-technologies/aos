@@ -196,6 +196,16 @@ does not inventory all failures. It predates the new adapter retention cases
 below and cannot qualify them. Native historical sourcing and complete T1
 remain open.
 
+Reviewed adapter candidate `f3099e857c60` preserves the exact immutable
+interpretation mode/table through three existing verifier reconstructions.
+Its three actual task gates, focused tests, all-target build, strict rustdoc
+and both formatters pass. The original full native run records 372 passing,
+31 failing and two timed-out tests out of 405, with zero skips; strict native
+Clippy remains red on unowned dead code. Combined qualification is running on
+isolated candidate `9a4a4f733813`, including a keep-going inventory if the
+default aggregate fails. It predates the new historical-calculation cases
+below, so it cannot qualify them. No task or milestone advances.
+
 Deployable as: a local tool that initializes a store under a `file://`
 root, commits a directory, forks and merges branches, and checks a commit
 out to a directory through the `sdk` surface.
@@ -550,11 +560,28 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   remain explicit. Three exact native helper cases are mandatory in property
   resolution: complete mode retention, per-view fence/refusal checks, and raw
   local/graft semantics under the retained revision. Their implementation is
-  pending. These ordinary tests invoke the actual construction seam without
+  reviewed in isolated candidate `f3099e857c60`. Its three actual gates,
+  focused tests, build, strict rustdoc and formats pass; the original full
+  native suite and strict Clippy remain red. These ordinary tests invoke the
+  actual construction seam without
   replacing protected-state copying, original verification, setup clocks or
   held-backend controls. The separate lifecycle adapter and historical sources
   remain unqualified. Combined candidate `8db47fdf2822` predates these cases;
   no task checkbox, milestone exit or freeze follows.
+  A subsequent read-only audit finds historical signature root witnessing and
+  ordinary Finish still calculate current semantics before immutable-read
+  selection. The next coupled prerequisite selects the installed exact
+  view/original-root interpretation before calculating ordinary historical
+  occurrence witnesses and dispatches the existing authenticated core scope
+  verifier under that selection. One candidate enclosing interpretation
+  governs candidate/prior comparison; each independently traversed parent or
+  source selects its own justified entry. Current authoring and every protected
+  original-association, token, signature, epoch and bootstrap check stay
+  mandatory. Three exact historical witness/dispatch cases are now required
+  in property resolution. Their implementation is pending; ordinary helper
+  evidence cannot qualify protected native historical inputs, certified cuts
+  or independent registration sourcing. Combined candidate `9a4a4f733813`
+  predates these cases. No task or milestone advances.
   — satisfies TREE-14,
   PROP-1 to PROP-30;
   `checks.terrane.gates.property-resolution`,
