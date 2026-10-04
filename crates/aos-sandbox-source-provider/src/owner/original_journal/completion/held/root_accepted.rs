@@ -61,6 +61,10 @@ impl OriginalSourceRootDispositionV5 {
         }
     }
 
+    pub(super) fn phase7_record(&self) -> Option<&SourceNativeHeldCompletionRecordV1> {
+        self.phase7.as_ref()
+    }
+
     pub(super) fn failure<'owner>(
         &'owner self,
         signatures: &'owner OriginalProviderHeldSignaturesV5,
@@ -185,7 +189,7 @@ impl FixedProviderOwnerV1 {
                 2, self.append_original_producer_step_v5(Append::RootDispositionPrepared),
             ),
             RootDispositionStageV5::Stored => {
-                let observation = self.require_original_root_disposition_readback_v5()
+                let observation = self.require_original_held_readback_v5(Append::RootDispositionPrepared)
                     .and_then(|()| self.observe_original_root_disposition_v5(RootDispositionObservationV5::Prepared).map(|_| ()));
                 if let Err(cause) = observation {
                     let lower_failed = self.original_held_v5()
@@ -231,7 +235,7 @@ impl FixedProviderOwnerV1 {
         }
         let postcheck = self.require_original_held_current_v5().and_then(|()| {
             if stage == RootDispositionStageV5::Commit {
-                self.require_original_root_disposition_readback_v5()?;
+                self.require_original_held_readback_v5(Append::RootDispositionPrepared)?;
                 self.observe_original_root_disposition_v5(RootDispositionObservationV5::Prepared)?;
             } else if stage == RootDispositionStageV5::Prepare {
                 self.observe_original_root_disposition_v5(RootDispositionObservationV5::Receipt)?;
@@ -284,7 +288,7 @@ impl FixedProviderOwnerV1 {
         let prepared = self.original_source_producer_v5()?
             .root_disposition_readback_present_v5();
         let observation = if prepared {
-            self.require_original_root_disposition_readback_v5()?;
+            self.require_original_held_readback_v5(Append::RootDispositionPrepared)?;
             RootDispositionObservationV5::Prepared
         } else {
             RootDispositionObservationV5::Receipt
@@ -433,26 +437,6 @@ impl FixedProviderOwnerV1 {
         super::super::super::PreparedSourceOriginalV5::park(
             &mut child.transaction, &mut None, destination,
         )?;
-        Ok(())
-    }
-
-    fn require_original_root_disposition_readback_v5(&mut self) -> Result<(), OriginalProducerErrorV5> {
-        let Some(FixedProviderOwnerStateV1::HeldReadOnly(held)) = self.state.as_ref() else {
-            return Err(ProviderLedgerError::Unavailable.into());
-        };
-        let producer = held.original.as_ref().and_then(|original| original.producer.as_ref())
-            .ok_or(ProviderLedgerError::Unavailable)?;
-        let child = producer.original_completion.as_ref().and_then(|completion| completion.held.as_ref())
-            .and_then(|held| held.root_disposition.as_ref()).ok_or(ProviderLedgerError::Unavailable)?;
-        let expected = child.phase7.as_ref().ok_or(ProviderLedgerError::Unavailable)?;
-        let key = native_completion_key_v2(expected.original().acquisition_id);
-        let readback = producer.readback(Append::RootDispositionPrepared)?;
-        if readback.rows().get(&(RecordNamespace::SourceProviderAuthority, key)) != Some(&expected.to_canonical_bytes()?) {
-            return Err(ProviderLedgerError::Equivocation.into());
-        }
-        let history = self.hold_challenges.original_history_v5()?;
-        self.journal.as_mut().ok_or(ProviderLedgerError::RuntimePoisoned)?
-            .claim_source_original_native_v5(&history)?.validate_readback(readback)?;
         Ok(())
     }
 }
