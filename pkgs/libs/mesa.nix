@@ -99,7 +99,7 @@ in
         buildPackages.llvm-graphics
       ]
       ++ platformPythonModules
-      ++ lib.optionals stdenv.isCross [buildPackages.cmake rust.passthru.buildTool];
+      ++ lib.optionals stdenv.isCross [rust.passthru.buildTool];
     runtimeDeps = [
       libdrm
       libglvnd
@@ -153,27 +153,60 @@ in
               src/util/u_debug_stack.h
 
             ${lib.optionalString stdenv.isCross ''
-              # Mesa otherwise invokes a build-host llvm-config for target
-              # headers and libraries. Its CMake resolver reads the target
-              # LLVM package metadata with the cross compiler instead.
-              test "$(grep -c "method : host_machine.system() == 'windows' ? 'auto' : 'config-tool'," meson.build)" -eq 1
-              sed -i "s|method : host_machine.system() == 'windows' ? 'auto' : 'config-tool',|method : host_machine.system() == 'windows' ? 'auto' : 'cmake',|" meson.build
+              # Resolve LLVM through llvm-config as the native build does. The
+              # CMake resolver turns LLVM into absolute library paths, which
+              # Meson hands to rustc as verbatim -l flags; Rusticl then gets
+              # libLLVM twice with modifiers, and rustc rejects that. The
+              # target llvm-config cannot run on the build platform, but the
+              # build platform's llvm-graphics has the same configuration:
+              # every query except --host-target differs only in its prefix.
+              mkdir -p .aos-build-tools
+              cat > .aos-build-tools/llvm-config <<'LLVM_CONFIG'
+              #!${buildPackages.bash}/bin/bash
+              set -euo pipefail
+              for argument in "$@"; do
+                if [ "$argument" = --host-target ]; then
+                  echo ${stdenv.hostPlatform.config}
+                  exit 0
+                fi
+              done
+              ${buildPackages.llvm-graphics}/bin/llvm-config "$@" \
+                | ${buildPackages.sed}/bin/sed 's|${buildPackages.llvm-graphics}|${llvm-graphics}|g'
+              LLVM_CONFIG
+              chmod 0755 .aos-build-tools/llvm-config
+              test "$(.aos-build-tools/llvm-config --libdir)" = ${llvm-graphics}/lib
+
+              # bindgen's libclang reads dependency headers from
+              # C_INCLUDE_PATH but knows neither the target C library nor the
+              # target libstdc++. Append the glibc header directory the target
+              # compiler wrapper uses, and give C++ parses the target GCC's
+              # libstdc++ directories in the order that compiler searches them.
+              # GCC's own builtin headers stay out; libclang supplies its own.
+              target_libc_include="$(cat ${stdenv.cc}/nix-support/orig-libc-dev)/include"
+              target_cxx_includes=$(
+                ${stdenv.cc}/bin/c++ -x c++ -E -v /dev/null -o /dev/null 2>&1 \
+                  | sed -n '/^#include <...> search starts here:$/,/^End of search list\.$/p' \
+                  | sed -n 's|^ \(.*/include/c++/.*\)$|\1|p'
+              )
+              bindgen_clang_arguments="'-idirafter', '$target_libc_include'"
+              for directory in $target_cxx_includes; do
+                directory=$(realpath "$directory")
+                test -d "$directory"
+                bindgen_clang_arguments="$bindgen_clang_arguments, '-cxx-isystem', '$directory'"
+              done
+              test -f "$(realpath "$(echo "$target_cxx_includes" | head -n 1)")/cassert"
 
               # The Linux cross Rust package keeps a native compiler with the
               # target standard library. Meson must use that compiler and the
               # target C linker for Rusticl, not the native Rust default.
-              cat > mesa-cross-rust.ini <<'MESON_RUST'
+              cat > mesa-cross-rust.ini <<MESON_CROSS
               [binaries]
               rust = ['${rust.passthru.buildTool}/bin/rustc', '--target', '${stdenv.hostPlatform.config}', '-C', 'linker=${stdenv.cc}/bin/cc']
-              MESON_RUST
+              llvm-config = '$PWD/.aos-build-tools/llvm-config'
 
-              # bindgen's libclang reads dependency headers from
-              # C_INCLUDE_PATH but has no target C library. Give it the same
-              # glibc header directory the target compiler wrapper appends.
-              cat >> mesa-cross-rust.ini <<MESON_BINDGEN
               [properties]
-              bindgen_clang_arguments = ['-idirafter', '$(cat ${stdenv.cc}/nix-support/orig-libc-dev)/include']
-              MESON_BINDGEN
+              bindgen_clang_arguments = [$bindgen_clang_arguments]
+              MESON_CROSS
 
               # Rusticl's procedural macros run inside the build-platform
               # compiler, so Meson needs a build-machine rustc. Meson links
@@ -182,7 +215,6 @@ in
               # Rust's -lgcc_s needs the build platform's libgcc_s. Give
               # Meson a build compiler with that link environment and the
               # same Rust toolchain's native standard library.
-              mkdir -p .aos-build-tools
               cat > .aos-build-tools/build-cc <<BUILD_CC
               #!$CONFIG_SHELL
               unset NIX_LDFLAGS NIX_CFLAGS_COMPILE
@@ -211,7 +243,7 @@ in
             # Explicitly enable the public dispatch, video and OpenCL APIs.
             # Mesa's C++ RTTI setting must match LLVM's library ABI.
             ${buildPackages.python3}/bin/python3 -m mesonbuild.mesonmain \
-              setup build $mesonFlags ${lib.optionalString stdenv.isCross "--cross-file=mesa-cross-rust.ini --native-file=mesa-native-rust.ini -Dcmake_prefix_path=${llvm-graphics}"} --prefix="$out" --libdir=lib \
+              setup build $mesonFlags ${lib.optionalString stdenv.isCross "--cross-file=mesa-cross-rust.ini --native-file=mesa-native-rust.ini"} --prefix="$out" --libdir=lib \
               --buildtype=release --wrap-mode=nodownload \
               -Dcpp_rtti=false \
               -Dglvnd=enabled -Degl=enabled -Dgbm=enabled \
