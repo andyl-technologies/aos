@@ -706,9 +706,11 @@ mod retry_tests {
 
         assert!(submissions > 1);
         assert!(error.to_string().contains("stdout=`last response`"));
-        assert!(error
-            .to_string()
-            .contains("campaign service is temporarily unavailable"));
+        assert!(
+            error
+                .to_string()
+                .contains("campaign service is temporarily unavailable")
+        );
     }
 
     #[test]
