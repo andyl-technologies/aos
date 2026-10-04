@@ -6,6 +6,9 @@ use crucible_cas::content_store::{ContentId, ObjectKind};
 #[path = "lifecycle/drain_pause.rs"]
 mod drain_pause;
 
+#[path = "lifecycle/report.rs"]
+mod report;
+
 // A fresh packaged realization must boot to its authenticated selectable.
 // The previous 90-second host wait reached only 203 ms of virtual time;
 // source discovery on the same clock reaches its marker near 555 ms.
@@ -32,7 +35,7 @@ fn public_packaged_campaign_lifecycle_uses_only_cli() -> Result<(), Box<dyn Erro
     assert_eq!(created["state"], "created");
     assert_eq!(created["semantic"]["admitted_attempts"], 0);
     let created_snapshot = json_string(&created, "snapshot")?;
-    let created_report = campaign_report(&fixture, &created_snapshot)?;
+    let created_report = report::current_campaign_report(&fixture, &created_snapshot)?;
     assert_eq!(created_report["explored_attempts"], 0);
     assert_eq!(created_report["unexplored_attempts"], 0);
 
@@ -99,7 +102,7 @@ fn public_packaged_campaign_lifecycle_uses_only_cli() -> Result<(), Box<dyn Erro
 
     let running = campaign_status(&fixture)?;
     let running_snapshot = json_string(&running, "snapshot")?;
-    let running_report = campaign_report(&fixture, &running_snapshot)?;
+    let running_report = report::current_campaign_report(&fixture, &running_snapshot)?;
     assert!(json_u64(&running_report, "explored_attempts")? >= 3);
     drain_pause::pause_running_campaign(
         &fixture,
@@ -209,7 +212,8 @@ fn public_packaged_campaign_lifecycle_uses_only_cli() -> Result<(), Box<dyn Erro
     assert_eq!(stopped["operation"], "stop");
     let completed = campaign_status(&fixture)?;
     assert_eq!(completed["state"], "completed");
-    let completed_report = campaign_report(&fixture, &json_string(&completed, "snapshot")?)?;
+    let completed_report =
+        report::current_campaign_report(&fixture, &json_string(&completed, "snapshot")?)?;
     assert!(json_u64(&completed_report, "explored_attempts")? >= 4);
     restarted.stop()?;
 
