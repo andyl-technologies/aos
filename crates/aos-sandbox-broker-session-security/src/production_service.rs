@@ -70,8 +70,10 @@ pub struct ProductionMountBrokerOwnersV1<'owners> {
 /// A genuine authenticated Mount session enters this owner before receiving.
 /// The same fixed Root opening and delivered catalog originals remain resident
 /// through independent domain admission and the existing native runtime. This
-/// route sends no public success, completes no BSA outcome, and proves neither
-/// Ready nor terminal drain. The selected installed caller supplies the genuine
+/// route sends no public success and proves neither Ready nor terminal drain.
+/// After real native terminal readback, the named continuation may commit only
+/// fixed Conflict and the two current inventory responses on the same Session.
+/// The selected installed caller supplies the genuine
 /// exclusive table/PID1-image owner, which is bookended at protected crossings.
 /// The compatibility constructor supplies no such owner. Source's independent
 /// initial entry chain, lower unreturned prefixes and allocation funding remain
@@ -289,15 +291,8 @@ impl ProductionOriginalMountCycleV1 {
         if !self.bookend(broker) {
             return None;
         }
-        let (Some(authority), Some(session)) = (
-            self.receipt.authority_mut(), self.root.borrow_current_session(),
-        ) else {
-            self.note_failure(OriginalMountCycleStageV1::Root);
+        if !self.advance_native_response(broker) {
             return None;
-        };
-        self.response_result = Some(broker.advance_signed_original_response_v5(authority, session));
-        if !matches!(self.response_result, Some(Ok(_))) {
-            self.note_failure(OriginalMountCycleStageV1::Mount);
         }
 
         // The action is resident before the slower outer catalog/kernel/image
@@ -307,6 +302,108 @@ impl ProductionOriginalMountCycleV1 {
             return None;
         }
         self.response_result.as_ref().and_then(|result| result.as_ref().ok()).copied()
+    }
+
+    fn advance_native_response<W: aos_sandbox_mount::worker::MountWorker>(
+        &mut self,
+        broker: &mut aos_sandbox_mount::broker::MountBroker<W>,
+    ) -> bool {
+        let (Some(authority), Some(session)) = (
+            self.receipt.authority_mut(), self.root.borrow_current_session(),
+        ) else {
+            self.note_failure(OriginalMountCycleStageV1::Root);
+            return false;
+        };
+        self.response_result = Some(broker.advance_signed_original_response_v5(authority, session));
+        if !matches!(self.response_result, Some(Ok(_))) {
+            self.note_failure(OriginalMountCycleStageV1::Mount);
+        }
+
+        true
+    }
+
+    /// Advances the fixed nonadmitting terminal on the original transport.
+    ///
+    /// The actual stored Root terminal is reobserved through its already-sent
+    /// branch. Conflict does not assert an absent effect or physical Release.
+    /// The original Acquire, writers and both same queues remain owned here.
+    ///
+    /// # Errors
+    /// Ends both queues on a stale owner, failed original cutoff, signing,
+    /// commit ambiguity or native send refusal. No signature or send is retried.
+    pub fn advance_selected_nonadmitting_terminal<W: aos_sandbox_mount::worker::MountWorker>(
+        &mut self,
+        broker: &mut aos_sandbox_mount::broker::MountBroker<W>,
+    ) -> Result<bool, ProductionOriginalMountCycleFailureV1<'_>> {
+        if self.ended || self.first_stage.is_some() || self.startup.is_none()
+            || !self.locally_sent || !self.attempted
+        {
+            self.end();
+            return Err(self.failure_or_ended());
+        }
+        let succeeded = {
+            let mut boundary = OriginalMountCycleBoundaryV1 { owner: self, completed: false };
+            let succeeded = boundary.owner.advance_nonadmitting_inner(broker);
+            boundary.completed = succeeded;
+            succeeded
+        };
+        if succeeded {
+            Ok(self.receipt.terminal_stage() == crate::production_response::OriginalMountTerminalStageV1::Sent)
+        } else {
+            Err(self.failure_or_ended())
+        }
+    }
+
+    fn advance_nonadmitting_inner<W: aos_sandbox_mount::worker::MountWorker>(
+        &mut self,
+        broker: &mut aos_sandbox_mount::broker::MountBroker<W>,
+    ) -> bool {
+        if !self.nonadmitting_bookend(broker) {
+            return false;
+        }
+        // A historical DATA flag is insufficient: this is the genuine native
+        // phase7 readback and retained same-Session already-sent observation.
+        let native = self.advance_native_response(broker);
+        if !native || !matches!(self.response_result, Some(Ok(aos_sandbox_mount::broker::OriginalMountResponseProgressV5::RootTerminalRecordedSent))) {
+            self.note_failure(OriginalMountCycleStageV1::Mount);
+            // A returned native refusal remains first; it does not suppress
+            // the independent owner and original-clock negative observations.
+            if !self.nonadmitting_bookend(broker) {
+                self.response_postcheck_failed = true;
+            }
+            return false;
+        }
+        if !self.nonadmitting_bookend(broker) {
+            return false;
+        }
+        let action = if self.receipt.terminal_stage() == crate::production_response::OriginalMountTerminalStageV1::Sent {
+            self.receipt.advance_original_inventory(broker, &mut self.root)
+        } else {
+            self.receipt.advance_nonadmitting_terminal()
+        };
+        if !action { self.note_failure(OriginalMountCycleStageV1::Receipt); }
+        // These posts are independently attempted even after the actual action
+        // failed; first cause stays resident before any negative disposition.
+        let post = self.nonadmitting_bookend(broker);
+        if !post { self.response_postcheck_failed = true; }
+        action && post
+    }
+
+    fn nonadmitting_bookend<W: aos_sandbox_mount::worker::MountWorker>(
+        &mut self,
+        broker: &mut aos_sandbox_mount::broker::MountBroker<W>,
+    ) -> bool {
+        let root = self.root.recheck_catalog();
+        if !root { self.note_failure(OriginalMountCycleStageV1::Root); }
+        let startup = match self.startup.as_mut() {
+            Some(startup) => broker.recheck_selected_mount_startup(startup).is_ok(),
+            None => false,
+        };
+        if !startup { self.note_failure(OriginalMountCycleStageV1::Startup); }
+        let receipt = self.receipt.recheck_nonadmitting_terminal();
+        if !receipt { self.note_failure(OriginalMountCycleStageV1::Receipt); }
+        let clock = self.check_deadline();
+        receipt && root && startup && clock
     }
 
     /// Borrows the actual response cause from its SAME broker runtime owner.
@@ -579,7 +676,8 @@ impl ProductionOriginalMountCycleV1 {
                 }
             }
             Some(OriginalMountCycleStageV1::Deadline) => self.deadline_result.as_ref().and_then(|result| result.as_ref().err()).map(ProductionOriginalMountCycleFailureV1::Deadline),
-            None => None,
+            None => self.receipt.selected_failure_for_cycle()
+                .map(ProductionOriginalMountCycleFailureV1::Receipt),
         };
         failure.or_else(|| self.ended.then_some(ProductionOriginalMountCycleFailureV1::Ended))
     }

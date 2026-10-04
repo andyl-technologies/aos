@@ -1137,6 +1137,48 @@ impl<W: MountWorker> MountBroker<W> {
         encode_mount_inventory_response(response).map_err(Into::into)
     }
 
+    /// Encodes original source inventory after real terminal readback/currentness.
+    ///
+    /// This named observation retains the same Source runtime and Session under
+    /// the existing restoration boundary. It neither grants Release nor uses
+    /// the separate phase11 negative-inventory loan as a positive substitute.
+    ///
+    /// # Errors
+    /// Refuses stale domain authority, missing actual terminal delivery, full
+    /// graph/index mismatch or changed protected journal/kernel/currentness.
+    pub fn inventory_original_terminal_sources_v1(
+        &mut self,
+        original: &mut OriginalMountAcquireAuthorityV1,
+        session: &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
+        returned: &mut Option<Vec<u8>>,
+    ) -> Result<()> {
+        if returned.is_some() {
+            return Err(MountError::Fence("original terminal inventory destination is occupied"));
+        }
+        let mut boundary = source_custody::QueryEntryBoundaryV6::new(self, session);
+        let result = (|| {
+            if boundary.broker.source_runtime_failed || original.stopped || !original.committed {
+                return Err(MountError::Fence("original terminal inventory owner is unavailable"));
+            }
+            boundary.broker.ensure_authority_healthy()?;
+            let mut effect = OriginalMountSignedEffectLoanV1 { authority: &boundary.broker.authority, original };
+            effect.check_before_original_effect()?;
+            boundary.broker.source_runtime_failed = true;
+            let mut runtime = source_custody::SourceRuntimeLoanV6::new(
+                &mut boundary.broker.source_runtime, &mut boundary.broker.source_runtime_failed,
+            );
+            runtime.attach(&mut boundary.broker.journal)?;
+            runtime.operate(|owner| owner.encode_original_terminal_inventory_v1(boundary.session, &mut effect, returned))
+        })();
+        boundary.finish(result)
+    }
+
+    /// Lends actual original inventory journal debt without a new observation.
+    #[must_use]
+    pub fn original_terminal_inventory_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source_runtime.as_ref().and_then(|runtime| runtime.original_terminal_inventory_failure())
+    }
+
     /// Lends Query custody and revokes actual Session on returned error or unwind.
     ///
     /// This dormant crate-private boundary includes errors before the generic

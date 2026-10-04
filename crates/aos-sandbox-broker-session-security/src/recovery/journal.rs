@@ -93,6 +93,8 @@ use super::{
     request_direction_for_endpoint, request_matches_head,
 };
 
+use crate::endpoint::RetainedOriginalBrokerOutcomeV1;
+
 const STORAGE_GROUP_KEY_MAGIC: &[u8; 8] = b"AOSBSG01";
 const STORAGE_INVENTORY_KEY_MAGIC: &[u8; 8] = b"AOSBSI01";
 const STORAGE_ABANDONMENT_KEY_MAGIC: &[u8; 8] = b"AOSBSA01";
@@ -2713,6 +2715,84 @@ impl ProtectedBrokerSessionOwnerV1 {
         }
     }
 
+    pub(crate) fn prepare_original_nonadmitting_outcome(
+        &mut self,
+        retained: &mut RetainedOriginalBrokerOutcomeV1,
+        purpose: crate::endpoint::OriginalBrokerOutcomePurposeV1,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        message: aos_proto::aos::sandbox::local::v1::BrokerResponseEnvelope,
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+        connection_peer: &ConnectionPeerIdentity,
+    ) -> bool {
+        if retained.setup.is_some() || retained.gate.is_some() || retained.signed
+            || retained.endpoint.message.is_some()
+        {
+            return false;
+        }
+        retained.endpoint.message = Some(message);
+        retained.gate = Some(self.journal.reopen_broker_outcome(request, transcript, connection_peer));
+        retained.setup = Some((|| {
+            let gate = match retained.gate.as_ref() {
+                Some(Ok(gate)) => gate,
+                _ => return Err(BrokerSessionSecurityError::Currentness),
+            };
+            if !gate.traffic.has_outstanding_request()
+                || request.method() != purpose.method()
+                || request.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive
+            {
+                return Err(BrokerSessionSecurityError::Currentness);
+            }
+            let endpoint = match &mut self.journal.endpoint {
+                ProtectedEndpointV1::Broker(endpoint) => endpoint,
+                ProtectedEndpointV1::Client(_) => return Err(BrokerSessionSecurityError::Currentness),
+            };
+            if !endpoint.prepare_original_outcome(
+                &mut retained.endpoint, request.method(), transcript.session_binding(),
+                transcript.broker_process(), gate.traffic.next_broker_sequence(),
+                request.request_id(), request.signed_request_digest(), request.maximum_response_bytes(),
+            ) {
+                return Err(BrokerSessionSecurityError::Currentness);
+            }
+            Ok(())
+        })());
+        retained.failure().is_none()
+    }
+
+    pub(crate) fn sign_original_nonadmitting_outcome(
+        &mut self,
+        retained: &mut RetainedOriginalBrokerOutcomeV1,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+        connection_peer: &ConnectionPeerIdentity,
+    ) -> bool {
+        if retained.signed || retained.failure().is_some() || !matches!(retained.setup, Some(Ok(()))) {
+            return false;
+        }
+        retained.signed = true;
+        let endpoint = match &mut self.journal.endpoint {
+            ProtectedEndpointV1::Broker(endpoint) => endpoint,
+            ProtectedEndpointV1::Client(_) => return false,
+        };
+        if !endpoint.sign_original_outcome(&mut retained.endpoint) {
+            return false;
+        }
+        // The signed packet remains in endpoint custody before all decoder and
+        // protected admission crossings. The ordinary gate/parser is reused.
+        retained.admission = Some((|| {
+            let packet = retained.endpoint.packet().ok_or(BrokerSessionSecurityError::Currentness)?;
+            let outcome = decode_canonical_response_v1(packet)
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            let gate = self.journal.reopen_broker_outcome(request, transcript, connection_peer)?;
+            match gate.admit_outcome_with_descriptor_count(&outcome, 0)? {
+                super::ProtectedBrokerOutcomeAdmissionV1::New { advancement } => Ok(advancement),
+                super::ProtectedBrokerOutcomeAdmissionV1::ExactReplay { .. } => {
+                    Err(BrokerSessionSecurityError::Currentness)
+                }
+            }
+        })());
+        retained.failure().is_none() && matches!(retained.admission, Some(Ok(_)))
+    }
+
     pub(crate) fn revalidate_transport(
         &mut self,
         transcript: &VerifiedBrokerSessionTranscriptV1,
@@ -2830,6 +2910,19 @@ impl ProtectedBrokerSessionOwnerV1 {
 }
 
 impl ProtectedBrokerOutcomeCommittedAdvancementV1 {
+    pub(crate) fn original_nonadmitting_request_context(
+        &self,
+    ) -> Result<(&AuthenticatedBrokerMethodRequestV1, &ProtectedBrokerSessionVerificationContextV1), BrokerSessionSecurityError> {
+        if !matches!(self.method, BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
+            | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES
+            | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS)
+            || self.currentness_owner.request.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        Ok((&self.currentness_owner.request, &self.currentness_owner.context))
+    }
+
     pub(crate) fn storage_output_server_originals_v1(
         &self,
     ) -> Result<(&AuthenticatedBrokerMethodOutcomeV1, &ProtectedBrokerOutcomeCurrentnessOwnerV1), BrokerSessionSecurityError> {
@@ -3094,6 +3187,32 @@ impl ProtectedBrokerSessionOwnerV1 {
     > {
         self.journal
             .revalidate_broker_committed(committed, connection_peer)
+    }
+
+    pub(crate) fn compare_original_nonadmitting_outcome(
+        &mut self,
+        committed: &ProtectedBrokerOutcomeCommittedAdvancementV1,
+        connection_peer: &ConnectionPeerIdentity,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        let owner = &committed.currentness_owner;
+        let exact_result = match owner.request.method() {
+            BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE => matches!(owner.outcome.result(), AuthenticatedBrokerMethodResultV1::Error(error)
+                if error.code() == aos_proto::aos::sandbox::local::v1::BrokerErrorCode::BROKER_ERROR_CODE_CONFLICT
+                    && error.retryable() && error.safe_message() == "broker operation conflicts"
+                    && error.missing_feature().is_none()),
+            BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES
+            | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS => {
+                owner.request.authorization().is_none()
+                    && matches!(owner.outcome.result(), AuthenticatedBrokerMethodResultV1::Success { .. })
+            }
+            _ => false,
+        };
+        if owner.request.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive
+            || !exact_result
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        self.journal.validate_broker_outcome(owner, connection_peer)
     }
 
     /// Revalidates and packages one terminal outcome for a broker-specific adapter.

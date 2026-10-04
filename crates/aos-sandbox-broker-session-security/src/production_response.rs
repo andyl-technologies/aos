@@ -1,6 +1,6 @@
 //! Bounded production completion for committed responses and exact replays.
 //!
-//! Every completion method consumes the authenticated session. Success returns
+//! Every ordinary public completion consumes the authenticated session. Success returns
 //! that same session for the next request. Failure drops the socket and all
 //! in-memory custody, forcing reconnect/replay against the protected journal
 //! instead of allowing a caller to continue after ambiguous transport.
@@ -9,6 +9,179 @@
 //! that session does not undo the committed outcome or permit a new effect.
 
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
+
+// The original Acquire and both fixed successor requests are retained beside
+// these closed reservoirs, never converted to BeforeEffect. Conflict closes
+// only transport stop-and-wait, not native custody; inventory is observation.
+pub(crate) struct OriginalMountNonadmittingTerminalV1 {
+    preparation: crate::endpoint::RetainedOriginalBrokerOutcomeV1,
+    prepared: Option<Result<bool, crate::BrokerSessionSecurityError>>,
+    committed: Option<ProtectedBrokerOutcomeCommitResultV1>,
+    native_send: Option<Result<(), aos_sandbox_linux::seqpacket::SeqpacketError>>,
+    owner_post: Option<Result<(), crate::BrokerSessionSecurityError>>,
+    clock_post: Option<Result<u64, crate::BrokerSessionSecurityError>>,
+    stage: OriginalMountTerminalStageV1,
+    first_stage: Option<OriginalMountTerminalStageV1>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum OriginalMountTerminalStageV1 {
+    Prepare,
+    Sign,
+    Commit,
+    Send,
+    Sent,
+    Ended,
+}
+
+impl OriginalMountNonadmittingTerminalV1 {
+    pub(crate) const fn new() -> Self {
+        Self {
+            preparation: crate::endpoint::RetainedOriginalBrokerOutcomeV1::new(),
+            prepared: None,
+            committed: None,
+            native_send: None,
+            owner_post: None,
+            clock_post: None,
+            stage: OriginalMountTerminalStageV1::Prepare,
+            first_stage: None,
+        }
+    }
+
+    pub(crate) fn stage(&self) -> OriginalMountTerminalStageV1 { self.stage }
+
+    pub(crate) fn has_committed(&self) -> bool {
+        matches!(self.committed, Some(ProtectedBrokerOutcomeCommitResultV1::Committed(_)))
+    }
+
+    pub(crate) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self.first_stage {
+            Some(OriginalMountTerminalStageV1::Prepare | OriginalMountTerminalStageV1::Sign) => {
+                self.preparation.failure().map(|cause| cause as &dyn std::error::Error)
+                    .or_else(|| self.prepared.as_ref().and_then(|result| result.as_ref().err())
+                        .map(|cause| cause as &dyn std::error::Error))
+            }
+            Some(OriginalMountTerminalStageV1::Commit) => match self.committed.as_ref() {
+                Some(ProtectedBrokerOutcomeCommitResultV1::RecoveryRequired { error, .. }) => Some(error),
+                _ => None,
+            },
+            Some(OriginalMountTerminalStageV1::Send) => self.native_send.as_ref()
+                .and_then(|result| result.as_ref().err()).map(|cause| cause as &dyn std::error::Error),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn post_failure(&self) -> Option<&crate::BrokerSessionSecurityError> {
+        self.owner_post.as_ref().and_then(|result| result.as_ref().err())
+            .or_else(|| self.clock_post.as_ref().and_then(|result| result.as_ref().err()))
+    }
+
+    pub(crate) fn prepare(
+        &mut self, session: &mut DormantAuthenticatedBrokerSessionV1,
+        request: &crate::DormantReceivedBrokerRequestV1,
+    ) -> bool {
+        if self.stage != OriginalMountTerminalStageV1::Prepare || self.prepared.is_some() {
+            return false;
+        }
+        self.stage = OriginalMountTerminalStageV1::Ended;
+        self.prepared = Some(session.prepare_original_nonadmitting_terminal(request, &mut self.preparation));
+        if !matches!(self.prepared, Some(Ok(true))) {
+            self.refuse(OriginalMountTerminalStageV1::Prepare);
+            return false;
+        }
+        self.stage = OriginalMountTerminalStageV1::Sign;
+        true
+    }
+
+    pub(crate) fn sign(
+        &mut self, session: &mut DormantAuthenticatedBrokerSessionV1,
+        request: &crate::DormantReceivedBrokerRequestV1,
+    ) -> bool {
+        if self.stage != OriginalMountTerminalStageV1::Sign {
+            return false;
+        }
+        // Irreversible purpose prearm precedes even a returned signing refusal.
+        self.stage = OriginalMountTerminalStageV1::Ended;
+        if !session.sign_original_nonadmitting_terminal(request, &mut self.preparation) {
+            self.refuse(OriginalMountTerminalStageV1::Sign);
+            return false;
+        }
+        self.stage = OriginalMountTerminalStageV1::Commit;
+        true
+    }
+
+    pub(crate) fn prepare_inventory(
+        &mut self, session: &mut DormantAuthenticatedBrokerSessionV1,
+        request: &crate::DormantReceivedBrokerRequestV1,
+        body: &mut Option<Vec<u8>>,
+    ) -> bool {
+        if self.stage != OriginalMountTerminalStageV1::Prepare || self.prepared.is_some()
+            || self.preparation.endpoint.message.is_some() || body.is_none()
+        {
+            return false;
+        }
+        self.stage = OriginalMountTerminalStageV1::Ended;
+        self.prepared = Some(session.prepare_original_inventory_outcome(request, &mut self.preparation, body));
+        if !matches!(self.prepared, Some(Ok(true))) {
+            self.refuse(OriginalMountTerminalStageV1::Prepare);
+            return false;
+        }
+        self.stage = OriginalMountTerminalStageV1::Sign;
+        true
+    }
+
+    pub(crate) fn commit(&mut self, session: &mut DormantAuthenticatedBrokerSessionV1) -> bool {
+        if self.stage != OriginalMountTerminalStageV1::Commit || self.committed.is_some() {
+            return false;
+        }
+        // All receiver occupancy checks precede the infallible immediate park.
+        let Some(pending) = self.preparation.take_pending() else { return false; };
+        self.stage = OriginalMountTerminalStageV1::Ended;
+        self.committed = Some(session.commit_broker_outcome(pending));
+        if !matches!(self.committed, Some(ProtectedBrokerOutcomeCommitResultV1::Committed(_))) {
+            self.refuse(OriginalMountTerminalStageV1::Commit);
+            return false;
+        }
+        self.stage = OriginalMountTerminalStageV1::Send;
+        true
+    }
+
+    pub(crate) fn recheck(&mut self, session: &mut DormantAuthenticatedBrokerSessionV1) -> bool {
+        let Some(ProtectedBrokerOutcomeCommitResultV1::Committed(committed)) = self.committed.as_ref() else {
+            return false;
+        };
+        if self.post_failure().is_some() {
+            return false;
+        }
+        self.owner_post = Some(session.compare_original_nonadmitting_outcome(committed));
+        // Owner refusal never skips the original paired-clock observation.
+        self.clock_post = Some(DormantAuthenticatedBrokerSessionV1::original_nonadmitting_clock(committed));
+        self.post_failure().is_none()
+    }
+
+    pub(crate) fn send(&mut self, session: &mut DormantAuthenticatedBrokerSessionV1) -> bool {
+        if self.stage != OriginalMountTerminalStageV1::Send || self.native_send.is_some() {
+            return false;
+        }
+        let Some(ProtectedBrokerOutcomeCommitResultV1::Committed(committed)) = self.committed.as_ref() else {
+            return false;
+        };
+        self.stage = OriginalMountTerminalStageV1::Ended;
+        let sent = session.send_original_nonadmitting_packet(committed, &mut self.native_send);
+        if !sent { self.refuse(OriginalMountTerminalStageV1::Send); }
+        let current = self.recheck(session);
+        if sent && current {
+            self.stage = OriginalMountTerminalStageV1::Sent;
+            return true;
+        }
+        false
+    }
+
+    fn refuse(&mut self, stage: OriginalMountTerminalStageV1) {
+        if self.first_stage.is_none() { self.first_stage = Some(stage); }
+        self.stage = OriginalMountTerminalStageV1::Ended;
+    }
+}
 
 use crate::{
     DormantAuthenticatedBrokerSessionV1, DormantBrokerDescriptorCommitResultV1,

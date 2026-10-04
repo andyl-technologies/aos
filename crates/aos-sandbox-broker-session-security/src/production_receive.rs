@@ -78,6 +78,57 @@ pub struct ProductionOriginalMountReceiptV1 {
     body: Option<Vec<u8>>,
     authority: Option<aos_sandbox_mount::broker::OriginalMountAcquireAuthorityV1>,
     live_attempted: bool,
+    terminal: crate::production_response::OriginalMountNonadmittingTerminalV1,
+    terminal_owner_post: Option<Result<crate::DormantBrokerOutcomeVerificationV1, crate::BrokerSessionSecurityError>>,
+    terminal_clock_post: Option<Result<u64, crate::BrokerSessionSecurityError>>,
+    inventory_progress: [Option<DormantBrokerRequestReceiveProgressV1>; 2],
+    inventory_receive: [Option<Result<(), ProductionBrokerReceiveErrorV1>>; 2],
+    inventory_bodies: [Option<Vec<u8>>; 2],
+    inventory_actions: [Option<Result<(), aos_sandbox_mount::MountError>>; 2],
+    inventory_responses: [crate::production_response::OriginalMountNonadmittingTerminalV1; 2],
+    inventory_index: usize,
+    inventory_first_failure: Option<usize>,
+    terminal_shutdown: Option<Result<(), std::io::Error>>,
+    diagnostic_phase: OriginalMountDiagnosticPhaseV1,
+    selected_first_source: Option<OriginalMountFirstFailureSourceV1>,
+    selected_crossing: Option<OriginalMountSelectedCrossingV1>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum OriginalMountDiagnosticPhaseV1 {
+    Acquire,
+    Selected,
+}
+
+// Prearmed at the actual delegate, so negative end can find a returned cause
+// even when an independent post observation unwinds before the wrapper returns.
+#[derive(Clone, Copy)]
+enum OriginalMountSelectedCrossingV1 {
+    Terminal,
+    InventoryReceive(usize),
+    InventoryAction(usize),
+    InventoryResponse(usize),
+    ReceiptPost,
+}
+
+// Only a source/index is retained. The actual cause stays in its owning Result,
+// so later authority.stop() and independent debt cannot replace its chronology.
+#[derive(Clone, Copy)]
+enum OriginalMountFirstFailureSourceV1 {
+    Alias,
+    Receive,
+    AcquireOwner,
+    AcquireClock,
+    Live,
+    Authority,
+    TerminalAction,
+    TerminalPost,
+    OwnerPost,
+    ClockPost,
+    InventoryReceive(usize),
+    InventoryAction(usize),
+    InventoryResponse(usize),
+    InventoryPost(usize),
 }
 
 impl std::fmt::Debug for ProductionOriginalMountReceiptV1 {
@@ -98,6 +149,10 @@ pub enum ProductionOriginalMountReceiptFailureV1<'owner> {
     Protocol(&'owner aos_sandbox_protocol::ProtocolValidationError),
     /// Independent signed-domain admission retained its original first cause.
     Authority(aos_sandbox_mount::broker::OriginalMountAcquireAuthorityFailureV1<'owner>),
+    /// The selected terminal retains its actual signing, commit or native cause.
+    Terminal(&'owner (dyn std::error::Error + 'static)),
+    /// An independent terminal owner or original-clock observation failed.
+    TerminalPost(&'owner crate::BrokerSessionSecurityError),
     /// The original owner ended without a returned cause, including unwind.
     Ended,
 }
@@ -110,6 +165,8 @@ impl std::fmt::Debug for ProductionOriginalMountReceiptFailureV1<'_> {
             Self::Currentness(_) => "ProductionOriginalMountReceiptFailureV1::Currentness",
             Self::Protocol(_) => "ProductionOriginalMountReceiptFailureV1::Protocol",
             Self::Authority(_) => "ProductionOriginalMountReceiptFailureV1::Authority",
+            Self::Terminal(_) => "ProductionOriginalMountReceiptFailureV1::Terminal",
+            Self::TerminalPost(_) => "ProductionOriginalMountReceiptFailureV1::TerminalPost",
             Self::Ended => "ProductionOriginalMountReceiptFailureV1::Ended",
         })
     }
@@ -205,7 +262,9 @@ impl ProductionOriginalMountReceiptV1 {
     }
 
     pub(crate) fn arm_original_fence(&mut self) -> bool {
-        if self.ended { return false; }
+        if self.ended {
+            return false;
+        }
         if self.alias.is_some() { return matches!(self.alias, Some(Ok(_))); }
         match self.session.as_fd() {
             Ok(original) => {
@@ -319,9 +378,336 @@ impl ProductionOriginalMountReceiptV1 {
         true
     }
 
+    pub(crate) fn terminal_stage(&self) -> crate::production_response::OriginalMountTerminalStageV1 {
+        self.terminal.stage()
+    }
+
+    pub(crate) fn advance_nonadmitting_terminal(&mut self) -> bool {
+        self.arm_selected_diagnostics();
+        self.retain_selected_authority_failure();
+        if self.selected_first_source.is_some() {
+            return false;
+        }
+        self.selected_crossing = Some(OriginalMountSelectedCrossingV1::Terminal);
+        let advanced = self.advance_nonadmitting_terminal_inner();
+        self.capture_selected_crossing();
+        self.retain_selected_authority_failure();
+        advanced
+    }
+
+    fn advance_nonadmitting_terminal_inner(&mut self) -> bool {
+        use crate::production_response::OriginalMountTerminalStageV1 as Stage;
+        if self.ended { return false; }
+        match self.terminal.stage() {
+            Stage::Prepare | Stage::Sign => {
+                let Some(DormantBrokerRequestReceiveProgressV1::Received(request)) = self.progress.as_ref() else {
+                    return false;
+                };
+                if self.terminal.stage() == Stage::Prepare {
+                    self.terminal.prepare(&mut self.session, request)
+                } else {
+                    self.terminal.sign(&mut self.session, request)
+                }
+            }
+            Stage::Commit => self.terminal.commit(&mut self.session),
+            Stage::Send => self.terminal.send(&mut self.session),
+            Stage::Sent => true,
+            Stage::Ended => false,
+        }
+    }
+
+    pub(crate) fn recheck_nonadmitting_terminal(&mut self) -> bool {
+        // This is the first receipt-owned selected bookend. Outer Root/startup
+        // causes remain separately owned by the cycle's existing first-stage.
+        self.arm_selected_diagnostics();
+        self.retain_selected_authority_failure();
+        let current = self.recheck_nonadmitting_terminal_inner();
+        self.capture_selected_crossing();
+        current
+    }
+
+    fn recheck_nonadmitting_terminal_inner(&mut self) -> bool {
+        let active = self.inventory_index.min(1);
+        if self.inventory_progress[active].is_some() {
+            if self.inventory_responses[active].has_committed() {
+                self.selected_crossing = Some(OriginalMountSelectedCrossingV1::InventoryResponse(active));
+                return self.inventory_responses[active].recheck(&mut self.session);
+            }
+            if let Some(DormantBrokerRequestReceiveProgressV1::Received(request)) = self.inventory_progress[active].as_ref() {
+                let Some(Ok(initial)) = self.live_verification.as_ref() else { return false; };
+                self.selected_crossing = Some(OriginalMountSelectedCrossingV1::ReceiptPost);
+                return self.session.observe_original_mount_terminal_prefix(
+                    request, initial, &mut self.terminal_owner_post, &mut self.terminal_clock_post,
+                );
+            }
+        }
+        if self.inventory_index == 1 && self.inventory_progress[1].is_none() {
+            self.selected_crossing = Some(OriginalMountSelectedCrossingV1::InventoryResponse(0));
+            return self.inventory_responses[0].recheck(&mut self.session);
+        }
+        if self.terminal.has_committed() {
+            self.selected_crossing = Some(OriginalMountSelectedCrossingV1::Terminal);
+            return self.terminal.recheck(&mut self.session);
+        }
+        let Some(DormantBrokerRequestReceiveProgressV1::Received(request)) = self.progress.as_ref() else {
+            return false;
+        };
+        let Some(Ok(initial)) = self.live_verification.as_ref() else { return false; };
+        self.selected_crossing = Some(OriginalMountSelectedCrossingV1::ReceiptPost);
+        self.session.observe_original_mount_terminal_prefix(
+            request, initial, &mut self.terminal_owner_post, &mut self.terminal_clock_post,
+        )
+    }
+
+    pub(crate) fn advance_original_inventory<W: aos_sandbox_mount::worker::MountWorker>(
+        &mut self,
+        broker: &mut aos_sandbox_mount::broker::MountBroker<W>,
+        root: &mut crate::ProductionSelectedRootMountSourceProviderV1,
+    ) -> bool {
+        self.arm_selected_diagnostics();
+        self.retain_selected_authority_failure();
+        if self.selected_first_source.is_some() {
+            return false;
+        }
+        let index = self.inventory_index.min(1);
+        let succeeded = self.advance_original_inventory_inner(broker, root);
+        self.capture_selected_crossing();
+        self.retain_selected_authority_failure();
+        if !succeeded && self.inventory_first_failure.is_none() {
+            self.inventory_first_failure = Some(index);
+        }
+        succeeded
+    }
+
+    fn advance_original_inventory_inner<W: aos_sandbox_mount::worker::MountWorker>(
+        &mut self,
+        broker: &mut aos_sandbox_mount::broker::MountBroker<W>,
+        root: &mut crate::ProductionSelectedRootMountSourceProviderV1,
+    ) -> bool {
+        use aos_proto::aos::sandbox::local::v1::BrokerMethod;
+        use crate::production_response::OriginalMountTerminalStageV1 as Stage;
+        if self.ended || self.terminal.stage() != Stage::Sent {
+            return false;
+        }
+        if self.inventory_index == 2 {
+            return true;
+        }
+        let index = self.inventory_index;
+        if self.inventory_progress[index].is_none() {
+            self.selected_crossing = Some(OriginalMountSelectedCrossingV1::InventoryReceive(index));
+            self.inventory_receive[index] = Some(self.session.receive_production_request_progress(
+                self.deadline, &mut self.inventory_progress[index],
+            ));
+            self.capture_selected_crossing();
+            if !matches!(self.inventory_receive[index], Some(Ok(()))) {
+                return false;
+            }
+            if matches!(self.inventory_progress[index], Some(DormantBrokerRequestReceiveProgressV1::Pending)) {
+                self.inventory_progress[index] = None;
+                return true;
+            }
+        }
+        let Some(DormantBrokerRequestReceiveProgressV1::Received(request)) = self.inventory_progress[index].as_ref() else {
+            return false;
+        };
+        let method = if index == 0 { BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES }
+            else { BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS };
+        let previous = if index == 0 {
+            self.progress.as_ref()
+        } else {
+            self.inventory_progress[0].as_ref()
+        };
+        let Some(DormantBrokerRequestReceiveProgressV1::Received(previous)) = previous else { return false; };
+        if !request.is_original_mount_inventory_successor(previous, method) {
+            return false;
+        }
+
+        let response = &mut self.inventory_responses[index];
+        match response.stage() {
+            Stage::Prepare => {
+                if self.inventory_actions[index].is_none() {
+                    self.selected_crossing = Some(OriginalMountSelectedCrossingV1::InventoryAction(index));
+                    if index == 0 {
+                        match broker.inventory_resources() {
+                            Ok(body) => {
+                                self.inventory_bodies[index] = Some(body);
+                                self.inventory_actions[index] = Some(Ok(()));
+                            }
+                            Err(cause) => self.inventory_actions[index] = Some(Err(cause)),
+                        }
+                    } else {
+                        let (Some(authority), Some(session)) = (self.authority.as_mut(), root.borrow_current_session()) else { return false; };
+                        self.inventory_actions[index] = Some(broker.inventory_original_terminal_sources_v1(
+                            authority, session, &mut self.inventory_bodies[index],
+                        ));
+                    }
+                    self.capture_selected_crossing();
+                    return matches!(self.inventory_actions[index], Some(Ok(())));
+                }
+                self.selected_crossing = Some(OriginalMountSelectedCrossingV1::InventoryResponse(index));
+                response.prepare_inventory(&mut self.session, request, &mut self.inventory_bodies[index])
+            }
+            Stage::Sign => {
+                self.selected_crossing = Some(OriginalMountSelectedCrossingV1::InventoryResponse(index));
+                response.sign(&mut self.session, request)
+            }
+            Stage::Commit => {
+                self.selected_crossing = Some(OriginalMountSelectedCrossingV1::InventoryResponse(index));
+                response.commit(&mut self.session)
+            }
+            Stage::Send => {
+                self.selected_crossing = Some(OriginalMountSelectedCrossingV1::InventoryResponse(index));
+                response.send(&mut self.session)
+            }
+            Stage::Sent => {
+                self.inventory_index += 1;
+                true
+            }
+            Stage::Ended => false,
+        }
+    }
+
+    fn arm_selected_diagnostics(&mut self) {
+        use aos_sandbox_mount::broker::OriginalMountAcquireAuthorityFailureV1 as AuthorityFailure;
+        use OriginalMountFirstFailureSourceV1 as Source;
+        use ProductionOriginalMountReceiptFailureV1 as Failure;
+
+        if self.diagnostic_phase == OriginalMountDiagnosticPhaseV1::Selected {
+            return;
+        }
+        // Consult the unchanged Acquire priority before changing disposition.
+        // A stopped-without-cause status is not a new owning error source.
+        let earlier = match self.failure() {
+            Some(Failure::Alias(_)) => Some(Source::Alias),
+            Some(Failure::Receive(_)) => Some(Source::Receive),
+            Some(Failure::Currentness(_)) => {
+                if matches!(self.live_verification, Some(Err(_))) {
+                    Some(Source::AcquireOwner)
+                } else {
+                    Some(Source::AcquireClock)
+                }
+            }
+            Some(Failure::Protocol(_)) => Some(Source::Live),
+            Some(Failure::Authority(AuthorityFailure::Ended)) => None,
+            Some(Failure::Authority(_)) => Some(Source::Authority),
+            _ => None,
+        };
+        self.diagnostic_phase = OriginalMountDiagnosticPhaseV1::Selected;
+        self.selected_first_source = earlier;
+    }
+
+    fn retain_selected_source(&mut self, source: OriginalMountFirstFailureSourceV1) {
+        if self.selected_first_source.is_none() {
+            self.selected_first_source = Some(source);
+        }
+    }
+
+    fn retain_selected_authority_failure(&mut self) {
+        use aos_sandbox_mount::broker::OriginalMountAcquireAuthorityFailureV1 as AuthorityFailure;
+
+        if self.selected_first_source.is_some() {
+            return;
+        }
+        let genuine_cause = self.authority.as_ref()
+            .and_then(|authority| authority.failure())
+            .is_some_and(|cause| !matches!(cause, AuthorityFailure::Ended));
+        if genuine_cause {
+            self.retain_selected_source(OriginalMountFirstFailureSourceV1::Authority);
+        }
+    }
+
+    fn capture_selected_crossing(&mut self) {
+        use OriginalMountSelectedCrossingV1 as Crossing;
+        use OriginalMountFirstFailureSourceV1 as Source;
+
+        if self.diagnostic_phase != OriginalMountDiagnosticPhaseV1::Selected
+            || self.selected_first_source.is_some()
+        {
+            return;
+        }
+        // Nested failure() follows its own owning first_stage, not a guessed
+        // field priority. Native Send refusal therefore precedes its posts.
+        let source = match self.selected_crossing {
+            Some(Crossing::Terminal) if self.terminal.failure().is_some() => {
+                Some(Source::TerminalAction)
+            }
+            Some(Crossing::Terminal) if self.terminal.post_failure().is_some() => {
+                Some(Source::TerminalPost)
+            }
+            Some(Crossing::InventoryReceive(index))
+                if matches!(self.inventory_receive[index], Some(Err(_))) =>
+            {
+                Some(Source::InventoryReceive(index))
+            }
+            Some(Crossing::InventoryAction(index))
+                if matches!(self.inventory_actions[index], Some(Err(_))) =>
+            {
+                Some(Source::InventoryAction(index))
+            }
+            Some(Crossing::InventoryResponse(index))
+                if self.inventory_responses[index].failure().is_some() =>
+            {
+                Some(Source::InventoryResponse(index))
+            }
+            Some(Crossing::InventoryResponse(index))
+                if self.inventory_responses[index].post_failure().is_some() =>
+            {
+                Some(Source::InventoryPost(index))
+            }
+            Some(Crossing::ReceiptPost) if matches!(self.terminal_owner_post, Some(Err(_))) => {
+                Some(Source::OwnerPost)
+            }
+            Some(Crossing::ReceiptPost) if matches!(self.terminal_clock_post, Some(Err(_))) => {
+                Some(Source::ClockPost)
+            }
+            _ => None,
+        };
+        if let Some(source) = source {
+            self.retain_selected_source(source);
+        }
+    }
+
+    fn selected_failure(&self) -> Option<ProductionOriginalMountReceiptFailureV1<'_>> {
+        use OriginalMountFirstFailureSourceV1 as Source;
+        use ProductionOriginalMountReceiptFailureV1 as Failure;
+
+        match self.selected_first_source? {
+            Source::Alias => self.alias.as_ref().and_then(|result| result.as_ref().err())
+                .map(Failure::Alias),
+            Source::Receive => self.first_failure.as_ref().map(Failure::Receive),
+            Source::AcquireOwner => self.live_verification.as_ref().and_then(|result| result.as_ref().err())
+                .map(Failure::Currentness),
+            Source::AcquireClock => self.live_clock.as_ref().and_then(|result| result.as_ref().err())
+                .map(Failure::Currentness),
+            Source::Live => self.live.as_ref().and_then(|result| result.as_ref().err())
+                .map(Failure::Protocol),
+            Source::Authority => self.authority.as_ref().and_then(|authority| authority.failure())
+                .map(Failure::Authority),
+            Source::TerminalAction => self.terminal.failure().map(Failure::Terminal),
+            Source::TerminalPost => self.terminal.post_failure().map(Failure::TerminalPost),
+            Source::OwnerPost => self.terminal_owner_post.as_ref().and_then(|result| result.as_ref().err())
+                .map(Failure::TerminalPost),
+            Source::ClockPost => self.terminal_clock_post.as_ref().and_then(|result| result.as_ref().err())
+                .map(Failure::TerminalPost),
+            Source::InventoryReceive(index) => self.inventory_receive[index].as_ref()
+                .and_then(|result| result.as_ref().err()).map(Failure::Receive),
+            Source::InventoryAction(index) => self.inventory_actions[index].as_ref()
+                .and_then(|result| result.as_ref().err())
+                .map(|cause| Failure::Terminal(cause)),
+            Source::InventoryResponse(index) => self.inventory_responses[index].failure()
+                .map(Failure::Terminal),
+            Source::InventoryPost(index) => self.inventory_responses[index].post_failure()
+                .map(Failure::TerminalPost),
+        }
+    }
+
     /// Borrows the first failure without observation, recovery or renewal.
     #[must_use]
     pub fn failure(&self) -> Option<ProductionOriginalMountReceiptFailureV1<'_>> {
+        if self.diagnostic_phase == OriginalMountDiagnosticPhaseV1::Selected {
+            return self.selected_failure()
+                .or_else(|| self.ended.then_some(ProductionOriginalMountReceiptFailureV1::Ended));
+        }
         if let Some(Err(cause)) = self.alias.as_ref() {
             return Some(ProductionOriginalMountReceiptFailureV1::Alias(cause));
         }
@@ -340,6 +726,40 @@ impl ProductionOriginalMountReceiptV1 {
         if let Some(cause) = self.authority.as_ref().and_then(|authority| authority.failure()) {
             return Some(ProductionOriginalMountReceiptFailureV1::Authority(cause));
         }
+        if let Some(cause) = self.terminal.failure() {
+            return Some(ProductionOriginalMountReceiptFailureV1::Terminal(cause));
+        }
+        if let Some(index) = self.inventory_first_failure {
+            if let Some(Err(cause)) = self.inventory_receive[index].as_ref() {
+                return Some(ProductionOriginalMountReceiptFailureV1::Receive(cause));
+            }
+            if let Some(Err(cause)) = self.inventory_actions[index].as_ref() {
+                return Some(ProductionOriginalMountReceiptFailureV1::Terminal(cause));
+            }
+            if let Some(cause) = self.inventory_responses[index].failure() {
+                return Some(ProductionOriginalMountReceiptFailureV1::Terminal(cause));
+            }
+        }
+        if let Some(cause) = self.terminal.post_failure()
+            .or_else(|| self.terminal_owner_post.as_ref().and_then(|result| result.as_ref().err()))
+            .or_else(|| self.terminal_clock_post.as_ref().and_then(|result| result.as_ref().err()))
+        {
+            return Some(ProductionOriginalMountReceiptFailureV1::TerminalPost(cause));
+        }
+        for index in 0..2 {
+            if let Some(Err(cause)) = self.inventory_receive[index].as_ref() {
+                return Some(ProductionOriginalMountReceiptFailureV1::Receive(cause));
+            }
+            if let Some(Err(cause)) = self.inventory_actions[index].as_ref() {
+                return Some(ProductionOriginalMountReceiptFailureV1::Terminal(cause));
+            }
+            if let Some(cause) = self.inventory_responses[index].failure() {
+                return Some(ProductionOriginalMountReceiptFailureV1::Terminal(cause));
+            }
+            if let Some(cause) = self.inventory_responses[index].post_failure() {
+                return Some(ProductionOriginalMountReceiptFailureV1::TerminalPost(cause));
+            }
+        }
         self.ended.then_some(ProductionOriginalMountReceiptFailureV1::Ended)
     }
 
@@ -347,11 +767,40 @@ impl ProductionOriginalMountReceiptV1 {
         self.failure().unwrap_or(ProductionOriginalMountReceiptFailureV1::Ended)
     }
 
+    // This closed borrower exposes only a latched owning selected cause. The
+    // cycle may use it when its action note_failure was bypassed by unwind.
+    pub(super) fn selected_failure_for_cycle(&self) -> Option<ProductionOriginalMountReceiptFailureV1<'_>> {
+        use aos_sandbox_mount::broker::OriginalMountAcquireAuthorityFailureV1 as AuthorityFailure;
+        use ProductionOriginalMountReceiptFailureV1 as Failure;
+
+        if self.diagnostic_phase != OriginalMountDiagnosticPhaseV1::Selected {
+            return None;
+        }
+        match self.selected_failure()? {
+            Failure::Ended | Failure::Authority(AuthorityFailure::Ended) => None,
+            cause => Some(cause),
+        }
+    }
+
     /// Ends the original queue before any returned request or recovery drops.
     pub fn end(&mut self) {
+        if self.diagnostic_phase == OriginalMountDiagnosticPhaseV1::Selected {
+            self.capture_selected_crossing();
+            self.retain_selected_authority_failure();
+        }
         self.ended = true;
         if let Some(authority) = self.authority.as_mut() {
             authority.stop();
+        }
+        if self.terminal_stage() != crate::production_response::OriginalMountTerminalStageV1::Prepare {
+            if self.terminal_shutdown.is_none() {
+                if let Some(Ok(alias)) = self.alias.as_ref() {
+                    self.terminal_shutdown = Some(rustix::net::shutdown(
+                        alias.as_fd(), rustix::net::Shutdown::Both,
+                    ).map_err(std::io::Error::from));
+                }
+            }
+            return;
         }
         if let Some(Ok(alias)) = self.alias.as_ref() {
             if let Err(cause) = rustix::net::shutdown(alias.as_fd(), rustix::net::Shutdown::Both) {
@@ -369,7 +818,7 @@ impl ProductionOriginalMountReceiptV1 {
     /// Lends shutdown debt separately; it never proves peer or descriptor drain.
     #[must_use]
     pub fn shutdown_failure(&self) -> Option<&std::io::Error> {
-        self.shutdown_failure.as_ref()
+        self.shutdown_failure.as_ref().or_else(|| self.terminal_shutdown.as_ref().and_then(|result| result.as_ref().err()))
     }
 }
 
@@ -404,6 +853,20 @@ impl DormantAuthenticatedBrokerSessionV1 {
             body: None,
             authority: None,
             live_attempted: false,
+            terminal: crate::production_response::OriginalMountNonadmittingTerminalV1::new(),
+            terminal_owner_post: None,
+            terminal_clock_post: None,
+            inventory_progress: [None, None],
+            inventory_receive: [None, None],
+            inventory_bodies: [None, None],
+            inventory_actions: [None, None],
+            inventory_responses: [crate::production_response::OriginalMountNonadmittingTerminalV1::new(), crate::production_response::OriginalMountNonadmittingTerminalV1::new()],
+            inventory_index: 0,
+            inventory_first_failure: None,
+            terminal_shutdown: None,
+            diagnostic_phase: OriginalMountDiagnosticPhaseV1::Acquire,
+            selected_first_source: None,
+            selected_crossing: None,
         }
     }
 

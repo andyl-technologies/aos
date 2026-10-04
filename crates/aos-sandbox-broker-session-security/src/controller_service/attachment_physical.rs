@@ -724,6 +724,20 @@ fn drain_pending_source_attempt(
             return Err(error);
         }
     };
+    if attempt.kind() == AttachmentSourceAttemptKindV1::Acquire
+        && matches!(outcome.result(), aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodResultV1::Error(_))
+    {
+        // Signed Conflict ends only this authenticated stop-and-wait exchange.
+        // Retain the dispatch on every stale/other error, and let the existing
+        // next paired inventories classify actual custody, never this packet.
+        if let Err(error) = attempt.recheck(journal, &mut clock)
+            .and_then(|()| attempt.validate_original_nonadmitting_terminal(&outcome))
+        {
+            executor.pending_attachment_source_attempt = Some(attempt);
+            return Err(retryable(error.to_string()));
+        }
+        return Ok(());
+    }
     // The source Host scope may change while Mount executes. A successful
     // terminal packet cannot promote stale source authority to completion.
     if let Err(error) = attempt.recheck(journal, &mut clock) {

@@ -10,6 +10,7 @@ use std::path::Path;
 
 use aos_proto::aos::sandbox::local::v1::{BrokerRequestEnvelope, BrokerResponseEnvelope};
 use aos_sandbox_broker_session_protocol::{
+    BrokerSessionArtifactError, BrokerSessionProjectionError, BrokerSessionValidationError,
     BrokerClientHelloSubjectV1, BrokerHelloSubjectV1, BrokerOutcomeSubjectV1,
     BrokerRequestSubjectV1, CanonicalBrokerClientHelloV1,
     ProtectedBrokerSessionVerificationContextV1, UntrustedBrokerSessionEndpointPublicationV1,
@@ -20,6 +21,8 @@ use aos_sandbox_broker_session_protocol::{
     outcome_fields_digest_v1, request_fields_digest_v1, server_hello_fields_digest_v1,
     sign_broker_hello_v1, sign_client_hello_v1, sign_outcome_v1, sign_request_v1,
 };
+use aos_sandbox_broker_session_protocol::artifact::PreparedBrokerOutcomeV1;
+use aos_sandbox_broker_session_protocol::projection::PreparedBrokerResponseV1;
 use aos_sandbox_protocol::authenticated_session::{
     AuthenticatedBrokerSessionStateV1, AuthenticatedNetworkInventoryOutcomeSigningPlanV1,
     PreparedAuthenticatedNetworkInventoryOutcomeV1, PreparedAuthenticatedNetworkInventoryRequestV1,
@@ -33,6 +36,125 @@ use crate::entropy::{EntropySource, KernelEntropy, nonzero_random};
 use crate::manifest::BrokerSessionManifestBindingV1;
 use crate::protected_files::{EndpointRole, ProtectedEndpointFiles};
 use crate::self_execution::{CurrentSelfExecutionGuard, RetainedSelfExecutionGuard};
+
+// This reservoir is installed in the original request owner before preparation.
+// Prepared DATA never carries the endpoint's signing or currentness authority.
+pub(crate) struct RetainedBrokerOutcomePreparationV1 {
+    pub(crate) message: Option<BrokerResponseEnvelope>,
+    response: Option<Result<PreparedBrokerResponseV1, BrokerSessionProjectionError>>,
+    subject_fields: Option<Result<BrokerOutcomeSubjectV1, BrokerSessionValidationError>>,
+    subject: Option<Result<PreparedBrokerOutcomeV1, BrokerSessionArtifactError>>,
+    key: Option<SigningKey>,
+    preparation: Option<Result<(), BrokerSessionSecurityError>>,
+    signature: Option<Result<aos_sandbox_broker_session_protocol::SignedBrokerOutcomeV1, BrokerSessionArtifactError>>,
+    projection: Option<Result<(), BrokerSessionProjectionError>>,
+    post: Option<Result<(), BrokerSessionSecurityError>>,
+    sign_attempted: bool,
+}
+
+impl RetainedBrokerOutcomePreparationV1 {
+    pub(crate) const fn new() -> Self {
+        Self {
+            message: None,
+            response: None,
+            subject_fields: None,
+            subject: None,
+            key: None,
+            preparation: None,
+            signature: None,
+            projection: None,
+            post: None,
+            sign_attempted: false,
+        }
+    }
+
+    pub(crate) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if let Some(Err(cause)) = self.response.as_ref() {
+            return Some(cause);
+        }
+        if let Some(Err(cause)) = self.subject_fields.as_ref() {
+            return Some(cause);
+        }
+        if let Some(Err(cause)) = self.subject.as_ref() {
+            return Some(cause);
+        }
+        if let Some(Err(cause)) = self.preparation.as_ref() {
+            return Some(cause);
+        }
+        if let Some(Err(cause)) = self.signature.as_ref() {
+            return Some(cause);
+        }
+        if let Some(Err(cause)) = self.projection.as_ref() {
+            return Some(cause);
+        }
+        self.post.as_ref().and_then(|result| result.as_ref().err())
+            .map(|cause| cause as &dyn std::error::Error)
+    }
+
+    pub(crate) fn packet(&self) -> Option<&[u8]> {
+        if self.failure().is_some() || !matches!(self.projection, Some(Ok(()))) {
+            return None;
+        }
+        self.response.as_ref().and_then(|result| result.as_ref().ok()).map(|response| response.packet())
+    }
+}
+
+pub(crate) struct RetainedOriginalBrokerOutcomeV1 {
+    pub(crate) endpoint: RetainedBrokerOutcomePreparationV1,
+    pub(crate) gate: Option<Result<crate::ProtectedBrokerOutcomeAdmissionGateV1, BrokerSessionSecurityError>>,
+    pub(crate) setup: Option<Result<(), BrokerSessionSecurityError>>,
+    pub(crate) admission: Option<Result<crate::ProtectedBrokerOutcomePendingAdvancementV1, BrokerSessionSecurityError>>,
+    pub(crate) signed: bool,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum OriginalBrokerOutcomePurposeV1 {
+    NonadmittingAcquire,
+    ResourceInventory,
+    SourceInventory,
+}
+
+impl OriginalBrokerOutcomePurposeV1 {
+    pub(crate) fn method(self) -> BrokerMethod {
+        match self {
+            Self::NonadmittingAcquire => BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE,
+            Self::ResourceInventory => BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES,
+            Self::SourceInventory => BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS,
+        }
+    }
+}
+
+impl RetainedOriginalBrokerOutcomeV1 {
+    pub(crate) const fn new() -> Self {
+        Self {
+            endpoint: RetainedBrokerOutcomePreparationV1::new(),
+            gate: None,
+            setup: None,
+            admission: None,
+            signed: false,
+        }
+    }
+
+    pub(crate) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.gate.as_ref().and_then(|result| result.as_ref().err()).map(|cause| cause as &dyn std::error::Error)
+            .or_else(|| self.endpoint.failure())
+            .or_else(|| self.setup.as_ref().and_then(|result| result.as_ref().err()).map(|cause| cause as &dyn std::error::Error))
+            .or_else(|| self.admission.as_ref().and_then(|result| result.as_ref().err()).map(|cause| cause as &dyn std::error::Error))
+    }
+
+    pub(crate) fn take_pending(&mut self) -> Option<crate::ProtectedBrokerOutcomePendingAdvancementV1> {
+        if self.failure().is_some() || !matches!(self.admission, Some(Ok(_))) {
+            return None;
+        }
+        match self.admission.take() {
+            Some(Ok(pending)) => Some(pending),
+            returned => {
+                self.admission = returned;
+                None
+            }
+        }
+    }
+}
 
 /// Identifies one protected endpoint process execution without granting authority.
 ///
@@ -745,6 +867,84 @@ impl ProtectedBrokerSessionBrokerV1 {
             return self.inner.poison(error);
         }
         Ok(packet)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_original_outcome(
+        &mut self,
+        retained: &mut RetainedBrokerOutcomePreparationV1,
+        method: BrokerMethod,
+        session_binding: [u8; 32],
+        broker_process: [u8; 16],
+        sequence: u64,
+        request_id: [u8; 16],
+        signed_request_digest: [u8; 32],
+        maximum_response_bytes: u32,
+    ) -> bool {
+        if retained.preparation.is_some() || retained.sign_attempted || retained.message.is_none() {
+            return false;
+        }
+        retained.preparation = Some((|| {
+            self.inner.revalidate_before()?;
+            let message = retained.message.as_ref().ok_or(BrokerSessionSecurityError::Currentness)?;
+            if broker_process != self.inner.process_execution_id
+                || message.method.as_known() != Some(method)
+                || message.request_id.as_slice() != request_id
+            {
+                return Err(BrokerSessionSecurityError::Currentness);
+            }
+            retained.response = Some(
+                PreparedBrokerResponseV1::prepare_original(
+                    &mut retained.message, maximum_response_bytes,
+                ),
+            );
+            let response = retained.response.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(BrokerSessionSecurityError::Currentness)?;
+            retained.subject_fields = Some(BrokerOutcomeSubjectV1::new(
+                session_binding, broker_process, sequence, request_id,
+                signed_request_digest, response.cleared_fields_digest(),
+            ));
+            let subject = retained.subject_fields.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(BrokerSessionSecurityError::Currentness)?;
+            let pin = &self.inner.files.manifest().key_pins()[3];
+            retained.subject = Some(
+                PreparedBrokerOutcomeV1::new(
+                    method, subject.clone(), pin.signer().clone(),
+                ),
+            );
+            if !matches!(retained.subject, Some(Ok(_))) {
+                return Err(BrokerSessionSecurityError::Currentness);
+            }
+            // Read the actual selected key now; no key or seed leaves custody.
+            retained.key = Some(SigningKey::from_bytes(self.inner.files.broker_outcome_seed()?));
+            Ok(())
+        })());
+        matches!(retained.preparation, Some(Ok(())))
+    }
+
+    pub(crate) fn sign_original_outcome(
+        &mut self,
+        retained: &mut RetainedBrokerOutcomePreparationV1,
+    ) -> bool {
+        if retained.sign_attempted || !matches!(retained.preparation, Some(Ok(()))) {
+            return false;
+        }
+        retained.sign_attempted = true;
+        let (Some(Ok(subject)), Some(key)) = (retained.subject.as_ref(), retained.key.as_ref()) else {
+            return false;
+        };
+        retained.signature = Some(subject.sign(key));
+        if let (Some(Ok(subject)), Some(Ok(signature)), Some(Ok(response))) = (
+            retained.subject.as_ref(), retained.signature.as_ref(), retained.response.as_mut(),
+        ) {
+            retained.projection = Some(response.fill(subject, signature));
+        }
+        // A failed sign/projection does not suppress this independent observation.
+        retained.post = Some(self.inner.revalidate_after());
+        if retained.failure().is_some() {
+            self.inner.poisoned = true;
+        }
+        retained.packet().is_some()
     }
 
     /// Loads and exclusively pins one protected broker endpoint directory.

@@ -3501,6 +3501,47 @@ impl DormantAuthenticatedBrokerSessionV1 {
             .prepare_broker_outcome(request, message, &self.transcript, self.socket.peer())
     }
 
+    pub(super) fn prepare_original_nonadmitting_outcome(
+        &mut self,
+        retained: &mut crate::endpoint::RetainedOriginalBrokerOutcomeV1,
+        purpose: crate::endpoint::OriginalBrokerOutcomePurposeV1,
+        request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+        message: aos_proto::aos::sandbox::local::v1::BrokerResponseEnvelope,
+    ) -> bool {
+        self.owner.prepare_original_nonadmitting_outcome(
+            retained, purpose, request, message, &self.transcript, self.socket.peer(),
+        )
+    }
+
+    pub(super) fn sign_original_nonadmitting_outcome(
+        &mut self,
+        retained: &mut crate::endpoint::RetainedOriginalBrokerOutcomeV1,
+        request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+    ) -> bool {
+        self.owner.sign_original_nonadmitting_outcome(
+            retained, request, &self.transcript, self.socket.peer(),
+        )
+    }
+
+    pub(super) fn compare_original_nonadmitting_outcome(
+        &mut self,
+        committed: &crate::ProtectedBrokerOutcomeCommittedAdvancementV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.owner.compare_original_nonadmitting_outcome(committed, self.socket.peer())
+    }
+
+    pub(super) fn send_original_nonadmitting_packet(
+        &mut self,
+        committed: &crate::ProtectedBrokerOutcomeCommittedAdvancementV1,
+        returned: &mut Option<Result<(), SeqpacketError>>,
+    ) -> bool {
+        if returned.is_some() {
+            return false;
+        }
+        *returned = Some(self.socket.send(committed.exact_packet()));
+        matches!(returned, Some(Ok(())))
+    }
+
     pub(super) fn send_response_packet(
         &mut self,
         packet: &[u8],

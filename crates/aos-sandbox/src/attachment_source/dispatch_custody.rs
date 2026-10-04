@@ -210,6 +210,34 @@ impl DurableCurrentAttachmentSourceDispatchV1 {
         }
         Ok(())
     }
+
+    /// Validates only the fixed original Acquire nonadmitting transport terminal.
+    ///
+    /// This observation asserts neither absent native effects nor physical
+    /// Release. Current paired inventories and the custody reducer remain
+    /// required; the durable dispatch is not erased by this classification.
+    ///
+    /// # Errors
+    /// Rejects another attempt, direction, method, exact request or error shape.
+    pub fn validate_original_nonadmitting_terminal(
+        &self,
+        outcome: &AuthenticatedBrokerMethodOutcomeV1,
+    ) -> Result<(), AttachmentSourceError> {
+        if self.source.record.kind != AttachmentSourceAttemptKindV1::Acquire
+            || outcome.direction() != AuthenticatedBrokerOutcomeDirectionV1::ClientReceive
+            || outcome.method() != BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
+            || outcome.request().exact_body() != self.dispatch.body()
+        {
+            return Err(AttachmentSourceError::Conflict);
+        }
+        match outcome.result() {
+            AuthenticatedBrokerMethodResultV1::Error(error)
+                if error.code() == aos_proto::aos::sandbox::local::v1::BrokerErrorCode::BROKER_ERROR_CODE_CONFLICT
+                    && error.safe_message() == "broker operation conflicts"
+                    && error.retryable() && error.missing_feature().is_none() => Ok(()),
+            _ => Err(AttachmentSourceError::Conflict),
+        }
+    }
 }
 
 pub(super) fn live_dispatch(

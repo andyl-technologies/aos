@@ -116,6 +116,77 @@ pub struct SignedBrokerOutcomeV1 {
     signature: BrokerSessionSignature,
 }
 
+/// Retains canonical outcome DATA prepared before a signing boundary.
+///
+/// The preimage carries no key, endpoint, clock or admission authority. The
+/// caller still supplies and validates its genuine purpose-specific key.
+pub struct PreparedBrokerOutcomeV1 {
+    method: BrokerMethod,
+    subject: BrokerOutcomeSubjectV1,
+    signer: BrokerSessionSignerReferenceV1,
+    subject_bytes: Vec<u8>,
+    preimage: Vec<u8>,
+}
+
+impl PreparedBrokerOutcomeV1 {
+    /// Prepares the sole canonical subject and domain-separated preimage.
+    ///
+    /// # Errors
+    /// Rejects an unknown method or a non-outcome signer usage.
+    pub fn new(
+        method: BrokerMethod,
+        subject: BrokerOutcomeSubjectV1,
+        signer: BrokerSessionSignerReferenceV1,
+    ) -> Result<Self, BrokerSessionArtifactError> {
+        let code = method_code(method)?;
+        if signer.usage() != BrokerSessionKeyUsageV1::BrokerOutcome {
+            return Err(BrokerSessionArtifactError::SignerUsageMismatch);
+        }
+        let subject_bytes = encode_outcome_subject(&subject);
+        let preimage = signing_message(
+            OUTCOME_SIGNATURE_DOMAIN, BROKER_OUTCOME_PURPOSE, code,
+            &signer, &subject_bytes,
+        );
+        Ok(Self { method, subject, signer, subject_bytes, preimage })
+    }
+
+    /// Signs the retained preimage without reconstructing its DATA buffers.
+    ///
+    /// # Errors
+    /// Rejects a wrong, weak or mismatched outcome key.
+    pub fn sign(&self, key: &SigningKey) -> Result<SignedBrokerOutcomeV1, BrokerSessionArtifactError> {
+        require_key(&self.signer, BrokerSessionKeyUsageV1::BrokerOutcome, key.verifying_key().as_bytes())?;
+        Ok(SignedBrokerOutcomeV1 {
+            method: self.method,
+            subject: self.subject.clone(),
+            signer: self.signer.clone(),
+            signature: BrokerSessionSignature::from_bytes(key.sign(&self.preimage).to_bytes()),
+        })
+    }
+
+    /// Fills an already reserved canonical artifact destination.
+    ///
+    /// # Errors
+    /// Rejects nonempty/undersized storage or an artifact for other DATA.
+    pub fn encode_signed_into(
+        &self,
+        signed: &SignedBrokerOutcomeV1,
+        bytes: &mut Vec<u8>,
+    ) -> Result<(), BrokerSessionArtifactError> {
+        if !bytes.is_empty() || bytes.capacity() < SIGNED_BROKER_OUTCOME_BYTES
+            || signed.method != self.method || signed.subject != self.subject
+            || signed.signer != self.signer
+        {
+            return Err(BrokerSessionArtifactError::InvalidEnvelope);
+        }
+        encode_artifact_into(
+            bytes, BROKER_OUTCOME_PURPOSE, method_code(self.method)?,
+            &self.signer, &self.subject_bytes, &signed.signature,
+        );
+        Ok(())
+    }
+}
+
 macro_rules! signed_accessors {
     ($type:ty, $subject:ty) => {
         impl $type {
@@ -486,16 +557,27 @@ fn encode_artifact(
     signature: &BrokerSessionSignature,
 ) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(BROKER_SESSION_SIGNED_OVERHEAD_BYTES + subject.len());
+    encode_artifact_into(&mut bytes, purpose, method, signer, subject, signature);
+    bytes
+}
+
+fn encode_artifact_into(
+    bytes: &mut Vec<u8>,
+    purpose: u8,
+    method: u8,
+    signer: &BrokerSessionSignerReferenceV1,
+    subject: &[u8],
+    signature: &BrokerSessionSignature,
+) {
     bytes.extend_from_slice(SIGNED_MAGIC);
     bytes.extend_from_slice(&SIGNED_VERSION.to_be_bytes());
     bytes.push(purpose);
     bytes.push(method);
     bytes.extend_from_slice(&[0; 4]);
-    signer.encode_into(&mut bytes);
+    signer.encode_into(bytes);
     bytes.extend_from_slice(&(subject.len() as u32).to_be_bytes());
     bytes.extend_from_slice(subject);
     bytes.extend_from_slice(signature.as_bytes());
-    bytes
 }
 
 fn decode_artifact(bytes: &[u8]) -> Result<DecodedArtifact<'_>, BrokerSessionArtifactError> {

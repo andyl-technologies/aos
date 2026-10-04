@@ -664,17 +664,24 @@ fn retain_selected_original_response<W: aos_sandbox_mount::worker::MountWorker>(
     original: &mut ProductionOriginalMountCycleV1,
     broker: &mut MountBroker<W>,
 ) -> ! {
+    let mut terminal_selected = false;
     loop {
-        match original.advance_selected_response_once(broker) {
-            Ok(aos_sandbox_mount::broker::OriginalMountResponseProgressV5::Waiting)
-            | Ok(aos_sandbox_mount::broker::OriginalMountResponseProgressV5::PendingClosedSent)
-            | Ok(aos_sandbox_mount::broker::OriginalMountResponseProgressV5::RootAcceptedSent)
-            | Ok(aos_sandbox_mount::broker::OriginalMountResponseProgressV5::RootTerminalRecordedSent) => {}
+        let advanced = if terminal_selected {
+            original.advance_selected_nonadmitting_terminal(broker).map(|_| ())
+        } else {
+            original.advance_selected_response_once(broker).map(|progress| {
+                terminal_selected = progress == aos_sandbox_mount::broker::OriginalMountResponseProgressV5::RootTerminalRecordedSent;
+            })
+        };
+        match advanced {
+            Ok(()) => {}
             Err(_) => {
                 original.end();
-                // Both native cause and outer debt remain resident across this
-                // bounded diagnostic. OS death is release, not queue settlement.
-                eprintln!("aos-sandbox-mountd: original response ended; invocation retained");
+                if let Some(cause) = broker.original_terminal_inventory_failure() {
+                    eprintln!("aos-sandbox-mountd: original inventory ended: {cause}; invocation retained");
+                } else {
+                    eprintln!("aos-sandbox-mountd: original response ended; invocation retained");
+                }
                 std::process::exit(1)
             }
         }

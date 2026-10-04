@@ -835,6 +835,17 @@ mod empty_host_inventory_tests {
 }
 
 impl DormantReceivedBrokerRequestV1 {
+    pub(crate) fn is_original_mount_inventory_successor(
+        &self,
+        original: &Self,
+        method: BrokerMethod,
+    ) -> bool {
+        self.0.direction() == aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerRequestDirectionV1::ServerReceive
+            && self.method() == method && self.authorization_artifacts().is_none()
+            && self.0.session_binding() == original.0.session_binding()
+            && original.0.client_sequence().checked_add(1) == Some(self.0.client_sequence())
+    }
+
     /// Compares an already admitted successor; the journal authenticated its
     /// signed predecessor link before this DATA comparison can be reached.
     pub(crate) fn is_original_output_successor(
@@ -1528,6 +1539,25 @@ impl DormantAuthenticatedBrokerSessionV1 {
         let Some(Ok(verification)) = verification.as_ref() else { return false; };
         *clock = Some(current_publication_boottime(&request.0, &verification.context));
         matches!(clock, Some(Ok(_)))
+    }
+
+    pub(crate) fn observe_original_mount_terminal_prefix(
+        &mut self,
+        request: &DormantReceivedBrokerRequestV1,
+        initial: &DormantBrokerOutcomeVerificationV1,
+        owner: &mut Option<Result<DormantBrokerOutcomeVerificationV1, BrokerSessionSecurityError>>,
+        clock: &mut Option<Result<u64, BrokerSessionSecurityError>>,
+    ) -> bool {
+        if owner.as_ref().is_some_and(Result::is_err)
+            || clock.as_ref().is_some_and(Result::is_err)
+        {
+            return false;
+        }
+        *owner = Some(self.reopen_broker_outcome(&request.0));
+        // The original boot binding is borrowed independently of the fresh
+        // owner Result, so an owner failure does not suppress the clock post.
+        *clock = Some(current_publication_boottime(&request.0, &initial.context));
+        matches!(owner, Some(Ok(_))) && matches!(clock, Some(Ok(_)))
     }
 
     pub(crate) fn hold_fuse_intent_transport<'session>(
@@ -4761,6 +4791,83 @@ impl DormantAuthenticatedBrokerSessionV1 {
         };
         let pending = self.0.prepare_broker_outcome(&request.0, message)?;
         Ok(self.0.commit_broker_outcome(pending))
+    }
+
+    pub(crate) fn prepare_original_nonadmitting_terminal(
+        &mut self,
+        request: &DormantReceivedBrokerRequestV1,
+        retained: &mut crate::endpoint::RetainedOriginalBrokerOutcomeV1,
+    ) -> Result<bool, BrokerSessionSecurityError> {
+        if request.method() != BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        let message = BrokerResponseEnvelope {
+            request_id: request.0.request_id().to_vec(),
+            method: request.0.method().into(),
+            error: Some(DormantBrokerFailureV1::Conflict.error()?).into(),
+            ..Default::default()
+        };
+        Ok(self.0.prepare_original_nonadmitting_outcome(
+            retained, crate::endpoint::OriginalBrokerOutcomePurposeV1::NonadmittingAcquire,
+            &request.0, message,
+        ))
+    }
+
+    pub(crate) fn prepare_original_inventory_outcome(
+        &mut self,
+        request: &DormantReceivedBrokerRequestV1,
+        retained: &mut crate::endpoint::RetainedOriginalBrokerOutcomeV1,
+        body: &mut Option<Vec<u8>>,
+    ) -> Result<bool, BrokerSessionSecurityError> {
+        let purpose = match request.method() {
+            BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES => crate::endpoint::OriginalBrokerOutcomePurposeV1::ResourceInventory,
+            BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS => crate::endpoint::OriginalBrokerOutcomePurposeV1::SourceInventory,
+            _ => return Err(BrokerSessionSecurityError::Currentness),
+        };
+        if request.authorization_artifacts().is_some() || body.is_none()
+            || retained.setup.is_some() || retained.gate.is_some() || retained.signed
+            || retained.endpoint.message.is_some()
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        let mut message = BrokerResponseEnvelope {
+            request_id: request.0.request_id().to_vec(),
+            method: request.method().into(),
+            ..Default::default()
+        };
+        let Some(actual_body) = body.take() else { return Err(BrokerSessionSecurityError::Currentness); };
+        message.body = actual_body;
+        Ok(self.0.prepare_original_nonadmitting_outcome(retained, purpose, &request.0, message))
+    }
+
+    pub(crate) fn sign_original_nonadmitting_terminal(
+        &mut self,
+        request: &DormantReceivedBrokerRequestV1,
+        retained: &mut crate::endpoint::RetainedOriginalBrokerOutcomeV1,
+    ) -> bool {
+        self.0.sign_original_nonadmitting_outcome(retained, &request.0)
+    }
+
+    pub(crate) fn compare_original_nonadmitting_outcome(
+        &mut self,
+        committed: &ProtectedBrokerOutcomeCommittedAdvancementV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.0.compare_original_nonadmitting_outcome(committed)
+    }
+
+    pub(crate) fn original_nonadmitting_clock(
+        committed: &ProtectedBrokerOutcomeCommittedAdvancementV1,
+    ) -> Result<u64, BrokerSessionSecurityError> {
+        let (request, context) = committed.original_nonadmitting_request_context()?;
+        current_publication_boottime(request, context)
+    }
+
+    pub(crate) fn send_original_nonadmitting_packet(
+        &mut self,
+        committed: &ProtectedBrokerOutcomeCommittedAdvancementV1,
+        returned: &mut Option<Result<(), aos_sandbox_linux::seqpacket::SeqpacketError>>,
+    ) -> bool {
+        self.0.send_original_nonadmitting_packet(committed, returned)
     }
 
     /// Commits a terminal error for a rejected Host catalog descriptor request.

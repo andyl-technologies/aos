@@ -490,6 +490,102 @@ pub fn encode_signed_response_packet_v1(
     Ok(encoded)
 }
 
+/// Retains cleared response DATA and actual reserved artifact/packet storage.
+///
+/// This descriptor-free projection does not sign or authorize a method. The
+/// buffers remain owned here even when later canonical validation refuses.
+pub struct PreparedBrokerResponseV1 {
+    message: BrokerResponseEnvelope,
+    cleared: Vec<u8>,
+    digest: [u8; 32],
+    packet: Vec<u8>,
+    filled: bool,
+}
+
+impl PreparedBrokerResponseV1 {
+    /// Reserves exact output storage under the genuine request's response budget.
+    ///
+    /// # Errors
+    /// Rejects populated authentication/descriptor fields, invalid nested DATA
+    /// or a response exceeding the selected request or protocol ceiling.
+    pub fn prepare_original(
+        original: &mut Option<BrokerResponseEnvelope>,
+        maximum_response_bytes: u32,
+    ) -> Result<Self, BrokerSessionProjectionError> {
+        let message = original.as_ref().ok_or(BrokerSessionProjectionError::InvalidSemantics)?;
+        if !message.signed_session_outcome.is_empty()
+            || !message.descriptors.is_empty()
+            || !message.request_descriptor_dispositions.is_empty()
+        {
+            return Err(BrokerSessionProjectionError::InvalidAuthenticationField);
+        }
+        validate_response_nested(message)?;
+        let cleared_length = usize::try_from(message.try_encoded_len()
+            .map_err(|_| BrokerSessionProjectionError::TooLarge)?)
+            .map_err(|_| BrokerSessionProjectionError::TooLarge)?;
+        let total = cleared_length.checked_add(RESPONSE_FIELD_CONTRIBUTION)
+            .ok_or(BrokerSessionProjectionError::TooLarge)?;
+        if total > maximum_response_bytes as usize || total > AUTHENTICATED_RESPONSE_MAXIMUM_BYTES {
+            return Err(BrokerSessionProjectionError::TooLarge);
+        }
+        let cleared = encode_response_v1(message);
+        if cleared.len() != cleared_length {
+            return Err(BrokerSessionProjectionError::InvalidSemantics);
+        }
+        let digest = digest_cleared(
+            RESPONSE_FIELDS_DOMAIN, &cleared, AUTHENTICATED_RESPONSE_CLEARED_MAXIMUM_BYTES,
+        )?;
+        let authentication = Vec::with_capacity(SIGNED_BROKER_OUTCOME_BYTES);
+        let packet = Vec::with_capacity(total);
+        let Some(mut message) = original.take() else {
+            return Err(BrokerSessionProjectionError::InvalidSemantics);
+        };
+        message.signed_session_outcome = authentication;
+        Ok(Self { message, cleared, digest, packet, filled: false })
+    }
+
+    /// Borrows the exact cleared-fields commitment.
+    #[must_use]
+    pub const fn cleared_fields_digest(&self) -> [u8; 32] { self.digest }
+
+    /// Fills the reserved packet through the same generated protobuf encoder.
+    ///
+    /// # Errors
+    /// Rejects reentry, a substituted signed subject or noncanonical output.
+    /// Filled output remains resident on every returned refusal.
+    pub fn fill(
+        &mut self,
+        prepared: &crate::artifact::PreparedBrokerOutcomeV1,
+        signed: &SignedBrokerOutcomeV1,
+    ) -> Result<(), BrokerSessionProjectionError> {
+        if self.filled || !self.packet.is_empty()
+            || self.message.method.as_known() != Some(signed.method())
+            || self.message.request_id.as_slice() != signed.subject().request_id()
+            || self.digest != signed.subject().cleared_fields_digest()
+        {
+            return Err(BrokerSessionProjectionError::InvalidSemantics);
+        }
+        self.filled = true;
+        prepared.encode_signed_into(signed, &mut self.message.signed_session_outcome)?;
+        // These two repeated fields are closed empty. This is exactly the
+        // ordinary zero-descriptor encode_response_v1 generated write path.
+        self.message.try_encode(&mut self.packet)
+            .map_err(|_| BrokerSessionProjectionError::TooLarge)?;
+        if self.packet.len() != self.cleared.len() + RESPONSE_FIELD_CONTRIBUTION {
+            return Err(BrokerSessionProjectionError::InvalidSemantics);
+        }
+        let canonical = decode_canonical_response_v1(&self.packet)?;
+        if canonical.cleared_fields_digest() != self.digest {
+            return Err(BrokerSessionProjectionError::InvalidSemantics);
+        }
+        Ok(())
+    }
+
+    /// Borrows the actual filled bytes, including a later refused packet.
+    #[must_use]
+    pub fn packet(&self) -> &[u8] { &self.packet }
+}
+
 /// Digests one outbound request whose authentication field is still clear.
 ///
 /// The canonical bytes commit the exact body, ordered contiguous descriptor

@@ -167,6 +167,8 @@ pub struct FixedMountSourceAcquisitionOwnerV2<'journal> {
 pub(crate) struct SourceAcquisitionRuntimeV2 {
     table: SourceAcquisitionTableV2,
     git_coverage_first_failure: Option<aos_sandbox::journal::JournalError>,
+    original_terminal_inventory_failure: Option<aos_sandbox::journal::JournalError>,
+    original_terminal_inventory_kernel_failure: Option<aos_sandbox_linux::Error>,
     broker_instance_id: [u8; 16],
     last_boottime_nanoseconds: Option<u64>,
     pending_provider: Option<SentProviderQueryV2>,
@@ -211,6 +213,13 @@ pub(crate) struct SourceAcquisitionRuntimeV2 {
     cold_released_rows: Vec<[u8; 32]>,
     retained_released_roots:
         BTreeMap<[u8; 32], aos_sandbox_source_provider_security::ReleasedMountSourceRootV2>,
+}
+
+impl SourceAcquisitionRuntimeV2 {
+    pub(crate) fn original_terminal_inventory_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.original_terminal_inventory_failure.as_ref().map(|cause| cause as &dyn std::error::Error)
+            .or_else(|| self.original_terminal_inventory_kernel_failure.as_ref().map(|cause| cause as &dyn std::error::Error))
+    }
 }
 
 struct ManagerHandoffStateV1 {
@@ -948,6 +957,8 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             runtime: SourceAcquisitionRuntimeV2 {
                 table,
                 git_coverage_first_failure: None,
+                original_terminal_inventory_failure: None,
+                original_terminal_inventory_kernel_failure: None,
                 broker_instance_id,
                 last_boottime_nanoseconds: None,
                 pending_provider: None,
@@ -2233,6 +2244,65 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             authority.with_authority(|claim| claim.validate_snapshot_for_effect(&snapshot))?;
             Ok(response)
         })
+    }
+
+    pub(crate) fn encode_original_terminal_inventory_v1(
+        &mut self,
+        session: &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
+        effect: &mut crate::broker::OriginalMountSignedEffectLoanV1<'_>,
+        returned: &mut Option<Vec<u8>>,
+    ) -> Result<()> {
+        if self.runtime.original_terminal_inventory_failure().is_some() || returned.is_some() {
+            return Err(state_error("original terminal inventory is permanently refused"));
+        }
+        if self.advance_signed_original_response_v5(session, effect)?
+            != crate::broker::OriginalMountResponseProgressV5::RootTerminalRecordedSent
+        {
+            return Err(state_error("original terminal inventory requires actual already-sent readback"));
+        }
+        let claimed = self.protected.root_original_native_authority_v5();
+        let writer = match claimed {
+            Ok(writer) => writer,
+            Err(cause) => {
+                self.runtime.original_terminal_inventory_failure = Some(cause);
+                return Err(state_error("original terminal inventory writer claim refused"));
+            }
+        };
+        let graph = match writer.current_graph() {
+            Ok(graph) => graph,
+            Err(cause) => {
+                self.runtime.original_terminal_inventory_failure = Some(cause);
+                return Err(state_error("original terminal inventory full graph refused"));
+            }
+        };
+        if !self.runtime.table.matches_state(graph.legacy())
+            || &self.runtime.original_native_sidecars != graph.sidecars()
+        {
+            return Err(state_error("original terminal inventory differs from full installed graph"));
+        }
+        let snapshot = match writer.snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(cause) => {
+                self.runtime.original_terminal_inventory_failure = Some(cause);
+                return Err(state_error("original terminal inventory snapshot refused"));
+            }
+        };
+        let boot = match aos_sandbox_linux::boot::KernelBootId::current() {
+            Ok(boot) => boot.into_bytes(),
+            Err(cause) => {
+                self.runtime.original_terminal_inventory_kernel_failure = Some(cause);
+                return Err(state_error("original terminal inventory boot observation refused"));
+            }
+        };
+        *returned = Some(self.runtime.table.encode_inventory_response(
+            boot, snapshot.sequence(), self.runtime.broker_instance_id,
+        )?);
+        if let Err(cause) = writer.validate_snapshot(&snapshot) {
+            self.runtime.original_terminal_inventory_failure = Some(cause);
+            return Err(state_error("original terminal inventory final snapshot refused"));
+        }
+        effect.check_before_original_effect()?;
+        Ok(())
     }
 
     /// Reads a terminal Acquire or Release result from the fixed source graph.
