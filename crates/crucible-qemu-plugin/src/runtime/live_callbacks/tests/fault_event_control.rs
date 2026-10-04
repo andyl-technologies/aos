@@ -292,17 +292,17 @@ fn one_fault_pump_preserves_pre_and_post_downtime_event_ticks() {
     }
 }
 
-#[test]
-fn post_dispatch_result_backpressure_retries_publication_without_redispatch() {
+fn backpressured_control_state(
+    slot: &NodeSlot,
+    fingerprint_slot: &FingerprintSampleSlot,
+) -> (LiveVcpuTimeCallbackState, ControlFaultTransports, u32, u32) {
     let target_node_hash = [0x33; 32];
     let (bridge, mut transports) = control_fault_bridge(target_node_hash);
-    let slot = NodeSlot::new(KIND_VM);
     let ceiling = authorize_advance_ceiling(0, 350, None)
         .unwrap_or_else(|error| panic!("test ceiling should authorize: {error}"));
     slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("test ceiling should publish: {error}"));
-    let fingerprint_slot = FingerprintSampleSlot::new();
-    let state = fingerprint_state(&slot, &fingerprint_slot, bridge);
+    let state = fingerprint_state(slot, fingerprint_slot, bridge);
 
     let first = boundary_probe(target_node_hash, 1);
     let second = boundary_probe(target_node_hash, 2);
@@ -324,6 +324,16 @@ fn post_dispatch_result_backpressure_retries_publication_without_redispatch() {
         .request_control_boundary(transports.command_ring.write_index(), Some(capture_request))
         .unwrap_or_else(|error| panic!("control request should publish: {error}"));
     TEST_REQUEST_VMSTOP_CALLS.set(0);
+
+    (state, transports, control_request, capture_request)
+}
+
+#[test]
+fn post_dispatch_result_backpressure_retries_publication_without_redispatch() {
+    let slot = NodeSlot::new(KIND_VM);
+    let fingerprint_slot = FingerprintSampleSlot::new();
+    let (state, transports, control_request, capture_request) =
+        backpressured_control_state(&slot, &fingerprint_slot);
 
     state
         .on_control_boundary(7)
@@ -364,6 +374,59 @@ fn post_dispatch_result_backpressure_retries_publication_without_redispatch() {
         second_result,
         Some(DequeuedFaultResult::Valid { header, .. }) if header.command_sequence == 2
     ));
+}
+
+#[test]
+fn registered_ceiling_pump_drains_results_without_continuing_pending_control() {
+    let slot = NodeSlot::new(KIND_VM);
+    let fingerprint_slot = FingerprintSampleSlot::new();
+    let (state, transports, control_request, _capture_request) =
+        backpressured_control_state(&slot, &fingerprint_slot);
+    TEST_ICOUNT_RAW.set(7);
+    let userdata = std::ptr::from_ref(&state).cast_mut().cast();
+
+    // Invoke the same entry point installed by the production registrar once.
+    crucible_qemu_plugin_live_control_boundary_cb(0, 7, userdata);
+    assert_eq!(slot.control_boundary_token(), control_request);
+    assert_eq!(crate::fault_command::test_support::node_dispatch_count(), 1);
+    assert!(crate::fault_command::test_support::dispatch_result_is_pending());
+
+    let first_result = dequeue_fault_result(
+        &transports.result_ring,
+        &transports.result_slots,
+        &transports.result_arena_header,
+        &transports.result_arena,
+        RESULT_ARENA_OFFSET,
+    )
+    .unwrap_or_else(|error| panic!("host drain must release result capacity: {error}"));
+    assert!(
+        matches!(first_result, Some(DequeuedFaultResult::Valid { header, .. })
+        if header.command_sequence == 1)
+    );
+
+    // The registered ceiling entry pumps the real bridge after host progress.
+    // No second control callback, host request, or diagnostic retry is injected.
+    assert_eq!(crucible_qemu_plugin_live_max_advance_icount_cb(userdata), 7);
+    assert!(!crate::fault_command::test_support::dispatch_result_is_pending());
+    assert_eq!(crate::fault_command::test_support::node_dispatch_count(), 1);
+    assert_eq!(slot.control_boundary_token(), control_request);
+    assert_eq!(fingerprint_slot.snapshot(), None);
+    assert_eq!(TEST_REQUEST_VMSTOP_CALLS.get(), 0);
+    assert_eq!(state.quiescence.snapshot().in_flight, 0);
+
+    let second_result = dequeue_fault_result(
+        &transports.result_ring,
+        &transports.result_slots,
+        &transports.result_arena_header,
+        &transports.result_arena,
+        RESULT_ARENA_OFFSET,
+    )
+    .unwrap_or_else(|error| panic!("drain pumped result: {error}"));
+    assert!(
+        matches!(second_result, Some(DequeuedFaultResult::Valid { header, .. })
+        if header.command_sequence == 2)
+    );
+    TEST_ICOUNT_RAW.set(0);
 }
 
 #[test]
