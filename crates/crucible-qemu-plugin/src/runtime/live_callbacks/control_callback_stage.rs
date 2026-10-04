@@ -332,6 +332,16 @@ impl LiveVcpuTimeCallbackState {
             raw_icount,
             self.control_stage_identity,
         );
+        let settlement = self.control_callback_witness.settlement_context(
+            callback,
+            raw_icount,
+            control_request,
+            fault_command_frontier,
+        );
+        self.control_callback_witness.retain_settlement(
+            settlement,
+            super::control_callback_witness::SettlementReason::Entered,
+        );
         let settled = self.control_callback_witness.stages.observe_work(
             invocation,
             StagePhase::SettleEnter,
@@ -342,7 +352,14 @@ impl LiveVcpuTimeCallbackState {
                     raw_icount,
                     control_request,
                     fault_command_frontier,
+                    settlement,
                 )
+                .inspect_err(|_error| {
+                    self.control_callback_witness.retain_settlement(
+                        settlement,
+                        super::control_callback_witness::SettlementReason::Error,
+                    );
+                })
             },
         )?;
         if !settled {

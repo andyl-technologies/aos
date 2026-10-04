@@ -27,6 +27,7 @@ pub(super) fn report_recent_callback_context(service: &CampaignServiceChild) {
         ("CRUCIBLE-NATIVE-STOP-CONTEXT-V1 ", 512),
         ("CRUCIBLE-NETWORK-OUTPUT-CONTEXT-V1 ", 512),
         ("CRUCIBLE-CONTROL-LAST-V1 ", 512),
+        ("CRUCIBLE-CONTROL-SETTLEMENT-LAST-V1 ", 512),
         ("CRUCIBLE-CHECKPOINT-STOP-V1 ", 511),
         ("CRUCIBLE-CONTROL-STAGE-V1 ", 255),
     ] {
@@ -161,6 +162,8 @@ fn materialization_capture_preserves_one_shot_record_outside_the_recent_tail()
     let callback_context = "CRUCIBLE-CONTROL-LAST-V1 kind=last-admitted phase=after-drain teardown=host-quit pid=42 device=1 inode=2 length=4096 slot=0 generation=2 final_token=3 callback=1 raw_icount=7 callback_phase=exit reason=acknowledged rejection_mask=0 token_kind=observed token_before=2 token_after=3";
     writeln!(service.stderr, "{output_context}")?;
     writeln!(service.stderr, "{callback_context}")?;
+    let settlement_context = "CRUCIBLE-CONTROL-SETTLEMENT-LAST-V1 phase=after-drain teardown=host-quit pid=42 device=1 inode=2 length=4096 slot=0 generation=2 final_token=2 callback=7 raw=8 token=2 frontier=6 reason=pump-active";
+    writeln!(service.stderr, "{settlement_context}")?;
     let native_context = "CRUCIBLE-NATIVE-STOP-CONTEXT-V1 phase=rearm-shutdown pid=42 gen=3 request=12830 ack=12829 complete=12829 state=2 runstate=4 flush=0 shutdown=1 advance=0 fd=7 scope=unavailable pc=unavailable coord=unavailable";
     writeln!(service.stderr, "{native_context}")?;
 
@@ -198,6 +201,10 @@ fn materialization_capture_preserves_one_shot_record_outside_the_recent_tail()
             .contains(MATERIALIZATION_DIAGNOSTIC_PREFIX)
     );
 
+    assert_eq!(
+        recent_callback_context_rows(&service, "CRUCIBLE-CONTROL-SETTLEMENT-LAST-V1 ", 512)?,
+        [settlement_context]
+    );
     let events = capture_materialization_events(&service)?;
     assert_eq!(events, [attestation]);
     assert_materialization_tier(&events, attempt, "HotFork")?;

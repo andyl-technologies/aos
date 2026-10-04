@@ -1215,19 +1215,35 @@ impl LiveControlTeardownHandle {
     }
 
     fn report_final_control_callback(&self, teardown: &'static str) {
+        if self
+            .control_callback_witness
+            .as_ref()
+            .is_some_and(|witness| witness.is_enabled())
+        {
+            // crucible-lint: allow direct-diagnostic -- This fixed final witness is advisory and uses the original joined teardown owner.
+            let _result =
+                self.write_final_control_callback_to(teardown, &mut std::io::stderr().lock());
+        }
+    }
+
+    fn write_final_control_callback_to(
+        &self,
+        teardown: &str,
+        writer: &mut impl std::io::Write,
+    ) -> std::io::Result<()> {
         if let Some(witness) = &self.control_callback_witness
             && witness.is_enabled()
         {
-            // crucible-lint: allow direct-diagnostic -- This fixed final witness is advisory and uses the original joined teardown owner.
-            let _result = witness.write_final_to(
-                &mut std::io::stderr().lock(),
+            witness.write_final_to(
+                writer,
                 self.region_identity,
                 self.slot_index,
                 self.process_generation,
                 teardown,
                 self.slot().control_boundary_token(),
-            );
+            )?;
         }
+        Ok(())
     }
 }
 

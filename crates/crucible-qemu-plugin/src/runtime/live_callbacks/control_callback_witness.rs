@@ -16,6 +16,11 @@
 //! a slot snapshot. The current PID distinguishes fork children and guests in
 //! merged stderr. Records carry no host-clock measurement or payload state.
 //!
+//! The existing materialization diagnostic budget also enables retained-only
+//! observations, without enabling callback, stage, or stop-caller streams. This
+//! mode reports only outstanding requests or original run-control faults after
+//! draining; successful shutdown is silent.
+//!
 //! Fixed observations also retain the last callback and last admitted
 //! outcome independently of row deduplication. Original ordered teardown emits
 //! two bounded summaries using its immutable region identity after callback
@@ -33,32 +38,62 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use super::super::callback_quiescence::LiveCallbackQuiescenceSnapshot;
 use super::{LiveVcpuTimeCallbackError, LiveVcpuTimeCallbackState, PluginShmemOrdering};
 
+mod settlement;
+pub(super) use settlement::{SettlementContext, SettlementReason};
+
 const TOKEN_VALID: u64 = 1;
 
 /// Diagnostic state independent of callback admission and canonical replay state.
 pub(in crate::runtime) struct ControlCallbackWitness {
     enabled: bool,
+    streaming: bool,
     pub(super) stages: super::control_callback_stage::ControlCallbackStages,
     pub(super) process_id: AtomicU32,
     token_and_events: AtomicU64,
     callback_sequence: AtomicU64,
     last_callback: LastObservation,
     last_admitted: LastObservation,
+    settlement: settlement::LastSettlement,
 }
 
 impl ControlCallbackWitness {
-    /// Returns whether the original opt-in enabled callback diagnostics.
+    /// Returns whether either admitted opt-in enabled fixed observations.
     pub(in crate::runtime) fn is_enabled(&self) -> bool {
         self.enabled
     }
 
+    /// Retains the original opt-in for routine and per-arm diagnostic streams.
+    pub(super) fn is_stream_enabled(&self) -> bool {
+        self.streaming
+    }
+
     pub(super) fn from_env() -> Self {
-        let mut witness =
-            Self::from_setting(std::env::var_os("CRUCIBLE_CONTROL_CALLBACK_WITNESS").as_deref());
-        if witness.enabled {
+        let mut witness = Self::from_settings(
+            std::env::var_os("CRUCIBLE_CONTROL_CALLBACK_WITNESS").as_deref(),
+            std::env::var_os("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS").as_deref(),
+        );
+        if witness.streaming {
             witness.stages = super::control_callback_stage::ControlCallbackStages::from_setting(
                 std::env::var_os("CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN").as_deref(),
             );
+        }
+        witness
+    }
+
+    /// Admits the existing aggregate budget independently of the legacy stream.
+    pub(in crate::runtime) fn from_settings(
+        stream: Option<&std::ffi::OsStr>,
+        aggregate: Option<&std::ffi::OsStr>,
+    ) -> Self {
+        let mut witness = Self::from_setting(stream);
+        witness.enabled |= aggregate
+            .and_then(std::ffi::OsStr::to_str)
+            .and_then(|value| value.parse::<u16>().ok())
+            .is_some_and(|budget| (1..=256).contains(&budget));
+        if witness.enabled && !witness.streaming {
+            witness
+                .process_id
+                .store(std::process::id(), Ordering::Relaxed);
         }
         witness
     }
@@ -70,12 +105,14 @@ impl ControlCallbackWitness {
     pub(super) fn new(enabled: bool) -> Self {
         Self {
             enabled,
+            streaming: enabled,
             stages: super::control_callback_stage::ControlCallbackStages::from_setting(None),
             process_id: AtomicU32::new(if enabled { std::process::id() } else { 0 }),
             token_and_events: AtomicU64::new(0),
             callback_sequence: AtomicU64::new(0),
             last_callback: LastObservation::default(),
             last_admitted: LastObservation::default(),
+            settlement: settlement::LastSettlement::default(),
         }
     }
 
@@ -92,6 +129,7 @@ impl ControlCallbackWitness {
             self.callback_sequence.store(0, Ordering::Relaxed);
             self.last_callback.clear();
             self.last_admitted.clear();
+            self.settlement.clear();
         }
         self.record(Event::Entry, raw_icount, None)
     }
@@ -116,7 +154,7 @@ impl ControlCallbackWitness {
     }
 
     fn record(&self, event: Event, raw_icount: u64, token_after: Option<u32>) -> Option<Record> {
-        if !self.enabled {
+        if !self.streaming {
             return None;
         }
         let event_bit = 1_u64 << (event as u8 + 1);
@@ -181,6 +219,10 @@ impl ControlCallbackWitness {
         if !self.enabled {
             return Ok(());
         }
+        let failed = final_token & 1 == 0 || teardown == "run-control-fault";
+        if !self.streaming && !failed {
+            return Ok(());
+        }
         let process_id = std::process::id();
         let inherited = self.process_id.load(Ordering::Relaxed) != process_id;
         for (kind, observation) in [
@@ -215,6 +257,19 @@ impl ControlCallbackWitness {
             writeln!(cursor)?;
             let length = cursor.position() as usize;
             writer.write_all(&bytes[..length])?;
+        }
+        if failed {
+            self.settlement.write_final_to(
+                writer,
+                settlement::FinalSettlementReport {
+                    identity,
+                    slot,
+                    generation,
+                    teardown,
+                    final_token,
+                },
+                inherited,
+            )?;
         }
         Ok(())
     }

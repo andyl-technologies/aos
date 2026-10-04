@@ -1217,8 +1217,9 @@ impl LiveVcpuTimeCallbackState {
         #[cfg(test)]
         let sim_tick_observed = None;
         let control_callback_witness = Arc::new(ControlCallbackWitness::from_env());
-        let stop_caller_witness =
-            checkpoint_stop_witness::StopCallerWitness::new(control_callback_witness.is_enabled());
+        let stop_caller_witness = checkpoint_stop_witness::StopCallerWitness::new(
+            control_callback_witness.is_stream_enabled(),
+        );
         Ok(Self {
             quiescence,
             teardown_router,
@@ -2546,6 +2547,7 @@ impl LiveVcpuTimeCallbackState {
         raw_icount: u64,
         control_request: u32,
         fault_command_frontier: u64,
+        settlement: Option<control_callback_witness::SettlementContext>,
     ) -> Result<bool, LiveVcpuTimeCallbackError> {
         if self
             .fault_command_pump_active
@@ -2557,6 +2559,10 @@ impl LiveVcpuTimeCallbackState {
                 control_request,
                 fault_command_frontier,
                 "pump-active",
+            );
+            self.control_callback_witness.retain_settlement(
+                settlement,
+                control_callback_witness::SettlementReason::PumpActive,
             );
             return Ok(false);
         }
@@ -2584,6 +2590,10 @@ impl LiveVcpuTimeCallbackState {
                 fault_command_frontier,
                 "pump-through-frontier-pending",
             );
+            self.control_callback_witness.retain_settlement(
+                settlement,
+                control_callback_witness::SettlementReason::FrontierPending,
+            );
             return Ok(false);
         }
         if self
@@ -2609,6 +2619,10 @@ impl LiveVcpuTimeCallbackState {
                 fault_command_frontier,
                 "publication-backpressure",
             );
+            self.control_callback_witness.retain_settlement(
+                settlement,
+                control_callback_witness::SettlementReason::PublicationBackpressure,
+            );
             return Ok(false);
         }
         let settled = bridge.command_frontier_is_settled(fault_command_frontier);
@@ -2618,6 +2632,16 @@ impl LiveVcpuTimeCallbackState {
                 control_request,
                 fault_command_frontier,
                 "command-frontier-unsettled",
+            );
+            self.control_callback_witness.retain_settlement(
+                settlement,
+                control_callback_witness::SettlementReason::FrontierUnsettled,
+            );
+        }
+        if settled {
+            self.control_callback_witness.retain_settlement(
+                settlement,
+                control_callback_witness::SettlementReason::Settled,
             );
         }
         Ok(settled)

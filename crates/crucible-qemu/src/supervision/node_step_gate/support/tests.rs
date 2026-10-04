@@ -567,3 +567,90 @@ fn test_eventfd_identity(descriptor: std::os::fd::RawFd) -> Result<u64, std::io:
 
     value.trim().parse::<u64>().map_err(std::io::Error::other)
 }
+
+#[test]
+fn aggregate_retention_admits_only_bounded_budget_into_actual_child_command() {
+    const PROBE: &str = "CRUCIBLE_TEST_AGGREGATE_BUDGET";
+    const BUDGET: &str = "CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS";
+    const NAME: &str = "supervision::node_step_gate::support::tests::aggregate_retention_admits_only_bounded_budget_into_actual_child_command";
+    let executable =
+        std::env::current_exe().unwrap_or_else(|error| panic!("test executable: {error}"));
+    let Ok(expected) = std::env::var(PROBE) else {
+        for setting in ["off", "1", "256", "0", "257", "invalid"] {
+            let mut command = std::process::Command::new(&executable);
+            command
+                .args(["--exact", NAME, "--nocapture"])
+                .env(PROBE, setting)
+                .env("CRUCIBLE_TEST_AMBIENT_SECRET", "must-not-inherit")
+                .env_remove(BUDGET)
+                .env_remove("CRUCIBLE_CONTROL_CALLBACK_WITNESS")
+                .env_remove("CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN");
+            if setting != "off" {
+                command.env(BUDGET, setting);
+            }
+            let output = command
+                .output()
+                .unwrap_or_else(|error| panic!("isolated environment test: {error}"));
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        }
+        return;
+    };
+    let admitted = matches!(expected.as_str(), "1" | "256");
+    let mut command = crate::spawn::guarded_qemu_process_command(
+        executable
+            .to_str()
+            .unwrap_or_else(|| panic!("UTF-8 test executable")),
+        &[
+            "--exact".to_owned(),
+            "supervision::node_step_gate::support::tests::aggregate_retention_cleared_child_probe"
+                .to_owned(),
+            "--ignored".to_owned(),
+            "--nocapture".to_owned(),
+        ],
+        &[],
+    );
+    let expected_env = if admitted {
+        vec![(
+            std::ffi::OsStr::new(BUDGET),
+            Some(std::ffi::OsStr::new(&expected)),
+        )]
+    } else {
+        Vec::new()
+    };
+    assert_eq!(command.get_envs().collect::<Vec<_>>(), expected_env);
+    command
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let output = command
+        .output()
+        .unwrap_or_else(|error| panic!("actual cleared child command: {error}"));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let expected_value = if admitted { expected.as_str() } else { "off" };
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains(&format!("aggregate_budget={expected_value}"))
+    );
+}
+
+#[test]
+#[ignore = "exec probe launched only by the constructed child environment test"]
+fn aggregate_retention_cleared_child_probe() {
+    assert!(std::env::var_os("CRUCIBLE_TEST_AMBIENT_SECRET").is_none());
+    assert!(std::env::var_os("CRUCIBLE_TEST_AGGREGATE_BUDGET").is_none());
+    assert!(std::env::var_os("CRUCIBLE_CONTROL_CALLBACK_WITNESS").is_none());
+    assert!(std::env::var_os("CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN").is_none());
+    println!(
+        "aggregate_budget={}",
+        std::env::var("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS")
+            .unwrap_or_else(|_error| "off".to_owned())
+    );
+}

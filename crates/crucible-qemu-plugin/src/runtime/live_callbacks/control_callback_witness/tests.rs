@@ -360,7 +360,7 @@ fn final_rows_fit_fixed_bound_at_integer_limits_and_fork_reset_clears_parent() {
             .split(|byte| *byte == b'\n')
             .filter(|row| !row.is_empty())
             .count(),
-        2
+        3
     );
     assert!(
         bytes
@@ -591,4 +591,111 @@ fn failed_diagnostic_writes_leave_callback_outcome_unchanged() {
     );
 
     assert_eq!(slot.control_boundary_token(), request + 1);
+}
+
+#[test]
+fn aggregate_retention_distinguishes_pending_settlement_without_streaming() {
+    let slot = NodeSlot::new(KIND_VM);
+    let mut state = state(&slot, false);
+    state.control_callback_witness = std::sync::Arc::new(ControlCallbackWitness::from_settings(
+        None,
+        Some(std::ffi::OsStr::new("256")),
+    ));
+    assert!(run(&state, 7).is_empty());
+    assert!(final_rows(&state, 1).is_empty());
+    let request = slot
+        .request_control_boundary(6, None)
+        .unwrap_or_else(|error| panic!("original request: {error}"));
+    state
+        .fault_command_pump_active
+        .store(true, Ordering::Release);
+    assert!(run(&state, 8).is_empty());
+    let rows = String::from_utf8(final_rows(&state, request))
+        .unwrap_or_else(|error| panic!("ASCII final observations: {error}"));
+    assert_eq!(rows.lines().count(), 3);
+    assert!(rows.contains("reason=pending"));
+    assert!(rows.contains(&format!(
+        "callback=2 raw=8 token={request} frontier=6 reason=pump-active"
+    )));
+    assert_eq!(slot.control_boundary_token(), request);
+    assert_eq!(state.quiescence.snapshot().in_flight, 0);
+}
+
+#[test]
+fn aggregate_retention_keeps_admission_distinct_from_settlement_and_guard_closure() {
+    let slot = NodeSlot::new(KIND_VM);
+    let mut state = state(&slot, false);
+    state.control_callback_witness = std::sync::Arc::new(ControlCallbackWitness::from_settings(
+        None,
+        Some(std::ffi::OsStr::new("1")),
+    ));
+    let request = slot
+        .request_control_boundary(0, None)
+        .unwrap_or_else(|error| panic!("original request: {error}"));
+    state.quiescence.hold_hot_fork();
+    assert!(run(&state, 7).is_empty());
+    let rejected = String::from_utf8(final_rows(&state, request))
+        .unwrap_or_else(|error| panic!("ASCII observations: {error}"));
+    assert!(rejected.contains("reason=hot-fork-held"));
+    assert!(
+        rejected
+            .lines()
+            .last()
+            .is_some_and(|row| row.ends_with("observation=unavailable"))
+    );
+    state.quiescence.release_hot_fork();
+    assert!(run(&state, 8).is_empty());
+    assert_eq!(slot.control_boundary_token(), request + 1);
+    assert!(final_rows(&state, request + 1).is_empty());
+    let identity = crucible_shmem::SetupRegionBackingIdentity::from_parts(1, 2, 4096)
+        .unwrap_or_else(|| panic!("valid original identity"));
+    let mut bytes = Vec::new();
+    state
+        .control_callback_witness
+        .write_final_to(&mut bytes, identity, 0, 2, "run-control-fault", request + 1)
+        .unwrap_or_else(|error| panic!("bounded fault report: {error}"));
+    let fault = String::from_utf8(bytes).unwrap_or_else(|error| panic!("ASCII report: {error}"));
+    assert!(fault.contains(&format!(
+        "callback=2 raw=8 token={request} frontier=0 reason=settled"
+    )));
+    assert_eq!(state.quiescence.snapshot().in_flight, 0);
+}
+
+#[test]
+fn aggregate_opt_in_is_bounded_and_preserves_original_error_outcome() {
+    for setting in ["0", "257", "-1", "bad"] {
+        assert!(
+            !ControlCallbackWitness::from_settings(None, Some(std::ffi::OsStr::new(setting)))
+                .is_enabled()
+        );
+    }
+    let slot = NodeSlot::new(KIND_VM);
+    let mut state = state(&slot, false);
+    state.control_callback_witness = std::sync::Arc::new(ControlCallbackWitness::from_settings(
+        None,
+        Some(std::ffi::OsStr::new("1")),
+    ));
+    let request = slot
+        .request_control_boundary(0, None)
+        .unwrap_or_else(|error| panic!("original request: {error}"));
+    let bridge = state
+        .fault_commands
+        .try_lock()
+        .unwrap_or_else(|error| panic!("original bridge owner: {error}"));
+    let mut failure = None;
+    state.run_control_callback(
+        7,
+        |_| panic!("retained mode must not stream"),
+        |error| failure = Some(error),
+    );
+    assert!(matches!(
+        failure,
+        Some(LiveVcpuTimeCallbackError::FaultCommandStateBorrowed)
+    ));
+    drop(bridge);
+    let rows = String::from_utf8(final_rows(&state, request))
+        .unwrap_or_else(|error| panic!("ASCII error report: {error}"));
+    assert!(rows.contains("frontier=0 reason=error"));
+    assert_eq!(slot.control_boundary_token(), request);
+    assert_eq!(state.quiescence.snapshot().in_flight, 0);
 }

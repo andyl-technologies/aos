@@ -1116,6 +1116,16 @@ pub(crate) fn guarded_qemu_process_command(
     for (key, value) in envs {
         command.env(key, value);
     }
+    // Aggregate diagnostics retain fixed failure observations without enabling
+    // the legacy callback stream or native trace selections.
+    const AGGREGATE_DIAGNOSTICS: &str = "CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS";
+    if let Ok(budget) = std::env::var(AGGREGATE_DIAGNOSTICS)
+        && budget
+            .parse::<u16>()
+            .is_ok_and(|budget| (1..=256).contains(&budget))
+    {
+        command.env(AGGREGATE_DIAGNOSTICS, budget);
+    }
     // The stage minimum is diagnostic-only and cannot escape the existing
     // witness opt-in. Invalid or noncanonical values leave stage notices off.
     if envs.contains(&("CRUCIBLE_CONTROL_CALLBACK_WITNESS", "1")) {

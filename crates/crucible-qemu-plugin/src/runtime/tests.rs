@@ -1839,3 +1839,51 @@ fn handshake_failure_marks_the_singleton_failed_before_second_install_attempt() 
     ));
     join_host(host);
 }
+
+#[test]
+fn joined_teardown_reports_outstanding_retained_request_but_success_is_silent() {
+    for outstanding in [false, true] {
+        let (mut handle, _header, slot, _wake_owner, _wake_peer) = control_worker_teardown_handle();
+        handle.control_callback_witness = Some(Arc::new(
+            live_callbacks::ControlCallbackWitness::from_settings(
+                None,
+                Some(std::ffi::OsStr::new("256")),
+            ),
+        ));
+        if outstanding {
+            slot.request_control_boundary(6, None)
+                .unwrap_or_else(|error| panic!("owned request: {error}"));
+        }
+        let admission = handle
+            .quiescence
+            .enter()
+            .unwrap_or_else(|| panic!("original admitted work"));
+        let quiescence = Arc::clone(&handle.quiescence);
+        let worker = std::thread::spawn(move || {
+            handle.quiesce();
+            let mut rows = Vec::new();
+            handle
+                .write_final_control_callback_to("host-quit", &mut rows)
+                .unwrap_or_else(|error| panic!("bounded retained report: {error}"));
+            rows
+        });
+        wait_until_callback_admission_closed(&quiescence);
+        assert!(!worker.is_finished());
+        drop(admission);
+        let rows = worker
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        assert_eq!(quiescence.snapshot().in_flight, 0);
+        if outstanding {
+            let text =
+                String::from_utf8(rows).unwrap_or_else(|error| panic!("ASCII report: {error}"));
+            assert_eq!(text.lines().count(), 3);
+            assert!(text.contains("CRUCIBLE-CONTROL-SETTLEMENT-LAST-V1"));
+            assert!(text.contains("generation=1 final_token=2 observation=unavailable"));
+            assert_eq!(slot.control_boundary_token(), 2);
+        } else {
+            assert!(rows.is_empty());
+            assert_eq!(slot.control_boundary_token(), 1);
+        }
+    }
+}

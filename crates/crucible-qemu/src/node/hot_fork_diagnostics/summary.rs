@@ -36,6 +36,7 @@ pub(super) fn control_diagnostics_summary(bytes: &[u8], child_process_id: u32) -
             && !line.starts_with(b"CRUCIBLE-NETWORK-OUTPUT-CONTEXT-V1 ")
             && !line.starts_with(b"CRUCIBLE-CONTROL-CALLBACK-V1 ")
             && !line.starts_with(b"CRUCIBLE-CONTROL-LAST-V1 ")
+            && !line.starts_with(b"CRUCIBLE-CONTROL-SETTLEMENT-LAST-V1 ")
             && !line.starts_with(b"CRUCIBLE-RR-CONTROL-DEFER-V1 ")
             && !line.starts_with(b"crucible_sim_rr_control_")
         {
@@ -52,6 +53,7 @@ pub(super) fn control_diagnostics_summary(bytes: &[u8], child_process_id: u32) -
                     || network_output_context::valid_row(row, child_process_id)
                     || valid_callback_row(row, child_process_id)
                     || valid_last_callback_row(row, child_process_id)
+                    || valid_settlement_row(row, child_process_id)
                     || valid_defer_row(row)
                     || crate::spawn::valid_rr_control_boundary_row(row)
                     || (crate::spawn::valid_control_delivery_row(row)
@@ -84,6 +86,56 @@ pub(super) fn control_diagnostics_summary(bytes: &[u8], child_process_id: u32) -
 
 fn value<'a>(fields: &mut std::str::SplitAsciiWhitespace<'a>, key: &str) -> Option<&'a str> {
     fields.next()?.strip_prefix(key)
+}
+
+fn valid_settlement_row(row: &str, child_process_id: u32) -> bool {
+    let mut fields = row.split_ascii_whitespace();
+    if fields.next() != Some("CRUCIBLE-CONTROL-SETTLEMENT-LAST-V1")
+        || value(&mut fields, "phase=") != Some("after-drain")
+        || !matches!(
+            value(&mut fields, "teardown="),
+            Some("host-quit" | "shared-shutdown" | "run-control-fault")
+        )
+        || value(&mut fields, "pid=").and_then(|pid| pid.parse::<u32>().ok())
+            != Some(child_process_id)
+    {
+        return false;
+    }
+    for key in ["device=", "inode=", "length="] {
+        if !value(&mut fields, key).is_some_and(unsigned::<u64>) {
+            return false;
+        }
+    }
+    if !value(&mut fields, "slot=").is_some_and(unsigned::<u32>)
+        || !value(&mut fields, "generation=").is_some_and(unsigned::<u64>)
+        || !value(&mut fields, "final_token=").is_some_and(unsigned::<u32>)
+    {
+        return false;
+    }
+    if fields.clone().next() == Some("observation=unavailable") {
+        fields.next();
+        return fields.next().is_none();
+    }
+    if !value(&mut fields, "callback=").is_some_and(unsigned::<u64>)
+        || !value(&mut fields, "raw=").is_some_and(unsigned::<u64>)
+        || !value(&mut fields, "token=").is_some_and(unsigned::<u32>)
+        || !value(&mut fields, "frontier=").is_some_and(unsigned::<u64>)
+        || !matches!(
+            value(&mut fields, "reason="),
+            Some(
+                "entered"
+                    | "pump-active"
+                    | "frontier-pending"
+                    | "publication-backpressure"
+                    | "frontier-unsettled"
+                    | "settled"
+                    | "error"
+            )
+        )
+    {
+        return false;
+    }
+    fields.next().is_none()
 }
 
 fn unsigned<T: std::str::FromStr>(value: &str) -> bool {
@@ -343,6 +395,31 @@ mod tests {
             assert!(summary.contains("accepted_rows=0 rejected_rows=1"));
             assert_eq!(summary.lines().count(), 1);
         }
+    }
+
+    #[test]
+    fn settlement_summary_keeps_exact_child_and_closed_reason_vocabulary() {
+        let row = "CRUCIBLE-CONTROL-SETTLEMENT-LAST-V1 phase=after-drain teardown=host-quit pid=153 device=1 inode=2 length=4096 slot=0 generation=2 final_token=2 callback=7 raw=8 token=2 frontier=6 reason=pump-active\n";
+        let unavailable = row
+            .split(" callback=")
+            .next()
+            .unwrap_or_default()
+            .to_owned()
+            + " observation=unavailable\n";
+        let mut bytes = format!("{row}{unavailable}");
+        for bad in [
+            row.replace("pid=153", "pid=132"),
+            row.replace("pump-active", "invented"),
+            row.replace("frontier=6", "frontier=-1"),
+            row.replace(" token=2 ", " token=4294967296 "),
+            row.trim_end().to_owned() + " extra=1\n",
+        ] {
+            bytes.push_str(&bad);
+        }
+        let summary = control_diagnostics_summary(bytes.as_bytes(), 153);
+        assert!(summary.contains("accepted_rows=2 rejected_rows=5 tail_rows=2"));
+        assert!(summary.contains("reason=pump-active"));
+        assert!(summary.ends_with("observation=unavailable"));
     }
 
     #[test]
