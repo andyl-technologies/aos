@@ -65,6 +65,20 @@ impl RegistryTier {
             Self::Production => &CHANNEL_KINDS,
         }
     }
+
+    /// Reports whether this tier may publish outputs whose Nix `--check`
+    /// repeat build did not prove them byte-identical.
+    ///
+    /// The testing tier records such outputs in its build evidence and lets
+    /// the release proceed so that nondeterministic packages do not block the
+    /// experimental pipeline. Production fails closed on any of them.
+    #[must_use]
+    pub const fn accepts_not_reproduced_outputs(self) -> bool {
+        match self {
+            Self::Testing => true,
+            Self::Production => false,
+        }
+    }
 }
 
 impl std::fmt::Display for RegistryTier {

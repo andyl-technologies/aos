@@ -22,12 +22,13 @@ use aos_core::output::Printer;
 use aos_release::artifact::{
     ArtifactKind, ArtifactRecord, ArtifactRelationship, BundlePath, Compression,
 };
-use aos_release::build::{BuildReportV1, ReproducibilityResult};
+use aos_release::build::BuildReportV1;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::manifest::{FinalArtifactSet, ImageResult, PackageResult, ReleaseManifestV1};
 use aos_release::plan::{PlatformCell, ReleasePlan};
 use aos_release::platform::MatrixCell;
+use aos_release::registry::registry_policy;
 use aos_release::sbom::SpdxDocument;
 use aos_release::signing::{SignerRole, TrustedEd25519Key};
 use serde::{Deserialize, Serialize};
@@ -188,6 +189,17 @@ impl ArtifactAttributes {
     }
 }
 
+/// Requires the build report's repeat-build results to satisfy the registry.
+///
+/// Report validation already applies this policy; assembly restates it
+/// because it is where the release first claims repeat-build evidence.
+/// Production registries fail closed on any unreproduced output. Testing
+/// registries accept outputs recorded as not reproduced.
+fn require_repeat_build_policy(registry: &str, report: &BuildReportV1) -> Result<()> {
+    let tier = registry_policy(registry)?.tier();
+    report.require_reproducibility_policy(tier)
+}
+
 /// Assembles finalized package, registry, image, OCI, and evidence bytes.
 pub(super) fn run(args: &ReleaseAssembleArgs, nix: &NixRunner, printer: &Printer) -> Result<()> {
     if args.output.exists() {
@@ -208,13 +220,7 @@ pub(super) fn run(args: &ReleaseAssembleArgs, nix: &NixRunner, printer: &Printer
     if require_utc(&report.completed_at, "build completion time")? > completed {
         bail!("assembly completed before its build report");
     }
-    if report
-        .outputs
-        .iter()
-        .any(|output| output.reproducibility != ReproducibilityResult::Reproduced)
-    {
-        bail!("build report contains an output without a successful repeat build");
-    }
+    require_repeat_build_policy(&plan.registry, &report)?;
 
     let sbom_bytes = read_canonical(&args.sbom, "release SBOM")?;
     let sbom: SpdxDocument = canonical::from_slice(&sbom_bytes, "release SBOM")?;
@@ -562,4 +568,78 @@ fn require_utc(value: &str, label: &str) -> Result<std::time::SystemTime> {
         bail!("{label} must be an RFC 3339 UTC timestamp");
     }
     humantime::parse_rfc3339(value).with_context(|| format!("parsing {label}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use aos_release::build::{BUILD_REPORT_V1, BuildOutputEvidence, ReproducibilityResult};
+    use aos_release::platform::Platform;
+    use aos_release::registry::{EXPERIMENTAL_REGISTRY, MAIN_REGISTRY};
+
+    use super::*;
+
+    fn report_with(reproducibility: ReproducibilityResult) -> BuildReportV1 {
+        BuildReportV1 {
+            schema_version: BUILD_REPORT_V1.to_owned(),
+            plan_digest: Sha256Digest::of_bytes("plan"),
+            source_commit: "0".repeat(40),
+            outputs: vec![BuildOutputEvidence {
+                id: "package/example/x86_64-linux".to_owned(),
+                package: "example".to_owned(),
+                version: "1.0.0".to_owned(),
+                license_expression: "Apache-2.0".to_owned(),
+                source_store_paths: vec![],
+                platform: Platform::X86_64Linux,
+                derivation: "/nix/store/22222222222222222222222222222222-example.drv".to_owned(),
+                output: "out".to_owned(),
+                store_path: "/nix/store/11111111111111111111111111111111-example".to_owned(),
+                nar_hash: format!("sha256:{}", "a".repeat(64)),
+                nar_size: 1,
+                closure_size: 1,
+                references: vec![],
+                reproducibility,
+            }],
+            sources: vec![],
+            completed_at: "2026-10-04T00:00:00Z".to_owned(),
+        }
+    }
+
+    #[test]
+    fn production_registry_rejects_not_reproduced_outputs() {
+        let report = report_with(ReproducibilityResult::NotReproduced);
+
+        let error = require_repeat_build_policy(MAIN_REGISTRY, &report)
+            .expect_err("production assembly must fail closed");
+
+        assert!(
+            error
+                .to_string()
+                .contains("without a successful repeat build")
+        );
+    }
+
+    #[test]
+    fn testing_registries_accept_not_reproduced_outputs() -> Result<()> {
+        let report = report_with(ReproducibilityResult::NotReproduced);
+
+        require_repeat_build_policy(EXPERIMENTAL_REGISTRY, &report)?;
+        require_repeat_build_policy("andyl/experimental-v2", &report)?;
+        Ok(())
+    }
+
+    #[test]
+    fn every_registry_accepts_reproduced_outputs() -> Result<()> {
+        let report = report_with(ReproducibilityResult::Reproduced);
+
+        require_repeat_build_policy(MAIN_REGISTRY, &report)?;
+        require_repeat_build_policy(EXPERIMENTAL_REGISTRY, &report)?;
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_registries_fail_closed() {
+        let report = report_with(ReproducibilityResult::Reproduced);
+
+        assert!(require_repeat_build_policy("example/unknown", &report).is_err());
+    }
 }
