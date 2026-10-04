@@ -1,10 +1,30 @@
 # 11 — Implementation plan and merge gates
 
-This RFC was initially published for review without implementation. Its
-implementation now continues in the same draft pull request so requirements,
-gates, and code evolve together. Checked tasks have executable evidence in the
-tree; incomplete production gates remain unchecked. No partial phase becomes
-the default campaign path until its listed gates pass.
+This RFC was initially published for review without implementation. Incremental
+implementation merged in [PR #194](https://github.com/andyl-technologies/aos/pull/194).
+Remaining implementation and qualification continue in follow-up work, with
+requirements, gates, and code reviewed together. Checked tasks have executable
+evidence in the tree; incomplete production gates remain unchecked. No partial
+phase becomes the default campaign path until its listed gates pass.
+
+## Continuation after PR #194
+
+The merged implementation and its bounded pre-merge qualification results
+establish the starting point below. This map does not close unchecked tasks or
+replace the [automated release contract](14-automated-release-validation.md).
+The task list and requirement traceability remain authoritative for completion.
+
+| Area | Established evidence | Remaining work |
+| --- | --- | --- |
+| Core package and execution | Packaged boot, CLI, two-node HTTP, native checkpoint, Rust aggregate, license boundary, and source co-retention passed. | Complete T-CAM-9.1's campaign-disabled/enabled gate coverage and the release profiles. |
+| Guest choices and checkpoint lifecycle | Selected guest execution reached its authenticated boundary; selected-state promotion exceeded its existing 180-second host watchdog. | Qualify packaged checkpoint/restart choices, the complete public lifecycle, storage recovery, and promotion/restore under T-CAM-2.8, T-CAM-4.8, T-CAM-5.8, and T-CAM-9.3. |
+| Native hot fork | The VMState-only fixture passed three children, two retained-source restorations, and zero thread/descriptor leaks. | Complete the supported-product inventory, exact/thin equivalence, scaling, deep-template, pressure, and multi-node matrices in Phases 6 and 7. This fixture does not qualify the full product profile. |
+| Product and measurement integration | The two-node HTTP fixture completed through the packaged public campaign surface. | T-CAM-3.6's known-finding integration and T-CAM-8.6's five-VM Envoy failover/recovery remain unqualified. |
+| Performance | Focused regression checks cover assertion-prefix and sparse-marker evaluation. | T-CAM-9.2 still requires the measured reference baseline, million-admission evidence, and complete scaling gate. |
+| Release acceptance | Gate implementations and evidence validators are present. | Complete the remaining portability, boundary, operational, and same-host determinism evidence in Phase 9 and §14 before defaults or release acceptance change. |
+
+Complete remaining cutovers through the shared campaign owners and remove
+obsolete routes as each replacement lands.
 
 ## 11.1 Sequencing principles
 

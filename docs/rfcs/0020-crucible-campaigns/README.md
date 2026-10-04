@@ -1,10 +1,11 @@
 # RFC-0020: Crucible campaigns, adaptive exploration, and hot forking
 
-- **Status:** Proposed. Implementation is landing incrementally in this draft
-  pull request behind non-default library and test surfaces; no campaign or
-  hot-fork path is enabled as a supported default before its listed gates.
+- **Status:** Proposed. Incremental implementation merged in PR #194;
+  remaining implementation and qualification continue in follow-up work.
+  No campaign or hot-fork path is enabled as a supported default before its
+  listed gates.
 - **Date:** 2026-08-18
-- **PR:** [#194](https://github.com/andyl-technologies/aos/pull/194)
+- **Merged implementation:** [#194](https://github.com/andyl-technologies/aos/pull/194)
 - **Depends on:** [RFC-0010](../0010-crucible/README.md) and
   [RFC-0014](../0014-signal-driven-fault-model/README.md), including RFC-0014's
   exact production checkpoint closure and stable fault-opportunity identities.
@@ -312,8 +313,8 @@ effects into arbitrary callbacks.
 12. [`10-performance-and-validation.md`](10-performance-and-validation.md)
     defines cost models, required metrics, conformance gates, and acceptance
     targets.
-13. [`11-implementation-plan.md`](11-implementation-plan.md) sequences the
-    implementation intended to follow this documentation review.
+13. [`11-implementation-plan.md`](11-implementation-plan.md) records merged
+    implementation, remaining work, and qualification gates.
 14. [`12-decisions-and-open-questions.md`](12-decisions-and-open-questions.md)
     records resolved decisions and the few questions intentionally left for
     measured implementation spikes.
