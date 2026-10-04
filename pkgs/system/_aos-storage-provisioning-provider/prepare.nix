@@ -3,6 +3,7 @@
   config,
   lib,
   dependencies,
+  package,
   packageName,
   evaluationInput,
   ...
@@ -22,7 +23,7 @@
     else cfg.evaluationContext;
   field = type: description: lib.mkOption {inherit type description;};
   tools = {
-    systemd_repart = "${dependencies.systemd}/bin/systemd-repart";
+    systemd_repart = "${package}/bin/aos-storage-repart";
     blkid = "${dependencies.util-linux}/sbin/blkid";
     lsblk = "${dependencies.util-linux}/bin/lsblk";
     sfdisk = "${dependencies.util-linux}/sbin/sfdisk";
