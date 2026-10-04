@@ -655,8 +655,18 @@ in
           mkdir -p "$packageRuntime/libexec"
           # Native dispatch clears its environment. Pin the evaluator's store
           # and pure-evaluation tools in its own retained executable wrapper.
-          install_cli aos-boot-configuration "$packageRuntime" \
-            ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} 0
+          # The boot entry keeps its own argv[0] and retained tool wrapper,
+          # while sharing the package executable already required by this output.
+          rm "$out/bin/aos-boot-configuration"
+          ln -s \
+            "$apm/bin/.aos-package-runtime-unwrapped" \
+            "$packageRuntime/bin/.aos-boot-configuration-unwrapped"
+          write_cli_wrapper \
+            aos-boot-configuration \
+            "$packageRuntime" \
+            ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} \
+            0 \
+            .aos-boot-configuration-unwrapped
           install_cli aos-provisioning-configuration-evaluator "$packageRuntime" \
             ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} 0
           mv \
@@ -681,6 +691,12 @@ in
           ${lib.optionalString (!isDarwinCross) ''
         test -x "$packageRuntime/bin/aos-provisioning-configuration-evaluator"
         test -x "$packageRuntime/bin/aos-boot-configuration"
+        test "$(readlink "$packageRuntime/bin/.aos-boot-configuration-unwrapped")" = \
+          "$apm/bin/.aos-package-runtime-unwrapped"
+        test "$packageRuntime/bin/.aos-boot-configuration-unwrapped" -ef \
+          "$apm/bin/.aos-package-runtime-unwrapped"
+        grep -Fqx 'export AOS_NIX_STORE="${nix}/bin/nix-store"' "$packageRuntime/bin/aos-boot-configuration"
+        grep -Fqx 'export AOS_NIX_INSTANTIATE="${nix}/bin/nix-instantiate"' "$packageRuntime/bin/aos-boot-configuration"
         test -x "$packageRuntime/libexec/aos-image-rollout-boot"
         test -x "$packageRuntime/libexec/aos-package-attestation-provider"
         test -x "$packageRuntime/libexec/aos-image-rollout-observer"
@@ -697,6 +713,16 @@ in
         PATH=/unreachable "$apm/bin/.aos-package-runtime-unwrapped" apply-deployment --help > /dev/null
         PATH=/unreachable "$packageRuntime/bin/.aos-package-runtime-unwrapped" apply-deployment --help > /dev/null
         PATH=/unreachable "$packageRuntime/bin/aos-package-runtime" apply-deployment --help > /dev/null
+        ${lib.optionalString (!isDarwinCross) ''
+          PATH=/unreachable "$packageRuntime/bin/.aos-boot-configuration-unwrapped" --help > boot-entry-help
+          grep -Fq -- '--admission-sha256' boot-entry-help
+          PATH=/unreachable "$packageRuntime/bin/aos-boot-configuration" --help > boot-wrapper-help
+          test "$(cat boot-entry-help)" = "$(cat boot-wrapper-help)"
+          if PATH=/unreachable "$packageRuntime/bin/aos-boot-configuration" apply-deployment --help > /dev/null 2>&1; then
+            echo "boot entry point accepted a private runtime command" >&2
+            exit 1
+          fi
+        ''}
       ''}
 
           # Release qualification fixtures belong only in the testSupport

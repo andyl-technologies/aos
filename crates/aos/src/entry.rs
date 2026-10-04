@@ -162,6 +162,18 @@ pub async fn package_runtime_main() {
     );
 }
 
+/// Runs authenticated host metadata adoption or initrd receipt handoff.
+///
+/// Both the standalone boot binary and its installed shared executable use
+/// this entry point. It reports boot errors on stderr and exits with status 1;
+/// the boot command retains its own argument parser and source checks.
+pub fn boot_configuration_main() {
+    if let Err(error) = aos_package::boot_configuration::run_from_process() {
+        eprintln!("aos-boot-configuration: {error:#}");
+        process::exit(1);
+    }
+}
+
 // Clap handles --help before it constructs a typed command. Inspect the same
 // command metadata first so help cannot cross the public/runtime boundary.
 fn selected_package_surface(args: &[OsString]) -> Option<bool> {
