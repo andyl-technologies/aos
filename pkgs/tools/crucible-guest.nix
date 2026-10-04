@@ -9,8 +9,24 @@
   patchelf,
   glibc,
   sqliteStatic,
+  buildPackages,
 }: let
   version = "0.1.0";
+
+  # patchelf only inspects the installed guest, so it runs on the build
+  # machine. Static SQLite is the opposite role: an archive linked into the
+  # guest for its own platform. Cross package sets reject target-platform
+  # buildDeps, so the archive enters through runtimeDeps there, which exposes
+  # its headers and libraries to the cross linker. Native builds keep the
+  # original buildDeps placement; the roles coincide and derivation
+  # identities stay unchanged.
+  buildPatchelf =
+    if stdenv.isCross
+    then buildPackages.patchelf
+    else patchelf;
+  guestBuildDeps = [buildPatchelf] ++ lib.optional (!stdenv.isCross) sqliteStatic;
+  guestLinkDeps = lib.optional stdenv.isCross sqliteStatic;
+
   src = import ./crucible/_source.nix {inherit lib;};
   cargoDeps = fetchCargoVendor {
     inherit src;
@@ -58,7 +74,7 @@
     family = "crucible-static-guest-release-and-test";
     target = targetTriple;
     rustflags = "-C target-feature=+crt-static -C relocation-model=static";
-    nativeInputs = map toString [patchelf sqliteStatic];
+    nativeInputs = map toString [buildPatchelf sqliteStatic];
     licenseScope = "Apache-2.0";
   };
   cargoArtifacts = mkCargoArtifacts {
@@ -75,7 +91,8 @@
       "test --release --no-run --frozen --offline -j$NIX_BUILD_CORES -p crucible-guest"
     ];
     preBuild = staticBuildSetup;
-    buildDeps = [patchelf sqliteStatic];
+    buildDeps = guestBuildDeps;
+    runtimeDeps = guestLinkDeps;
   };
 in
   mkCargoPackage {
@@ -89,8 +106,8 @@ in
     cargoFlags = "-p crucible-guest --bin crucible-guest";
     cargoTestFlags = "-p crucible-guest";
     doCheck = true;
-    buildDeps = [patchelf sqliteStatic];
-    runtimeDeps = [];
+    buildDeps = guestBuildDeps;
+    runtimeDeps = guestLinkDeps;
 
     preBuild = ''
       ${staticBuildSetup}
