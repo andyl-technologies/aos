@@ -21,6 +21,8 @@
     description = "Register authenticated immutable initrd deployment inputs";
     before = ["aos-ability-initrd-controller.service"];
     requiredBy = ["aos-ability-initrd-controller.service"];
+    # These initrd-local inputs are needed before the early boot transaction.
+    unitConfig.DefaultDependencies = false;
     path = [pkgs.coreutils];
     serviceConfig = {
       Type = "oneshot";
