@@ -2335,6 +2335,19 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
 
     fn append_one_original_root_prefix(&mut self) -> Result<(), CreateQ04ErrorV1> {
         self.require_original_held_input_cut()?;
+        self.append_parked_original_root_commit()?;
+        let history = self.root_history.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
+        let returned = self.root.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?
+            .q04_recheck_original_binding_prefix(history,
+                self.stage.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?, &self.source_complete);
+        if let Err(debt) = returned {
+            self.postcheck_debt.get_mut().get_or_insert(debt);
+            return Err(CreateQ04ErrorV1::ChangedCut);
+        }
+        self.require_identity_clock(history.identity())
+    }
+
+    fn append_parked_original_root_commit(&mut self) -> Result<(), CreateQ04ErrorV1> {
         let history = self.root_history.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
         let index = history.committed();
         let slot = self.root_commits.get_mut(index).ok_or(CreateQ04ErrorV1::ChangedCut)?;
@@ -2366,15 +2379,7 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
             return Err(CreateQ04ErrorV1::ChangedCut);
         }
         self.root_history.as_mut().ok_or(CreateQ04ErrorV1::ChangedCut)?.advance_parked_commit();
-        let history = self.root_history.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
-        let returned = self.root.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?
-            .q04_recheck_original_binding_prefix(history,
-                self.stage.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?, &self.source_complete);
-        if let Err(debt) = returned {
-            self.postcheck_debt.get_mut().get_or_insert(debt);
-            return Err(CreateQ04ErrorV1::ChangedCut);
-        }
-        self.require_identity_clock(history.identity())
+        Ok(())
     }
 
     fn require_original_held_input_cut(&mut self) -> Result<(), CreateQ04ErrorV1> {
@@ -2939,31 +2944,7 @@ impl<'startup> OriginalRootCreateQ04AttemptV1<'startup> {
         kind: super::Q04AcknowledgementKindV1,
     ) -> Result<(), CreateQ04ErrorV1> {
         self.require_terminal_held_input_cut(kind)?;
-        let history = self.root_history.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
-        let index = history.committed();
-        let slot = self.root_commits.get_mut(index).ok_or(CreateQ04ErrorV1::ChangedCut)?;
-        if slot.is_some() || !history.may_append(index) {
-            return Err(CreateQ04ErrorV1::ChangedCut);
-        }
-        let original = RootOriginalInputLoanV1 {
-            startup: self.startup.ok_or(CreateQ04ErrorV1::ChangedCut)?, stream: self.stream.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?,
-            peer: self.peer.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?,
-            state: self.state.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?,
-            clock: self.clock.ok_or(CreateQ04ErrorV1::ChangedCut)?,
-            started: self.started.ok_or(CreateQ04ErrorV1::ChangedCut)?, cause: &self.cause,
-        };
-        *slot = Some(self.root.as_mut().ok_or(CreateQ04ErrorV1::ChangedCut)?
-            .q04_append_original_binding_prefix(history,
-                self.stage.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?,
-                &self.source_complete, &original, index));
-        drop(original);
-        if !matches!(slot, Some(Ok(_))) {
-            if let Some(Err(first)) = slot.take() {
-                self.cause.get_mut().get_or_insert(first);
-            }
-            return Err(CreateQ04ErrorV1::ChangedCut);
-        }
-        self.root_history.as_mut().ok_or(CreateQ04ErrorV1::ChangedCut)?.advance_parked_commit();
+        self.append_parked_original_root_commit()?;
         if let Err(debt) = self.require_terminal_held_input_cut(kind) {
             self.postcheck_debt.get_mut().get_or_insert(debt);
             return Err(CreateQ04ErrorV1::ChangedCut);
