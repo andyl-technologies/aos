@@ -23,9 +23,12 @@ use clap::Parser as _;
 struct Arguments {
     #[command(flatten)]
     deployment: crate::native_deployment::NativeDeploymentArgs,
+    /// Verify completion without recovering or applying the deployment.
+    #[arg(long)]
+    verify: bool,
 }
 
-/// Runs host metadata adoption or the fixed initrd receipt handoff.
+/// Runs host adoption, read-only completion verification, or initrd receipt handoff.
 ///
 /// Local source authority comes from the checked committed initrd decision and
 /// the verified image admission. The receipt's signer label is not a signature.
@@ -36,7 +39,8 @@ struct Arguments {
 /// # Errors
 /// Returns an error for invalid invocation, missing or uncommitted metadata
 /// authority, changed source identities, admission or evaluation failure, or a
-/// failed native activation, recovery, or receipt transfer to the host store.
+/// failed native activation, recovery, completion verification, or receipt
+/// transfer to the host store.
 pub fn run_from_process() -> Result<()> {
     if std::env::args_os()
         .nth(1)
@@ -76,16 +80,27 @@ pub fn run_from_process() -> Result<()> {
         std::path::Path::new("/usr/lib/aos/toplevel"),
     )?;
     command.admission = command.input.join("admission.json");
+    run_host_command(&command, arguments.verify)
+}
+
+fn run_host_command(
+    command: &crate::native_deployment::NativeDeploymentCommand,
+    verify_only: bool,
+) -> Result<()> {
+    if verify_only {
+        return crate::native_deployment::verify(command);
+    }
+
     let cancellation = CancellationToken::default();
     if let Some(number) =
-        crate::native_deployment::recover_profile_publication(&command, &cancellation)?
+        crate::native_deployment::recover_profile_publication(command, &cancellation)?
     {
-        retained::verify(&command, number)?;
-        return crate::native_deployment::apply(&command, &cancellation);
+        retained::verify(command, number)?;
+        return crate::native_deployment::apply(command, &cancellation);
     }
     if !reader::metadata_required()? {
-        return crate::native_deployment::apply(&command, &cancellation);
+        return crate::native_deployment::apply(command, &cancellation);
     }
-    let authorized = reader::read_initial(&command)?;
-    capture::apply(&command, authorized, &cancellation)
+    let authorized = reader::read_initial(command)?;
+    capture::apply(command, authorized, &cancellation)
 }
