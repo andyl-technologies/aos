@@ -303,9 +303,21 @@ in
             cp ${./glib.nix} "$source/glib.nix"
             cp ${./tests/glib-crucible-main-context.c} "$source/tests/glib-crucible-main-context.c"
             cp COPYING "$source/COPYING"
-            sed -e "s|$out|@OUT@|g" -e "s|$dev|@DEV@|g" \
+            # Meson records the builder's pkg-config search path, which names
+            # every build input. Keep the package names as documentation but
+            # erase their store hashes: a retained reference would place the
+            # compiler, binutils, Python and the rest of the build toolchain in
+            # the runtime closure of every image that links GLib.
+            sed -E -e "s|$out|@OUT@|g" -e "s|$dev|@DEV@|g" \
               -e "s|$tools|@TOOLS@|g" -e "s|$source|@SOURCE@|g" \
+              -e "s|${builtins.storeDir}/[0-9a-z]{32}-|${builtins.storeDir}/eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee-|g" \
               build/meson-info/intro-buildoptions.json > "$source/build-options.json"
+            # The corresponding-source output is self-contained text plus the
+            # upstream archive. Fail closed if any text file names a store path.
+            if grep -rIlE "${builtins.storeDir}/[0-9a-df-np-sv-z]{32}-" "$source"; then
+              echo "glib: corresponding source retains a store reference" >&2
+              exit 1
+            fi
             printf '%s\n' "$source" > "$out/nix-support/glib-corresponding-source"
 
             nativePythonRoot=$(dirname "$(dirname "$(command -v python3)")")
