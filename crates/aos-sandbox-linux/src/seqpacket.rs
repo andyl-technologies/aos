@@ -52,10 +52,72 @@ pub use receive_custody::RetainedSeqpacketReceiveErrorV1;
 mod process_tests;
 
 /// A nonblocking, close-on-exec Unix sequenced-packet socket.
-#[derive(Debug)]
 pub struct SeqpacketSocket {
     fd: Option<OwnedFd>,
     peer: ConnectionPeerIdentity,
+    retained_send_flight: Option<OwnedFd>,
+}
+
+impl std::fmt::Debug for SeqpacketSocket {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Preserve the ordinary presentation without exposing failed custody.
+        formatter
+            .debug_struct("SeqpacketSocket")
+            .field("fd", &self.fd)
+            .field("peer", &self.peer)
+            .finish()
+    }
+}
+
+/// Owns one retained send refusal and any original sending descriptor.
+///
+/// The descriptor cannot be extracted or used for I/O. Its retention does not
+/// establish delivery, peer exit, retry eligibility or drained effects.
+pub struct RetainedSeqpacketSendErrorV1 {
+    cause: SeqpacketError,
+    descriptor: Option<OwnedFd>,
+}
+
+impl RetainedSeqpacketSendErrorV1 {
+    /// Borrows the exact typed send refusal without replacing its cause.
+    #[must_use]
+    pub const fn cause(&self) -> &SeqpacketError {
+        &self.cause
+    }
+
+    /// Reports original descriptor custody without exposing an I/O handle.
+    #[must_use]
+    pub fn retains_descriptor(&self) -> bool {
+        self.descriptor.is_some()
+    }
+}
+
+impl std::fmt::Debug for RetainedSeqpacketSendErrorV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RetainedSeqpacketSendErrorV1")
+            .field("cause", &self.cause)
+            .field("retains_descriptor", &self.retains_descriptor())
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for RetainedSeqpacketSendErrorV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "original sequenced-packet send refused: {}", self.cause)
+    }
+}
+
+impl std::error::Error for RetainedSeqpacketSendErrorV1 {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.cause)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum SeqpacketSendDispositionV1 {
+    Legacy,
+    Retained,
 }
 
 /// Owns an admission failure and any original socket created before that failure.
@@ -217,7 +279,11 @@ impl NixOfflineSeqpacketPairV5 {
             }
         };
         pending.armed = false;
-        self.socket = Some(SeqpacketSocket { fd: Some(fd), peer });
+        self.socket = Some(SeqpacketSocket {
+            fd: Some(fd),
+            peer,
+            retained_send_flight: None,
+        });
         Ok(())
     }
 
@@ -442,7 +508,11 @@ impl SeqpacketSocket {
     /// descriptor flags cannot be inspected or changed.
     pub fn from_owned(fd: OwnedFd) -> Result<Self, SeqpacketError> {
         let peer = admit_connected_peer(fd.as_fd())?;
-        Ok(Self { fd: Some(fd), peer })
+        Ok(Self {
+            fd: Some(fd),
+            peer,
+            retained_send_flight: None,
+        })
     }
 
     /// Adopts an original descriptor while retaining rejected admission custody.
@@ -465,7 +535,11 @@ impl SeqpacketSocket {
             return Err(pending.fail(source));
         }
         let (fd, peer) = pending.finish()?;
-        Ok(Self { fd: Some(fd), peer })
+        Ok(Self {
+            fd: Some(fd),
+            peer,
+            retained_send_flight: None,
+        })
     }
 
     /// Closes the transport while retaining its pinned connection identity.
@@ -527,12 +601,64 @@ impl SeqpacketSocket {
     /// Returns [`SeqpacketError::WouldBlock`] under backpressure, or an error
     /// if the socket is closed or the kernel does not accept the whole record.
     pub fn send(&mut self, payload: &[u8]) -> Result<(), SeqpacketError> {
+        self.send_with_disposition(payload, SeqpacketSendDispositionV1::Legacy)
+    }
+
+    /// Sends once while retaining the original descriptor on every refusal.
+    ///
+    /// Only the same full successful send restores the original active slot.
+    /// An unfinished or unwound call keeps its descriptor privately fenced in
+    /// this socket; ordinary I/O and later retained calls cannot revive it.
+    /// Neither a returned error nor a successful send proves peer drain.
+    ///
+    /// # Errors
+    ///
+    /// Returns the actual typed send cause with the original descriptor when
+    /// acquired. Backpressure and interruption also permanently fence this
+    /// selected attempt. A previously closed or unfinished socket is refused
+    /// without taking any earlier failed flight's custody.
+    pub fn send_retaining(&mut self, payload: &[u8]) -> Result<(), RetainedSeqpacketSendErrorV1> {
+        if self.retained_send_flight.is_some() || self.fd.is_none() {
+            return Err(RetainedSeqpacketSendErrorV1 {
+                cause: SeqpacketError::Closed,
+                descriptor: None,
+            });
+        }
+
+        // The original owner is resident and normal I/O is revoked before the
+        // first fallible payload/descriptor/native operation. Unwind cannot
+        // restore this slot or dispose it through a temporary local owner.
+        self.retained_send_flight = self.fd.take();
+        match self.send_with_disposition(payload, SeqpacketSendDispositionV1::Retained) {
+            Ok(()) => {
+                self.fd = self.retained_send_flight.take();
+                Ok(())
+            }
+            Err(cause) => Err(RetainedSeqpacketSendErrorV1 {
+                cause,
+                descriptor: self.retained_send_flight.take(),
+            }),
+        }
+    }
+
+    fn send_with_disposition(
+        &mut self,
+        payload: &[u8],
+        disposition: SeqpacketSendDispositionV1,
+    ) -> Result<(), SeqpacketError> {
         if payload.is_empty() {
             return Err(SeqpacketError::EmptyRecord);
         }
-        let sent = uapi::send_seqpacket(self.borrow_fd()?, payload).map_err(map_kernel_error)?;
+        let fd = match disposition {
+            SeqpacketSendDispositionV1::Legacy => self.borrow_fd()?,
+            SeqpacketSendDispositionV1::Retained => self.retained_send_flight.as_ref()
+                .map(AsFd::as_fd).ok_or(SeqpacketError::Closed)?,
+        };
+        let sent = uapi::send_seqpacket(fd, payload).map_err(map_kernel_error)?;
         if sent != payload.len() {
-            self.fd.take();
+            if matches!(disposition, SeqpacketSendDispositionV1::Legacy) {
+                self.fd.take();
+            }
             return Err(SeqpacketError::PartialSend {
                 expected: payload.len(),
                 actual: sent,
@@ -1521,6 +1647,31 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[test]
+    fn retained_send_refusal_keeps_the_typed_native_classification() {
+        // Pure error DATA; no socket, descriptor or peer is fabricated.
+        let failure = RetainedSeqpacketSendErrorV1 {
+            cause: SeqpacketError::PartialSend { expected: 4, actual: 3 },
+            descriptor: None,
+        };
+
+        assert!(matches!(failure.cause(), SeqpacketError::PartialSend { expected: 4, actual: 3 }));
+        assert!(!failure.retains_descriptor());
+        assert!(std::error::Error::source(&failure)
+            .and_then(|cause| cause.downcast_ref::<SeqpacketError>()).is_some());
+    }
+
+    #[test]
+    fn closed_send_refusal_does_not_claim_descriptor_custody() {
+        let failure = RetainedSeqpacketSendErrorV1 {
+            cause: SeqpacketError::Closed,
+            descriptor: None,
+        };
+
+        assert!(matches!(failure.cause(), SeqpacketError::Closed));
+        assert!(!failure.retains_descriptor());
+    }
 
     fn pair() -> (SeqpacketSocket, SeqpacketSocket) {
         let (left, right) = uapi::seqpacket_pair().expect("create seqpacket pair");

@@ -17,6 +17,7 @@ use std::num::NonZeroU64;
 use sha2::Digest as _;
 
 mod root_accepted;
+mod relay;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum HeldStageV5 {
@@ -44,6 +45,7 @@ pub(super) struct OriginalSourceHeldV5 {
     boundary: Option<OriginalProducerErrorV5>,
     postcheck_debt: Option<OriginalProducerErrorV5>,
     root_disposition: Option<root_accepted::OriginalSourceRootDispositionV5>,
+    relay: Option<relay::OriginalSourceRelayV5>,
 }
 
 impl OriginalSourceHeldV5 {
@@ -62,6 +64,7 @@ impl OriginalSourceHeldV5 {
             boundary: None,
             postcheck_debt: None,
             root_disposition: None,
+            relay: None,
         }
     }
 
@@ -72,6 +75,7 @@ impl OriginalSourceHeldV5 {
             .or_else(|| self.actions.iter().find_map(|result| {
                 result.as_ref()?.as_ref().err().map(|cause| cause as _)
             }))
+            .or_else(|| self.relay.as_ref()?.failure(&self.signatures))
             .or_else(|| match &self.root_disposition {
                 Some(child) => child.failure(&self.signatures),
                 None => self.signatures.failure(),
@@ -598,6 +602,8 @@ impl FixedProviderOwnerV1 {
             Append::HeldStored => child.phase6.as_ref(),
             Append::RootDispositionPrepared => child.root_disposition.as_ref()
                 .and_then(root_accepted::OriginalSourceRootDispositionV5::phase7_record),
+            Append::RelayStored => child.relay.as_ref()
+                .and_then(relay::OriginalSourceRelayV5::phase7_record),
             _ => None,
         }.ok_or(ProviderLedgerError::Unavailable)?;
         let key = native_completion_key_v2(expected.original().acquisition_id);

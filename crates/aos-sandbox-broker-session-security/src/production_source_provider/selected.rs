@@ -557,11 +557,11 @@ impl ProductionSelectedSourceProviderOriginalV1 {
         None
     }
 
-    /// Advances the SAME original pair through local Held and Complete transmission.
+    /// Advances the SAME original pair through stored relay5 and local delivery.
     ///
     /// The private owner, catalog originals and original deadline remain
     /// resident. Actual completion causes precede distinct later bookend debt.
-    /// A local send is not Root acceptance, relay, settlement or drain.
+    /// A local send is not a remote ACK, settlement or drain.
     ///
     /// # Errors
     ///
@@ -607,7 +607,7 @@ impl ProductionSelectedSourceProviderOriginalV1 {
             return None;
         }
         let progress = match self.owner.as_mut() {
-            Some(owner) => owner.advance_original_native_root_disposition_v5(
+            Some(owner) => owner.advance_original_native_relay_v5(
                 &self.catalog.publication.bytes, &self.catalog.rows.bytes,
             ),
             None => {
@@ -678,7 +678,7 @@ impl ProductionSelectedSourceProviderOriginalV1 {
     /// Lends actual retained failure custody without any observation or retry.
     pub fn failure(&self) -> Option<ProductionSelectedSourceProviderFailureRefV1<'_>> {
         if let Some(cause) = self.owner.as_ref()
-            .and_then(FixedProviderOwnerV1::original_completion_failure_v5)
+            .and_then(FixedProviderOwnerV1::original_relay_failure_v5)
         {
             return Some(ProductionSelectedSourceProviderFailureRefV1::Completion(cause));
         }
@@ -723,7 +723,7 @@ impl ProductionSelectedSourceProviderOriginalV1 {
         }
         // Splitting these resident fields avoids a self-borrowing stored view.
         if let Some(cause) = self.owner.as_ref()
-            .and_then(FixedProviderOwnerV1::original_completion_failure_v5)
+            .and_then(FixedProviderOwnerV1::original_relay_failure_v5)
         {
             return ProductionSelectedSourceProviderFailureRefV1::Completion(cause);
         }

@@ -78,6 +78,7 @@ pub struct OriginalSourceProtectedReadbackV5 {
     original_native_signing_attempted: std::cell::Cell<bool>,
     original_completion_signing: std::cell::Cell<u8>,
     original_held_signing_attempted: std::cell::Cell<bool>,
+    original_relay_signing_attempted: std::cell::Cell<bool>,
 }
 
 enum OriginalHeldBasisPurposeV5<'control> {
@@ -87,6 +88,16 @@ enum OriginalHeldBasisPurposeV5<'control> {
         &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
         &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
         &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::PreparedNativeHeldControlV1,
+    ),
+    RelayPreparation(
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::PreparedNativeHeldControlV1,
+    ),
+    RelayDelivery(
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
     ),
 }
 
@@ -318,6 +329,11 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
         };
         let before = read(cut.before_rows())?;
         let after = read(cut.after_rows())?;
+        let relay_headroom = matches!(
+            &purpose,
+            OriginalHeldBasisPurposeV5::RelayPreparation(..)
+                | OriginalHeldBasisPurposeV5::RelayDelivery(..)
+        );
         let step = match purpose {
             OriginalHeldBasisPurposeV5::Preparation(exact) => {
                 if before.suffix().phase() != 4 || after.suffix().phase() != 5
@@ -339,7 +355,8 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
                 }
                 SourceNativeHeldStepV1::HeldStored
             }
-            OriginalHeldBasisPurposeV5::RootDisposition(held, root4, relay) => {
+            OriginalHeldBasisPurposeV5::RootDisposition(held, root4, relay)
+            | OriginalHeldBasisPurposeV5::RelayPreparation(held, root4, relay) => {
                 if before.suffix().phase() != 6 || after.suffix().phase() != 7
                     || before.suffix().prepared().is_some()
                     || after.suffix().prepared() != Some(relay)
@@ -354,6 +371,24 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
                     return Err(invalid("original Root disposition phase7 changed"));
                 }
                 SourceNativeHeldStepV1::RootDispositionPrepared
+            }
+            OriginalHeldBasisPurposeV5::RelayDelivery(held, root4, relay) => {
+                if before.suffix().phase() != 7 || after.suffix().phase() != 7
+                    || before.suffix().prepared() != Some(relay.prepared())
+                    || after.suffix().prepared().is_some()
+                    || before.suffix().control(NativeHeldControlKindV1::ProviderHeld) != Some(held)
+                    || after.suffix().control(NativeHeldControlKindV1::ProviderHeld) != Some(held)
+                    || before.suffix().control(NativeHeldControlKindV1::RootAccepted) != Some(root4)
+                    || after.suffix().control(NativeHeldControlKindV1::RootAccepted) != Some(root4)
+                    || before.suffix().control(NativeHeldControlKindV1::ProviderRelay).is_some()
+                    || after.suffix().control(NativeHeldControlKindV1::ProviderRelay) != Some(relay)
+                    || held.kind() != NativeHeldControlKindV1::ProviderHeld
+                    || root4.kind() != NativeHeldControlKindV1::RootAccepted
+                    || relay.kind() != NativeHeldControlKindV1::ProviderRelay
+                {
+                    return Err(invalid("original relay signed phase7 changed"));
+                }
+                SourceNativeHeldStepV1::RelayStored
             }
         };
         let checkpoints = self.challenges.retained_rows()?;
@@ -378,6 +413,18 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
             || after.suffix().controls().first() != Some(&provenance.root_prepared)
         {
             return Err(invalid("original Held Applying association"));
+        }
+        if relay_headroom {
+            let journal = &self.authority.journal;
+            let comparison = journal.source_original_replay
+                .compare_cached(&readback.rows, None, journal.limits)?;
+            super::replay::require_advisory_bounds(
+                &comparison,
+                journal.limits,
+                journal.file.metadata()?.len(),
+                journal.committed_transactions,
+                journal.next_sequence,
+            )?;
         }
         self.validate_readback(readback)?;
         Ok(origin)
@@ -420,6 +467,64 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
         }
         self.original_held_signing_basis_v5(readback, acquisition, exact)?;
         Ok(())
+    }
+
+    /// Checks unsigned relay5 against the same genuine current phase7 cut.
+    ///
+    /// # Errors
+    ///
+    /// Refuses changed Held3, Root4, unsigned preparation, original lineage,
+    /// physical readback, complete graph, Spent or actual all-eight/NEXT limits.
+    pub fn original_relay_signing_basis_v5(
+        &self,
+        readback: &OriginalSourceProtectedReadbackV5,
+        acquisition: ObjectDigest,
+        held: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        root4: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        relay: &aos_sandbox_source_provider_protocol::native_held_completion::frame::PreparedNativeHeldControlV1,
+    ) -> Result<&SourceOriginalAdmissionDataV5, JournalError> {
+        self.original_held_basis_v5(
+            readback, acquisition, OriginalHeldBasisPurposeV5::RelayPreparation(held, root4, relay),
+        )
+    }
+
+    /// Consumes the distinct relay signing latch before any fallible basis work.
+    ///
+    /// # Errors
+    ///
+    /// Refuses repeated signing or a foreign/stale unsigned phase7 cut, complete
+    /// original graph, Spent history or actual current headroom. Failure cannot
+    /// reset this actual readback's latch or create a signing permit.
+    pub fn claim_original_relay_signing_v5(
+        &self,
+        readback: &OriginalSourceProtectedReadbackV5,
+        acquisition: ObjectDigest,
+        held: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        root4: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        relay: &aos_sandbox_source_provider_protocol::native_held_completion::frame::PreparedNativeHeldControlV1,
+    ) -> Result<(), JournalError> {
+        claim_original_relay_once_v5(&readback.original_relay_signing_attempted)?;
+        self.original_relay_signing_basis_v5(readback, acquisition, held, root4, relay)?;
+        Ok(())
+    }
+
+    /// Borrows the actual signed7-to7 relay cut without granting delivery.
+    ///
+    /// # Errors
+    ///
+    /// Refuses stale or substituted signed/unsigned relay, Held3, Root4, complete
+    /// original graph, Spent lineage or actual all-eight/NEXT headroom.
+    pub fn original_relay_delivery_basis_v5(
+        &self,
+        readback: &OriginalSourceProtectedReadbackV5,
+        acquisition: ObjectDigest,
+        held: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        root4: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        relay: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+    ) -> Result<&SourceOriginalAdmissionDataV5, JournalError> {
+        self.original_held_basis_v5(
+            readback, acquisition, OriginalHeldBasisPurposeV5::RelayDelivery(held, root4, relay),
+        )
     }
 
     /// Checks the remaining envelope on the actual phase-two cut before spend.
@@ -1011,6 +1116,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
                 original_native_signing_attempted: std::cell::Cell::new(false),
                 original_completion_signing: std::cell::Cell::new(0),
                 original_held_signing_attempted: std::cell::Cell::new(false),
+                original_relay_signing_attempted: std::cell::Cell::new(false),
             });
 
             self.authority.journal.complete_source_original_replay_v5(self.challenges)?;
@@ -1086,6 +1192,38 @@ fn require_fixed_location(journal: &Journal) -> Result<(), JournalError> {
         return Err(JournalError::ProtectedBoundary);
     }
     Ok(())
+}
+
+fn claim_original_relay_once_v5(attempted: &std::cell::Cell<bool>) -> Result<(), JournalError> {
+    if attempted.replace(true) {
+        return Err(invalid("original relay signing already attempted"));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod relay_latch_tests {
+    //! UNRUN latch DATA only; no physical Journal/readback is fabricated.
+
+    use super::*;
+
+    #[test]
+    fn relay_purpose_is_consumed_once_and_stays_consumed() {
+        let attempted = std::cell::Cell::new(false);
+
+        assert!(claim_original_relay_once_v5(&attempted).is_ok());
+        assert!(attempted.get());
+        assert!(claim_original_relay_once_v5(&attempted).is_err());
+        assert!(attempted.get());
+    }
+
+    #[test]
+    fn preclosed_latch_cannot_create_another_attempt() {
+        let attempted = std::cell::Cell::new(true);
+
+        assert!(claim_original_relay_once_v5(&attempted).is_err());
+        assert!(attempted.get());
+    }
 }
 
 #[cfg(test)]

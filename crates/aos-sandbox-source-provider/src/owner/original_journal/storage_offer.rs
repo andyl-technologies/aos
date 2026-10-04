@@ -92,6 +92,10 @@ impl OriginalStorageOfferV5 {
         &mut self.transport
     }
 
+    pub(super) fn original_transport_ref_v5(&self) -> &OriginalStorageOfferTransportV5 {
+        &self.transport
+    }
+
     fn pending() -> Self {
         Self {
             stage: OfferStageV5::StagePackets,

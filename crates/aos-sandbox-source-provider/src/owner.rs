@@ -145,6 +145,12 @@ pub enum FixedProviderOriginalCompletionProgressV5 {
     /// Root4 and an unsigned relay were read back in the same phase7 transaction.
     /// This is not a relay send, acknowledgement, settlement or release permit.
     RootDispositionPrepared,
+    /// The same signed relay5 and Source5 successor were read back at phase7.
+    /// This is DATA only and does not authorize delivery or remote settlement.
+    RelayStored,
+    /// Relay5 was locally sent once to the same original Storage connection.
+    /// This reports no remote ACK, interest retirement or physical drain.
+    RelaySent,
     /// All returned originals and the first cause remain permanently held.
     Closed,
 }

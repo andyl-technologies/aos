@@ -65,6 +65,10 @@ impl OriginalSourceRootDispositionV5 {
         self.phase7.as_ref()
     }
 
+    pub(super) fn relay_preparation(&self) -> Option<&PreparedNativeHeldControlV1> {
+        self.relay.as_ref()
+    }
+
     pub(super) fn failure<'owner>(
         &'owner self,
         signatures: &'owner OriginalProviderHeldSignaturesV5,
