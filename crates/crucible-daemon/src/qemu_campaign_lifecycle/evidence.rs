@@ -265,6 +265,23 @@ where
         Ok(entries)
     }
 
+    fn publish_released_host_outcomes(
+        &mut self,
+        configuration: &Configuration,
+    ) -> Result<Option<QuantumOutcome>, SchedulerError> {
+        let outcome = self
+            .lifecycle
+            .publish_released_host_outcomes(configuration)?;
+        if let Some(outcome) = &outcome {
+            self.evidence.record(
+                self.lifecycle.completed_quanta(),
+                outcome.frontier,
+                &outcome.event_log_entries,
+            )?;
+        }
+        Ok(outcome)
+    }
+
     fn capture_attempt_checkpoint(
         &mut self,
         context: &AttemptExecutionContext,

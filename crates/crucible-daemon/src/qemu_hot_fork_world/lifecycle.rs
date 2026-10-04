@@ -549,6 +549,13 @@ where
             .apply_selectable_reply(parent, decision, selected, pending, reply)
     }
 
+    fn publish_released_host_outcomes(
+        &mut self,
+        configuration: &Configuration,
+    ) -> Result<Option<QuantumOutcome>, SchedulerError> {
+        self.lifecycle.publish_released_host_outcomes(configuration)
+    }
+
     fn capture_attempt_checkpoint(
         &mut self,
         context: &AttemptExecutionContext,

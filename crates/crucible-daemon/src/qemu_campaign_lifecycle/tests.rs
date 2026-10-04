@@ -720,6 +720,7 @@ struct FakeFreshLifecycle {
     replies: Arc<Mutex<Vec<crucible_protocol::SelectionReply>>>,
     signal_fault_branches: VecDeque<crucible::SignalFaultCampaignBranch>,
     terminal_after_replay: bool,
+    released_host_outcome: Option<(u64, crucible::QuantumOutcome, bool)>,
     checkpoint_ready: bool,
     fingerprint_error: bool,
     fingerprint_node_override: Arc<Mutex<Option<crucible::NodeId>>>,
@@ -811,6 +812,25 @@ impl QemuFreshAttemptLifecycleOwner for FakeFreshLifecycle {
             event_log_offset: crucible::EventLogOffset::default(),
             scheduler_quiescence: None,
         })
+    }
+
+    fn publish_released_host_outcomes(
+        &mut self,
+        _configuration: &Configuration,
+    ) -> Result<Option<crucible::QuantumOutcome>, SchedulerError> {
+        if self
+            .released_host_outcome
+            .as_ref()
+            .is_none_or(|(after, _, _)| self.completed_quanta < *after)
+        {
+            return Ok(None);
+        }
+        let (_, outcome, terminal) = self
+            .released_host_outcome
+            .take()
+            .expect("eligible retained fixture outcome");
+        self.terminal_after_replay = terminal;
+        self.complete_quantum(outcome).map(Some)
     }
 
     fn completed_quanta(&self) -> u64 {
@@ -973,6 +993,7 @@ fn observed_lifecycle_retains_only_successful_execution_evidence() {
         replies: Arc::new(Mutex::new(Vec::new())),
         signal_fault_branches: VecDeque::new(),
         terminal_after_replay: false,
+        released_host_outcome: None,
         checkpoint_ready: true,
         fingerprint_error: false,
         fingerprint_node_override: Arc::new(Mutex::new(None)),
@@ -1076,6 +1097,7 @@ fn observed_lifecycle_rejects_a_mismatched_terminal_fingerprint_atomically() {
         replies: Arc::new(Mutex::new(Vec::new())),
         signal_fault_branches: VecDeque::new(),
         terminal_after_replay: false,
+        released_host_outcome: None,
         checkpoint_ready: true,
         fingerprint_error: false,
         fingerprint_node_override: Arc::clone(&fingerprint_node_override),
@@ -1126,6 +1148,7 @@ fn observed_lifecycle_does_not_publish_staged_fingerprints_when_cleanup_fails() 
         replies: Arc::new(Mutex::new(Vec::new())),
         signal_fault_branches: VecDeque::new(),
         terminal_after_replay: false,
+        released_host_outcome: None,
         checkpoint_ready: true,
         fingerprint_error: false,
         fingerprint_node_override: Arc::new(Mutex::new(None)),
@@ -1473,6 +1496,7 @@ impl QemuFreshAttemptLifecycleFactory for FakeFreshLifecycleFactory {
             replies: Arc::new(Mutex::new(Vec::new())),
             signal_fault_branches: signal_fault_replay.branches().iter().cloned().collect(),
             terminal_after_replay: self.terminal_after_replay,
+            released_host_outcome: None,
             checkpoint_ready: self.checkpoint_ready,
             fingerprint_error: false,
             fingerprint_node_override: Arc::new(Mutex::new(None)),
@@ -1567,6 +1591,7 @@ impl QemuFreshAttemptLifecycleFactory for PromotionRecordingFreshLifecycleFactor
             replies: Arc::new(Mutex::new(Vec::new())),
             signal_fault_branches: signal_fault_replay.branches().iter().cloned().collect(),
             terminal_after_replay: false,
+            released_host_outcome: None,
             checkpoint_ready: true,
             fingerprint_error: false,
             fingerprint_node_override: Arc::new(Mutex::new(None)),
@@ -3929,3 +3954,6 @@ fn test_checkpoint_capture() -> CapturedAttemptCheckpoint {
 fn test_checkpoint_product() -> AttemptExecutionProduct {
     AttemptExecutionProduct::exact_checkpoint(test_checkpoint_capture())
 }
+
+#[path = "tests/released_publication.rs"]
+mod released_publication;

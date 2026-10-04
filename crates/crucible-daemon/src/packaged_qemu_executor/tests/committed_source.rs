@@ -37,12 +37,31 @@ pub(crate) fn wrap_packaged_owner(
     owner: ProductionVmLifecycleLoop,
     source: &ScenarioDefForm,
     context: &AttemptExecutionContext,
-) -> Result<impl QemuFreshAttemptLifecycleOwner, Box<dyn std::error::Error>> {
+) -> Result<impl QemuFreshAttemptLifecycleOwner + use<>, Box<dyn std::error::Error>> {
+    wrap_packaged_owner_with_evidence(owner, source, context).map(|(owner, _evidence)| owner)
+}
+
+/// Installs the packaged decorators and retains their original evidence owner.
+///
+/// # Errors
+///
+/// Returns the original factory failure when the supplied owner is refused.
+pub(crate) fn wrap_packaged_owner_with_evidence(
+    owner: ProductionVmLifecycleLoop,
+    source: &ScenarioDefForm,
+    context: &AttemptExecutionContext,
+) -> Result<
+    (
+        impl QemuFreshAttemptLifecycleOwner + use<>,
+        QemuAttemptExecutionEvidence,
+    ),
+    Box<dyn std::error::Error>,
+> {
     let factory = PackagedStatusLifecycleFactory {
         inner: SuppliedLifecycleFactory(Some(owner)),
         lifecycles: PackagedWorldLifecycleTracker::new(),
     };
-    let (mut factory, _evidence) = QemuObservedFreshAttemptLifecycleFactory::with_evidence(factory);
+    let (mut factory, evidence) = QemuObservedFreshAttemptLifecycleFactory::with_evidence(factory);
     let scenario = source.scenario_def();
     let start = Configuration::genesis(scenario.clone());
     factory
@@ -53,5 +72,6 @@ pub(crate) fn wrap_packaged_owner(
             &crucible::SignalFaultCampaignReplayPlan::empty(start.clone()),
             context,
         )
+        .map(|owner| (owner, evidence))
         .map_err(|error| format!("packaged decorator factory failed: {error:?}").into())
 }

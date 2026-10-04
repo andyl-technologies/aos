@@ -448,3 +448,346 @@ fn packaged_decorators_preserve_committed_source_for_complete_driver() -> TestRe
     QemuFreshAttemptLifecycleOwner::shutdown(&mut owner)?;
     checks
 }
+
+#[test]
+fn replayed_guest_reply_retains_the_settled_scheduler_coordinate() -> TestResult {
+    replayed_guest_reply_at_start(true)?;
+    replayed_guest_reply_at_start(false)
+}
+
+fn replayed_guest_reply_at_start(already_held: bool) -> TestResult {
+    let expected_quanta = if already_held { 3 } else { 2 };
+    let source_input = held_source_input()?;
+    let input = input_for_scenario(
+        source_input.scenario().clone(),
+        StopCondition::ExecutionQuanta(expected_quanta),
+    );
+    let directory = tempfile::tempdir()?;
+    let root = directory.path().join("root.img");
+    std::fs::write(&root, b"scripted immutable root")?;
+    let config = ProductionVmLifecycleConfig::new(
+        "scripted-qemu",
+        "scripted-plugin",
+        "scripted-kernel",
+        root,
+        directory.path().join("runs"),
+    )
+    .with_run_ceiling_ticks(100_000)
+    .with_quantum_budget(5_000)
+    .with_maximum_host_workers(2);
+    let mut owner = build_production_vm_lifecycle_loop_with_launcher(
+        &input.scenario().scenario_def(),
+        input.scenario(),
+        &config,
+        HeldSourceLauncher {
+            world: input.scenario().world().clone(),
+        },
+    )?;
+    let parent = starting_configuration(&input);
+    let empty_start = crate::qemu_campaign_lifecycle::materialize_start_from::<(), ()>(
+        &mut owner,
+        &input,
+        parent.clone(),
+        &parent,
+        &context(),
+        QemuFreshStartMaterialization::genesis(),
+    )
+    .map_err(|error| format!("already matching empty start: {error:?}"))?;
+    assert_eq!(owner.completed_quanta(), 0);
+    assert!(empty_start.into_parts().0.is_empty());
+    let materialization = if already_held {
+        let outcome = QuantumLoop::drive_quantum(
+            &mut owner,
+            QuantumRequest {
+                configuration: parent.clone(),
+                control: Vec::new(),
+            },
+        )?;
+        assert_eq!(owner.completed_quanta(), 1);
+        let bytes = outcome
+            .event_log_entries
+            .iter()
+            .map(SchedulerEventLogEntry::canonical_material_len)
+            .sum();
+        QemuFreshStartMaterialization::from_origin_parts(
+            outcome.event_log_entries,
+            bytes,
+            owner.completed_quanta(),
+            outcome.frontier,
+            outcome.scheduler_quiescence,
+        )
+    } else {
+        QemuFreshStartMaterialization::genesis()
+    };
+    // This is the original scripted transport input. Replay must independently
+    // bind its actual pending request to the same authenticated opportunity.
+    let pending = crucible_qemu::QemuNodeSelectablePendingRequest::from_test_parts(
+        node("router-a"),
+        SelectablePlanPendingRequest::new(
+            SelectionRequest::new(9, "product.recovery", "routing-epoch-7", None, 256)?,
+            1,
+            50,
+            0,
+            0x1000,
+        ),
+    );
+    let discovery = resolve_guest_selectable(
+        input.lineage().scenario(),
+        input.scenario(),
+        pending.node(),
+        pending.pending(),
+    )?;
+    let parent_id = ConfigurationId::from_hash(CampaignHash::from_bytes(parent.id().bytes));
+    let selection = Selection::new_campaign_branch(
+        discovery.opportunity(),
+        discovery.domain(),
+        ChoiceValue::Boolean(true),
+        discovery.opportunity().branch_point_id(parent_id),
+    )?;
+    let target = try_step(
+        &parent,
+        Decision::Selection(SelectionDecision::new(&selection)),
+    )?;
+    let context = context();
+    let replay = crate::qemu_campaign_lifecycle::materialize_start_from::<(), ()>(
+        &mut owner,
+        &input,
+        parent,
+        &target,
+        &context,
+        materialization,
+    )
+    .map_err(|error| format!("replay original guest reply: {error:?}"))?;
+    assert_eq!(
+        owner.completed_quanta(),
+        expected_quanta,
+        "reply commits original held completion and any admitted catch-up"
+    );
+    let settled = owner.resume_state()?.into_parts();
+    assert!(owner.publish_released_host_outcomes(&target)?.is_none());
+    let result = {
+        let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+        QemuFreshModeledDriver::new().drive(&mut lifecycle, &input, &context, replay)
+    };
+    QuantumLoop::shutdown(&mut owner)?;
+
+    let result = result.map_err(|error| format!("drive settled start: {error:?}"))?;
+    let QemuFreshDriveOutcome::Observation(observation) = result else {
+        return Err("settled start did not produce an observation".into());
+    };
+    assert_eq!(observation.completed_quanta, expected_quanta);
+    assert_eq!(observation.configuration, target);
+    assert_eq!(observation.event_log, settled.1);
+    assert_eq!(observation.terminal_at, settled.4);
+    assert_eq!(observation.terminal_quiescence, Some(settled.5));
+    Ok(())
+}
+
+#[test]
+fn packaged_decorators_publish_replayed_held_suffix_into_exact_evidence() -> TestResult {
+    let expected_quanta = 3;
+    let source_input = held_source_input()?;
+    let input = input_for_scenario(
+        source_input.scenario().clone(),
+        StopCondition::ExecutionQuanta(expected_quanta),
+    );
+    let directory = tempfile::tempdir()?;
+    let root = directory.path().join("root.img");
+    std::fs::write(&root, b"scripted immutable root")?;
+    let config = ProductionVmLifecycleConfig::new(
+        "scripted-qemu",
+        "scripted-plugin",
+        "scripted-kernel",
+        root,
+        directory.path().join("runs"),
+    )
+    .with_run_ceiling_ticks(100_000)
+    .with_quantum_budget(5_000)
+    .with_maximum_host_workers(2);
+    let owner = build_production_vm_lifecycle_loop_with_launcher(
+        &input.scenario().scenario_def(),
+        input.scenario(),
+        &config,
+        HeldSourceLauncher {
+            world: input.scenario().world().clone(),
+        },
+    )?;
+    let (mut owner, evidence) =
+        crate::packaged_qemu_executor::tests::committed_source::wrap_packaged_owner_with_evidence(
+            owner,
+            input.scenario(),
+            &context(),
+        )?;
+    let parent = starting_configuration(&input);
+    let empty_start = crate::qemu_campaign_lifecycle::materialize_start_from::<(), ()>(
+        &mut owner,
+        &input,
+        parent.clone(),
+        &parent,
+        &context(),
+        QemuFreshStartMaterialization::genesis(),
+    )
+    .map_err(|error| format!("already matching empty start: {error:?}"))?;
+    assert_eq!(owner.completed_quanta(), 0);
+    assert!(empty_start.into_parts().0.is_empty());
+    let outcome = QemuFreshAttemptLifecycleOwner::drive_quantum(
+        &mut owner,
+        QuantumRequest {
+            configuration: parent.clone(),
+            control: Vec::new(),
+        },
+    )?;
+    assert_eq!(owner.completed_quanta(), 1);
+    let bytes = outcome
+        .event_log_entries
+        .iter()
+        .map(SchedulerEventLogEntry::canonical_material_len)
+        .sum();
+    let materialization = QemuFreshStartMaterialization::from_origin_parts(
+        outcome.event_log_entries,
+        bytes,
+        owner.completed_quanta(),
+        outcome.frontier,
+        outcome.scheduler_quiescence,
+    );
+    // This is the original scripted transport input. Replay must independently
+    // bind its actual pending request to the same authenticated opportunity.
+    let pending = crucible_qemu::QemuNodeSelectablePendingRequest::from_test_parts(
+        node("router-a"),
+        SelectablePlanPendingRequest::new(
+            SelectionRequest::new(9, "product.recovery", "routing-epoch-7", None, 256)?,
+            1,
+            50,
+            0,
+            0x1000,
+        ),
+    );
+    let discovery = resolve_guest_selectable(
+        input.lineage().scenario(),
+        input.scenario(),
+        pending.node(),
+        pending.pending(),
+    )?;
+    let parent_id = ConfigurationId::from_hash(CampaignHash::from_bytes(parent.id().bytes));
+    let selection = Selection::new_campaign_branch(
+        discovery.opportunity(),
+        discovery.domain(),
+        ChoiceValue::Boolean(true),
+        discovery.opportunity().branch_point_id(parent_id),
+    )?;
+    let target = try_step(
+        &parent,
+        Decision::Selection(SelectionDecision::new(&selection)),
+    )?;
+    let context = context();
+    let replay = crate::qemu_campaign_lifecycle::materialize_start_from::<(), ()>(
+        &mut owner,
+        &input,
+        parent,
+        &target,
+        &context,
+        materialization,
+    )
+    .map_err(|error| format!("replay original guest reply: {error:?}"))?;
+    assert_eq!(
+        owner.completed_quanta(),
+        expected_quanta,
+        "reply commits original held completion and any admitted catch-up"
+    );
+    let settled = evidence.snapshot()?;
+    assert!(owner.publish_released_host_outcomes(&target)?.is_none());
+    let result = {
+        let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+        QemuFreshModeledDriver::new().drive(&mut lifecycle, &input, &context, replay)
+    };
+    QemuFreshAttemptLifecycleOwner::shutdown(&mut owner)?;
+
+    let result = result.map_err(|error| format!("drive settled start: {error:?}"))?;
+    let QemuFreshDriveOutcome::Observation(observation) = result else {
+        return Err("settled start did not produce an observation".into());
+    };
+    assert_eq!(observation.completed_quanta, expected_quanta);
+    assert_eq!(observation.configuration, target);
+    assert_eq!(observation.event_log, settled.event_log_entries());
+    assert_eq!(observation.terminal_at, settled.frontier());
+    assert_eq!(settled.quanta(), expected_quanta);
+    Ok(())
+}
+
+#[test]
+fn matching_start_retains_unresolved_guest_choice_for_ordinary_discovery() -> TestResult {
+    let input = held_source_input()?;
+    let directory = tempfile::tempdir()?;
+    let root = directory.path().join("root.img");
+    std::fs::write(&root, b"scripted immutable root")?;
+    let config = ProductionVmLifecycleConfig::new(
+        "scripted-qemu",
+        "scripted-plugin",
+        "scripted-kernel",
+        root,
+        directory.path().join("runs"),
+    )
+    .with_run_ceiling_ticks(100_000)
+    .with_quantum_budget(5_000)
+    .with_maximum_host_workers(2);
+    let mut owner = build_production_vm_lifecycle_loop_with_launcher(
+        &input.scenario().scenario_def(),
+        input.scenario(),
+        &config,
+        HeldSourceLauncher {
+            world: input.scenario().world().clone(),
+        },
+    )?;
+    let parent = starting_configuration(&input);
+    let outcome = QuantumLoop::drive_quantum(
+        &mut owner,
+        QuantumRequest {
+            configuration: parent.clone(),
+            control: Vec::new(),
+        },
+    )?;
+    let before = owner.resume_state()?.into_parts();
+    let bytes = outcome
+        .event_log_entries
+        .iter()
+        .map(SchedulerEventLogEntry::canonical_material_len)
+        .sum();
+    let replay = QemuFreshStartMaterialization::from_origin_parts(
+        outcome.event_log_entries,
+        bytes,
+        owner.completed_quanta(),
+        outcome.frontier,
+        outcome.scheduler_quiescence,
+    );
+
+    let replay = crate::qemu_campaign_lifecycle::materialize_start_from::<(), ()>(
+        &mut owner,
+        &input,
+        parent.clone(),
+        &parent,
+        &context(),
+        replay,
+    )
+    .map_err(|error| format!("matching unresolved start: {error:?}"))?;
+    assert_eq!(owner.resume_state()?.into_parts(), before);
+    let result = {
+        let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+        QemuFreshModeledDriver::new().drive(&mut lifecycle, &input, &context(), replay)
+    };
+    QuantumLoop::shutdown(&mut owner)?;
+
+    let QemuFreshDriveOutcome::Observation(observation) =
+        result.map_err(|error| format!("discover matching unresolved start: {error:?}"))?
+    else {
+        return Err("matching unresolved start did not retain an observation".into());
+    };
+    assert_eq!(observation.completed_quanta, before.3);
+    assert_eq!(observation.event_log, before.1);
+    assert_eq!(observation.terminal_at, before.4);
+    assert!(matches!(
+        observation.stop,
+        ModeledStop::Reached(StopCondition::NextChoice)
+    ));
+    assert_eq!(observation.discoveries.len(), 1);
+    Ok(())
+}

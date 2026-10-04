@@ -557,3 +557,66 @@ fn committed_request_visibility_refuses_changed_source_counter() -> TestResult {
     lifecycle.shutdown()?;
     Ok(())
 }
+
+#[test]
+fn retained_publication_preserves_unreleased_stop_and_skips_absent_suffix() -> TestResult {
+    let mut lifecycle = stopped_lifecycle(0)?;
+    let pending = lifecycle.drain_pending_selectable_requests()?.remove(0);
+    let (parent, decision, selected, reply) = reply_for(&lifecycle, &pending)?;
+    let before = lifecycle.resume_state()?.into_parts();
+
+    assert!(lifecycle.publish_released_host_outcomes(&parent)?.is_none());
+    assert_eq!(lifecycle.resume_state()?.into_parts(), before);
+    assert!(
+        lifecycle
+            .drive_quantum(QuantumRequest {
+                configuration: parent.clone(),
+                control: Vec::new(),
+            })
+            .is_err()
+    );
+    assert_eq!(lifecycle.resume_state()?.into_parts(), before);
+    lifecycle.apply_selectable_reply(&parent, decision, &selected, &pending, &reply)?;
+    let released = lifecycle.resume_state()?.into_parts();
+    assert!(
+        lifecycle
+            .publish_released_host_outcomes(&selected)?
+            .is_none()
+    );
+    assert_eq!(lifecycle.resume_state()?.into_parts(), released);
+    lifecycle.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn retained_publication_authenticates_parent_and_returns_the_suffix_once() -> TestResult {
+    let mut lifecycle = stopped_lifecycle(1)?;
+    let pending = lifecycle.drain_pending_selectable_requests()?.remove(0);
+    let (parent, decision, selected, reply) = reply_for(&lifecycle, &pending)?;
+    let mut published = lifecycle.resume_state()?.into_parts().1;
+    published
+        .extend(lifecycle.apply_selectable_reply(&parent, decision, &selected, &pending, &reply)?);
+    let committed = lifecycle.resume_state()?.into_parts();
+
+    assert!(lifecycle.publish_released_host_outcomes(&parent).is_err());
+    assert_eq!(lifecycle.resume_state()?.into_parts(), committed);
+    assert!(lifecycle.pending_held_host_outcomes.is_some());
+    let outcome = lifecycle
+        .publish_released_host_outcomes(&selected)?
+        .ok_or("retained suffix absent")?;
+    published.extend(outcome.event_log_entries.clone());
+    assert_eq!(published, lifecycle.resume_state()?.into_parts().1);
+    assert_eq!(lifecycle.completed_quanta(), committed.3);
+    assert_eq!(outcome.frontier, committed.4);
+    assert_eq!(outcome.configuration, committed.0);
+    assert!(lifecycle.pending_held_host_outcomes.is_none());
+    let settled = lifecycle.resume_state()?.into_parts();
+    assert!(
+        lifecycle
+            .publish_released_host_outcomes(&outcome.configuration)?
+            .is_none()
+    );
+    assert_eq!(lifecycle.resume_state()?.into_parts(), settled);
+    lifecycle.shutdown()?;
+    Ok(())
+}

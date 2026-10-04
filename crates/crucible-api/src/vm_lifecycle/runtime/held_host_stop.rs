@@ -342,6 +342,35 @@ impl ProductionVmLifecycleLoop {
         Ok(())
     }
 
+    /// Publishes already committed peer outcomes without admitting another RUN.
+    ///
+    /// An absent retained suffix returns `None`. The original quantum branch
+    /// authenticates the released configuration and operation guards before
+    /// consuming a present suffix, and retains failed publication for retirement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for stale configuration, failed
+    /// operation guard, or failed retained-outcome publication.
+    pub fn publish_released_host_outcomes(
+        &mut self,
+        configuration: &Configuration,
+    ) -> Result<Option<QuantumOutcome>, SchedulerError> {
+        if self.pending_held_host_outcomes.is_none() {
+            // An unreleased guest stop remains available to ordinary discovery.
+            // Absence grants neither publication nor execution authority.
+            return Ok(None);
+        }
+
+        // The exclusive owner observes the pending suffix before entering the
+        // same guarded publication branch; that branch cannot admit a new RUN.
+        self.drive_quantum(QuantumRequest {
+            configuration: configuration.clone(),
+            control: Vec::new(),
+        })
+        .map(Some)
+    }
+
     fn retain_released_host_outcomes(
         &mut self,
         released_configuration: Configuration,
