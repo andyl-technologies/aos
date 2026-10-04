@@ -47,6 +47,9 @@
     inherit pkgs lib;
     src = source;
   };
+  clockReadGuest = import ./phase7-guest-clock-read-guest.nix {
+    inherit pkgs source cargoDeps;
+  };
   guest = import ./_nginx-curl-http-200-guest.nix {inherit pkgs;};
   idleGuest = import ./phase2-qemu-live-plugin-quantum-guest.nix {inherit pkgs;};
   blockRecoveryNanos = 5000000000;
@@ -468,6 +471,21 @@
   timeOwnershipDiagnostic = import ./phase7-time-ownership-live.nix {
     inherit pkgs testing productionFlightCommand rootfsDeps attemptHostSetupScript;
   };
+  guestClockReadEquivalence = import ./phase7-guest-clock-read-live.nix {
+    inherit pkgs testing attemptHostSetupScript;
+    rootfsDeps = rootfsDeps ++ [clockReadGuest];
+    clockReadFlightCommand = ''
+      ${pkgs.coreutils}/bin/timeout -k 15 900 \
+        ${flight}/bin/crucible-qemu-production-plugin-flight \
+        ${pkgs.qemu-crucible}/bin/qemu-system-x86_64 \
+        ${pkgs.crucible-qemu-plugin}/lib/libcrucible_qemu_plugin.so \
+        ${pkgs.linux}/boot/vmlinuz-* \
+        ${clockReadGuest}/initrd.img \
+        ${blockGuest}/initrd.img \
+        ${pkgs.qemu-crucible}/share/qemu/bios-256k.bin \
+        /sys/fs/cgroup/crucible /tmp/attempts/run \
+    '';
+  };
   partitionDiagnostic = testing.mkVMTest {
     name = "crucible-phase4-qemu-clock-partition-diagnostic";
     memory = 8192;
@@ -507,6 +525,7 @@
             blockRecoveryTestScript
             partitionDiagnostic
             timeOwnershipDiagnostic
+            guestClockReadEquivalence
             ;
         };
     };

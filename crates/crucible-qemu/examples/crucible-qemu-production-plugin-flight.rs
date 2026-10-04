@@ -55,6 +55,9 @@ mod partition_probe;
 #[path = "crucible-qemu-production-plugin-flight/time_ownership.rs"]
 mod time_ownership;
 
+#[path = "crucible-qemu-production-plugin-flight/guest_clock_reads.rs"]
+mod guest_clock_reads;
+
 const MEMORY_BYTES: u64 = 512 * 1024 * 1024;
 const DISK_BYTES: u64 = 1024 * 1024 * 1024;
 const RR_SWITCH_QUANTUM: u64 = 4096;
@@ -173,6 +176,10 @@ fn run() -> Result<(), Box<dyn Error>> {
         // The exact four-vCPU guest authenticated readiness after about 110
         // host seconds. Keep a finite per-advance guard with measured headroom.
         .with_completion_timeout(Duration::from_secs(300));
+
+    if guest_clock_reads::requested()? {
+        return guest_clock_reads::run(&mut factory, &config, qemu, reference_trace_output);
+    }
 
     if std::env::var(TIME_OWNERSHIP_ENVIRONMENT).as_deref() == Ok("1") {
         let reference = run_once(&mut factory, &config, qemu, false, None)?;
