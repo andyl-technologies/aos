@@ -51,6 +51,7 @@ in
     runtimeDeps = [
       nix
       systemd
+      aos-boot-storage
       aos-configuration-lower
       packageRuntime
       bash
