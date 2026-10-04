@@ -10,6 +10,7 @@ pkgs.mkDerivation {
   buildDeps = [
     pkgs.coreutils
     pkgs.glib.dev
+    pkgs.grep
     pkgs.python3
   ];
 
@@ -32,6 +33,14 @@ pkgs.mkDerivation {
           --arm ${qemuPackage}/bin/qemu-system-aarch64 \
           --plugin "$PWD/exact-preemption-plugin.so" \
           > result
+
+        for evidence in \
+          'PASS continuation case=x86-direct' \
+          'PASS continuation case=arm-direct' \
+          'PASS continuation case=arm-restore pending-command=true' \
+          'PASS continuation case=x86-input vector=32 irr-confirmed=true'; do
+          grep -Fxq "$evidence" result
+        done
 
         mkdir -p "$out"
         cp result "$out/result"
