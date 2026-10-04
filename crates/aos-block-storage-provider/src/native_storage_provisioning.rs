@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write as _;
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -923,8 +924,13 @@ fn publish_marker(
 
 fn wait_for_label(label: &str, deadline: Instant) -> Result<PathBuf> {
     let path = label_path(label);
+    let _ = writeln!(
+        std::io::stderr(),
+        "storage: waiting for marker label {label}"
+    );
     loop {
         if path.exists() {
+            let _ = writeln!(std::io::stderr(), "storage: observed marker label {label}");
             return fs::canonicalize(&path)
                 .with_context(|| format!("resolving provisioning label {label}"));
         }

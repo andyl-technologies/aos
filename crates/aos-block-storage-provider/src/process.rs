@@ -1,7 +1,7 @@
 //! Exact executable validation and bounded process execution.
 
 use std::fs;
-use std::io::Read as _;
+use std::io::{Read as _, Write as _};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::thread;
@@ -46,6 +46,13 @@ pub fn run_native(path: &Path, arguments: &[&str], remaining_millis: u64) -> Res
         "native executable escapes its store artifact"
     );
     ensure!(remaining_millis > 0, "native command deadline expired");
+    // Native tools have their own captured pipes. Report their lifecycle on the
+    // provider's diagnostic pipe so a host can locate an incomplete operation.
+    let _ = writeln!(
+        std::io::stderr(),
+        "storage: starting {} ({remaining_millis} ms)",
+        path.display()
+    );
     let mut child = Command::new(path)
         .args(arguments)
         .env_clear()
@@ -72,6 +79,11 @@ pub fn run_native(path: &Path, arguments: &[&str], remaining_millis: u64) -> Res
             break status;
         }
         if Instant::now() >= deadline {
+            let _ = writeln!(
+                std::io::stderr(),
+                "storage: deadline expired for {}",
+                path.display()
+            );
             child.kill().context("terminating expired native command")?;
             let _ = child.wait();
             let _ = join_reader(stdout_reader, "stdout");
@@ -80,8 +92,18 @@ pub fn run_native(path: &Path, arguments: &[&str], remaining_millis: u64) -> Res
         }
         thread::sleep(Duration::from_millis(10));
     };
+    let _ = writeln!(
+        std::io::stderr(),
+        "storage: exited {} ({status}); collecting output",
+        path.display()
+    );
     let stdout = join_reader(stdout_reader, "stdout")?;
     let stderr = join_reader(stderr_reader, "stderr")?;
+    let _ = writeln!(
+        std::io::stderr(),
+        "storage: completed {} ({status})",
+        path.display()
+    );
     Ok(Output {
         status,
         stdout,
