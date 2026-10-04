@@ -791,12 +791,29 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Monotone ordered frontiers with exact identity checks and measured growth
   bounds are required before accepting this prerequisite. Existing baseline
   test success does not qualify these missing proofs or the complexity bound;
-  the candidate remains uncommitted and T-DRV-2 remains open.
+  the candidate remains isolated and T-DRV-2 remains open.
   The owning `tree-history-independence` gate now also requires three exact
   selectors for changed internal content-cut divergence, complete completion
   phase attribution, and bounded adoption-frontier work. All six batch
   selectors must execute nonzero tests. This preserves the existing gate and
   requirement IDs and does not qualify the pending implementation.
+  Reviewed isolated editor candidate `2d4bb984124f` now closes these proof and
+  complexity gaps. All 501 core tests pass with zero skips (Nextest run
+  `c72de151-5836-4383-8637-170434049cad`), along with build, strict all-target
+  Clippy/rustdoc, both mandatory formatters and its three actual gates. The
+  history gate executes all six exact selectors. The final delta adds only
+  scoped-helper rustdoc and passes strict docs, both formatters and all three
+  gates again. Combined candidate `8fd890b79f34` is undergoing full trunk
+  qualification; no formal task merge or complete index-maintenance claim follows.
+  The following pure prerequisite compares old/new immutable source frontiers,
+  skips equal subtrees and expands changed, added and removed graft populations
+  with distinct local-hop occurrences. It must report independently checked
+  logical input/data changes and actual discovery work, keeping preparation and
+  validation separate. Three exact source-discovery groups are now required by
+  `checks.terrane.integration.index-evaluation`; absent selectors fail explicitly.
+  The normative `index-tree-maintenance` and `derivation-memo` gates remain
+  pending. Discovery alone cannot qualify I/P/G updates, complete route deltas,
+  same-commit maintenance, current lookup or the full T-DRV-2 bound.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route
