@@ -218,6 +218,24 @@ pub(super) fn drain_exact_pending(
     pending.clone()
 }
 
+fn boundary_precedes_shared_fault(frontier_ticks: u64) -> bool {
+    frontier_ticks < scenario::PERMANENT_FAILURE_NANOS * crucible::SIM_TICKS_PER_NS
+}
+
+#[test]
+fn source_boundary_preserves_the_exact_shared_fault_deadline()
+-> Result<(), crucible::TimeConversionError> {
+    let pre_fault = crucible::VirtualInstant::from_nanoseconds(1_000_000_000)?;
+    let fault = crucible::VirtualInstant::from_nanoseconds(scenario::PERMANENT_FAILURE_NANOS)?;
+
+    assert!(boundary_precedes_shared_fault(pre_fault.ticks));
+    assert!(boundary_precedes_shared_fault(fault.ticks - 1));
+    assert!(!boundary_precedes_shared_fault(fault.ticks));
+    assert!(!boundary_precedes_shared_fault(fault.ticks + 1));
+    assert!(!boundary_precedes_shared_fault(u64::MAX));
+    Ok(())
+}
+
 pub(super) fn capture_boundary_evidence(
     lifecycle: &mut impl QemuFreshAttemptLifecycleOwner,
     source: &crucible::ScenarioDefForm,
@@ -259,7 +277,7 @@ pub(super) fn capture_boundary_evidence(
     match topology {
         EquivalenceTopology::MultiNode => {
             assert!(
-                fault_evidence.frontier.ticks < scenario::PERMANENT_FAILURE_NANOS,
+                boundary_precedes_shared_fault(fault_evidence.frontier.ticks),
                 "exact source boundary must precede the shared fault"
             );
             assert!(pre_event_queue_and_cache_present(&fault_evidence));
