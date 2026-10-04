@@ -88,6 +88,7 @@ pub fn run_native(path: &Path, arguments: &[&str], remaining_millis: u64) -> Res
         stderr,
     })
 }
+
 fn read_bounded(reader: impl std::io::Read) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     reader.take(MAX_OUTPUT_BYTES + 1).read_to_end(&mut bytes)?;
