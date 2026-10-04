@@ -160,7 +160,12 @@ fn run_deployment(
             ));
         }
         run_exact(BOOT_CONFIGURATION, &arguments, &[])
-    } else if bundle_text == "/usr/lib/aos/host/deployment" && operation == "apply-deployment" {
+    } else if bundle_text == "/usr/lib/aos/host/deployment" {
+        if operation == "verify-deployment" {
+            // Resolve the copied image attachment through the same checked
+            // store identity as activation, without recovering any work.
+            arguments.push("--verify");
+        }
         run_exact(BOOT_CONFIGURATION, &arguments[1..], &[])
     } else {
         run_exact(PACKAGE_RUNTIME, &arguments, &[])

@@ -4,6 +4,7 @@
 //! disk. Host source capture, evaluation, profile publication, handler dispatch,
 //! operator replacement and interrupted recovery use their production paths.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -90,6 +91,39 @@ fn current(profile: &Profile, executable: &Path) -> Result<(u32, EvaluationInput
     Ok((number, input))
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum FixtureEntry {
+    Directory,
+    File(Vec<u8>),
+    Symlink(PathBuf),
+}
+
+// Preserve the whole publication and handler state, including absent files.
+// Links are recorded without following them into immutable store artifacts.
+fn verification_state(profile: &Profile, state: &Path) -> Result<BTreeMap<PathBuf, FixtureEntry>> {
+    fn record(path: &Path, entries: &mut BTreeMap<PathBuf, FixtureEntry>) -> Result<()> {
+        let metadata = fs::symlink_metadata(path)?;
+        let entry = if metadata.file_type().is_symlink() {
+            FixtureEntry::Symlink(fs::read_link(path)?)
+        } else if metadata.is_dir() {
+            for child in fs::read_dir(path)? {
+                record(&child?.path(), entries)?;
+            }
+            FixtureEntry::Directory
+        } else {
+            ensure!(metadata.is_file(), "unexpected fixture state file type");
+            FixtureEntry::File(fs::read(path)?)
+        };
+        entries.insert(path.to_path_buf(), entry);
+        Ok(())
+    }
+
+    let mut entries = BTreeMap::new();
+    record(&profile.path, &mut entries)?;
+    record(state, &mut entries)?;
+    Ok(entries)
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires the retained source-built boot-metadata fixture and isolated Nix store"]
 async fn checked_metadata_adoption_recovers_and_preserves_operator_sources() -> Result<()> {
@@ -174,6 +208,28 @@ async fn exercise_adoption(acquire_absent_package: bool) -> Result<()> {
     let initial_generation = profile.path.join(format!("gen-{first}"));
     let initial_marker = fs::read(initial_generation.join("native-deployment.json"))?;
     let initial_descriptor = fs::read_link(initial_generation.join("evaluation.json"))?;
+    let original_transaction: serde_json::Value =
+        serde_json::from_slice(&crate::native_deployment::read_immutable_document_in(
+            &host.input.join("transaction.json"),
+            &executable,
+            &cancellation,
+        )?)?;
+    let composed_transaction: serde_json::Value = serde_json::from_slice(
+        &crate::profile::deployment::committed_generation(&profile.path, first)?
+            .deployment
+            .canonical_bytes()?,
+    )?;
+    ensure!(
+        original_transaction["graph"] != composed_transaction["graph"],
+        "fixture must verify a metadata-composed graph distinct from the original image graph"
+    );
+    let before_verify = verification_state(&profile, &fixture.state_directory)?;
+    super::run_host_command(&host, true)
+        .context("verifying the committed metadata-composed host deployment")?;
+    ensure!(
+        verification_state(&profile, &fixture.state_directory)? == before_verify,
+        "host verification mutated publications, journals, or actual handler state"
+    );
     // Reusing the identical authority exercises the generic committed branch
     // without repeating the already completed host dispatch.
     capture::apply(&host, original, &cancellation)?;
@@ -237,6 +293,13 @@ async fn exercise_adoption(acquire_absent_package: bool) -> Result<()> {
     let changed_marker = fs::read(changed_generation.join("native-deployment.json"))?;
     let changed_descriptor = fs::read_link(changed_generation.join("evaluation.json"))?;
     let unchanged_count = fs::read_to_string(fixture.state_directory.join("count"))?;
+    let before_verify = verification_state(&profile, &fixture.state_directory)?;
+    super::run_host_command(&host, true)
+        .context("verifying the committed operator-composed host deployment")?;
+    ensure!(
+        verification_state(&profile, &fixture.state_directory)? == before_verify,
+        "operator host verification changed committed authority or dispatched a handler"
+    );
     crate::native_deployment::apply(&host, &cancellation)?;
     let (rebooted_generation, rebooted) = current(&profile, &executable)?;
     ensure!(
@@ -282,6 +345,16 @@ async fn exercise_adoption(acquire_absent_package: bool) -> Result<()> {
         "interrupted side effect has no native recovery intent"
     );
     let count = fs::read_to_string(fixture.state_directory.join("count"))?;
+    let before_verify = verification_state(&profile, &fixture.state_directory)?;
+    ensure!(
+        super::run_host_command(&host, true).is_err(),
+        "host verification accepted an interrupted package activation"
+    );
+    ensure!(
+        verification_state(&profile, &fixture.state_directory)? == before_verify
+            && crate::profile::deployment::has_pending_deployment(&profile.path)?,
+        "host verification resumed or changed the original pending package activation"
+    );
     let recovered = crate::native_deployment::recover_profile_publication(&host, &cancellation)?
         .context("interrupted operator generation did not commit during recovery")?;
     ensure!(
@@ -333,6 +406,16 @@ async fn exercise_adoption(acquire_absent_package: bool) -> Result<()> {
         .iter()
         .filter(|record| record.event == "begin")
         .count();
+    let before_verify = verification_state(&profile, &fixture.state_directory)?;
+    ensure!(
+        super::run_host_command(&host, true).is_err(),
+        "host verification accepted an interrupted reconciliation"
+    );
+    ensure!(
+        verification_state(&profile, &fixture.state_directory)? == before_verify
+            && crate::profile::deployment::has_pending_deployment(&profile.path)?,
+        "host verification consumed or changed the original pending reconciliation"
+    );
     let publication = crate::native_deployment::recover_profile_publication(&host, &cancellation)?
         .context("pending reconciliation lost its committed publication")?;
     ensure!(
