@@ -106,6 +106,18 @@ impl OriginalProviderSettlementV5 {
         Ok(())
     }
 
+    /// Lends only the two actual prior controls to the distinct terminal child.
+    ///
+    /// This fixed disjoint loan cannot reset settlement or extract its owners.
+    pub(super) fn root_terminal_controls_v5(
+        &self,
+    ) -> Option<(&SignedNativeHeldControlV1, &SignedNativeHeldControlV1)> {
+        if self.failed() || self.stage != SettlementStageV5::Sent {
+            return None;
+        }
+        Some((self.control.as_ref()?.as_ref().ok()?, self.signed.as_ref()?))
+    }
+
     fn storage6(&self) -> Result<&SignedNativeHeldControlV1, OriginalHeldCauseV5> {
         self.control.as_ref().and_then(|result| result.as_ref().ok())
             .ok_or_else(|| SourceProviderSecurityError::SessionContinuity.into())

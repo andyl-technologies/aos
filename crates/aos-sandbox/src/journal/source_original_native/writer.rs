@@ -120,6 +120,14 @@ enum OriginalHeldBasisPurposeV5<'control> {
         &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
         &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
     ),
+    RootTerminal(
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+    ),
 }
 
 /// Binds prospective archive metadata to one held append without proving commit.
@@ -357,6 +365,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
                 | OriginalHeldBasisPurposeV5::SettlementReceived(..)
                 | OriginalHeldBasisPurposeV5::SettlementPreparation(..)
                 | OriginalHeldBasisPurposeV5::SettlementDelivery(..)
+                | OriginalHeldBasisPurposeV5::RootTerminal(..)
         );
         let step = match purpose {
             OriginalHeldBasisPurposeV5::Preparation(exact) => {
@@ -454,6 +463,25 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
                     return Err(invalid("original Storage settlement before delivery changed"));
                 }
                 SourceNativeHeldStepV1::ProviderSettledStored
+            }
+            OriginalHeldBasisPurposeV5::RootTerminal(held, root4, relay, storage, signed7, root13) => {
+                if before.suffix().phase() != 9 || after.suffix().phase() != 10
+                    || before.suffix().prepared().is_some() || after.suffix().prepared().is_some()
+                    || before.suffix().control(NativeHeldControlKindV1::ProviderSettled) != Some(signed7)
+                    || after.suffix().control(NativeHeldControlKindV1::ProviderSettled) != Some(signed7)
+                    || before.suffix().control(NativeHeldControlKindV1::RootTerminalRecorded).is_some()
+                    || after.suffix().control(NativeHeldControlKindV1::RootTerminalRecorded) != Some(root13)
+                    || before.suffix().control(NativeHeldControlKindV1::StorageSettled) != Some(storage)
+                    || root13.kind() != NativeHeldControlKindV1::RootTerminalRecorded
+                    || root13.scope() != signed7.scope()
+                    || root13.prepared().predecessor() != signed7.digest()
+                {
+                    return Err(invalid("original Root terminal phase10 changed"));
+                }
+                require_original_settlement_prefix_v5(&before, &after, held, root4, relay, storage)?;
+                // The sole proposer below checks the full immutable original,
+                // checked revision and exact ordered prefix plus this one control.
+                SourceNativeHeldStepV1::RootTerminalRecorded
             }
         };
         let checkpoints = self.challenges.retained_rows()?;
@@ -662,6 +690,28 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
     ) -> Result<&SourceOriginalAdmissionDataV5, JournalError> {
         self.original_held_basis_v5(readback, acquisition,
             OriginalHeldBasisPurposeV5::SettlementDelivery(held, root4, relay, storage, signed))
+    }
+
+    /// Borrows the actual physical phase9-to10 Root receipt cut.
+    ///
+    /// This verifies the full graph and remaining cleanup floor, not retirement.
+    ///
+    /// # Errors
+    /// Refuses stale custody, a changed original/prefix, foreign Root13,
+    /// mismatched settlement, Spent lineage or opened all-eight/NEXT bounds.
+    pub fn original_root_terminal_basis_v5(
+        &self,
+        readback: &OriginalSourceProtectedReadbackV5,
+        acquisition: ObjectDigest,
+        held: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        root4: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        relay: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        storage: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        signed7: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        root13: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+    ) -> Result<&SourceOriginalAdmissionDataV5, JournalError> {
+        self.original_held_basis_v5(readback, acquisition,
+            OriginalHeldBasisPurposeV5::RootTerminal(held, root4, relay, storage, signed7, root13))
     }
 
     /// Checks the remaining envelope on the actual phase-two cut before spend.

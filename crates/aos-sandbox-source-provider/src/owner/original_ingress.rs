@@ -168,6 +168,18 @@ impl OriginalIngressV1 {
             .ok_or(ProviderLedgerError::Unavailable)
     }
 
+    /// Lends only the already-held clock for terminal negative observation.
+    ///
+    /// This bypasses no positive gate: it neither opens ingress nor validates
+    /// the pair/current writer. Only the terminal error path uses this loan
+    /// to sample the same original cutoff after closure. Absence stays negative.
+    pub(super) fn terminal_negative_clock_v5(
+        &self,
+    ) -> Result<&crate::native_completion::NativeAcquireClockGuardV1, ProviderLedgerError> {
+        self.pending.as_ref().and_then(|pair| pair.clock.as_ref())
+            .ok_or(ProviderLedgerError::Unavailable)
+    }
+
     /// Borrows the already authenticated full pair without moving its custody.
     pub(super) fn borrowed_pair_v5(
         &self,

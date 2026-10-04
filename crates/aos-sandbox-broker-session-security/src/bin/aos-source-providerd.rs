@@ -357,7 +357,8 @@ fn serve_selected_original(
                 | Ok(FixedProviderOriginalCompletionProgressV5::StorageSettlementRecorded)
                 | Ok(FixedProviderOriginalCompletionProgressV5::ProviderSettledPrepared)
                 | Ok(FixedProviderOriginalCompletionProgressV5::ProviderSettledStored)
-                | Ok(FixedProviderOriginalCompletionProgressV5::ProviderSettledSent) => {}
+                | Ok(FixedProviderOriginalCompletionProgressV5::ProviderSettledSent)
+                | Ok(FixedProviderOriginalCompletionProgressV5::RootTerminalRecorded) => {}
                 Ok(FixedProviderOriginalCompletionProgressV5::Closed)
                 | Err(_) => terminate_selected_original(flight.ingress, &mut flight.original),
             }
@@ -417,7 +418,8 @@ fn serve_original_native_completion(
                 | Ok(FixedProviderOriginalCompletionProgressV5::StorageSettlementRecorded)
                 | Ok(FixedProviderOriginalCompletionProgressV5::ProviderSettledPrepared)
                 | Ok(FixedProviderOriginalCompletionProgressV5::ProviderSettledStored)
-                | Ok(FixedProviderOriginalCompletionProgressV5::ProviderSettledSent) => {
+                | Ok(FixedProviderOriginalCompletionProgressV5::ProviderSettledSent)
+                | Ok(FixedProviderOriginalCompletionProgressV5::RootTerminalRecorded) => {
                     // This old driver cannot enter the selected receipt purpose.
                     // Refuse any impossible progress without lending a permit.
                     closed = true;

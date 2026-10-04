@@ -617,6 +617,18 @@ impl InertSourceProviderCarrierV1 {
         Ok(true)
     }
 
+    /// Receives Root13 through the same original optional-rights engine.
+    ///
+    /// The upper receipt owner retains and rejects unexpected rights; this
+    /// alias creates neither another socket nor another receive parser.
+    pub(crate) fn receive_original_root_terminal_retaining_v5(
+        &mut self,
+        record: &mut Option<RetainedSourceProviderRecordV5>,
+        failure: &mut Option<OriginalRootAcceptedCarrierFailureV5>,
+    ) -> Result<bool, CarrierFailureV1> {
+        self.receive_original_root_accepted_retaining_v5(record, failure)
+    }
+
     // Only the upper original-owner bookend may release a nonconsuming attempt.
     // A fatal result is never replaced by a fresh receive or projected to retry.
     pub(crate) fn finish_original_receive_backpressure_v5(&mut self) {

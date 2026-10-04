@@ -159,6 +159,9 @@ pub enum FixedProviderOriginalCompletionProgressV5 {
     ProviderSettledStored,
     /// Kind7 was locally sent once; terminal recording and retirement remain pending.
     ProviderSettledSent,
+    /// Root13 and the remaining cleanup floor were read back at phase10.
+    /// This is not physical retirement, a cleanup ACK or population Drain.
+    RootTerminalRecorded,
     /// All returned originals and the first cause remain permanently held.
     Closed,
 }
