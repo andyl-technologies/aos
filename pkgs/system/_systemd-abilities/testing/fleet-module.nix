@@ -60,10 +60,12 @@ in {
   ];
 
   # Image boots take their command line from the UKI. Match the direct-kernel
-  # test transport and keep predictable interface names.
-  aos.boot.kernelParams = [
+  # test transport and keep predictable interface names. The final console
+  # selects /dev/console, so userspace boot errors reach the serial transcript.
+  aos.boot.kernelParams = lib.mkAfter [
     "systemd.journald.forward_to_console=1"
     "net.ifnames=0"
+    "console=ttyS0,115200"
   ];
 
   environment.etc =
