@@ -100,6 +100,7 @@
   supplementarySeed = seed supplementary;
   builder = import ../../pkgs/system/_systemd-abilities/platform/_initrd-builder.nix {
     inherit lib;
+    inherit (pkgs) diffutils;
     mkDerivation = arguments: arguments;
     runtimePackages = pkgs;
     kernel = {};
