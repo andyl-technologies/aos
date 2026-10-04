@@ -201,10 +201,22 @@ interpretation mode/table through three existing verifier reconstructions.
 Its three actual task gates, focused tests, all-target build, strict rustdoc
 and both formatters pass. The original full native run records 372 passing,
 31 failing and two timed-out tests out of 405, with zero skips; strict native
-Clippy remains red on unowned dead code. Combined qualification is running on
-isolated candidate `9a4a4f733813`, including a keep-going inventory if the
-default aggregate fails. It predates the new historical-calculation cases
-below, so it cannot qualify them. No task or milestone advances.
+Clippy remains red on unowned dead code. Combined candidate `9a4a4f733813`
+passes both formatters, all five assigned task gates and the complete golden
+inventory (19 mandatory owning suites, 30 reviewed sections). Its default
+aggregate fails at three missing or unqualified native disclosure cases.
+The keep-going aggregate also exits 1, reporting 11 failed gate dependencies:
+`prov-disclosure-boundary`, `prov-commit-verify`, `store-idempotent-put`,
+`index-generation-manifest`, `ref-epoch-fencing`, `ref-advance-ordering`,
+`bucket-file-layout`, `role-selection`, `dom-reference-order`,
+`dom-dedup-scope` and `feature-matrix`. The Terrane package's own tests fail;
+`role-selection` is blocked by that package. Store/index physical-exclusion
+and portable-copy cases return `Unsupported`; the ref cases report expiry
+and elapsed deadline failures. The feature-matrix native phase records 369
+passing and 33 failing cases. These original outcomes do not establish their
+causes. Both aggregate runs predate the new ordinary historical-calculation
+and core certified-verification cases below, so they cannot qualify them.
+No task or milestone advances.
 
 Deployable as: a local tool that initializes a store under a `file://`
 root, commits a directory, forks and merges branches, and checks a commit
