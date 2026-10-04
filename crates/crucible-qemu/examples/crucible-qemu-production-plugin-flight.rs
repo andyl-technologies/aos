@@ -55,6 +55,10 @@ mod time_ownership;
 #[path = "crucible-qemu-production-plugin-flight/guest_clock_reads.rs"]
 mod guest_clock_reads;
 
+#[cfg(feature = "test-support")]
+#[path = "crucible-qemu-production-plugin-flight/linux_ack_poll.rs"]
+mod linux_ack_poll;
+
 const MEMORY_BYTES: u64 = 512 * 1024 * 1024;
 const DISK_BYTES: u64 = 1024 * 1024 * 1024;
 const RR_SWITCH_QUANTUM: u64 = 4096;
@@ -90,6 +94,7 @@ const BLOCK_RECOVERY_ONLY_ENVIRONMENT: &str =
     "CRUCIBLE_PRODUCTION_PLUGIN_FLIGHT_BLOCK_RECOVERY_ONLY";
 const PHASE4_PARTITION_PROBE_ENVIRONMENT: &str = "CRUCIBLE_PHASE4_PARTITION_PROBE";
 const TIME_OWNERSHIP_ENVIRONMENT: &str = "CRUCIBLE_TIME_OWNERSHIP_WITNESS";
+const LINUX_ACK_PAIR_ENVIRONMENT: &str = "CRUCIBLE_LINUX_BOOT_ACK_POLL_PAIR";
 
 fn main() -> ExitCode {
     match run() {
@@ -174,6 +179,15 @@ fn run() -> Result<(), Box<dyn Error>> {
         // The exact four-vCPU guest authenticated readiness after about 110
         // host seconds. Keep a finite per-advance guard with measured headroom.
         .with_completion_timeout(Duration::from_secs(300));
+
+    #[cfg(not(feature = "test-support"))]
+    if std::env::var_os(LINUX_ACK_PAIR_ENVIRONMENT).is_some() {
+        return Err("Linux ACK polling comparison requires the test-support feature".into());
+    }
+    #[cfg(feature = "test-support")]
+    if linux_ack_poll::requested()? {
+        return Ok(linux_ack_poll::run(&mut factory, &config, qemu)?);
+    }
 
     if clock_read_flight {
         return guest_clock_reads::run(&mut factory, &config, qemu, reference_trace_output);
@@ -493,6 +507,8 @@ struct FlightRun {
     on_demand_acknowledgements: usize,
     shutdown: QemuShutdownReport,
     diagnostics: RuntimeDeterminismDiagnostics,
+    #[cfg(feature = "test-support")]
+    boot_probe: Option<linux_ack_poll::BootProbe>,
 }
 
 #[derive(Debug)]
@@ -907,6 +923,17 @@ fn run_once(
     hostile: bool,
     partition_step_ps: Option<u64>,
 ) -> Result<FlightRun, Box<dyn Error>> {
+    run_once_with_boot_probe(factory, config, qemu, hostile, partition_step_ps, false)
+}
+
+fn run_once_with_boot_probe(
+    factory: &mut LinuxQemuAttemptHostFactory,
+    config: &QemuLiveNodeStepGateConfig,
+    qemu: &Path,
+    hostile: bool,
+    partition_step_ps: Option<u64>,
+    boot_probe_enabled: bool,
+) -> Result<FlightRun, Box<dyn Error>> {
     let mut owner = factory.begin(4, MEMORY_BYTES, DISK_BYTES)?;
     let mut directory = owner.prepare_generation_run_directory(config.resource_requirements())?;
     directory.prepare_fresh_artifacts_guarded(qemu, None, owner.process_contract()?)?;
@@ -1027,6 +1054,17 @@ fn run_once(
         rr_position_in_quantum: final_busy_sample.rr_position_in_quantum,
     };
 
+    #[cfg(not(feature = "test-support"))]
+    if boot_probe_enabled {
+        return Err("Linux boot segment requires the test-support feature".into());
+    }
+    #[cfg(feature = "test-support")]
+    let boot_probe = if boot_probe_enabled {
+        Some(linux_ack_poll::probe(&mut node)?)
+    } else {
+        None
+    };
+
     let idle = match probe_idle_wake(&mut node) {
         Ok(idle) => idle,
         Err(source) => {
@@ -1096,11 +1134,15 @@ fn run_once(
         (Ok(_), Err(error)) => return Err(error.into()),
     };
     Ok(FlightRun {
-        on_demand_acknowledgements: boundaries.len() + idle.on_demand_acknowledgements,
+        on_demand_acknowledgements: boundaries.len()
+            + idle.on_demand_acknowledgements
+            + if boot_probe_enabled { 2 } else { 0 },
         boundaries,
         instruction_exact,
         idle,
         partition_probe,
+        #[cfg(feature = "test-support")]
+        boot_probe,
         shutdown,
         diagnostics: RuntimeDeterminismDiagnostics {
             baseline: runtime_baseline,

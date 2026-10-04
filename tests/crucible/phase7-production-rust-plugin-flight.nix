@@ -4,6 +4,7 @@
   lib,
   attrPath,
   campaignComposition ? null,
+  ackPollExperiment ? false,
   testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
   repoRoot = ../..;
@@ -95,11 +96,13 @@
             --manifest-path crates/Cargo.toml \
             --target-dir "$TMPDIR/target" \
             -p crucible-qemu \
+            ${lib.optionalString ackPollExperiment "--features test-support"} \
             --example crucible-qemu-production-plugin-flight
           cargo test --frozen --offline \
             --manifest-path crates/Cargo.toml \
             --target-dir "$TMPDIR/target" \
             -p crucible-qemu \
+            ${lib.optionalString ackPollExperiment "--features test-support"} \
             --example crucible-qemu-production-plugin-flight
           cargo test --frozen --offline \
             --manifest-path crates/Cargo.toml \
@@ -486,6 +489,13 @@
         /sys/fs/cgroup/crucible /tmp/attempts/run \
     '';
   };
+  linuxBootAckPollPair =
+    if ackPollExperiment
+    then
+      import ./phase7-linux-boot-ack-poll.nix {
+        inherit pkgs testing rootfsDeps attemptHostSetupScript productionFlightCommand;
+      }
+    else null;
   partitionDiagnostic = testing.mkVMTest {
     name = "crucible-phase4-qemu-clock-partition-diagnostic";
     memory = 8192;
@@ -526,6 +536,7 @@
             partitionDiagnostic
             timeOwnershipDiagnostic
             guestClockReadEquivalence
+            linuxBootAckPollPair
             ;
         };
     };

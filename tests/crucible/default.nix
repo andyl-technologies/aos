@@ -2958,6 +2958,12 @@ in rec {
     };
     qemuGuestClockReadEquivalenceLive = phase7.productionRustPluginFlight.rawGate.passthru.guestClockReadEquivalence;
     qemuTimeOwnershipLive = phase7.productionRustPluginFlight.rawGate.passthru.timeOwnershipDiagnostic;
+    qemuLinuxBootAckPollExperiment =
+      (import ./phase7-production-rust-plugin-flight.nix {
+        inherit pkgs lib;
+        attrPath = "checks.crucible.phase7.qemuLinuxBootAckPollExperiment";
+        ackPollExperiment = true;
+      }).passthru.linuxBootAckPollPair;
     qemuHostParallel = import ./phase7-qemu-host-parallel.nix {
       inherit pkgs lib;
       productionPluginFlight = phase7.productionRustPluginFlight.rawGate;
