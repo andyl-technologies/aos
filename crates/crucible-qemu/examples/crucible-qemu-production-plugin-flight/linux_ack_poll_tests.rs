@@ -151,6 +151,103 @@ fn comparison_ignores_host_duration_but_refuses_canonical_changes() {
 }
 
 #[test]
+fn comparison_refusal_identifies_original_field_and_retains_both_values() {
+    let baseline = evidence();
+    let mut candidate = evidence();
+    candidate.canonical.control_returns += 1;
+    let error = compare(&baseline, &candidate).expect_err("changed control count");
+    let detail = error.to_string();
+    assert!(detail.contains("difference=control_returns"));
+    assert!(detail.contains("baseline=[control_returns=20000"));
+    assert!(detail.contains("candidate=[control_returns=20001"));
+
+    candidate = evidence();
+    candidate
+        .canonical
+        .final_boundary
+        .sample
+        .rr_position_in_quantum = 1;
+    let detail = compare(&baseline, &candidate)
+        .expect_err("changed original sample")
+        .to_string();
+    assert!(detail.contains("boundary 1"));
+    assert!(detail.contains("rr_position_in_quantum differs"));
+    assert!(detail.contains("rr_position_in_quantum: 0"));
+    assert!(detail.contains("rr_position_in_quantum: 1"));
+
+    candidate = evidence();
+    candidate.canonical.transcript.push('!');
+    let detail = compare(&baseline, &candidate)
+        .expect_err("changed original transcript")
+        .to_string();
+    assert!(detail.contains("difference=transcript_blake3"));
+    assert!(detail.contains("transcript_blake3=original authenticated transcript]"));
+    assert!(detail.contains("transcript_blake3=original authenticated transcript!]"));
+    assert!(!detail.contains("elapsed_us"));
+}
+
+#[test]
+fn comparison_refusal_stays_within_existing_result_budget() {
+    let mut baseline = evidence();
+    let maximum_sample = FingerprintSample {
+        sample_icount: u64::MAX,
+        vcpu_count: u32::MAX,
+        rr_current_vcpu: u32::MAX,
+        rr_position_in_quantum: u64::MAX,
+        rr_switch_quantum: u64::MAX,
+        component_failures: u32::MAX,
+        ram_bytes: u64::MAX,
+        ram_digest: [u8::MAX; 32],
+        device_state_bytes: u64::MAX,
+        device_state_sections: u64::MAX,
+        device_state_digest: [u8::MAX; 32],
+        device_state_schema_digest: [u8::MAX; 32],
+        vcpus: [crucible_shmem::FingerprintSampleVcpu {
+            register_digest: [u8::MAX; 32],
+            register_file_bytes: u64::MAX,
+            retired_instruction_count: u64::MAX,
+        }; 8],
+    };
+    baseline.canonical.control_returns = u64::MAX;
+    baseline.canonical.projected_grants = u64::MAX;
+    baseline.canonical.transcript = "x".repeat(65_536);
+    for boundary in [
+        &mut baseline.canonical.initial,
+        &mut baseline.canonical.final_boundary,
+    ] {
+        boundary.target = u64::MAX;
+        boundary.outcome = AdvanceOutcome::Paused {
+            at: Icount { retired: u64::MAX },
+        };
+        boundary.calibration = QemuLogicalTimeCalibration {
+            logical_icount: u64::MAX,
+            raw_icount: u64::MAX,
+        };
+        boundary.fingerprint.hash.bytes = [u8::MAX; 32];
+        boundary.sample = maximum_sample;
+    }
+    let mut candidate = BootProbe {
+        canonical: CanonicalProbe {
+            control_returns: u64::MAX - 1,
+            projected_grants: baseline.canonical.projected_grants,
+            initial: baseline.canonical.initial.clone(),
+            final_boundary: baseline.canonical.final_boundary.clone(),
+            transcript: baseline.canonical.transcript.clone(),
+        },
+        elapsed_us: u128::MAX,
+    };
+
+    let detail = compare(&baseline, &candidate)
+        .expect_err("bounded mismatched count")
+        .to_string();
+    assert!(detail.len() <= 16 * 1024, "{} bytes", detail.len());
+    assert!(!detail.contains(&"x".repeat(65)));
+
+    candidate.canonical.control_returns = baseline.canonical.control_returns;
+    assert!(compare(&baseline, &candidate).is_ok());
+}
+
+#[test]
 fn console_digest_binds_original_owner_coordinate_and_bytes() {
     let make_event = |owner: &str, at, bytes: &[u8]| {
         ObservableEvent::console_output(

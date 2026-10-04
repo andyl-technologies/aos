@@ -20,6 +20,8 @@ pub(super) enum ProbeError {
     InvalidMode,
     #[error("Linux ACK polling evidence refused: {0}")]
     InvalidEvidence(&'static str),
+    #[error("Linux ACK polling canonical comparison refused: {0}")]
+    CanonicalMismatch(String),
     #[error("original prelude comparison failed: {0}")]
     Prelude(String),
     #[error(transparent)]
@@ -343,11 +345,41 @@ fn validate_step(
 
 fn compare(baseline: &BootProbe, candidate: &BootProbe) -> Result<(), ProbeError> {
     if baseline.canonical != candidate.canonical {
-        return Err(ProbeError::InvalidEvidence(
-            "fresh Linux runs changed canonical segment evidence",
-        ));
+        let original = &baseline.canonical;
+        let changed = &candidate.canonical;
+        let difference = if original.control_returns != changed.control_returns {
+            String::from("control_returns")
+        } else if original.projected_grants != changed.projected_grants {
+            String::from("projected_grants")
+        } else {
+            compare_boundaries(
+                "canonical segment",
+                &[original.initial.clone(), original.final_boundary.clone()],
+                &[changed.initial.clone(), changed.final_boundary.clone()],
+            )
+            .err()
+            .unwrap_or_else(|| String::from("transcript_blake3"))
+        };
+        return Err(ProbeError::CanonicalMismatch(format!(
+            "fresh Linux runs changed canonical segment evidence; difference={difference}; baseline=[{}]; candidate=[{}]",
+            describe_canonical(original),
+            describe_canonical(changed),
+        )));
     }
     Ok(())
+}
+
+fn describe_canonical(evidence: &CanonicalProbe) -> String {
+    // Boundary samples contain only fixed-size scalar/digest arrays. A genuine
+    // transcript is a 64-character hash, never the original console payload.
+    let transcript = evidence.transcript.chars().take(64).collect::<String>();
+    format!(
+        "control_returns={},projected_grants={},initial={:?},final_boundary={:?},transcript_blake3={transcript}",
+        evidence.control_returns,
+        evidence.projected_grants,
+        evidence.initial,
+        evidence.final_boundary,
+    )
 }
 
 /// Measures the segment only; host time never selects guest state.
