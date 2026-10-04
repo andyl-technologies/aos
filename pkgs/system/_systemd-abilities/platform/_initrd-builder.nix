@@ -671,13 +671,23 @@
             '')
             maskedUnits}
 
-          # A weak upstream Wants permits switch-root after a failed filesystem
-          # transaction. The selected handoff completion target must succeed.
-          mkdir -p root/etc/systemd/system/initrd-switch-root.target.d
-          printf '%s\n' '[Unit]' \
-            ${lib.escapeShellArg "Requires=${completionUnit}"} \
-            ${lib.escapeShellArg "After=${completionUnit}"} \
-            > root/etc/systemd/system/initrd-switch-root.target.d/50-aos-handoff.conf
+          # Check completion before isolation stops udev and other prerequisites.
+          # Requiring the completion target through teardown would retain those
+          # daemons, which conflict with the upstream switch-root transaction.
+          mkdir -p root/etc/systemd/system/initrd-cleanup.service.d
+          printf '%s\n' '[Service]' \
+            ${lib.escapeShellArg "ExecStartPre=${systemd}/bin/systemctl --quiet is-active ${completionUnit}"} \
+            > root/etc/systemd/system/initrd-cleanup.service.d/50-aos-handoff.conf
+
+          # Upstream Wants links do not propagate failure to the actual service.
+          # Guard both entry points, including direct target or service starts.
+          for entrypoint in initrd-switch-root.target initrd-switch-root.service; do
+            mkdir -p "root/etc/systemd/system/$entrypoint.d"
+            printf '%s\n' '[Unit]' \
+              'Requires=initrd-cleanup.service' \
+              'After=initrd-cleanup.service' \
+              > "root/etc/systemd/system/$entrypoint.d/50-aos-handoff.conf"
+          done
 
           # The contract describes the rendered graph, so validate the actual
           # unit files and dependency links after every copy and mask step.
