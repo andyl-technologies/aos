@@ -173,9 +173,10 @@ fn prepare(
 fn resolve_apis() -> Option<Apis> {
     macro_rules! symbol {
         ($name:literal, $type:ty) => {{
-            // SAFETY: the name is a static NUL-terminated public QEMU export.
-            let address =
-                unsafe { libc::dlsym(libc::RTLD_DEFAULT, concat!($name, "\0").as_ptr().cast()) };
+            let address = unsafe {
+                // SAFETY: the name is a static NUL-terminated public QEMU export.
+                libc::dlsym(libc::RTLD_DEFAULT, concat!($name, "\0").as_ptr().cast())
+            };
             if address.is_null() {
                 return None;
             }
