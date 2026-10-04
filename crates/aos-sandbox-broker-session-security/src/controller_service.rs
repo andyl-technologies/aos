@@ -159,9 +159,11 @@ mod guest_root;
 mod git_read_inspection;
 #[allow(
     dead_code,
-    reason = "Local Nix input custody awaits genuine configured worker and independently floored session ingress"
+    reason = "The default binary leaves local Nix input custody dormant; only the selected online Resolve caller consumes it"
 )]
-mod nix_inputs;
+pub(crate) mod nix_inputs;
+#[cfg(feature = "online-nix")]
+mod nix_environment;
 mod original_attach;
 mod operator_repair;
 mod create_q04;
@@ -205,6 +207,10 @@ type SharedControllerBrokerSessions = Arc<Mutex<ControllerBrokerSessions>>;
 /// Retains authenticated transports and their durable sequence owners across cycles.
 #[derive(Default)]
 struct ControllerBrokerSessions {
+    #[cfg(feature = "online-nix")]
+    nix_resolve: Option<nix_environment::NixResolveAttemptV1>,
+    #[cfg(feature = "online-nix")]
+    nix_input_source: Option<crate::cache_directory_source::ProjectSealedViewObjectSourceV1>,
     launch_image: Option<crate::production_startup::Pid1LaunchImageV1>,
     host: Option<ControllerHostPublication>,
     mount: Option<crate::DormantMountLifecycleInventoryOwnerV1>,
@@ -1329,6 +1335,8 @@ struct ControllerWorkerLoanV1<'owner> {
 }
 
 enum ControllerResidentCauseV1 {
+    #[cfg(feature = "online-nix")]
+    NixResolve,
     // The real native cause and channel/Journal outcomes remain in fixed slots.
     GitRead,
     Runtime(ControllerRuntimeError),
@@ -1349,6 +1357,8 @@ enum ControllerResidentCauseV1 {
 impl ControllerResidentCauseV1 {
     fn diagnostic(&self) -> &'static str {
         match self {
+            #[cfg(feature = "online-nix")]
+            Self::NixResolve => "resident original Nix Resolve50 failure",
             Self::GitRead => "resident original Git read inspection failure",
             Self::Runtime(_) => "resident Controller startup/server failure",
             Self::Worker(_) => "resident Controller worker failure",
@@ -3272,7 +3282,7 @@ fn controller_from_journal(
     validate_controller_journal(&mut journal, node_id)?;
     let scope = ControllerRequestScopeV1::new(ObjectDigest::from_bytes(REQUEST_SCOPE))?;
     let limits = NodeControllerLimits::new(1024 * 1024, 65_536, 1)?;
-    let executor = ProductionEffectExecutor::open(
+    let mut executor = ProductionEffectExecutor::open(
         &mut journal,
         sessions,
         scope,
@@ -3281,6 +3291,12 @@ fn controller_from_journal(
         attachment_host,
         attachment_mount,
     )?;
+    #[cfg(feature = "online-nix")]
+    if let Some(selector) = nix_start.as_ref() {
+        // Share only the already admitted original. None keeps the old
+        // constructor allocation/check/drop intervals and creates no loan.
+        executor.nix_start = Some(Arc::clone(selector));
+    }
     let compiler = match nix_start {
         Some(selector) => ProductionOperationCompilerV1::with_nix_start(selector),
         None => ProductionOperationCompilerV1::new(),
@@ -3502,6 +3518,8 @@ fn parse_identity(
 }
 
 struct ProductionEffectExecutor {
+    #[cfg(feature = "online-nix")]
+    nix_start: Option<Arc<ControllerNixStartRecipeSelectorV2>>,
     sessions: SharedControllerBrokerSessions,
     request_scope: ControllerRequestScopeV1,
     broker_plan_signer: Option<ControllerBrokerPlanSignerV1>,
@@ -3613,6 +3631,8 @@ impl ProductionEffectExecutor {
         process_start: Option<([u8; 16], u64)>,
     ) -> Self {
         Self {
+            #[cfg(feature = "online-nix")]
+            nix_start: None,
             sessions,
             request_scope,
             broker_plan_signer,
@@ -5591,7 +5611,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
     fn observe_controller(
         &mut self,
         operation_id: OperationId,
-        _step: u32,
+        step: u32,
         plan: &EffectPlan,
         journal: &mut Journal,
     ) -> Result<EffectObservation, EffectFailure> {
@@ -5601,6 +5621,9 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             .map_err(|error| EffectFailure::Permanent(error.to_string()))?
             .is_some_and(|context| context.has_retained_nix_start())
         {
+            #[cfg(feature = "online-nix")]
+            return nix_environment::observe(self, operation_id, step);
+            #[cfg(not(feature = "online-nix"))]
             // Admission is real, but no namespace47 floor/archive/publication
             // owner exists in this slice. Generic lifecycle cannot stand in.
             return Ok(EffectObservation::Absent);
@@ -5751,7 +5774,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
     fn apply_controller(
         &mut self,
         operation_id: OperationId,
-        _step: u32,
+        step: u32,
         plan: &EffectPlan,
         journal: &mut Journal,
     ) -> Result<EffectReceipt, EffectFailure> {
@@ -5761,6 +5784,9 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             .map_err(|error| EffectFailure::Permanent(error.to_string()))?
             .is_some_and(|context| context.has_retained_nix_start())
         {
+            #[cfg(feature = "online-nix")]
+            return nix_environment::resolve(self, operation_id, step, plan, journal);
+            #[cfg(not(feature = "online-nix"))]
             return Err(EffectFailure::Retryable(
                 "retained Nix Start awaits genuine session floor and recipe publication owners".to_owned(),
             ));

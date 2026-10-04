@@ -16,6 +16,48 @@ use super::{FloorCutV1, FloorErrorV1, FloorProfileV1};
 use crate::BrokerSessionSecurityError;
 
 impl super::super::ProtectedBrokerSessionJournalV1 {
+    #[cfg(feature = "online-nix")]
+    pub(super) fn online_floor_cuts(
+        &mut self,
+        profile: crate::tpm_nv_custody::OnlineFloorProfileV1,
+        transaction: Option<&JournalTransaction>,
+    ) -> Result<(FloorCutV1, Option<FloorCutV1>), BrokerSessionSecurityError> {
+        self.validate_schema_only()?;
+        self.endpoint.revalidate()?;
+        let owner = self.owner;
+        let directory = self.directory.clone();
+        let name = self.name.clone();
+        owner.validate_held(self.journal_mut()?, &directory, &name)
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        let role = match profile.role() {
+            crate::tpm_nv_custody::OnlineFloorRoleV1::Controller => BrokerSessionDurableEndpointV1::Client,
+            crate::tpm_nv_custody::OnlineFloorRoleV1::Owner => BrokerSessionDurableEndpointV1::Broker,
+        };
+        if directory.as_os_str() != std::path::Path::new(profile.role().directory()).as_os_str()
+            || name != super::super::PROTECTED_SESSION_JOURNAL
+            || self.endpoint.role() != role
+            || self.endpoint.protected_protocol_and_node().0 != BrokerSessionProtocolV1::Nix
+            || self.stable_endpoint_identity(BrokerSessionProtocolV1::Nix)? != profile.stable_endpoint()
+            || !self.online_schema.as_ref().is_some_and(|schema| schema.profile == profile)
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        if let Some(transaction) = transaction {
+            self.require_online_transaction(transaction)?;
+        }
+        let cuts = journal_floor_cuts_purpose(
+            self.journal_mut()?, transaction, HeadPurposeV1::Online(profile),
+        ).map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        self.validate_schema_only()?;
+        if self.stable_endpoint_identity(BrokerSessionProtocolV1::Nix)? != profile.stable_endpoint() {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        self.endpoint.revalidate()?;
+        owner.validate_held(self.journal_mut()?, &directory, &name)
+            .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        Ok(cuts)
+    }
+
     /// Derives a current and prospective HEAD without committing or extending.
     ///
     /// Existing owner validation and preflight remain authoritative for record
@@ -85,6 +127,42 @@ pub(super) fn journal_floor_cuts_v1(
     journal: &mut Journal,
     transaction: Option<&JournalTransaction>,
 ) -> Result<(FloorCutV1, Option<FloorCutV1>), FloorErrorV1> {
+    journal_floor_cuts_purpose(journal, transaction, HeadPurposeV1::Broker)
+}
+
+#[derive(Clone, Copy)]
+enum HeadPurposeV1 {
+    Broker,
+    #[cfg(feature = "online-nix")]
+    Online(crate::tpm_nv_custody::OnlineFloorProfileV1),
+}
+
+impl HeadPurposeV1 {
+    fn cut<'a>(self, sequence: u64, records: impl IntoIterator<Item = (&'a [u8], &'a [u8])>)
+        -> Result<FloorCutV1, FloorErrorV1>
+    {
+        match self {
+            Self::Broker => cut_from_records_v1(sequence, records),
+            #[cfg(feature = "online-nix")]
+            Self::Online(profile) => crate::tpm_nv_custody::online_cut_from_records_v1(profile, sequence, records),
+        }
+    }
+
+    fn require_transaction(self, transaction: &JournalTransaction) -> Result<(), FloorErrorV1> {
+        match self {
+            Self::Broker => { transaction_digest_v1(transaction)?; }
+            #[cfg(feature = "online-nix")]
+            Self::Online(profile) => { crate::tpm_nv_custody::online_transaction_digest_v1(profile, transaction)?; }
+        }
+        Ok(())
+    }
+}
+
+fn journal_floor_cuts_purpose(
+    journal: &mut Journal,
+    transaction: Option<&JournalTransaction>,
+    purpose: HeadPurposeV1,
+) -> Result<(FloorCutV1, Option<FloorCutV1>), FloorErrorV1> {
     journal
         .validate_held_protected_names()
         .map_err(|_| FloorErrorV1::Unavailable)?;
@@ -98,7 +176,7 @@ pub(super) fn journal_floor_cuts_v1(
     for (key, value) in authority.records().map_err(|_| FloorErrorV1::Unavailable)? {
         records.insert(key, value);
     }
-    let current = cut_from_records_v1(
+    let current = purpose.cut(
         snapshot.sequence(),
         records.iter().map(|(key, value)| (*key, *value)),
     )?;
@@ -106,7 +184,7 @@ pub(super) fn journal_floor_cuts_v1(
         let preflight = authority
             .preflight_transactions(core::slice::from_ref(transaction))
             .map_err(|_| FloorErrorV1::Unavailable)?;
-        transaction_digest_v1(transaction)?;
+        purpose.require_transaction(transaction)?;
         for record in transaction.records() {
             match record.value() {
                 Some(value) => {
@@ -119,7 +197,7 @@ pub(super) fn journal_floor_cuts_v1(
         }
         let sequence = successor_sequence(snapshot.sequence(), transaction)?;
         let target =
-            cut_from_records_v1(sequence, records.iter().map(|(key, value)| (*key, *value)))?;
+            purpose.cut(sequence, records.iter().map(|(key, value)| (*key, *value)))?;
         authority
             .validate_preflight_for_effect(&preflight, core::slice::from_ref(transaction))
             .map_err(|_| FloorErrorV1::Unavailable)?;

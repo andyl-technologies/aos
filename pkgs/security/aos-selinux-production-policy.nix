@@ -23,15 +23,33 @@
   homeContextAliases ? "",
   gitReadDelegation ? false,
   sourceProviderMount ? false,
+  onlineNix ? false,
+  aos-nix-runtime-tpm-helpers ? null,
+  aos-nix-online-store-reader ? null,
 }: let
   policyVersion = "33";
   policySupport = ./_aos-selinux-production-policy;
   gitReadCheckerArgument = if gitReadDelegation then "--git-read-delegation" else "";
   homeAliases = builtins.toFile "aos-selinux-home-context-aliases" homeContextAliases;
+  closedOnlineSource = source: let
+    parts = builtins.split "\n# AOS_ONLINE_NIX_BEGIN\n" source;
+    ending =
+      if builtins.length parts == 3
+      then builtins.split "# AOS_ONLINE_NIX_END\n" (builtins.elemAt parts 2)
+      else [];
+  in
+    if builtins.length parts != 3 || builtins.length ending != 3
+    then throw "online Nix policy requires exactly one closed block"
+    else if onlineNix
+    then source
+    else builtins.elemAt parts 0 + "\n" + builtins.elemAt ending 2;
   # The suffix has one fixed beginning and ending, and no trailing source.
   # The false branch restores the exact original newline, not a blank block.
   closedSelectedSource = path: let
-    source = builtins.readFile path;
+    source =
+      if path == policySupport + "/owner_confinement.te"
+      then closedOnlineSource (builtins.readFile path)
+      else builtins.readFile path;
     parts = builtins.split "\n# AOS_SELECTED_MOUNT_SOURCE_BEGIN\n" source;
     ending =
       if builtins.length parts == 3
@@ -47,23 +65,35 @@
     if builtins.length (builtins.split pattern source) != 3
     then throw "selected owner DATA requires exactly one fixed initializer"
     else builtins.replaceStrings [literal] [replacement] source;
-  selectedOwnerData = builtins.toFile "aos-selected-owner-policy.py" (
-    replaceSelectedInitializer
-    "SELECTED_LAUNCHER_IMAGE_IOCTL_SELECTORS = frozenset\\(\\)"
-    "SELECTED_LAUNCHER_IMAGE_IOCTL_SELECTORS = frozenset()"
-    "SELECTED_LAUNCHER_IMAGE_IOCTL_SELECTORS = frozenset({0x6686})"
-    (
+  mountSourceOwnerData =
+    if !sourceProviderMount
+    then builtins.readFile (policySupport + "/owner_policy.py")
+    else (
       replaceSelectedInitializer
-      "SELECTED_MOUNT_SOURCE_DOMAINS = \\(\\)"
-      "SELECTED_MOUNT_SOURCE_DOMAINS = ()"
-      "SELECTED_MOUNT_SOURCE_DOMAINS = (\"aos_sandbox_mount_t\", \"aos_source_provider_t\")"
-      (builtins.readFile (policySupport + "/owner_policy.py"))
-    )
+      "SELECTED_LAUNCHER_IMAGE_IOCTL_SELECTORS = frozenset\\(\\)"
+      "SELECTED_LAUNCHER_IMAGE_IOCTL_SELECTORS = frozenset()"
+      "SELECTED_LAUNCHER_IMAGE_IOCTL_SELECTORS = frozenset({0x6686})"
+      (
+        replaceSelectedInitializer
+        "SELECTED_MOUNT_SOURCE_DOMAINS = \\(\\)"
+        "SELECTED_MOUNT_SOURCE_DOMAINS = ()"
+        "SELECTED_MOUNT_SOURCE_DOMAINS = (\"aos_sandbox_mount_t\", \"aos_source_provider_t\")"
+        (builtins.readFile (policySupport + "/owner_policy.py"))
+      )
+    );
+  selectedOwnerData = builtins.toFile "aos-selected-owner-policy.py" (
+    if onlineNix
+    then replaceSelectedInitializer
+      "ONLINE_NIX_DOMAINS = \\(\\)"
+      "ONLINE_NIX_DOMAINS = ()"
+      "ONLINE_NIX_DOMAINS = ONLINE_NIX_KNOWN_DOMAINS"
+      mountSourceOwnerData
+    else mountSourceOwnerData
   );
   # Selected checks import the rendered immutable DATA beside the same checker.
   # No policy observation or runtime option chooses its expected permissions.
   checkerScript =
-    if sourceProviderMount
+    if sourceProviderMount || onlineNix
     then "selected-policy-checker/effective_policy.py"
     else "${policySupport}/effective_policy.py";
   # toFile cannot carry an output reference, and the policy must not build
@@ -81,6 +111,37 @@
     if builtins.match "[a-z0-9]{32}-${name}-[0-9]+\\.[0-9]+\\.[0-9]+" basename != null
     then builtins.replaceStrings ["."] ["\\."] basename
     else throw "${name} SELinux label requires its exact evaluated package root";
+  onlinePackageBasename = name: package: let
+    basename = builtins.unsafeDiscardStringContext (builtins.baseNameOf (toString package));
+  in
+    if builtins.match "[a-z0-9]{32}-${name}-1" basename != null
+    then builtins.replaceStrings ["."] ["\\."] basename
+    else throw "online Nix SELinux label requires its exact evaluated package root";
+  onlineFileContexts =
+    if !onlineNix
+    then ""
+    else let
+      domain = aos-nix-online-store-reader.domainIdHex;
+      helperBasename = onlinePackageBasename "aos-nix-runtime-tpm-helpers" aos-nix-runtime-tpm-helpers;
+      readerBasename = onlinePackageBasename "aos-nix-online-store-reader-${domain}" aos-nix-online-store-reader;
+      sandboxBasename = exactPackageBasename "aos-sandboxd" aos-sandboxd;
+    in
+      if builtins.match "[0-9a-f]{32}" domain == null || domain == "00000000000000000000000000000000"
+      then throw "online Nix file contexts require the selected nonzero domain"
+      else ''
+        /(nix|nix\.lower)/store/${sandboxBasename}/bin/aos-sandbox-nixd -- system_u:object_r:aos_sandbox_nix_exec_t
+        /(nix|nix\.lower)/store/${helperBasename}/libexec/aos-nix-controller-tpm-helper -- system_u:object_r:aos_nix_controller_floor_helper_exec_t
+        /(nix|nix\.lower)/store/${helperBasename}/libexec/aos-nix-owner-tpm-helper -- system_u:object_r:aos_nix_owner_floor_helper_exec_t
+        /(nix|nix\.lower)/store/${readerBasename}/libexec/aos-nix-online-store-reader -- system_u:object_r:aos_nix_online_store_reader_exec_t
+        /(nix|nix\.lower)/store/[a-z0-9]{32}-aos-nix-startup-profile-2(/.*)? system_u:object_r:aos_nix_startup_profile_t
+        /var/lib/aos/sandbox-nix/domains/${domain}/root(/.*)? system_u:object_r:aos_nix_online_store_t
+        /var/lib/aos/sandbox-nix/broker-session/controller(/.*)? system_u:object_r:aos_nix_online_owner_state_t
+        /var/lib/aos/sandboxd/broker-session/nix(/.*)? system_u:object_r:aos_nix_online_controller_state_t
+        /var/lib/aos/sandbox-nix/broker-session/controller/(session\.journal|tpm-floor\.journal)\.lock -- system_u:object_r:aos_nix_online_owner_lock_t
+        /var/lib/aos/sandboxd/broker-session/nix/(session\.journal|tpm-floor\.journal)\.lock -- system_u:object_r:aos_nix_online_controller_lock_t
+        /run/aos/sandbox-nix(/.*)? system_u:object_r:aos_nix_online_runtime_t
+        /run/credentials/aos-sandbox-nixd\.service(/.*)? system_u:object_r:aos_nix_online_owner_credential_t
+      '';
   # PID1's public comparison pin uses this same evaluated package as Storage.
   # Its two-component version must not widen the existing owner-label helper.
   systemdBasename = builtins.unsafeDiscardStringContext (builtins.baseNameOf (toString systemd));
@@ -179,6 +240,7 @@
         (closedSelectedSource (policySupport + "/aos_sandbox.fc"))
         + builtins.concatStringsSep "" (map viewEntrypointContext viewPreparers)
         + (if gitReadDelegation then builtins.readFile (policySupport + "/git_read_delegation.fc") else "")
+        + onlineFileContexts
       )
     else throw "fixed service SELinux labels must match only their evaluated package roots";
 in
@@ -207,7 +269,7 @@ in
           attribute_negative_module=aos_sandbox_attribute_negative
           export PYTHONPATH=${setools}/lib/python3/site-packages
 
-          ${if sourceProviderMount then ''
+          ${if sourceProviderMount || onlineNix then ''
             mkdir selected-policy-checker
             cp -R ${policySupport}/. selected-policy-checker/
             chmod u+w selected-policy-checker
@@ -495,6 +557,13 @@ in
             deficient-binary-diagnostic \
             "$evidence_root/"
           install -m 0644 ${fileContexts} "$evidence_root/aos_sandbox.fc"
+          ${if onlineNix then ''
+            # Adjacent modules and rendered expectation DATA are the same
+            # inputs used above; the relative passthru has no output cycle.
+            mkdir -p "$out/share/aos/selected-policy-checker"
+            install -m 0444 selected-policy-checker/*.py \
+              "$out/share/aos/selected-policy-checker/"
+          '' else ""}
 
           cat > "$evidence_root/gate-result" <<'EOF'
           kernel_classmap_ordered_prefix=pass
@@ -511,11 +580,15 @@ in
       }
     ];
 
-    passthru.evidenceSources = [
-      policySupport
-      refpolicy-production.src
-      linux.src
-    ];
+    passthru = {
+      evidenceSources = [
+        policySupport
+        refpolicy-production.src
+        linux.src
+      ];
+    } // (if onlineNix then {
+      effectivePolicyCheckerRelative = "share/aos/selected-policy-checker/effective_policy.py";
+    } else {});
 
     meta = {
       description = "Offline SELinux policy matched to the production Linux class map";

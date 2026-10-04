@@ -63,7 +63,9 @@ mod fixed_domain;
 pub(crate) use authority::CheckedStartAuthorityV2;
 pub(crate) use carrier::NixStartAdmissionCarrierV2;
 use carrier::OriginalAssignmentV2;
-pub use continuation::{CurrentRetainedNixStartV2, NixStartContinuationErrorV2};
+pub use continuation::{
+    CurrentRetainedNixStartV2, NixResolveAuthorizationDraftV2, NixStartContinuationErrorV2,
+};
 pub use fixed_domain::{NixFixedDomainPinsDataV2, NixFixedDomainPinsDecodeErrorV2};
 
 const CATALOG_MAGIC: &[u8; 8] = b"AOSNRC02";
@@ -838,6 +840,44 @@ impl ControllerNixStartRecipeSelectorV2 {
         Ok(pins)
     }
 
+    /// Reuses the sole catalog decoder for the genuine fixed owner's originals.
+    pub(crate) fn decode_owner_recipe_catalog_v2(
+        credentials: &[PinnedSystemdCredential; 12],
+        pins: &NixFixedDomainPinsDataV2,
+    ) -> Result<Vec<VerifiedNixRecipeArtifactV2>, NixStartAdmissionErrorV2> {
+        decode_public_catalog(&credentials.each_ref(), pins, pins.node)
+    }
+
+    /// Decodes independent owner anchors through the existing public parsers.
+    ///
+    /// The returned anchors are configured DATA, not a current Start or lease.
+    pub(crate) fn decode_owner_admission_anchors_v2(
+        credentials: &[PinnedSystemdCredential; 12],
+        pins: &NixFixedDomainPinsDataV2,
+    ) -> Result<(BrokerPlanTrustAnchor, OwnershipLeaseTrustAnchor, NodeId), NixStartAdmissionErrorV2> {
+        let publics = credentials.each_ref();
+        let (ownership, _, _policy) = ownership_anchor_from_publics(&publics)?;
+        let plan = plan_anchor_from_publics(&publics, 6)?;
+        Ok((plan, ownership, pins.node))
+    }
+
+    pub(crate) fn retain_session_floor_admission_anchors_into_v2(
+        &self,
+        target: &mut Option<(BrokerPlanTrustAnchor, OwnershipLeaseTrustAnchor, NodeId)>,
+    ) -> Result<(), NixStartAdmissionErrorV2> {
+        if target.is_some() {
+            return Err(NixStartAdmissionErrorV2::Invalid);
+        }
+        {
+            let loan = self.recheck_and_borrow_publics()?;
+            let publics = loan.publics().ok_or(NixStartAdmissionErrorV2::CredentialCustodyClosed)?;
+            let (ownership, _, _policy) = ownership_anchor_from_publics(&publics)?;
+            let plan = plan_anchor_from_publics(&publics, 6)?;
+            *target = Some((plan, ownership, self.pins.node));
+        }
+        self.recheck()
+    }
+
     pub(super) fn prepare_vacant(
         &self,
         journal: &mut Journal,
@@ -1061,6 +1101,28 @@ fn assignment_policy_from_publics(
     credentials: &[&PinnedSystemdCredential; 12],
     pins: &NixFixedDomainPinsDataV2,
 ) -> Result<CurrentRuntimeScopePolicy, NixStartAdmissionErrorV2> {
+    // Keep the same decoded ownership policy alive through both later plan
+    // decoders. Sharing its parser must not shorten the ordinary local scope.
+    let (anchor, authority, _policy) = ownership_anchor_from_publics(credentials)?;
+
+    Ok(CurrentRuntimeScopePolicy {
+        node: pins.node,
+        clock_provenance: *b"aos-cli-clock-v1",
+        maximum_validity_seconds: 10,
+        runtime_limits: RuntimeAuthorityLimits::default(),
+        ownership_verifier: OwnershipAuthorityVerifier::new(anchor, authority),
+        broker_anchor: plan_anchor_from_publics(credentials, 6)?,
+        mount_broker_anchor: plan_anchor_from_publics(credentials, 9)?,
+    })
+}
+
+fn ownership_anchor_from_publics(
+    credentials: &[&PinnedSystemdCredential; 12],
+) -> Result<(
+    OwnershipLeaseTrustAnchor,
+    aos_sandbox_core::model::KeyReference,
+    aos_sandbox_core::model::TrustPolicy,
+), NixStartAdmissionErrorV2> {
     let policy_bytes = credentials[4].bytes();
     let policy = decode_trust_policy(policy_bytes, DecodeLimits::default())
         .map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
@@ -1088,15 +1150,8 @@ fn assignment_policy_from_publics(
         DecodeLimits::default(),
     ).map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
 
-    Ok(CurrentRuntimeScopePolicy {
-        node: pins.node,
-        clock_provenance: *b"aos-cli-clock-v1",
-        maximum_validity_seconds: 10,
-        runtime_limits: RuntimeAuthorityLimits::default(),
-        ownership_verifier: OwnershipAuthorityVerifier::new(anchor, authority.clone()),
-        broker_anchor: plan_anchor_from_publics(credentials, 6)?,
-        mount_broker_anchor: plan_anchor_from_publics(credentials, 9)?,
-    })
+    let authority = authority.clone();
+    Ok((anchor, authority, policy))
 }
 
 fn plan_anchor_from_publics(

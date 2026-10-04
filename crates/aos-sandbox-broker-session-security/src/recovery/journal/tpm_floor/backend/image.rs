@@ -26,6 +26,8 @@ const MAXIMUM_MAPS_BYTES: u64 = 64 * 1024;
 enum HelperImagePurposeV1 {
     Broker,
     RuntimeDeployment,
+    ControllerNix,
+    NixOwner,
 }
 
 impl HelperImagePurposeV1 {
@@ -33,6 +35,8 @@ impl HelperImagePurposeV1 {
         match self {
             Self::Broker => option_env!("AOS_METHOD46_TPM_HELPER"),
             Self::RuntimeDeployment => option_env!("AOS_RUNTIME_DEPLOYMENT_TPM_HELPER"),
+            Self::ControllerNix => option_env!("AOS_NIX_CONTROLLER_TPM_HELPER"),
+            Self::NixOwner => option_env!("AOS_NIX_OWNER_TPM_HELPER"),
         }
         .ok_or(FloorErrorV1::Unavailable)
     }
@@ -48,6 +52,16 @@ impl HelperImagePurposeV1 {
                 "aos-runtime-deployment-tpm-helper",
                 "aos-runtime-deployment-tpm-helper.sha256",
                 "aos-runtime-deployment-tpm-helper.loader",
+            ),
+            Self::ControllerNix => (
+                "aos-nix-controller-tpm-helper",
+                "aos-nix-controller-tpm-helper.sha256",
+                "aos-nix-controller-tpm-helper.loader",
+            ),
+            Self::NixOwner => (
+                "aos-nix-owner-tpm-helper",
+                "aos-nix-owner-tpm-helper.sha256",
+                "aos-nix-owner-tpm-helper.loader",
             ),
         }
     }
@@ -69,6 +83,16 @@ impl MeasuredHelperImageV1 {
     /// Rejects missing compiled pins or unsafe, malformed or changed images.
     pub(crate) fn open_runtime_deployment() -> Result<Self, FloorErrorV1> {
         Self::open_purpose(HelperImagePurposeV1::RuntimeDeployment)
+    }
+
+    /// Retains only the compiled online purpose through the same image engine.
+    pub(crate) fn open_online(
+        role: crate::tpm_nv_custody::OnlineFloorRoleV1,
+    ) -> Result<Self, FloorErrorV1> {
+        Self::open_purpose(match role {
+            crate::tpm_nv_custody::OnlineFloorRoleV1::Controller => HelperImagePurposeV1::ControllerNix,
+            crate::tpm_nv_custody::OnlineFloorRoleV1::Owner => HelperImagePurposeV1::NixOwner,
+        })
     }
 
     fn open_purpose(purpose: HelperImagePurposeV1) -> Result<Self, FloorErrorV1> {

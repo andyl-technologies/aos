@@ -79,6 +79,22 @@ pub(in crate::recovery::journal::tpm_floor) struct PhysicalTpmNvIoV1 {
 }
 
 impl PhysicalTpmNvIoV1 {
+    #[cfg(feature = "online-nix")]
+    pub(in crate::recovery::journal::tpm_floor) fn retain_online(
+        profile: crate::tpm_nv_custody::OnlineFloorProfileV1,
+        auth: &[u8; 32],
+        locks: [ProtectedJournalLockCustodyV1; 2],
+        origin: crate::nix_service::floor::OnlineOriginV1,
+        deadline: crate::handshake::OriginalBrokerColdDeadlineV1,
+    ) -> Self {
+        Self { owner: RetainedPhysicalTpmOwnerV1::retain_online(profile, auth, locks, origin, deadline) }
+    }
+
+    #[cfg(feature = "online-nix")]
+    pub(in crate::recovery::journal::tpm_floor) fn admit_online(&mut self) -> Result<(), FloorErrorV1> {
+        self.owner.admit_online()
+    }
+
     pub(in crate::recovery::journal::tpm_floor) fn bind_cold_deadline(
         &mut self,
         deadline: crate::handshake::OriginalBrokerColdDeadlineV1,
@@ -133,6 +149,14 @@ impl sealed::Sealed for PhysicalTpmNvIoV1 {}
 
 // Restricted concrete forwarding only; no new sealed transport or factory.
 impl super::TpmNvExtendFloorBackendV1<PhysicalTpmNvIoV1> {
+    #[cfg(feature = "online-nix")]
+    pub(in crate::recovery::journal::tpm_floor) fn bind_online_request_deadline(
+        &mut self,
+        deadline: crate::handshake::OriginalBrokerColdDeadlineV1,
+    ) -> Result<(), FloorErrorV1> {
+        self.io.owner.bind_online_request_deadline(deadline)
+    }
+
     pub(in crate::recovery::journal::tpm_floor) fn require_cold_retirement(
         &mut self,
         deadline: crate::handshake::OriginalBrokerColdDeadlineV1,

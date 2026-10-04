@@ -50,7 +50,8 @@ mod nix_environment;
 pub use nix_environment::{
     ControllerNixPublicDataLoanV2, ControllerNixSelectorAdmissionV2,
     ControllerNixSelectorFailureRefV2,
-    ControllerNixStartRecipeSelectorV2, CurrentRetainedNixStartV2, NixStartAdmissionErrorV2,
+    ControllerNixStartRecipeSelectorV2, CurrentRetainedNixStartV2, NixResolveAuthorizationDraftV2,
+    NixStartAdmissionErrorV2,
     NixStartContinuationErrorV2, NixFixedDomainPinsDataV2, NixFixedDomainPinsDecodeErrorV2,
 };
 #[cfg(target_os = "linux")]

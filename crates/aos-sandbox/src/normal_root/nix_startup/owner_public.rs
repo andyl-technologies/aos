@@ -8,9 +8,11 @@
 //! no Session, currentness, journal, NV, build, population-drain or effect proof.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use aos_sandbox_core::NodeId;
 use aos_sandbox_linux::pidfd::PidFd;
+use aos_sandbox_protocol::nix_build::VerifiedNixRecipeArtifactV2;
 
 use crate::production_operation_compiler::{
     ControllerNixStartRecipeSelectorV2, NixFixedDomainPinsDataV2, NixStartAdmissionErrorV2,
@@ -29,11 +31,33 @@ use super::floor_origin::OriginFailureLatchV2;
 /// keep the external startup alive rather than consume it into a self-borrow.
 #[must_use = "retain and recheck this original startup/public-credential loan"]
 pub struct NixOwnerPublicSessionFloorOriginV2<'origin> {
-    startup: &'origin ProductionNixOwnerStartupV1,
+    startup: OwnerOriginParentV2<'origin>,
     credentials: [PinnedSystemdCredential; 12],
     node: PinnedSystemdCredential,
     pins: NixFixedDomainPinsDataV2,
     health: OriginFailureLatchV2,
+}
+
+enum OwnerOriginParentV2<'origin> {
+    Borrowed(&'origin ProductionNixOwnerStartupV1),
+    RetainedArc(Arc<ProductionNixOwnerStartupV1>),
+}
+
+impl OwnerOriginParentV2<'_> {
+    fn as_ref(&self) -> &ProductionNixOwnerStartupV1 {
+        match self {
+            Self::Borrowed(startup) => startup,
+            Self::RetainedArc(startup) => startup.as_ref(),
+        }
+    }
+}
+
+impl std::ops::Deref for OwnerOriginParentV2<'_> {
+    type Target = ProductionNixOwnerStartupV1;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_ref()
+    }
 }
 
 impl ProductionNixOwnerStartupV1 {
@@ -64,7 +88,7 @@ impl ProductionNixOwnerStartupV1 {
         )?;
 
         let mut origin = NixOwnerPublicSessionFloorOriginV2 {
-            startup: self,
+            startup: OwnerOriginParentV2::Borrowed(self),
             credentials,
             node,
             pins,
@@ -75,7 +99,123 @@ impl ProductionNixOwnerStartupV1 {
     }
 }
 
-impl NixOwnerPublicSessionFloorOriginV2<'_> {
+impl<'origin> NixOwnerPublicSessionFloorOriginV2<'origin> {
+    /// Retains the original verified catalog as signed historical DATA.
+    ///
+    /// The caller retains the vacant output slot beside this same startup and
+    /// public-credential loan. A returned catalog is parked before the final
+    /// original check, and remains there even when that check fails. It grants
+    /// no current Controller Start, lease, Session, floor or build permission.
+    ///
+    /// # Errors
+    ///
+    /// Preserves the existing startup, credential, catalog and signature cause.
+    /// Rejects occupied output or a closed loan. Failure, interruption or caught
+    /// unwind permanently fences the loan without releasing a returned catalog.
+    pub fn retain_original_recipe_catalog_into(
+        &mut self,
+        target: &mut Option<Vec<VerifiedNixRecipeArtifactV2>>,
+    ) -> Result<(), NixStartAdmissionErrorV2> {
+        let observation = self.health.begin().ok_or(NixStartAdmissionErrorV2::Invalid)?;
+        let result = (|| {
+            if target.is_some() {
+                return Err(NixStartAdmissionErrorV2::Invalid);
+            }
+            Self::recheck_originals(self.startup.as_ref(), &self.credentials, &self.node)?;
+            *target = Some(ControllerNixStartRecipeSelectorV2::decode_owner_recipe_catalog_v2(
+                &self.credentials, &self.pins,
+            )?);
+            Self::recheck_originals(self.startup.as_ref(), &self.credentials, &self.node)
+        })();
+        observation.finish(result)
+    }
+
+    /// Parks independently configured anchors before the final original check.
+    ///
+    /// No request-supplied anchor or signed artifact chooses these twelve
+    /// originals. The caller keeps the output beside this same fenced loan.
+    /// A parsed anchor authenticates configured signatures, not current Start,
+    /// Session, floor, effect or physical-store permission.
+    ///
+    /// # Errors
+    ///
+    /// Preserves the existing typed startup, credential and canonical-policy
+    /// cause. Rejects an occupied target or a closed loan. Failure or unwind
+    /// keeps a successfully decoded result resident and closes this loan.
+    pub fn retain_original_admission_anchors_into(
+        &mut self,
+        target: &mut Option<(
+            aos_sandbox_core::BrokerPlanTrustAnchor,
+            aos_sandbox_core::OwnershipLeaseTrustAnchor,
+            NodeId,
+        )>,
+    ) -> Result<(), NixStartAdmissionErrorV2> {
+        let observation = self.health.begin().ok_or(NixStartAdmissionErrorV2::Invalid)?;
+        let result = (|| {
+            if target.is_some() {
+                return Err(NixStartAdmissionErrorV2::Invalid);
+            }
+            Self::recheck_originals(self.startup.as_ref(), &self.credentials, &self.node)?;
+            *target = Some(ControllerNixStartRecipeSelectorV2::decode_owner_admission_anchors_v2(
+                &self.credentials,
+                &self.pins,
+            )?);
+            Self::recheck_originals(self.startup.as_ref(), &self.credentials, &self.node)
+        })();
+        observation.finish(result)
+    }
+
+    /// Retains the same admitted root startup and all original public files.
+    ///
+    /// Validation borrows occupied caller slots; failure or caught unwind does
+    /// not dispose their originals. Success moves the existing credentials,
+    /// node, pins and fence, rather than reopening or recreating any of them.
+    /// Root control UID/GID0 and bounding0xc0 remain unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns the existing typed recheck cause or `Invalid` for missing input,
+    /// occupied output, another Arc parent or a closed loan. The caller retains
+    /// both inputs and the actual cause before another gate; no retry is granted.
+    pub fn retain_original_into(
+        loan: &mut Option<Self>,
+        original: &mut Option<Arc<ProductionNixOwnerStartupV1>>,
+        target: &mut Option<NixOwnerPublicSessionFloorOriginV2<'static>>,
+    ) -> Result<(), NixStartAdmissionErrorV2> {
+        {
+            let retained = loan.as_mut().ok_or(NixStartAdmissionErrorV2::Invalid)?;
+            let observation = retained.health.begin().ok_or(NixStartAdmissionErrorV2::Invalid)?;
+            let result = (|| {
+                let parent = original.as_ref().ok_or(NixStartAdmissionErrorV2::Invalid)?;
+                if target.is_some()
+                    || !std::ptr::eq(retained.startup.as_ref(), Arc::as_ref(parent))
+                {
+                    return Err(NixStartAdmissionErrorV2::Invalid);
+                }
+                Self::recheck_originals(retained.startup.as_ref(), &retained.credentials, &retained.node)
+            })();
+            observation.finish(result)?;
+        }
+
+        match (loan.take(), original.take()) {
+            (Some(retained), Some(parent)) => {
+                *target = Some(NixOwnerPublicSessionFloorOriginV2 {
+                    startup: OwnerOriginParentV2::RetainedArc(parent),
+                    credentials: retained.credentials,
+                    node: retained.node,
+                    pins: retained.pins,
+                    health: retained.health,
+                });
+                Ok(())
+            }
+            (retained, parent) => {
+                *loan = retained;
+                *original = parent;
+                Err(NixStartAdmissionErrorV2::Invalid)
+            }
+        }
+    }
+
     /// Rechecks original startup, all twelve publics, node, then startup again.
     ///
     /// # Errors
@@ -88,7 +228,7 @@ impl NixOwnerPublicSessionFloorOriginV2<'_> {
             .health
             .begin()
             .ok_or(NixStartAdmissionErrorV2::Invalid)?;
-        let result = Self::recheck_originals(self.startup, &self.credentials, &self.node);
+        let result = Self::recheck_originals(self.startup.as_ref(), &self.credentials, &self.node);
         observation.finish(result)
     }
 

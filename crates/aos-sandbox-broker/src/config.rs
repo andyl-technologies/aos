@@ -537,6 +537,7 @@ fn protected_configuration_binding(
         BrokerDomain::Mount => 2,
         BrokerDomain::Storage => 3,
         BrokerDomain::Network => 4,
+        BrokerDomain::Nix => 5,
     }]);
     hash.update((plan_policy.len() as u64).to_be_bytes());
     hash.update(plan_policy);

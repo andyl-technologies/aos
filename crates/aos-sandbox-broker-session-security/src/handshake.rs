@@ -178,14 +178,7 @@ impl HandshakeCarrier {
             HandshakeTransport::Ordinary(socket) => socket.peer(),
             HandshakeTransport::Descriptor(socket) => socket.peer(),
         };
-        self.peer.validate(peer.pidfd())?;
-        if peer.credentials().pid().get() != self.peer.process_id
-            || peer.credentials().uid() != self.peer.effective_user_id
-            || peer.credentials().gid() != self.peer.effective_group_id
-        {
-            return Err(HandshakeError::KernelEvidence);
-        }
-        Ok(())
+        self.peer.validate_connection(peer)
     }
 
     fn close(&mut self) {
@@ -438,6 +431,22 @@ impl ProcessEvidence {
     fn validate(self, pidfd: &PidFd) -> Result<(), HandshakeError> {
         let current = Self::observe(pidfd, None)?;
         self.require_current_observation(current, true)
+    }
+
+    // Shares the original handshake's connection-establishment bookend. The
+    // listening PID1 and the service's later record subject are distinct.
+    fn validate_connection(
+        self,
+        peer: &ConnectionPeerIdentity,
+    ) -> Result<(), HandshakeError> {
+        self.validate(peer.pidfd())?;
+        if peer.credentials().pid().get() != self.process_id
+            || peer.credentials().uid() != self.effective_user_id
+            || peer.credentials().gid() != self.effective_group_id
+        {
+            return Err(HandshakeError::KernelEvidence);
+        }
+        Ok(())
     }
 
     fn require_current_observation(self, current: Self, alive: bool) -> Result<(), HandshakeError> {
@@ -957,7 +966,7 @@ pub(super) struct VerifiedStorageHandshakeV1 {
     transcript: Option<VerifiedBrokerSessionTranscriptV1>,
     client_packet: Vec<u8>,
     broker_packet: Vec<u8>,
-    _witnesses: VerifiedStorageWitnessesV1,
+    _witnesses: Option<VerifiedStorageWitnessesV1>,
 }
 
 enum VerifiedStorageWitnessesV1 {
@@ -970,6 +979,137 @@ enum VerifiedStorageWitnessesV1 {
         _publication: [u8; BROKER_SESSION_ENDPOINT_PUBLICATION_BYTES],
         _client_subject: RetainedSubject,
     },
+}
+
+#[cfg(feature = "online-nix")]
+impl VerifiedStorageWitnessesV1 {
+    fn validate_online_client(
+        &self,
+        establishment: ProcessEvidence,
+        peer: &ConnectionPeerIdentity,
+    ) -> Result<(), HandshakeError> {
+        let Self::Client {
+            _publication_subject: publication,
+            _broker_subject: broker,
+            ..
+        } = self else {
+            return Err(HandshakeError::KernelEvidence);
+        };
+
+        establishment.validate_connection(peer)?;
+        publication.validate()?;
+        broker.validate()?;
+        if !publication.same_execution(broker) {
+            return Err(HandshakeError::KernelEvidence);
+        }
+        establishment.validate_connection(peer)
+    }
+
+    fn require_online_client_subject(
+        &self,
+        subject: &KernelAuthorizedRecordSubject,
+    ) -> Result<(), OnlineTransportFailureV1> {
+        let Self::Client {
+            _broker_subject: broker,
+            ..
+        } = self else {
+            return Err(OnlineTransportFailureV1::Closed);
+        };
+
+        // The actual signed HELLO subject, not SO_PEERCRED of the PID1
+        // listener, supplies the response writer's original nomination.
+        if !subject.is_alive()?
+            || subject.credentials() != broker.subject.credentials()
+            || subject.initial_info() != broker.subject.initial_info()
+        {
+            return Err(OnlineTransportFailureV1::Closed);
+        }
+        broker.evidence.validate(subject.pidfd())
+            .map_err(|cause| OnlineTransportFailureV1::Witness(cause.into()))
+    }
+}
+
+// Only the selected verified Client cold handoff moves these original owners.
+// Ordinary handoffs leave their witnesses in the cold shell as before.
+#[cfg(feature = "online-nix")]
+struct OnlineClientWitnessesV1 {
+    establishment: ProcessEvidence,
+    witnesses: VerifiedStorageWitnessesV1,
+    first_failure: Option<DormantBrokerSessionHandshakeErrorV1>,
+}
+
+#[cfg(feature = "online-nix")]
+impl OnlineClientWitnessesV1 {
+    fn revalidate(
+        &mut self,
+        peer: &ConnectionPeerIdentity,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        if self.first_failure.is_some() {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        if let Err(cause) = self.witnesses.validate_online_client(self.establishment, peer) {
+            // Preserve the first typed witness rejection before returning the
+            // existing currentness projection to the resident outer attempt.
+            self.first_failure = Some(cause.into());
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "online-nix"))]
+mod online_client_witness_data_tests {
+    use super::ProcessEvidence;
+
+    fn execution(process_id: u32) -> ProcessEvidence {
+        ProcessEvidence {
+            process_id,
+            thread_group_id: process_id,
+            start_time_ticks: 42,
+            cgroup_id: 7,
+            real_user_id: 1000,
+            real_group_id: 1000,
+            effective_user_id: 1000,
+            effective_group_id: 1000,
+            saved_user_id: 1000,
+            saved_group_id: 1000,
+            filesystem_user_id: 1000,
+            filesystem_group_id: 1000,
+        }
+    }
+
+    #[test]
+    fn pid1_establishment_is_not_the_authenticated_service_execution() {
+        // These are comparison DATA only; no pidfd, Session or live witness
+        // is fabricated by this test.
+        let establishment = execution(1);
+        let service = execution(57);
+
+        assert!(establishment
+            .require_current_observation(establishment, true)
+            .is_ok());
+        assert!(service.require_current_observation(service, true).is_ok());
+        assert!(service
+            .require_current_observation(establishment, true)
+            .is_err());
+        assert!(establishment.require_current_observation(service, true).is_err());
+    }
+
+    #[test]
+    fn service_identity_credential_change_or_exit_refuses() {
+        let original = execution(57);
+        let mut changed_start = original;
+        changed_start.start_time_ticks += 1;
+        let mut changed_cgroup = original;
+        changed_cgroup.cgroup_id += 1;
+        let mut changed_credentials = original;
+        changed_credentials.effective_user_id += 1;
+
+        for changed in [execution(58), changed_start, changed_cgroup, changed_credentials] {
+            assert!(original.require_current_observation(changed, true).is_err());
+        }
+        assert!(original.require_current_observation(original, false).is_err());
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1007,6 +1147,22 @@ impl OriginalBrokerColdDeadlineV1 {
         self.0
     }
 
+    #[cfg(feature = "online-nix")]
+    pub(crate) fn online_request(
+        request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+    ) -> Result<Self, BrokerSessionSecurityError> {
+        if request.method()
+            != aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2
+            || request.deadline_boottime_nanoseconds() == 0
+            || request.deadline_boottime_nanoseconds() == u64::MAX
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        let deadline = Self(request.deadline_boottime_nanoseconds());
+        deadline.check().map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        Ok(deadline)
+    }
+
     /// Samples the existing direct BOOTTIME comparator against the same D.
     ///
     /// # Errors
@@ -1036,6 +1192,68 @@ pub(super) enum ColdBrokerHandshakeProgressV1 {
     Verified(VerifiedStorageHandshakeV1),
 }
 
+/// Narrows only the method list of the sole canonical Nix HELLO producer.
+#[cfg(feature = "online-nix")]
+pub(crate) fn online_resolve_client_hello()
+    -> Result<BrokerClientHello, aos_sandbox_broker_session_protocol::BrokerSessionNegotiationError>
+{
+    let mut hello = aos_sandbox_broker_session_protocol::production_broker_client_hello_v1(
+        BrokerSessionProtocolV1::Nix,
+        aos_proto::aos::sandbox::local::v1::Audience::AUDIENCE_NODE_CONTROLLER,
+        aos_sandbox_broker_session_protocol::AUTHENTICATED_RESPONSE_MAXIMUM_BYTES as u32,
+    )?;
+    hello.required_methods = vec![
+        aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2.into(),
+    ];
+    Ok(hello)
+}
+
+/// Keeps canonical Nix features/version/ceilings but advertises only real50.
+#[cfg(feature = "online-nix")]
+pub(crate) fn online_resolve_server_hello()
+    -> Result<BrokerServerHello, aos_sandbox_broker_session_protocol::BrokerSessionNegotiationError>
+{
+    let mut hello = aos_sandbox_broker_session_protocol::production_broker_server_hello_v1(
+        BrokerSessionProtocolV1::Nix,
+        aos_proto::aos::sandbox::local::v1::Audience::AUDIENCE_NODE_CONTROLLER,
+        aos_sandbox_broker_session_protocol::AUTHENTICATED_RESPONSE_MAXIMUM_BYTES as u32,
+    )?;
+    hello.methods = vec![
+        aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2.into(),
+    ];
+    Ok(hello)
+}
+
+/// Joins the closed online root to the unchanged client HELLO typestate.
+#[cfg(feature = "online-nix")]
+pub(crate) fn begin_online_resolve_client(
+    custody: ProtectedBrokerSessionClientV1,
+    socket: SeqpacketSocket,
+    hello: BrokerClientHello,
+) -> Result<DormantControllerClientHandshakeV1, DormantBrokerSessionHandshakeErrorV1> {
+    if custody.protected_protocol_and_node().0 != BrokerSessionProtocolV1::Nix {
+        return Err(DormantBrokerSessionHandshakeErrorV1::EndpointRole);
+    }
+    DormantControllerClientHandshakeV1::begin(
+        "/var/lib/aos/sandboxd/broker-session/nix", custody, socket, hello,
+    )
+}
+
+/// Joins the closed online root to the unchanged broker HELLO typestate.
+#[cfg(feature = "online-nix")]
+pub(crate) fn begin_online_resolve_broker(
+    custody: ProtectedBrokerSessionBrokerV1,
+    socket: SeqpacketSocket,
+    hello: BrokerServerHello,
+) -> Result<DormantBrokerEndpointHandshakeV1, DormantBrokerSessionHandshakeErrorV1> {
+    if custody.protected_protocol_and_node().0 != BrokerSessionProtocolV1::Nix {
+        return Err(DormantBrokerSessionHandshakeErrorV1::EndpointRole);
+    }
+    DormantBrokerEndpointHandshakeV1::begin(
+        "/var/lib/aos/sandbox-nix/broker-session/controller", custody, socket, hello,
+    )
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StorageColdPhaseV1 {
     Fresh,
@@ -1062,6 +1280,10 @@ impl StorageColdPhaseV1 {
 pub(crate) struct RetainedStorageColdOpenV1 {
     verified: VerifiedStorageHandshakeV1,
     deadline: OriginalBrokerColdDeadlineV1,
+    #[cfg(feature = "online-nix")]
+    online_provision: Option<crate::nix_service::floor::OnlineProvisionV1>,
+    #[cfg(feature = "online-nix")]
+    online_client_establishment: Option<ProcessEvidence>,
     checkpoint: Option<HistoricalSessionCheckpointV1>,
     main: Option<crate::recovery::BrokerMainOpenV1>,
     owner: Option<ProtectedBrokerSessionOwnerV1>,
@@ -1070,6 +1292,10 @@ pub(crate) struct RetainedStorageColdOpenV1 {
 }
 
 impl RetainedStorageColdOpenV1 {
+    #[cfg(feature = "online-nix")]
+    pub(crate) const fn original_deadline(&self) -> OriginalBrokerColdDeadlineV1 {
+        self.deadline
+    }
     pub(super) fn retain(
         verified: VerifiedStorageHandshakeV1,
         deadline: OriginalBrokerColdDeadlineV1,
@@ -1077,12 +1303,40 @@ impl RetainedStorageColdOpenV1 {
         Self {
             verified,
             deadline,
+            #[cfg(feature = "online-nix")]
+            online_provision: None,
+            #[cfg(feature = "online-nix")]
+            online_client_establishment: None,
             checkpoint: None,
             main: None,
             owner: None,
             phase: StorageColdPhaseV1::Fresh,
             first_failure: None,
         }
+    }
+
+    /// Parks only a genuine verified HELLO and its independently supplied floor.
+    ///
+    /// The closed online route uses the same cold-open/checkpoint algorithm.
+    /// Its existing-only profile is not a method46 or offline provisioning grant.
+    #[cfg(feature = "online-nix")]
+    pub(crate) fn retain_online(
+        verified: VerifiedStorageHandshakeV1,
+        deadline: OriginalBrokerColdDeadlineV1,
+        provision: crate::nix_service::floor::OnlineProvisionV1,
+    ) -> Self {
+        let mut retained = Self::retain(verified, deadline);
+        if matches!(
+            &retained.verified.custody,
+            Some(FixedEndpointCustodyV1::Client(_))
+        ) {
+            let Some(carrier) = &retained.verified.carrier else {
+                std::process::abort();
+            };
+            retained.online_client_establishment = Some(carrier.peer);
+        }
+        retained.online_provision = Some(provision);
+        retained
     }
 
     pub(crate) fn is_failed(&self) -> bool {
@@ -1129,12 +1383,30 @@ impl RetainedStorageColdOpenV1 {
             }) => socket,
             _ => std::process::abort(),
         };
+        #[cfg(feature = "online-nix")]
+        let online_client_witnesses = match self.online_client_establishment {
+            Some(establishment) => {
+                let Some(witnesses @ VerifiedStorageWitnessesV1::Client { .. }) =
+                    self.verified._witnesses.take()
+                else {
+                    std::process::abort();
+                };
+                Some(OnlineClientWitnessesV1 {
+                    establishment,
+                    witnesses,
+                    first_failure: None,
+                })
+            }
+            None => None,
+        };
         self.phase = StorageColdPhaseV1::Complete;
         Ok(DormantAuthenticatedBrokerSessionV1 {
             owner,
             socket,
             transcript,
             checkpoint,
+            #[cfg(feature = "online-nix")]
+            online_client_witnesses,
         })
     }
 
@@ -1143,6 +1415,10 @@ impl RetainedStorageColdOpenV1 {
         expected_node: Option<[u8; 16]>,
     ) -> Result<(), crate::DormantBrokerSessionHandshakeErrorV1> {
         self.deadline.check()?;
+        #[cfg(feature = "online-nix")]
+        if let Some(establishment) = self.online_client_establishment {
+            self.verified.require_online_client_witnesses(establishment)?;
+        }
         let transcript = self.verified.transcript
             .as_ref()
             .ok_or(crate::DormantBrokerSessionHandshakeErrorV1::EndpointRole)?;
@@ -1180,6 +1456,21 @@ impl RetainedStorageColdOpenV1 {
         )?);
         self.deadline.check()?;
 
+        #[cfg(feature = "online-nix")]
+        let main = if self.online_provision.is_some() {
+            crate::recovery::BrokerMainOpenV1::prepare_online(
+                &mut self.verified.custody,
+                &mut self.online_provision,
+                self.deadline,
+            )?
+        } else {
+            crate::recovery::BrokerMainOpenV1::prepare_storage(
+                self.verified.root,
+                &mut self.verified.custody,
+                self.deadline,
+            )?
+        };
+        #[cfg(not(feature = "online-nix"))]
         let main = crate::recovery::BrokerMainOpenV1::prepare_storage(
             self.verified.root,
             &mut self.verified.custody,
@@ -1202,9 +1493,14 @@ impl RetainedStorageColdOpenV1 {
         }
         self.deadline.check()?;
 
+        #[cfg(feature = "online-nix")]
+        if let Some(establishment) = self.online_client_establishment {
+            self.verified.require_online_client_witnesses(establishment)?;
+        }
+
         // Final node/startup/currentness observations precede the final same-D
-        // check inside retirement. Witnesses remain here until success drops
-        // this emptied shell; no failure releases them or grants retry.
+        // check inside retirement. Selected Client witnesses move once into
+        // the Session; ordinary witnesses keep their original shell lifetime.
         owner.retire_cold_deadline(self.deadline)?;
         Ok(())
     }
@@ -1305,6 +1601,23 @@ mod storage_cold_data_tests {
 }
 
 impl VerifiedStorageHandshakeV1 {
+    #[cfg(feature = "online-nix")]
+    fn require_online_client_witnesses(
+        &self,
+        establishment: ProcessEvidence,
+    ) -> Result<(), DormantBrokerSessionHandshakeErrorV1> {
+        let Some(HandshakeCarrier {
+            transport: HandshakeTransport::Ordinary(socket),
+            ..
+        }) = &self.carrier else {
+            return Err(DormantBrokerSessionHandshakeErrorV1::EndpointRole);
+        };
+        let witnesses = self._witnesses.as_ref()
+            .ok_or(DormantBrokerSessionHandshakeErrorV1::KernelEvidence)?;
+        witnesses.validate_online_client(establishment, socket.peer())?;
+        Ok(())
+    }
+
     fn client(root: &'static str, session: InertProvisionalClientSession) -> Self {
         let InertProvisionalClientSession {
             _custody: custody,
@@ -1323,11 +1636,11 @@ impl VerifiedStorageHandshakeV1 {
             transcript: Some(transcript),
             client_packet,
             broker_packet,
-            _witnesses: VerifiedStorageWitnessesV1::Client {
+            _witnesses: Some(VerifiedStorageWitnessesV1::Client {
                 _publication: publication,
                 _publication_subject: publication_subject,
                 _broker_subject: broker_subject,
-            },
+            }),
         }
     }
 
@@ -1348,10 +1661,10 @@ impl VerifiedStorageHandshakeV1 {
             transcript: Some(transcript),
             client_packet,
             broker_packet,
-            _witnesses: VerifiedStorageWitnessesV1::Broker {
+            _witnesses: Some(VerifiedStorageWitnessesV1::Broker {
                 _publication: publication,
                 _client_subject: client_subject,
-            },
+            }),
         }
     }
 }
@@ -1677,6 +1990,51 @@ pub(super) struct DormantAuthenticatedBrokerSessionV1 {
     socket: SeqpacketSocket,
     transcript: VerifiedBrokerSessionTranscriptV1,
     checkpoint: HistoricalSessionCheckpointV1,
+    #[cfg(feature = "online-nix")]
+    online_client_witnesses: Option<OnlineClientWitnessesV1>,
+}
+
+/// Reports selected transport failures while originals stay in caller slots.
+#[cfg(feature = "online-nix")]
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum OnlineTransportFailureV1 {
+    #[error("online protected Session custody failed: {0}")]
+    Protected(#[from] BrokerSessionSecurityError),
+    #[error("online original record binding failed: {0}")]
+    Binding(#[from] aos_sandbox_linux::seqpacket::RecordBindingError),
+    #[error("online original record subject failed: {0}")]
+    Kernel(#[from] aos_sandbox_linux::Error),
+    #[error("online original HELLO witness failed: {0}")]
+    Witness(#[from] DormantBrokerSessionHandshakeErrorV1),
+    #[error("the actual owning receive failure is retained in this attempt")]
+    Receive,
+    #[error("the actual request admission error is retained in this attempt")]
+    Admission,
+    #[error("original paired clock observation failed: {0}")]
+    Clock(#[from] aos_sandbox::ownership_resume::OwnershipClockObservationError),
+    #[error("the actual selected request decoder error remains in its slot")]
+    Decode,
+    #[error("the actual selected send error remains in its slot")]
+    Send,
+    #[error("online original transport or destination slot is closed")]
+    Closed,
+}
+
+/// Keeps the full native target even when commit or its readback is ambiguous.
+#[cfg(feature = "online-nix")]
+pub(crate) enum OnlineRequestNativeResultV1 {
+    Initialized(Result<crate::ProtectedBrokerSessionInitializationResultV1, BrokerSessionSecurityError>),
+    Appended(Result<crate::ProtectedBrokerRequestCommitResultV1, BrokerSessionSecurityError>),
+}
+
+#[cfg(feature = "online-nix")]
+impl OnlineRequestNativeResultV1 {
+    pub(crate) fn is_committed(&self) -> bool {
+        matches!(self,
+            Self::Initialized(Ok(crate::ProtectedBrokerSessionInitializationResultV1::Initialized))
+                | Self::Appended(Ok(crate::ProtectedBrokerRequestCommitResultV1::Committed))
+        )
+    }
 }
 
 /// Opens the sole cgroup root used by both fixed Mount worker-peer boundaries.
@@ -1703,6 +2061,292 @@ fn fixed_worker_cgroup_root()
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    #[cfg(feature = "online-nix")]
+    fn require_online_client_currentness(&mut self) -> Result<(), BrokerSessionSecurityError> {
+        match self.owner.online_endpoint_role()? {
+            aos_sandbox_broker_session_protocol::BrokerSessionDurableEndpointV1::Client => {
+                let witnesses = self.online_client_witnesses.as_mut()
+                    .ok_or(BrokerSessionSecurityError::Currentness)?;
+                witnesses.revalidate(self.socket.peer())
+            }
+            aos_sandbox_broker_session_protocol::BrokerSessionDurableEndpointV1::Broker => Ok(()),
+        }
+    }
+
+    #[cfg(feature = "online-nix")]
+    fn revalidate_online_transport(&mut self) -> Result<(), BrokerSessionSecurityError> {
+        self.require_online_client_currentness()?;
+        self.owner.revalidate_transport(&self.transcript, self.socket.peer())?;
+        self.require_online_client_currentness()
+    }
+
+    /// Stages the sole decoder's full result using the already admitted peer.
+    #[cfg(feature = "online-nix")]
+    pub(crate) fn decode_online_request_into(
+        &mut self,
+        request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+        target: &mut Option<Result<
+            aos_sandbox_protocol::nix_build::ValidatedNixBuildRequestV2,
+            aos_sandbox_protocol::ProtocolValidationError,
+        >>,
+    ) -> Result<(), OnlineTransportFailureV1> {
+        if target.is_some() {
+            return Err(OnlineTransportFailureV1::Closed);
+        }
+        self.require_online_transport(request)?;
+        let now = protected_boottime_nanoseconds()?;
+        *target = Some(aos_sandbox_protocol::nix_build::decode_nix_build_request_v2(
+            request.exact_body(), request.method(), request.peer(), request.peer_policy(), now,
+        ));
+        if target.as_ref().is_none_or(Result::is_err) {
+            return Err(OnlineTransportFailureV1::Decode);
+        }
+        self.require_online_transport(request)?;
+        Ok(())
+    }
+
+    /// Uses the actual paired clock and the SAME common plan/lease authenticator.
+    #[cfg(feature = "online-nix")]
+    pub(crate) fn retain_online_admission(
+        &mut self,
+        request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+        checked: &aos_sandbox_protocol::nix_build::ValidatedNixBuildRequestV2,
+    ) -> Result<(), OnlineTransportFailureV1> {
+        self.require_online_transport(request)?;
+        let sample = crate::controller_ownership::sample_ownership_clock()?;
+        self.owner.retain_online_resolve_admission(
+            request, checked, &sample, &self.transcript, self.socket.peer(),
+        )?;
+        self.require_online_transport(request)?;
+        Ok(())
+    }
+
+    /// Parks the full native result before its pending-request postcheck.
+    #[cfg(feature = "online-nix")]
+    pub(crate) fn retain_online_request_commit_into(
+        &mut self,
+        request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+        initialize: bool,
+        target: &mut Option<OnlineRequestNativeResultV1>,
+    ) -> Result<(), OnlineTransportFailureV1> {
+        if target.is_some() {
+            return Err(OnlineTransportFailureV1::Closed);
+        }
+        self.require_online_transport(request)?;
+        *target = Some(if initialize {
+            OnlineRequestNativeResultV1::Initialized(self.initialize_authenticated_request(request))
+        } else {
+            OnlineRequestNativeResultV1::Appended(self.append_authenticated_request(request))
+        });
+        if !target.as_ref().is_some_and(OnlineRequestNativeResultV1::is_committed) {
+            return Err(OnlineTransportFailureV1::Closed);
+        }
+        self.require_online_request(request)?;
+        Ok(())
+    }
+
+    /// Releases completed native preparation only after the final fresh clock.
+    #[cfg(feature = "online-nix")]
+    pub(crate) fn finish_online_native_step(
+        &mut self,
+        request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.require_online_transport(request)?;
+        self.owner.check_online_resolve_effect(
+            request.request_id(), &self.transcript, self.socket.peer(),
+        )?;
+        self.require_online_client_currentness()?;
+        self.owner.release_online_native_step();
+        Ok(())
+    }
+
+    /// Sends once without projecting away the actual returned native cause.
+    ///
+    /// The caller marks dispatch before entering this method. A later failed
+    /// bookend does not establish that no bytes were sent or allow a new send.
+    #[cfg(feature = "online-nix")]
+    pub(crate) fn send_online_packet(
+        &mut self,
+        request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+        packet: &[u8],
+        failure: &mut Option<SeqpacketError>,
+    ) -> Result<(), OnlineTransportFailureV1> {
+        if failure.is_some() {
+            return Err(OnlineTransportFailureV1::Closed);
+        }
+        self.require_online_transport(request)?;
+        if let Err(cause) = self.socket.send(packet) {
+            *failure = Some(cause);
+            return Err(OnlineTransportFailureV1::Send);
+        }
+        self.require_online_transport(request)?;
+        Ok(())
+    }
+
+    /// Keeps terminal/pending checks distinct while preserving the same cutoff.
+    #[cfg(feature = "online-nix")]
+    pub(crate) fn require_online_transport(
+        &mut self,
+        request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        let deadline = OriginalBrokerColdDeadlineV1::online_request(request)?;
+        self.owner.bind_online_request_deadline(deadline)?;
+        self.revalidate_online_transport()?;
+        deadline.check().map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        self.owner.check_online_admitted_clock()
+    }
+
+    /// Parks a returned packet or actual owning error before caller bookends.
+    ///
+    /// Only initial nonconsuming EAGAIN/EINTR returns `false`. A fatal lower
+    /// error keeps its original attempt/duplicate OFD and shutdown debt in the
+    /// supplied slot; it does not imply the original Rust socket FD survived.
+    #[cfg(feature = "online-nix")]
+    pub(crate) fn receive_online_record_into(
+        &mut self,
+        record: &mut Option<aos_sandbox_linux::seqpacket::ReceivedRecord>,
+        failure: &mut Option<aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1>,
+    ) -> Result<bool, OnlineTransportFailureV1> {
+        if record.is_some() || failure.is_some() {
+            return Err(OnlineTransportFailureV1::Closed);
+        }
+        self.revalidate_online_transport()?;
+        if self.transcript.protocol() != BrokerSessionProtocolV1::Nix {
+            return Err(OnlineTransportFailureV1::Closed);
+        }
+
+        let maximum = match self.owner.online_endpoint_role()? {
+            aos_sandbox_broker_session_protocol::BrokerSessionDurableEndpointV1::Client => {
+                usize::try_from(self.transcript.negotiated_maximum_response_bytes())
+                    .map_err(|_| OnlineTransportFailureV1::Closed)?
+                    .min(aos_sandbox_broker_session_protocol::AUTHENTICATED_RESPONSE_MAXIMUM_BYTES)
+            }
+            aos_sandbox_broker_session_protocol::BrokerSessionDurableEndpointV1::Broker => {
+                self.transcript.negotiated_maximum_request_bytes().min(
+                    aos_sandbox_broker_session_protocol::maximum_broker_session_request_bytes_v1(
+                        BrokerSessionProtocolV1::Nix,
+                    ),
+                )
+            }
+        };
+        match self.socket.receive_retaining(maximum) {
+            Ok(returned) => *record = Some(returned),
+            Err(cause) if cause.is_nonconsuming_would_block() || cause.is_nonconsuming_interrupted() => {
+                // The lower engine proves that no record/sample was captured.
+                // No fatal custody or debt is being discarded on this edge.
+                self.revalidate_online_transport()?;
+                return Ok(false);
+            }
+            Err(cause) => {
+                *failure = Some(cause);
+                return Err(OnlineTransportFailureV1::Receive);
+            }
+        }
+
+        self.require_online_record(record.as_ref().ok_or(OnlineTransportFailureV1::Closed)?)?;
+        self.revalidate_online_transport()?;
+        Ok(true)
+    }
+
+    #[cfg(feature = "online-nix")]
+    fn require_online_record(
+        &mut self,
+        record: &aos_sandbox_linux::seqpacket::ReceivedRecord,
+    ) -> Result<(), OnlineTransportFailureV1> {
+        // This named lower method is a borrowed mechanical origin comparator;
+        // using it grants neither offline nor online provisioning authority.
+        self.socket.require_nix_offline_received_original_v5(record)?;
+        if self.owner.online_endpoint_role()? ==
+            aos_sandbox_broker_session_protocol::BrokerSessionDurableEndpointV1::Client
+        {
+            self.require_online_client_currentness()?;
+            let witnesses = self.online_client_witnesses.as_ref()
+                .ok_or(OnlineTransportFailureV1::Closed)?;
+            witnesses.witnesses
+                .require_online_client_subject(record.subject())?;
+            self.require_online_client_currentness()?;
+            return Ok(());
+        }
+
+        // The Broker still receives directly from its connecting Controller.
+        let subject = record.subject();
+        let credentials = subject.credentials();
+        let peer = self.socket.peer();
+        let established = peer.credentials();
+        if !subject.is_alive()? || !peer.is_alive()?
+            || credentials.pid() != established.pid()
+            || credentials.uid() != established.uid()
+            || credentials.gid() != established.gid()
+            || subject.initial_info() != peer.initial_info()
+        {
+            return Err(OnlineTransportFailureV1::Closed);
+        }
+        Ok(())
+    }
+
+    /// Stages the real admission result before the final protected observation.
+    #[cfg(feature = "online-nix")]
+    pub(crate) fn admit_online_record_into(
+        &mut self,
+        record: &aos_sandbox_linux::seqpacket::ReceivedRecord,
+        target: &mut Option<Result<
+            crate::recovery::ProtectedBrokerReceivedRequestAdmissionV1,
+            BrokerSessionSecurityError,
+        >>,
+    ) -> Result<(), OnlineTransportFailureV1> {
+        if target.is_some() {
+            return Err(OnlineTransportFailureV1::Closed);
+        }
+        self.require_online_record(record)?;
+        self.revalidate_online_transport()?;
+        let now = protected_boottime_nanoseconds()?;
+        *target = Some(self.owner.admit_received_request(
+            record.payload(), 0, &self.transcript, self.socket.peer(), now,
+        ));
+        if target.as_ref().is_none_or(Result::is_err) {
+            return Err(OnlineTransportFailureV1::Admission);
+        }
+        self.revalidate_online_transport()?;
+        Ok(())
+    }
+
+    /// Rechecks the genuine pending method50, original peer and same floor cut.
+    #[cfg(feature = "online-nix")]
+    pub(crate) fn require_online_request(
+        &mut self,
+        request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.require_online_client_currentness()?;
+        let deadline = OriginalBrokerColdDeadlineV1::online_request(request)?;
+        self.owner.bind_online_request_deadline(deadline)?;
+        let pending = self.owner.hold_pending_request(
+            request, &self.transcript, self.socket.peer(),
+        )?;
+        drop(pending);
+        deadline.check().map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        self.owner.check_online_resolve_effect(
+            request.request_id(), &self.transcript, self.socket.peer(),
+        )?;
+        self.require_online_client_currentness()
+    }
+
+    /// Checks the original stored request for read-only backing comparisons.
+    ///
+    /// This also accepts its actual completed terminal row, never a supplied
+    /// completion flag. Reader dispatch and request preparation still require
+    /// the separate genuine pending borrow above.
+    #[cfg(feature = "online-nix")]
+    pub(crate) fn require_online_store_readback(
+        &mut self,
+        request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.require_online_transport(request)?;
+        self.owner.check_online_resolve_effect(
+            request.request_id(), &self.transcript, self.socket.peer(),
+        )?;
+        self.require_online_client_currentness()
+    }
+
     /// Sends only the two comparison roles of the held method-49 continuation.
     fn send_host_worker_comparison_packet(
         &mut self,
@@ -2554,6 +3198,8 @@ impl DormantAuthenticatedBrokerSessionV1 {
             socket,
             transcript,
             checkpoint,
+            #[cfg(feature = "online-nix")]
+            online_client_witnesses: None,
         })
     }
 

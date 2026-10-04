@@ -12,6 +12,8 @@
   protobuf,
   stdenv,
   buildPackages,
+  nixOnlineStoreReader ? null,
+  aos-nix-runtime-tpm-helpers ? null,
 }: let
   version = "0.1.0";
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
@@ -28,6 +30,11 @@
     coreutils = buildCoreutils;
   };
   mechanicsFeature = "--features aos-sandbox/git-helper-mechanics";
+  onlineSelected = nixOnlineStoreReader != null;
+  onlineFeature = lib.optionalString onlineSelected ",aos-sandbox-broker-session-security/online-nix";
+  selectedFeatures = mechanicsFeature + onlineFeature;
+  onlineBin = lib.optionalString onlineSelected " --bin aos-sandbox-nixd";
+  onlineInputs = lib.optionals onlineSelected [nixOnlineStoreReader aos-nix-runtime-tpm-helpers];
   src = import ./aos/_workspace-source.nix {inherit lib;};
   cargoDeps = fetchCargoVendor {
     inherit src;
@@ -38,11 +45,15 @@
   cargoEnv = {
     PROTOC = "${buildProtobuf}/bin/protoc";
     AOS_GIT_HELPER_SELECTION_HEADER = "${gitHelperImages}/selected-images.rs";
+  } // lib.optionalAttrs onlineSelected {
+    AOS_NIX_ONLINE_STORE_READER_HEADER = "${nixOnlineStoreReader}/selected-reader.rs";
+    AOS_NIX_CONTROLLER_TPM_HELPER = "${aos-nix-runtime-tpm-helpers}/libexec/aos-nix-controller-tpm-helper";
+    AOS_NIX_OWNER_TPM_HELPER = "${aos-nix-runtime-tpm-helpers}/libexec/aos-nix-owner-tpm-helper";
   };
   cargoArtifactContract = {
     family = "aos-sandboxd-native";
     checkType = "debug";
-    nativeInputs = map toString [buildProtobuf gitHelperImages aos-git-helper git];
+    nativeInputs = map toString ([buildProtobuf gitHelperImages aos-git-helper git] ++ onlineInputs);
   };
   cargoArtifacts = mkCargoArtifacts {
     pname = "aos-sandboxd-artifacts";
@@ -55,25 +66,26 @@
     cargoRoot = "crates";
     checkType = "debug";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES ${mechanicsFeature} -p aos-sandbox-broker-session-security --bin aos-sandboxd --bin aos-sandbox-git-gateway --bin aos-sandbox-entitlement-sign --bin aos-sandbox-policy-authorityd --bin aos-sandbox-cache-signerd --bin aos-sandbox-source-signerd --bin aos-sandbox-policy-key-pin --bin aos-view-publisher --bin aos-sandbox-nix-floor-provision"
-      "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${mechanicsFeature} -p aos-sandbox -p aos-sandbox-broker-session-security"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES ${selectedFeatures} -p aos-sandbox-broker-session-security --bin aos-sandboxd --bin aos-sandbox-git-gateway --bin aos-sandbox-entitlement-sign --bin aos-sandbox-policy-authorityd --bin aos-sandbox-cache-signerd --bin aos-sandbox-source-signerd --bin aos-sandbox-policy-key-pin --bin aos-view-publisher --bin aos-sandbox-nix-floor-provision${onlineBin}"
+      "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${selectedFeatures} -p aos-sandbox -p aos-sandbox-broker-session-security"
     ];
-    buildDeps = [buildProtobuf gitHelperImages];
-    runtimeDeps = [aos-git-helper git];
+    buildDeps = [buildProtobuf gitHelperImages] ++ onlineInputs;
+    runtimeDeps = [aos-git-helper git] ++ onlineInputs;
   };
 in
+  assert !onlineSelected || aos-nix-runtime-tpm-helpers != null;
   mkCargoPackage {
     pname = "aos-sandboxd";
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
-    cargoFlags = "${mechanicsFeature} -p aos-sandbox-broker-session-security --bin aos-sandboxd --bin aos-sandbox-git-gateway --bin aos-sandbox-entitlement-sign --bin aos-sandbox-policy-authorityd --bin aos-sandbox-cache-signerd --bin aos-sandbox-source-signerd --bin aos-sandbox-policy-key-pin --bin aos-view-publisher --bin aos-sandbox-nix-floor-provision";
+    cargoFlags = "${selectedFeatures} -p aos-sandbox-broker-session-security --bin aos-sandboxd --bin aos-sandbox-git-gateway --bin aos-sandbox-entitlement-sign --bin aos-sandbox-policy-authorityd --bin aos-sandbox-cache-signerd --bin aos-sandbox-source-signerd --bin aos-sandbox-policy-key-pin --bin aos-view-publisher --bin aos-sandbox-nix-floor-provision${onlineBin}";
     checkType = "debug";
     # Keep the core suite when moving process ownership into the transport crate.
-    cargoTestFlags = "${mechanicsFeature} -p aos-sandbox -p aos-sandbox-broker-session-security";
+    cargoTestFlags = "${selectedFeatures} -p aos-sandbox -p aos-sandbox-broker-session-security";
     cargoNextest = true;
     doCheck = true;
-    buildDeps = [buildProtobuf gitHelperImages];
-    runtimeDeps = [aos-git-helper git];
+    buildDeps = [buildProtobuf gitHelperImages] ++ onlineInputs;
+    runtimeDeps = [aos-git-helper git] ++ onlineInputs;
 
     postInstall = ''
       test -x "$out/bin/aos-sandboxd"
@@ -85,11 +97,14 @@ in
       test -x "$out/bin/aos-sandbox-policy-key-pin"
       test -x "$out/bin/aos-view-publisher"
       test -x "$out/bin/aos-sandbox-nix-floor-provision"
+    '' + lib.optionalString onlineSelected ''
+      test -x "$out/bin/aos-sandbox-nixd"
+      test -f ${nixOnlineStoreReader}/selected-reader.rs
     '';
 
     passthru = {
       inherit cargoArtifacts cargoDeps cargoEnv;
-    };
+    } // lib.optionalAttrs onlineSelected {inherit nixOnlineStoreReader;};
 
     meta = {
       description = "Unprivileged AOS sandbox node controller";

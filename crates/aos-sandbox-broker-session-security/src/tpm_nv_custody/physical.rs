@@ -144,6 +144,13 @@ enum RetainedPhysicalBindingV1<'owner, 'origin, 'startup> {
         profile: FloorProfileV1,
         attempt: Option<BrokerPhysicalAttemptV1>,
     },
+    #[cfg(feature = "online-nix")]
+    Online {
+        image: Option<MeasuredHelperImageV1>,
+        original: crate::nix_service::floor::OnlineOriginV1,
+        profile: super::OnlineFloorProfileV1,
+        attempt: BrokerPhysicalAttemptV1,
+    },
     Host(RetainedHostPhysicalBindingV1<'owner, 'origin, 'startup>),
 }
 
@@ -194,7 +201,7 @@ struct BrokerPhysicalAttemptV1 {
     salt_name: [u8; 34],
     auth: Zeroizing<[u8; 32]>,
     locks: [ProtectedJournalLockCustodyV1; 2],
-    launch_image: crate::production_startup::Pid1LaunchImageV1,
+    launch_image: Option<crate::production_startup::Pid1LaunchImageV1>,
     observations: Option<PidFdProcObservationsV1>,
     helper_phase: BrokerHelperPhaseV1,
     phase: BrokerPhysicalPhaseV1,
@@ -266,10 +273,73 @@ fn broker_projection(cause: &PhysicalTpmFailureV1) -> FloorErrorV1 {
     }
 }
 
+#[cfg(feature = "online-nix")]
+fn require_extended_public(
+    observed: HelperObservationV1, expected_name: [u8; 34],
+) -> Result<(), PhysicalTpmFailureV1> {
+    if observed.name != expected_name
+        || observed.name_algorithm != 0x000b
+        || observed.attributes != NV_ATTRIBUTES_WRITTEN
+        || observed.size != 32
+        || observed.policy_length != 0
+        || observed.value == [0; 32]
+    {
+        return Err(FloorErrorV1::Provisioning.into());
+    }
+    Ok(())
+}
+
 // The two literal dispositions share this one admission recipe. Legacy lets
 // retain their original lexical lifetimes; only Retained writes resident slots.
 // These macros have no caller-selected policy, effect callback or owner factory.
 macro_rules! broker_admission_step {
+    (Legacy, owner $owner:ident, $profile:ident) => {
+        require_broker_floor_owner_v1($profile.endpoint())?;
+    };
+    (Retained, owner $owner:ident, $profile:ident) => {
+        require_broker_floor_owner_v1($profile.endpoint())?;
+    };
+    (Online, owner $owner:ident, $profile:ident) => {
+        $owner.online_origin_mut()?.recheck()?;
+    };
+    (Legacy, endpoint $profile:ident) => { $profile.endpoint() };
+    (Retained, endpoint $profile:ident) => { $profile.endpoint() };
+    (Online, endpoint $profile:ident) => { $profile.role().physical_endpoint() };
+    (Legacy, hello_bytes $profile:ident, $nonce:ident, $salt:ident, $identities:ident) => {
+        encode_hello_v2($profile.endpoint(), $nonce, $salt, $identities)?
+    };
+    (Retained, hello_bytes $profile:ident, $nonce:ident, $salt:ident, $identities:ident) => {
+        encode_hello_v2($profile.endpoint(), $nonce, $salt, $identities)?
+    };
+    (Online, hello_bytes $profile:ident, $nonce:ident, $salt:ident, $identities:ident) => {
+        framing::encode_hello_v2($profile.role().physical_endpoint(), $nonce, $salt, $identities)
+            .map_err(PhysicalTpmFailureV1::Carrier)?
+    };
+    (Legacy, auth_bytes $owner:ident, $profile:ident, $nonce:ident, $auth:ident) => {
+        encode_auth_v2($profile.endpoint(), $nonce, $auth)?
+    };
+    (Retained, auth_bytes $owner:ident, $profile:ident, $nonce:ident, $auth:ident) => {
+        encode_auth_v2($profile.endpoint(), $nonce, &$owner.broker()?.auth)?
+    };
+    (Online, auth_bytes $owner:ident, $profile:ident, $nonce:ident, $auth:ident) => {
+        framing::encode_auth_v2($profile.role().physical_endpoint(), $nonce, &$owner.broker()?.auth)
+            .map_err(PhysicalTpmFailureV1::Carrier)?
+    };
+    (Online, image $owner:ident, $image:ident) => {
+        let $image = MeasuredHelperImageV1::open_online($owner.online_profile()?.role())?;
+        if let RetainedPhysicalBindingV1::Online { image, .. } = &mut $owner.binding {
+            *image = Some($image);
+        }
+    };
+    (Online, service $owner:ident, $service:ident, $profile:ident, $launch:ident) => {
+        $owner.online_origin_mut()?.require_service()?;
+    };
+    (Online, helper $owner:ident, $profile:ident, $pid:ident) => {
+        $owner.require_online_helper()?;
+    };
+    (Online, read $owner:ident, $profile:ident) => {
+        $owner.read_online_inner($profile, $profile.role().nv_index())?;
+    };
     (Legacy, deadline $owner:ident) => {};
     (Retained, deadline $owner:ident) => { $owner.check_broker_cold_deadline()?; };
     // Legacy projects at the original call site; Retained keeps typed causes.
@@ -302,7 +372,7 @@ macro_rules! broker_admission_step {
     (Retained, service $owner:ident, $service:ident, $profile:ident, $launch:ident) => {
         let $service = RetainedFloorServicePolicyV1::open(
             $profile.endpoint(),
-            &$owner.broker()?.launch_image,
+            $owner.broker()?.launch_image.as_ref().ok_or(FloorErrorV1::Unavailable)?,
         )?;
         if let RetainedPhysicalBindingV1::Broker { service, .. } = &mut $owner.binding {
             *service = Some($service);
@@ -336,6 +406,10 @@ macro_rules! broker_admission_step {
             RetainedPhysicalBindingV1::Broker { attempt: Some(attempt), .. } => {
                 attempt.child_channel = Some($child_channel);
             }
+            #[cfg(feature = "online-nix")]
+            RetainedPhysicalBindingV1::Online { attempt, .. } => {
+                attempt.child_channel = Some($child_channel);
+            }
             _ => std::process::abort(),
         }
     };
@@ -343,6 +417,13 @@ macro_rules! broker_admission_step {
     (Retained, stdin $owner:ident, $child_channel:ident) => {
         Stdio::from(match &mut $owner.binding {
             RetainedPhysicalBindingV1::Broker { attempt: Some(attempt), .. } => {
+                match attempt.child_channel.take() {
+                    Some(channel) => channel,
+                    None => std::process::abort(),
+                }
+            }
+            #[cfg(feature = "online-nix")]
+            RetainedPhysicalBindingV1::Online { attempt, .. } => {
                 match attempt.child_channel.take() {
                     Some(channel) => channel,
                     None => std::process::abort(),
@@ -422,13 +503,16 @@ macro_rules! broker_admission_step {
     };
     (Legacy, finish $owner:ident) => { Ok($owner) };
     (Retained, finish $owner:ident) => { Ok(()) };
+    // The Online disposition changes only closed purpose admission. All
+    // returned carrier/child/frame staging uses the same retained recipe.
+    (Online, $($step:tt)*) => { broker_admission_step!(Retained, $($step)*) };
 }
 
 macro_rules! broker_admission_recipe {
     ($mode:ident, $owner:ident, $profile:ident, $salt:ident, $auth:ident,
         $locks:ident, $launch:ident) => {{
         broker_admission_step!($mode, deadline $owner);
-        require_broker_floor_owner_v1($profile.endpoint())?;
+        broker_admission_step!($mode, owner $owner, $profile);
         if Sha256::digest($salt).as_slice() != $profile.salt_key_name_digest() {
             broker_admission_step!($mode, provisioning);
         }
@@ -443,7 +527,7 @@ macro_rules! broker_admission_recipe {
         broker_admission_step!($mode, deadline $owner);
         broker_admission_step!($mode, identities $owner, $locks, identities);
         broker_admission_step!($mode, deadline $owner);
-        let hello = encode_hello_v2($profile.endpoint(), nonce, $salt, identities)?;
+        let hello = broker_admission_step!($mode, hello_bytes $profile, nonce, $salt, identities);
         broker_admission_step!($mode, hello $owner, hello);
         let (channel, child_channel) = broker_admission_step!($mode, error Send,
             SeqpacketSocket::pair_with_record_subjects());
@@ -485,9 +569,7 @@ macro_rules! broker_admission_recipe {
         )?;
         // The actual image and ACK still precede AUTH/device access.
         broker_admission_step!($mode, result $owner.require_custody());
-        let authentication = encode_auth_v2(
-            $profile.endpoint(), nonce, broker_admission_step!($mode, auth $owner, $auth),
-        )?;
+        let authentication = broker_admission_step!($mode, auth_bytes $owner, $profile, nonce, $auth);
         broker_admission_step!($mode, authentication $owner, authentication);
         broker_admission_step!($mode, deadline $owner);
         broker_admission_step!($mode, result $owner.send_frame(
@@ -500,6 +582,68 @@ macro_rules! broker_admission_recipe {
 }
 
 impl RetainedPhysicalTpmOwnerV1<'static, 'static, 'static> {
+    /// Parks a genuine online origin and the same two original lock loans.
+    #[cfg(feature = "online-nix")]
+    pub(crate) fn retain_online(
+        profile: super::OnlineFloorProfileV1,
+        auth: &[u8; 32],
+        locks: [ProtectedJournalLockCustodyV1; 2],
+        original: crate::nix_service::floor::OnlineOriginV1,
+        deadline: crate::handshake::OriginalBrokerColdDeadlineV1,
+    ) -> Self {
+        Self {
+            child: None,
+            channel: None,
+            pidfd: None,
+            identity: None,
+            binding: RetainedPhysicalBindingV1::Online {
+                image: None,
+                original,
+                profile,
+                attempt: BrokerPhysicalAttemptV1 {
+                    salt_name: profile.salt_name(),
+                    auth: Zeroizing::new(*auth),
+                    locks,
+                    launch_image: None,
+                    observations: None,
+                    helper_phase: BrokerHelperPhaseV1::AwaitingMeasurement,
+                    phase: BrokerPhysicalPhaseV1::Fresh,
+                    first_failure: None,
+                    kill_debt: None,
+                    wait_debt: None,
+                    hello: None,
+                    authentication: None,
+                    request: None,
+                    hello_attempted: false,
+                    authentication_attempted: false,
+                    request_attempted: false,
+                    acknowledgment: None,
+                    observation: None,
+                    cold_deadline: Some(deadline),
+                    child_channel: None,
+                },
+            },
+            nonce: [0; 32],
+            sequence: 1,
+            poisoned: false,
+        }
+    }
+
+    /// Admits the closed online purpose through the same retained recipe.
+    #[cfg(feature = "online-nix")]
+    pub(crate) fn admit_online(&mut self) -> Result<(), FloorErrorV1> {
+        let operation = BrokerPhysicalOperationV1::begin(self, BrokerPhysicalPhaseV1::Fresh)?;
+        let result = operation.owner.admit_online_inner();
+        operation.finish(result)
+    }
+
+    #[cfg(feature = "online-nix")]
+    fn admit_online_inner(&mut self) -> Result<(), PhysicalTpmFailureV1> {
+        let profile = self.online_profile()?;
+        let salt_name = profile.salt_name();
+        broker_admission_recipe!(Online, self, profile, salt_name, auth, locks, launch)
+    }
+
     /// Binds comparison DATA only on the actual fresh retained Broker attempt.
     ///
     /// # Errors
@@ -514,6 +658,26 @@ impl RetainedPhysicalTpmOwnerV1<'static, 'static, 'static> {
         }
         attempt.cold_deadline = Some(deadline);
         self.check_broker_cold_deadline().map_err(PhysicalTpmFailureV1::broker_error)
+    }
+
+    #[cfg(feature = "online-nix")]
+    pub(crate) fn bind_online_request_deadline(
+        &mut self,
+        deadline: crate::handshake::OriginalBrokerColdDeadlineV1,
+    ) -> Result<(), FloorErrorV1> {
+        if !matches!(&self.binding, RetainedPhysicalBindingV1::Online { .. }) {
+            return Err(FloorErrorV1::Unavailable);
+        }
+        let operation = BrokerPhysicalOperationV1::begin(self, BrokerPhysicalPhaseV1::Ready)?;
+        let result = (|| {
+            let attempt = operation.owner.broker_mut()?;
+            if attempt.cold_deadline.is_some_and(|original| original != deadline) {
+                return Err(PhysicalTpmFailureV1::State);
+            }
+            attempt.cold_deadline = Some(deadline);
+            operation.owner.check_broker_cold_deadline()
+        })();
+        operation.finish(result)
     }
 
     /// Checks original child custody and the same cutoff before retirement.
@@ -538,6 +702,10 @@ impl RetainedPhysicalTpmOwnerV1<'static, 'static, 'static> {
     /// Removes only temporary comparison DATA after all outer final bookends.
     pub(crate) fn clear_broker_cold_deadline(&mut self) {
         if let RetainedPhysicalBindingV1::Broker { attempt: Some(attempt), .. } = &mut self.binding {
+            attempt.cold_deadline = None;
+        }
+        #[cfg(feature = "online-nix")]
+        if let RetainedPhysicalBindingV1::Online { attempt, .. } = &mut self.binding {
             attempt.cold_deadline = None;
         }
     }
@@ -567,7 +735,7 @@ impl RetainedPhysicalTpmOwnerV1<'static, 'static, 'static> {
                     salt_name,
                     auth: Zeroizing::new(*auth),
                     locks,
-                    launch_image: launch_image.clone(),
+                    launch_image: Some(launch_image.clone()),
                     observations: None,
                     helper_phase: BrokerHelperPhaseV1::AwaitingMeasurement,
                     phase: BrokerPhysicalPhaseV1::Fresh,
@@ -623,6 +791,18 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
                 }
             }
         }
+        #[cfg(feature = "online-nix")]
+        if let RetainedPhysicalBindingV1::Online { attempt, .. } = &mut self.binding {
+            if let Some(deadline) = attempt.cold_deadline {
+                if let Err(cause) = deadline.check() {
+                    if attempt.first_failure.is_none() {
+                        attempt.first_failure = Some(BrokerPhysicalFailureV1::Deadline(cause));
+                    }
+                    attempt.phase = BrokerPhysicalPhaseV1::Failed;
+                    return Err(FloorErrorV1::Unavailable.into());
+                }
+            }
+        }
         Ok(())
     }
 
@@ -630,6 +810,8 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
         self.check_broker_cold_deadline()?;
         let original = match &self.binding {
             RetainedPhysicalBindingV1::Broker { attempt: Some(attempt), .. } => attempt.cold_deadline,
+            #[cfg(feature = "online-nix")]
+            RetainedPhysicalBindingV1::Online { attempt, .. } => attempt.cold_deadline,
             _ => None,
         };
         if let Some(original) = original {
@@ -763,7 +945,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
             RetainedPhysicalBindingV1::Host(host) => {
                 host.measure_helper_before_hello(pidfd, pid)
             }
-            RetainedPhysicalBindingV1::Broker { .. } => Err(PhysicalTpmFailureV1::State),
+            _ => Err(PhysicalTpmFailureV1::State),
         }
     }
 
@@ -796,6 +978,12 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
                 service.require_child(pidfd)?;
             }
             RetainedPhysicalBindingV1::Host(host) => host.require_measured_helper(pidfd)?,
+            #[cfg(feature = "online-nix")]
+            RetainedPhysicalBindingV1::Online { image, original, .. } => {
+                image.as_mut().ok_or(FloorErrorV1::Unavailable)?.revalidate()?;
+                original.require_helper(pidfd)?;
+                original.require_service()?;
+            }
         }
         if !self.pidfd()?.is_alive().map_err(|error| self.linux_error(error))? {
             return Err(FloorErrorV1::Unavailable.into());
@@ -906,6 +1094,24 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
                         let _ = child.0.kill();
                         let _ = child.0.wait();
                     }
+                }
+                #[cfg(feature = "online-nix")]
+                RetainedPhysicalBindingV1::Online { attempt, .. } => {
+                    return match result {
+                        Err(cause) => {
+                            let projected = attempt.close(cause);
+                            if let Some(child) = &mut self.child {
+                                if let Err(error) = child.0.kill() {
+                                    attempt.kill_debt = Some(error);
+                                }
+                                if let Err(error) = child.0.wait() {
+                                    attempt.wait_debt = Some(error);
+                                }
+                            }
+                            Err(projected.into())
+                        }
+                        Ok(observation) => Ok(observation),
+                    };
                 }
                 RetainedPhysicalBindingV1::Host(host) => {
                     // No replacement read/helper may overtake this failure.
@@ -1023,12 +1229,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
                     }
                     Err(error) => return Err(PhysicalTpmFailureV1::Receive(error)),
                 };
-                if let RetainedPhysicalBindingV1::Broker {
-                    attempt: Some(attempt),
-                    ..
-                } = &mut self.binding {
-                    attempt.stage_reply(host_reply, received);
-                }
+                self.broker_mut()?.stage_reply(host_reply, received);
                 ReceivedFrameV1::BrokerRetained(host_reply)
             } else {
                 let received = match self.channel_mut()?.receive(maximum) {
@@ -1081,6 +1282,10 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
     }
 
     fn is_retained_broker(&self) -> bool {
+        #[cfg(feature = "online-nix")]
+        if matches!(&self.binding, RetainedPhysicalBindingV1::Online { .. }) {
+            return true;
+        }
         matches!(
             &self.binding,
             RetainedPhysicalBindingV1::Broker { attempt: Some(_), .. },
@@ -1092,6 +1297,8 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
             RetainedPhysicalBindingV1::Broker { attempt, .. } => {
                 attempt.as_ref().ok_or(PhysicalTpmFailureV1::State)
             }
+            #[cfg(feature = "online-nix")]
+            RetainedPhysicalBindingV1::Online { attempt, .. } => Ok(attempt),
             RetainedPhysicalBindingV1::Host(_) => Err(PhysicalTpmFailureV1::State),
         }
     }
@@ -1101,6 +1308,8 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
             RetainedPhysicalBindingV1::Broker { attempt, .. } => {
                 attempt.as_mut().ok_or(PhysicalTpmFailureV1::State)
             }
+            #[cfg(feature = "online-nix")]
+            RetainedPhysicalBindingV1::Online { attempt, .. } => Ok(attempt),
             RetainedPhysicalBindingV1::Host(_) => Err(PhysicalTpmFailureV1::State),
         }
     }
@@ -1110,6 +1319,10 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
             RetainedPhysicalBindingV1::Broker { image, .. } => {
                 image.as_ref().ok_or_else(|| FloorErrorV1::Unavailable.into())
             }
+            #[cfg(feature = "online-nix")]
+            RetainedPhysicalBindingV1::Online { image, .. } => {
+                image.as_ref().ok_or_else(|| FloorErrorV1::Unavailable.into())
+            }
             RetainedPhysicalBindingV1::Host(_) => Err(PhysicalTpmFailureV1::State),
         }
     }
@@ -1117,6 +1330,10 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
     fn broker_image_mut(&mut self) -> Result<&mut MeasuredHelperImageV1, PhysicalTpmFailureV1> {
         match &mut self.binding {
             RetainedPhysicalBindingV1::Broker { image, .. } => {
+                image.as_mut().ok_or_else(|| FloorErrorV1::Unavailable.into())
+            }
+            #[cfg(feature = "online-nix")]
+            RetainedPhysicalBindingV1::Online { image, .. } => {
                 image.as_mut().ok_or_else(|| FloorErrorV1::Unavailable.into())
             }
             RetainedPhysicalBindingV1::Host(_) => Err(PhysicalTpmFailureV1::State),
@@ -1150,6 +1367,11 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
                     .capture_stat(pidfd)
                     .map_err(PhysicalTpmFailureV1::Linux)
             }
+            #[cfg(feature = "online-nix")]
+            RetainedPhysicalBindingV1::Online { attempt, .. } => {
+                attempt.observations.as_mut().ok_or(FloorErrorV1::Unavailable)?
+                    .capture_stat(pidfd).map_err(PhysicalTpmFailureV1::Linux)
+            }
             _ => Err(PhysicalTpmFailureV1::State),
         }
     }
@@ -1182,6 +1404,11 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
                     .ok_or(FloorErrorV1::Unavailable)?
                     .observe_identity(pidfd)
                     .map_err(PhysicalTpmFailureV1::Linux)
+            }
+            #[cfg(feature = "online-nix")]
+            RetainedPhysicalBindingV1::Online { attempt, .. } => {
+                attempt.observations.as_mut().ok_or(FloorErrorV1::Unavailable)?
+                    .observe_identity(pidfd).map_err(PhysicalTpmFailureV1::Linux)
             }
             _ => {
                 pidfd.process_identity().map_err(|error| self.linux_error(error))
@@ -1224,7 +1451,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
     ) -> Result<&RetainedHostPhysicalBindingV1<'owner, 'origin, 'startup>, PhysicalTpmFailureV1> {
         match &self.binding {
             RetainedPhysicalBindingV1::Host(host) => Ok(host),
-            RetainedPhysicalBindingV1::Broker { .. } => Err(PhysicalTpmFailureV1::State),
+            _ => Err(PhysicalTpmFailureV1::State),
         }
     }
 
@@ -1233,24 +1460,71 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
     ) -> Result<&mut RetainedHostPhysicalBindingV1<'owner, 'origin, 'startup>, PhysicalTpmFailureV1> {
         match &mut self.binding {
             RetainedPhysicalBindingV1::Host(host) => Ok(host),
-            RetainedPhysicalBindingV1::Broker { .. } => Err(PhysicalTpmFailureV1::State),
+            _ => Err(PhysicalTpmFailureV1::State),
         }
     }
 
     fn broker_profile(&self) -> Result<FloorProfileV1, FloorErrorV1> {
         match &self.binding {
             RetainedPhysicalBindingV1::Broker { profile, .. } => Ok(*profile),
-            RetainedPhysicalBindingV1::Host(_) => Err(FloorErrorV1::Provisioning),
+            _ => Err(FloorErrorV1::Provisioning),
         }
     }
 
-    fn require_broker_child(&self) -> Result<(), FloorErrorV1> {
+    #[cfg(feature = "online-nix")]
+    fn online_profile(&self) -> Result<super::OnlineFloorProfileV1, FloorErrorV1> {
+        match &self.binding {
+            RetainedPhysicalBindingV1::Online { profile, .. } => Ok(*profile),
+            _ => Err(FloorErrorV1::Provisioning),
+        }
+    }
+
+    #[cfg(feature = "online-nix")]
+    fn online_origin_mut(&mut self) -> Result<&mut crate::nix_service::floor::OnlineOriginV1, FloorErrorV1> {
+        match &mut self.binding {
+            RetainedPhysicalBindingV1::Online { original, .. } => Ok(original),
+            _ => Err(FloorErrorV1::Provisioning),
+        }
+    }
+
+    #[cfg(feature = "online-nix")]
+    fn require_online_helper(&mut self) -> Result<(), PhysicalTpmFailureV1> {
+        let pidfd = self.pidfd.as_ref().ok_or(FloorErrorV1::Unavailable)?;
+        match &mut self.binding {
+            RetainedPhysicalBindingV1::Online { original, .. } => {
+                original.require_helper(pidfd).map_err(Into::into)
+            }
+            _ => Err(PhysicalTpmFailureV1::State),
+        }
+    }
+
+    #[cfg(feature = "online-nix")]
+    fn read_online_inner(
+        &mut self, profile: super::OnlineFloorProfileV1, index: u32,
+    ) -> Result<AuthenticatedNvObservationV1, PhysicalTpmFailureV1> {
+        let observed = self.exchange(HelperOperationV1::Read, [0; 32])?;
+        Ok(AuthenticatedNvObservationV1 {
+            salt_key_name_digest: profile.salt_key_name_digest(),
+            index,
+            name: observed.name,
+            name_algorithm: observed.name_algorithm,
+            attributes: observed.attributes,
+            size: observed.size,
+            empty_auth_policy: observed.policy_length == 0,
+            value: observed.value,
+        })
+    }
+
+    fn require_broker_child(&mut self) -> Result<(), FloorErrorV1> {
         match &self.binding {
             RetainedPhysicalBindingV1::Broker { service, .. } => {
                 service.as_ref()
                     .ok_or(FloorErrorV1::Unavailable)?
                     .require_child(self.pidfd.as_ref().ok_or(FloorErrorV1::Unavailable)?)
             }
+            #[cfg(feature = "online-nix")]
+            RetainedPhysicalBindingV1::Online { .. } => self.require_online_helper()
+                .map_err(PhysicalTpmFailureV1::broker_error),
             RetainedPhysicalBindingV1::Host(_) => Err(FloorErrorV1::Provisioning),
         }
     }
@@ -1318,6 +1592,16 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
     /// # Errors
     /// Preserves fixed-index, custody, framing and carrier failures.
     pub(crate) fn read(&mut self, index: u32) -> Result<AuthenticatedNvObservationV1, FloorErrorV1> {
+        #[cfg(feature = "online-nix")]
+        if let RetainedPhysicalBindingV1::Online { profile, .. } = &self.binding {
+            let profile = *profile;
+            if index != profile.role().nv_index() {
+                return Err(FloorErrorV1::Provisioning);
+            }
+            let operation = BrokerPhysicalOperationV1::begin(self, BrokerPhysicalPhaseV1::Ready)?;
+            let result = operation.owner.read_online_inner(profile, index);
+            return operation.finish(result);
+        }
         let profile = self.broker_profile()?;
         if index != profile.endpoint().nv_index() {
             return Err(FloorErrorV1::Provisioning);
@@ -1354,6 +1638,19 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
     /// # Errors
     /// Preserves original fixed-index, custody, framing and observation failures.
     pub(crate) fn extend(&mut self, index: u32, input: &[u8; 32]) -> Result<(), FloorErrorV1> {
+        #[cfg(feature = "online-nix")]
+        if let RetainedPhysicalBindingV1::Online { profile, .. } = &self.binding {
+            let profile = *profile;
+            if index != profile.role().nv_index() {
+                return Err(FloorErrorV1::Provisioning);
+            }
+            let operation = BrokerPhysicalOperationV1::begin(self, BrokerPhysicalPhaseV1::Ready)?;
+            let result = (|| {
+                let observed = operation.owner.exchange(HelperOperationV1::Extend, *input)?;
+                require_extended_public(observed, profile.nv_name())
+            })();
+            return operation.finish(result);
+        }
         let profile = self.broker_profile()?;
         if index != profile.endpoint().nv_index() {
             return Err(FloorErrorV1::Provisioning);
@@ -1402,6 +1699,8 @@ impl<'operation, 'owner, 'origin, 'startup>
     ) -> Result<Self, FloorErrorV1> {
         let attempt = match &mut owner.binding {
             RetainedPhysicalBindingV1::Broker { attempt: Some(attempt), .. } => attempt,
+            #[cfg(feature = "online-nix")]
+            RetainedPhysicalBindingV1::Online { attempt, .. } => attempt,
             _ => return Err(FloorErrorV1::Provisioning),
         };
         if attempt.phase != expected || attempt.first_failure.is_some() {
@@ -1434,6 +1733,17 @@ impl<'operation, 'owner, 'origin, 'startup>
                 Ok(_) => Err(attempt.close(PhysicalTpmFailureV1::Unfinished)),
                 Err(cause) => Err(attempt.close(cause)),
             },
+            #[cfg(feature = "online-nix")]
+            RetainedPhysicalBindingV1::Online { attempt, .. } => match result {
+                Ok(value) if attempt.phase == BrokerPhysicalPhaseV1::Checking
+                    && attempt.first_failure.is_none() =>
+                {
+                    attempt.phase = BrokerPhysicalPhaseV1::Ready;
+                    Ok(value)
+                }
+                Ok(_) => Err(attempt.close(PhysicalTpmFailureV1::Unfinished)),
+                Err(cause) => Err(attempt.close(cause)),
+            },
             _ => Err(FloorErrorV1::Provisioning),
         };
         if result.is_err() {
@@ -1452,6 +1762,10 @@ impl Drop for BrokerPhysicalOperationV1<'_, '_, '_, '_> {
                 attempt: Some(attempt),
                 ..
             } = &mut self.owner.binding {
+                attempt.close(PhysicalTpmFailureV1::Unfinished);
+            }
+            #[cfg(feature = "online-nix")]
+            if let RetainedPhysicalBindingV1::Online { attempt, .. } = &mut self.owner.binding {
                 attempt.close(PhysicalTpmFailureV1::Unfinished);
             }
         }
@@ -1488,7 +1802,7 @@ impl<'operation, 'owner, 'origin, 'startup>
                     return Err(error);
                 }
             }
-            RetainedPhysicalBindingV1::Broker { .. } => {
+            _ => {
                 return Err(HostPhysicalReadErrorV1::wrong_owner());
             }
         }
@@ -1512,7 +1826,7 @@ impl<'operation, 'owner, 'origin, 'startup>
                     Err(host.fail(cause))
                 }
             },
-            RetainedPhysicalBindingV1::Broker { .. } => Err(HostPhysicalReadErrorV1::wrong_owner()),
+            _ => Err(HostPhysicalReadErrorV1::wrong_owner()),
         };
         if result.is_err() {
             self.owner.poisoned = true;

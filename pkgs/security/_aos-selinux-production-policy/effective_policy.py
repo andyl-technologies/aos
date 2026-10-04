@@ -44,6 +44,7 @@ NO_CONTEXT_TRANSLATION_DOMAINS = (
     *owner_policy.HELPER_DOMAINS,
     *view_policy.SIGNER_DOMAINS,
     *owner_policy.SELECTED_MOUNT_SOURCE_DOMAINS,
+    *owner_policy.ONLINE_NIX_HELPERS,
 )
 PRIVATE_ROOT_CUSTODY_ATTRIBUTE = "aos_private_root_custody_domain"
 EXPLICIT_DOMAIN_ATTRIBUTES = (
@@ -54,6 +55,7 @@ EXPLICIT_DOMAIN_ATTRIBUTES = (
         "aos_nix_offline_prepare_t",
         "aos_nix_offline_tpm_helper_t",
         *owner_policy.SELECTED_MOUNT_SOURCE_DOMAINS,
+        *owner_policy.ONLINE_NIX_DOMAINS,
     )),
 )
 GUEST_ROOT_PUBLISHER = "aos_sandbox_guest_root_publisher_t"
@@ -1162,8 +1164,16 @@ def _check_selected_launcher_image_ioctls(setools: Any, policy: Any) -> list[str
     command or the provenance/currentness of an actual received image FD.
     """
 
-    cells = owner_policy.SELECTED_LAUNCHER_IMAGE_IOCTL_CELLS
-    selectors = owner_policy.SELECTED_LAUNCHER_IMAGE_IOCTL_SELECTORS
+    return _check_image_ioctl_cells(
+        setools, policy,
+        owner_policy.SELECTED_LAUNCHER_IMAGE_IOCTL_CELLS,
+        owner_policy.SELECTED_LAUNCHER_IMAGE_IOCTL_SELECTORS,
+    )
+
+
+def _check_image_ioctl_cells(setools: Any, policy: Any, cells, selectors) -> list[str]:
+    """Uses the same native full-selector query for closed image DATA cells."""
+
     if type(selectors) is not frozenset or (selectors and selectors != {0x6686}):
         raise ValueError("unsupported selected-launcher ioctl expectation")
 
@@ -1263,6 +1273,29 @@ def _check_selected_launcher_image_ioctls(setools: Any, policy: Any) -> list[str
         evidence.append(f"allowxperm\t{source}\t{target}\tfile\tioctl\t0x6686")
 
     return evidence
+
+
+def _check_online_nix_policy(setools: Any, policy: Any) -> list[str]:
+    """Checks selected DATA, or rejects online types in the default policy."""
+
+    domains = owner_policy.ONLINE_NIX_DOMAINS
+    if not domains:
+        # Absence, not an empty positive query, proves the default recipe did
+        # not accidentally retain the selected TE block. Do not emit new lines
+        # into the old default evidence or infer selection from type presence.
+        for name in (*owner_policy.ONLINE_NIX_KNOWN_DOMAINS, "aos_nix_online_store_t"):
+            try:
+                policy.lookup_type(name)
+            except setools.exception.InvalidType:
+                continue
+            raise ValueError(f"online Nix type present in default policy: {name}")
+        return []
+    if domains != owner_policy.ONLINE_NIX_KNOWN_DOMAINS:
+        raise ValueError("unexpected online Nix owner cohort")
+    return _check_image_ioctl_cells(
+        setools, policy, owner_policy.ONLINE_NIX_IMAGE_IOCTL_CELLS,
+        frozenset({0x6686}),
+    )
 
 
 def check_policy(setools: Any, policy: Any, *, git_read_delegation: bool = False) -> list[str]:
@@ -1444,6 +1477,7 @@ def check_policy(setools: Any, policy: Any, *, git_read_delegation: bool = False
         )
 
     evidence.extend(_check_selected_launcher_image_ioctls(setools, policy))
+    evidence.extend(_check_online_nix_policy(setools, policy))
     if git_read_delegation:
         evidence.extend(_check_git_read_delegation(setools, policy))
     return evidence
