@@ -106,13 +106,7 @@ impl OriginalRootAcceptedV5 {
             }
             return Err(SourceProviderSecurityError::SessionContinuity.into());
         };
-        initial.validate_later_sample(*later)?;
-        if later.wall_seconds() < validity.0 || later.wall_seconds() >= validity.1
-            || later.boottime_nanoseconds() >= deadline
-        {
-            return Err(SourceProviderSecurityError::SessionContinuity.into());
-        }
-        Ok(())
+        validate_original_held_clock_sample_v5(initial, *later, deadline, validity)
     }
 }
 

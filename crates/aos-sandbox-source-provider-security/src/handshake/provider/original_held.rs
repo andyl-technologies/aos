@@ -103,6 +103,25 @@ impl core::fmt::Debug for OriginalHeldCauseV5 {
     }
 }
 
+// Compares observed DATA; the caller retains sample and first-cause state.
+fn validate_original_held_clock_sample_v5(
+    initial: RawPairedClockSample,
+    later: RawPairedClockSample,
+    deadline: u64,
+    validity: (i64, i64),
+) -> Result<(), OriginalHeldCauseV5> {
+    initial.validate_later_sample(later)?;
+
+    if later.wall_seconds() < validity.0
+        || later.wall_seconds() >= validity.1
+        || later.boottime_nanoseconds() >= deadline
+    {
+        return Err(SourceProviderSecurityError::SessionContinuity.into());
+    }
+
+    Ok(())
+}
+
 /// Retains one original Held signing and delivery attempt without a send permit.
 ///
 /// Only the genuine Session creates this empty reservoir. Repeat entry cannot
@@ -184,14 +203,7 @@ impl OriginalProviderHeldSignaturesV5 {
             // The actual native cause is still in this whole Result slot.
             return Err(SourceProviderSecurityError::SessionContinuity.into());
         };
-        initial.validate_later_sample(*later)?;
-        if later.wall_seconds() < validity.0
-            || later.wall_seconds() >= validity.1
-            || later.boottime_nanoseconds() >= deadline
-        {
-            return Err(SourceProviderSecurityError::SessionContinuity.into());
-        }
-        Ok(())
+        validate_original_held_clock_sample_v5(initial, *later, deadline, validity)
     }
 }
 
