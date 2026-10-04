@@ -1274,8 +1274,10 @@ impl OriginalBrokerColdDeadlineV1 {
     pub(crate) fn online_request(
         request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
     ) -> Result<Self, BrokerSessionSecurityError> {
-        if request.method()
-            != aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2
+        if !matches!(request.method(),
+            aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2
+                | aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2
+                | aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2)
             || request.deadline_boottime_nanoseconds() == 0
             || request.deadline_boottime_nanoseconds() == u64::MAX
         {
@@ -1344,6 +1346,35 @@ pub(crate) fn online_resolve_server_hello()
     hello.methods = vec![
         aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2.into(),
     ];
+    Ok(hello)
+}
+
+/// Advertises only the connected existing-output continuation on the client.
+///
+/// This selects negotiation DATA, not startup, request or floor authority.
+/// The actual independently measured mode remains an installed caller check.
+#[cfg(feature = "online-nix")]
+pub(crate) fn online_existing_output_client_hello()
+    -> Result<BrokerClientHello, aos_sandbox_broker_session_protocol::BrokerSessionNegotiationError>
+{
+    let mut hello = online_resolve_client_hello()?;
+    hello.required_methods.extend([
+        aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2.into(),
+        aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2.into(),
+    ]);
+    Ok(hello)
+}
+
+/// Advertises the same closed three-method continuation on the original owner.
+#[cfg(feature = "online-nix")]
+pub(crate) fn online_existing_output_server_hello()
+    -> Result<BrokerServerHello, aos_sandbox_broker_session_protocol::BrokerSessionNegotiationError>
+{
+    let mut hello = online_resolve_server_hello()?;
+    hello.methods.extend([
+        aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2.into(),
+        aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2.into(),
+    ]);
     Ok(hello)
 }
 
@@ -2257,6 +2288,89 @@ pub(super) struct DormantAuthenticatedBrokerSessionV1 {
     terminal_witness_debt: Option<OutputCurrentnessBoundaryV1>,
 }
 
+// The closed two-successor route has thirteen root-step returns, four reader
+// returns, one output-read return and two phase returns. These are comparison
+// archives, not a memory-funding or fresh-floor proof.
+#[cfg(feature = "online-nix")]
+pub(crate) const ONLINE_POSTFLIGHT_PASSES_V1: usize = 20;
+
+/// Retains independent negative observations without granting currentness.
+#[cfg(feature = "online-nix")]
+pub(crate) struct OnlinePostflightV1 {
+    pub(crate) client_before: Option<Result<(), BrokerSessionSecurityError>>,
+    pub(crate) endpoint_before: Option<Result<(), BrokerSessionSecurityError>>,
+    pub(crate) peer: Option<Result<(), BrokerSessionSecurityError>>,
+    pub(crate) endpoint_after: Option<Result<(), BrokerSessionSecurityError>>,
+    pub(crate) named: Option<Result<(), aos_sandbox::JournalError>>,
+    pub(crate) floor: Option<Result<(), crate::tpm_nv_custody::FloorErrorV1>>,
+    pub(crate) client_after: Option<Result<(), BrokerSessionSecurityError>>,
+    pub(crate) clock: Option<Result<(), OnlinePostflightClockErrorV1>>,
+}
+
+#[cfg(feature = "online-nix")]
+impl OnlinePostflightV1 {
+    pub(crate) const fn new() -> Self {
+        Self {
+            client_before: None,
+            endpoint_before: None,
+            peer: None,
+            endpoint_after: None,
+            named: None,
+            floor: None,
+            client_after: None,
+            clock: None,
+        }
+    }
+
+    pub(crate) fn failed(&self) -> bool {
+        self.client_before.as_ref().is_none_or(Result::is_err)
+            || self.endpoint_before.as_ref().is_none_or(Result::is_err)
+            || self.peer.as_ref().is_none_or(Result::is_err)
+            || self.endpoint_after.as_ref().is_none_or(Result::is_err)
+            || self.named.as_ref().is_none_or(Result::is_err)
+            || self.floor.as_ref().is_none_or(Result::is_err)
+            || self.client_after.as_ref().is_none_or(Result::is_err)
+            || self.clock.as_ref().is_none_or(Result::is_err)
+    }
+}
+
+#[cfg(all(test, feature = "online-nix"))]
+mod online_postflight_data_tests {
+    use super::{OnlinePostflightClockErrorV1, OnlinePostflightV1};
+    use crate::BrokerSessionSecurityError;
+
+    #[test]
+    fn an_unobserved_report_is_not_positive() {
+        assert!(OnlinePostflightV1::new().failed());
+    }
+
+    #[test]
+    fn later_clock_debt_does_not_replace_an_earlier_component_cause() {
+        let mut report = OnlinePostflightV1::new();
+        report.endpoint_before = Some(Err(BrokerSessionSecurityError::ExecutionChanged));
+
+        report.clock = Some(Err(OnlinePostflightClockErrorV1::Unavailable));
+
+        assert!(matches!(report.endpoint_before.as_ref(),
+            Some(Err(BrokerSessionSecurityError::ExecutionChanged))));
+        assert!(matches!(report.clock.as_ref(),
+            Some(Err(OnlinePostflightClockErrorV1::Unavailable))));
+        assert!(report.failed());
+    }
+}
+
+/// Keeps the actual final clock cause separate from an earlier action cause.
+#[cfg(feature = "online-nix")]
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum OnlinePostflightClockErrorV1 {
+    #[error("the original paired clock observation failed: {0}")]
+    Observation(#[from] aos_sandbox::ownership_resume::OwnershipClockObservationError),
+    #[error("the original admitted effect clock failed: {0}")]
+    Effect(#[from] aos_sandbox_broker::BrokerAdmissionError),
+    #[error("the original admitted clock context is unavailable or already fenced")]
+    Unavailable,
+}
+
 /// Reports selected transport failures while originals stay in caller slots.
 #[cfg(feature = "online-nix")]
 #[derive(Debug, thiserror::Error)]
@@ -2420,6 +2534,21 @@ impl DormantAuthenticatedBrokerSessionV1 {
             && subject.initial_info() == peer.initial_info()
     }
 
+    /// Observes only resident originals and samples the paired clock LAST.
+    ///
+    /// The caller parks a vacant fixed report before entering. No effect,
+    /// request, floor read, re-admission or positive failed-owner getter occurs.
+    #[cfg(feature = "online-nix")]
+    pub(crate) fn observe_online_postflight(&mut self, report: &mut OnlinePostflightV1) {
+        report.client_before = Some(self.require_online_client_currentness());
+        self.owner.observe_online_postflight(
+            &self.transcript, self.socket.peer(), report,
+        );
+        report.client_after = Some(self.require_online_client_currentness());
+        // Nothing fallible or allocating follows this genuine paired sample.
+        report.clock = Some(self.owner.observe_online_postflight_clock());
+    }
+
     #[cfg(feature = "online-nix")]
     fn require_online_client_currentness(&mut self) -> Result<(), BrokerSessionSecurityError> {
         match self.owner.online_endpoint_role()? {
@@ -2517,6 +2646,21 @@ impl DormantAuthenticatedBrokerSessionV1 {
         self.require_online_client_currentness()?;
         self.owner.release_online_native_step();
         Ok(())
+    }
+
+    /// Advances a phase only after this original Session's successful terminal.
+    ///
+    /// The caller retains its complete prior request/result. This method moves
+    /// only the same owner's completed admission into its fixed archive slot;
+    /// it neither clears a pending request nor renews any request deadline.
+    #[cfg(feature = "online-nix")]
+    pub(crate) fn advance_online_nix_terminal(
+        &mut self,
+        previous: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.require_online_store_readback(previous)?;
+        self.owner.advance_online_nix_terminal(previous, &self.transcript, self.socket.peer())?;
+        self.require_online_client_currentness()
     }
 
     /// Sends once without projecting away the actual returned native cause.
@@ -2702,6 +2846,19 @@ impl DormantAuthenticatedBrokerSessionV1 {
         self.require_online_transport(request)?;
         self.owner.check_online_resolve_effect(
             request.request_id(), &self.transcript, self.socket.peer(),
+        )?;
+        self.require_online_client_currentness()
+    }
+
+    /// Compares the remaining native suffix before selected GC-root effects.
+    #[cfg(feature = "online-nix")]
+    pub(crate) fn require_online_existing_output_suffix(
+        &mut self,
+        request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.require_online_request(request)?;
+        self.owner.require_online_existing_output_suffix(
+            request, &self.transcript, self.socket.peer(),
         )?;
         self.require_online_client_currentness()
     }

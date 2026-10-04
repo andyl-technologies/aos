@@ -51,13 +51,55 @@ enum FloorStateV1 {
     Online {
         provision: crate::nix_service::floor::OnlineProvisionV1,
         attached: BrokerAttachmentAttemptV1,
+        postflights: [Option<(Result<(), FloorErrorV1>, Result<(), FloorErrorV1>)>;
+            crate::handshake::ONLINE_POSTFLIGHT_PASSES_V1],
     },
 }
 
 impl BrokerFloorV1 {
     #[cfg(feature = "online-nix")]
     pub(in crate::recovery::journal) fn online(provision: crate::nix_service::floor::OnlineProvisionV1) -> Self {
-        Self { state: FloorStateV1::Online { provision, attached: BrokerAttachmentAttemptV1::fresh() } }
+        Self { state: FloorStateV1::Online {
+            provision, attached: BrokerAttachmentAttemptV1::fresh(),
+            postflights: [const { None }; crate::handshake::ONLINE_POSTFLIGHT_PASSES_V1],
+        } }
+    }
+
+    /// Compares only available retained custody, never NV or floor currentness.
+    ///
+    /// The unavailable original credential-File observation stays in its own
+    /// slot. It is not projected into a failure of otherwise available custody
+    /// or treated as a fresh proof. Healthy eligibility still comes exclusively
+    /// from the unchanged positive floor/currentness recipe at the caller.
+    ///
+    /// # Errors
+    /// Returns unavailable when the actual attachment comparison fails, its
+    /// original custody is missing or fenced, or the fixed archive is full.
+    #[cfg(feature = "online-nix")]
+    pub(in crate::recovery::journal) fn observe_online_postflight(
+        &mut self,
+        _owner: &mut ProtectedBrokerSessionJournalV1,
+    ) -> Result<(), FloorErrorV1> {
+        let FloorStateV1::Online { attached, postflights, .. } = &mut self.state else {
+            return Err(FloorErrorV1::Unavailable);
+        };
+        let slot = postflights.iter_mut().find(|slot| slot.is_none())
+            .ok_or(FloorErrorV1::Unavailable)?;
+        *slot = Some((Err(FloorErrorV1::Unavailable), Err(FloorErrorV1::Unavailable)));
+        let Some((provision_result, attachment_result)) = slot.as_mut() else {
+            return Err(FloorErrorV1::Unavailable);
+        };
+
+        // The old loader retains bytes, not original credential Files. Its
+        // positive revalidate would reopen names, so it cannot establish a
+        // retained negative observation here. Keep that custody unavailable;
+        // the actual retained attachment is observed independently below.
+        *provision_result = Err(FloorErrorV1::Unavailable);
+        *attachment_result = attached.observe_online_postflight();
+        if attachment_result.is_err() {
+            return Err(FloorErrorV1::Unavailable);
+        }
+        Ok(())
     }
 
     pub(in crate::recovery::journal) fn check_cold_deadline(&mut self) -> Result<(), FloorErrorV1> {
@@ -235,7 +277,7 @@ impl BrokerFloorV1 {
     ) -> Result<(), FloorErrorV1> {
         match &mut self.state {
             #[cfg(feature = "online-nix")]
-            FloorStateV1::Online { provision, attached } => {
+            FloorStateV1::Online { provision, attached, .. } => {
                 let operation = attached.begin(BrokerAttachmentPhaseV1::Fresh)?;
                 let result = (|| {
                     provision.revalidate()?;
@@ -298,7 +340,7 @@ impl BrokerFloorV1 {
             FloorStateV1::NotScoped => Ok(()),
             FloorStateV1::Unavailable => Err(FloorErrorV1::Unavailable),
             #[cfg(feature = "online-nix")]
-            FloorStateV1::Online { provision, attached } => {
+            FloorStateV1::Online { provision, attached, .. } => {
                 let operation = attached.begin(BrokerAttachmentPhaseV1::Ready)?;
                 let result = (|| {
                     provision.revalidate()?;
@@ -342,7 +384,7 @@ impl BrokerFloorV1 {
 
         match &mut self.state {
             #[cfg(feature = "online-nix")]
-            FloorStateV1::Online { provision, attached } => {
+            FloorStateV1::Online { provision, attached, .. } => {
                 let operation = attached.begin(BrokerAttachmentPhaseV1::Ready)?;
                 let result = (|| {
                     operation.attempt.use_online(owner, provision.profile()?, Some(transaction))?;
@@ -382,8 +424,7 @@ impl BrokerFloorV1 {
     ) -> Result<(), FloorErrorV1> {
         #[cfg(feature = "online-nix")]
         if let FloorStateV1::Online { attached, .. } = &self.state {
-            if method != BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2
-                || !attached.is_ready()
+            if crate::recovery::journal::online_nix_verb(method).is_none() || !attached.is_ready()
             {
                 return Err(FloorErrorV1::Unavailable);
             }
@@ -420,6 +461,27 @@ impl BrokerFloorV1 {
             return Err(FloorErrorV1::Unavailable);
         }
         attached.bind_online_request_deadline(deadline)
+    }
+
+    /// Borrows the actual online floor after main-journal widths are known.
+    #[cfg(feature = "online-nix")]
+    pub(in crate::recovery::journal) fn check_online_existing_output_suffix(
+        &mut self,
+        owner: &mut ProtectedBrokerSessionJournalV1,
+        prepared_widths: [usize; 3],
+    ) -> Result<(), FloorErrorV1> {
+        let FloorStateV1::Online { provision, attached, .. } = &mut self.state else {
+            return Err(FloorErrorV1::Unavailable);
+        };
+        let operation = attached.begin(BrokerAttachmentPhaseV1::Ready)?;
+        let result = (|| {
+            provision.revalidate()?;
+            operation.attempt.check_online_existing_output_suffix(
+                owner, provision.profile()?, prepared_widths,
+            )?;
+            provision.revalidate()
+        })();
+        operation.finish(result)
     }
 
     // A failed (or abandoned in-progress) Required owner cannot touch current

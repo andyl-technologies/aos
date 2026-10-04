@@ -3016,6 +3016,243 @@ impl Journal {
         self.limits
     }
 
+    /// Compares the remaining existing-output Nix main-journal geometry.
+    ///
+    /// The pending Realize request is already durable. The three widths cover
+    /// its Terminal, the following Query RequestPrepared, and Query Terminal.
+    /// This borrowed sizing comparison creates no transaction, reservation,
+    /// currentness certificate, or permission to perform an effect.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unhealthy or changed protected custody, foreign provenance,
+    /// missing selected rows, exhausted sequence space, and any opened native
+    /// limit exceeded by a record, transaction, or materialization prefix.
+    #[doc(hidden)]
+    pub fn compare_online_nix_main_suffix_capacity_v1(
+        &self,
+        traffic_key: &[u8],
+        fence_key: &[u8],
+        current_effect_key: &[u8],
+        fence_value_ceiling: usize,
+        pending_effect_value_ceiling: usize,
+        complete_effect_value_ceiling: usize,
+    ) -> Result<[usize; 3], JournalError> {
+        if traffic_key.len() != 9 || fence_key.len() != 24
+            || current_effect_key.len() != 24
+            || traffic_key == fence_key || fence_key == current_effect_key
+            || traffic_key == current_effect_key
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        let keys = [Some(traffic_key), Some(fence_key), Some(current_effect_key), None];
+        for key in keys.into_iter().flatten() {
+            if !self.state.iter().any(|((namespace, actual), _)|
+                *namespace == RecordNamespace::BrokerSessionTraffic && actual.as_slice() == key)
+            {
+                return Err(JournalError::ProtectedBoundary);
+            }
+        }
+
+        let traffic_overhead = EncodedRecordLayout::new(traffic_key.len(), Some(0))?.payload_bytes;
+        let traffic_bytes = self.limits.maximum_record_bytes.checked_sub(traffic_overhead)
+            .ok_or(JournalError::LimitExceeded("record bytes"))?;
+        let terminal = [
+            OnlineNixExtentV1::put(0, traffic_key.len(), traffic_bytes),
+            OnlineNixExtentV1::put(2, current_effect_key.len(), complete_effect_value_ceiling),
+        ];
+        let request = [
+            OnlineNixExtentV1::put(0, traffic_key.len(), traffic_bytes),
+            OnlineNixExtentV1::put(1, fence_key.len(), fence_value_ceiling),
+            // The real Query UUID/key does not exist yet. One anonymous fixed
+            // extent accounts for it without fabricating a prospective key.
+            OnlineNixExtentV1::put(3, 24, pending_effect_value_ceiling),
+        ];
+        let query = [
+            OnlineNixExtentV1::put(0, traffic_key.len(), traffic_bytes),
+            OnlineNixExtentV1::put(3, 24, complete_effect_value_ceiling),
+        ];
+        let widths = self.compare_online_nix_extents_v1(
+            keys, &[&terminal, &request, &query],
+        )?;
+        Ok([widths[0], widths[1], widths[2]])
+    }
+
+    /// Compares three prepare/finalize pairs on the same opened Nix sidecar.
+    ///
+    /// The existing checkpoint remains resident during each prepare and is
+    /// replaced before the intent and prepared-transaction rows are deleted.
+    /// Sizing includes every such transient prefix, not only each final map.
+    /// No intent, checkpoint, signature, transaction ID, or token is invented.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed or unhealthy protected custody, foreign or occupied
+    /// sidecar rows, exhausted sequence space, and any opened native ceiling.
+    #[doc(hidden)]
+    pub fn compare_online_nix_floor_suffix_capacity_v1(
+        &self,
+        checkpoint_key: &[u8],
+        intent_key: &[u8],
+        transaction_key: &[u8],
+        checkpoint_value_bytes: usize,
+        intent_value_bytes: usize,
+        prepared_main_value_bytes: [usize; 3],
+    ) -> Result<(), JournalError> {
+        if checkpoint_key != b"checkpoint" || intent_key != b"intent"
+            || transaction_key != b"transaction" || self.state.len() != 1
+            || !self.state.iter().any(|((namespace, key), value)|
+                *namespace == RecordNamespace::BrokerSessionTraffic
+                    && key.as_slice() == checkpoint_key
+                    && value.len() == checkpoint_value_bytes)
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        let keys = [Some(checkpoint_key), Some(intent_key), Some(transaction_key), None];
+        let preparations = prepared_main_value_bytes.map(|bytes| [
+            OnlineNixExtentV1::put(1, intent_key.len(), intent_value_bytes),
+            OnlineNixExtentV1::put(2, transaction_key.len(), bytes),
+        ]);
+        let finalize = [
+            OnlineNixExtentV1::put(0, checkpoint_key.len(), checkpoint_value_bytes),
+            OnlineNixExtentV1::delete(1, intent_key.len()),
+            OnlineNixExtentV1::delete(2, transaction_key.len()),
+        ];
+        self.compare_online_nix_extents_v1(keys, &[
+            &preparations[0], &finalize,
+            &preparations[1], &finalize,
+            &preparations[2], &finalize,
+        ])?;
+        Ok(())
+    }
+
+    // Four fixed slots describe only selected extents. All other actual rows
+    // stay in the borrowed map and remain charged; no inventory clone is made.
+    fn compare_online_nix_extents_v1(
+        &self,
+        keys: [Option<&[u8]>; 4],
+        phases: &[&[OnlineNixExtentV1]],
+    ) -> Result<[usize; 6], JournalError> {
+        self.ensure_healthy()?;
+        self.require_protected_names_current()?;
+        validate_limits(self.limits)?;
+        if phases.is_empty() || phases.len() > 6
+            || self.committed_namespaces.iter().any(|namespace|
+                *namespace != RecordNamespace::BrokerSessionTraffic)
+            || self.state.keys().any(|(namespace, _)|
+                *namespace != RecordNamespace::BrokerSessionTraffic)
+            || !self.idempotency.is_empty()
+        {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        }
+
+        let mut values = [None; 4];
+        let mut materialized = 0_usize;
+        for ((_, key), value) in &self.state {
+            materialized = materialized.checked_add(key.len())
+                .and_then(|bytes| bytes.checked_add(value.len()))
+                .ok_or(JournalError::LimitExceeded("materialized state bytes"))?;
+            for (index, selected) in keys.iter().enumerate() {
+                if *selected == Some(key.as_slice()) {
+                    values[index] = Some(value.len());
+                }
+            }
+        }
+        if materialized != self.materialized_bytes {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        let mut entries = self.state.len();
+        let original_length = self.file.metadata()?.len();
+        let mut length = original_length;
+        let mut next = self.next_sequence;
+        let mut committed = self.committed_transactions;
+        let mut widths = [0_usize; 6];
+        if next == 0 || next == u64::MAX || length > self.limits.maximum_journal_bytes
+            || materialized > self.limits.maximum_materialized_bytes
+            || entries > self.limits.maximum_materialized_records
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+
+        for (phase, records) in phases.iter().enumerate() {
+            if records.is_empty() || records.len() > self.limits.maximum_records_per_transaction {
+                return Err(JournalError::LimitExceeded("transaction record count"));
+            }
+            let _ = u32::try_from(records.len())
+                .map_err(|_| JournalError::LimitExceeded("transaction record count"))?;
+            let mut changed = [false; 4];
+            let mut payload = 0_usize;
+            let mut append = EncodedFrameLayout::new(4)?.frame_bytes
+                .checked_add(EncodedFrameLayout::new(COMMIT_PAYLOAD_BYTES)?.frame_bytes)
+                .ok_or(JournalError::JournalTooLarge)?;
+            for record in *records {
+                if record.slot >= values.len() || changed[record.slot]
+                    || keys[record.slot].is_some_and(|key| key.len() != record.key_bytes)
+                {
+                    return Err(JournalError::ProtectedBoundary);
+                }
+                changed[record.slot] = true;
+                let layout = EncodedRecordLayout::new(record.key_bytes, record.value_bytes)?;
+                if record.key_bytes > self.limits.maximum_key_bytes
+                    || layout.payload_bytes > self.limits.maximum_record_bytes
+                {
+                    return Err(JournalError::LimitExceeded("record bytes"));
+                }
+                payload = payload.checked_add(layout.payload_bytes)
+                    .filter(|bytes| *bytes <= self.limits.maximum_transaction_bytes)
+                    .ok_or(JournalError::LimitExceeded("transaction bytes"))?;
+                append = append.checked_add(EncodedFrameLayout::new(layout.payload_bytes)?.frame_bytes)
+                    .ok_or(JournalError::JournalTooLarge)?;
+
+                if let Some(old) = values[record.slot] {
+                    materialized = materialized.checked_sub(record.key_bytes)
+                        .and_then(|bytes| bytes.checked_sub(old))
+                        .ok_or(JournalError::ProtectedBoundary)?;
+                }
+                match record.value_bytes {
+                    Some(bytes) => {
+                        if values[record.slot].is_none() {
+                            entries = entries.checked_add(1)
+                                .ok_or(JournalError::LimitExceeded("materialized record count"))?;
+                        }
+                        materialized = materialized.checked_add(record.key_bytes)
+                            .and_then(|total| total.checked_add(bytes))
+                            .filter(|total| *total <= self.limits.maximum_materialized_bytes)
+                            .ok_or(JournalError::LimitExceeded("materialized state bytes"))?;
+                    }
+                    None if values[record.slot].is_some() => entries -= 1,
+                    None => {}
+                }
+                values[record.slot] = record.value_bytes;
+                if entries > self.limits.maximum_materialized_records {
+                    return Err(JournalError::LimitExceeded("materialized record count"));
+                }
+            }
+
+            committed = committed.checked_add(1)
+                .filter(|count| *count <= self.limits.maximum_transactions)
+                .ok_or(JournalError::LimitExceeded("committed transaction count"))?;
+            let frames = u64::try_from(records.len()).ok().and_then(|count| count.checked_add(2))
+                .ok_or(JournalError::SequenceExhausted)?;
+            next = next.checked_add(frames).filter(|next| *next != u64::MAX)
+                .ok_or(JournalError::SequenceExhausted)?;
+            length = length.checked_add(u64::try_from(append).map_err(|_| JournalError::JournalTooLarge)?)
+                .filter(|bytes| *bytes <= self.limits.maximum_journal_bytes)
+                .ok_or(JournalError::JournalTooLarge)?;
+            widths[phase] = JournalTransaction::maximum_prepared_bytes_v1(JournalLimits {
+                maximum_records_per_transaction: records.len(),
+                maximum_transaction_bytes: payload,
+                ..self.limits
+            })?;
+        }
+
+        self.require_protected_names_current()?;
+        if self.file.metadata()?.len() != original_length {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(widths)
+    }
+
     fn validate_consumer_resource_transition(
         &self,
         transaction: &JournalTransaction,
@@ -7150,6 +7387,23 @@ struct EncodedRecordLayout {
     payload_bytes: usize,
 }
 
+/// Carries only one fixed selected sizing extent, never record bytes or a key.
+struct OnlineNixExtentV1 {
+    slot: usize,
+    key_bytes: usize,
+    value_bytes: Option<usize>,
+}
+
+impl OnlineNixExtentV1 {
+    const fn put(slot: usize, key_bytes: usize, value_bytes: usize) -> Self {
+        Self { slot, key_bytes, value_bytes: Some(value_bytes) }
+    }
+
+    const fn delete(slot: usize, key_bytes: usize) -> Self {
+        Self { slot, key_bytes, value_bytes: None }
+    }
+}
+
 impl EncodedRecordLayout {
     fn of(record: &JournalRecord) -> Result<Self, JournalError> {
         Self::new(
@@ -7900,6 +8154,50 @@ mod tests {
                 record_bytes,
             );
         }
+    }
+
+    #[test]
+    fn online_nix_suffix_extents_use_the_native_and_prepared_width_engines() {
+        use super::{EncodedFrameLayout, EncodedRecordLayout};
+
+        let maximum_record = 67_242_238;
+        let traffic = EncodedRecordLayout::new(9, Some(maximum_record - 16)).unwrap();
+        let fence = EncodedRecordLayout::new(24, Some(741)).unwrap();
+        let pending = EncodedRecordLayout::new(24, Some(617)).unwrap();
+        let complete = EncodedRecordLayout::new(24, Some(649)).unwrap();
+        let cases = [
+            (2, traffic.payload_bytes + complete.payload_bytes, 67_242_958),
+            (3, traffic.payload_bytes + fence.payload_bytes + pending.payload_bytes, 67_243_702),
+            (2, traffic.payload_bytes + complete.payload_bytes, 67_242_958),
+        ];
+
+        let mut main_append = 0;
+        for (records, payload, expected_prepared) in cases {
+            let limits = JournalLimits {
+                maximum_record_bytes: maximum_record,
+                maximum_records_per_transaction: records,
+                maximum_transaction_bytes: payload,
+                ..JournalLimits::default()
+            };
+            let prepared = JournalTransaction::maximum_prepared_bytes_v1(limits).unwrap();
+            let append = payload + EncodedFrameLayout::new(4).unwrap().frame_bytes
+                + EncodedFrameLayout::new(36).unwrap().frame_bytes + records * HEADER_BYTES;
+
+            assert_eq!(prepared, expected_prepared);
+            main_append += append;
+        }
+        assert_eq!(main_append, 201_730_550);
+
+        let largest_prepared = 67_243_702;
+        let sidecar_prepare = EncodedRecordLayout::new(6, Some(324)).unwrap().payload_bytes
+            + EncodedRecordLayout::new(11, Some(largest_prepared)).unwrap().payload_bytes;
+        let sidecar_finalize = EncodedRecordLayout::new(10, Some(156)).unwrap().payload_bytes
+            + EncodedRecordLayout::new(6, None).unwrap().payload_bytes
+            + EncodedRecordLayout::new(11, None).unwrap().payload_bytes;
+
+        assert_eq!(sidecar_prepare, largest_prepared + 355);
+        assert_eq!(sidecar_finalize, 204);
+        assert_eq!(10 + 156 + 6 + 324 + 11 + largest_prepared, 67_244_209);
     }
 
     #[test]

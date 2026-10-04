@@ -568,6 +568,11 @@ type aos_nix_online_owner_lock_t;
 type aos_nix_online_controller_lock_t;
 type aos_nix_online_runtime_t;
 type aos_nix_online_store_t;
+type aos_nix_online_gcroots_t;
+
+# An existing ext4/ZFS Store label needs this object-to-superblock association.
+# It grants no actor the ability to provision, relabel or mutate that Store.
+allow aos_nix_online_store_t fs_t:filesystem associate;
 
 allow init_t aos_sandbox_nix_exec_t:file { execute getattr map open read };
 allow init_t aos_sandbox_nix_t:process transition;
@@ -741,6 +746,17 @@ allow { aos_sandbox_nix_t aos_nix_online_store_reader_t } aos_nix_online_store_t
 allow { aos_sandbox_nix_t aos_nix_online_store_reader_t } aos_nix_online_store_t:lnk_file { getattr read };
 allow aos_sandbox_nix_t aos_nix_online_store_t:file ioctl;
 allowxperm aos_sandbox_nix_t aos_nix_online_store_t:file ioctl { 0x6686 };
+
+# Only the two independently provisioned root subtrees carry this distinct
+# object SID. The Store/DB SID above remains read-only. The measured PATH child
+# uses the existing upstream temp/symlink/rename engine; the original owner can
+# only inspect and sync retained directories and links, never create or repair.
+allow aos_nix_online_gcroots_t fs_t:filesystem associate;
+allow aos_sandbox_nix_t aos_nix_online_gcroots_t:dir { getattr open read search };
+allow aos_sandbox_nix_t aos_nix_online_gcroots_t:lnk_file { getattr read };
+allow aos_nix_online_store_reader_t aos_nix_online_gcroots_t:dir { add_name getattr open read remove_name search write };
+allow aos_nix_online_store_reader_t aos_nix_online_gcroots_t:lnk_file { create getattr read rename unlink };
+type_transition aos_nix_online_store_reader_t aos_nix_online_gcroots_t:lnk_file aos_nix_online_gcroots_t;
 # AOS_ONLINE_NIX_END
 # AOS_SELECTED_MOUNT_SOURCE_BEGIN
 

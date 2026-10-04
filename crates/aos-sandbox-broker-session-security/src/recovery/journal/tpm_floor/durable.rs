@@ -61,6 +61,9 @@ pub(super) struct BrokerAttachmentAttemptV1 {
     cold_deadline: Option<crate::handshake::OriginalBrokerColdDeadlineV1>,
     cold_failure: Option<crate::DormantBrokerSessionHandshakeErrorV1>,
     native_failure: Option<aos_sandbox::JournalError>,
+    #[cfg(feature = "online-nix")]
+    postflights: [Option<(Result<(), aos_sandbox::JournalError>, Result<(), FloorErrorV1>)>;
+        crate::handshake::ONLINE_POSTFLIGHT_PASSES_V1],
 }
 
 impl BrokerAttachmentAttemptV1 {
@@ -146,7 +149,38 @@ impl BrokerAttachmentAttemptV1 {
             cold_deadline: None,
             cold_failure: None,
             native_failure: None,
+            #[cfg(feature = "online-nix")]
+            postflights: [const { None }; crate::handshake::ONLINE_POSTFLIGHT_PASSES_V1],
         }
+    }
+
+    /// Inspects the SAME partial attachment without entering its Ready gate.
+    #[cfg(feature = "online-nix")]
+    pub(super) fn observe_online_postflight(&mut self) -> Result<(), FloorErrorV1> {
+        let slot = self.postflights.iter_mut().find(|slot| slot.is_none())
+            .ok_or(FloorErrorV1::Unavailable)?;
+        *slot = Some((Err(aos_sandbox::JournalError::ProtectedBoundary), Err(FloorErrorV1::Unavailable)));
+        let Some((sidecar, physical)) = slot.as_mut() else {
+            return Err(FloorErrorV1::Unavailable);
+        };
+        *sidecar = match self.store.as_ref() {
+            Some(store) => store.validate_held_native(),
+            None => Err(aos_sandbox::JournalError::ProtectedBoundary),
+        };
+        *physical = if let Some(backend) = self.backend.as_mut() {
+            backend.observe_online_postflight()
+        } else if let Some(physical) = self.physical.as_mut() {
+            physical.observe_online_postflight()
+        } else {
+            Err(FloorErrorV1::Unavailable)
+        };
+        if sidecar.is_err() || physical.is_err() || self.phase != BrokerAttachmentPhaseV1::Ready
+            || self.first_failure.is_some() || self.native_failure.is_some()
+            || self.cold_failure.is_some()
+        {
+            return Err(FloorErrorV1::Unavailable);
+        }
+        Ok(())
     }
 
     pub(super) fn is_failed(&self) -> bool {
@@ -403,6 +437,30 @@ impl BrokerAttachmentAttemptV1 {
             }
         }
         Ok(())
+    }
+
+    /// Keeps the same physical attachment checking through both bookends.
+    #[cfg(feature = "online-nix")]
+    pub(super) fn check_online_existing_output_suffix(
+        &mut self,
+        owner: &mut super::super::ProtectedBrokerSessionJournalV1,
+        profile: crate::tpm_nv_custody::OnlineFloorProfileV1,
+        prepared_widths: [usize; 3],
+    ) -> Result<(), FloorErrorV1> {
+        self.use_online(owner, profile, None)?;
+        self.check_cold_deadline()?;
+        let result = self.store.as_mut().ok_or(FloorErrorV1::Unavailable)?
+            .check_online_suffix_capacity(profile, prepared_widths, &mut self.native_failure);
+        if let Err(cause) = result {
+            if let Some(native) = self.native_failure.take() {
+                // An infallible transfer into the first-cause tag happens
+                // immediately; no observation runs with the error unowned.
+                self.record_native_failure(native);
+            }
+            return Err(cause);
+        }
+        self.check_cold_deadline()?;
+        self.use_online(owner, profile, None)
     }
 
     fn require_endpoint(

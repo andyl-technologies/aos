@@ -713,6 +713,10 @@ struct OnlineJournalSchemaV1 {
     seed: [u8; 640],
     authority: aos_sandbox_broker::BrokerAuthority,
     prepared: Option<OnlinePreparedAuthorizationV1>,
+    completed_preparations: [Option<OnlinePreparedAuthorizationV1>; 2],
+    next_method: BrokerMethod,
+    original_deadline: Option<u64>,
+    phase_failed: bool,
     native_transaction: Option<std::sync::Arc<JournalTransaction>>,
     first_failure: Option<aos_sandbox_broker::BrokerAdmissionError>,
     clock_failure: Option<aos_sandbox::ownership_resume::OwnershipClockObservationError>,
@@ -724,6 +728,20 @@ struct OnlinePreparedAuthorizationV1 {
     admission: Option<aos_sandbox_broker::VerifiedBrokerAdmission>,
     fence: Option<Vec<u8>>,
     effect: Option<Vec<u8>>,
+}
+
+/// Maps only the three canonical online methods to their existing verbs.
+#[cfg(feature = "online-nix")]
+pub(crate) fn online_nix_verb(method: BrokerMethod) -> Option<aos_sandbox_core::BrokerVerb> {
+    match method {
+        BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2 =>
+            Some(aos_sandbox_core::BrokerVerb::NixResolveProtectedRecipe),
+        BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2 =>
+            Some(aos_sandbox_core::BrokerVerb::NixRealizeAuthorizedDerivation),
+        BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2 =>
+            Some(aos_sandbox_core::BrokerVerb::NixQueryAuthorizedPathInfo),
+        _ => None,
+    }
 }
 
 #[cfg(feature = "online-nix")]
@@ -752,7 +770,9 @@ fn require_online_effect_fields(
 ) -> Result<(), BrokerSessionSecurityError> {
     let target = aos_sandbox_core::BrokerResourceHandle::from_bytes(schema.profile.domain_commitment())
         .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-    if effect.verb() != aos_sandbox_core::BrokerVerb::NixResolveProtectedRecipe
+    if !matches!(effect.verb(), aos_sandbox_core::BrokerVerb::NixResolveProtectedRecipe
+        | aos_sandbox_core::BrokerVerb::NixRealizeAuthorizedDerivation
+        | aos_sandbox_core::BrokerVerb::NixQueryAuthorizedPathInfo)
         || effect.target() != aos_sandbox_core::BrokerGrantTarget::Resource(target)
         || effect.maximum_descriptors() != 0
         || effect.maximum_request_bytes() > aos_sandbox_protocol::nix_build::NIX_REQUEST_MAXIMUM_BYTES_V2 as u32
@@ -775,7 +795,7 @@ fn require_online_history_effect(
     let request = decode_canonical_request_v1(record.request_packet())
         .map_err(|_| BrokerSessionSecurityError::Currentness)?;
     let body_digest: [u8; 32] = Sha256::digest(&request.message().body).into();
-    if record.method() != BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2
+    if online_nix_verb(record.method()) != Some(effect.verb())
         || record.request_id() != *effect.request_id()
         || effect.transport_request_digest().as_bytes() != &body_digest
         || effect.request_digest().as_bytes() != &record.request_semantic_binding()
@@ -1024,6 +1044,9 @@ impl BrokerMainOpenV1 {
                     cold_deadline: Some(deadline),
                     online_schema: Some(OnlineJournalSchemaV1 {
                         profile, key, seed, authority, prepared: None,
+                        completed_preparations: [None, None],
+                        next_method: BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2,
+                        original_deadline: None, phase_failed: false,
                         native_transaction: None, first_failure: None, clock_failure: None,
                     }),
                 })
@@ -1673,7 +1696,10 @@ impl ProtectedBrokerSessionOwnerV1 {
             .ok_or(BrokerSessionSecurityError::Currentness)?;
         if schema.prepared.is_some() || schema.native_transaction.is_some()
             || schema.first_failure.is_some() || schema.clock_failure.is_some()
-            || request.method() != BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2
+            || schema.phase_failed || request.method() != schema.next_method
+            || schema.original_deadline.is_some_and(|original|
+                request.deadline_boottime_nanoseconds() != original)
+            || online_nix_verb(request.method()).is_none()
             || checked.method() != request.method()
             || *checked.header().request_id() != request.request_id()
             || checked.commitment() != request.semantic_commitment()
@@ -1684,6 +1710,7 @@ impl ProtectedBrokerSessionOwnerV1 {
         }
         // Occupy the one-shot slot before signature verification. A partial
         // result or interrupted preparation cannot be replaced and retried.
+        schema.original_deadline.get_or_insert(request.deadline_boottime_nanoseconds());
         schema.prepared = Some(OnlinePreparedAuthorizationV1 {
             request_id: request.request_id(), admission: None, fence: None, effect: None,
         });
@@ -1709,7 +1736,7 @@ impl ProtectedBrokerSessionOwnerV1 {
                 request_id: request.request_id(),
                 request_body: request.exact_body(),
                 descriptor_count: 0,
-                verb: aos_sandbox_core::BrokerVerb::NixResolveProtectedRecipe,
+                verb: online_nix_verb(request.method()).ok_or(BrokerSessionSecurityError::Currentness)?,
                 target: aos_sandbox_core::BrokerGrantTarget::Resource(target),
                 argument_commitment: commitment,
                 request_deadline_boottime_nanoseconds: request.deadline_boottime_nanoseconds(),
@@ -1805,27 +1832,142 @@ impl ProtectedBrokerSessionOwnerV1 {
 
     #[cfg(feature = "online-nix")]
     pub(crate) fn check_online_admitted_clock(&mut self) -> Result<(), BrokerSessionSecurityError> {
-        let schema = self.journal.online_schema.as_mut()
-            .ok_or(BrokerSessionSecurityError::Currentness)?;
-        if schema.first_failure.is_some() || schema.clock_failure.is_some() {
-            return Err(BrokerSessionSecurityError::Currentness);
+        self.journal.check_online_admitted_clock()
+    }
+
+    /// Independently compares available originals without entering a floor effect.
+    #[cfg(feature = "online-nix")]
+    pub(crate) fn observe_online_postflight(
+        &mut self,
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+        connection_peer: &ConnectionPeerIdentity,
+        report: &mut crate::handshake::OnlinePostflightV1,
+    ) {
+        report.endpoint_before = Some(self.journal.endpoint.revalidate());
+        let process_execution_id = match self.journal.endpoint.role() {
+            BrokerSessionDurableEndpointV1::Client => transcript.broker_process(),
+            BrokerSessionDurableEndpointV1::Broker => transcript.client_process(),
+        };
+        report.peer = Some(ObservedBrokerPeerExecutionV1::from_connection(
+            connection_peer, process_execution_id,
+        ).map(|_| ()));
+        report.endpoint_after = Some(self.journal.endpoint.revalidate());
+        report.named = Some(match self.journal.journal.as_ref() {
+            Some(journal) => self.journal.owner.validate_held(
+                journal, &self.journal.directory, &self.journal.name,
+            ),
+            None => Err(aos_sandbox::JournalError::ProtectedBoundary),
+        });
+
+        let mut operation = BrokerFloorOperationV1::begin(&mut self.journal);
+        let result = match operation.floor.as_mut() {
+            Some(floor) => floor.observe_online_postflight(operation.owner),
+            None => Err(tpm_floor::FloorErrorV1::Unavailable),
+        };
+        // Restore the SAME floor without clearing its existing failed state.
+        // finish's normal failure fencing remains unchanged and is not used
+        // to manufacture a fresh current-floor observation here.
+        report.floor = Some(result);
+        if let Some(floor) = operation.floor.take() {
+            operation.owner.floor = floor;
         }
-        let Some(prepared) = schema.prepared.as_ref() else {
-            return Ok(());
-        };
-        let admission = prepared.admission.as_ref().ok_or(BrokerSessionSecurityError::Currentness)?;
-        let sample = match crate::controller_ownership::sample_ownership_clock() {
-            Ok(sample) => sample,
-            Err(cause) => {
-                schema.clock_failure = Some(cause);
-                return Err(BrokerSessionSecurityError::Currentness);
-            }
-        };
-        if let Err(cause) = schema.authority.validate_effect_clock(&admission.effect, &sample) {
-            schema.first_failure.get_or_insert(cause);
-            return Err(BrokerSessionSecurityError::Currentness);
+        operation.complete = true;
+    }
+
+    /// Samples even a poisoned schema, then checks only the original effect/D.
+    #[cfg(feature = "online-nix")]
+    pub(crate) fn observe_online_postflight_clock(
+        &mut self,
+    ) -> Result<(), crate::handshake::OnlinePostflightClockErrorV1> {
+        use crate::handshake::OnlinePostflightClockErrorV1;
+
+        let sample = crate::controller_ownership::sample_ownership_clock()?;
+        let schema = self.journal.online_schema.as_ref()
+            .ok_or(OnlinePostflightClockErrorV1::Unavailable)?;
+        let prepared = schema.prepared.as_ref().or_else(|| {
+            schema.completed_preparations.iter().rev().find_map(Option::as_ref)
+        }).ok_or(OnlinePostflightClockErrorV1::Unavailable)?;
+        let admission = prepared.admission.as_ref()
+            .ok_or(OnlinePostflightClockErrorV1::Unavailable)?;
+        schema.authority.validate_effect_clock(&admission.effect, &sample)?;
+        if schema.first_failure.is_some() || schema.clock_failure.is_some() {
+            return Err(OnlinePostflightClockErrorV1::Unavailable);
         }
         Ok(())
+    }
+
+    /// Reacquires remaining suffix sizing at the actual pending Realize cut.
+    #[cfg(feature = "online-nix")]
+    pub(crate) fn require_online_existing_output_suffix(
+        &mut self,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+        connection_peer: &ConnectionPeerIdentity,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        if request.method() != BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2 {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        self.check_online_resolve_effect(request.request_id(), transcript, connection_peer)?;
+
+        // The whole owner is unavailable from BEFORE geometry through the last
+        // original clock observation. Its Drop restores only the same fence.
+        let mut operation = BrokerFloorOperationV1::begin(&mut self.journal);
+        let result = (|| {
+            operation.check_cold_deadline()?;
+            operation.owner.endpoint.revalidate()?;
+            operation.owner.validate_schema_only()?;
+            let schema = operation.owner.online_schema.as_ref()
+                .ok_or(BrokerSessionSecurityError::Currentness)?;
+            let prepared = schema.prepared.as_ref().ok_or(BrokerSessionSecurityError::Currentness)?;
+            let admission = prepared.admission.as_ref().ok_or(BrokerSessionSecurityError::Currentness)?;
+            if schema.phase_failed || schema.first_failure.is_some() || schema.clock_failure.is_some()
+                || schema.next_method != request.method()
+                || prepared.request_id != request.request_id()
+                || schema.native_transaction.is_some()
+                || schema.original_deadline != Some(request.deadline_boottime_nanoseconds())
+            {
+                return Err(BrokerSessionSecurityError::Currentness);
+            }
+            let traffic_key = protocol_key(BrokerSessionProtocolV1::Nix);
+            let fence_key = aos_sandbox_broker::BrokerAuthority::online_nix_fence_key(
+                admission.fence.assignment().sandbox().as_bytes(),
+            );
+            let effect_key = aos_sandbox_broker::BrokerAuthority::online_nix_effect_key(&prepared.request_id);
+            let old = schema.completed_preparations[0].as_ref()
+                .ok_or(BrokerSessionSecurityError::Currentness)?;
+            let completed_key = aos_sandbox_broker::BrokerAuthority::online_nix_effect_key(&old.request_id);
+            let journal = operation.owner.journal.as_ref()
+                .ok_or(BrokerSessionSecurityError::Currentness)?;
+            let stored = StoredProtocolHistoryV1::decode(
+                &traffic_key, journal.get(RecordNamespace::BrokerSessionTraffic, &traffic_key)
+                    .ok_or(BrokerSessionSecurityError::Currentness)?,
+            )?;
+            let history = stored.history_model()?;
+            let head = history.head().map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            if head.phase() != BrokerSessionDurablePhaseV1::RequestPrepared
+                || head.request_packet() != request.canonical_packet()
+                || head.method() != request.method() || head.request_id() != request.request_id()
+            {
+                return Err(BrokerSessionSecurityError::Currentness);
+            }
+            // These widths come from actual canonical retained rows, not from
+            // fabricated future signatures, effects, or transaction IDs.
+            let fence_bytes = prepared.fence.as_ref().ok_or(BrokerSessionSecurityError::Currentness)?.len();
+            let pending_bytes = prepared.effect.as_ref().ok_or(BrokerSessionSecurityError::Currentness)?.len();
+            let complete_bytes = journal.get(RecordNamespace::BrokerSessionTraffic, &completed_key)
+                .ok_or(BrokerSessionSecurityError::Currentness)?.len();
+            let compared = journal.compare_online_nix_main_suffix_capacity_v1(
+                &traffic_key, &fence_key, &effect_key, fence_bytes, pending_bytes, complete_bytes,
+            );
+            let widths = operation.retain_native_result(compared)?;
+            operation.floor.as_mut().ok_or(BrokerSessionSecurityError::Currentness)?
+                .check_online_existing_output_suffix(operation.owner, widths)
+                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
+            operation.owner.endpoint.revalidate()?;
+            operation.owner.check_online_admitted_clock()?;
+            operation.check_cold_deadline()
+        })();
+        operation.finish(result)
     }
 
     /// Releases only a completed native preparation after caller bookends.
@@ -1834,6 +1976,66 @@ impl ProtectedBrokerSessionOwnerV1 {
         if let Some(schema) = self.journal.online_schema.as_mut() {
             schema.native_transaction = None;
         }
+    }
+
+    /// Advances only the same Session's authentic successful native terminal.
+    ///
+    /// The two fixed slots retain prior admissions and original sealed bytes.
+    /// A failure before the infallible move permanently closes phase admission;
+    /// it does not clear a pending request or authorize a new deadline/retry.
+    #[cfg(feature = "online-nix")]
+    pub(crate) fn advance_online_nix_terminal(
+        &mut self,
+        previous: &AuthenticatedBrokerMethodRequestV1,
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+        connection_peer: &ConnectionPeerIdentity,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        let (index, next) = match previous.method() {
+            BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2 =>
+                (0, BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2),
+            BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2 =>
+                (1, BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2),
+            _ => return Err(BrokerSessionSecurityError::Currentness),
+        };
+        let schema = self.journal.online_schema.as_mut()
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        if schema.phase_failed || schema.next_method != previous.method()
+            || schema.native_transaction.is_some()
+            || schema.completed_preparations[index].is_some()
+            || schema.completed_preparations[..index].iter().any(Option::is_none)
+            || schema.original_deadline != Some(previous.deadline_boottime_nanoseconds())
+            || schema.prepared.as_ref().is_none_or(|prepared|
+                prepared.request_id != previous.request_id())
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        schema.phase_failed = true;
+
+        self.check_online_resolve_effect(previous.request_id(), transcript, connection_peer)?;
+        let retained = self.journal.read_optional(BrokerSessionProtocolV1::Nix)?
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let history = retained.history_model()?;
+        let head = history.head().map_err(|_| BrokerSessionSecurityError::Currentness)?;
+        if head.phase() != BrokerSessionDurablePhaseV1::Terminal
+            || head.method() != previous.method()
+            || head.request_id() != previous.request_id()
+            || head.request_packet() != previous.canonical_packet()
+            || head.request_semantic_binding() != previous.semantic_commitment()
+            || !successful_terminal(head)?
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        self.revalidate_transport(transcript, connection_peer)?;
+        self.check_online_admitted_clock()?;
+
+        // No fallible work follows the move. The actual fixed destination was
+        // checked while every old admission and sealed byte remained resident.
+        let schema = self.journal.online_schema.as_mut()
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        schema.completed_preparations[index] = schema.prepared.take();
+        schema.next_method = next;
+        schema.phase_failed = false;
+        Ok(())
     }
 
     #[cfg(feature = "online-nix")]
@@ -4342,6 +4544,35 @@ impl ProtectedBrokerSessionJournalV1 {
         self.journal
             .as_mut()
             .ok_or(BrokerSessionSecurityError::Currentness)
+    }
+
+    // The ordinary owner and the selected whole-Journal guard borrow this one
+    // clock recipe. Neither accepts a sample or creates a renewed deadline.
+    #[cfg(feature = "online-nix")]
+    fn check_online_admitted_clock(&mut self) -> Result<(), BrokerSessionSecurityError> {
+        let schema = self.online_schema.as_mut()
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        if schema.first_failure.is_some() || schema.clock_failure.is_some() {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        let Some(prepared) = schema.prepared.as_ref().or_else(|| {
+            schema.completed_preparations.iter().rev().find_map(Option::as_ref)
+        }) else {
+            return Ok(());
+        };
+        let admission = prepared.admission.as_ref().ok_or(BrokerSessionSecurityError::Currentness)?;
+        let sample = match crate::controller_ownership::sample_ownership_clock() {
+            Ok(sample) => sample,
+            Err(cause) => {
+                schema.clock_failure = Some(cause);
+                return Err(BrokerSessionSecurityError::Currentness);
+            }
+        };
+        if let Err(cause) = schema.authority.validate_effect_clock(&admission.effect, &sample) {
+            schema.first_failure.get_or_insert(cause);
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        Ok(())
     }
 
     /// Installs the first authenticated request under an exact absence CAS.

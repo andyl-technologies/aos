@@ -213,6 +213,8 @@ struct ControllerBrokerSessions {
     #[cfg(feature = "online-nix")]
     nix_resolve: Option<nix_environment::NixResolveAttemptV1>,
     #[cfg(feature = "online-nix")]
+    nix_existing_outputs: bool,
+    #[cfg(feature = "online-nix")]
     nix_input_source: Option<crate::cache_directory_source::ProjectSealedViewObjectSourceV1>,
     launch_image: Option<crate::production_startup::Pid1LaunchImageV1>,
     host: Option<ControllerHostPublication>,
@@ -506,6 +508,8 @@ fn run_ordinary_controller(
     let listener = bind_diagnostic_socket(&configuration)?;
     let sessions = Arc::new(Mutex::new(ControllerBrokerSessions {
         launch_image,
+        #[cfg(feature = "online-nix")]
+        nix_existing_outputs: configuration.nix_existing_outputs,
         ..ControllerBrokerSessions::default()
     }));
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -829,6 +833,8 @@ fn run_retained_controller(
     originals.sessions = Some(Arc::new(Mutex::new(ControllerBrokerSessions {
         launch_image: required!(parent.launch.take()),
         storage_terminal: Some(Arc::downgrade(&worker)),
+        #[cfg(feature = "online-nix")]
+        nix_existing_outputs: configuration.nix_existing_outputs,
         ..ControllerBrokerSessions::default()
     })));
     complete!(Sessions);
@@ -3462,13 +3468,25 @@ struct RuntimeConfiguration {
     git_coverage: bool,
     git_read_inspection: Option<(u32, u32)>,
     nix_start_admission: bool,
+    nix_existing_outputs: bool,
     issue_source_successor: bool,
     create_q04_policy_subgate: bool,
 }
 
 impl RuntimeConfiguration {
     fn from_process() -> Result<Self, ControllerRuntimeError> {
-        Self::from_arguments(std::env::args())
+        let mut configuration = Self::from_arguments(std::env::args())?;
+        if configuration.nix_start_admission {
+            // This fixed unit input selects a consumer disposition, not request
+            // authority. The original measured owner, floor and grants are still
+            // required independently at each exchange and physical readback.
+            configuration.nix_existing_outputs = match std::env::var_os("AOS_NIX_EXISTING_OUTPUTS") {
+                None => false,
+                Some(value) if value == "1" => true,
+                Some(_) => return Err(ControllerRuntimeError::InvalidArguments("online Nix mode")),
+            };
+        }
+        Ok(configuration)
     }
 
     fn from_arguments(
@@ -3570,6 +3588,7 @@ impl RuntimeConfiguration {
             git_coverage,
             git_read_inspection,
             nix_start_admission,
+            nix_existing_outputs: false,
             issue_source_successor,
             create_q04_policy_subgate,
         })
@@ -7909,6 +7928,7 @@ mod tests {
             git_coverage: false,
             git_read_inspection: None,
             nix_start_admission: false,
+            nix_existing_outputs: false,
             issue_source_successor: false,
             create_q04_policy_subgate: false,
         }

@@ -150,8 +150,47 @@ enum RetainedPhysicalBindingV1<'owner, 'origin, 'startup> {
         original: crate::nix_service::floor::OnlineOriginV1,
         profile: super::OnlineFloorProfileV1,
         attempt: BrokerPhysicalAttemptV1,
+        postflights: [Option<OnlinePhysicalPostflightV1>;
+            crate::handshake::ONLINE_POSTFLIGHT_PASSES_V1],
     },
     Host(RetainedHostPhysicalBindingV1<'owner, 'origin, 'startup>),
+}
+
+/// Keeps raw physical comparison causes separate from the actual action cause.
+#[cfg(feature = "online-nix")]
+struct OnlinePhysicalPostflightV1 {
+    locks: [Option<Result<(u64, u64, u32), aos_sandbox::JournalError>>; 2],
+    process: Option<Result<(), PhysicalTpmFailureV1>>,
+    alive: Option<Result<bool, PhysicalTpmFailureV1>>,
+    exited: Option<Result<bool, PhysicalTpmFailureV1>>,
+    identity: Option<Result<(), PhysicalTpmFailureV1>>,
+    image: Option<Result<(), FloorErrorV1>>,
+    startup: Option<Result<(), FloorErrorV1>>,
+    helper: Option<Result<(), FloorErrorV1>>,
+    service: Option<Result<(), FloorErrorV1>>,
+}
+
+#[cfg(feature = "online-nix")]
+impl OnlinePhysicalPostflightV1 {
+    const fn new() -> Self {
+        Self {
+            locks: [const { None }; 2], process: None, alive: None,
+            exited: None, identity: None, image: None, startup: None,
+            helper: None, service: None,
+        }
+    }
+
+    fn failed(&self) -> bool {
+        self.locks.iter().any(|result| result.as_ref().is_none_or(Result::is_err))
+            || self.process.as_ref().is_none_or(Result::is_err)
+            || !matches!(self.alive.as_ref(), Some(Ok(true)))
+            || !matches!(self.exited.as_ref(), Some(Ok(false)))
+            || self.identity.as_ref().is_none_or(Result::is_err)
+            || self.image.as_ref().is_none_or(Result::is_err)
+            || self.startup.as_ref().is_none_or(Result::is_err)
+            || self.helper.as_ref().is_none_or(Result::is_err)
+            || self.service.as_ref().is_none_or(Result::is_err)
+    }
 }
 
 /// Retains one actual carrier and its complete purpose-local owning binding.
@@ -622,11 +661,96 @@ impl RetainedPhysicalTpmOwnerV1<'static, 'static, 'static> {
                     cold_deadline: Some(deadline),
                     child_channel: None,
                 },
+                postflights: [const { None }; crate::handshake::ONLINE_POSTFLIGHT_PASSES_V1],
             },
             nonce: [0; 32],
             sequence: 1,
             poisoned: false,
         }
+    }
+
+    /// Observes available original online custody without TPM commands.
+    ///
+    /// Missing, stopped or fenced inner loans remain typed unavailable. Even
+    /// success is only comparison DATA and cannot make an effect guard Ready.
+    #[cfg(feature = "online-nix")]
+    pub(crate) fn observe_online_postflight(&mut self) -> Result<(), FloorErrorV1> {
+        let RetainedPhysicalBindingV1::Online {
+            image, original, attempt, postflights, ..
+        } = &mut self.binding else {
+            return Err(FloorErrorV1::Unavailable);
+        };
+        let slot = postflights.iter_mut().find(|slot| slot.is_none())
+            .ok_or(FloorErrorV1::Unavailable)?;
+        *slot = Some(OnlinePhysicalPostflightV1::new());
+        let Some(report) = slot.as_mut() else {
+            return Err(FloorErrorV1::Unavailable);
+        };
+
+        for (result, lock) in report.locks.iter_mut().zip(&attempt.locks) {
+            *result = Some(lock.identity());
+        }
+        report.process = Some((|| {
+            let pidfd = self.pidfd.as_ref().ok_or(FloorErrorV1::Unavailable)?;
+            let info = pidfd.info().map_err(PhysicalTpmFailureV1::Linux)?;
+            let credentials = info.credentials().ok_or(FloorErrorV1::Unavailable)?;
+            let child = self.child.as_ref().ok_or(FloorErrorV1::Unavailable)?;
+            let uid = rustix::process::geteuid().as_raw();
+            let gid = rustix::process::getegid().as_raw();
+            if info.parent_pid() != std::process::id() || info.pid() != child.0.id()
+                || [credentials.real_user_id(), credentials.effective_user_id(),
+                    credentials.saved_user_id(), credentials.filesystem_user_id()] != [uid; 4]
+                || [credentials.real_group_id(), credentials.effective_group_id(),
+                    credentials.saved_group_id(), credentials.filesystem_group_id()] != [gid; 4]
+            {
+                return Err(FloorErrorV1::Unavailable.into());
+            }
+            Ok(())
+        })());
+        report.alive = Some(match self.pidfd.as_ref() {
+            Some(pidfd) => pidfd.is_alive().map_err(PhysicalTpmFailureV1::Linux),
+            None => Err(FloorErrorV1::Unavailable.into()),
+        });
+        // This is the existing child's nonblocking try_wait observation, not
+        // another reaper, kill, wait-cleanup route or population Drain proof.
+        report.exited = Some(match self.child.as_mut() {
+            Some(child) => child.0.try_wait().map(|status| status.is_some())
+                .map_err(PhysicalTpmFailureV1::Child),
+            None => Err(FloorErrorV1::Unavailable.into()),
+        });
+        report.identity = Some((|| {
+            let pidfd = self.pidfd.as_ref().ok_or(FloorErrorV1::Unavailable)?;
+            let observations = attempt.observations.as_mut().ok_or(FloorErrorV1::Unavailable)?;
+            let identity = observations.observe_identity(pidfd).map_err(PhysicalTpmFailureV1::Linux)?;
+            if Some(identity) != self.identity {
+                return Err(FloorErrorV1::Unavailable.into());
+            }
+            Ok(())
+        })());
+        report.image = Some(match image.as_mut() {
+            Some(image) => image.revalidate(),
+            None => Err(FloorErrorV1::Unavailable),
+        });
+        report.startup = Some(if original.failure().is_none() {
+            original.recheck()
+        } else {
+            Err(FloorErrorV1::Unavailable)
+        });
+        report.helper = Some(match self.pidfd.as_ref() {
+            Some(pidfd) if original.failure().is_none() => original.require_helper(pidfd),
+            _ => Err(FloorErrorV1::Unavailable),
+        });
+        report.service = Some(if original.failure().is_none() {
+            original.require_service()
+        } else {
+            Err(FloorErrorV1::Unavailable)
+        });
+        if report.failed() || self.poisoned || self.channel.is_none()
+            || attempt.phase != BrokerPhysicalPhaseV1::Ready || attempt.first_failure.is_some()
+        {
+            return Err(FloorErrorV1::Unavailable);
+        }
+        Ok(())
     }
 
     /// Admits the closed online purpose through the same retained recipe.

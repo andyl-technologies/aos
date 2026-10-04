@@ -1137,7 +1137,12 @@ def negative_access() -> tuple[Access, ...]:
 OWNER_POSITIVE, OWNER_NEGATIVE, OWNER_TRANSITIONS = owner_policy.matrix(
     Access, Transition, accesses, DOMAINS,
 )
-POSITIVE_ACCESS = (*POSITIVE_ACCESS, *OWNER_POSITIVE)
+POSITIVE_ACCESS = (
+    *POSITIVE_ACCESS, *OWNER_POSITIVE,
+    *((Access("aos_nix_online_store_t", "fs_t", "filesystem", "associate"),)
+      if owner_policy.ONLINE_NIX_DOMAINS == owner_policy.ONLINE_NIX_KNOWN_DOMAINS
+      else ()),
+)
 TRANSITIONS = (*TRANSITIONS, *OWNER_TRANSITIONS)
 NEGATIVE_ACCESS = (*negative_access(), *OWNER_NEGATIVE)
 
@@ -1387,7 +1392,10 @@ def _check_online_nix_policy(setools: Any, policy: Any) -> list[str]:
         # Absence, not an empty positive query, proves the default recipe did
         # not accidentally retain the selected TE block. Do not emit new lines
         # into the old default evidence or infer selection from type presence.
-        for name in (*owner_policy.ONLINE_NIX_KNOWN_DOMAINS, "aos_nix_online_store_t"):
+        for name in (
+            *owner_policy.ONLINE_NIX_KNOWN_DOMAINS,
+            "aos_nix_online_store_t", "aos_nix_online_gcroots_t",
+        ):
             try:
                 policy.lookup_type(name)
             except setools.exception.InvalidType:

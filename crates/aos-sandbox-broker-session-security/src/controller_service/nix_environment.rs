@@ -84,6 +84,16 @@ pub(super) struct NixResolveAttemptV1 {
     pending: Option<DormantControllerClientHandshakeV1>,
     cold: Option<RetainedStorageColdOpenV1>,
     session: Option<DormantAuthenticatedBrokerSessionV1>,
+    resolve: NixRequestPhaseV1,
+    completed: bool,
+    first_failure: Option<NixResolveFailureV1>,
+    realize: Option<NixRequestPhaseV1>,
+    query: Option<NixRequestPhaseV1>,
+    existing_outputs: bool,
+}
+
+// Fixed result custody beside the same Session, not a retry destination.
+struct NixRequestPhaseV1 {
     draft: Option<NixResolveAuthorizationDraftV2>,
     signed: Option<Result<SignedBrokerPlan, ControllerBrokerPlanSignerError>>,
     request: Option<Result<(AuthenticatedBrokerMethodRequestV1, bool), BrokerSessionSecurityError>>,
@@ -104,21 +114,11 @@ pub(super) struct NixResolveAttemptV1 {
     admitted: Option<Result<ProtectedBrokerOutcomeAdmissionV1, BrokerSessionSecurityError>>,
     response: Option<Result<NixBuildResponseV2, aos_sandbox_protocol::ProtocolValidationError>>,
     native_outcome: Option<ProtectedBrokerOutcomeCommitResultV1>,
-    completed: bool,
-    first_failure: Option<NixResolveFailureV1>,
 }
 
-impl NixResolveAttemptV1 {
-    fn new(operation: OperationId, step: u32) -> Self {
+impl NixRequestPhaseV1 {
+    fn new() -> Self {
         Self {
-            operation,
-            step,
-            provision: None,
-            connected: None,
-            endpoint_custody: None,
-            pending: None,
-            cold: None,
-            session: None,
             draft: None,
             signed: None,
             request: None,
@@ -133,8 +133,27 @@ impl NixResolveAttemptV1 {
             admitted: None,
             response: None,
             native_outcome: None,
+        }
+    }
+}
+
+impl NixResolveAttemptV1 {
+    fn new(operation: OperationId, step: u32, existing_outputs: bool) -> Self {
+        Self {
+            operation,
+            step,
+            provision: None,
+            connected: None,
+            endpoint_custody: None,
+            pending: None,
+            cold: None,
+            session: None,
+            resolve: NixRequestPhaseV1::new(),
             completed: false,
             first_failure: None,
+            realize: None,
+            query: None,
+            existing_outputs,
         }
     }
 
@@ -191,7 +210,11 @@ impl NixResolveAttemptV1 {
         checked!(deadline.check());
         checked!(current.recheck());
         self.endpoint_custody = Some(checked!(ProtectedBrokerSessionClientV1::load(Path::new(ROOT))));
-        let hello = checked!(online_resolve_client_hello());
+        let hello = if self.existing_outputs {
+            checked!(crate::handshake::online_existing_output_client_hello())
+        } else {
+            checked!(online_resolve_client_hello())
+        };
         let custody = match self.endpoint_custody.take() {
             Some(custody) => custody,
             None => self.terminate(worker, NixResolveFailureV1::Closed),
@@ -256,6 +279,11 @@ pub(super) fn observe(
             return Err(EffectFailure::Permanent("original Nix Resolve attempt is closed".to_owned()));
         }
         if attempt.completed {
+            if attempt.existing_outputs {
+                return Err(EffectFailure::Retryable(
+                    "existing outputs and original GC roots are retained; Start still requires full build/publication completion".to_owned(),
+                ));
+            }
             return Err(EffectFailure::Retryable(
                 "Resolve50 is retained; Start still requires the actual Realize51 owner".to_owned(),
             ));
@@ -282,7 +310,8 @@ pub(super) fn resolve(
     if sessions.nix_resolve.is_some() {
         return Err(EffectFailure::Permanent("original Nix Resolve cannot be replaced or resent".to_owned()));
     }
-    sessions.nix_resolve = Some(NixResolveAttemptV1::new(operation, step));
+    let existing_outputs = sessions.nix_existing_outputs;
+    sessions.nix_resolve = Some(NixResolveAttemptV1::new(operation, step, existing_outputs));
     let super::ControllerBrokerSessions { nix_resolve, nix_input_source, .. } = &mut *sessions;
     let attempt = match nix_resolve.as_mut() {
         Some(attempt) => attempt,
@@ -313,11 +342,21 @@ pub(super) fn resolve(
     if let Err(cause) = exchange(attempt, &mut cut, signer) {
         attempt.terminate(&worker, cause);
     }
+    if attempt.existing_outputs {
+        if let Err(cause) = exchange_successors(attempt, &mut cut, signer) {
+            attempt.terminate(&worker, cause);
+        }
+    }
     attempt.completed = true;
     drop(cut);
     drop(current);
     // The actual Resolve result/floor stay in SAME sessions. Generic Effect
     // success would falsely complete Start without build/output owners.
+    if attempt.existing_outputs {
+        return Err(EffectFailure::Retryable(
+            "Resolve50, existing-output Realize51 and Query52 are retained; full build and current-generation publication remain required".to_owned(),
+        ));
+    }
     Err(EffectFailure::Retryable(
         "Resolve50 is durably retained; Realize51 and publication remain required".to_owned(),
     ))
@@ -329,14 +368,37 @@ fn exchange(
     signer: &ControllerBrokerPlanSignerV1,
 ) -> Result<(), NixResolveFailureV1> {
     let session = attempt.session.as_mut().ok_or(NixResolveFailureV1::Closed)?;
+    exchange_phase(session, &mut attempt.resolve, cut, signer, None)
+}
+
+fn exchange_phase(
+    session: &mut DormantAuthenticatedBrokerSessionV1,
+    phase: &mut NixRequestPhaseV1,
+    cut: &mut NixLocalInputCutV2<'_, '_>,
+    signer: &ControllerBrokerPlanSignerV1,
+    predecessor: Option<(&ValidatedNixBuildRequestV2, &NixBuildResponseV2)>,
+) -> Result<(), NixResolveFailureV1> {
+    let method = match predecessor {
+        None => RESOLVE,
+        Some((previous, _)) => match previous.method() {
+            RESOLVE => BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2,
+            BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2 =>
+                BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2,
+            _ => return Err(NixResolveFailureV1::Closed),
+        },
+    };
     let (request_id, _, maximum, _, _) = session.client_request_coordinates()?;
     if maximum < aos_sandbox_protocol::nix_build::NIX_RESPONSE_MAXIMUM_BYTES_V2 as u32 {
         return Err(NixResolveFailureV1::Closed);
     }
-    cut.retain_authorization_into(request_id, &mut attempt.draft)?;
-    let draft = attempt.draft.as_ref().ok_or(NixResolveFailureV1::Closed)?;
-    attempt.signed = Some(signer.sign_plan(draft.plan().clone(), draft.observed().wall_seconds()));
-    let signed = match attempt.signed.as_ref() {
+    if let Some((previous, response)) = predecessor {
+        cut.retain_successor_authorization_into(request_id, previous, response, &mut phase.draft)?;
+    } else {
+        cut.retain_authorization_into(request_id, &mut phase.draft)?;
+    }
+    let draft = phase.draft.as_ref().ok_or(NixResolveFailureV1::Closed)?;
+    phase.signed = Some(signer.sign_plan(draft.plan().clone(), draft.observed().wall_seconds()));
+    let signed = match phase.signed.as_ref() {
         Some(Ok(signed)) => signed,
         _ => return Err(NixResolveFailureV1::Signer),
     };
@@ -357,86 +419,145 @@ fn exchange(
     };
     let original_d = cut.original_deadline_boottime_nanoseconds();
     let body = draft.request_bytes().to_vec();
-    attempt.request = Some(session.prepare_client_request(BrokerRequestEnvelope {
-        method: RESOLVE.into(), body, authorization: Some(artifacts).into(), ..Default::default()
-    }, RESOLVE, 0, request_id, original_d,
+    phase.request = Some(session.prepare_client_request(BrokerRequestEnvelope {
+        method: method.into(), body, authorization: Some(artifacts).into(), ..Default::default()
+    }, method, 0, request_id, original_d,
         aos_sandbox_protocol::nix_build::NIX_RESPONSE_MAXIMUM_BYTES_V2 as u32));
-    let (request, initialize) = match attempt.request.as_ref() {
+    let (request, initialize) = match phase.request.as_ref() {
         Some(Ok(result)) => result,
         _ => return Err(NixResolveFailureV1::Native),
     };
     cut.recheck()?;
-    session.decode_online_request_into(request, &mut attempt.checked)?;
-    let checked = match attempt.checked.as_ref() {
+    session.decode_online_request_into(request, &mut phase.checked)?;
+    let checked = match phase.checked.as_ref() {
         Some(Ok(checked)) => checked,
         _ => return Err(NixResolveFailureV1::Closed),
     };
     session.retain_online_admission(request, checked)?;
     cut.recheck()?;
-    session.retain_online_request_commit_into(request, *initialize, &mut attempt.native_request)?;
+    session.retain_online_request_commit_into(request, *initialize, &mut phase.native_request)?;
     cut.recheck()?;
     session.finish_online_native_step(request)?;
     crate::dormant_handshake::wait_for_handshake_readiness(session.as_fd()?, true, original_d)?;
     cut.recheck()?;
-    attempt.dispatch_started = true;
-    session.send_online_packet(request, request.canonical_packet(), &mut attempt.send_failure)?;
+    phase.dispatch_started = true;
+    session.send_online_packet(request, request.canonical_packet(), &mut phase.send_failure)?;
     cut.recheck()?;
     loop {
         session.require_online_request(request)?;
         crate::dormant_handshake::wait_for_handshake_readiness(session.as_fd()?, false, original_d)?;
         cut.recheck()?;
-        if session.receive_online_record_into(&mut attempt.record, &mut attempt.receive_failure)? {
+        if session.receive_online_record_into(&mut phase.record, &mut phase.receive_failure)? {
             break;
         }
         cut.recheck()?;
     }
     cut.recheck()?;
-    attempt.canonical = Some(aos_sandbox_broker_session_protocol::decode_canonical_response_v1(
-        attempt.record.as_ref().ok_or(NixResolveFailureV1::Closed)?.payload(),
+    phase.canonical = Some(aos_sandbox_broker_session_protocol::decode_canonical_response_v1(
+        phase.record.as_ref().ok_or(NixResolveFailureV1::Closed)?.payload(),
     ));
-    let canonical = match attempt.canonical.as_ref() {
+    let canonical = match phase.canonical.as_ref() {
         Some(Ok(canonical)) => canonical,
         _ => return Err(NixResolveFailureV1::Closed),
     };
-    attempt.gate = Some(session.reopen_broker_outcome(request));
+    phase.gate = Some(session.reopen_broker_outcome(request));
     cut.recheck()?;
-    let gate = match attempt.gate.take() {
+    let gate = match phase.gate.take() {
         Some(Ok((gate, _context))) => gate,
         original => {
-            attempt.gate = original;
+            phase.gate = original;
             return Err(NixResolveFailureV1::Native);
         }
     };
-    attempt.admitted = Some(gate.admit_outcome(canonical));
-    if attempt.admitted.as_ref().is_none_or(Result::is_err) {
+    phase.admitted = Some(gate.admit_outcome(canonical));
+    if phase.admitted.as_ref().is_none_or(Result::is_err) {
         return Err(NixResolveFailureV1::Native);
     }
-    attempt.response = Some(aos_sandbox_protocol::nix_build::decode_nix_build_response_v2(
-        &canonical.message().body, checked, RESOLVE,
+    phase.response = Some(aos_sandbox_protocol::nix_build::decode_nix_build_response_v2(
+        &canonical.message().body, checked, method,
     ));
-    let response = match attempt.response.as_ref() {
+    let response = match phase.response.as_ref() {
         Some(Ok(response)) => response,
         _ => return Err(NixResolveFailureV1::Closed),
     };
-    if response.recipe_admission != cut.recipe_artifact().canonical_bytes() {
-        return Err(NixResolveFailureV1::Closed);
+    if method == RESOLVE {
+        if response.recipe_admission != cut.recipe_artifact().canonical_bytes() {
+            return Err(NixResolveFailureV1::Closed);
+        }
+    } else {
+        let observation = aos_sandbox_protocol::nix_build::decode_nix_build_observation_v2(
+            &response.observation, checked,
+        )?;
+        let recipe = cut.recipe_artifact().recipe();
+        if observation.inputs != recipe.inputs || observation.outputs != recipe.outputs {
+            return Err(NixResolveFailureV1::Closed);
+        }
+        if let Some((previous, prior_response)) = predecessor {
+            if previous.method() == BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2 {
+                let original = aos_sandbox_protocol::nix_build::decode_nix_build_observation_v2(
+                    &prior_response.observation, previous,
+                )?;
+                if observation.attempt != original.attempt
+                    || observation.retained_roots != original.retained_roots
+                {
+                    return Err(NixResolveFailureV1::Closed);
+                }
+            }
+        }
     }
     cut.recheck()?;
     session.require_online_request(request)?;
-    let pending = match attempt.admitted.take() {
+    let pending = match phase.admitted.take() {
         Some(Ok(ProtectedBrokerOutcomeAdmissionV1::New { advancement })) => advancement,
         original => {
-            attempt.admitted = original;
+            phase.admitted = original;
             return Err(NixResolveFailureV1::Native);
         }
     };
-    attempt.native_outcome = Some(session.commit_broker_outcome(pending));
-    if !matches!(attempt.native_outcome.as_ref(), Some(ProtectedBrokerOutcomeCommitResultV1::Committed(_))) {
+    phase.native_outcome = Some(session.commit_broker_outcome(pending));
+    if !matches!(phase.native_outcome.as_ref(), Some(ProtectedBrokerOutcomeCommitResultV1::Committed(_))) {
         return Err(NixResolveFailureV1::Native);
     }
     cut.recheck()?;
     session.finish_online_native_step(request)?;
     cut.recheck()?;
     session.require_online_transport(request)?;
+    Ok(())
+}
+
+fn exchange_successors(
+    attempt: &mut NixResolveAttemptV1,
+    cut: &mut NixLocalInputCutV2<'_, '_>,
+    signer: &ControllerBrokerPlanSignerV1,
+) -> Result<(), NixResolveFailureV1> {
+    if attempt.realize.is_some() || attempt.query.is_some() {
+        return Err(NixResolveFailureV1::Closed);
+    }
+    // Occupy the fixed destinations before their first current/native crossing.
+    // Prior full Results remain resident throughout both successor exchanges.
+    attempt.realize = Some(NixRequestPhaseV1::new());
+    let session = attempt.session.as_mut().ok_or(NixResolveFailureV1::Closed)?;
+    let (previous, _) = attempt.resolve.request.as_ref()
+        .and_then(|result| result.as_ref().ok()).ok_or(NixResolveFailureV1::Closed)?;
+    let checked = attempt.resolve.checked.as_ref()
+        .and_then(|result| result.as_ref().ok()).ok_or(NixResolveFailureV1::Closed)?;
+    let response = attempt.resolve.response.as_ref()
+        .and_then(|result| result.as_ref().ok()).ok_or(NixResolveFailureV1::Closed)?;
+    session.advance_online_nix_terminal(previous)?;
+    cut.recheck()?;
+    let realize = attempt.realize.as_mut().ok_or(NixResolveFailureV1::Closed)?;
+    exchange_phase(session, realize, cut, signer, Some((checked, response)))?;
+
+    attempt.query = Some(NixRequestPhaseV1::new());
+    let (previous, _) = realize.request.as_ref()
+        .and_then(|result| result.as_ref().ok()).ok_or(NixResolveFailureV1::Closed)?;
+    let checked = realize.checked.as_ref()
+        .and_then(|result| result.as_ref().ok()).ok_or(NixResolveFailureV1::Closed)?;
+    let response = realize.response.as_ref()
+        .and_then(|result| result.as_ref().ok()).ok_or(NixResolveFailureV1::Closed)?;
+    session.advance_online_nix_terminal(previous)?;
+    cut.recheck()?;
+    let query = attempt.query.as_mut().ok_or(NixResolveFailureV1::Closed)?;
+    exchange_phase(session, query, cut, signer, Some((checked, response)))?;
     Ok(())
 }

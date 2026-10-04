@@ -256,7 +256,20 @@ impl BrokerSidecarCustodyV1 {
     }
 
     pub(crate) fn validate_held(&self) -> Result<(), FloorErrorV1> {
-        let result = match &self.custody {
+        let result = self.compare_held_original();
+        result.map_err(|_| FloorErrorV1::Unavailable)
+    }
+
+    /// Returns the actual native cause only to the selected negative observer.
+    #[cfg(feature = "online-nix")]
+    pub(crate) fn validate_held_native(&self) -> Result<(), aos_sandbox::JournalError> {
+        self.compare_held_original()
+    }
+
+    // Both facades use this SAME original held/named comparator. The ordinary
+    // facade retains its original coarse error and native-result drop boundary.
+    fn compare_held_original(&self) -> Result<(), aos_sandbox::JournalError> {
+        match &self.custody {
             StoreCustodyV1::Production { owner, directory } => {
                 owner.validate_held(&self.journal, directory, self.name.as_str())
             }
@@ -264,8 +277,7 @@ impl BrokerSidecarCustodyV1 {
             StoreCustodyV1::Fixture { uid, directory } => self
                 .journal
                 .validate_held_protected_at_uid_for_test(directory, NAME, *uid),
-        };
-        result.map_err(|_| FloorErrorV1::Unavailable)
+        }
     }
 
     pub(crate) fn journal(&self) -> &Journal {
@@ -282,6 +294,16 @@ impl BrokerSidecarCustodyV1 {
 }
 
 impl FloorStoreV1 {
+    #[cfg(feature = "online-nix")]
+    pub(super) fn check_online_suffix_capacity(
+        &mut self,
+        profile: OnlineFloorProfileV1,
+        prepared_widths: [usize; 3],
+        native_failure: &mut Option<JournalError>,
+    ) -> Result<(), FloorErrorV1> {
+        self.inner.check_online_suffix_capacity(profile, prepared_widths, native_failure)
+    }
+
     pub(super) fn read_data(&mut self, profile: FloorProfileDataV1) -> Result<StoredFloorDataV1, FloorErrorV1> {
         self.inner.read_data(profile)
     }
@@ -358,6 +380,11 @@ impl FloorStoreV1 {
 
     pub(super) fn validate_held(&self) -> Result<(), FloorErrorV1> {
         self.inner.validate_held()
+    }
+
+    #[cfg(feature = "online-nix")]
+    pub(super) fn validate_held_native(&self) -> Result<(), aos_sandbox::JournalError> {
+        self.inner.validate_held_native()
     }
 
     pub(super) fn read(&mut self, profile: FloorProfileV1) -> Result<StoredFloorV1, FloorErrorV1> {

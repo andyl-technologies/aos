@@ -558,7 +558,12 @@ impl BrokerEffectIntentV1 {
                     && self.maximum_descriptors == 4
                     && self.maximum_request_bytes as usize <= HOST_WORKER_BODY_MAXIMUM_BYTES
             }
-            (BrokerVerb::NixResolveProtectedRecipe, BrokerGrantTarget::Resource(_)) => {
+            (
+                BrokerVerb::NixResolveProtectedRecipe
+                | BrokerVerb::NixRealizeAuthorizedDerivation
+                | BrokerVerb::NixQueryAuthorizedPathInfo,
+                BrokerGrantTarget::Resource(_),
+            ) => {
                 self.maximum_descriptors == 0
                     && self.maximum_request_bytes as usize
                         <= aos_sandbox_protocol::nix_build::NIX_REQUEST_MAXIMUM_BYTES_V2
@@ -1406,6 +1411,8 @@ const fn verb_code(domain: BrokerDomain, verb: BrokerVerb) -> u8 {
         (BrokerDomain::Storage, BrokerVerb::StorageAtomicSnapshot) => 10,
         (BrokerDomain::Storage, BrokerVerb::StoragePopulateGuestRoot) => 11,
         (BrokerDomain::Nix, BrokerVerb::NixResolveProtectedRecipe) => 1,
+        (BrokerDomain::Nix, BrokerVerb::NixRealizeAuthorizedDerivation) => 2,
+        (BrokerDomain::Nix, BrokerVerb::NixQueryAuthorizedPathInfo) => 3,
         _ => 0,
     }
 }
@@ -1452,6 +1459,8 @@ fn decode_verb(domain: BrokerDomain, code: u8) -> Result<BrokerVerb, Authorizati
         (BrokerDomain::Network, 4) => Ok(BrokerVerb::NetworkDisarm),
         (BrokerDomain::Network, 5) => Ok(BrokerVerb::NetworkDestroy),
         (BrokerDomain::Nix, 1) => Ok(BrokerVerb::NixResolveProtectedRecipe),
+        (BrokerDomain::Nix, 2) => Ok(BrokerVerb::NixRealizeAuthorizedDerivation),
+        (BrokerDomain::Nix, 3) => Ok(BrokerVerb::NixQueryAuthorizedPathInfo),
         _ => Err(AuthorizationRecordError::InvalidPayload),
     }
 }
@@ -1545,6 +1554,23 @@ mod tests {
     use super::*;
     use aos_sandbox_core::InvalidBrokerAuthorizationPlan;
     use sha2::Digest as _;
+
+    #[test]
+    fn online_nix_successor_codes_are_closed_and_keep_resolve_one() {
+        let cases = [
+            (BrokerVerb::NixResolveProtectedRecipe, 1),
+            (BrokerVerb::NixRealizeAuthorizedDerivation, 2),
+            (BrokerVerb::NixQueryAuthorizedPathInfo, 3),
+        ];
+
+        for (verb, code) in cases {
+            assert_eq!(verb_code(BrokerDomain::Nix, verb), code);
+            assert_eq!(decode_verb(BrokerDomain::Nix, code).unwrap(), verb);
+        }
+        for unsupported in [0, 4, u8::MAX] {
+            assert!(decode_verb(BrokerDomain::Nix, unsupported).is_err());
+        }
+    }
 
     #[test]
     fn online_nix_native_widths_use_the_original_encoders() {

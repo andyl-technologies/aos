@@ -1080,7 +1080,10 @@ fn is_online_nix_resolve_admission(request: &AdmissionRequest<'_>) -> bool {
     request.audience == BrokerAudience::Nix
         && request.protocol == ProtocolId::NixBuildBroker
         && request.protocol_version == ProtocolVersion::new(1, 0)
-        && request.verb == BrokerVerb::NixResolveProtectedRecipe
+        && matches!(request.verb,
+            BrokerVerb::NixResolveProtectedRecipe
+                | BrokerVerb::NixRealizeAuthorizedDerivation
+                | BrokerVerb::NixQueryAuthorizedPathInfo)
         && matches!(request.target, BrokerGrantTarget::Resource(_))
         && request.descriptor_count == 0
         && request.request_body.len()

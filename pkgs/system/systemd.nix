@@ -138,6 +138,8 @@ in
     #          and deliver its credential mount with strict ownership and labels.
     #   0021 — Loan PID1's current image only to the two sealed own-unit
     #          Mount/Source principals; no generic executable or unit selector.
+    #   0022 — Pin every fixed online Nix command to the same physical EROFS
+    #          fragment, excluding mutable aliases, environment and overrides.
     patches = [
       ./patches/0001-remove-usr-lib-unit-lookup-paths.patch
       ./patches/0002-add-prefix-to-conf-paths.patch
@@ -161,6 +163,7 @@ in
       ./patches/0020-bounded-controller-publisher-policy-credential.patch
       ./patches/0021-fixed-source-launcher-image-loan.patch
       ./patches/0021-nspawn-host-readiness-report.patch
+      ./patches/0022-pin-online-nix-unit-fragment-before-spawn.patch
     ];
 
     buildDeps = [

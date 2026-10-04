@@ -126,7 +126,7 @@ class FakePolicy:
 
     def lookup_type(self, domain: str) -> FakeType:
         if domain in (*effective_policy.owner_policy.ONLINE_NIX_KNOWN_DOMAINS,
-                      "aos_nix_online_store_t"):
+                      "aos_nix_online_store_t", "aos_nix_online_gcroots_t"):
             raise FakeInvalidType(domain)
         return FakeType(domain, domain in self.permissive)
 

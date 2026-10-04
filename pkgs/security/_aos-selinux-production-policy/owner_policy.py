@@ -775,6 +775,36 @@ def _online_nix_matrix(Access, Transition, accesses, all_roles):
     for foreign in all_roles:
         if foreign not in (owner, reader):
             negative.extend(accesses(foreign, store, "file", (*file_read, *file_mutate)))
+
+    # This separate SID is delivered only on the two fixed GC-root subtrees.
+    # No Store/DB mutation cell above changes, and no role can provision roots.
+    gcroots = "aos_nix_online_gcroots_t"
+    positive.append(Access(gcroots, "fs_t", "filesystem", "associate"))
+    for principal in (owner, reader):
+        positive.extend(accesses(principal, gcroots, "dir", (*file_read, "search")))
+        positive.extend(accesses(principal, gcroots, "lnk_file", ("getattr", "read")))
+        negative.extend(accesses(principal, gcroots, "file", (
+            *file_read, *file_mutate, "map", "execute", "execute_no_trans",
+            "relabelfrom", "relabelto",
+        )))
+        negative.extend(accesses(principal, gcroots, "dir", (
+            "create", "rename", "rmdir", "setattr", "mounton", "relabelfrom", "relabelto",
+        )))
+        negative.extend(accesses(principal, gcroots, "lnk_file", (
+            "setattr", "write", "relabelfrom", "relabelto",
+        )))
+    positive.extend(accesses(reader, gcroots, "dir", ("add_name", "remove_name", "write")))
+    positive.extend(accesses(reader, gcroots, "lnk_file", ("create", "rename", "unlink")))
+    transitions.append(Transition(reader, gcroots, "lnk_file", gcroots))
+    negative.extend(accesses(owner, gcroots, "dir", ("add_name", "remove_name", "write")))
+    negative.extend(accesses(owner, gcroots, "lnk_file", ("create", "rename", "unlink")))
+    for foreign in all_roles:
+        if foreign not in (owner, reader):
+            negative.extend(accesses(foreign, gcroots, "dir", (*file_read, "search", *dir_mutate)))
+            negative.extend(accesses(foreign, gcroots, "lnk_file", (
+                "getattr", "read", "create", "rename", "setattr", "unlink", "write",
+            )))
+            negative.extend(accesses(foreign, gcroots, "file", (*file_read, *file_mutate)))
     for principal in (controller, owner):
         negative.append(Access(principal, "aos_method46_tpm_device_t", "chr_file", "open"))
     for foreign in all_roles:

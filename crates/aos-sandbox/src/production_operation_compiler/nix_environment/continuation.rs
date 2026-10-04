@@ -11,7 +11,7 @@ use aos_sandbox_core::RawPairedClockSample;
 use buffa::Message as _;
 use aos_sandbox_ownership_protocol::SignedOwnershipLease;
 use aos_proto::aos::sandbox::local::v1::{
-    AssignmentFence, Audience, NixBuildRequestV2, RequestHeader,
+    AssignmentFence, Audience, BrokerMethod, NixBuildRequestV2, NixBuildResponseV2, RequestHeader,
 };
 
 use super::*;
@@ -95,9 +95,17 @@ pub struct CurrentRetainedNixStartV2<'current> {
     clock: ControllerProtectedClockV1,
     decision: CurrentCapabilityDecisionV1,
     failed: bool,
+    successor: Option<OriginalNixSuccessorV2>,
 }
 
-/// Retains one fresh unsigned Resolve50 plan beside its original signed lease.
+// These are comparison DATA derived from the same actual Resolve response.
+// Later drafts compare them; they cannot replace the original predecessor.
+struct OriginalNixSuccessorV2 {
+    resolve_observation: [u8; 32],
+    build_transaction: [u8; 32],
+}
+
+/// Retains one fresh unsigned online Nix plan beside its original signed lease.
 ///
 /// This historical draft still requires the installed Controller signer,
 /// authenticated Session, receiver admission and atomic physical-floor commit.
@@ -192,7 +200,7 @@ impl ControllerNixStartRecipeSelectorV2 {
 
         let mut owner = CurrentRetainedNixStartV2 {
             selector: self, journal, expected_plan, carrier, recipe, target, clock, decision,
-            failed: false,
+            failed: false, successor: None,
         };
         owner.recheck()?;
         Ok(owner)
@@ -257,6 +265,166 @@ impl ControllerNixStartRecipeSelectorV2 {
 }
 
 impl CurrentRetainedNixStartV2<'_> {
+    /// Forms the existing-output Realize51 body beside the original Resolve.
+    ///
+    /// The predecessor is comparison DATA. The installed caller must continue
+    /// holding its actual Session and confirmed native terminal; this method
+    /// supplies neither of those owners. The transaction excludes all future
+    /// request, outcome, root and journal-head fields.
+    ///
+    /// # Errors
+    /// Rejects a closed or changed Start, a substituted predecessor/response,
+    /// an invalid identity, an expired original cutoff or canonical encoding.
+    pub fn prepare_realize_request_v2(
+        &mut self,
+        request_id: [u8; 16],
+        predecessor: &aos_sandbox_protocol::nix_build::ValidatedNixBuildRequestV2,
+        response: &NixBuildResponseV2,
+    ) -> Result<NixBuildRequestV2, NixStartContinuationErrorV2> {
+        if predecessor.method() != BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2 {
+            self.failed = true;
+            return Err(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid).into());
+        }
+        self.prepare_successor_request(request_id, predecessor, response)
+    }
+
+    /// Forms Query52 against the exact original Realize51 observation.
+    ///
+    /// It does not replace the original realization or renew its deadline.
+    /// Physical roots and the native terminal remain the caller's obligations.
+    ///
+    /// # Errors
+    /// Rejects a closed or changed Start, a substituted predecessor/response,
+    /// an invalid identity, an expired original cutoff or canonical encoding.
+    pub fn prepare_query_request_v2(
+        &mut self,
+        request_id: [u8; 16],
+        predecessor: &aos_sandbox_protocol::nix_build::ValidatedNixBuildRequestV2,
+        response: &NixBuildResponseV2,
+    ) -> Result<NixBuildRequestV2, NixStartContinuationErrorV2> {
+        if predecessor.method() != BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2 {
+            self.failed = true;
+            return Err(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid).into());
+        }
+        self.prepare_successor_request(request_id, predecessor, response)
+    }
+
+    fn prepare_successor_request(
+        &mut self,
+        request_id: [u8; 16],
+        predecessor: &aos_sandbox_protocol::nix_build::ValidatedNixBuildRequestV2,
+        response: &NixBuildResponseV2,
+    ) -> Result<NixBuildRequestV2, NixStartContinuationErrorV2> {
+        if self.failed || request_id == [0; 16] || request_id == [0xff; 16] {
+            return Err(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid).into());
+        }
+        self.failed = true;
+        self.recheck_inner()?;
+        let body = self.original_successor_request(request_id, predecessor, response)?;
+        self.recheck_inner()?;
+        self.failed = false;
+        Ok(body)
+    }
+
+    fn original_successor_request(
+        &mut self,
+        request_id: [u8; 16],
+        predecessor: &aos_sandbox_protocol::nix_build::ValidatedNixBuildRequestV2,
+        response: &NixBuildResponseV2,
+    ) -> Result<NixBuildRequestV2, NixStartContinuationErrorV2> {
+        let prior = predecessor.wire();
+        let prior_id = predecessor.header().request_id();
+        let mut expected = self.original_resolve_request_v2(*prior_id)?;
+        expected.build_transaction_digest = prior.build_transaction_digest.clone();
+        expected.original_realization_digest = prior.original_realization_digest.clone();
+        let resolve = predecessor.method() == BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2;
+        if prior != &expected
+            || if resolve { response.recipe_admission != self.recipe.canonical_bytes() }
+                else { !response.recipe_admission.is_empty() }
+        {
+            return Err(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid).into());
+        }
+        let (observation, build_transaction, original_observation) =
+            Self::existing_output_successor_coordinates_v2(predecessor, response)
+                .map_err(ContinuationFailureV2::from)?;
+        if observation.inputs != self.recipe.recipe().inputs
+            || !resolve && observation.outputs != self.recipe.recipe().outputs
+        {
+            return Err(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid).into());
+        }
+
+        let mut body = self.original_resolve_request_v2(request_id)?;
+        match predecessor.method() {
+            BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2 => {
+                let resolve_observation = original_observation;
+                if let Some(original) = self.successor.as_ref() {
+                    if original.build_transaction != build_transaction
+                        || original.resolve_observation != resolve_observation
+                    {
+                        return Err(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid).into());
+                    }
+                } else {
+                    self.successor = Some(OriginalNixSuccessorV2 {
+                        resolve_observation, build_transaction,
+                    });
+                }
+                body.build_transaction_digest = build_transaction.to_vec();
+            }
+            BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2 => {
+                let original = self.successor.as_ref().ok_or(
+                    ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid),
+                )?;
+                if prior.build_transaction_digest.as_slice() != original.build_transaction {
+                    return Err(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid).into());
+                }
+                body.build_transaction_digest = original.build_transaction.to_vec();
+                body.original_realization_digest = original_observation.to_vec();
+            }
+            _ => return Err(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid).into()),
+        }
+        Ok(body)
+    }
+
+    /// Computes closed successor comparison DATA from the exact prior response.
+    ///
+    /// Both installed owners use this same canonical decoder and digest recipe.
+    /// The caller must separately hold the authentic native terminal, current
+    /// Session and physical originals; these returned coordinates grant none.
+    ///
+    /// # Errors
+    /// Rejects an unsupported predecessor or a noncanonical/mismatched response.
+    #[doc(hidden)]
+    pub fn existing_output_successor_coordinates_v2(
+        predecessor: &aos_sandbox_protocol::nix_build::ValidatedNixBuildRequestV2,
+        response: &NixBuildResponseV2,
+    ) -> Result<(
+        aos_sandbox_protocol::nix_build::NixBuildObservationV2,
+        [u8; 32],
+        [u8; 32],
+    ), aos_sandbox_protocol::ProtocolValidationError> {
+        use aos_sandbox_protocol::ProtocolValidationError;
+
+        aos_sandbox_protocol::nix_build::decode_nix_build_response_v2(
+            &response.encode_to_vec(), predecessor, predecessor.method(),
+        )?;
+        let observation = aos_sandbox_protocol::nix_build::decode_nix_build_observation_v2(
+            &response.observation, predecessor,
+        )?;
+        let transaction = match predecessor.method() {
+            BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2 => Sha256::new()
+                .chain_update(b"aos.sandbox.nix.existing-output-transaction.v2\0")
+                .chain_update(&predecessor.wire().operation_id)
+                .chain_update(predecessor.commitment())
+                .chain_update(Sha256::digest(response.encode_to_vec()))
+                .finalize().into(),
+            BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2 => predecessor.wire()
+                .build_transaction_digest.as_slice().try_into()
+                .map_err(|_| ProtocolValidationError::InvalidField("build_transaction_digest"))?,
+            _ => return Err(ProtocolValidationError::InvalidField("Nix successor predecessor")),
+        };
+        Ok((observation, transaction, Sha256::digest(&response.observation).into()))
+    }
+
     /// Computes purpose-separated input and predicted-output comparison data.
     ///
     /// Both fixed online owners use this same canonical typed serialization.
@@ -379,6 +547,43 @@ impl CurrentRetainedNixStartV2<'_> {
         request: &NixBuildRequestV2,
         target: &mut Option<NixResolveAuthorizationDraftV2>,
     ) -> Result<(), NixStartContinuationErrorV2> {
+        self.retain_authorization_into(
+            request, BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2, None, target,
+        )
+    }
+
+    /// Retains an independently granted successor draft under the same Start.
+    ///
+    /// The actual predecessor request and response stay borrowed from the
+    /// caller's resident completed phase. They are not a native commit proof.
+    ///
+    /// # Errors
+    /// Rejects substituted phase/body data, occupied custody, changed originals
+    /// and expired original authorization. A failure permanently fences use.
+    pub fn retain_successor_authorization_into(
+        &mut self,
+        request: &NixBuildRequestV2,
+        predecessor: &aos_sandbox_protocol::nix_build::ValidatedNixBuildRequestV2,
+        response: &NixBuildResponseV2,
+        target: &mut Option<NixResolveAuthorizationDraftV2>,
+    ) -> Result<(), NixStartContinuationErrorV2> {
+        let method = match predecessor.method() {
+            BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2 =>
+                BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2,
+            BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2 =>
+                BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2,
+            _ => return Err(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid).into()),
+        };
+        self.retain_authorization_into(request, method, Some((predecessor, response)), target)
+    }
+
+    fn retain_authorization_into(
+        &mut self,
+        request: &NixBuildRequestV2,
+        method: BrokerMethod,
+        predecessor: Option<(&aos_sandbox_protocol::nix_build::ValidatedNixBuildRequestV2, &NixBuildResponseV2)>,
+        target: &mut Option<NixResolveAuthorizationDraftV2>,
+    ) -> Result<(), NixStartContinuationErrorV2> {
         if self.failed {
             return Err(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid).into());
         }
@@ -392,10 +597,15 @@ impl CurrentRetainedNixStartV2<'_> {
             .ok_or(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid))?
             .request_id.as_slice().try_into()
             .map_err(|_| ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid))?;
-        if request_id == [0; 16]
-            || request_id == [0xff; 16]
-            || request != &self.original_resolve_request_v2(request_id)?
-        {
+        // Preserve the old Resolve short circuit before its body allocation.
+        if request_id == [0; 16] || request_id == [0xff; 16] {
+            return Err(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid).into());
+        }
+        let expected = match predecessor {
+            None => self.original_resolve_request_v2(request_id)?,
+            Some((prior, response)) => self.original_successor_request(request_id, prior, response)?,
+        };
+        if request != &expected {
             return Err(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid).into());
         }
         let bytes = request.encode_to_vec();
@@ -409,7 +619,7 @@ impl CurrentRetainedNixStartV2<'_> {
         let identities = self.selector.pins.identities;
         let checked = aos_sandbox_protocol::nix_build::decode_nix_build_request_v2(
             &bytes,
-            aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2,
+            method,
             aos_sandbox_protocol::PeerCredentials {
                 uid: identities[0],
                 gid: identities[1],
@@ -449,7 +659,15 @@ impl CurrentRetainedNixStartV2<'_> {
             ObjectDigest::from_bytes(checked.commitment()),
         ).map_err(ContinuationFailureV2::from)?;
         let grant = aos_sandbox_core::BrokerGrant::new(
-            aos_sandbox_core::BrokerVerb::NixResolveProtectedRecipe,
+            match method {
+                BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2 =>
+                    aos_sandbox_core::BrokerVerb::NixResolveProtectedRecipe,
+                BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2 =>
+                    aos_sandbox_core::BrokerVerb::NixRealizeAuthorizedDerivation,
+                BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2 =>
+                    aos_sandbox_core::BrokerVerb::NixQueryAuthorizedPathInfo,
+                _ => return Err(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid).into()),
+            },
             aos_sandbox_core::BrokerGrantTarget::Resource(target_handle),
             commitment,
             aos_sandbox_protocol::nix_build::NIX_REQUEST_MAXIMUM_BYTES_V2 as u32,

@@ -79,6 +79,14 @@ pub(in crate::recovery::journal::tpm_floor) struct PhysicalTpmNvIoV1 {
 }
 
 impl PhysicalTpmNvIoV1 {
+    /// Forwards only negative custody observation to this SAME resident owner.
+    #[cfg(feature = "online-nix")]
+    pub(in crate::recovery::journal::tpm_floor) fn observe_online_postflight(
+        &mut self,
+    ) -> Result<(), FloorErrorV1> {
+        self.owner.observe_online_postflight()
+    }
+
     #[cfg(feature = "online-nix")]
     pub(in crate::recovery::journal::tpm_floor) fn retain_online(
         profile: crate::tpm_nv_custody::OnlineFloorProfileV1,
@@ -149,6 +157,13 @@ impl sealed::Sealed for PhysicalTpmNvIoV1 {}
 
 // Restricted concrete forwarding only; no new sealed transport or factory.
 impl super::TpmNvExtendFloorBackendV1<PhysicalTpmNvIoV1> {
+    #[cfg(feature = "online-nix")]
+    pub(in crate::recovery::journal::tpm_floor) fn observe_online_postflight(
+        &mut self,
+    ) -> Result<(), FloorErrorV1> {
+        self.io.observe_online_postflight()
+    }
+
     #[cfg(feature = "online-nix")]
     pub(in crate::recovery::journal::tpm_floor) fn bind_online_request_deadline(
         &mut self,

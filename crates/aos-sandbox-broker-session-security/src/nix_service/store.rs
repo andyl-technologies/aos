@@ -39,11 +39,12 @@ use sha2::{Digest as _, Sha256};
 
 use crate::controller_service::nix_inputs::{
     NixLocalInputErrorV2, NixStoreMemberKindV2, NixStoreMemberV2, project_store_members_v2,
+    project_store_output_members_v2,
 };
 use crate::fixed_role_credential::{
     CredentialOwnerPolicyV1, FixedRoleCredentialErrorV1, read_optional_bounded_role_credential_v1,
 };
-use crate::handshake::DormantAuthenticatedBrokerSessionV1;
+use crate::handshake::{DormantAuthenticatedBrokerSessionV1, OnlinePostflightV1};
 use crate::tpm_nv_custody::{FloorErrorV1, OnlineFloorProfileV1, OnlineFloorRoleV1};
 use crate::BrokerSessionSecurityError;
 
@@ -69,6 +70,32 @@ const CONSTRUCTOR_DIRECTORIES: [&str; 11] = [
     "nix/var/nix/temproots", "nix/var/nix/db", "nix/var/nix/gcroots",
     "nix/var/nix/profiles/per-user", "nix/var/nix/gcroots/per-user", "etc", "etc/nix",
 ];
+
+// One borrowed observation per held original, plus the four pending
+// comparisons and five root/constructor descriptions. The same graph is not
+// copied. This bounded diagnostic archive is not a physical-funding proof.
+const MAXIMUM_POSTFLIGHT_ORIGINALS: usize = 2 * MAXIMUM_INPUTS + CONTROLS.len()
+    + 2 * CONSTRUCTOR_DIRECTORIES.len() + 9;
+
+/// Identifies only the two separately preprovisioned writable GC subtrees.
+#[derive(Clone, Copy)]
+pub(super) enum GcDirectoryV1 {
+    Direct,
+    Indirect,
+}
+
+impl GcDirectoryV1 {
+    pub(super) const fn relative_name(self) -> &'static str {
+        match self {
+            Self::Direct => "nix/var/nix/gcroots/aos-online",
+            Self::Indirect => "nix/var/nix/gcroots/auto",
+        }
+    }
+}
+
+pub(super) const fn domain_root() -> &'static str {
+    compiled::DOMAIN_ROOT
+}
 
 /// Owns the actual first failure, independent of the process cleanup report.
 #[derive(Debug, thiserror::Error)]
@@ -161,6 +188,12 @@ struct StoreBackingV1 {
     first_failure: Option<StoreFailureV1>,
     failed: bool,
     admitted: bool,
+    output_members: Option<Vec<NixStoreMemberV2>>,
+    outputs: bool,
+    postflight_debt: Vec<StoreFailureV1>,
+    postflight_passes: usize,
+    postflight_limit: usize,
+    postflight_unavailable: Option<StoreFailureV1>,
 }
 
 impl StoreBackingV1 {
@@ -188,7 +221,139 @@ impl StoreBackingV1 {
             first_failure: None,
             failed: false,
             admitted: false,
+            output_members: None,
+            outputs: false,
+            postflight_debt: Vec::new(),
+            postflight_passes: 0,
+            postflight_limit: 0,
+            postflight_unavailable: None,
         }
+    }
+
+    fn reserve_selected_postflight(&mut self, passes: usize) -> Result<(), StoreFailureV1> {
+        if self.postflight_limit != 0 || passes == 0
+            || passes > crate::handshake::ONLINE_POSTFLIGHT_PASSES_V1
+        {
+            return Err(StoreFailureV1::Bound);
+        }
+        // After the first debt only enclosing reader/output/phase returns run:
+        // at most three failing passes. Successful unit observations own no
+        // data, so twenty successful passes do not consume this archive.
+        let capacity = passes.min(3).checked_mul(MAXIMUM_POSTFLIGHT_ORIGINALS)
+            .ok_or(StoreFailureV1::Bound)?;
+        self.postflight_debt.try_reserve_exact(capacity)?;
+        self.postflight_limit = passes;
+        Ok(())
+    }
+
+    /// Compares available held/named originals, without opening replacements.
+    ///
+    /// A failed positive owner is not re-admitted. Its inaccessible complete
+    /// content/currentness check remains unavailable even when these physical
+    /// metadata observations succeed. All owning native causes stay here.
+    fn observe_selected_postflight(&mut self) -> bool {
+        if self.postflight_passes >= self.postflight_limit {
+            self.postflight_unavailable.get_or_insert(StoreFailureV1::Bound);
+            return true;
+        }
+        self.postflight_passes += 1;
+        let capacity = self.postflight_debt.capacity().saturating_sub(self.postflight_debt.len());
+        if capacity < MAXIMUM_POSTFLIGHT_ORIGINALS {
+            self.postflight_unavailable.get_or_insert(StoreFailureV1::Bound);
+            return true;
+        }
+
+        // Borrow disjoint fields. Each native Result is parked before another
+        // original is observed, even after an earlier physical comparison failed.
+        let debt = &mut self.postflight_debt;
+        let root = self.raw_root.as_ref();
+        if let Some(root) = root {
+            retain_postflight_result(debt, compare_named_original(
+                root.as_fd(), Some((rustix::fs::CWD.as_fd(), Path::new(compiled::DOMAIN_ROOT))),
+                None,
+            ));
+        } else {
+            self.postflight_unavailable.get_or_insert(StoreFailureV1::Closed);
+        }
+        for directory in &self.constructor_directories {
+            retain_postflight_result(debt, compare_named_original(directory.as_fd(), None, None));
+        }
+        for directory in &self.constructor_readers {
+            retain_postflight_result(debt, compare_named_original(directory.as_fd(), None, None));
+        }
+        for (index, control) in self.controls.iter().enumerate() {
+            let named = root.zip(CONTROLS.get(index)).map(|(root, (name, _))| {
+                (root.as_fd(), Path::new(name))
+            });
+            retain_postflight_result(debt, compare_named_original(
+                control.as_fd(), named, Some((control.identity().device(), control.identity().inode())),
+            ));
+        }
+        for member in &self.members {
+            let named = root.map(|root| (root.as_fd(), Path::new(&member.expected.name)));
+            let result = match member.physical.as_ref() {
+                Some(PhysicalMemberV1::File(file)) => compare_named_original(
+                    file.as_fd(), named, Some((file.identity().device(), file.identity().inode())),
+                ),
+                Some(PhysicalMemberV1::Directory { path, readable }) => {
+                    retain_postflight_result(debt, compare_named_original(path.as_fd(), named,
+                        Some((path.identity().device, path.identity().inode))));
+                    match readable.as_ref() {
+                        Some(readable) => compare_named_original(readable.as_fd(), named,
+                            Some((path.identity().device, path.identity().inode))),
+                        None => {
+                            self.postflight_unavailable.get_or_insert(StoreFailureV1::Closed);
+                            continue;
+                        }
+                    }
+                }
+                Some(PhysicalMemberV1::Symlink { parent, link: Some(link) }) => {
+                    retain_postflight_result(debt, compare_named_original(parent.as_fd(), None,
+                        Some((parent.identity().device, parent.identity().inode))));
+                    let leaf = Path::new(&member.expected.name).file_name();
+                    let named = leaf.map(|leaf| (parent.as_fd(), Path::new(leaf)));
+                    compare_named_original(link.as_fd(), named, None)
+                }
+                Some(PhysicalMemberV1::Symlink { parent, link: None }) => {
+                    self.postflight_unavailable.get_or_insert(StoreFailureV1::Closed);
+                    compare_named_original(parent.as_fd(), None, None)
+                }
+                None => {
+                    self.postflight_unavailable.get_or_insert(StoreFailureV1::Closed);
+                    continue;
+                }
+            };
+            retain_postflight_result(debt, result);
+        }
+        // Pending comparison objects are still originals of this attempt,
+        // including a successfully returned File preceding a later refusal.
+        if let Some(file) = self.comparison_file.as_ref() {
+            retain_postflight_result(debt, compare_named_original(file.as_fd(), None,
+                Some((file.identity().device(), file.identity().inode()))));
+        }
+        for path in [self.selected_root.as_ref(), self.comparison_root.as_ref(),
+            self.comparison_path.as_ref()]
+        {
+            if let Some(path) = path {
+                retain_postflight_result(debt, compare_named_original(path.as_fd(), None,
+                    Some((path.identity().device, path.identity().inode))));
+            }
+        }
+        for file in [self.filesystem_root_raw.as_ref(), self.comparison_raw.as_ref()] {
+            if let Some(file) = file {
+                retain_postflight_result(debt, compare_named_original(file.as_fd(), None, None));
+            }
+        }
+        for root in [self.filesystem_root.as_ref(), self.root.as_ref()] {
+            if let Some(root) = root {
+                retain_postflight_result(debt, compare_named_original(root.as_fd(), None,
+                    Some((root.identity().device, root.identity().inode))));
+            }
+        }
+        if self.failed || !self.admitted {
+            self.postflight_unavailable.get_or_insert(StoreFailureV1::Closed);
+        }
+        self.postflight_unavailable.is_some() || !self.postflight_debt.is_empty()
     }
 
     pub(super) fn failure(&self) -> Option<&StoreFailureV1> {
@@ -228,25 +393,42 @@ impl StoreBackingV1 {
             return Err(StoreFailureV1::Mismatch);
         }
 
-        let members = project_store_members_v2(recipe)?;
-        self.members.try_reserve_exact(members.len())?;
-        for expected in members {
-            self.members.push(RetainedMemberV1 { expected, physical: None });
+        if self.outputs {
+            let count = self.output_members.as_ref().ok_or(StoreFailureV1::Closed)?.len();
+            self.members.try_reserve_exact(count)?;
+            // Capacity is ready before moving the parked projection. Reserve
+            // failure leaves the actual complete projection in its old slot.
+            for expected in self.output_members.as_mut().ok_or(StoreFailureV1::Closed)?.drain(..) {
+                self.members.push(RetainedMemberV1 { expected, physical: None });
+            }
+        } else {
+            let members = project_store_members_v2(recipe)?;
+            self.members.try_reserve_exact(members.len())?;
+            for expected in members {
+                self.members.push(RetainedMemberV1 { expected, physical: None });
+            }
         }
         self.scratch.try_reserve_exact(SCRATCH_BYTES)?;
         self.scratch.resize(SCRATCH_BYTES, 0);
 
         self.snapshot_bytes = Some(read_optional_bounded_role_credential_v1(
             Path::new("/run/credentials/aos-sandbox-nixd.service"),
-            "nix-online-store-snapshot-v1", 77, SNAPSHOT_MAXIMUM, false,
+            if self.outputs { "nix-online-output-snapshot-v1" } else { "nix-online-store-snapshot-v1" },
+            77, SNAPSHOT_MAXIMUM, false,
             CredentialOwnerPolicyV1::RootOrCurrent,
         )?.ok_or(StoreFailureV1::Mismatch)?);
         session.require_online_request(request)?;
-        self.snapshot = Some(decode_snapshot(
-            self.snapshot_bytes.as_deref().ok_or(StoreFailureV1::Closed)?,
-            self.profile,
-            &self.issuer,
-        )?);
+        self.snapshot = Some(if self.outputs {
+            decode_snapshot_inner(
+                self.snapshot_bytes.as_deref().ok_or(StoreFailureV1::Closed)?,
+                self.profile, &self.issuer, None,
+            )?
+        } else {
+            decode_snapshot(
+                self.snapshot_bytes.as_deref().ok_or(StoreFailureV1::Closed)?,
+                self.profile, &self.issuer,
+            )?
+        });
         self.require_snapshot_names()?;
 
         self.filesystem_root_raw = Some(rustix::fs::open(
@@ -335,6 +517,35 @@ impl StoreBackingV1 {
 
     fn root(&self) -> Result<&BeneathRoot, StoreFailureV1> {
         self.root.as_ref().ok_or(StoreFailureV1::Closed)
+    }
+
+    fn require_same_controls(&self, original: &Self) -> Result<(), StoreFailureV1> {
+        let root = self.selected_root.as_ref().ok_or(StoreFailureV1::Closed)?;
+        let old_root = original.selected_root.as_ref().ok_or(StoreFailureV1::Closed)?;
+        if root.identity() != old_root.identity() || self.profile != original.profile
+            || self.issuer != original.issuer || self.controls.len() != CONTROLS.len()
+            || original.controls.len() != CONTROLS.len()
+        {
+            return Err(StoreFailureV1::Mismatch);
+        }
+        for (index, (name, _)) in CONTROLS.iter().enumerate() {
+            let current = &self.controls[index];
+            let old = &original.controls[index];
+            let current_id = current.identity();
+            let old_id = old.identity();
+            let current_snapshot = self.snapshot_file(name)?;
+            let old_snapshot = original.snapshot_file(name)?;
+            if current_id.device() != old_id.device() || current_id.inode() != old_id.inode()
+                || current_id.bytes() != old_id.bytes()
+                || current.verified_verity() != old.verified_verity()
+                || current_snapshot.bytes != old_snapshot.bytes
+                || current_snapshot.sha256 != old_snapshot.sha256
+                || current_snapshot.verity_sha256 != old_snapshot.verity_sha256
+            {
+                return Err(StoreFailureV1::Mismatch);
+            }
+        }
+        Ok(())
     }
 
     fn snapshot_file(&self, name: &str) -> Result<&SnapshotFileV1, StoreFailureV1> {
@@ -810,6 +1021,7 @@ pub(super) struct StoreReadbackV1 {
     reader: ReaderAttemptV1,
     failed: bool,
     completed: bool,
+    output_postflight: OnlinePostflightV1,
 }
 
 impl StoreReadbackV1 {
@@ -819,7 +1031,31 @@ impl StoreReadbackV1 {
             reader: ReaderAttemptV1::new(),
             failed: false,
             completed: false,
+            output_postflight: OnlinePostflightV1::new(),
         }
+    }
+
+    pub(super) fn reserve_selected_postflight(&mut self) -> Result<(), StoreFailureV1> {
+        self.backing.reserve_selected_postflight(3)
+    }
+
+    pub(super) fn observe_selected_postflight(&mut self) -> bool {
+        self.backing.observe_selected_postflight()
+    }
+
+    /// Compares a held GC directory against the SAME retained Store root name.
+    ///
+    /// This negative-only loan does not use a failed owner's positive getter,
+    /// open another directory, or grant a root registration/currentness right.
+    pub(super) fn compare_gc_directory_original(
+        &self,
+        role: GcDirectoryV1,
+        file: BorrowedFd<'_>,
+        identity: (u64, u64),
+    ) -> Result<(), StoreFailureV1> {
+        let root = self.backing.raw_root.as_ref().ok_or(StoreFailureV1::Closed)?;
+        compare_named_original(file, Some((root.as_fd(), Path::new(role.relative_name()))),
+            Some(identity))
     }
 
     pub(super) fn resolve(
@@ -847,6 +1083,77 @@ impl StoreReadbackV1 {
         self.backing.failure().or(self.reader.first_failure.as_ref())
     }
 
+    /// Creates an empty output destination associated with this original.
+    ///
+    /// # Errors
+    ///
+    /// Refuses failed, unfinished or already-output originals. The empty
+    /// destination grants no physical/currentness authority before admission.
+    pub(super) fn output_destination(&self) -> Result<Self, StoreFailureV1> {
+        if self.failed || !self.completed || self.backing.outputs {
+            return Err(StoreFailureV1::Closed);
+        }
+        let mut destination = Self::new(self.backing.profile, self.backing.issuer);
+        destination.backing.outputs = true;
+        destination.backing.reserve_selected_postflight(crate::handshake::ONLINE_POSTFLIGHT_PASSES_V1)?;
+        Ok(destination)
+    }
+
+    /// Reads expected existing outputs without mutating the Store or database.
+    ///
+    /// # Errors
+    ///
+    /// Refuses repeated use, an altered original/control/snapshot, missing or
+    /// noncanonical outputs, or a native/process/currentness failure. Both
+    /// originals retain their own full typed cause and partial custody.
+    pub(super) fn read_outputs(
+        &mut self,
+        original: &mut Self,
+        recipe: &NixPreadmittedRecipeV2,
+        session: &mut DormantAuthenticatedBrokerSessionV1,
+        request: &AuthenticatedBrokerMethodRequestV1,
+    ) -> Result<(), ()> {
+        if self.failed || self.completed || !self.backing.outputs
+            || self.backing.output_members.is_some()
+        {
+            return Err(());
+        }
+        self.failed = true;
+        let result = (|| {
+            original.recheck_completed(session, request).map_err(|_| StoreFailureV1::Closed)?;
+            self.backing.output_members = Some(project_store_output_members_v2(
+                recipe, original.backing.members.iter().map(|member| &member.expected),
+            )?);
+            for member in self.backing.output_members.as_ref().ok_or(StoreFailureV1::Closed)? {
+                if original.backing.members.binary_search_by(|old| {
+                    old.expected.name.cmp(&member.name)
+                }).is_ok() {
+                    return Err(StoreFailureV1::Mismatch);
+                }
+            }
+            self.backing.admit(recipe, session, request).map_err(|_| StoreFailureV1::Closed)?;
+            self.backing.require_same_controls(&original.backing)?;
+            self.reader.run(&mut self.backing, recipe, session, request)?;
+            self.backing.require_same_controls(&original.backing)?;
+            original.recheck_completed(session, request).map_err(|_| StoreFailureV1::Closed)?;
+            Ok(())
+        })();
+        if let Err(cause) = result {
+            self.reader.first_failure.get_or_insert(cause);
+        }
+        let original_debt = original.observe_selected_postflight();
+        let output_debt = self.observe_selected_postflight();
+        session.observe_online_postflight(&mut self.output_postflight);
+        if self.reader.first_failure.is_some() || original_debt || output_debt
+            || self.output_postflight.failed()
+        {
+            return Err(());
+        }
+        self.failed = false;
+        self.completed = true;
+        Ok(())
+    }
+
     /// Resolves the reader marker to its actual original typed process cause.
     pub(super) fn process_cause(&self)
         -> Option<&aos_sandbox_linux::process::FixedProcessDrivenCauseV1>
@@ -858,6 +1165,43 @@ impl StoreReadbackV1 {
         -> Option<&aos_sandbox_linux::process::FixedProcessDrivenDebtV1>
     {
         self.reader.process.as_ref().and_then(FixedProcessDrivenSessionV1::cleanup_debt)
+    }
+
+    /// Parks a fixed directory opened beneath this SAME completed Store root.
+    ///
+    /// # Errors
+    ///
+    /// Refuses non-output, failed or incomplete owners, occupied destinations,
+    /// changed original Session/root, or a failed fixed beneath-root open. The
+    /// returned directory is parked before every later fallible observation.
+    pub(super) fn open_gc_directory_into(
+        &mut self,
+        role: GcDirectoryV1,
+        session: &mut DormantAuthenticatedBrokerSessionV1,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        target: &mut Option<ResolvedPath>,
+    ) -> Result<(), ()> {
+        if self.failed || !self.completed || !self.backing.outputs || target.is_some() {
+            return Err(());
+        }
+        self.failed = true;
+        let result = (|| {
+            self.backing.check_root(session, request)?;
+            // These two fixed writable subtrees are separate bind mounts under
+            // the otherwise read-only Store. Keep the same beneath/no-symlink
+            // engine without rejecting the deliberate nested mount boundary.
+            *target = Some(self.backing.root()?.resolve(
+                Path::new(role.relative_name()),
+                ResolveOptions { no_mount_crossing: false, require_directory: true },
+            )?);
+            self.backing.check_root(session, request)
+        })();
+        if let Err(cause) = result {
+            self.reader.first_failure.get_or_insert(cause);
+            return Err(());
+        }
+        self.failed = false;
+        Ok(())
     }
 
     pub(super) fn recheck_completed(
@@ -883,6 +1227,108 @@ impl StoreReadbackV1 {
 struct ReaderRequestV1<'a> {
     version: u32,
     paths: Vec<ReaderPathV1<'a>>,
+}
+
+#[derive(Serialize)]
+struct RootReaderRequestV2<'a> {
+    version: u32,
+    operation: &'static str,
+    paths: Vec<ReaderPathV1<'a>>,
+    names: &'a [String],
+}
+
+/// Selects only the fixed private upstream GC-root engine operations.
+#[derive(Clone, Copy)]
+pub(super) enum RootReaderCommandV1 {
+    Plan,
+    Register,
+    Inspect,
+}
+
+impl RootReaderCommandV1 {
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Plan => "plan-roots",
+            Self::Register => "register-roots",
+            Self::Inspect => "inspect-roots",
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RootReaderResponseV1 {
+    pub(super) version: u32,
+    pub(super) roots: Vec<RootReaderEntryV1>,
+}
+
+#[derive(Deserialize, Serialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct RootReaderEntryV1 {
+    pub(super) path: String,
+    pub(super) direct: String,
+    pub(super) indirect: String,
+    pub(super) target: String,
+}
+
+/// Retains a one-shot root operation's actual process and complete response.
+pub(super) struct RootReaderV1 {
+    reader: ReaderAttemptV1,
+    started: bool,
+    complete: bool,
+}
+
+impl RootReaderV1 {
+    pub(super) fn new() -> Self {
+        Self { reader: ReaderAttemptV1::new(), started: false, complete: false }
+    }
+
+    pub(super) fn run(
+        &mut self,
+        output: &mut StoreReadbackV1,
+        recipe: &NixPreadmittedRecipeV2,
+        session: &mut DormantAuthenticatedBrokerSessionV1,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        command: RootReaderCommandV1,
+        names: &[String],
+    ) -> Result<(), ()> {
+        if self.started || !output.completed || output.failed || !output.backing.outputs {
+            return Err(());
+        }
+        self.started = true;
+        let result = self.reader.run_selected(
+            &mut output.backing, recipe, session, request, Some((command, names)),
+        );
+        if let Err(cause) = result {
+            self.reader.first_failure.get_or_insert(cause);
+            return Err(());
+        }
+        self.complete = true;
+        Ok(())
+    }
+
+    pub(super) fn response(&self) -> Result<&RootReaderResponseV1, StoreFailureV1> {
+        if !self.complete || self.reader.first_failure.is_some() {
+            return Err(StoreFailureV1::Closed);
+        }
+        self.reader.root_response.as_ref().ok_or(StoreFailureV1::Closed)
+    }
+
+    pub(super) fn failure(&self) -> Option<&StoreFailureV1> {
+        self.reader.first_failure.as_ref()
+    }
+
+    pub(super) fn process_cause(&self)
+        -> Option<&aos_sandbox_linux::process::FixedProcessDrivenCauseV1>
+    {
+        self.reader.process.as_ref().and_then(FixedProcessDrivenSessionV1::cause)
+    }
+
+    pub(super) fn cleanup_debt(&self)
+        -> Option<&aos_sandbox_linux::process::FixedProcessDrivenDebtV1>
+    {
+        self.reader.process.as_ref().and_then(FixedProcessDrivenSessionV1::cleanup_debt)
+    }
 }
 
 #[derive(Serialize)]
@@ -921,6 +1367,8 @@ struct ReaderAttemptV1 {
     process: Option<FixedProcessDrivenSessionV1>,
     response: Option<ReaderResponseV1>,
     first_failure: Option<StoreFailureV1>,
+    root_response: Option<RootReaderResponseV1>,
+    postflight: OnlinePostflightV1,
 }
 
 impl ReaderAttemptV1 {
@@ -935,6 +1383,8 @@ impl ReaderAttemptV1 {
             process: None,
             response: None,
             first_failure: None,
+            root_response: None,
+            postflight: OnlinePostflightV1::new(),
         }
     }
 
@@ -944,6 +1394,44 @@ impl ReaderAttemptV1 {
         recipe: &NixPreadmittedRecipeV2,
         session: &mut DormantAuthenticatedBrokerSessionV1,
         original: &AuthenticatedBrokerMethodRequestV1,
+    ) -> Result<(), StoreFailureV1> {
+        self.run_selected(backing, recipe, session, original, None)
+    }
+
+    fn run_selected(
+        &mut self,
+        backing: &mut StoreBackingV1,
+        recipe: &NixPreadmittedRecipeV2,
+        session: &mut DormantAuthenticatedBrokerSessionV1,
+        original: &AuthenticatedBrokerMethodRequestV1,
+        roots: Option<(RootReaderCommandV1, &[String])>,
+    ) -> Result<(), StoreFailureV1> {
+        if !backing.outputs && roots.is_none() {
+            // The ordinary method50 recipe, including local driver disposal,
+            // has no selected postflight or additional allocation/effect.
+            return self.run_recipe(backing, recipe, session, original, roots);
+        }
+        let result = self.run_recipe(backing, recipe, session, original, roots);
+        if let Err(cause) = result {
+            self.first_failure.get_or_insert(cause);
+        }
+        let physical_debt = backing.observe_selected_postflight();
+        session.observe_online_postflight(&mut self.postflight);
+        if self.first_failure.is_some() || physical_debt || self.postflight.failed() {
+            return Err(StoreFailureV1::ReaderStopped);
+        }
+        Ok(())
+    }
+
+    // One process/write/poll/decoder engine for both dispositions. Returning
+    // ends only the driver loan; the actual process/cause/debt stay resident.
+    fn run_recipe(
+        &mut self,
+        backing: &mut StoreBackingV1,
+        recipe: &NixPreadmittedRecipeV2,
+        session: &mut DormantAuthenticatedBrokerSessionV1,
+        original: &AuthenticatedBrokerMethodRequestV1,
+        roots: Option<(RootReaderCommandV1, &[String])>,
     ) -> Result<(), StoreFailureV1> {
         backing.check_root(session, original)?;
         self.identity.admit()?;
@@ -961,19 +1449,41 @@ impl ReaderAttemptV1 {
         }
 
         let mut paths = Vec::new();
-        let count = recipe.inputs.len().checked_add(1).ok_or(StoreFailureV1::Bound)?;
+        let count = if backing.outputs {
+            recipe.outputs.len()
+        } else {
+            recipe.inputs.len().checked_add(1).ok_or(StoreFailureV1::Bound)?
+        };
         if count > MAXIMUM_INPUTS {
             return Err(StoreFailureV1::Bound);
         }
         paths.try_reserve_exact(count)?;
-        for object in std::iter::once(&recipe.derivation).chain(&recipe.inputs) {
-            paths.push(ReaderPathV1 { path: &object.path, nar_size: object.nar_size });
+        if backing.outputs {
+            for output in &recipe.outputs {
+                paths.push(ReaderPathV1 { path: &output.object.path, nar_size: output.object.nar_size });
+            }
+        } else {
+            for object in std::iter::once(&recipe.derivation).chain(&recipe.inputs) {
+                paths.push(ReaderPathV1 { path: &object.path, nar_size: object.nar_size });
+            }
         }
         paths.sort_unstable_by(|left, right| left.path.cmp(right.path));
         if !paths.windows(2).all(|pair| pair[0].path < pair[1].path) {
             return Err(StoreFailureV1::Mismatch);
         }
-        self.request = serde_json::to_vec(&ReaderRequestV1 { version: 1, paths })?;
+        self.request = if let Some((command, names)) = roots {
+            if !backing.outputs || names.len() != paths.len() || names.len() > 256
+                || names.iter().any(|name| name.len() != 64
+                    || !name.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)))
+            {
+                return Err(StoreFailureV1::Bound);
+            }
+            serde_json::to_vec(&RootReaderRequestV2 {
+                version: 2, operation: command.name(), paths, names,
+            })?
+        } else {
+            serde_json::to_vec(&ReaderRequestV1 { version: 1, paths })?
+        };
         if self.request.len() > 262_144 {
             return Err(StoreFailureV1::Bound);
         }
@@ -1024,6 +1534,12 @@ impl ReaderAttemptV1 {
                     let end = self.sent.checked_add(SCRATCH_BYTES)
                         .ok_or(StoreFailureV1::Bound)?.min(self.request.len());
                     let writer = self.writer.as_ref().ok_or(StoreFailureV1::Closed)?;
+                    if matches!(roots, Some((RootReaderCommandV1::Register, _))) {
+                        // Reacquire from the same originals immediately before
+                        // each physical request fragment, not from an earlier
+                        // root-plan or process-preparation observation.
+                        session.require_online_existing_output_suffix(original)?;
+                    }
                     let result = rustix::io::write(writer, &self.request[self.sent..end]);
                     match result {
                         Ok(0) => return Err(StoreFailureV1::Mismatch),
@@ -1034,6 +1550,9 @@ impl ReaderAttemptV1 {
                     self.identity.require(child, first_info, session, original)?;
                     backing.check_root(session, original)?;
                     if self.sent == self.request.len() {
+                        if matches!(roots, Some((RootReaderCommandV1::Register, _))) {
+                            session.require_online_existing_output_suffix(original)?;
+                        }
                         // No byte or EOF crosses before image/peer/cut checks.
                         // The writer is never an inherited child role.
                         self.writer = None;
@@ -1074,29 +1593,117 @@ impl ReaderAttemptV1 {
             return Err(StoreFailureV1::ReaderStopped);
         }
         let capture = process.capture().ok_or(StoreFailureV1::Closed)?;
-        self.response = Some(decode_reader_response(capture.stdout(), recipe)?);
+        if let Some((_, names)) = roots {
+            self.root_response = Some(decode_root_reader_response(capture.stdout(), recipe, names)?);
+        } else {
+            self.response = Some(if backing.outputs {
+                decode_reader_response_for(capture.stdout(), recipe, true)?
+            } else {
+                decode_reader_response(capture.stdout(), recipe)?
+            });
+        }
         backing.recheck(session, original)?;
         session.require_online_request(original)?;
         Ok(())
     }
 }
 
+// Each caller reserves the complete selected diagnostic prefix before any
+// physical crossing. Only failures own data here; successful unit comparisons
+// have no resources to release and never establish currentness.
+fn retain_postflight_result(
+    debt: &mut Vec<StoreFailureV1>,
+    result: Result<(), StoreFailureV1>,
+) {
+    if let Err(cause) = result {
+        debt.push(cause);
+    }
+}
+
+fn compare_named_original(
+    file: BorrowedFd<'_>,
+    named: Option<(BorrowedFd<'_>, &Path)>,
+    identity: Option<(u64, u64)>,
+) -> Result<(), StoreFailureV1> {
+    let observed = rustix::fs::fstat(file)?;
+    if let Some((device, inode)) = identity
+        && (observed.st_dev, observed.st_ino) != (device, inode)
+    {
+        return Err(StoreFailureV1::Mismatch);
+    }
+    if let Some((directory, name)) = named {
+        let named = rustix::fs::statat(directory, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)?;
+        if (named.st_dev, named.st_ino) != (observed.st_dev, observed.st_ino) {
+            return Err(StoreFailureV1::Mismatch);
+        }
+    }
+    Ok(())
+}
+
+fn decode_root_reader_response(
+    bytes: &[u8], recipe: &NixPreadmittedRecipeV2, names: &[String],
+) -> Result<RootReaderResponseV1, StoreFailureV1> {
+    if bytes.is_empty() || bytes.len() > 4_194_304 {
+        return Err(StoreFailureV1::Bound);
+    }
+    let response: RootReaderResponseV1 = serde_json::from_slice(bytes)?;
+    if response.version != 2 || response.roots.len() != names.len()
+        || response.roots.len() != recipe.outputs.len()
+        || serde_json::to_vec(&response)? != bytes
+        || !response.roots.windows(2).all(|pair| pair[0].path < pair[1].path)
+    {
+        return Err(StoreFailureV1::Mismatch);
+    }
+    let direct_prefix = format!("{}/nix/var/nix/gcroots/aos-online/", compiled::DOMAIN_ROOT);
+    let indirect_prefix = format!("{}/nix/var/nix/gcroots/auto/", compiled::DOMAIN_ROOT);
+    for (entry, name) in response.roots.iter().zip(names) {
+        if !recipe.outputs.iter().any(|output| output.object.path == entry.path)
+            || entry.target != entry.path
+            || entry.direct.strip_prefix(direct_prefix.as_str()) != Some(name.as_str())
+        {
+            return Err(StoreFailureV1::Mismatch);
+        }
+        let indirect = entry.indirect.strip_prefix(indirect_prefix.as_str())
+            .ok_or(StoreFailureV1::Mismatch)?;
+        // The upstream SHA1/Nix32 engine supplies this name. Rust only checks
+        // its closed width/alphabet; actual named links are separately read.
+        if indirect.len() != 32 || !indirect.bytes().all(|byte| {
+            b"0123456789abcdfghijklmnpqrsvwxyz".contains(&byte)
+        }) {
+            return Err(StoreFailureV1::Mismatch);
+        }
+    }
+    Ok(response)
+}
+
 fn decode_reader_response(
     bytes: &[u8], recipe: &NixPreadmittedRecipeV2,
+) -> Result<ReaderResponseV1, StoreFailureV1> {
+    decode_reader_response_for(bytes, recipe, false)
+}
+
+fn decode_reader_response_for(
+    bytes: &[u8], recipe: &NixPreadmittedRecipeV2, outputs: bool,
 ) -> Result<ReaderResponseV1, StoreFailureV1> {
     if bytes.is_empty() || bytes.len() > 4_194_304 {
         return Err(StoreFailureV1::Bound);
     }
     let response: ReaderResponseV1 = serde_json::from_slice(bytes)?;
-    if response.version != 1 || response.objects.len() != recipe.inputs.len() + 1
+    let count = if outputs { recipe.outputs.len() } else { recipe.inputs.len() + 1 };
+    if response.version != 1 || response.objects.len() != count
         || serde_json::to_vec(&response)? != bytes
         || !response.objects.windows(2).all(|pair| pair[0].path < pair[1].path)
     {
         return Err(StoreFailureV1::Mismatch);
     }
     for observed in &response.objects {
-        let expected = std::iter::once(&recipe.derivation).chain(&recipe.inputs)
-            .find(|object| object.path == observed.path).ok_or(StoreFailureV1::Mismatch)?;
+        let expected = if outputs {
+            recipe.outputs.iter().map(|output| &output.object)
+                .find(|object| object.path == observed.path)
+        } else {
+            std::iter::once(&recipe.derivation).chain(&recipe.inputs)
+                .find(|object| object.path == observed.path)
+        }.ok_or(StoreFailureV1::Mismatch)?;
         let expected_hash = format!("sha256-{}",
             base64::engine::general_purpose::STANDARD.encode(expected.nar_sha256.as_bytes()));
         if observed.db_nar_hash != expected_hash || observed.actual_nar_hash != expected_hash
@@ -1453,6 +2060,13 @@ fn acl_bytes(metadata: &FilesystemMetadata) -> Result<Vec<u8>, StoreFailureV1> {
 fn decode_snapshot(
     bytes: &[u8], profile: OnlineFloorProfileV1, issuer: &[u8; 48],
 ) -> Result<SnapshotV1, StoreFailureV1> {
+    decode_snapshot_inner(bytes, profile, issuer, Some(profile.snapshot_digest()))
+}
+
+fn decode_snapshot_inner(
+    bytes: &[u8], profile: OnlineFloorProfileV1, issuer: &[u8; 48],
+    original_artifact: Option<[u8; 32]>,
+) -> Result<SnapshotV1, StoreFailureV1> {
     if bytes.len() < 77 || bytes.len() > SNAPSHOT_MAXIMUM || &bytes[..8] != b"AOSNXV01" {
         return Err(StoreFailureV1::Bound);
     }
@@ -1464,7 +2078,8 @@ fn decode_snapshot(
     let mut artifact = Sha256::new();
     artifact.update(SNAPSHOT_ARTIFACT_DOMAIN);
     artifact.update(bytes);
-    if <[u8; 32]>::from(artifact.finalize()) != profile.snapshot_digest() {
+    let artifact: [u8; 32] = artifact.finalize().into();
+    if original_artifact.is_some_and(|expected| artifact != expected) {
         return Err(StoreFailureV1::Mismatch);
     }
 
@@ -1509,7 +2124,7 @@ fn require_relative_name(name: &str) -> Result<(), StoreFailureV1> {
     Ok(())
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(super) fn hex(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {

@@ -135,6 +135,7 @@
         /(nix|nix\.lower)/store/${readerBasename}/libexec/aos-nix-online-store-reader -- system_u:object_r:aos_nix_online_store_reader_exec_t
         /(nix|nix\.lower)/store/[a-z0-9]{32}-aos-nix-startup-profile-2(/.*)? system_u:object_r:aos_nix_startup_profile_t
         /var/lib/aos/sandbox-nix/domains/${domain}/root(/.*)? system_u:object_r:aos_nix_online_store_t
+        /var/lib/aos/sandbox-nix/domains/${domain}/root/nix/var/nix/gcroots/(aos-online|auto)(/.*)? system_u:object_r:aos_nix_online_gcroots_t
         /var/lib/aos/sandbox-nix/broker-session/controller(/.*)? system_u:object_r:aos_nix_online_owner_state_t
         /var/lib/aos/sandboxd/broker-session/nix(/.*)? system_u:object_r:aos_nix_online_controller_state_t
         /var/lib/aos/sandbox-nix/broker-session/controller/(session\.journal|tpm-floor\.journal)\.lock -- system_u:object_r:aos_nix_online_owner_lock_t

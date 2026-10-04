@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <filesystem>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -154,14 +155,100 @@ Json readObject(nix::Store & store, const Json & requested)
     };
 }
 
+std::string readRoots(nix::LocalStore & store, const Json & request)
+{
+    const auto operation = request["operation"].get<std::string>();
+    require(operation == "plan-roots" || operation == "register-roots"
+        || operation == "inspect-roots");
+    require(request["names"].is_array() && request["names"].size() == request["paths"].size()
+        && request["names"].size() <= 256);
+
+    const auto directDirectory = std::string(domainRoot) + "/nix/var/nix/gcroots/aos-online";
+    const auto indirectDirectory = std::string(domainRoot) + "/nix/var/nix/gcroots/auto";
+    require(std::filesystem::is_directory(std::filesystem::symlink_status(directDirectory))
+        && std::filesystem::is_directory(std::filesystem::symlink_status(indirectDirectory)));
+
+    Json response{{"version", 2}, {"roots", Json::array()}};
+    std::string previous;
+    for (std::size_t index = 0; index < request["paths"].size(); ++index) {
+        const auto & requested = request["paths"][index];
+        const auto path = requested["path"].get<std::string>();
+        require(previous.empty() || previous < path);
+        // Complete the ordinary DB/NAR readback for every output before the
+        // first possible write. Its hash/parser engine is not duplicated.
+        static_cast<void>(readObject(store, requested));
+
+        const auto name = request["names"][index].get<std::string>();
+        require(name.size() == 64 && std::all_of(name.begin(), name.end(), [](char value) {
+            return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f');
+        }));
+        const auto direct = directDirectory + "/" + name;
+        // Exactly LocalStore::addIndirectRoot's selected upstream engine and
+        // physical path argument. Rust does not recreate its SHA1/Nix32 codec.
+        const auto indirect = indirectDirectory + "/"
+            + nix::hashString(nix::HashAlgorithm::SHA1, direct)
+                .to_string(nix::HashFormat::Nix32, false);
+        for (const auto & old : response["roots"]) {
+            require(old["direct"] != direct && old["indirect"] != indirect);
+        }
+        response["roots"].push_back(Json{
+            {"path", path}, {"direct", direct}, {"indirect", indirect}, {"target", path},
+        });
+        previous = path;
+    }
+
+    if (operation == "register-roots") {
+        // The parent has retained and checked both complete original directory
+        // inventories. Do not let upstream's replace-capable recipe adopt an
+        // already-present link, including a dangling symlink.
+        for (const auto & root : response["roots"]) {
+            require(std::filesystem::symlink_status(root["direct"].get<std::string>()).type()
+                    == std::filesystem::file_type::not_found
+                && std::filesystem::symlink_status(root["indirect"].get<std::string>()).type()
+                    == std::filesystem::file_type::not_found);
+        }
+        for (const auto & root : response["roots"]) {
+            const auto path = root["path"].get<std::string>();
+            const auto direct = root["direct"].get<std::string>();
+            require(store.addPermRoot(store.parseStorePath(path), direct) == direct);
+        }
+        // addPermRoot may have created a temp link or replaced a named link
+        // before failing. No retry, deletion, healing or durable receipt is
+        // emitted here; the parent's original directories/attempt survive.
+    }
+    if (operation != "plan-roots") {
+        for (const auto & root : response["roots"]) {
+            const auto direct = root["direct"].get<std::string>();
+            const auto indirect = root["indirect"].get<std::string>();
+            require(std::filesystem::is_symlink(std::filesystem::symlink_status(direct))
+                && std::filesystem::is_symlink(std::filesystem::symlink_status(indirect))
+                && std::filesystem::read_symlink(direct).string() == root["target"].get<std::string>()
+                && std::filesystem::read_symlink(indirect).string() == direct);
+        }
+    }
+    const auto encoded = response.dump();
+    require(encoded.size() <= maximumResponseBytes);
+    return encoded;
+}
+
 std::string readStore(const std::string & rawRequest)
 {
     const auto request = Json::parse(rawRequest);
-    require(request.dump() == rawRequest && request.is_object() && request.size() == 2
+    const bool roots = request.is_object() && request.contains("version")
+        && request["version"].is_number_unsigned() && request["version"] == 2;
+    if (roots) {
+        require(request.dump() == rawRequest && request.size() == 4
+            && request.contains("operation") && request["operation"].is_string()
+            && request.contains("paths") && request["paths"].is_array()
+            && !request["paths"].empty() && request["paths"].size() <= 256
+            && request.contains("names"));
+    } else {
+        require(request.dump() == rawRequest && request.is_object() && request.size() == 2
         && request.contains("version") && request.contains("paths")
         && request["version"].is_number_unsigned() && request["version"] == 1
         && request["paths"].is_array() && !request["paths"].empty()
         && request["paths"].size() <= maximumObjects);
+    }
 
     // Configuration files, plugins, substituters and build engines are not
     // inputs. initNix still starts its real upstream signal-handler thread.
@@ -187,6 +274,10 @@ std::string readStore(const std::string & rawRequest)
     require(local && local->readOnly.get() && store->storeDir == logicalStore
         && local->getRealStoreDir() == root + "/nix/store"
         && local->stateDir.get() == root + "/nix/var/nix");
+
+    if (roots) {
+        return readRoots(*local, request);
+    }
 
     Json response{{"version", 1}, {"objects", Json::array()}};
     // Reserve the exact outer JSON punctuation before each entry grows the

@@ -226,6 +226,34 @@ impl NixLocalInputCutV2<'_, '_> {
         result
     }
 
+    /// Stages a successor while the same complete input cut stays borrowed.
+    pub(super) fn retain_successor_authorization_into(
+        &mut self,
+        request_id: [u8; 16],
+        predecessor: &aos_sandbox_protocol::nix_build::ValidatedNixBuildRequestV2,
+        response: &aos_proto::aos::sandbox::local::v1::NixBuildResponseV2,
+        target: &mut Option<NixResolveAuthorizationDraftV2>,
+    ) -> Result<(), NixLocalInputErrorV2> {
+        self.latch.require_open()?;
+        self.latch.failed = true;
+        let result = (|| {
+            recheck_all_inputs(self.current, self.source, &self.pins)?;
+            let request = match predecessor.method() {
+                aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2 =>
+                    self.current.prepare_realize_request_v2(request_id, predecessor, response)?,
+                aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2 =>
+                    self.current.prepare_query_request_v2(request_id, predecessor, response)?,
+                _ => return Err(NixLocalInputErrorV2::Closed),
+            };
+            self.current.retain_successor_authorization_into(&request, predecessor, response, target)?;
+            recheck_all_inputs(self.current, self.source, &self.pins)
+        })();
+        if result.is_ok() {
+            self.latch.failed = false;
+        }
+        result
+    }
+
     /// Rechecks every original pin and the same current Start owner.
     ///
     /// # Errors
@@ -478,17 +506,48 @@ fn project_directory_leaves<'recipe>(
 pub(crate) fn project_store_members_v2(
     recipe: &NixPreadmittedRecipeV2,
 ) -> Result<Vec<NixStoreMemberV2>, NixLocalInputErrorV2> {
+    project_store_objects_v2(std::iter::once(&recipe.derivation).chain(&recipe.inputs), 0, 0)
+}
+
+/// Projects selected predicted outputs through the same portable engine.
+#[cfg(feature = "online-nix")]
+pub(crate) fn project_store_output_members_v2<'input>(
+    recipe: &NixPreadmittedRecipeV2,
+    mut inputs: impl Iterator<Item = &'input NixStoreMemberV2>,
+) -> Result<Vec<NixStoreMemberV2>, NixLocalInputErrorV2> {
+    if recipe.outputs.is_empty() {
+        return Err(NixLocalInputErrorV2::Bound);
+    }
+    // Borrow the already-retained input graph rather than reconstructing a
+    // second full union. Every output insertion shares its remaining count
+    // and Content-byte headroom with those actual original input members.
+    let (count, bytes) = inputs.try_fold((0_usize, 0_u64), |(count, bytes), member| {
+        let content_bytes = match &member.kind {
+            NixStoreMemberKindV2::Content { descriptor, .. } => descriptor.encoded_size(),
+            _ => 0,
+        };
+        let bytes = checked_projection_growth(count, bytes, content_bytes)?;
+        Ok::<_, NixLocalInputErrorV2>((count + 1, bytes))
+    })?;
+    project_store_objects_v2(recipe.outputs.iter().map(|output| &output.object), count, bytes)
+}
+
+#[cfg(feature = "online-nix")]
+fn project_store_objects_v2<'object>(
+    objects: impl Iterator<Item = &'object NixStoreObjectV2>,
+    retained_members: usize,
+    retained_bytes: u64,
+) -> Result<Vec<NixStoreMemberV2>, NixLocalInputErrorV2> {
     let mut members = Vec::new();
-    let mut total_bytes = 0;
-    for (object_index, object) in std::iter::once(&recipe.derivation)
-        .chain(&recipe.inputs)
-        .enumerate()
+    let mut total_bytes = retained_bytes;
+    for (object_index, object) in objects.enumerate()
     {
         let name = object.path.strip_prefix('/').ok_or(NixLocalInputErrorV2::Changed)?;
         if object.portable.media_type().as_str() == PortableMediaType::Content.as_str() {
             push_store_member(
                 &mut members,
                 &mut total_bytes,
+                retained_members,
                 name,
                 NixStoreMemberKindV2::Content {
                     descriptor: object.portable.clone(),
@@ -509,6 +568,7 @@ pub(crate) fn project_store_members_v2(
                 0,
                 &mut members,
                 &mut total_bytes,
+                retained_members,
             )?;
         }
     }
@@ -541,6 +601,7 @@ pub(crate) enum NixStoreMemberKindV2 {
 fn push_store_member(
     members: &mut Vec<NixStoreMemberV2>,
     total_bytes: &mut u64,
+    retained_members: usize,
     name: &str,
     kind: NixStoreMemberKindV2,
 ) -> Result<(), NixLocalInputErrorV2> {
@@ -548,7 +609,9 @@ fn push_store_member(
         NixStoreMemberKindV2::Content { descriptor, .. } => descriptor.encoded_size(),
         _ => 0,
     };
-    let next = checked_projection_growth(members.len(), *total_bytes, bytes)?;
+    let count = retained_members.checked_add(members.len())
+        .ok_or(NixLocalInputErrorV2::Bound)?;
+    let next = checked_projection_growth(count, *total_bytes, bytes)?;
     if name.is_empty() || name.len() > 4_096 {
         return Err(NixLocalInputErrorV2::Bound);
     }
@@ -570,6 +633,7 @@ fn project_store_directory(
     depth: usize,
     members: &mut Vec<NixStoreMemberV2>,
     total_bytes: &mut u64,
+    retained_members: usize,
 ) -> Result<(), NixLocalInputErrorV2> {
     if depth >= 64 {
         return Err(NixLocalInputErrorV2::Bound);
@@ -581,6 +645,7 @@ fn project_store_directory(
     push_store_member(
         members,
         total_bytes,
+        retained_members,
         name,
         NixStoreMemberKindV2::Directory(stream.metadata().clone()),
     )?;
@@ -601,6 +666,7 @@ fn project_store_directory(
         match entry.node {
             Node::Directory(descriptor) => project_store_directory(
                 object, object_index, &descriptor, &child, depth + 1, members, total_bytes,
+                retained_members,
             )?,
             Node::File(file) => {
                 let ContentLayout::Whole { content } = file.content else {
@@ -609,6 +675,7 @@ fn project_store_directory(
                 push_store_member(
                     members,
                     total_bytes,
+                    retained_members,
                     &child,
                     NixStoreMemberKindV2::Content {
                         descriptor: content,
@@ -618,7 +685,7 @@ fn project_store_directory(
                 )?;
             }
             Node::Symlink(link) => push_store_member(
-                members, total_bytes, &child, NixStoreMemberKindV2::Symlink(link),
+                members, total_bytes, retained_members, &child, NixStoreMemberKindV2::Symlink(link),
             )?,
         }
     }

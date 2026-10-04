@@ -1,0 +1,188 @@
+diff --git a/src/core/load-fragment.h b/src/core/load-fragment.h
+--- a/src/core/load-fragment.h
++++ b/src/core/load-fragment.h
+@@ -17,3 +17,6 @@
+ bool aos_own_launcher_protected_unit(const Unit *u);
+ int aos_own_launcher_verify_loaded_fragment(const Unit *u);
++bool aos_nix_protected_name(const char *name);
++bool aos_nix_protected_unit(const Unit *u);
++int aos_nix_verify_loaded_fragment(const Unit *u);
+ 
+diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
+--- a/src/core/load-fragment.c
++++ b/src/core/load-fragment.c
+@@ -6155,3 +6155,5 @@ static const char *aos_network_template_name(const char *name) {
+ static const char *aos_network_template_name(const char *name) {
++        if (aos_nix_protected_name(name))
++                return name;
+         /* Share only the physical manifest walk, not Network admission. */
+         if (aos_own_launcher_name(name))
+@@ -6330,12 +6332,12 @@
+-int aos_network_verify_loaded_fragment(const Unit *u) {
++/* Compare the original FILE seal through the one physical image resolver.
++ * Only the two fixed-name wrappers below enter this shared comparison. */
++static int aos_verify_loaded_image_fragment(const Unit *u) {
+         _cleanup_free_ char *expected = NULL;
+         struct stat st;
+         int r;
+ 
+-        if (!aos_network_protected_unit(u))
+-                return 0;
+-        if (!aos_network_protected_name(u->id) || u->transient ||
++        if (u->transient ||
+             u->load_state != UNIT_LOADED || !set_isempty(u->aliases) ||
+             !strv_isempty(u->dropin_paths) || !isempty(u->source_path))
+                 return -EPERM;
+ 
+@@ -6355,3 +6356,46 @@
+                          strjoina("/nix/store/", expected + strlen("/nix.lower/store/"))) ? 0 : -EPERM;
+ }
+ 
++int aos_network_verify_loaded_fragment(const Unit *u) {
++        if (!aos_network_protected_unit(u))
++                return 0;
++        if (!aos_network_protected_name(u->id))
++                return -EPERM;
++        return aos_verify_loaded_image_fragment(u);
++}
++
++bool aos_nix_protected_name(const char *name) {
++        return streq_ptr(name, "aos-sandbox-nixd.service");
++}
++
++bool aos_nix_protected_unit(const Unit *u) {
++        const char *alias;
++        bool selected = aos_nix_protected_name(u->id);
++
++        /* Selection comes from the actual immutable boot, never a directive,
++         * a serialized positive pin or a removable in-memory role flag. */
++        SET_FOREACH(alias, u->aliases)
++                if (aos_nix_protected_name(alias))
++                        selected = true;
++        return selected && aos_network_image_guard_active();
++}
++
++int aos_nix_verify_loaded_fragment(const Unit *u) {
++        const ExecContext *context;
++        int r;
++
++        if (!aos_nix_protected_unit(u))
++                return 0;
++        if (!aos_nix_protected_name(u->id) || u->type != UNIT_SERVICE)
++                return -EPERM;
++        r = aos_verify_loaded_image_fragment(u);
++        if (r < 0)
++                return r;
++        context = &SERVICE(u)->exec_context;
++        if (!strv_isempty(context->environment_files) ||
++            !strv_isempty(context->pass_environment) ||
++            !strv_isempty(context->exec_search_path))
++                return -EPERM;
++        return 0;
++}
++
+@@ -6449,5 +6495,11 @@ int unit_load_fragment(Unit *u) {
+         assert(u->load_state == UNIT_STUB);
+         assert(u->id);
+ 
++        if (aos_nix_protected_unit(u) &&
++            (!aos_nix_protected_name(u->id) || u->transient ||
++             !set_isempty(u->aliases) || !isempty(u->source_path)))
++                return log_unit_error_errno(u, SYNTHETIC_ERRNO(EPERM),
++                                            "Refusing mutable online Nix unit selection: %m");
++
+         if (u->transient) {
+                 if (((aos_network_image_guard_active() && aos_network_protected_unit(u)) ||
+@@ -6475,4 +6527,22 @@ int unit_load_fragment(Unit *u) {
+         if (r < 0 && r != -ENOENT)
+                 return r;
+ 
++        if ((aos_nix_protected_unit(u) || set_contains(names, "aos-sandbox-nixd.service")) &&
++            aos_network_image_guard_active()) {
++                const char *alias;
++
++                /* Reserve an alias discovered by the SAME name-map engine.
++                 * It must not fall back to ordinary fragment admission. */
++                if (!aos_nix_protected_name(u->id) || !set_isempty(u->aliases))
++                        return -EPERM;
++                SET_FOREACH(alias, names)
++                        if (!aos_nix_protected_name(alias))
++                                return -EPERM;
++                r = aos_network_image_fragment(u->id, &image_fragment, &image_fd, NULL);
++                if (r < 0)
++                        return log_unit_error_errno(u, r, "Cannot pin online Nix unit to boot-image EROFS: %m");
++                fragment = image_fragment;
++                names = set_free(names);
++        }
++
+         if (((aos_network_image_guard_active() && aos_network_protected_name(u->id)) ||
+diff --git a/src/core/service.c b/src/core/service.c
+--- a/src/core/service.c
++++ b/src/core/service.c
+@@ -2108,3 +2108,11 @@ static int service_spawn_internal(
+         assert(ret_pid);
+ 
++        /* Every Exec* command crosses here, including privileged prestart,
++         * restart and reload. Reexec does not restore the original FILE pin. */
++        if (aos_nix_protected_unit(UNIT(s))) {
++                r = aos_nix_verify_loaded_fragment(UNIT(s));
++                if (r < 0)
++                        return log_unit_error_errno(UNIT(s), r, "Refusing unsealed online Nix command: %m");
++        }
++
+         if (aos_own_launcher_protected_unit(UNIT(s))) {
+diff --git a/src/core/load-dropin.c b/src/core/load-dropin.c
+--- a/src/core/load-dropin.c
++++ b/src/core/load-dropin.c
+@@ -38,3 +38,7 @@ static int process_deps(
+         if (r < 0)
+                 return r;
+ 
++        if (aos_nix_protected_unit(u) && !strv_isempty(paths))
++                return log_unit_error_errno(u, SYNTHETIC_ERRNO(EPERM),
++                                            "Refusing online Nix dependency drop-ins: %m");
++
+@@ -136,3 +140,7 @@ int unit_load_dropin(Unit *u) {
+         if (r <= 0)
+                 return 0;
+ 
++        if (aos_nix_protected_unit(u))
++                return log_unit_error_errno(u, SYNTHETIC_ERRNO(EPERM),
++                                            "Refusing online Nix configuration drop-ins: %m");
++
+diff --git a/src/core/dbus-unit.c b/src/core/dbus-unit.c
+--- a/src/core/dbus-unit.c
++++ b/src/core/dbus-unit.c
+@@ -2597,2 +2597,6 @@ int bus_unit_set_properties(
+         /* Reject in-memory control overrides before the first setter runs. */
++        if (aos_nix_protected_unit(u))
++                return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_ACCESS_DENIED,
++                                         "Online Nix units do not accept property overrides");
++
+         if (aos_own_launcher_protected_unit(u))
+diff --git a/src/core/unit.c b/src/core/unit.c
+--- a/src/core/unit.c
++++ b/src/core/unit.c
+@@ -1804,3 +1804,9 @@ static int aos_network_unit_environment(Unit *u, char ***ret) {
+         char **env;
+ 
++        if (aos_nix_protected_unit(u)) {
++                int r = aos_nix_verify_loaded_fragment(u);
++                if (r < 0)
++                        return r;
++        }
++
+         if (aos_own_launcher_protected_unit(u)) {
+@@ -1814,3 +1820,4 @@ static int aos_network_unit_environment(Unit *u, char ***ret) {
+         if ((!aos_network_image_guard_active() || !aos_network_protected_unit(u)) &&
+-            !aos_fuse_worker_protected_unit(u) && !aos_own_launcher_protected_unit(u))
++            !aos_fuse_worker_protected_unit(u) && !aos_own_launcher_protected_unit(u) &&
++            !aos_nix_protected_unit(u))
+                 return manager_get_effective_environment(u->manager, ret);
+@@ -6683,2 +6690,6 @@ int unit_live_mount(
+         assert(UNIT_VTABLE(u)->live_mount);
+ 
++        if (aos_nix_protected_unit(u))
++                return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_ACCESS_DENIED,
++                                         "Online Nix units do not accept live mounts");
++

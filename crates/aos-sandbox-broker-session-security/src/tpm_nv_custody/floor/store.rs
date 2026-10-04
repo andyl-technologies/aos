@@ -218,6 +218,54 @@ impl BrokerSidecarStoreV1 {
         self.custody.validate_held()
     }
 
+    /// Forwards the actual native cause to the selected negative observer.
+    ///
+    /// # Errors
+    /// Returns the same held/named Journal comparison failure without coarse
+    /// projection. This comparison DATA grants no floor or admission authority.
+    #[cfg(feature = "online-nix")]
+    pub(crate) fn validate_held_native(&self) -> Result<(), aos_sandbox::JournalError> {
+        self.custody.validate_held_native()
+    }
+
+    /// Compares only the closed remaining online prepare/finalize geometry.
+    #[cfg(feature = "online-nix")]
+    pub(crate) fn check_online_suffix_capacity(
+        &mut self,
+        profile: super::OnlineFloorProfileV1,
+        prepared_widths: [usize; 3],
+        native_failure: &mut Option<aos_sandbox::JournalError>,
+    ) -> Result<(), FloorErrorV1> {
+        if native_failure.is_some() || profile.main_limits()? != self.main_limits {
+            return Err(FloorErrorV1::Unavailable);
+        }
+        let purpose = FloorProfileDataV1::Online(profile);
+        let stored = self.read_data(purpose)?;
+        if stored.prepared.is_some() {
+            return Err(FloorErrorV1::Diverged);
+        }
+        for offset in 1..=3 {
+            let ordinal = stored.checkpoint.ordinal().checked_add(offset)
+                .filter(|ordinal| *ordinal != u64::MAX)
+                .ok_or(FloorErrorV1::Successor)?;
+            // This is checked ordinal/sequence DATA, not a new checkpoint.
+            super::sidecar_sequence_v1(ordinal, false)?;
+        }
+
+        let result = self.custody.journal().compare_online_nix_floor_suffix_capacity_v1(
+            CHECKPOINT_KEY, INTENT_KEY, TRANSACTION_KEY,
+            CHECKPOINT_BYTES, INTENT_BYTES, prepared_widths,
+        );
+        if let Err(cause) = result {
+            // Preserve the owning native error BEFORE the compatibility facade
+            // redacts it. The attachment owns this reservoir throughout.
+            *native_failure = Some(cause);
+            return Err(FloorErrorV1::Unavailable);
+        }
+        self.require_same_data(stored.view(), purpose)?;
+        self.validate_held()
+    }
+
     pub(crate) fn read(&mut self, profile: FloorProfileV1) -> Result<StoredBrokerFloorV1, FloorErrorV1> {
         self.read_data(FloorProfileDataV1::Broker(profile))?.into_broker()
     }
