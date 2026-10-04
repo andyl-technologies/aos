@@ -7,7 +7,9 @@ let
     inherit name;
     version = "1";
     path = toString (payload name);
-    outputs = lib.genAttrs ["out" "apm" "packageRuntime"] (_: toString (payload name));
+    outputs =
+      lib.genAttrs ["out" "apm" "packageRuntime"] (_: toString (payload name))
+      // lib.optionalAttrs (name == "openssh") {server = toString (payload "openssh-server");};
     mainProgram = "handler";
   };
   record = name: source: module: let

@@ -125,6 +125,12 @@
     packageImportRoots.${builtins.unsafeDiscardStringContext (toString pkgs.openssh.module)} = toString ../../pkgs/networking/_openssh;
     operatorModules = [{aos.services.ssh.enable = true;}];
   };
+  sshServerProjection = lib.evalPackageModules {
+    scope = ["profile" "system"];
+    packages = [pkgs.openssh.server pkgs.systemd pkgs.aos-network-ruleset-provider];
+    packageImportRoots.${builtins.unsafeDiscardStringContext (toString pkgs.openssh.module)} = toString ../../pkgs/networking/_openssh;
+    operatorModules = [{aos.services.ssh.enable = true;}];
+  };
   developmentConfiguration = enabled:
     (lib.evalModules {
       inherit lib;
@@ -174,6 +180,13 @@ in {
   sudoFollowsActiveSystemProfiles = lib.hasInfix ''Defaults secure_path="/run/wrappers/bin:/var/lib/profiles/system-packages/current/bin:/var/lib/profiles/system-packages/current/sbin:/var/lib/profiles/system/current/bin:/var/lib/profiles/system/current/sbin"'' (sudoPolicy nativeSudo);
   sudoExcludesUserProfilePaths = sudoPolicy userPathSudo == sudoPolicy nativeSudo;
   sudoPreservesImageSystemPath = lib.hasInfix ''Defaults secure_path="${imageSecurePath}"'' (sudoPolicy imageSudo);
+  sshOutputCatalogHasNoInventedExecutable = builtins.all (package: package.deployment.package.mainProgram == null && lib.packageArtifacts.valid package.deployment.package) [pkgs.openssh pkgs.openssh.server];
+  sshServerOutputPreservesReleaseIdentity = pkgs.openssh.server.version == pkgs.openssh.version && pkgs.openssh.server.versionRequirement == pkgs.openssh.versionRequirement && pkgs.openssh.server.catalogName == pkgs.openssh.catalogName && pkgs.openssh.server.drvPath == pkgs.openssh.drvPath;
+  sshServerAdmissionSelectsOnlyServerPayload = (builtins.head (builtins.filter (artifact: artifact.name == "openssh") sshServerProjection.deployment.artifacts)).path == toString pkgs.openssh.server && builtins.elem (toString pkgs.openssh.server) sshServerProjection.deployment.inputs && !builtins.elem (toString pkgs.openssh) sshServerProjection.deployment.inputs;
+  sshDaemonAndKeygenUseServerOutput = builtins.all (projection: let
+    services = projection.config.aos.abilities.serviceManagement.operations.realize.effects;
+  in
+    (builtins.head services.ssh.input.lifecycle.start).executable.path == "${pkgs.openssh.server}/sbin/sshd" && (builtins.head services."ssh.sshd-keygen".input.lifecycle.start).executable.path == "${pkgs.openssh.server}/libexec/aos-openssh-host-key") [sshProjection sshServerProjection];
   sshStableManagerIdentities = sshProjection.config.aos.abilities.serviceManagement.operations.realize.effects.ssh.input.service == "sshd" && sshProjection.config.aos.abilities.serviceManagement.operations.realize.effects."ssh.sshd-keygen".input.service == "sshd-keygen";
   sshPreservesPublicHostKeyDirectoryAccess = sshProjection.config.aos.abilities.filesystem.operations.directory.effects.ssh-host-keys.input.mode == "0755";
   developmentRetainsOriginalPingWrappers = builtins.all originalPingMetadata ["ping" "ping6"];

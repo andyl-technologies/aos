@@ -6,6 +6,7 @@
   ...
 }: let
   cfg = config.aos.services.ssh;
+  server = package.server;
   types = lib.types;
   operations = config.aos.abilities;
   authorizedKeysDirectory = "ssh/authorized_keys";
@@ -30,7 +31,7 @@
   };
   command = entryPoint: arguments: {
     executable = {
-      path = "${package}/${entryPoint}";
+      path = "${server}/${entryPoint}";
       inherit arguments;
     };
     ignore_failure = false;
@@ -136,7 +137,7 @@
     [sshdConfigPrefix]
     ++ authorizedKeysCommandFragments
     ++ [
-      "\nSubsystem sftp ${package}/libexec/sftp-server"
+      "\nSubsystem sftp ${server}/libexec/sftp-server"
       sshdConfigSuffix
     ];
   keygen = {

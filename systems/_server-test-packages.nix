@@ -11,7 +11,7 @@
     bundle = true;
   };
   aos.packages.openssh = {
-    package = pkgs.openssh;
+    package = pkgs.openssh.server;
     bundle = true;
   };
   aos.packages.audit = {

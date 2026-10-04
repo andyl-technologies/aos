@@ -7,7 +7,9 @@ let
     inherit name;
     version = "1";
     path = toString (fixturePayload name);
-    outputs.out = toString (fixturePayload name);
+    outputs =
+      {out = toString (fixturePayload name);}
+      // lib.optionalAttrs (name == "openssh") {server = toString (fixturePayload "openssh-server");};
     mainProgram = name;
   };
   record = name: source: dependencies: let
