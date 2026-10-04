@@ -971,6 +971,9 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   and both mandatory formatters pass. Replay/refusal/rebuild, advisory cache
   behavior, native admission, opaque lookup and root-associated retention remain
   incomplete; this format prerequisite does not qualify `derivation-memo`.
+  The shared `checks.terrane.integration.memo-evaluation` helper names nine
+  exact replay/cache/rebuild groups before worker implementation. Its requested
+  check exits 1 on zero selected tests; a declaration cannot qualify execution.
   No formal task merge, checkbox or milestone freeze advances.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
