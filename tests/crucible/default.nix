@@ -471,6 +471,10 @@ in rec {
     qemuLivePluginInstall = import ./phase2-qemu-live-plugin-install.nix {inherit pkgs lib;};
     qemuLiveWhiteboxDoorbell = import ./phase2-qemu-live-whitebox-doorbell.nix {inherit pkgs lib;};
     qemuRomClampStress = import ./phase2-qemu-rom-clamp-stress.nix {inherit pkgs lib;};
+    qemuRomClampAckPollExperiment = import ./phase2-qemu-rom-clamp-stress.nix {
+      inherit pkgs lib;
+      ackPollExperiment = true;
+    };
     qemuLiveBlockRealization = import ./phase2-qemu-live-block-realization.nix {inherit pkgs lib;};
     qemuInstructionFaults = import ./phase2-qemu-instruction-faults.nix {inherit pkgs lib;};
     qemuInstructionResultEvidence = import ./phase2-qemu-instruction-faults.nix {

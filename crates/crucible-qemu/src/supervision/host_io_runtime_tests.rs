@@ -3,6 +3,9 @@
 use super::control::PendingControlBoundary;
 use super::*;
 
+#[cfg(feature = "test-support")]
+#[path = "host_io_runtime_tests/ack_poll_experiment.rs"]
+mod ack_poll_experiment;
 #[cfg(target_os = "linux")]
 #[path = "host_io_runtime_tests/block_coordinator_tests.rs"]
 mod block_coordinator;

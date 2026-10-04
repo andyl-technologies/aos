@@ -71,6 +71,8 @@ pub struct QemuLiveHostIoRuntime {
     wake: Arc<File>,
     vm_slot: u32,
     poll_interval: Duration,
+    #[cfg(feature = "test-support")]
+    clamp_ack_poll_cap: Option<Duration>,
     performance: performance::PerformanceDiagnostics,
     wait_observation: wait_observation::WaitObservation,
     advance_wait_deadline: AdvanceWaitDeadline,
@@ -153,8 +155,12 @@ pub trait QemuNinepFaultCoordinator: Send {
 
 impl QemuLiveHostIoRuntime {
     fn wait_for_poll_interval(&mut self, remaining: Duration) {
+        self.wait_for_poll_interval_capped(remaining, self.poll_interval);
+    }
+
+    fn wait_for_poll_interval_capped(&mut self, remaining: Duration, interval: Duration) {
         self.performance.pending_sleep();
-        thread::sleep(self.poll_interval.min(remaining));
+        thread::sleep(interval.min(remaining));
     }
 
     /// Maps `shmem_fd`, clones `wake_fd`, and binds the runtime to `vm_slot`.
@@ -235,6 +241,8 @@ impl QemuLiveHostIoRuntime {
             wake: Arc::new(wake),
             vm_slot,
             poll_interval,
+            #[cfg(feature = "test-support")]
+            clamp_ack_poll_cap: None,
             performance: performance::PerformanceDiagnostics::from_environment(shmem_fd),
             wait_observation: wait_observation::WaitObservation::from_environment(shmem_fd),
             advance_wait_deadline: AdvanceWaitDeadline::default(),

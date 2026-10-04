@@ -159,6 +159,8 @@ pub struct QemuLiveNodeStepGateConfig {
     accelerator: bool,
     queue_capacity: u32,
     completion_timeout: Duration,
+    #[cfg(feature = "test-support")]
+    short_clamp_ack_poll: bool,
     unbounded_advance_completion: bool,
     console_capture: bool,
     rr_control_boundary_trace: bool,
@@ -227,6 +229,17 @@ impl QemuLiveNodeStepGateConfig {
     #[must_use]
     pub fn without_gdbstub(mut self) -> Self {
         self.gdbstub = None;
+        self
+    }
+
+    /// Selects a 100-microsecond completed-clamp ACK poll cap for test support.
+    ///
+    /// Discovery, priming, deadlines, publication and guest coordinates retain
+    /// their original behavior. Ordinary profiles keep the default interval.
+    #[cfg(feature = "test-support")]
+    #[must_use]
+    pub const fn with_short_clamp_ack_poll_for_test(mut self) -> Self {
+        self.short_clamp_ack_poll = true;
         self
     }
 
@@ -325,6 +338,8 @@ impl QemuLiveNodeStepGateConfig {
             accelerator: false,
             queue_capacity: GATE_QUEUE_CAPACITY,
             completion_timeout: Duration::from_secs(240),
+            #[cfg(feature = "test-support")]
+            short_clamp_ack_poll: false,
             unbounded_advance_completion: false,
             console_capture: false,
             rr_control_boundary_trace: false,
@@ -387,6 +402,8 @@ impl QemuLiveNodeStepGateConfig {
             accelerator: false,
             queue_capacity: GATE_QUEUE_CAPACITY,
             completion_timeout: Duration::from_secs(240),
+            #[cfg(feature = "test-support")]
+            short_clamp_ack_poll: false,
             unbounded_advance_completion: false,
             console_capture: false,
             rr_control_boundary_trace: false,
@@ -1512,6 +1529,14 @@ fn build_live_node_with_authority(
         config.shmem_block.as_ref().map(|block| block.latency),
         config.completion_timeout,
     ));
+
+    #[cfg(feature = "test-support")]
+    if config.short_clamp_ack_poll {
+        // Arm after the original priming handoff, so only scheduled clamps
+        // participate in the comparison.
+        runtime.use_short_clamp_ack_poll_for_test();
+    }
+
     let qmp = if config.whitebox == QemuLaunchPluginSwitch::On {
         let activation_stream = launch_try!(debug_guest_activation_stream.ok_or_else(|| {
             QemuLiveNodeStepGateError::prime(

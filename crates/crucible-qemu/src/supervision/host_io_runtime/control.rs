@@ -12,6 +12,25 @@ pub(super) struct PendingControlBoundary {
 }
 
 impl QemuLiveHostIoRuntime {
+    /// Caps only completed-clamp polling in an explicitly configured experiment.
+    #[cfg(feature = "test-support")]
+    pub(crate) fn use_short_clamp_ack_poll_for_test(&mut self) {
+        self.clamp_ack_poll_cap = Some(Duration::from_micros(100));
+    }
+
+    pub(super) fn clamp_ack_poll_interval(&self, remaining: Duration) -> Duration {
+        let interval = self.poll_interval.min(remaining);
+        #[cfg(feature = "test-support")]
+        let interval = self
+            .clamp_ack_poll_cap
+            .map_or(interval, |cap| interval.min(cap));
+        interval
+    }
+
+    fn wait_for_clamp_ack_poll(&mut self, remaining: Duration) {
+        self.wait_for_poll_interval_capped(remaining, self.clamp_ack_poll_interval(remaining));
+    }
+
     /// Attaches an output-only QEMU console reader and its boundary spool.
     ///
     /// The stream is drained during every in-flight advance poll so guest
@@ -319,7 +338,7 @@ impl QemuLiveHostIoRuntime {
                 }),
                 remaining,
             );
-            self.wait_for_poll_interval(remaining);
+            self.wait_for_clamp_ack_poll(remaining);
         }
 
         let fault_command_indices = match self.region.fault_command_transport_mut(self.vm_slot) {
