@@ -16,6 +16,9 @@ in {
     ${runTests "tree_builder::batch_tests::tree_history_independence_batches_overlapping_sparse_edits -- --exact"}
     ${runTests "tree_builder::batch_tests::tree_history_independence_preserves_distant_subtrees_and_atomic_validation -- --exact"}
     ${runTests "tree_builder::batch_tests::tree_history_independence_accounts_for_actual_boundary_work -- --exact"}
-    printf 'PASS: persistent batched edits, deterministic replay, measured boundary work, and subtree reuse\n' > "$out/result"
+    ${runTests "tree_builder::batch_tests::changed_child_reference_invalidates_real_internal_content_cut -- --exact"}
+    ${runTests "tree_builder::batch_tests::completion_phases_measure_growth_collapse_and_final_properties -- --exact"}
+    ${runTests "tree_builder::batch_tests::tree_history_independence_bounds_adoption_frontier_work -- --exact"}
+    printf 'PASS: persistent batched edits, actual cut divergence, complete work attribution, bounded frontiers, and subtree reuse\n' > "$out/result"
   '';
 }

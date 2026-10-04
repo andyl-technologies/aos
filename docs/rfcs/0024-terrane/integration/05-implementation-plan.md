@@ -792,6 +792,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   bounds are required before accepting this prerequisite. Existing baseline
   test success does not qualify these missing proofs or the complexity bound;
   the candidate remains uncommitted and T-DRV-2 remains open.
+  The owning `tree-history-independence` gate now also requires three exact
+  selectors for changed internal content-cut divergence, complete completion
+  phase attribution, and bounded adoption-frontier work. All six batch
+  selectors must execute nonzero tests. This preserves the existing gate and
+  requirement IDs and does not qualify the pending implementation.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route
