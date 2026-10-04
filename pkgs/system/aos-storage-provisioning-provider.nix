@@ -124,7 +124,8 @@ in
           ${./_aos-storage-provisioning-provider/aos-storage-topology.sh} > "$out/bin/aos-storage-topology"
       chmod 0555 "$out/bin/aos-storage-topology"
       ${bash}/bin/bash ${./_aos-storage-provisioning-provider/check-repart-helpers.sh} \
-        "$out/bin/aos-storage-repart" "$TMPDIR/repart-helper-check" "${coreutils}/bin/env"
+        "$out/bin/aos-storage-repart" "$TMPDIR/repart-helper-check" "${coreutils}/bin/env" \
+        "${util-linux}/sbin/sfdisk" "${jq}/bin/jq"
       test -x "$out/bin/aos-storage-provisioning-provider"
       test -x "$out/bin/aos-storage-provisioning-marker-observer"
       if patchelf --print-interpreter "$out/bin/aos-storage-provisioning-provider" \
