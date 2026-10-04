@@ -1734,19 +1734,6 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         enablePlugins = true;
         applyCruciblePatch = true;
       };
-      # Rebuild the shipped patched identity and run QEMU's complete configured
-      # regression target without adding that cost to normal installation.
-      qemu-crucible-full-test-suite = callPackage ./emulation/qemu.nix {
-        pname = "qemu-crucible";
-        enablePlugins = true;
-        applyCruciblePatch = true;
-        testOnlyNonDistributable = true;
-        fullUpstreamTestSuiteOnly = true;
-        # The outer VM is deliberately the generic, unpatched package. The
-        # patched build under test must not provide its own filesystem or
-        # execution environment.
-        qemuTestRunner = self.qemu;
-      };
       qemu-crucible-reference = mkQemuPackage {
         pname = "qemu-crucible-reference";
         enablePlugins = true;
@@ -1967,6 +1954,24 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         then discoveredPackages.patch
         else withBootstrapPublication "patch"
       );
+    }
+    # The full patched-QEMU suite boots its build under KVM, so it exists only
+    # in native package sets. Cross image assembly freezes every exposed
+    # package path; an attribute that refuses cross evaluation would abort it.
+    // lib.optionalAttrs (!stdenv.isCross) {
+      # Rebuild the shipped patched identity and run QEMU's complete configured
+      # regression target without adding that cost to normal installation.
+      qemu-crucible-full-test-suite = callPackage ./emulation/qemu.nix {
+        pname = "qemu-crucible";
+        enablePlugins = true;
+        applyCruciblePatch = true;
+        testOnlyNonDistributable = true;
+        fullUpstreamTestSuiteOnly = true;
+        # The outer VM is deliberately the generic, unpatched package. The
+        # patched build under test must not provide its own filesystem or
+        # execution environment.
+        qemuTestRunner = self.qemu;
+      };
     }
     # --- Trivial builders, exposed flat on the package set ---
     # The file at pkgs/build-support/trivial-builders.nix is also picked up
