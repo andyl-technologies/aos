@@ -16,6 +16,33 @@ use aos_sandbox_protocol::semantics::{
 };
 use buffa::Message as _;
 
+/// Projects only correlated Prepared DATA from an already resident outcome.
+pub(crate) fn generation_prepared_parts(
+    outcome: &AuthenticatedBrokerMethodOutcomeV1,
+    draft: &aos_sandbox::production_operation_compiler::StorageGenerationPreparationDraftV1,
+) -> Result<CatalogBindingV1, aos_sandbox_protocol::ProtocolValidationError> {
+    use aos_sandbox_protocol::ProtocolValidationError;
+
+    if outcome.method() != BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1
+        || outcome.request().exact_body() != draft.request_bytes()
+        || outcome.request().authorization().is_none()
+    {
+        return Err(ProtocolValidationError::MethodMismatch);
+    }
+    let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = outcome.result() else {
+        return Err(ProtocolValidationError::MethodMismatch);
+    };
+    // The sole all-method outcome decoder has already run the shared old
+    // Prepare response correlation against the selected nested Clone request.
+    let response = PrepareStorageCatalogResponse::decode_from_slice(exact_body)
+        .map_err(|error| ProtocolValidationError::MalformedWire(error.to_string()))?;
+    CatalogBindingV1::from_publisher(
+        response.catalog_generation,
+        ObjectDigest::from_bytes(response.catalog_digest.as_slice().try_into()
+            .map_err(|_| ProtocolValidationError::InvalidField("catalog_digest"))?),
+    ).map_err(|_| ProtocolValidationError::InvalidField("catalog binding"))
+}
+
 /// Retains the signed Create Prepare result and broker-minted catalog binding.
 #[must_use = "retain the signed preparation through the independent Apply grant"]
 pub struct AuthenticatedStorageCreatePreparationV1 {

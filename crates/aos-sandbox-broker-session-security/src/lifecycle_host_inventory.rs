@@ -227,6 +227,8 @@ macro_rules! domain_inventory_owner {
                     pending: None,
                     authority_effects: ControllerAuthorityEffectExchangeV1::default(),
                     output_registration: None,
+                    #[cfg(feature = "online-nix")]
+                    nix_generation: None,
                     git_coverage: None,
                 })
             }
@@ -510,6 +512,8 @@ struct DormantLifecycleInventorySessionV1 {
     pending: Option<DormantLifecycleInventoryQueryRecoveryV1>,
     authority_effects: ControllerAuthorityEffectExchangeV1,
     output_registration: Option<crate::controller_service::execution_output_storage_registration::OriginalControllerOutputRegistrationV1>,
+    #[cfg(feature = "online-nix")]
+    nix_generation: Option<crate::controller_service::nix_generation::NixGenerationAttemptV1>,
     git_coverage: Option<GitCoverageQueryCustodyV1>,
 }
 
@@ -911,6 +915,8 @@ impl DormantLifecycleInventorySessionV1 {
     // beside the original session prevents another exchange from replacing a
     // failed output attempt after a durable local terminal or postcheck debt.
     fn has_pending_output_registration(&self) -> bool {
+        #[cfg(feature = "online-nix")]
+        if self.nix_generation.is_some() { return true; }
         self.output_registration.as_ref().is_some_and(|attempt| attempt.has_pending())
     }
 
@@ -1582,6 +1588,8 @@ impl DormantHostRuntimeInventoryOwnerV1 {
             pending: None,
             authority_effects: ControllerAuthorityEffectExchangeV1::default(),
             output_registration: None,
+            #[cfg(feature = "online-nix")]
+            nix_generation: None,
             git_coverage: None,
         })
     }
@@ -2085,6 +2093,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
     ), EffectFailure> {
         if self.0.pending.is_some() || self.0.authority_effects.has_pending()
             || self.0.git_coverage.is_some()
+            || self.has_pending_nix_generation()
         {
             return Err(EffectFailure::Retryable(
                 "Storage session retains another exact exchange".to_owned(),
@@ -2099,6 +2108,29 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
 
     pub(crate) fn has_pending_output_registration(&self) -> bool {
         self.0.has_pending_output_registration()
+    }
+
+    pub(crate) fn has_pending_nix_generation(&self) -> bool {
+        #[cfg(feature = "online-nix")]
+        { self.0.nix_generation.is_some() }
+        #[cfg(not(feature = "online-nix"))]
+        { false }
+    }
+
+    /// Lends only this actual Storage Session and its selected resident subslot.
+    #[cfg(feature = "online-nix")]
+    pub(crate) fn nix_generation_loan(
+        &mut self,
+    ) -> Result<(
+        &mut Option<crate::controller_service::nix_generation::NixGenerationAttemptV1>,
+        &mut DormantAuthenticatedBrokerSessionV1,
+    ), EffectFailure> {
+        if self.0.pending.is_some() || self.0.authority_effects.has_pending()
+            || self.0.output_registration.is_some() || self.0.git_coverage.is_some()
+        {
+            return Err(EffectFailure::Permanent("Storage original Session is occupied".to_owned()));
+        }
+        Ok((&mut self.0.nix_generation, &mut self.0.session))
     }
 
     pub(crate) fn output_registration_postcheck_debt(&self) -> Option<&(dyn std::error::Error + 'static)> {
@@ -2703,6 +2735,8 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
             pending: None,
             authority_effects: ControllerAuthorityEffectExchangeV1::default(),
             output_registration: None,
+            #[cfg(feature = "online-nix")]
+            nix_generation: None,
             git_coverage: None,
         })
     }

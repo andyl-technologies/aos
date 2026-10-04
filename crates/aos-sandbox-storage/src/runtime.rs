@@ -2841,6 +2841,91 @@ impl StorageBrokerRuntime {
         self.finish_live_transaction_mutation(result, StorageRuntimeError::Admission)
     }
 
+    /// Retains one selected Nix generation Prepare in its original reservoir.
+    ///
+    /// The request is parked before cohort, readiness or policy observations.
+    /// This is existing-only Prepare, not Clone Apply or completed Start.
+    ///
+    /// # Errors
+    /// Refuses reused custody, an enrolled cohort, unavailable originals,
+    /// failed admission/commit/readback or expired original clock. Actual
+    /// errors and any native commit remain in `original` before late checks.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_nix_generation_into<F>(
+        &mut self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request_id: [u8; 16],
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        trusted_clock: &mut F,
+        original: &mut crate::StorageGenerationAttemptV1,
+    ) -> Result<(), crate::StorageGenerationStoppedV1>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
+    {
+        use crate::nix_generation::StorageGenerationCauseV1;
+
+        if original.entered || original.request.is_none() || original.first.is_some() {
+            original.first.get_or_insert(StorageGenerationCauseV1::Occupied);
+            return Err(crate::StorageGenerationStoppedV1);
+        }
+        original.entered = true;
+
+        let prerequisites = self.require_git_coverage_new_admission_v1().and_then(|()| {
+            if !self.is_prepare_ready() || self.resolver_policies.is_none() {
+                return Err(StorageRuntimeError::Recovery);
+            }
+            Ok(())
+        });
+        if let Err(error) = prerequisites {
+            original.retain_runtime_error(error);
+            if let Err(error) = trusted_clock() {
+                original.clock_debt.get_or_insert(error);
+            }
+            return Err(crate::StorageGenerationStoppedV1);
+        }
+
+        let resolver_policies = match self.resolver_policies.as_ref() {
+            Some(policies) => policies,
+            None => return Err(crate::StorageGenerationStoppedV1),
+        };
+        let result = self.coordinator.prepare_nix_generation_into(
+            artifacts, request_id, resolver_policies, protocol_version, peer, policy,
+            trusted_clock, original,
+        );
+        if self.coordinator.transaction_journal_requires_reopen() {
+            self.latch_reopen_required();
+            original.retain_runtime_error(StorageRuntimeError::ReopenRequired);
+            original.finished = false;
+        }
+
+        // This independent clock observation also runs after a native Err.
+        // It never replaces the original cause with a coarse runtime marker.
+        let late = trusted_clock().and_then(|later| {
+            if let Some(Ok(initial)) = original.initial.as_ref() {
+                initial.validate_later_sample(later)
+                    .map_err(|_| StorageAdmissionError::FenceRejected)?;
+            }
+            if let Some(Ok(selected)) = original.checked.as_ref() {
+                if later.host_boot_id() != selected.prefix().host_boot_id
+                    || later.boottime_nanoseconds() >= selected.prefix().deadline_boottime_nanoseconds
+                {
+                    return Err(StorageAdmissionError::FenceRejected);
+                }
+            }
+            Ok(())
+        });
+        if let Err(error) = late {
+            original.clock_debt.get_or_insert(error);
+            original.finished = false;
+        }
+        if result.is_err() || original.first.is_some() || original.clock_debt.is_some() {
+            return Err(crate::StorageGenerationStoppedV1);
+        }
+        Ok(())
+    }
+
     /// Repairs one existing workspace root pin through fresh observation.
     ///
     /// The caller supplies only the raw Storage 1.0 request and standard

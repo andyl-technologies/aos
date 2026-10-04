@@ -638,6 +638,48 @@ impl StorageAuthorityV1 {
             return Err(StorageAdmissionError::RequestMismatch);
         }
 
+        self.finish_preparation_admission(
+            artifacts, &decoded, request_body, decoded.argument_commitment(),
+            protocol_version, current_clock, prior_fence,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn admit_nix_generation_preparation(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        semantics: &aos_sandbox_protocol::nix_generation::CanonicalNixGenerationPreparationV1,
+        request_body: &[u8],
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        current_clock: &RawPairedClockSample,
+        prior_fence: Option<&[u8]>,
+    ) -> Result<VerifiedStoragePreparationAdmissionV1, StorageAdmissionError> {
+        let decoded = aos_sandbox_protocol::nix_generation::CanonicalNixGenerationPreparationV1::decode(
+            request_body, peer, policy, current_clock.boottime_nanoseconds(),
+        ).map_err(|_| StorageAdmissionError::RequestMismatch)?;
+        if &decoded != semantics || decoded.prefix().host_boot_id != current_clock.host_boot_id() {
+            return Err(StorageAdmissionError::RequestMismatch);
+        }
+        self.finish_preparation_admission(
+            artifacts, decoded.prepare(), request_body, decoded.argument_commitment(),
+            protocol_version, current_clock, prior_fence,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish_preparation_admission(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        decoded: &CanonicalStoragePreparationSemanticsV1,
+        request_body: &[u8],
+        commitment: aos_sandbox_core::BrokerArgumentCommitment,
+        protocol_version: ProtocolVersion,
+        current_clock: &RawPairedClockSample,
+        prior_fence: Option<&[u8]>,
+    ) -> Result<VerifiedStoragePreparationAdmissionV1, StorageAdmissionError> {
+
         let assignment = assignment_from_preparation(&decoded)?;
         let admission = self.0.admit(
             artifacts,
@@ -651,7 +693,7 @@ impl StorageAuthorityV1 {
                 descriptor_count: 0,
                 verb: decoded.broker_verb(),
                 target: decoded.grant_target(),
-                argument_commitment: decoded.argument_commitment(),
+                argument_commitment: commitment,
                 request_deadline_boottime_nanoseconds: decoded
                     .header()
                     .deadline_boottime_nanoseconds(),
@@ -664,7 +706,7 @@ impl StorageAuthorityV1 {
             || admission.effect.status() != BrokerEffectStatusV1::Pending
             || admission.effect.request_id() != decoded.header().request_id()
             || admission.effect.transport_request_digest() != transport_digest
-            || admission.effect.request_digest() != decoded.argument_commitment().digest()
+            || admission.effect.request_digest() != commitment.digest()
             || admission.effect.verb() != BrokerVerb::StoragePrepareCatalog
             || admission.effect.target() != BrokerGrantTarget::Assignment
             || admission.effect.plan_digest() != admission.fence.plan_digest()
@@ -682,7 +724,7 @@ impl StorageAuthorityV1 {
                 operation_id: decoded.operation_id(),
                 inventory: decoded.inventory_binding(),
                 expected_head: decoded.expected_catalog_head(),
-                preparation_commitment: decoded.argument_commitment().digest(),
+                preparation_commitment: commitment.digest(),
                 transport_request_digest: transport_digest,
                 plan_digest: admission.effect.plan_digest(),
                 lease_digest: admission.effect.lease_digest(),

@@ -59,6 +59,7 @@ mod authority;
 mod carrier;
 mod continuation;
 mod fixed_domain;
+mod generation;
 
 pub(crate) use authority::CheckedStartAuthorityV2;
 pub(crate) use carrier::NixStartAdmissionCarrierV2;
@@ -67,6 +68,10 @@ pub use continuation::{
     CurrentRetainedNixStartV2, NixResolveAuthorizationDraftV2, NixStartContinuationErrorV2,
 };
 pub use fixed_domain::{NixFixedDomainPinsDataV2, NixFixedDomainPinsDecodeErrorV2};
+pub use generation::{
+    ControllerNixGenerationOriginalV1, NixGenerationOriginalErrorV1,
+    StorageGenerationPreparationDraftV1,
+};
 
 const CATALOG_MAGIC: &[u8; 8] = b"AOSNRC02";
 const CATALOG_DOMAIN: &[u8] = b"aos.sandbox.nix.recipe-catalog.v2\0";

@@ -167,6 +167,8 @@ mod git_read_inspection;
 pub(crate) mod nix_inputs;
 #[cfg(feature = "online-nix")]
 mod nix_environment;
+#[cfg(feature = "online-nix")]
+pub(crate) mod nix_generation;
 mod original_attach;
 mod operator_repair;
 mod create_q04;
@@ -210,6 +212,7 @@ type SharedControllerBrokerSessions = Arc<Mutex<ControllerBrokerSessions>>;
 /// Retains authenticated transports and their durable sequence owners across cycles.
 #[derive(Default)]
 struct ControllerBrokerSessions {
+    nix_generation_enabled: bool,
     #[cfg(feature = "online-nix")]
     nix_resolve: Option<nix_environment::NixResolveAttemptV1>,
     #[cfg(feature = "online-nix")]
@@ -508,6 +511,7 @@ fn run_ordinary_controller(
     let listener = bind_diagnostic_socket(&configuration)?;
     let sessions = Arc::new(Mutex::new(ControllerBrokerSessions {
         launch_image,
+        nix_generation_enabled: configuration.nix_storage_generation_prepare,
         #[cfg(feature = "online-nix")]
         nix_existing_outputs: configuration.nix_existing_outputs,
         ..ControllerBrokerSessions::default()
@@ -833,6 +837,7 @@ fn run_retained_controller(
     originals.sessions = Some(Arc::new(Mutex::new(ControllerBrokerSessions {
         launch_image: required!(parent.launch.take()),
         storage_terminal: Some(Arc::downgrade(&worker)),
+        nix_generation_enabled: configuration.nix_storage_generation_prepare,
         #[cfg(feature = "online-nix")]
         nix_existing_outputs: configuration.nix_existing_outputs,
         ..ControllerBrokerSessions::default()
@@ -1361,6 +1366,8 @@ struct ControllerWorkerLoanV1<'owner> {
 enum ControllerResidentCauseV1 {
     #[cfg(feature = "online-nix")]
     NixResolve,
+    #[cfg(feature = "online-nix")]
+    NixGeneration,
     // The real native cause and channel/Journal outcomes remain in fixed slots.
     GitRead,
     Runtime(ControllerRuntimeError),
@@ -1387,6 +1394,8 @@ impl ControllerResidentCauseV1 {
         match self {
             #[cfg(feature = "online-nix")]
             Self::NixResolve => "resident original Nix Resolve50 failure",
+            #[cfg(feature = "online-nix")]
+            Self::NixGeneration => "resident original Nix Storage Prepare failure",
             Self::GitRead => "resident original Git read inspection failure",
             Self::Runtime(_) => "resident Controller startup/server failure",
             Self::Worker(_) => "resident Controller worker failure",
@@ -2767,6 +2776,13 @@ fn ensure_controller_broker_sessions(
     node_id: [u8; 16],
     sessions: &mut ControllerBrokerSessions,
 ) -> Result<(), CycleFailure> {
+    if sessions.storage.as_ref().is_some_and(|storage| storage.has_pending_nix_generation()) {
+        #[cfg(feature = "online-nix")]
+        if let Some(worker) = sessions.storage_terminal.as_ref().and_then(std::sync::Weak::upgrade) {
+            worker.close(ControllerResidentCauseV1::NixGeneration);
+        }
+        return Err(CycleFailure::Fatal("original Nix generation Session remains occupied".to_owned()));
+    }
     if sessions.storage.as_ref().is_some_and(|storage| storage.has_pending_output_registration()) {
         if let Some(worker) = sessions.storage_terminal.as_ref().and_then(std::sync::Weak::upgrade) {
             worker.close(ControllerResidentCauseV1::OutputRegistration);
@@ -2839,6 +2855,7 @@ fn ensure_controller_broker_sessions(
                 image,
                 &mut sessions.storage_cold,
                 &worker,
+                sessions.nix_generation_enabled,
             )?;
             sessions.storage = Some(
                 crate::DormantStorageLifecycleInventoryOwnerV1::from_protected_session(session),
@@ -2874,6 +2891,7 @@ fn connect_retained_controller_storage(
     image: &crate::production_startup::Pid1LaunchImageV1,
     cold: &mut Option<crate::handshake::RetainedStorageColdOpenV1>,
     worker: &ControllerWorkerCustodyV1,
+    nix_generation: bool,
 ) -> Result<crate::DormantAuthenticatedBrokerSessionV1, CycleFailure> {
     let custody = crate::ProtectedBrokerSessionFixedCustodyV1::open_fixed_protected(
         crate::ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient,
@@ -2885,7 +2903,12 @@ fn connect_retained_controller_storage(
     let deadline = crate::handshake::OriginalBrokerColdDeadlineV1::controller()
         .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
 
-    match custody.connect_retained_output_storage_session(deadline, cold, node_id) {
+    let result = if nix_generation {
+        custody.connect_retained_nix_generation_storage_session(deadline, cold, node_id)
+    } else {
+        custody.connect_retained_output_storage_session(deadline, cold, node_id)
+    };
+    match result {
         Ok(session) => Ok(session),
         Err(error) if cold.is_some() => {
             worker.close(ControllerResidentCauseV1::StorageCold);
@@ -3370,6 +3393,7 @@ fn open_controller(
         attachment_host,
         attachment_mount,
         nix_start,
+        configuration.nix_storage_generation_prepare,
     )
 }
 
@@ -3381,6 +3405,7 @@ fn controller_from_journal(
     attachment_host: Option<aos_sandbox::runtime_scope::HostServiceIdentity>,
     attachment_mount: Option<aos_sandbox::mount_preparation::MountServiceIdentity>,
     nix_start: Option<Arc<ControllerNixStartRecipeSelectorV2>>,
+    nix_generation_enabled: bool,
 ) -> Result<ProductionController, ControllerRuntimeError> {
     validate_controller_journal(&mut journal, node_id)?;
     let scope = ControllerRequestScopeV1::new(ObjectDigest::from_bytes(REQUEST_SCOPE))?;
@@ -3394,6 +3419,10 @@ fn controller_from_journal(
         attachment_host,
         attachment_mount,
     )?;
+    #[cfg(feature = "online-nix")]
+    {
+        executor.nix_generation_enabled = nix_generation_enabled;
+    }
     #[cfg(feature = "online-nix")]
     if let Some(selector) = nix_start.as_ref() {
         // Share only the already admitted original. None keeps the old
@@ -3493,6 +3522,7 @@ struct RuntimeConfiguration {
     git_coverage: bool,
     git_read_inspection: Option<(u32, u32)>,
     nix_start_admission: bool,
+    nix_storage_generation_prepare: bool,
     nix_existing_outputs: bool,
     issue_source_successor: bool,
     create_q04_policy_subgate: bool,
@@ -3526,6 +3556,7 @@ impl RuntimeConfiguration {
         let mut git_coverage = false;
         let mut git_read_inspection = None;
         let mut nix_start_admission = false;
+        let mut nix_storage_generation_prepare = false;
         let mut issue_source_successor = false;
         let mut create_q04_policy_subgate = false;
         for argument in arguments {
@@ -3535,6 +3566,9 @@ impl RuntimeConfiguration {
                 "--git-upload-bootstrap" if !git_upload_bootstrap => git_upload_bootstrap = true,
                 "--git-upload-coverage" if !git_coverage => git_coverage = true,
                 "--nix-start-admission" if !nix_start_admission => nix_start_admission = true,
+                "--nix-storage-generation-prepare" if !nix_storage_generation_prepare => {
+                    nix_storage_generation_prepare = true;
+                }
                 "--issue-source-successor" if !issue_source_successor => {
                     issue_source_successor = true;
                 }
@@ -3587,6 +3621,14 @@ impl RuntimeConfiguration {
                 "original Q04 freshness is incompatible with Git Cache bootstrap",
             ));
         }
+        if nix_storage_generation_prepare
+            && (!cfg!(feature = "online-nix") || !nix_start_admission
+                || issue_source_successor || git_coverage || git_upload_bootstrap)
+        {
+            return Err(ControllerRuntimeError::InvalidArguments(
+                "Nix generation Prepare requires original Nix and excludes Git/issue profiles",
+            ));
+        }
         if git_upload_bootstrap && !publisher_ingress {
             return Err(ControllerRuntimeError::InvalidArguments(
                 "Git bootstrap requires original publisher ingress",
@@ -3613,6 +3655,7 @@ impl RuntimeConfiguration {
             git_coverage,
             git_read_inspection,
             nix_start_admission,
+            nix_storage_generation_prepare,
             nix_existing_outputs: false,
             issue_source_successor,
             create_q04_policy_subgate,
@@ -3646,6 +3689,8 @@ fn parse_identity(
 struct ProductionEffectExecutor {
     #[cfg(feature = "online-nix")]
     nix_start: Option<Arc<ControllerNixStartRecipeSelectorV2>>,
+    #[cfg(feature = "online-nix")]
+    nix_generation_enabled: bool,
     sessions: SharedControllerBrokerSessions,
     request_scope: ControllerRequestScopeV1,
     broker_plan_signer: Option<ControllerBrokerPlanSignerV1>,
@@ -3759,6 +3804,8 @@ impl ProductionEffectExecutor {
         Self {
             #[cfg(feature = "online-nix")]
             nix_start: None,
+            #[cfg(feature = "online-nix")]
+            nix_generation_enabled: false,
             sessions,
             request_scope,
             broker_plan_signer,
@@ -5816,6 +5863,10 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             .is_some_and(|context| context.has_retained_nix_start())
         {
             #[cfg(feature = "online-nix")]
+            if self.nix_generation_enabled {
+                return nix_generation::observe(self, operation_id, step);
+            }
+            #[cfg(feature = "online-nix")]
             return nix_environment::observe(self, operation_id, step);
             #[cfg(not(feature = "online-nix"))]
             // Admission is real, but no namespace47 floor/archive/publication
@@ -5978,6 +6029,10 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             .map_err(|error| EffectFailure::Permanent(error.to_string()))?
             .is_some_and(|context| context.has_retained_nix_start())
         {
+            #[cfg(feature = "online-nix")]
+            if self.nix_generation_enabled {
+                return nix_generation::prepare(self, operation_id, step, plan, journal);
+            }
             #[cfg(feature = "online-nix")]
             return nix_environment::resolve(self, operation_id, step, plan, journal);
             #[cfg(not(feature = "online-nix"))]
@@ -7971,6 +8026,7 @@ mod tests {
             git_coverage: false,
             git_read_inspection: None,
             nix_start_admission: false,
+            nix_storage_generation_prepare: false,
             nix_existing_outputs: false,
             issue_source_successor: false,
             create_q04_policy_subgate: false,

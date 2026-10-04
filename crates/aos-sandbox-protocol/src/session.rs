@@ -1259,6 +1259,7 @@ const fn method_requires_authorization(method: BrokerMethod) -> bool {
             | BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
             | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
             | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
+            | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1
             | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
             | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
             | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
@@ -1367,6 +1368,7 @@ fn validate_outbound_carriers(
         | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS
         | BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
         | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
+        | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1
         | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
         | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
         | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
@@ -1931,6 +1933,7 @@ fn validate_method(
         ) | (
             ProtocolId::StorageBroker,
             BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
+                | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1
                 | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
                 | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
                 | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT

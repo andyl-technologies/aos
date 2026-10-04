@@ -166,6 +166,7 @@ impl StorageCatalogPreparationOutcomeV1 {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RetainedStorageCatalogPreparationV1 {
+    version: u16,
     operation_id: [u8; 16],
     sandbox_id: [u8; 16],
     request_id: [u8; 16],
@@ -276,6 +277,50 @@ impl RetainedStorageCatalogPreparationV1 {
         authority_records: StoragePreparationAuthorityRecordsV1<'_>,
         resolver_policy_binding: StorageResolverPolicyBindingV1,
     ) -> Result<NewStorageCatalogPreparationV1, StorageCatalogPreparationError> {
+        Self::prepare_fields(
+            semantics, catalog, request_id, host_boot_id,
+            effect_deadline_boottime_nanoseconds, plan_digest, lease_digest,
+            authority_records, resolver_policy_binding,
+            semantics.canonical_bytes(), semantics.argument_commitment(), RECORD_VERSION,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_nix_generation(
+        semantics: &aos_sandbox_protocol::nix_generation::CanonicalNixGenerationPreparationV1,
+        whole_request: &[u8],
+        catalog: ResolvedCatalogCommitmentV1,
+        request_id: [u8; 16],
+        host_boot_id: [u8; 16],
+        effect_deadline_boottime_nanoseconds: u64,
+        plan_digest: ObjectDigest,
+        lease_digest: ObjectDigest,
+        authority_records: StoragePreparationAuthorityRecordsV1<'_>,
+        resolver_policy_binding: StorageResolverPolicyBindingV1,
+    ) -> Result<NewStorageCatalogPreparationV1, StorageCatalogPreparationError> {
+        Self::prepare_fields(
+            semantics.prepare(), catalog, request_id, host_boot_id,
+            effect_deadline_boottime_nanoseconds, plan_digest, lease_digest,
+            authority_records, resolver_policy_binding,
+            whole_request, semantics.argument_commitment(), 2,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_fields(
+        semantics: &CanonicalStoragePreparationSemanticsV1,
+        catalog: ResolvedCatalogCommitmentV1,
+        request_id: [u8; 16],
+        host_boot_id: [u8; 16],
+        effect_deadline_boottime_nanoseconds: u64,
+        plan_digest: ObjectDigest,
+        lease_digest: ObjectDigest,
+        authority_records: StoragePreparationAuthorityRecordsV1<'_>,
+        resolver_policy_binding: StorageResolverPolicyBindingV1,
+        canonical_request: &[u8],
+        commitment: BrokerArgumentCommitment,
+        version: u16,
+    ) -> Result<NewStorageCatalogPreparationV1, StorageCatalogPreparationError> {
         validate_resolution(semantics, &catalog)?;
         if host_boot_id == [0; 16]
             || request_id == [0; 16]
@@ -290,22 +335,24 @@ impl RetainedStorageCatalogPreparationV1 {
         {
             return Err(StorageCatalogPreparationError::ResolutionMismatch);
         }
-        let preparation_digest = semantics.argument_commitment().digest();
+        let preparation_digest = commitment.digest();
         let assignment_digest = ObjectDigest::from_bytes(*semantics.fence().assignment_digest());
         let execution = catalog
             .execution_binding()
             .map_err(|_| StorageCatalogPreparationError::ResolutionMismatch)?;
         let root_policy_digest = execution.root_policy_digest();
         let clone_identity_digest = execution.clone_identity_digest();
-        let receipt_payload = encode_receipt_payload(
+        let receipt_payload = encode_receipt_payload_for_version(
             semantics.operation_id(),
             catalog.binding(),
             semantics.expires_boottime_nanoseconds(),
             preparation_digest,
             plan_digest,
             lease_digest,
+            version,
         );
         let record = Self {
+            version,
             operation_id: semantics.operation_id(),
             sandbox_id: *semantics.fence().sandbox_id(),
             request_id,
@@ -324,7 +371,7 @@ impl RetainedStorageCatalogPreparationV1 {
             sealed_fence: authority_records.sealed_fence.to_vec(),
             sealed_effect: authority_records.sealed_effect.to_vec(),
             sealed_operation_fence: authority_records.sealed_operation_fence.to_vec(),
-            canonical_request: semantics.canonical_bytes().to_vec(),
+            canonical_request: canonical_request.to_vec(),
             receipt: Vec::new(),
             consumption: None,
         };
@@ -373,7 +420,7 @@ impl RetainedStorageCatalogPreparationV1 {
                 + self.receipt.len(),
         );
         encoder.fixed(RECORD_MAGIC);
-        encoder.fixed(&RECORD_VERSION.to_be_bytes());
+        encoder.fixed(&self.version.to_be_bytes());
         encoder.fixed(&self.operation_id);
         encoder.fixed(&self.sandbox_id);
         encoder.fixed(&self.request_id);
@@ -424,7 +471,8 @@ impl RetainedStorageCatalogPreparationV1 {
         if decoder.fixed::<8>()? != *RECORD_MAGIC {
             return Err(StorageCatalogPreparationError::CorruptRecord);
         }
-        if u16::from_be_bytes(decoder.fixed()?) != RECORD_VERSION {
+        let version = u16::from_be_bytes(decoder.fixed()?);
+        if !matches!(version, 1 | 2) {
             return Err(StorageCatalogPreparationError::CorruptRecord);
         }
         let operation_id = decoder.nonzero::<16>()?;
@@ -459,6 +507,9 @@ impl RetainedStorageCatalogPreparationV1 {
             )?),
             _ => return Err(StorageCatalogPreparationError::CorruptRecord),
         };
+        if version == 2 && consumption.is_some() {
+            return Err(StorageCatalogPreparationError::CorruptRecord);
+        }
         let catalog_binding = decoder.binding()?;
         let inventory = decoder.binding()?;
         let expected_head = decoder.binding()?;
@@ -512,6 +563,7 @@ impl RetainedStorageCatalogPreparationV1 {
             return Err(StorageCatalogPreparationError::CorruptRecord);
         }
         Ok(Self {
+            version,
             operation_id,
             sandbox_id,
             request_id,
@@ -544,11 +596,45 @@ impl RetainedStorageCatalogPreparationV1 {
         host_boot_id: [u8; 16],
         now_boottime_nanoseconds: u64,
     ) -> Result<(), StorageCatalogPreparationError> {
-        if self.operation_id != semantics.operation_id()
+        self.replay_matches_request(
+            semantics, semantics.canonical_bytes(), semantics.argument_commitment(),
+            RECORD_VERSION, plan_digest, lease_digest, host_boot_id, now_boottime_nanoseconds,
+        )
+    }
+
+    pub(crate) fn replay_matches_nix_generation(
+        &self,
+        semantics: &aos_sandbox_protocol::nix_generation::CanonicalNixGenerationPreparationV1,
+        whole_request: &[u8],
+        plan_digest: ObjectDigest,
+        lease_digest: ObjectDigest,
+        host_boot_id: [u8; 16],
+        now_boottime_nanoseconds: u64,
+    ) -> Result<(), StorageCatalogPreparationError> {
+        self.replay_matches_request(
+            semantics.prepare(), whole_request, semantics.argument_commitment(),
+            2, plan_digest, lease_digest, host_boot_id, now_boottime_nanoseconds,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn replay_matches_request(
+        &self,
+        semantics: &CanonicalStoragePreparationSemanticsV1,
+        canonical_request: &[u8],
+        commitment: BrokerArgumentCommitment,
+        version: u16,
+        plan_digest: ObjectDigest,
+        lease_digest: ObjectDigest,
+        host_boot_id: [u8; 16],
+        now_boottime_nanoseconds: u64,
+    ) -> Result<(), StorageCatalogPreparationError> {
+        if self.version != version
+            || self.operation_id != semantics.operation_id()
             || self.sandbox_id != *semantics.fence().sandbox_id()
             || self.request_id != *semantics.header().request_id()
-            || self.preparation_digest != semantics.argument_commitment().digest()
-            || self.canonical_request != semantics.canonical_bytes()
+            || self.preparation_digest != commitment.digest()
+            || self.canonical_request != canonical_request
             || self.inventory != semantics.inventory_binding()
             || self.expected_head != semantics.expected_catalog_head()
             || self.assignment_digest.as_bytes() != semantics.fence().assignment_digest()
@@ -653,13 +739,14 @@ impl RetainedStorageCatalogPreparationV1 {
     }
 
     pub(crate) fn expected_receipt_payload(&self) -> Vec<u8> {
-        encode_receipt_payload(
+        encode_receipt_payload_for_version(
             self.operation_id,
             self.catalog.binding(),
             self.expires_boottime_nanoseconds,
             self.preparation_digest,
             self.plan_digest,
             self.lease_digest,
+            self.version,
         )
     }
 
@@ -680,6 +767,10 @@ impl RetainedStorageCatalogPreparationV1 {
         apply_plan_digest: ObjectDigest,
         apply_lease_digest: ObjectDigest,
     ) -> Result<Self, StorageCatalogPreparationError> {
+        // This tranche intentionally does not authorize selected Clone Apply.
+        if self.version != RECORD_VERSION {
+            return Err(StorageCatalogPreparationError::ResolutionRejected);
+        }
         let consumption = StorageCatalogConsumptionV1::new(
             apply_request_id,
             apply_transport_digest,
@@ -708,9 +799,24 @@ pub(crate) fn encode_receipt_payload(
     plan_digest: ObjectDigest,
     lease_digest: ObjectDigest,
 ) -> Vec<u8> {
+    encode_receipt_payload_for_version(
+        operation_id, catalog, expires_boottime_nanoseconds,
+        preparation_digest, plan_digest, lease_digest, RECEIPT_VERSION,
+    )
+}
+
+fn encode_receipt_payload_for_version(
+    operation_id: [u8; 16],
+    catalog: CatalogBindingV1,
+    expires_boottime_nanoseconds: u64,
+    preparation_digest: ObjectDigest,
+    plan_digest: ObjectDigest,
+    lease_digest: ObjectDigest,
+    version: u16,
+) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(170);
     bytes.extend_from_slice(RECEIPT_MAGIC);
-    bytes.extend_from_slice(&RECEIPT_VERSION.to_be_bytes());
+    bytes.extend_from_slice(&version.to_be_bytes());
     bytes.extend_from_slice(&operation_id);
     bytes.extend_from_slice(&catalog.generation().to_be_bytes());
     bytes.extend_from_slice(catalog.digest().as_bytes());
@@ -1004,6 +1110,7 @@ mod tests {
             .map(|binding| binding.clone_identity_digest())
             .unwrap_or_else(|_| ObjectDigest::from_bytes([0; 32]));
         RetainedStorageCatalogPreparationV1 {
+            version: 1,
             operation_id: [34; 16],
             sandbox_id: [35; 16],
             request_id: [36; 16],
@@ -1052,6 +1159,21 @@ mod tests {
                 142, 150, 237, 36, 143, 125, 129, 224, 63, 51, 8, 228, 223, 237,
             ]
         );
+    }
+
+    #[test]
+    fn selected_record_version_never_grants_ordinary_apply_consumption() {
+        let mut record = retained();
+        record.version = 2;
+
+        assert!(matches!(record.consume(
+            [91; 16],
+            ObjectDigest::from_bytes([92; 32]),
+            ObjectDigest::from_bytes([93; 32]),
+            ObjectDigest::from_bytes([94; 32]),
+            ObjectDigest::from_bytes([95; 32]),
+        ), Err(StorageCatalogPreparationError::ResolutionRejected)));
+        assert!(record.consumption().is_none());
     }
 
     #[test]

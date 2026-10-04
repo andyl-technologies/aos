@@ -97,6 +97,26 @@ impl ProtectedStorageResolverPolicyV1 {
         component
     }
 
+    /// Derives a fixed generation-qualified destination below the same ancestor.
+    pub(crate) fn nix_generation_name(
+        &self,
+        sandbox_id: &[u8; 16],
+        generation: u64,
+    ) -> Result<String, StorageCatalogResolverErrorV1> {
+        if generation == 0 {
+            return Err(StorageCatalogResolverErrorV1::PolicyRejected);
+        }
+        let mut name = derived_name(
+            self.project_ancestor.dataset().name(), "nix-generation", sandbox_id,
+        )?;
+        name.push('-');
+        name.push_str(&generation.to_string());
+        if name.len() > 255 {
+            return Err(StorageCatalogResolverErrorV1::PolicyRejected);
+        }
+        Ok(name)
+    }
+
     pub(crate) fn space(
         &self,
         requested_quota_bytes: u64,

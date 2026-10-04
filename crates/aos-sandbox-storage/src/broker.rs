@@ -1188,6 +1188,30 @@ impl StorageAdmissionCoordinator {
             initial_clock.boottime_nanoseconds(),
         )
         .map_err(|_| StorageBrokerError::Request)?;
+        self.prepare_catalog_fields(
+            request_body, artifacts, resolver_policies, protocol_version,
+            peer, policy, trusted_clock, &semantics, initial_clock, None, None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_catalog_fields<F>(
+        &mut self,
+        request_body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        resolver_policies: &ProtectedStorageResolverPolicyDirectoryV1,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        trusted_clock: &mut F,
+        semantics: &CanonicalStoragePreparationSemanticsV1,
+        initial_clock: RawPairedClockSample,
+        generation: Option<&aos_sandbox_protocol::nix_generation::CanonicalNixGenerationPreparationV1>,
+        native: Option<crate::nix_generation::StorageGenerationNativeLoanV1<'_>>,
+    ) -> Result<StorageCatalogPreparationOutcomeV1, StorageBrokerError>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
+    {
         let operation_id = semantics.operation_id();
         let sandbox_id = *semantics.fence().sandbox_id();
         let request_id = *semantics.header().request_id();
@@ -1199,9 +1223,8 @@ impl StorageAdmissionCoordinator {
             .transactions
             .authority_record(RecordNamespace::DesiredState, &sandbox_id)?
             .map(<[u8]>::to_vec);
-        let admission = self
-            .authority
-            .admit_preparation(
+        let admission = match generation {
+            None => self.authority.admit_preparation(
                 artifacts,
                 &semantics,
                 request_body,
@@ -1210,18 +1233,33 @@ impl StorageAdmissionCoordinator {
                 policy,
                 &initial_clock,
                 prior_fence.as_deref(),
-            )
-            .map_err(|_| StorageBrokerError::Authority)?;
+            ),
+            Some(selected) => self.authority.admit_nix_generation_preparation(
+                artifacts, selected, request_body, protocol_version,
+                peer, policy, &initial_clock, prior_fence.as_deref(),
+            ),
+        }.map_err(|_| StorageBrokerError::Authority)?;
+        if generation.is_some_and(|selected| {
+            selected.origin().node != *admission.fence().node().as_bytes()
+        }) {
+            return Err(StorageBrokerError::Authority);
+        }
 
         if let Some(sealed_record) = retained {
             let retained = self.authenticate_catalog_preparation(operation_id, sealed_record)?;
-            retained.record.replay_matches(
+            match generation {
+                None => retained.record.replay_matches(
                 &semantics,
                 admission.plan_digest(),
                 admission.lease_digest(),
                 initial_clock.host_boot_id(),
                 initial_clock.boottime_nanoseconds(),
-            )?;
+                )?,
+                Some(selected) => retained.record.replay_matches_nix_generation(
+                    selected, request_body, admission.plan_digest(), admission.lease_digest(),
+                    initial_clock.host_boot_id(), initial_clock.boottime_nanoseconds(),
+                )?,
+            }
             if &retained.preparation_fence != admission.fence()
                 || admission.transport_request_digest()
                     != ObjectDigest::from_bytes(Sha256::digest(request_body).into())
@@ -1243,12 +1281,18 @@ impl StorageAdmissionCoordinator {
         let policy_catalog_binding = loaded_policy
             .binding()
             .map_err(|_| StorageCatalogPreparationError::ResolutionRejected)?;
-        self.transactions
-            .admit_resolver_policy_catalog(policy_catalog_binding)?;
+        if generation.is_none() {
+            self.transactions.admit_resolver_policy_catalog(policy_catalog_binding)?;
+        }
         let selected_policy = loaded_policy
             .select(admission.resolution().assignment())
             .map_err(|_| StorageCatalogPreparationError::ResolutionRejected)?;
         let policy_binding = selected_policy.binding();
+        if generation.is_some() {
+            // Selected Prepare is existing-only: it cannot advance policy as
+            // an unreported fifth write before the four-value transaction.
+            self.transactions.validate_fresh_resolver_policy(policy_binding)?;
+        }
         let policy = selected_policy.into_policy();
 
         let verified_journal = self.transactions.verified_resolver_journal()?;
@@ -1266,12 +1310,16 @@ impl StorageAdmissionCoordinator {
         }
         let resolver = StorageCatalogResolverV1::new(policy, inventory)
             .map_err(|_| StorageCatalogPreparationError::ResolutionRejected)?;
-        let catalog = resolver.resolve(admission.resolution(), current_head)?;
+        let catalog = match generation {
+            None => resolver.resolve(admission.resolution(), current_head)?,
+            Some(selected) => resolver.resolve_nix_generation(admission.resolution(), selected, current_head)?,
+        };
         let sealed = self
             .authority
             .seal_preparation(&admission)
             .map_err(|_| StorageBrokerError::Authority)?;
-        let prepared = RetainedStorageCatalogPreparationV1::prepare_with_policy(
+        let prepared = match generation {
+            None => RetainedStorageCatalogPreparationV1::prepare_with_policy(
             &semantics,
             catalog,
             request_id,
@@ -1285,7 +1333,17 @@ impl StorageAdmissionCoordinator {
                 sealed_operation_fence: &sealed.operation_fence,
             },
             policy_binding,
-        )?;
+            )?,
+            Some(selected) => RetainedStorageCatalogPreparationV1::prepare_nix_generation(
+                selected, request_body, catalog, request_id, initial_clock.host_boot_id(),
+                admission.effect_deadline_boottime_nanoseconds(), admission.plan_digest(),
+                admission.lease_digest(), StoragePreparationAuthorityRecordsV1 {
+                    sealed_fence: &sealed.current_fence,
+                    sealed_effect: &sealed.effect,
+                    sealed_operation_fence: &sealed.operation_fence,
+                }, policy_binding,
+            )?,
+        };
         let receipt = self
             .authority
             .seal_catalog_preparation_receipt(&operation_id, &prepared.receipt_payload)
@@ -1299,7 +1357,7 @@ impl StorageAdmissionCoordinator {
         self.authority
             .check_preparation_before_effect(&admission, trusted_clock)
             .map_err(|_| StorageBrokerError::Authority)?;
-        self.transactions.retain_catalog_preparation(
+        self.transactions.retain_catalog_preparation_with_generation(
             operation_id,
             sandbox_id,
             request_id,
@@ -1309,8 +1367,100 @@ impl StorageAdmissionCoordinator {
             sealed.operation_fence,
             sealed_record,
             policy_binding,
+            native,
         )?;
         record.outcome().map_err(Into::into)
+    }
+
+    /// Parks the selected request and all returned preparation/native results.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_nix_generation_into<F>(
+        &mut self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request_id: [u8; 16],
+        resolver_policies: &ProtectedStorageResolverPolicyDirectoryV1,
+        protocol_version: ProtocolVersion,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        trusted_clock: &mut F,
+        original: &mut crate::StorageGenerationAttemptV1,
+    ) -> Result<(), crate::StorageGenerationStoppedV1>
+    where
+        F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
+    {
+        use crate::nix_generation::{StorageGenerationCauseV1, StorageGenerationNativeLoanV1};
+
+        if !original.entered || original.request.is_none() || original.first.is_some() {
+            original.first.get_or_insert(StorageGenerationCauseV1::Occupied);
+            return Err(crate::StorageGenerationStoppedV1);
+        }
+        original.initial = Some(trusted_clock());
+        let initial = match original.initial.as_ref() {
+            Some(Ok(initial)) => *initial,
+            _ => {
+                original.first.get_or_insert(StorageGenerationCauseV1::Clock);
+                if let Err(error) = trusted_clock() { original.clock_debt = Some(error); }
+                return Err(crate::StorageGenerationStoppedV1);
+            }
+        };
+        let bytes = match original.request.as_deref() {
+            Some(bytes) => bytes,
+            None => return Err(crate::StorageGenerationStoppedV1),
+        };
+        original.checked = Some(aos_sandbox_protocol::nix_generation::CanonicalNixGenerationPreparationV1::decode(
+            bytes, peer, policy, initial.boottime_nanoseconds(),
+        ));
+        match original.checked.as_ref() {
+            Some(Ok(selected)) => {
+                if selected.prepare().header().request_id() != &request_id
+                    || selected.prepare().header().protocol_version() != protocol_version
+                {
+                    original.handoff = Some(Err(crate::DormantStorageBrokerCallErrorV1::StaleKernel));
+                    original.first.get_or_insert(StorageGenerationCauseV1::Handoff);
+                } else {
+                    let loan = StorageGenerationNativeLoanV1 {
+                        native: &mut original.native,
+                        clock: &mut original.native_clock,
+                        clock_validation: &mut original.native_clock_validation,
+                        first: &mut original.first,
+                        initial,
+                        boot: selected.prefix().host_boot_id,
+                        deadline: selected.prefix().deadline_boottime_nanoseconds,
+                    };
+                    let result = self.prepare_catalog_fields(
+                        bytes, artifacts, resolver_policies, protocol_version, peer, policy,
+                        trusted_clock, selected.prepare(), initial, Some(selected), Some(loan),
+                    );
+                    // No result-return gap: this same parent retains the whole
+                    // Preparation Err/Ok before the independent final clock.
+                    original.prepared = Some(result);
+                    if original.prepared.as_ref().is_some_and(Result::is_err) {
+                        original.first.get_or_insert(StorageGenerationCauseV1::Preparation);
+                    }
+                }
+            }
+            _ => { original.first.get_or_insert(StorageGenerationCauseV1::Request); }
+        }
+        let final_clock = trusted_clock().and_then(|later| {
+            initial.validate_later_sample(later)
+                .map_err(|_| StorageAdmissionError::FenceRejected)?;
+            if let Some(Ok(selected)) = original.checked.as_ref() {
+                if later.host_boot_id() != selected.prefix().host_boot_id
+                    || later.boottime_nanoseconds() >= selected.prefix().deadline_boottime_nanoseconds
+                {
+                    return Err(StorageAdmissionError::FenceRejected);
+                }
+            }
+            Ok(later)
+        });
+        if let Err(error) = final_clock {
+            original.clock_debt.get_or_insert(error);
+        }
+        if original.first.is_some() || original.clock_debt.is_some() {
+            return Err(crate::StorageGenerationStoppedV1);
+        }
+        original.finished = true;
+        Ok(())
     }
 
     /// Resolves and durably retains one independently authorized catalog preparation.

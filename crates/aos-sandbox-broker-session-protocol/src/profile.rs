@@ -96,7 +96,7 @@ const HOST_ARGUMENT_SOURCE_REQUEST_DESCRIPTOR_DISPOSITIONS: [BrokerDescriptorDis
 ///
 /// Registration is not production advertisement. Closed provisional carriers
 /// remain excluded until their protected issuers and Host owners are joined.
-pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 54] = [
+pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 55] = [
     BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
@@ -151,6 +151,7 @@ pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 54] = [
     BrokerMethod::BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1,
     BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1,
     BrokerMethod::BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1,
+    BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1,
 ];
 
 /// Number of non-sentinel methods in the authenticated broker profile.
@@ -186,6 +187,7 @@ pub fn authenticated_broker_methods_for_role_v1(
                     | BrokerMethod::BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1
                     | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1
                     | BrokerMethod::BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1
+                    | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1
             )
         })
         .filter(|method| {
@@ -322,6 +324,37 @@ fn git_coverage_methods(protocol: BrokerSessionProtocolV1) -> Vec<BrokerMethod> 
     }
 
     methods
+}
+
+/// Builds the selected Storage generation client hello through the ordinary builder.
+///
+/// Default and Git coverage rosters remain unchanged. This advertises a method,
+/// not a current Start, provisioned origin or permission to mutate Storage.
+///
+/// # Errors
+/// Returns the existing negotiation error for an invalid response bound.
+pub fn nix_generation_storage_client_hello_v1() -> Result<BrokerClientHello, BrokerSessionNegotiationError> {
+    let mut hello = production_broker_client_hello_v1(
+        BrokerSessionProtocolV1::Storage,
+        Audience::AUDIENCE_NODE_CONTROLLER,
+        1_048_576,
+    )?;
+    hello.required_methods.push(BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1.into());
+    Ok(hello)
+}
+
+/// Builds the selected Storage generation server hello through the ordinary builder.
+///
+/// # Errors
+/// Returns the existing negotiation error for an invalid response bound.
+pub fn nix_generation_storage_server_hello_v1() -> Result<BrokerServerHello, BrokerSessionNegotiationError> {
+    let mut hello = production_broker_server_hello_v1(
+        BrokerSessionProtocolV1::Storage,
+        Audience::AUDIENCE_NODE_CONTROLLER,
+        1_048_576,
+    )?;
+    hello.methods.push(BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1.into());
+    Ok(hello)
 }
 
 fn git_coverage_client_hello(
@@ -561,6 +594,7 @@ pub const fn authenticated_broker_method_profile_v1(
         BrokerMethod::BROKER_METHOD_STORAGE_APPLY
         | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
         | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
+        | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1
         | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
         | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
         | BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT => {
@@ -646,6 +680,7 @@ pub const fn authenticated_broker_method_profile_v1(
             | BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1
             | BrokerMethod::BROKER_METHOD_STORAGE_APPLY
             | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
+            | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1
             | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
             | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
             | BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT
@@ -1302,6 +1337,32 @@ mod tests {
     use super::*;
 
     const RESPONSE_MAXIMUM: u32 = 65_536;
+
+    #[test]
+    fn named_nix_generation_hellos_add_only_method57_without_changing_defaults() {
+        let protocol = BrokerSessionProtocolV1::Storage;
+        let audience = Audience::AUDIENCE_NODE_CONTROLLER;
+        let ordinary = production_broker_client_hello_v1(protocol, audience, 1_048_576).unwrap();
+        let mut expected = ordinary.required_methods.clone();
+        expected.push(BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1.into());
+
+        let client = nix_generation_storage_client_hello_v1().unwrap();
+        let broker = nix_generation_storage_server_hello_v1().unwrap();
+
+        assert_eq!(client.required_methods, expected);
+        assert_eq!(broker.methods, expected);
+        assert_eq!(client.required_features, ordinary.required_features);
+        assert_eq!(client.maximum_response_bytes, ordinary.maximum_response_bytes);
+        assert!(!ordinary.required_methods.contains(
+            &BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1.into(),
+        ));
+        validate_authenticated_negotiation_v1(&client, &broker, protocol, 1, 0, audience).unwrap();
+
+        let default_broker = production_broker_server_hello_v1(protocol, audience, 1_048_576).unwrap();
+        assert!(validate_authenticated_negotiation_v1(
+            &client, &default_broker, protocol, 1, 0, audience,
+        ).is_err());
+    }
 
     #[test]
     fn named_coverage_hellos_add_only_their_closed_pair_to_the_default_profile() {

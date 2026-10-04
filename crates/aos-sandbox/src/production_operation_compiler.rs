@@ -48,6 +48,8 @@ mod nix_environment;
 
 #[cfg(target_os = "linux")]
 pub use nix_environment::{
+    ControllerNixGenerationOriginalV1, NixGenerationOriginalErrorV1,
+    StorageGenerationPreparationDraftV1,
     ControllerNixPublicDataLoanV2, ControllerNixSelectorAdmissionV2,
     ControllerNixSelectorFailureRefV2,
     ControllerNixStartRecipeSelectorV2, CurrentRetainedNixStartV2, NixResolveAuthorizationDraftV2,
