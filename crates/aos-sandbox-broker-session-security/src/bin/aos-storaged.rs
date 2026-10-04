@@ -39,6 +39,7 @@ const CONTROLLER_CGROUP: &str = "aos.slice/aos-control.slice/aos-sandboxd.servic
 const HOST_CGROUP: &str = "system.slice/aos-sandbox-hostd.service";
 const SOURCE_PROVIDER_CGROUP: &str = "aos.slice/aos-control.slice/aos-source-providerd.service";
 const GIT_COVERAGE_ARGUMENT: &str = "--git-upload-exclusive-cohort";
+const NIX_GENERATION_ARGUMENT: &str = "--nix-storage-generation-prepare";
 
 // Declared after the actual Storage/output owners, so abandonment aborts
 // before their local destruction. Whole new-purpose return values stay in
@@ -243,7 +244,8 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
         let source = parse_provision_source(&command_line)?;
         return provision_execution_output_ledger(state_root, &source).map_err(Into::into);
     }
-    let (command, arguments, git_coverage_selected) = parse_selected_startup_command(command_line)?;
+    let (command, arguments, git_coverage_selected, nix_generation_selected) =
+        parse_nix_generation_startup_command(command_line)?;
 
     // Claim the complete systemd table before any inherited slot can be
     // reused. The broker session owns only its fixed control listener.
@@ -446,6 +448,8 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
         // The named Session operation returns its opaque concrete cycle. It
         // needs no public constructor, raw owner export, or empty-custody factory.
         let mut original_output_cycle = None;
+        let mut original_generation_cycle = None;
+        let mut generation_accepted = nix_generation_selected.then(|| Box::new(None));
         loop {
             // An unresolved sidecar hold admits its same-socket recovery and a
             // fresh authenticated handshake for historical checkpoint verification.
@@ -454,7 +458,7 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
                 if !storage.retain_operator_terminal_cold_hold(owner)? {
                     break;
                 }
-                if original_output_cycle.is_some() {
+                if original_output_cycle.is_some() || original_generation_cycle.is_some() {
                     // An operator hold cannot overtake or reopen the selected
                     // original output carrier and writer. Exit before disposal.
                     eprintln!("aos-storaged: operator hold overlaps resident output custody");
@@ -605,7 +609,18 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
             }
 
             let mut ready = Vec::with_capacity(6);
-            if let Some(cycle) = original_output_cycle.as_ref() {
+            if let Some(cycle) = original_generation_cycle.as_ref() {
+                let descriptor = match cycle.as_fd() {
+                    Ok(descriptor) => descriptor,
+                    Err(error) => {
+                        eprintln!("aos-storaged: original generation endpoint closed: {error}");
+                        std::process::exit(1);
+                    }
+                };
+                ready.push(rustix::event::PollFd::from_borrowed_fd(
+                    descriptor, rustix::event::PollFlags::IN,
+                ));
+            } else if let Some(cycle) = original_output_cycle.as_ref() {
                 let descriptor = match cycle.as_fd() {
                     Ok(descriptor) => descriptor,
                     Err(error) => {
@@ -671,6 +686,14 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
             match rustix::event::poll(&mut ready, None) {
                 Ok(_) => {}
                 Err(rustix::io::Errno::INTR) => continue,
+                Err(error) if original_generation_cycle.is_some() => {
+                    drop(ready);
+                    if let Some(cycle) = original_generation_cycle.as_mut() {
+                        cycle.close_on_poll_failure(error);
+                    }
+                    eprintln!("aos-storaged: original generation poll failed");
+                    std::process::exit(1);
+                }
                 Err(error) if original_output_cycle.is_some() => {
                     drop(ready);
                     if let Some(cycle) = original_output_cycle.as_mut() {
@@ -701,6 +724,10 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
                 .and_then(|index| ready.get(index))
                 .is_some_and(|entry| entry.revents().contains(rustix::event::PollFlags::IN));
             drop(ready);
+            if broker_disconnected && original_generation_cycle.is_some() {
+                eprintln!("aos-storaged: original generation peer retired without settlement");
+                std::process::exit(1);
+            }
             if broker_disconnected && original_output_cycle.is_some() {
                 // HUP/ERR is a native negative observation, not a terminal ACK.
                 // Never reconnect or drop the selected original on this path.
@@ -734,7 +761,58 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
                 .into());
             }
             if broker_ready {
-                if let Some(response) = &mut coverage_response {
+                if nix_generation_selected {
+                    if let Some(cycle) = original_generation_cycle.as_mut() {
+                        // The actual Session is already parked before this
+                        // fallible receive clock; no consuming Result helper.
+                        let deadline = production_deadline_after(REQUEST_TIMEOUT);
+                        cycle.advance(storage.composition_mut(), deadline);
+                        if let Some(cause) = cycle.failure() {
+                            if let Some(original) = storage.composition_mut().nix_generation_original() {
+                                if let Some(native) = original.failure() {
+                                    eprintln!("aos-storaged: original generation domain cause: {native}");
+                                }
+                                if let Some(debt) = original.clock_debt() {
+                                    eprintln!("aos-storaged: original generation domain clock debt: {debt}");
+                                }
+                            }
+                            if let Some(cause) = storage.composition_mut().nix_generation_clock_failure() {
+                                eprintln!("aos-storaged: original generation clock producer cause: {cause}");
+                            }
+                            eprintln!("aos-storaged: original generation failed: {cause}");
+                            std::process::exit(1);
+                        }
+                        if let Some(debt) = cycle.postcheck_debt() {
+                            eprintln!("aos-storaged: original generation postcheck debt: {debt}");
+                            std::process::exit(1);
+                        }
+                        if cycle.has_prepared_pending() {
+                            // This same original still owns the four-PUT
+                            // result and terminal packet. No next request,
+                            // expiry renewal or physical disposal is implied.
+                            eprintln!("aos-storaged: original Storage Prepared remains pending physical continuation");
+                            loop { std::thread::park(); }
+                        }
+                    } else {
+                        let accept_deadline = production_deadline_after(ACCEPT_TIMEOUT)
+                            .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
+                        let acceptance = StorageColdAcceptUnwindV1(&mut activation);
+                        let Some(accepted) = generation_accepted.as_mut() else {
+                            std::process::abort();
+                        };
+                        **accepted = Some(acceptance.0.accept_authenticated_nix_generation_storage_v1(accept_deadline));
+                        if let Some(Err(cause)) = accepted.as_ref() {
+                            eprintln!("aos-storaged: original Nix generation cold admission failed: {cause}");
+                            std::process::exit(1);
+                        }
+                        // Only infallible local assembly separates the real
+                        // returned owner from its same parent cycle slot.
+                        original_generation_cycle = Some(match accepted.take() {
+                            Some(Ok(session)) => session.begin_original_nix_generation_cycle(),
+                            _ => std::process::abort(),
+                        });
+                    }
+                } else if let Some(response) = &mut coverage_response {
                     let selected_deadline = if active_session.is_some() {
                         Some(match production_deadline_after(REQUEST_TIMEOUT) {
                             Ok(deadline) => deadline,
@@ -1019,6 +1097,21 @@ fn parse_startup_command(
     parse_arguments(arguments).map(|arguments| (command, arguments))
 }
 
+fn parse_nix_generation_startup_command(
+    mut arguments: Vec<std::ffi::OsString>,
+) -> Result<(StorageStartupCommandV4, Arguments, bool, bool), StorageServiceError> {
+    let selected = arguments.last()
+        .is_some_and(|argument| argument == NIX_GENERATION_ARGUMENT);
+    if selected { arguments.pop(); }
+    let (command, arguments, coverage) = parse_selected_startup_command(arguments)?;
+    if selected && (coverage || command != StorageStartupCommandV4::Serve
+        || arguments.resolver_policy_directory.is_none())
+    {
+        return Err(usage_error());
+    }
+    Ok((command, arguments, coverage, selected))
+}
+
 fn parse_selected_startup_command(
     mut arguments: Vec<std::ffi::OsString>,
 ) -> Result<(StorageStartupCommandV4, Arguments, bool), StorageServiceError> {
@@ -1197,6 +1290,37 @@ mod tests {
         assert_eq!(arguments.identity_pool_start, 65536);
         assert_eq!(arguments.controller_identity, (1000, 1000));
         assert!(arguments.output_key_source.is_none());
+    }
+
+    #[test]
+    fn nix_generation_selection_requires_existing_resolver_and_refuses_coverage() {
+        let ordinary = service_arguments("-", "-");
+        let (_, _, coverage, generation) = parse_nix_generation_startup_command(ordinary.clone()).unwrap();
+        assert!(!coverage);
+        assert!(!generation);
+
+        let mut selected = ordinary;
+        selected[8] = "/fixed/resolver-policy".into();
+        selected.push(NIX_GENERATION_ARGUMENT.into());
+        let (command, arguments, coverage, generation) = parse_nix_generation_startup_command(selected.clone()).unwrap();
+        assert_eq!(command, StorageStartupCommandV4::Serve);
+        assert_eq!(arguments.resolver_policy_directory, Some("/fixed/resolver-policy".into()));
+        assert!(!coverage);
+        assert!(generation);
+
+        selected.insert(selected.len() - 1, GIT_COVERAGE_ARGUMENT.into());
+        assert!(parse_nix_generation_startup_command(selected).is_err());
+    }
+
+    #[test]
+    fn nix_generation_selection_refuses_missing_resolver_and_provisioning() {
+        let mut selected = service_arguments("-", "-");
+        selected.push(NIX_GENERATION_ARGUMENT.into());
+        assert!(parse_nix_generation_startup_command(selected.clone()).is_err());
+
+        selected[8] = "/fixed/resolver-policy".into();
+        selected.insert(1, "--provision-operator-recovery".into());
+        assert!(parse_nix_generation_startup_command(selected).is_err());
     }
 
     #[test]

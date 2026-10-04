@@ -24,6 +24,20 @@ pub(super) fn resolve_action(
     ),
     StorageCatalogResolverErrorV1,
 > {
+    resolve_action_with_generation(policy, inventory, operation, sandbox_id, operation_id, None)
+}
+
+fn resolve_action_with_generation(
+    policy: &ProtectedStorageResolverPolicyV1,
+    inventory: &ProtectedStorageInventoryV1,
+    operation: StoragePreparationOperationV1,
+    sandbox_id: [u8; 16],
+    operation_id: [u8; 16],
+    generation: Option<u64>,
+) -> Result<
+    (CatalogPlanV1, Option<WorkspaceRootPolicyV1>, Option<CloneIdentityRequirementV1>),
+    StorageCatalogResolverErrorV1,
+> {
     match operation {
         StoragePreparationOperationV1::CreateWorkspace {
             quota_bytes,
@@ -109,7 +123,10 @@ pub(super) fn resolve_action(
                 return Err(StorageCatalogResolverErrorV1::StateConflict);
             }
             let (root_policy, clone_identity) = source.clone_identity_policy()?;
-            let name = policy.workspace_name(&sandbox_id)?;
+            let name = match generation {
+                None => policy.workspace_name(&sandbox_id)?,
+                Some(generation) => policy.nix_generation_name(&sandbox_id, generation)?,
+            };
             ensure_absent(inventory, &name)?;
             let destination =
                 PlannedDataset::from_catalog(policy.root().clone(), &name, policy.domains())
@@ -168,6 +185,51 @@ pub(super) fn resolve_action(
             }
             Ok((CatalogPlanV1::DestroyDataset { dataset }, None, None))
         }
+    }
+}
+
+impl super::StorageCatalogResolverV1 {
+    /// Resolves selected Clone intent against the same authenticated inventory.
+    pub(crate) fn resolve_nix_generation(
+        &self,
+        authorization: &crate::AuthorizedStorageResolutionV1,
+        selected: &aos_sandbox_protocol::nix_generation::CanonicalNixGenerationPreparationV1,
+        current_head: crate::CatalogBindingV1,
+    ) -> Result<crate::ResolvedCatalogCommitmentV1, crate::StorageCatalogPreparationError> {
+        let rejected = crate::StorageCatalogPreparationError::ResolutionRejected;
+        if authorization.assignment() != self.policy.assignment()
+            || authorization.sandbox_id() != *self.policy.assignment().sandbox().as_bytes()
+            || authorization.operation() != selected.prepare().operation()
+            || authorization.operation_id() != selected.prepare().operation_id()
+            || authorization.preparation_commitment() != selected.argument_commitment().digest()
+            || authorization.transport_request_digest().as_bytes() == &[0; 32]
+            || authorization.plan_digest().as_bytes() == &[0; 32]
+            || authorization.lease_digest().as_bytes() == &[0; 32]
+            || authorization.expected_catalog_head() != current_head
+            || authorization.inventory_binding() != self.inventory.binding()
+            || current_head != self.inventory.catalog_head()
+        {
+            return Err(rejected);
+        }
+        let (plan, root, identity) = resolve_action_with_generation(
+            &self.policy, &self.inventory, authorization.operation(),
+            authorization.sandbox_id(), authorization.operation_id(),
+            Some(selected.prefix().next_generation),
+        ).map_err(|_| crate::StorageCatalogPreparationError::ResolutionRejected)?;
+        let root = root.ok_or(crate::StorageCatalogPreparationError::ResolutionRejected)?;
+        let identity = identity.ok_or(crate::StorageCatalogPreparationError::ResolutionRejected)?;
+        let original = selected.origin();
+        if root.commitment().as_bytes() != &original.root_policy_digest
+            || identity.commitment().as_bytes() != &original.clone_identity_digest
+            || identity.source_metadata_record_digest().as_bytes() != &original.metadata_digest
+        {
+            return Err(crate::StorageCatalogPreparationError::ResolutionMismatch);
+        }
+        let generation = current_head.generation().checked_add(1)
+            .ok_or(crate::StorageCatalogPreparationError::ResolutionRejected)?;
+        crate::ResolvedCatalogCommitmentV1::new_execution_v1(
+            generation, self.policy.domains(), plan, Some(root), Some(identity),
+        ).map_err(|_| crate::StorageCatalogPreparationError::ResolutionRejected)
     }
 }
 

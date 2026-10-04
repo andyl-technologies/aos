@@ -42,7 +42,8 @@
     != null
     && cfg.operatorRecoveryStorageOwnerKey != null;
   sourceOriginalWorkerStartup = cfg.sourceOriginalWorkerStartup.enable;
-  startupImageDelivery = cfg.method46TpmFloor.required || sourceOriginalWorkerStartup;
+  startupImageDelivery = cfg.method46TpmFloor.required || sourceOriginalWorkerStartup
+    || cfg.nixGenerationPrepare.enable;
   coverageCredentialFields = {
     gitCoverageEnrollment = "git-upload-coverage-enrollment-v1";
     gitCoverageOwnerCatalog = "git-upload-owner-catalog-v1";
@@ -107,6 +108,8 @@ in {
       coverageCredentialFields;
 
     method46TpmFloor = method46Floor.options;
+
+    nixGenerationPrepare.enable = lib.mkEnableOption "the fixed method57 existing-only Storage Prepared consumer with genuine retained PID1/cold custody; no Clone Apply, publication or readiness";
 
     sourceOriginalWorkerStartup.enable = lib.mkOption {
       type = lib.types.bool;
@@ -176,6 +179,20 @@ in {
         message = "Storage Git coverage credentials must be configured as one complete fixed four-input profile";
       }) coverageCredentialFields
       ++ [
+        {
+          assertion = !cfg.nixGenerationPrepare.enable || (
+            config.aos.sandbox.nixBroker.enable
+            && config.aos.sandbox.nixBroker.storageGenerationPrepare.enable
+            && cfg.resolverPolicyDirectory != null
+            && !coverageSelected
+            && config.systemd.package == pkgs.systemd
+            && config.aos.security.selinux.enable
+            && config.aos.security.selinux.bootMode == "immutable-stage0"
+            && config.aos.security.selinux.mode == "enforcing"
+            && config.aos.security.selinux.policy == "aos"
+          );
+          message = "Nix generation Prepare requires the genuine paired Controller selection, existing resolver and immutable enforcing PID1/Storage launch; an enrolled Git cohort cannot be repurposed";
+        }
         {
           assertion = !coverageSelected || cfg.executionOutputKey != null;
           message = "The first exclusive Git cohort requires the actual independently provisioned output ledger and credential";
@@ -490,7 +507,7 @@ in {
             if cfg.executionOutputKey == null
             then "-"
             else cfg.executionOutputKey
-          )}${lib.optionalString coverageSelected " --git-upload-exclusive-cohort"}
+          )}${lib.optionalString coverageSelected " --git-upload-exclusive-cohort"}${lib.optionalString cfg.nixGenerationPrepare.enable " --nix-storage-generation-prepare"}
         '';
         LoadCredential =
           brokerSessionConfiguration.loadCredentials

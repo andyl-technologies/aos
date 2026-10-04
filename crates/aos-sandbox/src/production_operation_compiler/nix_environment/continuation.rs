@@ -67,6 +67,8 @@ enum ContinuationFailureV2 {
     BrokerRequest(#[from] aos_sandbox_protocol::ProtocolValidationError),
     #[error("canonical Nix authorization plan failed: {0}")]
     BrokerPlan(#[from] aos_sandbox_core::InvalidBrokerAuthorizationPlan),
+    #[error("original Nix generation input failed: {0}")]
+    Generation(#[from] NixGenerationOriginalErrorV1),
 }
 
 impl From<ContinuationFailureV2> for NixStartContinuationErrorV2 {
@@ -94,6 +96,7 @@ pub struct CurrentRetainedNixStartV2<'current> {
     target: CurrentAssignmentTarget,
     clock: ControllerProtectedClockV1,
     decision: CurrentCapabilityDecisionV1,
+    acquisition_clock: Option<RawPairedClockSample>,
     failed: bool,
     successor: Option<OriginalNixSuccessorV2>,
 }
@@ -188,11 +191,18 @@ impl ControllerNixStartRecipeSelectorV2 {
         let mut clock = ControllerProtectedClockV1::open_fixed()
             .map_err(ContinuationFailureV2::from)?;
         let decision = evaluate_original_grant(journal, &carrier, &mut clock)?;
+        let mut acquisition_clock = None;
         let target = crate::runtime_scope::acquire_current_assignment(
             journal,
             RuntimeScopeHolder { sandbox: recipe.recipe().sandbox, holder: carrier.authority.holder },
             self.assignment_policy().map_err(ContinuationFailureV2::from)?,
-            &mut || clock.sample(),
+            &mut || {
+                let result = clock.sample();
+                if let Ok(sample) = &result {
+                    acquisition_clock.get_or_insert(*sample);
+                }
+                result
+            },
         ).map_err(ContinuationFailureV2::from)?;
         if target.binding() != &binding {
             return Err(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid).into());
@@ -200,6 +210,7 @@ impl ControllerNixStartRecipeSelectorV2 {
 
         let mut owner = CurrentRetainedNixStartV2 {
             selector: self, journal, expected_plan, carrier, recipe, target, clock, decision,
+            acquisition_clock,
             failed: false, successor: None,
         };
         owner.recheck()?;
@@ -707,6 +718,179 @@ impl CurrentRetainedNixStartV2<'_> {
         Ok(())
     }
 
+    /// Parks one selected Storage Prepare draft from this same pending Start.
+    ///
+    /// The Session supplies only its next request identity. All assignment,
+    /// original clock and independently signed origin coordinates come from
+    /// the retained owners. Storage must independently resolve the Clone and
+    /// authenticate the complete wrapper; this draft is not a receipt.
+    ///
+    /// # Errors
+    /// Rejects an occupied output, changed originals, invalid canonical body,
+    /// unauthentic original lease or expired original bound. The draft is
+    /// parked before final checks, and failure permanently fences this owner.
+    pub fn retain_storage_generation_prepare_into(
+        &mut self,
+        original: &mut ControllerNixGenerationOriginalV1,
+        request_id: [u8; 16],
+        target: &mut Option<StorageGenerationPreparationDraftV1>,
+    ) -> Result<(), NixStartContinuationErrorV2> {
+        use aos_proto::aos::sandbox::local::v1::{
+            PrepareNixStorageGenerationRequestV1, PrepareStorageCatalogRequest, StorageAction,
+        };
+        use aos_sandbox_protocol::nix_generation::{
+            CanonicalNixGenerationPreparationV1, NixGenerationStartPrefixV1,
+            NIX_GENERATION_REQUEST_MAXIMUM_BYTES_V1,
+        };
+
+        if self.failed {
+            return Err(ContinuationFailureV2::Generation(NixGenerationOriginalErrorV1::Closed).into());
+        }
+        self.failed = true;
+        if target.is_some() || request_id == [0; 16] || request_id == [0xff; 16] {
+            return Err(ContinuationFailureV2::Generation(NixGenerationOriginalErrorV1::Changed).into());
+        }
+        self.recheck_inner()?;
+        original.recheck_original(self.selector, self.recipe)
+            .map_err(ContinuationFailureV2::from)?;
+        let family = original.family().map_err(ContinuationFailureV2::from)?;
+        let origin = family.origin();
+        let origin_bytes = origin.encode().map_err(ContinuationFailureV2::from)?;
+        let first = self.acquisition_clock
+            .ok_or(ContinuationFailureV2::Generation(NixGenerationOriginalErrorV1::Changed))?;
+        let binding = self.target.binding();
+        let manifest = binding.manifest().manifest();
+        if origin.incarnation != *manifest.incarnation().as_bytes() {
+            return Err(ContinuationFailureV2::Generation(NixGenerationOriginalErrorV1::Changed).into());
+        }
+        let assignment = aos_sandbox_core::BrokerAssignment::new(
+            manifest.sandbox(), manifest.incarnation(), manifest.epoch(),
+            manifest.desired_generation(), binding.assignment_digest(),
+        ).map_err(ContinuationFailureV2::from)?;
+
+        let presentation = Sha256::new()
+            .chain_update(b"aos.sandbox.nix.original-start-presentation.v1\0")
+            .chain_update((self.carrier.original_resource_version.len() as u64).to_be_bytes())
+            .chain_update(&self.carrier.original_resource_version)
+            .chain_update(&self.carrier.original_incarnation)
+            .chain_update(self.carrier.original_generation.to_be_bytes())
+            .finalize().into();
+        let prefix = NixGenerationStartPrefixV1 {
+            operation: *self.carrier.operation().as_bytes(),
+            step: 0,
+            assignment: *binding.assignment_digest().as_bytes(),
+            desired: Sha256::digest(&self.carrier.desired_value).into(),
+            effect: Sha256::digest(&self.carrier.ordinary_effect).into(),
+            recipe: *self.recipe.digest().as_bytes(),
+            input_set: family.artifact_digest(),
+            presentation,
+            domain: origin.domain,
+            project: origin.project,
+            sandbox: origin.sandbox,
+            incarnation: origin.incarnation,
+            origin: Sha256::digest(&origin_bytes).into(),
+            source_generation: origin.source_generation,
+            next_generation: origin.source_generation.checked_add(1)
+                .ok_or(ContinuationFailureV2::Generation(NixGenerationOriginalErrorV1::Changed))?,
+            host_boot_id: first.host_boot_id(),
+            first_wall_seconds: first.wall_seconds(),
+            first_boottime_nanoseconds: first.boottime_nanoseconds(),
+            deadline_boottime_nanoseconds: self.target.deadline_boottime_nanoseconds(),
+        };
+        let nested = PrepareStorageCatalogRequest {
+            header: Some(RequestHeader {
+                protocol_major: 1,
+                protocol_minor: 0,
+                request_id: request_id.to_vec(),
+                audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+                deadline_boottime_nanoseconds: prefix.deadline_boottime_nanoseconds,
+                maximum_response_bytes: 65_536,
+                ..Default::default()
+            }).into(),
+            fence: Some(AssignmentFence {
+                sandbox_id: manifest.sandbox().as_bytes().to_vec(),
+                incarnation_id: manifest.incarnation().as_bytes().to_vec(),
+                assignment_epoch: manifest.epoch().get(),
+                desired_generation: manifest.desired_generation().get(),
+                assignment_digest: binding.assignment_digest().as_bytes().to_vec(),
+                ..Default::default()
+            }).into(),
+            action: StorageAction::STORAGE_ACTION_CLONE.into(),
+            operation_id: prefix.operation.to_vec(),
+            storage_handle: origin.storage_handle.to_vec(),
+            source_version_handle: origin.source_version_handle.to_vec(),
+            requested_quota_bytes: origin.quota_bytes,
+            requested_reservation_bytes: origin.reservation_bytes,
+            requested_hold_id: origin.hold_id.to_vec(),
+            inventory_generation: origin.inventory_generation,
+            inventory_digest: origin.inventory_digest.to_vec(),
+            expected_catalog_generation: origin.catalog_generation,
+            expected_catalog_digest: origin.catalog_digest.to_vec(),
+            preparation_expires_boottime_nanoseconds: prefix.deadline_boottime_nanoseconds,
+            ..Default::default()
+        };
+        let bytes = PrepareNixStorageGenerationRequestV1 {
+            canonical_prepare: nested.encode_to_vec(),
+            original_start_prefix: prefix.encode().map_err(ContinuationFailureV2::from)?,
+            generation_origin: origin_bytes,
+            ..Default::default()
+        }.encode_to_vec();
+
+        let (lease, observed) = self.target.verified_plan_lease(
+            self.journal, &mut || self.clock.sample(),
+        ).map_err(ContinuationFailureV2::from)?;
+        require_original_lease(&self.carrier.assignment, &lease)
+            .map_err(ContinuationFailureV2::from)?;
+        first.validate_later_sample(observed).map_err(ContinuationFailureV2::from)?;
+        let identities = self.selector.pins.identities;
+        let checked = CanonicalNixGenerationPreparationV1::decode(
+            &bytes,
+            aos_sandbox_protocol::PeerCredentials {
+                uid: identities[0], gid: identities[1], pid: None,
+            },
+            aos_sandbox_protocol::PeerPolicy {
+                uid: identities[0], gid: Some(identities[1]),
+                audience: Audience::AUDIENCE_NODE_CONTROLLER,
+            },
+            observed.boottime_nanoseconds(),
+        ).map_err(ContinuationFailureV2::from)?;
+        let (policy_digest, revocation_scope) = {
+            let loan = self.selector.recheck_and_borrow_publics()
+                .map_err(ContinuationFailureV2::from)?;
+            let credentials = loan.publics()
+                .ok_or(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::CredentialCustodyClosed))?;
+            let anchor = plan_anchor_from_publics(&credentials, 6)
+                .map_err(ContinuationFailureV2::from)?;
+            (ObjectDigest::from_bytes(Sha256::digest(credentials[6].bytes()).into()),
+                anchor.revocation_scope())
+        };
+        let grant = aos_sandbox_core::BrokerGrant::new(
+            aos_sandbox_core::BrokerVerb::StoragePrepareCatalog,
+            aos_sandbox_core::BrokerGrantTarget::Assignment,
+            checked.argument_commitment(),
+            NIX_GENERATION_REQUEST_MAXIMUM_BYTES_V1 as u32,
+            0,
+        ).map_err(ContinuationFailureV2::from)?;
+        let feature = aos_sandbox_core::FeatureRef::new(
+            "aos.sandbox.authorization.signed-plan-lease", 1, 0,
+        ).map_err(|_| ContinuationFailureV2::Generation(NixGenerationOriginalErrorV1::Changed))?;
+        let expires = self.target.expires_wall_seconds().min(lease.authority_expires_seconds());
+        let plan = aos_sandbox_core::BrokerAuthorizationPlan::new(
+            aos_sandbox_core::BrokerAudience::Storage,
+            aos_sandbox_core::ProtocolId::StorageBroker,
+            aos_sandbox_core::ProtocolVersion::new(1, 0),
+            assignment, lease.node(), lease.signer().clone(), vec![grant],
+            policy_digest, revocation_scope, observed.wall_seconds(), expires, vec![feature],
+        ).map_err(ContinuationFailureV2::from)?;
+        *target = Some(StorageGenerationPreparationDraftV1 { plan, lease, request: bytes, observed });
+
+        original.recheck_original(self.selector, self.recipe)
+            .map_err(ContinuationFailureV2::from)?;
+        self.recheck_inner()?;
+        self.failed = false;
+        Ok(())
+    }
+
     /// Returns the immutable accepted operation identity as data.
     #[must_use]
     pub fn operation_id(&self) -> OperationId {
@@ -749,6 +933,25 @@ impl CurrentRetainedNixStartV2<'_> {
             self.failed = true;
         }
         result
+    }
+
+    /// Observes the same original clock even after a selected failure.
+    ///
+    /// This negative-only bookend never clears the failure latch, reacquires a
+    /// target or grants currentness. It preserves the original exclusive D.
+    ///
+    /// # Errors
+    /// Rejects clock acquisition/noncontinuity, another boot or elapsed D.
+    pub fn observe_original_clock_after_failure(&mut self) -> Result<(), NixStartContinuationErrorV2> {
+        let later = self.clock.sample().map_err(ContinuationFailureV2::from)?;
+        self.decision.clock().validate_later_sample(later)
+            .map_err(ContinuationFailureV2::from)?;
+        if later.host_boot_id() != self.decision.clock().host_boot_id()
+            || later.boottime_nanoseconds() >= self.target.deadline_boottime_nanoseconds()
+        {
+            return Err(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid).into());
+        }
+        Ok(())
     }
 
     fn require_original_ledger(&mut self) -> Result<(), NixStartContinuationErrorV2> {

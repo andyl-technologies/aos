@@ -3426,6 +3426,27 @@ impl StorageTransactionStore {
         sealed_preparation: Vec<u8>,
         policy_binding: StorageResolverPolicyBindingV1,
     ) -> Result<(), StorageStateError> {
+        self.retain_catalog_preparation_with_generation(
+            operation_id, sandbox_id, request_id, expected_head,
+            sealed_fence, sealed_effect, sealed_operation_fence,
+            sealed_preparation, policy_binding, None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn retain_catalog_preparation_with_generation(
+        &mut self,
+        operation_id: [u8; 16],
+        sandbox_id: [u8; 16],
+        request_id: [u8; 16],
+        expected_head: CatalogBindingV1,
+        sealed_fence: Vec<u8>,
+        sealed_effect: Vec<u8>,
+        sealed_operation_fence: Vec<u8>,
+        sealed_preparation: Vec<u8>,
+        policy_binding: StorageResolverPolicyBindingV1,
+        generation: Option<crate::nix_generation::StorageGenerationNativeLoanV1<'_>>,
+    ) -> Result<(), StorageStateError> {
         self.ensure_authority_readable()?;
         if operation_id == [0; 16]
             || sandbox_id == [0; 16]
@@ -3481,7 +3502,59 @@ impl StorageTransactionStore {
         ];
         let transaction =
             JournalTransaction::new(catalog_preparation_transaction_id(operation_id), records)?;
-        self.commit_journal(&transaction)?;
+        match generation {
+            None => self.commit_journal(&transaction)?,
+            Some(original) => {
+                if self.has_held_repair_guard() || original.native.is_some()
+                    || original.first.is_some()
+                    || self.journal.snapshot_sequence().checked_add(6).is_none()
+                {
+                    return Err(StorageStateError::InvalidTransition);
+                }
+                self.journal.preflight_transactions(std::slice::from_ref(&transaction))?;
+
+                // Preflight may be slow. The selected original gets a fresh
+                // SAME production pair after it, immediately before its write.
+                *original.clock = Some(crate::runtime::trusted_paired_clock_sample());
+                let clock = match original.clock.as_ref() {
+                    Some(Ok(clock)) => *clock,
+                    _ => {
+                        original.first.get_or_insert(crate::nix_generation::StorageGenerationCauseV1::NativeClock);
+                        return Err(StorageStateError::InvalidTransition);
+                    }
+                };
+                let valid = original.initial.validate_later_sample(clock)
+                    .map_err(|_| crate::authorization::StorageAdmissionError::FenceRejected)
+                    .and_then(|()| {
+                        if clock.host_boot_id() != original.boot
+                            || clock.boottime_nanoseconds() >= original.deadline
+                        {
+                            return Err(crate::authorization::StorageAdmissionError::FenceRejected);
+                        }
+                        Ok(())
+                    });
+                if let Err(error) = valid {
+                    *original.clock_validation = Some(error);
+                    original.first.get_or_insert(crate::nix_generation::StorageGenerationCauseV1::NativeClock);
+                    return Err(StorageStateError::InvalidTransition);
+                }
+
+                // The actual native Result is resident before readback or any
+                // upper clock/Session check. An Err is never classified retryable.
+                *original.native = Some(self.journal.commit(&transaction));
+                if original.native.as_ref().is_none_or(Result::is_err) {
+                    self.commit_failed = true;
+                    original.first.get_or_insert(crate::nix_generation::StorageGenerationCauseV1::Native);
+                    return Err(StorageStateError::InvalidTransition);
+                }
+                if transaction.records().iter().any(|record| {
+                    self.journal.get(record.namespace(), record.key()) != record.value()
+                }) {
+                    self.commit_failed = true;
+                    return Err(aos_sandbox::JournalError::Poisoned.into());
+                }
+            }
+        }
         Ok(())
     }
 

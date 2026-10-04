@@ -198,11 +198,112 @@ pub trait DormantStorageBrokerCallsiteV1: sealed::Sealed {
 /// install a listener; consumption remains an explicit broker-session call.
 pub struct DormantStorageApplyCompositionV1 {
     runtime: StorageBrokerRuntime,
+    nix_generation: Option<crate::StorageGenerationAttemptV1>,
+    nix_generation_clock_error: Option<crate::StorageRuntimeError>,
     guest_root_template: Option<ProtectedGuestRootTemplateV1>,
     _private_live_export_clones: Option<StorageLiveExportCloneLedgerV1>,
 }
 
 impl DormantStorageApplyCompositionV1 {
+    /// Borrows only the selected original result and its independent clock debt.
+    ///
+    /// This diagnostic does not admit another request or expose a writer.
+    #[must_use]
+    pub fn nix_generation_original(&self) -> Option<&crate::StorageGenerationAttemptV1> {
+        self.nix_generation.as_ref()
+    }
+
+    /// Borrows the selected kernel-clock producer's actual returned error.
+    ///
+    /// The admission classification and later clock debt remain in the same
+    /// attempt. This loan does not sample, renew or reopen its original clock.
+    #[must_use]
+    pub fn nix_generation_clock_failure(&self) -> Option<&crate::StorageRuntimeError> {
+        self.nix_generation_clock_error.as_ref()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn consume_nix_generation_original_v1(
+        &mut self,
+        request_body: &[u8],
+        request_id: [u8; 16],
+        request_body_digest: ObjectDigest,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        protocol_version: ProtocolVersion,
+        protected_boot_id: [u8; 16],
+    ) -> Result<Vec<u8>, DormantStorageBrokerCallErrorV1> {
+        use crate::nix_generation::StorageGenerationCauseV1;
+
+        if self.nix_generation.is_some() {
+            return Err(DormantStorageBrokerCallErrorV1::StaleKernel);
+        }
+        // The concrete runtime owns this reservoir before kernel, allocation
+        // or admission effects. No consuming public adapter owns its lifetime.
+        self.nix_generation = Some(crate::StorageGenerationAttemptV1::new());
+        let Some(original) = self.nix_generation.as_mut() else {
+            return Err(DormantStorageBrokerCallErrorV1::StaleKernel);
+        };
+        original.kernel = Some(KernelBootId::current());
+        if original.kernel.as_ref().is_some_and(Result::is_err) {
+            original.first = Some(StorageGenerationCauseV1::Kernel);
+        }
+        original.handoff = Some((|| {
+            let boot = original.kernel.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(DormantStorageBrokerCallErrorV1::StaleKernel)?;
+            if boot.into_bytes() != protected_boot_id
+                || ObjectDigest::from_bytes(Sha256::digest(request_body).into()) != request_body_digest
+                || request_body.len() > aos_sandbox_protocol::nix_generation::NIX_GENERATION_REQUEST_MAXIMUM_BYTES_V1
+            {
+                return Err(DormantStorageBrokerCallErrorV1::StaleKernel);
+            }
+            Ok(())
+        })());
+        if original.handoff.as_ref().is_some_and(Result::is_err) {
+            original.first.get_or_insert(StorageGenerationCauseV1::Handoff);
+        }
+
+        let clock_error = &mut self.nix_generation_clock_error;
+        let mut clock = || {
+            let sample = match super::runtime::trusted_paired_clock_sample() {
+                Ok(sample) => sample,
+                Err(error) => {
+                    // Keep the real producer error before the existing
+                    // authority adapter returns its coarse classification.
+                    clock_error.get_or_insert(error);
+                    return Err(StorageAdmissionError::FenceRejected);
+                }
+            };
+            if sample.host_boot_id() != protected_boot_id {
+                return Err(StorageAdmissionError::FenceRejected);
+            }
+            Ok(sample)
+        };
+        if original.first.is_some() {
+            if let Err(error) = clock() { original.clock_debt = Some(error); }
+            return Err(DormantStorageBrokerCallErrorV1::StaleKernel);
+        }
+        let mut body = Vec::new();
+        if let Err(error) = body.try_reserve_exact(request_body.len()) {
+            original.allocation = Some(error);
+            original.first = Some(StorageGenerationCauseV1::Allocation);
+            if let Err(error) = clock() { original.clock_debt = Some(error); }
+            return Err(DormantStorageBrokerCallErrorV1::StaleKernel);
+        }
+        body.extend_from_slice(request_body);
+        original.request = Some(body);
+        let result = self.runtime.prepare_nix_generation_into(
+            artifacts, request_id, protocol_version, peer, policy, &mut clock, original,
+        );
+        if result.is_err() {
+            return Err(DormantStorageBrokerCallErrorV1::StaleKernel);
+        }
+        let prepared = original.prepared()
+            .ok_or(DormantStorageBrokerCallErrorV1::StaleKernel)?;
+        Ok(prepared.response().encode_to_vec())
+    }
+
     /// Rechecks the original cohort fence and separately held output writer.
     ///
     /// # Errors
@@ -307,6 +408,8 @@ impl DormantStorageApplyCompositionV1 {
         )?;
         Ok(Self {
             runtime,
+            nix_generation: None,
+            nix_generation_clock_error: None,
             guest_root_template: None,
             _private_live_export_clones: None,
         })
@@ -389,6 +492,8 @@ impl DormantStorageApplyCompositionV1 {
     pub const fn from_runtime(runtime: StorageBrokerRuntime) -> Self {
         Self {
             runtime,
+            nix_generation: None,
+            nix_generation_clock_error: None,
             guest_root_template: None,
             _private_live_export_clones: None,
         }
@@ -810,6 +915,12 @@ impl DormantStorageBrokerCallsiteV1 for DormantStorageApplyCompositionV1 {
         protocol_version: ProtocolVersion,
         protected_boot_id: [u8; 16],
     ) -> Result<Vec<u8>, DormantStorageBrokerCallErrorV1> {
+        if method == BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1 {
+            return self.consume_nix_generation_original_v1(
+                request_body, request_id, request_body_digest, artifacts, peer,
+                policy, protocol_version, protected_boot_id,
+            );
+        }
         let current_boot_id = KernelBootId::current()
             .map_err(|_| DormantStorageBrokerCallErrorV1::StaleKernel)?
             .into_bytes();

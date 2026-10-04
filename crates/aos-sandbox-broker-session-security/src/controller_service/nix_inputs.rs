@@ -20,7 +20,9 @@ use std::io;
 use std::os::fd::AsFd as _;
 
 use aos_sandbox::production_operation_compiler::{
-    CurrentRetainedNixStartV2, NixResolveAuthorizationDraftV2, NixStartContinuationErrorV2,
+    ControllerNixGenerationOriginalV1, CurrentRetainedNixStartV2,
+    NixResolveAuthorizationDraftV2, NixStartContinuationErrorV2,
+    StorageGenerationPreparationDraftV1,
 };
 use aos_sandbox_core::model::{ContentLayout, Node};
 use aos_sandbox_core::{
@@ -190,6 +192,13 @@ pub(super) fn pin_local_inputs_v2<'inputs, 'current: 'inputs>(
 }
 
 impl NixLocalInputCutV2<'_, '_> {
+    /// Samples only the held original clock without reopening failed input custody.
+    pub(super) fn observe_original_clock_after_failure(
+        &mut self,
+    ) -> Result<(), NixStartContinuationErrorV2> {
+        self.current.observe_original_clock_after_failure()
+    }
+
     /// Returns the original current target's cutoff as comparison DATA only.
     pub(super) fn original_deadline_boottime_nanoseconds(&self) -> u64 {
         self.current.deadline_boottime_nanoseconds()
@@ -246,6 +255,30 @@ impl NixLocalInputCutV2<'_, '_> {
                 _ => return Err(NixLocalInputErrorV2::Closed),
             };
             self.current.retain_successor_authorization_into(&request, predecessor, response, target)?;
+            recheck_all_inputs(self.current, self.source, &self.pins)
+        })();
+        if result.is_ok() {
+            self.latch.failed = false;
+        }
+        result
+    }
+
+    /// Parks one Storage draft while the complete original input cut stays held.
+    ///
+    /// The same Session request identity is comparison DATA. The current Start
+    /// and fixed origin are exclusive separate loans; no input descriptor or
+    /// unsigned origin can replace either original owner.
+    pub(super) fn retain_storage_generation_prepare_into(
+        &mut self,
+        original: &mut ControllerNixGenerationOriginalV1,
+        request_id: [u8; 16],
+        target: &mut Option<StorageGenerationPreparationDraftV1>,
+    ) -> Result<(), NixLocalInputErrorV2> {
+        self.latch.require_open()?;
+        self.latch.failed = true;
+        let result = (|| {
+            recheck_all_inputs(self.current, self.source, &self.pins)?;
+            self.current.retain_storage_generation_prepare_into(original, request_id, target)?;
             recheck_all_inputs(self.current, self.source, &self.pins)
         })();
         if result.is_ok() {

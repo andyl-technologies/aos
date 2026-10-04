@@ -31,6 +31,9 @@ pub mod broker;
 pub mod catalog;
 mod catalog_decode;
 pub mod catalog_preparation;
+mod nix_generation;
+
+pub use nix_generation::{StorageGenerationAttemptV1, StorageGenerationStoppedV1};
 mod catalog_transition;
 mod clone_identity;
 mod dormant_broker_session;

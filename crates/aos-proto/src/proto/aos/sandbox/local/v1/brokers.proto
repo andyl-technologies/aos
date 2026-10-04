@@ -128,6 +128,8 @@ enum BrokerMethod {
   BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1 = 54;
   BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1 = 55;
   BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1 = 56;
+  // Selected Nix Start preparation; never an Apply or a completed Start.
+  BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1 = 57;
 }
 
 // One canonical zero-descriptor DATA carrier for the four fixed coverage flights.
@@ -1012,6 +1014,14 @@ message PrepareStorageCatalogResponse {
   bytes catalog_digest = 3;
   uint64 preparation_expires_boottime_nanoseconds = 4;
   bytes non_authorizing_receipt = 5;
+}
+
+// The signed argument commits this complete wrapper. Field 1 is a nested
+// Clone Prepare, not a direct RequestHeader or a deadline-injection template.
+message PrepareNixStorageGenerationRequestV1 {
+  bytes canonical_prepare = 1; // Canonical old Prepare body, at most 8192 bytes.
+  bytes original_start_prefix = 2; // AOSNXS01, at most 2048 bytes.
+  bytes generation_origin = 3; // AOSNXG01, at most 4096 bytes.
 }
 
 // Requests one freshly authorized, bounded attempt to repair an

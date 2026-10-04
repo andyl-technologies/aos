@@ -295,6 +295,8 @@ pub enum AuthenticatedBrokerMethodSemanticsV1 {
     NetworkInventoryResources,
     /// Storage catalog preparation.
     StoragePrepareCatalog,
+    /// Original pending Nix Start's independently authorized Storage preparation.
+    StoragePrepareNixGeneration,
     /// Storage workspace-pin repair.
     StorageRepairWorkspacePin,
     /// One complete grouped Storage dataset snapshot.
@@ -487,6 +489,9 @@ pub const fn authenticated_broker_method_adapter_v1(
         }
         BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG => {
             AuthenticatedBrokerMethodSemanticsV1::StoragePrepareCatalog
+        }
+        BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1 => {
+            AuthenticatedBrokerMethodSemanticsV1::StoragePrepareNixGeneration
         }
         BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN => {
             AuthenticatedBrokerMethodSemanticsV1::StorageRepairWorkspacePin
@@ -1316,6 +1321,7 @@ enum RequestOutcomeContextV1 {
     MountAcquireSource(crate::ValidatedAcquireMountSourceRequest),
     MountReleaseSource(crate::ValidatedReleaseMountSourceAcquisitionRequest),
     StoragePrepare(CanonicalStoragePreparationSemanticsV1),
+    StoragePrepareNixGeneration(crate::nix_generation::CanonicalNixGenerationPreparationV1),
     StorageRepair(CanonicalStorageRepairSemanticsV1),
     StorageGuestRoot(CanonicalStorageGuestRootSemanticsV1),
     StorageOutputReserve(crate::storage_output_reserve::ValidatedStorageOutputReserveRequestV1),
@@ -1726,6 +1732,16 @@ fn validate_request_semantics(
                 )),
             )
         }
+        BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1 => {
+            let semantics = crate::nix_generation::CanonicalNixGenerationPreparationV1::decode(
+                body, peer, policy, now,
+            )?;
+            (
+                AuthenticatedBrokerMethodSemanticsV1::StoragePrepareNixGeneration,
+                *semantics.prepare().header(),
+                Some(method_digest(REQUEST_SEMANTIC_DOMAIN, method, body)),
+            )
+        }
         BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN => {
             let semantics = CanonicalStorageRepairSemanticsV1::decode(body, peer, policy, now)
                 .map_err(|_| AuthenticatedBrokerMethodErrorV1::PortableSemantics)?;
@@ -1904,6 +1920,13 @@ fn validate_request_semantics(
             RequestOutcomeContextV1::StoragePrepare(
                 CanonicalStoragePreparationSemanticsV1::decode(body, peer, policy, now)
                     .map_err(|_| AuthenticatedBrokerMethodErrorV1::PortableSemantics)?,
+            )
+        }
+        BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1 => {
+            RequestOutcomeContextV1::StoragePrepareNixGeneration(
+                crate::nix_generation::CanonicalNixGenerationPreparationV1::decode(
+                    body, peer, policy, now,
+                )?,
             )
         }
         BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN => {
@@ -2315,6 +2338,12 @@ fn validate_success_semantics(
                 return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
             };
             validate_storage_preparation_response(body, original)?;
+        }
+        BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1 => {
+            let RequestOutcomeContextV1::StoragePrepareNixGeneration(original) = &request.outcome_context else {
+                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+            };
+            validate_storage_preparation_response(body, original.prepare())?;
         }
         BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN => {
             let RequestOutcomeContextV1::StorageRepair(original) = &request.outcome_context else {

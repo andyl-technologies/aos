@@ -38,6 +38,30 @@ const SEMANTIC_IDENTITY_DOMAIN: &[u8] = b"aos.sandbox.broker-semantic-identity.v
 const MAXIMUM_DEADLINE_FIELD_BYTES: usize = 11;
 const NANOS_PER_SECOND: u64 = 1_000_000_000;
 
+/// Checks a fully formed selected wrapper without direct-header injection.
+/// Method57's field1 is an entire nested request, not the ordinary header.
+pub(crate) fn validate_nix_generation_plan_v1(
+    signed: &SignedBrokerPlan,
+    expected: &BrokerAuthorizationPlan,
+    body: &[u8],
+) -> Result<(), BrokerDispatchTemplateError> {
+    if signed.plan() != expected {
+        return Err(BrokerDispatchTemplateError::PlanGrantMismatch);
+    }
+    let bytes = u32::try_from(body.len())
+        .map_err(|_| BrokerDispatchTemplateError::BodyTooLarge)?;
+    match_plan_grant(
+        signed.plan(),
+        BrokerDispatchSemanticIdentityV1::new(
+            BrokerVerb::StoragePrepareCatalog,
+            BrokerGrantTarget::Assignment,
+            BrokerArgumentCommitment::for_canonical_bytes(body),
+        ),
+        bytes,
+        0,
+    )
+}
+
 /// Names the controller-asserted portable grant for one immutable request.
 ///
 /// This value carries no proof that a protobuf body has these semantics. It is

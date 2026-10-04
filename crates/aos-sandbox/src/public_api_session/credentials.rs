@@ -1277,7 +1277,7 @@ impl ControllerNixPublicCredentialCustodyV1 {
     }
 }
 
-// Same original-directory capture, used only by the two fixed public profiles.
+// Same original-directory capture for the fixed public profiles.
 fn capture_controller_credential_originals<const COUNT: usize>(
     uid: u32,
     names: &[&'static str; COUNT],
@@ -1321,6 +1321,124 @@ fn capture_controller_credential_originals<const COUNT: usize>(
         });
     }
     Ok(())
+}
+
+/// Retains the one independently provisioned Nix generation-origin family.
+///
+/// Capture and readback use the same fixed Controller ancestry, original-file
+/// reader and named comparator as the existing twelve public credentials. This
+/// owner supplies bytes, not a current Start, Storage grant or signing key.
+pub(crate) struct ControllerNixGenerationOriginCredentialCustodyV1 {
+    original: [OriginalControllerCredential; 1],
+    ancestors: CredentialAncestors,
+    readback: CredentialReadback<1>,
+    uid: Option<u32>,
+    phase: ControllerCredentialPhase,
+    failure: Option<ControllerNixPublicCredentialErrorV1>,
+}
+
+impl std::fmt::Debug for ControllerNixGenerationOriginCredentialCustodyV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ControllerNixGenerationOriginCredentialCustodyV1(<resident original>)")
+    }
+}
+
+impl ControllerNixGenerationOriginCredentialCustodyV1 {
+    const NAME: &'static str = "nix-storage-generation-origin-v1";
+
+    /// Creates vacant slots without opening a descriptor or admitting bytes.
+    pub(crate) fn new() -> Self {
+        Self {
+            original: [OriginalControllerCredential {
+                public: None,
+                read: CredentialReadSlot::new(),
+            }],
+            ancestors: CredentialAncestors::new(),
+            readback: CredentialReadback::new(),
+            uid: None,
+            phase: ControllerCredentialPhase::Fresh,
+            failure: None,
+        }
+    }
+
+    /// Captures the fixed name once, retaining partial reads and original FDs.
+    pub(crate) fn capture(&mut self) -> Result<(), &ControllerNixPublicCredentialErrorV1> {
+        if self.phase != ControllerCredentialPhase::Fresh {
+            return self.finish(Err(credential_state_rejected()));
+        }
+        self.phase = ControllerCredentialPhase::Closed;
+        self.uid = Some(rustix::process::geteuid().as_raw());
+        let result = self.capture_original();
+        self.finish(result)
+    }
+
+    /// Rechecks the original and fixed named file without releasing either.
+    pub(crate) fn recheck(&mut self) -> Result<(), &ControllerNixPublicCredentialErrorV1> {
+        if self.phase != ControllerCredentialPhase::Ready {
+            return self.finish(Err(credential_state_rejected()));
+        }
+        self.phase = ControllerCredentialPhase::Closed;
+        self.readback = CredentialReadback::new();
+        let result = self.observe_original();
+        self.finish(result)
+    }
+
+    /// Borrows complete local DATA only while the last readback is complete.
+    pub(crate) fn bytes(&self) -> Option<&[u8]> {
+        if self.phase != ControllerCredentialPhase::Ready {
+            return None;
+        }
+        Some(self.original[0].public.as_ref()?.bytes())
+    }
+
+    /// Borrows the first actual credential cause without displacing its owner.
+    pub(crate) fn failure(&self) -> Option<&ControllerNixPublicCredentialErrorV1> {
+        self.failure.as_ref()
+    }
+
+    /// Fences interrupted upper work without releasing files or partial bytes.
+    pub(crate) fn fence(&mut self) {
+        self.phase = ControllerCredentialPhase::Closed;
+    }
+
+    fn finish(
+        &mut self,
+        result: CredentialResult<()>,
+    ) -> Result<(), &ControllerNixPublicCredentialErrorV1> {
+        match result {
+            Ok(()) => {
+                self.phase = ControllerCredentialPhase::Ready;
+                Ok(())
+            }
+            Err(error) => {
+                self.phase = ControllerCredentialPhase::Closed;
+                Err(self.failure.get_or_insert(error))
+            }
+        }
+    }
+
+    fn capture_original(&mut self) -> CredentialResult<()> {
+        let uid = self.uid.ok_or_else(credential_state_rejected)?;
+        capture_controller_credential_originals(
+            uid,
+            &[Self::NAME],
+            &[MAXIMUM_CREDENTIAL_BYTES],
+            &mut self.original,
+            &mut self.ancestors,
+        )?;
+        self.observe_original()
+    }
+
+    fn observe_original(&mut self) -> CredentialResult<()> {
+        observe_controller_credential_readback(
+            self.uid.ok_or_else(credential_state_rejected)?,
+            &[Self::NAME],
+            &[MAXIMUM_CREDENTIAL_BYTES],
+            &mut self.original,
+            &self.ancestors,
+            &mut self.readback,
+        )
+    }
 }
 
 fn observe_controller_credential_readback<const COUNT: usize>(

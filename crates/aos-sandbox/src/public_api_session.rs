@@ -36,6 +36,7 @@ pub(crate) use handshake_custody::{
 };
 
 pub(crate) use credentials::{
+    ControllerNixGenerationOriginCredentialCustodyV1,
     ControllerQ04CredentialCustodyV1, ControllerQ04CredentialErrorV1,
     ControllerNixPublicCredentialCustodyV1, ControllerNixPublicCredentialErrorV1,
     OfflinePrepareCredentialsV3,

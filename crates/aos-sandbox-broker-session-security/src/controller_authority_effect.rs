@@ -30,6 +30,60 @@ const ERRORS: RetainedExchangeErrorsV1 = RetainedExchangeErrorsV1 {
     unusable: SESSION_UNUSABLE,
 };
 
+/// Keeps the selected preparation and native transport results in the same parent.
+#[derive(Default)]
+pub(crate) struct ControllerStorageGenerationExchangeV1 {
+    preparation: Option<Result<crate::DormantBrokerRequestPreparationV1, crate::BrokerSessionSecurityError>>,
+    exchange: RetainedBrokerExchangeV1<()>,
+    attempted: bool,
+}
+
+impl ControllerStorageGenerationExchangeV1 {
+    pub(crate) fn prepare_into(
+        &mut self,
+        session: &mut DormantAuthenticatedBrokerSessionV1,
+        draft: &aos_sandbox::production_operation_compiler::StorageGenerationPreparationDraftV1,
+        signed: &aos_sandbox::SignedBrokerPlan,
+        request_id: [u8; 16],
+        original_deadline: u64,
+    ) {
+        if self.attempted { return; }
+        self.attempted = true;
+        self.preparation = Some(session.prepare_nix_generation_request(
+            draft, signed, request_id, original_deadline,
+        ));
+    }
+
+    pub(crate) fn drive(&mut self, session: &mut DormantAuthenticatedBrokerSessionV1) -> Result<(), EffectFailure> {
+        if self.failure().is_some() || !self.attempted {
+            return Err(EffectFailure::Permanent("original generation preparation is closed".to_owned()));
+        }
+        match self.preparation.take() {
+            Some(Ok(crate::DormantBrokerRequestPreparationV1::Prepared(prepared))) => {
+                self.exchange.start_generation((), prepared);
+            }
+            retained => self.preparation = retained,
+        }
+        self.exchange.drive_generation(session, &ERRORS)
+    }
+
+    pub(crate) fn outcome(&self) -> Option<&AuthenticatedBrokerMethodOutcomeV1> {
+        self.exchange.generation_outcome()
+    }
+
+    pub(crate) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self.preparation.as_ref() {
+            Some(Err(error))
+            | Some(Ok(crate::DormantBrokerRequestPreparationV1::InitializationRecoveryRequired { error, .. }))
+            | Some(Ok(crate::DormantBrokerRequestPreparationV1::SuccessorRecoveryRequired { error, .. })) => {
+                return Some(error);
+            }
+            _ => {}
+        }
+        self.exchange.generation_failure()
+    }
+}
+
 /// Retains one authority effect exchange beside its authenticated session owner.
 #[derive(Default)]
 pub(crate) struct ControllerAuthorityEffectExchangeV1 {

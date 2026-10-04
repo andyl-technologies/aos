@@ -561,6 +561,16 @@ impl DormantBrokerOutcomeUnknownV1 {
 }
 
 impl crate::ProductionBrokerRequestEventV1 {
+    pub(crate) fn is_nix_generation(&self) -> bool {
+        let method = match self {
+            Self::Request(request) => request.method(),
+            Self::InFlightReplay(unknown) => unknown.request.method(),
+            Self::TerminalReplay(replay) => replay.0.method(),
+            Self::DescriptorTerminalReplay(_) => return false,
+        };
+        method == BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1
+    }
+
     pub(crate) fn is_original_output_replay(&self) -> bool {
         let method = match self {
             Self::InFlightReplay(unknown) => unknown.request.method(),
@@ -835,6 +845,10 @@ mod empty_host_inventory_tests {
 }
 
 impl DormantReceivedBrokerRequestV1 {
+    pub(crate) const fn original_nix_generation_deadline(&self) -> u64 {
+        self.0.deadline_boottime_nanoseconds()
+    }
+
     pub(crate) fn is_original_mount_inventory_successor(
         &self,
         original: &Self,
@@ -4083,6 +4097,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
         let method_matches = matches!(
             request.0.method(),
             BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
+                | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1
                 | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
                 | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
                 | BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT
@@ -5428,6 +5443,59 @@ impl DormantAuthenticatedBrokerSessionV1 {
         self.prepare_authenticated_request_checked(method, build, |_| true)
     }
 
+    /// Reserves the complete selected wrapper on this same Session request ID.
+    /// No nested field is passed through the ordinary deadline injector.
+    pub(crate) fn prepare_nix_generation_request(
+        &mut self,
+        draft: &aos_sandbox::production_operation_compiler::StorageGenerationPreparationDraftV1,
+        signed: &aos_sandbox::SignedBrokerPlan,
+        request_id: [u8; 16],
+        original_deadline: u64,
+    ) -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError> {
+        let method = BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1;
+        self.0.require_negotiated_client_method(method)?;
+        draft.validate_signed_plan(signed)
+            .map_err(|_| BrokerSessionSecurityError::manifest("generation whole signed plan"))?;
+        let total = [draft.request_bytes(), signed.canonical_plan(), signed.canonical_signature(),
+            draft.lease().canonical_lease(), draft.lease().canonical_signature()]
+            .iter().try_fold(0_usize, |size, part| size.checked_add(part.len()))
+            .ok_or_else(|| BrokerSessionSecurityError::manifest("generation quartet bound"))?;
+        if total > 1_048_576 {
+            return Err(BrokerSessionSecurityError::manifest("generation quartet bound"));
+        }
+        let message = BrokerRequestEnvelope {
+            method: method.into(),
+            body: draft.request_bytes().to_vec(),
+            authorization: Some(aos_proto::aos::sandbox::local::v1::BrokerAuthorizationArtifactsV1 {
+                broker_plan: signed.canonical_plan().to_vec(),
+                broker_plan_signature: signed.canonical_signature().to_vec(),
+                ownership_lease: draft.lease().canonical_lease().to_vec(),
+                ownership_lease_signature: draft.lease().canonical_signature().to_vec(),
+                ..Default::default()
+            }).into(),
+            ..Default::default()
+        };
+        let (request, initialize) = self.0.prepare_client_request(
+            message, method, 0, request_id, original_deadline, 65_536,
+        )?;
+        if request.exact_body() != draft.request_bytes() {
+            return Err(BrokerSessionSecurityError::manifest("generation original body"));
+        }
+        self.reserve_exact_authenticated_request(request, initialize)
+    }
+
+    /// Checks the named method before any selected grant is signed.
+    pub(crate) fn nix_generation_request_id(&mut self) -> Result<[u8; 16], BrokerSessionSecurityError> {
+        self.0.require_negotiated_client_method(BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1)?;
+        let (request_id, _, maximum, version, audience) = self.0.client_request_coordinates()?;
+        if maximum < 65_536 || version != aos_sandbox_core::ProtocolVersion::new(1, 0)
+            || audience != Audience::AUDIENCE_NODE_CONTROLLER
+        {
+            return Err(BrokerSessionSecurityError::manifest("generation Session coordinates"));
+        }
+        Ok(request_id)
+    }
+
     /// Builds, validates, signs, and durably reserves one request.
     ///
     /// `validate` runs after cryptographic and method-specific decoding but
@@ -6632,6 +6700,17 @@ impl DormantAuthenticatedBrokerSessionV1 {
         }
     }
 
+    pub(crate) fn recheck_original_nix_generation_session(
+        &mut self,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        // This existing fixed Storage/NodeController check has no Output
+        // operation semantics. It validates the original named journal,
+        // transcript and actual peer through the sole currentness engine.
+        self.0.owner.require_original_storage_output_server(
+            &self.0.transcript, self.0.socket.peer(),
+        )
+    }
+
     /// Parks the selected coordinates under the same original nonrenewable cutoff.
     pub(crate) fn park_output_client_coordinates(
         &mut self,
@@ -6797,6 +6876,12 @@ enum ClientWitnessRetentionV1 {
     Output,
 }
 
+#[derive(Clone, Copy)]
+enum StorageHelloPurposeV1 {
+    Ordinary,
+    NixGeneration,
+}
+
 impl ProtectedBrokerSessionFixedCustodyV1 {
     /// Drives the same fixed ControllerStorage flight, parking its actual
     /// final HELLO return before the first cold context/main/floor gate.
@@ -6836,6 +6921,7 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
     ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
         self.connect_retained_storage_session_inner(
             deadline, slot, node, ClientWitnessRetentionV1::Legacy, coverage,
+            StorageHelloPurposeV1::Ordinary,
         )
     }
 
@@ -6848,6 +6934,21 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         self.require_output_client_endpoint()?;
         self.connect_retained_storage_session_inner(
             deadline, slot, node, ClientWitnessRetentionV1::Output, None,
+            StorageHelloPurposeV1::Ordinary,
+        )
+    }
+
+    /// Selects only method57 in the same original fixed Storage flight.
+    pub(crate) fn connect_retained_nix_generation_storage_session(
+        self,
+        deadline: handshake::OriginalBrokerColdDeadlineV1,
+        slot: &mut Option<handshake::RetainedStorageColdOpenV1>,
+        node: [u8; 16],
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
+        self.require_output_client_endpoint()?;
+        self.connect_retained_storage_session_inner(
+            deadline, slot, node, ClientWitnessRetentionV1::Output, None,
+            StorageHelloPurposeV1::NixGeneration,
         )
     }
 
@@ -6858,6 +6959,7 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         node: [u8; 16],
         retention: ClientWitnessRetentionV1,
         coverage: Option<aos_sandbox_core::format::git_upload_enrollment::GitCoverageBrokerRoleV1>,
+        purpose: StorageHelloPurposeV1,
     ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
         if slot.is_some()
             || self.production_protocol()
@@ -6868,7 +6970,9 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         deadline.check()?;
         let socket = SeqpacketSocket::connect(Path::new(self.production_socket_path()))
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::Transport)?;
-        let mut handshake = self.begin_production_client_handshake_with_coverage_v1(socket, coverage)?.0;
+        let mut handshake = self.begin_production_client_handshake_with_storage_purpose_v1(
+            socket, coverage, purpose,
+        )?.0;
         loop {
             deadline.check()?;
             match handshake.advance_retaining_storage()? {
@@ -6921,6 +7025,30 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         slot: &mut Option<handshake::RetainedStorageColdOpenV1>,
         coverage: Option<aos_sandbox_core::format::git_upload_enrollment::GitCoverageBrokerRoleV1>,
     ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
+        self.complete_retained_storage_handshake_with_purpose_v1(
+            socket, deadline, slot, coverage, StorageHelloPurposeV1::Ordinary,
+        )
+    }
+
+    pub(crate) fn complete_retained_nix_generation_storage_handshake(
+        self,
+        socket: SeqpacketSocket,
+        deadline: handshake::OriginalBrokerColdDeadlineV1,
+        slot: &mut Option<handshake::RetainedStorageColdOpenV1>,
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
+        self.complete_retained_storage_handshake_with_purpose_v1(
+            socket, deadline, slot, None, StorageHelloPurposeV1::NixGeneration,
+        )
+    }
+
+    fn complete_retained_storage_handshake_with_purpose_v1(
+        self,
+        socket: SeqpacketSocket,
+        deadline: handshake::OriginalBrokerColdDeadlineV1,
+        slot: &mut Option<handshake::RetainedStorageColdOpenV1>,
+        coverage: Option<aos_sandbox_core::format::git_upload_enrollment::GitCoverageBrokerRoleV1>,
+        purpose: StorageHelloPurposeV1,
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
         if slot.is_some()
             || self.production_protocol()
                 != aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1::Storage
@@ -6928,7 +7056,9 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
             return Err(DormantBrokerSessionHandshakeErrorV1::EndpointRole);
         }
         deadline.check()?;
-        let mut handshake = self.begin_production_broker_handshake_with_coverage_v1(socket, coverage)?.0;
+        let mut handshake = self.begin_production_broker_handshake_with_storage_purpose_v1(
+            socket, coverage, purpose,
+        )?.0;
         loop {
             deadline.check()?;
             match handshake.advance_retaining_storage()? {
@@ -7148,11 +7278,30 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         socket: SeqpacketSocket,
         coverage: Option<aos_sandbox_core::format::git_upload_enrollment::GitCoverageBrokerRoleV1>,
     ) -> Result<DormantControllerClientHandshakeV1, DormantBrokerSessionHandshakeErrorV1> {
+        self.begin_production_client_handshake_with_storage_purpose_v1(
+            socket, coverage, StorageHelloPurposeV1::Ordinary,
+        )
+    }
+
+    fn begin_production_client_handshake_with_storage_purpose_v1(
+        self,
+        socket: SeqpacketSocket,
+        coverage: Option<aos_sandbox_core::format::git_upload_enrollment::GitCoverageBrokerRoleV1>,
+        purpose: StorageHelloPurposeV1,
+    ) -> Result<DormantControllerClientHandshakeV1, DormantBrokerSessionHandshakeErrorV1> {
         let protocol = self.production_protocol();
         let audience = self.production_audience();
         let maximum_response_bytes = u32::try_from(AUTHENTICATED_RESPONSE_MAXIMUM_BYTES)
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
         let hello = match coverage {
+            None if matches!(purpose, StorageHelloPurposeV1::NixGeneration) => {
+                if protocol != aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1::Storage
+                    || audience != Audience::AUDIENCE_NODE_CONTROLLER
+                {
+                    return Err(DormantBrokerSessionHandshakeErrorV1::EndpointRole);
+                }
+                aos_sandbox_broker_session_protocol::profile::nix_generation_storage_client_hello_v1()
+            }
             None => production_broker_client_hello_v1(protocol, audience, maximum_response_bytes),
             Some(role) => {
                 use aos_sandbox_core::format::git_upload_enrollment::GitCoverageBrokerRoleV1;
@@ -7195,11 +7344,30 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         socket: SeqpacketSocket,
         coverage: Option<aos_sandbox_core::format::git_upload_enrollment::GitCoverageBrokerRoleV1>,
     ) -> Result<DormantBrokerEndpointHandshakeV1, DormantBrokerSessionHandshakeErrorV1> {
+        self.begin_production_broker_handshake_with_storage_purpose_v1(
+            socket, coverage, StorageHelloPurposeV1::Ordinary,
+        )
+    }
+
+    fn begin_production_broker_handshake_with_storage_purpose_v1(
+        self,
+        socket: SeqpacketSocket,
+        coverage: Option<aos_sandbox_core::format::git_upload_enrollment::GitCoverageBrokerRoleV1>,
+        purpose: StorageHelloPurposeV1,
+    ) -> Result<DormantBrokerEndpointHandshakeV1, DormantBrokerSessionHandshakeErrorV1> {
         let protocol = self.production_protocol();
         let audience = self.production_audience();
         let maximum_response_bytes = u32::try_from(AUTHENTICATED_RESPONSE_MAXIMUM_BYTES)
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
         let hello = match coverage {
+            None if matches!(purpose, StorageHelloPurposeV1::NixGeneration) => {
+                if protocol != aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1::Storage
+                    || audience != Audience::AUDIENCE_NODE_CONTROLLER
+                {
+                    return Err(DormantBrokerSessionHandshakeErrorV1::EndpointRole);
+                }
+                aos_sandbox_broker_session_protocol::profile::nix_generation_storage_server_hello_v1()
+            }
             None => production_broker_server_hello_v1(protocol, audience, maximum_response_bytes),
             Some(role) => {
                 use aos_sandbox_core::format::git_upload_enrollment::GitCoverageBrokerRoleV1;

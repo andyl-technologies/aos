@@ -755,6 +755,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
             }
             BrokerMethod::BROKER_METHOD_STORAGE_APPLY
             | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
+            | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_NIX_GENERATION_V1
             | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
             | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
             | BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT => {

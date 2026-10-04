@@ -70,6 +70,12 @@ struct FixedListenerV1 {
     listener: RecordSubjectListener,
 }
 
+#[derive(Clone, Copy)]
+enum ActivationAcceptPurposeV1 {
+    Ordinary,
+    NixGeneration,
+}
+
 /// Owns the complete fixed listener set for one production broker service.
 ///
 /// Construction consumes systemd's descriptor table once during the
@@ -383,6 +389,25 @@ impl ProductionBrokerSessionActivationV1 {
         self.accept_authenticated_with_coverage_v1(deadline_boottime_nanoseconds, None)
     }
 
+    /// Accepts the selected Nix generation profile on the original Storage listener.
+    ///
+    /// The fixed Storage endpoint and genuine retained launch image are required
+    /// before polling or acceptance. The same verified cold destination retains
+    /// returned originals; the selected mode is not authority or a new deadline.
+    ///
+    /// # Errors
+    ///
+    /// Rejects another listener table, a missing original image, failed cold
+    /// custody, expired polling or any unchanged protected-handshake failure.
+    pub fn accept_authenticated_nix_generation_storage_v1(
+        &mut self,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, ProductionBrokerSessionActivationErrorV1> {
+        self.accept_authenticated_with_purpose_v1(
+            deadline_boottime_nanoseconds, None, ActivationAcceptPurposeV1::NixGeneration,
+        )
+    }
+
     /// Accepts the opt-in Mount profile only after its actual owner comparison.
     ///
     /// # Errors
@@ -425,6 +450,27 @@ impl ProductionBrokerSessionActivationV1 {
         deadline_boottime_nanoseconds: u64,
         coverage: Option<aos_sandbox_core::format::git_upload_enrollment::GitCoverageBrokerRoleV1>,
     ) -> Result<DormantAuthenticatedBrokerSessionV1, ProductionBrokerSessionActivationErrorV1> {
+        self.accept_authenticated_with_purpose_v1(
+            deadline_boottime_nanoseconds, coverage, ActivationAcceptPurposeV1::Ordinary,
+        )
+    }
+
+    fn accept_authenticated_with_purpose_v1(
+        &mut self,
+        deadline_boottime_nanoseconds: u64,
+        coverage: Option<aos_sandbox_core::format::git_upload_enrollment::GitCoverageBrokerRoleV1>,
+        purpose: ActivationAcceptPurposeV1,
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, ProductionBrokerSessionActivationErrorV1> {
+        if matches!(purpose, ActivationAcceptPurposeV1::NixGeneration)
+            && (coverage.is_some() || self.launch_image.is_none()
+                || self.listeners.len() != 1
+                || self.listeners[0].endpoint
+                    != ProtectedBrokerSessionFixedEndpointV1::StorageBroker)
+        {
+            return Err(ProductionBrokerSessionActivationErrorV1::Activation(
+                "selected Nix generation requires the original fixed Storage launch",
+            ));
+        }
         if self.has_failed_storage_cold() {
             return Err(DormantBrokerSessionHandshakeErrorV1::Protected(
                 crate::BrokerSessionSecurityError::Currentness,
@@ -453,6 +499,11 @@ impl ProductionBrokerSessionActivationV1 {
                     let deadline = crate::handshake::OriginalBrokerColdDeadlineV1::storage_accept(
                         deadline_boottime_nanoseconds,
                     );
+                    if matches!(purpose, ActivationAcceptPurposeV1::NixGeneration) {
+                        return custody.complete_retained_nix_generation_storage_handshake(
+                            socket, deadline, &mut self.storage_cold,
+                        ).map_err(Into::into);
+                    }
                     return custody
                         .complete_retained_storage_handshake_with_coverage_v1(
                             socket, deadline, &mut self.storage_cold, coverage,

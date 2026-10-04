@@ -710,7 +710,8 @@ in {
           + lib.optionalString coverageSelected " --git-upload-coverage"
           + lib.optionalString cfg.gitReadInspection.enable " --git-read-inspection=${toString config.aos.sandbox.gitGatewayTransport.uid}:${toString config.aos.sandbox.gitGatewayTransport.gid}"
           + lib.optionalString cfg.sourceSuccessorIssuance.enable " --issue-source-successor"
-          + lib.optionalString onlineNix.enable " --nix-start-admission";
+          + lib.optionalString onlineNix.enable " --nix-start-admission"
+          + lib.optionalString onlineNix.storageGenerationPrepare.enable " --nix-storage-generation-prepare";
         # The selected flag uses the existing paired initial-table capture.
         # It does not activate methods51/52 or complete a Start operation.
         Sockets = lib.optional cfg.publisherIngress.enable "aos-sandboxd-publisher.socket";
@@ -751,7 +752,10 @@ in {
           ++ sourceGenesisPacketCredentials
           ++ q04PolicyCredentials
           ++ sourceSuccessorCredentials
-          ++ onlineNixCredentials;
+          ++ onlineNixCredentials
+          ++ lib.optionals onlineNix.storageGenerationPrepare.enable [
+            "nix-storage-generation-origin-v1:/run/credentials/@system/${onlineNix.storageGenerationPrepare.origin}"
+          ];
         Restart = if cfg.sourceSuccessorIssuance.enable || onlineNix.enable then "no" else "on-failure";
         RestartSec = "2s";
         # Population, not cgroup.procs, retains exiting TPM helper tasks until
