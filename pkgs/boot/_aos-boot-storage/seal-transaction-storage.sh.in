@@ -1,0 +1,49 @@
+#!@bash@
+set -euo pipefail
+
+PATH=@coreutils@/bin:@util_linux@/bin:@util_linux@/sbin
+export PATH
+
+target=$1
+shift
+
+if ! mountpoint -q "$target"; then
+  echo "aos-seal-boot-transaction-storage: journal filesystem is not mounted" >&2
+  exit 1
+fi
+filesystem=$(findmnt -rn --mountpoint "$target" -o FSTYPE)
+source=$(findmnt -rn --mountpoint "$target" -o SOURCE)
+configured=false
+for device in "$@"; do
+  if [ -b "$source" ] && [ -b "$device" ] && [ "$(readlink -f "$source")" = "$(readlink -f "$device")" ]; then
+    configured=true
+    break
+  fi
+done
+if [ "$filesystem" != vfat ] || [ "$configured" != true ]; then
+  echo "aos-seal-boot-transaction-storage: journal filesystem is not a configured ESP" >&2
+  exit 1
+fi
+
+options=$(findmnt -rn --mountpoint "$target" -o OPTIONS)
+if [[ ",$options," == *,ro,* && ",$options," == *,rw,* ]]; then
+  echo "aos-seal-boot-transaction-storage: journal mount has conflicting access modes" >&2
+  exit 1
+fi
+case ",$options," in
+  *,ro,*) exit 0 ;;
+  *,rw,*) ;;
+  *)
+    echo "aos-seal-boot-transaction-storage: journal mount has no access mode" >&2
+    exit 1
+    ;;
+esac
+
+# The committed initrd journal is read-only on the host. Keep its separate
+# retention-root tmpfs mounted and writable across switch-root.
+mount -o remount,ro "$target"
+options=$(findmnt -rn --mountpoint "$target" -o OPTIONS)
+if [[ ",$options," != *,ro,* || ",$options," == *,rw,* ]]; then
+  echo "aos-seal-boot-transaction-storage: journal mount did not become read-only" >&2
+  exit 1
+fi
