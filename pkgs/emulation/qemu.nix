@@ -49,10 +49,23 @@
   enableLinuxUser ? pname == "qemu" && stdenv.hostPlatform.isLinux,
   testOnlyNonDistributable ? false,
   fullUpstreamTestSuiteOnly ? false,
+  clockAdapterUnitTestsOnly ? false,
   focusedUpstreamTest ? null,
   qemuTestRunner ? null,
   atomicPatch ? import ./qemu-patches/_atomic-patch.nix,
 }: let
+  clockUnitQualification = import ./_qemu-clock-unit-qualification.nix {
+    inherit lib applyCruciblePatch testOnlyNonDistributable fullUpstreamTestSuiteOnly enableLinuxUser;
+    enabled = clockAdapterUnitTestsOnly;
+    isNativeLinux = !stdenv.isCross && stdenv.hostPlatform.isLinux;
+    ninja =
+      if stdenv.isCross
+      then buildPackages.ninja
+      else ninja;
+    python3 = buildPython;
+    inherit qemuBuildIdentity qemuBuildIdentityMaterial;
+  };
+
   _testArtifactPolicy =
     if testOnlyNonDistributable && !applyCruciblePatch
     then throw "test-only QEMU artifacts require the tracked Crucible atomic patch"
@@ -237,7 +250,9 @@
   # The stock Linux package also executes foreign build tools. Keep Crucible's
   # system-emulator target set and its inertness reference unchanged.
   qemuTargetFlag =
-    if enableLinuxUser
+    if clockAdapterUnitTestsOnly
+    then clockUnitQualification.targetFlag
+    else if enableLinuxUser
     then "--target-list=x86_64-softmmu,aarch64-softmmu,i386-linux-user,x86_64-linux-user,aarch64-linux-user,riscv64-linux-user"
     else "--target-list=x86_64-softmmu,aarch64-softmmu";
   qemuTargetList = lib.removePrefix "--target-list=" qemuTargetFlag;
@@ -342,16 +357,18 @@
   sambaSmbdSourceHash = lib.optionalString (!isDarwinCross) samba-smbd.src.outputHash;
   sambaSmbdSourceHashAlgo =
     lib.optionalString (!isDarwinCross) samba-smbd.src.outputHashAlgo;
-  qemuConfigureIdentityMaterial = ''
-    ${builtins.concatStringsSep "\n" qemuConfigureIdentityFlags}
-    ${lib.optionalString (!isDarwinCross) ''
-      samba_smbd_version=${sambaSmbdVersion}
-      samba_smbd_source_hash_algo=${sambaSmbdSourceHashAlgo}
-      samba_smbd_source_hash=${sambaSmbdSourceHash}
-      samba_smbd_recipe_hash=${sambaSmbdRecipeHash}
-      samba_smbd_executable=${sambaSmbdExecutable}
-    ''}
-  '';
+  qemuConfigureIdentityMaterial =
+    ''
+      ${builtins.concatStringsSep "\n" qemuConfigureIdentityFlags}
+      ${lib.optionalString (!isDarwinCross) ''
+        samba_smbd_version=${sambaSmbdVersion}
+        samba_smbd_source_hash_algo=${sambaSmbdSourceHashAlgo}
+        samba_smbd_source_hash=${sambaSmbdSourceHash}
+        samba_smbd_recipe_hash=${sambaSmbdRecipeHash}
+        samba_smbd_executable=${sambaSmbdExecutable}
+      ''}
+    ''
+    + lib.optionalString clockAdapterUnitTestsOnly clockUnitQualification.identityMaterial;
   qemuConfigureFlagsHash = builtins.hashString "sha256" qemuConfigureIdentityMaterial;
   qemuConfigureFlagsScript = builtins.concatStringsSep " \\\n            " qemuConfigureFlags;
   qemuRuntimeDeps =
@@ -485,6 +502,7 @@ in
   assert _testArtifactPolicy == null;
   assert _fullTestSuitePolicy == null;
   assert _fullTestVmPolicy == null;
+  assert clockUnitQualification.policy == null;
     mkDerivation {
       inherit pname;
       inherit version;
@@ -690,7 +708,9 @@ in
             # resulting emulator binaries are byte-reproducible.
             export PYTHONHASHSEED=0
             ${
-              if focusedUpstreamTest != null
+              if clockAdapterUnitTestsOnly
+              then clockUnitQualification.buildScript
+              else if focusedUpstreamTest != null
               then ''
                 ${ninja}/bin/ninja -C build -j$NIX_BUILD_CORES \
                   qemu-img qemu-io qemu-nbd \
@@ -1507,7 +1527,9 @@ in
         {
           name = "check";
           script =
-            if applyCruciblePatch && !fullUpstreamTestSuiteOnly
+            if clockAdapterUnitTestsOnly
+            then clockUnitQualification.checkScript
+            else if applyCruciblePatch && !fullUpstreamTestSuiteOnly
             then ''
               ${python3}/bin/python3 tests/unit/test-crucible-rr-halted-neighbor.py \
                 > rr-halted-neighbor.result
@@ -4166,6 +4188,7 @@ in
         {
           name = "install";
           script = ''
+            ${lib.optionalString clockAdapterUnitTestsOnly (clockUnitQualification.installScript + "exit 0\n")}
             ${lib.optionalString fullUpstreamTestSuiteOnly "exit 0"}
             make install${lib.optionalString isDarwinCross ''
 
@@ -4412,6 +4435,7 @@ in
       passthru = {
         standaloneRelease = !applyCruciblePatch && !testOnlyNonDistributable;
         inherit testOnlyNonDistributable;
+        inherit clockAdapterUnitTestsOnly;
         releaseVia =
           if applyCruciblePatch && !testOnlyNonDistributable
           then "crucible"
