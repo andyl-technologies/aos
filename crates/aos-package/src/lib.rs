@@ -2862,6 +2862,22 @@ pub async fn run(
         return run_runtime_config_command(command, printer).await;
     }
 
+    if let PackageCommand::Switch {
+        worktree,
+        eval_root,
+        dry_run: switch_dry_run,
+    } = command
+    {
+        return apply_runtime_worktree(
+            worktree,
+            eval_root,
+            false,
+            dry_run || *switch_dry_run,
+            printer,
+        )
+        .await;
+    }
+
     // TPM quoting and verifier enrollment use explicit inputs. Neither needs
     // mutable registry state, which may not exist on a verifier-only machine.
     if let PackageCommand::Attest { command } = command {

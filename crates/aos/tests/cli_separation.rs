@@ -15,6 +15,50 @@ fn run(binary: &str, arguments: &[&str]) -> Result<Output> {
         .with_context(|| format!("running {} {}", binary, arguments.join(" ")))
 }
 
+#[test]
+fn switch_dispatches_to_native_worktree_before_registry_configuration() -> Result<()> {
+    let temporary = tempdir()?;
+    let root = temporary.path().join("aos-root");
+    std::fs::create_dir_all(root.join("etc"))?;
+    std::fs::write(
+        root.join("etc/os-release"),
+        "ID=aos\nAOS_PACKAGE_MODULE_LIBRARY=/nix/store/00000000000000000000000000000000-module-library\n",
+    )?;
+    let blocked_parent = temporary.path().join("selected-authoring-parent");
+    std::fs::write(&blocked_parent, b"preserve this foreign file")?;
+    let worktree = blocked_parent.join("modules.d");
+    let eval_root = temporary.path().join("selected-evaluation");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_apm"))
+        .arg("switch")
+        .arg("--worktree")
+        .arg(&worktree)
+        .arg("--eval-root")
+        .arg(&eval_root)
+        .env("AOS_ROOT", &root)
+        .env_remove("AOS_RUNTIME")
+        .env_remove("AOS_CONTAINER_READ_ONLY")
+        .output()
+        .context("running public switch with a blocked authoring parent")?;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8(output.stderr)?;
+    assert!(stderr.contains(&format!(
+        "creating runtime config directory {}",
+        blocked_parent.display()
+    )));
+    assert!(!stderr.contains("panicked"));
+    assert!(!stderr.contains("handled before ApmConfig::load"));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        std::fs::read(&blocked_parent)?,
+        b"preserve this foreign file"
+    );
+    assert!(!eval_root.exists());
+    assert!(!root.join("var").exists());
+    Ok(())
+}
+
 fn require_success(output: Output, description: &str) -> Result<String> {
     if !output.status.success() {
         bail!(
