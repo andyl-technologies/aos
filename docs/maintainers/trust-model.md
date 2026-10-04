@@ -113,7 +113,8 @@ roles, gates, deployment identities, and channels. The build step must then:
 1. realize exactly the frozen derivations;
 2. reject deriver or output-path drift;
 3. record source and output NAR identities;
-4. repeat builds with Nix `--check`; and
+4. repeat builds with Nix `--check`, failing closed for production registries
+   and recording unreproduced outputs for the testing tier; and
 5. produce the SBOM and append-only evidence required by the plan.
 
 Contributor authorization is a separate source-admission prerequisite. Follow

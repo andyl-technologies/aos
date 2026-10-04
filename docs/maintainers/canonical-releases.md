@@ -893,6 +893,15 @@ packages instead bind the protected repository source). It writes
 existing path. A repeated build on one maintainer machine is nondeterminism
 evidence, not an independent SLSA builder.
 
+The registry tier decides what a failed `--check` rebuild means. A
+production-tier plan (`andyl/main`) fails the step and names every derivation
+whose rebuild differed or failed. A testing-tier plan (`andyl/experimental`
+and its epochs) records each output of such a derivation as `not-reproduced`
+in the build report, warns with one reason per derivation, and continues.
+Report validation and `step assemble` reject `not-reproduced` outputs for
+production and accept them for testing, where the `build-integrity`
+`repeat-build` observation states how many outputs were not reproduced.
+
 Inspect a copied journal without initializing Nix using
 [`step status`](#inspect-a-captured-journal).
 
