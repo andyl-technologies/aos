@@ -202,6 +202,7 @@ in {
   integration.index-format = import ./index-format.nix {inherit sourceGate;};
   integration.index-evaluation = import ./index-evaluation.nix {inherit sourceGate;};
   integration.index-query = import ./index-query.nix {inherit sourceGate;};
+  integration.memo-format = import ./memo-format.nix {inherit sourceGate;};
   integration.index-reference-models = import ./index-models.nix {inherit sourceGate;};
   integration.property-registry = import ./property-registry.nix {inherit sourceGate;};
   integration.container-reference-models = import ./container-models.nix {inherit sourceGate;};

@@ -955,13 +955,22 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   profiles remain unqualified. The earlier combined candidate reported twelve
   failed dependencies and 362 passing/43 failing native tests. These scoped
   improvements do not qualify the complete native index behavior or T1.
-  The common memo audit also confirms remaining DRV-19 to DRV-22 work: one typed
+  The common memo audit identified remaining DRV-19 to DRV-22 work: one typed
   memo codec, shared recipe replay/refusal/rebuild and advisory cache behavior,
   actual metadata admission and opaque lookup adapter, and root-associated
   retention/collection. Recipe lookup hashes and immutable memo-object hashes
   remain distinct; generic pack transport and attribute side tables cannot
   substitute for this common mechanism. Current producer/trust checks, native
   index materialization and the complete normative gates remain mandatory.
+  The shared canonical Memo codec and `checks.terrane.integration.memo-format`
+  now establish the unchanged two-field, 71-byte record before parallel replay
+  work. Independently assembled wire bytes and hash preimages distinguish recipe
+  lookup keys from immutable record identities; every truncation and explicit
+  nonminimal parser witness refuses. All 494 core tests, strict all-target Clippy,
+  strict rustdoc, the exact three-group format helper, no-std, the 292-gate registry
+  and both mandatory formatters pass. Replay/refusal/rebuild, advisory cache
+  behavior, native admission, opaque lookup and root-associated retention remain
+  incomplete; this format prerequisite does not qualify `derivation-memo`.
   No formal task merge, checkbox or milestone freeze advances.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe

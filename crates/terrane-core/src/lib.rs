@@ -19,6 +19,7 @@ pub mod bucket;
 pub mod cbor;
 pub mod chunking;
 pub mod codec;
+pub mod derivation;
 pub mod derived;
 pub mod gc;
 pub mod identity;
