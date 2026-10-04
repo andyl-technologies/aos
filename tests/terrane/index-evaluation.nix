@@ -9,6 +9,14 @@
     "source_discovery_preserves_local_hops_and_expands_changed_grafts"
     "source_discovery_skips_equal_frontiers_and_reports_logical_changes"
     "source_discovery_refuses_invalid_graphs_and_contexts"
+    "selected_source_lookups_ignore_growing_unrelated_graphs"
+    "selected_source_preparation_counts_reachable_storage_and_repeated_contexts"
+    "selected_source_binding_refuses_other_geometry_and_semantic_revisions"
+  ];
+
+  lookupTests = [
+    "clones_share_one_flat_snapshot_without_generation_chains"
+    "lookup_counter_overflow_refuses_without_wrapping"
   ];
 
   maintenanceTests = [
@@ -45,11 +53,21 @@
     fi
     python3 -c 'import pathlib, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit("test result: ok. 1 passed; 0 failed; 0 ignored" not in output)' "$TMPDIR/index-maintenance-test.log"
   '';
+
+  runLookupTest = name: ''
+    if ! cargo test --frozen --offline -p terrane-core --lib indexing::incremental::lookup::tests::${name} -- --exact \
+      > "$TMPDIR/source-lookup-test.log" 2>&1; then
+      cat "$TMPDIR/source-lookup-test.log"
+      exit 1
+    fi
+    python3 -c 'import pathlib, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit("test result: ok. 1 passed; 0 failed; 0 ignored" not in output)' "$TMPDIR/source-lookup-test.log"
+  '';
 in
   sourceGate "index-evaluation" ''
     cd crates
     ${builtins.concatStringsSep "\n" (map runTest tests)}
     ${builtins.concatStringsSep "\n" (map runDiscoveryTest discoveryTests)}
+    ${builtins.concatStringsSep "\n" (map runLookupTest lookupTests)}
     ${builtins.concatStringsSep "\n" (map runMaintenanceTest maintenanceTests)}
     cargo clippy --frozen --offline -p terrane-core --all-targets -- -D warnings
     printf 'PASS: pure canonical index relationships, changed-source discovery and repeatable maintenance\n' > "$out/result"

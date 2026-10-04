@@ -894,6 +894,33 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   They add no dependency or format and qualify no lookup implementation.
   Indexed discovery, occurrence traversal and current checks retain DRV-24's
   separate work obligations; the complete normative gates remain pending.
+  Review of the isolated lookup candidate required actual cache-search,
+  validation, cycle and copy accounting rather than undocumented traversal
+  costs. The revised source now separates primary candidates from missing rows
+  and compares full typed occurrences and every reported work field against
+  independent models of a genuine internal occurrence tree, shared grafts and
+  early traversal. All 628 core tests pass with zero skipped, along with strict
+  all-target Clippy/rustdoc and both mandatory formatters on the frozen source.
+  The actual `integration.index-query` check executes all three exact groups
+  once each, then strict Clippy, and passes; the actual no-std gate also passes.
+  Every owned source byte remains unchanged through these checks. Candidate
+  `a7effc5441bd` remains isolated; current lookup and native index behavior
+  remain unqualified by this immutable-data prerequisite.
+  Review of the repeatable maintenance candidate finds source-root searches
+  over the entire supplied graph, including unrelated roots and an unreported
+  no-op owner check. The next shared source prerequisite retains only the
+  checked reachable roots and binds their immutable handles into discovery,
+  with explicit lookup counters and constant-cost snapshot sharing. Maintenance
+  qualification now requires five additional exact source-selection groups
+  for unrelated graph growth, retained storage and occurrence contexts,
+  geometry/revision refusal, flat snapshot sharing and counter overflow.
+  These expand the existing evaluation check to sixteen exact groups;
+  declarations alone cannot qualify them. Maintenance corrections add
+  independent numerical multilevel work and phase totals, forced capacity cuts
+  and prolonged canonical resynchronization witnesses. They await full review
+  and shared-source qualification; five selected developmental groups do not
+  qualify the complete evaluation gate.
+  No formal task merge, checkbox or milestone freeze advances.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route
