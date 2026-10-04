@@ -132,6 +132,10 @@ in {
       INITRD_STATE = ${builtins.toJSON activatedSystem.config.aos.boot.substrateServices.initrdStateDirectory}
       HOST_STATE = ${builtins.toJSON activatedSystem.config.aos.boot.substrateServices.hostStateDirectory}
       INTERRUPTION_STATE = ${builtins.toJSON interruptionStateRoot}
+      EXPECTED_SCOPES = ${builtins.toJSON {
+        host = activatedSystem.config.system.build.hostDeploymentBundle.nativeTransaction.scope;
+        initrd = selectedInitrd.scope;
+      }}
 
       def read_json(path):
           return json.loads(target.succeed(f"{COREUTILS}/cat {shlex.quote(path)}"))
@@ -184,7 +188,11 @@ in {
           )
           transaction = read_json(f"{bundle}/transaction.json")
           assert transaction["schema"] == "aos.package.transaction", transaction
-          assert stage in transaction["scope"], transaction["scope"]
+          scope = transaction["scope"]
+          assert scope == EXPECTED_SCOPES[stage], (stage, scope, EXPECTED_SCOPES[stage])
+          evaluation = read_json(f"{bundle}/evaluation.json")
+          assert evaluation["schema"] == "aos.package.evaluation-input", evaluation
+          assert evaluation["scope"] == scope, (evaluation["scope"], scope)
           admission_digest = target.succeed(f"{COREUTILS}/sha256sum {bundle}/admission.json").split()[0]
           expected_digest = target.succeed(f"{COREUTILS}/cat {bundle}/admission-sha256").strip()
           assert expected_digest == "sha256:" + admission_digest
