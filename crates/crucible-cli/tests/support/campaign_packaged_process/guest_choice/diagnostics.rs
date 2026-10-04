@@ -96,7 +96,7 @@ pub(super) fn configure_flight_diagnostics(
     {
         // This explicit in-guest profile reaches late pending requests without
         // enabling callback stages or native per-quantum traces.
-        invocation.env("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS", "16");
+        // Keep the aggregate budget: seal phases and the tier receipt share it.
         invocation.env(
             "CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN",
             minimum.to_string(),
@@ -138,11 +138,6 @@ fn diagnostic_flights_request_admitted_materialization_events() {
             FlightDiagnostics::Disabled => None,
         };
         let witness = matches!(diagnostics, FlightDiagnostics::ControlCallback { .. });
-        let budget = if !witness && minimum.is_some() {
-            "16"
-        } else {
-            "256"
-        };
         let mut invocation = Command::new("unused-fixture-program");
         configure_flight_diagnostics(&mut invocation, diagnostics);
         let environment = invocation.get_envs().collect::<BTreeMap<_, _>>();
@@ -150,7 +145,7 @@ fn diagnostic_flights_request_admitted_materialization_events() {
             environment.get(std::ffi::OsStr::new(
                 "CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS"
             )),
-            Some(&Some(std::ffi::OsStr::new(budget)))
+            Some(&Some(std::ffi::OsStr::new("256")))
         );
         assert_eq!(
             environment.get(std::ffi::OsStr::new("CRUCIBLE_CONTROL_CALLBACK_WITNESS")),
