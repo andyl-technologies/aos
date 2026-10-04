@@ -125,14 +125,14 @@ empty `terrane` binary.
 ### T1 — Local repository
 
 **Status:** In progress. Latest completed full qualification records candidate
-`aab21813039a`, which retains
-reviewed source discovery, immutable lookup, repeatable I/P/G maintenance and
-separate verifier/preparation work. Its actual sixteen-group evaluation,
-three-group query, no-std and both mandatory formatters pass. The reviewed core
-corrections pass 638 tests with zero skips. Its default and keep-going
+`1ce3dbe9f62a`, which combines reviewed source discovery, immutable lookup,
+repeatable I/P/G maintenance, separate verifier/preparation work, common Memo
+replay and structural metadata validation. Its six owning Memo/index/no-std
+checks and both mandatory formatters pass. The reviewed core components pass
+650 tests with zero skips. Its default and keep-going
 current-trunk aggregates both exit 1; the latter reports eleven failed gate
 dependencies, listed under T-DRV-2. Its observed native feature suite records
-377 passing and 28 failing tests out of 405; later profiles remain unqualified.
+384 passing and 25 failing tests out of 409; later profiles remain unqualified.
 No formal task merge, task checkbox, milestone exit or freeze advances.
 
 The reviewed owned-association candidate `28e8a7b6e5b9`
@@ -998,9 +998,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   on unowned baseline diagnostics, with no suppression or completion claim.
   Combined dependency candidate `1ce3dbe9f62a` preserves all eight reviewed file
   images. Its actual Memo format/replay/metadata, index evaluation/query, no-std
-  and exact mandatory formatter checks pass. Full current-trunk qualification
-  is running; these components do not qualify persisted lookup, complete native
-  admission/producer/coverage checks, root-associated retention or collection.
+  and exact mandatory formatter checks pass. Its completed default and keep-going
+  current-trunk aggregates both exit 1; the same eleven gate dependencies listed
+  above remain red. The first native feature profile records 384 passing and
+  25 failing tests out of 409, with no ignored or filtered cases: sixteen
+  `Expired`, five `Unsupported`, three `Elapsed` and one `Denied`.
+  Later profiles remain unqualified. These components do not qualify persisted
+  lookup, complete native admission/producer/coverage checks, root-associated
+  retention or collection.
   No formal task merge, checkbox or milestone freeze advances.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
