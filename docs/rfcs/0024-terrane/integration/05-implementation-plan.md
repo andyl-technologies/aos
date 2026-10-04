@@ -133,6 +133,11 @@ checks and both mandatory formatters pass. The reviewed core components pass
 current-trunk aggregates both exit 1; the latter reports eleven failed gate
 dependencies, listed under T-DRV-2. Its observed native feature suite records
 384 passing and 25 failing tests out of 409; later profiles remain unqualified.
+An unchanged single-thread Nextest diagnostic of the first native profile
+executes all 409 tests: 404 pass and five fail with `Unsupported`, with zero
+skips. No unexpected `Expired`, `Elapsed` or `Denied` failure occurs in that
+invocation. Different runners and scheduling conditions prevent attributing
+the earlier failures to a cause; the mandatory aggregate remains red.
 No formal task merge, task checkbox, milestone exit or freeze advances.
 
 The reviewed owned-association candidate `28e8a7b6e5b9`
@@ -980,6 +985,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   exact structural-dispatch groups and exits 1 on zero selected tests before
   implementation. Record validation remains distinct from recipe replay,
   current producer checks and native index materialization.
+  The configured metadata validator currently accepts ordinary Node schemas
+  only, leaving registered overlay-layer and generic Index Nodes unqualified.
+  A shared `checks.terrane.integration.node-metadata` helper names four exact
+  structural-validation groups for this prerequisite under STORE-33, TREE-32
+  and TREE-35. Accepting registered Node grammar must not infer a contextual
+  index role, complete tree relationships, owner binding or current authority;
+  the existing owning format decoders and independent repository checks retain
+  those responsibilities. A declaration alone does not qualify execution.
+  The requested helper exits 1 on zero selected tests before implementation;
+  registry completeness and both mandatory formatters pass.
   Reviewed common replay candidate `9fadba97815c` passes all 650 core tests
   with zero skips (Nextest run `e67f9315-54a2-4202-8d6c-fe8cbbd25775`),
   strict all-target core Clippy and rustdoc, the nine exact replay groups,

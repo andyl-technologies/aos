@@ -205,6 +205,7 @@ in {
   integration.memo-format = import ./memo-format.nix {inherit sourceGate;};
   integration.memo-evaluation = import ./memo-evaluation.nix {inherit sourceGate;};
   integration.memo-metadata = import ./memo-metadata.nix {inherit sourceGate;};
+  integration.node-metadata = import ./node-metadata.nix {inherit sourceGate;};
   integration.index-reference-models = import ./index-models.nix {inherit sourceGate;};
   integration.property-registry = import ./property-registry.nix {inherit sourceGate;};
   integration.container-reference-models = import ./container-models.nix {inherit sourceGate;};
