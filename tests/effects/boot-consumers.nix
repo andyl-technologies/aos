@@ -103,6 +103,15 @@ let
 in {
   committed_receipt_handoff_seals_only_the_configured_esp = let
     handoff = initrd.config.aos.services."boot-preparations.aos-initrd-store-handoff";
+    handoffUnit = "${handoff.service}.service";
+    seed = initrd.config.aos.services."boot-preparations.aos-seed-profiles";
+    seedUnit = "${seed.service}.service";
+    overlay = initrd.config.aos.services."boot-preparations.nix-overlay-setup";
+    kernelWithoutHandoff = kernel.extendModules {
+      modules = [{aos.boot.substrateServices.handoffEnabled = lib.mkForce false;}];
+    };
+    kernelSeed = kernelWithoutHandoff.config.aos.services."boot-preparations.aos-seed-profiles";
+    originalPrerequisites = ["sysroot.mount" "mount-var.service" "nix-overlay-setup.service"];
     storage = initrd.config.aos.boot.storageServices;
     seal = builtins.head handoff.lifecycle.post_start;
   in
@@ -113,7 +122,16 @@ in {
     assert builtins.length handoff.lifecycle.post_start == 1;
     assert seal.executable.path == "${(artifact "aos-boot-storage").path}/bin/aos-seal-boot-transaction-storage";
     assert seal.executable.arguments == [storage.transactionStorageRoot] ++ storage.espDevices;
-    assert !seal.ignore_failure; true;
+    assert !seal.ignore_failure;
+    # Recovery verification must wait for the committed journal's read-only seal.
+    assert builtins.elem handoffUnit seed.dependencies.after;
+    assert builtins.elem handoffUnit seed.dependencies.requires;
+    assert !(builtins.elem seedUnit handoff.dependencies.after);
+    assert !(builtins.elem seedUnit overlay.dependencies.after);
+    assert !kernelWithoutHandoff.config.aos.services."boot-preparations.aos-initrd-store-handoff".enable;
+    assert kernelSeed.enable;
+    assert kernelSeed.dependencies.after == originalPrerequisites;
+    assert kernelSeed.dependencies.requires == originalPrerequisites; true;
   retained_identity_restoration_precedes_both_host_activation_paths = let
     restoration = host.config.aos.services."boot-preparations.aos-identity-restoration";
     command = builtins.head restoration.lifecycle.start;
