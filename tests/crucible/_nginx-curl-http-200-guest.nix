@@ -389,75 +389,79 @@ in
               done
               ;;
             *" crucible.workload=bench "*)
-              mount -t 9p \
-                -o trans=virtio,version=9p2000.L,msize=8192,cache=none \
-                crucible /mnt
-              ninep_content=$(cat /mnt/probe.txt)
-              test "$ninep_content" = CRUCIBLE-9P-OK
+              case "$cmdline" in
+                *" role=hot-fork-single "*)
+                  block_prefix=$(dd if=/dev/vdb bs=18 count=1 2>/dev/null)
+                  test "$block_prefix" = CRUCIBLE-BLOCK-OK
+                  mount -t 9p -o trans=virtio,version=9p2000.L,msize=8192 crucible /mnt
+                  ninep_content=$(cat /mnt/probe.txt)
+                  test "$ninep_content" = CRUCIBLE-9P-OK
 
-              crucible-guest sometimes \
-                io-probe-complete \
-                'The I/O probe read its 9p sub-node' \
-                1
-              while :; do
-                if ! cat /mnt/probe.txt > /dev/null 2>&1; then
+                  crucible-guest selectable register-u64 \
+                    1 hot-fork.retry-quanta 1 9 2 3 quanta
+                  crucible-guest setup-complete
+                  crucible-guest measurement-begin hot-fork-window instance-1
+                  crucible-guest semantic-marker hot-fork-window-begin instance-1
+                  selection=$(crucible-guest selectable choose-u64 \
+                    1 hot-fork.retry-quanta continuation/one 1 9 2)
+                  test "$selection" = u64=7
+                  mkdir -p /known-dirty
+                  mount -t tmpfs -o size=8m tmpfs /known-dirty
+                  dd if=/dev/zero of=/known-dirty/pages bs=4096 count=1024 2>/dev/null
+                  crucible-guest metric-sample \
+                    hot-fork-window instance-1 selected-retry u64 7
+                  crucible-guest measurement-end hot-fork-window instance-1
+                  crucible-guest semantic-marker hot-fork-window-end instance-1
                   crucible-guest sometimes \
-                    io-probe-fault-observed \
-                    'The I/O probe observed its injected 9p read error' \
+                    hot-fork-continuation-complete \
+                    'The selected continuation completed' \
                     1
-                  break
-                fi
-                sleep 1
-              done
-              while :; do
-                sleep 3600
-              done
-              ;;
-            *" crucible.workload=hot-fork-single "*)
-              block_prefix=$(dd if=/dev/vdb bs=18 count=1 2>/dev/null)
-              test "$block_prefix" = CRUCIBLE-BLOCK-OK
-              mount -t 9p -o trans=virtio,version=9p2000.L,msize=8192 crucible /mnt
-              ninep_content=$(cat /mnt/probe.txt)
-              test "$ninep_content" = CRUCIBLE-9P-OK
+                  while :; do
+                    sleep 3600
+                  done
+                  ;;
+                *" role=hot-fork-scaling "*)
+                  crucible-guest selectable register-u64 \
+                    1 hot-fork.retry-quanta 1 9 2 3 quanta
+                  crucible-guest setup-complete
+                  crucible-guest measurement-begin hot-fork-window instance-1
+                  crucible-guest semantic-marker hot-fork-window-begin instance-1
+                  for sequence in 1 2 3 4; do
+                    selection=$(crucible-guest selectable choose-u64 \
+                      "$sequence" hot-fork.retry-quanta \
+                      "scaling/$sequence" 1 9 2)
+                    test "$selection" = u64=7
+                  done
+                  while :; do
+                    sleep 3600
+                  done
+                  ;;
+                *)
+                  mount -t 9p \
+                    -o trans=virtio,version=9p2000.L,msize=8192,cache=none \
+                    crucible /mnt
+                  ninep_content=$(cat /mnt/probe.txt)
+                  test "$ninep_content" = CRUCIBLE-9P-OK
 
-              crucible-guest selectable register-u64 \
-                1 hot-fork.retry-quanta 1 9 2 3 quanta
-              crucible-guest setup-complete
-              crucible-guest measurement-begin hot-fork-window instance-1
-              crucible-guest semantic-marker hot-fork-window-begin instance-1
-              selection=$(crucible-guest selectable choose-u64 \
-                1 hot-fork.retry-quanta continuation/one 1 9 2)
-              test "$selection" = u64=7
-              mkdir -p /known-dirty
-              mount -t tmpfs -o size=8m tmpfs /known-dirty
-              dd if=/dev/zero of=/known-dirty/pages bs=4096 count=1024 2>/dev/null
-              crucible-guest metric-sample \
-                hot-fork-window instance-1 selected-retry u64 7
-              crucible-guest measurement-end hot-fork-window instance-1
-              crucible-guest semantic-marker hot-fork-window-end instance-1
-              crucible-guest sometimes \
-                hot-fork-continuation-complete \
-                'The selected continuation completed' \
-                1
-              while :; do
-                sleep 3600
-              done
-              ;;
-            *" crucible.workload=hot-fork-scaling "*)
-              crucible-guest selectable register-u64 \
-                1 hot-fork.retry-quanta 1 9 2 3 quanta
-              crucible-guest setup-complete
-              crucible-guest measurement-begin hot-fork-window instance-1
-              crucible-guest semantic-marker hot-fork-window-begin instance-1
-              for sequence in 1 2 3 4; do
-                selection=$(crucible-guest selectable choose-u64 \
-                  "$sequence" hot-fork.retry-quanta \
-                  "scaling/$sequence" 1 9 2)
-                test "$selection" = u64=7
-              done
-              while :; do
-                sleep 3600
-              done
+                  crucible-guest sometimes \
+                    io-probe-complete \
+                    'The I/O probe read its 9p sub-node' \
+                    1
+                  while :; do
+                    if ! cat /mnt/probe.txt > /dev/null 2>&1; then
+                      crucible-guest sometimes \
+                        io-probe-fault-observed \
+                        'The I/O probe observed its injected 9p read error' \
+                        1
+                      break
+                    fi
+                    sleep 1
+                  done
+                  while :; do
+                    sleep 3600
+                  done
+                  ;;
+              esac
               ;;
             *)
               echo CRUCIBLE_WORKLOAD_UNKNOWN
