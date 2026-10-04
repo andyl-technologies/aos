@@ -168,6 +168,19 @@ still uses current property semantics before recorded snapshot selection, so
 protected historical reads remain unqualified. No formal task merge, checkbox,
 milestone exit or freeze follows.
 
+Reviewed native merge-input candidate `b2be541dd49d` retains all three checked
+view/original-root pairs through selection, occurrence resolution and side
+evaluation before fold preprocessing. Its four actual task gates pass; the
+merge gate executes all 34 mandatory selectors. Build, strict rustdoc and both
+formatters pass. The original full native run remains red: 357 pass, 43 fail
+and two time out out of 402, with zero skips. Strict native Clippy remains red
+on unowned dead code. The final increment corrects two test-helper comments
+only, and strict rustdoc and both formatters pass again. The candidate remains
+isolated; protected native historical checks, core checked-scope/evaluator
+consistency and combined qualification remain pending. Earlier aggregate
+results precede the newly required core scope cases, so no task or milestone
+advances.
+
 Deployable as: a local tool that initializes a store under a `file://`
 root, commits a directory, forks and merges branches, and checks a commit
 out to a directory through the `sdk` surface.
@@ -346,10 +359,20 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   evaluators and fold preprocessing. Three exact native helper cases are now
   mandatory in `algebra-merge`: complete input selection, occurrence-specific
   fences with ambiguous-domain refusal, and original-context fold replay.
-  Implementation remains pending. Genuine core histories qualify the ordinary
-  interpretation helper; they cannot manufacture native protected inputs or
-  qualify original-history/admission checks. Prior aggregate results precede
-  these new cases; no task or milestone advances.
+  Reviewed isolated candidate `b2be541dd49d` now implements this retention.
+  Its actual merge gate executes all 34 exact selectors, including the three
+  new native helpers; property resolution, selector presets and no-std also
+  pass. Build, strict rustdoc and both formatters pass. The final correction
+  preserves evaluator error sources, followed by two factual test-helper
+  comment fixes with strict rustdoc and formatting rechecked. The original
+  full native run records 357 passing, 43 failing and two timed-out cases out
+  of 402; strict native Clippy remains red on unowned dead code. Genuine core
+  histories qualify the ordinary interpretation helper; they cannot
+  manufacture native protected inputs or qualify original-history/admission
+  checks. All incoming deltas are excluded in its fold witness, so trusted
+  winner selection, graft fold and changed-domain preprocessing remain
+  unqualified. Combined qualification awaits core scope consistency; earlier
+  aggregate results precede these new cases. No task or milestone advances.
   — satisfies ALG-15 to ALG-21, ALG-28 to ALG-39;
   `checks.terrane.gates.algebra-merge`, `checks.terrane.gates.algebra-fork`.
 - [ ] **T-PROP-1** Property resolution, types, boundary properties,
