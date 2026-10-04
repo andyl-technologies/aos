@@ -84,6 +84,47 @@ impl QemuLiveHostIoRuntime {
         })
     }
 
+    /// Re-notifies the original clamp after its consumer frees event capacity.
+    ///
+    /// Callback delivery can finish while event publication remains pending.
+    /// Actual event consumption gives that same request another opportunity
+    /// to settle. Device servicing already owns its progress notification.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original mapping or doorbell error without replacing the request.
+    pub(super) fn renotify_clamp_after_event_drain(
+        &mut self,
+        request: PendingControlBoundary,
+        drained_events: usize,
+        device_progress: bool,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        if drained_events == 0 || device_progress || request.generation & 1 != 0 {
+            return Ok(());
+        }
+        let observed = self
+            .region
+            .node_slot(self.vm_slot)
+            .map_err(map_slot_error)?
+            .snapshot();
+        if observed.control_boundary_ack != request.generation
+            || observed.control_boundary_fault_command_frontier != request.fault_command_frontier
+            || observed.control_boundary_capture_request
+                != request.fingerprint_capture_request.unwrap_or(0)
+            || self
+                .region
+                .fault_command_write_index(self.vm_slot)
+                .map_err(map_slot_error)?
+                != request.fault_command_frontier
+        {
+            return Ok(());
+        }
+
+        // An ACK racing this write may leave one redundant doorbell. It never
+        // creates a new request or changes the bound producer/capture epoch.
+        self.write_wake_doorbell()
+    }
+
     /// Aborts a coordinated pause and wakes both plugin wait mechanisms.
     pub(super) fn abort_checkpoint_pause_with_wake(
         &mut self,
@@ -209,12 +250,13 @@ impl QemuLiveHostIoRuntime {
         };
         let mut device_progress_observed = false;
         loop {
-            drained_fault_events += self.drain_fault_events_for_pump(
+            let drained_this_poll = self.drain_fault_events_for_pump(
                 self.fault_event_staging_limit,
                 &deadline,
                 timeout,
                 "acknowledge completed-quantum clamp",
             )?;
+            drained_fault_events += drained_this_poll;
             last_fault_event_indices = self.fault_event_ring_indices()?;
             self.service_console_output()?;
             let observed = self
@@ -264,6 +306,7 @@ impl QemuLiveHostIoRuntime {
             let Some(remaining) = deadline.remaining() else {
                 break;
             };
+            self.renotify_clamp_after_event_drain(request, drained_this_poll, device_progress)?;
             self.observe_pending_wait(
                 "clamp-ack-pending",
                 &observed,

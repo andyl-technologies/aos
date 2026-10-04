@@ -6,6 +6,9 @@ use super::*;
 #[cfg(target_os = "linux")]
 #[path = "host_io_runtime_tests/block_coordinator_tests.rs"]
 mod block_coordinator;
+#[cfg(target_os = "linux")]
+#[path = "host_io_runtime_tests/event_drain_continuation.rs"]
+mod event_drain_continuation;
 #[path = "host_io_runtime_tests/network_output.rs"]
 mod network_output;
 
