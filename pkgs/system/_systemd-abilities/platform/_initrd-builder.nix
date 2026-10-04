@@ -43,6 +43,7 @@
 {
   lib,
   mkDerivation,
+  diffutils,
   runtimePackages,
   kernel,
   kernelModulePackages ? [],
@@ -442,6 +443,7 @@
       cpio
       zstd
       coreutils
+      diffutils
       findutils
       gawk
       jq
@@ -556,6 +558,14 @@
             rm -f "$module_dir/build" "$module_dir/source"
             ${kmod}/sbin/depmod -b root "$(basename "$module_dir")"
           done
+
+          # Admission retains the complete kernel output. Share unchanged
+          # payloads with the conventional view without modifying either name's
+          # contents or depmod's independently generated metadata.
+          (
+            set -- "$PWD/root" ${lib.escapeShellArg kernelModuleTree} ${lib.escapeShellArg kernelRelease}
+            ${lib.fileContents ./share-kernel-modules.sh}
+          )
 
           # Firmware selected specifically for early storage, network, and TPM drivers.
           mkdir -p root/lib/firmware

@@ -145,6 +145,7 @@
     inherit accountSeed;
     inherit lib runtimePackages handoff initrdNetworkDir initrdUnits;
     inherit (buildContext) mkDerivation;
+    diffutils = buildContext.packageSet.diffutils;
     kernel = selectedKernel;
     kernelModulePackages = config.aos.boot.initrd.modulePackages;
     firmwarePackages = lib.optionals config.aos.kernel.includeFirmware config.aos.boot.initrd.firmwarePackages;
