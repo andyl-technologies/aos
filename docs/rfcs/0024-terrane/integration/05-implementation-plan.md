@@ -181,6 +181,17 @@ consistency and combined qualification remain pending. Earlier aggregate
 results precede the newly required core scope cases, so no task or milestone
 advances.
 
+Reviewed core scope candidate `7494ef6afdd5` now retains the owned interpretation
+through actual authenticated scope verification and requires modern evaluators
+to match it. All 609 core tests pass with zero skips (Nextest run
+`13cc2767-c4b0-42e2-9c57-91e400280ff5`), along with strict Clippy/rustdoc,
+both formatters and four actual task gates. A final enum rustdoc summary changes
+no behavior and passes strict rustdoc and both formatters again. Combined
+qualification is running on isolated candidate `8db47fdf2822`; no aggregate
+outcome is claimed. That candidate predates the new adapter retention cases
+below and cannot qualify them. Native historical sourcing and complete T1
+remain open.
+
 Deployable as: a local tool that initializes a store under a `file://`
 root, commits a directory, forks and merges branches, and checks a commit
 out to a directory through the `sdk` surface.
@@ -510,8 +521,30 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   The existing single enclosing prior/candidate comparison contract remains
   unchanged; prior views are independently verified under their own selections.
   Three exact signed-history cases are now mandatory across property resolution,
-  commit signatures and selector presets. Implementation remains pending, and
-  these pure checks cannot replace protected native historical qualification.
+  commit signatures and selector presets. Reviewed isolated candidate
+  `7494ef6afdd5` passes all 609 core tests, strict Clippy/rustdoc, both formatters
+  and all four assigned gates. The tests use actual signed, reverified histories
+  and independently modeled complete contexts, recipe wire and memo preimage/key.
+  A copied-tree control retains only the main canonical witness and a genuinely
+  verified contextless legacy parent, proving the selected modern scope avoids
+  an unnecessary walk of its absent graft child. Mode/revision/name conflicts
+  refuse repeated verification and both history-union orders before mutation;
+  compatible bootstrap evidence remains enrichable. Combined qualification is
+  pending, and these pure checks cannot replace protected native historical
+  qualification.
+  A read-only adapter audit identifies three verifier reconstructions that
+  discard the installed read-interpretation mode/table. The next bounded
+  prerequisite clones ordinary configuration through one shared private
+  construction helper used by those three existing adapters. Legacy remains
+  deliberate; explicit current revision and empty refusal-only tables must
+  remain explicit. Three exact native helper cases are mandatory in property
+  resolution: complete mode retention, per-view fence/refusal checks, and raw
+  local/graft semantics under the retained revision. Their implementation is
+  pending. These ordinary tests invoke the actual construction seam without
+  replacing protected-state copying, original verification, setup clocks or
+  held-backend controls. The separate lifecycle adapter and historical sources
+  remain unqualified. Combined candidate `8db47fdf2822` predates these cases;
+  no task checkbox, milestone exit or freeze follows.
   — satisfies TREE-14,
   PROP-1 to PROP-30;
   `checks.terrane.gates.property-resolution`,

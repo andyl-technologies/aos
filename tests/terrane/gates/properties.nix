@@ -36,6 +36,9 @@ in {
     ${runNativeTest "guard::recorded_properties::tests::explicit_read_configuration_refuses_missing_view_root_and_mode_mismatches"}
     ${runNativeTest "guard::recorded_properties::tests::retained_read_configuration_preserves_fixed_graft_interpretations"}
     ${runNativeTest "guard::recorded_properties::tests::selected_read_configuration_constructs_checked_recorded_evaluators"}
+    ${runNativeTest "guard::original::verifier::recorded_adapter_tests::adapter_configuration_preserves_legacy_and_explicit_modes"}
+    ${runNativeTest "guard::original::verifier::recorded_adapter_tests::adapter_configuration_retains_per_view_fences_and_refuses_missing_pairs"}
+    ${runNativeTest "guard::original::verifier::recorded_adapter_tests::adapter_configuration_preserves_recorded_graft_semantics"}
     printf 'PASS: closed registry and view-path property resolution\n' > "$out/result"
   '';
 
