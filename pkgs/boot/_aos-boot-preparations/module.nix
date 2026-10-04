@@ -433,20 +433,26 @@
         required_by = [initrdFilesystemsReadiness];
       };
   };
+  # Receipt transfer seals the writable ESP before recovery reads it through
+  # a read-only mount. Substrate-only configurations have no handoff service.
+  profileSeedPrerequisites =
+    [sysrootReadiness (serviceResource "mount-var") (serviceResource "nix-overlay-setup")]
+    ++ lib.optional cfg.handoffEnabled (serviceResource "aos-initrd-store-handoff");
+
   seedProfiles = substrateService {
     key = "aos-seed-profiles";
     description = "Seed apm system-profile state on first boot";
     dependencies =
       emptyDependencies
       // {
-        after = [sysrootReadiness (serviceResource "mount-var") (serviceResource "nix-overlay-setup")];
+        after = profileSeedPrerequisites;
         before = [
           (serviceResource "aos-config-seed")
           (serviceResource "run-etc-setup")
           (serviceResource "aos-machine-id")
           initrdFilesystemsReadiness
         ];
-        requires = [sysrootReadiness (serviceResource "mount-var") (serviceResource "nix-overlay-setup")];
+        requires = profileSeedPrerequisites;
         required_by = [initrdFilesystemsReadiness];
       };
   };
