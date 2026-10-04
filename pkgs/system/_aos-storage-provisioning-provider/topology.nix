@@ -197,7 +197,9 @@ in {
         dependencies = {
           prerequisites = [];
           after = ["aos-ability-initrd-controller.service" "systemd-udev-settle.service"];
-          before = ["mount-var.service" "aos-var-crypt.service" "initrd-root-fs.target" "systemd-veritysetup@root.service" "aos-verity-root-verify.service"];
+          # Provisioning consumes the mounted image root. State-array assembly
+          # must therefore gate persistent filesystems, never that root mount.
+          before = ["mount-var.service" "aos-var-crypt.service" "initrd-fs.target" "aos-verity-root-verify.service"];
           requires = ["aos-ability-initrd-controller.service"];
           wants = [];
           requisite = [];
@@ -205,7 +207,7 @@ in {
           binds_to = [];
           part_of = [];
           upholds = [];
-          required_by = ["initrd-root-fs.target"];
+          required_by = ["initrd-fs.target"];
           wanted_by = [];
           required_mounts = [];
           implicit_dependencies = false;
