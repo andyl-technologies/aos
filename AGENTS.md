@@ -342,5 +342,8 @@ the local design no worse and improve it where that is safe and proportionate.
 
 - `nix-build -A checks.eval` — pure evaluation checks
 - `nix-build -A checks.vm.boot` — VM boot test using QEMU direct kernel boot
+- `nix-build -A checks.rust.aos-test-targets` — compiles every application
+  crate's unit and `tests/` integration targets without running them; run it
+  for any Rust change, because `cargo test --lib` skips integration tests
 - VM tests use `mkfs.ext4 -d` (sandbox-compatible, no losetup/mount)
 - VM tests require `requiredSystemFeatures = [ "kvm" ]`

@@ -995,6 +995,20 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   those responsibilities. A declaration alone does not qualify execution.
   The requested helper exits 1 on zero selected tests before implementation;
   registry completeness and both mandatory formatters pass.
+  Reviewed Node metadata candidate `b6843cf880e0` accepts registered ordinary,
+  overlay-layer and generic Index schemas through their existing pure decoders.
+  Its raw witnesses include exact physical forwarding, primary-gap and
+  owner-binding forms without assigning contextual roles or relationships.
+  Build, all 134 default-feature tests with zero skips, strict rustdoc,
+  Node/Memo/no-std helpers and both mandatory formatters pass. Strict all-target
+  Clippy remains red on unowned baseline diagnostics. The newer repository
+  policy additionally requires the application test-target compilation check;
+  its shared definition and matching policy are now brought onto this branch.
+  The trunk compile check and both formatters pass: compiler messages retain
+  107 test executables across all 29 application packages, including 70
+  integration targets, without executing tests. Joint candidate compilation
+  and full trunk qualification remain separate. The Node candidate remains
+  isolated and does not complete T-DRV-2.
   Reviewed common replay candidate `9fadba97815c` passes all 650 core tests
   with zero skips (Nextest run `e67f9315-54a2-4202-8d6c-fe8cbbd25775`),
   strict all-target core Clippy and rustdoc, the nine exact replay groups,

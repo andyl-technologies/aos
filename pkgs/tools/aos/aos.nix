@@ -212,6 +212,20 @@
     buildDeps = [buildPerl buildPkgConfig buildProtobuf buildCmake];
     runtimeDeps = [openssl sqlite libssh2 zlib];
   };
+
+  # Compile unit and integration targets without running the application suite.
+  testTargets = mkCargoPackage {
+    pname = "aos-test-targets";
+    inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
+    cargoRoot = "crates";
+    cargoBuildCommands = [
+      "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${applicationTestFlags}"
+    ];
+    buildDeps = [buildPerl buildPkgConfig buildProtobuf buildCmake];
+    runtimeDeps = [openssl sqlite libssh2 zlib];
+    installBins = false;
+    doCheck = false;
+  };
 in
   mkCargoPackage {
     pname = "aos";
@@ -237,7 +251,7 @@ in
     # scheduler time to satisfy their production-sized deadlines on large hosts.
     cargoNextestMaxTestThreads = 16;
     passthru = {
-      inherit cargoArtifacts cargoDeps cargoEnv;
+      inherit cargoArtifacts cargoDeps cargoEnv testTargets;
     };
 
     # cmake builds git2's vendored libgit2 from source. OpenSSL, SQLite, and
