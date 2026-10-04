@@ -337,6 +337,8 @@
   sambaSmbdRecipeHash = builtins.hashString "sha256" ''
     samba.nix=${builtins.hashFile "sha256" ../networking/samba.nix}
     samba-smbd.nix=${builtins.hashFile "sha256" ../networking/samba-smbd.nix}
+    samba-cross/heimdal-build-tools.nix=${builtins.hashFile "sha256" ../networking/_samba-cross/heimdal-build-tools.nix}
+    samba-cross/aarch64-linux.answers=${builtins.hashFile "sha256" ../networking/_samba-cross/aarch64-linux.answers}
   '';
   sambaSmbdVersion = lib.optionalString (!isDarwinCross) samba-smbd.version;
   sambaSmbdSourceHash = lib.optionalString (!isDarwinCross) samba-smbd.src.outputHash;
