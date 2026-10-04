@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
+use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -20,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::native_state;
-use crate::process::run_native;
+use crate::process::{CommandDeadlineExpired, run_native};
 
 const SCRATCH_ROOT: &str = "/run/aos/storage-provisioning";
 const REPART_DIR: &str = "repart.d";
@@ -175,12 +176,13 @@ pub fn handle(action: &str, bytes: &[u8]) -> Result<Vec<u8>> {
     };
     validate_desired(&desired)?;
     let _lock = native_state::Lock::acquire(Path::new(SCRATCH_ROOT))?;
+    let deadline = operation_deadline(invocation.effect.timeout_ms)?;
     ensure!(
         action != "remove" && invocation.action != Action::Remove,
         "persistent provisioning transactions do not support removal; factory reset is required"
     );
     if action == "observe" {
-        let status = match inspect_state(&desired, &input.tools, &invocation.id)? {
+        let status = match inspect_state(&desired, &input.tools, &invocation.id, deadline)? {
             DiskState::Completed(source) if source == desired.plan.source => "current",
             DiskState::Absent => "retry-safe",
             DiskState::Completed(_)
@@ -199,12 +201,7 @@ pub fn handle(action: &str, bytes: &[u8]) -> Result<Vec<u8>> {
         desired.request.enabled,
         "disabled provisioning request cannot commit"
     );
-    converge(
-        &desired,
-        &input.tools,
-        &invocation.id,
-        invocation.effect.timeout_ms,
-    )?;
+    converge(&desired, &input.tools, &invocation.id, deadline)?;
     Ok(serde_json::to_vec(&outputs(&desired, &invocation.id))?)
 }
 
@@ -212,13 +209,8 @@ fn outputs(desired: &Desired, id: &str) -> Value {
     json!({"source":desired.plan.source.name(),"marker_uuid":desired.plan.marker_uuid,"resource":id})
 }
 
-fn converge(
-    desired: &Desired,
-    context: &Context,
-    target: &str,
-    remaining_millis: u64,
-) -> Result<()> {
-    match inspect_state(desired, context, target)? {
+fn converge(desired: &Desired, context: &Context, target: &str, deadline: Instant) -> Result<()> {
+    match inspect_state(desired, context, target, deadline)? {
         DiskState::Completed(source) if source == desired.plan.source => return Ok(()),
         DiskState::Absent => {}
         DiskState::Pending => bail!("pending provisioning marker requires explicit recovery"),
@@ -230,45 +222,46 @@ fn converge(
         }
     }
 
-    let deadline = operation_deadline(remaining_millis)?;
     let rendered = render(desired, target)?;
-    let root_disk = root_disk(&context.lsblk, &desired.request.root_device)?;
+    let root_disk = root_disk(&context.lsblk, &desired.request.root_device, deadline)?;
     let targets = rendered_targets(&rendered, &root_disk)?;
 
     for target in &targets {
-        run_repart(context, target, true, false, remaining(deadline)?)?;
+        run_repart(
+            context,
+            target,
+            true,
+            false,
+            remaining(deadline)?.min(15_000),
+        )?;
     }
     for target in &targets {
-        if let Err(apply_error) = run_repart(context, target, false, false, remaining(deadline)?) {
-            let verified = run_repart(context, target, true, true, remaining(deadline)?)
-                .and_then(|value| all_unchanged(&value));
-            ensure!(
-                matches!(verified, Ok(true)),
-                "systemd-repart failed and the resulting layout is incomplete: {apply_error:#}"
-            );
-        }
+        apply_repart(deadline, |dry_run, json_output, budget| {
+            run_repart(context, target, dry_run, json_output, budget)
+        })?;
     }
 
     let _ = settle(&context.udevadm, remaining(deadline)?);
     prepare_topology(desired, context, deadline)?;
     let pending = wait_for_label(PENDING_LABEL, deadline)?;
-    let partition_number = partition_number(&pending)?;
-    run_success(
-        &context.sfdisk,
-        &[
-            "--part-label",
-            &root_disk,
-            &partition_number,
-            desired.plan.source.label(),
-        ],
-        remaining(deadline)?,
-        "relabeling provisioning marker",
+    let marker = checked_marker(desired, context, &pending, &root_disk, deadline, true)?;
+    publish_marker(
+        context,
+        &marker,
+        &root_disk,
+        desired.plan.source.label(),
+        deadline,
+        run_success,
     )?;
     let _ = settle(&context.udevadm, remaining(deadline)?);
-    wait_for_label(desired.plan.source.label(), deadline)?;
+    let committed = wait_for_label(desired.plan.source.label(), deadline)?;
+    ensure!(
+        committed == marker.device,
+        "committed label resolves to another partition"
+    );
 
     ensure!(
-        matches!(inspect_state(desired, context, target)?, DiskState::Completed(source) if source == desired.plan.source),
+        matches!(inspect_state(desired, context, target, deadline)?, DiskState::Completed(source) if source == desired.plan.source),
         "committed provisioning layout did not verify"
     );
     Ok(())
@@ -363,7 +356,12 @@ fn wait_for_path(path: &Path, deadline: Instant) -> Result<()> {
     Ok(())
 }
 
-fn inspect_state(desired: &Desired, context: &Context, target: &str) -> Result<DiskState> {
+fn inspect_state(
+    desired: &Desired,
+    context: &Context,
+    target: &str,
+    deadline: Instant,
+) -> Result<DiskState> {
     if label_path(PENDING_LABEL).exists() {
         return Ok(DiskState::Pending);
     }
@@ -381,17 +379,29 @@ fn inspect_state(desired: &Desired, context: &Context, target: &str) -> Result<D
     };
     let marker = fs::canonicalize(label_path(source.label()))
         .context("resolving committed provisioning marker")?;
-    let marker_uuid = inspect_value(&context.lsblk, &["-ndo", "PARTUUID", "--"], &marker)?;
+    let marker_uuid = inspect_value(
+        &context.lsblk,
+        &["-ndo", "PARTUUID", "--"],
+        &marker,
+        deadline,
+    )?;
     if source != desired.plan.source || marker_uuid.to_ascii_lowercase() != desired.plan.marker_uuid
     {
         return Ok(DiskState::Drifted(source));
     }
 
     let rendered = render(desired, target)?;
-    let root_disk = root_disk(&context.lsblk, &desired.request.root_device)?;
+    let root_disk = root_disk(&context.lsblk, &desired.request.root_device, deadline)?;
+    checked_marker(desired, context, &marker, &root_disk, deadline, false)?;
     let targets = rendered_targets(&rendered, &root_disk)?;
     for target in &targets {
-        match run_repart(context, target, true, true, 15_000) {
+        match run_repart(
+            context,
+            target,
+            true,
+            true,
+            remaining(deadline)?.min(15_000),
+        ) {
             Ok(value) if all_unchanged(&value)? => {}
             Ok(_) => return Ok(DiskState::Drifted(source)),
             Err(error) => {
@@ -402,7 +412,7 @@ fn inspect_state(desired: &Desired, context: &Context, target: &str) -> Result<D
             }
         }
     }
-    match topology_matches(desired, context) {
+    match topology_matches(desired, context, deadline) {
         Ok(true) => Ok(DiskState::Completed(source)),
         Ok(false) => Ok(DiskState::Drifted(source)),
         Err(error) => Ok(DiskState::Unknown(format!(
@@ -413,7 +423,7 @@ fn inspect_state(desired: &Desired, context: &Context, target: &str) -> Result<D
 
 /// Checks stored member superblocks without requiring arrays to be assembled.
 /// Missing members remain compatible with the degraded-boot assembly policy.
-fn topology_matches(desired: &Desired, context: &Context) -> Result<bool> {
+fn topology_matches(desired: &Desired, context: &Context, deadline: Instant) -> Result<bool> {
     let topology = aos_storage_provisioning::topology::resolve_topology(
         &shared_plan(&desired.plan),
         desired.plan.measured_boot,
@@ -424,7 +434,11 @@ fn topology_matches(desired: &Desired, context: &Context) -> Result<bool> {
             if !Path::new(member).exists() {
                 continue;
             }
-            let output = run_native(&context.mdadm, &["--examine", "--export", member], 15_000)?;
+            let output = run_native(
+                &context.mdadm,
+                &["--examine", "--export", member],
+                remaining(deadline)?.min(15_000),
+            )?;
             if !output.status.success() {
                 return Ok(false);
             }
@@ -660,6 +674,27 @@ fn rendered_targets(rendered: &RenderedPlan, root_disk: &str) -> Result<Vec<Rend
     Ok(targets)
 }
 
+/// Checks a timed-out write without ever dispatching that write again.
+fn apply_repart(
+    deadline: Instant,
+    mut execute: impl FnMut(bool, bool, u64) -> Result<Value>,
+) -> Result<()> {
+    // A completed partition write can stall while notifying the kernel.
+    // Only a deadline expiry permits the original bounded read-only check.
+    match execute(false, false, remaining(deadline)?.min(30_000)) {
+        Ok(_) => Ok(()),
+        Err(error) if error.is::<CommandDeadlineExpired>() => {
+            let observed = execute(true, true, remaining(deadline)?.min(15_000))?;
+            ensure!(
+                all_unchanged(&observed)?,
+                "timed-out repart layout is incomplete"
+            );
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn run_repart(
     context: &Context,
     target: &RenderedTarget,
@@ -667,10 +702,12 @@ fn run_repart(
     json_output: bool,
     remaining_millis: u64,
 ) -> Result<Value> {
+    let deadline = operation_deadline(remaining_millis)?;
     let seed = inspect_value(
         &context.blkid,
         &["-p", "-s", "PTUUID", "-o", "value", "--"],
         Path::new(&target.device),
+        deadline,
     )?;
     normalize_marker_uuid(&seed).context("validating GPT repart seed")?;
     let dry_run = if dry_run {
@@ -691,7 +728,7 @@ fn run_repart(
     }
     arguments.push("--");
     arguments.push(&target.device);
-    let output = run_native(&context.systemd_repart, &arguments, remaining_millis)?;
+    let output = run_native(&context.systemd_repart, &arguments, remaining(deadline)?)?;
     ensure!(
         output.status.success(),
         "systemd-repart failed: {}",
@@ -708,18 +745,19 @@ fn all_unchanged(value: &Value) -> Result<bool> {
     let rows = value
         .as_array()
         .context("systemd-repart JSON result is not an array")?;
-    Ok(rows.iter().all(|row| {
-        row.as_object()
-            .and_then(|row| row.get("activity"))
-            .and_then(Value::as_str)
-            == Some("unchanged")
-    }))
+    Ok(!rows.is_empty()
+        && rows.iter().all(|row| {
+            row.as_object()
+                .and_then(|row| row.get("activity"))
+                .and_then(Value::as_str)
+                == Some("unchanged")
+        }))
 }
 
-fn root_disk(lsblk: &Path, root_device: &str) -> Result<String> {
+fn root_disk(lsblk: &Path, root_device: &str, deadline: Instant) -> Result<String> {
     validate_device_path(root_device)?;
     let canonical = fs::canonicalize(root_device).context("resolving root storage device")?;
-    let parent = inspect_value(lsblk, &["-ndo", "PKNAME", "--"], &canonical)?;
+    let parent = inspect_value(lsblk, &["-ndo", "PKNAME", "--"], &canonical, deadline)?;
     ensure!(
         !parent.contains('/'),
         "lsblk returned an invalid parent device"
@@ -729,11 +767,16 @@ fn root_disk(lsblk: &Path, root_device: &str) -> Result<String> {
     Ok(disk)
 }
 
-fn inspect_value(executable: &Path, prefix: &[&str], path: &Path) -> Result<String> {
+fn inspect_value(
+    executable: &Path,
+    prefix: &[&str],
+    path: &Path,
+    deadline: Instant,
+) -> Result<String> {
     let path = path.to_string_lossy();
     let mut arguments = prefix.to_vec();
     arguments.push(&path);
-    let output = run_native(executable, &arguments, 5_000)?;
+    let output = run_native(executable, &arguments, remaining(deadline)?.min(5_000))?;
     ensure!(
         output.status.success(),
         "storage inspection failed: {}",
@@ -755,6 +798,126 @@ fn settle(udevadm: &Path, remaining_millis: u64) -> Result<()> {
         &["settle", &timeout],
         remaining_millis,
         "settling device events",
+    )
+}
+
+struct CheckedMarker {
+    device: PathBuf,
+    partition: String,
+}
+
+/// Checks the sentinel's identity independently of its globally visible label.
+fn checked_marker(
+    desired: &Desired,
+    context: &Context,
+    device: &Path,
+    disk: &str,
+    deadline: Instant,
+    for_mutation: bool,
+) -> Result<CheckedMarker> {
+    let metadata = fs::metadata(device)?;
+    ensure!(
+        metadata.file_type().is_block_device(),
+        "provisioning marker is not a block device"
+    );
+    let identity = inspect_value(
+        &context.lsblk,
+        &["-ndo", "PKNAME,PARTUUID,PARTTYPE", "--"],
+        device,
+        deadline,
+    )?;
+    validate_marker_identity(&identity, disk, &desired.plan.marker_uuid)?;
+
+    if for_mutation {
+        let number = metadata.rdev();
+        let device_number = format!(
+            "{}:{}",
+            rustix::fs::major(number),
+            rustix::fs::minor(number)
+        );
+        let mounts = fs::read_to_string("/proc/self/mountinfo")?;
+        ensure!(
+            !mounts
+                .lines()
+                .any(|line| line.split_ascii_whitespace().nth(2) == Some(device_number.as_str())),
+            "refusing to relabel a mounted provisioning marker"
+        );
+    }
+
+    Ok(CheckedMarker {
+        device: device.to_path_buf(),
+        partition: partition_number(device)?,
+    })
+}
+
+fn validate_marker_identity(identity: &str, disk: &str, expected_uuid: &str) -> Result<()> {
+    let fields = identity.split_ascii_whitespace().collect::<Vec<_>>();
+    ensure!(
+        fields.len() == 3,
+        "provisioning marker identity is incomplete"
+    );
+    ensure!(
+        format!("/dev/{}", fields[0]) == disk,
+        "provisioning marker belongs to another disk"
+    );
+    ensure!(
+        fields[1].eq_ignore_ascii_case(expected_uuid),
+        "provisioning marker UUID differs from the admitted plan"
+    );
+    ensure!(
+        fields[2].eq_ignore_ascii_case(SENTINEL_TYPE_GUID),
+        "provisioning marker has another partition type"
+    );
+    Ok(())
+}
+
+/// Publishes only a sentinel name and refreshes that exact partition's udev data.
+fn publish_marker(
+    context: &Context,
+    marker: &CheckedMarker,
+    disk: &str,
+    label: &str,
+    deadline: Instant,
+    mut execute: impl FnMut(&Path, &[&str], u64, &str) -> Result<()>,
+) -> Result<()> {
+    // The immutable root may already hold another partition on this disk.
+    // A label changes no geometry, so avoid BLKRRPART while retaining GPT fsync.
+    execute(
+        &context.sfdisk,
+        &[
+            "--no-reread",
+            "--no-tell-kernel",
+            "--part-label",
+            disk,
+            &marker.partition,
+            label,
+        ],
+        remaining(deadline)?.min(5_000),
+        "relabeling provisioning marker",
+    )?;
+
+    let name = marker
+        .device
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("provisioning marker lacks a device name")?;
+    let sysname = format!("--sysname-match={name}");
+    let device = marker
+        .device
+        .to_str()
+        .context("provisioning marker path is not UTF-8")?;
+    execute(
+        &context.udevadm,
+        &[
+            "trigger",
+            "--action=change",
+            "--subsystem-match=block",
+            &sysname,
+            "--",
+            device,
+        ],
+        remaining(deadline)?.min(5_000),
+        "refreshing provisioning marker observation",
     )
 }
 
@@ -783,6 +946,10 @@ fn partition_number(device: &Path) -> Result<String> {
     ensure!(
         !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()),
         "pending marker has an invalid partition number"
+    );
+    ensure!(
+        value.parse::<u32>()? > 0,
+        "pending marker is not a partition"
     );
     Ok(value.into())
 }
@@ -1098,6 +1265,7 @@ mod tests {
 
     #[test]
     fn all_unchanged_requires_every_result_row() {
+        assert!(!all_unchanged(&json!([])).expect("empty result"));
         assert!(all_unchanged(&json!([{"activity": "unchanged"}])).expect("valid result"));
         assert!(
             !all_unchanged(&json!([
@@ -1106,5 +1274,177 @@ mod tests {
             ]))
             .expect("valid result")
         );
+    }
+
+    #[test]
+    fn marker_identity_refuses_foreign_disk_uuid_and_partition_type() {
+        let expected = "01234567-89ab-cdef-8123-456789abcdef";
+        let valid = format!("vda {expected} {SENTINEL_TYPE_GUID}");
+        validate_marker_identity(&valid, "/dev/vda", expected).expect("owned marker");
+        validate_marker_identity(
+            &valid.to_ascii_uppercase().replacen("VDA", "vda", 1),
+            "/dev/vda",
+            expected,
+        )
+        .expect("GUID casing is immaterial");
+
+        assert!(validate_marker_identity(&valid, "/dev/vdb", expected).is_err());
+        assert!(validate_marker_identity(&valid, "/dev/vda", "another-uuid").is_err());
+        assert!(
+            validate_marker_identity(
+                &format!("vda {expected} another-type"),
+                "/dev/vda",
+                expected
+            )
+            .is_err()
+        );
+        assert!(
+            validate_marker_identity(&format!("vda {expected}"), "/dev/vda", expected).is_err()
+        );
+    }
+
+    #[test]
+    fn marker_publication_only_refreshes_its_partition_after_a_durable_write() {
+        let context = test_context();
+        let marker = CheckedMarker {
+            device: "/dev/vda6".into(),
+            partition: "6".into(),
+        };
+        let mut calls = Vec::new();
+
+        publish_marker(
+            &context,
+            &marker,
+            "/dev/vda",
+            OPERATOR_LABEL,
+            operation_deadline(2_000).expect("deadline"),
+            |executable, arguments, budget, _| {
+                assert!(budget > 0 && budget <= 2_000);
+                calls.push((
+                    executable.to_path_buf(),
+                    arguments
+                        .iter()
+                        .map(|value| value.to_string())
+                        .collect::<Vec<_>>(),
+                ));
+                Ok(())
+            },
+        )
+        .expect("marker publication");
+
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, context.sfdisk);
+        assert!(calls[0].1.iter().any(|value| value == "--no-tell-kernel"));
+        assert!(!calls[0].1.iter().any(|value| value == "--force"));
+        assert_eq!(&calls[0].1[3..], ["/dev/vda", "6", OPERATOR_LABEL]);
+        assert_eq!(calls[1].0, context.udevadm);
+        assert!(
+            calls[1]
+                .1
+                .iter()
+                .any(|value| value == "--sysname-match=vda6")
+        );
+        assert_eq!(calls[1].1.last().map(String::as_str), Some("/dev/vda6"));
+        assert!(!calls[1].1.iter().any(|value| value == "--include-parents"));
+    }
+
+    #[test]
+    fn marker_publication_propagates_write_and_refresh_failures() {
+        let context = test_context();
+        let marker = CheckedMarker {
+            device: "/dev/vda6".into(),
+            partition: "6".into(),
+        };
+
+        for failing_call in [1, 2] {
+            let mut calls = 0;
+            let result = publish_marker(
+                &context,
+                &marker,
+                "/dev/vda",
+                OPERATOR_LABEL,
+                operation_deadline(2_000).expect("deadline"),
+                |_, _, _, _| {
+                    calls += 1;
+                    if calls == failing_call {
+                        bail!("command failed");
+                    }
+                    Ok(())
+                },
+            );
+
+            assert!(result.is_err());
+            assert_eq!(calls, failing_call);
+        }
+    }
+
+    #[test]
+    fn repart_timeout_uses_only_bounded_read_only_verification() {
+        let mut calls = Vec::new();
+        apply_repart(
+            operation_deadline(60_000).expect("deadline"),
+            |dry_run, json, budget| {
+                calls.push((dry_run, json, budget));
+                if !dry_run {
+                    return Err(CommandDeadlineExpired.into());
+                }
+                Ok(json!([{"activity": "unchanged"}]))
+            },
+        )
+        .expect("verified completed layout");
+
+        assert_eq!(calls, [(false, false, 30_000), (true, true, 15_000)]);
+    }
+
+    #[test]
+    fn repart_tool_failure_cannot_enter_timeout_recovery() {
+        let mut calls = 0;
+        let error = apply_repart(operation_deadline(60_000).expect("deadline"), |_, _, _| {
+            calls += 1;
+            bail!("formatter failed");
+        })
+        .expect_err("ordinary failure");
+
+        assert_eq!(calls, 1);
+        assert_eq!(error.to_string(), "formatter failed");
+    }
+
+    #[test]
+    fn repart_timeout_cannot_accept_empty_partial_or_unreadable_layout() {
+        for observed in [
+            json!([]),
+            json!([{"activity": "create"}]),
+            json!([{}]),
+            Value::Null,
+        ] {
+            let mut calls = 0;
+            let result = apply_repart(
+                operation_deadline(10_000).expect("deadline"),
+                |dry_run, _, budget| {
+                    assert!(budget > 0 && budget <= 10_000);
+                    calls += 1;
+                    if !dry_run {
+                        return Err(CommandDeadlineExpired.into());
+                    }
+                    Ok(observed.clone())
+                },
+            );
+
+            assert!(result.is_err());
+            assert_eq!(calls, 2);
+        }
+    }
+
+    fn test_context() -> Context {
+        Context {
+            systemd_repart: "/nix/store/repart".into(),
+            blkid: "/nix/store/blkid".into(),
+            lsblk: "/nix/store/lsblk".into(),
+            sfdisk: "/nix/store/sfdisk".into(),
+            udevadm: "/nix/store/udevadm".into(),
+            mdadm: "/nix/store/mdadm".into(),
+            mkfs_ext4: "/nix/store/mkfs-ext4".into(),
+            mkfs_xfs: "/nix/store/mkfs-xfs".into(),
+        }
     }
 }

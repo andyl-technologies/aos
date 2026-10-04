@@ -7,9 +7,21 @@ use std::process::{Command, Output, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context as _, Result, bail, ensure};
+use anyhow::{Context as _, Result, ensure};
 
 const MAX_OUTPUT_BYTES: u64 = 256 * 1024;
+
+/// Distinguishes an expired command from an ordinary native-tool failure.
+#[derive(Debug)]
+pub(crate) struct CommandDeadlineExpired;
+
+impl std::fmt::Display for CommandDeadlineExpired {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("native command deadline expired")
+    }
+}
+
+impl std::error::Error for CommandDeadlineExpired {}
 
 /// Runs an immutable executable with cleared environment and bounded I/O.
 ///
@@ -64,7 +76,7 @@ pub fn run_native(path: &Path, arguments: &[&str], remaining_millis: u64) -> Res
             let _ = child.wait();
             let _ = join_reader(stdout_reader, "stdout");
             let _ = join_reader(stderr_reader, "stderr");
-            bail!("native command deadline expired");
+            return Err(CommandDeadlineExpired.into());
         }
         thread::sleep(Duration::from_millis(10));
     };
