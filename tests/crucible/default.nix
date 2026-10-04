@@ -3130,6 +3130,7 @@ in rec {
     };
   };
   phase9 = {
+    campaignModeLibtest = import ./phase9-campaign-mode-libtest.nix {inherit pkgs;};
     gates = rec {
       campaignGateMatrixContract = import ./phase9-campaign-gate-matrix-contract.nix {
         inherit pkgs;
