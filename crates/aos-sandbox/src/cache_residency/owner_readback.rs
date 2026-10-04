@@ -440,6 +440,21 @@ pub(super) fn sign_closed_cache_owner_readback_v2(
     signer_generation: u64,
     signing_key: &SigningKey,
 ) -> Result<[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2], CacheOwnerReadbackErrorV1> {
+    let bytes = prepare_closed_cache_owner_readback_v2(
+        fields, manifest_identity, hold, quota_digest, challenge, signer_generation,
+    )?;
+    let preimage = signature_preimage_v2(&bytes[..BODY_BYTES_V2]);
+    Ok(finish_closed_cache_owner_readback_v2(bytes, preimage, signing_key))
+}
+
+fn prepare_closed_cache_owner_readback_v2(
+    fields: CacheOwnerReadbackFieldsV1,
+    manifest_identity: Option<(u64, u64)>,
+    hold: CachePolicyHoldV1,
+    quota_digest: ObjectDigest,
+    challenge: CacheOwnerReadbackChallengeV1,
+    signer_generation: u64,
+) -> Result<[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2], CacheOwnerReadbackErrorV1> {
     if !hold.is_held() || quota_digest.as_bytes() == &[0; 32] {
         return Err(CacheOwnerReadbackErrorV1::NonCanonical);
     }
@@ -462,9 +477,43 @@ pub(super) fn sign_closed_cache_owner_readback_v2(
     bytes[276..308].copy_from_slice(hold.binding().as_bytes());
     bytes[308..316].copy_from_slice(&hold.epoch().to_be_bytes());
     bytes[316..348].copy_from_slice(quota_digest.as_bytes());
-    let signature = signing_key.sign(&signature_preimage_v2(&bytes[..BODY_BYTES_V2]));
-    bytes[BODY_BYTES_V2..].copy_from_slice(&signature.to_bytes());
     Ok(bytes)
+}
+
+#[cfg(target_os = "linux")]
+#[allow(clippy::too_many_arguments)]
+pub(super) fn sign_original_q04_cache_owner_readback_v2(
+    fields: CacheOwnerReadbackFieldsV1,
+    manifest_identity: Option<(u64, u64)>,
+    hold: CachePolicyHoldV1,
+    quota_digest: ObjectDigest,
+    challenge: CacheOwnerReadbackChallengeV1,
+    signer_generation: u64,
+    signing_key: &SigningKey,
+    original: &crate::policy_compiler::create_q04::OriginalQ04RootCacheLoanV1<'_, '_, '_>,
+) -> Result<
+    [u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2],
+    crate::policy_compiler::create_q04::CreateQ04ErrorV1,
+> {
+    let bytes = prepare_closed_cache_owner_readback_v2(
+        fields, manifest_identity, hold, quota_digest, challenge, signer_generation,
+    )?;
+    let preimage = signature_preimage_v2(&bytes[..BODY_BYTES_V2]);
+
+    original.require_signing_boundary()?;
+    Ok(finish_closed_cache_owner_readback_v2(bytes, preimage, signing_key))
+}
+
+fn finish_closed_cache_owner_readback_v2(
+    mut bytes: [u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2],
+    preimage: Vec<u8>,
+    signing_key: &SigningKey,
+) -> [u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2] {
+    let signature = signing_key.sign(&preimage);
+    // Match the original signing temporary's lifetime, before copying.
+    drop(preimage);
+    bytes[BODY_BYTES_V2..].copy_from_slice(&signature.to_bytes());
+    bytes
 }
 
 fn write_physical_body(
@@ -806,5 +855,30 @@ mod tests {
         let v1 = sign_closed_cache_owner_readback_v1(fields(), challenge(), 9, &key)
             .expect("v1 receipt");
         assert!(verify_closed_cache_owner_readback_v2(&v1, &pinned, challenge(), 811).is_err());
+    }
+
+    #[test]
+    fn shared_v2_finish_matches_original_signing_statement_bytes() {
+        let key = SigningKey::from_bytes(&[98; 32]);
+        let hold = CachePolicyHoldV1::new(
+            ProjectId::from_bytes([1; 16]),
+            ObjectDigest::from_bytes([2; 32]),
+            ObjectDigest::from_bytes([3; 32]),
+            ObjectDigest::from_bytes([4; 32]),
+            5,
+        ).unwrap();
+        let quota = ObjectDigest::from_bytes([6; 32]);
+        let body = prepare_closed_cache_owner_readback_v2(
+            fields(), Some((11, 14)), hold, quota, challenge(), 9,
+        ).unwrap();
+
+        let mut original = body;
+        let signature = key.sign(&signature_preimage_v2(&original[..BODY_BYTES_V2]));
+        original[BODY_BYTES_V2..].copy_from_slice(&signature.to_bytes());
+        let shared = sign_closed_cache_owner_readback_v2(
+            fields(), Some((11, 14)), hold, quota, challenge(), 9, &key,
+        ).unwrap();
+
+        assert_eq!(shared, original);
     }
 }

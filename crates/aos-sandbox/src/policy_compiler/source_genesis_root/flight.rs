@@ -402,6 +402,53 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
         Ok(())
     }
 
+    // Preparation precedes this final same-flight sample. Continuity alone
+    // is not an age bound, and neither original start is ever renewed.
+    pub(in crate::policy_compiler) fn require_q04_signing_boundary(
+        &self,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        let now = self.signing_boundary_clock()?;
+        require_q04_original_age(self.clock, now)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::policy_compiler) fn capture_q04_prepare_readback(
+        &self,
+        controller: &HeldControllerSourceGenesisV1<'_>,
+        source: &crate::hierarchy::source_genesis::HeldSourceTreeGenesisObservationV1<'_>,
+        generation: u64,
+        key: &ed25519_dalek::SigningKey,
+        resident: &mut Option<Result<
+            [u8; super::controller_readback::CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1],
+            SourceGenesisErrorV1,
+        >>,
+        first: &mut Option<crate::policy_compiler::create_q04::CreateQ04ErrorV1>,
+        debt: &mut Option<crate::policy_compiler::create_q04::CreateQ04ErrorV1>,
+    ) -> Result<(), ()> {
+        super::controller_readback::capture_q04_prepare_readback_v1(
+            controller, source, generation, key, self, resident, first, debt,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::policy_compiler) fn capture_q04_complete_readback(
+        &self,
+        controller: &HeldControllerSourceGenesisV1<'_>,
+        source: &crate::hierarchy::source_genesis::HeldSourceTreeGenesisObservationV1<'_>,
+        generation: u64,
+        key: &ed25519_dalek::SigningKey,
+        resident: &mut Option<Result<
+            [u8; super::controller_readback::CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1],
+            SourceGenesisErrorV1,
+        >>,
+        first: &mut Option<crate::policy_compiler::create_q04::CreateQ04ErrorV1>,
+        debt: &mut Option<crate::policy_compiler::create_q04::CreateQ04ErrorV1>,
+    ) -> Result<(), ()> {
+        super::controller_readback::capture_q04_complete_readback_v1(
+            controller, source, generation, key, self, resident, first, debt,
+        )
+    }
+
     pub(in crate::policy_compiler) fn q04_original_clock(&self) -> Result<RawPairedClockSample, SourceGenesisErrorV1> {
         self.signing_boundary_clock()?;
         Ok(self.clock)
@@ -881,6 +928,21 @@ pub(in crate::policy_compiler) fn kernel_pair() -> Result<RawPairedClockSample, 
     .map_err(|_| SourceGenesisErrorV1::Stale)
 }
 
+// Pure nonauthorizing clock DATA comparison. The sole production caller
+// supplies its retained original pair and the just-observed genuine pair.
+fn require_q04_original_age(
+    original: RawPairedClockSample,
+    current: RawPairedClockSample,
+) -> Result<(), SourceGenesisErrorV1> {
+    let deadline = original.boottime_nanoseconds()
+        .checked_add(60_000_000_000)
+        .ok_or(SourceGenesisErrorV1::Stale)?;
+    if current.boottime_nanoseconds() >= deadline {
+        return Err(SourceGenesisErrorV1::Stale);
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use std::net::Shutdown;
@@ -976,5 +1038,34 @@ mod tests {
         assert!(require_completed_digest(&[16; 32], &floor).is_err());
         assert!(require_completed_digest(&floor[..31], &floor).is_err());
         assert!(require_completed_digest(&[], &floor).is_err());
+    }
+
+    #[test]
+    fn q04_original_age_refuses_deadline_equality_and_overflow_data() {
+        let sample = |boottime| RawPairedClockSample::new_untrusted(
+            RawClockProvenance::new_untrusted([91; 16]).unwrap(), [92; 16], 0, boottime,
+        ).unwrap();
+        let original = sample(1_000_000_000);
+        let deadline = 61_000_000_000;
+
+        assert!(require_q04_original_age(original, sample(deadline - 1)).is_ok());
+        assert!(require_q04_original_age(original, sample(deadline)).is_err());
+        assert!(require_q04_original_age(original, sample(deadline + 1)).is_err());
+        assert!(require_q04_original_age(sample(u64::MAX), sample(u64::MAX)).is_err());
+    }
+
+    #[test]
+    fn paired_continuity_does_not_replace_q04_original_age_data() {
+        let provenance = RawClockProvenance::new_untrusted([93; 16]).unwrap();
+        let original = RawPairedClockSample::new_untrusted(
+            provenance, [94; 16], 100, 1_000_000_000,
+        ).unwrap();
+        let later = RawPairedClockSample::new_untrusted(
+            provenance, [94; 16], 161, 62_000_000_000,
+        ).unwrap();
+
+        original.validate_later_sample(later).unwrap();
+        assert!(require_q04_original_age(original, later).is_err());
+        // These raw DATA samples never construct a flight or authorize signing.
     }
 }

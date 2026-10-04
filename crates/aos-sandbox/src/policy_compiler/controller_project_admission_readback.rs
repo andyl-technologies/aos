@@ -324,12 +324,13 @@ fn sign_controller_project_admission_at(
 // while its caller retains the original Journal, credentials and flight.
 #[cfg(target_os = "linux")]
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn sign_q04_current_controller_project_v1(
+pub(in crate::policy_compiler) fn sign_q04_current_controller_project_v1(
     journal: &mut Journal,
     ledger: &crate::reconciler::OriginalQ04ControllerLedgerV1,
     challenge: ControllerProjectAdmissionChallengeV1,
     signer_generation: u64,
     signing_key: &SigningKey,
+    original: &super::source_genesis_root::OriginalRootGenesisFlightV1<'_>,
     packet: &mut Option<[u8; CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1]>,
     first_cause: &mut Option<super::create_q04::CreateQ04ErrorV1>,
     postcheck_debt: &mut Option<super::create_q04::CreateQ04ErrorV1>,
@@ -341,7 +342,7 @@ pub(crate) fn sign_q04_current_controller_project_v1(
         return Err(());
     }
     let result = sign_q04_current_controller_project_original(
-        journal, ledger, challenge, signer_generation, signing_key, packet, first_cause,
+        journal, ledger, challenge, signer_generation, signing_key, original, packet, first_cause,
     );
     super::create_q04::finish_controller_q04_signing_v1(result, first_cause, postcheck_debt)
 }
@@ -354,6 +355,7 @@ fn sign_q04_current_controller_project_original(
     challenge: ControllerProjectAdmissionChallengeV1,
     signer_generation: u64,
     signing_key: &SigningKey,
+    original: &super::source_genesis_root::OriginalRootGenesisFlightV1<'_>,
     packet: &mut Option<[u8; CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1]>,
     first_cause: &mut Option<super::create_q04::CreateQ04ErrorV1>,
 ) -> Result<(), super::create_q04::CreateQ04ErrorV1> {
@@ -371,7 +373,7 @@ fn sign_q04_current_controller_project_original(
 
     // The actual signature or its typed error is resident before any later
     // original-name, full replay or current-field observation can fail.
-    match sign_fields(fields, challenge, signer_generation, signing_key) {
+    match sign_q04_fields(fields, challenge, signer_generation, signing_key, original) {
         Ok(returned) => *packet = Some(returned),
         Err(error) => *first_cause = Some(error.into()),
     }
@@ -435,7 +437,7 @@ fn fields_from_source(
 // signer, an authority DTO or a detached currentness/funding certificate.
 #[cfg(target_os = "linux")]
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn sign_q04_prehold_input_v1(
+pub(in crate::policy_compiler) fn sign_q04_prehold_input_v1(
     journal: &mut Journal,
     ledger: &crate::reconciler::OriginalQ04ControllerLedgerV1,
     metadata: &[u8; super::create_q04::PREHOLD_METADATA_BYTES],
@@ -443,6 +445,7 @@ pub(crate) fn sign_q04_prehold_input_v1(
     current_packet: &[u8; CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1],
     signer_generation: u64,
     signing_key: &SigningKey,
+    original: &super::source_genesis_root::OriginalRootGenesisFlightV1<'_>,
     resident_packet: &mut Vec<u8>,
     first_cause: &mut Option<super::create_q04::CreateQ04ErrorV1>,
     postcheck_debt: &mut Option<super::create_q04::CreateQ04ErrorV1>,
@@ -454,11 +457,11 @@ pub(crate) fn sign_q04_prehold_input_v1(
             Err(CreateQ04ErrorV1::ChangedCut), first_cause, postcheck_debt,
         );
     }
-    let mut original = None;
+    let mut original_bookend = None;
     let mut original_fields = None;
     let signed = (|| {
         let before = journal.q04_controller_signing_bookend_v1(ledger, None)?;
-        original = Some(before);
+        original_bookend = Some(before);
         let uid = journal.protected_owner_uid()?;
         if uid == 0 || uid != rustix::process::getuid().as_raw() {
             return Err(CreateQ04ErrorV1::ChangedCut);
@@ -480,7 +483,7 @@ pub(crate) fn sign_q04_prehold_input_v1(
             resident_packet,
             [metadata, rows[0], rows[1], rows[2], proposed, current_packet],
         )?;
-        super::create_q04::sign_q04_prehold_body_v1(resident_packet, signing_key)
+        super::create_q04::sign_original_q04_prehold_body_v1(resident_packet, signing_key, original)
     })();
 
     // Park the actual signing/allocation error before any physical postcheck.
@@ -488,7 +491,7 @@ pub(crate) fn sign_q04_prehold_input_v1(
     let result = finish_controller_q04_signing_v1(signed, first_cause, postcheck_debt);
     let checked = (|| {
         let after = journal.q04_controller_signing_bookend_v1(ledger, None)?;
-        if let Some(before) = original {
+        if let Some(before) = original_bookend {
             if after != before {
                 return Err(CreateQ04ErrorV1::ChangedCut);
             }
@@ -574,6 +577,19 @@ fn sign_fields(
     [u8; CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1],
     ControllerProjectAdmissionReadbackErrorV1,
 > {
+    let bytes = prepare_fields(fields, challenge, signer_generation)?;
+    let preimage = signature_preimage(&bytes[..BODY_BYTES]);
+    Ok(finish_fields(bytes, preimage, key))
+}
+
+fn prepare_fields(
+    fields: VerifiedControllerProjectAdmissionV1,
+    challenge: ControllerProjectAdmissionChallengeV1,
+    signer_generation: u64,
+) -> Result<
+    [u8; CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1],
+    ControllerProjectAdmissionReadbackErrorV1,
+> {
     if signer_generation == 0 {
         return Err(ControllerProjectAdmissionReadbackErrorV1::NonCanonical);
     }
@@ -598,9 +614,34 @@ fn sign_fields(
     bytes[256..288].copy_from_slice(fields.revocation_head.as_bytes());
     bytes[288] = encode_revocation_mode(fields.revocation_mode);
     bytes[289..297].copy_from_slice(&fields.revocation_grace_nanos.to_be_bytes());
-    let signature = key.sign(&signature_preimage(&bytes[..BODY_BYTES]));
-    bytes[BODY_BYTES..].copy_from_slice(&signature.to_bytes());
     Ok(bytes)
+}
+
+fn finish_fields(
+    mut bytes: [u8; CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1],
+    preimage: Vec<u8>,
+    key: &SigningKey,
+) -> [u8; CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1] {
+    let signature = key.sign(&preimage);
+    // The old temporary ended at the signing statement, before copying.
+    drop(preimage);
+    bytes[BODY_BYTES..].copy_from_slice(&signature.to_bytes());
+    bytes
+}
+
+#[cfg(target_os = "linux")]
+fn sign_q04_fields(
+    fields: VerifiedControllerProjectAdmissionV1,
+    challenge: ControllerProjectAdmissionChallengeV1,
+    signer_generation: u64,
+    key: &SigningKey,
+    original: &super::source_genesis_root::OriginalRootGenesisFlightV1<'_>,
+) -> Result<[u8; CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1], super::create_q04::CreateQ04ErrorV1> {
+    let bytes = prepare_fields(fields, challenge, signer_generation)?;
+    let preimage = signature_preimage(&bytes[..BODY_BYTES]);
+
+    original.require_q04_signing_boundary()?;
+    Ok(finish_fields(bytes, preimage, key))
 }
 
 #[cfg(test)]

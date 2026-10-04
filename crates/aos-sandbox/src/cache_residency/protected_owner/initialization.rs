@@ -575,8 +575,7 @@ impl<'owner> OriginalQ04CacheOwnerCutV1<'owner> {
             let (generation, signer) = credentials.cache_signer()
                 .ok_or(CreateQ04ErrorV1::ChangedCut)?;
             let snapshot = self.physical.held_snapshot()?;
-            snapshot.sign_original_q04_readback_v2(readback, challenge, generation, signer)
-                .map_err(Into::into)
+            snapshot.sign_original_q04_readback_v2(readback, challenge, generation, signer, root)
         })());
 
         let checked = (|| {

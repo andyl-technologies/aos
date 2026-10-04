@@ -30,7 +30,7 @@ use crate::policy_compiler::create_q04::{
     Q04ControllerPreparationV1, Q04PhaseRecordV1, Q04RootDecisionV1,
     controller_phase_recipe_v1, encode_q04_acknowledgement_data_v1,
     lower_clearance_recipe_digest_v1, q04_controller_capacity_events_v1,
-    sign_q04_acknowledgement_v1,
+    sign_original_q04_acknowledgement_v1,
 };
 
 // The same installed invocation owns every returned compiler/native/signing
@@ -250,7 +250,7 @@ fn capture_controller_q04_acknowledgement(
         events.pairs, clear_fields,
     ))?;
     *signature = Some(match credentials.signer() {
-        Some((_, signer)) => sign_q04_acknowledgement_v1(kind, packet, signer, identity),
+        Some((_, signer)) => sign_original_q04_acknowledgement_v1(kind, packet, signer, identity, &original),
         None => Err(CreateQ04ErrorV1::ChangedCut),
     });
 

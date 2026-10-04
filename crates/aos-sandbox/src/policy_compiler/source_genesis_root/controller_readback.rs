@@ -50,6 +50,16 @@ pub fn sign_controller_source_genesis_readback_v1(
     generation: u64,
     key: &SigningKey,
 ) -> Result<[u8; CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1], SourceGenesisErrorV1> {
+    let kind = prepare_current_readback_kind(controller, source, nonce, generation)?;
+    sign_readback(controller, source, nonce, generation, key, kind)
+}
+
+fn prepare_current_readback_kind(
+    controller: &HeldControllerSourceGenesisV1<'_>,
+    source: &HeldSourceTreeGenesisObservationV1<'_>,
+    nonce: [u8; 16],
+    generation: u64,
+) -> Result<u8, SourceGenesisErrorV1> {
     controller.recheck()?;
     source.recheck()?;
     if nonce == [0; 16] || generation == 0 || source.source_uid() == 0 {
@@ -78,7 +88,7 @@ pub fn sign_controller_source_genesis_readback_v1(
         controller.recheck_current_admission()?;
         0
     };
-    sign_readback(controller, source, nonce, generation, key, kind)
+    Ok(kind)
 }
 
 /// Signs actual durable Controller completion joined to the exact Source ACK.
@@ -110,6 +120,20 @@ fn sign_readback(
     key: &SigningKey,
     kind: u8,
 ) -> Result<[u8; CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1], SourceGenesisErrorV1> {
+    let packet = prepare_readback(controller, source, nonce, generation, kind)?;
+    let preimage = [DOMAIN, &packet[..BODY_BYTES]].concat();
+    let packet = finish_readback(packet, preimage, key);
+    recheck_readback(controller, source, kind)?;
+    Ok(packet)
+}
+
+fn prepare_readback(
+    controller: &HeldControllerSourceGenesisV1<'_>,
+    source: &HeldSourceTreeGenesisObservationV1<'_>,
+    nonce: [u8; 16],
+    generation: u64,
+    kind: u8,
+) -> Result<[u8; CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1], SourceGenesisErrorV1> {
     if nonce == [0; 16] || generation == 0 || source.source_uid() == 0 {
         return Err(SourceGenesisErrorV1::NonCanonical);
     }
@@ -127,8 +151,26 @@ fn sign_readback(
     packet[672..720].copy_from_slice(&controller.names().to_bytes());
     packet[720..768].copy_from_slice(&source.names().to_bytes());
     packet[768..800].copy_from_slice(&source.instance().unwrap_or([0; 32]));
-    let signature = key.sign(&[DOMAIN, &packet[..BODY_BYTES]].concat());
+    Ok(packet)
+}
+
+fn finish_readback(
+    mut packet: [u8; CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1],
+    preimage: Vec<u8>,
+    key: &SigningKey,
+) -> [u8; CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1] {
+    let signature = key.sign(&preimage);
+    // Preserve the original temporary's destruction before packet copying.
+    drop(preimage);
     packet[BODY_BYTES..].copy_from_slice(&signature.to_bytes());
+    packet
+}
+
+fn recheck_readback(
+    controller: &HeldControllerSourceGenesisV1<'_>,
+    source: &HeldSourceTreeGenesisObservationV1<'_>,
+    kind: u8,
+) -> Result<(), SourceGenesisErrorV1> {
     controller.recheck()?;
     source.recheck()?;
     if kind == 3 {
@@ -136,7 +178,118 @@ fn sign_readback(
     } else if kind != 1 {
         controller.recheck_current_admission()?;
     }
-    Ok(packet)
+    Ok(())
+}
+
+// These fixed entries use the same kind, body and postcheck engines, but
+// retain the actual signature before those postchecks can fail.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn capture_q04_prepare_readback_v1(
+    controller: &HeldControllerSourceGenesisV1<'_>,
+    source: &HeldSourceTreeGenesisObservationV1<'_>,
+    generation: u64,
+    key: &SigningKey,
+    original: &super::flight::OriginalRootGenesisFlightV1<'_>,
+    resident: &mut Option<Result<
+        [u8; CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1],
+        SourceGenesisErrorV1,
+    >>,
+    first: &mut Option<super::super::create_q04::CreateQ04ErrorV1>,
+    debt: &mut Option<super::super::create_q04::CreateQ04ErrorV1>,
+) -> Result<(), ()> {
+    require_q04_capture_vacant(resident, first, debt)?;
+    let kind = prepare_current_readback_kind(
+        controller, source, original.nonce(), generation,
+    );
+    capture_q04_readback(
+        controller, source, generation, key, original, resident, first, debt, kind,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn capture_q04_complete_readback_v1(
+    controller: &HeldControllerSourceGenesisV1<'_>,
+    source: &HeldSourceTreeGenesisObservationV1<'_>,
+    generation: u64,
+    key: &SigningKey,
+    original: &super::flight::OriginalRootGenesisFlightV1<'_>,
+    resident: &mut Option<Result<
+        [u8; CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1],
+        SourceGenesisErrorV1,
+    >>,
+    first: &mut Option<super::super::create_q04::CreateQ04ErrorV1>,
+    debt: &mut Option<super::super::create_q04::CreateQ04ErrorV1>,
+) -> Result<(), ()> {
+    require_q04_capture_vacant(resident, first, debt)?;
+    let kind = controller.recheck_completed_source_ack(source).map(|()| 3);
+    capture_q04_readback(
+        controller, source, generation, key, original, resident, first, debt, kind,
+    )
+}
+
+fn require_q04_capture_vacant(
+    resident: &Option<Result<
+        [u8; CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1],
+        SourceGenesisErrorV1,
+    >>,
+    first: &mut Option<super::super::create_q04::CreateQ04ErrorV1>,
+    debt: &Option<super::super::create_q04::CreateQ04ErrorV1>,
+) -> Result<(), ()> {
+    if resident.is_some() || first.is_some() || debt.is_some() {
+        if first.is_none() && debt.is_none() {
+            *first = Some(super::super::create_q04::CreateQ04ErrorV1::ChangedCut);
+        }
+        return Err(());
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn capture_q04_readback(
+    controller: &HeldControllerSourceGenesisV1<'_>,
+    source: &HeldSourceTreeGenesisObservationV1<'_>,
+    generation: u64,
+    key: &SigningKey,
+    original: &super::flight::OriginalRootGenesisFlightV1<'_>,
+    resident: &mut Option<Result<
+        [u8; CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1],
+        SourceGenesisErrorV1,
+    >>,
+    first: &mut Option<super::super::create_q04::CreateQ04ErrorV1>,
+    debt: &mut Option<super::super::create_q04::CreateQ04ErrorV1>,
+    kind: Result<u8, SourceGenesisErrorV1>,
+) -> Result<(), ()> {
+    let mut observed_kind = None;
+    *resident = Some((|| {
+        let kind = kind?;
+        observed_kind = Some(kind);
+        let packet = prepare_readback(
+            controller, source, original.nonce(), generation, kind,
+        )?;
+        let preimage = [DOMAIN, &packet[..BODY_BYTES]].concat();
+
+        original.require_q04_signing_boundary()?;
+        Ok(finish_readback(packet, preimage, key))
+    })());
+
+    // Move an actual error once; a successful signature never leaves its slot
+    // on failure. No postcheck can replace or manufacture that original result.
+    if matches!(resident, Some(Err(_))) {
+        match resident.take() {
+            Some(Err(error)) => { *first = Some(error.into()); }
+            returned => { *resident = returned; }
+        }
+    }
+    if let Some(kind) = observed_kind {
+        if let Err(error) = recheck_readback(controller, source, kind) {
+            debt.get_or_insert(error.into());
+        }
+    }
+    if first.is_some() || debt.is_some() {
+        Err(())
+    } else {
+        Ok(())
+    }
 }
 
 pub(super) struct VerifiedControllerSourceGenesisReadbackV1 {

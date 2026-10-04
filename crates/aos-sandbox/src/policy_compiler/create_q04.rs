@@ -1113,19 +1113,49 @@ impl<'packet> Q04AcknowledgementV1<'packet> {
 // The enclosing original owner already parks this exact body buffer. The
 // helper borrows it through validation/allocation/signing, including failure;
 // it does not consume a packet into a callee-local Result or mint live custody.
+#[cfg(test)]
 pub(crate) fn sign_q04_acknowledgement_v1(
     kind: Q04AcknowledgementKindV1,
     body: &mut Vec<u8>,
     key: &SigningKey,
     identity: &Q04CutIdentityV1,
 ) -> Result<(), CreateQ04ErrorV1> {
+    let preimage = prepare_q04_acknowledgement_v1(kind, body, identity)?;
+    append_q04_signature(body, key, &preimage);
+    Ok(())
+}
+
+fn prepare_q04_acknowledgement_v1(
+    kind: Q04AcknowledgementKindV1,
+    body: &mut Vec<u8>,
+    identity: &Q04CutIdentityV1,
+) -> Result<Vec<u8>, CreateQ04ErrorV1> {
     finish_q04_acknowledgement_body_v1(kind, body, identity)?;
 
     let preimage = acknowledgement_signature_preimage(kind, body)?;
     body.try_reserve_exact(64)?;
-    let signature = key.sign(&preimage);
-    body.extend_from_slice(&signature.to_bytes());
+    Ok(preimage)
+}
+
+pub(crate) fn sign_original_q04_acknowledgement_v1(
+    kind: Q04AcknowledgementKindV1,
+    body: &mut Vec<u8>,
+    key: &SigningKey,
+    identity: &Q04CutIdentityV1,
+    original: &OriginalQ04RootCacheLoanV1<'_, '_, '_>,
+) -> Result<(), CreateQ04ErrorV1> {
+    let preimage = prepare_q04_acknowledgement_v1(kind, body, identity)?;
+
+    original.require_signing_boundary()?;
+    append_q04_signature(body, key, &preimage);
     Ok(())
+}
+
+// The caller retains this named preimage through the append, as before.
+// Capacity and every fallible preparation step have already completed.
+fn append_q04_signature(body: &mut Vec<u8>, key: &SigningKey, preimage: &[u8]) {
+    let signature = key.sign(preimage);
+    body.extend_from_slice(&signature.to_bytes());
 }
 
 // The same body/header checks may advise fixed-width future capacity DATA.
@@ -1277,16 +1307,37 @@ pub(crate) fn encode_q04_claim_body_v1(
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn sign_q04_claim_v1(
     body: &mut Vec<u8>,
     key: &SigningKey,
     identity: &Q04CutIdentityV1,
 ) -> Result<(), CreateQ04ErrorV1> {
+    let preimage = prepare_q04_claim_v1(body, identity)?;
+    append_q04_signature(body, key, &preimage);
+    Ok(())
+}
+
+fn prepare_q04_claim_v1(
+    body: &mut Vec<u8>,
+    identity: &Q04CutIdentityV1,
+) -> Result<Vec<u8>, CreateQ04ErrorV1> {
     claim_body_fields(body, identity)?;
     let preimage = signed_record_preimage(CLAIM_SIGNATURE_DOMAIN, body)?;
     body.try_reserve_exact(64)?;
-    let signature = key.sign(&preimage);
-    body.extend_from_slice(&signature.to_bytes());
+    Ok(preimage)
+}
+
+pub(super) fn sign_original_q04_claim_v1(
+    body: &mut Vec<u8>,
+    key: &SigningKey,
+    identity: &Q04CutIdentityV1,
+    original: &super::source_genesis_root::OriginalRootGenesisFlightV1<'_>,
+) -> Result<(), CreateQ04ErrorV1> {
+    let preimage = prepare_q04_claim_v1(body, identity)?;
+
+    original.require_q04_signing_boundary()?;
+    append_q04_signature(body, key, &preimage);
     Ok(())
 }
 
@@ -1873,15 +1924,34 @@ pub(crate) fn encode_q04_prehold_body_v1(
 // Only the genuine private Controller donor invokes this DATA serializer.
 // The actual buffer is resident before allocation/signing; all original
 // ledger/current-source/name/clock bookends remain in that donor and caller.
+#[cfg(test)]
 pub(super) fn sign_q04_prehold_body_v1(
     output: &mut Vec<u8>,
     key: &SigningKey,
 ) -> Result<(), CreateQ04ErrorV1> {
+    let preimage = prepare_q04_prehold_body_v1(output)?;
+    append_q04_signature(output, key, &preimage);
+    Ok(())
+}
+
+fn prepare_q04_prehold_body_v1(
+    output: &mut Vec<u8>,
+) -> Result<Vec<u8>, CreateQ04ErrorV1> {
     prehold_body_fields(output)?;
     let preimage = signed_record_preimage(PREHOLD_SIGNATURE_DOMAIN, output)?;
     output.try_reserve_exact(64)?;
-    let signature = key.sign(&preimage);
-    output.extend_from_slice(&signature.to_bytes());
+    Ok(preimage)
+}
+
+pub(super) fn sign_original_q04_prehold_body_v1(
+    output: &mut Vec<u8>,
+    key: &SigningKey,
+    original: &super::source_genesis_root::OriginalRootGenesisFlightV1<'_>,
+) -> Result<(), CreateQ04ErrorV1> {
+    let preimage = prepare_q04_prehold_body_v1(output)?;
+
+    original.require_q04_signing_boundary()?;
+    append_q04_signature(output, key, &preimage);
     Ok(())
 }
 

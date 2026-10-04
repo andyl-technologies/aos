@@ -272,12 +272,13 @@ fn fields_from_hold(
 // output and cause belong to the same resident invocation before postchecks.
 #[cfg(target_os = "linux")]
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn sign_q04_held_controller_v1(
+pub(in crate::policy_compiler) fn sign_q04_held_controller_v1(
     journal: &mut Journal,
     transitions: &[crate::journal::ControllerQ04TransitionV1<'_>],
     challenge: ControllerHoldReadbackChallengeV1,
     signer_generation: u64,
     signing_key: &SigningKey,
+    original: &super::source_genesis_root::OriginalRootGenesisFlightV1<'_>,
     packet: &mut Option<[u8; CLOSED_CONTROLLER_HOLD_READBACK_BYTES_V1]>,
     first_cause: &mut Option<super::create_q04::CreateQ04ErrorV1>,
     postcheck_debt: &mut Option<super::create_q04::CreateQ04ErrorV1>,
@@ -289,7 +290,7 @@ pub(crate) fn sign_q04_held_controller_v1(
         return Err(());
     }
     let result = sign_q04_held_controller_original(
-        journal, transitions, challenge, signer_generation, signing_key, packet, first_cause,
+        journal, transitions, challenge, signer_generation, signing_key, original, packet, first_cause,
     );
     super::create_q04::finish_controller_q04_signing_v1(result, first_cause, postcheck_debt)
 }
@@ -302,6 +303,7 @@ fn sign_q04_held_controller_original(
     challenge: ControllerHoldReadbackChallengeV1,
     signer_generation: u64,
     signing_key: &SigningKey,
+    original: &super::source_genesis_root::OriginalRootGenesisFlightV1<'_>,
     packet: &mut Option<[u8; CLOSED_CONTROLLER_HOLD_READBACK_BYTES_V1]>,
     first_cause: &mut Option<super::create_q04::CreateQ04ErrorV1>,
 ) -> Result<(), super::create_q04::CreateQ04ErrorV1> {
@@ -322,7 +324,7 @@ fn sign_q04_held_controller_original(
     require_current_source(journal, held)?;
     let fields = fields_from_hold(held, uid, before.0);
 
-    match sign_fields(fields, challenge, signer_generation, signing_key) {
+    match sign_q04_fields(fields, challenge, signer_generation, signing_key, original) {
         Ok(returned) => *packet = Some(returned),
         Err(error) => *first_cause = Some(error.into()),
     }
@@ -426,6 +428,16 @@ fn sign_fields(
     signer_generation: u64,
     key: &SigningKey,
 ) -> Result<[u8; CLOSED_CONTROLLER_HOLD_READBACK_BYTES_V1], ControllerHoldReadbackErrorV1> {
+    let bytes = prepare_fields(fields, challenge, signer_generation)?;
+    let preimage = signature_preimage(&bytes[..BODY_BYTES]);
+    Ok(finish_fields(bytes, preimage, key))
+}
+
+fn prepare_fields(
+    fields: VerifiedControllerHoldReadbackV1,
+    challenge: ControllerHoldReadbackChallengeV1,
+    signer_generation: u64,
+) -> Result<[u8; CLOSED_CONTROLLER_HOLD_READBACK_BYTES_V1], ControllerHoldReadbackErrorV1> {
     if signer_generation == 0 {
         return Err(ControllerHoldReadbackErrorV1::NonCanonical);
     }
@@ -443,9 +455,34 @@ fn sign_fields(
     bytes[112..144].copy_from_slice(fields.source.as_bytes());
     bytes[144..176].copy_from_slice(fields.binding.as_bytes());
     bytes[176..184].copy_from_slice(&fields.epoch.to_be_bytes());
-    let signature = key.sign(&signature_preimage(&bytes[..BODY_BYTES]));
-    bytes[BODY_BYTES..].copy_from_slice(&signature.to_bytes());
     Ok(bytes)
+}
+
+fn finish_fields(
+    mut bytes: [u8; CLOSED_CONTROLLER_HOLD_READBACK_BYTES_V1],
+    preimage: Vec<u8>,
+    key: &SigningKey,
+) -> [u8; CLOSED_CONTROLLER_HOLD_READBACK_BYTES_V1] {
+    let signature = key.sign(&preimage);
+    // The old temporary ended at the signing statement, before copying.
+    drop(preimage);
+    bytes[BODY_BYTES..].copy_from_slice(&signature.to_bytes());
+    bytes
+}
+
+#[cfg(target_os = "linux")]
+fn sign_q04_fields(
+    fields: VerifiedControllerHoldReadbackV1,
+    challenge: ControllerHoldReadbackChallengeV1,
+    signer_generation: u64,
+    key: &SigningKey,
+    original: &super::source_genesis_root::OriginalRootGenesisFlightV1<'_>,
+) -> Result<[u8; CLOSED_CONTROLLER_HOLD_READBACK_BYTES_V1], super::create_q04::CreateQ04ErrorV1> {
+    let bytes = prepare_fields(fields, challenge, signer_generation)?;
+    let preimage = signature_preimage(&bytes[..BODY_BYTES]);
+
+    original.require_q04_signing_boundary()?;
+    Ok(finish_fields(bytes, preimage, key))
 }
 
 #[cfg(test)]
