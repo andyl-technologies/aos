@@ -493,6 +493,12 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
             return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
         }
         let current_operation = current.operation().clone();
+        // A Source-Planned record cannot exclude an already committed native
+        // batch. Only the future same-writer selected cancellation join may
+        // resolve that ambiguity; ordinary cancellation remains unchanged.
+        if current_operation.has_delete_batch_layout() {
+            return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+        }
         let current_record = current.record();
         let request = LifecycleCancelRequestV1::new(
             caller,
@@ -2201,6 +2207,7 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
             .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
         let operation = current.operation();
         if operation.phase() != LifecyclePhaseV1::Committed
+            || operation.has_delete_batch_layout()
             || operation.semantic_commit().is_none()
             || super::phase6::persisted_effect_cursor_for_operation(operation)
                 .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?
@@ -3315,6 +3322,7 @@ fn auxiliary_payload_matches_operation(
             inventory.operation_revision() == operation.record_revision()
         }
         LifecycleAuxiliaryPayloadV1::Operation(_)
+        | LifecycleAuxiliaryPayloadV1::DeleteBatch(_)
         | LifecycleAuxiliaryPayloadV1::Cancellation(_) => false,
     }
 }

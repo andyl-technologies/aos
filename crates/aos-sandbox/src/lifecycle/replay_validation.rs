@@ -15,6 +15,8 @@ impl LifecycleAuxiliaryHistoryV1 {
         record: &super::LifecycleAuxiliaryRecordV1,
     ) -> bool {
         match record.payload() {
+            LifecycleAuxiliaryPayloadV1::DeleteBatch(_) => true,
+            LifecycleAuxiliaryPayloadV1::Operation(operation) if operation.has_delete_batch_layout() => true,
             LifecycleAuxiliaryPayloadV1::Operation(operation) => self
                 .operations
                 .operation_record(operation.operation_id())
@@ -80,6 +82,7 @@ impl LifecycleAuxiliaryHistoryV1 {
                                         || retention_release.successor_ledger() == record
                                 }
                                 LifecycleSemanticCommitFactV1::DesiredState { .. }
+                                | LifecycleSemanticCommitFactV1::DeleteBatch { .. }
                                 | LifecycleSemanticCommitFactV1::CascadeDelete { .. } => false,
                             }
                     })
@@ -92,6 +95,9 @@ impl LifecycleAuxiliaryHistoryV1 {
         &self,
         operation: &LifecycleOperationV1,
     ) -> Result<(), LifecycleModelError> {
+        if operation.has_delete_batch_layout() {
+            return self.validate_delete_batch_materialization(operation);
+        }
         let Some(commit) = operation.method_semantic_commit() else {
             return Ok(());
         };
@@ -318,6 +324,9 @@ impl LifecycleAuxiliaryHistoryV1 {
             }
         }
         let facts_match = match commit.facts() {
+            LifecycleSemanticCommitFactV1::DeleteBatch { .. } => {
+                self.validate_delete_batch_materialization(operation).is_ok()
+            }
             LifecycleSemanticCommitFactV1::Snapshot {
                 manifest,
                 retention,
@@ -411,6 +420,79 @@ impl LifecycleAuxiliaryHistoryV1 {
         Ok(Some(LifecycleAuthoritativeSemanticCommitV1::from_replay(
             commit.clone(),
         )))
+    }
+
+    pub(super) fn validate_delete_batch_materialization(
+        &self,
+        operation: &LifecycleOperationV1,
+    ) -> Result<(), LifecycleModelError> {
+        // Every selected cut, including its Planned origin, remains retained.
+        // Follow actual replay order rather than an unordered latest witness.
+        let mut previous: Option<&super::LifecycleAuxiliaryRecordV1> = None;
+        for key in &self.order {
+            let record = self.records.get(key).ok_or(LifecycleModelError::InvalidTransition)?;
+            let LifecycleAuxiliaryPayloadV1::DeleteBatch(batch) = record.payload() else {
+                continue;
+            };
+            if record.project() != operation.project()
+                || record.operation() != operation.operation_id()
+            {
+                continue;
+            }
+            let follows = match previous {
+                None => {
+                    batch.state() == 1
+                        && record.revision().get() == 1
+                        && record.predecessor().is_none()
+                }
+                Some(before) => {
+                    let LifecycleAuxiliaryPayloadV1::DeleteBatch(before_batch) = before.payload()
+                    else {
+                        return Err(LifecycleModelError::InvalidTransition);
+                    };
+                    before.lineage() == record.lineage()
+                        && before.revision().checked_next().is_ok_and(|next| next == record.revision())
+                        && record.predecessor() == Some(before.complete_digest())
+                        && batch.can_follow(before_batch)
+                }
+            };
+            if batch.batch().project() != operation.project()
+                || batch.batch().operation() != operation.operation_id()
+                || !follows
+                || !matches!((record.declared_members(), record.declared_count()), (0x41, 2))
+                || !self.records.values().any(|member|
+                    member.atomic_join() == record.atomic_join()
+                        && member.project() == record.project()
+                        && member.operation_revision() == record.operation_revision()
+                        && member.operation_record() == record.operation_record()
+                        && matches!(member.payload(), LifecycleAuxiliaryPayloadV1::Operation(value)
+                            if value.has_delete_batch_layout()
+                                && value.operation_id() == operation.operation_id()
+                                && match (batch.state(), value.method_semantic_commit()) {
+                                    (1, None) => true,
+                                    (2, Some(commit)) => matches!(commit.facts(),
+                                        LifecycleSemanticCommitFactV1::DeleteBatch { batch: fact, .. }
+                                            if fact == batch),
+                                    _ => false,
+                                }))
+            {
+                return Err(LifecycleModelError::InvalidTransition);
+            }
+            previous = Some(record);
+        }
+        let previous = previous.and_then(|record| match record.payload() {
+            LifecycleAuxiliaryPayloadV1::DeleteBatch(batch) => Some(batch),
+            _ => None,
+        });
+        match (previous, operation.method_semantic_commit()) {
+            (Some(batch), None) if batch.state() == 1 => Ok(()),
+            (Some(batch), Some(commit))
+                if batch.state() == 2
+                    && matches!(commit.facts(), LifecycleSemanticCommitFactV1::DeleteBatch {
+                        batch: fact, ..
+                    } if fact == batch) => Ok(()),
+            _ => Err(LifecycleModelError::InvalidTransition),
+        }
     }
 }
 

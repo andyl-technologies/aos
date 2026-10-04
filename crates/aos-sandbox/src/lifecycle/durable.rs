@@ -12,6 +12,8 @@
 //! Replay reconstructs operation and auxiliary projections from the same
 //! declared atomic unit. Opaque journal verification is required before any
 //! decoded coordination or retention value can become a protected handle.
+//! Selected Delete DATA uses `AOSLIFA5` version 3 and its own join domain;
+//! full Planned history remains retained and is not a current floor proof.
 
 use std::collections::BTreeMap;
 
@@ -22,6 +24,7 @@ use super::auxiliary_payload::{
     LifecycleAuxiliaryPayloadLayoutV1, LifecycleAuxiliaryPayloadV1,
     MAXIMUM_LIFECYCLE_AUXILIARY_PAYLOAD_BYTES, decode_lifecycle_auxiliary_payload_with_layout_v1,
     encode_lifecycle_auxiliary_payload_v1,
+    encode_lifecycle_auxiliary_payload_with_layout_v1,
 };
 use super::{
     LifecycleCancelIdempotencyIndexV1, LifecycleCancelOutcomeV1, LifecycleCancelRequestV1,
@@ -34,6 +37,8 @@ const LEGACY_MAGIC: &[u8; 8] = b"AOSLIFA3";
 const LEGACY_VERSION: u16 = 1;
 const CURRENT_MAGIC: &[u8; 8] = b"AOSLIFA4";
 const CURRENT_VERSION: u16 = 2;
+const DELETE_BATCH_MAGIC: &[u8; 8] = b"AOSLIFA5";
+const DELETE_BATCH_VERSION: u16 = 3;
 const HEADER_BYTES: usize = 244;
 const DIGEST_BYTES: usize = 32;
 
@@ -41,6 +46,7 @@ const DIGEST_BYTES: usize = 32;
 enum LifecycleAuxiliaryEnvelopeFormatV1 {
     Legacy,
     Current,
+    DeleteBatch,
 }
 
 impl LifecycleAuxiliaryEnvelopeFormatV1 {
@@ -48,6 +54,7 @@ impl LifecycleAuxiliaryEnvelopeFormatV1 {
         match self {
             Self::Legacy => LEGACY_MAGIC,
             Self::Current => CURRENT_MAGIC,
+            Self::DeleteBatch => DELETE_BATCH_MAGIC,
         }
     }
 
@@ -55,6 +62,7 @@ impl LifecycleAuxiliaryEnvelopeFormatV1 {
         match self {
             Self::Legacy => LEGACY_VERSION,
             Self::Current => CURRENT_VERSION,
+            Self::DeleteBatch => DELETE_BATCH_VERSION,
         }
     }
 
@@ -62,6 +70,7 @@ impl LifecycleAuxiliaryEnvelopeFormatV1 {
         match self {
             Self::Legacy => LifecycleAuxiliaryPayloadLayoutV1::LegacyWithoutHostBoot,
             Self::Current => LifecycleAuxiliaryPayloadLayoutV1::Current,
+            Self::DeleteBatch => LifecycleAuxiliaryPayloadLayoutV1::DeleteBatch,
         }
     }
 
@@ -69,6 +78,7 @@ impl LifecycleAuxiliaryEnvelopeFormatV1 {
         match self {
             Self::Legacy => b"aos.sandbox.lifecycle.auxiliary-record.v2\0",
             Self::Current => b"aos.sandbox.lifecycle.auxiliary-record.v3\0",
+            Self::DeleteBatch => b"aos.sandbox.lifecycle.auxiliary-record.v4\0",
         }
     }
 }
@@ -94,6 +104,8 @@ pub enum LifecycleAuxiliaryKindV1 {
     BootInventory = 4,
     /// Stores a stable cancel-versus-commit resolution.
     Cancellation = 5,
+    /// Stores selected batch/native-outcome DATA, never retirement authority.
+    DeleteBatch = 6,
 }
 
 impl LifecycleAuxiliaryKindV1 {
@@ -176,16 +188,36 @@ impl LifecycleAuxiliaryRecordV1 {
             || payload
                 .operation()
                 .is_some_and(|payload_operation| payload_operation != operation)
+            || matches!(&payload, LifecycleAuxiliaryPayloadV1::DeleteBatch(value)
+                if value.batch().project() != project)
             || atomic_join.as_bytes() == &[0; 16]
             || replay_floor.is_some_and(|floor| floor.get() == 0 || floor.get() == u64::MAX)
         {
             return Err(LifecycleModelError::InvalidModel);
         }
-        let encoded_payload = encode_lifecycle_auxiliary_payload_v1(&payload)?;
+        let format = match &payload {
+            LifecycleAuxiliaryPayloadV1::DeleteBatch(_) => {
+                LifecycleAuxiliaryEnvelopeFormatV1::DeleteBatch
+            }
+            LifecycleAuxiliaryPayloadV1::Operation(value) if value.has_delete_batch_layout() => {
+                LifecycleAuxiliaryEnvelopeFormatV1::DeleteBatch
+            }
+            LifecycleAuxiliaryPayloadV1::Cancellation(value)
+                if value.operation().has_delete_batch_layout() =>
+            {
+                LifecycleAuxiliaryEnvelopeFormatV1::DeleteBatch
+            }
+            _ => LifecycleAuxiliaryEnvelopeFormatV1::Current,
+        };
+        let encoded_payload = if format == LifecycleAuxiliaryEnvelopeFormatV1::DeleteBatch {
+            encode_lifecycle_auxiliary_payload_with_layout_v1(&payload, format.payload_layout())?
+        } else {
+            encode_lifecycle_auxiliary_payload_v1(&payload)?
+        };
         let encoded_payload_length =
             u32::try_from(encoded_payload.len()).map_err(|_| LifecycleModelError::InvalidModel)?;
         Ok(Self {
-            format: LifecycleAuxiliaryEnvelopeFormatV1::Current,
+            format,
             project,
             operation,
             operation_revision,
@@ -521,6 +553,11 @@ pub fn lifecycle_atomic_join_digest_v1(
             hasher.update(first.format.magic());
             hasher.update(first.format.version().to_be_bytes());
         }
+        LifecycleAuxiliaryEnvelopeFormatV1::DeleteBatch => {
+            hasher.update(b"aos.sandbox.lifecycle.atomic-join.v3\0");
+            hasher.update(first.format.magic());
+            hasher.update(first.format.version().to_be_bytes());
+        }
     }
     hasher = hasher
         .chain_update(first.project.as_bytes())
@@ -561,6 +598,11 @@ pub fn lifecycle_atomic_join_digest_v1(
             .chain_update(&record.encoded_payload);
     }
     if members & LifecycleAuxiliaryKindV1::Operation.member_bit() == 0 {
+        return Err(LifecycleModelError::InvalidTransition);
+    }
+    if first.format == LifecycleAuxiliaryEnvelopeFormatV1::DeleteBatch
+        && !matches!((members, records.len()), (0x41, 2) | (0x61, 3) | (0x01, 1))
+    {
         return Err(LifecycleModelError::InvalidTransition);
     }
     let member_count =
@@ -718,6 +760,9 @@ impl LifecycleAuxiliaryHistoryV1 {
             .operations
             .operation_record(request.operation_id())
             .ok_or(LifecycleModelError::InvalidTransition)?;
+        if current.has_delete_batch_layout() {
+            return Err(LifecycleModelError::InvalidTransition);
+        }
         let mut cancellations = self.operations.cancellations().clone();
         let outcome = cancellations.resolve(request, current, current_record);
         if outcome == LifecycleCancelOutcomeV1::Conflict {
@@ -804,6 +849,24 @@ impl LifecycleAuxiliaryHistoryV1 {
             if encoded.len() > MAXIMUM_LIFECYCLE_AUXILIARY_BYTES {
                 return Err(LifecycleModelError::InvalidTransition);
             }
+            if encoded.get(..8) == Some(DELETE_BATCH_MAGIC.as_slice()) {
+                let pending = join.iter().try_fold(
+                    self.retained_bytes,
+                    |total, record: &LifecycleAuxiliaryRecordV1| {
+                        total.checked_add(HEADER_BYTES)
+                            .and_then(|bytes| bytes.checked_add(record.encoded_payload.len()))
+                            .and_then(|bytes| bytes.checked_add(DIGEST_BYTES))
+                            .ok_or(LifecycleModelError::InvalidTransition)
+                    },
+                )?;
+                pending.checked_add(encoded.len())
+                    .filter(|bytes| *bytes <= MAXIMUM_LIFECYCLE_AUXILIARY_BYTES)
+                    .ok_or(LifecycleModelError::InvalidTransition)?;
+                self.records.len().checked_add(join.len())
+                    .and_then(|count| count.checked_add(1))
+                    .filter(|count| *count <= MAXIMUM_LIFECYCLE_AUXILIARY_RECORDS)
+                    .ok_or(LifecycleModelError::InvalidTransition)?;
+            }
             let record = decode_lifecycle_auxiliary_record_v1(encoded, verification)?;
             let identity = (record.project, record.atomic_join);
             if join_identity.is_some_and(|current| current != identity) {
@@ -860,6 +923,18 @@ impl LifecycleAuxiliaryHistoryV1 {
         {
             return Err(LifecycleModelError::InvalidTransition);
         }
+        if first.format == LifecycleAuxiliaryEnvelopeFormatV1::DeleteBatch {
+            records.iter().try_fold(self.retained_bytes, |total, record| {
+                total.checked_add(HEADER_BYTES)
+                    .and_then(|bytes| bytes.checked_add(record.encoded_payload.len()))
+                    .and_then(|bytes| bytes.checked_add(DIGEST_BYTES))
+                    .filter(|bytes| *bytes <= MAXIMUM_LIFECYCLE_AUXILIARY_BYTES)
+                    .ok_or(LifecycleModelError::InvalidTransition)
+            })?;
+            self.records.len().checked_add(records.len())
+                .filter(|count| *count <= MAXIMUM_LIFECYCLE_AUXILIARY_RECORDS)
+                .ok_or(LifecycleModelError::InvalidTransition)?;
+        }
         let mut next = self.clone();
         next.synchronize_floor(first.replay_floor)?;
         for record in records {
@@ -890,6 +965,9 @@ impl LifecycleAuxiliaryHistoryV1 {
         records: &[LifecycleAuxiliaryRecordV1],
         operation: &LifecycleOperationV1,
     ) -> Result<(), LifecycleModelError> {
+        if operation.has_delete_batch_layout() {
+            return self.validate_delete_batch_join(records, operation);
+        }
         let Some(commit) = operation.method_semantic_commit() else {
             return Ok(());
         };
@@ -951,9 +1029,67 @@ impl LifecycleAuxiliaryHistoryV1 {
         Ok(())
     }
 
+    /// Checks selected member shape against retained original Source history.
+    /// No decoded native proof is promoted to a current Controller owner.
+    fn validate_delete_batch_join(
+        &self,
+        records: &[LifecycleAuxiliaryRecordV1],
+        operation: &LifecycleOperationV1,
+    ) -> Result<(), LifecycleModelError> {
+        if records.iter().any(|record| {
+            record.format != LifecycleAuxiliaryEnvelopeFormatV1::DeleteBatch
+        }) {
+            return Err(LifecycleModelError::InvalidTransition);
+        }
+        let before = self.latest.values()
+            .filter(|record| {
+                record.project == operation.project()
+                    && record.operation == operation.operation_id()
+            })
+            .find_map(|record| match record.payload() {
+                LifecycleAuxiliaryPayloadV1::DeleteBatch(value) => Some(value),
+                _ => None,
+            });
+        let supplied = records.iter().find_map(|record| match record.payload() {
+            LifecycleAuxiliaryPayloadV1::DeleteBatch(value) => Some(value),
+            _ => None,
+        });
+        let batch = match (before, supplied) {
+            (None, Some(value)) if value.state() == 1 => value,
+            (Some(previous), Some(value)) if value.can_follow(previous) => value,
+            (Some(value), None)
+                if value.state() == 2
+                    && self.operations.operation(operation.operation_id())
+                        .and_then(LifecycleOperationV1::method_semantic_commit)
+                        == operation.method_semantic_commit() => value,
+            _ => return Err(LifecycleModelError::InvalidTransition),
+        };
+        if batch.batch().project() != operation.project()
+            || batch.batch().operation() != operation.operation_id()
+        {
+            return Err(LifecycleModelError::InvalidTransition);
+        }
+        match (batch.state(), operation.method_semantic_commit()) {
+            (1, None) => Ok(()),
+            (2, Some(commit))
+                if matches!(commit.facts(), LifecycleSemanticCommitFactV1::DeleteBatch {
+                    batch: fact, ..
+                } if fact == batch) => Ok(()),
+            // Generic cancellation cannot authenticate a same-Controller
+            // cancellation fence. The future purpose-specific owner join is
+            // required before state3 can advance a selected Source operation.
+            _ => Err(LifecycleModelError::InvalidTransition),
+        }
+    }
+
     fn synchronize_floor(&mut self, floor: Option<Revision>) -> Result<(), LifecycleModelError> {
         if floor == self.replay_floor {
             return Ok(());
+        }
+        if self.records.values().any(|record| {
+            matches!(record.payload(), LifecycleAuxiliaryPayloadV1::DeleteBatch(_))
+        }) {
+            return Err(LifecycleModelError::InvalidTransition);
         }
         let floor = floor.ok_or(LifecycleModelError::InvalidTransition)?;
         if self.replay_floor.is_some_and(|current| floor <= current) {
@@ -1121,12 +1257,102 @@ impl LifecycleAuxiliaryHistoryV1 {
             cancellations.iter(),
         )
         .map_err(|_| LifecycleModelError::InvalidTransition)?;
+        history.validate_checkpoint_delete_operation_history()?;
         for operation in history.operations.operations() {
             history.authoritative_semantic_commit(operation)?;
             history.validate_materialized_method_join(operation)?;
             history.validate_terminal_auxiliaries(operation)?;
         }
         Ok(history)
+    }
+
+    /// Replays retained selected Operations without changing ordinary baselines.
+    fn validate_checkpoint_delete_operation_history(&self) -> Result<(), LifecycleModelError> {
+        if !self.records.values().any(|record| {
+            matches!(record.payload(), LifecycleAuxiliaryPayloadV1::Operation(operation)
+                if operation.has_delete_batch_layout())
+        }) {
+            return Ok(());
+        }
+
+        // Include earlier snapshots of each selected ID, as well as selected
+        // records whose latest snapshot tries to discard the selected layout.
+        let is_selected = |operation: &LifecycleOperationV1| {
+            operation.has_delete_batch_layout()
+                || self
+                    .operations
+                    .operation(operation.operation_id())
+                    .is_some_and(LifecycleOperationV1::has_delete_batch_layout)
+        };
+
+        // Bound the additional accumulator's canonical payload before cloning
+        // any Operation. Repeated members are conservatively counted here.
+        let mut selected_records = 0_usize;
+        let mut selected_bytes = 0_usize;
+        for key in &self.order {
+            let record = self
+                .records
+                .get(key)
+                .ok_or(LifecycleModelError::InvalidTransition)?;
+            let LifecycleAuxiliaryPayloadV1::Operation(operation) = record.payload() else {
+                continue;
+            };
+            if !is_selected(operation) {
+                continue;
+            }
+            selected_records = selected_records
+                .checked_add(1)
+                .filter(|count| *count <= super::history::MAXIMUM_LIFECYCLE_HISTORY_RECORDS)
+                .ok_or(LifecycleModelError::InvalidTransition)?;
+            let payload_bytes = record
+                .encoded_payload
+                .len()
+                .checked_sub(4)
+                .ok_or(LifecycleModelError::InvalidTransition)?;
+            selected_bytes = selected_bytes
+                .checked_add(payload_bytes)
+                .filter(|bytes| *bytes <= super::history::MAXIMUM_LIFECYCLE_HISTORY_BYTES)
+                .ok_or(LifecycleModelError::InvalidTransition)?;
+        }
+
+        // Only this selected branch creates an accumulator. The sole successor
+        // engine validates immutable fields, predecessors and phase progress,
+        // including later Operation-only joins in their actual retained order.
+        let mut selected = LifecycleHistoryV1::default();
+        for key in &self.order {
+            let record = self
+                .records
+                .get(key)
+                .ok_or(LifecycleModelError::InvalidTransition)?;
+            let LifecycleAuxiliaryPayloadV1::Operation(operation) = record.payload() else {
+                continue;
+            };
+            if !is_selected(operation) {
+                continue;
+            }
+
+            let digest = auxiliary_operation_record_digest(record)?;
+            let already_current = selected
+                .operation_record(operation.operation_id())
+                .is_some_and(|(current, current_digest)| {
+                    current == operation && current_digest == digest
+                });
+            if !already_current {
+                selected
+                    .apply_materialized(operation.clone(), digest)
+                    .map_err(|_| LifecycleModelError::InvalidTransition)?;
+            }
+        }
+
+        for operation in selected.operations() {
+            if selected.operation_record(operation.operation_id())
+                != self.operations.operation_record(operation.operation_id())
+            {
+                return Err(LifecycleModelError::InvalidTransition);
+            }
+        }
+
+        Ok(())
     }
 
     /// Applies one exact successor after validating its operation join.
@@ -1178,6 +1404,9 @@ impl LifecycleAuxiliaryHistoryV1 {
                 .is_ok_and(|next| next == record.revision)
                 || record.predecessor != Some(previous.complete_digest())
                 || !payload_may_follow(previous.payload(), record.payload())
+                || ((previous.format == LifecycleAuxiliaryEnvelopeFormatV1::DeleteBatch
+                    || record.format == LifecycleAuxiliaryEnvelopeFormatV1::DeleteBatch)
+                    && previous.format != record.format)
                 || previous
                     .replay_floor
                     .is_some_and(|floor| record.replay_floor.is_none_or(|next| next < floor))
@@ -1187,23 +1416,44 @@ impl LifecycleAuxiliaryHistoryV1 {
         } else if record.revision.get() != 1 || record.predecessor.is_some() {
             return Err(LifecycleModelError::InvalidTransition);
         }
+        // The selected join is already staged in apply_atomic_join's bounded
+        // temporary history. Inserting there avoids cloning the full retained
+        // history once more for each member; ordinary joins keep their path.
+        if record.format == LifecycleAuxiliaryEnvelopeFormatV1::DeleteBatch {
+            if let LifecycleAuxiliaryPayloadV1::Cancellation(cancellation) = record.payload() {
+                self.operations
+                    .apply_cancellation_record(cancellation)
+                    .map_err(|_| LifecycleModelError::InvalidTransition)?;
+            }
+            self.insert_record(key, record);
+            return Ok(());
+        }
+
         let mut next = self.clone();
         if let LifecycleAuxiliaryPayloadV1::Cancellation(cancellation) = record.payload() {
             next.operations
                 .apply_cancellation_record(cancellation)
                 .map_err(|_| LifecycleModelError::InvalidTransition)?;
         }
+        next.insert_record(key, record);
+        *self = next;
+        Ok(())
+    }
+
+    fn insert_record(
+        &mut self,
+        key: (ProjectId, ResourceId, LifecycleAuxiliaryKindV1),
+        record: LifecycleAuxiliaryRecordV1,
+    ) {
         let record_key = (
             record.project,
             record.lineage,
             record.kind(),
             record.revision,
         );
-        next.latest.insert(key, record.clone());
-        next.records.insert(record_key, record);
-        next.order.push(record_key);
-        *self = next;
-        Ok(())
+        self.latest.insert(key, record.clone());
+        self.records.insert(record_key, record);
+        self.order.push(record_key);
     }
 
     /// Captures the current bounded materialization as a trusted floor.
@@ -1255,6 +1505,7 @@ fn payload_may_follow(
     successor: &LifecycleAuxiliaryPayloadV1,
 ) -> bool {
     match (previous, successor) {
+        (LifecycleAuxiliaryPayloadV1::DeleteBatch(previous), LifecycleAuxiliaryPayloadV1::DeleteBatch(successor)) => successor.can_follow(previous),
         (LifecycleAuxiliaryPayloadV1::Operation(_), LifecycleAuxiliaryPayloadV1::Operation(_)) => {
             true
         }
@@ -1400,6 +1651,9 @@ fn envelope_format(body: &[u8]) -> Result<LifecycleAuxiliaryEnvelopeFormatV1, Li
         (value, CURRENT_VERSION) if value == CURRENT_MAGIC => {
             Ok(LifecycleAuxiliaryEnvelopeFormatV1::Current)
         }
+        (value, DELETE_BATCH_VERSION) if value == DELETE_BATCH_MAGIC => {
+            Ok(LifecycleAuxiliaryEnvelopeFormatV1::DeleteBatch)
+        }
         _ => Err(LifecycleModelError::CorruptEncoding),
     }
 }
@@ -1435,6 +1689,7 @@ fn decode_kind(value: u8) -> Result<LifecycleAuxiliaryKindV1, LifecycleModelErro
         3 => Ok(LifecycleAuxiliaryKindV1::SuspendObservation),
         4 => Ok(LifecycleAuxiliaryKindV1::BootInventory),
         5 => Ok(LifecycleAuxiliaryKindV1::Cancellation),
+        6 => Ok(LifecycleAuxiliaryKindV1::DeleteBatch),
         _ => Err(LifecycleModelError::CorruptEncoding),
     }
 }

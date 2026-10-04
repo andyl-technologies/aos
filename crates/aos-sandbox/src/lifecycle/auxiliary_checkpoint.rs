@@ -75,6 +75,11 @@ pub fn encode_lifecycle_auxiliary_checkpoint_v1(
     if checkpoint.digest != checkpoint.history.complete_digest()? {
         return Err(LifecycleModelError::InvalidModel);
     }
+    for operation in checkpoint.history.operations().operations()
+        .filter(|operation| operation.has_delete_batch_layout())
+    {
+        checkpoint.history.validate_delete_batch_materialization(operation)?;
+    }
     let mut records = Vec::new();
     records
         .try_reserve_exact(checkpoint.history.order.len())

@@ -24,6 +24,10 @@
 //! bytes, and fixed zero-filled payload when absent. The final SHA-256 covers a
 //! purpose domain and all preceding bytes. Decode validates the exact total
 //! length before allocating either collection.
+//!
+//! Selected Delete groundwork uses `AOSLIF04` version 4 even before semantic
+//! commit. Its kind5 fact owns the separate batch/native DATA layout; the
+//! ordinary encoder still emits D3 and never infers D4 from Delete intent.
 
 use super::attempt::{
     LifecycleAttemptStateV1, LifecycleEffectAttemptV1, LifecycleEffectDirectionV1,
@@ -67,6 +71,8 @@ const HOST_BOOT_MAGIC: &[u8; 8] = b"AOSLIF02";
 const HOST_BOOT_VERSION: u16 = 2;
 const CURRENT_MAGIC: &[u8; 8] = b"AOSLIF03";
 const CURRENT_VERSION: u16 = 3;
+const DELETE_BATCH_MAGIC: &[u8; 8] = b"AOSLIF04";
+const DELETE_BATCH_VERSION: u16 = 4;
 const INTENT_BYTES: usize = 260;
 const FIXED_BODY_BYTES: usize = 740;
 const EXPECTATION_BYTES: usize = 60;
@@ -90,7 +96,20 @@ const MAXIMUM_RECORD_BYTES: usize = FIXED_BODY_BYTES
 pub fn encode_operation_record_v1(
     operation: &LifecycleOperationV1,
 ) -> Result<Vec<u8>, LifecycleModelError> {
+    if operation.has_delete_batch_layout() {
+        return Err(LifecycleModelError::InvalidModel);
+    }
     encode_operation_record_with_format(operation, LifecycleOperationRecordFormatV1::Current)
+}
+
+pub(super) fn encode_retained_operation_record(
+    operation: &LifecycleOperationV1,
+) -> Result<Vec<u8>, LifecycleModelError> {
+    if operation.has_delete_batch_layout() {
+        encode_operation_record_with_format(operation, LifecycleOperationRecordFormatV1::DeleteBatch)
+    } else {
+        encode_operation_record_v1(operation)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -98,6 +117,7 @@ enum LifecycleOperationRecordFormatV1 {
     Legacy,
     HostBootWithoutCoordinationBindings,
     Current,
+    DeleteBatch,
 }
 
 impl LifecycleOperationRecordFormatV1 {
@@ -106,6 +126,7 @@ impl LifecycleOperationRecordFormatV1 {
             Self::Legacy => LEGACY_MAGIC,
             Self::HostBootWithoutCoordinationBindings => HOST_BOOT_MAGIC,
             Self::Current => CURRENT_MAGIC,
+            Self::DeleteBatch => DELETE_BATCH_MAGIC,
         }
     }
 
@@ -114,6 +135,7 @@ impl LifecycleOperationRecordFormatV1 {
             Self::Legacy => LEGACY_VERSION,
             Self::HostBootWithoutCoordinationBindings => HOST_BOOT_VERSION,
             Self::Current => CURRENT_VERSION,
+            Self::DeleteBatch => DELETE_BATCH_VERSION,
         }
     }
 
@@ -124,6 +146,7 @@ impl LifecycleOperationRecordFormatV1 {
                 LifecycleSemanticFactLayoutV1::HostBootWithoutCoordinationBindings
             }
             Self::Current => LifecycleSemanticFactLayoutV1::Current,
+            Self::DeleteBatch => LifecycleSemanticFactLayoutV1::DeleteBatch,
         }
     }
 }
@@ -132,6 +155,11 @@ fn encode_operation_record_with_format(
     operation: &LifecycleOperationV1,
     format: LifecycleOperationRecordFormatV1,
 ) -> Result<Vec<u8>, LifecycleModelError> {
+    if operation.has_delete_batch_layout()
+        != (format == LifecycleOperationRecordFormatV1::DeleteBatch)
+    {
+        return Err(LifecycleModelError::InvalidModel);
+    }
     let semantic_fact = operation
         .method_semantic_commit()
         .map(|fact| encode_semantic_fact_with_layout(fact, format.semantic_layout()))
@@ -340,7 +368,7 @@ pub fn decode_operation_record_v1(
         (None, None) => None,
         _ => return Err(LifecycleModelError::CorruptEncoding),
     };
-    LifecycleOperationV1::new(
+    let operation = LifecycleOperationV1::new(
         operation_id,
         caller,
         project,
@@ -360,7 +388,12 @@ pub fn decode_operation_record_v1(
         finished_at,
         predecessor_digest,
     )
-    .map_err(|_| LifecycleModelError::CorruptEncoding)
+    .map_err(|_| LifecycleModelError::CorruptEncoding)?;
+    if matches!(format, LifecycleOperationRecordFormatV1::DeleteBatch) {
+        operation.select_delete_batch_layout().map_err(|_| LifecycleModelError::CorruptEncoding)
+    } else {
+        Ok(operation)
+    }
 }
 
 fn operation_record_format(
@@ -381,6 +414,9 @@ fn operation_record_format(
         }
         (value, CURRENT_VERSION) if value == CURRENT_MAGIC => {
             Ok(LifecycleOperationRecordFormatV1::Current)
+        }
+        (value, DELETE_BATCH_VERSION) if value == DELETE_BATCH_MAGIC => {
+            Ok(LifecycleOperationRecordFormatV1::DeleteBatch)
         }
         _ => Err(LifecycleModelError::CorruptEncoding),
     }

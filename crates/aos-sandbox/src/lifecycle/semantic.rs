@@ -842,6 +842,52 @@ pub(super) fn dependency_postorder_is_complete(
     })
 }
 
+/// Adds deterministic ready-node ordering to the existing complete-graph check.
+///
+/// Only the new batch codec selects this rule. Snapshot-bound kind3 keeps its
+/// original postorder contract and traversal. This is a topological tie check,
+/// not a second reachability or graph-inventory engine.
+pub(super) fn canonical_dependency_postorder_is_complete(
+    edges: &[LifecycleDependencyEdgeV1],
+    postorder: &[LifecycleResourceV1],
+) -> bool {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    if !dependency_postorder_is_complete(edges, postorder) {
+        return false;
+    }
+
+    let mut incoming: BTreeMap<_, usize> = postorder.iter().map(|item| (*item, 0)).collect();
+    for edge in edges {
+        let Some(count) = incoming.get_mut(&edge.dependency()) else {
+            return false;
+        };
+        *count += 1;
+    }
+    let mut ready: BTreeSet<_> = incoming.iter()
+        .filter_map(|(item, count)| (*count == 0).then_some(*item))
+        .collect();
+
+    for actual in postorder {
+        if ready.pop_first() != Some(*actual) {
+            return false;
+        }
+        for edge in edges.iter().filter(|edge| edge.dependent() == *actual) {
+            let Some(count) = incoming.get_mut(&edge.dependency()) else {
+                return false;
+            };
+            let Some(next) = count.checked_sub(1) else {
+                return false;
+            };
+            *count = next;
+            if next == 0 {
+                ready.insert(edge.dependency());
+            }
+        }
+    }
+    ready.is_empty()
+}
+
 fn cascade_plan_digest(
     transaction: LifecycleTransactionIdV1,
     dependency_snapshot: ObjectDigest,
@@ -946,6 +992,24 @@ pub enum LifecycleSemanticCommitFactV1 {
         /// Exact canonical reservation set.
         reservations: Vec<LifecycleReservationCommitFactV1>,
     },
+    /// Retains a version-separated batch and exact native COMMIT DATA.
+    ///
+    /// Source access sets are independently typed; Controller projection
+    /// digests are not cast into Source revisions or desired-state authority.
+    DeleteBatch {
+        /// Exact Source desired-state compare-and-swap.
+        cas: DesiredStateCasV1,
+        /// Canonical Source read-only expectations.
+        reads: Vec<LifecycleReadCommitFactV1>,
+        /// Canonical Source committed writes.
+        resources: Vec<LifecycleCommittedResourceV1>,
+        /// Canonical Source assignment facts.
+        assignments: Vec<LifecycleAssignmentCommitFactV1>,
+        /// Canonical Source reservation facts.
+        reservations: Vec<LifecycleReservationCommitFactV1>,
+        /// Immutable state2 batch payload, not physical retirement.
+        batch: super::LifecycleDeleteBatchRecordV1,
+    },
 }
 
 impl LifecycleSemanticCommitFactV1 {
@@ -986,6 +1050,7 @@ impl LifecycleSemanticCommitFactV1 {
             Self::DesiredState { cas, .. }
             | Self::Snapshot { cas, .. }
             | Self::DeleteSnapshot { cas, .. }
+            | Self::DeleteBatch { cas, .. }
             | Self::CascadeDelete { cas, .. } => *cas,
         }
     }
@@ -995,6 +1060,7 @@ impl LifecycleSemanticCommitFactV1 {
             Self::DesiredState { resources, .. }
             | Self::Snapshot { resources, .. }
             | Self::DeleteSnapshot { resources, .. }
+            | Self::DeleteBatch { resources, .. }
             | Self::CascadeDelete { resources, .. } => resources,
         }
     }
@@ -1115,6 +1181,18 @@ fn facts_are_valid(
     expectations: &[ResourceExpectationV1],
 ) -> bool {
     match facts {
+        LifecycleSemanticCommitFactV1::DeleteBatch {
+            reads, resources, assignments, reservations, batch, ..
+        } => {
+            let Ok(view) = batch.batch().view() else { return false; };
+            matches!(intent, LifecycleIntentV1::DeleteSandbox { sandbox, .. }
+                if view.root() == Ok(LifecycleResourceV1::Sandbox(*sandbox)))
+                && batch.state() == 2
+                && canonical_access_sets_match_expectations(reads, resources, expectations)
+                && writes_include_semantic_cas(resources, facts.cas())
+                && canonical_assignment_and_reservation_sets(assignments, reservations)
+                && assignments_are_scoped(assignments, expectations)
+        }
         LifecycleSemanticCommitFactV1::DesiredState {
             reads,
             resources,

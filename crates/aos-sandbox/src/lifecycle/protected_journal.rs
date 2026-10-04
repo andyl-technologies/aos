@@ -23,7 +23,7 @@ use super::{
     LifecycleJournalOwnershipRecordV1, LifecycleJournalRecordKindV1, LifecycleJournalVerifierV1,
     LifecycleOperationV1, decode_lifecycle_auxiliary_record_v1, decode_lifecycle_journal_record_v1,
     decode_operation_record_v1, encode_lifecycle_auxiliary_record_v1,
-    encode_lifecycle_journal_record_v1, encode_operation_record_v1,
+    encode_lifecycle_journal_record_v1,
 };
 
 /// Selects one closed lifecycle protected-journal family.
@@ -173,7 +173,8 @@ impl ProtectedDomainSchemaV1 for LifecycleProtectedJournalSchemaV1 {
                     LifecycleAuxiliaryKindV1::Operation
                     | LifecycleAuxiliaryKindV1::RetentionLedger
                     | LifecycleAuxiliaryKindV1::SuspendObservation
-                    | LifecycleAuxiliaryKindV1::BootInventory => {
+                    | LifecycleAuxiliaryKindV1::BootInventory
+                    | LifecycleAuxiliaryKindV1::DeleteBatch => {
                         Some(ProtectedReducerPhaseV1::Observed)
                     }
                     LifecycleAuxiliaryKindV1::Cancellation => {
@@ -376,7 +377,7 @@ pub(crate) fn lifecycle_reducer_envelope_v1(
                 && operation.operation_id().as_bytes() == &key.identity()[32..48]
                 && operation_phase(key.kind(), operation.phase() as u8).is_some() =>
         {
-            encode_operation_record_v1(operation)
+            super::format::encode_retained_operation_record(operation)
         }
         LifecycleReducerRecordV1::Idempotency(record)
             if key.kind() == LifecycleProtectedRecordKindV1::Idempotency

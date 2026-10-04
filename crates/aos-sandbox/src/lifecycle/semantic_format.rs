@@ -58,6 +58,7 @@ pub(super) enum LifecycleSemanticFactLayoutV1 {
     LegacyWithoutHostBoot,
     HostBootWithoutCoordinationBindings,
     Current,
+    DeleteBatch,
 }
 
 impl LifecycleSemanticFactLayoutV1 {
@@ -66,20 +67,30 @@ impl LifecycleSemanticFactLayoutV1 {
     }
 
     const fn has_coordination_bindings(self) -> bool {
-        matches!(self, Self::Current)
+        matches!(self, Self::Current | Self::DeleteBatch)
     }
 }
 
 pub(super) fn encode_semantic_fact(
     value: &LifecycleMethodSemanticCommitV1,
 ) -> Result<Vec<u8>, LifecycleModelError> {
-    encode_semantic_fact_with_layout(value, LifecycleSemanticFactLayoutV1::Current)
+    let layout = if matches!(value.facts(), LifecycleSemanticCommitFactV1::DeleteBatch { .. }) {
+        LifecycleSemanticFactLayoutV1::DeleteBatch
+    } else {
+        LifecycleSemanticFactLayoutV1::Current
+    };
+    encode_semantic_fact_with_layout(value, layout)
 }
 
 pub(super) fn encode_semantic_fact_with_layout(
     value: &LifecycleMethodSemanticCommitV1,
     layout: LifecycleSemanticFactLayoutV1,
 ) -> Result<Vec<u8>, LifecycleModelError> {
+    if matches!(value.facts(), LifecycleSemanticCommitFactV1::DeleteBatch { .. })
+        != matches!(layout, LifecycleSemanticFactLayoutV1::DeleteBatch)
+    {
+        return Err(LifecycleModelError::InvalidModel);
+    }
     if layout.has_coordination_bindings()
         && value
             .evidence()
@@ -90,6 +101,9 @@ pub(super) fn encode_semantic_fact_with_layout(
     }
     let mut bytes = Vec::new();
     let (kind, reads, writes, assignments, reservations, retention) = match value.facts() {
+        LifecycleSemanticCommitFactV1::DeleteBatch {
+            reads, resources, assignments, reservations, ..
+        } => (5, reads, resources, assignments.as_slice(), reservations.as_slice(), &[][..]),
         LifecycleSemanticCommitFactV1::DesiredState {
             reads,
             resources,
@@ -138,6 +152,7 @@ pub(super) fn encode_semantic_fact_with_layout(
         ),
     };
     let variant_bytes = match value.facts() {
+        LifecycleSemanticCommitFactV1::DeleteBatch { batch, .. } => batch.encoded_length(),
         LifecycleSemanticCommitFactV1::DesiredState { .. } => 0,
         LifecycleSemanticCommitFactV1::Snapshot { .. } => 48,
         LifecycleSemanticCommitFactV1::DeleteSnapshot { .. } => 176,
@@ -157,7 +172,7 @@ pub(super) fn encode_semantic_fact_with_layout(
         LifecycleSemanticFactLayoutV1::HostBootWithoutCoordinationBindings => {
             HOST_BOOT_SEMANTIC_EVIDENCE_BYTES
         }
-        LifecycleSemanticFactLayoutV1::Current => CURRENT_SEMANTIC_EVIDENCE_BYTES,
+        LifecycleSemanticFactLayoutV1::Current | LifecycleSemanticFactLayoutV1::DeleteBatch => CURRENT_SEMANTIC_EVIDENCE_BYTES,
     };
     let length = 24_usize
         .checked_add(evidence_bytes)
@@ -185,6 +200,9 @@ pub(super) fn encode_semantic_fact_with_layout(
     }
     encode_semantic_evidence(&mut bytes, value.evidence(), layout);
     match value.facts() {
+        LifecycleSemanticCommitFactV1::DeleteBatch { batch, .. } => {
+            bytes.extend_from_slice(&batch.encode()?);
+        }
         LifecycleSemanticCommitFactV1::DesiredState { .. } => {}
         LifecycleSemanticCommitFactV1::Snapshot {
             snapshot, manifest, ..
@@ -297,10 +315,22 @@ pub(super) fn preflight_semantic_fact_with_layout(
             LifecycleSemanticFactLayoutV1::HostBootWithoutCoordinationBindings => {
                 HOST_BOOT_SEMANTIC_EVIDENCE_BYTES
             }
-            LifecycleSemanticFactLayoutV1::Current => CURRENT_SEMANTIC_EVIDENCE_BYTES,
+            LifecycleSemanticFactLayoutV1::Current | LifecycleSemanticFactLayoutV1::DeleteBatch => CURRENT_SEMANTIC_EVIDENCE_BYTES,
         },
     )?;
     match kind {
+        5 if matches!(layout, LifecycleSemanticFactLayoutV1::DeleteBatch) => {
+            let header = take_slice(&mut remaining, 8)?;
+            let length = u32::from_be_bytes(header[4..8].try_into().map_err(|_| LifecycleModelError::CorruptEncoding)?) as usize;
+            let payload_length = length.checked_add(72).ok_or(LifecycleModelError::CorruptEncoding)?;
+            let rest = take_slice(&mut remaining, payload_length - 8)?;
+            // The actual borrowed batch codec owns row/graph validation; this
+            // length preflight makes no copy of the body or its native proof.
+            if header[0] != 2 || header[1..4] != [0; 3] {
+                return Err(LifecycleModelError::CorruptEncoding);
+            }
+            super::delete_batch::DeleteBatchViewV1::decode(&rest[..length])?;
+        }
         1 => {}
         2 => {
             take_slice(&mut remaining, 48)?;
@@ -357,6 +387,16 @@ pub(super) fn decode_semantic_fact_with_layout(
     let reservation_count = bounded_fact_count(&mut remaining)?;
     let retention_count = bounded_fact_count(&mut remaining)?;
     let evidence = decode_semantic_evidence(&mut remaining, layout)?;
+    let batch = if kind == 5 && matches!(layout, LifecycleSemanticFactLayoutV1::DeleteBatch) {
+        let length = remaining.get(4..8)
+            .and_then(|value| value.try_into().ok())
+            .map(u32::from_be_bytes)
+            .and_then(|length| (length as usize).checked_add(72))
+            .ok_or(LifecycleModelError::CorruptEncoding)?;
+        Some(super::LifecycleDeleteBatchRecordV1::from_bytes(take_slice(&mut remaining, length)?)?)
+    } else {
+        None
+    };
     let snapshot = if kind == 2 {
         Some((
             SnapshotId::from_bytes(take(&mut remaining)?),
@@ -554,6 +594,12 @@ pub(super) fn decode_semantic_fact_with_layout(
         return Err(LifecycleModelError::CorruptEncoding);
     }
     let facts = match (kind, snapshot, cascade, snapshot_deletion) {
+        (5, None, None, None) if retention.is_empty() => {
+            LifecycleSemanticCommitFactV1::DeleteBatch {
+                cas, reads, resources: writes, assignments, reservations,
+                batch: batch.ok_or(LifecycleModelError::CorruptEncoding)?,
+            }
+        }
         (1, None, None, None) if retention.is_empty() => {
             LifecycleSemanticCommitFactV1::DesiredState {
                 cas,
@@ -819,7 +865,8 @@ fn decode_semantic_evidence(
             match layout {
                 LifecycleSemanticFactLayoutV1::LegacyWithoutHostBoot => 200,
                 LifecycleSemanticFactLayoutV1::HostBootWithoutCoordinationBindings
-                | LifecycleSemanticFactLayoutV1::Current => 216,
+                | LifecycleSemanticFactLayoutV1::Current
+                | LifecycleSemanticFactLayoutV1::DeleteBatch => 216,
             },
         )?;
         None
