@@ -86,7 +86,7 @@
     }
     {
       label = "guest entropy derives from scenario seed";
-      needle = "pub fn from_scenario_seed(scenario_seed: u64) -> Self";
+      needle = "pub(super) fn from_scenario_seed(scenario_seed: u64) -> Self";
     }
     {
       label = "stable splitmix derivation";
@@ -114,7 +114,7 @@
     }
     {
       label = "deterministic virtio-rng device";
-      needle = "format!(\"virtio-rng-pci,rng={GUEST_ENTROPY_RNG_ID}\")";
+      needle = "virtio-rng-pci,rng={GUEST_ENTROPY_RNG_ID},bus={QEMU_PCI_BUS},addr={QEMU_RNG_PCI_ADDRESS}";
     }
     {
       label = "hardware entropy disabled in CPU";
@@ -169,7 +169,7 @@
     }
     {
       label = "virtio-rng argument assertion";
-      needle = "[\"-device\", \"virtio-rng-pci,rng=crucible-rng0\"]";
+      needle = "virtio-rng-pci,rng=crucible-rng0,bus=pcie.0,addr=0x1";
     }
     {
       label = "guest entropy sealed host-side, not via guest cmdline trust flags";

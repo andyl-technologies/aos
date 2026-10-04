@@ -1,0 +1,3092 @@
+//! Canonical identity and bound tests for campaign GC plan headers.
+
+// crucible-lint: allow panic-shortcut -- test fixtures use panic shortcuts for exact failure localization.
+#![allow(clippy::expect_used)]
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
+use std::io::Cursor;
+use std::sync::{
+    Arc, Mutex, MutexGuard,
+    mpsc::{self, Sender, TryRecvError},
+};
+use std::thread;
+use std::time::Duration;
+
+use crucible::ContentHash;
+use crucible_campaign::{
+    AssignmentId, AttemptId, AttemptResourceLimits, BudgetGrant, CampaignCommandId,
+    CampaignControlAction, CampaignLineage, CampaignLineageId, CampaignMode, CampaignName,
+    CampaignPolicy, CampaignRecordKind, CampaignRepository, CampaignSeed, CampaignSnapshotId,
+    CancelAttemptExecutionDisposition, CancelAttemptExecutionRequest,
+    CheckpointAttemptExecutionDisposition, CheckpointAttemptExecutionRequest, ConfigurationId,
+    ControlRequest, CoverageProjection, DaemonEpoch, ExecutionId, ExecutionRetentionIntent,
+    ExecutorCompatibilityProfile, ExecutorControlService, ExecutorStatusService, ExplorerPolicy,
+    FairnessPolicy, FindingCandidateBundle, FindingCandidateBundleId, FindingCandidateCore,
+    FindingExactPins, FindingExactRetention, FindingExactRetentionDisposition,
+    FindingExactRetentionIncomplete, FindingId, FindingKind, FindingMinimizationAttempt,
+    FindingMinimizationEvidence, FindingSignature, FindingSignatureMinimizationEvidence,
+    FindingTarget, GetAttemptExecutionDisposition, GetAttemptExecutionRequest, MeasurementSet,
+    MerkleMap, Observation, ObservationCandidate, ObservationId, PropertyVerdictSet,
+    RetentionPolicy, ScenarioDefId, StopOutcome, SubmitAttemptRequest,
+};
+use crucible_cas::content_envelope::{ContentChild, ContentEnvelope};
+use crucible_cas::content_store::{
+    BlobHandle, BlobInventoryFence, BlobInventoryRecord, BlobInventorySummary, BlobStoreAdmin,
+    ContentId, DirectoryBlobBackend, DirectoryRefBackend, ImmutableBlobBackend, MemoryBlobBackend,
+    MemoryRefBackend, MutableRefBackend, ObjectKind, PackedBlobBackend, PhysicalStorageIdentity,
+    PlannedDeleteDisposition, RefBackendCapabilities, RefCasOutcome, RefName, RefPublicationGuard,
+    RefScanPage, StoreEncryptionKey, StoreEncryptionKeyId, StoreError, StoreGraph,
+    StoreGraphConfig, StoreGraphKeyring, StoreGraphPhysicalRetention, StoreNodeId, StoreNodeSpec,
+    StoreTierPolicy,
+};
+use crucible_cas::content_store::{RefInventoryFence, RefStoreAdmin};
+
+use super::apply::CampaignGcApplySources;
+use super::*;
+use super::{
+    apply_single_host_campaign_gc_with_physical as apply_single_host_campaign_gc,
+    plan_single_host_campaign_gc_with_physical as plan_single_host_campaign_gc,
+};
+use crate::{
+    AssignmentLedger, AssignmentRetentionAdmin, AssignmentRetentionFence,
+    AssignmentRetentionGeneration, AssignmentRetentionInventoryError, AssignmentRetentionRoot,
+    AssignmentRetentionSummary, AssignmentRetentionVisitorError, AttemptExecutionKey,
+    AttemptExecutionOrigin, AttemptRuntimeState, AttemptStateCas, CompletedFindingCandidate,
+    DirectoryAssignmentLedger, FindingCandidateRetentionOutcome, HotCheckpointFallback,
+    HotCheckpointFallbackRecord, HotCheckpointFallbackRetentionCas,
+    HotCheckpointFallbackRetentionStore, HotCheckpointFallbackSlot, HotCheckpointPoolKey,
+    MemoryAssignmentLedger, MemoryHotCheckpointFallbackRetentionStore, RepositoryAttemptAdmission,
+    acknowledge_incorporated_finding_candidate, incorporate_and_acknowledge_finding_candidate,
+    reconcile_pending_finding_candidates,
+};
+use crate::{
+    CampaignTransferJournalError, CampaignTransferRetentionAdmin, CampaignTransferRetentionFence,
+    CampaignTransferRetentionGeneration, CampaignTransferRetentionRoot,
+    CampaignTransferRetentionSummary, CompletionValidationFailure, ExecutorCapacity,
+    LocalExecutorError, LocalExecutorSupervisor,
+};
+
+mod physical_quota;
+mod s3;
+
+#[derive(Default)]
+struct TestCampaignTransferRoots {
+    roots: Mutex<Vec<CampaignTransferRetentionRoot>>,
+}
+
+impl TestCampaignTransferRoots {
+    fn replace(&self, roots: Vec<CampaignTransferRetentionRoot>) {
+        *self.roots.lock().expect("transfer roots") = roots;
+    }
+}
+
+impl CampaignTransferRetentionAdmin for TestCampaignTransferRoots {
+    fn acquire_campaign_transfer_retention_fence(
+        &self,
+    ) -> Result<Box<dyn CampaignTransferRetentionFence + '_>, CampaignTransferJournalError> {
+        Ok(Box::new(TestCampaignTransferFence {
+            roots: self.roots.lock().expect("transfer roots"),
+        }))
+    }
+}
+
+struct TestCampaignTransferFence<'a> {
+    roots: MutexGuard<'a, Vec<CampaignTransferRetentionRoot>>,
+}
+
+impl CampaignTransferRetentionFence for TestCampaignTransferFence<'_> {
+    fn visit_roots(
+        &mut self,
+        visitor: &mut dyn FnMut(CampaignTransferRetentionRoot) -> Result<(), StoreError>,
+    ) -> Result<CampaignTransferRetentionSummary, CampaignTransferJournalError> {
+        for root in self.roots.iter().copied() {
+            visitor(root).map_err(CampaignTransferJournalError::Visitor)?;
+        }
+        Ok(CampaignTransferRetentionSummary::new(
+            CampaignTransferRetentionGeneration::from_bytes([0x73; 32]),
+            u64::from(!self.roots.is_empty()),
+            self.roots.len() as u64,
+        ))
+    }
+}
+
+fn hash(domain: &str, byte: u8) -> CampaignHash {
+    CampaignHash::derive(domain, &[byte])
+}
+
+fn pending_finding_request(lineage: CampaignLineageId, attempt: AttemptId) -> SubmitAttemptRequest {
+    SubmitAttemptRequest::new(
+        AssignmentId::from_bytes([0x54; 16]).expect("assignment"),
+        DaemonEpoch::from_bytes([0x55; 16]).expect("daemon epoch"),
+        lineage,
+        attempt,
+        AttemptResourceLimits::new(1, 4096, 8192, 64).expect("resources"),
+        ExecutionRetentionIntent::RetainOnFailure,
+        crucible_campaign::AttemptRetentionPolicyDisposition::Disabled,
+    )
+    .expect("pending finding request")
+}
+
+struct LockOrderDirectoryRefs {
+    inner: DirectoryRefBackend,
+    publication_requested: Mutex<Option<Sender<()>>>,
+    inventory_acquired: Mutex<Option<Sender<()>>>,
+}
+
+impl LockOrderDirectoryRefs {
+    fn new(root: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            inner: DirectoryRefBackend::new(root),
+            publication_requested: Mutex::new(None),
+            inventory_acquired: Mutex::new(None),
+        }
+    }
+
+    fn arm(&self, publication_requested: Sender<()>, inventory_acquired: Sender<()>) {
+        *self
+            .publication_requested
+            .lock()
+            .expect("publication signal mutex") = Some(publication_requested);
+        *self
+            .inventory_acquired
+            .lock()
+            .expect("inventory signal mutex") = Some(inventory_acquired);
+    }
+}
+
+impl MutableRefBackend for LockOrderDirectoryRefs {
+    fn capabilities(&self) -> RefBackendCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn acquire_publication_guard(&self) -> Result<Box<dyn RefPublicationGuard + '_>, StoreError> {
+        if let Some(signal) = self
+            .publication_requested
+            .lock()
+            .expect("publication signal mutex")
+            .as_ref()
+        {
+            signal.send(()).expect("signal publication request");
+        }
+        self.inner.acquire_publication_guard()
+    }
+
+    fn read_ref(&self, name: &RefName) -> Result<Option<ContentId>, StoreError> {
+        self.inner.read_ref(name)
+    }
+
+    fn scan_refs(
+        &self,
+        namespace: &RefName,
+        after: Option<&RefName>,
+        limit: usize,
+    ) -> Result<RefScanPage, StoreError> {
+        self.inner.scan_refs(namespace, after, limit)
+    }
+
+    fn compare_exchange(
+        &self,
+        name: &RefName,
+        expected: Option<ContentId>,
+        next: ContentId,
+    ) -> Result<RefCasOutcome, StoreError> {
+        self.inner.compare_exchange(name, expected, next)
+    }
+}
+
+impl RefStoreAdmin for LockOrderDirectoryRefs {
+    fn acquire_ref_inventory_fence(&self) -> Result<Box<dyn RefInventoryFence + '_>, StoreError> {
+        let fence = self.inner.acquire_ref_inventory_fence()?;
+        if let Some(signal) = self
+            .inventory_acquired
+            .lock()
+            .expect("inventory signal mutex")
+            .as_ref()
+        {
+            signal.send(()).expect("signal inventory acquisition");
+        }
+        Ok(fence)
+    }
+}
+
+#[derive(Clone)]
+struct LockOrderDirectoryLedger {
+    inner: Arc<Mutex<DirectoryAssignmentLedger>>,
+    gate: Arc<Mutex<()>>,
+    acquisition_requested: Sender<()>,
+}
+
+struct LockOrderDirectoryFence<'a> {
+    inner: Arc<Mutex<DirectoryAssignmentLedger>>,
+    _gate: MutexGuard<'a, ()>,
+}
+
+impl AssignmentRetentionAdmin for LockOrderDirectoryLedger {
+    type Error = crate::AssignmentLedgerError;
+
+    fn acquire_retention_fence(
+        &mut self,
+    ) -> Result<Box<dyn AssignmentRetentionFence<BackendError = Self::Error> + '_>, Self::Error>
+    {
+        self.acquisition_requested
+            .send(())
+            .expect("signal ledger acquisition request");
+        let gate = self.gate.lock().expect("lock-order ledger gate");
+        Ok(Box::new(LockOrderDirectoryFence {
+            inner: self.inner.clone(),
+            _gate: gate,
+        }))
+    }
+}
+
+impl AssignmentRetentionFence for LockOrderDirectoryFence<'_> {
+    type BackendError = crate::AssignmentLedgerError;
+
+    fn visit_roots(
+        &mut self,
+        visitor: &mut dyn FnMut(
+            AssignmentRetentionRoot,
+        ) -> Result<(), AssignmentRetentionVisitorError>,
+    ) -> Result<AssignmentRetentionSummary, AssignmentRetentionInventoryError<Self::BackendError>>
+    {
+        let mut ledger = self.inner.lock().expect("lock directory ledger");
+        let mut fence = ledger
+            .acquire_retention_fence()
+            .map_err(AssignmentRetentionInventoryError::Backend)?;
+        fence.visit_roots(visitor)
+    }
+
+    fn load_attempt(
+        &mut self,
+        key: AttemptExecutionKey,
+    ) -> Result<Option<AttemptRuntimeState>, Self::BackendError> {
+        self.inner
+            .lock()
+            .expect("lock directory ledger")
+            .load_attempt(key)
+    }
+
+    fn compare_exchange_attempt(
+        &mut self,
+        key: AttemptExecutionKey,
+        expected: Option<AttemptRuntimeState>,
+        next: Option<AttemptRuntimeState>,
+    ) -> Result<AttemptStateCas, Self::BackendError> {
+        self.inner
+            .lock()
+            .expect("lock directory ledger")
+            .compare_exchange_attempt(key, expected, next)
+    }
+}
+
+fn publish_pending_finding_fixture(
+    repository: &CampaignRepository,
+) -> (
+    CampaignLineageId,
+    AttemptId,
+    ObservationId,
+    FindingCandidateBundleId,
+) {
+    publish_pending_finding_fixture_with_observation(repository, true)
+}
+
+pub(super) fn publish_retained_finding_fixture(
+    repository: &CampaignRepository,
+) -> (
+    CampaignName,
+    CampaignSnapshotId,
+    FindingId,
+    FindingCandidateBundleId,
+) {
+    const CAMPAIGN: &str = "pending-finding-gc-fixture";
+
+    let (_, _, _, bundle) = publish_pending_finding_fixture(repository);
+    let expected = repository
+        .head(CAMPAIGN)
+        .expect("retained finding fixture head")
+        .snapshot_id();
+    let publication = repository
+        .incorporate_finding_candidate_bundle(CAMPAIGN, expected, bundle)
+        .expect("incorporate retained finding fixture");
+
+    (
+        CampaignName::new(CAMPAIGN).expect("retained finding fixture campaign"),
+        publication.new_snapshot,
+        publication.finding,
+        bundle,
+    )
+}
+
+fn publish_pending_finding_fixture_with_observation(
+    repository: &CampaignRepository,
+    publish_observation: bool,
+) -> (
+    CampaignLineageId,
+    AttemptId,
+    ObservationId,
+    FindingCandidateBundleId,
+) {
+    const CAMPAIGN: &str = "pending-finding-gc-fixture";
+
+    let scenario = ScenarioDefId::from_hash(hash("crucible.test.pending-finding.scenario", 0x11));
+    let genesis =
+        ConfigurationId::from_hash(hash("crucible.test.pending-finding.configuration", 0x12));
+    let scenario_artifact = repository
+        .publish_scenario_artifact(scenario, 1, b"pending finding scenario".to_vec())
+        .expect("publish pending finding scenario");
+    let genesis_artifact = repository
+        .publish_configuration_artifact(
+            scenario,
+            scenario_artifact,
+            genesis,
+            1,
+            b"pending finding genesis".to_vec(),
+        )
+        .expect("publish pending finding genesis");
+    let lineage = CampaignLineage::new(
+        scenario,
+        scenario_artifact,
+        genesis,
+        genesis_artifact,
+        "crucible-pending-finding-test",
+        "qemu-pending-finding-test",
+        BTreeMap::from([(String::from("control"), 1)]),
+        1,
+        1,
+    )
+    .expect("pending finding lineage");
+    let policy = CampaignPolicy::new(
+        CampaignPolicy::identity(
+            scenario,
+            CampaignSeed::from_bytes([0x13; 32]),
+            CampaignMode::Strict,
+            ExplorerPolicy::Exhaustive {
+                maximum_cardinality: 1,
+            },
+        ),
+        CampaignPolicy::rules(
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            BTreeSet::new(),
+            FairnessPolicy::new(0, 0).expect("pending finding fairness"),
+            RetentionPolicy::new(true, 1, true, true),
+            true,
+        ),
+    )
+    .expect("pending finding policy");
+    let created = repository
+        .create(CAMPAIGN, &lineage, &policy, &BTreeMap::new())
+        .expect("create pending finding campaign");
+    let resumed = repository
+        .apply_control(
+            CAMPAIGN,
+            &ControlRequest {
+                command: CampaignCommandId::from_hash(hash(
+                    "crucible.test.pending-finding.command",
+                    0x14,
+                )),
+                expected_snapshot: created.snapshot_id(),
+                action: CampaignControlAction::Resume,
+            },
+        )
+        .expect("resume pending finding campaign");
+    let funded = repository
+        .apply_control(
+            CAMPAIGN,
+            &ControlRequest {
+                command: CampaignCommandId::from_hash(hash(
+                    "crucible.test.pending-finding.command",
+                    0x15,
+                )),
+                expected_snapshot: resumed.new_snapshot,
+                action: CampaignControlAction::GrantBudget(
+                    BudgetGrant::new(0, 1).expect("pending finding attempt budget"),
+                ),
+            },
+        )
+        .expect("fund pending finding campaign");
+    assert_eq!(
+        repository
+            .head(CAMPAIGN)
+            .expect("pending finding funded head")
+            .snapshot_id(),
+        funded.new_snapshot
+    );
+
+    let attempt = repository
+        .admit_initial_discovery_if_ready(CAMPAIGN)
+        .expect("admit pending finding discovery")
+        .expect("pending finding discovery attempt");
+    let attempt_record = repository
+        .load_attempt(attempt)
+        .expect("load pending finding attempt");
+    let child =
+        ConfigurationId::from_hash(hash("crucible.test.pending-finding.configuration", 0x16));
+    let child_artifact = repository
+        .publish_configuration_artifact(
+            scenario,
+            scenario_artifact,
+            child,
+            1,
+            b"pending finding child".to_vec(),
+        )
+        .expect("publish pending finding child");
+    let measurements = MeasurementSet::from_evaluation(
+        crucible_campaign::CampaignHash::derive(
+            "crucible.test.measurement-definitions.v1",
+            b"campaign gc",
+        ),
+        1,
+        crucible_campaign::CampaignHash::derive(
+            "crucible.test.measurement-evaluation.v1",
+            b"campaign gc",
+        ),
+        b"campaign gc".to_vec(),
+        BTreeSet::new(),
+    )
+    .expect("measurements");
+    let measurements = repository
+        .publish_measurement_set(&measurements)
+        .expect("publish pending finding measurements");
+    let properties = repository
+        .publish_property_verdict_set(
+            &PropertyVerdictSet::new(BTreeMap::new()).expect("properties"),
+        )
+        .expect("publish pending finding properties");
+    let coverage = repository
+        .publish_coverage_projection(
+            &CoverageProjection::new(BTreeSet::new(), BTreeSet::new()).expect("coverage"),
+        )
+        .expect("publish pending finding coverage");
+    let observation_record = Observation::new(
+        attempt,
+        Observation::outcome(
+            child,
+            child_artifact,
+            attempt_record.path(),
+            StopOutcome::TerminalSuccess,
+            measurements,
+            properties,
+            coverage,
+        ),
+        BTreeSet::new(),
+    )
+    .expect("pending finding observation");
+    let observation = if publish_observation {
+        repository
+            .publish_observation(
+                CAMPAIGN,
+                repository
+                    .head(CAMPAIGN)
+                    .expect("pending finding admission head")
+                    .snapshot_id(),
+                &observation_record,
+            )
+            .expect("publish pending finding observation")
+            .observation
+    } else {
+        let observation = observation_record
+            .id()
+            .expect("pending finding observation identity");
+        let candidate = ObservationCandidate::new(
+            repository
+                .load_configuration_artifact(child_artifact)
+                .expect("load pending finding child"),
+            repository
+                .load_measurement_set(measurements)
+                .expect("load pending finding measurements"),
+            repository
+                .load_property_verdict_set(properties)
+                .expect("load pending finding properties"),
+            repository
+                .load_coverage_projection(coverage)
+                .expect("load pending finding coverage"),
+            Vec::new(),
+            observation_record,
+        )
+        .expect("build pending finding observation candidate");
+        assert_eq!(
+            repository
+                .publish_observation_candidate(&candidate)
+                .expect("store pending finding observation body"),
+            observation
+        );
+        observation
+    };
+
+    let fingerprint = hash("crucible.test.pending-finding.fingerprint", 0x17);
+    let original = repository
+        .publish_reproduction_artifact(
+            scenario,
+            scenario_artifact,
+            child,
+            child_artifact,
+            fingerprint,
+            1,
+            b"pending finding original reproduction".to_vec(),
+        )
+        .expect("publish pending finding reproduction");
+    let replayed_state = hash("crucible.test.pending-finding.replayed-state", 0x18);
+    let minimization = FindingMinimizationEvidence::new(
+        original,
+        3,
+        b"pending finding deterministic minimizer".to_vec(),
+        vec![FindingMinimizationAttempt::new(
+            0,
+            hash("crucible.test.pending-finding.candidate-artifact", 0x19),
+            hash("crucible.test.pending-finding.candidate-schedule", 0x1a),
+            replayed_state,
+            Some(fingerprint),
+            true,
+        )],
+        replayed_state,
+    )
+    .expect("pending finding minimization evidence");
+    let minimized = repository
+        .publish_minimized_reproduction_artifact(
+            scenario,
+            scenario_artifact,
+            child,
+            child_artifact,
+            fingerprint,
+            1,
+            b"pending finding minimized reproduction".to_vec(),
+            minimization.clone(),
+        )
+        .expect("publish pending finding minimized reproduction");
+    let signature = FindingSignature::new(
+        FindingKind::Divergence,
+        fingerprint,
+        None,
+        String::from("qemu.pending-finding-divergence"),
+        Some(FindingTarget::Configuration(child_artifact)),
+        BTreeSet::new(),
+    )
+    .expect("pending finding signature");
+    let replay_pass = vec![Some(signature.clone()), Some(signature.clone())];
+    let signature_minimization = FindingSignatureMinimizationEvidence::new(
+        &signature,
+        &minimization,
+        replay_pass.clone(),
+        replay_pass,
+    )
+    .expect("pending finding signature minimization");
+    let retention_basis = repository
+        .attempt_retention_policy_basis_at(
+            repository
+                .head(CAMPAIGN)
+                .expect("pending finding campaign head")
+                .snapshot_id(),
+            attempt,
+        )
+        .expect("pending finding retention basis");
+    let exact_retention = FindingExactRetention::new(
+        retention_basis.snapshot(),
+        retention_basis.policy(),
+        retention_basis.admission(),
+        0,
+        FindingExactRetentionDisposition::Incomplete(
+            FindingExactRetentionIncomplete::MissingSafeBoundaryCapture,
+        ),
+    )
+    .expect("pending incomplete finding retention");
+    let bundle = FindingCandidateBundle::new_with_exact_retention(
+        FindingCandidateCore::new(
+            observation,
+            signature,
+            original,
+            minimized,
+            signature_minimization,
+            FindingExactPins::default(),
+        ),
+        None,
+        exact_retention,
+    )
+    .expect("pending finding candidate bundle");
+    let candidate = repository
+        .publish_finding_candidate_bundle(&bundle)
+        .expect("publish pending finding candidate bundle");
+
+    (
+        lineage.id().expect("pending finding lineage identity"),
+        attempt,
+        observation,
+        candidate,
+    )
+}
+
+fn basis(
+    backend: &str,
+    generation: u8,
+    objects: u64,
+    logical_bytes: u64,
+) -> CampaignGcBlobInventoryBasis {
+    CampaignGcBlobInventoryBasis::new(
+        backend,
+        PhysicalStorageIdentity::from_bytes([generation.wrapping_add(1); 32]),
+        InventoryGeneration::from_bytes([generation; 32]),
+        objects,
+        logical_bytes,
+    )
+    .expect("valid physical basis")
+}
+
+fn plan_with(
+    ref_generation: u8,
+    ledger_generation: u8,
+    physical: Vec<CampaignGcBlobInventoryBasis>,
+) -> CampaignGcPlan {
+    CampaignGcPlan::new(
+        hash("crucible.test.gc.store-graph.v1", 1),
+        CampaignGcRootSetId::from_hash(hash("crucible.test.gc.root-set.v1", 2)),
+        RefInventorySummary::from_parts(
+            RefInventoryGeneration::from_bytes([ref_generation; 32]),
+            3,
+        ),
+        AssignmentRetentionSummary::new(
+            AssignmentRetentionGeneration::from_bytes([ledger_generation; 32]),
+            4,
+            2,
+            1,
+            0,
+        ),
+        CampaignGcCandidateSetSummary::new(
+            CampaignGcCandidateSetId::from_hash(hash("crucible.test.gc.candidates.v1", 3)),
+            3,
+            30,
+        ),
+        physical,
+    )
+    .expect("valid GC plan")
+}
+
+#[test]
+fn plan_header_round_trips_without_changing_current_bytes() {
+    let plan = plan_with(
+        0x21,
+        0x31,
+        vec![basis("cache", 0x41, 10, 100), basis("durable", 0x42, 5, 50)],
+    );
+    let bytes = plan.canonical_bytes().expect("canonical plan");
+    let decoded = CampaignGcPlan::from_canonical_bytes(&bytes).expect("decode canonical plan");
+
+    assert!(bytes.starts_with(b"crucible.campaign.gc-plan.v1\0"));
+    assert_eq!(decoded, plan);
+    assert_eq!(decoded.id(), plan.id());
+    assert_eq!(plan.candidates().candidates(), 3);
+    assert_eq!(plan.physical().len(), 2);
+    assert_eq!(
+        plan.id().expect("plan identity").to_hex(),
+        "2393e1330ec0ae19da4aee2f68e39b905cb1f404f337e06ba4d0414497cc2e75"
+    );
+}
+
+#[test]
+fn every_administrative_generation_changes_plan_identity() {
+    let original = plan_with(0x21, 0x31, vec![basis("durable", 0x41, 10, 100)]);
+    let changed_ref = plan_with(0x22, 0x31, vec![basis("durable", 0x41, 10, 100)]);
+    let changed_ledger = plan_with(0x21, 0x32, vec![basis("durable", 0x41, 10, 100)]);
+    let changed_blob = plan_with(0x21, 0x31, vec![basis("durable", 0x42, 10, 100)]);
+
+    let original = original.id().expect("original plan identity");
+    assert_ne!(changed_ref.id().expect("changed ref identity"), original);
+    assert_ne!(
+        changed_ledger.id().expect("changed ledger identity"),
+        original
+    );
+    assert_ne!(changed_blob.id().expect("changed blob identity"), original);
+}
+
+#[test]
+fn plan_rejects_unordered_excessive_and_inconsistent_summaries() {
+    let common = || {
+        (
+            hash("crucible.test.gc.store-graph.v1", 1),
+            CampaignGcRootSetId::from_hash(hash("crucible.test.gc.root-set.v1", 2)),
+            RefInventorySummary::from_parts(RefInventoryGeneration::from_bytes([0x21; 32]), 3),
+            CampaignGcCandidateSetSummary::new(
+                CampaignGcCandidateSetId::from_hash(hash("crucible.test.gc.candidates.v1", 3)),
+                3,
+                30,
+            ),
+        )
+    };
+    let (graph, roots, refs, candidates) = common();
+    assert_eq!(
+        CampaignGcPlan::new(
+            graph,
+            roots,
+            refs,
+            AssignmentRetentionSummary::new(
+                AssignmentRetentionGeneration::from_bytes([0x31; 32]),
+                4,
+                2,
+                1,
+                0,
+            ),
+            candidates,
+            vec![basis("z", 1, 10, 100), basis("a", 2, 10, 100)],
+        ),
+        Err(CampaignGcPlanError::InvalidPhysicalInventoryCount)
+    );
+
+    let excessive = (0..=MAX_CAMPAIGN_GC_PHYSICAL_INVENTORIES)
+        .map(|index| basis(&format!("node{index:03}"), 1, 1, 1))
+        .collect();
+    let (graph, roots, refs, candidates) = common();
+    assert_eq!(
+        CampaignGcPlan::new(
+            graph,
+            roots,
+            refs,
+            AssignmentRetentionSummary::new(
+                AssignmentRetentionGeneration::from_bytes([0x31; 32]),
+                4,
+                2,
+                1,
+                0,
+            ),
+            candidates,
+            excessive,
+        ),
+        Err(CampaignGcPlanError::InvalidPhysicalInventoryCount)
+    );
+
+    let (graph, roots, refs, candidates) = common();
+    assert_eq!(
+        CampaignGcPlan::new(
+            graph,
+            roots,
+            refs,
+            AssignmentRetentionSummary::new(
+                AssignmentRetentionGeneration::from_bytes([0x31; 32]),
+                2,
+                2,
+                1,
+                0,
+            ),
+            candidates,
+            vec![basis("durable", 1, 10, 100)],
+        ),
+        Err(CampaignGcPlanError::InvalidLedgerSummary)
+    );
+
+    let (graph, roots, refs, _) = common();
+    assert_eq!(
+        CampaignGcPlan::new(
+            graph,
+            roots,
+            refs,
+            AssignmentRetentionSummary::new(
+                AssignmentRetentionGeneration::from_bytes([0x31; 32]),
+                4,
+                2,
+                1,
+                0,
+            ),
+            CampaignGcCandidateSetSummary::new(
+                CampaignGcCandidateSetId::from_hash(hash("crucible.test.gc.candidates.v1", 3,)),
+                11,
+                30,
+            ),
+            vec![basis("durable", 1, 10, 100)],
+        ),
+        Err(CampaignGcPlanError::InvalidCandidateSummary)
+    );
+}
+
+#[test]
+fn decoder_rejects_truncation_trailing_bytes_and_wrong_schema() {
+    let plan = plan_with(0x21, 0x31, vec![basis("durable", 0x41, 10, 100)]);
+    let bytes = plan.canonical_bytes().expect("canonical plan");
+    assert_eq!(
+        CampaignGcPlan::from_canonical_bytes(&bytes[..bytes.len() - 1]),
+        Err(CampaignGcPlanError::InvalidLength)
+    );
+
+    let mut trailing = bytes.clone();
+    trailing.push(0);
+    assert_eq!(
+        CampaignGcPlan::from_canonical_bytes(&trailing),
+        Err(CampaignGcPlanError::InvalidLength)
+    );
+
+    let mut wrong_schema = bytes;
+    wrong_schema[0] ^= 1;
+    assert_eq!(
+        CampaignGcPlan::from_canonical_bytes(&wrong_schema),
+        Err(CampaignGcPlanError::UnsupportedSchema)
+    );
+}
+
+#[test]
+fn root_and_candidate_manifests_round_trip_with_stable_identity() {
+    let first = ContentId::for_bytes(ObjectKind::Trace, 1, b"first");
+    let second = ContentId::for_bytes(ObjectKind::Finding, 2, b"second");
+    let roots = CampaignGcRootManifest::new([second, first, first]).expect("root manifest");
+    let root_id = roots.id();
+    let mut root_bytes = Vec::new();
+    roots
+        .write_canonical(&mut root_bytes)
+        .expect("encode roots");
+    let decoded_roots = CampaignGcRootManifest::from_canonical_reader(&mut Cursor::new(root_bytes))
+        .expect("decode roots");
+    assert_eq!(decoded_roots, roots);
+    assert_eq!(decoded_roots.id(), root_id);
+    let mut expected_roots = vec![first, second];
+    expected_roots.sort_unstable_by(content_id_manifest_order);
+    assert_eq!(decoded_roots.iter().collect::<Vec<_>>(), expected_roots);
+
+    let candidates = CampaignGcCandidateManifest::new(vec![
+        CampaignGcCandidate::new("z-tier", second, 20).expect("candidate"),
+        CampaignGcCandidate::new("a-tier", first, 10).expect("candidate"),
+    ])
+    .expect("candidate manifest");
+    let summary = candidates.summary();
+    let mut candidate_bytes = Vec::new();
+    candidates
+        .write_canonical(&mut candidate_bytes)
+        .expect("encode candidates");
+    assert!(candidate_bytes.starts_with(b"crucible.campaign.gc-candidate-manifest.v1\0"));
+    let decoded_candidates =
+        CampaignGcCandidateManifest::from_canonical_reader(&mut Cursor::new(&candidate_bytes))
+            .expect("decode candidates");
+    assert_eq!(decoded_candidates, candidates);
+    assert_eq!(decoded_candidates.summary(), summary);
+    assert_eq!(summary.candidates(), 2);
+    assert_eq!(summary.logical_bytes(), 30);
+    assert_eq!(
+        decoded_candidates.iter().next().expect("first").backend(),
+        "a-tier"
+    );
+
+    let mut wrong_candidate_schema = candidate_bytes;
+    wrong_candidate_schema[0] ^= 1;
+    assert!(matches!(
+        CampaignGcCandidateManifest::from_canonical_reader(&mut Cursor::new(
+            wrong_candidate_schema
+        )),
+        Err(CampaignGcManifestError::UnsupportedSchema)
+    ));
+}
+
+#[test]
+fn manifests_reject_duplicates_trailing_bytes_and_noncanonical_order() {
+    let first = ContentId::for_bytes(ObjectKind::Trace, 1, b"first");
+    assert!(matches!(
+        CampaignGcCandidateManifest::new(vec![
+            CampaignGcCandidate::new("tier", first, 1).expect("candidate"),
+            CampaignGcCandidate::new("tier", first, 2).expect("candidate"),
+        ]),
+        Err(CampaignGcManifestError::DuplicateCandidate)
+    ));
+
+    let roots = CampaignGcRootManifest::new([first]).expect("root manifest");
+    let mut bytes = Vec::new();
+    roots.write_canonical(&mut bytes).expect("encode roots");
+    bytes.push(0);
+    assert!(matches!(
+        CampaignGcRootManifest::from_canonical_reader(&mut Cursor::new(bytes)),
+        Err(CampaignGcManifestError::Noncanonical)
+    ));
+
+    let second = ContentId::for_bytes(ObjectKind::Trace, 1, b"second");
+    let mut descending = [second, first];
+    descending.sort_unstable_by(|left, right| content_id_manifest_order(right, left));
+    let mut unordered = Vec::new();
+    unordered.extend_from_slice(b"crucible.campaign.gc-root-manifest.v1\0");
+    unordered.extend_from_slice(&2_u64.to_be_bytes());
+    for id in descending {
+        let encoded = id.encode();
+        unordered.extend_from_slice(&(encoded.len() as u16).to_be_bytes());
+        unordered.extend_from_slice(encoded.as_bytes());
+    }
+    assert!(matches!(
+        CampaignGcRootManifest::from_canonical_reader(&mut Cursor::new(unordered)),
+        Err(CampaignGcManifestError::Noncanonical)
+    ));
+}
+
+#[test]
+fn planner_authenticates_roots_and_selects_only_unreachable_placements() {
+    let blobs = Arc::new(MemoryBlobBackend::new("gc-primary", 8 * 1024 * 1024));
+    let refs = Arc::new(MemoryRefBackend::new());
+    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+
+    let live = ContentEnvelope::new(
+        "crucible.test.gc-live",
+        1,
+        BTreeSet::new(),
+        b"live".to_vec(),
+    )
+    .expect("live envelope");
+    let live_bytes = live.canonical_bytes();
+    let live_id = live.content_id(ObjectKind::Trace);
+    blobs
+        .put_if_absent(live_id, &BlobHandle::from_bytes(live_bytes))
+        .expect("store live object");
+    assert_eq!(
+        refs.compare_exchange(
+            &RefName::new("retained/gc-live").expect("ref name"),
+            None,
+            live_id,
+        )
+        .expect("publish ref"),
+        RefCasOutcome::Advanced { next: live_id }
+    );
+
+    let orphan_bytes = b"unreachable".to_vec();
+    let orphan_id = ContentId::for_bytes(ObjectKind::Trace, 1, &orphan_bytes);
+    blobs
+        .put_if_absent(orphan_id, &BlobHandle::from_bytes(orphan_bytes))
+        .expect("store orphan");
+
+    let mut ledger = MemoryAssignmentLedger::default();
+    let physical =
+        CampaignGcRawPhysicalStore::new("gc-primary", blobs.as_ref()).expect("physical store");
+    let prepared = plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        hash("crucible.test.gc.store-graph.v1", 9),
+        &[physical],
+    )
+    .expect("plan GC");
+
+    assert_eq!(prepared.roots().iter().collect::<Vec<_>>(), vec![live_id]);
+    assert_eq!(prepared.reachable_objects(), 1);
+    assert_eq!(prepared.candidates().len(), 1);
+    let candidate = prepared
+        .candidates()
+        .iter()
+        .next()
+        .expect("orphan candidate");
+    assert_eq!(candidate.backend(), "gc-primary");
+    assert_eq!(candidate.id(), orphan_id);
+    assert_eq!(prepared.plan().root_set(), prepared.roots().id());
+    assert_eq!(
+        prepared.plan().candidates(),
+        prepared.candidates().summary()
+    );
+}
+
+#[test]
+fn policy_aware_gc_evicts_a_wrapped_read_through_cache_with_a_required_copy() {
+    let temp = tempfile::TempDir::new().expect("temporary read-through GC root");
+    let cache_root = temp.path().join("cache");
+    let source_root = temp.path().join("source");
+    let journal_root = temp.path().join("journal");
+    let root = StoreNodeId::new("read-through").expect("root node");
+    let cache_wrapper = StoreNodeId::new("cache-verified").expect("cache wrapper");
+    let cache = StoreNodeId::new("cache-compressed").expect("cache node");
+    let source = StoreNodeId::new("required-source").expect("source node");
+    let config = StoreGraphConfig {
+        root: root.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+        nodes: BTreeMap::from([
+            (
+                root,
+                StoreNodeSpec::ReadThrough {
+                    cache: cache_wrapper.clone(),
+                    source: source.clone(),
+                },
+            ),
+            (
+                cache_wrapper,
+                StoreNodeSpec::Verified {
+                    child: cache.clone(),
+                },
+            ),
+            (
+                cache.clone(),
+                StoreNodeSpec::CompressedDirectory {
+                    root: cache_root,
+                    maximum_logical_object_bytes: 1024 * 1024,
+                },
+            ),
+            (
+                source.clone(),
+                StoreNodeSpec::Directory { root: source_root },
+            ),
+        ]),
+    };
+    let (graph, admin) = StoreGraph::build_with_admin(config).expect("read-through graph");
+    let graph = Arc::new(graph);
+    let refs = Arc::new(MemoryRefBackend::new());
+    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let live = ContentEnvelope::new(
+        "crucible.test.gc-read-through-live",
+        1,
+        BTreeSet::new(),
+        vec![b'R'; 32 * 1024],
+    )
+    .expect("live envelope");
+    let live_bytes = live.canonical_bytes();
+    let live_id = live.content_id(ObjectKind::Trace);
+    graph
+        .put_if_absent(live_id, &BlobHandle::from_bytes(live_bytes.clone()))
+        .expect("store required source");
+    refs.compare_exchange(
+        &RefName::new("retained/read-through-live").expect("retained ref"),
+        None,
+        live_id,
+    )
+    .expect("publish retained root");
+    let mut promoted = Vec::new();
+    graph
+        .read(live_id, None)
+        .expect("read and promote source")
+        .copy_to(&mut promoted)
+        .expect("authenticate promoted read");
+    assert_eq!(promoted, live_bytes);
+
+    let second_live = ContentEnvelope::new(
+        "crucible.test.gc-read-through-live",
+        1,
+        BTreeSet::new(),
+        b"second reachable cache placement".to_vec(),
+    )
+    .expect("second live envelope");
+    let second_live_bytes = second_live.canonical_bytes();
+    let second_live_id = second_live.content_id(ObjectKind::Trace);
+    graph
+        .put_if_absent(
+            second_live_id,
+            &BlobHandle::from_bytes(second_live_bytes.clone()),
+        )
+        .expect("store second required source");
+    refs.compare_exchange(
+        &RefName::new("retained/read-through-live-second").expect("second retained ref"),
+        None,
+        second_live_id,
+    )
+    .expect("publish second retained root");
+    let mut second_promoted = Vec::new();
+    graph
+        .read(second_live_id, None)
+        .expect("read and promote second source")
+        .copy_to(&mut second_promoted)
+        .expect("authenticate second promoted read");
+    assert_eq!(second_promoted, second_live_bytes);
+
+    let mut ledger = MemoryAssignmentLedger::default();
+    let prepared = super::plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        &admin,
+    )
+    .expect("plan policy-aware GC");
+    assert_eq!(prepared.unreachable_candidates(), 0);
+    assert_eq!(prepared.reachable_cache_candidates(), 2);
+    let candidate = prepared
+        .candidates()
+        .iter()
+        .next()
+        .expect("cache candidate");
+    assert_eq!(candidate.backend(), cache.as_str());
+    assert!(matches!(
+        candidate.reason(),
+        CampaignGcCandidateReason::ReachableCache { required_backend }
+            if required_backend == source.as_str()
+    ));
+
+    let plan_bytes = prepared.plan().canonical_bytes().expect("encode plan");
+    assert_eq!(
+        CampaignGcPlan::from_canonical_bytes(&plan_bytes).expect("decode plan"),
+        *prepared.plan()
+    );
+    let mut trailing_plan = plan_bytes;
+    trailing_plan.push(0);
+    assert_eq!(
+        CampaignGcPlan::from_canonical_bytes(&trailing_plan),
+        Err(CampaignGcPlanError::InvalidLength)
+    );
+
+    let mut candidate_bytes = Vec::new();
+    prepared
+        .candidates()
+        .write_canonical(&mut candidate_bytes)
+        .expect("encode candidates");
+    assert_eq!(
+        CampaignGcCandidateManifest::from_canonical_reader(&mut Cursor::new(&candidate_bytes))
+            .expect("decode candidates"),
+        *prepared.candidates()
+    );
+    candidate_bytes.push(0);
+    assert!(matches!(
+        CampaignGcCandidateManifest::from_canonical_reader(&mut Cursor::new(candidate_bytes)),
+        Err(CampaignGcManifestError::Noncanonical)
+    ));
+
+    let forged_candidates = CampaignGcCandidateManifest::new(vec![
+        CampaignGcCandidate::new_reachable_cache(
+            source.as_str(),
+            live_id,
+            live_bytes.len() as u64,
+            cache.as_str(),
+        )
+        .expect("swapped-role candidate"),
+    ])
+    .expect("swapped-role manifest");
+    let forged = prepared
+        .clone()
+        .with_candidate_manifest_for_test(forged_candidates);
+    let (mut forged_journal, _) =
+        DirectoryCampaignGcJournal::create(temp.path().join("forged-journal"), &forged)
+            .expect("create swapped-role journal");
+    let error = super::apply_single_host_campaign_gc(
+        &mut forged_journal,
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        &admin,
+    )
+    .expect_err("reject swapped cache and required-source roles");
+    assert!(matches!(
+        error,
+        CampaignGcApplyError::CandidatePolicyChanged { backend, id }
+            if backend == source.as_str() && id == live_id
+    ));
+    assert_eq!(forged_journal.phase(), CampaignGcJournalPhase::Planned);
+    for physical in admin.physical() {
+        let mut fence = physical
+            .admin()
+            .acquire_inventory_fence()
+            .expect("post-rejection inventory");
+        let summary = fence
+            .visit_inventory(&mut |_record| Ok(()))
+            .expect("complete post-rejection inventory");
+        assert_eq!(summary.objects(), 2);
+    }
+
+    let (journal, _) =
+        DirectoryCampaignGcJournal::create(&journal_root, &prepared).expect("create v2 journal");
+    drop(journal);
+    let mut journal = DirectoryCampaignGcJournal::open(&journal_root).expect("reopen v2 journal");
+    let report = super::apply_single_host_campaign_gc(
+        &mut journal,
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        &admin,
+    )
+    .expect("apply cache eviction");
+    assert_eq!(report.unreachable_candidates(), 0);
+    assert_eq!(report.reachable_cache_candidates(), 2);
+
+    let cache_admin = admin
+        .physical()
+        .into_iter()
+        .find(|physical| physical.node() == &cache)
+        .expect("cache administration");
+    let mut cache_fence = cache_admin
+        .admin()
+        .acquire_inventory_fence()
+        .expect("cache inventory");
+    let cache_summary = cache_fence
+        .visit_inventory(&mut |_record| Ok(()))
+        .expect("complete cache inventory");
+    assert_eq!(cache_summary.objects(), 0);
+    drop(cache_fence);
+
+    let mut retained = Vec::new();
+    graph
+        .read(live_id, None)
+        .expect("read retained source")
+        .copy_to(&mut retained)
+        .expect("authenticate retained source");
+    assert_eq!(retained, live_bytes);
+    let mut second_retained = Vec::new();
+    graph
+        .read(second_live_id, None)
+        .expect("read second retained source")
+        .copy_to(&mut second_retained)
+        .expect("authenticate second retained source");
+    assert_eq!(second_retained, second_live_bytes);
+}
+
+#[test]
+fn policy_aware_gc_refuses_same_path_source_and_cache_aliases() {
+    let temp = tempfile::TempDir::new().expect("temporary alias GC root");
+    let shared = temp.path().join("shared");
+    let root = StoreNodeId::new("aliased-read-through").expect("root node");
+    let cache = StoreNodeId::new("aliased-cache").expect("cache node");
+    let source = StoreNodeId::new("aliased-source").expect("source node");
+    let (graph, admin) = StoreGraph::build_with_admin(StoreGraphConfig {
+        root: root.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+        nodes: BTreeMap::from([
+            (
+                root,
+                StoreNodeSpec::ReadThrough {
+                    cache: cache.clone(),
+                    source: source.clone(),
+                },
+            ),
+            (
+                cache,
+                StoreNodeSpec::Directory {
+                    root: shared.clone(),
+                },
+            ),
+            (source, StoreNodeSpec::Directory { root: shared }),
+        ]),
+    })
+    .expect("aliased graph");
+    let graph = Arc::new(graph);
+    let refs = Arc::new(MemoryRefBackend::new());
+    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let live = ContentEnvelope::new(
+        "crucible.test.gc-aliased-live",
+        1,
+        BTreeSet::new(),
+        b"aliased live".to_vec(),
+    )
+    .expect("live envelope");
+    let live_bytes = live.canonical_bytes();
+    let live_id = live.content_id(ObjectKind::Trace);
+    graph
+        .put_if_absent(live_id, &BlobHandle::from_bytes(live_bytes))
+        .expect("store shared placement");
+    refs.compare_exchange(
+        &RefName::new("retained/aliased-live").expect("retained ref"),
+        None,
+        live_id,
+    )
+    .expect("publish retained root");
+
+    let identities = admin
+        .physical()
+        .into_iter()
+        .map(|physical| {
+            let mut fence = physical
+                .admin()
+                .acquire_inventory_fence()
+                .expect("alias inventory");
+            fence
+                .visit_inventory(&mut |_record| Ok(()))
+                .expect("complete alias inventory")
+                .storage_identity()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(identities.len(), 2);
+    assert_eq!(identities[0], identities[1]);
+
+    let mut ledger = MemoryAssignmentLedger::default();
+    let prepared = super::plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        &admin,
+    )
+    .expect("plan aliased graph");
+    assert_eq!(prepared.reachable_cache_candidates(), 0);
+    assert!(prepared.candidates().is_empty());
+}
+
+#[test]
+fn required_graph_path_dominates_a_read_through_cache_role() {
+    let root = StoreNodeId::new("tiered-root").expect("root node");
+    let read_through = StoreNodeId::new("read-through").expect("read-through node");
+    let cache = StoreNodeId::new("shared-cache").expect("cache node");
+    let source = StoreNodeId::new("required-source").expect("source node");
+    let (_, admin) = StoreGraph::build_with_admin(StoreGraphConfig {
+        root: root.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+        nodes: BTreeMap::from([
+            (
+                root,
+                StoreNodeSpec::Tiered {
+                    tiers: vec![
+                        StoreTierPolicy {
+                            child: read_through.clone(),
+                            readable: true,
+                            writable: true,
+                            promote_reads: false,
+                        },
+                        StoreTierPolicy {
+                            child: cache.clone(),
+                            readable: true,
+                            writable: true,
+                            promote_reads: false,
+                        },
+                    ],
+                },
+            ),
+            (
+                read_through,
+                StoreNodeSpec::ReadThrough {
+                    cache: cache.clone(),
+                    source: source.clone(),
+                },
+            ),
+            (
+                cache.clone(),
+                StoreNodeSpec::Memory {
+                    max_logical_bytes: 1024,
+                },
+            ),
+            (
+                source.clone(),
+                StoreNodeSpec::Memory {
+                    max_logical_bytes: 1024,
+                },
+            ),
+        ]),
+    })
+    .expect("graph with shared required cache path");
+
+    let physical = admin.physical();
+    let cache_role = physical
+        .iter()
+        .find(|physical| physical.node() == &cache)
+        .and_then(|physical| physical.retention(ObjectKind::Trace));
+    let source_role = physical
+        .iter()
+        .find(|physical| physical.node() == &source)
+        .and_then(|physical| physical.retention(ObjectKind::Trace));
+    assert_eq!(cache_role, Some(StoreGraphPhysicalRetention::Required));
+    assert_eq!(source_role, Some(StoreGraphPhysicalRetention::Required));
+}
+
+#[test]
+fn pending_finding_candidate_closure_survives_gc_and_ledger_restart() {
+    let blobs = Arc::new(MemoryBlobBackend::new(
+        "pending-finding-gc",
+        8 * 1024 * 1024,
+    ));
+    let fixture_repository =
+        CampaignRepository::new(blobs.clone(), Arc::new(MemoryRefBackend::new()));
+    let (lineage, attempt, observation, candidate) =
+        publish_pending_finding_fixture(&fixture_repository);
+
+    // The executor ledger is the only root owner in this flight. Campaign
+    // construction records not referenced by the handoff remain collectible.
+    let refs = Arc::new(MemoryRefBackend::new());
+    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    let expected_closure = repository
+        .authenticated_closure_ids([candidate.content_id(), observation.content_id()])
+        .expect("authenticate pending finding closure");
+
+    let orphan_bytes = b"unreachable pending-finding neighbor".to_vec();
+    let orphan = ContentId::for_bytes(ObjectKind::Trace, 1, &orphan_bytes);
+    blobs
+        .put_if_absent(orphan, &BlobHandle::from_bytes(orphan_bytes))
+        .expect("store orphan");
+
+    let ledger_root = tempfile::tempdir().expect("assignment ledger directory");
+    let request = pending_finding_request(lineage, attempt);
+    let key = AttemptExecutionKey::new(request.lineage(), request.attempt());
+    let completed = AttemptRuntimeState::Completed {
+        execution_basis: request.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
+        daemon_epoch: request.daemon_epoch(),
+        execution: ExecutionId::from_bytes([0x64; 16]).expect("execution"),
+        observation,
+        finding_candidate: CompletedFindingCandidate::Pending(candidate),
+    };
+    {
+        let mut ledger =
+            DirectoryAssignmentLedger::open(ledger_root.path()).expect("open assignment ledger");
+        assert_eq!(
+            ledger
+                .compare_exchange_attempt(key, None, Some(completed))
+                .expect("retain pending finding"),
+            AttemptStateCas::Advanced
+        );
+    }
+
+    let mut ledger =
+        DirectoryAssignmentLedger::open(ledger_root.path()).expect("reopen assignment ledger");
+    assert_eq!(
+        ledger.load_attempt(key).expect("reload pending finding"),
+        Some(completed)
+    );
+    let graph = hash("crucible.test.pending-finding-gc-graph.v1", 0x75);
+    let physical = CampaignGcRawPhysicalStore::new("pending-finding-gc", blobs.as_ref())
+        .expect("physical store");
+    let prepared = plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        graph,
+        &[physical],
+    )
+    .expect("plan pending finding GC");
+    let retained = prepared.roots().iter().collect::<BTreeSet<_>>();
+    assert_eq!(
+        retained,
+        BTreeSet::from([observation.content_id(), candidate.content_id()])
+    );
+    assert_eq!(
+        prepared.reachable_objects(),
+        u64::try_from(expected_closure.len()).expect("pending finding closure count")
+    );
+    assert!(
+        prepared
+            .candidates()
+            .iter()
+            .any(|candidate| candidate.id() == orphan)
+    );
+
+    let journal_root = tempfile::tempdir().expect("GC journal directory");
+    let (mut journal, _) =
+        DirectoryCampaignGcJournal::create(journal_root.path().join("journal"), &prepared)
+            .expect("create pending finding GC journal");
+    let report = apply_single_host_campaign_gc(
+        &mut journal,
+        CampaignGcApplySources::new(&repository, refs.as_ref(), &mut ledger, None, None),
+        graph,
+        &[physical],
+    )
+    .expect("apply pending finding GC");
+    assert_eq!(report.status(), CampaignGcApplyStatus::Applied);
+    assert!(!blobs.contains(orphan).expect("orphan deleted"));
+    for object in &expected_closure {
+        assert!(
+            blobs
+                .contains(*object)
+                .expect("pending finding object retained")
+        );
+    }
+
+    drop(ledger);
+    let mut restarted_ledger = DirectoryAssignmentLedger::open(ledger_root.path())
+        .expect("restart assignment ledger after GC");
+    let restarted_repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    restarted_repository
+        .load_finding_candidate_bundle(candidate)
+        .expect("load retained finding candidate after restart");
+    let restarted = plan_single_host_campaign_gc(
+        &restarted_repository,
+        refs.as_ref(),
+        &mut restarted_ledger,
+        None,
+        None,
+        graph,
+        &[physical],
+    )
+    .expect("plan after pending finding restart");
+    assert_eq!(
+        restarted.reachable_objects(),
+        u64::try_from(expected_closure.len()).expect("restarted pending finding closure count")
+    );
+    assert!(restarted.candidates().is_empty());
+}
+
+#[test]
+fn incorporated_finding_releases_exact_candidate_root_across_restart() {
+    const CAMPAIGN: &str = "pending-finding-gc-fixture";
+
+    let storage = tempfile::tempdir().expect("durable handoff storage");
+    let blob_root = storage.path().join("blobs");
+    let ref_root = storage.path().join("refs");
+    let ledger_root = storage.path().join("ledger");
+    let campaign = CampaignName::new(CAMPAIGN).expect("campaign name");
+    let (key, execution, observation, candidate, expected_snapshot, completed, publication) = {
+        let blobs = Arc::new(DirectoryBlobBackend::new(
+            "incorporated-finding-gc",
+            &blob_root,
+        ));
+        let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
+        let repository = CampaignRepository::new(blobs, refs);
+        let (lineage, attempt, observation, candidate) =
+            publish_pending_finding_fixture(&repository);
+        let expected_snapshot = repository
+            .head(CAMPAIGN)
+            .expect("observation-owning head")
+            .snapshot_id();
+        let request = pending_finding_request(lineage, attempt);
+        let key = AttemptExecutionKey::new(lineage, attempt);
+        let execution = ExecutionId::from_bytes([0x65; 16]).expect("execution");
+        let completed = AttemptRuntimeState::Completed {
+            execution_basis: request.execution_basis_digest(),
+            origin: AttemptExecutionOrigin::Initial,
+            daemon_epoch: request.daemon_epoch(),
+            execution,
+            observation,
+            finding_candidate: CompletedFindingCandidate::Pending(candidate),
+        };
+        let mut ledger =
+            DirectoryAssignmentLedger::open(&ledger_root).expect("open assignment ledger");
+        assert_eq!(
+            ledger
+                .compare_exchange_attempt(key, None, Some(completed))
+                .expect("retain pending candidate"),
+            AttemptStateCas::Advanced
+        );
+
+        let publication = repository
+            .incorporate_finding_candidate_bundle(CAMPAIGN, expected_snapshot, candidate)
+            .expect("incorporate candidate before simulated crash");
+
+        (
+            key,
+            execution,
+            observation,
+            candidate,
+            expected_snapshot,
+            completed,
+            publication,
+        )
+    };
+
+    let blobs = Arc::new(DirectoryBlobBackend::new(
+        "incorporated-finding-gc",
+        &blob_root,
+    ));
+    let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
+    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    let mut restarted =
+        DirectoryAssignmentLedger::open(&ledger_root).expect("restart before acknowledgement");
+    assert_eq!(
+        restarted
+            .load_attempt(key)
+            .expect("candidate remains after crash"),
+        Some(completed)
+    );
+    let released = acknowledge_incorporated_finding_candidate(
+        &repository,
+        &mut restarted,
+        &campaign,
+        key,
+        execution,
+        observation,
+        publication.finding,
+        candidate,
+    )
+    .expect("reauthenticate and release after restart");
+    let FindingCandidateRetentionOutcome::Released(acknowledgement) = released else {
+        panic!("expected exact candidate release");
+    };
+    assert_eq!(acknowledgement.bundle(), candidate);
+    assert_eq!(acknowledgement.finding(), publication.finding);
+    assert_eq!(acknowledgement.snapshot(), publication.new_snapshot);
+    assert!(matches!(
+        restarted
+            .load_attempt(key)
+            .expect("load released completion"),
+        Some(AttemptRuntimeState::Completed {
+            finding_candidate: CompletedFindingCandidate::Acknowledged(retained_candidate),
+            ..
+        }) if retained_candidate == candidate
+    ));
+    let wrong_candidate_content = ContentId::for_bytes(
+        ObjectKind::Finding,
+        CampaignRecordKind::FindingCandidateBundle.schema_version(),
+        b"wrong acknowledged candidate",
+    );
+    let wrong_candidate = FindingCandidateBundleId::parse(&format!(
+        "crucible.campaign.finding-candidate-bundle@{wrong_candidate_content}"
+    ))
+    .expect("wrong candidate identity");
+    assert_eq!(
+        acknowledge_incorporated_finding_candidate(
+            &repository,
+            &mut restarted,
+            &campaign,
+            key,
+            execution,
+            observation,
+            publication.finding,
+            wrong_candidate,
+        )
+        .expect("wrong candidate is a stable non-current result"),
+        FindingCandidateRetentionOutcome::NotCurrent
+    );
+
+    drop(restarted);
+    drop(repository);
+    drop(refs);
+    drop(blobs);
+
+    let blobs = Arc::new(DirectoryBlobBackend::new(
+        "incorporated-finding-gc",
+        &blob_root,
+    ));
+    let refs = Arc::new(DirectoryRefBackend::new(&ref_root));
+    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    let mut replayed_ledger =
+        DirectoryAssignmentLedger::open(&ledger_root).expect("restart after release");
+    let replayed = incorporate_and_acknowledge_finding_candidate(
+        &repository,
+        &mut replayed_ledger,
+        &campaign,
+        expected_snapshot,
+        key,
+        execution,
+        observation,
+        candidate,
+    )
+    .expect("replay incorporated and acknowledged candidate");
+    assert!(replayed.publication().replayed);
+    assert!(matches!(
+        replayed.acknowledgement(),
+        FindingCandidateRetentionOutcome::AlreadyReleased(_)
+    ));
+
+    let expected_candidate_closure = repository
+        .authenticated_closure_ids([candidate.content_id()])
+        .expect("authenticate candidate closure");
+    let orphan_bytes = b"unreachable incorporated-finding neighbor".to_vec();
+    let orphan = ContentId::for_bytes(ObjectKind::Trace, 1, &orphan_bytes);
+    blobs
+        .put_if_absent(orphan, &BlobHandle::from_bytes(orphan_bytes))
+        .expect("store orphan");
+    let graph = hash("crucible.test.incorporated-finding-gc-graph.v1", 0x76);
+    let physical = CampaignGcRawPhysicalStore::new("incorporated-finding-gc", blobs.as_ref())
+        .expect("physical store");
+    let prepared = plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut replayed_ledger,
+        None,
+        None,
+        graph,
+        &[physical],
+    )
+    .expect("plan after candidate acknowledgement");
+    assert!(
+        !prepared
+            .roots()
+            .iter()
+            .any(|root| root == candidate.content_id())
+    );
+    let journal_root = tempfile::tempdir().expect("GC journal directory");
+    let (mut journal, _) =
+        DirectoryCampaignGcJournal::create(journal_root.path().join("journal"), &prepared)
+            .expect("create post-acknowledgement GC journal");
+    apply_single_host_campaign_gc(
+        &mut journal,
+        CampaignGcApplySources::new(&repository, refs.as_ref(), &mut replayed_ledger, None, None),
+        graph,
+        &[physical],
+    )
+    .expect("apply post-acknowledgement GC");
+    assert!(!blobs.contains(orphan).expect("orphan deleted"));
+    for object in expected_candidate_closure {
+        assert!(
+            blobs
+                .contains(object)
+                .expect("incorporated candidate closure retained")
+        );
+    }
+}
+
+#[test]
+fn pending_finding_restart_publishes_observation_before_finding_and_release() {
+    const CAMPAIGN: &str = "pending-finding-gc-fixture";
+
+    let repository = CampaignRepository::new(
+        Arc::new(MemoryBlobBackend::new(
+            "pending-finding-restart",
+            64 * 1024 * 1024,
+        )),
+        Arc::new(MemoryRefBackend::new()),
+    );
+    let (lineage, attempt, observation, candidate) =
+        publish_pending_finding_fixture_with_observation(&repository, false);
+    let request = pending_finding_request(lineage, attempt);
+    let key = AttemptExecutionKey::new(lineage, attempt);
+    let execution = ExecutionId::from_bytes([0x66; 16]).expect("execution");
+    let completed = AttemptRuntimeState::Completed {
+        execution_basis: request.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
+        daemon_epoch: request.daemon_epoch(),
+        execution,
+        observation,
+        finding_candidate: CompletedFindingCandidate::Pending(candidate),
+    };
+    let mut ledger = MemoryAssignmentLedger::default();
+    assert_eq!(
+        ledger
+            .compare_exchange_attempt(key, None, Some(completed))
+            .expect("retain pending restart candidate"),
+        AttemptStateCas::Advanced
+    );
+
+    let campaign = CampaignName::new(CAMPAIGN).expect("campaign name");
+    let summary = reconcile_pending_finding_candidates(&repository, &mut ledger, &campaign)
+        .expect("restart publishes the complete observation and finding handoff");
+    assert_eq!(summary.pending(), 1);
+    assert_eq!(summary.remaining(), 0);
+    assert_eq!(summary.released(), 1);
+    assert_eq!(summary.replayed_publications(), 0);
+    assert_eq!(summary.not_current(), 0);
+    assert!(matches!(
+        ledger
+            .load_attempt(key)
+            .expect("load reconciled restart completion"),
+        Some(AttemptRuntimeState::Completed {
+            finding_candidate: CompletedFindingCandidate::Acknowledged(retained),
+            ..
+        }) if retained == candidate
+    ));
+
+    let current = repository
+        .head(CAMPAIGN)
+        .expect("reconciled campaign head")
+        .snapshot_id();
+    let replayed = repository
+        .incorporate_finding_candidate_bundle(CAMPAIGN, current, candidate)
+        .expect("replay restart-incorporated finding");
+    assert!(replayed.replayed);
+    repository
+        .authenticate_current_finding_candidate_incorporation(
+            &campaign,
+            replayed.finding,
+            candidate,
+        )
+        .expect("finding and candidate are retained by the current head");
+}
+
+#[test]
+fn finding_acknowledgement_and_gc_follow_directory_ref_before_ledger_lock_order() {
+    const CAMPAIGN: &str = "pending-finding-gc-fixture";
+
+    let storage = tempfile::tempdir().expect("lock-order storage");
+    let blobs = Arc::new(DirectoryBlobBackend::new(
+        "finding-lock-order",
+        storage.path().join("blobs"),
+    ));
+    let refs = Arc::new(LockOrderDirectoryRefs::new(storage.path().join("refs")));
+    let repository = Arc::new(CampaignRepository::new(blobs.clone(), refs.clone()));
+    let (lineage, attempt, observation, candidate) = publish_pending_finding_fixture(&repository);
+    let expected_snapshot = repository
+        .head(CAMPAIGN)
+        .expect("observation-owning head")
+        .snapshot_id();
+    let publication = repository
+        .incorporate_finding_candidate_bundle(CAMPAIGN, expected_snapshot, candidate)
+        .expect("incorporate lock-order candidate");
+    let campaign = CampaignName::new(CAMPAIGN).expect("campaign name");
+    let request = pending_finding_request(lineage, attempt);
+    let key = AttemptExecutionKey::new(lineage, attempt);
+    let execution = ExecutionId::from_bytes([0x66; 16]).expect("execution");
+    let completed = AttemptRuntimeState::Completed {
+        execution_basis: request.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
+        daemon_epoch: request.daemon_epoch(),
+        execution,
+        observation,
+        finding_candidate: CompletedFindingCandidate::Pending(candidate),
+    };
+    let mut directory_ledger =
+        DirectoryAssignmentLedger::open(storage.path().join("ledger")).expect("directory ledger");
+    assert_eq!(
+        directory_ledger
+            .compare_exchange_attempt(key, None, Some(completed))
+            .expect("retain lock-order candidate"),
+        AttemptStateCas::Advanced
+    );
+
+    let (ledger_requested_tx, ledger_requested_rx) = mpsc::channel();
+    let shared_ledger = LockOrderDirectoryLedger {
+        inner: Arc::new(Mutex::new(directory_ledger)),
+        gate: Arc::new(Mutex::new(())),
+        acquisition_requested: ledger_requested_tx,
+    };
+    let gate = shared_ledger.gate.clone();
+    let blocker = gate.lock().expect("block ledger acquisition");
+    let (publication_requested_tx, publication_requested_rx) = mpsc::channel();
+    let (inventory_acquired_tx, inventory_acquired_rx) = mpsc::channel();
+    refs.arm(publication_requested_tx, inventory_acquired_tx);
+
+    let (gc_done_tx, gc_done_rx) = mpsc::channel();
+    let gc_repository = repository.clone();
+    let gc_refs = refs.clone();
+    let gc_blobs = blobs.clone();
+    let mut gc_ledger = shared_ledger.clone();
+    let gc_thread = thread::spawn(move || {
+        let physical = CampaignGcRawPhysicalStore::new("finding-lock-order", gc_blobs.as_ref())
+            .expect("lock-order physical store");
+        plan_single_host_campaign_gc(
+            &gc_repository,
+            gc_refs.as_ref(),
+            &mut gc_ledger,
+            None,
+            None,
+            hash("crucible.test.finding-lock-order.v1", 0x77),
+            &[physical],
+        )
+        .expect("plan lock-order GC");
+        gc_done_tx.send(()).expect("signal GC completion");
+    });
+    inventory_acquired_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("GC acquires directory ref inventory first");
+    ledger_requested_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("GC requests ledger after ref inventory");
+
+    let (ack_done_tx, ack_done_rx) = mpsc::channel();
+    let ack_repository = repository.clone();
+    let mut ack_ledger = shared_ledger;
+    let ack_thread = thread::spawn(move || {
+        let outcome = acknowledge_incorporated_finding_candidate(
+            &ack_repository,
+            &mut ack_ledger,
+            &campaign,
+            key,
+            execution,
+            observation,
+            publication.finding,
+            candidate,
+        )
+        .expect("acknowledge after concurrent GC");
+        assert!(matches!(
+            outcome,
+            FindingCandidateRetentionOutcome::Released(_)
+        ));
+        ack_done_tx
+            .send(())
+            .expect("signal acknowledgement completion");
+    });
+    publication_requested_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("acknowledgement requests publication guard");
+    assert_eq!(ledger_requested_rx.try_recv(), Err(TryRecvError::Empty));
+
+    drop(blocker);
+    gc_done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("GC completes after ledger release");
+    ack_done_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("acknowledgement completes after GC releases refs");
+    gc_thread.join().expect("join GC thread");
+    ack_thread.join().expect("join acknowledgement thread");
+}
+
+#[test]
+fn completed_status_and_control_fail_closed_on_missing_candidate_descendant() {
+    let storage = tempfile::tempdir().expect("missing candidate storage");
+    let blobs = Arc::new(DirectoryBlobBackend::new(
+        "missing-candidate-descendant",
+        storage.path().join("blobs"),
+    ));
+    let refs = Arc::new(DirectoryRefBackend::new(storage.path().join("refs")));
+    let repository = Arc::new(CampaignRepository::new(blobs.clone(), refs));
+    let (lineage, attempt, observation, candidate) = publish_pending_finding_fixture(&repository);
+    let request = pending_finding_request(lineage, attempt);
+    let execution = ExecutionId::from_bytes([0x67; 16]).expect("execution");
+    let completed = AttemptRuntimeState::Completed {
+        execution_basis: request.execution_basis_digest(),
+        origin: AttemptExecutionOrigin::Initial,
+        daemon_epoch: request.daemon_epoch(),
+        execution,
+        observation,
+        finding_candidate: CompletedFindingCandidate::Pending(candidate),
+    };
+    let mut ledger = MemoryAssignmentLedger::default();
+    assert_eq!(
+        ledger
+            .compare_exchange_attempt(
+                AttemptExecutionKey::new(lineage, attempt),
+                None,
+                Some(completed),
+            )
+            .expect("retain missing candidate fixture"),
+        AttemptStateCas::Advanced
+    );
+
+    let lineage_record = repository
+        .load_lineage(lineage)
+        .expect("load candidate lineage");
+    let admission = RepositoryAttemptAdmission::new(
+        Arc::clone(&repository),
+        ExecutorCompatibilityProfile::from_lineage(&lineage_record),
+    );
+    let mut supervisor = LocalExecutorSupervisor::new(
+        ledger,
+        admission,
+        request.daemon_epoch(),
+        ExecutorCapacity::new(1, 1, 4096, 8192, 64).expect("executor capacity"),
+    );
+    let status = GetAttemptExecutionRequest::new(&request, execution).expect("status request");
+    let completed_status = ExecutorStatusService::get_attempt_execution(&mut supervisor, &status)
+        .expect("complete candidate status");
+    assert_eq!(
+        completed_status.disposition(),
+        GetAttemptExecutionDisposition::Completed { observation }
+    );
+    assert_eq!(completed_status.finding_candidate(), Some(candidate));
+    let checkpoint =
+        CheckpointAttemptExecutionRequest::new(&request, execution).expect("checkpoint request");
+    let completed_checkpoint =
+        ExecutorControlService::checkpoint_attempt_execution(&mut supervisor, &checkpoint)
+            .expect("complete candidate checkpoint response");
+    assert_eq!(
+        completed_checkpoint.disposition(),
+        CheckpointAttemptExecutionDisposition::AlreadyCompleted { observation }
+    );
+    assert_eq!(completed_checkpoint.finding_candidate(), Some(candidate));
+    let cancel = CancelAttemptExecutionRequest::new(&request, execution).expect("cancel request");
+    let completed_cancel =
+        ExecutorControlService::cancel_attempt_execution(&mut supervisor, &cancel)
+            .expect("complete candidate cancel response");
+    assert_eq!(
+        completed_cancel.disposition(),
+        CancelAttemptExecutionDisposition::AlreadyCompleted { observation }
+    );
+    assert_eq!(completed_cancel.finding_candidate(), Some(candidate));
+
+    let bundle = repository
+        .load_finding_candidate_bundle(candidate)
+        .expect("load complete candidate before fault");
+    let mut inventory = blobs
+        .acquire_inventory_fence()
+        .expect("acquire candidate fault inventory");
+    assert_eq!(
+        inventory
+            .delete_candidate(bundle.minimized().content_id())
+            .expect("delete one candidate descendant"),
+        PlannedDeleteDisposition::Deleted
+    );
+    drop(inventory);
+
+    assert!(matches!(
+        ExecutorStatusService::get_attempt_execution(&mut supervisor, &status),
+        Err(LocalExecutorError::CompletionValidation {
+            reason: CompletionValidationFailure::UnavailableInput,
+        })
+    ));
+    assert!(matches!(
+        ExecutorControlService::checkpoint_attempt_execution(&mut supervisor, &checkpoint),
+        Err(LocalExecutorError::CompletionValidation {
+            reason: CompletionValidationFailure::UnavailableInput,
+        })
+    ));
+    assert!(matches!(
+        ExecutorControlService::cancel_attempt_execution(&mut supervisor, &cancel),
+        Err(LocalExecutorError::CompletionValidation {
+            reason: CompletionValidationFailure::UnavailableInput,
+        })
+    ));
+}
+
+#[test]
+fn hot_checkpoint_fallback_is_a_fenced_gc_root_until_durable_removal() {
+    let blobs = Arc::new(MemoryBlobBackend::new("hot-gc-primary", 8 * 1024 * 1024));
+    let refs = Arc::new(MemoryRefBackend::new());
+    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    let scenario = ScenarioDefId::from_hash(hash("crucible.test.gc.hot-scenario.v1", 1));
+    let scenario_artifact = repository
+        .publish_scenario_artifact(scenario, 1, b"hot scenario".to_vec())
+        .expect("publish hot scenario");
+    let configuration =
+        ConfigurationId::from_hash(hash("crucible.test.gc.hot-configuration.v1", 2));
+    let configuration_artifact = repository
+        .publish_configuration_artifact(
+            scenario,
+            scenario_artifact,
+            configuration,
+            1,
+            b"hot configuration".to_vec(),
+        )
+        .expect("publish hot configuration");
+
+    let lineage_digest = hash("crucible.test.gc.hot-lineage.v1", 3);
+    let lineage = CampaignLineageId::parse(&format!(
+        "crucible.campaign.lineage@campaign-fact.1.{}",
+        lineage_digest.to_hex()
+    ))
+    .expect("lineage");
+    let record = HotCheckpointFallbackRecord::new(
+        HotCheckpointPoolKey::new(
+            lineage,
+            ContentHash::from_bytes(b"hot configuration semantic basis"),
+        ),
+        HotCheckpointFallback::Thin(configuration_artifact),
+    );
+    let slot = HotCheckpointFallbackSlot::new(7).expect("fallback slot");
+    let hot = MemoryHotCheckpointFallbackRetentionStore::new();
+    assert_eq!(
+        hot.compare_exchange_fallback(slot, None, Some(record))
+            .expect("retain fallback"),
+        HotCheckpointFallbackRetentionCas::Advanced
+    );
+
+    let mut ledger = MemoryAssignmentLedger::default();
+    let graph = hash("crucible.test.gc.hot-store-graph.v1", 4);
+    let physical = CampaignGcRawPhysicalStore::new("hot-gc-primary", blobs.as_ref())
+        .expect("hot physical store");
+    let retained = plan_single_host_campaign_gc_with_physical_and_hot_checkpoints(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        CampaignGcHotCheckpointRoots::new(&hot),
+        graph,
+        &[physical],
+    )
+    .expect("plan with retained fallback");
+    assert_eq!(
+        retained.roots().iter().collect::<Vec<_>>(),
+        vec![configuration_artifact.content_id()]
+    );
+    assert!(retained.candidates().is_empty());
+
+    assert_eq!(
+        hot.compare_exchange_fallback(slot, Some(record), None)
+            .expect("release fallback"),
+        HotCheckpointFallbackRetentionCas::Advanced
+    );
+    let released = plan_single_host_campaign_gc_with_physical_and_hot_checkpoints(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        CampaignGcHotCheckpointRoots::new(&hot),
+        graph,
+        &[physical],
+    )
+    .expect("plan after fallback release");
+    assert_eq!(released.candidates().len(), 2);
+
+    let temp = tempfile::TempDir::new().expect("temporary hot GC journal");
+    let (mut journal, disposition) =
+        DirectoryCampaignGcJournal::create(temp.path().join("journal"), &released)
+            .expect("create hot GC journal");
+    assert_eq!(disposition, CampaignGcJournalCreateDisposition::Created);
+    assert_eq!(
+        hot.compare_exchange_fallback(slot, None, Some(record))
+            .expect("restore fallback before apply"),
+        HotCheckpointFallbackRetentionCas::Advanced
+    );
+    assert!(matches!(
+        apply_single_host_campaign_gc(
+            &mut journal,
+            CampaignGcApplySources::new_with_hot_checkpoints(
+                &repository,
+                refs.as_ref(),
+                &mut ledger,
+                None,
+                None,
+                Some(&hot),
+            ),
+            graph,
+            &[physical],
+        ),
+        Err(CampaignGcApplyError::RootSetChanged)
+    ));
+    assert_eq!(blobs.object_count().expect("object count"), 2);
+}
+
+#[test]
+fn direct_transfer_root_promoted_to_hot_root_revalidates_its_closure() {
+    let blobs = Arc::new(MemoryBlobBackend::new(
+        "combined-hot-transfer-gc",
+        1024 * 1024,
+    ));
+    let refs = Arc::new(MemoryRefBackend::new());
+    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+
+    let transfer_scenario =
+        ScenarioDefId::from_hash(hash("crucible.test.gc.transfer-scenario.v1", 1));
+    let transfer_scenario_artifact = repository
+        .publish_scenario_artifact(transfer_scenario, 1, b"transfer scenario".to_vec())
+        .expect("transfer scenario artifact");
+    let transfer_configuration =
+        ConfigurationId::from_hash(hash("crucible.test.gc.transfer-configuration.v1", 2));
+    let transfer_configuration_artifact = repository
+        .publish_configuration_artifact(
+            transfer_scenario,
+            transfer_scenario_artifact,
+            transfer_configuration,
+            1,
+            b"transfer configuration".to_vec(),
+        )
+        .expect("transfer configuration artifact");
+
+    let hot_scenario = ScenarioDefId::from_hash(hash("crucible.test.gc.hot-scenario.v1", 3));
+    let hot_scenario_artifact = repository
+        .publish_scenario_artifact(hot_scenario, 1, b"hot scenario".to_vec())
+        .expect("hot scenario artifact");
+    let hot_configuration =
+        ConfigurationId::from_hash(hash("crucible.test.gc.hot-configuration.v1", 4));
+    let hot_configuration_artifact = repository
+        .publish_configuration_artifact(
+            hot_scenario,
+            hot_scenario_artifact,
+            hot_configuration,
+            1,
+            b"hot configuration".to_vec(),
+        )
+        .expect("hot configuration artifact");
+
+    let hot = MemoryHotCheckpointFallbackRetentionStore::new();
+    let lineage = CampaignLineageId::parse(&format!(
+        "crucible.campaign.lineage@campaign-fact.1.{}",
+        hash("crucible.test.gc.combined-lineage.v1", 5).to_hex()
+    ))
+    .expect("lineage");
+    let hot_record = HotCheckpointFallbackRecord::new(
+        HotCheckpointPoolKey::new(
+            lineage,
+            ContentHash::from_bytes(b"combined hot semantic basis"),
+        ),
+        HotCheckpointFallback::Thin(hot_configuration_artifact),
+    );
+    let hot_slot = HotCheckpointFallbackSlot::new(8).expect("hot slot");
+    assert_eq!(
+        hot.compare_exchange_fallback(hot_slot, None, Some(hot_record))
+            .expect("install hot fallback"),
+        HotCheckpointFallbackRetentionCas::Advanced
+    );
+
+    let transfers = TestCampaignTransferRoots::default();
+    let transfer_length = blobs
+        .read(transfer_configuration_artifact.content_id(), None)
+        .expect("transfer root")
+        .logical_length();
+    transfers.replace(vec![CampaignTransferRetentionRoot::new(
+        transfer_configuration_artifact.content_id(),
+        transfer_length,
+    )]);
+    let mut ledger = MemoryAssignmentLedger::default();
+    let graph = hash("crucible.test.gc.combined-store-graph.v1", 6);
+    let physical = CampaignGcRawPhysicalStore::new("combined-hot-transfer-gc", blobs.as_ref())
+        .expect("physical store");
+    let prepared = plan_single_host_campaign_gc_with_physical_and_hot_checkpoints(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
+        graph,
+        &[physical],
+    )
+    .expect("plan combined hot and transfer roots");
+    assert!(
+        prepared
+            .roots()
+            .iter()
+            .any(|root| root == hot_configuration_artifact.content_id())
+    );
+    assert!(
+        prepared
+            .roots()
+            .iter()
+            .any(|root| root == transfer_configuration_artifact.content_id())
+    );
+    assert!(
+        prepared
+            .candidates()
+            .iter()
+            .any(|candidate| candidate.id() == transfer_scenario_artifact.content_id())
+    );
+
+    let temporary = tempfile::tempdir().expect("temporary GC journal");
+    let (mut journal, _) =
+        DirectoryCampaignGcJournal::create(temporary.path().join("journal"), &prepared)
+            .expect("create GC journal");
+    transfers.replace(Vec::new());
+    let promoted_record = HotCheckpointFallbackRecord::new(
+        HotCheckpointPoolKey::new(
+            lineage,
+            ContentHash::from_bytes(b"promoted transfer semantic basis"),
+        ),
+        HotCheckpointFallback::Thin(transfer_configuration_artifact),
+    );
+    assert_eq!(
+        hot.compare_exchange_fallback(
+            HotCheckpointFallbackSlot::new(9).expect("promotion slot"),
+            None,
+            Some(promoted_record),
+        )
+        .expect("promote transfer root"),
+        HotCheckpointFallbackRetentionCas::Advanced
+    );
+
+    assert!(matches!(
+        apply_single_host_campaign_gc(
+            &mut journal,
+            CampaignGcApplySources::new_with_retention_sources(
+                &repository,
+                refs.as_ref(),
+                &mut ledger,
+                None,
+                CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers).into_sources(),
+            ),
+            graph,
+            &[physical],
+        ),
+        Err(CampaignGcApplyError::CandidateBecameReachable { id })
+            if id == transfer_scenario_artifact.content_id()
+    ));
+    assert!(
+        blobs
+            .contains(transfer_scenario_artifact.content_id())
+            .expect("promoted child retained")
+    );
+}
+
+#[test]
+fn policy_aware_gc_retains_write_back_staging_until_durable_journal_completion() {
+    let temp = tempfile::TempDir::new().expect("temporary write-back GC root");
+    let staging_root = temp.path().join("staging");
+    let destination_root = temp.path().join("destination");
+    let graph_root = StoreNodeId::new("write-back").expect("root node");
+    let staging = StoreNodeId::new("staging").expect("staging node");
+    let destination = StoreNodeId::new("destination").expect("destination node");
+    let config = StoreGraphConfig {
+        root: graph_root.clone(),
+        admitted_kinds: BTreeSet::from([ObjectKind::ExactManifest, ObjectKind::Trace]),
+        nodes: BTreeMap::from([
+            (
+                graph_root,
+                StoreNodeSpec::WriteBack {
+                    staging: staging.clone(),
+                    destination: destination.clone(),
+                    journal_root: temp.path().join("write-back-journal"),
+                    maximum_pending_objects: 8,
+                    maximum_pending_bytes: 1024 * 1024,
+                },
+            ),
+            (
+                staging.clone(),
+                StoreNodeSpec::Directory {
+                    root: staging_root.clone(),
+                },
+            ),
+            (
+                destination.clone(),
+                StoreNodeSpec::Directory {
+                    root: destination_root.clone(),
+                },
+            ),
+        ]),
+    };
+    let (graph, admin) = StoreGraph::build_with_admin(config.clone()).expect("write-back graph");
+    let graph = Arc::new(graph);
+    let refs = Arc::new(MemoryRefBackend::new());
+    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+    let live_bytes = b"reachable write-back staging object".to_vec();
+    let live_id = ContentId::for_bytes(ObjectKind::Trace, 1, &live_bytes);
+    graph
+        .put_if_absent(live_id, &BlobHandle::from_bytes(live_bytes.clone()))
+        .expect("stage live object");
+    let parent = ContentEnvelope::new(
+        "crucible.test.gc-write-back-parent",
+        1,
+        BTreeSet::from([ContentChild::new("trace", live_id).expect("write-back child reference")]),
+        b"reachable write-back parent".to_vec(),
+    )
+    .expect("write-back parent envelope");
+    let parent_bytes = parent.canonical_bytes();
+    let parent_id = parent.content_id(ObjectKind::ExactManifest);
+    graph
+        .put_if_absent(parent_id, &BlobHandle::from_bytes(parent_bytes.clone()))
+        .expect("stage retained parent");
+    refs.compare_exchange(
+        &RefName::new("retained/write-back-live").expect("retained ref"),
+        None,
+        parent_id,
+    )
+    .expect("publish retained root");
+
+    // Simulate a crash after destination publication but before the pending
+    // journal entry is durably completed.
+    let destination_store = DirectoryBlobBackend::new("destination-check", &destination_root);
+    destination_store
+        .put_if_absent(live_id, &BlobHandle::from_bytes(live_bytes.clone()))
+        .expect("publish child destination before journal completion");
+    destination_store
+        .put_if_absent(parent_id, &BlobHandle::from_bytes(parent_bytes))
+        .expect("publish parent destination before journal completion");
+    assert_eq!(
+        destination_store
+            .read(live_id, None)
+            .expect("read published destination")
+            .read_all(1024)
+            .expect("authenticate published destination"),
+        live_bytes
+    );
+    drop(repository);
+    drop(graph);
+    drop(admin);
+
+    let (graph, admin) = StoreGraph::build_with_admin(config).expect("restart write-back graph");
+    let graph = Arc::new(graph);
+    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+
+    let mut ledger = MemoryAssignmentLedger::default();
+    let before_transfer = super::plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        Some(graph.as_ref()),
+        None,
+        &admin,
+    )
+    .expect("plan recovered pending transfer with destination present");
+    assert_eq!(before_transfer.reachable_cache_candidates(), 0);
+    assert!(before_transfer.candidates().is_empty());
+
+    let flush = graph
+        .flush_write_back(2)
+        .expect("complete destination transfer");
+    assert_eq!(flush.completed(), 2);
+    assert_eq!(flush.pending(), 0);
+
+    let prepared = super::plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        Some(graph.as_ref()),
+        None,
+        &admin,
+    )
+    .expect("plan completed staging eviction");
+    assert_eq!(prepared.reachable_cache_candidates(), 2);
+    let candidate = prepared
+        .candidates()
+        .iter()
+        .find(|candidate| candidate.id() == live_id)
+        .expect("staging child candidate");
+    assert_eq!(candidate.backend(), staging.as_str());
+    assert!(matches!(
+        candidate.reason(),
+        CampaignGcCandidateReason::ReachableCache { required_backend }
+            if required_backend == destination.as_str()
+    ));
+
+    let journal_root = temp.path().join("gc-journal");
+    let (mut journal, _) =
+        DirectoryCampaignGcJournal::create(journal_root, &prepared).expect("create GC journal");
+    graph
+        .put_if_absent(live_id, &BlobHandle::from_bytes(live_bytes.clone()))
+        .expect("reintroduce pending ownership after planning");
+    let error = super::apply_single_host_campaign_gc(
+        &mut journal,
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        Some(graph.as_ref()),
+        None,
+        &admin,
+    )
+    .expect_err("reject cache eviction while write-back is pending again");
+    assert!(matches!(
+        error,
+        CampaignGcApplyError::CandidateBecameWriteBackPending { backend, id }
+            if backend == staging.as_str() && id == live_id
+    ));
+    assert_eq!(journal.phase(), CampaignGcJournalPhase::Planned);
+    let staging_store = DirectoryBlobBackend::new("staging-check", &staging_root);
+    assert!(
+        staging_store
+            .contains(live_id)
+            .expect("pending staging retained")
+    );
+
+    let flush = graph
+        .flush_write_back(1)
+        .expect("complete reintroduced destination transfer");
+    assert_eq!(flush.completed(), 1);
+    assert_eq!(flush.pending(), 0);
+    drop(journal);
+
+    let prepared = super::plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        Some(graph.as_ref()),
+        None,
+        &admin,
+    )
+    .expect("replan after durable journal completion");
+    assert_eq!(prepared.reachable_cache_candidates(), 2);
+    let (mut journal, _) = DirectoryCampaignGcJournal::create(
+        temp.path().join("gc-journal-after-completion"),
+        &prepared,
+    )
+    .expect("create post-completion GC journal");
+    let report = super::apply_single_host_campaign_gc(
+        &mut journal,
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        Some(graph.as_ref()),
+        None,
+        &admin,
+    )
+    .expect("apply staging eviction");
+    assert_eq!(report.reachable_cache_candidates(), 2);
+
+    assert!(!staging_store.contains(live_id).expect("staging absence"));
+    assert!(
+        destination_store
+            .contains(live_id)
+            .expect("destination presence")
+    );
+    assert_eq!(
+        graph
+            .read(live_id, None)
+            .expect("read retained destination")
+            .read_all(1024)
+            .expect("authenticate retained destination"),
+        live_bytes
+    );
+}
+
+#[test]
+fn write_back_journal_roots_are_planned_and_revalidated_before_gc_deletion() {
+    let temp = tempfile::TempDir::new().expect("temporary write-back GC root");
+    let staging_root = temp.path().join("staging");
+    let archive_root = temp.path().join("archive");
+    let journal_root = temp.path().join("write-back-journal");
+    let write_back = StoreNodeId::new("write-back").expect("write-back node");
+    let staging = StoreNodeId::new("staging").expect("staging node");
+    let archive = StoreNodeId::new("archive").expect("archive node");
+    let graph = Arc::new(
+        StoreGraph::build(StoreGraphConfig {
+            root: write_back.clone(),
+            admitted_kinds: BTreeSet::from([ObjectKind::Trace]),
+            nodes: BTreeMap::from([
+                (
+                    write_back,
+                    StoreNodeSpec::WriteBack {
+                        staging: staging.clone(),
+                        destination: archive.clone(),
+                        journal_root,
+                        maximum_pending_objects: 16,
+                        maximum_pending_bytes: 1024 * 1024,
+                    },
+                ),
+                (
+                    staging,
+                    StoreNodeSpec::Directory {
+                        root: staging_root.clone(),
+                    },
+                ),
+                (
+                    archive,
+                    StoreNodeSpec::Directory {
+                        root: archive_root.clone(),
+                    },
+                ),
+            ]),
+        })
+        .expect("write-back store graph"),
+    );
+    let refs = Arc::new(MemoryRefBackend::new());
+    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+
+    let pending = ContentEnvelope::new(
+        "crucible.test.gc-write-back-pending",
+        1,
+        BTreeSet::new(),
+        b"pending".to_vec(),
+    )
+    .expect("pending envelope");
+    let pending_id = pending.content_id(ObjectKind::Trace);
+    graph
+        .put_if_absent(
+            pending_id,
+            &BlobHandle::from_bytes(pending.canonical_bytes()),
+        )
+        .expect("stage pending root");
+    let orphan = ContentEnvelope::new(
+        "crucible.test.gc-write-back-orphan",
+        1,
+        BTreeSet::new(),
+        b"orphan".to_vec(),
+    )
+    .expect("orphan envelope");
+    let orphan_id = orphan.content_id(ObjectKind::Trace);
+    let staging_leaf = DirectoryBlobBackend::new("staging", &staging_root);
+    staging_leaf
+        .put_if_absent(orphan_id, &BlobHandle::from_bytes(orphan.canonical_bytes()))
+        .expect("store unjournaled orphan");
+    let archive_leaf = DirectoryBlobBackend::new("archive", &archive_root);
+
+    let mut ledger = MemoryAssignmentLedger::default();
+    let archive_physical =
+        CampaignGcRawPhysicalStore::new("archive", &archive_leaf).expect("archive physical");
+    let staging_physical =
+        CampaignGcRawPhysicalStore::new("staging", &staging_leaf).expect("staging physical");
+    let graph_id = hash("crucible.test.gc.write-back-store-graph.v1", 0x44);
+    let prepared = plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        Some(graph.as_ref()),
+        None,
+        graph_id,
+        &[archive_physical, staging_physical],
+    )
+    .expect("plan write-back-aware GC");
+    assert_eq!(
+        prepared.roots().iter().collect::<Vec<_>>(),
+        vec![pending_id]
+    );
+    assert_eq!(prepared.candidates().len(), 1);
+    assert_eq!(
+        prepared.candidates().iter().next().expect("orphan").id(),
+        orphan_id
+    );
+
+    let (mut gc_journal, _) =
+        DirectoryCampaignGcJournal::create(temp.path().join("gc-journal"), &prepared)
+            .expect("create GC journal");
+    assert_eq!(
+        graph
+            .flush_write_back(1)
+            .expect("complete pending transfer")
+            .completed(),
+        1
+    );
+    assert!(matches!(
+        apply_single_host_campaign_gc(
+            &mut gc_journal,
+            CampaignGcApplySources::new(
+                &repository,
+                refs.as_ref(),
+                &mut ledger,
+                Some(graph.as_ref()),
+                None,
+            ),
+            graph_id,
+            &[archive_physical, staging_physical],
+        ),
+        Err(CampaignGcApplyError::RootSetChanged)
+    ));
+    assert!(staging_leaf.contains(orphan_id).expect("orphan retained"));
+    assert_eq!(gc_journal.phase(), CampaignGcJournalPhase::Planned);
+}
+
+#[test]
+fn write_back_roots_retain_exact_pending_objects_and_refs_retain_closures() {
+    let temp = tempfile::TempDir::new().expect("temporary exact write-back GC root");
+    let staging_root = temp.path().join("staging");
+    let destination_root = temp.path().join("destination");
+    let write_back = StoreNodeId::new("write-back").expect("write-back node");
+    let staging = StoreNodeId::new("staging").expect("staging node");
+    let destination = StoreNodeId::new("destination").expect("destination node");
+    let graph = Arc::new(
+        StoreGraph::build(StoreGraphConfig {
+            root: write_back.clone(),
+            admitted_kinds: BTreeSet::from([
+                ObjectKind::ExactManifest,
+                ObjectKind::MerkleNode,
+                ObjectKind::Trace,
+            ]),
+            nodes: BTreeMap::from([
+                (
+                    write_back,
+                    StoreNodeSpec::WriteBack {
+                        staging: staging.clone(),
+                        destination: destination.clone(),
+                        journal_root: temp.path().join("write-back-journal"),
+                        maximum_pending_objects: 64,
+                        maximum_pending_bytes: 1024 * 1024,
+                    },
+                ),
+                (
+                    staging,
+                    StoreNodeSpec::Directory {
+                        root: staging_root.clone(),
+                    },
+                ),
+                (
+                    destination,
+                    StoreNodeSpec::Directory {
+                        root: destination_root.clone(),
+                    },
+                ),
+            ]),
+        })
+        .expect("exact write-back graph"),
+    );
+    let refs = Arc::new(MemoryRefBackend::new());
+    let repository = CampaignRepository::new(graph.clone(), refs.clone());
+
+    let pending_child = ContentEnvelope::new(
+        "crucible.test.gc-write-back-child",
+        1,
+        BTreeSet::new(),
+        b"pending child".to_vec(),
+    )
+    .expect("pending child envelope");
+    let pending_child_id = pending_child.content_id(ObjectKind::ExactManifest);
+    graph
+        .put_if_absent(
+            pending_child_id,
+            &BlobHandle::from_bytes(pending_child.canonical_bytes()),
+        )
+        .expect("stage pending child");
+    let pending_parent = ContentEnvelope::new(
+        "crucible.test.gc-write-back-parent",
+        1,
+        BTreeSet::from([
+            ContentChild::new("child", pending_child_id).expect("pending child reference")
+        ]),
+        b"pending parent".to_vec(),
+    )
+    .expect("pending parent envelope");
+    let pending_parent_id = pending_parent.content_id(ObjectKind::ExactManifest);
+    graph
+        .put_if_absent(
+            pending_parent_id,
+            &BlobHandle::from_bytes(pending_parent.canonical_bytes()),
+        )
+        .expect("stage pending parent");
+
+    let merkle = MerkleMap::new(graph.clone());
+    let empty = merkle.empty().expect("empty pending map");
+    let first_key = hash("crucible.test.gc.write-back-merkle-key", 0);
+    let first_nibble = first_key.as_bytes()[0] >> 4;
+    let second_key = (1_u8..=u8::MAX)
+        .map(|value| hash("crucible.test.gc.write-back-merkle-key", value))
+        .find(|key| key.as_bytes()[0] >> 4 == first_nibble && *key != first_key)
+        .expect("second key sharing the first trie nibble");
+    let first_root = merkle
+        .insert(empty.content_id(), first_key, pending_parent_id)
+        .expect("insert first pending map value");
+    let final_root = merkle
+        .insert(first_root.content_id(), second_key, pending_child_id)
+        .expect("insert second pending map value");
+
+    let staging_leaf = DirectoryBlobBackend::new("staging", &staging_root);
+    let retained_child = ContentEnvelope::new(
+        "crucible.test.gc-write-back-ref-child",
+        1,
+        BTreeSet::new(),
+        b"retained ref child".to_vec(),
+    )
+    .expect("retained child envelope");
+    let retained_child_id = retained_child.content_id(ObjectKind::ExactManifest);
+    staging_leaf
+        .put_if_absent(
+            retained_child_id,
+            &BlobHandle::from_bytes(retained_child.canonical_bytes()),
+        )
+        .expect("store retained ref child outside journal");
+    let retained_parent = ContentEnvelope::new(
+        "crucible.test.gc-write-back-ref-parent",
+        1,
+        BTreeSet::from([
+            ContentChild::new("child", retained_child_id).expect("retained child reference")
+        ]),
+        b"retained ref parent".to_vec(),
+    )
+    .expect("retained parent envelope");
+    let retained_parent_id = retained_parent.content_id(ObjectKind::ExactManifest);
+    staging_leaf
+        .put_if_absent(
+            retained_parent_id,
+            &BlobHandle::from_bytes(retained_parent.canonical_bytes()),
+        )
+        .expect("store retained ref parent outside journal");
+    refs.compare_exchange(
+        &RefName::new("retained/write-back-closure").expect("retained ref name"),
+        None,
+        retained_parent_id,
+    )
+    .expect("publish retained closure");
+
+    let transfer_only = ContentEnvelope::new(
+        "crucible.test.gc-write-back-transfer",
+        1,
+        BTreeSet::new(),
+        b"active transfer root".to_vec(),
+    )
+    .expect("transfer envelope");
+    let transfer_id = transfer_only.content_id(ObjectKind::ExactManifest);
+    staging_leaf
+        .put_if_absent(
+            transfer_id,
+            &BlobHandle::from_bytes(transfer_only.canonical_bytes()),
+        )
+        .expect("store active transfer root");
+    let transfers = TestCampaignTransferRoots::default();
+    transfers.replace(vec![CampaignTransferRetentionRoot::new(
+        transfer_id,
+        transfer_only.canonical_bytes().len() as u64,
+    )]);
+    let hot = MemoryHotCheckpointFallbackRetentionStore::new();
+
+    let orphan = ContentEnvelope::new(
+        "crucible.test.gc-write-back-exact-orphan",
+        1,
+        BTreeSet::new(),
+        b"orphan".to_vec(),
+    )
+    .expect("orphan envelope");
+    let orphan_id = orphan.content_id(ObjectKind::Trace);
+    staging_leaf
+        .put_if_absent(orphan_id, &BlobHandle::from_bytes(orphan.canonical_bytes()))
+        .expect("store orphan outside journal");
+
+    let destination_leaf = DirectoryBlobBackend::new("destination", &destination_root);
+    let destination_physical = CampaignGcRawPhysicalStore::new("destination", &destination_leaf)
+        .expect("destination physical");
+    let staging_physical =
+        CampaignGcRawPhysicalStore::new("staging", &staging_leaf).expect("staging physical");
+    let graph_id = hash("crucible.test.gc.write-back-exact-store-graph.v1", 0x51);
+    let mut ledger = MemoryAssignmentLedger::default();
+    let prepared = plan_single_host_campaign_gc_with_physical_and_hot_checkpoints(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        Some(graph.as_ref()),
+        CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
+        graph_id,
+        &[destination_physical, staging_physical],
+    )
+    .expect("plan exact write-back roots");
+
+    let roots = prepared.roots().iter().collect::<BTreeSet<_>>();
+    assert!(roots.contains(&pending_child_id));
+    assert!(roots.contains(&pending_parent_id));
+    assert!(roots.contains(&retained_parent_id));
+    assert!(roots.contains(&transfer_id));
+    assert!(roots.contains(&final_root.content_id()));
+    assert!(
+        roots
+            .iter()
+            .any(|id| { id.kind() == ObjectKind::MerkleNode && *id != final_root.content_id() })
+    );
+    assert_eq!(
+        prepared
+            .candidates()
+            .iter()
+            .map(CampaignGcCandidate::id)
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([orphan_id])
+    );
+
+    let (mut stale_journal, _) =
+        DirectoryCampaignGcJournal::create(temp.path().join("gc-journal"), &prepared)
+            .expect("create exact write-back GC journal");
+    refs.compare_exchange(
+        &RefName::new("retained/write-back-second").expect("second retained ref name"),
+        None,
+        retained_child_id,
+    )
+    .expect("publish second ref after planning");
+    assert!(matches!(
+        apply_single_host_campaign_gc(
+            &mut stale_journal,
+            CampaignGcApplySources::new_with_retention_sources(
+                &repository,
+                refs.as_ref(),
+                &mut ledger,
+                Some(graph.as_ref()),
+                CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers).into_sources(),
+            ),
+            graph_id,
+            &[destination_physical, staging_physical],
+        ),
+        Err(CampaignGcApplyError::RefBasisChanged)
+    ));
+    assert_eq!(stale_journal.phase(), CampaignGcJournalPhase::Planned);
+    assert!(
+        staging_leaf
+            .contains(orphan_id)
+            .expect("orphan retained after stale plan")
+    );
+
+    let fresh = plan_single_host_campaign_gc_with_physical_and_hot_checkpoints(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        Some(graph.as_ref()),
+        CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers),
+        graph_id,
+        &[destination_physical, staging_physical],
+    )
+    .expect("replan after second ref publication");
+    let (mut journal, _) =
+        DirectoryCampaignGcJournal::create(temp.path().join("fresh-gc-journal"), &fresh)
+            .expect("create fresh write-back GC journal");
+    let applied = apply_single_host_campaign_gc(
+        &mut journal,
+        CampaignGcApplySources::new_with_retention_sources(
+            &repository,
+            refs.as_ref(),
+            &mut ledger,
+            Some(graph.as_ref()),
+            CampaignGcHotCheckpointRoots::with_transfers(&hot, &transfers).into_sources(),
+        ),
+        graph_id,
+        &[destination_physical, staging_physical],
+    )
+    .expect("apply exact write-back roots");
+    assert_eq!(applied.status(), CampaignGcApplyStatus::Applied);
+    assert!(!staging_leaf.contains(orphan_id).expect("orphan deleted"));
+    assert!(
+        staging_leaf
+            .contains(retained_child_id)
+            .expect("ref child retained")
+    );
+    assert_eq!(
+        refs.read_ref(&RefName::new("retained/write-back-second").expect("second ref"))
+            .expect("read second ref"),
+        Some(retained_child_id)
+    );
+    assert!(
+        staging_leaf
+            .contains(pending_parent_id)
+            .expect("pending parent retained")
+    );
+    assert!(
+        staging_leaf
+            .contains(transfer_id)
+            .expect("transfer root retained")
+    );
+}
+
+#[test]
+fn external_journal_reopens_exact_plan_and_durable_phase() {
+    let prepared = journal_plan_fixture(0x41);
+    let different = journal_plan_fixture(0x42);
+    let temp = tempfile::TempDir::new().expect("temporary journal parent");
+    let root = temp.path().join("gc-journal");
+
+    let (mut journal, disposition) =
+        DirectoryCampaignGcJournal::create(&root, &prepared).expect("create journal");
+    assert_eq!(disposition, CampaignGcJournalCreateDisposition::Created);
+    assert_eq!(journal.phase(), CampaignGcJournalPhase::Planned);
+    assert_eq!(journal.plan(), prepared.plan());
+    assert_eq!(journal.roots(), prepared.roots());
+    assert_eq!(journal.candidates(), prepared.candidates());
+    assert_eq!(
+        journal.begin_apply().expect("begin apply"),
+        CampaignGcJournalTransition::Advanced
+    );
+    assert_eq!(
+        journal.begin_apply().expect("repeat begin apply"),
+        CampaignGcJournalTransition::Existing
+    );
+    let retained_lock_description = journal
+        .duplicate_lock_for_test()
+        .expect("duplicate GC journal lock descriptor");
+    drop(journal);
+
+    let lock_probe = super::journal::try_acquire_lock_for_test(&root)
+        .expect("logical owner drop releases retained GC lock description");
+    drop(lock_probe);
+    let mut reopened = DirectoryCampaignGcJournal::open(&root).expect("reopen applying journal");
+    assert_eq!(reopened.phase(), CampaignGcJournalPhase::Applying);
+    assert_eq!(
+        reopened.mark_complete().expect("complete apply"),
+        CampaignGcJournalTransition::Advanced
+    );
+    assert_eq!(
+        reopened.mark_complete().expect("repeat completion"),
+        CampaignGcJournalTransition::Existing
+    );
+    drop(reopened);
+
+    let (complete, disposition) =
+        DirectoryCampaignGcJournal::create(&root, &prepared).expect("reopen exact journal");
+    assert_eq!(disposition, CampaignGcJournalCreateDisposition::Existing);
+    assert_eq!(complete.phase(), CampaignGcJournalPhase::Complete);
+    drop(complete);
+    assert!(matches!(
+        DirectoryCampaignGcJournal::create(&root, &different),
+        Err(CampaignGcJournalError::PlanMismatch)
+    ));
+    drop(retained_lock_description);
+}
+
+#[test]
+fn external_journal_cancellation_is_durable_idempotent_and_terminal() {
+    let prepared = journal_plan_fixture(0x43);
+    let temp = tempfile::TempDir::new().expect("temporary journal parent");
+    let root = temp.path().join("gc-journal");
+
+    let (mut journal, _) =
+        DirectoryCampaignGcJournal::create(&root, &prepared).expect("create journal");
+    assert_eq!(
+        journal.cancel().expect("cancel planned journal"),
+        CampaignGcJournalTransition::Advanced
+    );
+    assert_eq!(
+        journal.cancel().expect("repeat cancellation"),
+        CampaignGcJournalTransition::Existing
+    );
+    assert_eq!(journal.phase(), CampaignGcJournalPhase::Cancelled);
+    assert!(matches!(
+        journal.begin_apply(),
+        Err(CampaignGcJournalError::InvalidTransition)
+    ));
+    drop(journal);
+
+    let mut reopened = DirectoryCampaignGcJournal::open(&root).expect("reopen cancelled journal");
+    assert_eq!(reopened.phase(), CampaignGcJournalPhase::Cancelled);
+    assert_eq!(
+        reopened.cancel().expect("replay durable cancellation"),
+        CampaignGcJournalTransition::Existing
+    );
+    assert!(matches!(
+        reopened.mark_complete(),
+        Err(CampaignGcJournalError::InvalidTransition)
+    ));
+}
+
+#[test]
+fn external_journal_rejects_incomplete_and_corrupt_state() {
+    let temp = tempfile::TempDir::new().expect("temporary journal parent");
+    let incomplete = temp.path().join("incomplete");
+    fs::create_dir(&incomplete).expect("create incomplete journal");
+    assert!(matches!(
+        DirectoryCampaignGcJournal::open(&incomplete),
+        Err(CampaignGcJournalError::Incomplete)
+    ));
+
+    let prepared = journal_plan_fixture(0x51);
+    let complete = temp.path().join("complete");
+    let (journal, _) =
+        DirectoryCampaignGcJournal::create(&complete, &prepared).expect("create complete journal");
+    drop(journal);
+    fs::write(complete.join("state-v1"), b"corrupt").expect("corrupt journal state");
+    assert!(matches!(
+        DirectoryCampaignGcJournal::open(&complete),
+        Err(CampaignGcJournalError::InvalidState)
+    ));
+}
+
+#[test]
+fn apply_revalidates_every_basis_then_deletes_and_completes() {
+    let mut fixture = apply_fixture(2);
+    let temp = tempfile::TempDir::new().expect("temporary journal parent");
+    let (mut journal, _) =
+        DirectoryCampaignGcJournal::create(temp.path().join("journal"), &fixture.prepared)
+            .expect("create apply journal");
+    let physical = CampaignGcRawPhysicalStore::new("apply-primary", fixture.blobs.as_ref())
+        .expect("apply physical store");
+
+    let report = apply_single_host_campaign_gc(
+        &mut journal,
+        CampaignGcApplySources::new(
+            &fixture.repository,
+            fixture.refs.as_ref(),
+            &mut fixture.ledger,
+            None,
+            None,
+        ),
+        fixture.graph,
+        &[physical],
+    )
+    .expect("apply exact plan");
+    assert_eq!(report.status(), CampaignGcApplyStatus::Applied);
+    assert_eq!(report.candidates(), 2);
+    assert_eq!(
+        report.logical_bytes(),
+        fixture.prepared.candidates().logical_bytes()
+    );
+    assert_eq!(fixture.blobs.object_count().expect("object count"), 0);
+    assert_eq!(journal.phase(), CampaignGcJournalPhase::Complete);
+
+    let replay = apply_single_host_campaign_gc(
+        &mut journal,
+        CampaignGcApplySources::new(
+            &fixture.repository,
+            fixture.refs.as_ref(),
+            &mut fixture.ledger,
+            None,
+            None,
+        ),
+        fixture.graph,
+        &[physical],
+    )
+    .expect("replay completed apply");
+    assert_eq!(replay.status(), CampaignGcApplyStatus::AlreadyComplete);
+    assert_eq!(replay.candidates(), report.candidates());
+}
+
+struct ApplyFixture {
+    blobs: Arc<MemoryBlobBackend>,
+    refs: Arc<MemoryRefBackend>,
+    repository: CampaignRepository,
+    ledger: MemoryAssignmentLedger,
+    prepared: CampaignGcPreparedPlan,
+    graph: CampaignHash,
+}
+
+fn apply_fixture(orphan_count: u8) -> ApplyFixture {
+    let blobs = Arc::new(MemoryBlobBackend::new("apply-primary", 1024 * 1024));
+    let refs = Arc::new(MemoryRefBackend::new());
+    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    for index in 0..orphan_count {
+        let bytes = [index; 8];
+        let id = ContentId::for_bytes(ObjectKind::Trace, 1, &bytes);
+        blobs
+            .put_if_absent(id, &BlobHandle::from_bytes(bytes))
+            .expect("store apply orphan");
+    }
+    let mut ledger = MemoryAssignmentLedger::default();
+    let graph = hash("crucible.test.gc.apply-store-graph.v1", 0x61);
+    let physical = CampaignGcRawPhysicalStore::new("apply-primary", blobs.as_ref())
+        .expect("apply fixture physical store");
+    let prepared = plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        graph,
+        &[physical],
+    )
+    .expect("prepare apply fixture");
+    ApplyFixture {
+        blobs,
+        refs,
+        repository,
+        ledger,
+        prepared,
+        graph,
+    }
+}
+
+fn journal_plan_fixture(graph_byte: u8) -> CampaignGcPreparedPlan {
+    let blobs = Arc::new(MemoryBlobBackend::new("journal-primary", 1024 * 1024));
+    let refs = Arc::new(MemoryRefBackend::new());
+    let repository = CampaignRepository::new(blobs.clone(), refs.clone());
+    let orphan_bytes = b"journal orphan";
+    let orphan = ContentId::for_bytes(ObjectKind::Trace, 1, orphan_bytes);
+    blobs
+        .put_if_absent(orphan, &BlobHandle::from_bytes(orphan_bytes))
+        .expect("store journal orphan");
+    let mut ledger = MemoryAssignmentLedger::default();
+    let physical = CampaignGcRawPhysicalStore::new("journal-primary", blobs.as_ref())
+        .expect("journal physical store");
+    plan_single_host_campaign_gc(
+        &repository,
+        refs.as_ref(),
+        &mut ledger,
+        None,
+        None,
+        hash("crucible.test.gc.journal-store-graph.v1", graph_byte),
+        &[physical],
+    )
+    .expect("prepare journal plan")
+}
+
+fn content_id_manifest_order(left: &ContentId, right: &ContentId) -> std::cmp::Ordering {
+    left.kind()
+        .as_str()
+        .cmp(right.kind().as_str())
+        .then_with(|| left.schema_version().cmp(&right.schema_version()))
+        .then_with(|| left.digest().cmp(&right.digest()))
+}
+mod apply_and_restart;

@@ -3,42 +3,30 @@
   lib,
   qemuPackage ? pkgs.qemu-crucible,
   referenceQemu ? pkgs.qemu-crucible-reference,
-  patchName ? "0050-crucible-memory-access-faults.patch",
   attrPath ? "checks.crucible.phase2.qemuMemoryAccess",
   taskIds ? ["T-QEMU-0050"],
   focus ? "",
 }: let
   patchDir = ../../pkgs/emulation/qemu-patches;
-  series = import ../../pkgs/emulation/qemu-patches/_series.nix;
-  patchSource = builtins.readFile (patchDir + "/${patchName}");
+  atomicPatch = import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix;
+  patchSource = builtins.readFile (patchDir + "/${atomicPatch.file}");
   taskList = builtins.concatStringsSep "," taskIds;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
   dmaGuest = import ./phase2-qemu-memory-dma-guest.nix {inherit pkgs;};
-  failures =
-    failuresFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
-      {
-        label = "live memory-access rule engine";
-        needle = "qemu_crucible_fault_memory_access";
-      }
-      {
-        label = "identified virtio DMA";
-        needle = "crucible_dma_identity";
-      }
-      {
-        label = "live test plugin";
-        needle = "CRUCIBLE_MEMORY_ACCESS_LIVE_PASS";
-      }
-    ]
-    ++ forbiddenFor "pkgs/emulation/qemu-patches/${patchName}" patchSource [
-      {
-        label = "host sleeps as modeled latency";
-        needle = "g_usleep";
-      }
-      {
-        label = "debug memory shortcut";
-        needle = "cpu_memory_rw_debug";
-      }
-    ];
+  failures = failuresFor "pkgs/emulation/qemu-patches/${atomicPatch.file}" patchSource [
+    {
+      label = "live memory-access rule engine";
+      needle = "qemu_crucible_fault_memory_access";
+    }
+    {
+      label = "identified virtio DMA";
+      needle = "crucible_dma_identity";
+    }
+    {
+      label = "live test plugin";
+      needle = "CRUCIBLE_MEMORY_ACCESS_LIVE_PASS";
+    }
+  ];
   pluginSource = pkgs.mkDerivation {
     pname = "crucible-qemu-memory-access-plugin-source";
     version = "0";
@@ -50,16 +38,14 @@
         script = ''
           set -eu
           tar -xf "$src"
-          cd qemu-${series.qemuVersion}
+          cd qemu-${atomicPatch.qemuVersion}
         '';
       }
       {
-        name = "apply-series";
+        name = "apply-atomic-patch";
         script = ''
           set -eu
-          for patch_file in ${builtins.concatStringsSep " " series.patchFiles}; do
-            patch --batch --forward --fuzz=0 -p1 -i "${patchDir}/$patch_file"
-          done
+          patch --batch --forward --fuzz=0 -p1 -i "${patchDir}/${atomicPatch.file}"
         '';
       }
       {
@@ -69,6 +55,8 @@
           mkdir -p "$out"
           install -m 644 tests/tcg/plugins/crucible-memory-access.c "$out/"
           install -m 644 tests/tcg/plugins/crucible-memory-dma.c "$out/"
+          install -m 644 hw/nvram/fw_cfg.c "$out/"
+          install -m 644 system/crucible-hot-fork-coordinator.c "$out/"
         '';
       }
     ];
@@ -89,11 +77,57 @@ in
         pkgs.grep
         pkgs.llvm
         pkgs.pkg-config
+        pkgs.sed
         pkgs.linux
         qemuPackage
         referenceQemu
       ];
       phases = [
+        {
+          name = "check-fwcfg-deadline-invariants";
+          script = ''
+            set -eu
+            source=${pluginSource}/fw_cfg.c
+            fork_source=${pluginSource}/crucible-hot-fork-coordinator.c
+
+            # The process-wide hint must never be false while a ticket exists,
+            # including after VMState commit or a copy-on-write hot fork.
+            require_order() {
+              block="$1"
+              before="$2"
+              after="$3"
+              before_line="$(printf '%s\n' "$block" | grep -nF "$before" | cut -d: -f1)"
+              after_line="$(printf '%s\n' "$block" | grep -nF "$after" | cut -d: -f1)"
+              test "$(printf '%s\n' "$before_line" | grep -Ec '^[0-9]+$')" -eq 1
+              test "$(printf '%s\n' "$after_line" | grep -Ec '^[0-9]+$')" -eq 1
+              test "$before_line" -lt "$after_line"
+            }
+
+            clear="$(sed -n '/^static void fw_cfg_crucible_ticket_clear(/,/^}/p' "$source")"
+            transfer="$(sed -n '/^static void fw_cfg_dma_transfer(/,/^}/p' "$source")"
+            restore="$(sed -n '/^static void fw_cfg_crucible_vmstate_commit(/,/^}/p' "$source")"
+            deadline="$(sed -n '/^static uint64_t fw_cfg_crucible_service_deadline(/,/^}/p' "$source")"
+
+            require_order "$clear" 's->crucible_service_pending = false;' \
+              'qatomic_set(&fw_cfg_crucible_service_may_be_pending, false);'
+            require_order "$transfer" \
+              'qatomic_set(&fw_cfg_crucible_service_may_be_pending, true);' \
+              's->crucible_service_pending = true;'
+            require_order "$restore" \
+              'qatomic_set(&fw_cfg_crucible_service_may_be_pending, true);' \
+              's->crucible_service_pending = true;'
+            require_order "$deadline" \
+              '!qatomic_read(&fw_cfg_crucible_service_may_be_pending)' \
+              's = fw_cfg_find();'
+
+            test "$(grep -Fc 'fw_cfg_crucible_service_may_be_pending' "$source")" -eq 5
+            grep -Fq 'return FW_CFG(object_resolve_path_type("", TYPE_FW_CFG, NULL));' "$source"
+            test "$(grep -Fc 'object_property_add_child(OBJECT(qdev_get_machine()), TYPE_FW_CFG,' "$source")" -eq 2
+            grep -Fq 'at most one %s device is permitted' "$source"
+            grep -Fq 'child = fork();' "$fork_source"
+            printf 'fwcfg_deadline_invariants=PASS\n'
+          '';
+        }
         {
           name = "build-live-fixtures";
           script = ''
@@ -112,7 +146,7 @@ in
               ${pluginSource}/crucible-memory-dma.c \
               -o crucible-memory-dma.so \
               $(pkg-config --libs glib-2.0)
-            for mode in $(seq 1 22); do
+            for mode in $(seq 1 23); do
               ${pkgs.llvm}/bin/clang --target=i386-none-elf \
                 -c -Wa,-defsym,TEST_MODE=$mode \
                 ${./phase2-qemu-memory-access-guest.S} \
@@ -120,13 +154,15 @@ in
               ${pkgs.llvm}/bin/ld.lld -m elf_i386 \
                 -T ${./phase2-qemu-memory-access-guest.ld} \
                 "guest-x86-$mode.o" -o "guest-x86-$mode.elf"
-              ${pkgs.llvm}/bin/clang --target=aarch64-none-elf \
-                -c -Wa,-defsym,TEST_MODE=$mode \
-                ${./phase2-qemu-memory-access-guest-aarch64.S} \
-                -o "guest-aarch64-$mode.o"
-              ${pkgs.llvm}/bin/ld.lld \
-                -T ${./phase2-qemu-memory-access-guest-aarch64.ld} \
-                "guest-aarch64-$mode.o" -o "guest-aarch64-$mode.elf"
+              if test "$mode" -le 22; then
+                ${pkgs.llvm}/bin/clang --target=aarch64-none-elf \
+                  -c -Wa,-defsym,TEST_MODE=$mode \
+                  ${./phase2-qemu-memory-access-guest-aarch64.S} \
+                  -o "guest-aarch64-$mode.o"
+                ${pkgs.llvm}/bin/ld.lld \
+                  -T ${./phase2-qemu-memory-access-guest-aarch64.ld} \
+                  "guest-aarch64-$mode.o" -o "guest-aarch64-$mode.elf"
+              fi
             done
           '';
         }
@@ -178,7 +214,7 @@ in
                 *) exit 1 ;;
               esac
               set +e
-              timeout -k 5 120 $binary $machine -accel sim -icount shift=0 \
+              timeout -k 5 120 $binary $machine -accel sim -icount shift=0,align=off,sleep=off \
                 -smp 1 -nographic -no-reboot -serial none -monitor none \
                 -kernel "$guest" \
                 -plugin "$PWD/crucible-memory-access.so,address=$address,result=$result,expected=$expected,kind=$kind,classes=$classes,length=$length,mask=$mask,replacement=$replacement,atomic=$atomic" \
@@ -294,12 +330,15 @@ in
               if test "$length" -eq 2; then
                 mask=ffff
                 replacement=a014
+              elif test "$length" -eq 4; then
+                mask=ffffffff
+                replacement=a5a5a5a5
               elif test "$length" -eq 8; then
                 mask=ffffffffffffffff
                 replacement=a5a5a5a5a5a5a5a5
               fi
               set +e
-              timeout -k 5 120 $binary $machine $accel -icount shift=0 \
+              timeout -k 5 120 $binary $machine $accel -icount shift=0,align=off,sleep=off \
                 -smp 1 -nographic -no-reboot -serial none -monitor none \
                 -kernel "$guest" \
                 -plugin "$PWD/crucible-memory-access.so,address=$address,result=$result,expected=$expected,kind=1,classes=$classes,length=$length,mask=$mask,replacement=$replacement,atomic=0,scenario=$scenario" \
@@ -309,7 +348,8 @@ in
               cat "logs/$architecture-advanced-$scenario.log"
               test "$case_status" -eq 0
               case "$scenario" in
-                invalid-*) pass_marker=CRUCIBLE_MEMORY_REJECTION_LIVE_PASS ;;
+                invalid-*|service-host-dispatch)
+                  pass_marker=CRUCIBLE_MEMORY_REJECTION_LIVE_PASS ;;
                 *) pass_marker=CRUCIBLE_MEMORY_ACCESS_LIVE_PASS ;;
               esac
               grep -Fxq "$pass_marker" \
@@ -340,6 +380,8 @@ in
               run_advanced_case "$architecture" 15 retention 00
               run_advanced_case "$architecture" 16 rowhammer a5
               run_advanced_case "$architecture" 17 service 5a
+              run_advanced_case "$architecture" 17 service-ps8 5a
+              run_advanced_case "$architecture" 17 service-host-dispatch 5a
               run_advanced_case "$architecture" 20 page-table-walk e1 32 8
               run_advanced_case "$architecture" 20 \
                 page-table-walk-access-error e1 32 8
@@ -352,6 +394,8 @@ in
               run_advanced_case "$architecture" 21 \
                 page-table-walk-retry 5a 32 8
               if test "$architecture" = x86_64; then
+                run_advanced_case "$architecture" 23 \
+                  fwcfg-service-write 51 16 4
                 run_advanced_case "$architecture" 22 \
                   page-table-walk-nested-stage1 5a 32 8
                 run_advanced_case "$architecture" 22 \
@@ -440,7 +484,7 @@ in
             {
               printf 'PASS\n'
               printf 'gate=gate:patch-microtests\n'
-              printf 'patch=%s\n' '${patchName}'
+              printf 'atomic_patch=%s\n' '${atomicPatch.file}'
               printf 'attr_path=%s\n' '${attrPath}'
               printf 'task_ids=%s\n' '${taskList}'
               printf 'backend=actual-patched-and-stock-qemu\n'

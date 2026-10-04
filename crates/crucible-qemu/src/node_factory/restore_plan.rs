@@ -1,136 +1,177 @@
-//! Authorized VMState restore plans for warm QEMU node realization.
+//! Descriptor-backed QEMU restore plans for restored node realization.
 
 use crucible::{Checkpoint, ContentHash};
+use rustix::fs::{SealFlags, fcntl_get_seals};
+use std::io;
+use std::os::fd::BorrowedFd;
 
-use crate::{
-    QemuBakedGenesisRestoreAdmission, QemuHostIoCheckpoint, QemuLoadvmCommandAuthorization,
-    QemuLoadvmRealizationAdmission, QemuNodeContinuationCheckpoint, QemuVmSnapshot,
-};
+use crate::realization::QemuBakedGenesisRestoreAdmission;
+use crate::{QemuHostIoCheckpoint, QemuNodeContinuationCheckpoint, QemuVmSnapshot};
 
-/// Authorized VMState restore inputs for warm QEMU node realization.
-pub struct QemuNodeRestorePlan<'a> {
+pub(crate) struct QemuNodeCheckpointAssertion<'a> {
     pub(super) checkpoint: &'a Checkpoint,
-    pub(super) authorization: QemuLoadvmCommandAuthorization,
-    pub(super) admission: QemuNodeRestoreAdmission,
-    pub(super) host_io_checkpoint: Option<&'a QemuHostIoCheckpoint>,
-    pub(super) node_continuation: Option<&'a QemuNodeContinuationCheckpoint>,
 }
 
-/// Admission proof for the VMState snapshot restored before node assembly.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum QemuNodeRestoreAdmission {
-    /// The trusted baked ready-point snapshot produced by QEMU genesis baking.
-    BakedGenesis {
-        /// World identity whose baked genesis was validated.
-        world_id: ContentHash,
-    },
-    /// A replay-oracle-validated exact fat checkpoint runtime.
-    ReplayOracle(QemuLoadvmRealizationAdmission),
-    /// A complete snapshot emitted by a live scheduler-facing node.
-    CapturedExact {
-        /// Identity shared by VMState and both Apache continuation halves.
-        execution_binding: ContentHash,
-    },
-    /// A probe-only exact snapshot that cannot be admitted as a runtime.
-    ReplayOracleProbe,
+/// Opaque checkpoint assertion for one replay-oracle exact probe.
+pub(crate) struct QemuGuardedProbeRestoreAdmission<'a>(QemuNodeCheckpointAssertion<'a>);
+
+/// Opaque checkpoint assertion for one fresh baked-genesis replay launch.
+pub(crate) struct QemuGuardedBakedRestoreAdmission<'a>(QemuNodeCheckpointAssertion<'a>);
+
+/// Complete exact descriptor-backed plan accepted by the QEMU node factory.
+pub(crate) struct QemuNodeRestorePlan<'a> {
+    pub(super) checkpoint: &'a Checkpoint,
+    pub(super) host_io_checkpoint: &'a QemuHostIoCheckpoint,
+    pub(super) node_continuation: &'a QemuNodeContinuationCheckpoint,
+    pub(super) exact_checkpoint: QemuExactCheckpointRestorePlan<'a>,
+}
+
+/// Borrowed descriptor set for an exact direct-plus-delta restore.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct QemuExactCheckpointRestoreDescriptors<'a> {
+    pub(super) ram: &'a [BorrowedFd<'a>],
+    pub(super) device: BorrowedFd<'a>,
+    pub(super) cancellation: BorrowedFd<'a>,
+}
+
+impl<'a> QemuExactCheckpointRestoreDescriptors<'a> {
+    /// Binds ordered RAM, final device-state, and cancellation descriptors.
+    #[must_use]
+    pub(crate) const fn new(
+        ram: &'a [BorrowedFd<'a>],
+        device: BorrowedFd<'a>,
+        cancellation: BorrowedFd<'a>,
+    ) -> Self {
+        Self {
+            ram,
+            device,
+            cancellation,
+        }
+    }
+
+    pub(crate) fn validate_immutable(self, expected_ram_layers: usize) -> Result<(), io::Error> {
+        validate_immutable_restore_inputs(self.ram, self.device, expected_ram_layers)
+    }
+}
+
+pub(crate) fn validate_immutable_restore_inputs(
+    ram: &[BorrowedFd<'_>],
+    device: BorrowedFd<'_>,
+    expected_ram_layers: usize,
+) -> Result<(), io::Error> {
+    if expected_ram_layers != ram.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "RAM layer descriptor count differs from the restore request",
+        ));
+    }
+    let required = SealFlags::SEAL | SealFlags::SHRINK | SealFlags::GROW | SealFlags::WRITE;
+    for descriptor in ram.iter().copied().chain(std::iter::once(device)) {
+        if !fcntl_get_seals(descriptor)?.contains(required) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "exact checkpoint restore input is not an immutable sealed file",
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(super) struct QemuExactCheckpointRestorePlan<'a> {
+    pub(super) request: &'a crate::QmpCheckpointRestoreRequest,
+    pub(super) descriptors: QemuExactCheckpointRestoreDescriptors<'a>,
+    pub(super) topology: ContentHash,
+}
+
+impl<'a> QemuNodeCheckpointAssertion<'a> {
+    #[must_use]
+    const fn snapshot_completeness_probe(checkpoint: &'a Checkpoint) -> Self {
+        Self { checkpoint }
+    }
+
+    #[must_use]
+    fn baked_genesis(admission: QemuBakedGenesisRestoreAdmission<'a>) -> Self {
+        Self {
+            checkpoint: admission.checkpoint(),
+        }
+    }
+
+    pub(crate) const fn checkpoint(&self) -> &'a Checkpoint {
+        self.checkpoint
+    }
+}
+
+impl<'a> QemuGuardedProbeRestoreAdmission<'a> {
+    pub(crate) const fn new(checkpoint: &'a Checkpoint) -> Self {
+        Self(QemuNodeCheckpointAssertion::snapshot_completeness_probe(
+            checkpoint,
+        ))
+    }
+
+    pub(crate) const fn checkpoint(&self) -> &'a Checkpoint {
+        self.0.checkpoint()
+    }
+}
+
+impl<'a> QemuGuardedBakedRestoreAdmission<'a> {
+    pub(crate) fn new(admission: QemuBakedGenesisRestoreAdmission<'a>) -> Self {
+        Self(QemuNodeCheckpointAssertion::baked_genesis(admission))
+    }
+
+    pub(crate) const fn into_basis(self) -> QemuNodeCheckpointAssertion<'a> {
+        self.0
+    }
 }
 
 impl<'a> QemuNodeRestorePlan<'a> {
-    /// Creates a warm-restore plan for an exact fat checkpoint.
-    #[must_use]
-    pub const fn new(
-        checkpoint: &'a Checkpoint,
-        authorization: QemuLoadvmCommandAuthorization,
-        admission: QemuLoadvmRealizationAdmission,
+    pub(crate) fn exact_checkpoint(
+        snapshot: &'a QemuVmSnapshot,
+        request: &'a crate::QmpCheckpointRestoreRequest,
+        descriptors: QemuExactCheckpointRestoreDescriptors<'a>,
+        topology: ContentHash,
     ) -> Self {
-        Self {
-            checkpoint,
-            authorization,
-            admission: QemuNodeRestoreAdmission::ReplayOracle(admission),
-            host_io_checkpoint: None,
-            node_continuation: None,
-        }
-    }
-
-    /// Creates a probe-only warm-restore plan for snapshot-completeness comparison.
-    #[must_use]
-    pub const fn snapshot_completeness_probe(
-        checkpoint: &'a Checkpoint,
-        authorization: QemuLoadvmCommandAuthorization,
-    ) -> Self {
-        Self {
-            checkpoint,
-            authorization,
-            admission: QemuNodeRestoreAdmission::ReplayOracleProbe,
-            host_io_checkpoint: None,
-            node_continuation: None,
-        }
-    }
-
-    /// Creates a warm-restore plan for a baked genesis ready-point checkpoint.
-    #[must_use]
-    pub fn baked_genesis(admission: QemuBakedGenesisRestoreAdmission<'a>) -> Self {
-        Self {
-            checkpoint: admission.checkpoint(),
-            authorization: admission.authorization(),
-            admission: QemuNodeRestoreAdmission::BakedGenesis {
-                world_id: admission.world_id(),
-            },
-            host_io_checkpoint: None,
-            node_continuation: None,
-        }
-    }
-
-    pub(crate) fn captured_exact(snapshot: &'a QemuVmSnapshot) -> Self {
         Self {
             checkpoint: snapshot.checkpoint(),
-            authorization: crate::QemuExactSnapshotPolicy::production().authorize_loadvm_runtime(),
-            admission: QemuNodeRestoreAdmission::CapturedExact {
-                execution_binding: snapshot.checkpoint().id,
+            host_io_checkpoint: snapshot.host_io(),
+            node_continuation: snapshot.node_continuation(),
+            exact_checkpoint: QemuExactCheckpointRestorePlan {
+                request,
+                descriptors,
+                topology,
             },
-            host_io_checkpoint: Some(snapshot.host_io()),
-            node_continuation: Some(snapshot.node_continuation()),
         }
     }
 
-    /// Pairs the QEMU VMState restore with its complete host-I/O continuation.
-    #[must_use]
-    pub const fn with_host_io_checkpoint(mut self, checkpoint: &'a QemuHostIoCheckpoint) -> Self {
-        self.host_io_checkpoint = Some(checkpoint);
-        self
+    pub(crate) const fn exact_checkpoint_cancellation(&self) -> BorrowedFd<'a> {
+        self.exact_checkpoint.descriptors.cancellation
     }
 
-    /// Pairs the restore with scheduler-facing node continuation state.
-    #[must_use]
-    pub const fn with_node_continuation(
-        mut self,
-        checkpoint: &'a QemuNodeContinuationCheckpoint,
-    ) -> Self {
-        self.node_continuation = Some(checkpoint);
-        self
+    pub(crate) fn validate_immutable_descriptors(&self) -> Result<(), io::Error> {
+        self.exact_checkpoint
+            .descriptors
+            .validate_immutable(self.exact_checkpoint.request.layers().len())
     }
+}
 
-    /// Returns the checkpoint whose VMState will be restored.
-    #[must_use]
-    pub const fn checkpoint(&self) -> &'a Checkpoint {
-        self.checkpoint
-    }
+#[cfg(test)]
+mod tests {
+    use std::io::Write as _;
+    use std::os::fd::AsFd as _;
 
-    /// Returns the low-level QMP `loadvm` authorization token.
-    #[must_use]
-    pub const fn authorization(&self) -> QemuLoadvmCommandAuthorization {
-        self.authorization
-    }
+    use super::*;
 
-    /// Returns the admission proof paired with the restore authorization.
-    #[must_use]
-    pub const fn admission(&self) -> QemuNodeRestoreAdmission {
-        self.admission
-    }
+    #[test]
+    fn descriptor_validation_rejects_unsealed_device_state() -> Result<(), io::Error> {
+        let mut input = crate::QemuExactCheckpointInputMaterialization::new(1)?;
+        input.write_all(b"x")?;
+        let sealed = input.finish()?;
+        let unsealed = tempfile::tempfile()?;
+        unsealed.set_len(1)?;
+        let ram = [sealed.as_fd()];
+        let descriptors =
+            QemuExactCheckpointRestoreDescriptors::new(&ram, unsealed.as_fd(), sealed.as_fd());
 
-    /// Returns the paired host-I/O continuation, when the topology owns one.
-    #[must_use]
-    pub const fn host_io_checkpoint(&self) -> Option<&'a QemuHostIoCheckpoint> {
-        self.host_io_checkpoint
+        assert!(descriptors.validate_immutable(1).is_err());
+        Ok(())
     }
 }

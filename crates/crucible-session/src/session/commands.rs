@@ -13,19 +13,25 @@ pub type BreakpointId = u64;
 pub(super) type CommandReplySender<T> =
     Arc<Mutex<Option<oneshot::Sender<Result<T, SessionError>>>>>;
 
+type CommandReplyObservation = Arc<Mutex<Option<oneshot::Receiver<()>>>>;
+
 /// Reply channel carried by commands that return data to their caller.
 ///
 /// The reply transport is deliberately not part of command equality or hashing:
 /// it routes completion back to the caller, but it is not model state.
 pub struct CommandReply<T> {
     inner: Option<CommandReplySender<T>>,
+    observation: Option<CommandReplyObservation>,
 }
 
 impl<T> CommandReply<T> {
     /// Builds a reply wrapper that discards completions.
     #[must_use]
     pub const fn discard() -> Self {
-        Self { inner: None }
+        Self {
+            inner: None,
+            observation: None,
+        }
     }
 
     /// Builds a reply wrapper and its receiving end.
@@ -35,9 +41,32 @@ impl<T> CommandReply<T> {
         (
             Self {
                 inner: Some(Arc::new(Mutex::new(Some(sender)))),
+                observation: None,
             },
             receiver,
         )
+    }
+
+    /// Defers autonomous actor execution until the caller observes the reply.
+    ///
+    /// The caller signals the supplied channel after consuming its reply. Dropping
+    /// the signal sender also releases the actor, so canceled commands cannot
+    /// leave the actor waiting for an abandoned client. This is a local scheduling
+    /// handoff and does not alter the command result or its protocol encoding.
+    #[must_use]
+    pub fn with_observation(mut self, observed: oneshot::Receiver<()>) -> Self {
+        self.observation = Some(Arc::new(Mutex::new(Some(observed))));
+        self
+    }
+
+    pub(super) async fn wait_for_observation(&self) {
+        let receiver = self
+            .observation
+            .as_ref()
+            .and_then(|observed| observed.lock().ok()?.take());
+        if let Some(receiver) = receiver {
+            let _ = receiver.await;
+        }
     }
 
     pub(super) fn complete(&self, result: Result<T, SessionError>) {
@@ -57,6 +86,7 @@ impl<T> Clone for CommandReply<T> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
+            observation: self.observation.clone(),
         }
     }
 }

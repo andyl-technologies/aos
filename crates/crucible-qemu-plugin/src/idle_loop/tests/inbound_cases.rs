@@ -9,7 +9,7 @@ use crucible_shmem::{FrameDeliveryState, KIND_VM, RingHeader, STATUS_IDLE, STATU
 #[test]
 fn idle_loop_with_inbound_rings_does_not_consume_before_qemu_completion() {
     let slot = NodeSlot::new(KIND_VM);
-    let clock = owned_clock(10, 1);
+    let clock = owned_clock(10);
     let ring_a = RingHeader::new();
     let ring_b = RingHeader::new();
     let mut entries_a = empty_entries();
@@ -38,7 +38,7 @@ fn idle_loop_with_inbound_rings_does_not_consume_before_qemu_completion() {
 
     publish_ceiling(&slot, ceiling(10, 20));
     let mut clock = clock;
-    set_last_direct_advance_ns(-1);
+    set_last_direct_advance_tick(-1);
     let pending = expect_pending(
         PluginIdleHotLoop::complete_after_scheduler_wake_from_inbound_rings(
             &slot,
@@ -52,13 +52,13 @@ fn idle_loop_with_inbound_rings_does_not_consume_before_qemu_completion() {
         ),
     );
 
-    assert_eq!(last_direct_advance_ns(), 40);
+    assert_eq!(last_direct_advance_tick(), 20);
     assert_eq!(clock.current_icount(), 10);
     assert_eq!(ring_a.read_index(), 0);
     assert_eq!(ring_b.read_index(), 0);
     let snapshot = slot.snapshot();
     assert_eq!(snapshot.current_icount, 10);
-    assert_eq!(snapshot.current_ns, 20);
+    assert_eq!(snapshot.current_ns, 0);
     assert_eq!(snapshot.status, STATUS_IDLE);
 
     let result = PluginIdleHotLoop::complete_after_time_advance_from_inbound_rings(
@@ -93,7 +93,7 @@ fn idle_loop_with_inbound_rings_does_not_consume_before_qemu_completion() {
 #[test]
 fn idle_loop_rx_injection_waits_for_qemu_completion() {
     let slot = NodeSlot::new(KIND_VM);
-    let clock = owned_clock(10, 1);
+    let clock = owned_clock(10);
     let ring_a = RingHeader::new();
     let ring_b = RingHeader::new();
     let mut entries_a = empty_entries();
@@ -120,7 +120,7 @@ fn idle_loop_rx_injection_waits_for_qemu_completion() {
 
     publish_ceiling(&slot, ceiling(10, 20));
     let mut clock = clock;
-    set_last_direct_advance_ns(-1);
+    set_last_direct_advance_tick(-1);
     let network_rx = PluginNetworkRx::new();
     let mut rx_queue = RecordingNetworkRxQueue::for_slot(&slot);
     let pending = expect_pending(
@@ -138,8 +138,8 @@ fn idle_loop_rx_injection_waits_for_qemu_completion() {
         ),
     );
 
-    assert_eq!(last_direct_advance_ns(), 40);
-    assert!(rx_queue.direct_advance_ns_at_queue.is_empty());
+    assert_eq!(last_direct_advance_tick(), 20);
+    assert!(rx_queue.direct_advance_tick_at_queue.is_empty());
     assert!(rx_queue.slot_status_at_queue.is_empty());
     assert!(rx_queue.queued_payloads.is_empty());
     assert_eq!(ring_a.read_index(), 0);
@@ -162,7 +162,7 @@ fn idle_loop_rx_injection_waits_for_qemu_completion() {
             &mut rx_queue,
         )
         .unwrap_or_else(|error| panic!("completed idle turn should inject RX: {error}"));
-    assert_eq!(rx_queue.direct_advance_ns_at_queue, vec![40, 40, 40]);
+    assert_eq!(rx_queue.direct_advance_tick_at_queue, vec![20, 20, 20]);
     assert_eq!(
         rx_queue.slot_status_at_queue,
         vec![STATUS_IDLE, STATUS_IDLE, STATUS_IDLE]
@@ -181,7 +181,7 @@ fn idle_loop_rx_injection_waits_for_qemu_completion() {
 #[test]
 fn idle_loop_rx_delivery_failure_does_not_commit_inbound_ring_reads() {
     let slot = NodeSlot::new(KIND_VM);
-    let clock = owned_clock(10, 1);
+    let clock = owned_clock(10);
     let ring = RingHeader::new();
     let mut entries = empty_entries();
     enqueue(&ring, &mut entries, frame(20, 1, 0, b"queued"));
@@ -199,7 +199,7 @@ fn idle_loop_rx_delivery_failure_does_not_commit_inbound_ring_reads() {
 
     publish_ceiling(&slot, ceiling(10, 20));
     let mut clock = clock;
-    set_last_direct_advance_ns(-1);
+    set_last_direct_advance_tick(-1);
     let network_rx = PluginNetworkRx::new();
     let mut rx_queue = RecordingNetworkRxQueue::for_slot(&slot);
     rx_queue.delivery_error_at = Some(0);
@@ -216,7 +216,7 @@ fn idle_loop_rx_delivery_failure_does_not_commit_inbound_ring_reads() {
         ),
     );
 
-    assert_eq!(last_direct_advance_ns(), 40);
+    assert_eq!(last_direct_advance_tick(), 20);
     assert_eq!(clock.current_icount(), 10);
     assert_eq!(ring.read_index(), 0);
     assert!(rx_queue.queued_payloads.is_empty());
@@ -246,9 +246,99 @@ fn idle_loop_rx_delivery_failure_does_not_commit_inbound_ring_reads() {
 }
 
 #[test]
+fn idle_loop_rx_later_delivery_failure_keeps_only_undelivered_head() {
+    let slot = NodeSlot::new(KIND_VM);
+    let clock = owned_clock(10);
+    let ring = RingHeader::new();
+    let mut entries = empty_entries();
+    let first = frame(20, 1, 0, b"accepted");
+    let second = frame(20, 1, 1, b"failed");
+    enqueue(&ring, &mut entries, first);
+    enqueue(&ring, &mut entries, second.clone());
+    publish_ceiling(&slot, ceiling(0, 10));
+    let request = PluginIdleHotLoop::begin_idle_with_inbound_rings(
+        &slot,
+        &clock,
+        &deadline_reader(deadline_80),
+        [InboundFrameRing::new(0, &ring, &entries)],
+        None,
+    )
+    .unwrap_or_else(|error| panic!("idle begin should select inbound head: {error}"));
+
+    publish_ceiling(&slot, ceiling(10, 20));
+    let mut clock = clock;
+    let network_rx = PluginNetworkRx::new();
+    let mut rx_queue = RecordingNetworkRxQueue::for_slot(&slot);
+    rx_queue.delivery_error_at = Some(1);
+    let pending = expect_pending(
+        PluginIdleHotLoop::complete_after_scheduler_wake_from_inbound_rings_with_rx_injection(
+            &slot,
+            &mut clock,
+            &queued_idle_advance(),
+            request,
+            [InboundFrameRing::new(0, &ring, &entries)],
+            &network_rx,
+            &mut rx_queue,
+        ),
+    );
+
+    assert!(matches!(
+        PluginIdleHotLoop::complete_after_time_advance_from_inbound_rings_with_rx_injection(
+            &slot,
+            &mut clock,
+            request,
+            pending,
+            successful_completion(pending),
+            [InboundFrameRing::new(0, &ring, &entries)],
+            &network_rx,
+            &mut rx_queue,
+        ),
+        Err(IdleHotLoopError::NetworkRxInjection {
+            source: NetworkRxError::Delivery { .. }
+        })
+    ));
+    assert_eq!(rx_queue.queued_payloads, vec![b"accepted".to_vec()]);
+    assert_eq!(ring.read_index(), 1);
+    assert_eq!(
+        PluginShmemOrdering::peek_inbound_delivery_icount(&ring, &entries),
+        Ok(Some(second.delivery_icount))
+    );
+
+    rx_queue.delivery_error_at = None;
+    let retry = PluginInboundFrames::preview_deliverable_since(
+        [InboundFrameRing::new(0, &ring, &entries)],
+        20,
+        20,
+    )
+    .unwrap_or_else(|error| panic!("retry should preview only the live head: {error}"));
+    assert_eq!(retry.frames(), std::slice::from_ref(&second));
+    crate::network_rx::handle_network_rx_idle_callback_with_commit(
+        &network_rx,
+        &mut rx_queue,
+        20,
+        20,
+        retry.frames(),
+        |frame| {
+            PluginInboundFrames::commit_delivered_prefix(
+                [InboundFrameRing::new(0, &ring, &entries)],
+                20,
+                std::slice::from_ref(frame),
+            )
+            .map(|_| ())
+        },
+    )
+    .unwrap_or_else(|error| panic!("retry should deliver only the remaining head: {error}"));
+    assert_eq!(ring.read_index(), 2);
+    assert_eq!(
+        rx_queue.queued_payloads,
+        vec![b"accepted".to_vec(), b"failed".to_vec()]
+    );
+}
+
+#[test]
 fn idle_loop_rx_backpressure_marks_canonical_head_retained() {
     let slot = NodeSlot::new(KIND_VM);
-    let clock = owned_clock(10, 1);
+    let clock = owned_clock(10);
     let ring = RingHeader::new();
     let mut entries = empty_entries();
     let retained = frame(20, 1, 0, b"retained");
@@ -315,7 +405,7 @@ fn idle_loop_rx_backpressure_marks_canonical_head_retained() {
 #[test]
 fn idle_loop_rejects_late_inbound_ring_before_direct_advance() {
     let slot = NodeSlot::new(KIND_VM);
-    let mut clock = owned_clock(10, 1);
+    let mut clock = owned_clock(10);
     let ring = RingHeader::new();
     let mut entries = empty_entries();
     enqueue(&ring, &mut entries, frame(9, 7, 2, b"late"));
@@ -327,15 +417,14 @@ fn idle_loop_rejects_late_inbound_ring_before_direct_advance() {
             ceiling_icount: 20,
             timer_deadline_icount: None,
             inbound_delivery_icount: Some(9),
-            device_completion_deadline_icount: None,
+            device_completion_deadline_tick: None,
             device_io_holding_ticks: false,
             cause: IdleWakeCause::InboundFrame,
         },
         futex_wait: FutexWait::Runnable,
-        icount_shift: clock.icount_shift(),
     };
     let before = slot.snapshot();
-    set_blocked_direct_advance_ns(-1);
+    set_blocked_direct_advance_tick(-1);
 
     assert_eq!(
         PluginIdleHotLoop::complete_after_scheduler_wake_from_inbound_rings(
@@ -357,13 +446,13 @@ fn idle_loop_rejects_late_inbound_ring_before_direct_advance() {
     assert_eq!(clock.current_icount(), 10);
     assert_eq!(slot.snapshot(), before);
     assert_eq!(ring.read_index(), 0);
-    assert_eq!(blocked_direct_advance_ns(), -1);
+    assert_eq!(blocked_direct_advance_tick(), -1);
 }
 
 #[test]
 fn idle_loop_rejects_late_materialized_frame_before_direct_advance() {
     let slot = NodeSlot::new(KIND_VM);
-    let mut clock = owned_clock(10, 1);
+    let mut clock = owned_clock(10);
     publish_ceiling(&slot, ceiling(10, 20));
     let request = IdleParkRequest {
         plan: IdleWakePlan {
@@ -372,15 +461,14 @@ fn idle_loop_rejects_late_materialized_frame_before_direct_advance() {
             ceiling_icount: 20,
             timer_deadline_icount: None,
             inbound_delivery_icount: Some(9),
-            device_completion_deadline_icount: None,
+            device_completion_deadline_tick: None,
             device_io_holding_ticks: false,
             cause: IdleWakeCause::InboundFrame,
         },
         futex_wait: FutexWait::Runnable,
-        icount_shift: clock.icount_shift(),
     };
     let before = slot.snapshot();
-    set_blocked_direct_advance_ns(-1);
+    set_blocked_direct_advance_tick(-1);
 
     assert_eq!(
         PluginIdleHotLoop::complete_after_scheduler_wake(
@@ -401,13 +489,13 @@ fn idle_loop_rejects_late_materialized_frame_before_direct_advance() {
 
     assert_eq!(clock.current_icount(), 10);
     assert_eq!(slot.snapshot(), before);
-    assert_eq!(blocked_direct_advance_ns(), -1);
+    assert_eq!(blocked_direct_advance_tick(), -1);
 }
 
 #[test]
 fn idle_loop_rejects_late_inbound_ring_at_begin_without_publishing() {
     let slot = NodeSlot::new(KIND_VM);
-    let clock = owned_clock(10, 1);
+    let clock = owned_clock(10);
     let ring = RingHeader::new();
     let mut entries = empty_entries();
     enqueue(&ring, &mut entries, frame(9, 7, 2, b"late"));
@@ -439,7 +527,7 @@ fn idle_loop_rejects_late_inbound_ring_at_begin_without_publishing() {
 #[test]
 fn idle_loop_rejects_raw_late_inbound_delivery_before_publishing() {
     let slot = NodeSlot::new(KIND_VM);
-    let clock = owned_clock(10, 1);
+    let clock = owned_clock(10);
     publish_ceiling(&slot, ceiling(0, 20));
     let before = slot.snapshot();
 
@@ -463,9 +551,37 @@ fn idle_loop_rejects_raw_late_inbound_delivery_before_publishing() {
 }
 
 #[test]
+fn idle_loop_rejects_unrepresentable_timer_before_publishing() {
+    extern "C" fn unrepresentable_deadline() -> i64 {
+        -2
+    }
+
+    let slot = NodeSlot::new(KIND_VM);
+    let clock = owned_clock(10);
+    publish_ceiling(&slot, ceiling(0, 20));
+    let before = slot.snapshot();
+
+    assert_eq!(
+        PluginIdleHotLoop::begin_idle(
+            &slot,
+            &clock,
+            &deadline_reader(unrepresentable_deadline),
+            None,
+            None,
+        ),
+        Err(IdleHotLoopError::ReadExactDeadline {
+            source: ExactDeadlineError::UnrepresentableDeadline,
+        })
+    );
+
+    assert_eq!(slot.snapshot(), before);
+    assert_eq!(clock.current_icount(), 10);
+}
+
+#[test]
 fn idle_loop_rejects_release_before_scheduler_authorizes_wake() {
     let slot = NodeSlot::new(KIND_VM);
-    let clock = owned_clock(10, 0);
+    let clock = owned_clock(10);
     publish_ceiling(&slot, ceiling(0, 10));
     let request = match PluginIdleHotLoop::begin_idle(
         &slot,
@@ -497,23 +613,23 @@ fn idle_loop_rejects_release_before_scheduler_authorizes_wake() {
 #[test]
 fn idle_loop_direct_advance_range_failure_leaves_clock_and_slot_unchanged() {
     let slot = NodeSlot::new(KIND_VM);
-    let mut clock = owned_clock(0, crate::MAX_PLUGIN_ICOUNT_SHIFT);
-    publish_ceiling(&slot, ceiling(0, 1));
+    let mut clock = owned_clock(0);
+    let out_of_range_tick = i64::MAX as u64 + 1;
+    publish_ceiling(&slot, ceiling(0, out_of_range_tick));
     let before = slot.snapshot();
-    set_blocked_direct_advance_ns(-1);
+    set_blocked_direct_advance_tick(-1);
     let request = IdleParkRequest {
         plan: IdleWakePlan {
             current_icount: 0,
-            desired_wake_icount: 1,
-            ceiling_icount: 1,
-            timer_deadline_icount: Some(1),
+            desired_wake_icount: out_of_range_tick,
+            ceiling_icount: out_of_range_tick,
+            timer_deadline_icount: Some(out_of_range_tick),
             inbound_delivery_icount: None,
-            device_completion_deadline_icount: None,
+            device_completion_deadline_tick: None,
             device_io_holding_ticks: false,
             cause: IdleWakeCause::TimerDeadline,
         },
         futex_wait: FutexWait::Runnable,
-        icount_shift: clock.icount_shift(),
     };
 
     assert_eq!(
@@ -522,24 +638,24 @@ fn idle_loop_direct_advance_range_failure_leaves_clock_and_slot_unchanged() {
             &mut clock,
             &blocked_queued_idle_advance(),
             request,
-            [frame(1, 1, 1, b"would-be-due")]
+            [frame(out_of_range_tick, 1, 1, b"would-be-due")]
         ),
-        Err(IdleHotLoopError::QueuedIdleAdvance {
-            source: QueuedIdleAdvanceError::VirtualTimeOutOfRange {
-                target_virtual_ns: i64::MAX as u64 + 1,
+        Err(IdleHotLoopError::AdvanceClock {
+            source: crate::PluginClockError::QemuTickOutOfRange {
+                icount: out_of_range_tick,
             },
         })
     );
 
     assert_eq!(clock.current_icount(), 0);
     assert_eq!(slot.snapshot(), before);
-    assert_eq!(blocked_direct_advance_ns(), -1);
+    assert_eq!(blocked_direct_advance_tick(), -1);
 }
 
 #[test]
 fn idle_resume_boundary_republishes_running_without_advancing_time() {
     let slot = NodeSlot::new(KIND_VM);
-    let clock = owned_clock(32, 2);
+    let clock = owned_clock(32);
     publish_ceiling(&slot, ceiling(0, 32));
 
     if let Err(error) = PluginIdleHotLoop::publish_resume_boundary(&slot, &clock) {
@@ -548,23 +664,27 @@ fn idle_resume_boundary_republishes_running_without_advancing_time() {
 
     let snapshot = slot.snapshot();
     assert_eq!(snapshot.current_icount, 32);
-    assert_eq!(snapshot.current_ns, 128);
+    assert_eq!(snapshot.current_ns, 0);
     assert_eq!(snapshot.status, STATUS_RUNNING);
     assert_eq!(clock.current_icount(), 32);
 }
 
 #[test]
-fn idle_timer_deadline_conversion_ceils_to_icount() {
+fn idle_timer_deadline_conversion_uses_exact_tick_boundary() {
     assert_eq!(
-        timer_deadline_icount(ExactDeadlineReport::Armed { deadline_ns: 41 }, 3),
-        Ok(Some(6))
+        timer_deadline_icount(ExactDeadlineReport::Armed { deadline_ps: 1 }),
+        Ok(Some(1))
     );
     assert_eq!(
-        timer_deadline_icount(ExactDeadlineReport::NoArmedTimer, 3),
+        timer_deadline_icount(ExactDeadlineReport::NoArmedTimer),
         Ok(None)
     );
     assert_eq!(
-        timer_deadline_icount(ExactDeadlineReport::Armed { deadline_ns: 1 }, 64),
-        Err(IdleHotLoopError::InvalidIcountShift { icount_shift: 64 })
+        timer_deadline_icount(ExactDeadlineReport::Armed {
+            deadline_ps: i64::MAX as u64 + 1,
+        }),
+        Err(IdleHotLoopError::TimerDeadlineOverflow {
+            deadline_ps: i64::MAX as u64 + 1,
+        })
     );
 }

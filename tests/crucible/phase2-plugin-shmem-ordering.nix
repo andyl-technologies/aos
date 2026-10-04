@@ -119,7 +119,7 @@
   forbiddenRawShmemCalls = [
     ".control_action()"
     ".shutdown_requested()"
-    ".load_node_ceiling()"
+    ".load_scheduler_advance()"
     ".publish_reached_icount("
     ".publish_idle("
     ".prepare_futex_wait()"
@@ -135,7 +135,7 @@
     ".snapshot()"
     ".header_snapshot()"
     ".validate_header()"
-    ".publish_scheduler_ceiling("
+    ".publish_scheduler_advance("
     ".futex_wait_still_valid("
     ".peek_delivery_icount("
     ".dequeue("
@@ -153,6 +153,45 @@
         forbiddenRawShmemCalls
     )
     rawShmemSources;
+
+  blockIoOrderingProduction = builtins.concatStringsSep "\n" (map (file: productionRust (builtins.readFile file)) [
+    ../../crates/crucible-qemu-plugin/src/block_io.rs
+    ../../crates/crucible-qemu-plugin/src/block_io/history.rs
+  ]);
+
+  # This closed, process-local owner counter never publishes shared-memory state.
+  # Any other atomic declaration or operation remains subject to the facade ban.
+  blockOwnerAtomicImport = "use std::sync::atomic::{AtomicU64, Ordering};";
+  blockOwnerAtomicCounter = ''
+    static NEXT_BLOCK_OWNER_ID: AtomicU64 = AtomicU64::new(1);
+
+    fn next_block_owner_id() -> u64 {
+        // Epochs and request IDs can repeat in distinct callback owners.
+        match NEXT_BLOCK_OWNER_ID.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        }) {
+            Ok(owner_id) => owner_id,
+            Err(_) => std::process::abort(),
+        }
+    }
+  '';
+  blockIoOrderingOutsideOwner = builtins.replaceStrings [blockOwnerAtomicImport blockOwnerAtomicCounter] ["" ""] blockIoOrderingProduction;
+  blockOwnerAtomicFailures =
+    lib.concatMap (
+      needle: let
+        stripped = builtins.replaceStrings [needle] [""] blockIoOrderingProduction;
+        removedLength = builtins.stringLength blockIoOrderingProduction - builtins.stringLength stripped;
+      in
+        lib.optionals (removedLength != builtins.stringLength needle) [
+          "crates/crucible-qemu-plugin/src/block_io.rs: expected exactly one closed process-local owner atomic declaration"
+        ]
+    ) [blockOwnerAtomicImport blockOwnerAtomicCounter]
+    ++ lib.concatMap (
+      needle:
+        lib.optionals (hasInfix needle blockIoOrderingOutsideOwner) [
+          "crates/crucible-qemu-plugin/src/block_io.rs: atomic outside the closed process-local owner: `${needle}`"
+        ]
+    ) ["AtomicU64" "Ordering::Relaxed"];
 
   forbiddenRawOrderingSources = [
     {
@@ -176,10 +215,7 @@
     }
     {
       label = "crates/crucible-qemu-plugin/src/block_io.rs";
-      content = builtins.concatStringsSep "\n" (map (file: productionRust (builtins.readFile file)) [
-        ../../crates/crucible-qemu-plugin/src/block_io.rs
-        ../../crates/crucible-qemu-plugin/src/block_io/history.rs
-      ]);
+      content = blockIoOrderingOutsideOwner;
     }
     {
       label = "crates/crucible-qemu-plugin/src/ninep_io.rs";
@@ -289,7 +325,7 @@
       }
       {
         label = "ceiling acquire helper";
-        needle = "pub fn load_scheduler_ceiling";
+        needle = "pub fn load_scheduler_advance";
       }
       {
         label = "reached publish helper";
@@ -399,7 +435,7 @@
       }
       {
         label = "idle loop loads ceiling through facade";
-        needle = "PluginShmemOrdering::load_scheduler_ceiling";
+        needle = "PluginShmemOrdering::load_scheduler_advance";
       }
       {
         label = "idle loop publishes reached through facade";
@@ -505,7 +541,7 @@
       }
       {
         label = "node ceiling acquire load";
-        needle = "self.max_advance_icount.load(Ordering::Acquire)";
+        needle = "self.load_scheduler_advance()";
       }
       {
         label = "node current icount release publish";
@@ -524,6 +560,7 @@
     ]
     ++ forbiddenRawShmemFailures
     ++ forbiddenRawOrderingFailures
+    ++ blockOwnerAtomicFailures
     ++ deviceIoOrderingFailures;
 in
   if failures != []

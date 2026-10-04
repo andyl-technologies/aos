@@ -2,8 +2,6 @@
 
 use super::*;
 
-type OptionalHashPair = (Option<crucible::ContentHash>, Option<crucible::ContentHash>);
-
 impl Cli {
     pub(super) fn output_format(&self) -> OutputFormat {
         resolve_output_format(self.format, io::stdout().is_terminal())
@@ -30,19 +28,97 @@ pub(super) struct TriageRunReport {
     pub(super) result: crucible::FailureTriageResult,
     pub(super) stored_result: crucible::FailureTriageStoredArtifact,
     pub(super) report_path: PathBuf,
-    pub(super) compare: Option<TriageSummaryDiff>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct LoadedTriageFindings {
     pub(super) ledger: crucible::FailureFindingsLedger,
     pub(super) evidence: BTreeMap<crucible::ContentHash, TriageFindingEvidence>,
+    pub(super) campaign_evidence: Vec<CampaignTriageFindingEvidence>,
     pub(super) artifact_bytes: Vec<u8>,
+}
+
+/// Authenticated campaign records retained beside one report projection.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct CampaignTriageFindingEvidence {
+    pub(super) campaign: crucible_campaign::CampaignName,
+    pub(super) snapshot: crucible_campaign::CampaignSnapshotId,
+    pub(super) membership: CampaignFindingsMembershipProof,
+    pub(super) observation_proof: CampaignFindingObjectProof,
+    pub(super) reproduction_proof: CampaignFindingObjectProof,
+    pub(super) minimized_reproduction_proof: Option<CampaignFindingObjectProof>,
+    pub(super) occurrence_proofs: Vec<CampaignFindingOccurrenceProof>,
+    pub(super) finding: crucible_campaign::Finding,
+    pub(super) observation: crucible_campaign::Observation,
+    pub(super) reproduction: crucible_campaign::ReproductionArtifact,
+    pub(super) minimized_reproduction: Option<crucible_campaign::ReproductionArtifact>,
+    pub(super) report: TriageFindingEvidence,
+}
+
+/// Exact checked service exchange proving final-snapshot Finding membership.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct CampaignFindingsMembershipProof {
+    pub(super) request: crucible_campaign::QueryCampaignFindingsRequest,
+    pub(super) response: crucible_campaign::QueryCampaignFindingsResponse,
+}
+
+/// Exact checked service exchange resolving one Finding-owned dependency.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct CampaignFindingObjectProof {
+    pub(super) request: crucible_campaign::GetCampaignFindingObjectRequest,
+    pub(super) response: crucible_campaign::GetCampaignFindingObjectResponse,
+}
+
+/// Exact checked service exchange for one page of retained candidate occurrences.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct CampaignFindingOccurrencesProof {
+    pub(super) request: crucible_campaign::QueryCampaignFindingOccurrencesRequest,
+    pub(super) response: crucible_campaign::QueryCampaignFindingOccurrencesResponse,
+}
+
+/// Exact checked exchanges resolving one retained candidate occurrence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct CampaignFindingOccurrenceProof {
+    pub(super) page: CampaignFindingOccurrencesProof,
+    pub(super) observation: CampaignFindingOccurrenceObjectProof,
+    pub(super) reproduction: CampaignFindingOccurrenceObjectProof,
+    pub(super) minimized_reproduction: CampaignFindingOccurrenceObjectProof,
+    pub(super) triage_evidence: Option<CampaignFindingOccurrenceTriageProof>,
+}
+
+/// Four independently replayed native signatures retained by a rich candidate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct CampaignFindingOccurrenceTriageProof {
+    pub(super) minimization_original: CampaignFindingTriageReplayProof,
+    pub(super) minimization_selected: CampaignFindingTriageReplayProof,
+    pub(super) verification_original: CampaignFindingTriageReplayProof,
+    pub(super) verification_selected: CampaignFindingTriageReplayProof,
+}
+
+/// Complete ordered segment transcript for one candidate triage replay.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct CampaignFindingTriageReplayProof {
+    pub(super) segments: Vec<CampaignFindingTriageReplaySegmentProof>,
+}
+
+/// One exact checked exchange resolving a stored replay-envelope segment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct CampaignFindingTriageReplaySegmentProof {
+    pub(super) request: crucible_campaign::GetCampaignFindingTriageReplaySegmentRequest,
+    pub(super) response: crucible_campaign::GetCampaignFindingTriageReplaySegmentResponse,
+}
+
+/// Exact checked service exchange resolving one candidate-owned dependency.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct CampaignFindingOccurrenceObjectProof {
+    pub(super) request: crucible_campaign::GetCampaignFindingOccurrenceObjectRequest,
+    pub(super) response: crucible_campaign::GetCampaignFindingOccurrenceObjectResponse,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct TriageFindingEvidence {
     pub(super) finding: crucible::FindingReproductionArtifact,
+    pub(super) causal_entries: Vec<crucible::SchedulerEventLogEntry>,
     pub(super) recorded_event_log: crucible_model::FailureRecordedEventLog,
     pub(super) failure: crucible_model::FailureClusterReportFailure,
     pub(super) discovery_signature: crucible_model::FailureSignature,
@@ -51,20 +127,12 @@ pub(super) struct TriageFindingEvidence {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct TriageInvocationPlan {
-    pub(super) findings: TriageFindingsSource,
     pub(super) policy: crucible::SignaturePolicy,
     pub(super) minimize: TriageMinimizeArg,
     pub(super) report_dir: PathBuf,
     pub(super) format: crucible::FailureClusterReportFormat,
     pub(super) recompute_signatures: bool,
-    pub(super) compare: Option<TriageCompareTarget>,
     pub(super) store_root: PathBuf,
-    pub(super) pipeline: Vec<TriagePipelineStep>,
-    pub(super) failure_exit_code: i32,
-    pub(super) thin_driver: bool,
-    pub(super) owns_run_state: bool,
-    pub(super) offline: bool,
-    pub(super) scheduler_started: bool,
 }
 
 impl TriageInvocationPlan {
@@ -93,238 +161,6 @@ impl TriageInvocationPlan {
             crucible::FailureClusterReportFormat::Markdown => "markdown",
         }
     }
-
-    pub(super) fn proves_t_tri_7(&self) -> bool {
-        self.thin_driver
-            && !self.owns_run_state
-            && self.offline
-            && !self.scheduler_started
-            && self
-                .pipeline
-                .contains(&TriagePipelineStep::LoadFindingsLedger)
-            && self.pipeline.contains(&TriagePipelineStep::Cluster)
-            && self.pipeline.contains(&TriagePipelineStep::EmitReports)
-            && self
-                .pipeline
-                .contains(&TriagePipelineStep::StoreTriageResult)
-            && self.failure_exit_code == 1
-            && match self.minimize {
-                TriageMinimizeArg::None => self
-                    .pipeline
-                    .contains(&TriagePipelineStep::SkipMinimization),
-                TriageMinimizeArg::Representative => self
-                    .pipeline
-                    .contains(&TriagePipelineStep::MinimizeRepresentative),
-                TriageMinimizeArg::All => self.pipeline.contains(&TriagePipelineStep::MinimizeAll),
-            }
-            && (!self.recompute_signatures
-                || self
-                    .pipeline
-                    .contains(&TriagePipelineStep::RecomputeSignatureSelfCheck))
-            && (self.compare.is_none()
-                || self
-                    .pipeline
-                    .contains(&TriagePipelineStep::CompareContentDiff))
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum TriageFindingsSource {
-    Path(PathBuf),
-    StoredLedger(crucible::ContentHash),
-}
-
-impl TriageFindingsSource {
-    pub(super) fn label(&self) -> &'static str {
-        match self {
-            Self::Path(_) => "path",
-            Self::StoredLedger(_) => "dag-store",
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum TriageCompareTarget {
-    Path(PathBuf),
-    StoredResult(crucible::ContentHash),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(super) enum TriagePipelineStep {
-    LoadFindingsLedger,
-    RecomputeSignatureSelfCheck,
-    Cluster,
-    SkipMinimization,
-    MinimizeRepresentative,
-    MinimizeAll,
-    EmitReports,
-    StoreTriageResult,
-    CompareContentDiff,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct TriageResultSummary {
-    pub(super) result: crucible::ContentHash,
-    pub(super) report_hashes: BTreeMap<crucible::ContentHash, crucible::ContentHash>,
-}
-
-impl TriageResultSummary {
-    pub(super) fn from_result(result: &crucible::FailureTriageResult) -> Self {
-        Self {
-            result: result.content_hash(),
-            report_hashes: result
-                .report_set
-                .reports
-                .iter()
-                .map(|report| (report.cluster_id, report.content_hash()))
-                .collect(),
-        }
-    }
-
-    pub(super) fn from_artifact_bytes(bytes: &[u8]) -> Result<Self, CliError> {
-        let text = std::str::from_utf8(bytes)
-            .map_err(|error| artifact_error(format!("triage result is not UTF-8: {error}")))?;
-        if text.lines().next() != Some("crucible.failure-triage.result.v1") {
-            return Err(artifact_error("unsupported triage result artifact schema"));
-        }
-        let mut by_index = BTreeMap::<usize, OptionalHashPair>::new();
-        for line in text.lines() {
-            let Some(rest) = line.strip_prefix("report.") else {
-                continue;
-            };
-            let Some((index, field_value)) = rest.split_once('.') else {
-                return Err(artifact_error("malformed triage result report line"));
-            };
-            let index = index
-                .parse::<usize>()
-                .map_err(|_| artifact_error("malformed triage result report index"))?;
-            let Some((field, value)) = field_value.split_once('=') else {
-                return Err(artifact_error("malformed triage result report field"));
-            };
-            let entry = by_index.entry(index).or_insert((None, None));
-            match field {
-                "cluster_id" => {
-                    entry.0 = Some(parse_hex_content_hash("triage result cluster id", value)?);
-                }
-                "content_hash" => {
-                    entry.1 = Some(parse_hex_content_hash("triage result report hash", value)?);
-                }
-                "minimal_representative" => {}
-                _ => {}
-            }
-        }
-        let mut report_hashes = BTreeMap::new();
-        for (index, (cluster_id, report_hash)) in by_index {
-            let cluster_id = cluster_id.ok_or_else(|| {
-                artifact_error(format!(
-                    "triage result report {index} is missing cluster_id"
-                ))
-            })?;
-            let report_hash = report_hash.ok_or_else(|| {
-                artifact_error(format!(
-                    "triage result report {index} is missing content_hash"
-                ))
-            })?;
-            report_hashes.insert(cluster_id, report_hash);
-        }
-        Ok(Self {
-            result: crucible::ContentHash::from_bytes(bytes),
-            report_hashes,
-        })
-    }
-
-    pub(super) fn diff_from(&self, baseline: &Self) -> TriageSummaryDiff {
-        let all_clusters = self
-            .report_hashes
-            .keys()
-            .chain(baseline.report_hashes.keys())
-            .copied()
-            .collect::<BTreeSet<_>>();
-        let mut added = Vec::new();
-        let mut removed = Vec::new();
-        let mut changed = Vec::new();
-        let mut unchanged = Vec::new();
-        for cluster in all_clusters {
-            match (
-                baseline.report_hashes.get(&cluster),
-                self.report_hashes.get(&cluster),
-            ) {
-                (None, Some(_)) => added.push(cluster),
-                (Some(_), None) => removed.push(cluster),
-                (Some(left), Some(right)) if left == right => unchanged.push(cluster),
-                (Some(left), Some(right)) => changed.push(TriageSummaryChangedCluster {
-                    cluster,
-                    baseline_report: *left,
-                    candidate_report: *right,
-                }),
-                (None, None) => {}
-            }
-        }
-        TriageSummaryDiff {
-            baseline: baseline.result,
-            candidate: self.result,
-            added,
-            removed,
-            changed,
-            unchanged,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct TriageSummaryChangedCluster {
-    pub(super) cluster: crucible::ContentHash,
-    pub(super) baseline_report: crucible::ContentHash,
-    pub(super) candidate_report: crucible::ContentHash,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct TriageSummaryDiff {
-    pub(super) baseline: crucible::ContentHash,
-    pub(super) candidate: crucible::ContentHash,
-    pub(super) added: Vec<crucible::ContentHash>,
-    pub(super) removed: Vec<crucible::ContentHash>,
-    pub(super) changed: Vec<TriageSummaryChangedCluster>,
-    pub(super) unchanged: Vec<crucible::ContentHash>,
-}
-
-impl TriageSummaryDiff {
-    pub(super) fn status_label(&self) -> &'static str {
-        if self.baseline == self.candidate
-            && self.added.is_empty()
-            && self.removed.is_empty()
-            && self.changed.is_empty()
-        {
-            "unchanged"
-        } else {
-            "changed"
-        }
-    }
-
-    pub(super) fn content_diff(&self) -> String {
-        let mut lines = vec![
-            format!("baseline\t{}", format_content_hash_ref(self.baseline)),
-            format!("candidate\t{}", format_content_hash_ref(self.candidate)),
-        ];
-        for cluster in &self.added {
-            lines.push(format!("added\t{}", format_content_hash_ref(*cluster)));
-        }
-        for cluster in &self.removed {
-            lines.push(format!("removed\t{}", format_content_hash_ref(*cluster)));
-        }
-        for changed in &self.changed {
-            lines.push(format!(
-                "changed\t{}\t{}\t{}",
-                format_content_hash_ref(changed.cluster),
-                format_content_hash_ref(changed.baseline_report),
-                format_content_hash_ref(changed.candidate_report)
-            ));
-        }
-        for cluster in &self.unchanged {
-            lines.push(format!("unchanged\t{}", format_content_hash_ref(*cluster)));
-        }
-        lines.join("\n")
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -351,7 +187,7 @@ impl DebugInvocationPlan {
     fn proves_thin_wrapper(&self) -> bool {
         !self.owns_debug_state
             && self.surface_contract.delegates_to_session_commands
-            && self.surface_contract.delegates_to_gdbstub_proxy
+            && self.surface_contract.delegates_to_debug_gateway
             && self
                 .engine_operations
                 .contains(&DebugEngineOperation::ResolveTarget)

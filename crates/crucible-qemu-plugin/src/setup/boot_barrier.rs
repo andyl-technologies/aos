@@ -18,23 +18,12 @@ impl PluginSetupCompletion {
     /// # Errors
     ///
     /// Returns [`PluginSetupBootBarrierError`] when the slot or canonical ring
-    /// topology cannot be borrowed, the mapped icount shift is invalid, or the
-    /// scheduler ceiling wait fails.
+    /// topology cannot be borrowed or the scheduler ceiling wait fails.
     pub fn wait_boot_barrier(
         &mut self,
         setup_ack: PluginReadySetupAck,
         slot_index: u32,
     ) -> Result<BootBarrierRelease, PluginSetupBootBarrierError> {
-        let layout = self.mapped_region.layout().map_err(|source| {
-            PluginSetupBootBarrierError::MappedRegion {
-                source: MappedSetupRegionAccessError::Header { source },
-            }
-        })?;
-        let icount_shift = u8::try_from(layout.icount_shift).map_err(|_error| {
-            PluginSetupBootBarrierError::IcountShiftOutOfRange {
-                icount_shift: layout.icount_shift,
-            }
-        })?;
         let net_slot = u32::try_from(ReservedExecutorSlot::NetRouter.slot())
             .map_err(|_error| PluginSetupBootBarrierError::ExecutorSlotOutOfRange)?;
         let block_slot = u32::try_from(ReservedExecutorSlot::BlockIo.slot())
@@ -43,7 +32,7 @@ impl PluginSetupCompletion {
             .mapped_region
             .node_directed_ring_pair_mut(slot_index, slot_index, net_slot, slot_index, block_slot)
             .map_err(|source| PluginSetupBootBarrierError::MappedRegion { source })?;
-        PluginBootBarrier::wait(setup_ack, mapped.node_slot, icount_shift)
+        PluginBootBarrier::wait(setup_ack, mapped.node_slot)
             .map_err(|source| PluginSetupBootBarrierError::Wait { source })
     }
 }
@@ -60,12 +49,6 @@ pub enum PluginSetupBootBarrierError {
     /// A reserved executor slot did not fit the shared-memory wire type.
     #[error("reserved executor slot does not fit u32")]
     ExecutorSlotOutOfRange,
-    /// The mapped setup header carried an icount shift that does not fit `u8`.
-    #[error("setup icount shift {icount_shift} does not fit u8")]
-    IcountShiftOutOfRange {
-        /// Rejected header value.
-        icount_shift: u32,
-    },
     /// The scheduler ceiling wait failed.
     #[error("setup boot barrier failed")]
     Wait {

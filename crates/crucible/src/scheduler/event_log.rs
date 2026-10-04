@@ -2,12 +2,16 @@
 
 use super::*;
 use crate::{DebugCoordinate, RuntimeState};
+use crucible_campaign::ChoiceDiscovery;
 use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 mod backend_loop;
+pub(super) use backend_loop::HeldDeliveryCeiling;
+pub(super) use backend_loop::HeldRunLineage;
 mod observation_append;
 pub use backend_loop::{
     BackendNetworkOutputInterceptor, BackendNetworkSettlement, BackendQuantumLoop,
-    NoopBackendNetworkOutputInterceptor,
+    FailedCapNegotiation, FailedDispatchResolution, FailedInputResolution, HeldHostStopKind,
+    HeldHostStopWitness, NoopBackendNetworkOutputInterceptor,
 };
 
 /// Terminal verdict emitted by a scenario trigger at a quantum boundary.
@@ -52,7 +56,7 @@ pub trait QuantumLoop {
     ///
     /// The global frontier is expressed on the shared virtual timeline and is
     /// not generally interchangeable with a node-local retired-instruction
-    /// counter. Pure and legacy loops inherit the frontier default; schedulers
+    /// counter. Pure loops inherit the frontier default; schedulers
     /// with an explicit RUN plan override this with the selected node's exact
     /// post-RUN counter.
     ///
@@ -69,7 +73,7 @@ pub trait QuantumLoop {
 
     /// Converts a scheduler event time into one node's backend counter.
     ///
-    /// Pure and legacy loops use the shared virtual time directly. Schedulers
+    /// Pure loops use the shared virtual time directly. Schedulers
     /// that admit a VM at a nonzero ready-point counter override this conversion
     /// so backend effects retain the node's physical counter coordinate.
     ///
@@ -90,7 +94,7 @@ pub trait QuantumLoop {
     ///
     /// Live adapters use this projection to retain frames produced beyond the
     /// conservative frontier until their source-local emission coordinate is
-    /// globally committed. Pure and legacy loops use the raw instruction count
+    /// globally committed. Pure loops use the raw instruction count
     /// as their virtual-time coordinate.
     ///
     /// # Errors
@@ -104,6 +108,38 @@ pub trait QuantumLoop {
     ) -> Result<VirtualTime, SchedulerError> {
         let _ = node;
         Ok(VirtualTime { ticks: at.retired })
+    }
+
+    /// Counts World routes represented by one intercepted backend frame.
+    ///
+    /// Pure loops decline exact preselection because they cannot authenticate
+    /// whether one frame expands to several directed routes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the frame cannot be routed exactly.
+    fn backend_network_route_count(
+        &self,
+        _output: &BackendNetworkOutput,
+    ) -> Result<usize, SchedulerError> {
+        Ok(0)
+    }
+
+    /// Expands one physical emission into its canonical directed World routes.
+    ///
+    /// The backend loop presents each route separately to an interceptor while
+    /// pausing for a choice, so effects on a later route cannot cross an
+    /// unresolved choice on an earlier route. Pure loops retain their opaque
+    /// emission and continue to decline route-specific preselection.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the emission cannot be routed exactly.
+    fn backend_network_routes(
+        &self,
+        output: BackendNetworkOutput,
+    ) -> Result<Vec<BackendNetworkOutput>, SchedulerError> {
+        Ok(vec![output])
     }
 
     /// Projects a backend observation's physical counter onto scheduler time.
@@ -123,6 +159,34 @@ pub trait QuantumLoop {
     ) -> Result<VirtualTime, SchedulerError> {
         let _ = node;
         Ok(at)
+    }
+
+    /// Returns the causal boundary where a backend poll became observable.
+    ///
+    /// The shared frontier is sufficient for loops that collect evidence at
+    /// the scheduler boundary. Production loops may already have emitted a
+    /// later node-local causal entry before they poll the backend.
+    fn backend_observation_poll_boundary(&self, frontier: VirtualTime) -> VirtualTime {
+        frontier
+    }
+
+    /// Projects a scheduler-resolved event into host-observed trigger input.
+    ///
+    /// Pure loops do not expose resolved events as observations.
+    /// Production schedulers override this hook for scheduler-owned events,
+    /// such as deterministic World I/O completions, that cannot originate in
+    /// the live backend's observation queue.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when the resolved event refers to invalid or
+    /// inconsistent scheduler-owned state.
+    fn resolved_event_observation(
+        &self,
+        event: &ScheduledEvent,
+    ) -> Result<Option<ObservableEvent>, SchedulerError> {
+        let _ = event;
+        Ok(None)
     }
 
     /// Samples a deterministic execution fingerprint for `node`.
@@ -313,6 +377,19 @@ pub trait QuantumLoop {
         Ok(entries)
     }
 
+    /// Unlocks guest-write RSP packets after a noncanonical guest-edit fork.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when no private production debugger gateway
+    /// is attached or it rejects the owner-only access transition.
+    fn authorize_noncanonical_guest_write(&mut self) -> Result<(), SchedulerError> {
+        Err(BackendError::Unsupported {
+            capability: "authorize_noncanonical_guest_write",
+        }
+        .into())
+    }
+
     /// Opens the optional backend gdbstub channel outside scheduler order.
     ///
     /// Pure loops and backends without a real mediated gdbstub use the default
@@ -450,11 +527,12 @@ pub trait QuantumLoop {
         })
     }
 
-    /// Atomically appends backend observations and their evaluation boundary.
+    /// Atomically appends normalized backend observations and their evaluation boundary.
     ///
     /// A live node may advance ahead of the shared conservative frontier. The
-    /// adapter buffers those observations until `at` commits them, then appends
-    /// the observations and boundary in one checked event-log segment so no
+    /// adapter stamps each observation at its original poll boundary and
+    /// buffers it until `at` commits that coordinate, then appends the
+    /// observations and boundary in one checked event-log segment so no
     /// intermediate prefix is evaluated at an earlier point.
     ///
     /// # Errors
@@ -475,18 +553,28 @@ pub trait QuantumLoop {
 
     /// Validates and appends causal decisions completed by a live backend.
     ///
-    /// The returned tuple contains the canonical decisions actually appended
-    /// (including any seeded RNG draw preceding an app-random decision), the
-    /// updated frontier configuration, and their unified event-log append.
+    /// The returned tuple contains the canonical decisions actually appended,
+    /// self-contained records for choices discovered while normalizing them,
+    /// the updated frontier configuration, and their unified event-log append.
+    /// Live application randomness is returned as a seeded RNG draw followed
+    /// by a typed selection rather than the backend's transport record.
     ///
     /// # Errors
     ///
     /// Returns [`SchedulerError`] when this loop cannot admit backend decisions
     /// or when the values differ from the scenario-seeded decision source.
-    fn append_backend_causal_decisions(
+    fn append_backend_rng_evidence(
         &mut self,
-        _decisions: Vec<Decision>,
-    ) -> Result<(Vec<Decision>, Configuration, SchedulerEventLogAppend), SchedulerError> {
+        _evidence: Vec<BackendRngEvidence>,
+    ) -> Result<
+        (
+            Vec<Decision>,
+            Vec<ChoiceDiscovery>,
+            Configuration,
+            SchedulerEventLogAppend,
+        ),
+        SchedulerError,
+    > {
         Err(SchedulerError::BoundaryViolation {
             message: String::from("quantum loop cannot append causal backend decisions"),
         })
@@ -496,7 +584,8 @@ pub trait QuantumLoop {
     ///
     /// The returned tuple contains the canonical network fault decisions
     /// appended while admitting the frames, the updated configuration, and the
-    /// corresponding unified event-log append.
+    /// corresponding unified event-log append. `emission_times` preserves the
+    /// original logical timestamp of frames held across a VM counter rebase.
     ///
     /// # Errors
     ///
@@ -506,9 +595,67 @@ pub trait QuantumLoop {
     fn append_backend_network_outputs(
         &mut self,
         _outputs: Vec<BackendNetworkOutput>,
-    ) -> Result<(Vec<Decision>, Configuration, SchedulerEventLogAppend), SchedulerError> {
+        _emission_times: &BTreeMap<(NodeId, u64), VirtualTime>,
+    ) -> Result<
+        (
+            Vec<Decision>,
+            Vec<ChoiceDiscovery>,
+            Configuration,
+            SchedulerEventLogAppend,
+        ),
+        SchedulerError,
+    > {
         Err(SchedulerError::BoundaryViolation {
             message: String::from("quantum loop cannot route live-backend network outputs"),
+        })
+    }
+
+    /// Resolves a reserved frame after its exact campaign selection has
+    /// already been recorded at the paused boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] if this loop lacks selected network replay
+    /// or the emitted frame differs from the authenticated reservation.
+    fn append_backend_network_outputs_after_selection(
+        &mut self,
+        _outputs: Vec<BackendNetworkOutput>,
+        _parent: &Configuration,
+        _selection: &SelectionDecision,
+        _emission_times: &BTreeMap<(NodeId, u64), VirtualTime>,
+    ) -> Result<
+        (
+            Vec<Decision>,
+            Vec<ChoiceDiscovery>,
+            Configuration,
+            SchedulerEventLogAppend,
+        ),
+        SchedulerError,
+    > {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("quantum loop cannot resolve a selected network reservation"),
+        })
+    }
+
+    /// Admits due outputs until the first unselected live-network choice.
+    ///
+    /// Loops without a preselection boundary resolve the full batch normally.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SchedulerError`] when routing or modeled link admission fails.
+    fn append_backend_network_outputs_until_choice(
+        &mut self,
+        outputs: Vec<BackendNetworkOutput>,
+        emission_times: &BTreeMap<(NodeId, u64), VirtualTime>,
+    ) -> Result<BackendNetworkAdmission, SchedulerError> {
+        let (decisions, discoveries, configuration, append) =
+            self.append_backend_network_outputs(outputs, emission_times)?;
+        Ok(BackendNetworkAdmission::Settled {
+            decisions,
+            discoveries,
+            configuration,
+            append,
         })
     }
 
@@ -639,6 +786,8 @@ pub struct QuantumOutcome {
     pub resolved_events: Vec<ScheduledEvent>,
     /// Decisions appended by STEP in canonical order.
     pub decisions: Vec<Decision>,
+    /// Self-contained choice records discovered while normalizing live decisions.
+    pub discovered_choices: Vec<ChoiceDiscovery>,
     /// Event-log entries appended by EMIT in deterministic order.
     pub event_log_entries: Vec<SchedulerEventLogEntry>,
     /// Canonical bytes of the final event-log segment appended by this quantum.
@@ -657,76 +806,82 @@ pub struct QuantumOutcome {
     pub scheduler_quiescence: Option<SchedulerQuiescence>,
 }
 
-/// Output produced by one bounded host-concurrent scheduler round.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SchedulerConcurrentQuantumOutcome {
-    /// RUN set selected from the same scheduler boundary before host dispatch.
-    pub run_set: SchedulerConcurrentRunSet,
-    /// Serialized scheduler completions for the dispatched RUN set.
-    pub outcomes: Vec<QuantumOutcome>,
+/// Result of admitting due live-network outputs at an exact choice boundary.
+#[derive(Clone, Debug)]
+pub enum BackendNetworkAdmission {
+    /// Every due output was resolved through its selected or default outcome.
+    Settled {
+        /// Decisions committed by the network admission.
+        decisions: Vec<Decision>,
+        /// Choices found while resolving the outputs.
+        discoveries: Vec<ChoiceDiscovery>,
+        /// Configuration after all admitted outputs.
+        configuration: Configuration,
+        /// Matching event-log append.
+        append: SchedulerEventLogAppend,
+    },
+    /// A newly offered choice remains unresolved at its exact parent.
+    Preselection {
+        /// Decisions committed before this choice in canonical output order.
+        decisions: Vec<Decision>,
+        /// Choices discovered before and at the pending boundary.
+        discoveries: Vec<ChoiceDiscovery>,
+        /// Configuration before the offered choice.
+        configuration: Configuration,
+        /// Matching event-log append for the committed prefix.
+        append: SchedulerEventLogAppend,
+        /// The unselected frame and route at this boundary.
+        reservation: Box<LiveNetworkPreselection>,
+        /// Current and later outputs, after route expansion, awaiting resolution.
+        remaining: Vec<BackendNetworkOutput>,
+    },
 }
 
-/// Deterministic set of RUNs eligible for host-level concurrent dispatch.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SchedulerConcurrentRunSet {
-    /// Caller-supplied maximum host workers for this round.
-    pub max_host_workers: usize,
-    /// RUN candidates selected in deterministic scheduler completion order.
-    pub candidates: Vec<SchedulerConcurrentRunCandidate>,
-}
-
-/// One node RUN selected for bounded host-level concurrent dispatch.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SchedulerConcurrentRunCandidate {
-    /// Scheduler node selected by PICK for this concurrent round.
-    pub node: SchedulerNodeId,
-    /// Node-local virtual time before RUN.
-    pub current_time: SimInstant,
-    /// Conservative lookahead-bounded virtual time for this RUN.
-    pub target_time: SimInstant,
-    /// Icount ceiling published before host dispatch.
-    pub max_advance_icount: u64,
-}
-
-/// Per-node retired-instruction stamp attached to an event-log time.
+/// Exact logical event tick and optional physical retirement witness.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-pub struct EventLogIcountStamp {
-    /// Node whose retired-instruction counter was sampled, when node-local.
+pub struct EventLogTickStamp {
+    /// Node to which the event applies, when node-local.
     pub node: Option<NodeId>,
-    /// Retired-instruction count at the event boundary.
-    pub icount: Icount,
+    /// Exact logical tick, including any idle-time jump bias.
+    pub tick: SimInstant,
+    /// Raw retired count when independently observed by the backend.
+    pub retired: Option<Icount>,
 }
 
-/// Virtual-time coordinate enriched with a deterministic icount stamp.
+/// Virtual-time coordinate enriched with an exact tick and optional raw witness.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct EventLogTime {
     /// Scheduler virtual time at which the entry occurred.
     pub virtual_time: VirtualTime,
-    /// Retired-instruction coordinate at the same boundary.
-    pub icount: EventLogIcountStamp,
+    /// Node-local exact tick and independently observed retired count, if any.
+    pub stamp: EventLogTickStamp,
 }
 
 impl EventLogTime {
-    /// Builds a time coordinate using virtual time as the scheduler-boundary icount.
+    /// Builds a time coordinate at the exact scheduler boundary.
     #[must_use]
     pub const fn from_virtual_time(virtual_time: VirtualTime) -> Self {
         Self {
             virtual_time,
-            icount: EventLogIcountStamp {
+            stamp: EventLogTickStamp {
                 node: None,
-                icount: Icount {
-                    retired: virtual_time.ticks,
+                tick: SimInstant {
+                    ticks: virtual_time.ticks,
                 },
+                retired: None,
             },
         }
     }
 
-    /// Adds a per-node icount stamp to this coordinate.
+    /// Adds an independently observed per-node retired count.
     #[must_use]
     pub fn with_icount(mut self, node: NodeId, icount: Icount) -> Self {
-        self.icount = EventLogIcountStamp {
+        self.stamp = EventLogTickStamp {
             node: Some(node),
-            icount,
+            tick: SimInstant {
+                ticks: self.virtual_time.ticks,
+            },
+            retired: Some(icount),
         };
         self
     }
@@ -960,12 +1115,6 @@ pub struct SchedulerEventLogEntry {
     pub(super) provenance: SchedulerEventLogEntryProvenance,
 }
 
-/// Compatibility name for entries in the unified event log.
-pub type LogEntry = SchedulerEventLogEntry;
-
-/// Compatibility name for the causal-vs-observational event class.
-pub type EventClass = SchedulerEventLogClass;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(super) struct SchedulerEventLogEntryProvenance;
 
@@ -1134,7 +1283,66 @@ impl SchedulerEventLogEntry {
         )
     }
 
+    /// Builds a scheduler-owned typed guest-measurement observation.
+    ///
+    /// Callers must pass the next dense per-run event-log sequence number for
+    /// a message already decoded through the bounded white-box protocol. This
+    /// constructor is for trusted scheduler loop and conformance-test
+    /// implementations; campaign sealing still validates the exact scenario
+    /// measurement contract before retaining an observation.
+    #[must_use]
+    pub fn guest_measurement_observation(
+        sequence: u64,
+        retired_icount: Icount,
+        node: NodeId,
+        event: GuestMeasurementEvent,
+    ) -> Self {
+        scheduler_event_log_entry(
+            sequence,
+            VirtualTime {
+                ticks: retired_icount.retired,
+            },
+            SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestMeasurement {
+                retired_icount,
+                node,
+                event,
+            }),
+        )
+    }
+
+    /// Builds a scheduler-owned typed semantic-marker observation.
+    ///
+    /// Callers must pass the next dense per-run event-log sequence number for
+    /// a marker already decoded through the bounded white-box protocol. This
+    /// constructor is for trusted scheduler loop and conformance-test
+    /// implementations; campaign sealing still validates the exact scenario
+    /// marker and instance contract before retaining an observation.
+    #[must_use]
+    pub fn guest_semantic_marker_observation(
+        sequence: u64,
+        retired_icount: Icount,
+        node: NodeId,
+        marker: String,
+        instance: String,
+        details: Vec<GuestSemanticMarkerDetail>,
+    ) -> Self {
+        scheduler_event_log_entry(
+            sequence,
+            VirtualTime {
+                ticks: retired_icount.retired,
+            },
+            SchedulerEventLogPayload::Observable(ObservableEventPayload::GuestSemanticMarker {
+                retired_icount,
+                node,
+                marker,
+                instance,
+                details,
+            }),
+        )
+    }
+
     /// Builds an observable condition entry as if appended by scheduler EMIT.
+    #[cfg(any(debug_assertions, feature = "test-support"))]
     #[must_use]
     pub(crate) fn observable(
         sequence: u64,
@@ -1252,6 +1460,26 @@ impl SchedulerEventLogEntry {
         self.content_hash
     }
 
+    /// Returns the byte length of this entry's canonical identity material.
+    ///
+    /// This length provides a deterministic, conservative work unit for
+    /// consumers that retain scheduler entries across multiple quanta. It
+    /// includes variable-sized payload material but excludes container
+    /// allocation overhead.
+    #[must_use]
+    pub fn canonical_material_len(&self) -> usize {
+        scheduler_event_log_entry_material(
+            self.sequence,
+            &self.at,
+            &self.source,
+            self.level,
+            self.class,
+            &self.event_payload,
+            &self.payload,
+        )
+        .len()
+    }
+
     /// Returns whether this entry's content hash matches its canonical material.
     #[must_use]
     pub fn has_valid_content_hash(&self) -> bool {
@@ -1260,7 +1488,7 @@ impl SchedulerEventLogEntry {
         }
         self.content_hash
             == ContentHash::from_canonical_material(
-                "crucible.scheduler.event-log.entry.v1",
+                "crucible.scheduler.event-log.entry.v5",
                 &scheduler_event_log_entry_material(
                     self.sequence,
                     &self.at,
@@ -1288,7 +1516,7 @@ impl SchedulerEventLogEntry {
         self
     }
 
-    #[cfg(any(debug_assertions, feature = "test-support"))]
+    #[cfg(any(test, debug_assertions, feature = "test-support"))]
     pub(crate) fn with_payload_for_test(
         sequence: u64,
         at: VirtualTime,
@@ -1380,7 +1608,6 @@ pub struct EventLog {
     pub(super) offset: EventLogOffset,
     pub(super) bytes: u64,
     pub(super) events: u64,
-    pub(super) condition_entries: Vec<LogEntry>,
     pub(super) condition_base_events: u64,
     pub(super) condition_prefix: ConditionEventLogPrefix,
 }
@@ -1438,9 +1665,10 @@ impl EventLog {
             offset,
             bytes: offset.bytes,
             events: offset.events,
-            condition_entries: Vec::new(),
             condition_base_events: offset.events,
-            condition_prefix: ConditionEventLogPrefix::genesis().with_event_log_offset(offset),
+            condition_prefix: ConditionEventLogPrefix::genesis()
+                .with_base_sequence(offset.events)
+                .with_event_log_offset(offset),
         }
     }
 
@@ -1454,6 +1682,23 @@ impl EventLog {
     #[must_use]
     pub fn condition_prefix(&self) -> &ConditionEventLogPrefix {
         &self.condition_prefix
+    }
+
+    /// Returns the exact event entries retained for condition and evidence replay.
+    ///
+    /// A scheduler created at run genesis retains a zero-based complete prefix.
+    /// An offset-only continuation may retain only a suffix; callers must pair
+    /// this slice with [`Self::retained_base_events`] before treating it as a
+    /// complete run history.
+    #[must_use]
+    pub fn retained_entries(&self) -> &[SchedulerEventLogEntry] {
+        self.condition_prefix.scheduler_entries()
+    }
+
+    /// Returns the dense event count preceding [`Self::retained_entries`].
+    #[must_use]
+    pub const fn retained_base_events(&self) -> u64 {
+        self.condition_base_events
     }
 
     /// Returns the next dense sequence number after `offset` pending entries.
@@ -1476,7 +1721,7 @@ impl EventLog {
     /// condition prefix overflow or become invalid.
     pub fn append_entries(
         &mut self,
-        entries: Vec<LogEntry>,
+        entries: Vec<SchedulerEventLogEntry>,
     ) -> Result<SchedulerEventLogAppend, SchedulerError> {
         if entries.is_empty() {
             return Ok(SchedulerEventLogAppend {
@@ -1552,24 +1797,18 @@ impl EventLog {
             EventLogOffset::with_appended_segment(self.prefix, bytes, events, segment_hash);
         let prefix =
             scheduler_event_log_prefix_after_append(self.prefix, segment_hash, bytes, events);
-        let mut condition_entries = self.condition_entries.clone();
-        condition_entries.extend(entries.iter().cloned());
-        let condition_prefix = ConditionEventLogPrefix::from_scheduler_event_log_entries_with_base(
-            condition_entries.clone(),
-            self.condition_base_events,
-        )
-        .map_err(|error| SchedulerError::BoundaryViolation {
-            message: format!("scheduler emitted invalid condition event-log prefix: {error:?}"),
-        })?
-        .with_event_log_offset(current_offset);
+        self.condition_prefix
+            .append_scheduler_entries(entries.clone())
+            .map_err(|error| SchedulerError::BoundaryViolation {
+                message: format!("scheduler emitted invalid condition event-log prefix: {error:?}"),
+            })?;
 
         self.prefix = prefix;
         self.segment_dependencies.push(segment_hash);
         self.offset = current_offset;
         self.bytes = bytes;
         self.events = events;
-        self.condition_entries = condition_entries;
-        self.condition_prefix = condition_prefix;
+        self.condition_prefix.set_event_log_offset(current_offset);
 
         Ok(SchedulerEventLogAppend {
             entries,
@@ -1640,7 +1879,7 @@ pub struct EventLogCausalDivergencePoint {
     /// Index of the entry in the original unified event log before filtering.
     pub raw_index: usize,
     /// Icount-stamped location that pins the divergence to a node, when node-local.
-    pub at: EventLogIcountStamp,
+    pub at: EventLogTickStamp,
     /// Closed source that emitted the differing entry.
     pub source: EventSource,
     /// Open-set payload kind for the differing entry.
@@ -1813,7 +2052,7 @@ pub(super) fn event_log_causal_divergence_point(
 ) -> EventLogCausalDivergencePoint {
     EventLogCausalDivergencePoint {
         raw_index: entry.raw_index,
-        at: entry.entry.time().icount.clone(),
+        at: entry.entry.time().stamp.clone(),
         source: entry.entry.source().clone(),
         kind: entry.entry.event_payload().kind().to_owned(),
     }
@@ -1846,13 +2085,28 @@ pub enum EventLogCoverageObservation {
     },
 }
 
+impl EventLogCoverageObservation {
+    /// Returns the deterministic identity of this semantic coverage point.
+    ///
+    /// The identity excludes event position and source metadata so repeated
+    /// observations of one basic block or named marker collapse to one
+    /// grow-only coverage identity.
+    #[must_use]
+    pub fn content_hash(&self) -> ContentHash {
+        ContentHash::from_canonical_material(
+            "crucible.scheduler.event-log.coverage-observation.v1",
+            &event_log_coverage_observation_material(self),
+        )
+    }
+}
+
 /// One event-log entry retained by the coverage projection.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct EventLogCoverageProjectionEntry {
     /// Index of the entry in the original unified event log before filtering.
     pub raw_index: usize,
     /// Icount-stamped location where the coverage observation occurred.
-    pub at: EventLogIcountStamp,
+    pub at: EventLogTickStamp,
     /// Closed source that emitted the coverage entry.
     pub source: EventSource,
     /// Coverage observation carried by this entry.
@@ -1908,7 +2162,7 @@ pub fn event_log_coverage_projection(
         .collect::<Vec<_>>();
     let unique_material = entries
         .iter()
-        .map(event_log_coverage_observation_material)
+        .map(|entry| event_log_coverage_observation_material(&entry.observation))
         .collect::<BTreeSet<_>>();
     let content_hash = if unique_material.is_empty() {
         ContentHash::default()
@@ -1986,7 +2240,7 @@ pub struct EventLogAssertionProximityProjectionEntry {
     /// Index of the entry in the original unified event log before filtering.
     pub raw_index: usize,
     /// Icount-stamped location where the proximity observation occurred.
-    pub at: EventLogIcountStamp,
+    pub at: EventLogTickStamp,
     /// Closed source that emitted the proximity entry.
     pub source: EventSource,
     /// Assertion whose predicate produced this distance.

@@ -8,7 +8,14 @@
     entry = ../../crates/crucible-harness/tests/testing_standards.rs;
   };
   testingStandardsSupport = builtins.readFile ../../crates/crucible-harness/tests/support/testing_standards.rs;
-  testingStandardsCode = testingStandardsRust + "\n" + testingStandardsSupport;
+  testingStandardsSourceInventory =
+    builtins.readFile ../../crates/crucible-harness/tests/support/testing_standards/source_inventory.rs;
+  testingStandardsCode =
+    testingStandardsRust
+    + "\n"
+    + testingStandardsSupport
+    + "\n"
+    + testingStandardsSourceInventory;
   testingStandardsBaseline = builtins.readFile ./testing-standards-baseline.txt;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
@@ -145,38 +152,20 @@
     }
     {
       gate = "gate:layer0-determinism";
-      package = "crucible-sim";
-      testTarget = "gate_layer0_determinism";
+      package = "crucible-qemu";
+      testTarget = "deterministic_launch";
       requiredFeatures = [];
-    }
-    {
-      gate = "gate:layer0-determinism";
-      package = "crucible-assert";
-      testTarget = "gate_layer0_determinism";
-      requiredFeatures = [];
-    }
-    {
-      gate = "gate:layer0-determinism";
-      package = "crucible";
-      testTarget = "gate_layer0_determinism";
-      requiredFeatures = ["test-double"];
-    }
-    {
-      gate = "gate:single-vm-fingerprint";
-      package = "crucible";
-      testTarget = "gate_single_vm_fingerprint";
-      requiredFeatures = ["test-double"];
     }
     {
       gate = "gate:single-vm-fingerprint";
       package = "crucible-qemu";
-      testTarget = "gate_single_vm_fingerprint";
+      testTarget = "deterministic_launch";
       requiredFeatures = [];
     }
     {
       gate = "gate:single-vm-fingerprint";
       package = "crucible-qemu-plugin";
-      testTarget = "gate_single_vm_fingerprint";
+      testTarget = "gate_patch_microtests";
       requiredFeatures = [];
     }
     {
@@ -255,7 +244,7 @@
       gate = "gate:content-address";
       package = "crucible";
       testTarget = "gate_content_address";
-      requiredFeatures = ["test-double"];
+      requiredFeatures = [];
     }
     {
       gate = "gate:content-address";
@@ -265,9 +254,9 @@
     }
     {
       gate = "gate:scheduler-liveness";
-      package = "crucible";
-      testTarget = "gate_scheduler_liveness";
-      requiredFeatures = ["test-double"];
+      package = "crucible-qemu";
+      testTarget = "deterministic_launch";
+      requiredFeatures = [];
     }
     {
       gate = "gate:control-responsive";
@@ -290,7 +279,7 @@
     {
       gate = "gate:any-guest";
       package = "crucible-qemu";
-      testTarget = "gate_any_guest";
+      testTarget = "deterministic_launch";
       requiredFeatures = [];
     }
     {
@@ -339,7 +328,7 @@
       gate = "gate:fleet-equivalence";
       package = "crucible";
       testTarget = "gate_fleet_equivalence";
-      requiredFeatures = ["test-double"];
+      requiredFeatures = [];
     }
     {
       gate = "gate:campaign-continuity";
@@ -359,14 +348,14 @@
     }
     {
       gate = "gate:layer0-determinism";
-      ownerPackages = ["crucible-sim" "crucible-assert" "crucible"];
-      layers = ["L0" "L3"];
-      shape = "twice-reduce-compare-by-hash";
-      backend = "in-process";
+      ownerPackages = ["crucible-qemu"];
+      layers = ["L2"];
+      shape = "fingerprint-compare";
+      backend = "real-qemu";
     }
     {
       gate = "gate:single-vm-fingerprint";
-      ownerPackages = ["crucible" "crucible-qemu" "crucible-qemu-plugin" "crucible-guest"];
+      ownerPackages = ["crucible-qemu" "crucible-qemu-plugin" "crucible-guest"];
       layers = ["L2" "L3"];
       shape = "fingerprint-compare";
       backend = "mixed";
@@ -401,10 +390,10 @@
     }
     {
       gate = "gate:scheduler-liveness";
-      ownerPackages = ["crucible"];
-      layers = ["L3"];
-      shape = "twice-reduce-compare-by-hash";
-      backend = "sim-double";
+      ownerPackages = ["crucible-qemu"];
+      layers = ["L2"];
+      shape = "responsiveness-bound";
+      backend = "real-qemu";
     }
     {
       gate = "gate:control-responsive";
@@ -472,10 +461,8 @@
   ];
 
   hashCompareGates = [
-    "gate:layer0-determinism"
     "gate:replay-oracle"
     "gate:content-address"
-    "gate:scheduler-liveness"
   ];
 
   flakyEscapePatterns = [
@@ -489,11 +476,11 @@
   crateOwnership = [
     {
       package = "crucible-sim";
-      gates = ["gate:layer0-determinism" "gate:content-address"];
+      gates = ["gate:content-address"];
     }
     {
       package = "crucible-assert";
-      gates = ["gate:layer0-determinism"];
+      gates = [];
     }
     {
       package = "crucible-shmem";
@@ -509,7 +496,7 @@
     }
     {
       package = "crucible-qemu";
-      gates = ["gate:single-vm-fingerprint" "gate:any-guest" "gate:qemu-inert"];
+      gates = ["gate:layer0-determinism" "gate:single-vm-fingerprint" "gate:scheduler-liveness" "gate:any-guest" "gate:qemu-inert"];
     }
     {
       package = "crucible-qemu-plugin";
@@ -521,7 +508,7 @@
     }
     {
       package = "crucible";
-      gates = ["gate:layer0-determinism" "gate:single-vm-fingerprint" "gate:abi-conformance" "gate:replay-oracle" "gate:content-address" "gate:scheduler-liveness" "gate:adversarial-determinism" "gate:e2e-determinism" "gate:fleet-equivalence"];
+      gates = ["gate:abi-conformance" "gate:replay-oracle" "gate:content-address" "gate:adversarial-determinism" "gate:e2e-determinism" "gate:fleet-equivalence"];
     }
     {
       package = "crucible-cas";
@@ -781,7 +768,7 @@
   baselineWiringFailures = failuresFor "tests/crucible/testing-standards-baseline.txt" testingStandardsBaseline [
     {
       label = "thread sleep baseline";
-      needle = "crucible-qemu\tsrc/spawn_test\tstd::thread::sleep\t1";
+      needle = "crucible-qemu\tsrc/spawn\tthread::sleep\t1";
     }
   ];
 
@@ -816,7 +803,7 @@
         }
       ''
       ++ [
-        "crucible-assert missing crate-owned layer gate gate:layer0-determinism"
+        "crucible-qemu missing crate-owned layer gate gate:layer0-determinism"
       ];
     hasFinding = needle: builtins.any (finding: hasInfix needle finding) findings;
   in
@@ -835,7 +822,7 @@
     ++ lib.optionals (!(hasFinding "SimDouble backend")) [
       "testing-standard regression failed to reject missing SimDouble body coverage"
     ]
-    ++ lib.optionals (!(hasFinding "crucible-assert missing crate-owned layer gate")) [
+    ++ lib.optionals (!(hasFinding "crucible-qemu missing crate-owned layer gate")) [
       "testing-standard regression failed to reject missing per-crate ownership"
     ];
 

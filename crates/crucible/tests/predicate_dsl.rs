@@ -18,7 +18,12 @@ fn predicate_dsl_desugars_supported_world_predicates_and_preserves_host_extensio
     let fixture = crucible::happy_path_scenario().expect("happy-path fixture should build");
     let world = fixture.scenario.world();
     let plan = Plan::empty();
-    let server = world.vm_nodes()[0].id.clone();
+    let server = world
+        .vm_nodes()
+        .first()
+        .expect("happy-path world should contain a VM node")
+        .id
+        .clone();
     let dsl = Properties::from_assertions_for_world_and_plan(
         world,
         &plan,

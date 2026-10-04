@@ -1,6 +1,6 @@
-# Patch 0109: dispatch exact control-boundary node faults
+# Capability task 0109: dispatch exact control-boundary node faults
 
-Patch `0109-crucible-control-boundary-node-faults.patch` closes the halted-node
+The atomic patch `crucible-qemu-11.1.1.patch` closes the halted-node
 command deadlock in the production QEMU mutation path.
 
 ## Problem
@@ -8,7 +8,7 @@ command deadlock in the production QEMU mutation path.
 The host publishes a typed node-fault command and rings the shared control
 doorbell without authorizing guest progress. A running guest reaches another
 node-boundary dispatch naturally, but a halted guest returns through QEMU's
-drained control callback. Before this patch that callback let the plugin enqueue
+drained control callback. Without this capability that callback let the plugin enqueue
 the command only after the existing node-boundary dispatcher had run. The host
 then waited for a result while correctly refusing to advance the guest, leaving
 the command permanently pending.
@@ -53,7 +53,7 @@ PermanentFailure retained without invoking scheduler publication or QEMU
 resume.
 
 The successor launch is rebound to the terminal snapshot's next network-TX
-sequence and the scheduler checkpoint's app-random stream positions. QEMU runs
+sequence and the scheduler checkpoint's RNG-draw stream positions. QEMU runs
 a throwaway boot-barrier quantum before loading VMState, so the plugin retains
 prebuilt launch continuations and reapplies them exactly once when it first
 observes the pending logical-time restore generation. This reset precedes both

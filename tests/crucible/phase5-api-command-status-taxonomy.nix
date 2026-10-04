@@ -164,8 +164,8 @@
         needle = "rpc_status_code_from_wire_name";
       }
       {
-        label = "RPC minor bumped";
-        needle = "pub const RPC_PROTOCOL_MINOR: u16 = 1;";
+        label = "current RPC minor version";
+        needle = "pub const RPC_PROTOCOL_MINOR: u16 = 0;";
       }
       {
         label = "rejected command golden vector";
@@ -290,12 +290,17 @@ in
   pkgs.mkDerivation {
     pname = "crucible-phase5-api-command-status-taxonomy";
     version = "0";
+    LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+    runtimeDeps = [pkgs.sqlite];
     src = crucibleSrc;
 
     buildDeps = [
       pkgs.coreutils
       pkgs.rust
       pkgs.sed
+
+      pkgs.pkg-config
+      pkgs.sqlite
     ];
 
     CRUCIBLE_T_API_10_FAILURES = failureText;

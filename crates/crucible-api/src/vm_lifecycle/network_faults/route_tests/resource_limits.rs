@@ -350,7 +350,7 @@ fn shared_medium_and_custody_admission_share_the_authored_queue_budget() {
         &opportunity_at(1, 0),
         2,
         2,
-        1_000,
+        8_000,
         &id("custody-policy"),
         &id("contact-plan"),
         crucible::model::NetworkBundlePriority::Normal,
@@ -370,7 +370,7 @@ fn shared_medium_and_custody_admission_share_the_authored_queue_budget() {
             &opportunity_at(2, 0),
             2,
             2,
-            1_000,
+            8_000,
             &id("custody-policy"),
             &id("contact-plan"),
             crucible::model::NetworkBundlePriority::Normal,
@@ -415,7 +415,7 @@ fn contact_and_restore_admission_use_authored_aggregate_coordinates() {
             &intervals[0],
             &id("sender"),
             &id("receiver"),
-            110,
+            110_000,
             1,
             ContentHash::from_bytes(b"resource-contact"),
             &custody_action(),
@@ -453,7 +453,7 @@ fn contact_and_restore_admission_use_authored_aggregate_coordinates() {
             transition_sequence: 0,
         },
         created_by: ContentHash::from_bytes(b"connection-opportunity"),
-        last_used_nanos: 0,
+        last_used_ticks: 0,
     };
     let mut state = NetworkEffectRuntimeState::default();
     state
@@ -491,6 +491,9 @@ fn contact_and_restore_admission_use_authored_aggregate_coordinates() {
         observations:
             super::super::super::storage_faults::ProductionFaultObservationJournal::default(),
         effect_state: state,
+        campaign_records: Vec::new(),
+        campaign_replay_identity: None,
+        campaign_marker_releases: Vec::new(),
     };
     let error = scheduler_error(
         validate_network_adapter_checkpoint(&checkpoint, limits),
@@ -535,6 +538,9 @@ fn contact_and_restore_admission_use_authored_aggregate_coordinates() {
         observations:
             super::super::super::storage_faults::ProductionFaultObservationJournal::default(),
         effect_state: state,
+        campaign_records: Vec::new(),
+        campaign_replay_identity: None,
+        campaign_marker_releases: Vec::new(),
     };
     let limits = FaultResourceLimits {
         network_queue_frames: 1,

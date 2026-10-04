@@ -34,21 +34,21 @@ fn spatial_components_have_independent_content_addresses_and_cross_reuse()
     assert_eq!(
         world.id(),
         ContentHash::from_canonical_material(
-            "crucible.model.world.v4",
+            "crucible.model.world.v6",
             std::str::from_utf8(&world.canonical_bytes())?,
         )
     );
     assert_eq!(
         plan.content_hash(),
         ContentHash::from_canonical_material(
-            "crucible.model.plan.v5",
+            "crucible.model.plan.v6",
             std::str::from_utf8(&plan.canonical_bytes())?,
         )
     );
     assert_eq!(
         properties.content_hash(),
         ContentHash::from_canonical_material(
-            "crucible.model.properties.v1",
+            "crucible.model.properties.v2",
             std::str::from_utf8(&properties.canonical_bytes())?,
         )
     );
@@ -191,14 +191,23 @@ fn scenario_layers_stay_structurally_orthogonal() -> Result<(), Box<dyn std::err
 fn scenario_builder_keeps_authoring_layers_structurally_orthogonal()
 -> Result<(), Box<dyn std::error::Error>> {
     let (manual_world, plan, properties) = spatial_fixture()?;
+    let manual_world = World::from_nodes_and_links(
+        manual_world.vm_nodes().to_vec(),
+        vec![LinkDef::new(node_id("a"), node_id("b"))?],
+    )?;
     let seed = Seed::from_u64(41);
     let authored = ScenarioBuilder::new()
         .node(
             "a",
-            NodeTemplate::from_world_node(&manual_world.vm_nodes()[0]),
+            NodeTemplate::from_world_node(
+                manual_world
+                    .vm_nodes()
+                    .first()
+                    .ok_or("fixture node a missing")?,
+            ),
         )
         .node_like("b", "a")
-        .link_def(manual_world.links()[0].clone())
+        .link("a", "b")
         .plan(plan.clone())
         .properties(properties.clone())
         .seed(seed)
@@ -229,7 +238,13 @@ fn scenario_builder_keeps_authoring_layers_structurally_orthogonal()
         wrong_properties,
         Err(EngineError::PropertyPredicateUnknownNode { .. })
     ));
-    let incompatible_world = world_from_nodes(vec![manual_world.vm_nodes()[1].clone()]);
+    let incompatible_world = world_from_nodes(vec![
+        manual_world
+            .vm_nodes()
+            .get(1)
+            .ok_or("fixture node b missing")?
+            .clone(),
+    ]);
     assert!(
         ScenarioBuilder::new()
             .world(&incompatible_world)
@@ -255,7 +270,13 @@ fn properties_content_address_is_orthogonal_and_validated() -> Result<(), Box<dy
 
     assert_eq!(properties.assertions(), same_properties.assertions());
     assert_eq!(properties.content_hash(), same_properties.content_hash());
-    let incompatible_world = world_from_nodes(vec![world.vm_nodes()[1].clone()]);
+    let incompatible_world = world_from_nodes(vec![
+        world
+            .vm_nodes()
+            .get(1)
+            .ok_or("fixture node b missing")?
+            .clone(),
+    ]);
     assert!(matches!(
         incompatible_world.scenario_def_with_plan_and_properties(&Plan::empty(), &properties),
         Err(EngineError::PropertyPredicateUnknownNode { .. }),
@@ -294,8 +315,18 @@ fn plan_content_address_preserves_declared_event_order() -> Result<(), Box<dyn s
         Plan::from_compact_binary_for_world(&world, &plan.to_compact_binary())?.content_hash(),
         plan.content_hash(),
     );
-    let incompatible_world = world_from_nodes(vec![world.vm_nodes()[1].clone()]);
-    assert!(incompatible_world.scenario_def_with_plan(&plan).is_err());
+    let incompatible_world = world_from_nodes(vec![
+        world
+            .vm_nodes()
+            .get(1)
+            .ok_or("fixture node b missing")?
+            .clone(),
+    ]);
+    assert!(
+        incompatible_world
+            .scenario_def_with_plan_and_properties(&plan, &Properties::empty())
+            .is_err()
+    );
 
     Ok(())
 }
@@ -314,7 +345,10 @@ fn serializable_scenario_form_round_trips_and_rejects_host_paths()
     assert_eq!(parsed_binary, form);
     assert_eq!(parsed_binary.canonical_bytes(), form.canonical_bytes());
     assert_eq!(parsed_binary.to_canonical_toml()?, toml);
-    let kernel = world.vm_nodes()[0]
+    let kernel = world
+        .vm_nodes()
+        .first()
+        .ok_or("fixture node a missing")?
         .kernel
         .unwrap_or_else(|| panic!("fixture has a content-addressed kernel"));
     let invalid_path_toml = toml.replacen(&kernel.to_uri(), "/tmp/host-kernel", 1);
@@ -323,9 +357,30 @@ fn serializable_scenario_form_round_trips_and_rejects_host_paths()
         Err(EngineError::ScenarioImageReferenceNotContentAddressed { .. }),
     ));
     for (field, reference) in [
-        ("kernel", world.vm_nodes()[0].kernel),
-        ("root_image", world.vm_nodes()[0].root_image),
-        ("initrd", world.vm_nodes()[0].initrd),
+        (
+            "kernel",
+            world
+                .vm_nodes()
+                .first()
+                .ok_or("fixture node a missing")?
+                .kernel,
+        ),
+        (
+            "root_image",
+            world
+                .vm_nodes()
+                .first()
+                .ok_or("fixture node a missing")?
+                .root_image,
+        ),
+        (
+            "initrd",
+            world
+                .vm_nodes()
+                .first()
+                .ok_or("fixture node a missing")?
+                .initrd,
+        ),
     ] {
         assert!(toml.contains(&format!(
             "{field} = \"{}\"",
@@ -428,7 +483,8 @@ fn reproduction_artifact_is_self_contained_and_replay_checked()
         NodeTemplate::fixed_icount(Icount { retired: 24 }),
     );
     let pinned = family.instantiate_sample(0)?.genesis_configuration();
-    let pinned_genesis_artifact = ReproductionArtifact::from_pinned_configuration(&pinned)?;
+    let pinned_genesis_artifact =
+        ReproductionArtifact::capture(pinned.scenario_form(), &pinned.configuration().schedule)?;
     assert!(pinned_genesis_artifact.schedule().is_empty());
     assert_eq!(
         pinned_genesis_artifact.replay()?.state,
@@ -483,16 +539,19 @@ fn canonicalization_hashes_meaning_not_authoring_spelling() -> Result<(), Box<dy
 fn scenario_def_form_rejects_well_formedness_matrix_before_hashing()
 -> Result<(), Box<dyn std::error::Error>> {
     let (world, plan, properties) = spatial_fixture()?;
-    let a = world.vm_nodes()[0].clone();
+    let a = world
+        .vm_nodes()
+        .first()
+        .ok_or("fixture node a missing")?
+        .clone();
     assert!(matches!(
         World::from_nodes_and_links(vec![a.clone(), a.clone()], Vec::new()),
         Err(EngineError::DuplicateWorldNodeId { .. }),
     ));
-    for (memory_mib, smp_vcpus, icount_shift) in [(0, 1, 0), (512, 0, 0), (512, 1, 64)] {
+    for (memory_mib, smp_vcpus) in [(0, 1), (512, 0)] {
         let invalid_node = WorldNode {
             memory_mib,
             smp_vcpus,
-            icount_shift,
             ..a.clone()
         };
         assert!(World::from_nodes_and_links(vec![invalid_node], Vec::new()).is_err());
@@ -514,8 +573,8 @@ fn scenario_def_form_rejects_well_formedness_matrix_before_hashing()
     let subfloor_link = LinkDef::with_transport(
         node_id("a"),
         node_id("b"),
-        SimDuration { nanos: 1 },
-        SimDuration { nanos: 1 },
+        MIN_LINK_LATENCY,
+        SimDuration { ticks: 1 },
         LinkLossProbability::ZERO,
         None,
     );
@@ -523,7 +582,13 @@ fn scenario_def_form_rejects_well_formedness_matrix_before_hashing()
         subfloor_link,
         Err(EngineError::WorldLinkJitterBelowLatencyFloor { .. })
     ));
-    let incompatible_world = world_from_nodes(vec![world.vm_nodes()[1].clone()]);
+    let incompatible_world = world_from_nodes(vec![
+        world
+            .vm_nodes()
+            .get(1)
+            .ok_or("fixture node b missing")?
+            .clone(),
+    ]);
     assert!(
         ScenarioDefForm::from_components(
             &incompatible_world,
@@ -543,9 +608,12 @@ fn scenario_def_form_rejects_well_formedness_matrix_before_hashing()
         Err(EngineError::PropertyPredicateUnknownNode { .. })
     ));
     let form = ScenarioDefForm::from_components(&world, &plan, &properties, Seed::default())?;
-    let invalid_toml = form
-        .to_canonical_toml()?
-        .replacen("smp_vcpus = 1", "smp_vcpus = 0", 1);
+    let canonical_toml = form.to_canonical_toml()?;
+    let removed_clock_setting =
+        canonical_toml.replacen("smp_vcpus = 1", "smp_vcpus = 1\nicount_shift = 64", 1);
+    assert!(ScenarioDefForm::from_canonical_toml(&removed_clock_setting).is_err());
+
+    let invalid_toml = canonical_toml.replacen("smp_vcpus = 1", "smp_vcpus = 0", 1);
     assert!(matches!(
         ScenarioDefForm::from_canonical_toml(&invalid_toml),
         Err(EngineError::WorldNodeSmpVcpuCountZero { .. })

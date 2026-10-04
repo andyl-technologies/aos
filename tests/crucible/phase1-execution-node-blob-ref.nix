@@ -106,20 +106,16 @@
     ]
     ++ failuresFor "crates/crucible-qemu/src/realization.rs" qemuRealization [
       {
-        label = "QEMU bake node blob regression";
-        needle = "qemu_bake_records_baked_node_blob_refs";
-      }
-      {
         label = "QEMU baked genesis node blob validation";
         needle = "fn validate_baked_genesis_node_blobs";
       }
       {
         label = "QEMU missing baked node blob regression";
-        needle = "qemu_instantiate_rejects_baked_genesis_missing_node_blob";
+        needle = "validate_baked_genesis_node_blobs(snapshot, world)?;";
       }
       {
-        label = "QEMU fake bake emits node blobs";
-        needle = "qemu_baked_node_blobs(world)";
+        label = "QEMU requires a baked ref for every VM node";
+        needle = "Some(NodeBlobRef::Baked(_))";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -212,7 +208,7 @@ in
               --manifest-path crates/Cargo.toml \
               -p crucible-qemu \
               --lib \
-              node_blob \
+              baked_checkpoint_rejects_unrelated_configuration \
               -- --test-threads=1
           '';
         }
@@ -230,7 +226,7 @@ in
             checkpoint_node_blobs=homogeneous-map
             blob_identity=resolved-content-hash
             materialized_snapshots=carry-cow-delta-node-blobs
-            qemu_bake_node_blobs=present-and-validated-for-world-nodes
+            qemu_baked_restore_node_blobs=present-and-validated-for-world-nodes
             RESULT
           '';
         }

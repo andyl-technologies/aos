@@ -34,6 +34,71 @@ fn choice() -> SignalChoiceContext {
 }
 
 #[test]
+fn pulse_is_inactive_before_start_without_hiding_coordinate_identity_errors() {
+    let output = id("pulse");
+    let source_node = id("source-node");
+    let pulse = SignalNode {
+        id: output.clone(),
+        domain: SignalDomain::NodeCounter,
+        output: shape(SignalValueType::Bool, SignalUnit::Dimensionless),
+        inputs: Vec::new(),
+        kind: SignalNodeKind::Source(SignalSourceSpecification::Pulse {
+            start: SignalCoordinate::NodeCounter {
+                node: source_node.clone(),
+                retired_instructions: 10,
+            },
+            duration: 2,
+            inactive: SignalValue::Bool(false),
+            active: SignalValue::Bool(true),
+        }),
+    };
+    let program = SignalProgram::new(
+        vec![pulse],
+        vec![output.clone()],
+        SignalResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("pulse program: {error}"));
+    let store = MemoryDagStore::new();
+    let provider = DagSignalArtifactProvider::new(&store);
+    let mut evaluator = SignalEvaluator::new(
+        &program,
+        &provider,
+        SignalBoundarySnapshot::default(),
+        FaultResourceLimits::default(),
+    )
+    .unwrap_or_else(|error| panic!("pulse evaluator: {error}"));
+
+    let evaluate = |evaluator: &mut SignalEvaluator<'_>, node, retired_instructions| {
+        evaluator.evaluate(&SignalEvaluationRequest {
+            output: output.clone(),
+            coordinate: SignalCoordinate::NodeCounter {
+                node,
+                retired_instructions,
+            },
+            same_coordinate_sequence: 0,
+            choice: choice(),
+        })
+    };
+
+    assert!(matches!(
+        evaluate(&mut evaluator, source_node.clone(), 9),
+        Ok(EvaluatedSignal::Value(SignalValue::Bool(false)))
+    ));
+    assert!(matches!(
+        evaluate(&mut evaluator, source_node.clone(), 10),
+        Ok(EvaluatedSignal::Value(SignalValue::Bool(true)))
+    ));
+    assert!(matches!(
+        evaluate(&mut evaluator, source_node, 12),
+        Ok(EvaluatedSignal::Value(SignalValue::Bool(false)))
+    ));
+    assert!(matches!(
+        evaluate(&mut evaluator, id("different-node"), 9),
+        Err(SignalEvaluationError::IncompatibleCoordinates)
+    ));
+}
+
+#[test]
 fn ramp_and_ratio_arithmetic_are_exact() {
     let value_shape = shape(SignalValueType::I64, SignalUnit::Dimensionless);
     let ramp = SignalNode {
@@ -42,8 +107,8 @@ fn ramp_and_ratio_arithmetic_are_exact() {
         output: value_shape.clone(),
         inputs: Vec::new(),
         kind: SignalNodeKind::Source(SignalSourceSpecification::Ramp {
-            start: SignalCoordinate::VirtualTime { nanos: 0 },
-            end: SignalCoordinate::VirtualTime { nanos: 10 },
+            start: SignalCoordinate::VirtualTime { ticks: 0 },
+            end: SignalCoordinate::VirtualTime { ticks: 10 },
             start_value: SignalValue::I64(-10),
             end_value: SignalValue::I64(10),
             rounding: SignalRounding::NearestTiesToEven,
@@ -85,7 +150,7 @@ fn ramp_and_ratio_arithmetic_are_exact() {
     };
     let result = evaluator.evaluate(&SignalEvaluationRequest {
         output: id("scaled"),
-        coordinate: SignalCoordinate::VirtualTime { nanos: 7 },
+        coordinate: SignalCoordinate::VirtualTime { ticks: 7 },
         same_coordinate_sequence: 0,
         choice: choice(),
     });
@@ -144,7 +209,7 @@ fn ratio_division_preserves_a_negative_divisor() {
     assert!(matches!(
         evaluator.evaluate(&SignalEvaluationRequest {
             output: id("divided"),
-            coordinate: SignalCoordinate::VirtualTime { nanos: 0 },
+            coordinate: SignalCoordinate::VirtualTime { ticks: 0 },
             same_coordinate_sequence: 0,
             choice: choice(),
         }),
@@ -229,7 +294,7 @@ fn field_sample_uses_content_addressed_grid_and_explicit_position() {
     };
     let result = evaluator.evaluate(&SignalEvaluationRequest {
         output: id("sample"),
-        coordinate: SignalCoordinate::VirtualTime { nanos: 1 },
+        coordinate: SignalCoordinate::VirtualTime { ticks: 1 },
         same_coordinate_sequence: 0,
         choice: choice(),
     });
@@ -253,7 +318,7 @@ fn checkpoint_restore_preserves_stateful_continuation() {
         kind: SignalNodeKind::Source(SignalSourceSpecification::EventSequence {
             events: vec![
                 SignalPoint {
-                    coordinate: SignalCoordinate::VirtualTime { nanos: 1 },
+                    coordinate: SignalCoordinate::VirtualTime { ticks: 1 },
                     sequence: 0,
                     value: SignalValue::Event {
                         schema: event_schema.clone(),
@@ -261,7 +326,7 @@ fn checkpoint_restore_preserves_stateful_continuation() {
                     },
                 },
                 SignalPoint {
-                    coordinate: SignalCoordinate::VirtualTime { nanos: 2 },
+                    coordinate: SignalCoordinate::VirtualTime { ticks: 2 },
                     sequence: 0,
                     value: SignalValue::Event {
                         schema: event_schema,
@@ -307,7 +372,7 @@ fn checkpoint_restore_preserves_stateful_continuation() {
     };
     let first = SignalEvaluationRequest {
         output: id("counter"),
-        coordinate: SignalCoordinate::VirtualTime { nanos: 1 },
+        coordinate: SignalCoordinate::VirtualTime { ticks: 1 },
         same_coordinate_sequence: 0,
         choice: choice(),
     };
@@ -330,7 +395,7 @@ fn checkpoint_restore_preserves_stateful_continuation() {
     };
     let second = SignalEvaluationRequest {
         output: id("counter"),
-        coordinate: SignalCoordinate::VirtualTime { nanos: 2 },
+        coordinate: SignalCoordinate::VirtualTime { ticks: 2 },
         same_coordinate_sequence: 0,
         choice: choice(),
     };
@@ -355,7 +420,7 @@ fn event_merge_maps_global_sequence_to_source_then_local_sequence() {
         inputs: Vec::new(),
         kind: SignalNodeKind::Source(SignalSourceSpecification::EventSequence {
             events: vec![SignalPoint {
-                coordinate: SignalCoordinate::VirtualTime { nanos: 10 },
+                coordinate: SignalCoordinate::VirtualTime { ticks: 10 },
                 sequence: 0,
                 value: SignalValue::Event {
                     schema: event_schema.clone(),
@@ -395,7 +460,7 @@ fn event_merge_maps_global_sequence_to_source_then_local_sequence() {
     let evaluate = |evaluator: &mut SignalEvaluator<'_>, sequence| {
         evaluator.evaluate(&SignalEvaluationRequest {
             output: id("merge"),
-            coordinate: SignalCoordinate::VirtualTime { nanos: 10 },
+            coordinate: SignalCoordinate::VirtualTime { ticks: 10 },
             same_coordinate_sequence: sequence,
             choice: choice(),
         })
@@ -470,16 +535,16 @@ fn cadence_integrator_commits_prior_input_at_boundaries() {
         accumulator: SignalValue::I64(0),
         pending: SignalValue::I64(0),
         previous_input: None,
-        last_nanos: None,
+        last_ticks: None,
     };
     let mut emitted = Vec::new();
-    let mut evaluate = |nanos, input| {
+    let mut evaluate = |ticks, input| {
         evaluate_stateful_node(
             &node,
             &specification,
             &SignalEvaluationRequest {
                 output: id("integrator"),
-                coordinate: SignalCoordinate::VirtualTime { nanos },
+                coordinate: SignalCoordinate::VirtualTime { ticks },
                 same_coordinate_sequence: 0,
                 choice: choice(),
             },
@@ -495,11 +560,11 @@ fn cadence_integrator_commits_prior_input_at_boundaries() {
         Ok(EvaluatedSignal::Value(SignalValue::I64(0)))
     ));
     assert!(matches!(
-        evaluate(5, 4),
+        evaluate(5_000, 4),
         Ok(EvaluatedSignal::Value(SignalValue::I64(0)))
     ));
     assert!(matches!(
-        evaluate(10, 6),
+        evaluate(10_000, 6),
         Ok(EvaluatedSignal::Value(SignalValue::I64(3)))
     ));
 }
@@ -531,7 +596,7 @@ fn leaky_integrator_rejects_excess_catch_up_before_mutation() {
     let mut state = EvaluatorNodeState::LeakyIntegrator {
         accumulator: SignalValue::I64(0),
         previous_input: None,
-        last_nanos: None,
+        last_ticks: None,
     };
     let mut emitted = Vec::new();
     let first = evaluate_stateful_node(
@@ -539,7 +604,7 @@ fn leaky_integrator_rejects_excess_catch_up_before_mutation() {
         &specification,
         &SignalEvaluationRequest {
             output: id("leaky"),
-            coordinate: SignalCoordinate::VirtualTime { nanos: 0 },
+            coordinate: SignalCoordinate::VirtualTime { ticks: 0 },
             same_coordinate_sequence: 0,
             choice: choice(),
         },
@@ -555,7 +620,7 @@ fn leaky_integrator_rejects_excess_catch_up_before_mutation() {
         &specification,
         &SignalEvaluationRequest {
             output: id("leaky"),
-            coordinate: SignalCoordinate::VirtualTime { nanos: 30 },
+            coordinate: SignalCoordinate::VirtualTime { ticks: 30_000 },
             same_coordinate_sequence: 0,
             choice: choice(),
         },
@@ -590,7 +655,7 @@ fn stochastic_keys_ignore_unselected_identity_domains() {
     };
     let request = SignalEvaluationRequest {
         output: id("random"),
-        coordinate: SignalCoordinate::VirtualTime { nanos: 7 },
+        coordinate: SignalCoordinate::VirtualTime { ticks: 7 },
         same_coordinate_sequence: 2,
         choice: choice(),
     };
@@ -602,7 +667,7 @@ fn stochastic_keys_ignore_unselected_identity_domains() {
     );
 
     let mut moved = unrelated.clone();
-    moved.coordinate = SignalCoordinate::VirtualTime { nanos: 8 };
+    moved.coordinate = SignalCoordinate::VirtualTime { ticks: 8 };
     moved.same_coordinate_sequence = 0;
     assert_eq!(
         keyed_u64(&node, &unrelated, StochasticKeyDomain::Transition, 0),
@@ -618,7 +683,7 @@ fn window_includes_the_current_live_sample() {
         4,
         SignalRounding::NearestTiesToEven,
         SignalOverflow::Error,
-        &SignalCoordinate::VirtualTime { nanos: 10 },
+        &SignalCoordinate::VirtualTime { ticks: 10 },
         0,
         None,
         &EvaluatedSignal::Value(SignalValue::I64(7)),

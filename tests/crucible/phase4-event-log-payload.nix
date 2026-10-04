@@ -206,7 +206,7 @@
       }
       {
         label = "observational error-level diagnostic";
-        needle = "diagnostic_error.class(), EventClass::Observational";
+        needle = "diagnostic_error.class(),\n        SchedulerEventLogClass::Observational";
       }
     ]
     ++ failuresFor "crates/crucible/tests/formal_trace_export.rs" formalTraceTest [

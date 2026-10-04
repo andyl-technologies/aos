@@ -52,7 +52,7 @@ impl FaultBindingRuntime<'_> {
             state.active = prior.active;
             state.transition_sequence = prior.transition_sequence;
             state.pending_activation = prior.pending_activation;
-            state.pending_since_nanos = prior.pending_since_nanos;
+            state.pending_since_ticks = prior.pending_since_ticks;
             state.mapped_parameters = prior.mapped_parameters;
             state.mapped_values.clone_from(&prior.mapped_values);
             state.mapping_output.clone_from(&prior.mapping_output);

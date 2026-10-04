@@ -9,6 +9,8 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
+  propertiesTest = builtins.readFile ../../crates/crucible/tests/property_fingerprint_neutrality.rs;
+  coverageTest = builtins.readFile ../../crates/crucible/tests/coverage_condition_leaf.rs;
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
@@ -111,34 +113,32 @@
       model) [
       "crates/crucible/src/model.rs: properties identity field must not be public"
     ]
-    ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/tests/property_fingerprint_neutrality.rs" propertiesTest [
       {
-        label = "properties content-address regression";
-        needle = "fn properties_content_address_is_orthogonal_and_validated()";
+        label = "properties content-address test";
+        needle = "fn property_changes_move_scenario_identity_without_moving_run_material()";
       }
       {
-        label = "canonical assertion order";
-        needle = "assert_eq!(properties.assertions(), same_properties.assertions());";
+        label = "test checks properties identity changes";
+        needle = "removed.properties().content_hash(),";
       }
       {
-        label = "canonical properties identity";
-        needle = "assert_eq!(properties.content_hash(), same_properties.content_hash());";
+        label = "test checks scenario properties sensitivity";
+        needle = "property declaration must move the scenario hash";
       }
       {
-        label = "reuse and scenario sensitivity regression";
-        needle = "spatial_components_have_independent_content_addresses_and_cross_reuse";
+        label = "test checks properties do not move run components";
+        needle = "assert_same_run_components(&removed, &declared);";
       }
       {
-        label = "incompatible world rejection";
-        needle = "incompatible_world.scenario_def_with_plan_and_properties";
+        label = "test checks properties ref in scenario material";
+        needle = "assert_scenario_material_points_at_properties(&amended);";
       }
+    ]
+    ++ failuresFor "crates/crucible/tests/coverage_condition_leaf.rs" coverageTest [
       {
-        label = "incompatible plan rejection";
-        needle = "&plan, &Properties::empty()";
-      }
-      {
-        label = "undeclared predicate node rejection";
-        needle = "PropertyPredicateUnknownNode";
+        label = "test rejects undeclared property predicate node";
+        needle = "Err(EngineError::PropertyPredicateUnknownNode";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -201,8 +201,18 @@ in
               --target-dir "$TMPDIR/crucible-spatial-properties-component-target" \
               --manifest-path crates/Cargo.toml \
               -p crucible \
-              --lib \
-              properties_content_address \
+              --features test-double \
+              --test property_fingerprint_neutrality \
+              property_changes_move_scenario_identity_without_moving_run_material \
+              -- --test-threads=1
+            cargo test \
+              --frozen \
+              --offline \
+              --target-dir "$TMPDIR/crucible-spatial-properties-component-target" \
+              --manifest-path crates/Cargo.toml \
+              -p crucible \
+              --test coverage_condition_leaf \
+              coverage_point_properties_validate_referenced_nodes \
               -- --test-threads=1
           '';
         }

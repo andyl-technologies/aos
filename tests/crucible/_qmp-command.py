@@ -1,6 +1,7 @@
 """Runs a bounded QMP command and retains its complete reply transcript."""
 
 import json
+import math
 import socket
 import sys
 import time
@@ -47,7 +48,10 @@ def command(socket_path, request, output, timeout=15):
 
 if __name__ == "__main__":
     try:
-        command(sys.argv[1], json.loads(sys.argv[2]), sys.stdout)
+        timeout = float(sys.argv[3]) if len(sys.argv) > 3 else 15
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("QMP timeout must be finite and positive")
+        command(sys.argv[1], json.loads(sys.argv[2]), sys.stdout, timeout)
     except (OSError, ValueError) as error:
         print(f"QMP command failed: {error}", file=sys.stderr)
         sys.exit(1)
