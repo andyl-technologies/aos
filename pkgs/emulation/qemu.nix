@@ -98,6 +98,21 @@
     else null;
   version = atomicPatch.qemuVersion;
   isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+
+  # The Crucible check phase executes the built target programs, so a cross
+  # build would run them under the build machine's user-mode emulator. Upstream
+  # linux-user fork handling (still present in QEMU 11.1.1) drops the parent's
+  # other vCPUs from the child's CPU list but leaves their indices registered
+  # with the TCG plugin core. When the fork child of a multithreaded process
+  # starts a thread, the new vCPU reuses such an index, and a plugin-enabled
+  # emulator aborts in qemu_plugin_vcpu_init__async before the program under
+  # test runs. Every GLib trap subprocess, libqtest launch, and hot-fork case
+  # here forks from a process that already runs QEMU's call_rcu thread, and
+  # QEMU's RCU atfork child handler restarts that thread. The emulator defect,
+  # not the patch set, would decide those results, so only native builds run
+  # the Crucible checks and install their evidence.
+  runCrucibleChecks =
+    applyCruciblePatch && !fullUpstreamTestSuiteOnly && !stdenv.isCross;
   buildPython =
     if stdenv.isCross
     then buildPackages.python3
@@ -1509,7 +1524,7 @@ in
         {
           name = "check";
           script =
-            if applyCruciblePatch && !fullUpstreamTestSuiteOnly
+            if runCrucibleChecks
             then ''
               ${python3}/bin/python3 tests/unit/test-crucible-rr-halted-neighbor.py \
                 > rr-halted-neighbor.result
@@ -4223,7 +4238,7 @@ in
             ''}
 
             mkdir -p "$out/share/aos/crucible"
-            ${lib.optionalString applyCruciblePatch ''
+            ${lib.optionalString runCrucibleChecks ''
               install -m 644 block-backend-tests.tap \
                 "$out/share/aos/crucible/block-backend-tests.tap"
               install -m 644 aio-hot-fork-tests.tap \

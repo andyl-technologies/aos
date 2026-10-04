@@ -1341,8 +1341,11 @@ fn validate_diagnostic_trace_metadata(
     credentials: QemuChildCredentials,
 ) -> Result<(), QemuSpawnError> {
     let mode = metadata.st_mode & 0o7777;
+
+    let links = widen_link_count(metadata.st_nlink);
+
     if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
-        || metadata.st_nlink != 1
+        || links != 1
         || metadata.st_uid != credentials.user_id
         || metadata.st_gid != credentials.group_id
         || mode != 0o600
@@ -1350,13 +1353,21 @@ fn validate_diagnostic_trace_metadata(
         return Err(QemuSpawnError::DiagnosticTraceMetadata {
             file: file_name,
             file_type_mode: metadata.st_mode & libc::S_IFMT,
-            links: metadata.st_nlink,
+            links,
             user_id: metadata.st_uid,
             group_id: metadata.st_gid,
             mode,
         });
     }
     Ok(())
+}
+
+/// Widens a kernel hard-link count to the arch-independent error field type.
+///
+/// `st_nlink` is `u64` on x86_64 but `u32` on aarch64 Linux. The generic
+/// bound accepts either width without an identity conversion on x86_64.
+fn widen_link_count(links: impl Into<u64>) -> u64 {
+    links.into()
 }
 
 fn open_optional_root_overlay(directory: &OwnedFd) -> Result<Option<OwnedFd>, QemuSpawnError> {
