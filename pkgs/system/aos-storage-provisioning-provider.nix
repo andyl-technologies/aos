@@ -12,6 +12,7 @@
   mdadm,
   e2fsprogs,
   xfsprogs,
+  dosfstools,
   bash,
   coreutils,
   jq,
@@ -97,13 +98,23 @@ in
     cargoTestFlags = "-p aos-block-storage-provider -p aos-storage-provisioning";
     doCheck = true;
     buildDeps = [patchelf];
-    runtimeDeps = [systemd util-linux mdadm e2fsprogs xfsprogs bash coreutils jq aos];
+    runtimeDeps = [systemd util-linux mdadm e2fsprogs xfsprogs dosfstools bash coreutils jq aos];
 
     module = ./_aos-storage-provisioning-provider;
     moduleDeps = [aos-metadata-provider aos-nix-store-provider service-management storage-interface aos-boot-storage];
     preBuild = staticBuildSetup;
 
     postInstall = ''
+      # Repart invokes filesystem helpers by name. Its native caller clears the
+      # environment, so this package owns both their search path and scratch root.
+      cat > "$out/bin/aos-storage-repart" <<'EOF'
+      #!${bash}/bin/bash
+      export PATH="${util-linux}/bin:${util-linux}/sbin:${e2fsprogs}/sbin:${xfsprogs}/sbin:${dosfstools}/sbin"
+      export TMPDIR="''${TMPDIR:-/run/aos/storage-provisioning}"
+      exec "${systemd}/bin/systemd-repart" "$@"
+      EOF
+      chmod 0555 "$out/bin/aos-storage-repart"
+
       sed -e 's|@bash@|${bash}|g' \
           -e 's|@coreutils@|${coreutils}|g' \
           -e 's|@jq@|${jq}|g' \
@@ -112,6 +123,8 @@ in
           -e 's|@util-linux@|${util-linux}|g' \
           ${./_aos-storage-provisioning-provider/aos-storage-topology.sh} > "$out/bin/aos-storage-topology"
       chmod 0555 "$out/bin/aos-storage-topology"
+      ${bash}/bin/bash ${./_aos-storage-provisioning-provider/check-repart-helpers.sh} \
+        "$out/bin/aos-storage-repart" "$TMPDIR/repart-helper-check" "${coreutils}/bin/env"
       test -x "$out/bin/aos-storage-provisioning-provider"
       test -x "$out/bin/aos-storage-provisioning-marker-observer"
       if patchelf --print-interpreter "$out/bin/aos-storage-provisioning-provider" \

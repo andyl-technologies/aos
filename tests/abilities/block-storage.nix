@@ -107,7 +107,7 @@ in
   assert commit.lifetime == "persistent";
   assert commit.input.request.policy.initialize == "if-unprovisioned";
   assert commit.input.request.policy.committed_divergence == "require-factory-reset";
-  assert commit.input.tools.systemd_repart == "${fixture.manager}/bin/systemd-repart";
+  assert commit.input.tools.systemd_repart == "${fixture.provisioning}/bin/aos-storage-repart";
   assert graph.order != [];
   assert disabled.deployment.graph.nodes == {};
   assert !invalid.success;
