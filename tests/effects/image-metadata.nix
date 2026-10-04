@@ -50,7 +50,36 @@ pkgs.mkDerivation {
           recovery_a:null,recovery_b:null,bootloader:"systemd-boot.efi",logical_disk:"image.raw",
           partition_table:"table.json",fat_volume_id:$fat,
           raw_format:"disk.zst",raw_filename:"disk.zst",secure_boot_certificate:"cert.pem"}' > input.json
-        ${pkgs.aos}/bin/aos-image-metadata "$out/image-info.json" < input.json
+        # An optimised store certificate remains a valid signing input, but
+        # the strict reader must reject it until captured into a private file.
+        ln cert.pem cert-alias.pem
+        chmod 0444 cert.pem
+        test "$(stat -c %h cert.pem)" -eq 2
+        certificate_digest="sha256:$(sha256sum cert.pem | cut -d ' ' -f1)"
+        if ${pkgs.aos}/bin/aos-image-metadata hardlinked.json < input.json 2> hardlinked-error; then
+          echo 'serializer accepted a multiply linked certificate' >&2
+          exit 1
+        fi
+        case "$(cat hardlinked-error)" in
+          *"digest input must be a single-link regular file"*) ;;
+          *) cat hardlinked-error >&2; exit 1 ;;
+        esac
+        certificate_capture=$(mktemp -d "$PWD/metadata-certificate.XXXXXXXX")
+        cp -- cert.pem "$certificate_capture/db.crt"
+        chmod 0600 "$certificate_capture/db.crt"
+        test -f "$certificate_capture/db.crt" && test ! -L "$certificate_capture/db.crt"
+        test "$(stat -c %h "$certificate_capture/db.crt")" -eq 1
+        test "$(sha256sum cert.pem | cut -d ' ' -f1)" = \
+          "$(sha256sum "$certificate_capture/db.crt" | cut -d ' ' -f1)"
+        ${pkgs.jq}/bin/jq --arg certificate "$certificate_capture/db.crt" \
+          '.secure_boot_certificate = $certificate' input.json > captured-input.json
+        ${pkgs.aos}/bin/aos-image-metadata "$out/image-info.json" < captured-input.json
+        ${pkgs.jq}/bin/jq -e --arg digest "$certificate_digest" \
+          '.secure_boot_certificate_sha256 == $digest' "$out/image-info.json"
+        test "$(stat -c '%h:%a' cert.pem)" = 2:444
+        ${pkgs.jq}/bin/jq '.secure_boot_certificate = null' input.json > unsigned-input.json
+        ${pkgs.aos}/bin/aos-image-metadata unsigned.json < unsigned-input.json
+        ${pkgs.jq}/bin/jq -e '.secure_boot_certificate_sha256 == null' unsigned.json
         root_digest="sha256:$(sha256sum root.img | cut -d ' ' -f1)"
         disk_digest="sha256:$(sha256sum image.raw | cut -d ' ' -f1)"
         uki_digest="sha256:$(sha256sum uki-b.efi | cut -d ' ' -f1)"
@@ -61,7 +90,7 @@ pkgs.mkDerivation {
             and (has("assembly_digest") | not) and (has("capabilities") | not)
             and (has("schemaVersion") | not)' "$out/image-info.json"
         printf 'changed\n' >> root.img
-        if ${pkgs.aos}/bin/aos-image-metadata rejected.json < input.json; then
+        if ${pkgs.aos}/bin/aos-image-metadata rejected.json < captured-input.json; then
           echo 'serializer accepted filesystem bytes outside the committed partition' >&2
           exit 1
         fi
