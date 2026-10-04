@@ -1665,6 +1665,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Existing-only coordination and complete profile access support genuine
   read-only startup verification. Actual producer integration, submitted-effect
   retention and full crash/copy qualification remain incomplete.
+  A read-only timing audit of the combined source-discovery candidate
+  `bddcd674cd` preserves the original aggregate failures. The side-attribute
+  test returned `Expired`; its 53.20-second total does not establish the final
+  attempt's elapsed time or load causation. The fixture's 30-second bound uses
+  native monotonic time, which Tokio timer pause does not freeze. The observed
+  cancellation barrier failure precedes cancellation; Unsupported results
+  remain distinct implementation failures. Per-attempt timing evidence and
+  genuine unchanged-bound qualification remain required. All 12 current
+  aggregate failures remain unresolved.
   Optional native binding hooks now retain the exact injected clock and actual
   duplicated exclusion without stronger generic clock or lock bounds. Native
   and supported non-Send builds qualify the shared seam; private factories,
