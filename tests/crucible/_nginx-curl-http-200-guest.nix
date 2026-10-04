@@ -2,14 +2,75 @@
   pkgs,
   hotForkEquivalence ? false,
   strictHttpResponse ? false,
+  httpServer ? "nginx",
 }: let
+  envoyDirect = assert builtins.elem httpServer ["nginx" "envoy-direct"];
+  assert httpServer != "envoy-direct" || (strictHttpResponse && !hotForkEquivalence);
+    httpServer == "envoy-direct";
+  serverName =
+    if envoyDirect
+    then "Envoy"
+    else "nginx";
+  responseBody = "Crucible reached ${serverName}\n";
+  envoyConfig = builtins.toJSON {
+    static_resources.listeners = [
+      {
+        name = "direct_response";
+        address.socket_address = {
+          address = "10.0.0.2";
+          port_value = 8080;
+        };
+        filter_chains = [
+          {
+            filters = [
+              {
+                name = "envoy.filters.network.http_connection_manager";
+                typed_config = {
+                  "@type" = "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager";
+                  stat_prefix = "direct_response";
+                  route_config = {
+                    name = "direct_response";
+                    virtual_hosts = [
+                      {
+                        name = "service";
+                        domains = ["*"];
+                        routes = [
+                          {
+                            match.prefix = "/";
+                            direct_response = {
+                              status = 200;
+                              body.inline_string = responseBody;
+                            };
+                          }
+                        ];
+                      }
+                    ];
+                  };
+                  http_filters = [
+                    {
+                      name = "envoy.filters.http.router";
+                      typed_config."@type" = "type.googleapis.com/envoy.extensions.filters.http.router.v3.Router";
+                    }
+                  ];
+                };
+              }
+            ];
+          }
+        ];
+      }
+    ];
+  };
   closureDeps = [
     pkgs.bash
     pkgs.coreutils
     pkgs.crucible-guest
     pkgs.curl
     pkgs.iproute2
-    pkgs.nginx
+    (
+      if envoyDirect
+      then pkgs.envoy
+      else pkgs.nginx
+    )
     pkgs.util-linux
   ];
   closureGraph =
@@ -32,7 +93,7 @@
     else "0";
 in
   pkgs.mkDerivation {
-    pname = "crucible-nginx-curl-http-200-root-image";
+    pname = "crucible-${httpServer}-curl-http-200-root-image";
     version = "0";
     src = null;
 
@@ -100,6 +161,12 @@ in
           }
           NGINX_CONFIG
 
+          ${pkgs.lib.optionalString envoyDirect ''
+            cat > rootfs/etc/envoy-direct.json <<'ENVOY_CONFIG'
+            ${envoyConfig}
+            ENVOY_CONFIG
+          ''}
+
           cat > rootfs/init <<'INIT'
           #!/bin/sh
           set -eu
@@ -124,15 +191,23 @@ in
 
           cmdline=" $(cat /proc/cmdline) "
           case "$cmdline" in
-            *" crucible.workload=httpd "*)
+          *" crucible.workload=httpd "*)
               ip address add 10.0.0.2/24 dev eth0
               ${pkgs.lib.optionalString strictHttpResponse ''
             crucible-guest event boot.network-configured
             crucible-guest event boot.service-starting
-            # This attests init/network setup, not nginx request readiness.
+            # This attests init/network setup, not HTTP service readiness.
             crucible-guest setup-complete
           ''}
-              exec nginx -c /etc/nginx/nginx.conf -g 'daemon off; master_process off;'
+              ${
+            if envoyDirect
+            then ''
+              envoy --mode validate --config-path /etc/envoy-direct.json
+              exec envoy --disable-hot-restart --concurrency 1 \
+                --config-path /etc/envoy-direct.json --log-level info
+            ''
+            else "exec nginx -c /etc/nginx/nginx.conf -g 'daemon off; master_process off;'"
+          }
               ;;
             *" crucible.workload=httpget "*)
               ip address add 10.0.0.3/24 dev eth0
@@ -177,12 +252,16 @@ in
                     ${pkgs.lib.optionalString strictHttpResponse ''
             # The marker authenticates a complete application response,
             # not only a successful TCP connection or status line.
-            test "$(cat /tmp/http-response)" = 'Crucible reached nginx'
-            test "$(wc -c < /tmp/http-response)" -eq 23
+            test "$(cat /tmp/http-response)" = 'Crucible reached ${serverName}'
+            test "$(wc -c < /tmp/http-response)" -eq ${toString (builtins.stringLength responseBody)}
           ''}
                     crucible-guest sometimes \
                       curl-receives-http-200 \
-                      'Curl receives an HTTP 200 response from Nginx' \
+                      'Curl receives an HTTP 200 response from ${
+            if envoyDirect
+            then "Envoy"
+            else "Nginx"
+          }' \
                       1
                     ${pkgs.lib.optionalString strictHttpResponse ''
             crucible-guest semantic-marker http.request-response instance-1

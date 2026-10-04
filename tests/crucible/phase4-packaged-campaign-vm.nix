@@ -16,8 +16,20 @@
   policyTimeout ? false,
   singleGuest ? null,
   twoNodeHttp ? false,
+  twoNodeHttpServer ? "nginx",
 }: let
   singleGuestMaterialization = singleGuest == "materialization";
+  envoyDirect = assert builtins.elem twoNodeHttpServer ["nginx" "envoy-direct"];
+  assert twoNodeHttpServer != "envoy-direct" || twoNodeHttp;
+    twoNodeHttpServer == "envoy-direct";
+  httpEvidencePrefix =
+    if envoyDirect
+    then "two_node_envoy_direct"
+    else "two_node_http";
+  httpFlightName =
+    if envoyDirect
+    then "two-node-envoy-direct"
+    else "two-node-http";
   envoyProduct = envoyNetwork || envoyKnownFinding;
   source = import ../../pkgs/tools/crucible/_cargo-source.nix {inherit lib;};
   controllerArtifacts = pkgs.crucible-controller.passthru.cargoArtifacts;
@@ -197,6 +209,7 @@
   httpRootImage = import ./_nginx-curl-http-200-guest.nix {
     inherit pkgs;
     strictHttpResponse = true;
+    httpServer = twoNodeHttpServer;
   };
   storageRecoveryRunner = pkgs.writeTextFile {
     name = "campaign-storage-recovery-garage";
@@ -209,7 +222,7 @@
       if singleGuest != null
       then "crucible-single-guest-${singleGuest}"
       else if twoNodeHttp
-      then "crucible-two-node-http"
+      then "crucible-${httpFlightName}"
       else if policyTimeout
       then "crucible-packaged-campaign-policy-timeout"
       else if storageRecovery
@@ -396,12 +409,16 @@
         ''
         else if twoNodeHttp
         then ''
-          http_selector=packaged::two_node_http::public_two_node_http_request_and_response_are_authenticated
-          http_log=/tmp/two-node-http.log
+          http_selector=packaged::two_node_http::${
+            if envoyDirect
+            then "public_two_node_envoy_direct_response_is_authenticated"
+            else "public_two_node_http_request_and_response_are_authenticated"
+          }
+          http_log=/tmp/${httpFlightName}.log
           ${flight}/bin/campaign-store-process-flight --ignored --list \
-            > /tmp/two-node-http-list.log 2>&1
+            > /tmp/${httpFlightName}-list.log 2>&1
           ${pkgs.grep}/bin/grep -Fqx "$http_selector: test" \
-            /tmp/two-node-http-list.log
+            /tmp/${httpFlightName}-list.log
 
           # The scenario requires the routed exchange within its virtual budget.
           # Leave time for the finite 1800s startup and 180s application panic
@@ -423,16 +440,16 @@
           fi
           wait "$http_tail" || true
           for evidence in \
-            two_node_http_request_response_authenticated=true \
-            two_node_http_exact_body_authenticated=true \
-            two_node_http_cold_execution=true \
-            two_node_http_cleanup_authenticated=true
+            ${httpEvidencePrefix}_request_response_authenticated=true \
+            ${httpEvidencePrefix}_exact_body_authenticated=true \
+            ${httpEvidencePrefix}_cold_execution=true \
+            ${httpEvidencePrefix}_cleanup_authenticated=true
           do
             ${pkgs.grep}/bin/grep -Fxq "$evidence" "$http_log"
           done
           ${pkgs.grep}/bin/grep -Fq \
             'test result: ok. 1 passed; 0 failed; 0 ignored;' "$http_log"
-          printf '%s\n' 'gate=gate:two-node-http'
+          printf '%s\n' 'gate=gate:${httpFlightName}'
         ''
         else if storageRecovery
         then ''

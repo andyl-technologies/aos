@@ -19,9 +19,38 @@ const HTTP_VIRTUAL_BUDGET_TICKS: u64 = 2_000_000_000_000;
 // time and does not determine the canonical outcome.
 const HTTP_STARTUP_WATCHDOG: Duration = Duration::from_secs(1800);
 const HTTP_APPLICATION_WATCHDOG: Duration = Duration::from_secs(180);
-const HTTP_RESPONSE: &[u8] = b"Crucible reached nginx\n";
 const HTTP_MARKER: &str = "http.request-response";
 const HTTP_MARKER_INSTANCE: &str = "instance-1";
+
+/// Selects the real guest service without changing the exchange contract.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HttpServer {
+    Nginx,
+    EnvoyDirect,
+}
+
+impl HttpServer {
+    fn node(self) -> &'static str {
+        match self {
+            Self::Nginx => "nginx",
+            Self::EnvoyDirect => "envoy",
+        }
+    }
+
+    fn response(self) -> &'static [u8] {
+        match self {
+            Self::Nginx => b"Crucible reached nginx\n",
+            Self::EnvoyDirect => b"Crucible reached Envoy\n",
+        }
+    }
+
+    fn evidence_prefix(self) -> &'static str {
+        match self {
+            Self::Nginx => "two_node_http",
+            Self::EnvoyDirect => "two_node_envoy_direct",
+        }
+    }
+}
 
 fn http_measurement_definitions(
     world: &World,
@@ -60,10 +89,21 @@ fn http_measurement_definitions(
 #[test]
 #[ignore = "requires packaged QEMU and isolated cgroup-v2/project-quota roots"]
 fn public_two_node_http_request_and_response_are_authenticated() -> Result<(), Box<dyn Error>> {
+    run_http_exchange(HttpServer::Nginx)
+}
+
+#[test]
+#[ignore = "requires packaged QEMU and isolated cgroup-v2/project-quota roots"]
+fn public_two_node_envoy_direct_response_is_authenticated() -> Result<(), Box<dyn Error>> {
+    run_http_exchange(HttpServer::EnvoyDirect)
+}
+
+fn run_http_exchange(server: HttpServer) -> Result<(), Box<dyn Error>> {
+    let prefix = server.evidence_prefix();
     let fixture = FlightFixture::new()?;
-    println!("two_node_http_stage=compile");
-    let compiled = compile_http_scenario(&fixture)?;
-    println!("two_node_http_stage=import");
+    println!("{prefix}_stage=compile");
+    let compiled = compile_http_scenario(&fixture, server)?;
+    println!("{prefix}_stage=import");
     guest_choice::create_guest_choice_campaign_with_timeout(
         &fixture,
         &compiled,
@@ -71,18 +111,18 @@ fn public_two_node_http_request_and_response_are_authenticated() -> Result<(), B
         Some(HTTP_VIRTUAL_BUDGET_TICKS),
     )?;
     let authority = guest_choice::write_component_authority(&fixture)?;
-    println!("two_node_http_stage=start-runtime");
+    println!("{prefix}_stage=start-runtime");
     let mut service =
         guest_choice::start_callback_witness_flight_service(&fixture, &authority, None, 10400)?;
     let mut processes = process_audit::ProcessAudit::with_cpu_diagnostics(256);
 
-    println!("two_node_http_virtual_budget_ticks={HTTP_VIRTUAL_BUDGET_TICKS}");
-    println!("two_node_http_startup_host_watchdog_seconds=1800");
-    println!("two_node_http_application_host_watchdog_seconds=180");
+    println!("{prefix}_virtual_budget_ticks={HTTP_VIRTUAL_BUDGET_TICKS}");
+    println!("{prefix}_startup_host_watchdog_seconds=1800");
+    println!("{prefix}_application_host_watchdog_seconds=180");
     let exchange = (|| {
         guest_choice::grant_and_start_guest_choice_campaign(&fixture)?;
-        println!("two_node_http_campaign_started=true");
-        let explanation = wait_for_http_completion(&fixture, &mut service, &mut processes)?;
+        println!("{prefix}_campaign_started=true");
+        let explanation = wait_for_http_completion(&fixture, &mut service, &mut processes, server)?;
         if explanation["observation"]["stop"] != "terminal-success"
             || explanation["observation"]["discovered_choices"] != serde_json::json!([])
         {
@@ -90,14 +130,14 @@ fn public_two_node_http_request_and_response_are_authenticated() -> Result<(), B
         }
         envoy_network::require_semantic_marker(&explanation, HTTP_MARKER, "curl")?;
         processes.require_guest_workloads(&["httpget", "httpd"])?;
-        println!("two_node_http_attempt={explanation}");
+        println!("{prefix}_attempt={explanation}");
         Ok::<(), Box<dyn Error>>(())
     })();
     if exchange.is_err() {
         guest_choice::report_recent_control_callback_witness(&service);
     }
     processes.report_observed_processes("before-http-cleanup");
-    println!("two_node_http_stage=cleanup");
+    println!("{prefix}_stage=cleanup");
     let shutdown = service.stop();
     let cleanup = processes.verify_cleanup();
     let mut failures = Vec::new();
@@ -130,74 +170,24 @@ fn public_two_node_http_request_and_response_are_authenticated() -> Result<(), B
     {
         return Err("HTTP cleanup retained its executor socket".into());
     }
-    println!("two_node_http_request_response_authenticated=true");
-    println!("two_node_http_exact_body_authenticated=true");
-    println!("two_node_http_cold_execution=true");
-    println!("two_node_http_cleanup_authenticated=true");
+    println!("{prefix}_request_response_authenticated=true");
+    println!("{prefix}_exact_body_authenticated=true");
+    println!("{prefix}_cold_execution=true");
+    println!("{prefix}_cleanup_authenticated=true");
     Ok(())
 }
 
-fn compile_http_scenario(fixture: &FlightFixture) -> Result<Value, Box<dyn Error>> {
+fn compile_http_scenario(
+    fixture: &FlightFixture,
+    server: HttpServer,
+) -> Result<Value, Box<dyn Error>> {
     let kernel = ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(&fs::read(
         required_path("CRUCIBLE_KERNEL")?,
     )?));
     let root_image = ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(&fs::read(
         required_path("CRUCIBLE_ROOT_IMAGE")?,
     )?));
-    let client = WorldNode {
-        id: NodeId { name: "curl".into() },
-        arch: VmArchitecture::X86_64,
-        memory_mib: 256,
-        cmdline: "console=ttyS0 net.ifnames=0 root=/dev/vda rw init=/init nokaslr norandmaps random.trust_cpu=off crucible.workload=httpget".into(),
-        ready_point: ReadyPoint::FixedIcount { icount: Icount { retired: 0 } },
-        white_box: WhiteBoxPolicy::Enabled,
-        smp_vcpus: 1,
-        kernel: Some(kernel),
-        root_image: Some(root_image),
-        initrd: None,
-    };
-    let server = WorldNode {
-        id: NodeId {
-            name: "nginx".into(),
-        },
-        cmdline: client.cmdline.replace("httpget", "httpd"),
-        ..client.clone()
-    };
-    let link_id = LinkId::for_endpoints(&client.id, &server.id);
-    let link = LinkDef::with_transport(
-        client.id.clone(),
-        server.id.clone(),
-        SimDuration { ticks: 250_000_000 },
-        SimDuration { ticks: 0 },
-        LinkLossProbability::ZERO,
-        None,
-    )?;
-    let world = World::from_nodes_and_links(vec![client, server], vec![link])?;
-    let graph = EventGraph::builder()
-        .event("complete-http-exchange")
-        .entrypoint()
-        .when(Predicate::all_of(vec![
-            Predicate::once(Predicate::network_match(
-                Some(link_id.clone()),
-                FramePredicate::contains(b"GET / HTTP/1.1".to_vec()),
-            )),
-            Predicate::once(Predicate::network_match(
-                Some(link_id),
-                FramePredicate::contains(HTTP_RESPONSE.to_vec()),
-            )),
-            Predicate::once(Predicate::guest_marker(MarkerId::from_name(HTTP_MARKER))),
-        ]))
-        .action(Action::Pass)
-        .build_for_world(&world)?;
-    let plan = Plan::from_event_graph_for_world(&world, graph)?;
-    let measurements = http_measurement_definitions(&world, &plan)?;
-    let scenario = ScenarioDefForm::from_components_with_measurements(
-        &world,
-        &plan,
-        &Properties::empty(),
-        &measurements,
-        Seed::from_u64(104),
-    )?;
+    let scenario = http_scenario(server, kernel, root_image)?;
     let source = fixture
         ._temporary
         .path()
@@ -212,25 +202,94 @@ fn compile_http_scenario(fixture: &FlightFixture) -> Result<Value, Box<dyn Error
     )
 }
 
+fn http_scenario(
+    server: HttpServer,
+    kernel: ContentAddressedBlobRef,
+    root_image: ContentAddressedBlobRef,
+) -> Result<ScenarioDefForm, Box<dyn Error>> {
+    let client = WorldNode {
+        id: NodeId { name: "curl".into() },
+        arch: VmArchitecture::X86_64,
+        memory_mib: 256,
+        cmdline: "console=ttyS0 net.ifnames=0 root=/dev/vda rw init=/init nokaslr norandmaps random.trust_cpu=off crucible.workload=httpget".into(),
+        ready_point: ReadyPoint::FixedIcount { icount: Icount { retired: 0 } },
+        white_box: WhiteBoxPolicy::Enabled,
+        smp_vcpus: 1,
+        kernel: Some(kernel),
+        root_image: Some(root_image),
+        initrd: None,
+    };
+    let server_node = WorldNode {
+        id: NodeId {
+            name: server.node().into(),
+        },
+        // Httpd is the model's generic HTTP-daemon workload; the immutable
+        // root image selects nginx or Envoy rather than extending that model.
+        cmdline: client.cmdline.replace("httpget", "httpd"),
+        ..client.clone()
+    };
+    let link_id = LinkId::for_endpoints(&client.id, &server_node.id);
+    let link = LinkDef::with_transport(
+        client.id.clone(),
+        server_node.id.clone(),
+        SimDuration { ticks: 250_000_000 },
+        SimDuration { ticks: 0 },
+        LinkLossProbability::ZERO,
+        None,
+    )?;
+    let world = World::from_nodes_and_links(vec![client, server_node], vec![link])?;
+    let graph = EventGraph::builder()
+        .event("complete-http-exchange")
+        .entrypoint()
+        .when(Predicate::all_of(vec![
+            Predicate::once(Predicate::network_match(
+                Some(link_id.clone()),
+                FramePredicate::contains(b"GET / HTTP/1.1".to_vec()),
+            )),
+            Predicate::once(Predicate::network_match(
+                Some(link_id),
+                FramePredicate::contains(server.response().to_vec()),
+            )),
+            Predicate::once(Predicate::guest_marker(MarkerId::from_name(HTTP_MARKER))),
+        ]))
+        .action(Action::Pass)
+        .build_for_world(&world)?;
+    let plan = Plan::from_event_graph_for_world(&world, graph)?;
+    let measurements = http_measurement_definitions(&world, &plan)?;
+    Ok(ScenarioDefForm::from_components_with_measurements(
+        &world,
+        &plan,
+        &Properties::empty(),
+        &measurements,
+        Seed::from_u64(104),
+    )?)
+}
+
 /// Tracks operational phases using only host-reported authenticated setup events.
 struct HttpHostWatchdog {
     began: Instant,
     application_started: Option<Instant>,
     setup_nodes: BTreeSet<&'static str>,
+    server: HttpServer,
 }
 
 impl HttpHostWatchdog {
-    fn new(began: Instant) -> Self {
+    fn new(began: Instant, server: HttpServer) -> Self {
         Self {
             began,
             application_started: None,
             setup_nodes: BTreeSet::new(),
+            server,
         }
     }
 
     fn observe(&mut self, stderr: &str, now: Instant) {
-        self.setup_nodes
-            .extend(stderr.lines().filter_map(setup_receipt_node));
+        let server = self.server;
+        self.setup_nodes.extend(
+            stderr
+                .lines()
+                .filter_map(|line| setup_receipt_node(line, server)),
+        );
         if self.application_started.is_none()
             && self.setup_nodes.len() == 2
             && now.duration_since(self.began) < HTTP_STARTUP_WATCHDOG
@@ -255,7 +314,7 @@ impl HttpHostWatchdog {
     }
 }
 
-fn setup_receipt_node(line: &str) -> Option<&'static str> {
+fn setup_receipt_node(line: &str, server: HttpServer) -> Option<&'static str> {
     let mut fields = line
         .strip_prefix("CRUCIBLE-RUNTIME-BOOT-V1 ")?
         .split_whitespace();
@@ -265,7 +324,8 @@ fn setup_receipt_node(line: &str) -> Option<&'static str> {
     }
     let node = match fields.next()? {
         "node=\"curl\"" => "curl",
-        "node=\"nginx\"" => "nginx",
+        "node=\"nginx\"" if server == HttpServer::Nginx => "nginx",
+        "node=\"envoy\"" if server == HttpServer::EnvoyDirect => "envoy",
         _ => return None,
     };
     fields.next()?.strip_prefix("guest_stage=")?;
@@ -286,10 +346,11 @@ fn wait_for_http_completion(
     fixture: &FlightFixture,
     service: &mut CampaignServiceChild,
     processes: &mut process_audit::ProcessAudit,
+    server: HttpServer,
 ) -> Result<Value, Box<dyn Error>> {
     let began = Instant::now();
     let deadline = began + HTTP_STARTUP_WATCHDOG + HTTP_APPLICATION_WATCHDOG;
-    let mut watchdog = HttpHostWatchdog::new(began);
+    let mut watchdog = HttpHostWatchdog::new(began, server);
     let mut last_report = began;
     let mut last_states = String::new();
     let completed = wait_for_process_observation(deadline, || {
@@ -309,7 +370,8 @@ fn wait_for_http_completion(
         last_states = format!("{states:?}");
         if last_report.elapsed() >= Duration::from_secs(5) {
             println!(
-                "two_node_http_wait elapsed_host_seconds={} operational_phase={} authenticated_setup_nodes={:?} states={last_states}",
+                "{}_wait elapsed_host_seconds={} operational_phase={} authenticated_setup_nodes={:?} states={last_states}",
+                server.evidence_prefix(),
                 began.elapsed().as_secs(),
                 watchdog.phase(),
                 watchdog.setup_nodes,
@@ -327,7 +389,10 @@ fn wait_for_http_completion(
                 .take(10)
                 .collect::<Vec<_>>();
             for diagnostic in diagnostics.into_iter().rev() {
-                println!("two_node_http_runtime_diagnostic={diagnostic}");
+                println!(
+                    "{}_runtime_diagnostic={diagnostic}",
+                    server.evidence_prefix()
+                );
             }
             last_report = Instant::now();
         }
@@ -381,9 +446,123 @@ fn first_execution_error(stderr: &str) -> Option<&str> {
 }
 
 #[test]
+fn http_profiles_roundtrip_with_only_two_world_routed_guests() -> Result<(), Box<dyn Error>> {
+    let kernel = ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(b"kernel"));
+    let root = ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(b"root"));
+    for server in [HttpServer::Nginx, HttpServer::EnvoyDirect] {
+        let form = http_scenario(server, kernel, root)?;
+        let restored = ScenarioDefForm::from_canonical_toml(&form.to_canonical_toml()?)?;
+        assert_eq!(restored, form);
+
+        let world = restored.world();
+        assert_eq!(world.nodes().len(), 2);
+        assert_eq!(world.links().len(), 1);
+        let nodes = world.vm_nodes().to_vec();
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].id.name, "curl");
+        assert_eq!(nodes[1].id.name, server.node());
+        for node in &nodes {
+            assert_eq!(node.smp_vcpus, 1);
+            assert_eq!(node.memory_mib, 256);
+            assert_eq!(node.white_box, WhiteBoxPolicy::Enabled);
+            assert_eq!(node.kernel, Some(kernel));
+            assert_eq!(node.root_image, Some(root));
+        }
+        assert!(nodes[0].cmdline.ends_with("crucible.workload=httpget"));
+        assert!(nodes[1].cmdline.ends_with("crucible.workload=httpd"));
+    }
+    assert_ne!(
+        HttpServer::Nginx.response(),
+        HttpServer::EnvoyDirect.response()
+    );
+    Ok(())
+}
+
+#[test]
+fn envoy_completion_requires_routed_request_exact_response_and_guest_marker()
+-> Result<(), Box<dyn Error>> {
+    use crucible_core::{ConditionEvaluationPass, ConditionLeaf, ObservableEvent};
+
+    let asset = ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(b"asset"));
+    let form = http_scenario(HttpServer::EnvoyDirect, asset, asset)?;
+    let lowered = form.plan().lower_to_event_graph_for_world(form.world())?;
+    let condition = lowered.event_graph().events()[0]
+        .trigger
+        .as_ref()
+        .ok_or("HTTP completion must have an explicit trigger")?;
+    let client = NodeId {
+        name: "curl".into(),
+    };
+    let server = NodeId {
+        name: "envoy".into(),
+    };
+    let link = LinkId::for_endpoints(&client, &server);
+    let at = VirtualTime { ticks: 10 };
+    let request = ObservableEvent::network_delivered(
+        at,
+        Some(link.clone()),
+        b"GET / HTTP/1.1\r\nHost: 10.0.0.2\r\n\r\n".to_vec(),
+    );
+    let response = ObservableEvent::network_delivered(
+        at,
+        Some(link.clone()),
+        HttpServer::EnvoyDirect.response().to_vec(),
+    );
+    let marker = ObservableEvent::guest_marker(
+        Icount { retired: 10 },
+        client,
+        MarkerId::from_name(HTTP_MARKER),
+    );
+    let wrong_response =
+        ObservableEvent::network_delivered(at, Some(link), HttpServer::Nginx.response().to_vec());
+    let evaluate = |events| -> Result<bool, Box<dyn Error>> {
+        let prefix = crucible_core::test_support::condition_prefix_from_observable_events_for_test(
+            at.ticks, events,
+        )?;
+        let mut pass =
+            ConditionEvaluationPass::from_log_prefix(prefix, |_: ConditionLeaf<'_>| false)
+                .with_world_white_box_policies(form.world());
+        Ok(pass.evaluate_assertion_condition(condition))
+    };
+
+    assert!(evaluate(vec![
+        request.clone(),
+        response.clone(),
+        marker.clone()
+    ])?);
+    for incomplete in [
+        vec![request.clone(), response.clone()],
+        vec![request.clone(), marker.clone()],
+        vec![response, marker.clone()],
+        vec![request, wrong_response, marker],
+    ] {
+        assert!(!evaluate(incomplete)?);
+    }
+    Ok(())
+}
+
+#[test]
+fn envoy_setup_receipts_do_not_accept_the_nginx_profile() {
+    let began = Instant::now();
+    let curl = "CRUCIBLE-RUNTIME-BOOT-V1 stage=after-quantum node=\"curl\" guest_stage=setup-complete stage_icount=42 setup_receipts=1";
+    let nginx = curl.replace("node=\"curl\"", "node=\"nginx\"");
+    let envoy = curl.replace("node=\"curl\"", "node=\"envoy\"");
+    let mut watchdog = HttpHostWatchdog::new(began, HttpServer::EnvoyDirect);
+
+    watchdog.observe(curl, began + Duration::from_secs(10));
+    watchdog.observe(&nginx, began + Duration::from_secs(20));
+    assert_eq!(watchdog.phase(), "startup");
+    assert_eq!(setup_receipt_node(&envoy, HttpServer::Nginx), None);
+
+    watchdog.observe(&envoy, began + Duration::from_secs(30));
+    assert_eq!(watchdog.phase(), "application");
+    assert!(watchdog.expired(began + Duration::from_secs(210)));
+}
+
+#[test]
 fn setup_receipts_require_host_prefix_declared_node_and_positive_count() {
     let valid = "CRUCIBLE-RUNTIME-BOOT-V1 stage=after-quantum node=\"curl\" guest_stage=setup-complete stage_icount=42 setup_receipts=1 console_bytes=12 console_tail_partial=true console_tail=\"boot\"";
-    assert_eq!(setup_receipt_node(valid), Some("curl"));
+    assert_eq!(setup_receipt_node(valid, HttpServer::Nginx), Some("curl"));
     for invalid in [
         valid.replace("CRUCIBLE-RUNTIME-BOOT-V1", "guest-console"),
         valid.replace("node=\"curl\"", "node=\"other\""),
@@ -393,7 +572,11 @@ fn setup_receipts_require_host_prefix_declared_node_and_positive_count() {
         valid.replace("stage=after-quantum", "stage=guest-claimed"),
         format!("console_tail={valid:?}"),
     ] {
-        assert_eq!(setup_receipt_node(&invalid), None, "{invalid}");
+        assert_eq!(
+            setup_receipt_node(&invalid, HttpServer::Nginx),
+            None,
+            "{invalid}"
+        );
     }
 }
 
@@ -402,7 +585,7 @@ fn host_fallback_transitions_only_after_both_guest_setup_receipts() {
     let began = Instant::now();
     let curl = "CRUCIBLE-RUNTIME-BOOT-V1 stage=after-quantum node=\"curl\" guest_stage=setup-complete stage_icount=42 setup_receipts=1";
     let nginx = curl.replace("node=\"curl\"", "node=\"nginx\"");
-    let mut watchdog = HttpHostWatchdog::new(began);
+    let mut watchdog = HttpHostWatchdog::new(began, HttpServer::Nginx);
 
     watchdog.observe(curl, began + Duration::from_secs(10));
     watchdog.observe(curl, began + Duration::from_secs(20));
@@ -414,7 +597,7 @@ fn host_fallback_transitions_only_after_both_guest_setup_receipts() {
     assert!(!watchdog.expired(began + Duration::from_secs(209)));
     assert!(watchdog.expired(began + Duration::from_secs(210)));
 
-    let mut late = HttpHostWatchdog::new(began);
+    let mut late = HttpHostWatchdog::new(began, HttpServer::Nginx);
     late.observe(curl, began);
     assert!(late.expired(began + HTTP_STARTUP_WATCHDOG));
     late.observe(&nginx, began + HTTP_STARTUP_WATCHDOG);

@@ -857,6 +857,7 @@ in rec {
     singleGuestBootVm = import ./phase4-single-guest-boot-vm.nix {inherit pkgs lib;};
     singleGuestMaterializationVm = import ./phase4-single-guest-materialization-vm.nix {inherit pkgs lib;};
     twoNodeHttpVm = import ./phase4-two-node-http-vm.nix {inherit pkgs lib;};
+    packagedCampaignEnvoyDirectVm = import ./phase4-packaged-campaign-envoy-direct-vm.nix {inherit pkgs lib;};
     packagedCampaignChoiceVm = import ./phase4-packaged-campaign-choice-vm.nix {inherit pkgs lib;};
     packagedCampaignLifecycleVm = import ./phase4-packaged-campaign-lifecycle-vm.nix {inherit pkgs lib;};
     packagedCampaignEnvoyNetworkVm = import ./phase4-packaged-campaign-envoy-network-vm.nix {inherit pkgs lib;};
