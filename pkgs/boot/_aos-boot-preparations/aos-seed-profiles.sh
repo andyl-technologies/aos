@@ -272,16 +272,14 @@ if [ "$AOS_RECOVERY_ENABLED" = true ]; then
   recovery_audit=/run/aos-seed-recovery-audit
   rm -rf "$recovery_audit"
   mkdir -p "$recovery_audit"
-  @package_runtime@/bin/aos-package-runtime \
-    attest __read-uki-identity-section \
+  @boot_identity@/bin/aos-boot-identity read-uki-section \
     --uki "$recovery_mount/$recovery_uki" --section cmdline \
     > "$recovery_audit/cmdline" \
     || fail_image_identity "cannot inspect paired recovery command line"
   recovery_cmdline=$(cat "$recovery_audit/cmdline")
   [ "$recovery_cmdline" = "console=ttyS0,115200 rd.systemd.unit=aos-recovery.target aos.recovery=1 rd.luks=0" ] \
     || fail_image_identity "paired recovery UKI has a noncanonical signed command line"
-  @package_runtime@/bin/aos-package-runtime \
-    attest __read-uki-identity-section \
+  @boot_identity@/bin/aos-boot-identity read-uki-section \
     --uki "$recovery_mount/$recovery_uki" --section osrel \
     > "$recovery_audit/os-release.clean" \
     || fail_image_identity "cannot inspect paired recovery identity"
