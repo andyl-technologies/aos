@@ -135,9 +135,10 @@ Inspect the native activation journal directly:
 aos ability journal /var/lib/profiles/system/deployment/effects.journal
 ```
 
-The shared runtime reader validates journal framing and native state transitions
-and reports committed state, pending work, and an incomplete trailing frame.
-It opens the file for reading and never repairs, truncates, or resumes it.
+The public reader reports a checked observed prefix without repairing,
+truncating, or resuming the journal. See the canonical
+[journal inspection semantics](runtime-abilities.md#journal-inspection) for
+concurrent reads and their consistency limits.
 Recovery is performed by the package transaction controller, which consults the
 retained handler's `observe` operation before deciding whether a pending effect
 can be retried or accepted.

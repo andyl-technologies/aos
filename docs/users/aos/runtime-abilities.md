@@ -750,17 +750,27 @@ available before the first observed dispatch; it cannot observe its own creation
 Image-owned startup or an externally supplied test listener can establish that
 prerequisite.
 
+### Journal inspection
+
 Read-only journal inspection uses the same bounded replay model as activation:
 
 ```sh
 aos ability journal activation.journal --format json
 ```
 
-It distinguishes desired state, pending invocations, and durable completion.
-It does not query live services or repair an interrupted journal. Package
-inspection also holds a shared generation-journal lock while reading its checked
-snapshot and associated profile publication. Incomplete final frames are
-reported and left unchanged.
+The public command reports `readConsistency = "observed-prefix"`. It can read
+while the controller holds its journal lock: the reader captures the opened
+descriptor's length and verifies complete frames and native state transitions
+within that prefix. Later appends do not extend the observation. An incomplete
+final frame is reported and left unchanged.
+
+This reports recorded desired state, pending invocations, and completion; it is
+not proof that the writer finished `fsync`, that live resources match, or that
+generation and effect journals agree with profile publication. It does not
+repair or execute anything. Stable package inspection and generation/effect
+authority readers remain locked. Package inspection holds a shared
+generation-journal lock while reading its checked snapshot and associated
+profile publication.
 
 The current process transport uses Linux facilities; another execution platform
 needs a transport implementation as well as its own domain handlers. These

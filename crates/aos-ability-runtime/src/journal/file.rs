@@ -149,6 +149,60 @@ impl<T> FileJournal<T>
 where
     T: JournalPayload,
 {
+    /// Observes a bounded verified prefix while a writer may remain active.
+    ///
+    /// The existing private regular file is opened read-only with `NOFOLLOW`.
+    /// Decoding stops at the length captured from that descriptor, so later
+    /// appends cannot extend this observation. An incomplete final frame is
+    /// reported without repair; every complete frame receives the same checks
+    /// as a locked reader.
+    ///
+    /// This is an observation of checksummed bytes, not evidence that the
+    /// writer's synchronization completed. It must not replace locked readers
+    /// when establishing retained execution authority or reading related files.
+    ///
+    /// # Errors
+    /// Returns an error for absent or insecure files, exceeded limits, corrupt
+    /// complete frames, invalid bodies, or truncation during the observation.
+    pub fn observe_snapshot(
+        path: impl AsRef<Path>,
+        limits: JournalLimits,
+    ) -> Result<JournalSnapshot<T>, JournalError> {
+        let path = path.as_ref();
+        let mut file = open_read_only(path)?;
+        validate_private_regular_file(&file, path)?;
+        let RecoveryReport {
+            records,
+            valid_bytes,
+            discarded_torn_bytes,
+        } = recover::<T>(&mut file, path, limits)?;
+
+        // A concurrent controller may repair an incomplete suffix. If that
+        // truncation happens during this read, reject the raced cut instead of
+        // implying a stable endpoint. A later observation can read the new cut.
+        let captured_length = valid_bytes + discarded_torn_bytes;
+        let current_length = file
+            .metadata()
+            .map_err(|source| io_error("read observation metadata", path, source))?
+            .len();
+        if current_length < captured_length {
+            return Err(io_error(
+                "read observed prefix",
+                path,
+                std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "journal was truncated during observation",
+                ),
+            ));
+        }
+
+        Ok(JournalSnapshot {
+            records,
+            verified_bytes: valid_bytes,
+            incomplete_tail_bytes: discarded_torn_bytes,
+        })
+    }
+
     /// Reads a stable verified prefix without modifying the journal.
     ///
     /// The existing path is opened read-only with `NOFOLLOW` and a nonblocking
@@ -428,6 +482,18 @@ where
         .metadata()
         .map_err(|source| io_error("read metadata", path, source))?
         .len();
+    read_verified_prefix::<T>(file, path, limits, file_length)
+}
+
+fn read_verified_prefix<T>(
+    reader: &mut impl Read,
+    path: &Path,
+    limits: JournalLimits,
+    file_length: u64,
+) -> Result<RecoveryReport<T>, JournalError>
+where
+    T: JournalPayload,
+{
     if file_length > limits.max_file_bytes {
         return Err(JournalError::Limit(format!(
             "journal has {file_length} bytes, limit is {}",
@@ -435,6 +501,9 @@ where
         )));
     }
 
+    // Bound both observation and recovery to one descriptor-captured cut.
+    // In particular, an unlocked observer must not chase an appending writer.
+    let mut reader = reader.take(file_length);
     let mut records = Vec::new();
     let mut offset = 0_u64;
     let mut expected_sequence = 1_u64;
@@ -452,7 +521,7 @@ where
         }
 
         let mut header = [0_u8; HEADER_LENGTH];
-        let header_bytes = read_to_end_of_buffer(file, &mut header)
+        let header_bytes = read_to_end_of_buffer(&mut reader, &mut header)
             .map_err(|source| io_error("read frame header", path, source))?;
         if header_bytes == 0 {
             break;
@@ -469,7 +538,7 @@ where
             limits,
         )?;
         let mut body = vec![0_u8; body_length];
-        let body_bytes = read_to_end_of_buffer(file, &mut body)
+        let body_bytes = read_to_end_of_buffer(&mut reader, &mut body)
             .map_err(|source| io_error("read frame body", path, source))?;
         if body_bytes < body_length {
             break;
@@ -495,6 +564,17 @@ where
         records.push(decoded.record);
     }
 
+    if reader.limit() != 0 {
+        return Err(io_error(
+            "read captured prefix",
+            path,
+            std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "journal ended before its captured length",
+            ),
+        ));
+    }
+
     Ok(RecoveryReport {
         records,
         valid_bytes: offset,
@@ -502,10 +582,10 @@ where
     })
 }
 
-fn read_to_end_of_buffer(file: &mut File, buffer: &mut [u8]) -> std::io::Result<usize> {
+fn read_to_end_of_buffer(reader: &mut impl Read, buffer: &mut [u8]) -> std::io::Result<usize> {
     let mut filled = 0;
     while filled < buffer.len() {
-        let bytes = file.read(&mut buffer[filled..])?;
+        let bytes = reader.read(&mut buffer[filled..])?;
         if bytes == 0 {
             break;
         }
@@ -580,6 +660,10 @@ fn io_error(operation: &'static str, path: &Path, source: std::io::Error) -> Jou
         source,
     }
 }
+
+#[cfg(test)]
+#[path = "file/observation_tests.rs"]
+mod observation_tests;
 
 #[cfg(test)]
 mod tests {

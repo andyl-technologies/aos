@@ -375,9 +375,10 @@ a traversal of desired dependencies. Diagnostic output separates a committed
 profile's desired graph from retained output values and does not verify live
 state. Its default audience redacts protected details. `journal` reads a
 bounded native activation journal through the checked replay reader, showing
-durable pending dispatch identities, completed transactions, and retained
-outputs without repairing or executing anything. Inspection requires the
-manager to release its exclusive journal lock.
+recorded pending dispatch identities, completed transactions, and retained
+outputs without repairing or executing anything. The public journal command can
+observe a checked prefix while the manager runs; see the runtime guide's
+[journal inspection semantics](../aos/runtime-abilities.md#journal-inspection).
 
 An already enrolled reporter can submit a checked desired transaction and
 optional named result assertions:

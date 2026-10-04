@@ -14,7 +14,7 @@ use serde_json::Value;
 
 use super::journal::{Event, State};
 use super::{Action, Invocation};
-use crate::journal::{FileJournal, JournalLimits};
+use crate::journal::{FileJournal, JournalLimits, JournalSnapshot};
 
 /// Identifies one exact dispatched invocation without exposing its payload.
 #[derive(Clone, Debug, Serialize)]
@@ -118,6 +118,37 @@ impl ActivationInspection {
     }
 }
 
+/// Reports a checked observed prefix while the controller may still be running.
+///
+/// The observation does not establish writer synchronization, cross-journal
+/// publication consistency, or the current state of external resources. Its
+/// private inspection has no retained-invocation authority accessor.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivationObservation {
+    read_consistency: &'static str,
+    #[serde(flatten)]
+    inspection: ActivationInspection,
+}
+
+/// Observes a bounded, checksummed activation prefix without acquiring a lock.
+///
+/// Complete frames and native state transitions remain strictly validated.
+/// An incomplete frame at the captured endpoint is reported without repair.
+/// This is an observed cut, not proof that the writer has synchronized it or
+/// that a related journal or live resource agrees with it.
+///
+/// # Errors
+/// Returns an error for insecure files, exceeded limits, shrinking input,
+/// complete-frame corruption, or invalid native activation ordering or schemas.
+pub fn observe(path: impl AsRef<Path>, limits: JournalLimits) -> Result<ActivationObservation> {
+    let snapshot = FileJournal::<Event>::observe_snapshot(path, limits)?;
+    Ok(ActivationObservation {
+        read_consistency: "observed-prefix",
+        inspection: project_snapshot(snapshot)?,
+    })
+}
+
 /// Reads a bounded native journal without repair, dispatch, or mutation.
 ///
 /// A running manager holds an exclusive lock. Inspection fails on contention;
@@ -128,6 +159,10 @@ impl ActivationInspection {
 /// limits, or any record that violates native activation ordering or schemas.
 pub fn inspect(path: impl AsRef<Path>, limits: JournalLimits) -> Result<ActivationInspection> {
     let snapshot = FileJournal::<Event>::read_only_snapshot(path, limits)?;
+    project_snapshot(snapshot)
+}
+
+fn project_snapshot(snapshot: JournalSnapshot<Event>) -> Result<ActivationInspection> {
     let incomplete_tail_bytes = snapshot.incomplete_tail_bytes();
     let mut state = State::default();
     let mut pending_sequence = None;
@@ -225,6 +260,46 @@ mod tests {
     use super::super::{Activation, Boundary};
     use super::*;
     use crate::adapter::CancellationToken;
+
+    #[test]
+    fn observation_reads_exact_pending_dispatch_without_releasing_the_writer() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("effects.journal");
+        let desired = graph(Some("example"), "instance");
+        let mut host = Host::default();
+        host.halt_boundary = Some(Boundary::DispatchReturned);
+        let mut activation = Activation::open(&path, JournalLimits::default())?;
+        assert!(
+            activation
+                .activate_once(
+                    "held",
+                    &desired,
+                    &BTreeSet::new(),
+                    &mut host,
+                    &CancellationToken::default(),
+                )
+                .is_err()
+        );
+        let before = fs::read(&path)?;
+
+        let observed = serde_json::to_value(observe(&path, JournalLimits::default())?)?;
+
+        assert_eq!(observed["readConsistency"], "observed-prefix");
+        assert_eq!(observed["transaction"], "held");
+        assert_eq!(observed["pending"]["journalSequence"], 2);
+        assert_eq!(observed["pending"]["action"], "apply");
+        assert_eq!(observed["pending"], observed["records"][1]["dispatch"]);
+        assert_eq!(observed["liveStateVerified"], false);
+        assert!(observed["completed"].is_null());
+        assert!(inspect(&path, JournalLimits::default()).is_err());
+        assert!(Activation::open(&path, JournalLimits::default()).is_err());
+        assert_eq!(fs::read(&path)?, before);
+        drop(activation);
+        let stable = serde_json::to_value(inspect(&path, JournalLimits::default())?)?;
+        assert_eq!(observed["pending"], stable["pending"]);
+        assert_eq!(observed["desired"], stable["desired"]);
+        Ok(())
+    }
 
     #[test]
     fn inspection_distinguishes_pending_dispatch_from_completed_receipt() -> Result<()> {

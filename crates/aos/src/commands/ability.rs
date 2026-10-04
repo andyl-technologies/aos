@@ -31,7 +31,7 @@ pub async fn run(command: &AbilityCommand, printer: &Printer) -> Result<()> {
         AbilityCommand::Evaluate(args) => evaluate::run(args),
         AbilityCommand::CheckCompat(args) => check_compat::run(args, printer),
         AbilityCommand::Journal(args) => {
-            let inspection = aos_ability_runtime::activation::inspect(
+            let inspection = aos_ability_runtime::activation::observe(
                 &args.journal,
                 aos_package::deployment::transaction::journal_limits(),
             )?;
