@@ -403,6 +403,96 @@ pub(crate) fn load_entitlement_credentials()
     Ok(bytes)
 }
 
+/// Retains the two fixed public entitlement inputs for selected first issuance.
+/// The same directory/read/readback engines own all returned files and buffers.
+pub(crate) struct InitialEntitlementCredentialCustodyV1 {
+    originals: [OriginalControllerCredential; 2],
+    ancestors: CredentialAncestors,
+    readback: CredentialReadback<2>,
+    uid: Option<u32>,
+    phase: ControllerCredentialPhase,
+    failure: Option<ControllerNixPublicCredentialErrorV1>,
+}
+
+impl InitialEntitlementCredentialCustodyV1 {
+    pub(crate) fn new() -> Self {
+        Self {
+            originals: std::array::from_fn(|_| OriginalControllerCredential {
+                public: None,
+                read: CredentialReadSlot::new(),
+            }),
+            ancestors: CredentialAncestors::new(),
+            readback: CredentialReadback::new(),
+            uid: None,
+            phase: ControllerCredentialPhase::Fresh,
+            failure: None,
+        }
+    }
+
+    pub(crate) fn capture(&mut self) -> Result<(), ()> {
+        if self.phase != ControllerCredentialPhase::Fresh {
+            return self.finish(Err(credential_state_rejected()));
+        }
+        self.phase = ControllerCredentialPhase::Closed;
+        self.uid = Some(rustix::process::geteuid().as_raw());
+        let result = (|| {
+            let uid = self.uid.ok_or_else(credential_state_rejected)?;
+            capture_controller_credential_originals(
+                uid, &[ENTITLEMENT_NAME, ENTITLEMENT_KEY_NAME],
+                &[MAXIMUM_CREDENTIAL_BYTES; 2], &mut self.originals, &mut self.ancestors,
+            )?;
+            self.observe()
+        })();
+        self.finish(result)
+    }
+
+    pub(crate) fn recheck(&mut self) -> Result<(), ()> {
+        if self.phase != ControllerCredentialPhase::Ready {
+            return self.finish(Err(credential_state_rejected()));
+        }
+        self.phase = ControllerCredentialPhase::Closed;
+        self.readback = CredentialReadback::new();
+        let result = self.observe();
+        self.finish(result)
+    }
+
+    pub(crate) fn ready(&self) -> Option<[&[u8]; 2]> {
+        if self.phase != ControllerCredentialPhase::Ready {
+            return None;
+        }
+        Some([
+            self.originals[0].public.as_ref()?.bytes(),
+            self.originals[1].public.as_ref()?.bytes(),
+        ])
+    }
+
+    pub(crate) fn failure(&self) -> Option<&ControllerNixPublicCredentialErrorV1> {
+        self.failure.as_ref()
+    }
+
+    fn observe(&mut self) -> CredentialResult<()> {
+        observe_controller_credential_readback(
+            self.uid.ok_or_else(credential_state_rejected)?,
+            &[ENTITLEMENT_NAME, ENTITLEMENT_KEY_NAME], &[MAXIMUM_CREDENTIAL_BYTES; 2],
+            &mut self.originals, &self.ancestors, &mut self.readback,
+        )
+    }
+
+    fn finish(&mut self, result: CredentialResult<()>) -> Result<(), ()> {
+        match result {
+            Ok(()) => {
+                self.phase = ControllerCredentialPhase::Ready;
+                Ok(())
+            }
+            Err(cause) => {
+                self.failure.get_or_insert(cause);
+                self.phase = ControllerCredentialPhase::Closed;
+                Err(())
+            }
+        }
+    }
+}
+
 pub(super) struct Credentials {
     path: PathBuf,
     uid: u32,
@@ -1167,41 +1257,10 @@ impl ControllerNixPublicCredentialCustodyV1 {
 
     fn capture_originals(&mut self) -> CredentialResult<()> {
         let uid = self.uid.ok_or_else(credential_state_rejected)?;
-        open_directory_with_custody(
-            Path::new(NIX_CONTROLLER_DIRECTORY),
-            uid,
-            &mut DirectoryCustody::Resident(&mut self.ancestors),
+        capture_controller_credential_originals(
+            uid, &NIX_PUBLIC_NAMES, &[MAXIMUM_CREDENTIAL_BYTES; 12],
+            &mut self.originals, &mut self.ancestors,
         )?;
-        let directory = self.ancestors.directory()?;
-        let directory_identity = self.ancestors.slots[3]
-            .identity
-            .ok_or_else(credential_state_rejected)?;
-
-        for (index, name) in NIX_PUBLIC_NAMES.iter().enumerate() {
-            let original = &mut self.originals[index];
-            let observed = open_read_credential(
-                directory,
-                name,
-                uid,
-                MAXIMUM_CREDENTIAL_BYTES,
-                &mut original.read,
-            )?;
-            let file_identity = require_present_credential(observed)?;
-
-            // Allocate the fixed DATA path while the read buffer is still
-            // resident. Once it moves into public, construction is infallible.
-            let path = PathBuf::from(NIX_CONTROLLER_DIRECTORY);
-            let bytes = original.read.bytes.take().ok_or_else(credential_state_rejected)?;
-            original.public = Some(PinnedSystemdCredential {
-                name: *name,
-                path,
-                uid,
-                directory_identity,
-                file_identity,
-                bytes,
-                exact_bytes: None,
-            });
-        }
         self.observe_originals()
     }
 
@@ -1216,6 +1275,52 @@ impl ControllerNixPublicCredentialCustodyV1 {
             &mut self.readback,
         )
     }
+}
+
+// Same original-directory capture, used only by the two fixed public profiles.
+fn capture_controller_credential_originals<const COUNT: usize>(
+    uid: u32,
+    names: &[&'static str; COUNT],
+    maximum_bytes: &[u64; COUNT],
+    originals: &mut [OriginalControllerCredential; COUNT],
+    ancestors: &mut CredentialAncestors,
+) -> CredentialResult<()> {
+    open_directory_with_custody(
+        Path::new(NIX_CONTROLLER_DIRECTORY),
+        uid,
+        &mut DirectoryCustody::Resident(ancestors),
+    )?;
+    let directory = ancestors.directory()?;
+    let directory_identity = ancestors.slots[3]
+        .identity
+        .ok_or_else(credential_state_rejected)?;
+
+    for (index, name) in names.iter().enumerate() {
+        let original = &mut originals[index];
+        let observed = open_read_credential(
+            directory,
+            name,
+            uid,
+            maximum_bytes[index],
+            &mut original.read,
+        )?;
+        let file_identity = require_present_credential(observed)?;
+
+        // Allocate the fixed DATA path while the read buffer is still
+        // resident. Once it moves into public, construction is infallible.
+        let path = PathBuf::from(NIX_CONTROLLER_DIRECTORY);
+        let bytes = original.read.bytes.take().ok_or_else(credential_state_rejected)?;
+        original.public = Some(PinnedSystemdCredential {
+            name: *name,
+            path,
+            uid,
+            directory_identity,
+            file_identity,
+            bytes,
+            exact_bytes: None,
+        });
+    }
+    Ok(())
 }
 
 fn observe_controller_credential_readback<const COUNT: usize>(

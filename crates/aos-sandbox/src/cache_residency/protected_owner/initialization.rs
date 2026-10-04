@@ -76,6 +76,9 @@ enum InitializationCauseV1 {
     #[cfg(target_os = "linux")]
     #[error("the original Cache coverage append has unresolved custody")]
     CoverageAppend,
+    #[cfg(target_os = "linux")]
+    #[error("the original Git read metadata crossing has unresolved custody")]
+    ReadMetadata,
 }
 
 #[cfg(target_os = "linux")]
@@ -797,6 +800,10 @@ pub struct CacheResidentInitializationV1 {
     #[cfg(target_os = "linux")]
     coverage_account_capture_started: bool,
     #[cfg(target_os = "linux")]
+    read_metadata: CacheClockReadMetadataProgressV1,
+    #[cfg(target_os = "linux")]
+    read_metadata_active: bool,
+    #[cfg(target_os = "linux")]
     coverage_transaction: Option<JournalTransaction>,
     #[cfg(target_os = "linux")]
     coverage_commit: Option<Result<crate::journal::CommitResult, JournalError>>,
@@ -829,6 +836,149 @@ pub struct CacheResidentInitializationV1 {
 }
 
 impl CacheResidentInitializationV1 {
+    /// Runs the fixed read crossing under this SAME original held clock.
+    ///
+    /// Both writers are preflighted before the first effect. Returned native
+    /// causes stay in their original request or clock progress; later Source,
+    /// credential, name and clock debt cannot replace them.
+    ///
+    /// # Errors
+    /// Refuses changed originals, unsupported profiles or interrupted/failed
+    /// prior work. This lends no clock, writer, effect or funding authority.
+    #[cfg(target_os = "linux")]
+    #[doc(hidden)]
+    pub fn run_existing_git_coverage_read_metadata_v1(
+        &mut self,
+        owner: &mut CacheResidencyProtectedOwnerV1,
+        physical: &super::super::DormantCacheOwnerV1,
+        source_domains: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        controller: &mut Journal,
+        original_inputs: &mut GitCoverageCredentialCustodyV1,
+        operation: &mut crate::reconciler::GitCoverageReadMetadataOperationV1<'_, '_>,
+    ) -> Result<(), CacheResidentUnavailableV1> {
+        if self.read_metadata_active || self.read_metadata.failure().is_some()
+            || self.failure().is_some() || !self.complete
+        {
+            return Err(CacheResidentUnavailableV1);
+        }
+        self.audit_empty_git_coverage_v1(owner, physical, original_inputs)?;
+        self.read_metadata_active = true;
+        self.read_metadata = CacheClockReadMetadataProgressV1::default();
+        // Share only the SAME allocation so the guard can stay local while
+        // this owner parks disjoint action and independent observation slots.
+        let clock = Arc::clone(self.clock.as_ref().ok_or(CacheResidentUnavailableV1)?);
+        let mut guard = match clock.hold_writer_for_readback() {
+            Ok(guard) => guard,
+            Err(cause) => {
+                self.first_failure.get_or_insert(cause.into());
+                return Err(CacheResidentUnavailableV1);
+            }
+        };
+
+        let returned = (|| {
+            self.require_same_coverage_inputs(original_inputs)?;
+            operation.compare_source(source_domains, original_inputs)
+                .map_err(|_| InitializationCauseV1::ReadMetadata)?;
+            let data = original_inputs.ready().ok_or(InitializationCauseV1::CoverageInputs)?;
+            let catalog = GitCoverageCatalogV1::decode(data.catalog())?;
+            let sampled = match operation.prepare(controller, &catalog) {
+                Ok(Some(sampled)) => sampled,
+                Ok(None) => return Ok(()),
+                Err(cause) => {
+                    operation.refuse(cause);
+                    return Err(InitializationCauseV1::ReadMetadata);
+                }
+            };
+            let seconds = u64::try_from(sampled.wall_seconds())
+                .map_err(|_| InitializationCauseV1::ReadMetadata)?;
+            let inputs = self.coverage_inputs.ok_or(InitializationCauseV1::CoverageInputs)?;
+            if seconds < inputs.issued_seconds || seconds >= inputs.expires_seconds {
+                return Err(InitializationCauseV1::CoverageInputs);
+            }
+            // Controller preparation has parked its all-eight-bound preflight.
+            // Cache preparation parks its own, while the same guard stays held.
+            guard.prepare_git_read_metadata(&mut self.read_metadata, seconds)
+                .map_err(|_| InitializationCauseV1::ReadMetadata)?;
+            operation.compare_source(source_domains, original_inputs)
+                .map_err(|_| InitializationCauseV1::ReadMetadata)?;
+            self.require_same_coverage_inputs(original_inputs)?;
+            if let Err(cause) = operation.check_original_crossing() {
+                operation.refuse(cause);
+                return Err(InitializationCauseV1::ReadMetadata);
+            }
+            guard.commit_git_read_metadata(&mut self.read_metadata)
+                .map_err(|_| InitializationCauseV1::ReadMetadata)?;
+            if let Err(cause) = operation.commit_and_evaluate(controller) {
+                operation.refuse(cause);
+                return Err(InitializationCauseV1::ReadMetadata);
+            }
+            Ok::<(), InitializationCauseV1>(())
+        })();
+        if let Err(cause) = returned {
+            self.first_failure.get_or_insert(cause);
+            self.complete = false;
+        }
+
+        // Run independent observations even after a primary action failure.
+        if operation.compare_source(source_domains, original_inputs).is_err() {
+            self.postcheck.get_or_insert(InitializationCauseV1::ReadMetadata);
+        }
+        if let Err(cause) = self.require_same_coverage_inputs(original_inputs) {
+            self.postcheck.get_or_insert(cause);
+        }
+        if let Some(source) = self.source.as_mut() {
+            if let Err(cause) = source.recheck_existing() {
+                self.postcheck.get_or_insert(cause.into());
+            }
+        }
+        if let Some(hold) = self.hold.as_mut() {
+            if let Err(cause) = require_original_hold(
+                &mut hold.0, self.original_hold, self.coverage_inputs, self.original_coverage,
+            ) {
+                self.postcheck.get_or_insert(cause);
+            }
+        }
+        let cache_names = (|| {
+            let state = owner.state_journal.as_ref().ok_or(InitializationCauseV1::Closed)?;
+            require_cache_named_writer(
+                state, Path::new(PROTECTED_CACHE_ROOT), CACHE_STATE_JOURNAL,
+                owner.owner_uid, cache_state_journal_limits(),
+            )?;
+            owner.authority.check_named_location(|journal| {
+                require_cache_named_writer(
+                    journal, Path::new(PROTECTED_CACHE_ROOT), CACHE_AUTHORITY_JOURNAL,
+                    owner.owner_uid, cache_authority_journal_limits(),
+                )
+            })?;
+            Ok::<(), InitializationCauseV1>(())
+        })();
+        if let Err(cause) = cache_names {
+            self.postcheck.get_or_insert(cause);
+        }
+        if let Err(cause) = guard.current_unix_seconds().and_then(|seconds| {
+            let inputs = self.coverage_inputs.ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+            if seconds < inputs.issued_seconds || seconds >= inputs.expires_seconds {
+                return Err(ProtectedDomainJournalErrorV1::StaleAuthority.into());
+            }
+            Ok(())
+        }) {
+            self.postcheck.get_or_insert(cause.into());
+        }
+        if let Err(cause) = guard.revalidate() {
+            self.postcheck.get_or_insert(cause.into());
+        }
+        if operation.postcheck().is_err() {
+            self.postcheck.get_or_insert(InitializationCauseV1::ReadMetadata);
+        }
+        drop(guard);
+        if self.first_failure.is_some() || self.postcheck.is_some() {
+            self.complete = false;
+            return Err(CacheResidentUnavailableV1);
+        }
+        self.read_metadata_active = false;
+        Ok(())
+    }
+
     /// Captures the fixed local account cut under the SAME private clock loan.
     ///
     /// Global Source and CacheBootstrap are distinct original writers. All
@@ -2388,6 +2538,9 @@ impl CacheResidentInitializationV1 {
     pub fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
         let cause = self.first_failure.as_ref().or(self.postcheck.as_ref());
         match cause {
+            #[cfg(target_os = "linux")]
+            Some(InitializationCauseV1::ReadMetadata) => self.read_metadata.failure()
+                .or_else(|| cause.map(|cause| cause as &(dyn std::error::Error + 'static))),
             #[cfg(target_os = "linux")]
             Some(InitializationCauseV1::Q04) => self.q04.failure()
                 .map(|cause| cause as &(dyn std::error::Error + 'static)),

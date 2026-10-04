@@ -11,6 +11,7 @@
 //! ```
 
 use aos_proto::aos::sandbox::local::v1::BrokerMethod;
+use buffa::Message as _;
 use aos_sandbox_broker_session_protocol::{
     BROKER_SESSION_MANIFEST_BYTES, BrokerSessionManifestAudienceV1,
     BrokerSessionManifestErrorV1, BrokerSessionManifestV1, BrokerSessionProjectionError,
@@ -177,7 +178,14 @@ enum AccountPhaseV1 {
     Committing,
     Committed,
     LocallyCompleted,
+    ExistingLocallyCompleted,
     Failed,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AccountDispositionV1 {
+    Enrollment,
+    Existing,
 }
 
 /// Retains one covered account attempt under an external original profile loan.
@@ -205,6 +213,8 @@ pub struct GitCoverageAccountAttemptV1<'profile> {
     first_failure: Option<RootFlightFailureV1>,
     postcheck: Option<RootFlightFailureV1>,
     phase: AccountPhaseV1,
+    disposition: AccountDispositionV1,
+    existing_prepare_nonce: Option<[u8; 16]>,
 }
 
 impl<'profile> GitCoverageAccountAttemptV1<'profile> {
@@ -229,7 +239,48 @@ impl<'profile> GitCoverageAccountAttemptV1<'profile> {
             first_failure: None,
             postcheck: None,
             phase: AccountPhaseV1::Fresh,
+            disposition: AccountDispositionV1::Enrollment,
+            existing_prepare_nonce: None,
         }
+    }
+
+    /// Selects read-only replay while the SAME flight is still wholly fresh.
+    ///
+    /// # Errors
+    /// Refuses every entered or partially captured owner. This sets no Ready,
+    /// completion, currentness, generation or account permission.
+    #[doc(hidden)]
+    pub fn select_existing_replay_before_root_v1(&mut self) -> Result<(), ()> {
+        if self.phase != AccountPhaseV1::Fresh || self.root.phase != RootClientPhaseV1::Fresh
+            || self.source_cut.is_some() || self.controller_cut.is_some()
+        {
+            return Err(());
+        }
+        self.disposition = AccountDispositionV1::Existing;
+        Ok(())
+    }
+
+    /// Ends only the local existing-pair flight after genuine Root readback.
+    ///
+    /// # Errors
+    /// Refuses incomplete/failed replay and retains original endpoint debt.
+    /// The existing account is never retagged as a new successful append.
+    #[doc(hidden)]
+    pub fn finish_existing_root_once(&mut self) -> Result<(), ()> {
+        if self.disposition != AccountDispositionV1::Existing
+            || self.phase != AccountPhaseV1::Captured
+            || self.root.phase != RootClientPhaseV1::Observed
+            || self.failure().is_some() || self.postcheck.is_some()
+        {
+            self.phase = AccountPhaseV1::Failed;
+            return Err(());
+        }
+        if self.root.finish_after_cas_once().is_err() {
+            self.phase = AccountPhaseV1::Failed;
+            return Err(());
+        }
+        self.phase = AccountPhaseV1::ExistingLocallyCompleted;
+        Ok(())
     }
 
     /// Starts the SAME original Root challenge flight before local capture.
@@ -288,10 +339,16 @@ impl<'profile> GitCoverageAccountAttemptV1<'profile> {
         credentials: &crate::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
         now: i64,
     ) -> Result<(), crate::publisher_policy::GitUploadBootstrapErrorV1> {
-        if !matches!(self.phase, AccountPhaseV1::Committed | AccountPhaseV1::LocallyCompleted)
+        if !matches!(self.phase, AccountPhaseV1::Committed | AccountPhaseV1::LocallyCompleted
+            | AccountPhaseV1::ExistingLocallyCompleted)
             || self.failure().is_some()
         {
             return Err(crate::publisher_policy::GitUploadBootstrapErrorV1::Conflict);
+        }
+        if self.disposition == AccountDispositionV1::Existing {
+            return store.current_git_upload_stored_enrolled_account_v1(
+                bootstrap, source, capacity, credentials, now,
+            );
         }
         let append = self.account_append.as_ref().and_then(|result| result.as_ref().ok())
             .ok_or(crate::publisher_policy::GitUploadBootstrapErrorV1::Conflict)?;
@@ -330,7 +387,7 @@ impl<'profile> GitCoverageAccountAttemptV1<'profile> {
                     compare_borrowed_coverage_pair(
                         &proof, role,
                         original_outcomes[index * 2], original_outcomes[index * 2 + 1],
-                        &enrollment, &catalog, root_nonce,
+                        &enrollment, &catalog, root_nonce, self.existing_prepare_nonce,
                     )
                 })());
                 if !matches!(self.remote_readbacks[index].as_ref(), Some(Ok(_))) {
@@ -420,7 +477,7 @@ impl<'profile> GitCoverageAccountAttemptV1<'profile> {
         original: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
         original_inputs: &crate::public_api_session::GitCoverageCredentialCustodyV1,
     ) -> Result<(), ()> {
-        if self.phase != AccountPhaseV1::LocallyCompleted {
+        if !matches!(self.phase, AccountPhaseV1::LocallyCompleted | AccountPhaseV1::ExistingLocallyCompleted) {
             self.first_failure.get_or_insert(RootFlightFailureV1::Refused);
             self.phase = AccountPhaseV1::Failed;
             return Err(());
@@ -565,13 +622,26 @@ impl<'profile> GitCoverageAccountAttemptV1<'profile> {
 
         // The same protected store compares the real completed gen1 triple,
         // signed full source, capacity and credential backing before the pair.
+        if self.disposition == AccountDispositionV1::Existing {
+            self.existing_prepare_nonce = Some(
+                journal.existing_controller_coverage_birth_nonce_v1(&catalog)
+                    .map_err(|cause| RootFlightFailureV1::Native(Box::new(cause)))?,
+            );
+        }
         let store = crate::publisher_policy::PublisherPolicyStore::load(
             journal, crate::publisher_policy::PublisherPolicyLimits::default(),
         ).map_err(crate::publisher_policy::GitUploadBootstrapErrorV1::from)?;
-        store.current_git_upload_bootstrap(
-            original_bootstrap, original_source, original_capacity,
-            original_bootstrap_credentials, now,
-        )?;
+        if self.disposition == AccountDispositionV1::Existing {
+            store.current_git_upload_stored_enrolled_account_v1(
+                original_bootstrap, original_source, original_capacity,
+                original_bootstrap_credentials, now,
+            )?;
+        } else {
+            store.current_git_upload_bootstrap(
+                original_bootstrap, original_source, original_capacity,
+                original_bootstrap_credentials, now,
+            )?;
+        }
         drop(store);
 
         self.controller_cut = Some(observe_controller_native_cut(journal, &catalog));
@@ -579,6 +649,20 @@ impl<'profile> GitCoverageAccountAttemptV1<'profile> {
             return Err(RootFlightFailureV1::Refused);
         };
         let nonce = self.root.root_nonce.ok_or(RootFlightFailureV1::Refused)?;
+        if self.disposition == AccountDispositionV1::Existing {
+            let source = self.source_cut.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(RootFlightFailureV1::Refused)?;
+            let bootstrap = self.cache_bootstrap_cut.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(RootFlightFailureV1::Refused)?;
+            let deadline = self.root.deadline.ok_or(RootFlightFailureV1::Refused)?;
+            self.metadata = Some(encode_local_cut_metadata(
+                nonce, deadline.cutoff(), [before, source, bootstrap],
+            ));
+            if !matches!(self.metadata.as_ref(), Some(Ok(_))) {
+                return Err(RootFlightFailureV1::Refused);
+            }
+            return Ok(());
+        }
         let birth_fields = enrollment.fixed_owner_birth_recipe_v1(
             &catalog, GitCoverageJournalProfileV1::Controller, nonce,
         )?;
@@ -930,6 +1014,7 @@ fn compare_borrowed_coverage_pair(
     enrollment: &GitCoverageEnrollmentV1<'_>,
     catalog: &GitCoverageCatalogV1<'_>,
     root_nonce: [u8; 16],
+    existing_prepare_nonce: Option<[u8; 16]>,
 ) -> ComparisonResult<GitCoverageOutcomeFieldsV1> {
     let parts = proof.parts();
     let (prepare_method, read_method, profile) = match role {
@@ -958,8 +1043,17 @@ fn compare_borrowed_coverage_pair(
     if original.enrollment().map(GitCoverageEnrollmentV1::bytes) != Some(enrollment.bytes()) {
         return Err(EnrollmentComparisonErrorV1::Refused);
     }
+    use aos_sandbox_core::format::git_upload_enrollment::GitCoveragePrepareModeV1;
+    let birth_nonce = match (original.prepare_mode(), existing_prepare_nonce) {
+        (GitCoveragePrepareModeV1::Original, None) => original.coordinates().nonce,
+        (GitCoveragePrepareModeV1::ExistingPair, Some(nonce)) if nonce != [0; 16] => nonce,
+        _ => return Err(EnrollmentComparisonErrorV1::Refused),
+    };
+    if original.coordinates().nonce != root_nonce {
+        return Err(EnrollmentComparisonErrorV1::Refused);
+    }
     let (fence_bytes, commit_sequence) = fixed_coverage_fence_for_original_pair(
-        enrollment, catalog, profile, original.coordinates().nonce,
+        enrollment, catalog, profile, birth_nonce,
     )?;
     let fence = GitCoverageFenceV1::decode(&fence_bytes)?;
     let prepare_readback = original_coverage_readback_v1(prepare, &fence)?;
@@ -1887,7 +1981,23 @@ impl<'startup> RootGitCoverageEnrollmentOwnerV1<'startup> {
         let Some(Ok(local_cuts)) = &self.local_cuts else {
             return Err(RootFlightFailureV1::Refused);
         };
-        compare_local_cut_catalog(local_cuts, &enrollment, &catalog, root_nonce)?;
+        // Keep the original ordinary local check and its error priority.
+        // Only its rejected cold shape can select the new read-only branch;
+        // malformed/Original carriers still return that same old cause.
+        let existing_pair = match compare_local_cut_catalog(
+            local_cuts, &enrollment, &catalog, root_nonce, false,
+        ) {
+            Ok(()) => false,
+            Err(original) => {
+                if existing_pair_mode(parts[2]).is_ok_and(|mode| mode)
+                    && existing_pair_mode(parts[3]).is_ok_and(|mode| mode)
+                {
+                    true
+                } else {
+                    return Err(original);
+                }
+            }
+        };
 
         let manifests = originals.root_session_manifests().ok_or(RootFlightFailureV1::Refused)?;
         for (index, role) in [GitCoverageBrokerRoleV1::Mount, GitCoverageBrokerRoleV1::Storage]
@@ -1899,6 +2009,12 @@ impl<'startup> RootGitCoverageEnrollmentOwnerV1<'startup> {
                 deadline.boot(), root_nonce, cutoff, deadline.current_git_coverage_boottime()?,
             ));
             if !matches!(self.proofs[index].as_ref(), Some(Ok(_))) {
+                return Err(RootFlightFailureV1::Refused);
+            }
+            if !existing_pair && self.proofs[index].as_ref()
+                .and_then(|result| result.as_ref().ok())
+                .is_none_or(|pair| pair.readback.is_none())
+            {
                 return Err(RootFlightFailureV1::Refused);
             }
         }
@@ -1913,6 +2029,32 @@ impl<'startup> RootGitCoverageEnrollmentOwnerV1<'startup> {
         require_enrollment_wall(&enrollment, coverage_wall_now(deadline)?)?;
         if catalog.coordinates().2 != *head.packet_digest().as_bytes() {
             return Err(RootFlightFailureV1::Refused);
+        }
+        if existing_pair {
+            let authority_nonce = root_denial_nonce(
+                RootCoverageWritersV1::original(&self.writers.authority)?,
+                ROOT_WRITER_PROFILES[0], &enrollment, &catalog,
+            )?;
+            let state_nonce = root_denial_nonce(
+                RootCoverageWritersV1::original(&self.writers.state)?,
+                ROOT_WRITER_PROFILES[1], &enrollment, &catalog,
+            )?;
+            let birth_nonce = match (authority_nonce, state_nonce) {
+                (Some(authority), Some(state)) if authority == state => authority,
+                _ => return Err(RootFlightFailureV1::Refused),
+            };
+            compare_local_cut_catalog(local_cuts, &enrollment, &catalog, birth_nonce, true)?;
+            for (index, role) in [GitCoverageBrokerRoleV1::Mount, GitCoverageBrokerRoleV1::Storage]
+                .into_iter().enumerate()
+            {
+                let pair = self.proofs[index].as_mut().and_then(|result| result.as_mut().ok())
+                    .ok_or(RootFlightFailureV1::Refused)?;
+                let proof = GitCoverageBrokerProofV1::decode(parts[index + 2])?;
+                pair.readback = Some(compare_borrowed_coverage_pair(
+                    &proof, role, &pair.prepare, &pair.read, &enrollment, &catalog,
+                    root_nonce, Some(birth_nonce),
+                )?);
+            }
         }
         self.writers.prepare_denial_once(&enrollment, &catalog, root_nonce)?;
         for index in 0..ROOT_WRITER_PROFILES.len() {
@@ -2098,6 +2240,7 @@ fn compare_local_cut_catalog(
     enrollment: &GitCoverageEnrollmentV1<'_>,
     catalog: &GitCoverageCatalogV1<'_>,
     nonce: [u8; 16],
+    existing_pair: bool,
 ) -> Result<(), RootFlightFailureV1> {
     for cut in cuts {
         let member = catalog.members().find(|member| member.profile() == cut.profile)
@@ -2107,7 +2250,10 @@ fn compare_local_cut_catalog(
         }
         if cut.profile == GitCoverageJournalProfileV1::Controller {
             let birth = enrollment.fixed_owner_birth_recipe_v1(catalog, cut.profile, nonce)?;
-            if cut.last_commit != Some((birth.transaction, birth.commit_sequence)) {
+            if !existing_pair && cut.last_commit != Some((birth.transaction, birth.commit_sequence)) {
+                return Err(RootFlightFailureV1::Refused);
+            }
+            if existing_pair && cut.last_commit.is_none_or(|(_, sequence)| sequence <= birth.commit_sequence) {
                 return Err(RootFlightFailureV1::Refused);
             }
         } else if member.bytes()[104..136] != cut.prefix {
@@ -2565,7 +2711,7 @@ struct OriginalBrokerCoveragePairV1 {
     checkpoint: HistoricalSessionCheckpointV1,
     prepare: AuthenticatedBrokerMethodOutcomeV1,
     read: AuthenticatedBrokerMethodOutcomeV1,
-    readback: GitCoverageOutcomeFieldsV1,
+    readback: Option<GitCoverageOutcomeFieldsV1>,
 }
 
 // Every supplied coordinate is comparison DATA borrowed from the containing
@@ -2640,11 +2786,33 @@ fn compare_original_broker_pair_v1(
         original_cut, now_boottime_nanoseconds,
     )?;
 
-    let readback = compare_borrowed_coverage_pair(
-        &proof, expected_role, &prepare, &read, enrollment, catalog, root_nonce,
-    )?;
+    let comparison = prepare.request().git_coverage_request_v1()
+        .ok_or(EnrollmentComparisonErrorV1::Refused)?.comparison()?;
+    let readback = match comparison.prepare_mode() {
+        aos_sandbox_core::format::git_upload_enrollment::GitCoveragePrepareModeV1::Original => {
+            Some(compare_borrowed_coverage_pair(
+                &proof, expected_role, &prepare, &read, enrollment, catalog, root_nonce, None,
+            )?)
+        }
+        aos_sandbox_core::format::git_upload_enrollment::GitCoveragePrepareModeV1::ExistingPair => None,
+    };
 
     Ok(OriginalBrokerCoveragePairV1 { checkpoint, prepare, read, readback })
+}
+
+// This preliminary mode is only a routing discriminator. The complete same
+// carriers are authenticated and compared below before Root acquires writers.
+fn existing_pair_mode(bytes: &[u8]) -> ComparisonResult<bool> {
+    let proof = GitCoverageBrokerProofV1::decode(bytes)?;
+    let request = decode_canonical_request_v1(proof.parts()[1])?;
+    let wire = aos_proto::aos::sandbox::local::v1::GitProjectCoverageRequestV1::decode_from_slice(
+        &request.message().body,
+    ).map_err(|_| EnrollmentComparisonErrorV1::Refused)?;
+    let comparison = aos_sandbox_core::format::git_upload_enrollment::GitCoverageRequestV1::decode(
+        &wire.coverage,
+    )?;
+    Ok(comparison.prepare_mode()
+        == aos_sandbox_core::format::git_upload_enrollment::GitCoveragePrepareModeV1::ExistingPair)
 }
 
 // One canonical packet/admission body advances both original exchanges. The

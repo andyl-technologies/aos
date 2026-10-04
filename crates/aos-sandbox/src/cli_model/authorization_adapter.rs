@@ -731,15 +731,18 @@ impl CurrentProtectedCliAuthorizationV1 {
     }
 }
 
-/// Retains the actual protected inputs after the common current grant checks.
+/// Retains the actual protected inputs for the common current grant checks.
 ///
 /// There is no scalar constructor. Callers must still establish the identity
 /// and exact request semantics in their own owner boundary; this projection
 /// does not reconstruct a TLS peer or mint public mutation authorization.
+/// Selected preparation parks these inputs privately before the floor effect;
+/// only the later scope check can move them into the completed decision slot.
 pub(crate) struct CurrentCapabilityDecisionV1 {
     capability: aos_sandbox_core::CapabilityRecord,
     policy: crate::publisher_policy::PreparedPublisherPolicyRevisionV1,
     controller: crate::publisher_policy::PublisherControllerHeadV1,
+    revocation: crate::publisher_policy::PublisherRevocationHeadV1,
     time_floor: ProtectedTimeFloorRevisionV1,
     authorized_wall_seconds: i64,
 }
@@ -868,6 +871,58 @@ fn evaluate_current_protected_capability_inner(
         .sample()
         .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
     let time_floor = advance_protected_time_floor_inner(journal, clock, crossing)?;
+    evaluate_at_protected_time_floor(
+        journal, capability_limits, policy_limits, capability_id,
+        authenticated_project, holder, channel_binding, resource_kind,
+        operation, selector, clock, time_floor,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn evaluate_at_protected_time_floor(
+    journal: &mut Journal,
+    capability_limits: PublisherAuthorityLimits,
+    policy_limits: PublisherPolicyLimits,
+    capability_id: CapabilityId,
+    authenticated_project: ProjectId,
+    holder: PrincipalId,
+    channel_binding: ChannelBinding,
+    resource_kind: ResourceKind,
+    operation: Operation,
+    selector: &Selector,
+    clock: RawPairedClockSample,
+    time_floor: ProtectedTimeFloorRevisionV1,
+) -> Result<CurrentCapabilityDecisionV1, CliAuthorizationAdapterError> {
+    prepare_capability_at_protected_time_floor(
+        journal, capability_limits, policy_limits, capability_id, authenticated_project,
+        holder, channel_binding, resource_kind, operation, selector, clock, time_floor,
+        CapabilityCheckV1::Scope,
+    )
+}
+
+enum CapabilityCheckV1 {
+    Scope,
+    // Preserve scope-denied negative DATA after the ordinary floor crossing;
+    // Denied is distinct from the real context, validity or revocation errors.
+    RetainedLifetime,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_capability_at_protected_time_floor(
+    journal: &mut Journal,
+    capability_limits: PublisherAuthorityLimits,
+    policy_limits: PublisherPolicyLimits,
+    capability_id: CapabilityId,
+    authenticated_project: ProjectId,
+    holder: PrincipalId,
+    channel_binding: ChannelBinding,
+    resource_kind: ResourceKind,
+    operation: Operation,
+    selector: &Selector,
+    clock: RawPairedClockSample,
+    time_floor: ProtectedTimeFloorRevisionV1,
+    check: CapabilityCheckV1,
+) -> Result<CurrentCapabilityDecisionV1, CliAuthorizationAdapterError> {
     let trusted_now = clock.wall_seconds();
     let capability = {
         let registry = PublisherCapabilityRegistry::load(journal, capability_limits)
@@ -896,6 +951,38 @@ fn evaluate_current_protected_capability_inner(
         (controller, revocation, policy)
     };
 
+    validate_current_capability_inputs(
+        &capability, &policy, &controller, &revocation, holder, channel_binding,
+        resource_kind, operation, selector, trusted_now, check,
+    )?;
+
+    Ok(CurrentCapabilityDecisionV1 {
+        capability,
+        policy,
+        controller,
+        revocation,
+        time_floor,
+        authorized_wall_seconds: trusted_now,
+    })
+}
+
+// The ordinary evaluator and selected crossings borrow the same grant and
+// lifetime paragraph. This helper neither advances a floor nor prepares DATA.
+#[allow(clippy::too_many_arguments)]
+fn validate_current_capability_inputs(
+    capability: &aos_sandbox_core::CapabilityRecord,
+    policy: &crate::publisher_policy::PreparedPublisherPolicyRevisionV1,
+    controller: &crate::publisher_policy::PublisherControllerHeadV1,
+    revocation: &crate::publisher_policy::PublisherRevocationHeadV1,
+    holder: PrincipalId,
+    channel_binding: ChannelBinding,
+    resource_kind: ResourceKind,
+    operation: Operation,
+    selector: &Selector,
+    trusted_now: i64,
+    check: CapabilityCheckV1,
+) -> Result<(), CliAuthorizationAdapterError> {
+    let claims = capability.claims();
     if controller.principal != claims.audience
         || revocation.scope != claims.revocation_scope
         || revocation.generation != claims.revocation_generation.get()
@@ -918,17 +1005,41 @@ fn evaluate_current_protected_capability_inner(
         assignment_epoch: claims.assignment_epoch,
         revocation_generation: claims.revocation_generation,
     };
-    capability
-        .authorize(&context, resource_kind, operation, selector)
-        .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+    match capability.authorize(&context, resource_kind, operation, selector) {
+        Ok(()) => {}
+        Err(aos_sandbox_core::AuthorizationError::Denied)
+            if matches!(check, CapabilityCheckV1::RetainedLifetime) => {}
+        Err(_) => return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected),
+    }
 
-    Ok(CurrentCapabilityDecisionV1 {
-        capability,
-        policy,
-        controller,
-        time_floor,
-        authorized_wall_seconds: trusted_now,
-    })
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn compare_retained_git_read_at_clock_v1(
+    decision: &CurrentCapabilityDecisionV1,
+    facts: crate::git::delegated_read::ReadFactsV1,
+    clock: RawPairedClockSample,
+) -> Result<(), CliAuthorizationAdapterError> {
+    require_authenticated_project(facts.project, decision.capability.claims().project)?;
+    validate_current_capability_inputs(
+        &decision.capability, &decision.policy, &decision.controller, &decision.revocation,
+        facts.principal, facts.binding, ResourceKind::GitObjectDatabase,
+        Operation::ContentRead, &Selector::Resource { resource: facts.resource },
+        clock.wall_seconds(), CapabilityCheckV1::RetainedLifetime,
+    )
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn compare_retained_git_entitlement_at_clock_v1(
+    owner: &mut crate::public_capability_issuance::RetainedGitEntitlementReadV1,
+    decision: &CurrentCapabilityDecisionV1,
+    clock: RawPairedClockSample,
+) -> Result<(), CliAuthorizationAdapterError> {
+    owner.check_current_inputs(
+        &decision.capability, &decision.policy, &decision.controller, &decision.revocation,
+        clock.wall_seconds(),
+    ).map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)
 }
 
 fn require_authenticated_project(
@@ -939,6 +1050,199 @@ fn require_authenticated_project(
         return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
     }
     Ok(())
+}
+
+/// Lends one genuine selected request to the fixed same-writer crossing.
+///
+/// This opaque mechanical argument has no public constructor, clock, owner,
+/// quantity or authority projection. Its originals stay in their caller slots.
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub struct GitCoverageReadMetadataOperationV1<'original, 'profile> {
+    input: GitCoverageReadInputV1<'original>,
+    account: &'original mut crate::policy_compiler::GitCoverageAccountAttemptV1<'profile>,
+}
+
+#[cfg(target_os = "linux")]
+enum GitCoverageReadInputV1<'original> {
+    Inspect {
+        original: &'original mut crate::git::delegated_read::GitReadRequestOwnerV1,
+        acceptor: &'original crate::public_api_session::PublicApiSessionAcceptor,
+        prepared: Option<(CapabilityId, crate::git::delegated_read::ReadFactsV1)>,
+    },
+    Bootstrap(&'original mut crate::public_capability_issuance::RetainedGitInitialIssuanceV1),
+}
+
+#[cfg(target_os = "linux")]
+impl<'original, 'profile> GitCoverageReadMetadataOperationV1<'original, 'profile> {
+    pub(crate) fn inspect(
+        original: &'original mut crate::git::delegated_read::GitReadRequestOwnerV1,
+        acceptor: &'original crate::public_api_session::PublicApiSessionAcceptor,
+        account: &'original mut crate::policy_compiler::GitCoverageAccountAttemptV1<'profile>,
+    ) -> Self {
+        Self {
+            input: GitCoverageReadInputV1::Inspect {
+                original,
+                acceptor,
+                prepared: None,
+            },
+            account,
+        }
+    }
+
+    pub(crate) fn bootstrap(
+        original: &'original mut crate::public_capability_issuance::RetainedGitInitialIssuanceV1,
+        account: &'original mut crate::policy_compiler::GitCoverageAccountAttemptV1<'profile>,
+    ) -> Self {
+        Self {
+            input: GitCoverageReadInputV1::Bootstrap(original),
+            account,
+        }
+    }
+
+    pub(crate) fn compare_source(
+        &mut self,
+        source: &mut crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1,
+        inputs: &crate::public_api_session::GitCoverageCredentialCustodyV1,
+    ) -> Result<(), ()> {
+        self.account.compare_completed_original_source_cut(source, inputs)
+    }
+
+    pub(crate) fn refuse(&mut self, cause: CliAuthorizationAdapterError) {
+        match &mut self.input {
+            GitCoverageReadInputV1::Inspect { original, .. } => {
+                original.decision.get_or_insert(Err(cause));
+            }
+            GitCoverageReadInputV1::Bootstrap(original) => original.refuse(),
+        }
+    }
+
+    pub(crate) fn prepare(
+        &mut self,
+        journal: &mut Journal,
+        catalog: &aos_sandbox_core::format::git_upload_enrollment::GitCoverageCatalogV1<'_>,
+    ) -> Result<Option<RawPairedClockSample>, CliAuthorizationAdapterError> {
+        let refused = || CliAuthorizationAdapterError::ProtectedAuthorizationRejected;
+        let (original, acceptor, prepared_slot) = match &mut self.input {
+            GitCoverageReadInputV1::Inspect { original, acceptor, prepared } => {
+                (original, acceptor, prepared)
+            }
+            GitCoverageReadInputV1::Bootstrap(original) => {
+                return original.prepare(journal, catalog).map(Some);
+            }
+        };
+        if prepared_slot.is_some() || original.coverage_sample.is_some() {
+            return Err(refused());
+        }
+        let Some(prepared) = crate::controller::prepare_original_gateway_git_read_v1(
+            journal, original, acceptor,
+        ) else {
+            if original.handle_rejected() {
+                // The SAME registry has parked an ordinary negative handle
+                // result. No time-floor or Cache effect follows this 401.
+                return Ok(None);
+            }
+            return Err(refused());
+        };
+        *prepared_slot = Some(prepared);
+        let sampled = {
+            let (clock, _, _) = original.borrow_git_coverage_evaluation_v1()?;
+            clock.sample()
+        };
+        original.coverage_sample = Some(sampled);
+        let sample = *original.coverage_sample.as_ref()
+            .and_then(|result| result.as_ref().ok()).ok_or_else(refused)?;
+
+        original.coverage_entitlements = Some(
+            crate::public_capability_issuance::RetainedGitEntitlementReadV1::new(),
+        );
+        original.coverage_entitlements.as_mut().ok_or_else(refused)?
+            .capture_and_compare(journal, prepared.1.project).map_err(|_| refused())?;
+
+        original.coverage_prefix = Some((|| {
+            let mut loan = journal.controller_git_coverage_native_prefix_v1(catalog)?;
+            let has_floor = loan.existing_controller_read_floor_v1()
+                .map_err(|first| crate::journal::GitCoverageNativeHistoryErrorV1::from_first(first))?;
+            loan.recheck()
+                .map_err(|first| crate::journal::GitCoverageNativeHistoryErrorV1::from_first(first))?;
+            Ok(has_floor)
+        })());
+        original.coverage_prefix.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or_else(refused)?;
+        original.crossing.prepare_existing_git_read(journal, sample)?;
+        let revision = original.crossing.prepared_revision.ok_or_else(refused)?;
+        original.coverage_prepared = Some(prepare_capability_at_protected_time_floor(
+            journal, PublisherAuthorityLimits::default(), PublisherPolicyLimits::default(),
+            prepared.0, prepared.1.project, prepared.1.principal, prepared.1.binding,
+            ResourceKind::GitObjectDatabase, Operation::ContentRead,
+            &Selector::Resource { resource: prepared.1.resource }, sample, revision,
+            CapabilityCheckV1::RetainedLifetime,
+        ));
+        original.coverage_prepared.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or_else(refused)?;
+        Ok(Some(sample))
+    }
+
+    // Checks the real request after slow preparation, before the next effect.
+    // No returned sample is a permit; every later crossing samples again.
+    pub(crate) fn check_original_crossing(&mut self) -> Result<(), CliAuthorizationAdapterError> {
+        match &mut self.input {
+            GitCoverageReadInputV1::Inspect { original, prepared, .. } => {
+                let (_, facts) = (*prepared)
+                    .ok_or(CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+                original.check_git_coverage_crossing_v1(facts)
+            }
+            GitCoverageReadInputV1::Bootstrap(original) => original.check_original_crossing(),
+        }
+    }
+
+    pub(crate) fn commit_and_evaluate(
+        &mut self,
+        journal: &mut Journal,
+    ) -> Result<(), CliAuthorizationAdapterError> {
+        let (original, prepared) = match &mut self.input {
+            GitCoverageReadInputV1::Inspect { original, prepared, .. } => (original, prepared),
+            GitCoverageReadInputV1::Bootstrap(original) => {
+                return original.commit_and_issue(journal);
+            }
+        };
+        let (_, facts) = (*prepared)
+            .ok_or(CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+        original.crossing.preflight_existing_git_read(journal)?;
+        original.check_git_coverage_crossing_v1(facts)?;
+        let revision = original.crossing.commit_prepared_existing_git_read(journal)?;
+        let decision = original.coverage_prepared.as_mut().and_then(|result| result.as_mut().ok())
+            .ok_or(CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+        decision.time_floor = revision;
+        let scope = validate_current_capability_inputs(
+            &decision.capability, &decision.policy, &decision.controller, &decision.revocation,
+            facts.principal, facts.binding, ResourceKind::GitObjectDatabase,
+            Operation::ContentRead, &Selector::Resource { resource: facts.resource },
+            decision.authorized_wall_seconds, CapabilityCheckV1::Scope,
+        );
+        original.decision = Some(match scope {
+            Ok(()) => original.coverage_prepared.take()
+                .ok_or(CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?,
+            Err(cause) => Err(cause),
+        });
+        // A denied scope after an exact floor crossing remains negative DATA;
+        // it does not poison the shared owner or create effect permission.
+        Ok(())
+    }
+
+    pub(crate) fn postcheck(&mut self) -> Result<(), ()> {
+        match &mut self.input {
+            GitCoverageReadInputV1::Inspect { original, .. } => {
+                original.postcheck_git_coverage_evaluation_v1();
+                if original.terminal_failure_observed() {
+                    Err(())
+                } else {
+                    Ok(())
+                }
+            }
+            GitCoverageReadInputV1::Bootstrap(original) => original.postcheck(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1220,7 +1524,7 @@ fn authenticated_channel_commitment(
 }
 
 #[derive(Clone, Copy)]
-struct ProtectedTimeFloorRevisionV1 {
+pub(crate) struct ProtectedTimeFloorRevisionV1 {
     generation: u64,
     clock: RawPairedClockSample,
     previous: ObjectDigest,
@@ -1232,20 +1536,178 @@ struct ProtectedTimeFloorRevisionV1 {
 #[derive(Default)]
 pub(crate) struct RetainedAuthorizationTimeFloorV1 {
     proposal: Option<JournalTransaction>,
+    preflight: Option<Result<(), crate::JournalError>>,
+    prepared_revision: Option<ProtectedTimeFloorRevisionV1>,
     commit: Option<Result<crate::journal::CommitResult, crate::JournalError>>,
     expected: Option<(Vec<u8>, Vec<u8>)>,
+    unsigned: Option<Vec<u8>>,
     readback: Option<bool>,
     attempted: bool,
 }
 
 impl RetainedAuthorizationTimeFloorV1 {
     pub(crate) fn failure(&self) -> Option<&crate::JournalError> {
-        self.commit.as_ref().and_then(|result| result.as_ref().err())
+        self.preflight.as_ref().and_then(|result| result.as_ref().err())
+            .or_else(|| self.commit.as_ref().and_then(|result| result.as_ref().err()))
     }
 
     pub(crate) fn clean_readback(&self) -> bool {
         matches!(self.commit, Some(Ok(_))) && self.readback == Some(true)
     }
+
+    pub(crate) fn compare_original_post_clock(
+        &self,
+        clock: RawPairedClockSample,
+    ) -> Result<(), CliAuthorizationAdapterError> {
+        validate_clock_advancement(self.prepared_revision, clock)
+    }
+
+    pub(crate) fn prepare_existing_git_read(
+        &mut self,
+        journal: &Journal,
+        clock: RawPairedClockSample,
+    ) -> Result<(), CliAuthorizationAdapterError> {
+        if self.attempted {
+            return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
+        }
+        self.attempted = true;
+
+        let (revision, unsigned, revision_bytes, head_bytes, transaction) =
+            prepare_protected_time_floor(journal, clock)?;
+        self.prepared_revision = Some(revision);
+        self.proposal = Some(transaction);
+        self.unsigned = Some(unsigned);
+        self.expected = Some((revision_bytes, head_bytes));
+        let proposal = self.proposal.as_ref()
+            .ok_or(CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+        self.preflight = Some(journal.preflight_transactions(std::slice::from_ref(proposal)));
+        self.preflight.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+        Ok(())
+    }
+
+    fn commit_prepared_existing_git_read(
+        &mut self,
+        journal: &mut Journal,
+    ) -> Result<ProtectedTimeFloorRevisionV1, CliAuthorizationAdapterError> {
+        let revision = self.prepared_revision
+            .ok_or(CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+        let proposal = self.proposal.as_ref()
+            .ok_or(CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+        let expected = self.expected.as_ref()
+            .ok_or(CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+        commit_prepared_floor(
+            journal, proposal, revision, expected, &mut self.preflight,
+            &mut self.commit, &mut self.readback,
+        )
+    }
+
+    fn preflight_existing_git_read(
+        &mut self,
+        journal: &Journal,
+    ) -> Result<(), CliAuthorizationAdapterError> {
+        let refused = || CliAuthorizationAdapterError::ProtectedAuthorizationRejected;
+        preflight_prepared_floor(
+            journal, self.proposal.as_ref().ok_or_else(refused)?,
+            self.prepared_revision.ok_or_else(refused)?, &mut self.preflight, &self.commit,
+        )
+    }
+
+    pub(crate) fn preflight_initial_issuance_floor(
+        &mut self,
+        journal: &Journal,
+        proposal: &JournalTransaction,
+    ) -> Result<(), CliAuthorizationAdapterError> {
+        preflight_prepared_floor(
+            journal, proposal,
+            self.prepared_revision.ok_or(CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?,
+            &mut self.preflight, &self.commit,
+        )
+    }
+
+    pub(crate) fn park_initial_issuance_prefix(
+        &mut self,
+        destination: &mut Vec<JournalTransaction>,
+    ) -> Result<(), CliAuthorizationAdapterError> {
+        if !destination.is_empty() || self.proposal.is_none()
+            || !matches!(self.preflight, Some(Ok(())))
+        {
+            return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
+        }
+        // Allocate while the original proposal is still parked. The only
+        // move is then into the caller's resident two-transaction batch.
+        destination.reserve_exact(2);
+        if let Some(proposal) = self.proposal.take() {
+            destination.push(proposal);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn commit_prepared_initial_issuance_floor(
+        &mut self,
+        journal: &mut Journal,
+        proposal: &JournalTransaction,
+    ) -> Result<(), CliAuthorizationAdapterError> {
+        let revision = self.prepared_revision
+            .ok_or(CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+        let expected = self.expected.as_ref()
+            .ok_or(CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+        commit_prepared_floor(
+            journal, proposal, revision, expected, &mut self.preflight,
+            &mut self.commit, &mut self.readback,
+        ).map(|_| ())
+    }
+}
+
+// Inspect and initial issuance share this exact staged floor crossing. Its
+// proposal is borrowed from the original resident slot or batch, never cloned.
+fn commit_prepared_floor(
+    journal: &mut Journal,
+    proposal: &JournalTransaction,
+    revision: ProtectedTimeFloorRevisionV1,
+    expected: &(Vec<u8>, Vec<u8>),
+    preflight: &mut Option<Result<(), crate::JournalError>>,
+    commit: &mut Option<Result<crate::journal::CommitResult, crate::JournalError>>,
+    readback: &mut Option<bool>,
+) -> Result<ProtectedTimeFloorRevisionV1, CliAuthorizationAdapterError> {
+    let refused = || CliAuthorizationAdapterError::ProtectedAuthorizationRejected;
+    if commit.is_some() || !matches!(preflight, Some(Ok(()))) {
+        return Err(refused());
+    }
+    *commit = Some(journal.commit(proposal));
+    *readback = Some(time_floor_readback(journal, revision.generation, &expected.0, &expected.1));
+    if !matches!(commit, Some(Ok(_))) || *readback != Some(true) {
+        return Err(refused());
+    }
+    Ok(revision)
+}
+
+// Slow lineage validation and native preflight end before the caller's fresh
+// original-clock check; append/readback remain the same single paragraph.
+fn preflight_prepared_floor(
+    journal: &Journal,
+    proposal: &JournalTransaction,
+    revision: ProtectedTimeFloorRevisionV1,
+    preflight: &mut Option<Result<(), crate::JournalError>>,
+    commit: &Option<Result<crate::journal::CommitResult, crate::JournalError>>,
+) -> Result<(), CliAuthorizationAdapterError> {
+    let refused = || CliAuthorizationAdapterError::ProtectedAuthorizationRejected;
+    if commit.is_some() || !matches!(preflight, Some(Ok(()))) {
+        return Err(refused());
+    }
+    let prior = load_protected_time_floor(journal)?;
+    if revision.generation != prior.map_or(Some(1), |value| value.generation.checked_add(1))
+        .ok_or_else(refused)?
+        || revision.previous != prior.map_or(ObjectDigest::from_bytes([0; 32]), |value| value.digest)
+    {
+        return Err(refused());
+    }
+
+    *preflight = Some(journal.preflight_transactions(std::slice::from_ref(proposal)));
+    if !matches!(preflight, Some(Ok(()))) {
+        return Err(refused());
+    }
+    Ok(())
 }
 
 fn advance_protected_time_floor(
@@ -1267,6 +1729,42 @@ fn advance_protected_time_floor_inner(
         // Interrupted or failed crossings can never be repeated.
         destination.attempted = true;
     }
+    let (revision, unsigned, revision_bytes, head_bytes, transaction) =
+        prepare_protected_time_floor(journal, clock)?;
+    let generation = revision.generation;
+
+    // A journal error can be an acknowledgement loss after durable append.
+    // Exact readback below is therefore the sole ordinary success criterion.
+    let Some(destination) = retained else {
+        let _commit_outcome = journal.commit(&transaction);
+        if !time_floor_readback(journal, generation, &revision_bytes, &head_bytes) {
+            return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
+        }
+        return Ok(revision);
+    };
+    destination.proposal = Some(transaction);
+    destination.unsigned = Some(unsigned);
+    destination.expected = Some((revision_bytes, head_bytes));
+    let proposal = destination.proposal.as_ref()
+        .ok_or(CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+    destination.commit = Some(journal.commit(proposal));
+    let (revision_bytes, head_bytes) = destination.expected.as_ref()
+        .ok_or(CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+    destination.readback = Some(time_floor_readback(
+        journal, generation, revision_bytes, head_bytes,
+    ));
+    if !destination.clean_readback() {
+        return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
+    }
+    Ok(revision)
+}
+
+fn prepare_protected_time_floor(
+    journal: &Journal,
+    clock: RawPairedClockSample,
+) -> Result<(
+    ProtectedTimeFloorRevisionV1, Vec<u8>, Vec<u8>, Vec<u8>, JournalTransaction,
+), CliAuthorizationAdapterError> {
     journal
         .ensure_protected_authority()
         .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
@@ -1316,31 +1814,7 @@ fn advance_protected_time_floor_inner(
         ],
     )
     .map_err(|_| CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
-    // A journal error can be an acknowledgement loss after durable append.
-    // Exact readback below is therefore the sole success criterion.
-    let Some(destination) = retained else {
-        // Preserve ordinary locals and their original reverse drop order.
-        let _commit_outcome = journal.commit(&transaction);
-        if !time_floor_readback(journal, generation, &revision_bytes, &head_bytes) {
-            return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
-        }
-        return Ok(revision);
-    };
-    destination.proposal = Some(transaction);
-    destination.expected = Some((revision_bytes, head_bytes));
-    let proposal = destination.proposal.as_ref()
-        .ok_or(CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
-    destination.commit = Some(journal.commit(proposal));
-    let (revision_bytes, head_bytes) = destination.expected.as_ref()
-        .ok_or(CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
-    destination.readback = Some(time_floor_readback(
-        journal, generation, revision_bytes, head_bytes,
-    ));
-    if !destination.clean_readback() {
-        return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
-    }
-
-    Ok(revision)
+    Ok((revision, unsigned, revision_bytes, head_bytes, transaction))
 }
 
 fn time_floor_readback(journal: &Journal, generation: u64, revision: &[u8], head: &[u8]) -> bool {
@@ -1366,9 +1840,15 @@ pub(crate) fn advance_initial_issuance_time_floor(
 fn load_protected_time_floor(
     journal: &Journal,
 ) -> Result<Option<ProtectedTimeFloorRevisionV1>, CliAuthorizationAdapterError> {
+    load_protected_time_floor_records(journal.records(RecordNamespace::CliAuthorizationTime))
+}
+
+fn load_protected_time_floor_records<'a>(
+    records: impl IntoIterator<Item = (&'a [u8], &'a [u8])>,
+) -> Result<Option<ProtectedTimeFloorRevisionV1>, CliAuthorizationAdapterError> {
     let mut revisions = BTreeMap::new();
     let mut head = None;
-    for (key, value) in journal.records(RecordNamespace::CliAuthorizationTime) {
+    for (key, value) in records {
         if key == TIME_FLOOR_CURRENT_KEY {
             if head.replace(decode_time_floor_head(value)?).is_some() {
                 return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
@@ -1407,6 +1887,71 @@ fn load_protected_time_floor(
             }
             Ok(revisions.get(&head_generation).copied())
         }
+        _ => Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected),
+    }
+}
+
+// The same fixed codec/clock relation is used by native replay and preflight.
+// A parsed transaction supplies no signed-currentness or write permission.
+pub(crate) fn require_git_coverage_floor_transaction_v1(
+    transaction: &JournalTransaction,
+    prior: Option<ProtectedTimeFloorRevisionV1>,
+) -> Result<ProtectedTimeFloorRevisionV1, CliAuthorizationAdapterError> {
+    let refused = || CliAuthorizationAdapterError::ProtectedAuthorizationRejected;
+    let records = transaction.records();
+    if records.len() != 2
+        || records.iter().any(|record| {
+            record.namespace() != RecordNamespace::CliAuthorizationTime
+                || record.value().is_none()
+        })
+    {
+        return Err(refused());
+    }
+    let bytes = records[0].value().ok_or_else(refused)?;
+    let revision = decode_time_floor_revision(bytes)?;
+    let generation = prior.map_or(Some(1), |prior| prior.generation.checked_add(1))
+        .ok_or_else(refused)?;
+    if revision.generation != generation
+        || revision.previous != prior.map_or(ObjectDigest::from_bytes([0; 32]), |prior| prior.digest)
+        || records[0].key() != time_floor_revision_key(generation)
+        || records[1].key() != TIME_FLOOR_CURRENT_KEY
+        || decode_time_floor_head(records[1].value().ok_or_else(refused)?)?
+            != (generation, revision.digest)
+    {
+        return Err(refused());
+    }
+    validate_clock_advancement(prior, revision.clock)?;
+    let digest = Sha256::new()
+        .chain_update(TIME_FLOOR_TRANSACTION_DOMAIN)
+        .chain_update(bytes)
+        .finalize();
+    let mut id: [u8; 16] = digest[..16].try_into().map_err(|_| refused())?;
+    id[0] |= 0x80;
+    if transaction.id() != &id {
+        return Err(refused());
+    }
+    Ok(revision)
+}
+
+pub(crate) fn require_git_coverage_floor_from_state_v1(
+    transaction: &JournalTransaction,
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+) -> Result<(), CliAuthorizationAdapterError> {
+    let prior = load_protected_time_floor_records(state.iter()
+        .filter(|((namespace, _), _)| *namespace == RecordNamespace::CliAuthorizationTime)
+        .map(|((_, key), value)| (key.as_slice(), value.as_slice())))?;
+    require_git_coverage_floor_transaction_v1(transaction, prior).map(|_| ())
+}
+
+pub(crate) fn compare_git_coverage_floor_history_v1(
+    journal: &Journal,
+    observed: Option<ProtectedTimeFloorRevisionV1>,
+) -> Result<(), CliAuthorizationAdapterError> {
+    match (load_protected_time_floor(journal)?, observed) {
+        (None, None) => Ok(()),
+        (Some(current), Some(original))
+            if encode_time_floor_revision(current, true)
+                == encode_time_floor_revision(original, true) => Ok(()),
         _ => Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected),
     }
 }

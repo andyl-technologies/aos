@@ -851,13 +851,20 @@ pub struct GitReadRequestOwnerV1 {
     result: Option<[u8; RESULT_BYTES]>,
     evaluation_attempted: bool,
     pub(crate) lookup_failure: Option<crate::publisher_authority::PublisherAuthorityError>,
+    pub(crate) coverage_sample: Option<Result<RawPairedClockSample, crate::ProtectedOwnershipClockError>>,
+    pub(crate) coverage_prefix: Option<Result<bool, crate::journal::GitCoverageNativeHistoryErrorV1>>,
+    pub(crate) coverage_entitlements: Option<crate::public_capability_issuance::RetainedGitEntitlementReadV1>,
+    pub(crate) coverage_prepared: Option<Result<CurrentCapabilityDecisionV1, CliAuthorizationAdapterError>>,
+    coverage_validity: Option<Result<(), CliAuthorizationAdapterError>>,
 }
 
 impl GitReadRequestOwnerV1 {
     fn new(ids: RoleIdsV1) -> Self {
         Self { channel: ChannelV1::new(RoleV1::Gateway, ids), facts: None,
             crossing: RetainedAuthorizationTimeFloorV1::default(), decision: None,
-            result: None, evaluation_attempted: false, lookup_failure: None }
+            result: None, evaluation_attempted: false, lookup_failure: None,
+            coverage_sample: None, coverage_prefix: None,
+            coverage_entitlements: None, coverage_prepared: None, coverage_validity: None }
     }
 
     /// Receives once into the original fixed slots before parsing or admission.
@@ -913,6 +920,61 @@ impl GitReadRequestOwnerV1 {
     pub fn route(&self) -> Result<(ProjectId, ResourceId), GitReadInspectionUnavailableV1> {
         if !matches!(self.channel.phase, PhaseV1::Ready | PhaseV1::Completed) { return Err(GitReadInspectionUnavailableV1); }
         self.facts.map(|facts| (facts.project, facts.resource)).ok_or(GitReadInspectionUnavailableV1)
+    }
+
+    /// Lends the original clock and result slots only after the sole lookup.
+    /// No clock, peer or authority is copied or replaced by this crossing.
+    pub(crate) fn borrow_git_coverage_evaluation_v1(
+        &mut self,
+    ) -> Result<(
+        &mut crate::controller::ControllerProtectedClockV1,
+        &mut RetainedAuthorizationTimeFloorV1,
+        &mut Option<Result<CurrentCapabilityDecisionV1, CliAuthorizationAdapterError>>,
+    ), CliAuthorizationAdapterError> {
+        if self.channel.phase != PhaseV1::Ready
+            || !self.evaluation_attempted
+            || self.decision.is_some()
+            || self.lookup_failure.is_some()
+            || self.channel.failure.is_some()
+            || self.channel.postcheck_debt.is_some()
+        {
+            return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
+        }
+        self.channel.check_clock().map_err(|cause| {
+            self.channel.failure.get_or_insert(cause);
+            CliAuthorizationAdapterError::ProtectedAuthorizationRejected
+        })?;
+        let clock = self.channel.clock.as_mut()
+            .ok_or(CliAuthorizationAdapterError::ProtectedAuthorizationRejected)?;
+        Ok((clock, &mut self.crossing, &mut self.decision))
+    }
+
+    pub(crate) fn postcheck_git_coverage_evaluation_v1(&mut self) {
+        if let Err(cause) = self.channel.check_clock() {
+            self.channel.postcheck_debt.get_or_insert(cause);
+            self.channel.end();
+        }
+        if self.coverage_entitlements.as_mut().is_some_and(|owner| owner.postcheck().is_err()) {
+            self.channel.end();
+        }
+    }
+
+    // A fresh loan of the SAME Channel clock and actual staged grant inputs.
+    // The original D and floor sample are compared, never renewed or replaced.
+    pub(crate) fn check_git_coverage_crossing_v1(
+        &mut self,
+        facts: ReadFactsV1,
+    ) -> Result<(), CliAuthorizationAdapterError> {
+        let checked = compare_git_coverage_crossing(
+            &mut self.channel, &self.crossing, &self.coverage_prepared, &self.decision,
+            &mut self.coverage_entitlements, &mut self.coverage_validity, facts,
+        );
+        if let Err(cause) = checked {
+            self.channel.failure.get_or_insert(cause);
+            self.channel.end();
+            return Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected);
+        }
+        Ok(())
     }
 
     pub(crate) fn begin_evaluation(&mut self, acceptor: &PublicApiSessionAcceptor) -> Result<ReadFactsV1, CliAuthorizationAdapterError> {
@@ -976,12 +1038,19 @@ impl GitReadRequestOwnerV1 {
         let armed = self.channel.phase == PhaseV1::Ready && self.result.is_none() && self.evaluation_attempted;
         if armed { self.channel.phase = PhaseV1::Checking; }
         let handle_rejected = self.handle_rejected();
-        let Self { channel, result, decision, crossing, facts, .. } = self;
+        let Self { channel, result, decision, crossing, facts, coverage_entitlements, coverage_prepared, coverage_validity, .. } = self;
         let mut operation = ChannelOperationV1 { channel, armed };
         async move {
             if !armed { operation.channel.end(); return Err(GitReadInspectionUnavailableV1); }
             let returned = async {
                 operation.channel.check_role().await?;
+                if coverage_entitlements.is_some() {
+                    compare_git_coverage_crossing(
+                        operation.channel, crossing, coverage_prepared, decision,
+                        coverage_entitlements, coverage_validity,
+                        facts.ok_or(CauseV1::Closed)?,
+                    )?;
+                }
                 let request = operation.channel.first.payload.as_ref().ok_or(CauseV1::Closed)?;
                 let original = facts.ok_or(CauseV1::Closed)?;
                 let mut bytes = new_header::<RESULT_BYTES>(b"AOSGDR01");
@@ -1018,6 +1087,13 @@ impl GitReadRequestOwnerV1 {
                 operation.channel.check_role().await?;
                 operation.channel.check_record_role(false).await?;
                 operation.channel.check_record_role(true).await?;
+                if coverage_entitlements.is_some() {
+                    compare_git_coverage_crossing(
+                        operation.channel, crossing, coverage_prepared, decision,
+                        coverage_entitlements, coverage_validity,
+                        original,
+                    )?;
+                }
                 Ok(())
             }.await;
             operation.finish(returned, PhaseV1::Completed)
@@ -1031,20 +1107,29 @@ impl GitReadRequestOwnerV1 {
     /// Coarse inherited evaluator/readback refusals need not have a native cause.
     pub fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
         if let Some(cause) = self.lookup_failure.as_ref() { return Some(cause); }
+        if let Some(Err(cause)) = self.coverage_sample.as_ref() { return Some(cause); }
+        if let Some(cause) = self.coverage_entitlements.as_ref().and_then(|owner| owner.failure()) { return Some(cause); }
+        if let Some(Err(cause)) = self.coverage_prefix.as_ref() { return Some(cause); }
+        if let Some(Err(cause)) = self.coverage_prepared.as_ref() { return Some(cause); }
         if let Some(cause) = self.crossing.failure() { return Some(cause); }
+        if let Some(Err(cause)) = self.coverage_validity.as_ref() { return Some(cause); }
         self.channel.native_failure()
+            .or_else(|| self.coverage_entitlements.as_ref().and_then(|owner| owner.postcheck_failure()))
     }
 
     /// Reports whether a crossing/native refusal must remain terminal-resident.
     /// A negative grant result after a clean floor readback is not an effect.
     pub fn terminal_failure_observed(&self) -> bool {
         self.channel.failure.is_some() || self.channel.phase == PhaseV1::Ended
+            || self.coverage_entitlements.as_ref().is_some_and(|owner| {
+                owner.failure().is_some() || owner.postcheck_failure().is_some()
+            })
             || self.channel.postcheck_debt.is_some()
             || self.channel.has_shutdown_debt()
             || (self.evaluation_attempted && !self.crossing.clean_readback() && !self.handle_rejected())
     }
 
-    fn handle_rejected(&self) -> bool {
+    pub(crate) fn handle_rejected(&self) -> bool {
         use crate::publisher_authority::PublisherAuthorityError as Error;
         matches!(self.lookup_failure, Some(Error::UnknownCapability | Error::Revoked
             | Error::InvalidHandle | Error::HandleHolderMismatch))
@@ -1063,6 +1148,36 @@ impl GitReadRequestOwnerV1 {
         self.channel.phase = PhaseV1::Completed;
         Ok(())
     }
+}
+
+// Closed selected-only comparison. Ordinary completion does not enter it.
+fn compare_git_coverage_crossing(
+    channel: &mut ChannelV1,
+    crossing: &RetainedAuthorizationTimeFloorV1,
+    prepared: &Option<Result<CurrentCapabilityDecisionV1, CliAuthorizationAdapterError>>,
+    decision: &Option<Result<CurrentCapabilityDecisionV1, CliAuthorizationAdapterError>>,
+    entitlements: &mut Option<crate::public_capability_issuance::RetainedGitEntitlementReadV1>,
+    validity: &mut Option<Result<(), CliAuthorizationAdapterError>>,
+    facts: ReadFactsV1,
+) -> Result<(), CauseV1> {
+    channel.check_clock()?;
+    let sample = channel.latest_clock.ok_or(CauseV1::Closed)?;
+    crossing.compare_original_post_clock(sample).map_err(|_| CauseV1::Closed)?;
+    let decision = prepared.as_ref().and_then(|result| result.as_ref().ok())
+        .or_else(|| decision.as_ref().and_then(|result| result.as_ref().ok()))
+        .ok_or(CauseV1::Closed)?;
+    if matches!(validity, Some(Err(_))) {
+        return Err(CauseV1::Closed);
+    }
+    *validity = Some(crate::cli_model::authorization_adapter::compare_retained_git_read_at_clock_v1(
+        decision, facts, sample,
+    ));
+    if !matches!(validity, Some(Ok(()))) {
+        return Err(CauseV1::Closed);
+    }
+    crate::cli_model::authorization_adapter::compare_retained_git_entitlement_at_clock_v1(
+        entitlements.as_mut().ok_or(CauseV1::Closed)?, decision, sample,
+    ).map_err(|_| CauseV1::Closed)
 }
 
 /// Keeps the original local client in the same funded Gateway resident.

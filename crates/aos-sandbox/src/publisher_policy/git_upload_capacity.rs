@@ -698,6 +698,92 @@ impl PublisherPolicyStore<'_> {
         Ok(())
     }
 
+    /// Reports only a complete stored-pair candidate, never account authority.
+    ///
+    /// # Errors
+    /// Refuses a one-sided or pre-account denial rather than completing it.
+    #[doc(hidden)]
+    pub fn existing_git_upload_enrollment_candidate_v1(
+        &self,
+        project: ProjectId,
+    ) -> Result<bool, GitUploadBootstrapErrorV1> {
+        let birth = self.journal.get(RecordNamespace::DesiredState, b"z-git-birth-v1");
+        let fence = self.journal.get(RecordNamespace::DesiredState, b"z-git-fence-v1");
+        let companion = self.journal.get(
+            RecordNamespace::PublisherPolicy, &super::account_coverage::first_profile_key(project),
+        );
+        match (birth, fence, companion) {
+            (None, None, None) => Ok(false),
+            (Some(_), Some(_), Some(_)) => Ok(true),
+            _ => Err(GitUploadBootstrapErrorV1::Conflict),
+        }
+    }
+
+    /// Compares a genuine stored gen2 successor without fabricating an append.
+    ///
+    /// The proposal preserves the original signed gen1 bytes as comparison
+    /// DATA only. Complete native-prefix replay and current remote/Root owners
+    /// remain separate mandatory checks at the installed cold caller.
+    ///
+    /// # Errors
+    /// Refuses changed credentials/policy, a missing or different predecessor,
+    /// unbound companion, nonempty account, or unsupported later generation.
+    #[doc(hidden)]
+    pub fn current_git_upload_stored_enrolled_account_v1(
+        &self,
+        proposal: &GitUploadBootstrapAppendV1,
+        source: &VerifiedPublisherPolicySourceV1,
+        capacity: &GitUploadCapacityV1,
+        credentials: &PublisherPolicyBootstrapCredentialCustodyV1,
+        now: i64,
+    ) -> Result<(), GitUploadBootstrapErrorV1> {
+        self.journal.ensure_protected_authority().map_err(PublisherPolicyError::from)?;
+        require_original_append(proposal, source)?;
+        if proposal.failure().is_some()
+            || now < source.policy.not_before() || now >= source.policy.expires_at()
+        {
+            return Err(GitUploadBootstrapErrorV1::Conflict);
+        }
+        let [packet, policy, key, body] = credentials.ready()
+            .ok_or(GitUploadBootstrapErrorV1::Conflict)?;
+        if packet != source.packet.as_slice() || policy != source.policy.canonical_policy()
+            || key != source.key.as_slice() || source.verify_git_capacity(body)? != *capacity
+        {
+            return Err(GitUploadBootstrapErrorV1::Conflict);
+        }
+        require_original_policy(self.journal, source)?;
+        require_exact_records(self.journal, &proposal.transaction.records()[..2])?;
+        validate_namespace(self.journal, self.limits)?;
+
+        let companion_key = super::account_coverage::first_profile_key(source.policy.project());
+        let companion_bytes = self.journal.get(RecordNamespace::PublisherPolicy, &companion_key)
+            .ok_or(GitUploadBootstrapErrorV1::Conflict)?;
+        let companion = super::account_coverage::AccountCoverageV1::decode(companion_bytes)?;
+        let account_key = account_key(source.policy.project(), 2);
+        let head_key = account_head_key(source.policy.project());
+        let account = self.journal.get(RecordNamespace::PublisherPolicy, &account_key)
+            .ok_or(GitUploadBootstrapErrorV1::Conflict)?;
+        let head = self.journal.get(RecordNamespace::PublisherPolicy, &head_key)
+            .ok_or(GitUploadBootstrapErrorV1::Conflict)?;
+        require_coverage_native_account_parts(&companion.transaction()?, [
+            (&companion_key, Some(companion_bytes)), (&account_key, Some(account)),
+            (&head_key, Some(head)),
+        ])?;
+        let predecessor = proposal.transaction.records()[1].value()
+            .ok_or(GitUploadBootstrapErrorV1::Conflict)?;
+        let origin = proposal.transaction.records()[0].value()
+            .ok_or(GitUploadBootstrapErrorV1::Conflict)?;
+        let revision = decode_account_contents(account)?;
+        if revision.predecessor != commitment(ACCOUNT_DOMAIN, predecessor)
+            || revision.origin != commitment(ORIGIN_DOMAIN, origin)
+            || companion.ceiling_authority()? != capacity_authority_digest(capacity)?
+            || companion.cpu_period_micros()? != capacity.cpu_period_micros()
+        {
+            return Err(GitUploadBootstrapErrorV1::Conflict);
+        }
+        Ok(())
+    }
+
     /// Prepares a closed triple from one original full-policy source.
     ///
     /// Preparation is DATA. The caller parks the result before preflight or
@@ -1101,12 +1187,23 @@ pub(crate) fn require_coverage_native_account_transaction(
     {
         return Err(PublisherPolicyError::CorruptState);
     }
+    require_coverage_native_account_parts(transaction.id(), [
+        (records[0].key(), records[0].value()),
+        (records[1].key(), records[1].value()),
+        (records[2].key(), records[2].value()),
+    ])
+}
+
+fn require_coverage_native_account_parts(
+    transaction_id: &[u8; 16],
+    records: [(&[u8], Option<&[u8]>); 3],
+) -> Result<(), PublisherPolicyError> {
     let coverage = super::account_coverage::AccountCoverageV1::decode(
-        records[0].value().ok_or(PublisherPolicyError::CorruptState)?,
+        records[0].1.ok_or(PublisherPolicyError::CorruptState)?,
     )?;
     coverage.require_empty_first_profile()?;
-    let account = records[1].value().ok_or(PublisherPolicyError::CorruptState)?;
-    let head = records[2].value().ok_or(PublisherPolicyError::CorruptState)?;
+    let account = records[1].1.ok_or(PublisherPolicyError::CorruptState)?;
+    let head = records[2].1.ok_or(PublisherPolicyError::CorruptState)?;
     let (project, generation) = check_record_header(account, ACCOUNT_MAGIC, ACCOUNT_BYTES)?;
     let (head_project, head_generation) = check_record_header(head, HEAD_MAGIC, HEAD_BYTES)?;
     if account.len() != ACCOUNT_BYTES
@@ -1114,11 +1211,11 @@ pub(crate) fn require_coverage_native_account_transaction(
         || generation != 2
         || coverage.project()? != project
         || coverage.generation()? != generation
-        || records[0].key() != coverage.key()?
-        || records[1].key() != account_key(project, generation)
-        || records[2].key() != account_head_key(project)
+        || records[0].0 != coverage.key()?
+        || records[1].0 != account_key(project, generation)
+        || records[2].0 != account_head_key(project)
         || (head_project, head_generation) != (project, generation)
-        || transaction.id() != &coverage.transaction()?
+        || transaction_id != &coverage.transaction()?
     {
         return Err(PublisherPolicyError::CorruptState);
     }
@@ -1133,6 +1230,35 @@ pub(crate) fn require_coverage_native_account_transaction(
         return Err(PublisherPolicyError::CorruptState);
     }
     Ok(())
+}
+
+impl PublisherPolicyStore<'_> {
+    // This checks canonical DATA consistency only. Signed enrollment and
+    // original native prefix/current owner comparisons remain independent.
+    pub(crate) fn require_complete_coverage_read_state_v1(
+        state: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    ) -> Result<(), PublisherPolicyError> {
+        let mut coverage_rows = state.iter().filter(|((namespace, key), _)| {
+            *namespace == RecordNamespace::PublisherPolicy
+                && key.starts_with(super::account_coverage::PREFIX)
+        });
+        let ((_, coverage_key), bytes) = coverage_rows.next()
+            .ok_or(PublisherPolicyError::CorruptState)?;
+        if coverage_rows.next().is_some() {
+            return Err(PublisherPolicyError::CorruptState);
+        }
+        let coverage = super::account_coverage::AccountCoverageV1::decode(bytes)?;
+        let project = coverage.project()?;
+        let account_key = account_key(project, 2);
+        let head_key = account_head_key(project);
+        let account = state.get(&(RecordNamespace::PublisherPolicy, account_key.clone()))
+            .ok_or(PublisherPolicyError::CorruptState)?;
+        let head = state.get(&(RecordNamespace::PublisherPolicy, head_key.clone()))
+            .ok_or(PublisherPolicyError::CorruptState)?;
+        require_coverage_native_account_parts(&coverage.transaction()?, [
+            (coverage_key, Some(bytes)), (&account_key, Some(account)), (&head_key, Some(head)),
+        ])
+    }
 }
 
 /// Accumulates the closed Git families inside the sole namespace replay.

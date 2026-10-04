@@ -2644,12 +2644,186 @@ impl CacheResidencyProtectedOwnerV1 {
     }
 }
 
+/// Owns one selected in-place clock proposal and every returned native result.
+/// The optional proposal distinguishes an unchanged actual floor from a write;
+/// neither case manufactures a commit receipt or lends the clock authority.
+#[derive(Default)]
+pub(in crate::cache_residency) struct CacheClockReadMetadataProgressV1 {
+    prepared: Option<Result<Option<CacheClockReadMetadataStepV1>, CacheResidencyProtectedJournalErrorV1>>,
+    preflight: Option<Result<(), crate::journal::JournalError>>,
+    commit: Option<Result<crate::journal::CommitResult, crate::journal::JournalError>>,
+    readback: Option<Result<(), CacheResidencyProtectedJournalErrorV1>>,
+    attempted: bool,
+    commit_attempted: bool,
+}
+
+struct CacheClockReadMetadataStepV1 {
+    original: CacheClockFloorV1,
+    proposed: CacheClockFloorV1,
+    transaction: JournalTransaction,
+    expected: Vec<u8>,
+}
+
+impl CacheClockReadMetadataProgressV1 {
+    pub(in crate::cache_residency) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if let Some(Err(cause)) = self.prepared.as_ref() {
+            return Some(cause);
+        }
+        if let Some(Err(cause)) = self.preflight.as_ref() {
+            return Some(cause);
+        }
+        if let Some(Err(cause)) = self.commit.as_ref() {
+            return Some(cause);
+        }
+        self.readback.as_ref().and_then(|result| result.as_ref().err())
+            .map(|cause| cause as &(dyn std::error::Error + 'static))
+    }
+}
+
 pub(in crate::cache_residency) struct CacheClockWriterReadbackGuard<'clock> {
     clock: &'clock ProtectedCacheClockV1,
     witness: ProtectedWriterNameWitness,
 }
 
 impl CacheClockWriterReadbackGuard<'_> {
+    pub(in crate::cache_residency) fn prepare_git_read_metadata(
+        &self,
+        destination: &mut CacheClockReadMetadataProgressV1,
+        sampled_seconds: u64,
+    ) -> Result<(), initialization::CacheResidentUnavailableV1> {
+        use initialization::CacheResidentUnavailableV1;
+
+        if destination.attempted {
+            return Err(CacheResidentUnavailableV1);
+        }
+        destination.attempted = true;
+        destination.prepared = Some((|| {
+            self.revalidate()?;
+            let current = self.current_unix_seconds()?;
+            let state = self.clock.state.lock()
+                .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+            let journal = state.journal.as_ref()
+                .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+            self.clock.check_named_journal(journal)?;
+            journal.validate_protected_writer_name_witness(&self.witness)?;
+            if !state.readback_held || sampled_seconds < state.floor.observed_unix_seconds
+                || sampled_seconds > current
+            {
+                return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
+            }
+            if sampled_seconds == state.floor.observed_unix_seconds {
+                return Ok(None);
+            }
+
+            let proposed = CacheClockFloorV1 {
+                owner_scope: state.floor.owner_scope,
+                revision: state.floor.revision.checked_add(1)
+                    .ok_or(ProtectedDomainJournalErrorV1::NonCanonicalRecord)?,
+                observed_unix_seconds: sampled_seconds,
+                predecessor_unix_seconds: state.floor.observed_unix_seconds,
+            };
+            let expected = encode_cache_clock_floor(proposed);
+            let transaction = JournalTransaction::new(
+                cache_clock_transaction_id(&expected)?,
+                vec![JournalRecord::put(
+                    RecordNamespace::DesiredState, CACHE_CLOCK_KEY.to_vec(), expected.clone(),
+                )],
+            )?;
+            if journal.get(RecordNamespace::DesiredState, CACHE_CLOCK_KEY)
+                != Some(encode_cache_clock_floor(state.floor).as_slice())
+            {
+                return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
+            }
+            Ok(Some(CacheClockReadMetadataStepV1 {
+                original: state.floor, proposed, transaction, expected,
+            }))
+        })());
+        let step = destination.prepared.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(CacheResidentUnavailableV1)?;
+        if let Some(step) = step {
+            let state = self.clock.state.lock().map_err(|_| CacheResidentUnavailableV1)?;
+            let journal = state.journal.as_ref().ok_or(CacheResidentUnavailableV1)?;
+            destination.preflight = Some(journal.preflight_transactions(
+                std::slice::from_ref(&step.transaction),
+            ));
+            if !matches!(destination.preflight, Some(Ok(()))) {
+                return Err(CacheResidentUnavailableV1);
+            }
+        }
+        Ok(())
+    }
+
+    pub(in crate::cache_residency) fn commit_git_read_metadata(
+        &mut self,
+        destination: &mut CacheClockReadMetadataProgressV1,
+    ) -> Result<(), initialization::CacheResidentUnavailableV1> {
+        use initialization::CacheResidentUnavailableV1;
+
+        if destination.commit_attempted || destination.failure().is_some() {
+            return Err(CacheResidentUnavailableV1);
+        }
+        destination.commit_attempted = true;
+        let step = destination.prepared.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(CacheResidentUnavailableV1)?;
+        let Some(step) = step else {
+            destination.readback = Some(self.revalidate());
+            return match destination.readback {
+                Some(Ok(())) => Ok(()),
+                _ => Err(CacheResidentUnavailableV1),
+            };
+        };
+
+        let mut state = self.clock.state.lock().map_err(|_| CacheResidentUnavailableV1)?;
+        let journal = state.journal.as_mut().ok_or(CacheResidentUnavailableV1)?;
+        // Do not recursively acquire this mutex through guard.revalidate().
+        destination.readback = Some((|| {
+            self.clock.check_named_journal(journal)?;
+            journal.validate_protected_writer_name_witness(&self.witness)?;
+            if journal.get(RecordNamespace::DesiredState, CACHE_CLOCK_KEY)
+                != Some(encode_cache_clock_floor(step.original).as_slice())
+            {
+                return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
+            }
+            Ok(())
+        })());
+        if !matches!(destination.readback, Some(Ok(()))) {
+            return Err(CacheResidentUnavailableV1);
+        }
+        destination.preflight = Some(journal.preflight_transactions(
+            std::slice::from_ref(&step.transaction),
+        ));
+        if !matches!(destination.preflight, Some(Ok(()))) {
+            return Err(CacheResidentUnavailableV1);
+        }
+
+        destination.commit = Some(journal.commit(&step.transaction));
+        destination.readback = Some((|| {
+            if journal.get(RecordNamespace::DesiredState, CACHE_CLOCK_KEY)
+                != Some(step.expected.as_slice())
+            {
+                return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
+            }
+            self.clock.check_named_journal(journal)?;
+            Ok(())
+        })());
+        if !matches!(destination.commit, Some(Ok(_)))
+            || !matches!(destination.readback, Some(Ok(())))
+        {
+            return Err(CacheResidentUnavailableV1);
+        }
+        // Only exact success advances the remembered floor and its witness.
+        let witness = match journal.protected_writer_name_witness() {
+            Ok(witness) => witness,
+            Err(cause) => {
+                destination.readback = Some(Err(cause.into()));
+                return Err(CacheResidentUnavailableV1);
+            }
+        };
+        state.floor = step.proposed;
+        self.witness = witness;
+        Ok(())
+    }
+
     #[cfg(target_os = "linux")]
     pub(in crate::cache_residency) fn q04_prepare_coordinates(
         &self,

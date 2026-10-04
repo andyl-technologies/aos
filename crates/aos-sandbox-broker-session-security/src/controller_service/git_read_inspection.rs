@@ -160,6 +160,8 @@ impl GitReadWorkerInputsV1 {
         &mut self,
         controller: &mut ProductionController,
         bootstrap: &mut PublisherPolicyBootstrapAttemptV1,
+        #[cfg(target_os = "linux")]
+        mut coverage: Option<&mut super::git_coverage::GitCoverageWorkerV1<'_>>,
         original: Box<Option<GitReadRequestOwnerV1>>,
         index: usize,
         reply: tokio::sync::oneshot::Sender<()>,
@@ -188,19 +190,41 @@ impl GitReadWorkerInputsV1 {
             let (project, resource) = original.route()?;
             // Mandatory ExistingResident Cache and its genuine signed bootstrap
             // remain separate owners; seven quantities are not a total account.
-            if super::cache_usage::selected_bookend(controller, bootstrap).is_err()
+            #[cfg(target_os = "linux")]
+            let cache_checked = coverage_bookend(&mut coverage, controller, bootstrap);
+            #[cfg(not(target_os = "linux"))]
+            let cache_checked = super::cache_usage::selected_bookend(controller, bootstrap);
+            if cache_checked.is_err()
                 || bootstrap.check_git_read_route(controller, project, resource).is_err()
             { return Err(GitReadInspectionUnavailableV1); }
+            #[cfg(target_os = "linux")]
+            if let Some(coverage) = coverage.as_deref_mut() {
+                coverage.inspect_current(controller, bootstrap, original, &self.acceptor)
+                    .map_err(|_| GitReadInspectionUnavailableV1)?;
+            } else {
+                controller.inspect_original_gateway_git_read_v1(original, &self.acceptor);
+            }
+            #[cfg(not(target_os = "linux"))]
             controller.inspect_original_gateway_git_read_v1(original, &self.acceptor);
             original.recheck().await?;
             original.recheck_registration(&self.acceptor)?;
-            if bootstrap.check_git_read_route(controller, project, resource).is_err()
-                || super::cache_usage::selected_bookend(controller, bootstrap).is_err()
+            if bootstrap.check_git_read_route(controller, project, resource).is_err() {
+                return Err(GitReadInspectionUnavailableV1);
+            }
+            #[cfg(target_os = "linux")]
+            let cache_checked = coverage_bookend(&mut coverage, controller, bootstrap);
+            #[cfg(not(target_os = "linux"))]
+            let cache_checked = super::cache_usage::selected_bookend(controller, bootstrap);
+            if cache_checked.is_err()
             { return Err(GitReadInspectionUnavailableV1); }
             original.complete_local_inspection().await?;
             original.recheck().await?;
             original.recheck_registration(&self.acceptor)?;
-            if super::cache_usage::selected_bookend(controller, bootstrap).is_err()
+            #[cfg(target_os = "linux")]
+            let cache_checked = coverage_bookend(&mut coverage, controller, bootstrap);
+            #[cfg(not(target_os = "linux"))]
+            let cache_checked = super::cache_usage::selected_bookend(controller, bootstrap);
+            if cache_checked.is_err()
                 || bootstrap.check_git_read_route(controller, project, resource).is_err()
             { return Err(GitReadInspectionUnavailableV1); }
             original.retire_completed_local()
@@ -213,5 +237,17 @@ impl GitReadWorkerInputsV1 {
         drop(slot.take());
         let Some(reply) = reply_slot.take() else { terminal.terminate(ControllerResidentCauseV1::GitRead); };
         if reply.send(()).is_err() { terminal.terminate(ControllerResidentCauseV1::GitRead); }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn coverage_bookend(
+    coverage: &mut Option<&mut super::git_coverage::GitCoverageWorkerV1<'_>>,
+    controller: &mut ProductionController,
+    bootstrap: &mut PublisherPolicyBootstrapAttemptV1,
+) -> Result<(), ()> {
+    match coverage.as_deref_mut() {
+        Some(owner) => owner.bookend(controller, bootstrap),
+        None => super::cache_usage::selected_bookend(controller, bootstrap),
     }
 }

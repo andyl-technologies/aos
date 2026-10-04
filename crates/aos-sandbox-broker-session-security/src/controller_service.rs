@@ -933,7 +933,12 @@ fn run_retained_controller(
                     publisher_policy_source::PublisherPolicyBootstrapAttemptV1::new(),
                 );
                 let attempt = required!(publisher_policy_bootstrap.as_mut());
-                if attempt.install_bootstrap_once(controller, scope).is_err() {
+                let installed = if configuration.git_coverage {
+                    attempt.install_coverage_bootstrap_once(controller, scope)
+                } else {
+                    attempt.install_bootstrap_once(controller, scope)
+                };
+                if installed.is_err() {
                     worker.terminate(ControllerResidentCauseV1::PublisherPolicyBootstrap);
                 }
             } else {
@@ -1938,7 +1943,27 @@ fn controller_worker_loop(
                 else {
                     std::process::abort();
                 };
-                inputs.inspect(controller, bootstrap, original, index, reply, terminal);
+                inputs.inspect(
+                    controller, bootstrap,
+                    #[cfg(target_os = "linux")]
+                    coverage.as_mut(),
+                    original, index, reply, terminal,
+                );
+            }
+            #[cfg(target_os = "linux")]
+            Ok(ControllerCommand::BootstrapPublicCapability { peer, idempotency_key, expires_at, reply })
+                if coverage.is_some() =>
+            {
+                let (Some(owner), Some(bootstrap), Some(terminal)) =
+                    (coverage.as_mut(), cache_bootstrap.as_deref_mut(), custody)
+                else {
+                    std::process::abort();
+                };
+                if owner.bootstrap_public_capability(
+                    controller, bootstrap, peer, idempotency_key, expires_at, reply,
+                ).is_err() {
+                    terminal.terminate(ControllerResidentCauseV1::GitCoverage);
+                }
             }
             Ok(command) => {
                 if custody.is_some_and(|owner| owner.ended.load(Ordering::Acquire)) {
@@ -5568,6 +5593,24 @@ fn reject_unqualified_delete_effect(plan: &EffectPlan) -> Result<(), EffectFailu
 }
 
 impl SingleNodeEffectExecutor for ProductionEffectExecutor {
+    #[cfg(target_os = "linux")]
+    fn run_existing_git_coverage_read_metadata_v1(
+        &mut self,
+        journal: &mut Journal,
+        original_inputs: &mut aos_sandbox::public_api_session::GitCoverageCredentialCustodyV1,
+        operation: &mut aos_sandbox::reconciler::GitCoverageReadMetadataOperationV1<'_, '_>,
+    ) -> Result<(), aos_sandbox::cache_residency::CacheResidentUnavailableV1> {
+        use aos_sandbox::cache_residency::CacheResidentUnavailableV1;
+
+        self.cache_mutation.require_completed_or_empty()?;
+        let protected = self.cache_inventory.as_mut().ok_or(CacheResidentUnavailableV1)?;
+        let physical = self.cache_physical.as_ref().ok_or(CacheResidentUnavailableV1)?;
+        self.cache_resident_usage.run_existing_git_coverage_read_metadata_v1(
+            protected, physical, &mut self.source_domains, journal,
+            original_inputs, operation,
+        )
+    }
+
     #[cfg(target_os = "linux")]
     fn capture_existing_git_coverage_account_cut_v1(
         &mut self,

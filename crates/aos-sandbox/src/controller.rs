@@ -81,6 +81,8 @@ mod original_attach_grant;
 #[cfg(target_os = "linux")]
 mod public_api_authorization;
 #[cfg(target_os = "linux")]
+pub(crate) use public_api_authorization::prepare_original_gateway_git_read_v1;
+#[cfg(target_os = "linux")]
 pub use original_attach_grant::{
     CurrentOriginalAttachConsumeCutV3, CurrentOriginalAttachHostConsumeDraftV3,
 };
@@ -3140,6 +3142,43 @@ where
         );
     }
 
+    /// Inspects the SAME original request under the enrolled same-writer cut.
+    ///
+    /// # Errors
+    /// Refuses changed or incomplete resident owners; actual causes remain
+    /// with the request, account attempt and installed Cache initialization.
+    #[cfg(target_os = "linux")]
+    #[doc(hidden)]
+    pub fn inspect_enrolled_gateway_git_read_v1(
+        &mut self,
+        original: &mut crate::git::delegated_read::GitReadRequestOwnerV1,
+        acceptor: &crate::public_api_session::PublicApiSessionAcceptor,
+        inputs: &mut crate::public_api_session::GitCoverageCredentialCustodyV1,
+        account: &mut crate::policy_compiler::GitCoverageAccountAttemptV1<'_>,
+    ) -> Result<(), crate::cache_residency::CacheResidentUnavailableV1> {
+        let mut operation = crate::reconciler::GitCoverageReadMetadataOperationV1::inspect(
+            original, acceptor, account,
+        );
+        self.reconciler.run_existing_git_coverage_read_metadata_v1(inputs, &mut operation)
+    }
+
+    /// Observes the actual stored enrollment nonce through the sole replay.
+    ///
+    /// This is correlation DATA only. Fresh Sessions, Root's original pair,
+    /// current signed inputs and their independent bookends remain required.
+    ///
+    /// # Errors
+    /// Retains the actual complete-prefix or final-name cause in the returned
+    /// result; callers must park it before another fallible observation.
+    #[cfg(target_os = "linux")]
+    #[doc(hidden)]
+    pub fn existing_git_coverage_birth_nonce_v1(
+        &mut self,
+        catalog: &aos_sandbox_core::format::git_upload_enrollment::GitCoverageCatalogV1<'_>,
+    ) -> Result<[u8; 16], crate::journal::GitCoverageNativeHistoryErrorV1> {
+        self.reconciler.journal_mut().existing_controller_coverage_birth_nonce_v1(catalog)
+    }
+
     /// Rechecks the same fixed initialization owners after a project usage loan.
     ///
     /// # Errors
@@ -3251,6 +3290,25 @@ where
             peer,
             idempotency_key,
         )
+    }
+
+    /// Runs selected first issuance through the same retained Cache/Controller cut.
+    ///
+    /// # Errors
+    /// Refuses failed or changed original owners; all native results remain in
+    /// the actual issuer capsule. This does not activate a Git backend.
+    #[cfg(target_os = "linux")]
+    #[doc(hidden)]
+    pub fn bootstrap_enrolled_git_public_capability_v1(
+        &mut self,
+        original: &mut crate::public_capability_issuance::RetainedGitInitialIssuanceV1,
+        inputs: &mut crate::public_api_session::GitCoverageCredentialCustodyV1,
+        account: &mut crate::policy_compiler::GitCoverageAccountAttemptV1<'_>,
+    ) -> Result<(), crate::cache_residency::CacheResidentUnavailableV1> {
+        let mut operation = crate::cli_model::authorization_adapter::GitCoverageReadMetadataOperationV1::bootstrap(
+            original, account,
+        );
+        self.reconciler.run_existing_git_coverage_read_metadata_v1(inputs, &mut operation)
     }
 
     /// Resolves a protected public handle for the live authenticated TLS holder.

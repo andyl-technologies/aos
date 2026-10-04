@@ -1457,6 +1457,17 @@ pub enum GitCoverageFlightV1 {
     Read,
 }
 
+/// Selects append preparation or observation of an already durable pair.
+///
+/// This is closed body DATA, not a broker method or mutation permission.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GitCoveragePrepareModeV1 {
+    /// Preserves the original byte-zero preparation recipe.
+    Original,
+    /// Requires an existing complete pair and performs no append.
+    ExistingPair,
+}
+
 /// Contains comparison DATA common to both closed request forms.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct GitCoverageRequestCoordinatesV1 {
@@ -1525,12 +1536,24 @@ impl GitCoverageRequestCoordinatesV1 {
         GitCoverageRequestV1::decode(&bytes)?;
         Ok(bytes)
     }
+
+    /// Encodes a fresh challenge for an already durable owner pair.
+    ///
+    /// # Errors
+    /// Rejects the same invalid original bindings and bounds as [`Self::encode`].
+    pub fn encode_existing_pair(self, enrollment: &[u8]) -> Result<Vec<u8>> {
+        let mut bytes = self.encode(Some(enrollment))?;
+        bytes[11] = 1;
+        GitCoverageRequestV1::decode(&bytes)?;
+        Ok(bytes)
+    }
 }
 
 /// Borrows the exact canonical request and optional original signed intent.
 pub struct GitCoverageRequestV1<'a> {
     bytes: &'a [u8],
     flight: GitCoverageFlightV1,
+    prepare_mode: GitCoveragePrepareModeV1,
     coordinates: GitCoverageRequestCoordinatesV1,
     enrollment: Option<GitCoverageEnrollmentV1<'a>>,
 }
@@ -1545,7 +1568,7 @@ impl<'a> GitCoverageRequestV1<'a> {
         if bytes.len() < COVERAGE_REQUEST_PREFIX_BYTES_V1
             || bytes.len() > COVERAGE_REQUEST_PREFIX_BYTES_V1 + MAXIMUM_ENROLLMENT_BYTES_V1
             || u16_at(bytes, 8)? != 1
-            || bytes[11] != 0
+            || bytes[11] > 1
             || u64_at(bytes, 212)? != 7
         {
             return Err(GitCoverageDataErrorV1::Invalid);
@@ -1553,6 +1576,11 @@ impl<'a> GitCoverageRequestV1<'a> {
         let flight = match bytes.get(..8) {
             Some(b"AOSGUFP1") => GitCoverageFlightV1::Prepare,
             Some(b"AOSGUFR1") => GitCoverageFlightV1::Read,
+            _ => return Err(GitCoverageDataErrorV1::Invalid),
+        };
+        let prepare_mode = match (flight, bytes[11]) {
+            (_, 0) => GitCoveragePrepareModeV1::Original,
+            (GitCoverageFlightV1::Prepare, 1) => GitCoveragePrepareModeV1::ExistingPair,
             _ => return Err(GitCoverageDataErrorV1::Invalid),
         };
         let coordinates = GitCoverageRequestCoordinatesV1 {
@@ -1589,7 +1617,7 @@ impl<'a> GitCoverageRequestV1<'a> {
             }
         };
 
-        Ok(Self { bytes, flight, coordinates, enrollment })
+        Ok(Self { bytes, flight, prepare_mode, coordinates, enrollment })
     }
 
     /// Borrows the complete unchanged request DATA preimage.
@@ -1602,6 +1630,12 @@ impl<'a> GitCoverageRequestV1<'a> {
     #[must_use]
     pub fn flight(&self) -> GitCoverageFlightV1 {
         self.flight
+    }
+
+    /// Returns the closed Prepare body mode, without granting append authority.
+    #[must_use]
+    pub fn prepare_mode(&self) -> GitCoveragePrepareModeV1 {
+        self.prepare_mode
     }
 
     /// Returns the bounded original comparison coordinates.
@@ -1761,7 +1795,10 @@ impl<'a> GitCoverageOutcomeV1<'a> {
     pub fn compare_request(&self, request: &GitCoverageRequestV1<'_>) -> Result<()> {
         let original = request.coordinates();
         let expected = match request.flight() {
-            GitCoverageFlightV1::Prepare => self.fields.predecessor_prefix,
+            GitCoverageFlightV1::Prepare
+                if request.prepare_mode() == GitCoveragePrepareModeV1::Original =>
+                self.fields.predecessor_prefix,
+            GitCoverageFlightV1::Prepare => self.fields.fence,
             GitCoverageFlightV1::Read => self.fields.fence,
         };
         if original.expected != expected

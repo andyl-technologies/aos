@@ -385,6 +385,8 @@ impl<W: MountWorker> MountBroker<W> {
                 _ => return Err(CoverageCauseV1::Refused("original native cut is unavailable")),
             };
             if comparison.flight() == GitCoverageFlightV1::Prepare
+                && comparison.prepare_mode()
+                    == aos_sandbox_core::format::git_upload_enrollment::GitCoveragePrepareModeV1::Original
                 && self.journal.get(RecordNamespace::DesiredState, FENCE_KEY).is_none()
             {
                 if owner.transaction.is_some() || owner.commit.is_some() {
@@ -446,9 +448,13 @@ impl<W: MountWorker> MountBroker<W> {
                 || original.generation != coordinates.generation
                 || actual.last != Some((original.transaction, birth.fields().commit_sequence))
                 || (comparison.flight() == GitCoverageFlightV1::Prepare
+                    && comparison.prepare_mode()
+                        == aos_sandbox_core::format::git_upload_enrollment::GitCoveragePrepareModeV1::Original
                     && (coordinates.expected != original.predecessor_prefix
                         || coordinates.nonce != original.prepare_nonce))
-                || (comparison.flight() == GitCoverageFlightV1::Read
+                || ((comparison.flight() == GitCoverageFlightV1::Read
+                    || comparison.prepare_mode()
+                        == aos_sandbox_core::format::git_upload_enrollment::GitCoveragePrepareModeV1::ExistingPair)
                     && coordinates.expected != fence.digest())
             {
                 return Err(CoverageCauseV1::Refused("original fence or replay changed"));

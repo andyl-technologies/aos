@@ -958,6 +958,16 @@ fn capability_id_from_key(key: &[u8]) -> Result<CapabilityId, PublisherAuthority
     Ok(CapabilityId::from_bytes(bytes))
 }
 
+pub(crate) fn decode_git_coverage_initial_for_id_v1(
+    journal: &Journal,
+    id: CapabilityId,
+) -> Result<CapabilityRecord, PublisherAuthorityError> {
+    let key = capability_key(id);
+    let bytes = journal.get(RecordNamespace::PublisherAuthority, &key)
+        .ok_or(PublisherAuthorityError::UnknownCapability)?;
+    decode_git_coverage_initial_content_read_v1(&key, bytes).map(|(record, _)| record)
+}
+
 fn decode_record(
     key: &[u8],
     bytes: &[u8],
@@ -1029,6 +1039,35 @@ fn decode_record(
         parent: decoded.parent,
         handle: decoded.handle,
     })
+}
+
+// Closed canonical DATA projection for the enrolled initial-read recipe.
+// Signed entitlement and live holder/current policy checks remain at issuance.
+pub(crate) fn decode_git_coverage_initial_content_read_v1(
+    key: &[u8],
+    bytes: &[u8],
+) -> Result<(CapabilityRecord, [u8; 32]), PublisherAuthorityError> {
+    use aos_sandbox_core::{Operation, OperationSet, ResourceKind, Selector};
+
+    let decoded = decode_record(
+        key, bytes, PublisherAuthorityLimits::default().maximum_record_bytes,
+    )?;
+    if decoded.state != DurableCapabilityStateV1::Active
+        || decoded.parent.is_some()
+        || decoded.issuance.is_some()
+        || decoded.runtime.is_some()
+        || decoded.capability.claims().grants.is_empty()
+        || decoded.capability.claims().grants.iter().any(|grant| {
+            grant.resource_kind() != ResourceKind::GitObjectDatabase
+                || grant.operations() != OperationSet::one(Operation::ContentRead)
+                || !matches!(grant.selector(), Selector::Resource { resource }
+                    if resource.as_bytes() != &[0; 16])
+        })
+    {
+        return Err(PublisherAuthorityError::MalformedRecord);
+    }
+    let handle = decoded.handle.ok_or(PublisherAuthorityError::InvalidHandle)?;
+    Ok((decoded.capability, handle))
 }
 
 fn encode_record(

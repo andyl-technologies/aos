@@ -31,6 +31,10 @@ pub(super) const MAXIMUM_BYTES: usize =
 
 type Result<T> = std::result::Result<T, PublisherPolicyError>;
 
+pub(super) fn first_profile_key(project: ProjectId) -> Vec<u8> {
+    key(PREFIX, project.as_bytes(), Some(2))
+}
+
 /// Supplies nonauthorizing coordinates from the retained successor attempt.
 pub(super) struct EmptyAccountCoverageFieldsV1 {
     pub(super) project: ProjectId,

@@ -466,6 +466,8 @@ impl StorageBrokerRuntime {
                 _ => return Err(StorageGitCoverageCauseV1::Refused("original native cut is unavailable")),
             };
             if comparison.flight() == GitCoverageFlightV1::Prepare
+                && comparison.prepare_mode()
+                    == aos_sandbox_core::format::git_upload_enrollment::GitCoveragePrepareModeV1::Original
                 && self.coordinator.git_coverage_durable_v1()?.is_none()
             {
                 if owner.transaction.is_some() || owner.commit.is_some() {
@@ -527,9 +529,13 @@ impl StorageBrokerRuntime {
                 || original.generation != coordinates.generation
                 || actual.last != Some((original.transaction, birth.fields().commit_sequence))
                 || (comparison.flight() == GitCoverageFlightV1::Prepare
+                    && comparison.prepare_mode()
+                        == aos_sandbox_core::format::git_upload_enrollment::GitCoveragePrepareModeV1::Original
                     && (coordinates.expected != original.predecessor_prefix
                         || coordinates.nonce != original.prepare_nonce))
-                || (comparison.flight() == GitCoverageFlightV1::Read
+                || ((comparison.flight() == GitCoverageFlightV1::Read
+                    || comparison.prepare_mode()
+                        == aos_sandbox_core::format::git_upload_enrollment::GitCoveragePrepareModeV1::ExistingPair)
                     && coordinates.expected != fence.digest())
             {
                 return Err(StorageGitCoverageCauseV1::Refused("original fence or replay changed"));

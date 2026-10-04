@@ -224,6 +224,10 @@ pub struct GitCoverageNativeHistoryErrorV1 {
 }
 
 impl GitCoverageNativeHistoryErrorV1 {
+    pub(crate) fn from_first(first: JournalError) -> Self {
+        Self { first, final_bookend: None }
+    }
+
     /// Borrows the unchanged first owning native cause.
     #[must_use]
     pub fn first_cause(&self) -> &JournalError {
@@ -250,9 +254,19 @@ pub struct GitCoverageNativePrefixLoanV1<'journal> {
     last_transaction: Option<[u8; 16]>,
     last_commit_sequence: Option<u64>,
     ended: bool,
+    controller_account_seen: bool,
+    controller_floor_seen: bool,
 }
 
 impl GitCoverageNativePrefixLoanV1<'_> {
+    pub(crate) fn existing_controller_read_floor_v1(&self) -> Result<bool, JournalError> {
+        if self.ended || !self.controller_account_seen {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        // False describes absence in this COMPLETE replay, not the current map.
+        Ok(self.controller_floor_seen)
+    }
+
     /// Returns the whole original native-prefix commitment as comparison DATA.
     #[must_use]
     pub fn prefix_digest(&self) -> [u8; 32] {
@@ -309,6 +323,8 @@ pub(super) struct NativePrefixObserverV1<'data> {
     last_commit_sequence: Option<u64>,
     owner_fence_seen: bool,
     publisher_account_seen: bool,
+    controller_floor: Option<crate::cli_model::authorization_adapter::ProtectedTimeFloorRevisionV1>,
+    initial_issuance: crate::public_capability_issuance::GitCoverageInitialIssuanceHistoryV1,
 }
 
 impl<'data> NativePrefixObserverV1<'data> {
@@ -325,6 +341,8 @@ impl<'data> NativePrefixObserverV1<'data> {
             last_commit_sequence: None,
             owner_fence_seen: false,
             publisher_account_seen: false,
+            controller_floor: None,
+            initial_issuance: Default::default(),
         }
     }
 
@@ -367,14 +385,28 @@ impl<'data> NativePrefixObserverV1<'data> {
                 // Controller's first covered account is one subsequent
                 // immutable three-PUT transaction. No later effect, overwrite
                 // or retirement is classified by this bounded first profile.
-                if profile != GitCoverageJournalProfileV1::Controller
-                    || self.publisher_account_seen
-                {
+                if profile != GitCoverageJournalProfileV1::Controller {
                     return Err(JournalError::ProtectedBoundary);
                 }
-                crate::publisher_policy::require_coverage_native_account_transaction(transaction)
-                    .map_err(|_| JournalError::ProtectedBoundary)?;
-                self.publisher_account_seen = true;
+                if !self.publisher_account_seen {
+                    crate::publisher_policy::require_coverage_native_account_transaction(transaction)
+                        .map_err(|_| JournalError::ProtectedBoundary)?;
+                    self.publisher_account_seen = true;
+                } else if transaction.records().first().is_some_and(|record| {
+                    record.namespace() == RecordNamespace::CliAuthorizationTime
+                }) {
+                    self.controller_floor = Some(
+                        crate::cli_model::authorization_adapter::require_git_coverage_floor_transaction_v1(
+                            transaction, self.controller_floor,
+                        ).map_err(|_| JournalError::ProtectedBoundary)?,
+                    );
+                } else {
+                    if self.controller_floor.is_none() {
+                        return Err(JournalError::ProtectedBoundary);
+                    }
+                    self.initial_issuance.observe(transaction)
+                        .map_err(|_| JournalError::ProtectedBoundary)?;
+                }
                 catalog_transaction = false;
             } else if transaction.records().iter().any(|record| {
                 record.namespace() == RecordNamespace::DesiredState
@@ -397,7 +429,7 @@ impl<'data> NativePrefixObserverV1<'data> {
             // catalogued Genesis. Its predecessor remains that original
             // Genesis prefix; the future fence prefix is never provisioned.
             if catalog_transaction {
-                catalog.observe(transaction, begin_sequence)?;
+                catalog_transaction = catalog.observe(transaction, begin_sequence)?;
             }
         }
 
@@ -452,13 +484,27 @@ impl FixedCacheCatalogAuditV1<'_> {
         &mut self,
         transaction: &JournalTransaction,
         begin_sequence: u64,
-    ) -> Result<(), JournalError> {
+    ) -> Result<bool, JournalError> {
         if self.profile == GitCoverageJournalProfileV1::CacheClock {
+            let has_member = self.catalog.members()
+                .any(|member| belongs_to_catalog_writer(self.profile, member.profile()));
+            let catalogued_prefix_complete = has_member && self.catalog.members().enumerate()
+                .filter(|(_, member)| belongs_to_catalog_writer(self.profile, member.profile()))
+                .all(|(index, member)| {
+                    self.records.get(index).copied() == Some(member.infrastructure_count() as usize)
+                        && member.predecessor_prefix() == self.prefix
+                });
             self.previous_clock = Some(
                 crate::cache_residency::CacheResidencyProtectedOwnerV1::compare_git_coverage_clock_transaction_v1(
                     transaction, self.previous_clock,
                 )?,
             );
+            if catalogued_prefix_complete {
+                // The signed catalog commits only the actual prebirth prefix.
+                // Later floors are classified by the SAME Clock chain, not
+                // by invented future catalog rows or overwritten current keys.
+                return Ok(false);
+            }
         }
         // The initial logical state is entirely in each genuine checkpoint.
         // This first profile does not classify later durable state mutations
@@ -516,7 +562,7 @@ impl FixedCacheCatalogAuditV1<'_> {
             *count = count.checked_add(1)
                 .ok_or(JournalError::LimitExceeded("coverage fixed Cache records"))?;
         }
-        Ok(())
+        Ok(true)
     }
 
     fn require_complete(
@@ -592,6 +638,31 @@ impl Journal {
             return Ok(());
         }
 
+        if transaction.records().first().is_some_and(|record| {
+            matches!(record.namespace(), RecordNamespace::CliAuthorizationTime
+                | RecordNamespace::PublisherAuthority)
+        }) {
+            crate::publisher_policy::PublisherPolicyStore::require_complete_coverage_read_state_v1(state)
+                .map_err(|_| JournalError::ProtectedBoundary)?;
+            return match transaction.records()[0].namespace() {
+                RecordNamespace::CliAuthorizationTime =>
+                    crate::cli_model::authorization_adapter::require_git_coverage_floor_from_state_v1(
+                        transaction, state,
+                    ).map_err(|_| JournalError::ProtectedBoundary),
+                RecordNamespace::PublisherAuthority => {
+                    if !state.keys().any(|(namespace, _)| {
+                        *namespace == RecordNamespace::CliAuthorizationTime
+                    }) {
+                        return Err(JournalError::ProtectedBoundary);
+                    }
+                    crate::public_capability_issuance::require_git_coverage_initial_from_state_v1(
+                        transaction, state,
+                    ).map_err(|_| JournalError::ProtectedBoundary)
+                }
+                _ => Err(JournalError::ProtectedBoundary),
+            };
+        }
+
         // The only new durable work in this first profile is its sole existing
         // three-PUT account successor. The shared account codec validates its
         // relation; the genuine store/capture performs authority and CAS.
@@ -618,6 +689,35 @@ impl Journal {
             "/var/lib/aos/sandboxd", "controller.journal",
             NativePrefixRecipeV1::OwnerCoverage(GitCoverageJournalProfileV1::Controller),
         )
+    }
+
+    pub(crate) fn existing_controller_coverage_birth_nonce_v1(
+        &self,
+        catalog: &GitCoverageCatalogV1<'_>,
+    ) -> Result<[u8; 16], GitCoverageNativeHistoryErrorV1> {
+        let mut loan = self.controller_git_coverage_native_prefix_v1(catalog)?;
+        loan.existing_controller_read_floor_v1()
+            .map_err(GitCoverageNativeHistoryErrorV1::from_first)?;
+        let nonce = (|| {
+            let birth = GitCoverageBirthV1::decode(self.get(
+                RecordNamespace::DesiredState, b"z-git-birth-v1",
+            ).ok_or(JournalError::ProtectedBoundary)?)
+                .map_err(|_| JournalError::ProtectedBoundary)?;
+            let fence = GitCoverageFenceV1::decode(self.get(
+                RecordNamespace::DesiredState, b"z-git-fence-v1",
+            ).ok_or(JournalError::ProtectedBoundary)?)
+                .map_err(|_| JournalError::ProtectedBoundary)?;
+            fence.compare_birth(&birth).map_err(|_| JournalError::ProtectedBoundary)?;
+            Ok(fence.fields().prepare_nonce)
+        })();
+        let postchecked = loan.recheck();
+        match (nonce, postchecked) {
+            (Ok(nonce), Ok(())) => Ok(nonce),
+            (Err(first), final_bookend) => Err(GitCoverageNativeHistoryErrorV1 {
+                first, final_bookend: final_bookend.err(),
+            }),
+            (Ok(_), Err(first)) => Err(GitCoverageNativeHistoryErrorV1::from_first(first)),
+        }
     }
 
     pub(crate) fn root_authority_git_coverage_native_prefix_v1<'data>(
@@ -1001,6 +1101,18 @@ impl Journal {
                 Some(DeploymentHistoryObserverV1::GitCoverage(&mut observer)),
             )?;
             require_replayed_snapshot(self, &replayed, &observer, witness.file.size)?;
+            if matches!(recipe, NativePrefixRecipeV1::OwnerCoverage(
+                GitCoverageJournalProfileV1::Controller,
+            )) && observer.publisher_account_seen {
+                crate::publisher_policy::PublisherPolicyStore::require_complete_coverage_read_state_v1(
+                    &self.state,
+                ).map_err(|_| JournalError::ProtectedBoundary)?;
+                crate::cli_model::authorization_adapter::compare_git_coverage_floor_history_v1(
+                    self, observer.controller_floor,
+                ).map_err(|_| JournalError::ProtectedBoundary)?;
+                observer.initial_issuance.compare_final(self)
+                    .map_err(|_| JournalError::ProtectedBoundary)?;
+            }
             if let Some(catalog) = observer.fixed_cache_catalog.as_ref() {
                 catalog.require_complete(provision_origin(self, &witness))?;
             }
@@ -1030,6 +1142,8 @@ impl Journal {
             last_transaction: observer.last_transaction,
             last_commit_sequence: observer.last_commit_sequence,
             ended: false,
+            controller_account_seen: observer.publisher_account_seen,
+            controller_floor_seen: observer.controller_floor.is_some(),
         })
     }
 }

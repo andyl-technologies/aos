@@ -33,11 +33,27 @@ pub(crate) fn inspect_original_gateway_git_read_v1(
     original: &mut crate::git::delegated_read::GitReadRequestOwnerV1,
     acceptor: &crate::public_api_session::PublicApiSessionAcceptor,
 ) {
+    let Some((capability, facts)) =
+        prepare_original_gateway_git_read_v1(journal, original, acceptor)
+    else {
+        return;
+    };
+    original.evaluate_current(journal, capability, facts);
+}
+
+// One begin/lookup body serves ordinary and enrolled crossings. Failure stays
+// with the genuine request before either path can perform a time-floor effect.
+#[cfg(target_os = "linux")]
+pub(crate) fn prepare_original_gateway_git_read_v1(
+    journal: &mut crate::Journal,
+    original: &mut crate::git::delegated_read::GitReadRequestOwnerV1,
+    acceptor: &crate::public_api_session::PublicApiSessionAcceptor,
+) -> Option<(CapabilityId, crate::git::delegated_read::ReadFactsV1)> {
     use crate::publisher_authority::PublisherCapabilityRegistry;
 
     let facts = match original.begin_evaluation(acceptor) {
         Ok(facts) => facts,
-        Err(cause) => { original.decision = Some(Err(cause)); return; }
+        Err(cause) => { original.decision = Some(Err(cause)); return None; }
     };
     let lookup = (|| {
         let registry = PublisherCapabilityRegistry::load(journal, PublisherAuthorityLimits::default())?;
@@ -48,10 +64,10 @@ pub(crate) fn inspect_original_gateway_git_read_v1(
         Err(cause) => {
             original.lookup_failure = Some(cause);
             original.decision = Some(Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected));
-            return;
+            return None;
         }
     };
-    original.evaluate_current(journal, capability, facts);
+    Some((capability, facts))
 }
 
 /// Authorizes one resolved public mutation using the sole protected journal.

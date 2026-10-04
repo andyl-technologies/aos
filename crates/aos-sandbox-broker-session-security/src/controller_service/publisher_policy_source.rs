@@ -129,6 +129,7 @@ pub(super) struct PublisherPolicyBootstrapAttemptV1 {
     first_failure: Option<BootstrapCauseV1>,
     postcheck_debt: Option<BootstrapCauseV1>,
     started: bool,
+    enrolled_current: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -176,6 +177,7 @@ impl PublisherPolicyBootstrapAttemptV1 {
             first_failure: None,
             postcheck_debt: None,
             started: false,
+            enrolled_current: false,
         }
     }
 
@@ -183,6 +185,23 @@ impl PublisherPolicyBootstrapAttemptV1 {
         &mut self,
         controller: &mut ProductionController,
         scope: PublisherSessionScope,
+    ) -> Result<(), ()> {
+        self.install_once_with_profile(controller, scope, false)
+    }
+
+    pub(super) fn install_coverage_bootstrap_once(
+        &mut self,
+        controller: &mut ProductionController,
+        scope: PublisherSessionScope,
+    ) -> Result<(), ()> {
+        self.install_once_with_profile(controller, scope, true)
+    }
+
+    fn install_once_with_profile(
+        &mut self,
+        controller: &mut ProductionController,
+        scope: PublisherSessionScope,
+        selected_coverage: bool,
     ) -> Result<(), ()> {
         if self.started {
             if self.first_failure.is_none() && self.postcheck_debt.is_none() {
@@ -193,7 +212,7 @@ impl PublisherPolicyBootstrapAttemptV1 {
         }
         // Prearm before any capture, decode, clock or Journal effect.
         self.started = true;
-        let result = self.install_inner(controller, scope);
+        let result = self.install_inner(controller, scope, selected_coverage);
         if let Err(cause) = result {
             self.first_failure.get_or_insert(cause);
         }
@@ -216,6 +235,7 @@ impl PublisherPolicyBootstrapAttemptV1 {
         &mut self,
         controller: &mut ProductionController,
         scope: PublisherSessionScope,
+        selected_coverage: bool,
     ) -> Result<(), BootstrapCauseV1> {
         self.credentials.capture().map_err(|_| BootstrapCauseV1::Lower)?;
         let now = self.check_originals_and_time()?;
@@ -264,6 +284,23 @@ impl PublisherPolicyBootstrapAttemptV1 {
         self.append = Some(store.prepare_git_upload_bootstrap(source, capacity, body));
         if matches!(self.append.as_ref(), Some(Err(_))) {
             return Err(BootstrapCauseV1::AppendPreparation);
+        }
+
+        if selected_coverage && store.existing_git_upload_enrollment_candidate_v1(
+            source.policy().project(),
+        ).map_err(BootstrapCauseV1::Current)? {
+            let now = self.check_originals_and_time()?;
+            let source = self.source.as_ref().and_then(|value| value.as_ref().ok())
+                .ok_or(BootstrapCauseV1::Rejected)?;
+            let capacity = self.capacity.as_ref().and_then(|value| value.as_ref().ok())
+                .ok_or(BootstrapCauseV1::Rejected)?;
+            let proposal = self.append.as_ref().and_then(|value| value.as_ref().ok())
+                .ok_or(BootstrapCauseV1::Rejected)?;
+            store.current_git_upload_stored_enrolled_account_v1(
+                proposal, source, capacity, &self.credentials, now,
+            ).map_err(BootstrapCauseV1::Current)?;
+            self.enrolled_current = true;
+            return Ok(());
         }
 
         self.check_originals_and_time()?;
@@ -323,6 +360,9 @@ impl PublisherPolicyBootstrapAttemptV1 {
         &mut self,
         controller: &mut ProductionController,
     ) -> Result<aos_sandbox_core::ProjectId, ()> {
+        if self.enrolled_current {
+            return self.current_stored_enrolled_project(controller);
+        }
         if self.first_failure.is_some() || self.postcheck_debt.is_some() {
             return Err(());
         }
@@ -434,6 +474,50 @@ impl PublisherPolicyBootstrapAttemptV1 {
             attempt.compare_enrolled_current_v1(&store, append, source, capacity, &self.credentials, now)
                 .map_err(BootstrapCauseV1::Current)?;
             Ok::<_, BootstrapCauseV1>(source.policy().policy().project())
+        })();
+        let project = match returned {
+            Ok(project) => Some(project),
+            Err(cause) => {
+                self.first_failure.get_or_insert(cause);
+                None
+            }
+        };
+        if let Err(cause) = self.check_originals_and_time() {
+            self.postcheck_debt.get_or_insert(cause);
+        }
+        if self.first_failure.is_some() || self.postcheck_debt.is_some() {
+            return Err(());
+        }
+        let project = project.ok_or(())?;
+        self.enrolled_current = true;
+        Ok(project)
+    }
+
+    pub(super) fn existing_enrollment_selected(&self) -> bool {
+        self.enrolled_current
+    }
+
+    fn current_stored_enrolled_project(
+        &mut self,
+        controller: &mut ProductionController,
+    ) -> Result<aos_sandbox_core::ProjectId, ()> {
+        if self.first_failure.is_some() || self.postcheck_debt.is_some() {
+            return Err(());
+        }
+        let returned = (|| {
+            let now = self.check_originals_and_time()?;
+            let source = self.source.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(BootstrapCauseV1::Rejected)?;
+            let capacity = self.capacity.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(BootstrapCauseV1::Rejected)?;
+            let proposal = self.append.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(BootstrapCauseV1::Rejected)?;
+            let store = controller.publisher_policies(PublisherPolicyLimits::default())
+                .map_err(BootstrapCauseV1::Store)?;
+            store.current_git_upload_stored_enrolled_account_v1(
+                proposal, source, capacity, &self.credentials, now,
+            ).map_err(BootstrapCauseV1::Current)?;
+            Ok::<_, BootstrapCauseV1>(source.policy().project())
         })();
         let project = match returned {
             Ok(project) => Some(project),

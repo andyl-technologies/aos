@@ -60,10 +60,15 @@ pub(super) struct GitCoverageWorkerV1<'profile> {
     restored_mount: Option<Result<DormantMountLifecycleInventoryOwnerV1, DormantGitCoverageQueryOwnerV1>>,
     restored_storage: Option<Result<DormantStorageLifecycleInventoryOwnerV1, DormantGitCoverageQueryOwnerV1>>,
     nonce: Option<[u8; 16]>,
+    existing_birth_nonce: Option<Result<[u8; 16], aos_sandbox::journal::GitCoverageNativeHistoryErrorV1>>,
     first_failure: Option<CoverageFailureV1>,
     postcheck: Option<CoverageFailureV1>,
     attempted: bool,
     completed: bool,
+    read_metadata: Option<Result<(), CacheResidentUnavailableV1>>,
+    initial_issuance: Option<aos_sandbox::public_capability_issuance::RetainedGitInitialIssuanceV1>,
+    initial_reply: Option<tokio::sync::oneshot::Sender<super::ControllerCommandResponse<(aos_sandbox_core::CapabilityId, [u8; 32])>>>,
+    initial_sent: Option<Result<(), super::ControllerCommandResponse<(aos_sandbox_core::CapabilityId, [u8; 32])>>>,
 }
 
 impl<'profile> GitCoverageWorkerV1<'profile> {
@@ -80,10 +85,15 @@ impl<'profile> GitCoverageWorkerV1<'profile> {
             restored_mount: None,
             restored_storage: None,
             nonce: None,
+            existing_birth_nonce: None,
             first_failure: None,
             postcheck: None,
             attempted: false,
             completed: false,
+            read_metadata: None,
+            initial_issuance: None,
+            initial_reply: None,
+            initial_sent: None,
         }
     }
 
@@ -124,6 +134,18 @@ impl<'profile> GitCoverageWorkerV1<'profile> {
         node: [u8; 16],
     ) -> Result<(), CoverageFailureV1> {
         self.inputs.capture().map_err(|_| CoverageFailureV1::Closed)?;
+        if bootstrap.existing_enrollment_selected() {
+            // The stored nonce comes from this actual complete native prefix,
+            // not catalog DATA or a guessed earlier flight coordinate.
+            let inputs = self.inputs.ready().ok_or(CoverageFailureV1::Closed)?;
+            let catalog = GitCoverageCatalogV1::decode(inputs.catalog())?;
+            self.existing_birth_nonce = Some(controller.existing_git_coverage_birth_nonce_v1(&catalog));
+            if !matches!(self.existing_birth_nonce, Some(Ok(_))) {
+                return Err(CoverageFailureV1::Closed);
+            }
+            self.account.select_existing_replay_before_root_v1()
+                .map_err(|_| CoverageFailureV1::Closed)?;
+        }
         self.account.begin_root_once().map_err(|_| CoverageFailureV1::Closed)?;
         let (nonce, _boot, cutoff) = self.account.root_challenge()
             .map_err(|_| CoverageFailureV1::Closed)?;
@@ -139,8 +161,13 @@ impl<'profile> GitCoverageWorkerV1<'profile> {
         self.open_mount(cutoff, node)?;
         self.open_storage(cutoff, node, sessions)?;
 
+        let cache_flight = if self.existing_birth_nonce.is_some() {
+            GitCoverageFlightV1::Read
+        } else {
+            GitCoverageFlightV1::Prepare
+        };
         self.cache[0] = Some(controller.compare_existing_cache_git_coverage_v1(
-            &mut self.inputs, GitCoverageFlightV1::Prepare, nonce, None,
+            &mut self.inputs, cache_flight, nonce, None,
         ));
         self.inputs.recheck().map_err(|_| CoverageFailureV1::Closed)?;
         if !matches!(&self.cache[0], Some(Ok(_))) {
@@ -188,13 +215,19 @@ impl<'profile> GitCoverageWorkerV1<'profile> {
         postchecked?;
 
         self.check_latest()?;
-        let committed = bootstrap.commit_coverage_account_once(
-            controller, &mut self.inputs, &mut self.account,
-        );
-        let postchecked = self.check_latest();
-        committed.map_err(|_| CoverageFailureV1::Closed)?;
-        postchecked?;
-        let finished = self.account.finish_local_root_once();
+        if self.existing_birth_nonce.is_none() {
+            let committed = bootstrap.commit_coverage_account_once(
+                controller, &mut self.inputs, &mut self.account,
+            );
+            let postchecked = self.check_latest();
+            committed.map_err(|_| CoverageFailureV1::Closed)?;
+            postchecked?;
+        }
+        let finished = if self.existing_birth_nonce.is_some() {
+            self.account.finish_existing_root_once()
+        } else {
+            self.account.finish_local_root_once()
+        };
         let postchecked = self.check_latest();
         finished.map_err(|_| CoverageFailureV1::Closed)?;
         postchecked?;
@@ -219,6 +252,81 @@ impl<'profile> GitCoverageWorkerV1<'profile> {
         if let Some(Ok(original)) = self.restored_storage.take() {
             sessions.storage = Some(original);
         }
+        Ok(())
+    }
+
+    pub(super) fn inspect_current(
+        &mut self,
+        controller: &mut ProductionController,
+        bootstrap: &mut PublisherPolicyBootstrapAttemptV1,
+        original: &mut aos_sandbox::git::delegated_read::GitReadRequestOwnerV1,
+        acceptor: &aos_sandbox::public_api_session::PublicApiSessionAcceptor,
+    ) -> Result<(), ()> {
+        if !self.completed || self.first_failure.is_some() || self.postcheck.is_some()
+            || self.read_metadata.as_ref().is_some_and(Result::is_err)
+        {
+            return Err(());
+        }
+        self.bookend(controller, bootstrap)?;
+        self.read_metadata = Some(controller.inspect_enrolled_gateway_git_read_v1(
+            original, acceptor, &mut self.inputs, &mut self.account,
+        ));
+        let postchecked = self.bookend(controller, bootstrap);
+        if !matches!(self.read_metadata, Some(Ok(()))) {
+            self.first_failure.get_or_insert(CoverageFailureV1::Closed);
+            return Err(());
+        }
+        postchecked
+    }
+
+    pub(super) fn bootstrap_public_capability(
+        &mut self,
+        controller: &mut ProductionController,
+        bootstrap: &mut PublisherPolicyBootstrapAttemptV1,
+        peer: aos_sandbox::public_api_session::PublicApiPeer,
+        idempotency_key: Vec<u8>,
+        expires_at: std::time::Instant,
+        reply: tokio::sync::oneshot::Sender<super::ControllerCommandResponse<(aos_sandbox_core::CapabilityId, [u8; 32])>>,
+    ) -> Result<(), ()> {
+        if self.initial_issuance.is_some() || self.initial_reply.is_some() {
+            // Incoming original arguments still belong to this frame.
+            std::process::abort();
+        }
+        self.initial_issuance = Some(aos_sandbox::public_capability_issuance::RetainedGitInitialIssuanceV1::new(
+            peer, idempotency_key, expires_at,
+        ));
+        self.initial_reply = Some(reply);
+        self.bookend(controller, bootstrap)?;
+        let original = self.initial_issuance.as_mut().ok_or(())?;
+        self.read_metadata = Some(controller.bootstrap_enrolled_git_public_capability_v1(
+            original, &mut self.inputs, &mut self.account,
+        ));
+        let postchecked = self.bookend(controller, bootstrap);
+        if !matches!(self.read_metadata, Some(Ok(()))) {
+            let original = self.initial_issuance.as_ref().ok_or(())?;
+            let failure = if original.deadline_exceeded() {
+                super::ControllerCommandFailure::DeadlineExceeded
+            } else if original.rejected() {
+                super::ControllerCommandFailure::Rejected
+            } else {
+                super::ControllerCommandFailure::ControllerUnavailable
+            };
+            let reply = self.initial_reply.take().ok_or(())?;
+            self.initial_sent = Some(reply.send(Err(failure)));
+            // A negative response is not permission to destroy the original
+            // failed capsule. The caller ends with every remaining owner here.
+            return Err(());
+        }
+        postchecked?;
+
+        let original = self.initial_issuance.as_mut().ok_or(())?;
+        let issued = original.issued().ok_or(())?;
+        let response = Ok((issued.id(), *issued.holder_handle()));
+        let reply = self.initial_reply.take().ok_or(())?;
+        self.initial_sent = Some(reply.send(response));
+        if !matches!(self.initial_sent, Some(Ok(()))) { return Err(()); }
+        original.retire_local().map_err(|_| ())?;
+        drop(self.initial_issuance.take());
         Ok(())
     }
 
@@ -284,7 +392,12 @@ impl<'profile> GitCoverageWorkerV1<'profile> {
                 BrokerMethod::BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1,
             ])
         };
-        let birth = enrollment.fixed_owner_birth_recipe_v1(&catalog, profile, nonce)?;
+        let birth_nonce = match self.existing_birth_nonce.as_ref() {
+            Some(Ok(original)) => *original,
+            Some(Err(_)) => return Err(CoverageFailureV1::Closed),
+            None => nonce,
+        };
+        let birth = enrollment.fixed_owner_birth_recipe_v1(&catalog, profile, birth_nonce)?;
         let birth_bytes = birth.encode()?;
         let birth_digest = GitCoverageBirthV1::decode(&birth_bytes)?.digest();
         let fence_bytes = GitCoverageFenceFieldsV1 {
@@ -298,11 +411,11 @@ impl<'profile> GitCoverageWorkerV1<'profile> {
             catalog: birth.catalog,
             transaction: birth.transaction,
             predecessor_prefix: birth.predecessor_prefix,
-            prepare_nonce: nonce,
+            prepare_nonce: birth_nonce,
         }.encode()?;
         let fence_digest = GitCoverageFenceV1::decode(&fence_bytes)?.digest();
         for slot in 0..2 {
-            self.requests[index][slot] = Some(GitCoverageRequestCoordinatesV1 {
+            let coordinates = GitCoverageRequestCoordinatesV1 {
                 role,
                 project: birth.project,
                 node: birth.node,
@@ -311,9 +424,18 @@ impl<'profile> GitCoverageWorkerV1<'profile> {
                 nonce,
                 enrollment: birth.enrollment,
                 birth: birth_digest,
-                expected: if slot == 0 { birth.predecessor_prefix } else { fence_digest },
+                expected: if slot == 0 && self.existing_birth_nonce.is_none() {
+                    birth.predecessor_prefix
+                } else {
+                    fence_digest
+                },
                 catalog: birth.catalog,
-            }.encode(if slot == 0 { Some(inputs.enrollment()) } else { None }));
+            };
+            self.requests[index][slot] = Some(if slot == 0 && self.existing_birth_nonce.is_some() {
+                coordinates.encode_existing_pair(inputs.enrollment())
+            } else {
+                coordinates.encode(if slot == 0 { Some(inputs.enrollment()) } else { None })
+            });
             let body = self.requests[index][slot].as_ref()
                 .and_then(|result| result.as_ref().ok()).ok_or(CoverageFailureV1::Closed)?;
             self.queries[index].as_mut().ok_or(CoverageFailureV1::Closed)?

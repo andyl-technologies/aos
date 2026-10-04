@@ -32,6 +32,11 @@ use aos_sandbox_ownership_protocol::{CLAIM_BYTES, OwnershipClaimV1};
 
 use crate::{GuardianPlanRequestV1, SignedBrokerPlan};
 
+/// Lends a closed original Git read/issuance crossing to its installed executor.
+#[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub use crate::cli_model::authorization_adapter::GitCoverageReadMetadataOperationV1;
+
 use crate::journal::{
     IdempotencyKey, IdempotencyOutcome, Journal, JournalError, JournalRecord, JournalTransaction,
     RecordNamespace,
@@ -802,6 +807,20 @@ pub trait SingleNodeEffectExecutor {
         Err(crate::cache_residency::CacheResidentUnavailableV1)
     }
 
+    /// Runs the fixed enrolled metadata crossing with both original writers.
+    ///
+    /// # Errors
+    /// The default refuses before effects; no substitute owner or clock exists.
+    #[cfg(target_os = "linux")]
+    fn run_existing_git_coverage_read_metadata_v1(
+        &mut self,
+        _controller: &mut Journal,
+        _original_inputs: &mut crate::public_api_session::GitCoverageCredentialCustodyV1,
+        _operation: &mut GitCoverageReadMetadataOperationV1<'_, '_>,
+    ) -> Result<(), crate::cache_residency::CacheResidentUnavailableV1> {
+        Err(crate::cache_residency::CacheResidentUnavailableV1)
+    }
+
     /// Compares the fixed cohort through the same resident Cache owners.
     ///
     /// Coordinates and flight selection are DATA. The concrete installed
@@ -1375,6 +1394,18 @@ where
         self.executor.commit_existing_git_coverage_account_v1(
             &mut self.journal, original_inputs, original_bootstrap, original_source,
             original_capacity, original_bootstrap_credentials, attempt,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn run_existing_git_coverage_read_metadata_v1(
+        &mut self,
+        original_inputs: &mut crate::public_api_session::GitCoverageCredentialCustodyV1,
+        operation: &mut GitCoverageReadMetadataOperationV1<'_, '_>,
+    ) -> Result<(), crate::cache_residency::CacheResidentUnavailableV1> {
+        self.ledger_validated = false;
+        self.executor.run_existing_git_coverage_read_metadata_v1(
+            &mut self.journal, original_inputs, operation,
         )
     }
 

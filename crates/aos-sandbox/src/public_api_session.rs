@@ -40,6 +40,7 @@ pub(crate) use credentials::{
     ControllerNixPublicCredentialCustodyV1, ControllerNixPublicCredentialErrorV1,
     OfflinePrepareCredentialsV3,
     PinnedOperatorRecoveryKeyV1, PinnedSystemdCredential, load_entitlement_credentials,
+    InitialEntitlementCredentialCustodyV1,
 };
 pub(crate) use original_registration::CurrentOriginalPublicRegistrationV3;
 pub use stream::AuthenticatedPublicApiStream;
