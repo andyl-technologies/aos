@@ -88,7 +88,8 @@ fn public_packaged_campaign_lifecycle_uses_only_cli() -> Result<(), Box<dyn Erro
     );
     assert_eq!(safe_explanation["proposal"]["request"], safe_request);
 
-    let finite = submit_all_choices(&fixture, &recovery)?;
+    let finite = submit_all_choices(&fixture, &recovery)
+        .inspect_err(|_| report_rpc_failure_context(&service, "finite-domain"))?;
     assert_eq!(finite["validated_cardinality"]["count"], 2);
     assert_eq!(finite["deduplicated_existing_edges"]["count"], 2);
     assert_eq!(finite["remaining_lazy_candidates"]["count"], 0);
@@ -157,7 +158,8 @@ fn public_packaged_campaign_lifecycle_uses_only_cli() -> Result<(), Box<dyn Erro
     )?;
     assert_eq!(campaign_status(&fixture)?["state"], "paused");
 
-    let pressured = submit_bounded_choices(&fixture, &retry)?;
+    let pressured = submit_bounded_choices(&fixture, &retry)
+        .inspect_err(|_| report_rpc_failure_context(&restarted, "bounded-domain"))?;
     assert_eq!(pressured["budget"]["maximum_proposals"], 3);
     assert_eq!(pressured["budget"]["maximum_attempts"], 1);
     assert_eq!(pressured["validated_cardinality"]["count"], 3);
@@ -241,6 +243,69 @@ fn public_packaged_campaign_lifecycle_uses_only_cli() -> Result<(), Box<dyn Erro
     println!("campaign_lifecycle_pause_restart_resume=true");
     println!("campaign_lifecycle_steering_graceful_stop=true");
     Ok(())
+}
+
+fn report_rpc_failure_context(service: &CampaignServiceChild, operation: &str) {
+    // Capture before this owner enters failure cleanup. Advisory I/O never
+    // replaces the original submission error or retries the public request.
+    let records = recent_rpc_failure_rows(service.stderr.as_file());
+    let mut output = std::io::stderr().lock();
+    let _ = writeln!(
+        output,
+        "lifecycle RPC failure context operation={operation} service_pid={} unvalidated=true",
+        service.child.id(),
+    );
+    match records {
+        Ok(records) => {
+            for record in records {
+                let _ = writeln!(output, "{record}");
+            }
+        }
+        Err(_) => {
+            let _ = writeln!(output, "lifecycle RPC failure context unavailable");
+        }
+    }
+}
+
+fn recent_rpc_failure_rows(stderr: &fs::File) -> Result<Vec<String>, Box<dyn Error>> {
+    use std::os::unix::fs::FileExt;
+
+    let length = stderr.metadata()?.len();
+    let start = length.saturating_sub(MAX_CAMPAIGN_SERVICE_STDERR_BYTES);
+    let mut bytes = vec![0; usize::try_from(length - start)?];
+    let mut read = 0;
+    while read < bytes.len() {
+        // Positional reads preserve the live service's shared capture cursor.
+        // The frozen window bounds total input even if the writer keeps growing.
+        let count = stderr.read_at(&mut bytes[read..], start + u64::try_from(read)?)?;
+        if count == 0 {
+            break;
+        }
+        read += count;
+    }
+    bytes.truncate(read);
+
+    // A clipped first line and an unfinished final write are not complete rows.
+    let begin = if start == 0 {
+        0
+    } else {
+        bytes
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(bytes.len(), |index| index + 1)
+    };
+    let end = bytes
+        .iter()
+        .rposition(|byte| *byte == b'\n')
+        .map_or(0, |index| index + 1);
+    let complete = bytes.get(begin..end).unwrap_or_default();
+
+    recent_matching_lines_bounded(
+        std::io::Cursor::new(complete),
+        "CRUCIBLE-CAMPAIGN-RPC-FAILURE-V1 ",
+        32,
+        511,
+    )
 }
 
 fn prepare_steering_policy(
@@ -604,6 +669,79 @@ fn acceptance_count_minimum(count: &Value) -> Result<u64, Box<dyn Error>> {
         Some("exact") => json_u64(count, "count"),
         Some("range") => json_u64(count, "minimum"),
         _ => Err(format!("branch acceptance omitted a bounded count: {count}").into()),
+    }
+}
+
+#[cfg(test)]
+mod rpc_failure_tests {
+    use super::*;
+
+    const PREFIX: &str = "CRUCIBLE-CAMPAIGN-RPC-FAILURE-V1 ";
+
+    fn record(index: usize) -> String {
+        format!("{PREFIX}kind=request operation=GetCampaign request={index:064x} failure=not-found")
+    }
+
+    #[test]
+    fn rpc_failure_capture_reads_only_recent_complete_rows_without_moving_the_writer()
+    -> Result<(), Box<dyn Error>> {
+        let mut stderr = NamedTempFile::new()?;
+        writeln!(stderr, "{}", record(99))?;
+        stderr.write_all(&vec![
+            b'x';
+            usize::try_from(MAX_CAMPAIGN_SERVICE_STDERR_BYTES)?
+        ])?;
+        writeln!(stderr)?;
+        let recent: Vec<_> = (0..2).map(record).collect();
+        for row in &recent {
+            writeln!(stderr, "{row}")?;
+        }
+        write!(stderr, "{}", record(100))?;
+        stderr.as_file_mut().seek(SeekFrom::Start(11))?;
+
+        let captured = recent_rpc_failure_rows(stderr.as_file())?;
+
+        assert_eq!(captured, recent);
+        assert_eq!(stderr.as_file_mut().stream_position()?, 11);
+        assert!(captured.iter().all(|row| row.len() <= 511));
+        Ok(())
+    }
+
+    #[test]
+    fn rpc_failure_capture_refuses_clipped_and_oversized_records() -> Result<(), Box<dyn Error>> {
+        let mut stderr = NamedTempFile::new()?;
+        let clipped = record(0);
+        let complete = record(1);
+        let unfinished = record(2);
+        let fixed = clipped.len() + complete.len() + unfinished.len() + 3;
+        let padding = usize::try_from(MAX_CAMPAIGN_SERVICE_STDERR_BYTES)? - fixed;
+        let tail = format!(
+            "{clipped}\n{complete}\n{}\n{unfinished}",
+            "x".repeat(padding)
+        );
+        assert_eq!(
+            tail.len(),
+            usize::try_from(MAX_CAMPAIGN_SERVICE_STDERR_BYTES)?
+        );
+        // The retained window starts with the prefix in the middle of an
+        // unrelated original line; treating that fragment as a row is wrong.
+        write!(stderr, "unrelated-original-line:{tail}")?;
+
+        assert_eq!(recent_rpc_failure_rows(stderr.as_file())?, [complete]);
+
+        let exact = format!("{PREFIX}{}", "x".repeat(511 - PREFIX.len()));
+        fs::write(stderr.path(), format!("{exact}\n"))?;
+        assert_eq!(
+            recent_rpc_failure_rows(stderr.as_file())?.as_slice(),
+            std::slice::from_ref(&exact)
+        );
+        fs::write(stderr.path(), format!("{exact}x\n"))?;
+        assert!(recent_rpc_failure_rows(stderr.as_file()).is_err());
+
+        let recent: Vec<_> = (0..35).map(record).collect();
+        fs::write(stderr.path(), format!("{}\n", recent.join("\n")))?;
+        assert_eq!(recent_rpc_failure_rows(stderr.as_file())?, recent[3..]);
+        Ok(())
     }
 }
 
