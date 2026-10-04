@@ -2957,6 +2957,7 @@ in rec {
       attrPath = "checks.crucible.phase7.qemuRrControlBoundaryDeviceFlight";
     };
     qemuGuestClockReadEquivalenceLive = phase7.productionRustPluginFlight.rawGate.passthru.guestClockReadEquivalence;
+    qemuGuestClockPublishedKernelRuntimeConversionLive = phase7.productionRustPluginFlight.rawGate.passthru.guestClockRuntimeConversion;
     qemuTimeOwnershipLive = phase7.productionRustPluginFlight.rawGate.passthru.timeOwnershipDiagnostic;
     qemuLinuxBootAckPollExperiment =
       (import ./phase7-production-rust-plugin-flight.nix {

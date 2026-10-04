@@ -37,6 +37,8 @@ struct ReadReceipt {
     fraction: i64,
     value: u64,
     unit: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vvar: Option<Vec<u64>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -107,8 +109,13 @@ pub(super) fn run(
     qemu: &Path,
     evidence_output: &Path,
 ) -> Result<(), Box<dyn Error>> {
-    let reference = run_once(factory, config, qemu, false)?;
-    let hostile = run_once(factory, config, qemu, true)?;
+    let runtime_anchor = match std::env::var_os("CRUCIBLE_GUEST_CLOCK_RUNTIME_ANCHOR") {
+        None => false,
+        Some(value) if value == "1" => true,
+        _ => return Err("guest clock runtime anchor requires exact mode=1".into()),
+    };
+    let reference = run_once(factory, config, qemu, false, runtime_anchor)?;
+    let hostile = run_once(factory, config, qemu, true, runtime_anchor)?;
     compare(&reference, &hostile)?;
     std::fs::write(
         evidence_output,
@@ -120,6 +127,9 @@ pub(super) fn run(
     println!("tsc_original_read_brackets_valid=true");
     println!("idle_hold_clock_unchanged=true");
     println!("authorized_exact_timer_wake_raw_unchanged=true");
+    if runtime_anchor {
+        println!("published_kernel_runtime_anchor_retained=true");
+    }
     println!("absolute_linux_clock_calibration_qualified=false");
     println!("fork_child_clock_ownership_qualified=false");
     Ok(())
@@ -149,6 +159,7 @@ fn run_once(
     config: &QemuLiveNodeStepGateConfig,
     qemu: &Path,
     hostile: bool,
+    runtime_anchor: bool,
 ) -> Result<RunEvidence, Box<dyn Error>> {
     let mut owner = factory.begin(4, super::MEMORY_BYTES, super::DISK_BYTES)?;
     let mut directory = owner.prepare_generation_run_directory(config.resource_requirements())?;
@@ -176,7 +187,7 @@ fn run_once(
         },
     )?;
     let (first, first_boundary) = barrier(&mut node, 3, "clock-0", false)?;
-    let mut reads = validate_batch(&first, 0)?;
+    let mut reads = validate_batch_mode(&first, 0, runtime_anchor)?;
     let mut events = retained(&boot);
     events.extend(retained(&first));
 
@@ -239,7 +250,7 @@ fn run_once(
     }
 
     let (second, second_boundary) = barrier(&mut node, 4, "clock-1", false)?;
-    reads.extend(validate_batch(&second, 1)?);
+    reads.extend(validate_batch_mode(&second, 1, runtime_anchor)?);
     events.extend(retained(&second));
     validate_forward_returns(&reads)?;
     let shutdown = node.shutdown_child()?;
@@ -331,7 +342,16 @@ fn retained(events: &[ObservableEvent]) -> Vec<(u64, ObservableEventPayload)> {
         .collect()
 }
 
+#[cfg(test)]
 fn validate_batch(events: &[ObservableEvent], batch: u64) -> Result<Vec<ReadReceipt>, String> {
+    validate_batch_mode(events, batch, false)
+}
+
+fn validate_batch_mode(
+    events: &[ObservableEvent],
+    batch: u64,
+    runtime_anchor: bool,
+) -> Result<Vec<ReadReceipt>, String> {
     if events.len() != CLOCKS.len() * 2 {
         return Err("clock-read batch must contain exactly four original read pairs".into());
     }
@@ -342,7 +362,7 @@ fn validate_batch(events: &[ObservableEvent], batch: u64) -> Result<Vec<ReadRece
         let (after_ps, after) = marker(&events[index * 2 + 1], AFTER, &instance)?;
         if before.len() != 1
             || unsigned(before, 0, "cpu")? != 0
-            || after.len() != 5
+            || after.len() != if runtime_anchor { 6 } else { 5 }
             || unsigned(after, 0, "cpu")? != 0
             || before_ps >= after_ps
             || result
@@ -391,6 +411,26 @@ fn validate_batch(events: &[ObservableEvent], batch: u64) -> Result<Vec<ReadRece
                 return Err("Linux clock return is not a normalized original API tuple".into());
             }
         }
+        let vvar = if runtime_anchor {
+            match &after[5] {
+                GuestSemanticMarkerDetail {
+                    key,
+                    value: GuestMeasurementValue::UnsignedVector(words),
+                } if key == "vvar"
+                    && words.len() == 16
+                    && words[0] == 1
+                    && words[1] & 1 == 0
+                    && words[2] == 1
+                    && words[14] < 16
+                    && words[15] == words[1] =>
+                {
+                    Some(words.clone())
+                }
+                _ => return Err("published kernel runtime anchor is missing or unsupported".into()),
+            }
+        } else {
+            None
+        };
         result.push(ReadReceipt {
             instance,
             before_ps,
@@ -399,6 +439,7 @@ fn validate_batch(events: &[ObservableEvent], batch: u64) -> Result<Vec<ReadRece
             fraction,
             value,
             unit: unit.clone(),
+            vvar,
         });
     }
     Ok(result)

@@ -243,6 +243,7 @@ def main():
     parser.add_argument("capture", type=Path, nargs="?")
     parser.add_argument("ownership_parser", type=Path, nargs="?")
     parser.add_argument("launch_source", type=Path, nargs="?")
+    parser.add_argument("--runtime-anchor", type=Path)
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -261,9 +262,18 @@ def main():
         evidence, raw = read_evidence(stream)
     bind(evidence, records)
     epoch = declared_rtc_epoch(args.launch_source)
-    lower, upper = affine_consistency(evidence, epoch)
+    if args.runtime_anchor is None:
+        lower, upper = affine_consistency(evidence, epoch)
+    else:
+        specification = importlib.util.spec_from_file_location("clock_vvar", args.runtime_anchor)
+        runtime = importlib.util.module_from_spec(specification)
+        specification.loader.exec_module(runtime)
+        runtime.validate(evidence)
     print("PASS fresh guest clock-read equivalence processes=2 reads=16 original-native-idle-waits=2")
-    print(f"PASS nominal-rate Linux API affine consistency source_rtc_epoch_seconds={epoch} offset_ps=[{lower},{upper})")
+    if args.runtime_anchor is None:
+        print(f"PASS nominal-rate Linux API affine consistency source_rtc_epoch_seconds={epoch} offset_ps=[{lower},{upper})")
+    else:
+        print("PASS published-kernel runtime conversion consistency processes=2 reads=16")
     print("absolute Linux API calibration and fork-child ownership remain unqualified")
     print(raw.decode("utf-8"))
 

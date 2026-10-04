@@ -5,13 +5,17 @@
   clockReadFlightCommand,
   rootfsDeps,
   attemptHostSetupScript,
+  runtimeAnchor ? false,
 }:
 # The zero-offset TSC proof is source-bound to the audited reset, SVM and
 # VMState writers. A native selection change requires re-auditing this profile.
 assert (import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix).commit
 == "39a0e603dd25905ada9f87276485375f9836b70c";
   testing.mkVMTest {
-    name = "crucible-fresh-guest-clock-read-equivalence";
+    name =
+      if runtimeAnchor
+      then "crucible-guest-clock-published-kernel-runtime-conversion"
+      else "crucible-fresh-guest-clock-read-equivalence";
     memory = 8192;
     timeout = 1200;
     rootfsDeps =
@@ -21,12 +25,21 @@ assert (import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix).commit
         "${./phase7-time-ownership-receipts.py}"
         "${./phase7-guest-clock-read-receipts.py}"
         "${../../crates/crucible-qemu/src/launch.rs}"
-      ];
+      ]
+      ++ (
+        if runtimeAnchor
+        then ["${./phase7-clock-vvar-receipts.py}"]
+        else []
+      );
     testScript = ''
       set -eu
       ${attemptHostSetupScript}
       export CRUCIBLE_TIME_OWNERSHIP_WITNESS=1
-      export CRUCIBLE_GUEST_CLOCK_READ_FLIGHT=1
+      export CRUCIBLE_GUEST_CLOCK_READ_FLIGHT=1${
+        if runtimeAnchor
+        then "\nexport CRUCIBLE_GUEST_CLOCK_RUNTIME_ANCHOR=1"
+        else ""
+      }
       result=/tmp/guest-clock-read-result
       capture=/tmp/guest-clock-read-native-receipts
       evidence=/tmp/guest-clock-read-evidence.json
@@ -51,7 +64,11 @@ assert (import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix).commit
         tsc_original_read_brackets_valid=true idle_hold_clock_unchanged=true \
         authorized_exact_timer_wake_raw_unchanged=true \
         absolute_linux_clock_calibration_qualified=false \
-        fork_child_clock_ownership_qualified=false; do
+        fork_child_clock_ownership_qualified=false${
+        if runtimeAnchor
+        then " published_kernel_runtime_anchor_retained=true"
+        else ""
+      }; do
         if ${pkgs.grep}/bin/grep -Fxq "$item" "$result"; then
           :
         else
@@ -60,7 +77,11 @@ assert (import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix).commit
       done
       if ${pkgs.python3}/bin/python3 ${./phase7-guest-clock-read-receipts.py} \
         "$evidence" "$capture" ${./phase7-time-ownership-receipts.py} \
-        ${../../crates/crucible-qemu/src/launch.rs}; then
+        ${../../crates/crucible-qemu/src/launch.rs}${
+        if runtimeAnchor
+        then " --runtime-anchor ${./phase7-clock-vvar-receipts.py}"
+        else ""
+      }; then
         :
       else
         report_failure "$?" original-evidence

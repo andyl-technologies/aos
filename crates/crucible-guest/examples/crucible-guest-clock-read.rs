@@ -8,6 +8,10 @@
 use std::error::Error;
 use std::process::ExitCode;
 
+#[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+#[path = "crucible-guest-clock-read/vvar.rs"]
+mod vvar;
+
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use crucible_guest::{
     InstructionDoorbellTransport, emit_command, emit_selectable_registration, request_selection,
@@ -67,8 +71,15 @@ fn run() -> Result<(), Box<dyn Error>> {
             let instance = format!("{batch}-{clock}");
             let cpu = current_cpu()?;
             emit_command(&before(&instance, cpu), &mut transport)?;
-            let returned = read_clock(clock)?;
-            emit_command(&after(&instance, cpu, returned), &mut transport)?;
+            // Only the optional constructor sets this compile-time flag. The
+            // default flight retains its ordinary API call without a file probe.
+            let marker = if option_env!("CRUCIBLE_GUEST_CLOCK_VVAR_OBSERVER") == Some("1") {
+                let observed = vvar::read(clock)?;
+                after_with_anchor(&instance, cpu, observed.returned, Some(observed.anchor))
+            } else {
+                after(&instance, cpu, read_clock(clock)?)
+            };
+            emit_command(&marker, &mut transport)?;
         }
         pause(3 + batch, &format!("clock-{batch}"), &mut transport)?;
         if batch == 0 {
@@ -106,26 +117,39 @@ fn before(instance: &str, cpu: u64) -> GuestCommand {
 
 #[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
 fn after(instance: &str, cpu: u64, returned: ClockReturn) -> GuestCommand {
-    GuestCommand::semantic_marker(
-        "clock.read.after",
-        instance,
-        vec![
-            detail("cpu", WhiteboxMeasurementValue::Unsigned(cpu)),
-            detail(
-                "fraction",
-                WhiteboxMeasurementValue::Signed(returned.fraction),
-            ),
-            detail(
-                "seconds",
-                WhiteboxMeasurementValue::Signed(returned.seconds),
-            ),
-            detail(
-                "unit",
-                WhiteboxMeasurementValue::Enumerated(returned.unit.into()),
-            ),
-            detail("value", WhiteboxMeasurementValue::Unsigned(returned.value)),
-        ],
-    )
+    after_with_anchor(instance, cpu, returned, None)
+}
+
+#[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+fn after_with_anchor(
+    instance: &str,
+    cpu: u64,
+    returned: ClockReturn,
+    anchor: Option<Vec<u64>>,
+) -> GuestCommand {
+    let mut details = vec![
+        detail("cpu", WhiteboxMeasurementValue::Unsigned(cpu)),
+        detail(
+            "fraction",
+            WhiteboxMeasurementValue::Signed(returned.fraction),
+        ),
+        detail(
+            "seconds",
+            WhiteboxMeasurementValue::Signed(returned.seconds),
+        ),
+        detail(
+            "unit",
+            WhiteboxMeasurementValue::Enumerated(returned.unit.into()),
+        ),
+        detail("value", WhiteboxMeasurementValue::Unsigned(returned.value)),
+    ];
+    if let Some(anchor) = anchor {
+        details.push(detail(
+            "vvar",
+            WhiteboxMeasurementValue::UnsignedVector(anchor),
+        ));
+    }
+    GuestCommand::semantic_marker("clock.read.after", instance, details)
 }
 
 #[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
@@ -316,5 +340,48 @@ mod tests {
             WhiteboxMeasurementValue::Unsigned(u64::MAX)
         );
         assert!(bytes.len() < 512);
+    }
+
+    #[test]
+    fn actual_sdk_roundtrip_retains_optional_kernel_bases_and_generation() {
+        let anchor = vec![
+            1,
+            2,
+            1,
+            1000,
+            10000,
+            u64::MAX,
+            4,
+            4,
+            123,
+            100,
+            7,
+            200,
+            1040,
+            1080,
+            0,
+            2,
+        ];
+        let returned = ClockReturn {
+            seconds: 123,
+            fraction: 456,
+            value: 0,
+            unit: "nanoseconds",
+        };
+        let command = after_with_anchor("0-realtime", 0, returned, Some(anchor.clone()));
+        let frame = WhiteboxDoorbellFrame::decode(&command.encode_frame().expect("anchored frame"))
+            .expect("decoded anchored frame");
+        let WhiteboxMarkerPayload::SemanticMarker(body) =
+            decode_whitebox_marker_payload(&frame).expect("typed anchored marker")
+        else {
+            panic!("semantic marker required")
+        };
+
+        assert_eq!(body.details.len(), 6);
+        assert_eq!(body.details[5].key, "vvar");
+        assert_eq!(
+            body.details[5].value,
+            WhiteboxMeasurementValue::UnsignedVector(anchor)
+        );
     }
 }

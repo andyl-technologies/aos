@@ -3,6 +3,7 @@
   pkgs,
   source,
   cargoDeps,
+  runtimeObserver ? null,
 }:
 assert pkgs.stdenv.hostPlatform.system == "x86_64-linux";
   pkgs.mkCargoPackage {
@@ -14,14 +15,26 @@ assert pkgs.stdenv.hostPlatform.system == "x86_64-linux";
     cargoFlags = "-p crucible-guest --example crucible-guest-clock-read";
     cargoTestFlags = "-p crucible-guest --example crucible-guest-clock-read";
     installBins = false;
-    buildDeps = [pkgs.patchelf pkgs.sqliteStatic pkgs.cpio pkgs.pigz];
+    buildDeps =
+      [pkgs.patchelf pkgs.sqliteStatic pkgs.cpio pkgs.pigz]
+      ++ (
+        if runtimeObserver == null
+        then []
+        else [runtimeObserver]
+      );
     runtimeDeps = [];
-    cargoEnv = {
-      SQLITE3_LIB_DIR = "${pkgs.sqliteStatic}/lib";
-      SQLITE3_INCLUDE_DIR = "${pkgs.sqliteStatic}/include";
-      SQLITE3_STATIC = "1";
-      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
-    };
+    cargoEnv =
+      {
+        SQLITE3_LIB_DIR = "${pkgs.sqliteStatic}/lib";
+        SQLITE3_INCLUDE_DIR = "${pkgs.sqliteStatic}/include";
+        SQLITE3_STATIC = "1";
+        LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      }
+      // (
+        if runtimeObserver == null
+        then {}
+        else {CRUCIBLE_GUEST_CLOCK_VVAR_OBSERVER = "1";}
+      );
     preBuild = ''
       # Keep the established static guest contract: host proc macros remain
       # dynamic, while the explicit target executable has no ELF interpreter.
@@ -43,7 +56,15 @@ assert pkgs.stdenv.hostPlatform.system == "x86_64-linux";
       fi
       mkdir -p "$TMPDIR/clock-read-root/proc" "$TMPDIR/clock-read-root/sys" "$TMPDIR/clock-read-root/dev"
       cp "$executable" "$TMPDIR/clock-read-root/init"
-      chmod 0755 "$TMPDIR/clock-read-root/init"
+      chmod 0755 "$TMPDIR/clock-read-root/init"${
+        if runtimeObserver == null
+        then ""
+        else
+          "\n"
+          + ''
+            cp ${runtimeObserver}/bin/clock-vvar-observer "$TMPDIR/clock-read-root/clock-vvar-observer"
+          ''
+      }
       (
         cd "$TMPDIR/clock-read-root"
         find . -print0 | LC_ALL=C sort -z \

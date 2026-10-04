@@ -201,6 +201,81 @@ fn original_read_bracket_accepts_tsc_interval_without_using_later_marker_as_read
     validate_forward_returns(&reads).expect("authorized wake advances returned clocks");
 }
 
+fn anchored_batch(words: &[u64]) -> Vec<ObservableEvent> {
+    let mut events = batch(0);
+    for (index, clock) in CLOCKS.into_iter().enumerate() {
+        let instance = format!("0-{clock}");
+        let (at, details) =
+            marker(&events[index * 2 + 1], AFTER, &instance).expect("original marker");
+        let mut details = details.to_vec();
+        details.push(detail(
+            "vvar",
+            GuestMeasurementValue::UnsignedVector(words.to_vec()),
+        ));
+        events[index * 2 + 1] = event(at, AFTER, &instance, details);
+    }
+    events
+}
+
+#[test]
+fn runtime_anchor_is_opt_in_and_retains_kernel_bases_without_changing_default_json() {
+    let words = [
+        1,
+        2,
+        1,
+        1000,
+        10000,
+        u64::MAX,
+        4,
+        4,
+        123,
+        100,
+        7,
+        200,
+        1040,
+        1080,
+        0,
+        2,
+    ];
+    let events = anchored_batch(&words);
+    let reads = validate_batch_mode(&events, 0, true).expect("optional anchor schema");
+
+    assert_eq!(reads[0].vvar.as_deref(), Some(words.as_slice()));
+    assert!(validate_batch(&events, 0).is_err());
+    let default = validate_batch(&batch(0), 0).expect("unchanged default markers");
+    let json = serde_json::to_value(&default).expect("default receipt encoding");
+    assert!(json[0].get("vvar").is_none());
+}
+
+#[test]
+fn runtime_anchor_refuses_missing_or_unsupported_observer_generations() {
+    let words = [
+        1,
+        2,
+        1,
+        1000,
+        10000,
+        u64::MAX,
+        4,
+        4,
+        123,
+        100,
+        7,
+        200,
+        1040,
+        1080,
+        0,
+        2,
+    ];
+    assert!(validate_batch_mode(&batch(0), 0, true).is_err());
+    assert!(validate_batch_mode(&anchored_batch(&words[..15]), 0, true).is_err());
+    for (index, value) in [(0, 2), (1, 3), (2, 0), (14, 16), (15, 4)] {
+        let mut altered = words;
+        altered[index] = value;
+        assert!(validate_batch_mode(&anchored_batch(&altered), 0, true).is_err());
+    }
+}
+
 #[test]
 fn wrong_node_missing_repeated_reversed_and_extra_original_events_refuse() {
     let original = batch(0);
