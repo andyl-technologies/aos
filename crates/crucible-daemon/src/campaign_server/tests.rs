@@ -19,6 +19,8 @@ use crucible_cas::content_store::{MemoryBlobBackend, MemoryRefBackend};
 use tempfile::tempdir;
 
 use super::*;
+
+mod source_diagnostics;
 use crate::{
     CampaignAccessGrant, CampaignAccessScope, CampaignLoopbackEndpointConfig,
     LoopbackCampaignService, UnixPeerCampaignBinding, UnixPeerCampaignCredentials,

@@ -33,11 +33,35 @@ impl CampaignServiceFailureSource for RepositoryCampaignServiceError {
             Self::Codec(_) => CampaignServiceFailure::IntegrityFailure,
         }
     }
+
+    fn campaign_service_failure_category(&self) -> Option<CampaignServiceFailureCategory> {
+        match self {
+            Self::Repository(error) => repository_failure_category(error),
+            Self::Authorization(_) | Self::Codec(_) => None,
+        }
+    }
 }
 
 impl CampaignServiceFailureSource for CampaignRepositoryError {
     fn campaign_service_failure(&self) -> CampaignServiceFailure {
         repository_service_failure(self)
+    }
+}
+
+fn repository_failure_category(
+    error: &CampaignRepositoryError,
+) -> Option<CampaignServiceFailureCategory> {
+    let store = match error {
+        CampaignRepositoryError::Store(error)
+        | CampaignRepositoryError::Merkle(crate::CampaignStoreError::Store(error)) => error,
+        _ => return None,
+    };
+    match store {
+        StoreError::NotFound { .. } => Some(CampaignServiceFailureCategory::Missing),
+        StoreError::Unavailable => Some(CampaignServiceFailureCategory::Unavailable),
+        StoreError::Io { .. } => Some(CampaignServiceFailureCategory::Io),
+        StoreError::StreamIo { .. } => Some(CampaignServiceFailureCategory::StreamIo),
+        _ => None,
     }
 }
 
@@ -1227,3 +1251,59 @@ where
 }
 
 mod occurrences;
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use crucible_cas::content_store::{ContentId, ObjectKind};
+
+    use super::*;
+
+    #[test]
+    fn original_store_categories_preserve_public_unavailable_mapping() {
+        let cases = [
+            (
+                StoreError::NotFound {
+                    id: ContentId::for_bytes(ObjectKind::CampaignSnapshot, 3, b"missing"),
+                },
+                CampaignServiceFailureCategory::Missing,
+            ),
+            (
+                StoreError::Unavailable,
+                CampaignServiceFailureCategory::Unavailable,
+            ),
+            (
+                StoreError::Io {
+                    operation: "read",
+                    path: std::path::PathBuf::from("private-backend-path"),
+                    source: std::io::ErrorKind::PermissionDenied.into(),
+                },
+                CampaignServiceFailureCategory::Io,
+            ),
+            (
+                StoreError::StreamIo {
+                    operation: "read-stream",
+                    source: std::io::ErrorKind::BrokenPipe.into(),
+                },
+                CampaignServiceFailureCategory::StreamIo,
+            ),
+        ];
+
+        for (store, category) in cases {
+            let error =
+                RepositoryCampaignServiceError::Repository(CampaignRepositoryError::Store(store));
+
+            assert_eq!(
+                error.campaign_service_failure(),
+                CampaignServiceFailure::Unavailable
+            );
+            assert_eq!(error.campaign_service_failure_category(), Some(category));
+        }
+        let missing_campaign =
+            RepositoryCampaignServiceError::Repository(CampaignRepositoryError::NotFound);
+        assert_eq!(
+            missing_campaign.campaign_service_failure(),
+            CampaignServiceFailure::NotFound
+        );
+        assert_eq!(missing_campaign.campaign_service_failure_category(), None);
+    }
+}

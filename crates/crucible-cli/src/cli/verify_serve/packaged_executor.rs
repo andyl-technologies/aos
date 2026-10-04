@@ -115,6 +115,7 @@ pub(crate) struct GuardedCampaignRunDeployment {
 /// Prepared packaged executor and its authenticated coordinator tuning.
 pub(super) struct PreparedCliPackagedExecutor {
     pub(super) executor: crucible_daemon::AttachedPackagedQemuExecutor,
+    pub(super) diagnostic_maximum_events: Option<usize>,
     operations: PackagedExecutorOperations,
 }
 
@@ -320,6 +321,8 @@ pub(super) fn prepare_cli_packaged_executor(
         .map_err(|error| serve_error(format!("campaign executor startup error: {error}")))?;
     Ok(PreparedCliPackagedExecutor {
         executor,
+        diagnostic_maximum_events: guest_selectable_diagnostics
+            .map(|diagnostics| diagnostics.maximum_events()),
         operations,
     })
 }
