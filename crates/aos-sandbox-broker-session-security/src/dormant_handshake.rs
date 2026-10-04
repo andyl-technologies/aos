@@ -552,6 +552,19 @@ impl DormantBrokerOutcomeUnknownV1 {
     }
 }
 
+impl crate::ProductionBrokerRequestEventV1 {
+    pub(crate) fn is_original_output_replay(&self) -> bool {
+        let method = match self {
+            Self::InFlightReplay(unknown) => unknown.request.method(),
+            Self::TerminalReplay(replay) => replay.0.method(),
+            _ => return false,
+        };
+        matches!(method,
+            BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+            | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT)
+    }
+}
+
 impl DormantBrokerDescriptorInFlightReplayV1 {
     pub(crate) fn into_recovery_request(self) -> DormantReceivedBrokerDescriptorRequestV1 {
         DormantReceivedBrokerDescriptorRequestV1 {
@@ -814,6 +827,25 @@ mod empty_host_inventory_tests {
 }
 
 impl DormantReceivedBrokerRequestV1 {
+    /// Compares an already admitted successor; the journal authenticated its
+    /// signed predecessor link before this DATA comparison can be reached.
+    pub(crate) fn is_original_output_successor(
+        &self,
+        original: &AuthenticatedBrokerMethodRequestV1,
+    ) -> bool {
+        self.0.direction() == aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerRequestDirectionV1::ServerReceive
+            && self.0.session_binding() == original.session_binding()
+            && original.client_sequence().checked_add(1) == Some(self.0.client_sequence())
+    }
+
+    /// Moves this admitted original directly into its genuine Storage attempt.
+    pub(crate) fn into_original_output_registration(
+        self,
+        storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+    ) -> aos_sandbox_storage::execution_output_credential::OriginalExecutionOutputRegistrationV1 {
+        storage.begin_original_execution_output_registration(self.0)
+    }
+
     pub(crate) fn decode_host_runtime_argument_request(
         &self,
         now_boottime_nanoseconds: u64,
@@ -6414,6 +6446,198 @@ impl DormantAuthenticatedBrokerSessionV1 {
         self.0.revalidate_broker_outcome(currentness)
     }
 
+    /// Rechecks the borrowed original Host48 terminal without consuming its owner.
+    pub(crate) fn compare_host_storage_output_outcome_v1(
+        &mut self,
+        currentness: &ProtectedBrokerOutcomeCurrentnessOwnerV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.0.compare_host_storage_output_outcome_v1(currentness)
+    }
+
+    pub(crate) fn compare_original_storage_output_outcome_v1(
+        &mut self,
+        currentness: &crate::ProtectedBrokerOutcomeCurrentnessOwnerV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.0.compare_original_storage_output_outcome_v1(currentness)
+    }
+
+    /// Prearms a short exclusive preparation loan before any observation.
+    pub(crate) fn output_registration_transport<'session>(
+        &'session mut self,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        state: &'session mut crate::handshake::output_registration_continuation::OutputPreparationCustodyV1,
+    ) -> crate::handshake::output_registration_continuation::HeldOutputPreparationV1<'session> {
+        crate::handshake::output_registration_continuation::HeldOutputPreparationV1::begin(
+            &mut self.0, request, state,
+        )
+    }
+
+    pub(crate) fn receive_original_output_request(
+        &mut self,
+        receipt: &mut crate::handshake::output_registration_continuation::OriginalOutputServerReceiptV1,
+        deadline: u64,
+    ) -> Option<crate::ProductionBrokerRequestEventV1> {
+        receipt.receive_once(&mut self.0, deadline);
+        match receipt.into_admitted_original()? {
+            crate::recovery::ProtectedBrokerReceivedRequestAdmissionV1::New { request, .. } => {
+                Some(crate::ProductionBrokerRequestEventV1::Request(DormantReceivedBrokerRequestV1(request)))
+            }
+            crate::recovery::ProtectedBrokerReceivedRequestAdmissionV1::InFlightReplay { request } => {
+                Some(crate::ProductionBrokerRequestEventV1::InFlightReplay(DormantBrokerOutcomeUnknownV1 {
+                    request: DormantReceivedBrokerRequestV1(request), observation: None,
+                }))
+            }
+            crate::recovery::ProtectedBrokerReceivedRequestAdmissionV1::TerminalReplay { replay } => {
+                Some(crate::ProductionBrokerRequestEventV1::TerminalReplay(DormantBrokerTerminalReplayV1(replay)))
+            }
+        }
+    }
+
+    /// Parks the selected coordinates under the same original nonrenewable cutoff.
+    pub(crate) fn park_output_client_coordinates(
+        &mut self,
+        method: BrokerMethod,
+        original_cutoff: u64,
+        flight: &mut crate::handshake::output_registration_continuation::OriginalOutputClientFlightV1,
+    ) {
+        if flight.coordinates.is_some() { return; }
+        flight.coordinates = Some((|| {
+            if !matches!(method, BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT)
+                || original_cutoff == 0
+            {
+                return Err(BrokerSessionSecurityError::Currentness);
+            }
+            self.0.require_negotiated_client_method(method)?;
+            let (request_id, deadline, maximum_response_bytes, protocol_version, audience) = self.0.client_request_coordinates()?;
+            Ok(DormantBrokerRequestCoordinatesV1 {
+                request_id,
+                deadline_boottime_nanoseconds: deadline.min(original_cutoff),
+                maximum_response_bytes,
+                protocol_version,
+                audience,
+            })
+        })());
+    }
+
+    pub(crate) fn park_output_client_request(
+        &mut self,
+        flight: &mut crate::handshake::output_registration_continuation::OriginalOutputClientFlightV1,
+        envelope: BrokerRequestEnvelope,
+    ) -> bool {
+        flight.prepare(&mut self.0, envelope)
+    }
+
+    /// Borrows the actual witness cause at this flight's recorded primary site.
+    pub(crate) fn output_client_flight_failure<'a>(
+        &'a self,
+        flight: &'a crate::handshake::output_registration_continuation::OriginalOutputClientFlightV1,
+    ) -> Option<&'a (dyn std::error::Error + 'static)> {
+        flight.failure_with_session(&self.0)
+    }
+
+    pub(crate) fn output_client_flight_postcheck_debt<'a>(
+        &'a self,
+        flight: &'a crate::handshake::output_registration_continuation::OriginalOutputClientFlightV1,
+    ) -> Option<&'a (dyn std::error::Error + 'static)> {
+        flight.postcheck_debt_with_session(&self.0)
+    }
+
+    pub(crate) fn output_preparation_failure<'a>(
+        &'a self,
+        preparation: &'a crate::handshake::output_registration_continuation::OutputPreparationCustodyV1,
+    ) -> Option<&'a (dyn std::error::Error + 'static)> {
+        preparation.failure_with_session(&self.0)
+    }
+
+    pub(crate) fn output_preparation_postcheck_debt<'a>(
+        &'a self,
+        preparation: &'a crate::handshake::output_registration_continuation::OutputPreparationCustodyV1,
+    ) -> Option<&'a (dyn std::error::Error + 'static)> {
+        preparation.postcheck_debt_with_session(&self.0)
+    }
+
+    pub(crate) fn output_terminal_witness_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.output_terminal_witness_failure()
+    }
+
+    pub(crate) fn output_terminal_witness_debt(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.output_terminal_witness_debt()
+    }
+
+    pub(crate) fn output_terminal_witness_debt_before_protected(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.output_terminal_witness_debt_before_protected()
+    }
+
+    pub(crate) fn bookend_output_terminal_witnesses(&mut self, boundary: handshake::OutputCurrentnessBoundaryV1) -> bool {
+        self.0.bookend_output_terminal_witnesses(boundary)
+    }
+
+    pub(crate) fn send_original_output_client_request(
+        &mut self,
+        flight: &mut crate::handshake::output_registration_continuation::OriginalOutputClientFlightV1,
+    ) -> bool {
+        flight.send_once(&mut self.0)
+    }
+
+    pub(crate) fn receive_original_output_client_terminal(
+        &mut self,
+        flight: &mut crate::handshake::output_registration_continuation::OriginalOutputClientFlightV1,
+    ) -> bool {
+        flight.receive_terminal_once(&mut self.0)
+    }
+
+    pub(crate) fn commit_original_output_server_terminal(
+        &mut self,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        body: &[u8],
+        terminal: &mut crate::handshake::output_registration_continuation::OriginalOutputServerTerminalV1,
+    ) {
+        terminal.prepare_and_commit(&mut self.0, request, body);
+    }
+
+    pub(crate) fn send_original_output_server_terminal(
+        &mut self,
+        terminal: &mut crate::handshake::output_registration_continuation::OriginalOutputServerTerminalV1,
+    ) {
+        terminal.send_once(&mut self.0);
+    }
+
+    /// Keeps the genuine Host Session exclusively borrowed across the real
+    /// Storage writer and its bookends, including an atomic-write error.
+    pub(crate) fn register_original_storage_output_with_host(
+        &mut self,
+        committed: &crate::ProtectedBrokerOutcomeCommittedAdvancementV1,
+        storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+        output: &mut aos_sandbox_storage::execution_output_credential::StorageExecutionOutputCustodyV1,
+        attempt: &mut aos_sandbox_storage::execution_output_credential::OriginalExecutionOutputRegistrationV1,
+        checks: &mut [Option<Result<(), BrokerSessionSecurityError>>; 2],
+    ) {
+        let projection = committed.host_storage_output_originals_v1();
+        let (outcome, currentness) = match projection {
+            Ok(originals) => originals,
+            Err(error) => { checks[0] = Some(Err(error)); return; }
+        };
+        let witness_before = self.0.bookend_output_terminal_witnesses(
+            handshake::OutputCurrentnessBoundaryV1::BeforeAction,
+        );
+        checks[0] = Some(self.0.compare_host_storage_output_outcome_v1(currentness));
+        let witness_after_check = self.0.bookend_output_terminal_witnesses(
+            handshake::OutputCurrentnessBoundaryV1::PostAction,
+        );
+        if witness_before && witness_after_check && matches!(&checks[0], Some(Ok(()))) {
+            storage.register_original_execution_output(output, attempt, outcome);
+        }
+        // Keep the actual writer Result in its original attempt before BOTH
+        // independent terminal checks, even when either earlier check failed.
+        checks[1] = Some(self.0.compare_host_storage_output_outcome_v1(currentness));
+        let boundary = if matches!(&checks[1], Some(Err(_))) {
+            handshake::OutputCurrentnessBoundaryV1::PostProtectedFailure
+        } else {
+            handshake::OutputCurrentnessBoundaryV1::PostAction
+        };
+        self.0.bookend_output_terminal_witnesses(boundary);
+    }
+
     /// Produces one broker-specific effect handoff under this session borrow.
     ///
     /// # Errors
@@ -6428,6 +6652,12 @@ impl DormantAuthenticatedBrokerSessionV1 {
     }
 }
 
+#[derive(Clone, Copy)]
+enum ClientWitnessRetentionV1 {
+    Legacy,
+    Output,
+}
+
 impl ProtectedBrokerSessionFixedCustodyV1 {
     /// Drives the same fixed ControllerStorage flight, parking its actual
     /// final HELLO return before the first cold context/main/floor gate.
@@ -6440,6 +6670,30 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         deadline: handshake::OriginalBrokerColdDeadlineV1,
         slot: &mut Option<handshake::RetainedStorageColdOpenV1>,
         node: [u8; 16],
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
+        self.connect_retained_storage_session_inner(
+            deadline, slot, node, ClientWitnessRetentionV1::Legacy,
+        )
+    }
+
+    pub(crate) fn connect_retained_output_storage_session(
+        self,
+        deadline: handshake::OriginalBrokerColdDeadlineV1,
+        slot: &mut Option<handshake::RetainedStorageColdOpenV1>,
+        node: [u8; 16],
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
+        self.require_output_client_endpoint()?;
+        self.connect_retained_storage_session_inner(
+            deadline, slot, node, ClientWitnessRetentionV1::Output,
+        )
+    }
+
+    fn connect_retained_storage_session_inner(
+        self,
+        deadline: handshake::OriginalBrokerColdDeadlineV1,
+        slot: &mut Option<handshake::RetainedStorageColdOpenV1>,
+        node: [u8; 16],
+        retention: ClientWitnessRetentionV1,
     ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
         if slot.is_some()
             || self.production_protocol()
@@ -6463,9 +6717,11 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
                     handshake = pending;
                 }
                 handshake::ColdClientHandshakeProgressV1::Verified(verified) => {
-                    *slot = Some(handshake::RetainedStorageColdOpenV1::retain(
-                        verified, deadline,
-                    ));
+                    *slot = Some(if matches!(retention, ClientWitnessRetentionV1::Output) {
+                        handshake::RetainedStorageColdOpenV1::retain_output(verified, deadline)
+                    } else {
+                        handshake::RetainedStorageColdOpenV1::retain(verified, deadline)
+                    });
                     let session = slot
                         .as_mut()
                         .ok_or(DormantBrokerSessionHandshakeErrorV1::EndpointRole)?
@@ -6549,6 +6805,20 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         self.complete_production_client_handshake(socket, deadline_boottime_nanoseconds)
     }
 
+    /// Keeps the original HELLO writer for the two fixed Output Clients.
+    pub(crate) fn connect_output_client_session(
+        self,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
+        self.require_output_client_endpoint()?;
+        remaining_handshake_nanoseconds(deadline_boottime_nanoseconds)?;
+        let socket = SeqpacketSocket::connect(Path::new(self.production_socket_path()))
+            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::Transport)?;
+        self.complete_client_handshake_inner(
+            socket, deadline_boottime_nanoseconds, ClientWitnessRetentionV1::Output,
+        )
+    }
+
     /// Completes a controller-side production handshake before a boot-time deadline.
     ///
     /// This is the bounded activation path for a fixed client endpoint. It
@@ -6567,13 +6837,39 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         socket: SeqpacketSocket,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
+        self.complete_client_handshake_inner(
+            socket, deadline_boottime_nanoseconds, ClientWitnessRetentionV1::Legacy,
+        )
+    }
+
+    fn complete_client_handshake_inner(
+        self,
+        socket: SeqpacketSocket,
+        deadline_boottime_nanoseconds: u64,
+        retention: ClientWitnessRetentionV1,
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
         remaining_handshake_nanoseconds(deadline_boottime_nanoseconds)?;
         let mut handshake = self.begin_production_client_handshake(socket)?;
 
         loop {
             // Ready sockets bypass polling, but never bypass the activation deadline.
             remaining_handshake_nanoseconds(deadline_boottime_nanoseconds)?;
-            match handshake.advance()? {
+            let progress = if matches!(retention, ClientWitnessRetentionV1::Output) {
+                match handshake.0.advance_output_client()? {
+                    handshake::ColdClientHandshakeProgressV1::Pending(pending) => {
+                        DormantControllerClientHandshakeProgressV1::Pending(DormantControllerClientHandshakeV1(pending))
+                    }
+                    handshake::ColdClientHandshakeProgressV1::Complete(session) => {
+                        DormantControllerClientHandshakeProgressV1::Complete(DormantAuthenticatedBrokerSessionV1(session, Vec::new()))
+                    }
+                    handshake::ColdClientHandshakeProgressV1::Verified(_) => {
+                        return Err(DormantBrokerSessionHandshakeErrorV1::EndpointRole);
+                    }
+                }
+            } else {
+                handshake.advance()?
+            };
+            match progress {
                 DormantControllerClientHandshakeProgressV1::Complete(session) => {
                     remaining_handshake_nanoseconds(deadline_boottime_nanoseconds)?;
                     return Ok(session);

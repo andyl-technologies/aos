@@ -971,6 +971,29 @@ impl SeqpacketSocket {
         &mut self,
         record: &ReceivedRecord,
     ) -> Result<(), RecordBindingError> {
+        self.require_received_original(record)
+    }
+
+    /// Compares a parked output-registration record with this original socket.
+    ///
+    /// This observes carrier continuity DATA only. The caller retains the
+    /// complete record and independently authenticates its subject and role.
+    /// It establishes neither writer identity nor output admission authority.
+    ///
+    /// # Errors
+    /// Closes this socket on its existing binding failures without moving,
+    /// cloning or dropping the received record or its subject.
+    pub fn require_output_registration_received_original_v1(
+        &mut self,
+        record: &ReceivedRecord,
+    ) -> Result<(), RecordBindingError> {
+        self.require_received_original(record)
+    }
+
+    fn require_received_original(
+        &mut self,
+        record: &ReceivedRecord,
+    ) -> Result<(), RecordBindingError> {
         if let Err(error) = self.require_record_origin(record) {
             self.fd.take();
             return Err(error);

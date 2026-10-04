@@ -460,6 +460,41 @@ impl BrokerAuthority {
         )
     }
 
+    /// Admits only an original logical Storage output reserve or historical query.
+    ///
+    /// The exact grant may rotate, but the genuine existing base assignment and
+    /// lease remain unchanged. This check does not establish live Host custody.
+    ///
+    /// # Errors
+    ///
+    /// Rejects another domain, verb, target, assignment, signed grant, or lease.
+    pub fn admit_storage_output(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: AdmissionRequest<'_>,
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+    ) -> Result<VerifiedBrokerAdmission, BrokerAdmissionError> {
+        if self.domain != BrokerDomain::Storage
+            || !matches!(request.verb, BrokerVerb::StorageReserveExecutionOutput | BrokerVerb::StorageQueryExecutionOutput)
+            || request.target != BrokerGrantTarget::Assignment
+            || request.descriptor_count != 0
+        {
+            return Err(BrokerAdmissionError::RequestMismatch);
+        }
+        let current = self.open_fence(request.assignment.sandbox().as_bytes(), prior_fence)?;
+        if current.assignment() != request.assignment {
+            return Err(BrokerAdmissionError::FenceRejected);
+        }
+        self.admit_with_plan_rotation(
+            artifacts,
+            request,
+            current_clock,
+            Some(prior_fence),
+            AdmissionPhase::ExactGrantRotation,
+        )
+    }
+
     fn admit_with_plan_rotation(
         &self,
         artifacts: &ValidatedUntrustedAuthorizationArtifacts,

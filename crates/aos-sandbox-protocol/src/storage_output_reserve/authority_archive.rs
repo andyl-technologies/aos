@@ -3,7 +3,7 @@
 //! The Output-specific codecs retain complete preimages. They borrow the sole
 //! shared manifest and historical checkpoint codecs; they never construct a
 //! current Session, protected owner, floor, resend permit or Storage admission.
-//! The canonical method-46 carrier remains unsupported by the existing profile.
+//! The canonical method-46 profile does not promote historical DATA to a live owner.
 //!
 //! ```text
 //! AOSCSA01: original envelope + pin manifest + checkpoint + public pins + cut
@@ -311,14 +311,15 @@ mod tests {
     }
 
     #[test]
-    fn complete_outer_data_retains_exact_bytes_but_never_opens_method46() {
+    fn complete_outer_data_keeps_exact_bytes_but_rejects_its_opaque_carrier() {
         let bytes = fixture();
         let archive = HistoricalStorageOutputAuthorityArchiveV1::decode(&bytes).unwrap();
         assert_eq!(archive.canonical_bytes(), bytes);
         assert_eq!(archive.original_coordinates().request_id(), [18; 16]);
         assert_eq!(archive.owner_cut_data().canonical_bytes().len(), 1_104);
-        assert!(matches!(archive.canonical_carrier(),
-            Err(HistoricalStorageOutputArchiveErrorV1::UnsupportedCarrierProfile)));
+        // This fixture deliberately contains opaque bytes, not a canonical
+        // authenticated request. Profile availability cannot repair them.
+        assert!(archive.canonical_carrier().is_err());
     }
 
     #[test]

@@ -234,7 +234,7 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
             mut operator_listener,
             mut existing_output_listener,
         ) = startup.into_parts();
-        let output_custody = if let Some(source) = &arguments.output_key_source {
+        let mut output_custody = if let Some(source) = &arguments.output_key_source {
             Some(StorageExecutionOutputCustodyV1::open(state_root, source)?)
         } else {
             None
@@ -387,6 +387,9 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
         // settlement. Neither may create journal names while Repair debt is held.
         let mut ordinary_services_initialized = false;
         let mut active_session: Option<DormantAuthenticatedBrokerSessionV1> = None;
+        // The named Session operation returns its opaque concrete cycle. It
+        // needs no public constructor, raw owner export, or empty-custody factory.
+        let mut original_output_cycle = None;
         loop {
             // An unresolved sidecar hold admits its same-socket recovery and a
             // fresh authenticated handshake for historical checkpoint verification.
@@ -394,6 +397,12 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
             while let Some(owner) = operator_owner.as_mut() {
                 if !storage.retain_operator_terminal_cold_hold(owner)? {
                     break;
+                }
+                if original_output_cycle.is_some() {
+                    // An operator hold cannot overtake or reopen the selected
+                    // original output carrier and writer. Exit before disposal.
+                    eprintln!("aos-storaged: operator hold overlaps resident output custody");
+                    std::process::exit(1);
                 }
                 let listener = operator_listener.as_mut().ok_or_else(|| {
                     StorageServiceError::Activation("unresolved operator hold has no listener".to_owned())
@@ -450,6 +459,9 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
                         .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
                     let acceptance = StorageColdAcceptUnwindV1(&mut activation);
                     match acceptance.0.accept_authenticated(deadline) {
+                        Ok(session) if output_custody.is_some() => {
+                            original_output_cycle = Some(session.begin_original_storage_output_cycle());
+                        }
                         Ok(session) => active_session = Some(session),
                         Err(error) if acceptance.0.has_failed_storage_cold() => {
                             // Original cold owners and typed cause remain in the
@@ -488,7 +500,19 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
             }
 
             let mut ready = Vec::with_capacity(6);
-            if let Some(session) = active_session.as_ref() {
+            if let Some(cycle) = original_output_cycle.as_ref() {
+                let descriptor = match cycle.as_fd() {
+                    Ok(descriptor) => descriptor,
+                    Err(error) => {
+                        eprintln!("aos-storaged: resident output endpoint closed: {error}");
+                        std::process::exit(1);
+                    }
+                };
+                ready.push(rustix::event::PollFd::from_borrowed_fd(
+                    descriptor,
+                    rustix::event::PollFlags::IN,
+                ));
+            } else if let Some(session) = active_session.as_ref() {
                 let session_fd = session
                     .as_fd()
                     .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
@@ -542,6 +566,16 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
             match rustix::event::poll(&mut ready, None) {
                 Ok(_) => {}
                 Err(rustix::io::Errno::INTR) => continue,
+                Err(error) if original_output_cycle.is_some() => {
+                    drop(ready);
+                    if let Some(cycle) = original_output_cycle.as_mut() {
+                        cycle.close_on_poll_failure(error);
+                        if let Some(cause) = cycle.failure() {
+                            eprintln!("aos-storaged: resident output poll failed: {cause}");
+                        }
+                    }
+                    std::process::exit(1);
+                }
                 Err(error) => return Err(error.into()),
             }
             let broker_ready = ready[0].revents().contains(rustix::event::PollFlags::IN);
@@ -562,6 +596,12 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
                 .and_then(|index| ready.get(index))
                 .is_some_and(|entry| entry.revents().contains(rustix::event::PollFlags::IN));
             drop(ready);
+            if broker_disconnected && original_output_cycle.is_some() {
+                // HUP/ERR is a native negative observation, not a terminal ACK.
+                // Never reconnect or drop the selected original on this path.
+                eprintln!("aos-storaged: resident output peer retired");
+                std::process::exit(1);
+            }
             if let Some(key) = &zfs_hold_key {
                 key.recheck()?;
             }
@@ -589,7 +629,27 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
                 .into());
             }
             if broker_ready {
-                if let Some(session) = active_session.take() {
+                if original_output_cycle.is_some() {
+                    let request_deadline = production_deadline_after(REQUEST_TIMEOUT);
+                    if let (Some(cycle), Some(output)) =
+                        (original_output_cycle.as_mut(), output_custody.as_mut())
+                    {
+                        cycle.advance(storage.composition_mut(), output, request_deadline);
+                        if let Some(cause) = cycle.failure() {
+                            eprintln!("aos-storaged: resident original output request failed: {cause}");
+                            if let Some(debt) = cycle.postcheck_debt() {
+                                eprintln!("aos-storaged: original output postcheck debt: {debt}");
+                            }
+                            std::process::exit(1);
+                        }
+                        if let Some(debt) = cycle.postcheck_debt() {
+                            eprintln!("aos-storaged: original output postcheck debt: {debt}");
+                            std::process::exit(1);
+                        }
+                    } else {
+                        std::process::abort();
+                    }
+                } else if let Some(session) = active_session.take() {
                     let request_deadline = production_deadline_after(REQUEST_TIMEOUT)
                         .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
                     match session.serve_production_storage_request(storage.composition_mut(), request_deadline) {
@@ -601,6 +661,9 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
                         .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
                     let acceptance = StorageColdAcceptUnwindV1(&mut activation);
                     match acceptance.0.accept_authenticated(accept_deadline) {
+                        Ok(session) if output_custody.is_some() => {
+                            original_output_cycle = Some(session.begin_original_storage_output_cycle());
+                        }
                         Ok(session) => active_session = Some(session),
                         Err(error) if acceptance.0.has_failed_storage_cold() => {
                             // Original cold owners and typed cause remain in the

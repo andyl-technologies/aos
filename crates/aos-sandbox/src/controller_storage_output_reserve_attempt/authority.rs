@@ -136,9 +136,10 @@ pub fn retain_historical_complete_storage_output_archive_v1(
 ) -> Result<HistoricalRetainedStorageOutputArchiveV1, HistoricalStorageOutputRetentionErrorV1> {
     require_supported_carrier()?;
     let carrier = companion.canonical_carrier()?;
-    let (attempt, original_parts) = ControllerStorageOutputReserveAttemptV1::from_original_checked(
+    let (attempt, original_parts) = ControllerStorageOutputReserveAttemptV1::from_original_checked_profile(
         exact_original_body,
         signed_plan.digest(),
+        super::OriginalOutputProfileV1::Captured,
     ).map_err(|_| HistoricalStorageOutputRetentionErrorV1::Invalid)?;
     let authorization = carrier.message().authorization.as_option()
         .ok_or(HistoricalStorageOutputRetentionErrorV1::Invalid)?;
@@ -294,8 +295,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn profile_refusal_is_the_first_retention_step_and_needs_no_journal() {
-        assert!(matches!(require_supported_carrier(),
-            Err(HistoricalStorageOutputRetentionErrorV1::UnsupportedCarrierProfile)));
+    fn profile_availability_is_data_only_and_needs_no_journal() {
+        assert!(require_supported_carrier().is_ok());
     }
 }

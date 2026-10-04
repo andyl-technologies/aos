@@ -482,6 +482,28 @@ message QueryStorageExecutionOutputRequestV1 {
   bytes original_semantic_request_digest = 4; // Exact 32-byte grant digest.
 }
 
+// In-flight zero-FD comparison records on the SAME pending method-46 channel.
+// Version 1 is not a Broker request, terminal response, or effect permission.
+message StorageOutputRegistrationPreparationV1 {
+  uint32 version = 1; // Exactly 1.
+  uint32 stage = 2; // 1 nomination; 2 Controller authorization.
+  bytes original_storage_request_id = 3;
+  bytes original_storage_session_binding = 4;
+  bytes original_signed_request_digest = 5;
+  bytes original_semantic_request_digest = 6;
+  bytes storage_pending_head = 7; // Original endpoint-local protected head.
+  bytes controller_pending_head = 8; // Authorization only; not an assertion of equal endpoint heads.
+  bytes canonical_host_readback_request = 9; // Exact nominated Host48 body.
+  BrokerAuthorizationArtifactsV1 host_authorization = 10; // Authorization only.
+}
+
+// Exact local-MAC records crosslinked to the original reserve in a signed terminal.
+// Structural validation is not independent live Host currentness or a writer permit.
+message StorageOutputRegistrationResponseV1 {
+  bytes canonical_reservation = 1; // Exact 177-byte AOSEOR03.
+  bytes canonical_original_marker = 2; // Exact 184-byte AOSEOS01.
+}
+
 // A separate Host-audience Controller grant must bind this complete request.
 // The Storage peer cannot substitute an AOSCST01 attempt or reuse method 36.
 message ObserveHostStorageOutputRequestV1 {

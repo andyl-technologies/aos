@@ -226,6 +226,7 @@ macro_rules! domain_inventory_owner {
                     session,
                     pending: None,
                     authority_effects: ControllerAuthorityEffectExchangeV1::default(),
+                    output_registration: None,
                 })
             }
 
@@ -507,9 +508,17 @@ struct DormantLifecycleInventorySessionV1 {
     session: DormantAuthenticatedBrokerSessionV1,
     pending: Option<DormantLifecycleInventoryQueryRecoveryV1>,
     authority_effects: ControllerAuthorityEffectExchangeV1,
+    output_registration: Option<crate::controller_service::execution_output_storage_registration::OriginalControllerOutputRegistrationV1>,
 }
 
 impl DormantLifecycleInventorySessionV1 {
+    // Only the Storage-specific named loan can populate this slot. Keeping it
+    // beside the original session prevents another exchange from replacing a
+    // failed output attempt after a durable local terminal or postcheck debt.
+    fn has_pending_output_registration(&self) -> bool {
+        self.output_registration.as_ref().is_some_and(|attempt| attempt.has_pending())
+    }
+
     fn query(
         &mut self,
         method: LifecycleInventoryMethodV1,
@@ -529,6 +538,9 @@ impl DormantLifecycleInventorySessionV1 {
         )
             -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError>,
     ) -> Result<DormantLifecycleInventoryQueryProgressV1, LifecyclePhase6ErrorV1> {
+        if self.has_pending_output_registration() {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
         if self.authority_effects.has_pending() {
             return Err(LifecyclePhase6ErrorV1::StaleAuthority);
         }
@@ -575,6 +587,9 @@ impl DormantLifecycleInventorySessionV1 {
         &mut self,
         effect: &PreparedAuthorityEffectV1,
     ) -> Result<ValidatedAuthorityEffectReceiptV1, EffectFailure> {
+        if self.has_pending_output_registration() {
+            return Err(output_registration_pending());
+        }
         if self.pending.is_some() {
             return Err(EffectFailure::Retryable(
                 "broker session has retained inventory work".to_owned(),
@@ -587,6 +602,9 @@ impl DormantLifecycleInventorySessionV1 {
         &mut self,
         effect: &PreparedAuthorityEffectV1,
     ) -> Option<Result<ValidatedAuthorityEffectReceiptV1, EffectFailure>> {
+        if self.has_pending_output_registration() {
+            return Some(Err(output_registration_pending()));
+        }
         self.authority_effects.resume(&mut self.session, effect)
     }
 
@@ -594,6 +612,9 @@ impl DormantLifecycleInventorySessionV1 {
         &mut self,
         effect: &PreparedAuthorityEffectV1,
     ) -> Result<Option<ValidatedAuthorityEffectReceiptV1>, EffectFailure> {
+        if self.has_pending_output_registration() {
+            return Err(output_registration_pending());
+        }
         if self.pending.is_some() || self.authority_effects.has_pending() {
             return Err(EffectFailure::Retryable(
                 "broker session has retained recovery work".to_owned(),
@@ -930,6 +951,9 @@ impl DormantLifecycleInventorySessionV1 {
         ),
         LifecyclePhase6ErrorV1,
     > {
+        if self.has_pending_output_registration() {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
         if self.authority_effects.has_pending() {
             return Err(LifecyclePhase6ErrorV1::StaleAuthority);
         }
@@ -1091,6 +1115,9 @@ impl DormantLifecycleInventorySessionV1 {
     fn resume_pending(
         &mut self,
     ) -> Result<Option<DormantLifecycleInventoryQueryProgressV1>, LifecyclePhase6ErrorV1> {
+        if self.has_pending_output_registration() {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
         let Some(recovery) = self.pending.take() else {
             return Ok(None);
         };
@@ -1101,6 +1128,10 @@ impl DormantLifecycleInventorySessionV1 {
         }
         Ok(Some(progress))
     }
+}
+
+fn output_registration_pending() -> EffectFailure {
+    EffectFailure::Permanent("Storage session retains original output registration".to_owned())
 }
 
 /// Owns a live authenticated Host inventory endpoint.
@@ -1115,6 +1146,7 @@ impl DormantHostRuntimeInventoryOwnerV1 {
             session,
             pending: None,
             authority_effects: ControllerAuthorityEffectExchangeV1::default(),
+            output_registration: None,
         })
     }
 
@@ -1577,6 +1609,9 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         protected: &ProtectedStorageCreatePreparationV1,
         authority: &PreparedAuthorityEffectV1,
     ) -> Result<AuthenticatedStorageCreatePreparationV1, EffectFailure> {
+        if self.0.has_pending_output_registration() {
+            return Err(output_registration_pending());
+        }
         if self.0.pending.is_some() {
             return Err(EffectFailure::Retryable(
                 "Storage inventory query retains exact session custody".to_owned(),
@@ -1599,6 +1634,45 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
     pub(crate) fn guest_root_session(
         &mut self,
     ) -> Result<&mut DormantAuthenticatedBrokerSessionV1, EffectFailure> {
+        self.exclusive_effect_session()
+    }
+
+    /// Lends disjoint request custody and the same original Storage session.
+    ///
+    /// This excludes inventory and other authority effects but grants no
+    /// registration permission and extracts no transport or owner.
+    pub(crate) fn output_registration_loan(
+        &mut self,
+    ) -> Result<(
+        &mut Option<crate::controller_service::execution_output_storage_registration::OriginalControllerOutputRegistrationV1>,
+        &mut DormantAuthenticatedBrokerSessionV1,
+    ), EffectFailure> {
+        if self.0.pending.is_some() || self.0.authority_effects.has_pending() {
+            return Err(EffectFailure::Retryable(
+                "Storage session retains another exact exchange".to_owned(),
+            ));
+        }
+        Ok((&mut self.0.output_registration, &mut self.0.session))
+    }
+
+    pub(crate) fn output_registration_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.output_registration.as_ref()?.failure(&self.0.session)
+    }
+
+    pub(crate) fn has_pending_output_registration(&self) -> bool {
+        self.0.has_pending_output_registration()
+    }
+
+    pub(crate) fn output_registration_postcheck_debt(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.0.output_registration.as_ref()?.postcheck_debt(&self.0.session)
+    }
+
+    fn exclusive_effect_session(
+        &mut self,
+    ) -> Result<&mut DormantAuthenticatedBrokerSessionV1, EffectFailure> {
+        if self.0.has_pending_output_registration() {
+            return Err(output_registration_pending());
+        }
         if self.0.pending.is_some() || self.0.authority_effects.has_pending() {
             return Err(EffectFailure::Retryable(
                 "Storage session retains another exact exchange".to_owned(),
@@ -1924,6 +1998,9 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         fence: LiveRuntimeFenceV1,
         authority: &PreparedAuthorityEffectV1,
     ) -> Result<AuthenticatedBrokerMethodOutcomeV1, EffectFailure> {
+        if self.0.has_pending_output_registration() {
+            return Err(output_registration_pending());
+        }
         if self.0.pending.is_some() {
             return Err(EffectFailure::Retryable(
                 "Storage inventory recovery must settle before group dispatch".to_owned(),
@@ -2187,6 +2264,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
             session,
             pending: None,
             authority_effects: ControllerAuthorityEffectExchangeV1::default(),
+            output_registration: None,
         })
     }
 

@@ -1495,6 +1495,25 @@ impl core::fmt::Debug for ProtectedBrokerSessionFixedCustodyV1 {
 }
 
 impl ProtectedBrokerSessionFixedCustodyV1 {
+    /// Selects only the two genuine fixed Client roots used by Output.
+    pub(crate) fn require_output_client_endpoint(&self) -> Result<(), BrokerSessionSecurityError> {
+        for endpoint in [
+            ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient,
+            ProtectedBrokerSessionFixedEndpointV1::StorageHostClient,
+        ] {
+            let fixed = fixed_endpoint(endpoint);
+            if matches!(&self.custody, FixedEndpointCustodyV1::Client(_))
+                && self.journal_root == fixed.journal_root
+                && self.protocol == fixed.protocol
+                && self.audience == fixed.audience
+                && self.socket_path == fixed.socket_path
+            {
+                return Ok(());
+            }
+        }
+        Err(BrokerSessionSecurityError::Currentness)
+    }
+
     /// Carries only the actual startup observation into its exact Storage role.
     pub(crate) fn retain_launch_image(
         mut self,
@@ -1588,6 +1607,57 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
 }
 
 impl ProtectedBrokerSessionOwnerV1 {
+    /// Identifies the actual opened Client endpoint, not a caller nomination.
+    pub(crate) fn is_output_client_endpoint(&self) -> bool {
+        self.journal.endpoint.role() == BrokerSessionDurableEndpointV1::Client
+            && [
+                ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient,
+                ProtectedBrokerSessionFixedEndpointV1::StorageHostClient,
+            ].into_iter().any(|endpoint| {
+                self.journal.directory == Path::new(fixed_endpoint(endpoint).journal_root)
+            })
+    }
+
+    pub(crate) fn require_original_storage_output_server(
+        &mut self,
+        transcript: &VerifiedBrokerSessionTranscriptV1,
+        peer: &ConnectionPeerIdentity,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        let fixed = fixed_endpoint(ProtectedBrokerSessionFixedEndpointV1::StorageBroker);
+        if self.journal.directory != Path::new(fixed.journal_root)
+            || self.journal.endpoint.role() != BrokerSessionDurableEndpointV1::Broker
+            || transcript.protocol() != BrokerSessionProtocolV1::Storage
+            || transcript.audience() != aos_proto::aos::sandbox::local::v1::Audience::AUDIENCE_NODE_CONTROLLER
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        self.revalidate_transport(transcript, peer)
+    }
+
+    pub(crate) fn compare_storage_output_server_terminal_v1(
+        &mut self,
+        owner: &ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        peer: &ConnectionPeerIdentity,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.journal.compare_storage_output_server_terminal_v1(owner, peer)
+    }
+
+    pub(crate) fn compare_host_storage_output_outcome_v1(
+        &mut self,
+        owner: &ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        peer: &ConnectionPeerIdentity,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.journal.compare_host_storage_output_outcome_v1(owner, peer)
+    }
+
+    pub(crate) fn compare_original_storage_output_outcome_v1(
+        &mut self,
+        owner: &ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        peer: &ConnectionPeerIdentity,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.journal.compare_original_storage_output_outcome_v1(owner, peer)
+    }
+
     /// Stages common signed-plan admission before the first ONLINE mutation.
     #[cfg(feature = "online-nix")]
     pub(crate) fn retain_online_resolve_admission(
@@ -1840,6 +1910,28 @@ impl ProtectedBrokerSessionOwnerV1 {
             request,
             transcript,
             connection_peer,
+        )
+    }
+
+    pub(crate) fn hold_output_registration_request<'owner>(
+        &'owner mut self,
+        request: &'owner AuthenticatedBrokerMethodRequestV1,
+        transcript: &'owner VerifiedBrokerSessionTranscriptV1,
+        connection_peer: &'owner ConnectionPeerIdentity,
+    ) -> Result<ProtectedPendingBrokerRequestCutV1<'owner>, BrokerSessionSecurityError> {
+        ProtectedPendingBrokerRequestCutV1::capture_output_registration(
+            &mut self.journal, request, transcript, connection_peer,
+        )
+    }
+
+    pub(crate) fn hold_storage_output_host_readback<'owner>(
+        &'owner mut self,
+        request: &'owner AuthenticatedBrokerMethodRequestV1,
+        transcript: &'owner VerifiedBrokerSessionTranscriptV1,
+        connection_peer: &'owner ConnectionPeerIdentity,
+    ) -> Result<ProtectedPendingBrokerRequestCutV1<'owner>, BrokerSessionSecurityError> {
+        ProtectedPendingBrokerRequestCutV1::capture_storage_output_host_readback(
+            &mut self.journal, request, transcript, connection_peer,
         )
     }
 
@@ -2532,6 +2624,61 @@ impl ProtectedBrokerSessionOwnerV1 {
             }
         };
         Ok(ProtectedBrokerSessionOwnerV1 { journal })
+    }
+}
+
+impl ProtectedBrokerOutcomeCommittedAdvancementV1 {
+    pub(crate) fn storage_output_server_originals_v1(
+        &self,
+    ) -> Result<(&AuthenticatedBrokerMethodOutcomeV1, &ProtectedBrokerOutcomeCurrentnessOwnerV1), BrokerSessionSecurityError> {
+        let owner = &self.currentness_owner;
+        if !matches!(owner.request.method(),
+            BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+            | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT)
+            || owner.request.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive
+            || owner.outcome.direction() != aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerOutcomeDirectionV1::ServerSend
+            || owner.transcript.protocol() != BrokerSessionProtocolV1::Storage
+            || owner.transcript.audience() != aos_proto::aos::sandbox::local::v1::Audience::AUDIENCE_NODE_CONTROLLER
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        Ok((&owner.outcome, owner))
+    }
+
+    /// Borrows only the completed original Controller-client Storage46 result.
+    pub(crate) fn output_registration_originals_v1(
+        &self,
+    ) -> Result<(&AuthenticatedBrokerMethodOutcomeV1, &ProtectedBrokerOutcomeCurrentnessOwnerV1), BrokerSessionSecurityError> {
+        let owner = &self.currentness_owner;
+        if owner.request.method() != BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+            || owner.request.direction() != AuthenticatedBrokerRequestDirectionV1::ClientSend
+            || owner.outcome.direction() != aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerOutcomeDirectionV1::ClientReceive
+            || owner.transcript.protocol() != BrokerSessionProtocolV1::Storage
+            || owner.transcript.audience() != aos_proto::aos::sandbox::local::v1::Audience::AUDIENCE_NODE_CONTROLLER
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        Ok((&owner.outcome, owner))
+    }
+
+    /// Borrows only a genuine committed Storage-client Host48 result and owner.
+    /// This projection is not a currentness check; the actual Session performs it.
+    pub(crate) fn host_storage_output_originals_v1(
+        &self,
+    ) -> Result<(
+        &AuthenticatedBrokerMethodOutcomeV1,
+        &ProtectedBrokerOutcomeCurrentnessOwnerV1,
+    ), BrokerSessionSecurityError> {
+        let owner = &self.currentness_owner;
+        if owner.request.method() != BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
+            || owner.request.direction() != AuthenticatedBrokerRequestDirectionV1::ClientSend
+            || owner.outcome.direction() != aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerOutcomeDirectionV1::ClientReceive
+            || owner.transcript.protocol() != BrokerSessionProtocolV1::Host
+            || owner.transcript.audience() != aos_proto::aos::sandbox::local::v1::Audience::AUDIENCE_STORAGE_BROKER
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        Ok((&owner.outcome, owner))
     }
 }
 
@@ -4411,6 +4558,65 @@ impl ProtectedBrokerSessionJournalV1 {
             connection_peer,
             owner,
         })
+    }
+
+    /// Compares only the original Storage-client Host48 terminal under its held owner.
+    pub(crate) fn compare_host_storage_output_outcome_v1(
+        &mut self,
+        owner: &ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        connection_peer: &ConnectionPeerIdentity,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        let endpoint = fixed_endpoint(ProtectedBrokerSessionFixedEndpointV1::StorageHostClient);
+        if self.directory != Path::new(endpoint.journal_root)
+            || self.endpoint.role() != BrokerSessionDurableEndpointV1::Client
+            || owner.transcript.protocol() != BrokerSessionProtocolV1::Host
+            || owner.transcript.audience() != aos_proto::aos::sandbox::local::v1::Audience::AUDIENCE_STORAGE_BROKER
+            || owner.request.method() != aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
+            || owner.request.direction() != aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerRequestDirectionV1::ClientSend
+            || owner.outcome.direction() != aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerOutcomeDirectionV1::ClientReceive
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        self.validate_broker_outcome(owner, connection_peer)
+    }
+
+    pub(crate) fn compare_original_storage_output_outcome_v1(
+        &mut self,
+        owner: &ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        connection_peer: &ConnectionPeerIdentity,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        let endpoint = fixed_endpoint(ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient);
+        if self.directory != Path::new(endpoint.journal_root)
+            || self.endpoint.role() != BrokerSessionDurableEndpointV1::Client
+            || owner.transcript.protocol() != BrokerSessionProtocolV1::Storage
+            || owner.transcript.audience() != aos_proto::aos::sandbox::local::v1::Audience::AUDIENCE_NODE_CONTROLLER
+            || owner.request.method() != BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+            || owner.request.direction() != AuthenticatedBrokerRequestDirectionV1::ClientSend
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        self.validate_broker_outcome(owner, connection_peer)
+    }
+
+    /// Compares the actual Storage-server terminal, not a copied readback permit.
+    pub(crate) fn compare_storage_output_server_terminal_v1(
+        &mut self,
+        owner: &ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        connection_peer: &ConnectionPeerIdentity,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        let endpoint = fixed_endpoint(ProtectedBrokerSessionFixedEndpointV1::StorageBroker);
+        if self.directory != Path::new(endpoint.journal_root)
+            || self.endpoint.role() != BrokerSessionDurableEndpointV1::Broker
+            || owner.transcript.protocol() != BrokerSessionProtocolV1::Storage
+            || owner.transcript.audience() != aos_proto::aos::sandbox::local::v1::Audience::AUDIENCE_NODE_CONTROLLER
+            || !matches!(owner.request.method(),
+                BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+                | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT)
+            || owner.request.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        self.validate_broker_outcome(owner, connection_peer)
     }
 
     fn revalidate_broker_replay(

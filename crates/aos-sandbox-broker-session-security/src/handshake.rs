@@ -10,6 +10,7 @@
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 
 pub(crate) mod fuse_intent_continuation;
+pub(crate) mod output_registration_continuation;
 pub(super) mod host_worker_comparison;
 
 use aos_sandbox::controller_execution_argument_attempt::ControllerExecutionArgumentAttemptV1;
@@ -473,6 +474,27 @@ impl core::fmt::Debug for HandshakeError {
             Self::KernelEvidence => formatter.write_str("KernelEvidence"),
             Self::RetryableTransport => formatter.write_str("RetryableTransport"),
             Self::Transport => formatter.write_str("Transport"),
+        }
+    }
+}
+
+impl core::fmt::Display for HandshakeError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Local(error) => core::fmt::Display::fmt(error, formatter),
+            Self::RemoteInvalid => formatter.write_str("original handshake remote evidence is invalid"),
+            Self::KernelEvidence => formatter.write_str("original handshake kernel evidence changed"),
+            Self::RetryableTransport => formatter.write_str("original handshake transport was not ready"),
+            Self::Transport => formatter.write_str("original handshake transport failed"),
+        }
+    }
+}
+
+impl std::error::Error for HandshakeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Local(error) => Some(error),
+            _ => None,
         }
     }
 }
@@ -981,13 +1003,16 @@ enum VerifiedStorageWitnessesV1 {
     },
 }
 
-#[cfg(feature = "online-nix")]
 impl VerifiedStorageWitnessesV1 {
-    fn validate_online_client(
+    fn validate_client(
         &self,
         establishment: ProcessEvidence,
         peer: &ConnectionPeerIdentity,
+        selection: ClientWitnessValidationV1,
     ) -> Result<(), HandshakeError> {
+        if matches!(selection, ClientWitnessValidationV1::Output) {
+            establishment.validate_connection(peer)?;
+        }
         let Self::Client {
             _publication_subject: publication,
             _broker_subject: broker,
@@ -996,7 +1021,10 @@ impl VerifiedStorageWitnessesV1 {
             return Err(HandshakeError::KernelEvidence);
         };
 
-        establishment.validate_connection(peer)?;
+        #[cfg(feature = "online-nix")]
+        if matches!(selection, ClientWitnessValidationV1::OnlineNix) {
+            establishment.validate_connection(peer)?;
+        }
         publication.validate()?;
         broker.validate()?;
         if !publication.same_execution(broker) {
@@ -1005,6 +1033,7 @@ impl VerifiedStorageWitnessesV1 {
         establishment.validate_connection(peer)
     }
 
+    #[cfg(feature = "online-nix")]
     fn require_online_client_subject(
         &self,
         subject: &KernelAuthorizedRecordSubject,
@@ -1029,31 +1058,113 @@ impl VerifiedStorageWitnessesV1 {
     }
 }
 
-// Only the selected verified Client cold handoff moves these original owners.
-// Ordinary handoffs leave their witnesses in the cold shell as before.
-#[cfg(feature = "online-nix")]
-struct OnlineClientWitnessesV1 {
-    establishment: ProcessEvidence,
-    witnesses: VerifiedStorageWitnessesV1,
-    first_failure: Option<DormantBrokerSessionHandshakeErrorV1>,
+// Keep each selected route's original position of the establishment check
+// relative to the Client shape match while sharing the observation engine.
+#[derive(Clone, Copy)]
+enum ClientWitnessValidationV1 {
+    Output,
+    #[cfg(feature = "online-nix")]
+    OnlineNix,
 }
 
-#[cfg(feature = "online-nix")]
-impl OnlineClientWitnessesV1 {
-    fn revalidate(
+enum ClientWitnessFailureV1 {
+    Output(HandshakeError),
+    #[cfg(feature = "online-nix")]
+    OnlineNix(DormantBrokerSessionHandshakeErrorV1),
+}
+
+impl ClientWitnessFailureV1 {
+    fn cause(&self) -> &(dyn std::error::Error + 'static) {
+        match self {
+            Self::Output(cause) => cause,
+            #[cfg(feature = "online-nix")]
+            Self::OnlineNix(cause) => cause,
+        }
+    }
+}
+
+/// Retains the same establishment and HELLO subjects for the closed Nix and
+/// Output Client routes. Their admission and original error projections remain
+/// distinct; neither route can nominate a replacement service writer.
+struct AuthenticatedClientWitnessesV1 {
+    establishment: ProcessEvidence,
+    witnesses: VerifiedStorageWitnessesV1,
+    first_failure: Option<ClientWitnessFailureV1>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum OutputCurrentnessBoundaryV1 {
+    BeforeAction,
+    PostAction,
+    // A previous native protected postcheck already owns earlier debt.
+    PostProtectedFailure,
+}
+
+impl AuthenticatedClientWitnessesV1 {
+    #[cfg(feature = "online-nix")]
+    fn revalidate_online(
         &mut self,
         peer: &ConnectionPeerIdentity,
     ) -> Result<(), BrokerSessionSecurityError> {
         if self.first_failure.is_some() {
             return Err(BrokerSessionSecurityError::Currentness);
         }
-        if let Err(cause) = self.witnesses.validate_online_client(self.establishment, peer) {
+        if let Err(cause) = self.witnesses.validate_client(
+            self.establishment, peer, ClientWitnessValidationV1::OnlineNix,
+        ) {
             // Preserve the first typed witness rejection before returning the
             // existing currentness projection to the resident outer attempt.
-            self.first_failure = Some(cause.into());
+            self.first_failure = Some(ClientWitnessFailureV1::OnlineNix(cause.into()));
             return Err(BrokerSessionSecurityError::Currentness);
         }
         Ok(())
+    }
+
+    fn revalidate(&mut self, peer: &ConnectionPeerIdentity) -> bool {
+        if self.first_failure.is_some() {
+            return false;
+        }
+        match self.witnesses.validate_client(
+            self.establishment, peer, ClientWitnessValidationV1::Output,
+        ) {
+            Ok(()) => true,
+            Err(cause) => {
+                self.first_failure = Some(ClientWitnessFailureV1::Output(cause));
+                false
+            }
+        }
+    }
+
+    fn require_subject(&mut self, subject: &KernelAuthorizedRecordSubject) -> bool {
+        if self.first_failure.is_some() {
+            return false;
+        }
+        match self.compare_subject(subject) {
+            Ok(()) => true,
+            Err(cause) => {
+                self.first_failure = Some(ClientWitnessFailureV1::Output(cause));
+                false
+            }
+        }
+    }
+
+    fn compare_subject(&self, subject: &KernelAuthorizedRecordSubject) -> Result<(), HandshakeError> {
+        let VerifiedStorageWitnessesV1::Client {
+            _broker_subject: broker,
+            ..
+        } = &self.witnesses else {
+            return Err(HandshakeError::KernelEvidence);
+        };
+        let actual = subject.credentials();
+        let expected = broker.subject.credentials();
+        if actual.pid() != expected.pid()
+            || actual.uid() != expected.uid()
+            || actual.gid() != expected.gid()
+            || subject.initial_info() != broker.subject.initial_info()
+        {
+            return Err(HandshakeError::KernelEvidence);
+        }
+        broker.evidence.validate(subject.pidfd())
     }
 }
 
@@ -1116,6 +1227,7 @@ mod online_client_witness_data_tests {
 enum HandshakeCompletionV1 {
     Legacy,
     RetainStorage,
+    OutputClient,
 }
 
 /// Carries the original fixed cold-flight cutoff as comparison DATA only.
@@ -1272,6 +1384,15 @@ impl StorageColdPhaseV1 {
     }
 }
 
+#[derive(Clone, Copy)]
+enum OutputColdFailureSiteV1 {
+    WitnessCreation,
+    WitnessPrecheck,
+    ProtectedOwner,
+    WitnessPostcheck,
+    Outer,
+}
+
 /// Owns one genuine post-VERIFIED HELLO while cold admission borrows it.
 ///
 /// All returned owners are parked before later gates. Its first outer cause
@@ -1289,6 +1410,9 @@ pub(crate) struct RetainedStorageColdOpenV1 {
     owner: Option<ProtectedBrokerSessionOwnerV1>,
     phase: StorageColdPhaseV1,
     first_failure: Option<crate::DormantBrokerSessionHandshakeErrorV1>,
+    client_witnesses: Option<Result<AuthenticatedClientWitnessesV1, HandshakeError>>,
+    output_failure_site: Option<OutputColdFailureSiteV1>,
+    output_witness_debt: bool,
 }
 
 impl RetainedStorageColdOpenV1 {
@@ -1312,6 +1436,9 @@ impl RetainedStorageColdOpenV1 {
             owner: None,
             phase: StorageColdPhaseV1::Fresh,
             first_failure: None,
+            client_witnesses: None,
+            output_failure_site: None,
+            output_witness_debt: false,
         }
     }
 
@@ -1339,6 +1466,32 @@ impl RetainedStorageColdOpenV1 {
         retained
     }
 
+    pub(super) fn retain_output(
+        verified: VerifiedStorageHandshakeV1,
+        deadline: OriginalBrokerColdDeadlineV1,
+    ) -> Self {
+        let mut retained = Self::retain(verified, deadline);
+        let establishment = retained.verified.carrier.as_ref().map(|carrier| carrier.peer);
+        if matches!(
+            retained.verified._witnesses.as_ref(),
+            Some(VerifiedStorageWitnessesV1::Client { .. })
+        ) {
+            if let Some(establishment) = establishment {
+                if let Some(witnesses) = retained.verified._witnesses.take() {
+                    retained.client_witnesses = Some(Ok(AuthenticatedClientWitnessesV1 {
+                        establishment,
+                        witnesses,
+                        first_failure: None,
+                    }));
+                    return retained;
+                }
+            }
+        }
+        retained.client_witnesses = Some(Err(HandshakeError::KernelEvidence));
+        retained.output_failure_site = Some(OutputColdFailureSiteV1::WitnessCreation);
+        retained
+    }
+
     pub(crate) fn is_failed(&self) -> bool {
         self.phase.is_unfinished()
     }
@@ -1357,7 +1510,13 @@ impl RetainedStorageColdOpenV1 {
         }
         self.phase = StorageColdPhaseV1::Checking;
         if let Err(cause) = self.admit(expected_node) {
-            self.first_failure = Some(cause);
+            if self.first_failure.is_none() {
+                self.first_failure = Some(cause);
+            }
+            if self.client_witnesses.is_some() {
+                self.output_failure_site
+                    .get_or_insert(OutputColdFailureSiteV1::Outer);
+            }
             self.phase = StorageColdPhaseV1::Failed;
             return Err(self.failure_projection());
         }
@@ -1383,21 +1542,26 @@ impl RetainedStorageColdOpenV1 {
             }) => socket,
             _ => std::process::abort(),
         };
+        let client_witnesses = match self.client_witnesses.take() {
+            Some(Ok(witnesses)) => Ok(Some(witnesses)),
+            None => Ok(None),
+            Some(Err(_)) => std::process::abort(),
+        };
         #[cfg(feature = "online-nix")]
-        let online_client_witnesses = match self.online_client_establishment {
+        let client_witnesses = match self.online_client_establishment {
             Some(establishment) => {
                 let Some(witnesses @ VerifiedStorageWitnessesV1::Client { .. }) =
                     self.verified._witnesses.take()
                 else {
                     std::process::abort();
                 };
-                Some(OnlineClientWitnessesV1 {
+                Ok(Some(AuthenticatedClientWitnessesV1 {
                     establishment,
                     witnesses,
                     first_failure: None,
-                })
+                }))
             }
-            None => None,
+            None => client_witnesses,
         };
         self.phase = StorageColdPhaseV1::Complete;
         Ok(DormantAuthenticatedBrokerSessionV1 {
@@ -1405,8 +1569,9 @@ impl RetainedStorageColdOpenV1 {
             socket,
             transcript,
             checkpoint,
-            #[cfg(feature = "online-nix")]
-            online_client_witnesses,
+            client_witnesses,
+            terminal_witness_failure: false,
+            terminal_witness_debt: None,
         })
     }
 
@@ -1418,6 +1583,23 @@ impl RetainedStorageColdOpenV1 {
         #[cfg(feature = "online-nix")]
         if let Some(establishment) = self.online_client_establishment {
             self.verified.require_online_client_witnesses(establishment)?;
+        }
+        if let Some(witnesses) = &mut self.client_witnesses {
+            let carrier = self.verified.carrier.as_ref()
+                .ok_or(crate::DormantBrokerSessionHandshakeErrorV1::EndpointRole)?;
+            let peer = match &carrier.transport {
+                HandshakeTransport::Ordinary(socket) => socket.peer(),
+                _ => return Err(crate::DormantBrokerSessionHandshakeErrorV1::EndpointRole),
+            };
+            let current = match witnesses {
+                Ok(witnesses) => witnesses.revalidate(peer),
+                Err(_) => false,
+            };
+            if !current {
+                self.output_failure_site
+                    .get_or_insert(OutputColdFailureSiteV1::WitnessPrecheck);
+                return Err(crate::DormantBrokerSessionHandshakeErrorV1::KernelEvidence);
+            }
         }
         let transcript = self.verified.transcript
             .as_ref()
@@ -1487,9 +1669,41 @@ impl RetainedStorageColdOpenV1 {
         let owner = self.owner
             .as_mut()
             .ok_or(crate::DormantBrokerSessionHandshakeErrorV1::EndpointRole)?;
-        match expected_node {
-            Some(node) => owner.require_current_node(node, transcript, socket.peer())?,
-            None => owner.revalidate_transport(transcript, socket.peer())?,
+        if let Some(witnesses) = &mut self.client_witnesses {
+            let result = match expected_node {
+                Some(node) => owner.require_current_node(node, transcript, socket.peer()),
+                None => owner.revalidate_transport(transcript, socket.peer()),
+            };
+            if let Err(error) = result {
+                self.first_failure = Some(error.into());
+                self.output_failure_site
+                    .get_or_insert(OutputColdFailureSiteV1::ProtectedOwner);
+            }
+            let witness_current = match witnesses {
+                Ok(witnesses) => witnesses.revalidate(socket.peer()),
+                Err(_) => false,
+            };
+            if !witness_current {
+                if self.first_failure.is_some() {
+                    self.output_witness_debt = true;
+                } else {
+                    self.output_failure_site
+                        .get_or_insert(OutputColdFailureSiteV1::WitnessPostcheck);
+                }
+            }
+            if self.first_failure.is_some() {
+                return Err(crate::DormantBrokerSessionHandshakeErrorV1::Protected(
+                    BrokerSessionSecurityError::Currentness,
+                ));
+            }
+            if !witness_current {
+                return Err(crate::DormantBrokerSessionHandshakeErrorV1::KernelEvidence);
+            }
+        } else {
+            match expected_node {
+                Some(node) => owner.require_current_node(node, transcript, socket.peer())?,
+                None => owner.revalidate_transport(transcript, socket.peer())?,
+            }
         }
         self.deadline.check()?;
 
@@ -1503,6 +1717,31 @@ impl RetainedStorageColdOpenV1 {
         // the Session; ordinary witnesses keep their original shell lifetime.
         owner.retire_cold_deadline(self.deadline)?;
         Ok(())
+    }
+
+    // Resolves only the site latched before the next independent bookend.
+    // Later witness debt cannot displace the actual earlier protected cause.
+    pub(crate) fn output_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self.output_failure_site? {
+            OutputColdFailureSiteV1::WitnessCreation
+            | OutputColdFailureSiteV1::WitnessPrecheck
+            | OutputColdFailureSiteV1::WitnessPostcheck => self.output_witness_cause(),
+            OutputColdFailureSiteV1::ProtectedOwner | OutputColdFailureSiteV1::Outer => {
+                self.first_failure.as_ref().map(|error| error as &dyn std::error::Error)
+            }
+        }
+    }
+
+    pub(crate) fn output_postcheck_debt(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.output_witness_debt.then(|| self.output_witness_cause()).flatten()
+    }
+
+    fn output_witness_cause(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self.client_witnesses.as_ref()? {
+            Ok(witnesses) => witnesses.first_failure.as_ref()
+                .map(ClientWitnessFailureV1::cause),
+            Err(error) => Some(error),
+        }
     }
 
     fn failure_projection(&self) -> crate::DormantBrokerSessionHandshakeErrorV1 {
@@ -1614,7 +1853,9 @@ impl VerifiedStorageHandshakeV1 {
         };
         let witnesses = self._witnesses.as_ref()
             .ok_or(DormantBrokerSessionHandshakeErrorV1::KernelEvidence)?;
-        witnesses.validate_online_client(establishment, socket.peer())?;
+        witnesses.validate_client(
+            establishment, socket.peer(), ClientWitnessValidationV1::OnlineNix,
+        )?;
         Ok(())
     }
 
@@ -1768,6 +2009,12 @@ impl DormantControllerClientHandshakeV1 {
         self.advance_with_completion(HandshakeCompletionV1::RetainStorage)
     }
 
+    pub(super) fn advance_output_client(
+        self,
+    ) -> Result<ColdClientHandshakeProgressV1, DormantBrokerSessionHandshakeErrorV1> {
+        self.advance_with_completion(HandshakeCompletionV1::OutputClient)
+    }
+
     fn advance_with_completion(
         self,
         completion: HandshakeCompletionV1,
@@ -1813,6 +2060,9 @@ impl DormantControllerClientHandshakeV1 {
                             VerifiedStorageHandshakeV1::client(self.root, session),
                         ))
                     }
+                    HandshakeCompletionV1::OutputClient => Ok(ColdClientHandshakeProgressV1::Complete(
+                        DormantAuthenticatedBrokerSessionV1::from_output_client(self.root, session)?,
+                    )),
                 },
                 Transition::Retry(state) => {
                     Ok(ColdClientHandshakeProgressV1::Pending(Self {
@@ -1950,6 +2200,7 @@ impl DormantBrokerEndpointHandshakeV1 {
                             VerifiedStorageHandshakeV1::broker(self.root, session),
                         ))
                     }
+                    HandshakeCompletionV1::OutputClient => Err(DormantBrokerSessionHandshakeErrorV1::EndpointRole),
                 },
                 Transition::Retry(state) => {
                     Ok(ColdBrokerHandshakeProgressV1::Pending(Self {
@@ -1990,8 +2241,9 @@ pub(super) struct DormantAuthenticatedBrokerSessionV1 {
     socket: SeqpacketSocket,
     transcript: VerifiedBrokerSessionTranscriptV1,
     checkpoint: HistoricalSessionCheckpointV1,
-    #[cfg(feature = "online-nix")]
-    online_client_witnesses: Option<OnlineClientWitnessesV1>,
+    client_witnesses: Result<Option<AuthenticatedClientWitnessesV1>, HandshakeError>,
+    terminal_witness_failure: bool,
+    terminal_witness_debt: Option<OutputCurrentnessBoundaryV1>,
 }
 
 /// Reports selected transport failures while originals stay in caller slots.
@@ -2061,13 +2313,109 @@ fn fixed_worker_cgroup_root()
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    pub(crate) fn revalidate_output_witnesses(&mut self) -> bool {
+        if !self.owner.is_output_client_endpoint() {
+            return true;
+        }
+        Self::revalidate_client_witnesses(&mut self.client_witnesses, self.socket.peer())
+    }
+
+    fn revalidate_client_witnesses(
+        witnesses: &mut Result<Option<AuthenticatedClientWitnessesV1>, HandshakeError>,
+        peer: &ConnectionPeerIdentity,
+    ) -> bool {
+        if matches!(witnesses.as_ref(), Ok(None)) {
+            *witnesses = Err(HandshakeError::KernelEvidence);
+        }
+        match witnesses {
+            Ok(Some(witnesses)) => witnesses.revalidate(peer),
+            _ => false,
+        }
+    }
+
+    pub(crate) fn output_witness_failure(
+        &self,
+    ) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.client_witnesses {
+            Ok(Some(witnesses)) => witnesses.first_failure.as_ref()
+                .map(ClientWitnessFailureV1::cause),
+            Err(error) => Some(error),
+            Ok(None) => None,
+        }
+    }
+
+    pub(crate) fn output_terminal_witness_failure(
+        &self,
+    ) -> Option<&(dyn std::error::Error + 'static)> {
+        self.terminal_witness_failure.then(|| self.output_witness_failure()).flatten()
+    }
+
+    pub(crate) fn output_terminal_witness_debt(
+        &self,
+    ) -> Option<&(dyn std::error::Error + 'static)> {
+        self.terminal_witness_debt.and_then(|_| self.output_witness_failure())
+    }
+
+    pub(crate) fn output_terminal_witness_debt_before_protected(
+        &self,
+    ) -> Option<&(dyn std::error::Error + 'static)> {
+        if self.terminal_witness_debt == Some(OutputCurrentnessBoundaryV1::PostProtectedFailure) {
+            return None;
+        }
+        self.output_terminal_witness_debt()
+    }
+
+    fn mark_terminal_witness_failure(&mut self, boundary: OutputCurrentnessBoundaryV1) {
+        match boundary {
+            OutputCurrentnessBoundaryV1::BeforeAction => self.terminal_witness_failure = true,
+            OutputCurrentnessBoundaryV1::PostAction | OutputCurrentnessBoundaryV1::PostProtectedFailure => {
+                if self.terminal_witness_debt.is_none() {
+                    self.terminal_witness_debt = Some(boundary);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn bookend_output_terminal_witnesses(
+        &mut self,
+        boundary: OutputCurrentnessBoundaryV1,
+    ) -> bool {
+        let current = self.revalidate_output_witnesses();
+        if !current {
+            self.mark_terminal_witness_failure(boundary);
+        }
+        current
+    }
+
+    pub(crate) fn require_output_subject(
+        &mut self,
+        subject: &KernelAuthorizedRecordSubject,
+    ) -> bool {
+        if self.owner.is_output_client_endpoint() {
+            if matches!(&self.client_witnesses, Ok(None)) {
+                self.client_witnesses = Err(HandshakeError::KernelEvidence);
+            }
+            return match &mut self.client_witnesses {
+                Ok(Some(witnesses)) => witnesses.require_subject(subject),
+                _ => false,
+            };
+        }
+        let peer = self.socket.peer();
+        let actual = subject.credentials();
+        let expected = peer.credentials();
+        actual.pid() == expected.pid()
+            && actual.uid() == expected.uid()
+            && actual.gid() == expected.gid()
+            && subject.initial_info() == peer.initial_info()
+    }
+
     #[cfg(feature = "online-nix")]
     fn require_online_client_currentness(&mut self) -> Result<(), BrokerSessionSecurityError> {
         match self.owner.online_endpoint_role()? {
             aos_sandbox_broker_session_protocol::BrokerSessionDurableEndpointV1::Client => {
-                let witnesses = self.online_client_witnesses.as_mut()
+                let witnesses = self.client_witnesses.as_mut().ok().and_then(Option::as_mut)
                     .ok_or(BrokerSessionSecurityError::Currentness)?;
-                witnesses.revalidate(self.socket.peer())
+                witnesses.revalidate_online(self.socket.peer())
             }
             aos_sandbox_broker_session_protocol::BrokerSessionDurableEndpointV1::Broker => Ok(()),
         }
@@ -2260,7 +2608,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
             aos_sandbox_broker_session_protocol::BrokerSessionDurableEndpointV1::Client
         {
             self.require_online_client_currentness()?;
-            let witnesses = self.online_client_witnesses.as_ref()
+            let witnesses = self.client_witnesses.as_ref().ok().and_then(Option::as_ref)
                 .ok_or(OnlineTransportFailureV1::Closed)?;
             witnesses.witnesses
                 .require_online_client_subject(record.subject())?;
@@ -2873,6 +3221,11 @@ impl DormantAuthenticatedBrokerSessionV1 {
         &mut self,
         maximum_bytes: usize,
     ) -> Result<Vec<u8>, DormantBrokerSessionHandshakeErrorV1> {
+        let retained_client = self.owner.is_output_client_endpoint()
+            && !matches!(&self.client_witnesses, Ok(None));
+        if retained_client && !self.revalidate_output_witnesses() {
+            return Err(DormantBrokerSessionHandshakeErrorV1::KernelEvidence);
+        }
         self.owner
             .revalidate_transport(&self.transcript, self.socket.peer())?;
         let record = self
@@ -2890,21 +3243,45 @@ impl DormantAuthenticatedBrokerSessionV1 {
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::KernelEvidence)?;
         let credentials = bound.subject().credentials();
         let peer_credentials = bound.peer().credentials();
-        if !bound
-            .subject()
-            .is_alive()
-            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::KernelEvidence)?
-            || credentials.pid() != peer_credentials.pid()
-            || credentials.uid() != peer_credentials.uid()
-            || credentials.gid() != peer_credentials.gid()
-            || bound.subject().initial_info() != bound.peer().initial_info()
-        {
-            return Err(DormantBrokerSessionHandshakeErrorV1::KernelEvidence);
+        if retained_client {
+            if !bound.subject().is_alive()
+                .map_err(|_| DormantBrokerSessionHandshakeErrorV1::KernelEvidence)?
+            {
+                return Err(DormantBrokerSessionHandshakeErrorV1::KernelEvidence);
+            }
+            let current = match &mut self.client_witnesses {
+                Ok(Some(witnesses)) => witnesses.require_subject(bound.subject()),
+                _ => false,
+            };
+            if !current {
+                return Err(DormantBrokerSessionHandshakeErrorV1::KernelEvidence);
+            }
+        } else {
+            if !bound
+                .subject()
+                .is_alive()
+                .map_err(|_| DormantBrokerSessionHandshakeErrorV1::KernelEvidence)?
+                || credentials.pid() != peer_credentials.pid()
+                || credentials.uid() != peer_credentials.uid()
+                || credentials.gid() != peer_credentials.gid()
+                || bound.subject().initial_info() != bound.peer().initial_info()
+            {
+                return Err(DormantBrokerSessionHandshakeErrorV1::KernelEvidence);
+            }
         }
         let packet = bound.payload().to_vec();
         drop(bound);
-        self.owner
-            .revalidate_transport(&self.transcript, self.socket.peer())?;
+        if retained_client {
+            let result = self.owner.revalidate_transport(&self.transcript, self.socket.peer());
+            let witness_current = self.revalidate_output_witnesses();
+            result?;
+            if !witness_current {
+                return Err(DormantBrokerSessionHandshakeErrorV1::KernelEvidence);
+            }
+        } else {
+            self.owner
+                .revalidate_transport(&self.transcript, self.socket.peer())?;
+        }
         Ok(packet)
     }
 
@@ -3145,6 +3522,43 @@ impl DormantAuthenticatedBrokerSessionV1 {
         )
     }
 
+    fn from_output_client(
+        root: &'static str,
+        session: InertProvisionalClientSession,
+    ) -> Result<Self, DormantBrokerSessionHandshakeErrorV1> {
+        let InertProvisionalClientSession {
+            _custody: custody,
+            _carrier: carrier,
+            _publication_packet: publication,
+            _client_packet: client_packet,
+            _broker_packet: broker_packet,
+            _publication_subject: publication_subject,
+            _broker_subject: broker_subject,
+            _transcript: transcript,
+        } = session;
+        let witnesses = AuthenticatedClientWitnessesV1 {
+            establishment: carrier.peer,
+            witnesses: VerifiedStorageWitnessesV1::Client {
+                _publication: publication,
+                _publication_subject: publication_subject,
+                _broker_subject: broker_subject,
+            },
+            first_failure: None,
+        };
+        let context = custody.context_for_handshake(transcript.broker_process())?;
+        let mut session = Self::from_parts(
+            root,
+            FixedEndpointCustodyV1::Client(custody),
+            carrier,
+            transcript,
+            context,
+            client_packet,
+            broker_packet,
+        )?;
+        session.client_witnesses = Ok(Some(witnesses));
+        Ok(session)
+    }
+
     fn from_broker(
         root: &'static str,
         session: InertProvisionalBrokerSession,
@@ -3198,8 +3612,9 @@ impl DormantAuthenticatedBrokerSessionV1 {
             socket,
             transcript,
             checkpoint,
-            #[cfg(feature = "online-nix")]
-            online_client_witnesses: None,
+            client_witnesses: Ok(None),
+            terminal_witness_failure: false,
+            terminal_witness_debt: None,
         })
     }
 
@@ -3279,6 +3694,20 @@ impl DormantAuthenticatedBrokerSessionV1 {
     ) -> Result<crate::ProtectedBrokerOutcomeCurrentV1<'session>, BrokerSessionSecurityError> {
         self.owner
             .revalidate_broker_outcome(currentness, self.socket.peer())
+    }
+
+    pub(super) fn compare_host_storage_output_outcome_v1(
+        &mut self,
+        currentness: &crate::ProtectedBrokerOutcomeCurrentnessOwnerV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.owner.compare_host_storage_output_outcome_v1(currentness, self.socket.peer())
+    }
+
+    pub(super) fn compare_original_storage_output_outcome_v1(
+        &mut self,
+        currentness: &crate::ProtectedBrokerOutcomeCurrentnessOwnerV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.owner.compare_original_storage_output_outcome_v1(currentness, self.socket.peer())
     }
 
     pub(super) fn revalidate_broker_replay(

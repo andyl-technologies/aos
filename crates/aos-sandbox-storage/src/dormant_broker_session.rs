@@ -178,6 +178,46 @@ pub struct DormantStorageApplyCompositionV1 {
 }
 
 impl DormantStorageApplyCompositionV1 {
+    /// Parks the exact authenticated pending request without observing or permitting it.
+    ///
+    /// The actual pending Session must retain the returned owner before its
+    /// next fallible gate. No scalar constructor or live permission is exposed.
+    #[must_use]
+    pub fn begin_original_execution_output_registration(
+        &mut self,
+        request: aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+    ) -> crate::execution_output_credential::OriginalExecutionOutputRegistrationV1 {
+        crate::execution_output_credential::OriginalExecutionOutputRegistrationV1::begin(request)
+    }
+
+    /// Registers one original request while the caller retains genuine Host currentness.
+    ///
+    /// This named operation lends the configured runtime and output writer
+    /// exclusively. It parks results in the request-scoped owner, not the
+    /// publication custody. Unit return is not success: the caller must inspect
+    /// the resident result and finish both original Session bookends before
+    /// authenticating a terminal. A failed or abandoned attempt is never reset.
+    pub fn register_original_execution_output(
+        &mut self,
+        output: &mut crate::execution_output_credential::StorageExecutionOutputCustodyV1,
+        attempt: &mut crate::execution_output_credential::OriginalExecutionOutputRegistrationV1,
+        host_terminal: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
+    ) {
+        self.runtime.register_original_execution_output(output, attempt, host_terminal);
+    }
+
+    /// Reads only an occupied original output marker under configured admission.
+    ///
+    /// An absent or conflicting marker is not successful registration or a new
+    /// reserve permission. The request-scoped owner retains the actual result.
+    pub fn query_original_execution_output(
+        &mut self,
+        output: &mut crate::execution_output_credential::StorageExecutionOutputCustodyV1,
+        attempt: &mut crate::execution_output_credential::OriginalExecutionOutputRegistrationV1,
+    ) {
+        self.runtime.query_original_execution_output(output, attempt);
+    }
+
     /// Opens the complete dormant protected Storage Apply composition.
     ///
     /// # Errors

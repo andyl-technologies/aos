@@ -962,7 +962,7 @@ fn validate_authorization_artifacts(
     })
 }
 
-fn validate_authorization_artifact_bytes(
+pub(crate) fn validate_authorization_artifact_bytes(
     artifacts: AuthorizationArtifactBytes<'_>,
 ) -> Result<(), ProtocolValidationError> {
     if artifacts.broker_plan.is_empty()

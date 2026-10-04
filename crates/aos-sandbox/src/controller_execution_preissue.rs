@@ -47,6 +47,7 @@ pub use attempt::{
     load_controller_execution_output_attempt_v1, retain_controller_execution_output_attempt_v1,
 };
 pub use reserve_source::{
+    ControllerExecutionReserveSourceErrorV1,
     ControllerExecutionReserveSourceV1, EXECUTION_RESERVE_SOURCE_BYTES_V1,
     prepare_execution_reserve_source_v1,
 };

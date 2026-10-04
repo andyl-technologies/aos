@@ -1,12 +1,16 @@
-//! Closed signed-plan semantics for an original zero-byte Storage output reserve.
+//! Closed signed-plan semantics for original Storage output registration.
 //!
 //! The request carries the existing AOSCIA01 and AOSCIS01 records verbatim.
 //! Their checksums establish structure only. A Storage effect additionally
 //! requires a verified Controller signature, current assignment, a same-session
-//! Host readback, and the exclusively held Storage output writer. No production
-//! method advertises or dispatches this request yet.
+//! Host readback, and the exclusively held Storage output writer. The legacy
+//! profile keeps zero-output behavior. The captured profile also checks the
+//! original accepted stdout/stderr quantities against their parent bound; its
+//! parser alone never supplies admission or a physical output-capture permit.
 
 pub mod authority_archive;
+/// Defines closed pending-registration comparison and terminal DATA formats.
+pub mod continuation;
 
 use aos_proto::aos::sandbox::local::v1::{
     Audience, QueryStorageExecutionOutputRequestV1, ReserveStorageExecutionOutputRequestV1,
@@ -39,6 +43,43 @@ const GRANT_DOMAIN: &[u8] = b"aos.sandbox.storage.output-reserve-grant.v1\0";
 const QUERY_GRANT_DOMAIN: &[u8] = b"aos.sandbox.storage.output-query-grant.v1\0";
 const MAXIMUM_BODY_BYTES: usize = 4 * 1_024;
 
+/// Selects only the structural quantities accepted by the shared record decoder.
+#[derive(Clone, Copy)]
+pub(crate) enum OutputReserveProfileV1 {
+    LegacyZero,
+    Captured,
+}
+
+impl OutputReserveProfileV1 {
+    fn rejects_quantities(self, source: &[u8; 688]) -> bool {
+        match self {
+            Self::LegacyZero => {
+                source[80..96] != [0; 16]
+                    || source[424..432] != [0; 8]
+                    || source[440..456] != [0; 16]
+            }
+            Self::Captured => {
+                let quantities = (|| {
+                    let stdout = read_u64(&source[80..88])?;
+                    let stderr = read_u64(&source[88..96])?;
+                    let requested = read_u64(&source[424..432])?;
+                    let parent_limit = read_u64(&source[432..440])?;
+                    let claim_stdout = read_u64(&source[440..448])?;
+                    let claim_stderr = read_u64(&source[448..456])?;
+
+                    Ok::<_, ProtocolValidationError>(
+                        stdout == claim_stdout
+                            && stderr == claim_stderr
+                            && stdout.checked_add(stderr) == Some(requested)
+                            && requested <= parent_limit,
+                    )
+                })();
+                !matches!(quantities, Ok(true))
+            }
+        }
+    }
+}
+
 /// Keeps structurally matched original Controller records under one request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StorageOutputReserveRecordsV1 {
@@ -58,6 +99,27 @@ impl StorageOutputReserveRecordsV1 {
     pub fn from_canonical_records(
         attempt: &[u8],
         settlement: &[u8],
+    ) -> Result<Self, ProtocolValidationError> {
+        Self::from_canonical_records_profile(attempt, settlement, OutputReserveProfileV1::LegacyZero)
+    }
+
+    /// Parses matched capture quantities without claiming protected provenance.
+    ///
+    /// # Errors
+    ///
+    /// Rejects different preissue and claim quantities, overflow, an exceeded
+    /// parent bound, or any original record crosslink/checksum disagreement.
+    pub fn from_canonical_captured_records(
+        attempt: &[u8],
+        settlement: &[u8],
+    ) -> Result<Self, ProtocolValidationError> {
+        Self::from_canonical_records_profile(attempt, settlement, OutputReserveProfileV1::Captured)
+    }
+
+    pub(crate) fn from_canonical_records_profile(
+        attempt: &[u8],
+        settlement: &[u8],
+        profile: OutputReserveProfileV1,
     ) -> Result<Self, ProtocolValidationError> {
         let attempt: [u8; CONTROLLER_OUTPUT_ATTEMPT_BYTES_V1] =
             attempt.try_into().map_err(|_| invalid())?;
@@ -83,9 +145,7 @@ impl StorageOutputReserveRecordsV1 {
         if &attempt[..8] != b"AOSCIA01"
             || &settlement[..8] != b"AOSCIS01"
             || &source[192..200] != b"AOSEOR02"
-            || source[80..96] != [0; 16]
-            || source[424..432] != [0; 8]
-            || source[440..456] != [0; 16]
+            || profile.rejects_quantities(&source)
             || source[296..328] != source[624..656]
             || source[520..552] == [0; 32]
             || source[584..600] == [0; 16]
@@ -233,6 +293,30 @@ pub fn decode_storage_output_reserve_request_v1(
     policy: PeerPolicy,
     now_boottime_nanoseconds: u64,
 ) -> Result<ValidatedStorageOutputReserveRequestV1, ProtocolValidationError> {
+    decode_reserve_profile(body, peer, policy, now_boottime_nanoseconds, OutputReserveProfileV1::LegacyZero)
+}
+
+/// Parses captured-output records without granting a Storage effect.
+///
+/// # Errors
+///
+/// Rejects noncanonical records, quantity mismatches, stale headers, or a widened deadline.
+pub fn decode_captured_storage_output_reserve_request_v1(
+    body: &[u8],
+    peer: PeerCredentials,
+    policy: PeerPolicy,
+    now_boottime_nanoseconds: u64,
+) -> Result<ValidatedStorageOutputReserveRequestV1, ProtocolValidationError> {
+    decode_reserve_profile(body, peer, policy, now_boottime_nanoseconds, OutputReserveProfileV1::Captured)
+}
+
+fn decode_reserve_profile(
+    body: &[u8],
+    peer: PeerCredentials,
+    policy: PeerPolicy,
+    now_boottime_nanoseconds: u64,
+    profile: OutputReserveProfileV1,
+) -> Result<ValidatedStorageOutputReserveRequestV1, ProtocolValidationError> {
     if body.len() > MAXIMUM_BODY_BYTES {
         return Err(ProtocolValidationError::RequestTooLarge);
     }
@@ -251,9 +335,10 @@ pub fn decode_storage_output_reserve_request_v1(
         ProtocolId::StorageBroker,
         now_boottime_nanoseconds,
     )?;
-    let records = StorageOutputReserveRecordsV1::from_canonical_records(
+    let records = StorageOutputReserveRecordsV1::from_canonical_records_profile(
         &request.canonical_controller_attempt,
         &request.canonical_controller_settlement,
+        profile,
     )?;
     if header.deadline_boottime_nanoseconds() > records.deadline_boottime_nanoseconds() {
         return Err(invalid());
@@ -274,6 +359,28 @@ pub fn storage_output_reserve_grant_v1(
     request_id: [u8; 16],
     body: &[u8],
 ) -> Result<BrokerGrant, ProtocolValidationError> {
+    reserve_grant_profile(assignment, request_id, body, OutputReserveProfileV1::LegacyZero)
+}
+
+/// Compiles the complete captured-output request commitment for independent admission.
+///
+/// # Errors
+///
+/// Rejects malformed records, inconsistent quantities, or a changed assignment.
+pub fn captured_storage_output_reserve_grant_v1(
+    assignment: BrokerAssignment,
+    request_id: [u8; 16],
+    body: &[u8],
+) -> Result<BrokerGrant, ProtocolValidationError> {
+    reserve_grant_profile(assignment, request_id, body, OutputReserveProfileV1::Captured)
+}
+
+pub(crate) fn reserve_grant_profile(
+    assignment: BrokerAssignment,
+    request_id: [u8; 16],
+    body: &[u8],
+    profile: OutputReserveProfileV1,
+) -> Result<BrokerGrant, ProtocolValidationError> {
     if request_id == [0; 16] || body.is_empty() || body.len() > MAXIMUM_BODY_BYTES {
         return Err(invalid());
     }
@@ -289,9 +396,10 @@ pub fn storage_output_reserve_grant_v1(
     {
         return Err(invalid());
     }
-    let records = StorageOutputReserveRecordsV1::from_canonical_records(
+    let records = StorageOutputReserveRecordsV1::from_canonical_records_profile(
         &request.canonical_controller_attempt,
         &request.canonical_controller_settlement,
+        profile,
     )?;
     let source = &records.attempt[8..696];
     if records.host_locator().assignment_digest() != assignment.digest()
@@ -335,7 +443,31 @@ pub fn decode_storage_output_query_request_v1(
     policy: PeerPolicy,
     now_boottime_nanoseconds: u64,
 ) -> Result<ValidatedStorageOutputQueryRequestV1, ProtocolValidationError> {
-    let (query, original_id, records, original_semantic_digest) = parse_query_parts(body)?;
+    decode_query_profile(body, peer, policy, now_boottime_nanoseconds, OutputReserveProfileV1::LegacyZero)
+}
+
+/// Parses a historical captured-output query without authorizing a new effect.
+///
+/// # Errors
+///
+/// Rejects changed original records, commitments, query identity, or current header.
+pub fn decode_captured_storage_output_query_request_v1(
+    body: &[u8],
+    peer: PeerCredentials,
+    policy: PeerPolicy,
+    now_boottime_nanoseconds: u64,
+) -> Result<ValidatedStorageOutputQueryRequestV1, ProtocolValidationError> {
+    decode_query_profile(body, peer, policy, now_boottime_nanoseconds, OutputReserveProfileV1::Captured)
+}
+
+fn decode_query_profile(
+    body: &[u8],
+    peer: PeerCredentials,
+    policy: PeerPolicy,
+    now_boottime_nanoseconds: u64,
+    profile: OutputReserveProfileV1,
+) -> Result<ValidatedStorageOutputQueryRequestV1, ProtocolValidationError> {
+    let (query, original_id, records, original_semantic_digest) = parse_query_parts(body, profile)?;
     let header = validate_request_header(
         query
             .header
@@ -377,7 +509,29 @@ pub fn storage_output_query_grant_v1(
     request_id: [u8; 16],
     body: &[u8],
 ) -> Result<BrokerGrant, ProtocolValidationError> {
-    let (query, original_id, records, _) = parse_query_parts(body)?;
+    query_grant_profile(assignment, request_id, body, OutputReserveProfileV1::LegacyZero)
+}
+
+/// Compiles a fresh historical-query commitment for captured-output records.
+///
+/// # Errors
+///
+/// Rejects substituted original records, commitments, assignment, or request identity.
+pub fn captured_storage_output_query_grant_v1(
+    assignment: BrokerAssignment,
+    request_id: [u8; 16],
+    body: &[u8],
+) -> Result<BrokerGrant, ProtocolValidationError> {
+    query_grant_profile(assignment, request_id, body, OutputReserveProfileV1::Captured)
+}
+
+fn query_grant_profile(
+    assignment: BrokerAssignment,
+    request_id: [u8; 16],
+    body: &[u8],
+    profile: OutputReserveProfileV1,
+) -> Result<BrokerGrant, ProtocolValidationError> {
+    let (query, original_id, records, _) = parse_query_parts(body, profile)?;
     let header = query.header.as_option().ok_or_else(invalid)?;
     if request_id == [0; 16]
         || header.request_id != request_id
@@ -403,6 +557,7 @@ pub fn storage_output_query_grant_v1(
 
 fn parse_query_parts(
     body: &[u8],
+    profile: OutputReserveProfileV1,
 ) -> Result<
     (
         QueryStorageExecutionOutputRequestV1,
@@ -441,14 +596,16 @@ fn parse_query_parts(
         .as_slice()
         .try_into()
         .map_err(|_| invalid())?;
-    let records = StorageOutputReserveRecordsV1::from_canonical_records(
+    let records = StorageOutputReserveRecordsV1::from_canonical_records_profile(
         &original.canonical_controller_attempt,
         &original.canonical_controller_settlement,
+        profile,
     )?;
-    let original_grant = storage_output_reserve_grant_v1(
+    let original_grant = reserve_grant_profile(
         records.assignment(),
         original_id,
         &query.canonical_original_reserve_request,
+        profile,
     )?;
     let semantic_digest = original_grant.argument_commitment().digest();
     if query.original_semantic_request_digest != *semantic_digest.as_bytes() {
@@ -480,6 +637,30 @@ pub(crate) mod tests {
     use aos_sandbox_core::{AssignmentEpoch, DesiredGeneration, IncarnationId, SandboxId};
 
     use super::*;
+
+    #[test]
+    fn captured_quantities_require_the_same_preissue_claim_and_parent_bound() {
+        let mut source = [0; 688];
+        source[80..88].copy_from_slice(&7_u64.to_be_bytes());
+        source[88..96].copy_from_slice(&3_u64.to_be_bytes());
+        source[424..432].copy_from_slice(&10_u64.to_be_bytes());
+        source[432..440].copy_from_slice(&10_u64.to_be_bytes());
+        source[440..448].copy_from_slice(&7_u64.to_be_bytes());
+        source[448..456].copy_from_slice(&3_u64.to_be_bytes());
+
+        assert!(!OutputReserveProfileV1::Captured.rejects_quantities(&source));
+        assert!(OutputReserveProfileV1::LegacyZero.rejects_quantities(&source));
+
+        source[432..440].copy_from_slice(&9_u64.to_be_bytes());
+        assert!(OutputReserveProfileV1::Captured.rejects_quantities(&source));
+        source[432..440].copy_from_slice(&10_u64.to_be_bytes());
+        source[440..448].copy_from_slice(&8_u64.to_be_bytes());
+        assert!(OutputReserveProfileV1::Captured.rejects_quantities(&source));
+
+        source[80..88].copy_from_slice(&u64::MAX.to_be_bytes());
+        source[440..448].copy_from_slice(&u64::MAX.to_be_bytes());
+        assert!(OutputReserveProfileV1::Captured.rejects_quantities(&source));
+    }
 
     fn seal(domain: &[u8], bytes: &mut [u8], digest_start: usize) {
         let digest = Sha256::new()

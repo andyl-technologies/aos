@@ -25,7 +25,7 @@ use crate::host_output::{
     decode_host_output_reservation_response_v1,
 };
 use crate::storage_output_reserve::{
-    StorageOutputReserveRecordsV1, storage_output_reserve_grant_v1,
+    OutputReserveProfileV1, StorageOutputReserveRecordsV1, reserve_grant_profile,
 };
 use crate::{
     PeerCredentials, PeerPolicy, ProtocolValidationError, ValidatedHeader, exact_nonzero,
@@ -168,8 +168,32 @@ pub fn decode_host_storage_output_readback_request_v1(
     policy: PeerPolicy,
     now_boottime_nanoseconds: u64,
 ) -> Result<ValidatedHostStorageOutputReadbackRequestV1, ProtocolValidationError> {
+    decode_request_profile(body, peer, policy, now_boottime_nanoseconds, OutputReserveProfileV1::LegacyZero)
+}
+
+/// Parses the captured-output Host readback against its complete original records.
+///
+/// # Errors
+///
+/// Rejects changed quantities, commitments, assignment, audience, or current header.
+pub fn decode_captured_host_storage_output_readback_request_v1(
+    body: &[u8],
+    peer: PeerCredentials,
+    policy: PeerPolicy,
+    now_boottime_nanoseconds: u64,
+) -> Result<ValidatedHostStorageOutputReadbackRequestV1, ProtocolValidationError> {
+    decode_request_profile(body, peer, policy, now_boottime_nanoseconds, OutputReserveProfileV1::Captured)
+}
+
+fn decode_request_profile(
+    body: &[u8],
+    peer: PeerCredentials,
+    policy: PeerPolicy,
+    now_boottime_nanoseconds: u64,
+    profile: OutputReserveProfileV1,
+) -> Result<ValidatedHostStorageOutputReadbackRequestV1, ProtocolValidationError> {
     let (request, original_id, records, plan_digest, semantic_digest, attempt_digest) =
-        parse_request(body)?;
+        parse_request(body, profile)?;
     let header = validate_request_header(
         request
             .header
@@ -211,7 +235,29 @@ pub fn host_storage_output_readback_grant_v1(
     request_id: [u8; 16],
     body: &[u8],
 ) -> Result<BrokerGrant, ProtocolValidationError> {
-    let (request, original_id, records, _, _, _) = parse_request(body)?;
+    grant_profile(assignment, request_id, body, OutputReserveProfileV1::LegacyZero)
+}
+
+/// Compiles the distinct Host commitment over captured-output readback records.
+///
+/// # Errors
+///
+/// Rejects substituted original records, quantities, assignment, or request identity.
+pub fn captured_host_storage_output_readback_grant_v1(
+    assignment: BrokerAssignment,
+    request_id: [u8; 16],
+    body: &[u8],
+) -> Result<BrokerGrant, ProtocolValidationError> {
+    grant_profile(assignment, request_id, body, OutputReserveProfileV1::Captured)
+}
+
+fn grant_profile(
+    assignment: BrokerAssignment,
+    request_id: [u8; 16],
+    body: &[u8],
+    profile: OutputReserveProfileV1,
+) -> Result<BrokerGrant, ProtocolValidationError> {
+    let (request, original_id, records, _, _, _) = parse_request(body, profile)?;
     let header = request.header.as_option().ok_or_else(invalid)?;
     if request_id == [0; 16]
         || header.request_id != request_id
@@ -309,6 +355,7 @@ pub fn decode_host_storage_output_readback_response_v1(
 
 fn parse_request(
     body: &[u8],
+    profile: OutputReserveProfileV1,
 ) -> Result<
     (
         ObserveHostStorageOutputRequestV1,
@@ -351,14 +398,16 @@ fn parse_request(
         .as_slice()
         .try_into()
         .map_err(|_| invalid())?;
-    let records = StorageOutputReserveRecordsV1::from_canonical_records(
+    let records = StorageOutputReserveRecordsV1::from_canonical_records_profile(
         &original.canonical_controller_attempt,
         &original.canonical_controller_settlement,
+        profile,
     )?;
-    let original_grant = storage_output_reserve_grant_v1(
+    let original_grant = reserve_grant_profile(
         records.assignment(),
         original_id,
         &request.canonical_original_storage_reserve_request,
+        profile,
     )?;
     let semantic_digest = original_grant.argument_commitment().digest();
     let plan_digest = ObjectDigest::from_bytes(exact_nonzero::<32>(
@@ -408,6 +457,7 @@ fn invalid() -> ProtocolValidationError {
 
 #[cfg(test)]
 mod tests {
+    use crate::storage_output_reserve::storage_output_reserve_grant_v1;
     use aos_proto::aos::sandbox::local::v1::{
         AssignmentFence, HostExecutionOutputReservationStatusV1, HostExecutionOutputReservationV1,
         RequestHeader,

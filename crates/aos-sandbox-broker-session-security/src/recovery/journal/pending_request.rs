@@ -93,6 +93,54 @@ impl<'owner> ProtectedPendingBrokerRequestCutV1<'owner> {
         })
     }
 
+    /// Borrows only the original two fixed endpoints of pending Storage46.
+    pub(super) fn capture_output_registration(
+        journal: &'owner mut ProtectedBrokerSessionJournalV1,
+        request: &'owner AuthenticatedBrokerMethodRequestV1,
+        transcript: &'owner VerifiedBrokerSessionTranscriptV1,
+        peer: &'owner ConnectionPeerIdentity,
+    ) -> Result<Self, BrokerSessionSecurityError> {
+        use super::{fixed_endpoint, ProtectedBrokerSessionFixedEndpointV1};
+        use aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1;
+        use aos_proto::aos::sandbox::local::v1::BrokerMethod;
+
+        let endpoint = match journal.endpoint.role() {
+            BrokerSessionDurableEndpointV1::Client => ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient,
+            BrokerSessionDurableEndpointV1::Broker => ProtectedBrokerSessionFixedEndpointV1::StorageBroker,
+        };
+        if journal.directory != std::path::Path::new(fixed_endpoint(endpoint).journal_root)
+            || transcript.protocol() != BrokerSessionProtocolV1::Storage
+            || !matches!(request.method(),
+                BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+                | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT)
+            || !transcript.negotiated_methods().contains(&request.method())
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        Self::capture_pending(journal, request, transcript, peer)
+    }
+
+    /// Borrows only Storage's original client request to its fixed Host endpoint.
+    pub(super) fn capture_storage_output_host_readback(
+        journal: &'owner mut ProtectedBrokerSessionJournalV1,
+        request: &'owner AuthenticatedBrokerMethodRequestV1,
+        transcript: &'owner VerifiedBrokerSessionTranscriptV1,
+        peer: &'owner ConnectionPeerIdentity,
+    ) -> Result<Self, BrokerSessionSecurityError> {
+        use super::{fixed_endpoint, ProtectedBrokerSessionFixedEndpointV1};
+        let endpoint = fixed_endpoint(ProtectedBrokerSessionFixedEndpointV1::StorageHostClient);
+        if journal.directory != std::path::Path::new(endpoint.journal_root)
+            || journal.endpoint.role() != BrokerSessionDurableEndpointV1::Client
+            || transcript.protocol() != aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1::Host
+            || transcript.audience() != aos_proto::aos::sandbox::local::v1::Audience::AUDIENCE_STORAGE_BROKER
+            || request.method() != aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
+            || !transcript.negotiated_methods().contains(&request.method())
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        Self::capture_pending(journal, request, transcript, peer)
+    }
+
     /// Replays the same protected head under the still-held writer and peer.
     ///
     /// Expiry denies new dispatch; it does not erase an uncertain request or

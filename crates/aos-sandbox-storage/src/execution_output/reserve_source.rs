@@ -15,6 +15,18 @@
 
 use aos_sandbox::{Journal, JournalRecord, JournalTransaction};
 use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_protocol::authenticated_session::all_methods::{
+    AuthenticatedBrokerMethodOutcomeV1, AuthenticatedBrokerMethodRequestV1,
+    AuthenticatedBrokerMethodResultV1, AuthenticatedBrokerOutcomeDirectionV1,
+};
+use aos_sandbox_protocol::host_storage_output_readback::{
+    decode_captured_host_storage_output_readback_request_v1,
+    decode_host_storage_output_readback_response_v1,
+};
+use aos_sandbox_protocol::storage_output_reserve::StorageOutputReserveRecordsV1;
+use aos_sandbox_protocol::storage_output_reserve::continuation::original_plan_digest_v1;
+use aos_proto::aos::sandbox::local::v1::{BrokerMethod, StorageOutputRegistrationResponseV1};
+use buffa::Message as _;
 use sha2::{Digest as _, Sha256};
 
 use super::{
@@ -37,11 +49,11 @@ struct OriginalReserveMarker {
     record_digest: ObjectDigest,
 }
 
-/// Holds values that the future Controller and Host verifier must establish.
+/// Keeps the exact authenticated preimages after the sole canonical comparison.
 ///
-/// There is deliberately no constructor in production code. A scalar source
-/// digest or caller-supplied v2 claim cannot mint this witness.
-struct VerifiedOriginalOutputReserveV1 {
+/// This private DATA is not admission or currentness. Its caller retains the
+/// original configured Storage and Host owners through the atomic write.
+pub(crate) struct VerifiedOriginalOutputReserveV1 {
     record: RetainedOutputRecord,
     request_id: [u8; 16],
     signed_source_digest: ObjectDigest,
@@ -49,6 +61,31 @@ struct VerifiedOriginalOutputReserveV1 {
 }
 
 impl ExecutionOutputLedgerV1 {
+    /// Uses actual authenticated preimages only after configured Storage admission.
+    /// The installed caller separately holds the genuine Host currentness loan.
+    pub(crate) fn prepare_authenticated_original(
+        &self,
+        records: &StorageOutputReserveRecordsV1,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        host_terminal: &AuthenticatedBrokerMethodOutcomeV1,
+        now_boottime_nanoseconds: u64,
+    ) -> Result<VerifiedOriginalOutputReserveV1, ExecutionOutputLedgerErrorV1> {
+        verified_original(
+            records,
+            request,
+            host_terminal,
+            now_boottime_nanoseconds,
+        )
+    }
+
+    /// Uses the prepared preimages only under the caller's final live cut.
+    pub(crate) fn reserve_authenticated_original(
+        &mut self,
+        verified: &VerifiedOriginalOutputReserveV1,
+    ) -> Result<ObjectDigest, ExecutionOutputLedgerErrorV1> {
+        self.reserve_original_record_profile(verified, OriginalReserveProfile::Captured)
+    }
+
     // Unit tests exercise row, capture, and deletion rules through the same
     // atomic marker transaction without manufacturing cross-owner authority.
     #[cfg(test)]
@@ -82,6 +119,14 @@ impl ExecutionOutputLedgerV1 {
     fn reserve_original_record(
         &mut self,
         verified: &VerifiedOriginalOutputReserveV1,
+    ) -> Result<ObjectDigest, ExecutionOutputLedgerErrorV1> {
+        self.reserve_original_record_profile(verified, OriginalReserveProfile::Legacy)
+    }
+
+    fn reserve_original_record_profile(
+        &mut self,
+        verified: &VerifiedOriginalOutputReserveV1,
+        profile: OriginalReserveProfile,
     ) -> Result<ObjectDigest, ExecutionOutputLedgerErrorV1> {
         let record = &verified.record;
         if record.execution == [0; 16]
@@ -154,6 +199,9 @@ impl ExecutionOutputLedgerV1 {
                 JournalRecord::put(NAMESPACE, marker_location, marker_bytes.to_vec()),
             ],
         )?;
+        if matches!(profile, OriginalReserveProfile::Captured) {
+            self.journal.preflight_transactions(std::slice::from_ref(&transaction))?;
+        }
         self.journal.commit(&transaction)?;
         self.retained_bytes = next;
         Ok(record_digest)
@@ -215,6 +263,102 @@ impl ExecutionOutputLedgerV1 {
     ) -> Result<ObjectDigest, ExecutionOutputLedgerErrorV1> {
         original_row_digest(&self.journal, marker, &self.key)
     }
+
+    /// Returns exact MAC-checked historical bytes, never a fresh Host permit.
+    pub(crate) fn original_registration_response(
+        &self,
+        request_id: [u8; 16],
+        records: &StorageOutputReserveRecordsV1,
+        plan_digest: ObjectDigest,
+    ) -> Result<Vec<u8>, ExecutionOutputLedgerErrorV1> {
+        let locator = records.host_locator();
+        self.query_original_reserve(
+            request_id,
+            *locator.execution().as_bytes(),
+            *locator.create_operation().as_bytes(),
+            plan_digest,
+        )?
+        .ok_or(ExecutionOutputLedgerErrorV1::NotCurrent)?;
+        let row_location = reservation_key(*locator.execution().as_bytes());
+        let row = self.journal.get(NAMESPACE, &row_location)
+            .ok_or(ExecutionOutputLedgerErrorV1::Corrupt)?;
+        let original = self.journal.get(NAMESPACE, &marker_key(request_id))
+            .ok_or(ExecutionOutputLedgerErrorV1::Corrupt)?;
+        if row.len() != super::RECORD_BYTES || original.len() != MARKER_BYTES {
+            return Err(ExecutionOutputLedgerErrorV1::Corrupt);
+        }
+        let response = StorageOutputRegistrationResponseV1 {
+            canonical_reservation: row.to_vec(),
+            canonical_original_marker: original.to_vec(),
+            ..Default::default()
+        };
+        if response.encoded_len() > 1024 {
+            return Err(ExecutionOutputLedgerErrorV1::Corrupt);
+        }
+        Ok(response.encode_to_vec())
+    }
+}
+
+enum OriginalReserveProfile {
+    Legacy,
+    Captured,
+}
+
+fn verified_original(
+    records: &StorageOutputReserveRecordsV1,
+    request: &AuthenticatedBrokerMethodRequestV1,
+    terminal: &AuthenticatedBrokerMethodOutcomeV1,
+    now: u64,
+) -> Result<VerifiedOriginalOutputReserveV1, ExecutionOutputLedgerErrorV1> {
+    let fail = || ExecutionOutputLedgerErrorV1::NotCurrent;
+    if request.method() != BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+        || terminal.method() != BrokerMethod::BROKER_METHOD_HOST_OBSERVE_STORAGE_OUTPUT
+        || terminal.direction() != AuthenticatedBrokerOutcomeDirectionV1::ClientReceive
+    {
+        return Err(fail());
+    }
+    let AuthenticatedBrokerMethodResultV1::Success { exact_body, .. } = terminal.result() else {
+        return Err(fail());
+    };
+    let host_request = terminal.request();
+    let decoded = decode_captured_host_storage_output_readback_request_v1(
+        host_request.exact_body(), host_request.peer(), host_request.peer_policy(), now,
+    ).map_err(|_| fail())?;
+    let plan_digest = original_plan_digest_v1(request).map_err(|_| fail())?;
+    let observed = decode_host_storage_output_readback_response_v1(exact_body, &decoded)
+        .map_err(|_| fail())?;
+    if decoded.original_body() != request.exact_body()
+        || decoded.records() != records
+        || decoded.original_storage_request_id() != request.request_id()
+        || decoded.original_storage_plan_digest() != plan_digest
+        || decoded.original_storage_semantic_digest().as_bytes() != &request.semantic_commitment()
+        || observed.current_assignment() != records.assignment()
+    {
+        return Err(fail());
+    }
+    let source = &records.attempt()[8..696];
+    let number = |bytes: &[u8]| -> Result<u64, ExecutionOutputLedgerErrorV1> {
+        Ok(u64::from_be_bytes(bytes.try_into().map_err(|_| fail())?))
+    };
+    let locator = records.host_locator();
+    Ok(VerifiedOriginalOutputReserveV1 {
+        record: RetainedOutputRecord {
+            execution: *locator.execution().as_bytes(),
+            create: *locator.create_operation().as_bytes(),
+            assignment: *records.assignment().digest().as_bytes(),
+            claim_digest: *locator.claim_digest().as_bytes(),
+            bytes: number(&source[424..432])?,
+            maximum_stdout_bytes: number(&source[80..88])?,
+            maximum_stderr_bytes: number(&source[88..96])?,
+            state: STATE_RETAINED,
+            delete_operation: [0; 16],
+        },
+        request_id: request.request_id(),
+        signed_source_digest: plan_digest,
+        host_outcome_digest: ObjectDigest::from_bytes(
+            Sha256::digest(terminal.canonical_packet()).into(),
+        ),
+    })
 }
 
 pub(super) fn verify_replayed_original_reserve(

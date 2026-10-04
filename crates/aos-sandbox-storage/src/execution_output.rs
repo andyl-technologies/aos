@@ -57,7 +57,7 @@ mod physical_observation;
     dead_code,
     reason = "original Storage reserve awaits Controller signature and same-session Host verification"
 )]
-mod reserve_source;
+pub(crate) mod reserve_source;
 
 pub use held_readback::{
     HeldExecutionOutputReadbackV1, StorageHeldOutputRequestV1, StorageHeldOutputResponseV1,

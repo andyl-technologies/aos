@@ -60,7 +60,8 @@ use aos_sandbox_protocol::host_output::{
     decode_host_output_query_request_v1, decode_host_output_reserve_request_v1,
 };
 use aos_sandbox_protocol::host_storage_output_readback::{
-    decode_host_storage_output_readback_request_v1, host_storage_output_readback_grant_v1,
+    decode_captured_host_storage_output_readback_request_v1,
+    captured_host_storage_output_readback_grant_v1,
 };
 use aos_sandbox_protocol::semantics::{
     CanonicalHostAttachGateSemanticsV1, CanonicalHostExecutionArgumentSemanticsV1,
@@ -742,7 +743,7 @@ where
             ));
         }
 
-        let request = decode_host_storage_output_readback_request_v1(
+        let request = decode_captured_host_storage_output_readback_request_v1(
             authenticated.exact_body(),
             authenticated.peer(),
             authenticated.peer_policy(),
@@ -758,7 +759,7 @@ where
             ));
         }
         let assignment = execution_assignment(claim)?;
-        let grant = host_storage_output_readback_grant_v1(
+        let grant = captured_host_storage_output_readback_grant_v1(
             assignment,
             request_id,
             authenticated.exact_body(),

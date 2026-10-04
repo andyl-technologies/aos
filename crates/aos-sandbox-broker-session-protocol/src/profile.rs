@@ -174,8 +174,6 @@ pub fn authenticated_broker_methods_for_role_v1(
                     | BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE
                     | BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
                     | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
-                    | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
-                    | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
                     | BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1
             )
         })
@@ -497,11 +495,11 @@ pub const fn authenticated_broker_method_profile_v1(
         | BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2 => {
             BrokerSessionProtocolV1::Nix
         }
-        // The Storage method remains unnegotiable until its same-session Host
-        // proof and protected writer admission are implemented.
         BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
-        | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
-        | BrokerMethod::BROKER_METHOD_UNSPECIFIED => return None,
+        | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT => {
+            BrokerSessionProtocolV1::Storage
+        }
+        BrokerMethod::BROKER_METHOD_UNSPECIFIED => return None,
     };
     let (major, minor) = supported_broker_session_version_v1(protocol);
     let audience = if matches!(
@@ -550,6 +548,8 @@ pub const fn authenticated_broker_method_profile_v1(
             | BrokerMethod::BROKER_METHOD_STORAGE_ATOMIC_SNAPSHOT
             | BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT
             | BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE
+            | BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+            | BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT
             | BrokerMethod::BROKER_METHOD_MOUNT_APPLY
             | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT
             | BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
@@ -1332,21 +1332,21 @@ mod tests {
     }
 
     #[test]
-    fn storage_output_reserve_remains_unnegotiable() {
+    fn storage_output_registration_has_a_closed_zero_descriptor_profile() {
         let method = BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT;
         let query = BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT;
         let audience = Audience::AUDIENCE_NODE_CONTROLLER;
         let protocol = BrokerSessionProtocolV1::Storage;
 
-        assert!(authenticated_broker_method_profile_v1(method).is_none());
-        assert!(authenticated_broker_method_profile_v1(query).is_none());
-        assert!(!authenticated_broker_methods_for_role_v1(protocol, audience).contains(&method));
-        assert!(!authenticated_broker_methods_for_role_v1(protocol, audience).contains(&query));
+        assert!(authenticated_broker_method_profile_v1(method).is_some());
+        assert!(authenticated_broker_method_profile_v1(query).is_some());
+        assert!(authenticated_broker_methods_for_role_v1(protocol, audience).contains(&method));
+        assert!(authenticated_broker_methods_for_role_v1(protocol, audience).contains(&query));
 
         let client = production_broker_client_hello_v1(protocol, audience, RESPONSE_MAXIMUM)
             .expect("existing Storage hello remains available");
-        assert!(!client.required_methods.contains(&method.into()));
-        assert!(!client.required_methods.contains(&query.into()));
+        assert!(client.required_methods.contains(&method.into()));
+        assert!(client.required_methods.contains(&query.into()));
     }
 
     #[test]

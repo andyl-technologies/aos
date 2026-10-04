@@ -332,6 +332,87 @@ impl VerifiedStoragePreparationAdmissionV1 {
 }
 
 impl StorageAuthorityV1 {
+    /// Independently admits the exact original output grant on the held base fence.
+    pub(crate) fn admit_output_registration(
+        &self,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        protocol_version: ProtocolVersion,
+        current_clock: &RawPairedClockSample,
+        prior_fence: &[u8],
+    ) -> Result<(
+        aos_sandbox_protocol::storage_output_reserve::StorageOutputReserveRecordsV1,
+        VerifiedBrokerAdmission,
+    ), StorageAdmissionError> {
+        use aos_sandbox_protocol::storage_output_reserve::{
+            captured_storage_output_query_grant_v1,
+            captured_storage_output_reserve_grant_v1,
+            decode_captured_storage_output_query_request_v1,
+            decode_captured_storage_output_reserve_request_v1,
+        };
+
+        if request.direction() != aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerRequestDirectionV1::ServerReceive
+            || request.peer_policy().audience != aos_proto::aos::sandbox::local::v1::Audience::AUDIENCE_NODE_CONTROLLER
+        {
+            return Err(StorageAdmissionError::RequestMismatch);
+        }
+        let artifacts = request.authorization().ok_or(StorageAdmissionError::RequestMismatch)?;
+        let (header, records, grant) = match request.method() {
+            BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT => {
+                let decoded = decode_captured_storage_output_reserve_request_v1(
+                    request.exact_body(), request.peer(), request.peer_policy(), current_clock.boottime_nanoseconds(),
+                ).map_err(|_| StorageAdmissionError::RequestMismatch)?;
+                let grant = captured_storage_output_reserve_grant_v1(
+                    decoded.records().assignment(), request.request_id(), request.exact_body(),
+                ).map_err(|_| StorageAdmissionError::RequestMismatch)?;
+                (*decoded.header(), *decoded.records(), grant)
+            }
+            BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT => {
+                let decoded = decode_captured_storage_output_query_request_v1(
+                    request.exact_body(), request.peer(), request.peer_policy(), current_clock.boottime_nanoseconds(),
+                ).map_err(|_| StorageAdmissionError::RequestMismatch)?;
+                let grant = captured_storage_output_query_grant_v1(
+                    decoded.records().assignment(), request.request_id(), request.exact_body(),
+                ).map_err(|_| StorageAdmissionError::RequestMismatch)?;
+                (*decoded.header(), *decoded.records(), grant)
+            }
+            _ => return Err(StorageAdmissionError::RequestMismatch),
+        };
+        if header.request_id() != &request.request_id()
+            || header.protocol_version() != protocol_version
+            || header.deadline_boottime_nanoseconds() != request.deadline_boottime_nanoseconds()
+            || request.semantic_commitment() != *grant.argument_commitment().digest().as_bytes()
+        {
+            return Err(StorageAdmissionError::RequestMismatch);
+        }
+        let admission = self.0.admit_storage_output(
+            artifacts,
+            AdmissionRequest {
+                audience: BrokerAudience::Storage,
+                protocol: ProtocolId::StorageBroker,
+                protocol_version,
+                assignment: records.assignment(),
+                request_id: request.request_id(),
+                request_body: request.exact_body(),
+                descriptor_count: 0,
+                verb: grant.verb(),
+                target: grant.target(),
+                argument_commitment: grant.argument_commitment(),
+                request_deadline_boottime_nanoseconds: header.deadline_boottime_nanoseconds(),
+            },
+            current_clock,
+            prior_fence,
+        )?;
+        if admission.effect.status() != BrokerEffectStatusV1::Pending
+            || admission.effect.verb() != grant.verb()
+            || admission.effect.request_id() != &request.request_id()
+            || admission.effect.transport_request_digest() != ObjectDigest::from_bytes(Sha256::digest(request.exact_body()).into())
+            || admission.effect.request_digest() != grant.argument_commitment().digest()
+        {
+            return Err(StorageAdmissionError::RequestMismatch);
+        }
+        Ok((records, admission))
+    }
+
     /// Verifies a read-only candidate's exact signed plan on the current fence.
     ///
     /// This does not commit the prospective effect returned by common broker

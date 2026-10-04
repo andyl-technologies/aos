@@ -155,6 +155,7 @@ pub(crate) mod execution_output_reserve;
     reason = "Storage output reserve is signed but awaits same-session Host proof and closed dispatch"
 )]
 mod execution_output_storage_reserve;
+pub(crate) mod execution_output_storage_registration;
 mod guest_root;
 mod git_read_inspection;
 #[allow(
@@ -1351,6 +1352,8 @@ enum ControllerResidentCauseV1 {
     CacheUsage,
     // Typed cause and every partial owner remain in SAME sessions' cold slot.
     StorageCold,
+    // The first native cause stays with the SAME Storage pending-session slot.
+    OutputRegistration,
     Closed(&'static str),
 }
 
@@ -1368,6 +1371,7 @@ impl ControllerResidentCauseV1 {
             Self::PublisherPolicyBootstrap => "resident original Publisher policy bootstrap failure",
             Self::CacheUsage => "resident original Cache project observation failure",
             Self::StorageCold => "resident original Storage cold admission failure",
+            Self::OutputRegistration => "resident original output registration failure",
             Self::Closed(label) => label,
         }
     }
@@ -2678,6 +2682,14 @@ fn ensure_controller_broker_sessions(
     node_id: [u8; 16],
     sessions: &mut ControllerBrokerSessions,
 ) -> Result<(), CycleFailure> {
+    if sessions.storage.as_ref().is_some_and(|storage| storage.has_pending_output_registration()) {
+        if let Some(worker) = sessions.storage_terminal.as_ref().and_then(std::sync::Weak::upgrade) {
+            worker.close(ControllerResidentCauseV1::OutputRegistration);
+        }
+        return Err(CycleFailure::Fatal(
+            "resident original output registration is closed".to_owned(),
+        ));
+    }
     // Required failure closes before reconnect can release either the old
     // Storage session or the original guest-root exchange. No replacement
     // owner may overtake a failed/unfinished verified cold flight.
@@ -2788,13 +2800,17 @@ fn connect_retained_controller_storage(
     let deadline = crate::handshake::OriginalBrokerColdDeadlineV1::controller()
         .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
 
-    match custody.connect_retained_storage_session(deadline, cold, node_id) {
+    match custody.connect_retained_output_storage_session(deadline, cold, node_id) {
         Ok(session) => Ok(session),
         Err(error) if cold.is_some() => {
             worker.close(ControllerResidentCauseV1::StorageCold);
             // Diagnostic projection only: the typed cause, packets, writers,
             // physical owners and debt remain in the SAME cold slot.
-            Err(CycleFailure::Fatal(error.to_string()))
+            let diagnostic = cold.as_ref()
+                .and_then(crate::handshake::RetainedStorageColdOpenV1::output_failure)
+                .map(|cause| cause.to_string())
+                .unwrap_or_else(|| error.to_string());
+            Err(CycleFailure::Fatal(diagnostic))
         }
         Err(error) => Err(classify_protected_handshake_error(error)),
     }
@@ -2819,9 +2835,11 @@ fn connect_controller_storage_session(
         .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
     let deadline = crate::production_deadline_after(Duration::from_secs(10))
         .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
-    let mut session = custody
-        .connect_production_client_session(deadline)
-        .map_err(classify_protected_handshake_error)?;
+    let mut session = if endpoint == crate::ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient {
+        custody.connect_output_client_session(deadline)
+    } else {
+        custody.connect_production_client_session(deadline)
+    }.map_err(classify_protected_handshake_error)?;
     session
         .require_current_node(node_id)
         .map_err(|error| CycleFailure::Fatal(error.to_string()))?;

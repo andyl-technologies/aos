@@ -396,8 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn canonical_method46_remains_unsupported_without_any_fallback_parser() {
-        assert!(matches!(require_original_carrier_profile_v1(),
-            Err(HistoricalStorageOutputArchiveErrorV1::UnsupportedCarrierProfile)));
+    fn canonical_method46_profile_uses_the_existing_guard() {
+        assert!(require_original_carrier_profile_v1().is_ok());
     }
 }

@@ -34,7 +34,7 @@ use std::os::fd::{AsFd as _, OwnedFd};
 use std::path::{Path, PathBuf};
 
 use aos_proto::aos::sandbox::local::v1::{
-    ApplyStorageRequest, InventoryStorageResourcesResponse, StorageExecutionCaptureCandidateV1,
+    ApplyStorageRequest, BrokerMethod, InventoryStorageResourcesResponse, StorageExecutionCaptureCandidateV1,
     StorageOperatorRepairCommitRecordV1,
 };
 use aos_sandbox_agent::guest_root_publication::GuestRootPublicationProofV1;
@@ -273,6 +273,22 @@ enum StorageStartupOutcomeV4 {
         Option<crate::operator_recovery::StorageOperatorRecoveryOwnerV1>,
     ),
     OperatorProvisioned,
+}
+
+// The request owner lives outside the runtime loan. A return or unwind that
+// did not establish complete readback permanently ends this one attempt.
+struct OriginalOutputRegistrationBoundaryV1<'attempt> {
+    attempt: &'attempt mut crate::execution_output_credential::OriginalExecutionOutputRegistrationV1,
+}
+
+impl Drop for OriginalOutputRegistrationBoundaryV1<'_> {
+    fn drop(&mut self) {
+        if !self.attempt.completed && self.attempt.failure().is_none() && self.attempt.postcheck_debt().is_none() {
+            self.attempt.first_cause = Some(
+                crate::execution_output_credential::OriginalOutputRegistrationErrorV1::NotCurrent,
+            );
+        }
+    }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -983,6 +999,166 @@ impl StorageBrokerRuntime {
         };
         held.verify_mount()?;
         Ok(held)
+    }
+
+    /// Holds configured Storage admission around the original atomic output write.
+    /// The pending Session owns `attempt`; no borrowed owner is stored in it.
+    pub(crate) fn register_original_execution_output(
+        &mut self,
+        output: &mut crate::execution_output_credential::StorageExecutionOutputCustodyV1,
+        attempt: &mut crate::execution_output_credential::OriginalExecutionOutputRegistrationV1,
+        host_terminal: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
+    ) {
+        if attempt.started {
+            return;
+        }
+        attempt.started = true;
+
+        let mut boundary = OriginalOutputRegistrationBoundaryV1 { attempt };
+        self.register_original_execution_output_inner(output, &mut *boundary.attempt, Some(host_terminal));
+    }
+
+    /// Reads an original occupied marker under the same configured admission.
+    pub(crate) fn query_original_execution_output(
+        &mut self,
+        output: &mut crate::execution_output_credential::StorageExecutionOutputCustodyV1,
+        attempt: &mut crate::execution_output_credential::OriginalExecutionOutputRegistrationV1,
+    ) {
+        if attempt.started { return; }
+        attempt.started = true;
+        let mut boundary = OriginalOutputRegistrationBoundaryV1 { attempt };
+        self.register_original_execution_output_inner(output, &mut *boundary.attempt, None);
+    }
+
+    fn register_original_execution_output_inner(
+        &mut self,
+        output: &mut crate::execution_output_credential::StorageExecutionOutputCustodyV1,
+        attempt: &mut crate::execution_output_credential::OriginalExecutionOutputRegistrationV1,
+        host_terminal: Option<&aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1>,
+    ) {
+        use crate::execution_output_credential::OriginalOutputRegistrationErrorV1 as Error;
+        let state_root = Path::new("/var/lib/aos/sandbox-storage");
+
+        // Prearming is irreversible even if a lower observer panics. The
+        // caller's resident Session/attempt survives its unwind fence.
+        if self.readiness != StorageRuntimeReadiness::Ready
+            || self.held_reader_state_directory.as_deref() != Some(state_root)
+            || attempt.request.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive
+            || !matches!((attempt.request.method(), host_terminal.is_some()),
+                (BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT, true)
+                | (BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT, false))
+        {
+            attempt.first_cause = Some(Error::NotCurrent);
+            return;
+        }
+
+        attempt.initial_custody = Some(output.recheck(state_root));
+        if attempt.failure().is_some() {
+            return;
+        }
+        attempt.initial_clock = Some(trusted_paired_clock_sample());
+        let Some(Ok(clock)) = &attempt.initial_clock else {
+            return;
+        };
+        let clock = *clock;
+        attempt.initial_cut = Some(self.coordinator.authenticate_output_registration(
+            &attempt.request, &clock,
+        ));
+        let Some(Ok(initial)) = &attempt.initial_cut else {
+            return;
+        };
+        if clock.host_boot_id() != initial.records.host_locator().host_boot_id() {
+            attempt.first_cause = Some(Error::NotCurrent);
+            return;
+        }
+        let dispatch = match self.worker_dispatch.enter() {
+            Ok(dispatch) => dispatch,
+            Err(_) => {
+                attempt.first_cause = Some(Error::NotCurrent);
+                return;
+            }
+        };
+
+        // Canonical Host comparison and repeated signature/cut validation may
+        // be lengthy. Their complete results precede the final clock read.
+        if let Some(host_terminal) = host_terminal {
+            output.prepare_original(attempt, host_terminal, clock.boottime_nanoseconds());
+        }
+        if attempt.failure().is_none() {
+            attempt.crossing_clock = Some(trusted_paired_clock_sample());
+            if let Some(Ok(crossing_clock)) = &attempt.crossing_clock {
+                attempt.crossing_cut = Some(self.coordinator.authenticate_output_registration(
+                    &attempt.request, &crossing_clock,
+                ));
+                if let (Some(Ok(initial)), Some(Ok(crossing))) =
+                    (&attempt.initial_cut, &attempt.crossing_cut)
+                {
+                    if !initial.matches(crossing) {
+                        attempt.first_cause = Some(Error::NotCurrent);
+                    }
+                }
+            }
+        }
+        if attempt.failure().is_none() {
+            attempt.entry_clock = Some(trusted_paired_clock_sample());
+            if let (Some(Ok(cut)), Some(Ok(entry_clock))) =
+                (&attempt.initial_cut, &attempt.entry_clock)
+            {
+                attempt.entry_clock_check = Some(
+                    self.coordinator.check_output_registration_clock(cut, entry_clock),
+                );
+            }
+            if attempt.failure().is_none() && host_terminal.is_some() {
+                // Security retains its genuine exclusive Host currentness
+                // loan through this call and the subsequent bookends.
+                output.register_original(attempt);
+            }
+        }
+
+        // Later failures never replace a prior parser, admission or commit
+        // result. Every observer's whole Result remains request-resident.
+        attempt.final_custody = Some(output.recheck(state_root));
+        attempt.final_clock = Some(trusted_paired_clock_sample());
+        if let Some(Ok(final_clock)) = &attempt.final_clock {
+            attempt.final_cut = Some(self.coordinator.authenticate_output_registration(
+                &attempt.request, &final_clock,
+            ));
+            if let (Some(Ok(initial)), Some(Ok(successor))) =
+                (&attempt.initial_cut, &attempt.final_cut)
+            {
+                if (!initial.matches(successor) || final_clock.host_boot_id() != clock.host_boot_id())
+                    && attempt.postcheck_debt().is_none()
+                {
+                    attempt.postcheck_debt = Some(Error::NotCurrent);
+                }
+            }
+        }
+        drop(dispatch);
+        if attempt.failure().is_some() || attempt.postcheck_debt().is_some() {
+            return;
+        }
+        if let Err(error) = output.read_original_registration(attempt) {
+            if attempt.failure().is_none() {
+                attempt.first_cause = Some(error);
+            }
+        }
+        attempt.response_custody = Some(output.recheck(state_root));
+        attempt.response_clock = Some(trusted_paired_clock_sample());
+        if let Some(Ok(response_clock)) = &attempt.response_clock {
+            attempt.response_cut = Some(self.coordinator.authenticate_output_registration(
+                &attempt.request, &response_clock,
+            ));
+            if let (Some(Ok(initial)), Some(Ok(successor))) =
+                (&attempt.initial_cut, &attempt.response_cut)
+            {
+                if (!initial.matches(successor) || response_clock.host_boot_id() != clock.host_boot_id())
+                    && attempt.postcheck_debt().is_none()
+                {
+                    attempt.postcheck_debt = Some(Error::NotCurrent);
+                }
+            }
+        }
+        attempt.completed = attempt.failure().is_none() && attempt.postcheck_debt().is_none();
     }
 
     /// Observes one authenticated, read-only method-41 candidate.

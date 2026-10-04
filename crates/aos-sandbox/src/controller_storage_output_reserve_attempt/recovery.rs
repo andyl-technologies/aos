@@ -32,7 +32,7 @@ use super::authority::{
 use super::publication_chunks::HistoricalOutputPublicationChunkViewV1;
 use super::{
     CheckedOriginalStorageOutputV1, ControllerStorageOutputReserveAttemptV1,
-    inspect_original_checked,
+    inspect_original_checked_profile, OriginalOutputProfileV1,
 };
 
 /// Retains fully loaded historical original bytes without any effect authority.
@@ -166,7 +166,7 @@ fn decode_selected(
         }
         return Ok(HistoricalStorageOutputArchiveStateV1::Absent);
     };
-    let (attempt, original) = ControllerStorageOutputReserveAttemptV1::decode_checked(attempt_bytes)
+    let (attempt, original) = ControllerStorageOutputReserveAttemptV1::decode_checked_profile(attempt_bytes, OriginalOutputProfileV1::Captured)
         .map_err(|_| HistoricalStorageOutputRetentionErrorV1::Invalid)?;
     if attempt.execution() != execution {
         return Err(HistoricalStorageOutputRetentionErrorV1::Invalid);
@@ -271,7 +271,7 @@ fn validate_carrier_message_with_original(
     let original = match original {
         Some(original) => original,
         None => {
-            inspected = inspect_original_checked(attempt.canonical_body())
+            inspected = inspect_original_checked_profile(attempt.canonical_body(), OriginalOutputProfileV1::Captured)
                 .map_err(|_| HistoricalStorageOutputRetentionErrorV1::Invalid)?;
             &inspected
         }
@@ -331,7 +331,7 @@ fn validate_attempt_companion_with_original(
     let original = match original {
         Some(original) => original,
         None => {
-            inspected = inspect_original_checked(attempt.canonical_body())
+            inspected = inspect_original_checked_profile(attempt.canonical_body(), OriginalOutputProfileV1::Captured)
                 .map_err(|_| HistoricalStorageOutputRetentionErrorV1::Invalid)?;
             &inspected
         }

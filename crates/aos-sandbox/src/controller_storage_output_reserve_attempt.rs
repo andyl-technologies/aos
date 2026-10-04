@@ -53,6 +53,39 @@ const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.controller-storage-output-attemp
 const FIXED_PREFIX_BYTES: usize = 8 + 16 + 16 + 16 + 32 + 32 + 2;
 const MAXIMUM_BODY_BYTES: usize = 4 * 1_024;
 
+// This closed choice changes only canonical quantity validation. It does not
+// select a writer, signer, clock, or currentness policy.
+#[derive(Clone, Copy)]
+enum OriginalOutputProfileV1 {
+    LegacyZero,
+    Captured,
+}
+
+impl OriginalOutputProfileV1 {
+    fn records(
+        self,
+        attempt: &[u8],
+        settlement: &[u8],
+    ) -> Result<StorageOutputReserveRecordsV1, aos_sandbox_protocol::ProtocolValidationError> {
+        match self {
+            Self::LegacyZero => StorageOutputReserveRecordsV1::from_canonical_records(attempt, settlement),
+            Self::Captured => StorageOutputReserveRecordsV1::from_canonical_captured_records(attempt, settlement),
+        }
+    }
+
+    fn grant(
+        self,
+        assignment: aos_sandbox_core::BrokerAssignment,
+        request_id: [u8; 16],
+        body: &[u8],
+    ) -> Result<BrokerGrant, aos_sandbox_protocol::ProtocolValidationError> {
+        match self {
+            Self::LegacyZero => storage_output_reserve_grant_v1(assignment, request_id, body),
+            Self::Captured => aos_sandbox_protocol::storage_output_reserve::captured_storage_output_reserve_grant_v1(assignment, request_id, body),
+        }
+    }
+}
+
 /// Reports invalid or ambiguous original Storage reserve custody.
 #[derive(Debug, thiserror::Error)]
 pub enum ControllerStorageOutputReserveAttemptErrorV1 {
@@ -65,6 +98,9 @@ pub enum ControllerStorageOutputReserveAttemptErrorV1 {
     /// The append may have committed; reopen protected custody before query.
     #[error("Controller Storage output reserve attempt outcome is ambiguous")]
     OutcomeUnknown,
+    /// The captured append may have committed; the actual native cause remains owned.
+    #[error("captured Controller Storage output append is uncertain")]
+    CapturedOutcomeUnknown(#[source] JournalError),
     /// The protected Controller journal is unavailable or poisoned.
     #[error(transparent)]
     Journal(#[from] JournalError),
@@ -92,6 +128,39 @@ struct CheckedOriginalStorageOutputV1 {
 }
 
 impl ControllerStorageOutputReserveAttemptV1 {
+    /// Reconstructs nonauthorizing attempt DATA from an admitted original request.
+    ///
+    /// This shares the canonical record engine; it neither installs a Controller
+    /// record nor proves the original request's present authority. Storage keeps
+    /// the genuine request and independently authenticates both domain owners.
+    ///
+    /// # Errors
+    /// Rejects another purpose, missing signed artifacts, or changed canonical
+    /// request identity or semantic commitment.
+    pub fn from_authenticated_captured_request(
+        request: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+    ) -> Result<Self, ControllerStorageOutputReserveAttemptErrorV1> {
+        use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerRequestDirectionV1;
+
+        if request.method() != aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT
+            || request.direction() != AuthenticatedBrokerRequestDirectionV1::ServerReceive
+        {
+            return Err(ControllerStorageOutputReserveAttemptErrorV1::Invalid);
+        }
+        let digest = aos_sandbox_protocol::storage_output_reserve::continuation::original_plan_digest_v1(
+            request,
+        ).map_err(|_| ControllerStorageOutputReserveAttemptErrorV1::Invalid)?;
+        let attempt = Self::from_original_profile(
+            request.exact_body(), digest, OriginalOutputProfileV1::Captured,
+        )?;
+        if attempt.original_request_id != request.request_id()
+            || attempt.semantic_digest.as_bytes() != &request.semantic_commitment()
+        {
+            return Err(ControllerStorageOutputReserveAttemptErrorV1::Invalid);
+        }
+        Ok(attempt)
+    }
+
     /// Returns the execution that owns this sole Storage reserve attempt.
     #[must_use]
     pub const fn execution(&self) -> ExecutionId {
@@ -140,6 +209,26 @@ impl ControllerStorageOutputReserveAttemptV1 {
         &self,
         header: RequestHeader,
     ) -> Result<Vec<u8>, ControllerStorageOutputReserveAttemptErrorV1> {
+        self.host_readback_body_profile(header, OriginalOutputProfileV1::LegacyZero)
+    }
+
+    /// Builds the complete captured-output Host request as nonauthorizing DATA.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed original records, a reused request ID, or malformed header.
+    pub fn captured_host_readback_body(
+        &self,
+        header: RequestHeader,
+    ) -> Result<Vec<u8>, ControllerStorageOutputReserveAttemptErrorV1> {
+        self.host_readback_body_profile(header, OriginalOutputProfileV1::Captured)
+    }
+
+    fn host_readback_body_profile(
+        &self,
+        header: RequestHeader,
+        profile: OriginalOutputProfileV1,
+    ) -> Result<Vec<u8>, ControllerStorageOutputReserveAttemptErrorV1> {
         let request_id: [u8; 16] = header
             .request_id
             .as_slice()
@@ -154,8 +243,12 @@ impl ControllerStorageOutputReserveAttemptV1 {
             ..Default::default()
         }
         .encode_to_vec();
-        let (_, records, _) = inspect_original(&self.canonical_body)?;
-        host_storage_output_readback_grant_v1(records.assignment(), request_id, &body)
+        let (_, records, _) = inspect_original_profile(&self.canonical_body, profile)?;
+        let grant = match profile {
+            OriginalOutputProfileV1::LegacyZero => host_storage_output_readback_grant_v1(records.assignment(), request_id, &body),
+            OriginalOutputProfileV1::Captured => aos_sandbox_protocol::host_storage_output_readback::captured_host_storage_output_readback_grant_v1(records.assignment(), request_id, &body),
+        };
+        grant
             .map_err(|_| ControllerStorageOutputReserveAttemptErrorV1::Invalid)?;
         Ok(body)
     }
@@ -187,6 +280,26 @@ impl ControllerStorageOutputReserveAttemptV1 {
         &self,
         header: RequestHeader,
     ) -> Result<Vec<u8>, ControllerStorageOutputReserveAttemptErrorV1> {
+        self.query_body_profile(header, OriginalOutputProfileV1::LegacyZero)
+    }
+
+    /// Builds a fresh historical query over the complete captured original.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed original records or a substituted query identity.
+    pub fn captured_query_body(
+        &self,
+        header: RequestHeader,
+    ) -> Result<Vec<u8>, ControllerStorageOutputReserveAttemptErrorV1> {
+        self.query_body_profile(header, OriginalOutputProfileV1::Captured)
+    }
+
+    fn query_body_profile(
+        &self,
+        header: RequestHeader,
+        profile: OriginalOutputProfileV1,
+    ) -> Result<Vec<u8>, ControllerStorageOutputReserveAttemptErrorV1> {
         let request_id: [u8; 16] = header
             .request_id
             .as_slice()
@@ -200,8 +313,12 @@ impl ControllerStorageOutputReserveAttemptV1 {
             ..Default::default()
         };
         let body = query.encode_to_vec();
-        let (_, records, _) = inspect_original(&self.canonical_body)?;
-        storage_output_query_grant_v1(records.assignment(), request_id, &body)
+        let (_, records, _) = inspect_original_profile(&self.canonical_body, profile)?;
+        let grant = match profile {
+            OriginalOutputProfileV1::LegacyZero => storage_output_query_grant_v1(records.assignment(), request_id, &body),
+            OriginalOutputProfileV1::Captured => aos_sandbox_protocol::storage_output_reserve::captured_storage_output_query_grant_v1(records.assignment(), request_id, &body),
+        };
+        grant
             .map_err(|_| ControllerStorageOutputReserveAttemptErrorV1::Invalid)?;
         Ok(body)
     }
@@ -221,7 +338,15 @@ impl ControllerStorageOutputReserveAttemptV1 {
         body: &[u8],
         signed_plan_digest: ObjectDigest,
     ) -> Result<Self, ControllerStorageOutputReserveAttemptErrorV1> {
-        Self::from_original_checked(body, signed_plan_digest).map(|(attempt, _)| attempt)
+        Self::from_original_profile(body, signed_plan_digest, OriginalOutputProfileV1::LegacyZero)
+    }
+
+    fn from_original_profile(
+        body: &[u8],
+        signed_plan_digest: ObjectDigest,
+        profile: OriginalOutputProfileV1,
+    ) -> Result<Self, ControllerStorageOutputReserveAttemptErrorV1> {
+        Self::from_original_checked_profile(body, signed_plan_digest, profile).map(|(attempt, _)| attempt)
     }
 
     fn from_original_checked(
@@ -231,7 +356,15 @@ impl ControllerStorageOutputReserveAttemptV1 {
         (Self, CheckedOriginalStorageOutputV1),
         ControllerStorageOutputReserveAttemptErrorV1,
     > {
-        let original = inspect_original_checked(body)?;
+        Self::from_original_checked_profile(body, signed_plan_digest, OriginalOutputProfileV1::LegacyZero)
+    }
+
+    fn from_original_checked_profile(
+        body: &[u8],
+        signed_plan_digest: ObjectDigest,
+        profile: OriginalOutputProfileV1,
+    ) -> Result<(Self, CheckedOriginalStorageOutputV1), ControllerStorageOutputReserveAttemptErrorV1> {
+        let original = inspect_original_checked_profile(body, profile)?;
         if signed_plan_digest.as_bytes() == &[0; 32] {
             return Err(ControllerStorageOutputReserveAttemptErrorV1::Invalid);
         }
@@ -269,7 +402,14 @@ impl ControllerStorageOutputReserveAttemptV1 {
     }
 
     fn decode(bytes: &[u8]) -> Result<Self, ControllerStorageOutputReserveAttemptErrorV1> {
-        Self::decode_checked(bytes).map(|(attempt, _)| attempt)
+        Self::decode_profile(bytes, OriginalOutputProfileV1::LegacyZero)
+    }
+
+    fn decode_profile(
+        bytes: &[u8],
+        profile: OriginalOutputProfileV1,
+    ) -> Result<Self, ControllerStorageOutputReserveAttemptErrorV1> {
+        Self::decode_checked_profile(bytes, profile).map(|(attempt, _)| attempt)
     }
 
     fn decode_checked(
@@ -278,6 +418,13 @@ impl ControllerStorageOutputReserveAttemptV1 {
         (Self, CheckedOriginalStorageOutputV1),
         ControllerStorageOutputReserveAttemptErrorV1,
     > {
+        Self::decode_checked_profile(bytes, OriginalOutputProfileV1::LegacyZero)
+    }
+
+    fn decode_checked_profile(
+        bytes: &[u8],
+        profile: OriginalOutputProfileV1,
+    ) -> Result<(Self, CheckedOriginalStorageOutputV1), ControllerStorageOutputReserveAttemptErrorV1> {
         if bytes.len() < FIXED_PREFIX_BYTES + 32 || bytes.get(..8) != Some(MAGIC.as_slice()) {
             return Err(ControllerStorageOutputReserveAttemptErrorV1::Invalid);
         }
@@ -298,9 +445,10 @@ impl ControllerStorageOutputReserveAttemptV1 {
                 .try_into()
                 .map_err(|_| ControllerStorageOutputReserveAttemptErrorV1::Invalid)?,
         );
-        let (rebuilt, original) = Self::from_original_checked(
+        let (rebuilt, original) = Self::from_original_checked_profile(
             &bytes[FIXED_PREFIX_BYTES..FIXED_PREFIX_BYTES + body_len],
             plan_digest,
+            profile,
         )?;
         if rebuilt.encode() != bytes {
             return Err(ControllerStorageOutputReserveAttemptErrorV1::Invalid);
@@ -323,12 +471,35 @@ pub fn retain_controller_storage_output_reserve_attempt_v1(
     body: &[u8],
     signed_plan: &SignedBrokerPlan,
 ) -> Result<ControllerStorageOutputReserveAttemptV1, ControllerStorageOutputReserveAttemptErrorV1> {
+    retain_attempt_profile(controller, body, signed_plan, OriginalOutputProfileV1::LegacyZero)
+}
+
+/// Freezes one original captured-output Storage request before its sole send.
+///
+/// # Errors
+///
+/// Rejects changed records or signed authority, an occupied original key, or
+/// an uncertain append retaining its actual native error.
+pub fn retain_captured_controller_storage_output_reserve_attempt_v1(
+    controller: &mut Journal,
+    body: &[u8],
+    signed_plan: &SignedBrokerPlan,
+) -> Result<ControllerStorageOutputReserveAttemptV1, ControllerStorageOutputReserveAttemptErrorV1> {
+    retain_attempt_profile(controller, body, signed_plan, OriginalOutputProfileV1::Captured)
+}
+
+fn retain_attempt_profile(
+    controller: &mut Journal,
+    body: &[u8],
+    signed_plan: &SignedBrokerPlan,
+    profile: OriginalOutputProfileV1,
+) -> Result<ControllerStorageOutputReserveAttemptV1, ControllerStorageOutputReserveAttemptErrorV1> {
     controller.ensure_protected_authority()?;
     let attempt =
-        ControllerStorageOutputReserveAttemptV1::from_original(body, signed_plan.digest())?;
+        ControllerStorageOutputReserveAttemptV1::from_original_profile(body, signed_plan.digest(), profile)?;
     let request = ReserveStorageExecutionOutputRequestV1::decode_from_slice(body)
         .map_err(|_| ControllerStorageOutputReserveAttemptErrorV1::Invalid)?;
-    let records = StorageOutputReserveRecordsV1::from_canonical_records(
+    let records = profile.records(
         &request.canonical_controller_attempt,
         &request.canonical_controller_settlement,
     )
@@ -338,7 +509,7 @@ pub fn retain_controller_storage_output_reserve_attempt_v1(
         return Err(ControllerStorageOutputReserveAttemptErrorV1::Invalid);
     };
     let expected_grant =
-        storage_output_reserve_grant_v1(records.assignment(), attempt.original_request_id, body)
+        profile.grant(records.assignment(), attempt.original_request_id, body)
             .map_err(|_| ControllerStorageOutputReserveAttemptErrorV1::Invalid)?;
     if plan.audience() != BrokerAudience::Storage
         || plan.protocol() != ProtocolId::StorageBroker
@@ -349,7 +520,7 @@ pub fn retain_controller_storage_output_reserve_attempt_v1(
     {
         return Err(ControllerStorageOutputReserveAttemptErrorV1::Invalid);
     }
-    persist_attempt(controller, &attempt)?;
+    persist_attempt_profile(controller, &attempt, profile)?;
     Ok(attempt)
 }
 
@@ -365,6 +536,28 @@ pub fn load_controller_storage_output_reserve_attempt_v1(
     Option<ControllerStorageOutputReserveAttemptV1>,
     ControllerStorageOutputReserveAttemptErrorV1,
 > {
+    load_attempt_profile(controller, execution, OriginalOutputProfileV1::LegacyZero)
+}
+
+/// Loads the immutable captured original from the same protected Controller store.
+///
+/// This is historical DATA, not a new signing or delivery epoch.
+///
+/// # Errors
+///
+/// Rejects unprotected or poisoned custody and malformed original records.
+pub fn load_captured_controller_storage_output_reserve_attempt_v1(
+    controller: &Journal,
+    execution: ExecutionId,
+) -> Result<Option<ControllerStorageOutputReserveAttemptV1>, ControllerStorageOutputReserveAttemptErrorV1> {
+    load_attempt_profile(controller, execution, OriginalOutputProfileV1::Captured)
+}
+
+fn load_attempt_profile(
+    controller: &Journal,
+    execution: ExecutionId,
+    profile: OriginalOutputProfileV1,
+) -> Result<Option<ControllerStorageOutputReserveAttemptV1>, ControllerStorageOutputReserveAttemptErrorV1> {
     controller.ensure_protected_authority()?;
     controller
         .get(
@@ -372,7 +565,7 @@ pub fn load_controller_storage_output_reserve_attempt_v1(
             execution.as_bytes(),
         )
         .map(|bytes| {
-            let attempt = ControllerStorageOutputReserveAttemptV1::decode(bytes)?;
+            let attempt = ControllerStorageOutputReserveAttemptV1::decode_profile(bytes, profile)?;
             if attempt.execution != execution {
                 return Err(ControllerStorageOutputReserveAttemptErrorV1::Invalid);
             }
@@ -387,7 +580,14 @@ fn inspect_original(
     ([u8; 16], StorageOutputReserveRecordsV1, ObjectDigest),
     ControllerStorageOutputReserveAttemptErrorV1,
 > {
-    let original = inspect_original_checked(body)?;
+    inspect_original_profile(body, OriginalOutputProfileV1::LegacyZero)
+}
+
+fn inspect_original_profile(
+    body: &[u8],
+    profile: OriginalOutputProfileV1,
+) -> Result<([u8; 16], StorageOutputReserveRecordsV1, ObjectDigest), ControllerStorageOutputReserveAttemptErrorV1> {
+    let original = inspect_original_checked_profile(body, profile)?;
     Ok((
         original.request_id,
         original.records,
@@ -397,6 +597,13 @@ fn inspect_original(
 
 fn inspect_original_checked(
     body: &[u8],
+) -> Result<CheckedOriginalStorageOutputV1, ControllerStorageOutputReserveAttemptErrorV1> {
+    inspect_original_checked_profile(body, OriginalOutputProfileV1::LegacyZero)
+}
+
+fn inspect_original_checked_profile(
+    body: &[u8],
+    profile: OriginalOutputProfileV1,
 ) -> Result<CheckedOriginalStorageOutputV1, ControllerStorageOutputReserveAttemptErrorV1> {
     if body.is_empty() || body.len() > MAXIMUM_BODY_BYTES {
         return Err(ControllerStorageOutputReserveAttemptErrorV1::Invalid);
@@ -414,12 +621,12 @@ fn inspect_original_checked(
         .try_into()
         .map_err(|_| ControllerStorageOutputReserveAttemptErrorV1::Invalid)?;
 
-    let records = StorageOutputReserveRecordsV1::from_canonical_records(
+    let records = profile.records(
         &request.canonical_controller_attempt,
         &request.canonical_controller_settlement,
     )
     .map_err(|_| ControllerStorageOutputReserveAttemptErrorV1::Invalid)?;
-    let grant = storage_output_reserve_grant_v1(records.assignment(), request_id, body)
+    let grant = profile.grant(records.assignment(), request_id, body)
         .map_err(|_| ControllerStorageOutputReserveAttemptErrorV1::Invalid)?;
 
     Ok(CheckedOriginalStorageOutputV1 {
@@ -434,8 +641,16 @@ fn persist_attempt(
     controller: &mut Journal,
     attempt: &ControllerStorageOutputReserveAttemptV1,
 ) -> Result<(), ControllerStorageOutputReserveAttemptErrorV1> {
+    persist_attempt_profile(controller, attempt, OriginalOutputProfileV1::LegacyZero)
+}
+
+fn persist_attempt_profile(
+    controller: &mut Journal,
+    attempt: &ControllerStorageOutputReserveAttemptV1,
+    profile: OriginalOutputProfileV1,
+) -> Result<(), ControllerStorageOutputReserveAttemptErrorV1> {
     controller.ensure_protected_authority()?;
-    if !ControllerStorageOutputReserveAttemptV1::decode(&attempt.encode())
+    if !ControllerStorageOutputReserveAttemptV1::decode_profile(&attempt.encode(), profile)
         .is_ok_and(|decoded| decoded == *attempt)
     {
         return Err(ControllerStorageOutputReserveAttemptErrorV1::Invalid);
@@ -466,9 +681,22 @@ fn persist_attempt(
             attempt.encode(),
         )],
     )?;
-    controller
-        .commit(&transaction)
-        .map_err(|_| ControllerStorageOutputReserveAttemptErrorV1::OutcomeUnknown)?;
+    if matches!(profile, OriginalOutputProfileV1::Captured) {
+        controller.preflight_transactions(std::slice::from_ref(&transaction))?;
+    }
+    match profile {
+        OriginalOutputProfileV1::LegacyZero => {
+            // Keep the ordinary classified-error/drop adapter at its old site.
+            controller
+                .commit(&transaction)
+                .map_err(|_| ControllerStorageOutputReserveAttemptErrorV1::OutcomeUnknown)?;
+        }
+        OriginalOutputProfileV1::Captured => {
+            controller
+                .commit(&transaction)
+                .map_err(ControllerStorageOutputReserveAttemptErrorV1::CapturedOutcomeUnknown)?;
+        }
+    }
     Ok(())
 }
 

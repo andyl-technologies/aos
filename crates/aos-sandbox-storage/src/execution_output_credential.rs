@@ -3,8 +3,10 @@
 //! The root-owned external source and systemd credential copy must contain
 //! identical capacity and MAC key bytes. Both are pinned while the existing
 //! journal's authenticated AOSEOC01 configuration is replayed. This custody
-//! does not provision a journal or enable output mutation; the only live
-//! output endpoint is a read-only query of a retained row.
+//! does not provision a journal or independently enable output mutation. The
+//! installed selected registration borrows this writer only through genuine
+//! Storage admission and the original pending Session/Host bookends. Physical
+//! capture, provisioning and method-46 floor activation remain separate.
 //!
 //! ```text
 //! credential = AOSOCK01 | capacity:u64be | key-id[16] | secret[32]
@@ -36,6 +38,149 @@ const CREDENTIAL_NAME: &str = "storage-execution-output-key-v1";
 const JOURNAL_NAME: &str = "execution-output.journal";
 const MAGIC: &[u8; 8] = b"AOSOCK01";
 const CREDENTIAL_BYTES: usize = 64;
+
+/// Owns a selected registration failure without flattening its original cause.
+#[derive(Debug, thiserror::Error)]
+pub enum OriginalOutputRegistrationErrorV1 {
+    /// The selected request or live owner cut does not match.
+    #[error("original output registration is closed or not current")]
+    NotCurrent,
+    /// The actual configured Storage signed admission failed.
+    #[error(transparent)]
+    Admission(#[from] crate::StorageAdmissionError),
+    /// The original configured Storage state failed to replay or recheck.
+    #[error(transparent)]
+    State(#[from] crate::StorageStateError),
+    /// Storage runtime or its genuine clock failed.
+    #[error(transparent)]
+    Runtime(#[from] crate::StorageRuntimeError),
+    /// The original output credentials or writer names changed.
+    #[error(transparent)]
+    Custody(#[from] StorageServiceError),
+    /// Canonical original request or response DATA failed to decode.
+    #[error(transparent)]
+    Protocol(#[from] aos_sandbox_protocol::ProtocolValidationError),
+}
+
+/// Retains one authenticated pending request and its actual lower results.
+///
+/// Only the genuine Storage composition starts this request-scoped custody.
+/// It supplies no permission. The installed session keeps the original
+/// carrier and Host currentness separately, and never replaces a failed
+/// attempt. Local commit success is not authenticated terminal retirement.
+pub struct OriginalExecutionOutputRegistrationV1 {
+    pub(crate) request: aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+    pub(crate) started: bool,
+    pub(crate) initial_custody: Option<Result<(), StorageServiceError>>,
+    pub(crate) initial_clock: Option<Result<aos_sandbox_core::RawPairedClockSample, crate::StorageRuntimeError>>,
+    pub(crate) initial_cut: Option<Result<crate::broker::OriginalOutputAdmissionCutV1, OriginalOutputRegistrationErrorV1>>,
+    pub(crate) crossing_clock: Option<Result<aos_sandbox_core::RawPairedClockSample, crate::StorageRuntimeError>>,
+    pub(crate) crossing_cut: Option<Result<crate::broker::OriginalOutputAdmissionCutV1, OriginalOutputRegistrationErrorV1>>,
+    pub(crate) verified: Option<Result<crate::execution_output::reserve_source::VerifiedOriginalOutputReserveV1, crate::execution_output::ExecutionOutputLedgerErrorV1>>,
+    pub(crate) entry_clock: Option<Result<aos_sandbox_core::RawPairedClockSample, crate::StorageRuntimeError>>,
+    pub(crate) entry_clock_check: Option<Result<(), crate::StorageAdmissionError>>,
+    pub(crate) commit: Option<Result<aos_sandbox_core::ObjectDigest, crate::execution_output::ExecutionOutputLedgerErrorV1>>,
+    pub(crate) response: Option<Result<Vec<u8>, crate::execution_output::ExecutionOutputLedgerErrorV1>>,
+    pub(crate) query: Option<Result<aos_sandbox_protocol::storage_output_reserve::ValidatedStorageOutputQueryRequestV1, aos_sandbox_protocol::ProtocolValidationError>>,
+    pub(crate) first_cause: Option<OriginalOutputRegistrationErrorV1>,
+    pub(crate) postcheck_debt: Option<OriginalOutputRegistrationErrorV1>,
+    pub(crate) final_custody: Option<Result<(), StorageServiceError>>,
+    pub(crate) final_clock: Option<Result<aos_sandbox_core::RawPairedClockSample, crate::StorageRuntimeError>>,
+    pub(crate) final_cut: Option<Result<crate::broker::OriginalOutputAdmissionCutV1, OriginalOutputRegistrationErrorV1>>,
+    pub(crate) response_custody: Option<Result<(), StorageServiceError>>,
+    pub(crate) response_clock: Option<Result<aos_sandbox_core::RawPairedClockSample, crate::StorageRuntimeError>>,
+    pub(crate) response_cut: Option<Result<crate::broker::OriginalOutputAdmissionCutV1, OriginalOutputRegistrationErrorV1>>,
+    pub(crate) completed: bool,
+}
+
+impl OriginalExecutionOutputRegistrationV1 {
+    pub(crate) fn begin(
+        request: aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1,
+    ) -> Self {
+        Self {
+            request,
+            started: false,
+            initial_custody: None,
+            initial_clock: None,
+            initial_cut: None,
+            crossing_clock: None,
+            crossing_cut: None,
+            verified: None,
+            entry_clock: None,
+            entry_clock_check: None,
+            commit: None,
+            response: None,
+            query: None,
+            first_cause: None,
+            postcheck_debt: None,
+            final_custody: None,
+            final_clock: None,
+            final_cut: None,
+            response_custody: None,
+            response_clock: None,
+            response_cut: None,
+            completed: false,
+        }
+    }
+
+    /// Borrows the exact original request; no request can be replaced in this attempt.
+    #[must_use]
+    pub const fn original_request(&self) -> &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1 {
+        &self.request
+    }
+
+    /// Borrows the actual atomic commit result, including uncertain native errors.
+    #[must_use]
+    pub const fn original_registration_commit_result(&self) -> Option<&Result<aos_sandbox_core::ObjectDigest, crate::execution_output::ExecutionOutputLedgerErrorV1>> {
+        self.commit.as_ref()
+    }
+
+    /// Borrows exact readback bytes only after every lower registration bookend.
+    #[must_use]
+    pub fn response(&self) -> Option<&[u8]> {
+        if !self.completed || self.failure().is_some() || self.postcheck_debt().is_some() {
+            return None;
+        }
+        self.response.as_ref()?.as_ref().ok().map(Vec::as_slice)
+    }
+
+    /// Borrows the first actual action cause, without cloning or moving any result.
+    #[must_use]
+    pub fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if let Some(error) = &self.first_cause {
+            return Some(error);
+        }
+        if let Some(Err(error)) = &self.initial_custody { return Some(error); }
+        if let Some(Err(error)) = &self.initial_clock { return Some(error); }
+        if let Some(Err(error)) = &self.initial_cut { return Some(error); }
+        if let Some(Err(error)) = &self.crossing_clock { return Some(error); }
+        if let Some(Err(error)) = &self.crossing_cut { return Some(error); }
+        if let Some(Err(error)) = &self.verified { return Some(error); }
+        if let Some(Err(error)) = &self.entry_clock { return Some(error); }
+        if let Some(Err(error)) = &self.entry_clock_check { return Some(error); }
+        if let Some(Err(error)) = &self.commit {
+            return Some(error);
+        }
+        if let Some(Err(error)) = &self.response {
+            return Some(error);
+        }
+        if let Some(Err(error)) = &self.query { return Some(error); }
+        None
+    }
+
+    /// Borrows independent later debt; an action error remains the first cause.
+    #[must_use]
+    pub fn postcheck_debt(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if let Some(error) = &self.postcheck_debt { return Some(error); }
+        if let Some(Err(error)) = &self.final_custody { return Some(error); }
+        if let Some(Err(error)) = &self.final_clock { return Some(error); }
+        if let Some(Err(error)) = &self.final_cut { return Some(error); }
+        if let Some(Err(error)) = &self.response_custody { return Some(error); }
+        if let Some(Err(error)) = &self.response_clock { return Some(error); }
+        if let Some(Err(error)) = &self.response_cut { return Some(error); }
+        None
+    }
+}
 
 /// Pins the output capacity and key alongside its exclusive journal writer.
 pub struct StorageExecutionOutputCustodyV1 {
@@ -138,6 +283,61 @@ fn recheck_source(expected: &PinnedSource) -> Result<(), StorageServiceError> {
 }
 
 impl StorageExecutionOutputCustodyV1 {
+    pub(crate) fn prepare_original(
+        &self,
+        attempt: &mut OriginalExecutionOutputRegistrationV1,
+        host_terminal: &aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodOutcomeV1,
+        now: u64,
+    ) {
+        let Some(Ok(cut)) = &attempt.initial_cut else {
+            attempt.first_cause = Some(OriginalOutputRegistrationErrorV1::NotCurrent);
+            return;
+        };
+        attempt.verified = Some(self.ledger.prepare_authenticated_original(
+            &cut.records, &attempt.request, host_terminal, now,
+        ));
+    }
+
+    pub(crate) fn register_original(
+        &mut self,
+        attempt: &mut OriginalExecutionOutputRegistrationV1,
+    ) {
+        let Some(Ok(verified)) = &attempt.verified else {
+            return;
+        };
+        attempt.commit = Some(self.ledger.reserve_authenticated_original(verified));
+    }
+
+    pub(crate) fn read_original_registration(
+        &self,
+        attempt: &mut OriginalExecutionOutputRegistrationV1,
+    ) -> Result<(), OriginalOutputRegistrationErrorV1> {
+        let cut = attempt.initial_cut.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(OriginalOutputRegistrationErrorV1::NotCurrent)?;
+        let (request_id, digest) = match attempt.request.method() {
+            aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT => (
+                attempt.request.request_id(),
+                aos_sandbox_protocol::storage_output_reserve::continuation::original_plan_digest_v1(&attempt.request)?,
+            ),
+            aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT => {
+                let clock = attempt.response_clock.as_ref().and_then(|result| result.as_ref().ok())
+                    .or_else(|| attempt.final_clock.as_ref().and_then(|result| result.as_ref().ok()))
+                    .ok_or(OriginalOutputRegistrationErrorV1::NotCurrent)?;
+                attempt.query = Some(aos_sandbox_protocol::storage_output_reserve::decode_captured_storage_output_query_request_v1(
+                    attempt.request.exact_body(), attempt.request.peer(), attempt.request.peer_policy(), clock.boottime_nanoseconds(),
+                ));
+                let query = attempt.query.as_ref().and_then(|result| result.as_ref().ok())
+                    .ok_or(OriginalOutputRegistrationErrorV1::NotCurrent)?;
+                (query.original_request_id(), query.original_plan_digest())
+            }
+            _ => return Err(OriginalOutputRegistrationErrorV1::NotCurrent),
+        };
+        attempt.response = Some(self.ledger.original_registration_response(
+            request_id, &cut.records, digest,
+        ));
+        Ok(())
+    }
+
     /// Borrows the authenticated, exclusively held output ledger for a readback.
     pub(crate) const fn ledger(&self) -> &ExecutionOutputLedgerV1 {
         &self.ledger

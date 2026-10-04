@@ -210,6 +210,24 @@ pub(crate) struct AuthenticatedCaptureCandidateCutV1 {
     desired_state_digest: ObjectDigest,
 }
 
+/// Keeps the genuine configured admission and both original owner bindings.
+pub(crate) struct OriginalOutputAdmissionCutV1 {
+    pub(crate) records: aos_sandbox_protocol::storage_output_reserve::StorageOutputReserveRecordsV1,
+    authority_head_sequence: u64,
+    desired_state_digest: ObjectDigest,
+    catalog_binding: (u64, ObjectDigest),
+    _admission: aos_sandbox_broker::VerifiedBrokerAdmission,
+}
+
+impl OriginalOutputAdmissionCutV1 {
+    pub(crate) fn matches(&self, successor: &Self) -> bool {
+        self.records == successor.records
+            && self.authority_head_sequence == successor.authority_head_sequence
+            && self.desired_state_digest == successor.desired_state_digest
+            && self.catalog_binding == successor.catalog_binding
+    }
+}
+
 impl AuthenticatedCaptureCandidateCutV1 {
     pub(crate) const fn query(&self) -> &StorageCaptureCandidateQueryV1 {
         &self.query
@@ -645,6 +663,65 @@ impl StorageAdmissionCoordinator {
         self.transactions
             .verified_resolver_journal()
             .map_err(Into::into)
+    }
+
+    /// Joins the signed original output operation to the installed base fence.
+    pub(crate) fn authenticate_output_registration(
+        &self,
+        request: &AuthenticatedBrokerMethodRequestV1,
+        clock: &RawPairedClockSample,
+    ) -> Result<OriginalOutputAdmissionCutV1, crate::execution_output_credential::OriginalOutputRegistrationErrorV1> {
+        use crate::execution_output_credential::OriginalOutputRegistrationErrorV1 as Error;
+        use aos_sandbox_protocol::storage_output_reserve::{
+            decode_captured_storage_output_query_request_v1,
+            decode_captured_storage_output_reserve_request_v1,
+        };
+
+        let records = match request.method() {
+            BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT => {
+                *decode_captured_storage_output_reserve_request_v1(
+                    request.exact_body(), request.peer(), request.peer_policy(), clock.boottime_nanoseconds(),
+                )?.records()
+            }
+            BrokerMethod::BROKER_METHOD_STORAGE_QUERY_EXECUTION_OUTPUT => {
+                *decode_captured_storage_output_query_request_v1(
+                    request.exact_body(), request.peer(), request.peer_policy(), clock.boottime_nanoseconds(),
+                )?.records()
+            }
+            _ => return Err(Error::NotCurrent),
+        };
+        let prior = self.transactions.authority_record(
+            RecordNamespace::DesiredState, records.assignment().sandbox().as_bytes(),
+        )?.ok_or(Error::NotCurrent)?;
+        let (admitted_records, admission) = self.authority.admit_output_registration(
+            request, ProtocolVersion::new(1, 0), clock, prior,
+        )?;
+        if admitted_records != records {
+            return Err(Error::NotCurrent);
+        }
+        let physical = self.transactions.verified_resolver_journal()?;
+        let binding = physical.physical().binding();
+        Ok(OriginalOutputAdmissionCutV1 {
+            records,
+            authority_head_sequence: self.transactions.authority_head_sequence()?,
+            desired_state_digest: ObjectDigest::from_bytes(Sha256::digest(prior).into()),
+            catalog_binding: (binding.generation(), binding.digest()),
+            _admission: admission,
+        })
+    }
+
+    /// Validates the final protected sample against the already-admitted effect.
+    pub(crate) fn check_output_registration_clock(
+        &self,
+        cut: &OriginalOutputAdmissionCutV1,
+        clock: &RawPairedClockSample,
+    ) -> Result<(), crate::StorageAdmissionError> {
+        match self.authority.classify_effect_clock(&cut._admission.effect, clock)? {
+            BrokerEffectClockDispositionV1::Fresh => Ok(()),
+            BrokerEffectClockDispositionV1::Expired => {
+                Err(crate::StorageAdmissionError::FenceRejected)
+            }
+        }
     }
 
     /// Authenticates a read-only candidate against the current fenced catalog.
