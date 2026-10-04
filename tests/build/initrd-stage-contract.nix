@@ -52,6 +52,11 @@
       member = "sbin/blkid";
     }
     {
+      name = "getent";
+      package = pkgs.glibc-tools;
+      member = "bin/getent";
+    }
+    {
       name = "apm";
       package = pkgs.aos.apm;
       member = "bin/apm";

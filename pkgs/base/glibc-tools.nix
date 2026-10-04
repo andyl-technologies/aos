@@ -34,7 +34,7 @@ in
         files = {};
         steps = [
           {
-            argv = ["@python@" "-c" "import subprocess\nresult = subprocess.run(['@out@/bin/getconf', 'ARG_MAX'], capture_output=True, text=True)\nassert result.returncode == 0 and (result.stdout.strip().isdigit() and int(result.stdout.strip()) > 0), (result.returncode, result.stdout, result.stderr)\nprint('glibc-tools command passed')\n"];
+            argv = ["@python@" "-c" "import subprocess\nresult = subprocess.run(['@out@/bin/getconf', 'ARG_MAX'], capture_output=True, text=True)\nassert result.returncode == 0 and (result.stdout.strip().isdigit() and int(result.stdout.strip()) > 0), (result.returncode, result.stdout, result.stderr)\nlookup = subprocess.run(['@out@/bin/getent', '--service=files', 'protocols', 'tcp'], capture_output=True, text=True)\nassert lookup.returncode == 0, (lookup.returncode, lookup.stdout, lookup.stderr)\nfields = lookup.stdout.split()\nassert fields[:2] == ['tcp', '6'], fields\nprint('glibc-tools command passed')\n"];
             exit_code = 0;
             stdout.exact = "glibc-tools command passed\n";
             stderr.exact = "";
@@ -64,7 +64,7 @@ in
 
     # The utility tree is target data copied by native build tools.
     src = glibc.bin;
-    buildDeps = [];
+    buildDeps = [glibc.getent];
     runtimeDeps = [glibc perl bash];
     dontNukeRefs = true;
 
@@ -76,6 +76,10 @@ in
         script = ''
           cp -R ${glibc.bin}/. "$out/"
           chmod -R u+w "$out"
+
+          # libc exports getent separately; the complete utility package also
+          # exposes that command through its existing bin directory.
+          cp ${glibc.getent}/bin/getent "$out/bin/getent"
 
           # The bootstrap utility export deliberately uses its tier's Perl.
           # Rebind mtrace to the distribution interpreter without losing tools.
