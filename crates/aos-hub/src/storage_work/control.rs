@@ -5,7 +5,7 @@
 
 use anyhow::{Context as _, Result};
 use aos_hub_core::fetch::SurfaceFetch as _;
-use aos_hub_core::storage_work::{MAX_OCI_RANGE_BYTES, admitted_oci_blob_path};
+use aos_hub_core::storage_work::{admitted_oci_blob_path, MAX_OCI_RANGE_BYTES};
 
 use super::HybridSurfaceFetch;
 
@@ -33,7 +33,7 @@ pub(super) async fn fetch_bounded(
         return Ok(bytes);
     }
 
-    let Some(head) = surface.head(path).await? else {
+    let Some((head, guarded_source)) = surface.head_source(path).await? else {
         return Ok(None);
     };
     let size = usize::try_from(head.size).context("OCI control object size exceeds usize")?;
@@ -49,10 +49,14 @@ pub(super) async fn fetch_bounded(
     let mut start = 0_u64;
     while start < head.size {
         let end = (start + MAX_OCI_RANGE_BYTES as u64 - 1).min(head.size - 1);
-        let read = surface
-            .inspect_oci_range(path, (start, end))
+        let (read, guarded) = surface
+            .inspect_oci_range_source(path, (start, end))
             .await?
             .context("OCI control object disappeared during inspection")?;
+        anyhow::ensure!(
+            guarded_source == guarded,
+            "OCI control source incarnation changed between ranges"
+        );
         anyhow::ensure!(
             read.total == head.size
                 && read.range == Some((start, end))

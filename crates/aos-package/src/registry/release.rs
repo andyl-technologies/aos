@@ -24,6 +24,212 @@ use crate::config::ApmConfig;
 use crate::provenance::ProvenanceSigner;
 use crate::types::{package_name_bucket, validate_package_name, validate_registry_name};
 
+pub(crate) mod artifacts;
+mod lineage;
+mod recovery;
+mod root_base;
+pub use artifacts::RegistryReleaseArtifacts;
+pub use root_base::{RootRegistryBase, inspect_root_base};
+
+/// Coordinates shared pack generation and publication after role-bound signing.
+pub struct RegistryReleaseLifecycle;
+
+impl RegistryReleaseLifecycle {
+    /// Composes authored changes with the authenticated preceding release tree.
+    ///
+    /// The caller supplies a clean isolated workspace. Its branch stays at the
+    /// authored base, while the composed tree is reviewed before signing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for untrusted predecessor tags, unrelated histories,
+    /// conflicting changes, or failed worktree updates.
+    pub fn prepare_lineage(directory: &Path, release: &semver::Version) -> Result<Option<String>> {
+        lineage::compose(directory, release)
+    }
+
+    /// Signs and completes one reviewed candidate through the shared finalizer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when review validation, metadata policy, role signing,
+    /// immutable tag creation, or optimized pack generation fails.
+    pub async fn finalize_prepared(
+        prepared: &PreparedRegistryRelease,
+        identity: &RegistryCommitIdentity,
+        signer: &mut dyn RegistryObjectSigner,
+    ) -> Result<FinalizedRegistryRelease> {
+        if let Some(receipt) = recovery::read(&prepared.directory, &prepared.release)? {
+            if receipt.prepared != *prepared || receipt.identity != *identity {
+                bail!("signed finalization receipt differs from the prepared review or identity");
+            }
+            return recovery::complete(receipt).await;
+        }
+        prepared.finalize_signed_tree(identity, signer).await
+    }
+
+    /// Resumes a reviewed transaction after its signed objects were persisted.
+    ///
+    /// Returns `None` when signing has not produced a durable receipt. Recovery
+    /// verifies the original provider evidence, signatures, exact tree, and
+    /// ancestry before restoring candidate refs and completing artifacts.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for changed review inputs, inactive signer identities,
+    /// changed candidate bytes or refs, or failed artifact generation.
+    pub async fn resume_transaction(
+        transaction: &RegistryReleaseTransaction,
+        directory: &Path,
+    ) -> Result<Option<FinalizedRegistryRelease>> {
+        recovery::resume_transaction(transaction, directory).await
+    }
+
+    /// Restores an interrupted local candidate's exact signed refs.
+    ///
+    /// This verifies the full signed tree before updating its original branch.
+    /// It never resets the caller's index or working tree and never requests
+    /// new signatures. Returns `false` when no signed receipt exists yet.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for mismatched checkpoint identity, changed bytes or
+    /// refs, invalid signatures, or an inactive signing authority.
+    pub fn restore_signed_candidate(
+        directory: &Path,
+        registry: &str,
+        release: &str,
+        base_commit: &str,
+    ) -> Result<bool> {
+        let Some(receipt) = recovery::read(directory, release)? else {
+            return Ok(false);
+        };
+        if receipt.prepared.directory != directory
+            || receipt.prepared.registry != registry
+            || receipt.prepared.release != release
+            || receipt.prepared.base_commit != base_commit
+        {
+            bail!("signed candidate differs from the original preparation checkpoint");
+        }
+        recovery::restore_refs(&receipt)?;
+        Ok(true)
+    }
+
+    /// Completes the optimized immutable transfer surface for a signed release.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for missing signed tags, failed pack generation, or
+    /// invalid static-origin metadata.
+    pub async fn complete_signed_release(
+        directory: &Path,
+        version: &semver::Version,
+        resume: bool,
+        printer: &aos_core::output::Printer,
+    ) -> Result<RegistryReleaseArtifacts> {
+        let published = crate::registry_ops::semver_tag_versions(directory)?
+            .into_iter()
+            .filter(|prior| prior != version)
+            .collect::<Vec<_>>();
+        let artifacts =
+            artifacts::write_release_artifacts(directory, &published, version, resume, printer)
+                .await?;
+        crate::registry_ops::refresh_registry_object_store(directory)?;
+        Ok(artifacts)
+    }
+
+    /// Uploads an exact generated publication through the common origin adapter.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any selected surface byte changed or upload fails.
+    pub async fn upload(
+        directory: &Path,
+        surface: &[RegistryStaticSurfaceFile],
+        destinations: &[String],
+        auth: &aos_cache::AuthOptions,
+        no_skip: bool,
+        printer: &aos_core::output::Printer,
+    ) -> Result<super::static_upload::StaticOriginUploadReport> {
+        if collect_static_surface(directory)? != surface {
+            bail!("prepared registry publication surface changed before upload");
+        }
+        super::static_upload::upload_static_origin_to_all(
+            directory,
+            destinations,
+            auth,
+            no_skip,
+            printer,
+        )
+        .await
+    }
+}
+
+/// Adapts an active local Ed25519 key to the role-bound registry signer API.
+pub struct KeyPathRegistryObjectSigner {
+    directory: PathBuf,
+    key_path: PathBuf,
+    key_id: String,
+    trusted_key: String,
+    registry: String,
+}
+
+impl KeyPathRegistryObjectSigner {
+    /// Binds a local key to an active registry trust-roster entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid key material or an inactive roster identity.
+    pub fn new(directory: &Path, registry: &str, key_path: &Path, key_id: &str) -> Result<Self> {
+        let trusted_key = format!(
+            "{registry}:Ed25519:{}",
+            crate::security::public_ed25519_blob(key_path)?
+        );
+        require_active_signing_key(directory, key_id, &trusted_key)?;
+        Ok(Self {
+            directory: directory.to_path_buf(),
+            key_path: key_path.to_path_buf(),
+            key_id: key_id.to_string(),
+            trusted_key,
+            registry: registry.to_string(),
+        })
+    }
+}
+
+#[async_trait]
+impl RegistryObjectSigner for KeyPathRegistryObjectSigner {
+    async fn sign_git_object(
+        &mut self,
+        request: RegistryGitSigningRequest,
+    ) -> Result<RegistryGitSignature> {
+        require_active_signing_key(&self.directory, &self.key_id, &self.trusted_key)?;
+        if request.registry != self.registry
+            || sha256_bytes(&request.payload) != request.payload_digest
+        {
+            bail!("registry signing request payload digest differs");
+        }
+        semver::Version::parse(&request.release)?;
+        require_sha256(&request.plan_digest, "signing plan digest")?;
+        let armored_signature =
+            crate::security::sign_payload_signature(&self.key_path, "git", &request.payload)?;
+        if !crate::security::verify_payload_signature(
+            &request.payload,
+            &armored_signature,
+            &self.trusted_key,
+            "git",
+        )? {
+            bail!("local registry signature failed verification");
+        }
+        Ok(RegistryGitSignature {
+            kind: request.kind,
+            payload_digest: request.payload_digest.clone(),
+            key_id: self.key_id.clone(),
+            provider_operation_id: format!("local:{}", request.payload_digest),
+            armored_signature,
+        })
+    }
+}
+
 /// Schema identifier for an atomic registry authoring request.
 pub const TRANSACTION_SCHEMA: &str = "aos.registry-release-transaction/v1";
 /// Schema identifier for a registry authoring intent before surface review.
@@ -237,6 +443,12 @@ pub struct RegistryReleaseTransaction {
     /// the policy surface is digested; absent when the contract states none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub support: Option<super::support::SupportSectionWrite>,
+    /// Exact complete signed OCI graph included in the reviewed candidate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container: Option<aos_registry_surface::staging::StageContainerGraph>,
+    /// Exact authenticated preceding release included in the signed ancestry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predecessor_commit: Option<String>,
 }
 
 /// Auditable result of a successfully prepared registry tree.
@@ -259,6 +471,15 @@ pub struct PreparedRegistryRelease {
     pub surfaces: RegistrySurfaceDigests,
     /// Durable isolated authoring directory.
     pub directory: PathBuf,
+    /// Ordinary isolated maintainer branch retaining the candidate commit.
+    #[serde(default)]
+    pub source_branch: String,
+    /// Exact reviewed container graph retained alongside the candidate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container: Option<aos_registry_surface::staging::StageContainerGraph>,
+    /// Exact authenticated predecessor retained by the reviewed transaction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predecessor_commit: Option<String>,
 }
 
 /// Deterministic author and tagger identity frozen for registry finalization.
@@ -356,6 +577,18 @@ pub struct FinalizedRegistryRelease {
     pub surfaces: RegistrySurfaceDigests,
     /// Exact static-origin files generated without uploading them.
     pub static_surface: Vec<RegistryStaticSurfaceFile>,
+    /// Ordinary maintainer branch retaining the prepared signed candidate.
+    #[serde(default)]
+    pub source_branch: String,
+    /// Exact reviewed container graph inherited from preparation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container: Option<aos_registry_surface::staging::StageContainerGraph>,
+    /// Full anchor pack generated by the shared lifecycle, when required.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_pack: Option<String>,
+    /// Optimized compressed thin packs generated by the shared lifecycle.
+    #[serde(default)]
+    pub deltas: Vec<String>,
 }
 
 /// One exact file in the generated registry static surface.
@@ -443,6 +676,8 @@ impl RegistryReleaseIntent {
             author,
             container_release,
             None,
+            None,
+            None,
         )
         .await?;
         let transaction = RegistryReleaseTransaction {
@@ -454,9 +689,83 @@ impl RegistryReleaseIntent {
             entries: self.entries.clone(),
             expected: prepared.surfaces.clone(),
             support: self.support.clone(),
+            container: prepared.container.clone(),
+            predecessor_commit: prepared.predecessor_commit.clone(),
         };
         transaction.validate()?;
 
+        Ok((transaction, prepared))
+    }
+
+    /// Authors a candidate and signs catalog TUF metadata before review freezes it.
+    ///
+    /// # Errors
+    ///
+    /// Returns preparation errors or an error from the metadata signing authority.
+    pub async fn prepare_with_metadata_signer(
+        &self,
+        source_registry: &Path,
+        output: &Path,
+        author: &mut dyn RegistryEntryAuthor,
+        container_release: Option<&[u8]>,
+        signer: &mut dyn super::tuf::RegistryMetadataSigner,
+    ) -> Result<(RegistryReleaseTransaction, PreparedRegistryRelease)> {
+        self.validate()?;
+        let prepared = prepare_registry(
+            self,
+            source_registry,
+            output,
+            author,
+            container_release,
+            None,
+            None,
+            Some(signer),
+        )
+        .await?;
+        let transaction = RegistryReleaseTransaction {
+            schema: TRANSACTION_SCHEMA.to_string(),
+            registry: self.registry.clone(),
+            base_commit: self.base_commit.clone(),
+            release: self.release.clone(),
+            plan_digest: self.plan_digest.clone(),
+            entries: self.entries.clone(),
+            expected: prepared.surfaces.clone(),
+            support: self.support.clone(),
+            container: prepared.container.clone(),
+            predecessor_commit: prepared.predecessor_commit.clone(),
+        };
+        transaction.validate()?;
+        Ok((transaction, prepared))
+    }
+
+    /// Authors a reviewed catalog with an exact complete signed container graph.
+    ///
+    /// # Errors
+    ///
+    /// Returns preparation errors or an error for a mismatched container graph.
+    pub async fn prepare_with_metadata_signer_and_container_graph(
+        &self,
+        source_registry: &Path,
+        output: &Path,
+        author: &mut dyn RegistryEntryAuthor,
+        container_release: Option<&[u8]>,
+        signer: &mut dyn super::tuf::RegistryMetadataSigner,
+        graph: Option<&aos_registry_surface::staging::StageContainerGraph>,
+    ) -> Result<(RegistryReleaseTransaction, PreparedRegistryRelease)> {
+        let (mut transaction, mut prepared) = self
+            .prepare_with_metadata_signer(
+                source_registry,
+                output,
+                author,
+                container_release,
+                signer,
+            )
+            .await?;
+        if let Some(graph) = graph {
+            validate_container_graph(&prepared.directory, &prepared.release, graph)?;
+            transaction.container = Some(graph.clone());
+            prepared.container = Some(graph.clone());
+        }
         Ok((transaction, prepared))
     }
 
@@ -525,6 +834,8 @@ impl RegistryReleaseTransaction {
             author,
             container_release,
             Some(&self.expected),
+            Some(&self.predecessor_commit),
+            None,
         )
         .await
     }
@@ -548,6 +859,9 @@ impl RegistryReleaseTransaction {
             bail!("prepared registry release tag already exists");
         }
         validate_materialized_entries(directory, &self.entries)?;
+        if let Some(graph) = &self.container {
+            validate_container_graph(directory, &self.release, graph)?;
+        }
         require_worktree_changes(directory)?;
         let surfaces = registry_surface_digests(directory)?;
         if surfaces != self.expected {
@@ -563,6 +877,13 @@ impl RegistryReleaseTransaction {
             entry_count: self.entries.len(),
             surfaces,
             directory: directory.to_path_buf(),
+            source_branch: repository
+                .head()?
+                .shorthand()
+                .context("prepared registry has no branch")?
+                .to_string(),
+            container: self.container.clone(),
+            predecessor_commit: self.predecessor_commit.clone(),
         })
     }
 
@@ -586,6 +907,15 @@ impl RegistryReleaseTransaction {
         require_sha256(&self.expected.catalog, "catalog digest")?;
         require_sha256(&self.expected.store_graph, "store-graph digest")?;
         require_sha256(&self.expected.policy, "policy digest")?;
+        if let Some(predecessor) = &self.predecessor_commit {
+            require_git_oid(predecessor)?;
+        }
+        if let Some(graph) = &self.container {
+            graph.validate(
+                &crate::registry::container_stage::graph_objects(graph),
+                &self.release,
+            )?;
+        }
         Ok(())
     }
 }
@@ -597,6 +927,8 @@ async fn prepare_registry(
     author: &mut dyn RegistryEntryAuthor,
     container_release: Option<&[u8]>,
     expected: Option<&RegistrySurfaceDigests>,
+    expected_predecessor: Option<&Option<String>>,
+    metadata_signer: Option<&mut dyn super::tuf::RegistryMetadataSigner>,
 ) -> Result<PreparedRegistryRelease> {
     if output.exists() {
         bail!(
@@ -632,6 +964,20 @@ async fn prepare_registry(
             )
         })?;
     require_head(&isolated, &intent.base_commit)?;
+    let source_branch = format!("maintainer/release-{}", intent.release);
+    let isolated_repository = Repository::open(&isolated)?;
+    let base = isolated_repository.head()?.peel_to_commit()?;
+    isolated_repository.branch(&source_branch, &base, false)?;
+    isolated_repository.set_head(&format!("refs/heads/{source_branch}"))?;
+    drop(base);
+    drop(isolated_repository);
+    let predecessor_commit = RegistryReleaseLifecycle::prepare_lineage(
+        &isolated,
+        &semver::Version::parse(&intent.release)?,
+    )?;
+    if expected_predecessor.is_some_and(|expected| expected != &predecessor_commit) {
+        bail!("published predecessor differs from the reviewed transaction");
+    }
 
     let mut entry_groups = BTreeMap::<(String, String, String), Vec<RegistryReleaseEntry>>::new();
     for entry in &intent.entries {
@@ -678,6 +1024,18 @@ async fn prepare_registry(
     require_head(&isolated, &intent.base_commit)?;
     require_worktree_changes(&isolated)?;
 
+    if let Some(signer) = metadata_signer {
+        let catalog_registry = crate::registry_ops::local_registry_name(&isolated)?;
+        super::tuf::write_release_metadata_worktree_with_signer(
+            &isolated,
+            &catalog_registry,
+            &semver::Version::parse(&intent.release)?,
+            signer,
+        )
+        .await?;
+    }
+    verify_catalog_metadata(&isolated)?;
+
     let surfaces = registry_surface_digests(&isolated)?;
     if expected.is_some_and(|expected| expected != &surfaces) {
         bail!(
@@ -717,6 +1075,9 @@ async fn prepare_registry(
         entry_count: intent.entries.len(),
         surfaces,
         directory: output.to_path_buf(),
+        source_branch,
+        container: None,
+        predecessor_commit,
     })
 }
 
@@ -833,6 +1194,40 @@ fn validate_release_identity_and_entries(
 }
 
 impl PreparedRegistryRelease {
+    /// Binds a locally authored tree to the same finalizer used by release plans.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid identity, moved base, or invalid catalog.
+    pub fn from_authored_tree(
+        directory: &Path,
+        registry: &str,
+        release: &str,
+        plan_digest: &str,
+        base_commit: &str,
+        predecessor_commit: Option<String>,
+    ) -> Result<Self> {
+        let repository = Repository::open(directory)?;
+        require_head(directory, base_commit)?;
+        let source_branch = repository
+            .head()?
+            .shorthand()
+            .context("registry authoring HEAD is not a branch")?
+            .to_string();
+        Ok(Self {
+            schema: PREPARED_SCHEMA.to_string(),
+            registry: registry.to_string(),
+            base_commit: base_commit.to_string(),
+            release: release.to_string(),
+            plan_digest: plan_digest.to_string(),
+            entry_count: super::parse::parse_registry_all_platforms(directory)?.len(),
+            surfaces: registry_surface_digests(directory)?,
+            directory: directory.to_path_buf(),
+            source_branch,
+            container: None,
+            predecessor_commit,
+        })
+    }
     /// Creates the transaction's sole signed commit and annotated release tag.
     ///
     /// The method stages the complete prepared tree, obtains two independently
@@ -851,7 +1246,16 @@ impl PreparedRegistryRelease {
         identity: &RegistryCommitIdentity,
         signer: &mut dyn RegistryObjectSigner,
     ) -> Result<FinalizedRegistryRelease> {
+        RegistryReleaseLifecycle::finalize_prepared(self, identity, signer).await
+    }
+
+    async fn finalize_signed_tree(
+        &self,
+        identity: &RegistryCommitIdentity,
+        signer: &mut dyn RegistryObjectSigner,
+    ) -> Result<FinalizedRegistryRelease> {
         self.validate_for_finalization(identity)?;
+        verify_catalog_metadata(&self.directory)?;
         let repository = Repository::open(&self.directory)
             .with_context(|| format!("opening prepared registry {}", self.directory.display()))?;
         let head = repository.head()?;
@@ -890,8 +1294,23 @@ impl PreparedRegistryRelease {
             "release {}\n\nAOS-Release-Plan: {}",
             self.release, self.plan_digest
         );
+        let predecessor = self
+            .predecessor_commit
+            .as_ref()
+            .map(|commit| {
+                repository.find_commit(git2::Oid::from_str_ext(commit, repository.object_format())?)
+            })
+            .transpose()?;
+        let mut parents = vec![&parent];
+        if let Some(predecessor) = &predecessor {
+            if parent.id() != predecessor.id()
+                && !repository.graph_descendant_of(parent.id(), predecessor.id())?
+            {
+                parents.push(predecessor);
+            }
+        }
         let commit_buffer = repository
-            .commit_create_buffer(&signature, &signature, &message, &tree, &[&parent])
+            .commit_create_buffer(&signature, &signature, &message, &tree, &parents)
             .context("building unsigned registry release commit")?;
         let commit_payload = commit_buffer.to_vec();
         let commit_response = request_signature(
@@ -927,7 +1346,28 @@ impl PreparedRegistryRelease {
             .write(git2::ObjectType::Tag, &signed_tag)
             .context("writing signed registry release tag")?;
 
+        // Persist honest provider evidence before installing either ref so a
+        // retry can reuse the exact signatures and audit operation identities.
+        recovery::write(&recovery::SignedFinalizationReceipt {
+            prepared: self.clone(),
+            identity: identity.clone(),
+            commit: commit_oid.to_string(),
+            tag_object: tag_oid.to_string(),
+            signer_key_ids: vec![commit_response.key_id.clone(), tag_response.key_id.clone()],
+            provider_operation_ids: vec![
+                commit_response.provider_operation_id.clone(),
+                tag_response.provider_operation_id.clone(),
+            ],
+        })?;
+
         require_head(&self.directory, &self.base_commit)?;
+        if let Some(predecessor) = &self.predecessor_commit {
+            require_git_oid(predecessor)?;
+            repository.find_commit(git2::Oid::from_str_ext(
+                predecessor,
+                repository.object_format(),
+            )?)?;
+        }
         let tag_ref = format!("refs/tags/{}", self.release);
         if repository.find_reference(&tag_ref).is_ok() {
             bail!("prepared registry release tag appeared during signing");
@@ -946,8 +1386,15 @@ impl PreparedRegistryRelease {
         }
         branch.set_target(commit_oid, "aos canonical registry release commit")?;
 
-        crate::registry_ops::refresh_registry_object_store(&self.directory)
-            .context("generating finalized registry static surface")?;
+        let version = semver::Version::parse(&self.release)?;
+        let artifacts = RegistryReleaseLifecycle::complete_signed_release(
+            &self.directory,
+            &version,
+            false,
+            &aos_core::output::Printer::new(0, true, false),
+        )
+        .await
+        .context("generating finalized registry static surface")?;
         let static_surface = collect_static_surface(&self.directory)?;
 
         Ok(FinalizedRegistryRelease {
@@ -963,6 +1410,10 @@ impl PreparedRegistryRelease {
             ],
             surfaces: self.surfaces.clone(),
             static_surface,
+            source_branch: self.source_branch.clone(),
+            container: self.container.clone(),
+            full_pack: artifacts.full_pack,
+            deltas: artifacts.deltas,
         })
     }
 
@@ -970,11 +1421,18 @@ impl PreparedRegistryRelease {
         if self.schema != PREPARED_SCHEMA {
             bail!("unsupported prepared registry release schema");
         }
-        validate_registry_identity(&self.registry)?;
+        if self.registry.contains('/') {
+            validate_registry_identity(&self.registry)?;
+        } else {
+            validate_registry_name(&self.registry)?;
+        }
         require_git_oid(&self.base_commit)?;
         require_sha256(&self.plan_digest, "plan digest")?;
         semver::Version::parse(&self.release).context("invalid prepared release version")?;
         identity.validate()?;
+        if let Some(graph) = &self.container {
+            validate_container_graph(&self.directory, &self.release, graph)?;
+        }
         require_head(&self.directory, &self.base_commit)?;
         if registry_surface_digests(&self.directory)? != self.surfaces {
             bail!("prepared registry surfaces changed before finalization");
@@ -1066,7 +1524,46 @@ fn sha256_bytes(bytes: &[u8]) -> String {
     format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
 }
 
-fn collect_static_surface(directory: &Path) -> Result<Vec<RegistryStaticSurfaceFile>> {
+fn verify_catalog_metadata(directory: &Path) -> Result<()> {
+    let registry = crate::registry_ops::local_registry_name(directory)?;
+    let trusted_keys = super::keys::load_keys_toml(directory)?
+        .map(|roster| {
+            roster
+                .active
+                .into_iter()
+                .map(|entry| entry.key)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    super::tuf::verify_worktree_metadata(directory, &registry, &trusted_keys)
+        .context("verifying the candidate catalog TUF metadata before signing")?;
+    Ok(())
+}
+
+fn validate_container_graph(
+    directory: &Path,
+    release: &str,
+    graph: &aos_registry_surface::staging::StageContainerGraph,
+) -> Result<()> {
+    graph.validate(
+        &crate::registry::container_stage::graph_objects(graph),
+        release,
+    )?;
+    let sidecar = aos_oci_types::ContainerRelease::from_canonical_json(&fs::read(
+        directory.join(CONTAINER_RELEASE_SIDECAR_PATH),
+    )?)?;
+    if sidecar != graph.release {
+        bail!("reviewed container graph differs from its signed catalog sidecar");
+    }
+    Ok(())
+}
+
+/// Collects the exact byte identities of a generated static publication.
+///
+/// # Errors
+///
+/// Returns an error for invalid origin paths or unreadable surface bytes.
+pub fn collect_static_surface(directory: &Path) -> Result<Vec<RegistryStaticSurfaceFile>> {
     crate::registry::static_upload::collect_static_origin_files(directory)?
         .into_iter()
         .map(|file| {
@@ -1488,7 +1985,7 @@ const fn is_output_name_byte(byte: u8) -> bool {
 }
 
 struct AuthoringLock {
-    path: PathBuf,
+    _file: File,
 }
 
 impl AuthoringLock {
@@ -1497,7 +1994,8 @@ impl AuthoringLock {
         let path = repository.path().join("aos-release-authoring.lock");
         let mut file = OpenOptions::new()
             .write(true)
-            .create_new(true)
+            .create(true)
+            .truncate(false)
             .open(&path)
             .with_context(|| {
                 format!(
@@ -1505,14 +2003,11 @@ impl AuthoringLock {
                     path.display()
                 )
             })?;
+        rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive)
+            .context("another registry author holds the advisory lock")?;
+        file.set_len(0)?;
         writeln!(file, "pid={}", std::process::id())?;
-        Ok(Self { path })
-    }
-}
-
-impl Drop for AuthoringLock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        Ok(Self { _file: file })
     }
 }
 
@@ -1629,6 +2124,8 @@ mod tests {
                 policy: empty_digest,
             },
             support: None,
+            container: None,
+            predecessor_commit: None,
         }
     }
 
@@ -1653,10 +2150,9 @@ mod tests {
             .object_format(git2::ObjectFormat::Sha256)
             .initial_head("master");
         let repository = Repository::init_opts(path, &options)?;
-        fs::write(
-            path.join("registry.toml"),
-            b"[registry]\nname = \"andyl/main\"\n",
-        )?;
+        // The committed manifest carries the local authoring name; only the
+        // release transaction uses the canonical `SCOPE/NAME` identity.
+        fs::write(path.join("registry.toml"), b"[registry]\nname = \"main\"\n")?;
         let mut index = repository.index()?;
         index.add_all(["registry.toml"], IndexAddOption::DEFAULT, None)?;
         index.write()?;
@@ -1931,6 +2427,25 @@ mod tests {
             .find_reference("refs/tags/2026.1.0")?
             .peel(git2::ObjectType::Tag)?;
         assert_eq!(tag.id().to_string(), finalized.tag_object);
+        let pack_name = finalized
+            .full_pack
+            .as_deref()
+            .context("shared finalizer omitted the minor release anchor pack")?;
+        let pack_root = repository
+            .path()
+            .join("releases")
+            .join(super::super::objectstore::release_object_dir(
+                &semver::Version::parse(&finalized.release)?,
+            ))
+            .join("pack");
+        assert!(pack_root.join(pack_name).is_file());
+        assert!(pack_root.join(pack_name).with_extension("idx").is_file());
+        assert!(
+            finalized
+                .static_surface
+                .iter()
+                .any(|file| file.path.starts_with("releases/") && file.path.ends_with(pack_name))
+        );
         assert!(repository.find_reference("refs/heads/stable").is_err());
         Ok(())
     }

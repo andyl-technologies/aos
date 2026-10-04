@@ -5,9 +5,9 @@ Use the shared [qualification contract](qualification.md) and
 select the `smoke`, `functional`, and `soak` profiles of that contract.
 
 `andyl/main` is the supported registry. It is a separate trust and pipeline
-assurance domain from `andyl/testing`: hardware-backed key custody, threshold
-signing, and the production publication pipeline, where testing has lighter
-versions of each. Testing releases and testing roots never promote into it.
+assurance domain from `andyl/experimental`: hardware-backed key custody, threshold
+signing, and the production publication pipeline, where the experimental registry has lighter
+versions of each. Experimental releases and experimental roots never promote into it.
 Main carries every channel, including `edge`, so the integration stream runs
 through the same keys and pipeline as the releases it leads to.
 
@@ -23,9 +23,9 @@ records an explicit go-live decision. Before any operation:
 2. for each Hub surface, build one immutable Hub installer, deploy it to
    staging, validate it, and promote the exact store path to production;
 3. take a complete verified backup and recovery point;
-4. confirm with `aos release fitness status` that every fitness attestation the
-   planned profiles require is fresh and binding-matched (`smoke` requires
-   none);
+4. confirm with `aos maintain release fitness status` that every fitness
+   attestation the planned profiles require is fresh and binding-matched
+   (`smoke` requires none);
 5. load only main-registry role credentials and the current surface's
    credentials; and
 6. record registry base commit/generation, surface identities, key roster,
@@ -55,10 +55,14 @@ backup and recovery inventory.
 ## Bootstrap
 
 Create the main authoring base with a dedicated `andyl` registry anchor and
-role-separated release/TUF/image authorities. Bootstrap the exact empty base
-with threshold-approved intents first in staging and then production using
-`aos release step bootstrap`. Never reuse a testing key or import a testing registry
-history. Both bootstrap destinations must be empty for `andyl/main`.
+role-separated release/TUF/image authorities. Plan the first main release with
+`aos maintain release new --first-release --source-registry <clone>`, which
+takes the clone's single root commit as the base, then bootstrap that exact
+empty base with threshold-approved intents first in staging and then
+production using `aos maintain release step bootstrap`, as described in
+[`canonical-releases.md`](canonical-releases.md#bootstrap-the-first-registry-base).
+Never reuse a experimental key or import a experimental registry history. Both
+bootstrap destinations must be empty for `andyl/main`.
 
 After the `andyl` organization exists in staging, create the Hub topology row
 there through a reviewed plan, using the separately backed-up main anchor:
@@ -109,11 +113,11 @@ Main carries three channels and six destinations:
   candidate and stable destinations. Publish the bundle to
   `production/candidate` first, then advance it into `production/stable`; the
   stable channel receives the same signed bytes, never a rebuild.
-- Main's `edge` and testing's `edge` are built from the same protected source
+- Main's `edge` and experimental's `edge` are built from the same protected source
   and may share a version and `release/<version>` source tag. Planning accepts
   an existing tag only when it already names the planned commit.
 - A change to the build or release mechanism itself is rehearsed in
-  `andyl/testing` before it runs against main's keys and surfaces.
+  `andyl/experimental` before it runs against main's keys and surfaces.
 
 Follow the [release checklist](release-checklist.md), using
 [`canonical-releases.md`](canonical-releases.md) for command arguments,
@@ -134,8 +138,8 @@ not a separate class:
 3. Write the override for the new release ID, naming the incident, a soak of at
    least one day, and rings that end at 256 partitions. Obtain the
    release-evidence threshold of signatures.
-4. Run `aos release new` with `--override DIR`, or run it and then
-   `aos release advance --to production/stable --override DIR` before any
+4. Run `aos maintain release new` with `--override DIR`, or run it and then
+   `aos maintain release advance --to production/stable --override DIR` before any
    build, as described in
    [plan an emergency override](canonical-releases.md#plan-an-emergency-override).
 
@@ -145,7 +149,7 @@ integrity check remain required.
 
 ## Routine package updates
 
-Use the `aos maintain` workflow documented in the testing runbook to land source
+Use the `aos maintain` workflow documented in the experimental runbook to land source
 updates through a reviewed pull request. After merge, the next `edge` release
 picks the change up on its changed-business-day cadence, and the next weekly
 `-rc.N` candidate carries it toward stable. A stable release is a new plan for a final version, whose one
@@ -176,7 +180,7 @@ state loss, follow [`aos-hub-backup-recovery.md`](aos-hub-backup-recovery.md)
 and restore into an isolated instance before changing production routing.
 
 Deleting `andyl/main`, its root keys, corresponding source, release evidence,
-or backup history requires a separately reviewed retirement plan. The testing
+or backup history requires a separately reviewed retirement plan. The experimental
 registry's disposable-data authorization does not apply to main.
 
 Only after that plan's retention and consumer-migration gates close, capture the

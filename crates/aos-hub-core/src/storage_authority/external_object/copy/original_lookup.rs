@@ -12,14 +12,14 @@
 //! result = unseen | {original, progress}
 //! ```
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
 use crate::storage_authority::{canonical_digest, lease::LeaseInteger};
 
 use super::{
-    control::CopyProgress, digest_string, identifier, CopyPlacementPin, CopyTopologyOriginal,
-    ExternalCopyOriginal, MAX_EXTERNAL_COPY_ORIGINAL_BYTES,
+    CopyPlacementPin, CopyTopologyOriginal, ExternalCopyOriginal, MAX_EXTERNAL_COPY_ORIGINAL_BYTES,
+    control::CopyProgress, digest_string, identifier,
 };
 
 /// Selects an existing original by the exact scheduled owner and physical destination.
@@ -44,6 +44,9 @@ pub struct CopyOriginalSelector {
     pub snapshot_revision: String,
     /// Independently installed copy profile commitment.
     pub profile_digest: String,
+    /// Independently installed cross-binding pins; old selectors omit this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer: Option<super::transfer::CopyTransferPins>,
 }
 
 impl CopyOriginalSelector {
@@ -63,6 +66,7 @@ impl CopyOriginalSelector {
             binding_resource_version: original.binding_resource_version,
             snapshot_revision: original.snapshot_revision.clone(),
             profile_digest: original.profile_digest.clone(),
+            transfer: original.transfer.clone(),
         };
         value.validate()?;
         Ok(value)
@@ -78,11 +82,20 @@ impl CopyOriginalSelector {
         self.destination.validate(&self.topology.destination)?;
         identifier(&self.deployment_id)?;
         identifier(&self.binding_stable_id)?;
+        let binding_geometry = match &self.transfer {
+            Some(transfer) => {
+                transfer.validate(&self.source, &self.destination)?;
+                transfer.source_binding.binding_stable_id != self.binding_stable_id
+            }
+            None => {
+                self.source.binding_id == self.destination.binding_id
+                    && self.source.prefix != self.destination.prefix
+            }
+        };
         ensure!(
             self.binding_resource_version.get() > 0
-                && self.source.binding_id == self.destination.binding_id
+                && binding_geometry
                 && self.source.placement_id != self.destination.placement_id
-                && self.source.prefix != self.destination.prefix
                 && self.source.registry_id == self.destination.registry_id
                 && self.source.cache_id == self.destination.cache_id
                 && digest_string(&self.snapshot_revision)

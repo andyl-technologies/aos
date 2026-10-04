@@ -34,11 +34,36 @@ use worker::{Env, Fetch, Headers, Method, Request, RequestInit, Response, Respon
 ///
 /// # Errors
 /// Refuses malformed plans, original pins or unavailable correlation randomness.
-pub(super) fn request(
+pub(in crate::external_object) fn request(
     plan: &StorageWorkPlan,
     profile_digest: String,
     scope: aos_hub_core::storage_authority::control::StorageAuthorityObjectScope,
     selector: Option<CopyOriginalSelector>,
+    operation: Operation,
+) -> Result<source_protocol::Request> {
+    build_request(plan, profile_digest, scope, selector, None, operation)
+}
+
+/// Constructs an exact typed inspection selector without granting source authority.
+///
+/// # Errors
+/// Refuses a malformed selection, plan or unavailable correlation randomness.
+pub(in crate::external_object) fn inspection_request(
+    plan: &StorageWorkPlan,
+    profile_digest: String,
+    scope: aos_hub_core::storage_authority::control::StorageAuthorityObjectScope,
+    selection: super::super::inspection::selection::Selection,
+    operation: Operation,
+) -> Result<source_protocol::Request> {
+    build_request(plan, profile_digest, scope, None, Some(selection), operation)
+}
+
+fn build_request(
+    plan: &StorageWorkPlan,
+    profile_digest: String,
+    scope: aos_hub_core::storage_authority::control::StorageAuthorityObjectScope,
+    selector: Option<CopyOriginalSelector>,
+    inspection: Option<super::super::inspection::selection::Selection>,
     operation: Operation,
 ) -> Result<source_protocol::Request> {
     use rand::TryRngCore as _;
@@ -54,6 +79,7 @@ pub(super) fn request(
         scope,
         selector,
         plan: plan.clone(),
+        inspection,
         capacity_transfer: None,
         operation,
     };
@@ -65,7 +91,7 @@ pub(super) fn request(
 ///
 /// # Errors
 /// Refuses original cutoff/cancellation, mismatched request or unavailable capacity.
-pub(super) async fn reserve(
+pub(in crate::external_object) async fn reserve(
     message: &mut source_protocol::Request,
     initial: Option<crate::direct_upload::provider_capacity::Permit>,
     window: &super::window::DispatchWindow<'_>,
@@ -93,7 +119,7 @@ pub(super) async fn reserve(
 ///
 /// # Errors
 /// Refuses missing/changed permanent provenance or a corrupt/mismatched reply.
-pub(super) async fn lookup(
+pub(in crate::external_object) async fn lookup(
     env: &Env,
     message: &source_protocol::Request,
 ) -> Result<CopySourceClosure> {
@@ -106,11 +132,27 @@ pub(super) async fn lookup(
     source_protocol::verify_reply(&storage::key(env)?, message, &signature, &body)
 }
 
+/// Verifies a leased transient absence or genuine retained typed-source closure.
+///
+/// # Errors
+/// Refuses unauthenticated, changed, malformed or oversized metadata replies.
+pub(in crate::external_object) async fn inspection_lookup(
+    env: &Env,
+    message: &source_protocol::Request,
+    signal: &worker::web_sys::AbortSignal,
+) -> Result<source_protocol::InspectionLookup> {
+    let response = call(env, message, Some(signal)).await?;
+    let signature = response.headers().get(GUARD_HEADER)?
+        .ok_or_else(|| anyhow::anyhow!("inspection source signature absent"))?;
+    let body = crate::direct_digest::read_bounded_native(response, MAX_MESSAGE).await?;
+    source_protocol::verify_inspection_lookup(&storage::key(env)?, message, &signature, &body)
+}
+
 /// Opens one exact range and verifies its retained closure before handing off bytes.
 ///
 /// # Errors
 /// Refuses a changed source guard, current lease/cutoff or unauthenticated reply.
-pub(super) async fn range(
+pub(in crate::external_object) async fn range(
     env: &Env,
     message: &source_protocol::Request,
     signal: &worker::web_sys::AbortSignal,
@@ -226,6 +268,10 @@ impl ExternalObjectGuard {
                 .validate(&deployment, object.clock().observed_at)?;
             message.current(object.clock().observed_at)?;
             let (prefix, path) = source_path(&message)?;
+            if let Some(inspection) = &message.inspection {
+                inspection.validate_scope(&message.plan,
+                    &domain.read_cohort.association.binding_prefix, &message.scope)?;
+            }
             let selected_scope = if let Some(selector) = &message.selector {
                 domain.selector_scope_for(&object, selector, false)?
             } else {
@@ -266,6 +312,11 @@ impl ExternalObjectGuard {
                 }
                 worker::Delay::from(Duration::from_millis(50)).await;
             };
+            if matches!(message.operation, Operation::InspectLookup { .. }) {
+                return super::super::inspection::absence::fetch(
+                    self, request, &message, &object, domain, gate,
+                ).await;
+            }
             crate::direct_guard::deny_legacy(&self.state.storage()).await?;
             let mut head = storage::load_head(&self.state.storage())
                 .await?
@@ -278,6 +329,7 @@ impl ExternalObjectGuard {
                 source_protocol::sign_reply(&key, &message, closure.clone())?;
             let range = match &message.operation {
                 Operation::Lookup | Operation::Check { .. } => None,
+                Operation::InspectLookup { .. } => anyhow::bail!("inspection lookup dispatch differs"),
                 Operation::Range {
                     read_lease,
                     offset,
@@ -298,6 +350,14 @@ impl ExternalObjectGuard {
                 headers.set("cache-control", "private, no-store")?;
                 return Ok(Response::from_bytes(receipt)?.with_headers(headers));
             };
+            let maximum_range = if message.inspection.is_some() {
+                domain.provider_contract.maximum_copy_read_range_bytes
+                    .ok_or_else(|| anyhow::anyhow!("typed inspection accepted Read range bound absent"))?
+            } else {
+                domain.provider_contract.maximum_copy_read_range_bytes.unwrap_or(domain.part_bytes)
+            };
+            ensure!(bytes <= maximum_range.get() as u64,
+                "protected source exceeds its accepted conditional range bound");
             let publication =
                 crate::hybrid_binding::resolve_for_plan(&self.env, &message.plan).await?;
             publication.snapshot.authorizes(
@@ -354,9 +414,9 @@ impl ExternalObjectGuard {
             lifetime.retain_source_gate(gate)?;
             // The application reserves GET+PUT atomically. Consume its real
             // GET slot only after exact MAC, source, closure and lease checks.
-            crate::direct_upload::provider_capacity::configure(u32::from(
-                domain.provider_concurrency,
-            ))?;
+            crate::direct_upload::provider_capacity::policy::configure_bounded(
+                &self.env, u32::from(domain.provider_concurrency), 3,
+            )?;
             message.current(
                 object
                     .clock()
@@ -365,7 +425,8 @@ impl ExternalObjectGuard {
                     .ok_or_else(|| anyhow::anyhow!("protected source clock overflow"))?,
             )?;
             let transferred = match &message.operation {
-                Operation::Range { .. } => {
+                Operation::Range { .. } | Operation::InspectRange { .. }
+                    if message.inspection.is_some() || matches!(message.operation, Operation::Range { .. }) => {
                     let ticket = message
                         .capacity_transfer
                         .as_ref()
@@ -587,7 +648,10 @@ impl ExternalObjectGuard {
 }
 
 fn source_path(message: &source_protocol::Request) -> Result<(String, String)> {
-    if let Some(selector) = &message.selector {
+    if let Some(inspection) = &message.inspection {
+        inspection.validate(&message.plan)?;
+        Ok((message.plan.placement_prefix.clone(), inspection.path.clone()))
+    } else if let Some(selector) = &message.selector {
         Ok((selector.source.prefix.clone(), selector.path.clone()))
     } else {
         match &message.plan.operation {
@@ -620,7 +684,7 @@ impl Drop for RangeState {
     }
 }
 
-async fn bounded<T>(
+pub(in crate::external_object) async fn bounded<T>(
     work: impl std::future::Future<Output = Result<T>>,
     fresh: &dyn Fn() -> Result<()>,
 ) -> Result<T> {

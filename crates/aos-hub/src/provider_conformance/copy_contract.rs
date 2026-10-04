@@ -10,7 +10,8 @@
 //!  private_policy: DirectPrivateStagePolicyRef, policy_review_sha256,
 //!  provider_contract: {contract_id, evidence_digest,
 //!    versioned_conditional_range_read: false,
-//!    versioned_multipart_complete: false, private_incomplete_upload: true,
+//!    versioned_multipart_complete: false, maximum_copy_read_range_bytes: "8388608",
+//!    private_incomplete_upload: true,
 //!    completed_upload_rejects_late_parts: true, abort_closes_upload_id: true,
 //!    upload_part_checksum_enforced: true, versioned_empty_put: false,
 //!    protected_versionless: {strong_conditional_range_read: true,
@@ -55,7 +56,7 @@ fn phase_observations<'a>(
     Ok(observations)
 }
 
-fn validate(report: &Report, journal: &Path) -> Result<()> {
+fn validate(report: &Report, journal: &Path) -> Result<u64> {
     ensure!(
         report.original.version == 1
             && report.original.source_kind == "operator_core_s3surface_http"
@@ -86,6 +87,7 @@ fn validate(report: &Report, journal: &Path) -> Result<()> {
     );
 
     let mut operation_ids = BTreeSet::new();
+    let mut maximum_read_range = 0;
     for (index, observed) in report.observations.iter().enumerate() {
         let intent: Intent = serde_json::from_slice(&read(
             &journal.join(format!("{index:03}.intent.json")),
@@ -125,6 +127,9 @@ fn validate(report: &Report, journal: &Path) -> Result<()> {
                     && observed.actual_sha256 == intent.expected_sha256,
                 "copy report range lacks exact conditional content geometry"
             );
+            // This bound describes bytes actually read under the retained condition.
+            // Multipart writer geometry is not evidence of source Read capability.
+            maximum_read_range = maximum_read_range.max(intent.size);
         }
         if observed.phase == Phase::RejectWrongConditionalRange {
             ensure!(
@@ -236,7 +241,11 @@ fn validate(report: &Report, journal: &Path) -> Result<()> {
             "copy report full read lacks actual size or SHA equality"
         );
     }
-    Ok(())
+    ensure!(
+        maximum_read_range > 0 && maximum_read_range <= 20 * 1024 * 1024,
+        "copy observed source range exceeds the supported explicit bound"
+    );
+    Ok(maximum_read_range)
 }
 
 pub(super) fn project(report_file: &Path, journal: &Path, output: &Path) -> Result<String> {
@@ -257,7 +266,7 @@ pub(super) fn project(report_file: &Path, journal: &Path, output: &Path) -> Resu
         serde_json::to_vec(&report)? == bytes,
         "copy report is noncanonical"
     );
-    validate(&report, journal)?;
+    let maximum_read_range = validate(&report, journal)?;
     let parent = output
         .parent()
         .context("copy contract output parent absent")?;
@@ -290,6 +299,7 @@ pub(super) fn project(report_file: &Path, journal: &Path, output: &Path) -> Resu
             "private_incomplete_upload": true, "completed_upload_rejects_late_parts": true,
             "abort_closes_upload_id": true, "upload_part_checksum_enforced": true,
             "versioned_empty_put": false,
+            "maximum_copy_read_range_bytes": maximum_read_range.to_string(),
             "protected_versionless": {"strong_conditional_range_read": true,
                 "positive_multipart_complete": true}
         }

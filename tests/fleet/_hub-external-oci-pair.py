@@ -35,6 +35,16 @@ def external_oci_pair_coordinates(run):
         "placementPrefix": ".aos-direct-qualification/external-oci/" + run + "/registry"}
 
 
+def external_oci_provider_prefix(bucket, binding_prefix, placement_prefix):
+    """Compose the actual two key prefixes using the shared r2_key convention."""
+    if (not isinstance(bucket, str) or re.fullmatch(r"[a-z0-9][a-z0-9.-]{1,62}", bucket) is None
+            or any(not isinstance(value, str) or not value or value.startswith("/")
+                or any(part in {"", ".", ".."} for part in value.split("/"))
+                for value in (binding_prefix, placement_prefix))):
+        raise ValueError("External provider key coordinates differ")
+    return "/" + bucket + "/" + binding_prefix.strip("/") + "/" + placement_prefix.lstrip("/") + "/"
+
+
 def external_oci_initial_configuration(original, tools, coordinates, roles, clock_policy,
                                        reviewer_public_key):
     """Select one fresh Worker and fixed origins before physical observations."""
@@ -59,6 +69,9 @@ def external_oci_initial_configuration(original, tools, coordinates, roles, cloc
     source_worker = "fleet-external-oci-" + run
     if isolation_case == "source_worker":
         source_worker = "fleet-external-source-" + run
+    copy_destination_prefix = coordinates["placementPrefix"]
+    if isolation_case == "source_worker":
+        copy_destination_prefix = coordinates["placementPrefix"].rsplit("/", 1)[0] + "/destination/registry"
     configuration = {name: copy.deepcopy(original[name]) for name in (
         "scriptPath", "compatibilityDate", "certificatePath", "privateKeyPath")}
     if "compatibilityFlags" in original:
@@ -92,7 +105,8 @@ def external_oci_initial_configuration(original, tools, coordinates, roles, cloc
         "bindings": {**roles, **queue_bindings,
             "HUB_EXTERNAL_COPY_LIFETIME_OBSERVER": json.dumps({"version": 1, "capture_id": run,
                 "source_prefix": coordinates["placementPrefix"], "destination_prefixes": [
-                    coordinates["placementPrefix"] + "-" + kind + "-" + run
+                    (copy_destination_prefix if kind in {"replicate", "repair"}
+                        else coordinates["placementPrefix"]) + "-" + kind + "-" + run
                     for kind in ("replicate", "repair", "cancel", "lost")]}, separators=(",", ":")),
             "HUB_TOPOLOGY": "hybrid",
             "HUB_DEPLOYMENT_ID": "fleet-external-oci-" + run,

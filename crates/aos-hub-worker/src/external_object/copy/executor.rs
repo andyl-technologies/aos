@@ -5,24 +5,24 @@
 //! failed or ambiguous provider outcome leaves that turn unresolved; only an
 //! exact positive receipt may advance it. Object bytes never enter a Hub RPC.
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use aos_hub_core::{
     direct_upload::{DirectChecksumAlgorithm, DirectPart, DirectPartChecksum, WireInteger},
     s3surface::{self, S3Surface},
     storage_authority::{
         external_object::copy::{
+            CopyIncarnationMode, CopySourceObject,
             control::{
-                CopyControl, CopyProgress, ExternalCopyReply, ExternalCopyRequest,
-                EXTERNAL_COPY_PATH, MAX_EXTERNAL_COPY_CONTROL_BYTES,
+                CopyControl, CopyProgress, EXTERNAL_COPY_PATH, ExternalCopyReply,
+                ExternalCopyRequest, MAX_EXTERNAL_COPY_CONTROL_BYTES,
             },
             session::{CopyAction, CopyOutcome, CopyPhase, CopyReceipt, CopyTurn},
-            CopySourceObject,
         },
         lease::{LeaseEffect, LeaseInteger},
     },
     storage_work::{
-        StorageBindingPublication, StorageCredentialSelector, StorageWorkKey,
-        STORAGE_WORK_SIGNATURE_HEADER,
+        STORAGE_WORK_SIGNATURE_HEADER, StorageBindingPublication, StorageCredentialSelector,
+        StorageWorkKey,
     },
 };
 use base64::Engine as _;
@@ -30,7 +30,7 @@ use rand::TryRngCore as _;
 use worker::{Env, Fetch, Headers, Method, Request, RequestInit, RequestRedirect, Response};
 
 use super::super::{
-    config::{configured, Config as ObjectConfig},
+    config::{Config as ObjectConfig, configured},
     protocol::{GUARD_HEADER, MAX_MESSAGE, SCOPE_HEADER},
     storage,
 };
@@ -117,12 +117,14 @@ async fn execute(
     object: &ObjectConfig,
     work: &ExternalCopyRequest,
     signal: &worker::web_sys::AbortSignal,
-    #[cfg(feature = "do-e2e")]
-    trace: Option<&std::rc::Rc<super::observation::Trace>>,
+    #[cfg(feature = "do-e2e")] trace: Option<&std::rc::Rc<super::observation::Trace>>,
 ) -> Result<CopyProgress> {
     let config = config::configured(env, object)?
         .ok_or_else(|| anyhow::anyhow!("copy consumer disabled"))?;
     let domain = config.domain(object, &work.original)?;
+    let source_domain = config.source_domain(object, &work.original)?;
+    config.validate_pair(object, &work.original)?;
+    let source_mode = work.original.source_incarnation()?;
     let mut message = message(object, domain, work, Operation::Lookup)?;
     let prior = match call(env, &message).await? {
         Reply::Progress { progress } => Some(progress),
@@ -149,7 +151,26 @@ async fn execute(
     );
     let deployment = env.var("HUB_DEPLOYMENT_ID")?.to_string();
     let publication = crate::hybrid_binding::resolve_for_plan(env, &work.plan).await?;
-    check_publication(object, domain, work, &publication, &deployment)?;
+    let source_plan = work.source_plan.as_ref().unwrap_or(&work.plan);
+    let independent_source_publication = if work.source_plan.is_some() {
+        Some(crate::hybrid_binding::resolve_for_plan(env, source_plan).await?)
+    } else {
+        None
+    };
+    let source_publication = independent_source_publication
+        .as_ref()
+        .unwrap_or(&publication);
+    let check_current = || -> Result<()> {
+        check_publication(object, domain, work, &publication, &deployment)?;
+        check_source_publication(
+            object,
+            source_domain,
+            work,
+            &source_publication,
+            &deployment,
+        )
+    };
+    check_current()?;
     let write_lease = super::super::stage::planning::acquire_configured_lease(
         env,
         object,
@@ -158,15 +179,15 @@ async fn execute(
         &domain.write_cohort.admitted_prefix,
     )
     .await?;
-    check_publication(object, domain, work, &publication, &deployment)?;
+    check_current()?;
 
-    if work.original.version == 2 {
-        let request = super::source::request(&work.plan, domain.commitment()?,
-            domain.scope(object, &work.original, false)?,
+    if source_mode == CopyIncarnationMode::GuardedClosure {
+        let request = super::source::request(source_plan, source_domain.commitment()?,
+            source_domain.scope(object, &work.original, false)?,
             Some(aos_hub_core::storage_authority::external_object::copy::original_lookup::CopyOriginalSelector::from_original(&work.original)?),
             super::source_protocol::Operation::Check { original: work.original.clone() })?;
         super::source::lookup(env, &request).await?;
-        check_publication(object, domain, work, &publication, &deployment)?;
+        check_current()?;
     }
 
     // A part is selected only after a positive Create. Read permission is
@@ -180,19 +201,19 @@ async fn execute(
         let token = super::super::stage::planning::acquire_configured_lease(
             env,
             object,
-            &domain.issuer_installation,
-            &domain.read_cohort,
-            &domain.read_cohort.admitted_prefix,
+            &source_domain.issuer_installation,
+            &source_domain.read_cohort,
+            &source_domain.read_cohort.admitted_prefix,
         )
         .await?;
-        check_publication(object, domain, work, &publication, &deployment)?;
+        check_current()?;
         let mut source = message.clone();
         source.request_nonce = nonce()?;
-        source.scope = domain.scope(object, &work.original, false)?;
+        source.scope = source_domain.scope(object, &work.original, false)?;
         source.operation = Operation::SourceRead {
             read_lease: token.clone(),
         };
-        let floor = if work.original.version == 1 {
+        let floor = if source_mode == CopyIncarnationMode::ProviderVersion {
             let Reply::ReadAuthorized { floor } = call(env, &source).await? else {
                 anyhow::bail!("source read floor absent");
             };
@@ -204,7 +225,7 @@ async fn execute(
     } else {
         None
     };
-    check_publication(object, domain, work, &publication, &deployment)?;
+    check_current()?;
     message.request_nonce = nonce()?;
     message.operation = Operation::Begin {
         control: work.control,
@@ -221,7 +242,7 @@ async fn execute(
         _ => anyhow::bail!("copy guard dispatch absent"),
     };
     let fresh = || -> Result<()> {
-        check_publication(object, domain, work, &publication, &deployment)?;
+        check_current()?;
         object.verifier()?.validate_lease(
             write_lease.as_bytes(),
             &domain.write_cohort,
@@ -234,7 +255,7 @@ async fn execute(
         if let Some((token, Some(source_floor), scope)) = &read {
             object.verifier()?.validate_lease(
                 token.as_bytes(),
-                &domain.read_cohort,
+                &source_domain.read_cohort,
                 &object.timing_profile,
                 source_floor,
                 &scope.full_key,
@@ -254,7 +275,11 @@ async fn execute(
     #[cfg(feature = "do-e2e")]
     window.lifetime.observe(trace.cloned());
     window.check()?;
-    crate::direct_upload::provider_capacity::configure(u32::from(domain.provider_concurrency))?;
+    crate::direct_upload::provider_capacity::policy::configure_bounded(
+        env,
+        u32::from(domain.provider_concurrency),
+        3,
+    )?;
     let capacity = crate::direct_upload::provider_capacity::acquire_class_checked(
         if part { 2 } else { 1 },
         if part {
@@ -265,13 +290,14 @@ async fn execute(
         &|| window.check(),
     )
     .await?;
-    let (capacity, mut source_capacity) = if part && work.original.version == 2 {
-        let (destination, source) =
-            crate::direct_upload::provider_capacity::transfer::split(capacity)?;
-        (destination, Some(source))
-    } else {
-        (capacity, None)
-    };
+    let (capacity, mut source_capacity) =
+        if part && source_mode == CopyIncarnationMode::GuardedClosure {
+            let (destination, source) =
+                crate::direct_upload::provider_capacity::transfer::split(capacity)?;
+            (destination, Some(source))
+        } else {
+            (capacity, None)
+        };
     window.lifetime.retain_capacity(capacity)?;
     #[cfg(feature = "do-e2e")]
     if let Some(trace) = trace {
@@ -301,7 +327,7 @@ async fn execute(
             ..
         } => {
             ensure!(read.is_some(), "part lacks guarded source read");
-            let read_secret = publication.credential_text(
+            let read_secret = source_publication.credential_text(
                 &StorageCredentialSelector {
                     purpose: "read".into(),
                     generation: work.original.read_generation.get(),
@@ -310,7 +336,7 @@ async fn execute(
                 object.clock().observed_at,
             )?;
             let source = S3Surface::from_snapshot(
-                &publication.snapshot,
+                &source_publication.snapshot,
                 &deployment,
                 &work.original.source.prefix,
                 Some(read_secret.as_str()),
@@ -323,7 +349,7 @@ async fn execute(
                 offset: *offset,
                 bytes: *bytes,
             };
-            let signed_read = if work.original.version == 1 {
+            let signed_read = if source_mode == CopyIncarnationMode::ProviderVersion {
                 Some(source.versioned_conditional_range_request(
                     &work.original.path,
                     &work.original.source_object,
@@ -335,9 +361,9 @@ async fn execute(
             } else {
                 None
             };
-            let mut guarded_read = if work.original.version == 2 {
-                Some(super::source::request(&work.plan, domain.commitment()?,
-                    domain.scope(object, &work.original, false)?,
+            let mut guarded_read = if source_mode == CopyIncarnationMode::GuardedClosure {
+                Some(super::source::request(source_plan, source_domain.commitment()?,
+                    source_domain.scope(object, &work.original, false)?,
                     Some(aos_hub_core::storage_authority::external_object::copy::original_lookup::CopyOriginalSelector::from_original(&work.original)?),
                     super::source_protocol::Operation::Range { original: work.original.clone(),
                         read_lease: read.as_ref().ok_or_else(|| anyhow::anyhow!("source read lease absent"))?.0.clone(),
@@ -376,7 +402,7 @@ async fn execute(
                 object.clock().observed_at,
                 PROVIDER_TTL,
             )?;
-            let signed_read = if work.original.version == 1 {
+            let signed_read = if source_mode == CopyIncarnationMode::ProviderVersion {
                 Some(source.versioned_conditional_range_request(
                     &work.original.path,
                     &work.original.source_object,
@@ -388,9 +414,9 @@ async fn execute(
             } else {
                 None
             };
-            let mut guarded_read = if work.original.version == 2 {
-                Some(super::source::request(&work.plan, domain.commitment()?,
-                    domain.scope(object, &work.original, false)?,
+            let mut guarded_read = if source_mode == CopyIncarnationMode::GuardedClosure {
+                Some(super::source::request(source_plan, source_domain.commitment()?,
+                    source_domain.scope(object, &work.original, false)?,
                     Some(aos_hub_core::storage_authority::external_object::copy::original_lookup::CopyOriginalSelector::from_original(&work.original)?),
                     super::source_protocol::Operation::Range { original: work.original.clone(),
                         read_lease: read.as_ref().ok_or_else(|| anyhow::anyhow!("source read lease absent"))?.0.clone(),
@@ -518,6 +544,39 @@ fn check_publication(
             "copy purpose cohort changed"
         );
     }
+    Ok(())
+}
+
+fn check_source_publication(
+    object: &ObjectConfig,
+    domain: &config::Domain,
+    work: &ExternalCopyRequest,
+    publication: &StorageBindingPublication,
+    deployment: &str,
+) -> Result<()> {
+    if work.original.transfer.is_none() {
+        return Ok(());
+    }
+    domain.validate_source_original(object, &work.original)?;
+    let plan = work
+        .source_plan
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("paired source Read plan absent"))?;
+    publication
+        .snapshot
+        .authorizes(plan, deployment, object.clock().observed_at)?;
+    let cohort = &domain.read_cohort;
+    ensure!(
+        publication.snapshot.binding_stable_id == cohort.association.binding_stable_id
+            && publication.snapshot.object_prefix == cohort.association.binding_prefix
+            && super::super::executor::select_cohort(
+                object,
+                publication,
+                "read",
+                cohort.association.binding_write_revision.get()
+            )? == cohort,
+        "copy independent source Read publication changed"
+    );
     Ok(())
 }
 
@@ -676,7 +735,9 @@ async fn metadata_effect(
                     )?;
                     let destination =
                         CopySourceObject {
-                            provider_version: if work.original.version == 1 {
+                            provider_version: if work.original.destination_incarnation()?
+                                == CopyIncarnationMode::ProviderVersion
+                            {
                                 Some(version.ok_or_else(|| {
                                     anyhow::anyhow!("copy Complete version absent")
                                 })?)

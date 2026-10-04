@@ -13,7 +13,8 @@
 //!       -> prepare-registry -> [transaction review] -> finalize-registry
 //!       -> finalize-cache -> assemble -> finalize -> verify
 //! per destination:
-//!   [after] -> [production: staging qualification: collect, review, admit]
+//!   [after] -> [first release: the surface's signed bootstrap]
+//!   -> [production: staging qualification: collect, review, admit]
 //!   -> [fitness]
 //!   -> [first destination on its surface: [production: record] -> tuf
 //!       -> timestamp refresh -> compose-surface]
@@ -261,6 +262,9 @@ pub(super) struct DestinationFacts {
     pub(super) state: Option<ReleaseState>,
     /// Why the destination may not be published yet (`after`), if blocked.
     pub(super) after_blocker: Option<String>,
+    /// The `step bootstrap` instruction while a first release's base is not
+    /// yet installed on the destination's surface.
+    pub(super) bootstrap_blocker: Option<String>,
     /// Why required fitness is not satisfied, if it is not.
     pub(super) fitness_blocker: Option<String>,
     /// Surface metadata this destination publishes; `None` when it reuses a
@@ -418,6 +422,11 @@ fn publication_step(destination: &DestinationFacts, options: &Options) -> Next {
     if let Some(blocker) = &destination.after_blocker {
         return Next::Wait(blocker.clone());
     }
+    // Nothing may reach a first release's surface, not even its qualification
+    // reads or TUF state, before the signed bootstrap installed the base.
+    if let Some(instruction) = &destination.bootstrap_blocker {
+        return Next::Wait(instruction.clone());
+    }
     if destination.surface == SurfaceRole::Production {
         // Publication always admits a signed staging decision, even when the
         // profile selects no staging case.
@@ -544,7 +553,7 @@ fn completion_step(destination: &DestinationFacts, options: &Options) -> Result<
         let missing = destination.completion_threshold - destination.completion_approvals;
         return Ok(Next::Wait(format!(
             "{missing} completion approval(s) needed for {name}: each release-evidence \
-             reviewer runs aos release review"
+             reviewer runs aos maintain release review"
         )));
     }
     Ok(Next::Run(Step::Complete))
@@ -568,7 +577,7 @@ fn phase_step(destination: &DestinationFacts, phase: Phase, facts: PhaseFacts) -
         let missing = destination.review_threshold - facts.accepted_reviews;
         return Some(Next::Wait(format!(
             "{missing} reviewer signature(s) needed over qualification/{}/{}/prepared/\
-             qualification-report.json: run aos release review",
+             qualification-report.json: run aos maintain release review",
             destination_slug(&destination.name),
             phase.directory_name()
         )));
@@ -609,7 +618,7 @@ fn observation_ready_at(destination: &DestinationFacts, ring: u16) -> Result<Opt
 
 /// Renders the fitness instruction for a fitness failure.
 fn fitness_instruction(blocker: &str) -> String {
-    format!("record fresh fitness with aos release fitness run <kind> ({blocker})")
+    format!("record fresh fitness with aos maintain release fitness run <kind> ({blocker})")
 }
 
 /// Formats a time as RFC 3339 UTC with second precision.

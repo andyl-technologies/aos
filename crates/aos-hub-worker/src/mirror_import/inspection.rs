@@ -397,6 +397,7 @@ async fn build_loose_inventory(
         "loose source ended before exact length"
     );
     let object = aos_hub_core::mirror_inspection::MirrorPackSource {
+        guarded_source: None,
         path,
         sha256: hex::encode(Sha256::digest(&encoded)),
         size,

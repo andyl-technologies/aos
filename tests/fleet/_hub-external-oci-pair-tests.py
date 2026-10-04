@@ -2,6 +2,7 @@
 
 import ast
 import copy
+import json
 import importlib.util
 from pathlib import Path
 import textwrap
@@ -15,6 +16,16 @@ spec.loader.exec_module(fixture)
 
 
 class ExternalPairTests(unittest.TestCase):
+    def test_physical_key_keeps_binding_and_placement_prefixes(self):
+        coordinates = fixture.external_oci_pair_coordinates("a" * 32)
+        placement = coordinates["placementPrefix"]
+        binding = placement.rsplit("/", 1)[0]
+        self.assertEqual(fixture.external_oci_provider_prefix("fleet-s3", binding, placement),
+            "/fleet-s3/" + binding + "/" + placement + "/")
+        for wrong in ("../outside", "/absolute", "bad//prefix"):
+            with self.assertRaises(ValueError):
+                fixture.external_oci_provider_prefix("fleet-s3", wrong, placement)
+
     def setUp(self):
         self.coordinates = fixture.external_oci_pair_coordinates("a" * 32)
         self.tools = {"shim": "/nix/store/source/shim.mjs",
@@ -72,6 +83,17 @@ class ExternalPairTests(unittest.TestCase):
                 ("--hybrid-origin-url", "https://localhost:4674")):
             self.assertEqual(arguments[arguments.index(flag) + 1], value)
         self.assertFalse(any("candidate" in argument or "acceptance" in argument for argument in arguments))
+
+    def test_initial_observer_selects_actual_cross_binding_prefix_only_in_source_worker_case(self):
+        original = json.loads(self.configuration()["bindings"]["HUB_EXTERNAL_COPY_LIFETIME_OBSERVER"])
+        self.tools["copyIsolationCase"] = "source_worker"
+        paired = json.loads(self.configuration()["bindings"]["HUB_EXTERNAL_COPY_LIFETIME_OBSERVER"])
+        self.assertEqual(paired["source_prefix"], original["source_prefix"])
+        self.assertEqual(paired["destination_prefixes"][2:], original["destination_prefixes"][2:])
+        self.assertEqual(len(paired["destination_prefixes"]), 4)
+        for kind, prefix in zip(("replicate", "repair"), paired["destination_prefixes"]):
+            self.assertEqual(prefix, self.coordinates["placementPrefix"].rsplit("/", 1)[0]
+                + "/destination/registry-" + kind + "-" + self.coordinates["runId"])
 
     def test_rendered_guest_blocks_compile(self):
         for node in ast.walk(ast.parse(Path(fixture.__file__).read_text())):

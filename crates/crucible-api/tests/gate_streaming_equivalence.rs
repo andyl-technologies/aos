@@ -321,7 +321,6 @@ async fn recv_watch_state_update(
     tokio::time::timeout(Duration::from_millis(100), watch.recv_state_update())
         .await
         .unwrap_or_else(|_| panic!("Watch state update should arrive before timeout"))
-        .unwrap_or_else(|error| panic!("Watch state update should decode: {error}"))
         .unwrap_or_else(|| panic!("Watch state update stream should remain open"))
 }
 
@@ -487,6 +486,7 @@ impl QuantumLoop for StreamingLoop {
             advanced_node: None,
             resolved_events: Vec::new(),
             decisions: Vec::new(),
+            discovered_choices: Vec::new(),
             event_log_entries: Vec::new(),
             event_log_segment_bytes: Vec::new(),
             event_log_segment_text: String::new(),

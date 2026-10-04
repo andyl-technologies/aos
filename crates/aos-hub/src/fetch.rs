@@ -1175,6 +1175,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn local_listing_walks_only_the_requested_prefix() {
+        use aos_hub_core::fetch::SurfaceFetch as CoreFetch;
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let blob_a = format!("oci/blobs/sha256/{}", "a".repeat(64));
+        let blob_b = format!("oci/blobs/sha256/{}", "b".repeat(64));
+        for relative in [
+            "0000.narinfo",
+            "nar/0000.nar.zst",
+            "objects/ab/cd",
+            blob_a.as_str(),
+            blob_b.as_str(),
+        ] {
+            let path = root.join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"bytes").unwrap();
+        }
+        let fetch = LocalFsFetch::new(root);
+
+        let scoped = CoreFetch::list_page(&fetch, "oci/blobs/sha256/", None, 10)
+            .await
+            .unwrap();
+        assert_eq!(scoped.paths, vec![blob_a.clone(), blob_b.clone()]);
+        assert_eq!(scoped.next_cursor, None);
+
+        // A prefix may end mid-component.
+        let partial = CoreFetch::list_page(&fetch, "oci/blobs/sha256/b", None, 10)
+            .await
+            .unwrap();
+        assert_eq!(partial.paths, vec![blob_b.clone()]);
+
+        let first = CoreFetch::list_page(&fetch, "oci/blobs/sha256/", None, 1)
+            .await
+            .unwrap();
+        assert_eq!(first.paths, vec![blob_a.clone()]);
+        assert_eq!(first.next_cursor.as_deref(), Some(blob_a.as_str()));
+        let rest = CoreFetch::list_page(&fetch, "oci/blobs/sha256/", Some(&blob_a), 1)
+            .await
+            .unwrap();
+        assert_eq!(rest.paths, vec![blob_b.clone()]);
+        assert_eq!(rest.next_cursor, None);
+
+        let absent = CoreFetch::list_page(&fetch, "oci/manifests/", None, 10)
+            .await
+            .unwrap();
+        assert!(absent.paths.is_empty());
+        let whole = CoreFetch::list_page(&fetch, "", None, 10).await.unwrap();
+        assert_eq!(whole.paths.len(), 5);
+        assert!(CoreFetch::list_page(&fetch, "../", None, 10).await.is_err());
+    }
+
+    #[tokio::test]
     async fn local_fetch_rejects_symlink_escape() {
         let dir = tempfile::tempdir().unwrap();
         let outside = dir.path().join("secret.txt");

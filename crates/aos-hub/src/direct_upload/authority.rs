@@ -902,3 +902,14 @@ fn target_permission(record: &DirectUploadSessionRecord) -> aos_hub_core::domain
 
 #[cfg(test)]
 mod tests;
+
+/// Reuses the independently signed External acceptance fixture for Native tests.
+#[cfg(test)]
+pub(crate) fn external_acceptance_fixture(
+    origin: &str,
+    now: u64,
+    expires_at: u64,
+    binding: &aos_hub_core::db::BindingRecord,
+) -> (NativeDirectUploadAcceptances, DirectProtectedProfile) {
+    acceptance::tests::external_fixture(origin, now, expires_at, binding)
+}

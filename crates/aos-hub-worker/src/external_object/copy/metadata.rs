@@ -3,20 +3,20 @@
 //! This path does no provider I/O or lease renewal. It cannot initialize a copy
 //! session, drain an unknown turn or expose private continuations/part receipts.
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use aos_hub_core::{
     storage_authority::external_object::copy::metadata::{
-        CopyMetadataProfile, CopyMetadataReply, CopyMetadataRequest, RetainedCopyOriginal,
-        EXTERNAL_COPY_METADATA_PATH,
+        CopyMetadataProfile, CopyMetadataReply, CopyMetadataRequest, EXTERNAL_COPY_METADATA_PATH,
+        RetainedCopyOriginal,
     },
-    storage_work::{StorageWorkKey, STORAGE_WORK_SIGNATURE_HEADER},
+    storage_work::{STORAGE_WORK_SIGNATURE_HEADER, StorageBindingPublication, StorageWorkKey},
 };
 use rand::TryRngCore as _;
 use worker::{Env, Headers, Method, Request, RequestInit, Response};
 
 use super::super::{
     config::configured,
-    protocol::{digest, GUARD_HEADER, MAX_MESSAGE, SCOPE_HEADER},
+    protocol::{GUARD_HEADER, MAX_MESSAGE, SCOPE_HEADER, digest},
     storage,
 };
 use super::{config, discovery};
@@ -70,6 +70,31 @@ pub(crate) async fn fetch(mut request: Request, env: &Env) -> worker::Result<Res
                 && association.binding_prefix == publication.snapshot.object_prefix,
             "copy metadata current physical binding differs"
         );
+        let source_publication = if let Some(plan) = &query.source_plan {
+            ensure!(
+                config.version == 2,
+                "paired copy requires the new configured capacity contract"
+            );
+            let source = crate::hybrid_binding::resolve_for_plan(env, plan).await?;
+            source
+                .snapshot
+                .authorizes(plan, &deployment, object.clock().observed_at)?;
+            Some(source)
+        } else {
+            None
+        };
+        let source_domain = if let Some(plan) = &query.source_plan {
+            config
+                .domains
+                .iter()
+                .find(|domain| domain.read_cohort.association.binding_id.get() == plan.binding_id)
+                .ok_or_else(|| anyhow::anyhow!("independent copy source Read domain absent"))?
+        } else {
+            domain
+        };
+        if let Some(source) = &source_publication {
+            check_source_publication(&object, source_domain, &query, source, &deployment)?;
+        }
         let mut reply = CopyMetadataReply {
             version: 1,
             request_digest: digest(&query)?,
@@ -84,6 +109,55 @@ pub(crate) async fn fetch(mut request: Request, env: &Env) -> worker::Result<Res
             },
             retained: None,
             source_closure: None,
+            transfer: match (&query.source_plan, &source_publication) {
+                (Some(plan), Some(source)) => {
+                    use aos_hub_core::storage_authority::external_object::copy::{
+                        CopyIncarnationMode, CopySourceBindingPin, CopyTransferPins,
+                    };
+                    let mode = |domain: &config::Domain| {
+                        if domain.provider_contract.protected_versionless.is_some() {
+                            CopyIncarnationMode::GuardedClosure
+                        } else {
+                            CopyIncarnationMode::ProviderVersion
+                        }
+                    };
+                    let association = &source_domain.read_cohort.association;
+                    Some(CopyTransferPins {
+                        source_binding: CopySourceBindingPin {
+                            binding_id: association.binding_id,
+                            binding_stable_id: source.snapshot.binding_stable_id.clone(),
+                            binding_resource_version: association.binding_resource_version,
+                            snapshot_revision: plan
+                                .binding_snapshot_revision
+                                .clone()
+                                .ok_or_else(|| anyhow::anyhow!("source snapshot absent"))?,
+                            profile_digest: source_domain.commitment()?,
+                            binding_read_revision: association.binding_write_revision,
+                            read_generation: source_domain.read_cohort.credential.generation,
+                            physical_authority_id: source_domain
+                                .read_cohort
+                                .authority
+                                .authority_id
+                                .clone(),
+                        },
+                        source_incarnation: mode(source_domain),
+                        destination_incarnation: mode(domain),
+                        destination_physical_authority_id: domain
+                            .write_cohort
+                            .authority
+                            .authority_id
+                            .clone(),
+                        maximum_source_range_bytes: source_domain
+                            .provider_contract
+                            .maximum_copy_read_range_bytes
+                            .ok_or_else(|| {
+                                anyhow::anyhow!("accepted copy source range bound absent")
+                            })?,
+                    })
+                }
+                (None, None) => None,
+                _ => anyhow::bail!("paired source publication absent"),
+            },
         };
         if query.profile_only {
             query.validate(&deployment, object.clock().observed_at)?;
@@ -92,6 +166,9 @@ pub(crate) async fn fetch(mut request: Request, env: &Env) -> worker::Result<Res
                 &deployment,
                 object.clock().observed_at,
             )?;
+            if let Some(source) = &source_publication {
+                check_source_publication(&object, source_domain, &query, source, &deployment)?;
+            }
             return reply.sign(&key, &query);
         }
         let selector = reply.selector(&query)?;
@@ -112,12 +189,16 @@ pub(crate) async fn fetch(mut request: Request, env: &Env) -> worker::Result<Res
                 progress: retained.progress,
             });
         }
-        if reply.retained.is_none() && reply.profile.protected_versionless {
+        let source_protected = source_domain
+            .provider_contract
+            .protected_versionless
+            .is_some();
+        if reply.retained.is_none() && source_protected {
             let selector = reply.selector(&query)?;
             let message = super::source::request(
-                &query.plan,
-                domain.commitment()?,
-                domain.selector_scope_for(&object, &selector, false)?,
+                query.source_plan.as_ref().unwrap_or(&query.plan),
+                source_domain.commitment()?,
+                source_domain.selector_scope_for(&object, &selector, false)?,
                 Some(selector),
                 super::source_protocol::Operation::Lookup,
             )?;
@@ -129,6 +210,9 @@ pub(crate) async fn fetch(mut request: Request, env: &Env) -> worker::Result<Res
         publication
             .snapshot
             .authorizes(&query.plan, &deployment, object.clock().observed_at)?;
+        if let Some(source) = &source_publication {
+            check_source_publication(&object, source_domain, &query, source, &deployment)?;
+        }
         reply.sign(&key, &query)
     }
     .await;
@@ -142,6 +226,39 @@ pub(crate) async fn fetch(mut request: Request, env: &Env) -> worker::Result<Res
         }
         Err(_) => Response::error("external copy metadata refused", 409),
     }
+}
+
+fn check_source_publication(
+    object: &super::super::config::Config,
+    domain: &config::Domain,
+    query: &CopyMetadataRequest,
+    publication: &StorageBindingPublication,
+    deployment: &str,
+) -> Result<()> {
+    let plan = query
+        .source_plan
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("source Read plan absent"))?;
+    publication
+        .snapshot
+        .authorizes(plan, deployment, object.clock().observed_at)?;
+    let cohort = &domain.read_cohort;
+    ensure!(
+        publication.snapshot.binding_stable_id == cohort.association.binding_stable_id
+            && publication.snapshot.object_prefix == cohort.association.binding_prefix
+            && plan
+                .credential_references
+                .first()
+                .is_some_and(|selected| selected.generation == cohort.credential.generation.get())
+            && super::super::executor::select_cohort(
+                object,
+                publication,
+                "read",
+                cohort.association.binding_write_revision.get()
+            )? == cohort,
+        "copy metadata independent current Read cohort differs"
+    );
+    Ok(())
 }
 
 async fn call(env: &Env, message: &discovery::Request) -> Result<Option<discovery::Retained>> {

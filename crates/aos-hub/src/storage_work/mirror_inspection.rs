@@ -207,7 +207,7 @@ impl HybridSurfaceFetch {
             _ => anyhow::bail!("pack tree lookup has no exact surface"),
         };
         for index_path in self.db.mirror_git_pack_candidates(surface).await? {
-            let profile_digest = self.work.mirror_managed_profile_digest()?;
+            let profile_digest = self.stored_inspection_profile().await?;
             let query = aos_hub_core::mirror_inspection::MirrorPackTreeQuery {
                 index_path,
                 oid: oid.to_hex(),
@@ -223,7 +223,7 @@ impl HybridSurfaceFetch {
             )?;
             let result = self.execute(&plan).await?;
             ensure!(
-                self.work.mirror_managed_profile_digest()? == profile_digest,
+                self.stored_inspection_profile().await? == profile_digest,
                 "pack tree profile changed during execution"
             );
             let StorageWorkOutcome::GitPackTreeProjection { projection } = result.outcome else {
@@ -273,7 +273,7 @@ impl HybridSurfaceFetch {
                         range: None,
                     })
                     .collect();
-                let profile = self.work.mirror_managed_profile_digest()?;
+                let profile = self.stored_inspection_profile().await?;
                 let plan = self.work.plan_for_placement(
                     &self.placement,
                     &self.binding,
@@ -286,7 +286,7 @@ impl HybridSurfaceFetch {
                 )?;
                 let result = self.execute(&plan).await?;
                 ensure!(
-                    self.work.mirror_managed_profile_digest()? == profile,
+                    self.stored_inspection_profile().await? == profile,
                     "pack lookup profile changed during execution"
                 );
                 let StorageWorkOutcome::GitPackProjection { projection } = result.outcome else {

@@ -59,7 +59,10 @@ def validate_selected_storage_logs(selected, processes, roots):
         native_label = ("native-bootstrap" if selected["nativeRole"] == "ordinary_native"
             else "native-controlled")
         allowed_workers = {"worker-bootstrap", "external-oci-installed", "external-oci-final"}
-        valid = native_log == roots["native"] + "/" + native_label + ".log" and any(
+        allowed_native = {roots["native"] + "/" + native_label + ".log"}
+        if selected["nativeRole"] == "controlled_external_oci_native":
+            allowed_native.add(roots["native"] + "/native-inventory-restart.log")
+        valid = native_log in allowed_native and any(
             worker_log == roots["worker"] + "/" + label + ".log" for label in allowed_workers)
     else:
         valid = (native_log == roots["native"] + "/native-accepted.log"

@@ -209,3 +209,83 @@ fn structural_projection_matches_shared_digest_and_refuses_unknown_bounds() {
     std::fs::write(&path, vec![b' '; MAX_PROFILE_BYTES as usize + 1]).unwrap();
     assert!(project(&path).is_err());
 }
+
+fn capacity_profile(binding: i64) -> DirectProtectedExternalProfile {
+    let mut selected = profile();
+    let mut association = selected.selector.association.clone();
+    association.binding_id = integer(binding);
+    association.binding_stable_id = format!("binding-{binding}");
+    selected.selector.association = association.clone();
+    selected.read_cohort.association = association.clone();
+    selected.write_cohort.association = association;
+    let mut runtime = runtime_reference();
+    runtime.maximum_parallel_provider_requests = WireInteger::new(3);
+    DirectProtectedExternalProfile::new(selected, runtime).unwrap()
+}
+
+#[test]
+fn copy_capacity_maps_declared_three_and_five_without_relabelling_measured_three() {
+    use super::super::copy_capacity::{map_domains, DomainCeiling};
+    let profiles = [capacity_profile(31), capacity_profile(51)];
+    let declarations = [
+        DomainCeiling {
+            producer_profile_digest: profiles[0].digest().unwrap(),
+            admitted_provider_requests: 3,
+        },
+        DomainCeiling {
+            producer_profile_digest: profiles[1].digest().unwrap(),
+            admitted_provider_requests: 5,
+        },
+    ];
+    let originals = serde_json::to_vec(&profiles).unwrap();
+
+    let domains = map_domains(&profiles, 3, &declarations).unwrap();
+
+    assert_eq!(domains[0]["binding_id"], "31");
+    assert_eq!(domains[1]["binding_id"], "51");
+    assert_eq!(domains[1]["admitted_provider_requests"], 5);
+    assert_eq!(
+        profiles[1]
+            .runtime_qualification
+            .maximum_parallel_provider_requests
+            .get(),
+        3
+    );
+    assert_eq!(serde_json::to_vec(&profiles).unwrap(), originals);
+}
+
+#[test]
+fn copy_capacity_refuses_smaller_ceiling_missing_profile_and_changed_whole_isolate_bound() {
+    use super::super::copy_capacity::{map_domains, DomainCeiling};
+    let profiles = [capacity_profile(31)];
+    let mut declaration = DomainCeiling {
+        producer_profile_digest: profiles[0].digest().unwrap(),
+        admitted_provider_requests: 2,
+    };
+    assert!(map_domains(&profiles, 3, &[declaration]).is_err());
+    declaration = DomainCeiling {
+        producer_profile_digest: "a".repeat(64),
+        admitted_provider_requests: 5,
+    };
+    assert!(map_domains(&profiles, 3, &[declaration]).is_err());
+    let declaration = DomainCeiling {
+        producer_profile_digest: profiles[0].digest().unwrap(),
+        admitted_provider_requests: 8,
+    };
+    assert!(map_domains(&profiles, 8, &[declaration]).is_err());
+    assert!(map_domains(&profiles, 2, &[]).is_err());
+}
+
+#[test]
+fn copy_capacity_refuses_duplicate_profile_and_duplicate_actual_binding() {
+    use super::super::copy_capacity::{map_domains, DomainCeiling};
+    let mut profiles = [capacity_profile(31), capacity_profile(31)];
+    profiles[1].runtime_qualification.qualification_digest = "e".repeat(64);
+    profiles[1].validate().unwrap();
+    let declaration = |index: usize| DomainCeiling {
+        producer_profile_digest: profiles[index].digest().unwrap(),
+        admitted_provider_requests: 5,
+    };
+    assert!(map_domains(&profiles, 3, &[declaration(0), declaration(0)]).is_err());
+    assert!(map_domains(&profiles, 3, &[declaration(0), declaration(1)]).is_err());
+}

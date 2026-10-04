@@ -181,6 +181,33 @@ pub(crate) async fn close_checked<F: Fn() -> Result<()>>(
     expires_at: WireInteger,
     before_dispatch: F,
 ) -> Result<ClosedStage> {
+    close_checked_with_signal(
+        env,
+        admission,
+        complete,
+        placement_id,
+        created,
+        expires_at,
+        before_dispatch,
+        None,
+    )
+    .await
+}
+
+/// Closes the original stage under the foreground caller's actual cancellation.
+///
+/// # Errors
+/// Refuses changed admission, expired permission or an unresolved closure effect.
+pub(crate) async fn close_checked_with_signal<F: Fn() -> Result<()>>(
+    env: &Env,
+    admission: &DirectUploadAdmission,
+    complete: &DirectCompleteRequest,
+    placement_id: WireInteger,
+    created: &CreatedStage,
+    expires_at: WireInteger,
+    before_dispatch: F,
+    signal: Option<worker::web_sys::AbortSignal>,
+) -> Result<ClosedStage> {
     let placement = storage::placement(admission, placement_id)?;
     let manifest = complete
         .manifests
@@ -273,7 +300,12 @@ pub(crate) async fn close_checked<F: Fn() -> Result<()>>(
             .await?;
             before_dispatch()?;
             Ok(ClosedStage::External {
-                result: crate::external_object::execute_stage(env, &work).await?,
+                result: crate::external_object::execute_stage_with_signal(
+                    env,
+                    &work,
+                    signal.clone(),
+                )
+                .await?,
             })
         }
         _ => anyhow::bail!("direct stage receipt physical kind differs"),
@@ -562,12 +594,17 @@ async fn verify_observed(
                     &work,
                     source_dispatch,
                     fault_observation.as_ref(),
+                    &_capacity,
                 )
                 .await;
                 #[cfg(not(feature = "do-e2e"))]
-                let result =
-                    crate::external_object::execute_stage_observed(env, &work, source_dispatch)
-                        .await;
+                let result = crate::external_object::execute_stage_observed(
+                    env,
+                    &work,
+                    source_dispatch,
+                    &_capacity,
+                )
+                .await;
                 #[cfg(feature = "do-e2e")]
                 if let Some(observation) = fault_observation.as_ref() {
                     observation.finish(&result);
@@ -590,6 +627,7 @@ async fn verify_observed(
                         result,
                         &verified,
                         512 * 1024,
+                        &_capacity,
                     )
                     .await?
                 };

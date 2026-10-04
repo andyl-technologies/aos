@@ -324,14 +324,14 @@ impl Drop for Cancellation {
     }
 }
 
-pub(super) struct Reader {
+pub(in crate::external_object) struct Reader {
     native: JsValue,
     ended: std::cell::Cell<bool>,
     _registration: super::lifetime::Registration,
 }
 
 impl Reader {
-    pub(super) fn new(stream: JsValue, lifetime: &super::lifetime::Lifetime) -> Result<Self> {
+    pub(in crate::external_object) fn new(stream: JsValue, lifetime: &super::lifetime::Lifetime) -> Result<Self> {
         let options = js_sys::Object::new();
         Reflect::set(&options, &"mode".into(), &"byob".into()).map_err(|_| refused())?;
         let native = invoke(&stream, "getReader", &[options.into()])?;
@@ -343,7 +343,7 @@ impl Reader {
         })
     }
 
-    pub(super) async fn read(&self) -> Result<(Uint8Array, bool)> {
+    pub(in crate::external_object) async fn read(&self) -> Result<(Uint8Array, bool)> {
         let view = Uint8Array::new_with_length(CHUNK_BYTES as u32);
         let result = awaited(invoke(&self.native, "read", &[view.into()])?).await?;
         let done = Reflect::get(&result, &"done".into())

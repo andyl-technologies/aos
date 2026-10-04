@@ -187,6 +187,23 @@ pub fn source_commitment(source: &crate::storage_work::StorageObjectIdentity) ->
     Ok(hex::encode(hash.finalize()))
 }
 
+/// Commits a genuine guarded source while preserving the absent legacy form.
+///
+/// # Errors
+/// Refuses malformed closure evidence or an unencodable exact source.
+pub fn guarded_source_commitment(
+    source: &crate::storage_work::StorageObjectIdentity,
+    guarded: Option<&crate::storage_work::protected_inspection::ProtectedInspectionSource>,
+) -> Result<String> {
+    let Some(guarded) = guarded else { return source_commitment(source); };
+    guarded.validate_for(&guarded.scope.full_key, source.size, &source.etag)?;
+    ensure!(source.provider_version.is_none(), "guarded tree has a fabricated provider version");
+    let mut hash = Sha256::new();
+    hash.update(b"aos.storage.guarded-git-tree-source.v1\0");
+    hash.update(serde_json::to_vec(&(source, guarded))?);
+    Ok(hex::encode(hash.finalize()))
+}
+
 /// Validates the predicate and continuation before any provider I/O.
 ///
 /// # Errors

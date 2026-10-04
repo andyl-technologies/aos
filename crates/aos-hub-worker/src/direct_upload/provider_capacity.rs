@@ -14,6 +14,9 @@ use anyhow::{ensure, Result};
 /// One-use transfers of actual reserved source capacity within the same pool.
 pub(crate) mod transfer;
 
+/// Source-bound common capacity shared by independently authenticated roles.
+pub(crate) mod policy;
+
 /// Distinguishes queue read capacity from bounded foreground SDK work.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Class {

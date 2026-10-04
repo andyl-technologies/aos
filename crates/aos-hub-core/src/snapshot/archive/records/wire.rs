@@ -45,12 +45,13 @@ impl PostgresSource {
         }
     }
 
-    pub(super) fn expected() -> Self {
-        Self::new(
-            include_str!("../../../backend/postgres_snapshot/current8.sha256")
-                .trim()
-                .into(),
-        )
+    pub(super) fn expected_for_generation(generation: usize) -> Option<Self> {
+        let digest = match generation {
+            8 => include_str!("../../../backend/postgres_snapshot/current8.sha256"),
+            12 => include_str!("../../../backend/postgres_snapshot/current12.sha256"),
+            _ => return None,
+        };
+        Some(Self::new(digest.trim().into()))
     }
 }
 pub(super) const CONTROL_CAP: usize = 16 * 1024;
@@ -82,6 +83,7 @@ pub(super) enum MigrationDigests {
     Generation6([String; 6]),
     Generation7([String; 7]),
     Generation8([String; 8]),
+    Generation12([String; 12]),
 }
 
 impl MigrationDigests {
@@ -103,6 +105,9 @@ impl MigrationDigests {
                 anyhow::anyhow!("snapshot migration shape differs")
             })?)),
             8 => Ok(Self::Generation8(values.try_into().map_err(|_| {
+                anyhow::anyhow!("snapshot migration shape differs")
+            })?)),
+            12 => Ok(Self::Generation12(values.try_into().map_err(|_| {
                 anyhow::anyhow!("snapshot migration shape differs")
             })?)),
             _ => anyhow::bail!("snapshot migration generation is unsupported"),

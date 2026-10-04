@@ -11,10 +11,37 @@
     inherit lib;
     inherit packageNames;
   };
+  deferredPlatforms = import ../../qualification/deferred-platforms.nix;
+  fixturePackages = ["aos" "nginx" "containerd" "runc"];
+  # The Rust fixture is the complete contract. Rust tests apply a deferral
+  # explicitly, through the same transformation `defer` checks below.
   fixture = import ../../qualification {
     inherit lib;
-    packageNames = ["aos" "nginx" "containerd" "runc"];
+    packageNames = fixturePackages;
+    deferredPlatforms = [];
   };
+  deferredFixture = import ../../qualification {
+    inherit lib;
+    packageNames = fixturePackages;
+    deferredPlatforms = ["aarch64-linux"];
+  };
+  # Deferral keeps every target with its environment, makes the deferred
+  # ones optional, and drops exactly their claims.
+  defer = platforms: complete: let
+    deferredTarget = target: builtins.elem target.platform platforms;
+    deferredIds = map (target: target.id) (builtins.filter deferredTarget complete.targets);
+  in
+    complete
+    // {
+      deferred_platforms = platforms;
+      targets = map (target:
+        target
+        // lib.optionalAttrs (deferredTarget target) {
+          required = false;
+        })
+      complete.targets;
+      claims = builtins.filter (claim: !(builtins.elem claim.target deferredIds)) complete.claims;
+    };
   capturedFixture = builtins.fromJSON (builtins.readFile ../../crates/aos-release/tests/fixtures/qualification-contract.json);
   sourceTree = builtins.path {
     path = ../../qualification;
@@ -173,21 +200,21 @@
     identity = "fixture-executor";
     packageNames = ["fixture"];
     probes.fixture = packageProbe;
-    trustKeys = ["andyl-testing:Ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="];
+    trustKeys = ["andyl-experimental:Ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="];
   };
   partialPackageExecutor = testing.mkQualificationPackageScenario {
     name = "qualification-package-scenario-partial-fixture";
     identity = "fixture-executor";
     packageNames = ["fixture" "missing"];
     probes.fixture = packageProbe;
-    trustKeys = ["andyl-testing:Ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="];
+    trustKeys = ["andyl-experimental:Ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="];
   };
   rejectsPackageExecutor = packageNames: probes:
     !(builtins.tryEval (builtins.deepSeq (testing.mkQualificationPackageScenario {
         name = "qualification-package-scenario-invalid";
         identity = "fixture-executor";
         inherit packageNames probes;
-        trustKeys = ["andyl-testing:Ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="];
+        trustKeys = ["andyl-experimental:Ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="];
       })
       true))
     .success;
@@ -284,6 +311,9 @@ in
   assert lib.hasInfix "release step qualification respond" (containerReport false);
   assert lib.hasInfix "lifecycle_cycles" (containerReport true);
   assert fixture == capturedFixture;
+  assert !(fixture ? deferred_platforms);
+  assert deferredFixture == defer ["aarch64-linux"] fixture;
+  assert (contract.deferred_platforms or []) == builtins.sort builtins.lessThan deferredPlatforms;
   assert builtins.match "^/nix/store/[0-9a-z]{32}-[^/]+$" (builtins.toString sourceRoot) != null;
   assert builtins.readFile (sourceRoot + "/server.nix") == builtins.readFile (nestedSource + "/server.nix");
   assert generatedSourceRoot == builtins.toString generatedArchive;
@@ -311,10 +341,10 @@ in
   assert recoveryPackage.execution
   == {
     kind = "recovery-image";
-    system_variant = "aos-testing";
+    system_variant = "aos-experimental";
   };
   assert builtins.all (rule:
-    (rule.execution or null) == null || rule.execution.system_variant == "aos-testing")
+    (rule.execution or null) == null || rule.execution.system_variant == "aos-experimental")
   contract.package_rules;
   assert builtins.all (phase: builtins.elem phase phases) ["build" "staging" "rollout" "complete"];
   assert builtins.length contract.targets == 4;
@@ -391,7 +421,9 @@ in
     builtins.match ".*/aos-qualification-${platform}-${name}-fleet"
     releaseExecutor.passthru.qualification.caseScenarios."package-function/${name}/${platform}"
     != null) ["k3s" "k3s-combined" "k3s-control-plane" "k3s-worker"];
-  assert builtins.length contract.claims == 8;
+  # Each released Linux platform keeps a functional and a qualified claim for
+  # its image and its container target.
+  assert builtins.length contract.claims == 4 * (2 - builtins.length deferredPlatforms);
   assert contract.support.default
   == {
     kind = "standard";
@@ -430,6 +462,12 @@ in
     };
   };
   assert rejects {qualification.qemu.unknown = true;};
+  assert rejects {qualification.deferredPlatforms = lib.mkForce ["aarch64-linux" "x86_64-linux"];};
+  assert rejects {qualification.deferredPlatforms = lib.mkForce ["x86_64-darwin"];};
+  assert rejects {
+    qualification.deferredPlatforms = lib.mkForce ["aarch64-linux"];
+    qualification.targets.disk-aarch64-linux.required = lib.mkForce true;
+  };
   assert contract.schema_version == "aos.release.qualification-contract/v1";
   assert contract.id == "aos-system";
   assert builtins.all (requirement: !(requirement ? production_only)) contract.requirements;
@@ -458,7 +496,16 @@ in
   assert builtins.elem "production/production/stable" destinationKeys;
   assert builtins.elem "staging/production/edge" destinationKeys;
   assert builtins.elem "production/production/edge" destinationKeys;
-  assert builtins.all (row: row.channel != "edge" || row.profile == (if row.surface == "staging" then "build" else "smoke")) contract.destinations;
+  assert builtins.all (row:
+    row.channel
+    != "edge"
+    || row.profile
+    == (
+      if row.surface == "staging"
+      then "build"
+      else "smoke"
+    ))
+  contract.destinations;
   assert builtins.all (row: builtins.hasAttr row.profile profiles) contract.destinations;
   assert builtins.all (row: row.after == lib.optional (row.surface == "production") "staging") contract.destinations;
   assert rejects {qualification.profiles.build.requirements = lib.mkForce ["staging-delivery"];};

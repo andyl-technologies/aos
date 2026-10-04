@@ -303,7 +303,7 @@ def inspect_direct_external_deployment(worker, python, hub_executable, exported,
                                        worker_url, native_origin_url, worker_name,
                                        emulator_bucket, guard_key_file, *,
                                        inspection_root="/var/lib/hybrid-worker/operator/deployment-inspection",
-                                       retention_label=None):
+                                       retention_label=None, additional_bootstraps=None):
     """Capture the installed CLI's authenticated full actual External profile."""
     bootstrap = exported["bootstrap"]
     if inspection_root != "/var/lib/hybrid-worker/operator/deployment-inspection" and re.fullmatch(
@@ -312,7 +312,15 @@ def inspect_direct_external_deployment(worker, python, hub_executable, exported,
     if retention_label is not None and re.fullmatch(r"external-oci-[0-9a-f]{32}", retention_label) is None:
         raise ValueError("External discovery retention label differs")
     root = inspection_root
-    encoded = base64.b64encode(json.dumps([bootstrap["selector"]]).encode()).decode()
+    selectors = [bootstrap["selector"]]
+    if additional_bootstraps is not None:
+        if (not isinstance(additional_bootstraps, list) or len(additional_bootstraps) != 1
+                or additional_bootstraps[0]["deployment_id"] != bootstrap["deployment_id"]
+                or additional_bootstraps[0]["selector"]["association"]["binding_id"]
+                    == bootstrap["selector"]["association"]["binding_id"]):
+            raise ValueError("paired discovery requires one distinct actual binding selector")
+        selectors.append(additional_bootstraps[0]["selector"])
+    encoded = base64.b64encode(json.dumps(selectors).encode()).decode()
     arguments = [
         hub_executable, "worker", "inspect-hybrid-direct-upload", "--name", worker_name,
         "--bucket", emulator_bucket, "--deployment-id", bootstrap["deployment_id"],
@@ -352,11 +360,15 @@ def inspect_direct_external_deployment(worker, python, hub_executable, exported,
     if (
         identity["version"] != 1 or identity["deploymentId"] != bootstrap["deployment_id"]
         or identity["publicOrigin"] != worker_url or identity["managedProfile"] is not None
-        or len(identity["externalProfiles"]) != 1
+        or len(identity["externalProfiles"]) != len(selectors)
         or not re.fullmatch(r"[0-9a-f]{64}", identity["sourceDigest"])
         or identity["scriptVersion"] != "emulated-" + identity["sourceDigest"]
     ):
         raise RuntimeError("actual authenticated deployment differs from the External fixture")
+    if additional_bootstraps is not None and any(sum(
+            profile["selector"] == selector for profile in identity["externalProfiles"]) != 1
+            for selector in selectors):
+        raise ValueError("paired authenticated discovery changed the actual requested selectors")
     destination = (Path("external-direct-authority/deployment-identity.json") if retention_label is None
         else Path("external-direct-flow") / (retention_label + "-deployment-identity.json"))
     descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)

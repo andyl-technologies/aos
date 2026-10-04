@@ -98,7 +98,17 @@ async fn handle(request: &mut Request, env: &Env, state: &State) -> Result<Reply
     let storage = state.storage();
 
     match &turn.operation {
-        Operation::Reserve => reserve(env, &storage, &turn, selected, &qualified).await,
+        Operation::Reserve => {
+            reserve(
+                env,
+                &storage,
+                &turn,
+                selected,
+                &qualified,
+                request.inner().signal(),
+            )
+            .await
+        }
         Operation::ReadPublication | Operation::NativeCommit { .. } => {
             anyhow::bail!("direct metadata operation reached provider authority path")
         }
@@ -374,6 +384,7 @@ async fn reserve(
     turn: &Turn,
     selected: DirectSelectedCompleteCommitment,
     qualified: &QualifiedConfig,
+    signal: worker::web_sys::AbortSignal,
 ) -> Result<Reply> {
     let placement = original::placement(&turn.admission, turn.placement_id)?;
     ensure!(
@@ -492,6 +503,7 @@ async fn reserve(
                 &turn.admission,
                 turn.placement_id,
                 turn.context.expires_at.get(),
+                Some(signal.clone()),
             )
             .await?
         }

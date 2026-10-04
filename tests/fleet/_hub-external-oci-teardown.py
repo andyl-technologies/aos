@@ -18,7 +18,13 @@ def shutdown_external_oci_helper(native, tools, prepared, helper):
         raise ValueError("External helper shutdown changed its selected original")
     offered = {"version": 1, "inputSha256": identity["inputSha256"],
         "candidateSha256": identity["candidateSha256"]}
-    request = install_direct_guest_file(native, tools["python"], root + "/helper-shutdown.json",
+    paths = helper.get("inputValue", {"shutdownFile": root + "/helper-shutdown.json",
+        "terminalFile": root + "/helper-terminal.json"})
+    if (paths["shutdownFile"], paths["terminalFile"]) not in {
+            (root + "/helper-shutdown.json", root + "/helper-terminal.json"),
+            (root + "/inventory-restart-shutdown.json", root + "/inventory-restart-terminal.json")}:
+        raise ValueError("External helper shutdown leaves its selected actual epoch")
+    request = install_direct_guest_file(native, tools["python"], paths["shutdownFile"],
         json.dumps(offered, separators=(",", ":")).encode())
     result = json.loads(direct_guest_python(native, tools["python"], """
         import hashlib, os, select, time
@@ -56,7 +62,7 @@ def shutdown_external_oci_helper(native, tools, prepared, helper):
         finally:
             if fd is not None: os.close(fd)
     """, {"process": helper["process"], "identity": identity,
-        "terminal": root + "/helper-terminal.json"}, timeout=50))
+        "terminal": paths["terminalFile"]}, timeout=50))
     return {"shutdownOriginal": request, **result}
 
 

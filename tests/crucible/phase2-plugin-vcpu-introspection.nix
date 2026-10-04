@@ -94,10 +94,6 @@
         needle = "QEMU_PLUGIN_RR_CURSOR_SYMBOL";
       }
       {
-        label = "compat register-list symbol";
-        needle = "QEMU_PLUGIN_CRUCIBLE_GET_VCPU_REGISTERS_SYMBOL";
-      }
-      {
         label = "register read function type";
         needle = "pub type QemuReadVcpuRegsFn";
       }
@@ -166,12 +162,12 @@
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/abi.rs" pluginAbi [
       {
-        label = "vCPU introspection install scaffold";
-        needle = "pub fn install_required_vcpu_introspection_scaffold";
+        label = "vCPU introspection admission";
+        needle = "PluginVcpuIntrospector::require";
       }
       {
-        label = "vCPU introspection install from qemu info";
-        needle = "pub fn install_required_vcpu_introspection_scaffold_from_qemu_info";
+        label = "vCPU introspection runtime symbols";
+        needle = "read_vcpu_regs: Option<QemuReadVcpuRegsFn>";
       }
       {
         label = "register resolver";
@@ -189,7 +185,15 @@
     ++ failuresFor "crates/crucible-qemu-plugin/src/abi/tests.rs" pluginAbiTests [
       {
         label = "ABI vCPU introspection test";
-        needle = "abi_install_requires_vcpu_introspection_symbols";
+        needle = "runtime_install_rejects_each_missing_capability_family";
+      }
+      {
+        label = "ABI missing register reader rejection";
+        needle = "symbols.read_vcpu_regs = None;";
+      }
+      {
+        label = "ABI missing round-robin cursor rejection";
+        needle = "symbols.read_rr_cursor = None;";
       }
     ]
     ++ failuresFor "crates/crucible-qemu-plugin/src/inertness.rs" pluginInertness [

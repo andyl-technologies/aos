@@ -72,10 +72,84 @@ impl RpcService {
         Ok(registry)
     }
 
+    /// Renders the authority clients prefix repository names with.
+    ///
+    /// A registry served through an instance OCI route under its slug renders
+    /// `<host>/<registry-slug>`, so `<authority>/<repository>` stays the
+    /// reference clients pull.
     pub(crate) async fn container_distribution_authority(
         &self,
         registry_id: i64,
     ) -> Result<Option<String>, RpcError> {
+        let Some(exposure) = self.container_distribution_exposure(registry_id).await? else {
+            return Ok(None);
+        };
+        let authority = distribution_authority(&exposure.origin)?;
+        Ok(Some(match exposure.namespace {
+            Some(namespace) => format!("{authority}/{namespace}"),
+            None => authority,
+        }))
+    }
+
+    /// Resolves the origin of the registry's OCI surface without inventing one.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for database failure or a malformed ready route origin.
+    pub(crate) async fn container_distribution_origin(
+        &self,
+        registry_id: i64,
+    ) -> Result<Option<String>, RpcError> {
+        Ok(self
+            .container_distribution_exposure(registry_id)
+            .await?
+            .map(|exposure| exposure.origin))
+    }
+
+    /// Resolves where the registry's OCI surface is reachable.
+    ///
+    /// A ready registry-bound route on the registry's preferred authority wins,
+    /// then an enabled, ready instance OCI route that serves the registry
+    /// through its namespace or as its default, then any other ready
+    /// registry-bound route.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for database failure or a malformed ready route origin.
+    pub(crate) async fn container_distribution_exposure(
+        &self,
+        registry_id: i64,
+    ) -> Result<Option<super::oci_namespaces::ContainerDistributionExposure>, RpcError> {
+        let Some(registry) = self
+            .db
+            .registry_by_id(registry_id)
+            .await
+            .map_err(RpcError::internal)?
+        else {
+            return Ok(None);
+        };
+        let (preferred, fallback) = self.registry_bound_distribution_origins(registry_id).await?;
+        if let Some(origin) = preferred {
+            return Ok(Some(super::oci_namespaces::ContainerDistributionExposure {
+                origin,
+                namespace: None,
+            }));
+        }
+        if let Some(exposure) = self.instance_oci_route_exposure(&registry).await? {
+            return Ok(Some(exposure));
+        }
+        Ok(fallback.map(|origin| super::oci_namespaces::ContainerDistributionExposure {
+            origin,
+            namespace: None,
+        }))
+    }
+
+    /// Returns the ready registry-bound OCI origins: the one on the registry's
+    /// preferred authority, and otherwise the first ready route.
+    async fn registry_bound_distribution_origins(
+        &self,
+        registry_id: i64,
+    ) -> Result<(Option<String>, Option<String>), RpcError> {
         let canonical_registry_url = self
             .db
             .ready_registry_canonical_url(registry_id)
@@ -94,7 +168,7 @@ impl RpcService {
             .list_routes(SurfaceTarget::Registry(registry_id))
             .await
             .map_err(RpcError::internal)?;
-        let mut fallback_authority = None;
+        let mut fallback_origin = None;
 
         for route in routes {
             if !route.enabled {
@@ -130,14 +204,14 @@ impl RpcService {
             // A CDN can serve static registry objects and expose OCI on /v2/.
             // Prefer that configured route without deriving an implicit one.
             if preferred_authority.as_deref() == Some(authority.as_str()) {
-                return Ok(Some(authority));
+                return Ok((Some(snapshot.canonical_url), None));
             }
-            if fallback_authority.is_none() {
-                fallback_authority = Some(authority);
+            if fallback_origin.is_none() {
+                fallback_origin = Some(snapshot.canonical_url);
             }
         }
 
-        Ok(fallback_authority)
+        Ok((None, fallback_origin))
     }
 }
 
@@ -161,7 +235,7 @@ fn distribution_authority(canonical_url: &str) -> Result<String, RpcError> {
         None => {
             return Err(RpcError::internal(anyhow::anyhow!(
                 "ready OCI route has no URL authority"
-            )))
+            )));
         }
     };
     Ok(url
@@ -373,9 +447,11 @@ mod tests {
             finished_at: None,
             last_error: None,
             resource_version: 9,
+            retire_registry: true,
         };
 
         let message = gc_run_message("andyl/main", &record, &[]);
+        assert!(message.retire_registry);
         assert_eq!(message.inventory_object_count, 23);
         assert_eq!(message.inventory_byte_size, 2_300);
         assert_eq!(message.reachable_object_count, 17);
@@ -960,6 +1036,7 @@ fn gc_run_message(
         applied_at: record.applied_at.unwrap_or_default(),
         policy_digest: record.policy_digest.to_string(),
         inventory_byte_size: record.inventory_byte_size,
+        retire_registry: record.retire_registry,
     }
 }
 

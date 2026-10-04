@@ -586,7 +586,64 @@
       "methods": [
         "GetInstanceSettings",
         "PlanSetInstanceSettings",
-        "SetInstanceSettings"
+        "SetInstanceSettings",
+        "TriggerInstanceMaintenance",
+        "ListInstanceOciRoutes",
+        "GetInstanceOciRoute",
+        "PlanCreateInstanceOciRoute",
+        "CreateInstanceOciRoute",
+        "PlanUpdateInstanceOciRoute",
+        "UpdateInstanceOciRoute",
+        "PlanDeleteInstanceOciRoute",
+        "DeleteInstanceOciRoute",
+        "PlanConvertRouteToInstanceOciRoute",
+        "ConvertRouteToInstanceOciRoute"
+      ],
+      "web_method_exceptions": [
+        {
+          "method": "TriggerInstanceMaintenance",
+          "reason": "Immediate maintenance scheduling is an explicit operator command used during registry retirement and incident response; the browser observes maintenance results but does not schedule work."
+        },
+        {
+          "method": "ListInstanceOciRoutes",
+          "reason": "Instance OCI root routes are deployment-wide delivery topology administered through the reviewed CLI workflow; the first console release observes registry container catalogs but does not manage instance routes."
+        },
+        {
+          "method": "GetInstanceOciRoute",
+          "reason": "Instance OCI root routes are deployment-wide delivery topology administered through the reviewed CLI workflow; the first console release observes registry container catalogs but does not manage instance routes."
+        },
+        {
+          "method": "PlanCreateInstanceOciRoute",
+          "reason": "Instance OCI root routes are deployment-wide delivery topology administered through the reviewed CLI workflow; the first console release observes registry container catalogs but does not manage instance routes."
+        },
+        {
+          "method": "CreateInstanceOciRoute",
+          "reason": "Instance OCI root routes are deployment-wide delivery topology administered through the reviewed CLI workflow; the first console release observes registry container catalogs but does not manage instance routes."
+        },
+        {
+          "method": "PlanUpdateInstanceOciRoute",
+          "reason": "Instance OCI root routes are deployment-wide delivery topology administered through the reviewed CLI workflow; the first console release observes registry container catalogs but does not manage instance routes."
+        },
+        {
+          "method": "UpdateInstanceOciRoute",
+          "reason": "Instance OCI root routes are deployment-wide delivery topology administered through the reviewed CLI workflow; the first console release observes registry container catalogs but does not manage instance routes."
+        },
+        {
+          "method": "PlanDeleteInstanceOciRoute",
+          "reason": "Instance OCI root routes are deployment-wide delivery topology administered through the reviewed CLI workflow; the first console release observes registry container catalogs but does not manage instance routes."
+        },
+        {
+          "method": "DeleteInstanceOciRoute",
+          "reason": "Instance OCI root routes are deployment-wide delivery topology administered through the reviewed CLI workflow; the first console release observes registry container catalogs but does not manage instance routes."
+        },
+        {
+          "method": "PlanConvertRouteToInstanceOciRoute",
+          "reason": "In-place conversion of a registry-bound OCI route is a one-time migration step run by instance administrators from the CLI."
+        },
+        {
+          "method": "ConvertRouteToInstanceOciRoute",
+          "reason": "In-place conversion of a registry-bound OCI route is a one-time migration step run by instance administrators from the CLI."
+        }
       ]
     },
     {
@@ -774,6 +831,18 @@
           "reason": "Failed-action requeue is an explicit operator maintenance command; the browser renders exact action evidence but does not mutate provider work."
         },
         {
+          "method": "GetContainerNamespace",
+          "reason": "Registry OCI namespace exposure is a reviewed CLI administration setting tied to instance OCI routes; the browser renders the resulting image references but does not change exposure."
+        },
+        {
+          "method": "PlanSetContainerNamespace",
+          "reason": "Registry OCI namespace exposure is a reviewed CLI administration setting tied to instance OCI routes; the browser renders the resulting image references but does not change exposure."
+        },
+        {
+          "method": "SetContainerNamespace",
+          "reason": "Registry OCI namespace exposure is a reviewed CLI administration setting tied to instance OCI routes; the browser renders the resulting image references but does not change exposure."
+        },
+        {
           "method": "BeginContainerPublication",
           "reason": "Verified container publication is currently initiated by the CLI; the browser workflow does not yet admit a signed release declaration."
         },
@@ -820,6 +889,7 @@
         "SetContainerRetentionPolicy",
         "PlanRunContainerGc",
         "RunContainerGc",
+        "CancelContainerGcRun",
         "GetContainerGcRun",
         "ListContainerGcRuns",
         "ListContainerGcCandidates",
@@ -836,7 +906,10 @@
         "BeginContainerPublication",
         "GetContainerPublication",
         "CommitContainerPublication",
-        "AbortContainerPublication"
+        "AbortContainerPublication",
+        "GetContainerNamespace",
+        "PlanSetContainerNamespace",
+        "SetContainerNamespace"
       ]
     },
     {
@@ -846,7 +919,8 @@
         "registry publish"
       ],
       "web_workflows": [
-        "registry-publication"
+        "registry-publication",
+        "registry-staging"
       ],
       "web_method_exceptions": [
         {
@@ -860,10 +934,6 @@
         {
           "method": "SealRegistryPublicationManifest",
           "reason": "The browser observes publication state; the CLI alone seals a completely admitted local manifest."
-        },
-        {
-          "method": "GetRegistryPublication",
-          "reason": "ListRegistryPublications returns the complete publication state rendered by the browser workflow."
         },
         {
           "method": "BeginRegistryPublicationMultipartUpload",
@@ -907,6 +977,11 @@
         }
       ],
       "methods": [
+        "UpsertStagedRelease",
+        "GetStagedRelease",
+        "ListStagedReleases",
+        "FinalizeStagedRelease",
+        "DiscardStagedRelease",
         "BeginRegistryPublication",
         "BeginRegistryPublicationManifest",
         "AppendRegistryPublicationManifest",
@@ -1124,10 +1199,6 @@
         "operations"
       ],
       "web_method_exceptions": [
-        {
-          "method": "GetOperation",
-          "reason": "ListOperations returns complete operation records for the selected scope."
-        },
         {
           "method": "WatchOperation",
           "reason": "The browser polls ListOperations so it can recover across navigation and Worker request boundaries."

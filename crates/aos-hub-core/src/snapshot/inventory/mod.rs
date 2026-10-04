@@ -1,6 +1,6 @@
 //! Authenticated, incomplete object requirements derived from retained SQL.
 //!
-//! Generation-eight coverage explicitly classifies every source column. Exact
+//! Generation-twelve coverage explicitly classifies every source column. Exact
 //! scalar references and identity/version fields are projected only into the
 //! encrypted private stream. Secret cells are excluded; opaque application and
 //! mutation cells contribute context-bound digests and unresolved dependencies.
@@ -31,8 +31,10 @@ pub use codec::{ObjectRequirementsOutput, ObjectRequirementsReader, ObjectRequir
 #[cfg(test)]
 mod tests;
 
-const COVERAGE: &str = include_str!("coverage-v8.tsv");
-const SOURCE: &str = include_str!("../schema-v8.tsv");
+const GENERATION8_COVERAGE: &str = include_str!("coverage-v8.tsv");
+const GENERATION8_SOURCE: &str = include_str!("../schema-v8.tsv");
+const COVERAGE: &str = include_str!("coverage-v12.tsv");
+const SOURCE: &str = include_str!("../schema-v12.tsv");
 const PROFILE: &str = "aos.hub.object-requirements/v1";
 const RECORD_BYTES: usize = 1024 * 1024;
 const FAMILIES: [&str; 10] = [
@@ -113,6 +115,7 @@ struct Table {
 pub struct ObjectRequirementsCoverage {
     tables: BTreeMap<String, Table>,
     schema: SnapshotSchemaManifest,
+    coverage_sha256: String,
 }
 
 impl ObjectRequirementsCoverage {
@@ -123,11 +126,23 @@ impl ObjectRequirementsCoverage {
     /// Rejects changed, missing, duplicate or reordered source/coverage columns,
     /// unknown policies/families or inconsistent policies for secret originals.
     pub fn current8() -> Result<Self> {
+        Self::from_generation_contract(GENERATION8_COVERAGE, GENERATION8_SOURCE, 8)
+    }
+
+    /// Admits the exact current generation-twelve requirements coverage.
+    ///
+    /// # Errors
+    /// Refuses missing, reordered or changed columns and incompatible privacy policies.
+    pub fn current12() -> Result<Self> {
         Self::from_contract(COVERAGE)
     }
 
     fn from_contract(coverage: &str) -> Result<Self> {
-        let source = SOURCE
+        Self::from_generation_contract(coverage, SOURCE, 12)
+    }
+
+    fn from_generation_contract(coverage: &str, source: &str, generation: usize) -> Result<Self> {
+        let source = source
             .lines()
             .filter(|line| !line.is_empty() && !line.starts_with('#'));
         let mut contract = coverage
@@ -162,7 +177,7 @@ impl ObjectRequirementsCoverage {
             ensure!(
                 (original[6] == "secret") == matches!(policy, Policy::SecretExcluded)
                     && (!matches!(policy, Policy::Value)
-                        || !matches!(original[6], "private_json" | "private_cell" | "secret"))
+                        || !matches!(original[6], "private_json" | "private_cell" | "secret" | "oci_inventory_progress"))
                     && (original[1] == "retain" || fields[2] == "none"),
                 "object coverage confidentiality policy differs"
             );
@@ -184,10 +199,11 @@ impl ObjectRequirementsCoverage {
             contract.next().is_none(),
             "object coverage has extra columns"
         );
-        let classifier = SnapshotClassifier::for_supported_generation(8)?;
+        let classifier = SnapshotClassifier::for_supported_generation(generation)?;
         Ok(Self {
             tables,
             schema: classifier.manifest().clone(),
+            coverage_sha256: hex::encode(Sha256::digest(coverage.as_bytes())),
         })
     }
 
@@ -215,7 +231,7 @@ impl ObjectRequirementsCoverage {
             role: role.into(),
             source_capture_root_sha256: source_root_sha256.into(),
             schema: self.schema.clone(),
-            coverage_sha256: hex::encode(Sha256::digest(COVERAGE.as_bytes())),
+            coverage_sha256: self.coverage_sha256.clone(),
             pending: [
                 "signed_graph_closure",
                 "physical_content_and_incarnations",

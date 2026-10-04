@@ -1,8 +1,14 @@
 # Contributing to AOS
 
-Thank you for contributing. Before opening a change, read
-[the repository license map](docs/legal/licensing.md) and the instructions in
-[`AGENTS.md`](AGENTS.md).
+Anyone may open issues for bugs and feature requests. External contributions
+are currently disabled, and only project contributors may open pull requests.
+The authorization requirements below do not enable external contributions.
+Report undisclosed vulnerabilities privately under the
+[security policy](SECURITY.md); reporting does not require a contributor
+agreement.
+
+Project contributors must read
+[the repository license map](docs/legal/licensing.md) before opening a change.
 
 ## Code style
 
@@ -77,7 +83,7 @@ for the complete intake and record-handling requirements.
   Otherwise they inherit QEMU's documented default, currently
   `GPL-2.0-or-later`. Update
   [`pkgs/emulation/qemu-patches/LICENSES.md`](pkgs/emulation/qemu-patches/LICENSES.md)
-  whenever the patch series starts creating or deleting a file.
+  whenever the atomic patch starts creating or deleting a file.
 - Third-party code retains its own license and notices.
 - The patched `qemu-crucible` package is not a standalone release root. Use the
   `crucible` aggregate when publishing; its release policy must retain the

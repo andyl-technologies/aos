@@ -233,8 +233,8 @@ dependencies = [
  "flate2",
  "futures-util",
  "hex",
- "http-body 1.0.1",
  "hmac 0.12.1",
+ "http-body 1.0.1",
  "lzma-rs",
  "md-5",
  "p256",
@@ -327,6 +327,7 @@ dependencies = [
  "async-trait",
  "aws-config",
  "aws-sdk-s3",
+ "aws-types",
  "base64 0.22.1",
  "bytes",
  "digest 0.10.7",
@@ -341,10 +342,42 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "ssh2",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "aos-oci"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aos-net",
+ "aos-oci-types",
+ "aos-proto-types",
+ "aos-registry-surface",
+ "aos-remote",
+ "async-trait",
+ "base64 0.22.1",
+ "bytes",
+ "flate2",
+ "futures-util",
+ "hex",
+ "reqwest",
+ "rustix",
+ "rustls-native-certs",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tar",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "url",
+ "zeroize",
+ "zstd",
 ]
 
 [[package]]
@@ -368,6 +401,7 @@ dependencies = [
  "aos-core",
  "aos-doc-model",
  "aos-net",
+ "aos-oci",
  "aos-oci-types",
  "aos-proto-types",
  "aos-registry-surface",
@@ -443,6 +477,7 @@ name = "aos-registry-surface"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-oci-types",
  "base64 0.22.1",
  "crc32fast",
  "ed25519-dalek",

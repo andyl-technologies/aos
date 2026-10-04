@@ -24,8 +24,8 @@ use aos_core::nar::pack::{self, PackPath};
 use aos_core::nix::{NixCli, PathInfo};
 use aos_core::output::Printer;
 use aos_net::{
-    MultipartAdmission, MultipartBackend, MultipartSessionState, MultipartSource,
-    MultipartUploadRequest, TransferEngine, TransferEngineConfig,
+    MultipartAdmission, MultipartBackend, MultipartFailurePolicy, MultipartSessionState,
+    MultipartSource, MultipartUploadRequest, TransferEngine, TransferEngineConfig,
 };
 
 use crate::backend::{CacheBackend, ObjectUploadAdmission, UploadedNarinfo};
@@ -444,6 +444,8 @@ struct CacheMultipartAdapter<'a> {
     backend: &'a dyn CacheBackend,
     path: &'a str,
     sha256: Option<&'a str>,
+    journal: Option<crate::upload_resume::ResumeJournal>,
+    checkpoint: std::sync::Mutex<Option<crate::upload_resume::Checkpoint>>,
 }
 
 #[async_trait::async_trait]
@@ -452,10 +454,53 @@ impl MultipartBackend for CacheMultipartAdapter<'_> {
     type Part = (u32, String);
 
     async fn begin(&self, size: u64) -> Result<MultipartAdmission<Self::Session>> {
+        if let Some(journal) = &self.journal {
+            if let Some(checkpoint) = journal.read()? {
+                anyhow::ensure!(
+                    !checkpoint.upload_id.is_empty() && checkpoint.part_size > 0,
+                    "invalid durable multipart checkpoint"
+                );
+                let mut next_part_number = 1_u32;
+                for (part, etag) in &checkpoint.parts {
+                    anyhow::ensure!(
+                        *part == next_part_number && !etag.is_empty(),
+                        "invalid durable multipart part receipt"
+                    );
+                    next_part_number = next_part_number
+                        .checked_add(1)
+                        .context("multipart progress overflow")?;
+                }
+                let session = checkpoint.upload_id.clone();
+                let part_size = checkpoint.part_size;
+                *self
+                    .checkpoint
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("upload checkpoint lock poisoned"))? =
+                    Some(checkpoint);
+                return Ok(MultipartAdmission {
+                    session,
+                    part_size,
+                    next_part_number,
+                    state: MultipartSessionState::Active,
+                });
+            }
+        }
         let (session, part_size) = self
             .backend
             .initiate_multipart(self.path, size, self.sha256)
             .await?;
+        let checkpoint = crate::upload_resume::Checkpoint {
+            upload_id: session.clone(),
+            part_size,
+            parts: Vec::new(),
+        };
+        if let Some(journal) = &self.journal {
+            journal.write(&checkpoint)?;
+        }
+        *self
+            .checkpoint
+            .lock()
+            .map_err(|_| anyhow::anyhow!("upload checkpoint lock poisoned"))? = Some(checkpoint);
         Ok(MultipartAdmission {
             session,
             part_size,
@@ -479,13 +524,43 @@ impl MultipartBackend for CacheMultipartAdapter<'_> {
             part.0 == part_number,
             "backend returned a mismatched multipart part number"
         );
+        if let Some(journal) = &self.journal {
+            let mut checkpoint = self
+                .checkpoint
+                .lock()
+                .map_err(|_| anyhow::anyhow!("upload checkpoint lock poisoned"))?;
+            let checkpoint = checkpoint
+                .as_mut()
+                .context("multipart session was not admitted")?;
+            anyhow::ensure!(
+                part_number == u32::try_from(checkpoint.parts.len())? + 1,
+                "durable multipart receipts must be contiguous"
+            );
+            checkpoint.parts.push(part.clone());
+            journal.write(checkpoint)?;
+        }
         Ok(part)
     }
 
     async fn complete(&self, session: &Self::Session, parts: &[Self::Part]) -> Result<()> {
+        let accepted = if self.journal.is_some() {
+            self.checkpoint
+                .lock()
+                .map_err(|_| anyhow::anyhow!("upload checkpoint lock poisoned"))?
+                .as_ref()
+                .context("multipart session was not admitted")?
+                .parts
+                .clone()
+        } else {
+            parts.to_vec()
+        };
         self.backend
-            .complete_multipart(self.path, session, parts)
-            .await
+            .complete_multipart(self.path, session, &accepted)
+            .await?;
+        if let Some(journal) = &self.journal {
+            journal.clear()?;
+        }
+        Ok(())
     }
 
     async fn abort(&self, session: &Self::Session) -> Result<()> {
@@ -508,20 +583,95 @@ pub(crate) async fn upload_multipart_source(
             &fallback
         }
     };
+    let namespace = backend.multipart_resume_namespace();
+    let identity = if namespace.is_some() {
+        Some(crate::upload_resume::source_identity(&source)?)
+    } else {
+        None
+    };
+    if let (Some(expected), Some((_, actual))) = (sha256, &identity) {
+        anyhow::ensure!(
+            expected == actual,
+            "multipart source differs from its admitted SHA-256"
+        );
+    }
+    let journal = match (&namespace, &identity) {
+        (Some(namespace), Some((size, digest))) => {
+            Some(match backend.multipart_resume_directory() {
+                Some(root) => crate::upload_resume::ResumeJournal::open_at(
+                    root, namespace, path, *size, digest,
+                )?,
+                None => crate::upload_resume::ResumeJournal::open(namespace, path, *size, digest)?,
+            })
+        }
+        _ => None,
+    };
+    if let (Some(journal), Some((size, digest))) = (&journal, &identity) {
+        if let Some(current) = backend.static_file_identity(path).await? {
+            anyhow::ensure!(
+                current.byte_size == *size && current.sha256 == *digest,
+                "multipart destination already contains conflicting bytes"
+            );
+            journal.clear()?;
+            return Ok(());
+        }
+    }
     let adapter = CacheMultipartAdapter {
         backend,
         path,
-        sha256,
+        sha256: identity
+            .as_ref()
+            .map(|(_, digest)| digest.as_str())
+            .or(sha256),
+        journal,
+        checkpoint: std::sync::Mutex::new(None),
     };
+    // Journaling parts sequentially leaves a durable contiguous accepted prefix.
+    // Non-resumable backends keep their ordinary concurrent abort semantics.
     let request = MultipartUploadRequest::new(format!("cache:{path}"), source)
-        .with_concurrency(PART_CONCURRENCY)
+        .with_concurrency(if namespace.is_some() {
+            1
+        } else {
+            PART_CONCURRENCY
+        })
         .with_maximum_in_flight_bytes(MAX_MULTIPART_WINDOW_BYTES as u64)
         .with_part_limits(
             MIN_MULTIPART_PART_SIZE as u64,
             MAX_MULTIPART_PART_SIZE as u64,
             MAX_MULTIPART_PARTS as u32,
-        );
-    manager.upload_multipart(request, &adapter).await?;
+        )
+        .with_failure_policy(if namespace.is_some() {
+            MultipartFailurePolicy::Preserve
+        } else {
+            MultipartFailurePolicy::Abort
+        });
+    if let Err(error) = manager.upload_multipart(request.clone(), &adapter).await {
+        if error
+            .downcast_ref::<crate::backend::MultipartSessionExpired>()
+            .is_none()
+        {
+            return Err(error);
+        }
+        let journal = adapter
+            .journal
+            .as_ref()
+            .context("expired multipart session was not journaled")?;
+        if let Some(current) = backend.static_file_identity(path).await? {
+            let (size, digest) = identity
+                .as_ref()
+                .context("resumable transfer has no source identity")?;
+            anyhow::ensure!(
+                current.byte_size == *size && current.sha256 == *digest,
+                "completed multipart destination contains conflicting bytes"
+            );
+            journal.clear()?;
+            return Ok(());
+        }
+        // The provider explicitly confirmed absence; discard only this stale
+        // session, then admit once more with the same exact source identity.
+        journal.clear()?;
+        manager.upload_multipart(request, &adapter).await?;
+    }
     Ok(())
 }
 
@@ -626,6 +776,7 @@ fn order_path_infos_for_import(infos: &mut Vec<PathInfo>) {
 #[cfg(test)]
 mod tests {
     use aos_core::nix::PathInfo;
+    use sha2::Digest as _;
 
     use super::{
         MAX_MULTIPART_PART_SIZE, MAX_MULTIPART_PARTS, MIN_MULTIPART_PART_SIZE, PreparedUpload,
@@ -640,6 +791,11 @@ mod tests {
         uploaded: std::sync::atomic::AtomicUsize,
         completed: std::sync::atomic::AtomicUsize,
         admitted: std::sync::Mutex<Vec<(String, Vec<u8>)>>,
+        resume_root: Option<std::path::PathBuf>,
+        failed_part: std::sync::Mutex<Option<u32>>,
+        missing_session: std::sync::atomic::AtomicBool,
+        accepted_parts: std::sync::Mutex<Vec<u32>>,
+        final_identity: std::sync::Mutex<Option<crate::backend::StaticFileIdentity>>,
     }
 
     impl MaliciousNegotiationBackend {
@@ -651,6 +807,11 @@ mod tests {
                 uploaded: std::sync::atomic::AtomicUsize::new(0),
                 completed: std::sync::atomic::AtomicUsize::new(0),
                 admitted: std::sync::Mutex::new(Vec::new()),
+                resume_root: None,
+                failed_part: std::sync::Mutex::new(None),
+                missing_session: std::sync::atomic::AtomicBool::new(false),
+                accepted_parts: std::sync::Mutex::new(Vec::new()),
+                final_identity: std::sync::Mutex::new(None),
             }
         }
     }
@@ -659,6 +820,21 @@ mod tests {
     impl crate::backend::CacheBackend for MaliciousNegotiationBackend {
         async fn exists(&self, _relative_path: &str) -> anyhow::Result<bool> {
             anyhow::bail!("unused test operation")
+        }
+
+        fn multipart_resume_namespace(&self) -> Option<String> {
+            self.resume_root.as_ref().map(|_| "test-hub".to_owned())
+        }
+
+        fn multipart_resume_directory(&self) -> Option<std::path::PathBuf> {
+            self.resume_root.clone()
+        }
+
+        async fn static_file_identity(
+            &self,
+            _path: &str,
+        ) -> anyhow::Result<Option<crate::backend::StaticFileIdentity>> {
+            Ok(self.final_identity.lock().unwrap().clone())
         }
 
         async fn get_narinfo(&self, _store_hash: &str) -> anyhow::Result<String> {
@@ -731,6 +907,25 @@ mod tests {
             part_number: u32,
             _data: &[u8],
         ) -> anyhow::Result<(u32, String)> {
+            if self
+                .missing_session
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err(crate::backend::MultipartSessionExpired.into());
+            }
+            if self
+                .failed_part
+                .lock()
+                .unwrap()
+                .is_some_and(|failed| failed == part_number)
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "injected interruption",
+                )
+                .into());
+            }
+            self.accepted_parts.lock().unwrap().push(part_number);
             self.uploaded
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok((part_number, "etag".to_string()))
@@ -885,5 +1080,110 @@ mod tests {
                 0
             );
         }
+    }
+    #[tokio::test]
+    async fn durable_multipart_reuses_session_and_only_transfers_missing_parts()
+    -> anyhow::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let mut backend = MaliciousNegotiationBackend::new(MIN_MULTIPART_PART_SIZE as u64);
+        backend.resume_root = Some(temporary.path().to_path_buf());
+        *backend.failed_part.lock().unwrap() = Some(2);
+        let source = aos_net::MultipartSource::bytes(vec![7; MIN_MULTIPART_PART_SIZE + 1]);
+
+        assert!(
+            upload_multipart_source(&backend, "nar/exact", source.clone(), None)
+                .await
+                .is_err()
+        );
+        assert_eq!(*backend.accepted_parts.lock().unwrap(), vec![1]);
+        assert_eq!(backend.aborted.load(std::sync::atomic::Ordering::SeqCst), 0);
+        *backend.failed_part.lock().unwrap() = None;
+        upload_multipart_source(&backend, "nar/exact", source, None).await?;
+
+        assert_eq!(*backend.accepted_parts.lock().unwrap(), vec![1, 2]);
+        assert_eq!(
+            backend.initiated.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(
+            backend.completed.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn expired_session_restarts_only_after_provider_confirms_absence() -> anyhow::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let mut backend = MaliciousNegotiationBackend::new(MIN_MULTIPART_PART_SIZE as u64);
+        backend.resume_root = Some(temporary.path().to_path_buf());
+        backend
+            .missing_session
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let source = aos_net::MultipartSource::bytes(vec![9; MIN_MULTIPART_PART_SIZE]);
+
+        upload_multipart_source(&backend, "nar/expired", source, None).await?;
+
+        assert_eq!(
+            backend.initiated.load(std::sync::atomic::Ordering::SeqCst),
+            2
+        );
+        assert_eq!(
+            backend.completed.load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        assert_eq!(backend.aborted.load(std::sync::atomic::Ordering::SeqCst), 0);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn completed_object_recovers_checkpoint_before_admitting_new_transfer()
+    -> anyhow::Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let mut backend = MaliciousNegotiationBackend::new(MIN_MULTIPART_PART_SIZE as u64);
+        backend.resume_root = Some(temporary.path().to_path_buf());
+        let bytes = vec![3; MIN_MULTIPART_PART_SIZE];
+        let digest = hex::encode(sha2::Sha256::digest(&bytes));
+        let journal = crate::upload_resume::ResumeJournal::open_at(
+            temporary.path().to_path_buf(),
+            "test-hub",
+            "nar/complete",
+            bytes.len() as u64,
+            &digest,
+        )?;
+        journal.write(&crate::upload_resume::Checkpoint {
+            upload_id: "completed-session".into(),
+            part_size: MIN_MULTIPART_PART_SIZE as u64,
+            parts: vec![(1, "etag".into())],
+        })?;
+        drop(journal);
+        *backend.final_identity.lock().unwrap() = Some(crate::backend::StaticFileIdentity {
+            byte_size: bytes.len() as u64,
+            sha256: digest,
+        });
+
+        upload_multipart_source(
+            &backend,
+            "nar/complete",
+            aos_net::MultipartSource::bytes(bytes),
+            None,
+        )
+        .await?;
+
+        assert_eq!(
+            backend.initiated.load(std::sync::atomic::Ordering::SeqCst),
+            0
+        );
+        assert_eq!(
+            std::fs::read_dir(temporary.path())?
+                .filter_map(Result::ok)
+                .filter(|entry| entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "json"))
+                .count(),
+            0
+        );
+        Ok(())
     }
 }

@@ -1,0 +1,460 @@
+schema = "aos.crucible.campaign-gate-matrix-inventory.v2"
+
+[[members]]
+class = "determinism"
+gates = [
+  "gate:harness-lint",
+  "gate:layer0-determinism",
+  "gate:content-address",
+  "gate:campaign-model",
+  "gate:campaign-statistics",
+  "gate:single-vm-fingerprint",
+  "gate:scheduler-liveness",
+  "gate:adversarial-determinism",
+  "gate:e2e-determinism",
+  "gate:control-responsive",
+  "gate:basic-block-coverage",
+  "gate:checkpoint-materialization",
+  "gate:state-space-search",
+  "gate:perf-bench",
+  "gate:fleet-equivalence",
+  "gate:campaign-continuity",
+]
+
+[[members]]
+class = "replay"
+gates = ["gate:replay-oracle", "gate:divergence-bisect"]
+
+[[members]]
+class = "signal-fault"
+gates = ["gate:layer1-injection", "gate:signal-fault-system"]
+
+[[members]]
+class = "abi"
+gates = ["gate:abi-conformance", "gate:typed-choice"]
+
+[[members]]
+class = "qemu"
+gates = ["gate:patch-microtests", "gate:production-rust-plugin-flight"]
+
+[[members]]
+class = "package"
+gates = ["gate:qemu-inert", "gate:any-guest"]
+
+[[members]]
+class = "license"
+gates = ["gate:license-boundary"]
+
+[[authorities]]
+gate = "gate:harness-lint"
+class = "determinism"
+attr_path = "checks.crucible.phase1.gates.harnessLint"
+execution_family = "static-closure"
+
+[[authorities]]
+gate = "gate:layer0-determinism"
+class = "determinism"
+attr_path = "checks.crucible.phase1.gates.layer0Determinism"
+execution_family = "qemu-runtime"
+
+[[authorities]]
+gate = "gate:content-address"
+class = "determinism"
+attr_path = "checks.crucible.phase1.gates.contentAddress"
+execution_family = "native-runtime"
+
+[[authorities]]
+gate = "gate:campaign-model"
+class = "determinism"
+attr_path = "checks.crucible.phase1.gates.campaignModel"
+execution_family = "native-runtime"
+
+[[authorities]]
+gate = "gate:campaign-statistics"
+class = "determinism"
+attr_path = "checks.crucible.phase4.gates.campaignStatistics"
+execution_family = "native-runtime"
+
+[[authorities]]
+gate = "gate:single-vm-fingerprint"
+class = "determinism"
+attr_path = "checks.crucible.phase2.gates.singleVmFingerprint"
+execution_family = "qemu-runtime"
+
+[[authorities]]
+gate = "gate:scheduler-liveness"
+class = "determinism"
+attr_path = "checks.crucible.phase3.gates.schedulerLiveness"
+execution_family = "qemu-runtime"
+
+[[authorities]]
+gate = "gate:adversarial-determinism"
+class = "determinism"
+attr_path = "checks.crucible.phase3.gates.adversarialDeterminism"
+execution_family = "native-runtime"
+
+[[authorities]]
+gate = "gate:e2e-determinism"
+class = "determinism"
+attr_path = "checks.crucible.phase7.gates.e2eDeterminism"
+execution_family = "fleet-runtime"
+
+[[authorities]]
+gate = "gate:control-responsive"
+class = "determinism"
+attr_path = "checks.crucible.phase5.gates.controlResponsive"
+execution_family = "native-runtime"
+
+[[authorities]]
+gate = "gate:basic-block-coverage"
+class = "determinism"
+attr_path = "checks.crucible.phase6.basicBlockCoverage"
+execution_family = "qemu-runtime"
+
+[[authorities]]
+gate = "gate:checkpoint-materialization"
+class = "determinism"
+attr_path = "checks.crucible.phase6.checkpointMaterialization"
+execution_family = "qemu-runtime"
+
+[[authorities]]
+gate = "gate:state-space-search"
+class = "determinism"
+attr_path = "checks.crucible.phase6.stateSpaceSearch"
+execution_family = "native-runtime"
+
+[[authorities]]
+gate = "gate:perf-bench"
+class = "determinism"
+attr_path = "checks.crucible.phase7.gates.perfBench"
+execution_family = "qemu-runtime"
+
+[[authorities]]
+gate = "gate:fleet-equivalence"
+class = "determinism"
+attr_path = "checks.crucible.phase7.gates.fleetEquivalence"
+execution_family = "fleet-runtime"
+
+[[authorities]]
+gate = "gate:campaign-continuity"
+class = "determinism"
+attr_path = "checks.crucible.phase7.gates.campaignContinuity"
+execution_family = "native-runtime"
+
+[[authorities]]
+gate = "gate:replay-oracle"
+class = "replay"
+attr_path = "checks.crucible.phase6.gates.replayOracle"
+execution_family = "qemu-runtime"
+
+[[authorities]]
+gate = "gate:divergence-bisect"
+class = "replay"
+attr_path = "checks.crucible.phase1.gates.divergenceBisect"
+execution_family = "native-runtime"
+
+[[authorities]]
+gate = "gate:layer1-injection"
+class = "signal-fault"
+attr_path = "checks.crucible.phase3.gates.layer1Injection"
+execution_family = "qemu-runtime"
+
+[[authorities]]
+gate = "gate:signal-fault-system"
+class = "signal-fault"
+attr_path = "checks.crucible.phase7.gates.signalFaultSystem"
+execution_family = "qemu-runtime"
+
+[[authorities]]
+gate = "gate:abi-conformance"
+class = "abi"
+attr_path = "checks.crucible.phase2.gates.abiConformance"
+execution_family = "static-closure"
+
+[[authorities]]
+gate = "gate:typed-choice"
+class = "abi"
+attr_path = "checks.crucible.phase2.gates.typedChoice"
+execution_family = "native-runtime"
+
+[[authorities]]
+gate = "gate:patch-microtests"
+class = "qemu"
+attr_path = "checks.crucible.phase2.gates.patchMicrotests"
+execution_family = "qemu-runtime"
+
+[[authorities]]
+gate = "gate:production-rust-plugin-flight"
+class = "qemu"
+attr_path = "checks.crucible.phase7.productionRustPluginFlight"
+execution_family = "qemu-runtime"
+
+[[authorities]]
+gate = "gate:qemu-inert"
+class = "package"
+attr_path = "checks.crucible.phase2.gates.qemuInert"
+execution_family = "qemu-runtime"
+
+[[authorities]]
+gate = "gate:any-guest"
+class = "package"
+attr_path = "checks.crucible.phase2.gates.anyGuest"
+execution_family = "qemu-runtime"
+
+[[authorities]]
+gate = "gate:license-boundary"
+class = "license"
+attr_path = "checks.crucible.phase1.gates.licenseBoundary"
+execution_family = "static-closure"
+
+[[targets]]
+gate = "gate:harness-lint"
+package = "crucible-harness"
+test_target = "harness_lint"
+features = []
+
+[[targets]]
+gate = "gate:license-boundary"
+package = "crucible-harness"
+test_target = "gate_license_boundary"
+features = []
+
+[[targets]]
+gate = "gate:layer0-determinism"
+package = "crucible-qemu"
+test_target = "deterministic_launch"
+features = []
+
+[[targets]]
+gate = "gate:single-vm-fingerprint"
+package = "crucible-qemu"
+test_target = "deterministic_launch"
+features = []
+
+[[targets]]
+gate = "gate:single-vm-fingerprint"
+package = "crucible-qemu-plugin"
+test_target = "gate_patch_microtests"
+features = []
+
+[[targets]]
+gate = "gate:single-vm-fingerprint"
+package = "crucible-guest"
+test_target = "gate_single_vm_fingerprint"
+features = []
+
+[[targets]]
+gate = "gate:layer1-injection"
+package = "crucible-device"
+test_target = "gate_layer1_injection"
+features = []
+
+[[targets]]
+gate = "gate:layer1-injection"
+package = "crucible-protocol"
+test_target = "gate_layer1_injection"
+features = []
+
+[[targets]]
+gate = "gate:layer1-injection"
+package = "crucible-shmem"
+test_target = "gate_layer1_injection"
+features = []
+
+[[targets]]
+gate = "gate:abi-conformance"
+package = "crucible-harness"
+test_target = "gate_abi_conformance"
+features = []
+
+[[targets]]
+gate = "gate:abi-conformance"
+package = "crucible-shmem"
+test_target = "gate_abi_conformance"
+features = []
+
+[[targets]]
+gate = "gate:abi-conformance"
+package = "crucible-protocol"
+test_target = "gate_abi_conformance"
+features = []
+
+[[targets]]
+gate = "gate:abi-conformance"
+package = "crucible-api"
+test_target = "gate_abi_conformance"
+features = []
+
+[[targets]]
+gate = "gate:abi-conformance"
+package = "crucible-qemu-plugin"
+test_target = "gate_abi_conformance"
+features = []
+
+[[targets]]
+gate = "gate:abi-conformance"
+package = "crucible-guest"
+test_target = "gate_abi_conformance"
+features = []
+
+[[targets]]
+gate = "gate:abi-conformance"
+package = "crucible"
+test_target = "gate_abi_conformance"
+features = ["test-double"]
+
+[[targets]]
+gate = "gate:typed-choice"
+package = "crucible-campaign"
+test_target = "gate_typed_choice"
+features = []
+
+[[targets]]
+gate = "gate:replay-oracle"
+package = "crucible"
+test_target = "gate_replay_oracle"
+features = ["test-double"]
+
+[[targets]]
+gate = "gate:content-address"
+package = "crucible"
+test_target = "gate_content_address"
+features = []
+
+[[targets]]
+gate = "gate:content-address"
+package = "crucible-sim"
+test_target = "gate_content_address"
+features = []
+
+[[targets]]
+gate = "gate:campaign-model"
+package = "crucible-campaign"
+test_target = "gate_campaign_model"
+features = []
+
+[[targets]]
+gate = "gate:campaign-statistics"
+package = "crucible-campaign"
+test_target = "gate_campaign_statistics"
+features = []
+
+[[targets]]
+gate = "gate:scheduler-liveness"
+package = "crucible-qemu"
+test_target = "deterministic_launch"
+features = []
+
+[[targets]]
+gate = "gate:control-responsive"
+package = "crucible-session"
+test_target = "gate_control_responsive"
+features = []
+
+[[targets]]
+gate = "gate:control-responsive"
+package = "crucible-api"
+test_target = "gate_control_responsive"
+features = []
+
+[[targets]]
+gate = "gate:control-responsive"
+package = "crucible-daemon"
+test_target = "gate_control_responsive"
+features = []
+
+[[targets]]
+gate = "gate:any-guest"
+package = "crucible-qemu"
+test_target = "deterministic_launch"
+features = []
+
+[[targets]]
+gate = "gate:qemu-inert"
+package = "crucible-qemu"
+test_target = "gate_qemu_inert"
+features = []
+
+[[targets]]
+gate = "gate:qemu-inert"
+package = "crucible-qemu-plugin"
+test_target = "gate_qemu_inert"
+features = []
+
+[[targets]]
+gate = "gate:patch-microtests"
+package = "crucible-qemu-plugin"
+test_target = "gate_patch_microtests"
+features = []
+
+[[targets]]
+gate = "gate:divergence-bisect"
+package = "crucible-harness"
+test_target = "gate_divergence_bisect"
+features = []
+
+[[targets]]
+gate = "gate:adversarial-determinism"
+package = "crucible"
+test_target = "gate_adversarial_determinism"
+features = []
+
+[[targets]]
+gate = "gate:e2e-determinism"
+package = "crucible"
+test_target = "gate_e2e_determinism_concurrency"
+features = ["test-double"]
+
+[[targets]]
+gate = "gate:e2e-determinism"
+package = "crucible-cli"
+test_target = "gate_e2e_determinism"
+features = []
+
+[[targets]]
+gate = "gate:basic-block-coverage"
+package = "crucible"
+test_target = "gate_basic_block_coverage"
+features = []
+
+[[targets]]
+gate = "gate:basic-block-coverage"
+package = "crucible-qemu"
+test_target = "gate_basic_block_coverage"
+features = []
+
+[[targets]]
+gate = "gate:checkpoint-materialization"
+package = "crucible"
+test_target = "gate_checkpoint_materialization"
+features = []
+
+[[targets]]
+gate = "gate:state-space-search"
+package = "crucible"
+test_target = "gate_state_space_search"
+features = []
+
+[[targets]]
+gate = "gate:fleet-equivalence"
+package = "crucible"
+test_target = "gate_fleet_equivalence"
+features = []
+
+[[targets]]
+gate = "gate:campaign-continuity"
+package = "crucible-cas"
+test_target = "gate_campaign_continuity"
+features = []
+
+[[targets]]
+gate = "gate:signal-fault-system"
+package = "crucible"
+test_target = "gate_signal_fault_system"
+features = []
+
+[[targets]]
+gate = "gate:perf-bench"
+package = "crucible-harness"
+test_target = "gate_perf_bench"
+features = []

@@ -399,6 +399,7 @@
     cp ${./_hub-oci-sdk-install.py} "$out/_hub-oci-sdk-install.py"
     cp ${./_hub-managed-container.py} "$out/_hub-managed-container.py"
     cp ${./_hub-external-oci-setup.py} "$out/_hub-external-oci-setup.py"
+    cp ${./_hub-external-inventory-resume.py} "$out/_hub-external-inventory-resume.py"
     cp ${./_hub-external-workflow-accounting.py} "$out/_hub-external-workflow-accounting.py"
     cp ${./_hub-direct-boundary.py} "$out/_hub-direct-boundary.py"
     cp ${./_hub-direct-runtime-observations.py} "$out/_hub-direct-runtime-observations.py"
@@ -712,6 +713,7 @@ in {
       + builtins.readFile ./_hub-external-oci-process.py
       + builtins.readFile ./_hub-external-oci-direct.py
       + builtins.readFile ./_hub-external-oci-business.py
+      + builtins.readFile ./_hub-external-inventory-window.py
       + builtins.readFile ./_hub-external-oci-accounting.py
       + builtins.readFile ./_hub-external-oci-teardown.py
       + builtins.readFile ./_hub-external-copy-loss-setup.py
@@ -866,7 +868,9 @@ in {
             "python": "${pkgs.python3}/bin/python3",
             "node": "${pkgs.nodejs}/bin/node",
             "externalCopyPartialHold": "${managedFixtureModules}/_hub-external-copy-partial-hold.mjs",
-        }, partial_prefixes=["/fleet-s3/.aos-direct-qualification/external-oci/" + run + "/registry/"
+        }, partial_prefixes=[external_oci_provider_prefix("fleet-s3",
+            external_oci_pair_coordinates(run)["placementPrefix"].rsplit("/", 1)[0],
+            external_oci_pair_coordinates(run)["placementPrefix"])
             for run in external_copy_cases.values()])
       ''}
       s3.wait_until_succeeds(f"{GARAGE} status > /dev/null", timeout=180)
@@ -1017,6 +1021,7 @@ in {
             else builtins.toJSON (toString runtimeSource)
           },
               "externalOciSetup": "${managedFixtureModules}/_hub-external-oci-setup.py",
+              "externalInventoryResume": "${managedFixtureModules}/_hub-external-inventory-resume.py",
               "externalCopyIsolation": "${managedFixtureModules}/_hub-external-copy-isolation.cjs",
               "externalCopyClosedLoss": "${managedFixtureModules}/_hub-external-copy-closed-loss.mjs",
               "externalCopyLifetime": "${managedFixtureModules}/_hub-external-copy-lifetime.py",

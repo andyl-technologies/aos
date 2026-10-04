@@ -10,6 +10,60 @@ fn integer(value: i64) -> LeaseInteger {
     LeaseInteger::new(value).unwrap()
 }
 
+#[test]
+fn legacy_capacity_remains_exact_while_new_domains_admit_a_common_bound() {
+    let (_, mut config, _) = fixture();
+    let policy = crate::direct_upload::provider_capacity::policy::Policy {
+        version: 1,
+        deployment_id: "fixture-deployment".into(),
+        source_digest: "a".repeat(64),
+        script_version: "actual-script".into(),
+        maximum_provider_requests: 3,
+    };
+    assert!(config.validate_capacity(None).is_ok());
+    assert!(config.validate_capacity(Some(&policy)).is_ok());
+    config.domains[0].provider_concurrency = 5;
+    assert!(config.validate_capacity(Some(&policy)).is_err());
+    config.version = 2;
+    assert!(config.validate_capacity(None).is_err());
+    assert!(config.validate_capacity(Some(&policy)).is_ok());
+    config.domains[0].provider_concurrency = 2;
+    assert!(config.validate_capacity(Some(&policy)).is_err());
+}
+
+#[test]
+fn distinct_sql_bindings_cannot_alias_the_same_physical_key() {
+    let (object, config, original) = fixture();
+    let domain = &config.domains[0];
+    let source = domain.scope(&object, &original, false).unwrap();
+    let destination = domain.scope(&object, &original, true).unwrap();
+    distinct_physical_keys(
+        &domain.read_cohort,
+        &source,
+        &domain.write_cohort,
+        &destination,
+    )
+    .unwrap();
+
+    let mut alternate = domain.write_cohort.clone();
+    alternate.authority.authority_id =
+        aos_hub_core::storage_authority::PhysicalStorageAuthorityId::parse(
+            "00000000-0000-4000-8000-000000000002",
+        )
+        .unwrap();
+    let mut aliased_scope = source.clone();
+    aliased_scope.physical_authority_id = alternate.authority.authority_id.clone();
+    assert!(
+        distinct_physical_keys(&domain.read_cohort, &source, &alternate, &aliased_scope).is_err()
+    );
+
+    alternate.alias.spec.bucket = "different-actual-bucket".into();
+    distinct_physical_keys(&domain.read_cohort, &source, &alternate, &aliased_scope).unwrap();
+    alternate.alias.spec = domain.read_cohort.alias.spec.clone();
+    aliased_scope.full_key = destination.full_key;
+    distinct_physical_keys(&domain.read_cohort, &source, &alternate, &aliased_scope).unwrap();
+}
+
 pub(in crate::external_object::copy) fn fixture() -> (ObjectConfig, Config, ExternalCopyOriginal) {
     let mut object = crate::external_object::tests::config();
     let publication = &object.publications[0];
@@ -51,6 +105,7 @@ pub(in crate::external_object::copy) fn fixture() -> (ObjectConfig, Config, Exte
         },
         producer_profile_digest: "c".repeat(64),
         provider_contract: ProviderContract {
+            maximum_copy_read_range_bytes: None,
             contract_id: "controlled-copy-provider".into(),
             evidence_digest: "d".repeat(64),
             versioned_conditional_range_read: true,
@@ -119,6 +174,7 @@ pub(in crate::external_object::copy) fn fixture() -> (ObjectConfig, Config, Exte
         part_bytes: domain.part_bytes,
         expected_sha256: None,
         source_receipt_digest: None,
+        transfer: None,
     };
     (
         object,
@@ -226,8 +282,8 @@ fn parser_and_execution_budgets_refuse_ambiguity_and_capacity_exhaustion() {
     assert!(Config::parse(&serde_json::to_string(&value).unwrap(), &object).is_err());
 }
 
-pub(in crate::external_object::copy) fn protected_fixture(
-) -> (ObjectConfig, Config, ExternalCopyOriginal) {
+pub(in crate::external_object::copy) fn protected_fixture()
+-> (ObjectConfig, Config, ExternalCopyOriginal) {
     let (object, mut config, mut original) = fixture();
     let contract = &mut config.domains[0].provider_contract;
     contract.versioned_conditional_range_read = false;
@@ -289,3 +345,5 @@ fn protected_copy_requires_its_exact_independently_installed_contract() {
         assert!(Config::parse(&serde_json::to_string(&changed).unwrap(), &object).is_err());
     }
 }
+
+mod paired;

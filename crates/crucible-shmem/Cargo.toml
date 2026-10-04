@@ -13,5 +13,6 @@ blake3 = { workspace = true }
 crucible-protocol = { path = "../crucible-protocol" }
 libc = { workspace = true }
 sha2 = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

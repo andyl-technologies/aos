@@ -409,8 +409,9 @@ fn check_header(
     ensure!(
         (header.profile == PROFILE && header.source.is_none())
             || (postgres
-                && classifier.manifest().version == 8
-                && header.source.as_ref() == Some(&PostgresSource::expected())),
+                && header.source.is_some()
+                && header.source
+                    == PostgresSource::expected_for_generation(classifier.manifest().version)),
         "snapshot source profile differs"
     );
     ensure!(

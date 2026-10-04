@@ -115,7 +115,12 @@ async fn execute(State(state): State<Arc<Mutex<Provider>>>, request: Request) ->
                 parts: BTreeMap::new(),
             },
         );
-        return response(200, format!("<InitiateMultipartUploadResult><Bucket>probe-bucket</Bucket><Key>{key}</Key><UploadId>{upload_id}</UploadId></InitiateMultipartUploadResult>"));
+        return response(
+            200,
+            format!(
+                "<InitiateMultipartUploadResult><Bucket>probe-bucket</Bucket><Key>{key}</Key><UploadId>{upload_id}</UploadId></InitiateMultipartUploadResult>"
+            ),
+        );
     }
     if let Some(upload_id) = query.get("uploadId") {
         if !provider.uploads.contains_key(upload_id) {
@@ -226,7 +231,12 @@ async fn execute(State(state): State<Arc<Mutex<Provider>>>, request: Request) ->
                     .1
                     .bytes[0] ^= 1;
             }
-            return response(200, format!("<CompleteMultipartUploadResult><Bucket>probe-bucket</Bucket><Key>{key}</Key><ETag>{tag}</ETag></CompleteMultipartUploadResult>"));
+            return response(
+                200,
+                format!(
+                    "<CompleteMultipartUploadResult><Bucket>probe-bucket</Bucket><Key>{key}</Key><ETag>{tag}</ETag></CompleteMultipartUploadResult>"
+                ),
+            );
         }
     }
     let object = provider.objects.get(&key).unwrap();
@@ -372,7 +382,7 @@ async fn actual_tls_pipeline_retains_closed_observations_without_authorizing_a_p
     assert_eq!(report.source.sha256, report.original.expected_sha256);
     assert_eq!(report.streamed_copy.sha256, report.source.sha256);
     assert_eq!(report.provider_copy.sha256, report.source.sha256);
-    assert_eq!(report.source.size, 5 * 1024 * 1024 + 32 * 1024);
+    assert_eq!(report.source.size, 8 * 1024 * 1024 + 32 * 1024);
     assert_eq!(report.cleanup_state, "retained_known_objects");
     for phase in [
         Phase::RejectBadChecksum,
@@ -433,6 +443,26 @@ async fn actual_tls_pipeline_retains_closed_observations_without_authorizing_a_p
     );
 }
 
+fn report_range_bytes(report: &std::path::Path, journal: &std::path::Path) -> u64 {
+    let report: Report = serde_json::from_slice(&std::fs::read(report).unwrap()).unwrap();
+    report
+        .observations
+        .iter()
+        .enumerate()
+        .filter(|(_, observed)| observed.phase == Phase::SourceRangeRead)
+        .map(|(index, observed)| {
+            let intent: super::model::Intent = serde_json::from_slice(
+                &std::fs::read(journal.join(format!("{index:03}.intent.json"))).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(observed.actual_size, Some(intent.size));
+            assert_eq!(observed.actual_sha256, intent.expected_sha256);
+            intent.size
+        })
+        .max()
+        .unwrap()
+}
+
 #[tokio::test]
 async fn versionless_copy_contract_projects_only_complete_actual_tls_journal() {
     let fixture = Fixture::new(Fault::Versionless).await;
@@ -467,6 +497,12 @@ async fn versionless_copy_contract_projects_only_complete_actual_tls_journal() {
         false
     );
     assert_eq!(
+        selected["provider_contract"]["maximum_copy_read_range_bytes"],
+        "8388608"
+    );
+    let range = report_range_bytes(&report, &journal);
+    assert_eq!(range, 8 * 1024 * 1024);
+    assert_eq!(
         selected["provider_contract"]["protected_versionless"]["strong_conditional_range_read"],
         true
     );
@@ -490,6 +526,26 @@ async fn versionless_copy_contract_projects_only_complete_actual_tls_journal() {
     )
     .is_err());
     write(&report, &original);
+
+    // A larger declared range cannot be inferred from multipart writer geometry.
+    let retained: Report = serde_json::from_slice(&original).unwrap();
+    let index = retained
+        .observations
+        .iter()
+        .position(|observed| observed.phase == Phase::SourceRangeRead)
+        .unwrap();
+    let intent_file = journal.join(format!("{index:03}.intent.json"));
+    let intent_bytes = std::fs::read(&intent_file).unwrap();
+    let mut intent: super::model::Intent = serde_json::from_slice(&intent_bytes).unwrap();
+    intent.size += 1;
+    write(&intent_file, &serde_json::to_vec(&intent).unwrap());
+    assert!(super::export_provider_copy_contract(
+        &report,
+        &journal,
+        &root.join("unobserved-range.json")
+    )
+    .is_err());
+    write(&intent_file, &intent_bytes);
 
     let mut changed: Report = serde_json::from_slice(&original).unwrap();
     changed.source.size += 1;

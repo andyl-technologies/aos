@@ -9,6 +9,7 @@ mod direct_receipts;
 mod lifetimes;
 mod mirror;
 mod privacy;
+mod inventory_progress;
 
 #[test]
 fn historical_contract_keeps_exact_digests_and_refuses_mixed_generations() {
@@ -208,13 +209,13 @@ async fn contract_covers_the_actual_production_initializer() {
     let tables = sqlx::query("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
         .fetch_all(&pool).await.unwrap();
     let contracts = contract().unwrap();
-    assert_eq!(contracts.len(), 279);
+    assert_eq!(contracts.len(), 287);
     assert_eq!(
         contracts
             .values()
             .map(|table| table.columns.len())
             .sum::<usize>(),
-        2725
+        2789
     );
     assert_eq!(tables.len(), contracts.len());
 
@@ -972,5 +973,5 @@ fn generation8_adds_channel_classification_without_changing_generation7() {
     assert!(!previous.tables.contains_key("release_channel_advances"));
     assert_eq!(current.tables.len(), previous.tables.len() + 1);
     assert_eq!(current.tables["release_channel_advances"].columns.len(), 11);
-    assert_eq!(current.manifest.migration_digests, digests());
+    assert_eq!(current.manifest.migration_digests, digests()[..8]);
 }

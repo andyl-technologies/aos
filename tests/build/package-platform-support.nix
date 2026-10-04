@@ -261,6 +261,13 @@
       builtins.filter (cell: cell.platform == platform) (packageByName name).platforms
     ))
     .decision;
+  # A deferred Linux platform blocks every eligible cell with one reviewed
+  # reason; every other eligible cell is unblocked.
+  deferred = platform: builtins.elem platform support.deferredPlatforms;
+  expectedBlockers = platform:
+    if deferred platform
+    then ["platform-release-deferred"]
+    else [];
 in
   assert support.validate packageNames;
   assert support.validateHelpers helperFiles;
@@ -360,11 +367,23 @@ in
   assert (decisionFor "darwin-runtimes" "aarch64-darwin").state == "eligible";
   assert (decisionFor "rust" "x86_64-linux").blockers == [];
   assert (decisionFor "rust" "x86_64-darwin").blockers == [];
+  assert support.deferredPlatforms == import ../../qualification/deferred-platforms.nix;
   assert builtins.all (package:
     builtins.all (cell:
-      cell.decision.state != "eligible" || cell.decision.blockers == [])
+      cell.decision.state != "eligible" || cell.decision.blockers == expectedBlockers cell.platform)
     package.platforms)
   releaseInventory.packages;
+  assert (decisionFor "rust" "aarch64-linux").state == "eligible";
+  assert (decisionFor "rust" "aarch64-linux").blockers == expectedBlockers "aarch64-linux";
+  # Blocked cells must never reach derivation evaluation, so a deferred
+  # platform evaluates no release derivation at all.
+  assert builtins.all (platform:
+    support.releaseDerivationNames platform packageNames
+    == (
+      if deferred platform
+      then []
+      else support.publicationEligibleNames platform packageNames
+    )) ["x86_64-linux" "aarch64-linux"];
   assert (decisionFor "darwin-runtimes" "x86_64-linux").state == "not-applicable";
   assert (decisionFor "aos-hub-e2e" "x86_64-linux").state == "not-applicable";
   assert (decisionFor "darling" "aarch64-linux").state == "not-applicable";

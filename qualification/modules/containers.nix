@@ -6,6 +6,11 @@
 }: let
   cfg = config.qualification.containers;
   types = import ./_types.nix {inherit lib;};
+  # Deferred platforms keep their reviewed target, but it does not gate the
+  # release until the platform returns; see ../deferred-platforms.nix.
+  releasedPlatforms =
+    builtins.filter (platform: !(builtins.elem platform config.qualification.deferredPlatforms))
+    ["x86_64-linux" "aarch64-linux"];
 
   physicalHost = platform: {
     inherit platform;
@@ -29,7 +34,7 @@
   target = platform: hostLayers: {
     inherit platform;
     kind = "container";
-    required = true;
+    required = builtins.elem platform releasedPlatforms;
     environment = {
       # The ARM64 runtime lives inside an emulated Linux guest. Recording
       # the outer host prevents this scope from claiming native ARM64 hardware.
@@ -94,8 +99,9 @@ in {
           >= 10
           && builtins.all (platform:
             builtins.any (target: target.platform == platform && target.kind == "container" && target.required)
-            (builtins.attrValues config.qualification.targets)) ["x86_64-linux" "aarch64-linux"];
-        message = "Containers require both Linux subject architectures and at least ten lifecycle cycles.";
+            (builtins.attrValues config.qualification.targets))
+          releasedPlatforms;
+        message = "Containers require every Linux subject architecture that is not deferred and at least ten lifecycle cycles.";
       }
     ];
   };

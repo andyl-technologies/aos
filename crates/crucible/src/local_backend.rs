@@ -159,6 +159,10 @@ impl Backend for SimBackend {
 }
 
 impl SimulationBackend for SimBackend {
+    fn io_inventory_authority(&self) -> crate::BackendIoInventoryAuthority {
+        crate::BackendIoInventoryAuthority::SchedulerOwnedModel
+    }
+
     fn step_to(&mut self, ceiling: VirtualTime) -> Result<StepObservation, BackendError> {
         let outcome = self.advance_to_horizon(ExecutionHorizon {
             icount: Icount {

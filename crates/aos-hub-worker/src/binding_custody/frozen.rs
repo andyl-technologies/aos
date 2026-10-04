@@ -12,7 +12,7 @@ use aos_hub_core::storage_work::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-use worker::{Env, Fetch, Method, Request, RequestInit, RequestRedirect, Storage};
+use worker::{Env, Method, Request, RequestInit, RequestRedirect, Storage};
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -30,6 +30,7 @@ pub(super) async fn handle(
     env: &Env,
     storage: &Storage,
     binding_id: i64,
+    signal: worker::web_sys::AbortSignal,
 ) -> Result<Outcome> {
     let key = StorageWorkKey::new(env.secret("HUB_STORAGE_WORK_KEY")?.to_string())?;
     let deployment = env.var("HUB_DEPLOYMENT_ID")?.to_string();
@@ -175,8 +176,13 @@ pub(super) async fn handle(
     let physical = challenge.with_material(material, now)?;
     if let Some(request) = &deletion {
         let plan = delete_plan(request)?;
-        let result =
-            crate::external_object::execute_delete_plan(env, &plan, &physical.publication).await?;
+        let result = crate::external_object::execute_delete_plan(
+            env,
+            &plan,
+            &physical.publication,
+            Some(signal.clone()),
+        )
+        .await?;
         return delete_reply(storage, &key, request, result.outcome).await;
     }
     let encoded = zeroize::Zeroizing::new(serde_json::to_vec(&physical)?);
@@ -196,15 +202,36 @@ pub(super) async fn handle(
     // The existing binding gate retains exact archival material throughout I/O.
     // Fresh claim expiry is checked after all awaited preparation and before Fetch.
     challenge.validate(&deployment, aos_hub_core::clock::now_unix_secs())?;
-    crate::direct_upload::provider_capacity::record_dispatch();
-    let response = Fetch::Request(request).send().await?;
-    let length = response.headers().get("content-length")?;
-    let etag = response.headers().get("etag")?;
-    let result: StorageFrozenCleanupHeadResult = serde_json::from_slice(&grant.result(
-        response.status_code(),
-        length.as_deref(),
-        etag.as_deref(),
-    )?)?;
+    let fresh = || {
+        challenge
+            .validate(&deployment, aos_hub_core::clock::now_unix_secs())
+            .map_err(anyhow::Error::from)
+    };
+    // This archival grant uses its existing UTC expiry, not an issuer clock
+    // qualification. The binding gate remains held through response ownership.
+    let result: StorageFrozenCleanupHeadResult =
+        crate::external_object::configured_provider_response(
+            env,
+            request,
+            challenge.expires_at,
+            0,
+            Some(signal),
+            crate::direct_upload::provider_capacity::Class::Metadata,
+            None,
+            &fresh,
+            &|| {},
+            true,
+            |response| async move {
+                let length = response.headers().get("content-length")?;
+                let etag = response.headers().get("etag")?;
+                Ok(serde_json::from_slice(&grant.result(
+                    response.status_code(),
+                    length.as_deref(),
+                    etag.as_deref(),
+                )?)?)
+            },
+        )
+        .await?;
     let observed_at = aos_hub_core::clock::now_unix_secs();
     challenge.validate(&deployment, observed_at)?;
     write(storage, "credential-custody/clock/v1", &observed_at).await?;

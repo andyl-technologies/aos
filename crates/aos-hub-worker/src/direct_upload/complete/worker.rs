@@ -55,21 +55,43 @@ impl Runtime for WorkerRuntime<'_> {
         admission: DirectUploadAdmission,
         complete: DirectCompleteRequest,
     ) -> Result<Option<Ready>> {
-        prepare(self.env, self.qualified, context, admission, complete).await
+        prepare(
+            self.env,
+            self.qualified,
+            context,
+            admission,
+            complete,
+            self.request.inner().signal(),
+        )
+        .await
     }
 
     async fn reserve(&self, context: &DirectRequestContext, ready: Ready) -> Result<Reserved> {
         let qualified = self
             .qualified
             .ok_or_else(|| anyhow::anyhow!("direct historical reservation refused"))?;
-        reserve(self.env, qualified, context, ready).await
+        reserve(
+            self.env,
+            qualified,
+            context,
+            ready,
+            self.request.inner().signal(),
+        )
+        .await
     }
 
     async fn promote(&self, reserved: Reserved, permission: &LogicalReply) -> Result<Published> {
         let qualified = self
             .qualified
             .ok_or_else(|| anyhow::anyhow!("direct historical promotion refused"))?;
-        promote(self.env, qualified, reserved, permission).await
+        promote(
+            self.env,
+            qualified,
+            reserved,
+            permission,
+            self.request.inner().signal(),
+        )
+        .await
     }
 
     async fn acknowledge(
@@ -105,6 +127,7 @@ async fn prepare(
     context: &DirectRequestContext,
     admission: DirectUploadAdmission,
     complete: DirectCompleteRequest,
+    signal: worker::web_sys::AbortSignal,
 ) -> Result<Option<Ready>> {
     if let Some(qualified) = qualified {
         context.foreground.validate_at(qualified.latest_now()?)?;
@@ -145,7 +168,7 @@ async fn prepare(
             qualified.ok_or_else(|| anyhow::anyhow!("direct historical verification absent"))?;
         let created = created(env, &admission, placement.placement_id).await?;
         current(qualified, context, &admission)?;
-        let closed = verification::close_checked(
+        let closed = verification::close_checked_with_signal(
             env,
             &admission,
             &complete,
@@ -153,6 +176,7 @@ async fn prepare(
             &created,
             context.foreground.expires_at,
             || current(qualified, context, &admission),
+            Some(signal.clone()),
         )
         .await?;
         let job = VerificationJob {
@@ -219,6 +243,7 @@ async fn reserve(
     qualified: &QualifiedConfig,
     context: &DirectRequestContext,
     ready: Ready,
+    signal: worker::web_sys::AbortSignal,
 ) -> Result<Reserved> {
     let mut baselines = Vec::new();
     let mut witnesses = Vec::new();
@@ -234,6 +259,7 @@ async fn reserve(
             &ready.complete,
             placement.placement_id,
             context,
+            Some(signal.clone()),
         )
         .await?;
         baselines.push(baseline);
@@ -251,6 +277,7 @@ async fn promote(
     qualified: &QualifiedConfig,
     reserved: Reserved,
     permission: &LogicalReply,
+    signal: worker::web_sys::AbortSignal,
 ) -> Result<Published> {
     let Reserved {
         mut ready,
@@ -300,6 +327,7 @@ async fn promote(
                     &permission.context,
                     &permission.signed.body,
                     &permission.signed.signature,
+                    Some(signal.clone()),
                 )
                 .await?
             }

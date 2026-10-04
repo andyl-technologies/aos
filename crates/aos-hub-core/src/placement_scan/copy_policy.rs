@@ -47,9 +47,9 @@ impl PlacementScanController {
         for page_number in 1..=max_pages {
             let current = match page.take() {
                 Some(page) => page,
-                None => fetch.list_page(cursor.as_deref(), page_limit).await?,
+                None => fetch.list_page("", cursor.as_deref(), page_limit).await?,
             };
-            current.validate(page_limit, cursor.as_deref())?;
+            current.validate(page_limit, "", cursor.as_deref())?;
             for path in current.paths {
                 anyhow::ensure!(
                     prior_path.as_ref().is_none_or(|prior| prior < &path),

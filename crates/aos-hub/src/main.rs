@@ -1595,7 +1595,6 @@ async fn main() -> Result<()> {
                         aos_hub_core::topology_probe::SignedManifestRouteObservationProvider::from_signed_json(
                             &signed_manifest,
                             &public_key,
-                            now_secs(),
                             Arc::clone(&route_http),
                         )
                         .context("invalid signed route publication manifest")?,
@@ -1659,10 +1658,33 @@ async fn main() -> Result<()> {
                     )
                     .with_credentials(Arc::clone(&app_state.secret_versions)),
                 ));
+
+                // Registry deletion can schedule a scan for this same tick.
+                let registry_deletions =
+                    aos_hub_core::registry_delete_controller::RegistryDeletionController::new(
+                        Arc::clone(&app_state.db),
+                        Arc::new(
+                            aos_hub::coreports::HubSurfaceProvider::new(
+                                Arc::clone(&app_state.db),
+                                app_state.http.clone(),
+                                app_state.image_snapshots.clone(),
+                            )
+                            .with_credentials(Arc::clone(&app_state.secret_versions)),
+                        ),
+                        "native-registry-delete",
+                        aos_hub_core::oci_inventory_controller::NATIVE_OCI_INVENTORY_DISPATCH_BUDGET,
+                    );
+
                 tokio::spawn(async move {
                     let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
                     loop {
                         tick.tick().await;
+                        if let Err(error) = registry_deletions.run_due(5).await {
+                            tracing::warn!(
+                                error = %format!("{error:#}"),
+                                "registry deletion controller pass failed"
+                            );
+                        }
                         if let Err(error) = placement_scans.run_due(5).await {
                             tracing::warn!(
                                 error = %format!("{error:#}"),
@@ -1832,10 +1854,26 @@ async fn main() -> Result<()> {
                     Arc::clone(&inventory_surfaces),
                 )
                 .with_writes(Arc::clone(&inventory_writers));
+
+                // Keep registry inspection on Worker storage plans in hybrid mode.
+                let registry_deletions =
+                    aos_hub_core::registry_delete_controller::RegistryDeletionController::new(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(&inventory_surfaces),
+                        "hybrid-registry-delete",
+                        aos_hub_core::oci_inventory_controller::NATIVE_OCI_INVENTORY_DISPATCH_BUDGET,
+                    );
+
                 tokio::spawn(async move {
                     let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
                     loop {
                         tick.tick().await;
+                        if let Err(error) = registry_deletions.run_due(5).await {
+                            tracing::warn!(
+                                error = %format!("{error:#}"),
+                                "hybrid registry deletion controller pass failed"
+                            );
+                        }
                         if let Err(error) = placement_scans.run_due(5).await {
                             tracing::warn!(
                                 error = %format!("{error:#}"),

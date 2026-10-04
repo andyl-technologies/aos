@@ -408,6 +408,27 @@ pub(in crate::direct_upload::authority) fn external_fixture(
 }
 
 #[test]
+fn retained_external_domain_cannot_disappear_behind_an_unrelated_current_profile() {
+    let item = artifact();
+    let (bytes, keys) = encoded(&item);
+    let mut accepted = NativeDirectUploadAcceptances::from_bytes(&bytes, &keys, 150).unwrap();
+    let retained = profile();
+    let association = &retained.selector.association;
+    let (unrelated, _) = managed_fixture(&item.public_origin, 150, 300);
+    accepted.accepted.extend(unrelated.accepted);
+
+    let current = accepted
+        .profiles(&item.deployment_id, &item.public_origin, 201)
+        .unwrap();
+    assert!(current
+        .iter()
+        .all(|profile| matches!(profile, DirectProtectedProfile::Managed { .. })));
+    assert!(accepted
+        .protects_external_binding(association.binding_id.get(), &association.binding_stable_id,));
+    assert!(!accepted.protects_external_binding(1, "another-binding"));
+}
+
+#[test]
 fn reviewed_emulator_requires_exact_current_audience_and_window() {
     let item = artifact();
     let (bytes, keys) = encoded(&item);

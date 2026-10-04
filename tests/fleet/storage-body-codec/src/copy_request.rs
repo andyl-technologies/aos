@@ -167,6 +167,7 @@ mod tests {
             ],
             placement_prefix: "destination/".into(),
             operation: StorageWorkOperation::CopyObject {
+                source_binding_id: None,
                 source_placement_id: 10,
                 source_placement_resource_version: 4,
                 source_prefix: "source/".into(),

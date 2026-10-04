@@ -110,6 +110,16 @@ pub(super) fn physical_address(
 }
 
 pub(super) async fn call(env: &Env, turn: &Turn) -> Result<Reply> {
+    call_with_signal(env, turn, None).await
+}
+
+// The native Request carries the existing HTTP signal across the internal DO
+// hop; signed turn bytes and physical reservation identity remain unchanged.
+async fn call_with_signal(
+    env: &Env,
+    turn: &Turn,
+    signal: Option<worker::web_sys::AbortSignal>,
+) -> Result<Reply> {
     let (binding, address, full_key) = physical_address(env, &turn.admission, turn.placement_id)?;
     let body = serde_json::to_vec(turn)?;
     ensure!(
@@ -126,7 +136,18 @@ pub(super) async fn call(env: &Env, turn: &Turn) -> Result<Reply> {
     init.with_method(Method::Post)
         .with_headers(headers)
         .with_body(Some(js_sys::Uint8Array::from(body.as_slice()).into()));
-    let request = Request::new_with_init(&format!("https://physical-guard{TURN_PATH}"), &init)?;
+    let request = if let Some(signal) = signal {
+        let native = worker::web_sys::RequestInit::from(&init);
+        native.set_signal(Some(&signal));
+        worker::web_sys::Request::new_with_str_and_init(
+            &format!("https://physical-guard{TURN_PATH}"),
+            &native,
+        )
+        .map(Request::from)
+        .map_err(|_| anyhow::anyhow!("direct guard cancellation handoff failed"))?
+    } else {
+        Request::new_with_init(&format!("https://physical-guard{TURN_PATH}"), &init)?
+    };
     let mut response = env
         .durable_object(&binding)?
         .id_from_name(&address)?
@@ -164,6 +185,7 @@ pub(crate) async fn reserve_baseline(
     complete: &DirectCompleteRequest,
     placement_id: WireInteger,
     context: &DirectRequestContext,
+    signal: Option<worker::web_sys::AbortSignal>,
 ) -> Result<(
     DirectDestinationBaselineEvidence,
     DirectDestinationBaselineWitness,
@@ -175,7 +197,7 @@ pub(crate) async fn reserve_baseline(
         context: context.clone(),
         operation: Operation::Reserve,
     };
-    match call(env, &turn).await? {
+    match call_with_signal(env, &turn, signal).await? {
         Reply::Baseline { baseline, witness } => Ok((baseline, witness)),
         _ => anyhow::bail!("direct baseline reservation response differs"),
     }
@@ -261,6 +283,7 @@ pub(crate) async fn promote_external(
     context: &DirectRequestContext,
     native_reply_body: &[u8],
     native_reply_signature: &str,
+    signal: Option<worker::web_sys::AbortSignal>,
 ) -> Result<(DirectPlacementEvidence, DirectFinalGuardRecord)> {
     use crate::direct_upload::verification;
     use aos_hub_core::storage_authority::external_object::stage::{
@@ -305,7 +328,8 @@ pub(crate) async fn promote_external(
         },
     )
     .await?;
-    let created = crate::external_object::execute_stage(env, &create).await?;
+    let created =
+        crate::external_object::execute_stage_with_signal(env, &create, signal.clone()).await?;
     match created.outcome {
         Outcome::EmptyClosed { .. } => {}
         Outcome::Created { upload_id } => {
@@ -330,7 +354,9 @@ pub(crate) async fn promote_external(
                     },
                 )
                 .await?;
-                let receipt = crate::external_object::execute_stage(env, &work).await?;
+                let receipt =
+                    crate::external_object::execute_stage_with_signal(env, &work, signal.clone())
+                        .await?;
                 let Outcome::Copied { part, etag } = receipt.outcome else {
                     anyhow::bail!("direct external copied part acknowledgement differs");
                 };
@@ -361,7 +387,7 @@ pub(crate) async fn promote_external(
                 },
             )
             .await?;
-            crate::external_object::execute_stage(env, &work).await?;
+            crate::external_object::execute_stage_with_signal(env, &work, signal.clone()).await?;
         }
         _ => anyhow::bail!("direct external destination Create acknowledgement differs"),
     }

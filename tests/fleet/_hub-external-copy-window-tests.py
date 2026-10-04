@@ -98,5 +98,41 @@ class CatalogueTests(unittest.TestCase):
             module.require_external_copy_operation(detail, "repair", "source", "target", 1)
 
 
+class DestinationTests(unittest.TestCase):
+    def test_cross_binding_uses_independent_id_name_and_prefix(self):
+        source_binding = {"stableId": "source-id", "spec": {"name": "source",
+            "s3": {"prefix": "selected/source"}}}
+        target_binding = {"stableId": "target-id", "spec": {"name": "target",
+            "s3": {"prefix": "selected/target"}}}
+        source = {"bindingName": "source", "prefix": "selected/source/registry"}
+        run = "a" * 32
+        selected, prefix = module.external_copy_destination(
+            source_binding, source, "repair", run, target_binding)
+        self.assertEqual(selected["stableId"], "target-id")
+        self.assertEqual(prefix, "selected/target/registry-repair-" + run)
+        same, old_prefix = module.external_copy_destination(
+            source_binding, source, "repair", run)
+        self.assertEqual(same, source_binding)
+        self.assertEqual(old_prefix, source["prefix"] + "-repair-" + run)
+
+    def test_identity_alias_and_source_escape_refuse(self):
+        source_binding = {"stableId": "source-id", "spec": {"name": "source",
+            "s3": {"prefix": "selected/source"}}}
+        source = {"bindingName": "source", "prefix": "selected/source/registry"}
+        target = {"stableId": "target-id", "spec": {"name": "target",
+            "s3": {"prefix": "selected/target"}}}
+        for change in (lambda v: v.update(stableId="source-id"),
+                lambda v: v["spec"].update(name="source"),
+                lambda v: v["spec"]["s3"].update(prefix="selected/source"),
+                lambda v: v["spec"]["s3"].update(prefix="selected/../target")):
+            selected = copy.deepcopy(target)
+            change(selected)
+            with self.assertRaises(ValueError):
+                module.external_copy_destination(source_binding, source, "replicate", "a" * 32, selected)
+        with self.assertRaises(ValueError):
+            module.external_copy_destination(source_binding,
+                {**source, "prefix": "another/registry"}, "replicate", "a" * 32, target)
+
+
 if __name__ == "__main__":
     unittest.main()

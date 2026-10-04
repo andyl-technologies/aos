@@ -608,3 +608,209 @@ async fn revoked_operator_cannot_apply_a_previously_reviewed_workflow() {
         .unwrap()
         .is_none());
 }
+
+/// Drives a workflow until its gateway and direct route exist, returning the
+/// prepared workflow so a second surface can share the gateway.
+async fn prepared_workflow(
+    service: &RpcService,
+    auth: &str,
+    intent: &pb::DeliveryDestinationIntent,
+) -> pb::DeliveryWorkflow {
+    let plan = service
+        .plan_delivery_destination(
+            Some(auth),
+            pb::PlanDeliveryDestinationRequest {
+                intent: Some(intent.clone()),
+                idempotency_key: "plan-shared-gateway".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .plan
+        .unwrap();
+    let prepared = service
+        .apply_delivery_destination(Some(auth), apply_request(plan, "apply-shared-gateway"))
+        .await
+        .unwrap()
+        .workflow
+        .unwrap();
+    let gateway = service
+        .db
+        .gateway(&prepared.gateway_id)
+        .await
+        .unwrap()
+        .unwrap();
+    service
+        .db
+        .observe_gateway(&gateway.id, 1, "ready", None, gateway.resource_version)
+        .await
+        .unwrap();
+    service
+        .resume_delivery_destination(
+            Some(auth),
+            pb::ResumeDeliveryDestinationRequest {
+                workflow_id: prepared.workflow_id.clone(),
+                expected_resource_version: prepared.resource_version,
+                idempotency_key: "resume-shared-gateway".into(),
+            },
+        )
+        .await
+        .unwrap()
+        .workflow
+        .unwrap()
+}
+
+#[tokio::test]
+async fn direct_route_without_access_policy_inherits_the_gateway_policy() {
+    let (service, auth, intent, _) = fixture().await;
+    let workflow = prepared_workflow(&service, &auth, &intent).await;
+    assert_eq!(
+        workflow.state, "awaiting_verification",
+        "{:?}",
+        workflow.blockers
+    );
+
+    // A second registry on the same binding reuses the workflow's gateway:
+    // the gateway maps the whole binding, so only a route is needed.
+    let org = service
+        .db
+        .org_by_stable_id(&intent.owner_scope_key)
+        .await
+        .unwrap()
+        .unwrap();
+    let binding = service
+        .db
+        .binding_by_stable_id(&workflow_gateway_binding(&service, &workflow).await)
+        .await
+        .unwrap()
+        .unwrap();
+    let registry_id = service
+        .db
+        .create_managed_registry(org.id, "", "experimental", "public", &[], false)
+        .await
+        .unwrap();
+    service
+        .db
+        .create_surface_placement(&NewSurfacePlacementSpec {
+            surface: SurfaceTarget::Registry(registry_id),
+            name: "primary".into(),
+            binding_id: binding.id,
+            prefix: "delivery-workflow/experimental".into(),
+            kind: "complete".into(),
+            desired_state: "active".into(),
+            hash_range: None,
+            desired_read_enabled: true,
+            read_order: 0,
+            requires_conditional_writes: false,
+        })
+        .await
+        .unwrap();
+
+    let surface = Some(pb::SurfaceRef {
+        target: Some(pb::surface_ref::Target::RegistrySlug(
+            "delivery-workflow/experimental".into(),
+        )),
+    });
+    let direct_spec = pb::RouteSpec {
+        surface: surface.clone(),
+        endpoint_id: workflow.endpoint_id.clone(),
+        endpoint_generation: workflow.endpoint_generation,
+        base_path: String::new(),
+        target: Some(pb::RouteTarget {
+            target: Some(pb::route_target::Target::DirectGatewayPlacement(
+                pb::DirectGatewayPlacementTarget {
+                    placement_name: "primary".into(),
+                    gateway_id: workflow.gateway_id.clone(),
+                    gateway_generation: 1,
+                },
+            )),
+        }),
+        access_policy: None,
+        capabilities: Some(pb::RouteCapabilities {
+            serves_cache: true,
+            ..Default::default()
+        }),
+        enabled: false,
+    };
+    let plan = service
+        .plan_create_route(
+            Some(&auth),
+            pb::PlanRouteMutationRequest {
+                stable_id: "route:shared-gateway-experimental".into(),
+                spec: Some(direct_spec.clone()),
+                idempotency_key: "plan-shared-route".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .plan
+        .unwrap();
+    let route = service
+        .create_route(
+            Some(&auth),
+            pb::ApplyRouteMutationRequest {
+                plan_id: plan.plan_id,
+                confirmation_hash: plan.confirmation_hash,
+                idempotency_key: "apply-shared-route".into(),
+            },
+        )
+        .await
+        .unwrap()
+        .route
+        .unwrap();
+    let spec = route.spec.unwrap();
+    assert_eq!(spec.access_policy, intent.access_policy);
+    assert_eq!(
+        route.canonical_rendered_url,
+        "https://cdn.workflow.example.test/cache/delivery-workflow/experimental"
+    );
+
+    // Hub routes still have to state their policy explicitly.
+    let hub_spec = pb::RouteSpec {
+        base_path: "/experimental".into(),
+        target: Some(pb::RouteTarget {
+            target: Some(pb::route_target::Target::HubPlacement(
+                pb::HubPlacementTarget {
+                    placement_name: "primary".into(),
+                    delivery_kind: pb::HubDeliveryKind::Proxy as i32,
+                },
+            )),
+        }),
+        ..direct_spec
+    };
+    let error = service
+        .plan_create_route(
+            Some(&auth),
+            pb::PlanRouteMutationRequest {
+                stable_id: "route:shared-gateway-hub".into(),
+                spec: Some(hub_spec),
+                idempotency_key: "plan-hub-route".into(),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("accessPolicy is required"),
+        "{error}"
+    );
+}
+
+/// Returns the stable id of the binding behind a workflow's gateway.
+async fn workflow_gateway_binding(service: &RpcService, workflow: &pb::DeliveryWorkflow) -> String {
+    let revision = service
+        .db
+        .gateway_revision(&workflow.gateway_id, 1)
+        .await
+        .unwrap()
+        .unwrap();
+    service
+        .db
+        .binding(revision.spec.binding_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .stable_id
+}

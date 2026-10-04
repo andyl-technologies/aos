@@ -158,6 +158,8 @@ async fn seed_inventory(db: &Database, registry_id: i64) {
     .unwrap();
     let snapshot = IndexSnapshot {
         commit: "c".repeat(64),
+        public_catalog_commit: None,
+        public_catalog_release: None,
         name: "secret".into(),
         description: None,
         readme: None,

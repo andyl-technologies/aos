@@ -443,7 +443,7 @@ async fn consume(
     key(env)?.verify_body(&queued.signature, &signing_bytes(&queued)?)?;
     let limits = config::qualification_limits(env)?
         .ok_or_else(|| anyhow::anyhow!("qualification queue disabled"))?;
-    provider_capacity::configure(u32::try_from(limits.maximum_provider_requests.get())?)?;
+    provider_capacity::policy::configure_exact(env, u32::try_from(limits.maximum_provider_requests.get())?)?;
     let binding = if queued.job.admission.intent.dependency_phase == DirectDependencyPhase::Content
     {
         verification::BULK_QUEUE

@@ -11,7 +11,7 @@ use aos_hub_core::{
     },
     storage_work::{StorageBindingPublication, StorageCredentialSelector},
 };
-use worker::{Env, Fetch, Headers, Method, Request, RequestInit, RequestRedirect};
+use worker::{Env, Headers, Method, Request, RequestInit, RequestRedirect};
 
 use super::super::{config::Config, delete_config, protocol::Intent};
 
@@ -29,6 +29,7 @@ pub(in crate::external_object) async fn execute(
     floor: &EpochLeaseFloor,
     expected: &ExternalDeletePrecondition,
     path: &str,
+    client_signal: Option<worker::web_sys::AbortSignal>,
 ) -> Result<ExternalObjectOutcome> {
     let cohort = object.cohort(&intent.cohort_digest)?;
     let domains = delete_config::configured(env, object)?;
@@ -82,9 +83,33 @@ pub(in crate::external_object) async fn execute(
         object.clock(),
     )?;
     work.check_dispatch_time(&publication.snapshot, &validated, floor, object.clock())?;
-    let response = Fetch::Request(request).send().await?;
+    let fresh = || {
+        let validated = object.verifier()?.validate_lease(
+            work.lease.as_bytes(),
+            &domain.delete_cohort,
+            &object.timing_profile,
+            floor,
+            &intent.scope.full_key,
+            LeaseEffect::ConditionalDelete,
+            object.clock(),
+        )?;
+        work.check_dispatch_time(&publication.snapshot, &validated, floor, object.clock())?;
+        Ok(())
+    };
+    let response = super::super::request_capacity::send(
+        env,
+        request,
+        work.plan.expires_at,
+        object.clock_uncertainty,
+        client_signal.clone(),
+        crate::direct_upload::provider_capacity::Class::Metadata,
+        &fresh,
+    )
+    .await?;
     match response.status_code() {
         404 => {
+            // End this HEAD's native ownership before reserving another request.
+            drop(response);
             // Latest-key absence can hide an older version behind a marker.
             // It cannot settle the reviewed physical incarnation by itself.
             let url = surface.versioned_head_url(
@@ -108,7 +133,16 @@ pub(in crate::external_object) async fn execute(
                 object.clock(),
             )?;
             work.check_dispatch_time(&publication.snapshot, &validated, floor, object.clock())?;
-            let exact = Fetch::Request(request).send().await?;
+            let exact = super::super::request_capacity::send(
+                env,
+                request,
+                work.plan.expires_at,
+                object.clock_uncertainty,
+                client_signal.clone(),
+                crate::direct_upload::provider_capacity::Class::Metadata,
+                &fresh,
+            )
+            .await?;
             return match exact.status_code() {
                 404 => Ok(ExternalObjectOutcome::DeleteAbsent),
                 200 | 405 => Ok(ExternalObjectOutcome::DeletePreconditionFailed),
@@ -131,6 +165,8 @@ pub(in crate::external_object) async fn execute(
     )? {
         return Ok(ExternalObjectOutcome::DeletePreconditionFailed);
     }
+    // The matched metadata precondition owns no live request during DELETE.
+    drop(response);
     // Reserved probes intentionally send a wrong If-Match to the *current*
     // version so the provider must enforce the condition. Ordinary objects
     // never reach DELETE after an ETag mismatch.
@@ -180,8 +216,30 @@ pub(in crate::external_object) async fn execute(
         object.clock(),
     )?;
     work.check_dispatch_time(&publication.snapshot, &validated, floor, object.clock())?;
-    // No await follows the final lease check before this single provider effect.
-    let response = Fetch::Request(request).send().await?;
+    // The configured wait repeats this lease check immediately before DELETE.
+    let fresh_delete = || {
+        let validated = object.verifier()?.validate_lease(
+            work.lease.as_bytes(),
+            cohort,
+            &object.timing_profile,
+            floor,
+            &intent.scope.full_key,
+            LeaseEffect::ConditionalDelete,
+            object.clock(),
+        )?;
+        work.check_dispatch_time(&publication.snapshot, &validated, floor, object.clock())?;
+        Ok(())
+    };
+    let response = super::super::request_capacity::send(
+        env,
+        request,
+        work.plan.expires_at,
+        object.clock_uncertainty,
+        client_signal,
+        crate::direct_upload::provider_capacity::Class::Foreground,
+        &fresh_delete,
+    )
+    .await?;
     super::acknowledgement(
         expected,
         response.status_code(),

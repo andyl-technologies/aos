@@ -10,12 +10,12 @@ use std::{future::Future, time::Duration};
 use anyhow::{ensure, Result};
 use futures_util::future::{select, Either};
 
-pub(super) struct DispatchWindow<'a> {
-    pub(super) expires_at: i64,
-    pub(super) uncertainty: i64,
-    pub(super) client_signal: &'a worker::web_sys::AbortSignal,
-    pub(super) fresh: &'a dyn Fn() -> Result<()>,
-    pub(super) lifetime: super::lifetime::Lifetime,
+pub(in crate::external_object) struct DispatchWindow<'a> {
+    pub(in crate::external_object) expires_at: i64,
+    pub(in crate::external_object) uncertainty: i64,
+    pub(in crate::external_object) client_signal: &'a worker::web_sys::AbortSignal,
+    pub(in crate::external_object) fresh: &'a dyn Fn() -> Result<()>,
+    pub(in crate::external_object) lifetime: super::lifetime::Lifetime,
 }
 
 impl DispatchWindow<'_> {
@@ -23,7 +23,7 @@ impl DispatchWindow<'_> {
     ///
     /// # Errors
     /// Refuses canceled clients, stale floors or unqualified/expired deadlines.
-    pub(super) fn check(&self) -> Result<()> {
+    pub(in crate::external_object) fn check(&self) -> Result<()> {
         self.lifetime.check()?;
         ensure!(!self.client_signal.aborted(), "copy invocation canceled");
         (self.fresh)()?;
@@ -56,7 +56,7 @@ impl DispatchWindow<'_> {
     ///
     /// # Errors
     /// Refuses any failed work, cancellation, deadline or post-await authority check.
-    pub(super) async fn run<T>(&self, work: impl Future<Output = Result<T>>) -> Result<T> {
+    pub(in crate::external_object) async fn run<T>(&self, work: impl Future<Output = Result<T>>) -> Result<T> {
         self.check()?;
         let seconds = self.remaining()?;
         let timeout = async {

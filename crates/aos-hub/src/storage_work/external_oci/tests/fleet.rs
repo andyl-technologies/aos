@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context as _, Result, ensure};
+use anyhow::{ensure, Context as _, Result};
 use aos_hub_core::backend::{Backend as _, SqlxBackend};
 use aos_hub_core::db::Database;
 use aos_hub_core::storage_authority::external_object::oci::{
@@ -29,6 +29,9 @@ use serde_json::json;
 use sha2::{Digest as _, Sha256};
 
 use super::super::{ExternalOciRuntime, RemoteStorageWorkClient};
+
+#[path = "fleet/background.rs"]
+mod background;
 
 const MAX_INPUT_BYTES: u64 = 64 * 1024;
 const MAX_EXECUTABLE_BYTES: u64 = 512 * 1024 * 1024;
@@ -327,10 +330,22 @@ async fn selected_profile(
 // The normal production loader verifies the reviewer and all current measured
 // facts. Parsing the already authenticated record below only correlates the
 // selected source and audience; it grants no additional acceptance.
-fn direct_factory(
-    input: &Input,
-    work_key: &[u8],
-) -> Result<Option<Arc<dyn crate::direct_upload::DirectUploadTransportFactory>>> {
+struct DirectSelection {
+    factory: Arc<dyn crate::direct_upload::DirectUploadTransportFactory>,
+    profiles: crate::direct_upload::authority::NativeDirectUploadAcceptances,
+}
+
+fn install_direct_profiles(
+    work: RemoteStorageWorkClient,
+    direct: Option<&DirectSelection>,
+) -> RemoteStorageWorkClient {
+    match direct {
+        Some(direct) => work.with_mirror_profiles(direct.profiles.clone()),
+        None => work,
+    }
+}
+
+fn direct_selection(input: &Input, work_key: &[u8]) -> Result<Option<DirectSelection>> {
     use crate::direct_upload::authority::{
         NativeDirectUploadAcceptances, NativeDirectUploadRuntime,
     };
@@ -359,9 +374,12 @@ fn direct_factory(
         &input.deployment_id,
         work_key,
         &guard_key,
-        acceptances,
+        acceptances.clone(),
     )?;
-    Ok(Some(Arc::new(runtime)))
+    Ok(Some(DirectSelection {
+        factory: Arc::new(runtime),
+        profiles: acceptances,
+    }))
 }
 
 async fn app_state(db: Arc<Database>, input: &Input) -> Result<crate::server::AppState> {
@@ -464,6 +482,7 @@ async fn serve_window(
     candidate_sha: &str,
     deadline: Instant,
     expires_at: i64,
+    controllers: &mut background::Controllers,
 ) -> Result<Stop> {
     tokio::pin!(server);
     tokio::select! {
@@ -472,6 +491,10 @@ async fn serve_window(
             anyhow::bail!("External OCI server ended before its owner window");
         }
         reason = wait_for_stop(input, input_sha, candidate_sha, deadline, expires_at) => reason,
+        result = controllers.next_exit() => {
+            result?;
+            Ok(Stop::OriginalExpired)
+        }
     }
 }
 
@@ -549,23 +572,23 @@ async fn actual_external_oci_fleet_origin() -> Result<()> {
         guard_bytes.as_slice(),
         now,
     )?;
-    let work = Arc::new(
+    let direct = direct_selection(&input, &work_key)?;
+    let work =
         RemoteStorageWorkClient::new(&input.public_origin, input.deployment_id.clone(), &work_key)?
             .with_controlled_http(http)
-            .with_external_oci_runtime(runtime)?,
-    );
+            .with_external_oci_runtime(runtime)?;
+    let work = Arc::new(install_direct_profiles(work, direct.as_ref()));
     let ingress = private_bytes(&input.files.ingress_key_file, 8192)?;
     let ingress = Arc::new(aos_hub_core::hybrid_ingress::HybridIngressKey::new(
         &ingress,
     )?);
-    let direct = direct_factory(&input, &work_key)?;
-    let state = Arc::new(app_state(db, &input).await?);
+    let state = Arc::new(app_state(Arc::clone(&db), &input).await?);
     let router = crate::server::router_with_hybrid_ingress_and_direct(
         state,
         ingress,
         input.deployment_id.clone(),
-        work,
-        direct,
+        Arc::clone(&work),
+        direct.map(|selection| selection.factory),
     )
     .await;
     let latest = aos_hub_core::clock::now_unix_secs()
@@ -591,34 +614,63 @@ async fn actual_external_oci_fleet_origin() -> Result<()> {
             .with_writer(std::io::stderr)
             .finish(),
     )?;
-    let identity = json!({"pid":std::process::id(), "startTicks":process_start_ticks()?,
+    let start_ticks = process_start_ticks()?;
+    let mut controllers = background::Controllers::start(
+        db,
+        work,
+        &input.run_id,
+        original_deadline,
+        expires_at,
+        input.clock_uncertainty_seconds,
+    )?;
+    let identity = json!({"pid":std::process::id(), "startTicks":start_ticks,
         "executableSha256":executable_sha, "executableBytes":executable_bytes,
         "inputSha256":input_sha, "candidateSha256":candidate_sha,
         "selectedWorkerSourceDigest":input.worker_source_digest, "selectedWorkerScriptVersion":input.worker_script_version,
         "placementId":input.placement_id, "placementPrefix":input.placement_prefix,
         "publicOrigin":input.public_origin, "controlOrigin":input.control_origin,
         "expiresAt":expires_at, "clockUncertaintySeconds":input.clock_uncertainty_seconds});
-    write_private(
+    let readiness = write_private(
         &input.readiness_file,
         &json!({"version":1,"scope":"controlled_external_oci_native_origin",
         "identity":identity, "listen":input.listen, "observedAt":aos_hub_core::clock::now_unix_secs(),
+        "backgroundControllers":controllers.selection(),
         "nativeBulkBytes":null,"providerSdkCalls":null}),
-    )?;
+    );
 
     let server = axum::serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .into_future();
-    let reason = serve_window(
-        server,
-        &input,
-        &input_sha,
-        &candidate_sha,
-        original_deadline,
-        expires_at,
-    )
-    .await?;
+    let outcome = match readiness {
+        Ok(()) => {
+            serve_window(
+                server,
+                &input,
+                &input_sha,
+                &candidate_sha,
+                original_deadline,
+                expires_at,
+                &mut controllers,
+            )
+            .await
+        }
+        Err(error) => Err(error),
+    };
+    let joined = controllers.stop().await;
+    let reason = match outcome {
+        Ok(reason) => {
+            joined?;
+            reason
+        }
+        Err(error) => {
+            if let Err(join_error) = joined {
+                tracing::warn!(error = %format!("{join_error:#}"), "External helper controller shutdown failed");
+            }
+            return Err(error);
+        }
+    };
     // Dropping the server is not proof that provider promises drained. The
     // supervisor observes actual process exit; pending effects stay unknown.
     write_private(
@@ -765,7 +817,22 @@ async fn original_expiry_drops_the_pending_origin_without_owner_renewal() {
     }
     let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let input = test_input();
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let work = Arc::new(
+        RemoteStorageWorkClient::new(&input.public_origin, input.deployment_id.clone(), &[11; 32])
+            .unwrap(),
+    );
     let deadline = Instant::now() + Duration::from_millis(20);
+    let expires_at = aos_hub_core::clock::now_unix_secs() + 600;
+    let mut controllers = background::Controllers::start(
+        db,
+        work,
+        &input.run_id,
+        deadline,
+        expires_at,
+        input.clock_uncertainty_seconds,
+    )
+    .unwrap();
     let result = tokio::time::timeout(
         Duration::from_secs(1),
         serve_window(
@@ -774,7 +841,8 @@ async fn original_expiry_drops_the_pending_origin_without_owner_renewal() {
             "input",
             "candidate",
             deadline,
-            aos_hub_core::clock::now_unix_secs() + 600,
+            expires_at,
+            &mut controllers,
         ),
     )
     .await
@@ -782,6 +850,7 @@ async fn original_expiry_drops_the_pending_origin_without_owner_renewal() {
     .unwrap();
     assert_eq!(result, Stop::OriginalExpired);
     assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
+    controllers.stop().await.unwrap();
 }
 
 #[tokio::test]
@@ -795,17 +864,15 @@ async fn owner_shutdown_cannot_name_another_input_or_candidate() {
         &json!({"version":1,"inputSha256":"another","candidateSha256":"candidate"}),
     )
     .unwrap();
-    assert!(
-        wait_for_stop(
-            &input,
-            "input",
-            "candidate",
-            Instant::now() + Duration::from_secs(1),
-            aos_hub_core::clock::now_unix_secs() + 600
-        )
-        .await
-        .is_err()
-    );
+    assert!(wait_for_stop(
+        &input,
+        "input",
+        "candidate",
+        Instant::now() + Duration::from_secs(1),
+        aos_hub_core::clock::now_unix_secs() + 600
+    )
+    .await
+    .is_err());
 }
 
 #[tokio::test]
@@ -876,7 +943,104 @@ fn optional_direct_role_requires_the_closed_complete_private_triplet() {
 fn omitted_direct_role_does_not_load_files_or_grant_a_factory() {
     // The predecessor has no Direct role; its deliberately absent private paths
     // must remain unused when the optional triplet is omitted.
-    assert!(direct_factory(&test_input(), b"unused").unwrap().is_none());
+    assert!(direct_selection(&test_input(), b"unused")
+        .unwrap()
+        .is_none());
+    let work =
+        RemoteStorageWorkClient::new("https://localhost:4673", "deployment-1".into(), &[11; 32])
+            .unwrap();
+    assert!(install_direct_profiles(work, None)
+        .mirror_profiles
+        .is_none());
+}
+
+#[tokio::test]
+async fn genuine_direct_selection_installs_the_same_verified_profiles_on_work() {
+    let db = Database::open_in_memory().await.unwrap();
+    let org = db
+        .create_org("direct-profile", "Direct profile")
+        .await
+        .unwrap();
+    let owner = db.org_by_id(org).await.unwrap().unwrap();
+    let binding = db
+        .create_topology_binding(
+            Some(org),
+            "binding",
+            &owner.stable_id,
+            "Binding",
+            "s3",
+            None,
+            Some("qualified-bucket"),
+            Some("managed/binding"),
+            Some("https"),
+            Some("dns"),
+            Some(b"s3.fleet.test"),
+            Some(443),
+            Some("test-region"),
+            Some("private"),
+        )
+        .await
+        .unwrap();
+    let binding = db.binding(binding).await.unwrap().unwrap();
+    let now = u64::try_from(aos_hub_core::clock::now_unix_secs()).unwrap();
+    let origin = "https://localhost:4673";
+    let (profiles, expected) = crate::direct_upload::authority::external_acceptance_fixture(
+        origin,
+        now,
+        now + 600,
+        &binding,
+    );
+    let runtime = crate::direct_upload::authority::NativeDirectUploadRuntime::new(
+        origin,
+        "deployment-1",
+        &[11; 32],
+        &[12; 32],
+        profiles.clone(),
+    )
+    .unwrap();
+    let selection = DirectSelection {
+        factory: Arc::new(runtime),
+        profiles,
+    };
+    let work = RemoteStorageWorkClient::new(origin, "deployment-1".into(), &[11; 32]).unwrap();
+    let work = install_direct_profiles(work, Some(&selection));
+
+    assert_eq!(
+        work.mirror_profiles
+            .as_ref()
+            .unwrap()
+            .profiles("deployment-1", origin, now)
+            .unwrap(),
+        vec![expected]
+    );
+    assert!(work
+        .mirror_profiles
+        .as_ref()
+        .unwrap()
+        .profiles("deployment-1", "https://localhost:4674", now)
+        .is_err());
+    let mut controllers = background::Controllers::start(
+        Arc::new(db),
+        Arc::new(work),
+        &"1".repeat(32),
+        Instant::now() + Duration::from_secs(30),
+        i64::try_from(now + 600).unwrap(),
+        2,
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(controllers.selection()).unwrap(),
+        json!({
+            "placementScan":{"intervalSeconds":2,"maximumPlacements":5},
+            "ociInventory":{
+                "collectorId":format!("external-oci-inventory-{}", "1".repeat(32)),
+                "idempotencyPrefix":format!("external-oci-inventory-{}", "1".repeat(32)),
+                "maximumPlacements":100,"dispatchBudget":"native"
+            }
+        })
+    );
+    tokio::task::yield_now().await;
+    controllers.stop().await.unwrap();
 }
 
 #[test]
@@ -900,5 +1064,5 @@ fn direct_factory_refuses_an_oci_candidate_instead_of_measured_acceptance() {
     });
     // The unchanged production loader refuses before the absent guard is read,
     // a business router is constructed, or any provider exchange can begin.
-    assert!(direct_factory(&input, b"unused").is_err());
+    assert!(direct_selection(&input, b"unused").is_err());
 }

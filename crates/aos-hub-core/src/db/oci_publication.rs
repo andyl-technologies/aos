@@ -228,7 +228,163 @@ pub struct CasOciManualTag {
     /// Positive current Unix time.
     pub now: i64,
 }
+
+/// Selects only OCI stage objects with exact complete repository placement evidence.
+const STAGED_OCI_VERIFIED_INVENTORY: &str = "SELECT inventory.object_key, inventory.byte_size
+               FROM staged_release_objects inventory
+               JOIN staged_releases stage ON stage.registry_id = inventory.registry_id
+                AND stage.stage_id = inventory.stage_id AND stage.current_revision = inventory.revision
+               JOIN oci_repositories repository ON repository.registry_id = stage.registry_id
+                AND repository.name = stage.container_repository AND repository.lifecycle_state = 'active'
+               JOIN oci_repository_objects link ON link.repository_id = repository.id
+                AND link.registry_id = inventory.registry_id
+                AND SUBSTR(link.digest, 8) = inventory.sha256
+                AND link.media_type = inventory.media_type
+               JOIN oci_blobs stored ON stored.registry_id = link.registry_id
+                AND stored.digest = link.digest AND stored.byte_size = inventory.byte_size
+                AND stored.lifecycle_state = 'active'
+               JOIN surface_objects object ON object.id = stored.surface_object_id
+                AND object.registry_id = inventory.registry_id AND object.object_key = inventory.object_key
+                AND object.content_hash = inventory.sha256 AND object.size = inventory.byte_size
+                AND object.lifecycle_state = 'active'
+              WHERE inventory.registry_id = ?1 AND inventory.stage_id = ?2 AND inventory.revision = ?3
+                AND inventory.object_key LIKE 'oci/blobs/sha256/%'
+                AND EXISTS (SELECT 1 FROM registry_publication_placements required
+                  WHERE required.publication_id = stage.publication_id AND required.required = 1)
+                AND NOT EXISTS (SELECT 1 FROM registry_publication_placements required
+                  WHERE required.publication_id = stage.publication_id AND required.required = 1
+                    AND NOT EXISTS (SELECT 1 FROM object_placements presence
+                      WHERE presence.surface_object_id = object.id AND presence.placement_id = required.placement_id
+                        AND presence.state = 'present' AND presence.observed_hash = inventory.sha256
+                        AND presence.registry_id = inventory.registry_id AND presence.etag IS NOT NULL
+                        AND presence.observed_size = inventory.byte_size
+                        AND presence.catalog_object_resource_version = object.resource_version))";
+
 impl Database {
+    /// Returns the server-confirmed contiguous bytes of an unfinished descriptor.
+    ///
+    /// This is progress evidence only; readiness still requires complete digest
+    /// verification and repository placement evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for database failure or an invalid persisted offset.
+    pub async fn staged_oci_descriptor_offset(
+        &self,
+        repository_id: i64,
+        descriptor: &Descriptor,
+        now: i64,
+    ) -> Result<u64> {
+        let row = self
+            .backend
+            .query_opt(
+                "SELECT COALESCE(MAX(uploaded_size), 0) FROM oci_upload_sessions
+               WHERE repository_id = ?1 AND expected_digest = ?2
+                 AND expected_size = ?3 AND state IN('active', 'completing')
+                 AND expires_at > ?4 AND uploaded_size = sha256_total_bytes
+                 AND uploaded_size <= expected_size",
+                &vals![
+                    repository_id,
+                    descriptor.digest.to_string(),
+                    checked_u64(descriptor.size, "OCI descriptor size")?,
+                    now
+                ],
+            )
+            .await?
+            .context("OCI upload progress aggregate is absent")?;
+        Ok(u64::try_from(row.get::<i64>(0)?)?)
+    }
+
+    /// Returns bounded exact OCI summary progress for the selected stage.
+    ///
+    /// Repository membership and each required placement must match the staged
+    /// digest, length, and media type before a complete object is counted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for database failure or invalid persisted totals.
+    pub async fn staged_container_summary_progress(
+        &self,
+        registry_id: i64,
+        stage_id: &str,
+        revision: u64,
+    ) -> Result<(u64, u64)> {
+        let row = self
+            .backend
+            .query_opt(
+                &format!(
+                    "WITH verified AS ({STAGED_OCI_VERIFIED_INVENTORY})
+                SELECT COALESCE(SUM(byte_size), 0), COUNT(*) FROM verified"
+                ),
+                &vals![registry_id, stage_id, i64::try_from(revision)?],
+            )
+            .await?
+            .context("OCI stage progress aggregate is absent")?;
+        Ok((
+            u64::try_from(row.get::<i64>(0)?)?,
+            u64::try_from(row.get::<i64>(1)?)?,
+        ))
+    }
+
+    /// Sums accepted durable offsets for OCI inventory not completely verified.
+    ///
+    /// Each object contributes its greatest unexpired identity-bound SHA offset,
+    /// matching detail progress while preserving complete-only readiness checks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for database failure or invalid persisted byte counts.
+    pub async fn staged_container_summary_partial_bytes(
+        &self,
+        registry_id: i64,
+        stage_id: &str,
+        revision: u64,
+        now: i64,
+    ) -> Result<u64> {
+        let row = self.backend.query_opt(
+            &format!("WITH verified AS ({STAGED_OCI_VERIFIED_INVENTORY})
+              SELECT COALESCE(SUM((SELECT MAX(upload.uploaded_size)
+                FROM oci_upload_sessions upload WHERE upload.repository_id = repository.id
+                  AND upload.expected_digest = ('sha256:' || inventory.sha256)
+                  AND upload.expected_size = inventory.byte_size
+                  AND upload.state IN('active', 'completing') AND upload.expires_at > ?4
+                  AND upload.uploaded_size = upload.sha256_total_bytes
+                  AND upload.uploaded_size <= upload.expected_size)), 0)
+                FROM staged_release_objects inventory
+                JOIN staged_releases stage ON stage.registry_id = inventory.registry_id
+                  AND stage.stage_id = inventory.stage_id AND stage.current_revision = inventory.revision
+                JOIN oci_repositories repository ON repository.registry_id = stage.registry_id
+                  AND repository.name = stage.container_repository AND repository.lifecycle_state = 'active'
+               WHERE inventory.registry_id = ?1 AND inventory.stage_id = ?2 AND inventory.revision = ?3
+                 AND inventory.object_key LIKE 'oci/blobs/sha256/%'
+                 AND NOT EXISTS (SELECT 1 FROM verified WHERE verified.object_key = inventory.object_key)"),
+            &vals![registry_id, stage_id, i64::try_from(revision)?, now],
+        ).await?.context("OCI stage partial progress aggregate is absent")?;
+        Ok(u64::try_from(row.get::<i64>(0)?)?)
+    }
+
+    /// Checks that the indexed immutable release is the exact staged Git commit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for database failure.
+    pub async fn staged_release_commit_indexed(
+        &self,
+        registry_id: i64,
+        release: &str,
+        commit: &str,
+    ) -> Result<bool> {
+        Ok(self
+            .backend
+            .query_opt(
+                "SELECT 1 FROM releases WHERE registry_id = ?1 AND semver = ?2
+               AND commit_oid = ?3 AND pack_present = 1 LIMIT 1",
+                &vals![registry_id, release, commit],
+            )
+            .await?
+            .is_some())
+    }
+
     /// Opens or idempotently returns a verified publication transaction.
     ///
     /// # Errors
@@ -1164,8 +1320,9 @@ impl Database {
             bail!("OCI tag compare-and-swap metadata is invalid");
         }
         let history_id = Uuid::new_v4().simple().to_string();
-        let mut statements = vec![Statement::new(
-            "INSERT INTO oci_tag_history
+        let mut statements = vec![
+            Statement::new(
+                "INSERT INTO oci_tag_history
                    (id, repository_id, registry_id, name, prior_digest,
                     next_digest, source_kind, actor_id, changed_at,
                     tag_resource_version)
@@ -1183,17 +1340,18 @@ impl Database {
                    AND ((CAST(?7 AS BIGINT) IS NULL AND current.name IS NULL)
                      OR (CAST(?7 AS BIGINT) IS NOT NULL AND current.resource_version = ?7
                        AND current.source_kind = 'manual'))",
-            vals![
-                history_id,
-                input.repository_id,
-                input.tag.as_str(),
-                input.digest.to_string(),
-                input.actor_id,
-                input.now,
-                input.expected_resource_version
-            ],
-        )
-        .expecting(1)];
+                vals![
+                    history_id,
+                    input.repository_id,
+                    input.tag.as_str(),
+                    input.digest.to_string(),
+                    input.actor_id,
+                    input.now,
+                    input.expected_resource_version
+                ],
+            )
+            .expecting(1),
+        ];
         let tag_mutation = if let Some(expected) = input.expected_resource_version {
             Statement::new(
                 "UPDATE oci_tags SET digest = ?3, source_kind = 'manual',

@@ -185,6 +185,7 @@ async fn reviewed_absent_action() -> (Arc<Database>, sqlx::SqlitePool, String, S
             idempotency_key: "absence-plan".into(),
             expected_resource_version: 0,
             now,
+            retire_registry: false,
         })
         .await
         .unwrap();

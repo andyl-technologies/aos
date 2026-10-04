@@ -1,8 +1,8 @@
-# Patch 0077: authoritative serialized round-robin cursor
+# Capability task 0077: authoritative serialized round-robin cursor
 
 ## Responsibility
 
-`0077-crucible-serialize-rr-cursor.patch` makes the deterministic
+The atomic patch `crucible-qemu-11.1.1.patch` makes the deterministic
 single-threaded TCG scheduler's inter-vCPU position explicit state. The cursor
 contains the selected vCPU and the number of retired instructions within its
 pinned `rr_switch_quantum`. It is the cursor exported to the fingerprint plugin
@@ -55,7 +55,7 @@ restarting at vCPU zero.
 
 ## Verification
 
-Patch microtests must prove partial turns survive multiple host ceilings,
+Focused capability tests must prove partial turns survive multiple host ceilings,
 quantum completion rotates exactly once, and invalid/missing cursor VMState is
 rejected. The live gate uses at least two vCPUs, checkpoints at a nonzero
 intra-turn position, destroys QEMU, restores into a fresh process, and requires
@@ -70,5 +70,5 @@ restore.
 The cursor and its VMState subsection are QEMU scheduler implementation and
 remain in the applicable GPL scope. Only fixed-width cursor values cross the
 versioned plugin/shared-memory boundary; no QEMU pointer or private structure
-does. The patch commit requires the QEMU-series DCO sign-off and is included in
+does. The single atomic commit carries the required DCO sign-off and is included in
 the retained corresponding-source bundle.

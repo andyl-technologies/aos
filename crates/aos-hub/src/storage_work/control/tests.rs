@@ -121,6 +121,7 @@ async fn surface_with_binding(
                     StorageWorkOperation::Head { path } => (
                         0,
                         StorageWorkOutcome::Head {
+                            guarded_source: None,
                             object: StorageObjectIdentity {
                                 provider_version,
                                 key: plan.object_key(path).unwrap(),
@@ -134,6 +135,7 @@ async fn surface_with_binding(
                         (
                             bytes.len() as u64,
                             StorageWorkOutcome::OciRange {
+                                guarded_source: None,
                                 source: StorageObjectIdentity {
                                     provider_version: None,
                                     key: plan.object_key(path).unwrap(),
@@ -165,6 +167,7 @@ async fn surface_with_binding(
                         (
                             bytes.len() as u64,
                             StorageWorkOutcome::OciRangeHashed {
+                                guarded_source: None,
                                 source: StorageObjectIdentity {
                                     provider_version,
                                     key: plan.object_key(path).unwrap(),

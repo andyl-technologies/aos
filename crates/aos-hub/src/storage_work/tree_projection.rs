@@ -43,6 +43,7 @@ pub(super) fn validate(
     names: &[String],
     cursor: Option<&GitTreeCursor>,
     source: &StorageObjectIdentity,
+    guarded_source: Option<&protected_inspection::ProtectedInspectionSource>,
     page: &GitTreeEntriesPage,
     source_bytes: u64,
 ) -> Result<()> {
@@ -76,6 +77,6 @@ pub(super) fn validate(
         oid,
         names,
         cursor,
-        &tree_projection::source_commitment(source)?,
+        &tree_projection::guarded_source_commitment(source, guarded_source)?,
     )
 }

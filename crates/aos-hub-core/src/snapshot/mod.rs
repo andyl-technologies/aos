@@ -50,7 +50,8 @@ const GENERATION4_CONTRACT: &str = include_str!("schema-v4.tsv");
 const GENERATION5_CONTRACT: &str = include_str!("schema-v5.tsv");
 const GENERATION6_CONTRACT: &str = include_str!("schema-v6.tsv");
 const GENERATION7_CONTRACT: &str = include_str!("schema-v7.tsv");
-const CONTRACT: &str = include_str!("schema-v8.tsv");
+const GENERATION8_CONTRACT: &str = include_str!("schema-v8.tsv");
+const CONTRACT: &str = include_str!("schema-v12.tsv");
 const LEGACY_CONTRACT_MIGRATION_DIGESTS: &[&str] = &[
     "ac60f004a8c71ad9aaf5169a3497a40cbd886648eedee5394da9bc7cbd72e061",
     "8da079db002b25543fc856e9cc57f335e67a73b3272c9a339ef8cc66c65ae51d",
@@ -86,6 +87,17 @@ const GENERATION7_MIGRATION_DIGESTS: &[&str] = &[
     "24ad86fc4c15974cdacbb0d3f1374c7b2061778777e97fa78e0fb9673171bc26",
     "0053f400c189667dfd0bc59dfc8818d02e2fbc0694d1e4cd9ccbd8d319dd4e93",
 ];
+const GENERATION8_MIGRATION_DIGESTS: &[&str] = &[
+    "ac60f004a8c71ad9aaf5169a3497a40cbd886648eedee5394da9bc7cbd72e061",
+    "8da079db002b25543fc856e9cc57f335e67a73b3272c9a339ef8cc66c65ae51d",
+    "1378ed62ac1a61f2abaf960d64a4617bdf523a437dcf326f3cb083f7e75ccdb1",
+    "aed8c7be101fe114a4b989184d79c5224fb27ba0b1065b881f1a0779b71d09c3",
+    "a65b54c031446a5960de39354623d8e9ce22bc116ce3f735ae065cf96d54faf4",
+    "24ad86fc4c15974cdacbb0d3f1374c7b2061778777e97fa78e0fb9673171bc26",
+    "0053f400c189667dfd0bc59dfc8818d02e2fbc0694d1e4cd9ccbd8d319dd4e93",
+    "7d9f4b656245f8e533bf497ef1db9854d0371c54e95dd1942d5b615d63fdd7cb",
+];
+
 const CONTRACT_MIGRATION_DIGESTS: &[&str] = &[
     "ac60f004a8c71ad9aaf5169a3497a40cbd886648eedee5394da9bc7cbd72e061",
     "8da079db002b25543fc856e9cc57f335e67a73b3272c9a339ef8cc66c65ae51d",
@@ -95,6 +107,10 @@ const CONTRACT_MIGRATION_DIGESTS: &[&str] = &[
     "24ad86fc4c15974cdacbb0d3f1374c7b2061778777e97fa78e0fb9673171bc26",
     "0053f400c189667dfd0bc59dfc8818d02e2fbc0694d1e4cd9ccbd8d319dd4e93",
     "7d9f4b656245f8e533bf497ef1db9854d0371c54e95dd1942d5b615d63fdd7cb",
+    "b16424eb544753e1902cbf1c494e9a56b1d7084ae2625b98690f8dcb29daf45c",
+    "f907ae55914445ad6e5c9a8e50ad0a72e568f36ae3a5d0d3f279bfa517a24aed",
+    "6ae37e95910570c0bb884a2057c9a0cbaffd1414ed72d41f9b380bcbbcab2764",
+    "f365fc114aa545eb5b2db8483c2dbf604b04e733e488376bc34b961812f367b8",
 ];
 
 const MAX_CELL_BYTES: usize = 1024 * 1024;
@@ -201,7 +217,7 @@ pub struct SnapshotSchemaManifest {
     pub classification_version: String,
     /// Exact compiled production lineage, never inferred from a migration count.
     pub identity: String,
-    /// Exact supported source generation, currently three through eight.
+    /// Exact supported source generation: historical three through eight or current twelve.
     pub version: usize,
     /// Ordered SHA-256 hashes of the compiled schema scripts.
     pub migration_digests: Vec<String>,
@@ -460,7 +476,8 @@ fn generation_contract(version: usize) -> Result<(&'static str, &'static [&'stat
         5 => Ok((GENERATION5_CONTRACT, GENERATION5_MIGRATION_DIGESTS)),
         6 => Ok((GENERATION6_CONTRACT, GENERATION6_MIGRATION_DIGESTS)),
         7 => Ok((GENERATION7_CONTRACT, GENERATION7_MIGRATION_DIGESTS)),
-        8 => Ok((CONTRACT, CONTRACT_MIGRATION_DIGESTS)),
+        8 => Ok((GENERATION8_CONTRACT, GENERATION8_MIGRATION_DIGESTS)),
+        12 => Ok((CONTRACT, CONTRACT_MIGRATION_DIGESTS)),
         _ => anyhow::bail!("snapshot generation is unsupported"),
     }
 }
@@ -490,6 +507,7 @@ fn parse_contract(document: &str) -> Result<BTreeMap<String, TableContract>> {
                         | "fingerprint"
                         | "idp_locator"
                         | "oci_sha256_state"
+                        | "oci_inventory_progress"
                 ),
             "snapshot contract rule is unknown"
         );
@@ -544,6 +562,35 @@ fn classify_cell(
         "idp_locator" => {
             json::validate_idp_locator(text(value)?)?;
             Ok(None)
+        }
+        "oci_inventory_progress" => {
+            let encoded = match value {
+                Value::Bytes(bytes) => std::str::from_utf8(bytes)
+                    .map_err(|_| anyhow::anyhow!("snapshot inventory progress is invalid"))?,
+                _ => anyhow::bail!("snapshot inventory progress storage differs"),
+            };
+            let progress = crate::db::OciInventoryProgress::decode(encoded)
+                .map_err(|_| anyhow::anyhow!("snapshot inventory progress shape differs"))?;
+            let integer = |name| -> Result<i64> {
+                match named_value(table, row, name)? {
+                    Value::Int(value) => Ok(*value),
+                    _ => anyhow::bail!("snapshot inventory progress discriminator differs"),
+                }
+            };
+            let cursor = match named_value(table, row, "provider_cursor")? {
+                Value::Null => None,
+                Value::Text(value) => Some(value.as_str()),
+                _ => anyhow::bail!("snapshot inventory progress cursor differs"),
+            };
+            ensure!(
+                progress.generation_id == text(named_value(table, row, "id")?)?
+                    && progress.object.placement_id == integer("placement_id")?
+                    && progress.object.checkpoint_ordinal
+                        == u64::try_from(integer("checkpoint_ordinal")?)?
+                    && progress.object.provider_cursor.as_deref() == cursor,
+                "snapshot inventory progress row correlation differs"
+            );
+            Ok(Some(PrivateDependencyReason::PrivateContext))
         }
         "oci_sha256_state" => {
             validate_oci_sha256_state(table, row)?;

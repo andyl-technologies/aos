@@ -21,7 +21,7 @@ def install_external_oci_consumers(worker, tools, prepared, consumers, issuer_bi
         "name", "scriptPath", "resourcePersistencePath", "r2Buckets", "durableObjects",
         "kvNamespaces", "queueProducers", "queueConsumers")}
     allowed = {"HUB_EXTERNAL_OBJECT_CONSUMER", "HUB_EXTERNAL_COPY_CONSUMER",
-        "HUB_EXTERNAL_OCI_CONSUMER", "HUB_EXTERNAL_STAGING_CONSUMER"}
+        "HUB_EXTERNAL_OCI_CONSUMER", "HUB_EXTERNAL_STAGING_CONSUMER", "HUB_PROVIDER_CAPACITY_POLICY"}
     if not consumers or not set(consumers).issubset(allowed):
         raise ValueError("External consumer selection contains an unsupported domain")
     for name, value in consumers.items():
@@ -104,9 +104,23 @@ def retain_external_oci_native_file(native, worker, tools, path, source, maximum
     return reference
 
 
-def await_external_oci_helper(native, tools, prepared, process, input_ref, candidate_sha):
+def require_external_background_controllers(ready, run_id):
+    """Require the source-owned task registration without claiming completion."""
+    identity = "external-oci-inventory-" + run_id
+    expected = {"placementScan": {"intervalSeconds": 2, "maximumPlacements": 5},
+        "ociInventory": {"collectorId": identity, "idempotencyPrefix": identity,
+            "maximumPlacements": 100, "dispatchBudget": "native"}}
+    if ready.get("backgroundControllers") != expected:
+        raise ValueError("External helper lacks its selected real controller task registrations")
+    return expected
+
+
+def await_external_oci_helper(native, tools, prepared, process, input_ref, candidate_sha, *, readiness_file=None):
     """Verify the actual post-bind helper record against this separate helper pin."""
-    path = prepared["coordinates"]["nativeRoot"] + "/helper-ready.json"
+    root = prepared["coordinates"]["nativeRoot"]
+    path = readiness_file or root + "/helper-ready.json"
+    if path not in {root + "/helper-ready.json", root + "/inventory-restart-ready.json"}:
+        raise ValueError("External helper readiness leaves its selected process epoch")
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         ready = json.loads(direct_guest_python(native, tools["python"], """
@@ -143,6 +157,7 @@ def await_external_oci_helper(native, tools, prepared, process, input_ref, candi
                 or identity["candidateSha256"] != candidate_sha
                 or identity["publicOrigin"] != prepared["coordinates"]["publicOrigin"]):
             raise ValueError("External helper readiness changes its input, audience or process")
+        require_external_background_controllers(ready, prepared["coordinates"]["runId"])
         return ready
     raise RuntimeError("Actual External helper readiness remains unknown")
 
@@ -196,31 +211,44 @@ def read_external_oci_sql(native, tools, prepared, process, query, label):
 
 
 def prepare_external_oci_profile_input(native, worker, tools, prepared, credentials,
-                                        exports, copy_contract, files, observed):
+                                        exports, copy_contract, files, observed, *, profile_role=None):
     """Supply genuine exports and provider originals to the existing Rust builder."""
     coordinates = prepared["coordinates"]
     root = coordinates["nativeRoot"]
+    if profile_role not in {None, "destination"}:
+        raise ValueError("External profile role differs")
+    destination = profile_role == "destination"
+    filename_prefix = "destination-" if destination else ""
+    provider_root = coordinates["workerRoot"] + (
+        "/destination-provider-observation" if destination else "/provider-observation")
     for name, source in (("bootstrap.json", exports["bootstrapFile"]["path"]),
             ("list-cohort.json", exports["listFile"]["path"]),
-            ("provider-report.json", coordinates["workerRoot"] + "/provider-observation/observations.json"),
-            ("private-policy.json", coordinates["workerRoot"] + "/provider-observation/private-policy.json")):
-        retain_external_oci_native_file(native, worker, tools, root + "/" + name, source, 1048576)
+            ("provider-report.json", provider_root + "/observations.json"),
+            ("private-policy.json", provider_root + "/private-policy.json")):
+        retain_external_oci_native_file(native, worker, tools,
+            root + "/" + filename_prefix + name, source, 1048576)
     source_digest = hashlib.sha256(tools["workerSourcePath"].encode()).hexdigest()
     value = {"version": 1, "phase": "profile", "runId": coordinates["runId"],
         "deploymentId": tools["deploymentId"], "sourceDigest": source_digest,
         "scriptVersion": None,
         "bindingId": int(credentials["currentSqlPins"]["bindingId"]), "placementId": None,
-        "placementPrefix": coordinates["placementPrefix"], "databaseUrlFile": prepared["nativeFiles"]["database"],
-        "issuerConfigurationFile": root + "/issuer/configuration.json", "bootstrapFile": root + "/bootstrap.json",
-        "listCohortFile": root + "/list-cohort.json", "privatePolicyFile": root + "/private-policy.json",
-        "providerReviewFile": root + "/provider-report.json",
+        "placementPrefix": (coordinates["placementPrefix"].rsplit("/", 1)[0] + "/destination/registry"
+            if destination else coordinates["placementPrefix"]),
+        "databaseUrlFile": prepared["nativeFiles"]["database"],
+        "issuerConfigurationFile": root + "/issuer/configuration.json",
+        "bootstrapFile": root + "/" + filename_prefix + "bootstrap.json",
+        "listCohortFile": root + "/" + filename_prefix + "list-cohort.json",
+        "privatePolicyFile": root + "/" + filename_prefix + "private-policy.json",
+        "providerReviewFile": root + "/" + filename_prefix + "provider-report.json",
         "providerReviewSha256": copy_contract["value"]["report_sha256"],
         "versionlessConditionalReads": True, "maximumBlobBytes": 536870912,
         "clockUncertaintySeconds": 1, "lifetimeSeconds": 900, "expectedProfileSha256": None,
         "candidateKeyFile": prepared["nativeFiles"]["HUB_EXTERNAL_OCI_CANDIDATE_KEY"],
         "workKeyFile": tools["nativeStorageWorkKeyFile"],
         "guardKeyFile": prepared["nativeFiles"]["HUB_EXTERNAL_OBJECT_GUARD_KEY"],
-        "outputDirectory": root + "/profile"}
+        "outputDirectory": root + "/" + filename_prefix + "profile"}
+    if destination:
+        value["profileRole"] = "destination"
     # The script identity is compiled from the source path; the actual protected
     # Clock response supplies its exact spelling rather than a guessed version.
     identity = read_direct_guest_file(worker, tools["python"],
@@ -229,13 +257,15 @@ def prepare_external_oci_profile_input(native, worker, tools, prepared, credenti
     if identity["sourceDigest"] != source_digest:
         raise ValueError("External source identity changed before profile preparation")
     value["scriptVersion"] = identity["scriptVersion"]
-    reference = install_direct_guest_file(native, tools["python"], root + "/profile-input.json",
+    reference = install_direct_guest_file(native, tools["python"], root + "/" + filename_prefix + "profile-input.json",
         json.dumps(value, separators=(",", ":")).encode())
     return {**reference, "value": value}
 
 
 def prepare_external_oci_candidate(native, tools, prepared, original, profile, registry, setup, process):
     """Resolve the genuine admitted placement before assembling a fresh candidate."""
+    if original["value"].get("profileRole") is not None:
+        raise ValueError("External candidate requires the original source profile")
     slug = registry["registry"]["slug"]
     stable = registry["registry"]["stableId"]
     name = registry["placement"]["name"]

@@ -163,7 +163,8 @@ impl OciProviderConfig {
                 .to_string(),
             config::guard_latest_now(env)?,
         )?;
-        crate::direct_upload::provider_capacity::configure(
+        crate::direct_upload::provider_capacity::policy::configure_exact(
+            env,
             artifact.profile.maximum_provider_requests,
         )?;
         crate::direct_upload::managed::probe(env)?;

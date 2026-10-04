@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{bail, Context as _, Result};
 use aos_hub_core::db::{
     BindingCredentialRevisionRecord, BindingRecord, BindingWriteRevisionRecord, Database,
     OciUploadChunkRecord, SurfacePlacementRecord,
@@ -18,17 +18,17 @@ use aos_hub_core::fetch::{
     SurfaceInventoryHashChunk, SurfaceListPage, SurfaceListedEvidence, SurfaceObjectEvidence,
     SurfaceProvider,
 };
-use aos_hub_core::secret_version::{SecretVersionResolver, verify_secret_fingerprint};
+use aos_hub_core::secret_version::{verify_secret_fingerprint, SecretVersionResolver};
 use aos_hub_core::storage_work::{
+    StorageBindingAcknowledgement, StorageBindingControl, StorageBindingPublication,
+    StorageBindingSnapshot, StorageCapabilities, StorageCredentialMaterial,
+    StorageCredentialSelector, StorageGitObjectProjection, StorageOciChunkSource, StorageWorkKey,
+    StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan, StorageWorkResult,
     MAX_BINDING_CONTROL_BYTES, MAX_DOCUMENTATION_ROWS, MAX_GIT_INSPECTION_BATCH,
     MAX_GIT_INSPECTION_CONTENT_BYTES, MAX_METADATA_BYTES, MAX_METADATA_INSPECTION_BATCH,
     MAX_OCI_HASH_RANGE_BYTES, MAX_OCI_RANGE_BYTES, MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES,
     STORAGE_BINDING_CONTROL_PATH, STORAGE_CAPABILITIES_CHALLENGE, STORAGE_CAPABILITIES_PATH,
-    STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER, StorageBindingAcknowledgement,
-    StorageBindingControl, StorageBindingPublication, StorageBindingSnapshot, StorageCapabilities,
-    StorageCredentialMaterial, StorageCredentialSelector, StorageGitObjectProjection,
-    StorageOciChunkSource, StorageWorkKey, StorageWorkOperation, StorageWorkOutcome,
-    StorageWorkPlan, StorageWorkResult,
+    STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER,
 };
 use aos_hub_core::surface_write::{
     FrozenSurfaceAccess, MultipartAbortOutcome, PartTag, SurfaceDeleteOutcome,
@@ -54,9 +54,10 @@ mod control;
 mod external_delete;
 mod external_oci;
 pub use external_oci::ExternalOciRuntime;
-mod external_observation;
-mod external_copy;
 mod execute_observation;
+mod external_copy;
+mod external_observation;
+mod fetch;
 mod frozen;
 mod frozen_head;
 #[cfg(test)]
@@ -66,9 +67,10 @@ mod mirror_candidate;
 mod mirror_guard;
 mod mirror_inspection;
 mod mirror_membership;
+mod oci_cleanup;
 mod oci_document_effect;
 mod oci_projection;
-mod oci_cleanup;
+mod protected_inspection;
 #[cfg(test)]
 mod result_acceptance_tests;
 mod telemetry;
@@ -1351,6 +1353,7 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
             StorageWorkOutcome::GitPackTreeProjection { projection },
         ) => {
             projection.validate(query)?;
+            protected_inspection::validate_pack_cursor(query, projection)?;
             anyhow::ensure!(
                 result.source_bytes == projection.pair.pack.size + projection.pair.index.size,
                 "pack tree source-byte accounting differs"
@@ -1444,7 +1447,14 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
                 "missing Git batch reported excessive source bytes"
             );
         }
-        (StorageWorkOperation::Head { path }, StorageWorkOutcome::Head { object }) => {
+        (
+            StorageWorkOperation::Head { path },
+            StorageWorkOutcome::Head {
+                object,
+                guarded_source,
+            },
+        ) => {
+            protected_inspection::validate_source_shape(path, object, guarded_source.as_ref())?;
             aos_hub_core::surface_write::strong_if_match_etag(&object.etag)?;
             anyhow::ensure!(
                 result.source_bytes == 0 && object.key == plan.object_key(path)?,
@@ -1636,13 +1646,18 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
         ) => page.validate(plan, result.source_bytes)?,
         (
             StorageWorkOperation::FilterGitTreeEntries { oid, names, cursor },
-            StorageWorkOutcome::GitTreeEntries { source, page },
+            StorageWorkOutcome::GitTreeEntries {
+                source,
+                guarded_source,
+                page,
+            },
         ) => tree_projection::validate(
             plan,
             oid,
             names,
             cursor.as_ref(),
             source,
+            guarded_source.as_ref(),
             page,
             result.source_bytes,
         )?,
@@ -1729,12 +1744,14 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
             StorageWorkOperation::InspectOciRange { path, start, end },
             StorageWorkOutcome::OciRange {
                 source,
+                guarded_source,
                 start: returned_start,
                 end: returned_end,
                 content_base64,
             },
         ) => {
             aos_hub_core::surface_write::strong_if_match_etag(&source.etag)?;
+            protected_inspection::validate_source_shape(path, source, guarded_source.as_ref())?;
             let expected = end - start + 1;
             anyhow::ensure!(
                 source.key == plan.object_key(path)?
@@ -1761,15 +1778,24 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
                 total,
                 strong_etag,
                 expected_provider_version,
+                guarded_source: original_guarded_source,
                 ..
             },
             StorageWorkOutcome::OciRangeHashed {
                 source,
+                guarded_source,
                 start: returned_start,
                 end: returned_end,
                 sha256_state,
             },
         ) => {
+            protected_inspection::validate_source_shape(path, source, guarded_source.as_ref())?;
+            anyhow::ensure!(
+                original_guarded_source
+                    .as_ref()
+                    .is_none_or(|original| Some(original) == guarded_source.as_ref()),
+                "storage Worker hash changed its original guarded source"
+            );
             sha256_state.validate()?;
             anyhow::ensure!(
                 source.key == plan.object_key(path)?
@@ -1790,6 +1816,7 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
         }
         (
             StorageWorkOperation::CopyObject {
+                source_binding_id,
                 source_prefix,
                 path,
                 expected_size,
@@ -1803,7 +1830,8 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
         ) => {
             aos_hub_core::surface_write::strong_if_match_etag(&destination.etag)?;
             anyhow::ensure!(
-                source.key == aos_hub_core::keymap::r2_key(source_prefix, path)
+                source_binding_id.is_none()
+                    && source.key == aos_hub_core::keymap::r2_key(source_prefix, path)
                     && source.size == *expected_size
                     && source.etag == expected_etag.as_str()
                     && destination.key == plan.object_key(path)?
@@ -2047,6 +2075,7 @@ impl HybridSurfaceFetch {
                 commitments.insert("credentialSnapshotSha256", digest);
             }
         }
+        protected_inspection::validate_current(self, plan, &result, &binding).await?;
         if let Some(observation) = observation {
             if let (Some(placement_digest), Some(binding_digest)) = (
                 telemetry::context::fact_digest(&(
@@ -2073,6 +2102,18 @@ impl HybridSurfaceFetch {
         &self,
         path: &str,
     ) -> Result<Option<aos_hub_core::storage_work::StorageObjectIdentity>> {
+        Ok(self.head_source(path).await?.map(|(object, _)| object))
+    }
+
+    async fn head_source(
+        &self,
+        path: &str,
+    ) -> Result<
+        Option<(
+            aos_hub_core::storage_work::StorageObjectIdentity,
+            Option<aos_hub_core::storage_work::protected_inspection::ProtectedInspectionSource>,
+        )>,
+    > {
         let plan = self.work.plan_for_placement(
             &self.placement,
             &self.binding,
@@ -2098,7 +2139,10 @@ impl HybridSurfaceFetch {
                             aos_hub_core::clock::now_unix_secs(),
                         )?;
                         return match self.execute(&refreshed).await?.outcome {
-                            StorageWorkOutcome::Head { object } => Ok(Some(object)),
+                            StorageWorkOutcome::Head {
+                                object,
+                                guarded_source,
+                            } => Ok(Some((object, guarded_source))),
                             _ => anyhow::bail!(
                                 "positive pull-through import has no exact delivery HEAD"
                             ),
@@ -2107,7 +2151,10 @@ impl HybridSurfaceFetch {
                 }
                 Ok(None)
             }
-            StorageWorkOutcome::Head { object } => Ok(Some(object)),
+            StorageWorkOutcome::Head {
+                object,
+                guarded_source,
+            } => Ok(Some((object, guarded_source))),
             _ => bail!("storage Worker returned an unexpected head result"),
         }
     }
@@ -2453,42 +2500,12 @@ impl SurfaceFetch for HybridSurfaceFetch {
     async fn inspect_oci_range(
         &self,
         path: &str,
-        (start, end): (u64, u64),
+        range: (u64, u64),
     ) -> Result<Option<StreamedRead>> {
-        anyhow::ensure!(
-            aos_hub_core::storage_work::admitted_oci_blob_path(path),
-            "hybrid range reads require a canonical OCI blob"
-        );
-        let plan = self.work.plan_for_placement(
-            &self.placement,
-            &self.binding,
-            StorageWorkOperation::InspectOciRange {
-                path: path.into(),
-                start,
-                end,
-            },
-            aos_hub_core::clock::now_unix_secs(),
-        )?;
-        let result = self.execute(&plan).await?;
-        match result.outcome {
-            StorageWorkOutcome::NotFound => Ok(None),
-            StorageWorkOutcome::OciRange {
-                source,
-                content_base64,
-                ..
-            } => Ok(Some(StreamedRead {
-                body: axum::body::Body::from(
-                    base64::engine::general_purpose::STANDARD
-                        .decode(content_base64)
-                        .context("decoding OCI range from storage Worker")?,
-                ),
-                total: source.size,
-                range: Some((start, end)),
-                strong_etag: Some(source.etag),
-                snapshot_lease_id: None,
-            })),
-            _ => bail!("storage Worker returned an unexpected OCI range result"),
-        }
+        Ok(self
+            .inspect_oci_range_source(path, range)
+            .await?
+            .map(|(read, _)| read))
     }
 
     async fn inventory_hash_chunk_bounded(
@@ -2499,6 +2516,32 @@ impl SurfaceFetch for HybridSurfaceFetch {
         maximum_bytes: u64,
         strong_etag: &str,
         expected_provider_version: Option<&str>,
+        sha256_state: aos_hub_core::db::OciSha256State,
+    ) -> Result<Option<SurfaceInventoryHashChunk>> {
+        self.inventory_hash_chunk_guarded_bounded(
+            path,
+            offset,
+            expected_total,
+            maximum_bytes,
+            strong_etag,
+            expected_provider_version,
+            None,
+            sha256_state,
+        )
+        .await
+    }
+
+    async fn inventory_hash_chunk_guarded_bounded(
+        &self,
+        path: &str,
+        offset: u64,
+        expected_total: u64,
+        maximum_bytes: u64,
+        strong_etag: &str,
+        expected_provider_version: Option<&str>,
+        guarded_source: Option<
+            &aos_hub_core::storage_work::protected_inspection::ProtectedInspectionSource,
+        >,
         sha256_state: aos_hub_core::db::OciSha256State,
     ) -> Result<Option<SurfaceInventoryHashChunk>> {
         sha256_state.validate()?;
@@ -2518,6 +2561,7 @@ impl SurfaceFetch for HybridSurfaceFetch {
             &self.placement,
             &self.binding,
             StorageWorkOperation::HashOciRange {
+                guarded_source: guarded_source.cloned(),
                 expected_provider_version: expected_provider_version.map(str::to_string),
                 path: path.into(),
                 start: offset,
@@ -2528,15 +2572,18 @@ impl SurfaceFetch for HybridSurfaceFetch {
             },
             aos_hub_core::clock::now_unix_secs(),
         )?;
+        protected_inspection::check_hash_resume(self, &plan).await?;
         let result = self.execute(&plan).await?;
         match result.outcome {
             StorageWorkOutcome::NotFound => Ok(None),
             StorageWorkOutcome::OciRangeHashed {
+                guarded_source,
                 source,
                 start,
                 end,
                 sha256_state,
             } => Ok(Some(SurfaceInventoryHashChunk {
+                guarded_source,
                 total: source.size,
                 range: (start, end),
                 strong_etag: source.etag,
@@ -2559,8 +2606,13 @@ impl SurfaceFetch for HybridSurfaceFetch {
         Ok(self.head(path).await?.map(|object| object.size))
     }
 
-    async fn list_page(&self, cursor: Option<&str>, limit: usize) -> Result<SurfaceListPage> {
-        self.list_page_with_prefix("", cursor, limit).await
+    async fn list_page(
+        &self,
+        prefix: &str,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<SurfaceListPage> {
+        self.list_page_with_prefix(prefix, cursor, limit).await
     }
 
     async fn list_page_with_prefix(
@@ -2569,6 +2621,7 @@ impl SurfaceFetch for HybridSurfaceFetch {
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<SurfaceListPage> {
+        aos_hub_core::fetch::validate_surface_list_prefix(prefix)?;
         anyhow::ensure!(
             (1..=1000).contains(&limit),
             "hybrid listing page limit is invalid"
@@ -2635,9 +2688,9 @@ impl SurfaceFetch for HybridSurfaceFetch {
         &self,
         path: &str,
     ) -> Result<Option<aos_hub_core::fetch::SurfaceInventoryHead>> {
-        self.head(path)
+        self.head_source(path)
             .await?
-            .map(|object| {
+            .map(|(object, guarded_source)| {
                 anyhow::ensure!(
                     self.binding.kind != "deployment_r2"
                         || object
@@ -2647,6 +2700,7 @@ impl SurfaceFetch for HybridSurfaceFetch {
                     "R2 inventory HEAD has no valid provider upload version"
                 );
                 Ok(aos_hub_core::fetch::SurfaceInventoryHead {
+                    guarded_source,
                     size: i64::try_from(object.size).context("R2 object size exceeds i64")?,
                     strong_etag: Some(object.etag),
                     provider_version: object.provider_version,
@@ -2822,13 +2876,25 @@ impl SurfaceWriteProvider for HybridSurfaceWrites {
         path: &str,
         listed_source: Option<&SurfaceListedEvidence>,
     ) -> Result<Option<u64>> {
-        let binding = self.db.binding(destination.binding_id).await?
+        let binding = self
+            .db
+            .binding(destination.binding_id)
+            .await?
             .context("copy destination binding disappeared")?;
         if binding.kind == "deployment_r2" && binding.is_instance_default {
-            return self.copy_placement_object(source, destination, path, listed_source).await;
+            return self
+                .copy_placement_object(source, destination, path, listed_source)
+                .await;
         }
-        self.copy_external_claimed(operation, claim_token, source, destination,
-            path, listed_source).await
+        self.copy_external_claimed(
+            operation,
+            claim_token,
+            source,
+            destination,
+            path,
+            listed_source,
+        )
+        .await
     }
 
     async fn prepare_external_oci_stage(
@@ -2898,6 +2964,7 @@ impl SurfaceWriteProvider for HybridSurfaceWrites {
             destination,
             &binding,
             StorageWorkOperation::CopyObject {
+                source_binding_id: None,
                 source_placement_id: source.id,
                 source_placement_resource_version: source.resource_version,
                 source_prefix: source.prefix.clone(),
@@ -3601,11 +3668,9 @@ mod tests {
         let operation = || StorageWorkOperation::Head {
             path: "object".into(),
         };
-        assert!(
-            client
-                .plan_for_placement(&placement, &binding, operation(), 101)
-                .is_err()
-        );
+        assert!(client
+            .plan_for_placement(&placement, &binding, operation(), 101)
+            .is_err());
 
         client
             .published_bindings
@@ -3626,25 +3691,21 @@ mod tests {
                 generation: 2,
             }]
         );
-        assert!(
-            client
-                .plan_for_placement(
-                    &placement,
-                    &binding,
-                    StorageWorkOperation::ListPage {
-                        prefix: "".into(),
-                        cursor: None,
-                        limit: 1,
-                    },
-                    101,
-                )
-                .is_err()
-        );
-        assert!(
-            client
-                .plan_for_placement(&placement, &binding, operation(), 201)
-                .is_err()
-        );
+        assert!(client
+            .plan_for_placement(
+                &placement,
+                &binding,
+                StorageWorkOperation::ListPage {
+                    prefix: "".into(),
+                    cursor: None,
+                    limit: 1,
+                },
+                101,
+            )
+            .is_err());
+        assert!(client
+            .plan_for_placement(&placement, &binding, operation(), 201)
+            .is_err());
     }
 
     #[test]
@@ -3698,25 +3759,19 @@ mod tests {
             .unwrap()
             .insert(binding.id, snapshot);
 
-        assert!(
-            client
-                .validate_published_binding_snapshot(&binding, &[credential.clone()], &revision)
-                .is_ok()
-        );
+        assert!(client
+            .validate_published_binding_snapshot(&binding, &[credential.clone()], &revision)
+            .is_ok());
         let mut rotated = credential.clone();
         rotated.generation += 1;
-        assert!(
-            client
-                .validate_published_binding_snapshot(&binding, &[rotated], &revision)
-                .is_err()
-        );
+        assert!(client
+            .validate_published_binding_snapshot(&binding, &[rotated], &revision)
+            .is_err());
         let mut moved = binding.clone();
         moved.object_prefix = Some("other-tenant".into());
-        assert!(
-            client
-                .validate_published_binding_snapshot(&moved, &[credential], &revision)
-                .is_err()
-        );
+        assert!(client
+            .validate_published_binding_snapshot(&moved, &[credential], &revision)
+            .is_err());
     }
 
     #[test]
@@ -3963,6 +4018,7 @@ mod tests {
             binding_resource_version: plan.binding_resource_version,
             source_bytes: 0,
             outcome: StorageWorkOutcome::Head {
+                guarded_source: None,
                 object: StorageObjectIdentity {
                     provider_version: None,
                     key: "registry/HEAD".into(),
@@ -3975,7 +4031,7 @@ mod tests {
         result.placement_resource_version += 1;
         assert!(validate_result(&plan, &result).is_err());
         result.placement_resource_version -= 1;
-        if let StorageWorkOutcome::Head { object } = &mut result.outcome {
+        if let StorageWorkOutcome::Head { object, .. } = &mut result.outcome {
             object.key = "another/HEAD".into();
         }
         assert!(validate_result(&plan, &result).is_err());
@@ -3998,6 +4054,7 @@ mod tests {
             credential_references: Vec::new(),
             placement_prefix: "registry/".into(),
             operation: StorageWorkOperation::CopyObject {
+                source_binding_id: None,
                 source_placement_id: 5,
                 source_placement_resource_version: 2,
                 source_prefix: "source/".into(),
@@ -4242,6 +4299,7 @@ mod tests {
             binding_resource_version: plan.binding_resource_version,
             source_bytes: 3,
             outcome: StorageWorkOutcome::OciRange {
+                guarded_source: None,
                 source: StorageObjectIdentity {
                     provider_version: None,
                     key: format!("registry/{path}"),
@@ -4280,6 +4338,7 @@ mod tests {
             credential_references: Vec::new(),
             placement_prefix: "registry/".into(),
             operation: StorageWorkOperation::HashOciRange {
+                guarded_source: None,
                 expected_provider_version: Some("upload-v1".into()),
                 path: path.clone(),
                 start: 0,
@@ -4297,6 +4356,7 @@ mod tests {
             binding_resource_version: plan.binding_resource_version,
             source_bytes: 3,
             outcome: StorageWorkOutcome::OciRangeHashed {
+                guarded_source: None,
                 source: StorageObjectIdentity {
                     provider_version: Some("upload-v1".into()),
                     key: format!("registry/{path}"),

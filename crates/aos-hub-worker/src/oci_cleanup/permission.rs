@@ -137,7 +137,8 @@ impl Permission {
                         && actual.deployment_id == selection.deployment_id,
                     "Managed cleanup actual fixture pair or clock differs"
                 );
-                crate::direct_upload::provider_capacity::configure(
+                crate::direct_upload::provider_capacity::policy::configure_exact(
+                    env,
                     actual.maximum_provider_requests,
                 )?;
                 crate::direct_upload::managed::probe(env)?;

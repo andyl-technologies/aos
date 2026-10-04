@@ -544,23 +544,27 @@ impl S3Surface {
 
     /// Build a presigned `ListObjectsV2` URL scoped to this surface's prefix.
     ///
-    /// A `GET` on `/{bucket}` with `prefix` = this surface's in-bucket prefix,
-    /// optionally continuing from `continuation` and returning at most
-    /// `max_keys` keys. The walk that storage
-    /// migration / re-scan run when a surface lives on an external binding pages
-    /// through these. Credential-less (public) bindings cannot be listed.
+    /// A `GET` on `/{bucket}` with `prefix` = this surface's in-bucket prefix
+    /// joined to the surface-relative `prefix` (see
+    /// [`SurfaceFetch::list_page`](crate::fetch::SurfaceFetch::list_page);
+    /// empty walks the whole surface), optionally continuing from
+    /// `continuation` and returning at most `max_keys` keys. The walks that
+    /// storage migration, re-scan, and OCI provider inventory run when a
+    /// surface lives on an external binding page through these.
+    /// Credential-less (public) bindings cannot be listed.
     ///
     /// # Errors
     ///
-    /// [`bail`]s for a public binding (no anonymous list); otherwise propagates
-    /// a signing error.
+    /// [`bail`]s for a public binding (no anonymous list) or an invalid
+    /// `prefix`; otherwise propagates a signing error.
     pub fn list_url(
         &self,
+        prefix: &str,
         continuation: Option<&str>,
         max_keys: usize,
         now: i64,
     ) -> Result<String> {
-        self.list_url_with_prefix("", continuation, max_keys, now)
+        self.list_url_with_prefix(prefix, continuation, max_keys, now)
     }
 
     /// Builds a presigned listing URL for a surface-relative key prefix.
@@ -578,6 +582,7 @@ impl S3Surface {
         let Some(creds) = &self.creds else {
             bail!("cannot list a public (credential-less) binding");
         };
+        crate::fetch::validate_surface_list_prefix(relative_prefix)?;
         let (bucket, in_bucket) = self.bucket_split();
         let list_prefix = if in_bucket.is_empty() {
             relative_prefix.to_owned()
@@ -1134,7 +1139,7 @@ mod tests {
         );
         assert_eq!(surface.relative_from_key("other/x"), None);
         // And a presigned list URL carries the in-bucket prefix + signature.
-        let url = surface.list_url(None, 256, 1_700_000_000).unwrap();
+        let url = surface.list_url("", None, 256, 1_700_000_000).unwrap();
         assert!(
             url.contains("/my-bucket?") || url.contains("/my-bucket&"),
             "{url}"
@@ -1147,10 +1152,22 @@ mod tests {
             scoped.contains("prefix=andyl%2Fdemo%2Fobjects%2Fab"),
             "{scoped}"
         );
+        assert!(url.contains("prefix=andyl%2Fdemo%2F&"), "{url}");
         assert!(
             url.contains("list-type=2") && url.contains("X-Amz-Signature="),
             "{url}"
         );
+        // A surface-relative prefix narrows the bucket listing itself.
+        let scoped = surface
+            .list_url("oci/blobs/sha256/", None, 256, 1_700_000_000)
+            .unwrap();
+        assert!(
+            scoped.contains("prefix=andyl%2Fdemo%2Foci%2Fblobs%2Fsha256%2F"),
+            "{scoped}"
+        );
+        assert!(surface
+            .list_url("/oci/blobs/sha256/", None, 256, 1_700_000_000)
+            .is_err());
     }
 
     #[test]

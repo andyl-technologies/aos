@@ -133,18 +133,39 @@ def run_external_oci_business_lane(client, native, worker, s3, database_machine,
         "versionReferences": {purpose: "secret://fleet/external-oci/" + run + "/" + purpose + "/v1"
             for purpose in ("presign", "read", "list", "write")}, "providerMaterial": material,
     }, operator, database_host)
+    destination_credentials = setup.bootstrap_external_oci_destination(controls, worker,
+        pair_tools, coordinates, credentials, material, operator, database_host, private_guest_command)
+    destination_review = await_direct_review(label + "-destination-provider-inputs", {
+        "actualBinding": retain_direct_flow(label + "-destination-binding.json", destination_credentials),
+        "sourceClockNamespace": observation_sha,
+    }, {"privateStagePolicy", "providerReviewFile"})
+    destination_selected = {**destination_review["selection"], "providerPrefix":
+        destination_credentials["binding"]["spec"]["s3"]["prefix"] + "/.aos-direct-upload"}
+    destination_body, destination_sha, _ = direct_provider_observations(worker, s3,
+        pair_tools, destination_selected,
+        observation_root=coordinates["workerRoot"] + "/destination-provider-observation",
+        artifact_label="external-oci-" + run + "-destination-provider")
+    destination_contract = observe_external_copy_contract(worker, pair_tools,
+        observation_root=coordinates["workerRoot"] + "/destination-provider-observation",
+        report_sha256=destination_sha, label=label + "-destination")
     fresh = observe_external_oci_pair(worker, pair_tools, prepared, processes, "installed")
     physical = await_direct_review(label + "-physical-authority", {
         "actualProviderReport": provider_sha,
         "currentCredentialSql": retain_direct_flow(label + "-credential-bootstrap.json", credentials),
         "actualNamespaceClock": retain_direct_flow(label + "-before-authority.json", fresh),
         "actualCopyContract": copy_contract["receipt"]["sha256"],
+        "destinationProviderReport": destination_sha,
+        "destinationCredentialSql": retain_direct_flow(label + "-destination-credentials.json", destination_credentials),
+        "destinationCopyContract": destination_contract["receipt"]["sha256"],
     }, {"authority", "issuerInstallation", "timingProfile", "clockUncertaintySeconds",
         "clockCommitLatencySeconds", "issuerSigningKeyId", "providerContract",
-        "privateStagePolicy", "checksumAlgorithm", "maximumGrantLifetimeSeconds"})
+        "privateStagePolicy", "checksumAlgorithm", "maximumGrantLifetimeSeconds",
+        "destinationAssociationId", "destinationProviderContract", "destinationPrivateStagePolicy"})
     selection = physical["selection"]
     if selection["privateStagePolicy"] != selected["privateStagePolicy"]:
         raise ValueError("External authority changed its observed private policy")
+    if selection["destinationPrivateStagePolicy"] != destination_selected["privateStagePolicy"]:
+        raise ValueError("External destination changed its independently observed private policy")
     renewal = read_direct_guest_file(worker, pair_tools["python"],
         coordinates["workerRoot"] + "/materials/HUB_AUTHORITY_RENEWAL_KEY", 65536)
     issuer = provision_external_issuer(native, worker, pair_tools["python"], pair_tools["openssl"],
@@ -165,9 +186,21 @@ def run_external_oci_business_lane(client, native, worker, s3, database_machine,
     exports = setup.export_external_oci_setup(native, worker, pair_tools, coordinates, files,
         selection["authority"], credentials, controls,
         SimpleNamespace(admit_external_fixture_authority=admit_external_fixture_authority),
-        private_guest_command, actual_time)
+        private_guest_command, actual_time, additional_associations=[{
+            "binding": destination_credentials["binding"],
+            "sqlPins": destination_credentials["currentSqlPins"],
+            "associationId": selection["destinationAssociationId"]}])
+    destination_files = {**files,
+        "restrictedSqlUrlFile": coordinates["workerRoot"] + "/operator/destination/sql.url",
+        "secretVersionManifestFile": destination_credentials["operatorVersions"]["manifestFile"]}
+    destination_exports = setup.export_external_oci_cohorts(worker, pair_tools, coordinates,
+        destination_files, {**selection["authority"], "associationId": selection["destinationAssociationId"]},
+        destination_credentials, exports["authority"], private_guest_command,
+        operator_root=coordinates["workerRoot"] + "/operator/destination")
     if copy_contract["value"]["private_staging_prefix"] != exports["bootstrap"]["staging_prefix"]:
         raise ValueError("Provider conformance measured another actual Direct staging prefix")
+    if destination_contract["value"]["private_staging_prefix"] != destination_exports["bootstrap"]["staging_prefix"]:
+        raise ValueError("Destination conformance measured another actual Direct staging prefix")
     setup_input = prepare_external_oci_profile_input(native, worker, pair_tools, prepared,
         credentials, exports, copy_contract, files, fresh)
     profile = setup.invoke_external_oci_preparation(native, pair_tools, coordinates,
@@ -178,6 +211,22 @@ def run_external_oci_business_lane(client, native, worker, s3, database_machine,
     staging = external_consumer_configuration(exports["bootstrap"], selection["providerContract"], provider_body,
         selection["privateStagePolicy"], selection["checksumAlgorithm"], selection["maximumGrantLifetimeSeconds"])
     consumers["HUB_EXTERNAL_STAGING_CONSUMER"] = staging["HUB_EXTERNAL_STAGING_CONSUMER"]
+    destination_input = prepare_external_oci_profile_input(native, worker, pair_tools,
+        prepared, destination_credentials, destination_exports, destination_contract,
+        destination_files, fresh, profile_role="destination")
+    destination_profile = setup.invoke_external_oci_preparation(native, pair_tools,
+        coordinates, destination_input["file"], "profile", private_guest_command)
+    destination_consumers = setup.project_external_oci_consumers(destination_exports,
+        destination_profile["profile"], destination_profile["receipt"], {
+            "providerReportSha256": destination_sha,
+            "providerContract": destination_contract["value"]["provider_contract"],
+            "maximumListPageObjects": 128, "maximumListPages": 128, "providerConcurrency": 3})
+    destination_staging = external_consumer_configuration(destination_exports["bootstrap"],
+        selection["destinationProviderContract"], destination_body,
+        selection["destinationPrivateStagePolicy"], selection["checksumAlgorithm"],
+        selection["maximumGrantLifetimeSeconds"])
+    destination_consumers["HUB_EXTERNAL_STAGING_CONSUMER"] = destination_staging["HUB_EXTERNAL_STAGING_CONSUMER"]
+    consumers = setup.combine_external_oci_consumers(consumers, destination_consumers)
     install_direct_guest_file(native, pair_tools["python"], coordinates["nativeRoot"] + "/issuer/publication.json",
         read_direct_guest_file(worker, pair_tools["python"],
             coordinates["workerRoot"] + "/operator/authority-export/publication.json", 1048576))
@@ -193,6 +242,9 @@ def run_external_oci_business_lane(client, native, worker, s3, database_machine,
     ownership.update(prepared=prepared, processes=processes)
     workflow.resume(prepared, processes, "ordinary_native")
     hydrated = setup.hydrate_external_oci_setup(native, worker, pair_tools, coordinates, files, exports, private_guest_command)
+    destination_hydrated = setup.hydrate_external_oci_setup(native, worker, pair_tools,
+        coordinates, destination_files, destination_exports, private_guest_command,
+        operator_root=coordinates["workerRoot"] + "/operator/destination")
     source_coordinates = {**coordinates, "workerOrigin": coordinates["publicOrigin"],
         "registryOrganizationSlug": "external-" + run, "clientRoot": coordinates["clientRoot"] + "/producer"}
     producer = managed_fixture_module(pair_tools["managedContainerProducer"], "external_oci_producer_" + run)
@@ -201,7 +253,8 @@ def run_external_oci_business_lane(client, native, worker, s3, database_machine,
     direct = qualify_external_oci_direct(native, worker, pair_tools, prepared, processes,
         exports, artifacts, reviewer_public_key,
         lambda: prepare_external_oci_candidate(native, pair_tools, prepared, setup_input,
-            profile, registry, setup, processes["native"]), workflow=workflow, ownership=ownership)
+            profile, registry, setup, processes["native"]), workflow=workflow, ownership=ownership,
+        paired_exports=destination_exports)
     prepared, processes = direct["prepared"], direct["processes"]
     final_candidate = direct["candidate"]
     workflow.close(processes)
@@ -222,8 +275,14 @@ def run_external_oci_business_lane(client, native, worker, s3, database_machine,
     policy_tools = prepare_direct_client_provider_policy(client, pair_tools, credentials,
         policy_root=coordinates["clientRoot"] + "/provider-policy",
         artifact_label=label + "-client-policy")
+    inventory_selection = prepare_external_inventory_restart(client, s3, pair_tools,
+        prepared, source, helper, exports)
     publication = producer.publish_managed_container(client, policy_tools, controls, source_coordinates,
         registry["registry"], source, refresh)
+    inventory_restart = run_external_inventory_restart(native, worker, s3, pair_tools,
+        prepared, processes, registry, final_candidate, helper, inventory_selection,
+        workflow, artifacts, ownership)
+    processes, helper = inventory_restart["processes"], inventory_restart["helper"]
     readback = read_external_oci_signed_graph(client, policy_tools, source_coordinates, source,
         publication, refresh)
     # Ordinary signed upload invokes the genuine reindexer. Retain its exact
@@ -233,7 +292,9 @@ def run_external_oci_business_lane(client, native, worker, s3, database_machine,
     catalogue = observe_external_copy_catalog(read_sql, registry,
         publication["signedSource"]["sourceCommit"], "external-oci-copy-catalogue")
     copied = run_external_placement_copy(controls, registry, credentials["binding"], catalogue,
-        run_id=run, retain=retain_direct_flow, read_sql=read_sql)
+        run_id=run, retain=retain_direct_flow, read_sql=read_sql,
+        destination_binding=(destination_credentials["binding"]
+            if pair_tools["copyIsolationCase"] == "source_worker" else None))
     cancelled = run_external_copy_cancel_window(native, worker, s3, pair_tools, prepared,
         processes, workflow, controls, registry, credentials["binding"], ownership=ownership)
     lost = run_external_copy_loss_window(native, worker, pair_tools, prepared, processes,
@@ -242,9 +303,13 @@ def run_external_oci_business_lane(client, native, worker, s3, database_machine,
         "copyIsolationCase": pair_tools["copyIsolationCase"],
         "issuerProcess": issuer_process, "operatorReader": reader, "issuer": issuer,
         "providerContract": copy_contract, "exports": exports, "hydration": hydrated,
+        "destination": {"credentials": destination_credentials, "providerContract": destination_contract,
+            "exports": destination_exports, "profile": destination_profile,
+            "hydration": destination_hydrated},
         "profile": profile, "candidate": final_candidate, "direct": direct["evidence"],
         "helper": helper, "route": route, "publication": publication, "readback": readback,
         "reindex": reindex, "copy": copied, "copyCancellation": cancelled, "copyClosedLoss": lost,
+        "inventoryRestart": inventory_restart["evidence"],
         "nativeBulkBytes": None,
         "scope": "connected emulated External OCI/Copy lane; independent full byte and provider joins required"}
     retain_direct_flow(label + "-business-window.json", report)

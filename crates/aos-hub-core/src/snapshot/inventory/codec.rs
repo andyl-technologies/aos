@@ -78,7 +78,7 @@ impl<M: Write, P: Write> ObjectRequirementsWriter<M, P> {
     ) -> Result<Self> {
         limits.validate()?;
         hash_string(source_capture_root_sha256)?;
-        let coverage = ObjectRequirementsCoverage::current8()?;
+        let coverage = ObjectRequirementsCoverage::current12()?;
         let archive = FreshArchiveId::generate(rng)?;
         let metadata_key = FreshStreamKey::generate(rng)?;
         let private_key = FreshStreamKey::generate(rng)?;
@@ -123,7 +123,7 @@ impl<M: Write, P: Write> ObjectRequirementsWriter<M, P> {
         })
     }
 
-    /// Requires the exact authenticated generation-eight source manifest.
+    /// Requires the exact authenticated current source manifest.
     ///
     /// # Errors
     ///
@@ -238,7 +238,7 @@ impl<M: Read, P: Read> ObjectRequirementsReader<M, P> {
         let (metadata_key, private_key) = root
             .unwrap_reader_keys(wrapping, exclusions)?
             .into_role_keys();
-        let coverage = ObjectRequirementsCoverage::current8()?;
+
         let mut metadata = io::Reader::new(StreamDecoder::new(
             metadata,
             metadata_key,
@@ -252,7 +252,13 @@ impl<M: Read, P: Read> ObjectRequirementsReader<M, P> {
             streams,
         )?);
         let id = hex::encode(root.archive_id());
-        metadata.compare(&coverage.header(&id, "metadata", source_capture_root_sha256))?;
+        let historical = ObjectRequirementsCoverage::current8()?;
+        let current = ObjectRequirementsCoverage::current12()?;
+        let selection = metadata.select_exact(&[
+            historical.header(&id, "metadata", source_capture_root_sha256),
+            current.header(&id, "metadata", source_capture_root_sha256),
+        ])?;
+        let coverage = if selection == 0 { historical } else { current };
         private.compare(&coverage.header(&id, "private", source_capture_root_sha256))?;
         Ok(Self {
             metadata,

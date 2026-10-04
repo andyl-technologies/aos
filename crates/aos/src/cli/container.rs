@@ -162,7 +162,7 @@ pub enum ContainerCommand {
         direct: ContainerDirectUploadArgs,
         /// Container definition name
         name: String,
-        /// AUTHORITY/REPOSITORY[:TAG|@DIGEST]
+        /// AUTHORITY/[REGISTRY-SLUG/]REPOSITORY[:TAG|@DIGEST]
         reference: String,
         /// Canonical sidecar already committed in the signed AOS release
         #[arg(long)]
@@ -188,9 +188,12 @@ pub enum ContainerCommand {
         /// Stable retry identity shared by begin, commit, and recovery
         #[arg(long)]
         idempotency_key: String,
-        /// Upload and verify the immutable graph without calling Hub control
-        #[arg(long)]
+        /// Upload the immutable graph into an existing unpublished registry candidate
+        #[arg(long, requires = "registry_stage")]
         stage_only: bool,
+        /// Exact shared registry candidate record containing this container graph
+        #[arg(long)]
+        registry_stage: Option<PathBuf>,
         /// Override the OCI Distribution origin
         #[arg(long, env = "AOS_REGISTRY_ORIGIN")]
         registry_origin: Option<String>,
@@ -330,6 +333,8 @@ mod tests {
             "--idempotency-key",
             "release-42",
             "--stage-only",
+            "--registry-stage",
+            "stage.json",
             "--expected-tag-resource-version",
             "7",
             "--expected-tag-digest",
@@ -353,6 +358,7 @@ mod tests {
                     registry,
                     idempotency_key,
                     stage_only,
+                    registry_stage,
                     expected_tag_resource_version,
                     expected_tag_digest,
                     registry_origin,
@@ -371,12 +377,43 @@ mod tests {
         assert_eq!(registry, "core");
         assert_eq!(idempotency_key, "release-42");
         assert!(stage_only);
+        assert_eq!(registry_stage, Some(PathBuf::from("stage.json")));
         assert_eq!(expected_tag_resource_version.as_deref(), Some("7"));
         assert!(expected_tag_digest.is_some());
         assert_eq!(registry_origin.as_deref(), Some("https://oci.example"));
         assert_eq!(registry_token.as_deref(), Some("registry-secret"));
         assert_eq!(hub.as_deref(), Some("https://hub.example"));
         assert_eq!(token.as_deref(), Some("hub-secret"));
+    }
+
+    #[test]
+    fn upload_only_container_publication_requires_a_real_registry_candidate() {
+        let error = Cli::try_parse_from([
+            "aos",
+            "container",
+            "publish",
+            "aos",
+            "registry.example/aos:stable",
+            "--release",
+            "containers-v1-index.json",
+            "--release-layout",
+            "aos.signed.oci.tar",
+            "--signature-input",
+            "signature-input.json",
+            "--registry",
+            "example/main",
+            "--idempotency-key",
+            "release-42",
+            "--stage-only",
+        ])
+        .err()
+        .expect("an existing candidate is required before transfer");
+
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        assert!(error.to_string().contains("--registry-stage"));
     }
 
     #[test]

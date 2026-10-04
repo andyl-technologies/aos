@@ -360,20 +360,20 @@ mod tests {
 
         assert_eq!(
             state
-                .advance_visibility(7, 9, &BTreeMap::new())
+                .advance_visibility(7, 9_999, &BTreeMap::new())
                 .unwrap_or_else(|error| panic!("advance: {error}")),
             (0, 0)
         );
         assert_eq!(
             state
-                .advance_visibility(7, 10, &BTreeMap::new())
+                .advance_visibility(7, 10_000, &BTreeMap::new())
                 .unwrap_or_else(|error| panic!("advance: {error}")),
             (1, 1)
         );
-        let events = BTreeMap::from([([9; 32], 12)]);
+        let events = BTreeMap::from([([9; 32], 12_000)]);
         assert_eq!(
             state
-                .advance_visibility(7, 12, &events)
+                .advance_visibility(7, 12_000, &events)
                 .unwrap_or_else(|error| panic!("advance: {error}")),
             (2, 2)
         );
@@ -408,7 +408,7 @@ mod tests {
             .unwrap_or_else(|error| panic!("commit: {error}"));
 
         state
-            .advance_visibility(3, 10, &BTreeMap::new())
+            .advance_visibility(3, 10_000, &BTreeMap::new())
             .unwrap_or_else(|error| panic!("advance: {error}"));
         let split = state
             .visible_object(3, "/a")
@@ -416,7 +416,7 @@ mod tests {
         assert_eq!(split.version, 2);
         assert_eq!(split.data, b"old");
         state
-            .advance_visibility(3, 15, &BTreeMap::new())
+            .advance_visibility(3, 15_000, &BTreeMap::new())
             .unwrap_or_else(|error| panic!("advance: {error}"));
         assert_eq!(
             state
@@ -424,6 +424,79 @@ mod tests {
                 .unwrap_or_else(|| panic!("object is visible"))
                 .data,
             b"new"
+        );
+    }
+
+    #[test]
+    fn event_data_lag_preserves_fractional_tick_phase() {
+        let mut state = NinepVisibilityState::default();
+        state
+            .commit(
+                [1; 32],
+                object("/a", 1, b"new"),
+                NinepVisibilityPolicy {
+                    scope: NinepVisibilityScope::Global,
+                    atomic_metadata_and_data: false,
+                    retain_deleted_objects: false,
+                },
+                NinepVisibilityRelease::OnEvent([9; 32]),
+                0,
+                1,
+            )
+            .unwrap_or_else(|error| panic!("commit: {error}"));
+
+        let events = BTreeMap::from([([9; 32], 7)]);
+        assert_eq!(state.advance_visibility(3, 1_006, &events), Ok((1, 0)));
+        assert_eq!(state.advance_visibility(3, 1_007, &events), Ok((1, 1)));
+    }
+
+    #[test]
+    fn absolute_nanosecond_release_starts_at_its_tick_boundary() {
+        let mut state = NinepVisibilityState::default();
+        state
+            .commit(
+                [1; 32],
+                object("/a", 1, b"new"),
+                atomic(NinepVisibilityScope::Global, false),
+                NinepVisibilityRelease::AtNanos(2),
+                0,
+                0,
+            )
+            .unwrap_or_else(|error| panic!("commit: {error}"));
+
+        assert_eq!(
+            state.advance_visibility(3, 1_999, &BTreeMap::new()),
+            Ok((0, 0))
+        );
+        assert_eq!(
+            state.advance_visibility(3, 2_000, &BTreeMap::new()),
+            Ok((1, 1))
+        );
+    }
+
+    #[test]
+    fn delayed_tick_release_preserves_fractional_action_phase() {
+        let mut state = NinepVisibilityState::default();
+        let action_tick = 7_u64;
+        let release_tick = action_tick + crucible_shmem::TICKS_PER_NS;
+        state
+            .commit(
+                [1; 32],
+                object("/a", 1, b"new"),
+                atomic(NinepVisibilityScope::Global, false),
+                NinepVisibilityRelease::AtTicks(release_tick),
+                0,
+                0,
+            )
+            .unwrap_or_else(|error| panic!("commit: {error}"));
+
+        assert_eq!(
+            state.advance_visibility(3, release_tick - 1, &BTreeMap::new()),
+            Ok((0, 0))
+        );
+        assert_eq!(
+            state.advance_visibility(3, release_tick, &BTreeMap::new()),
+            Ok((1, 1))
         );
     }
 

@@ -21,7 +21,7 @@ use aos_hub_core::storage_work::{
 use base64::Engine as _;
 use futures_util::StreamExt as _;
 use sha2::{Digest as _, Sha256};
-use worker::{Env, Fetch, Headers, Method, Request, RequestInit, RequestRedirect, Response};
+use worker::{Env, Headers, Method, Request, RequestInit, RequestRedirect, Response};
 
 use super::{
     config::{configured, coordinates, Config},
@@ -87,7 +87,7 @@ async fn execute(request: &mut Request, env: &Env) -> Result<ExternalObjectResul
     publication
         .snapshot
         .authorizes(&work.plan, &deployment, config.clock().observed_at)?;
-    execute_authorized(env, config, work, &publication, deployment).await
+    execute_authorized(env, config, work, &publication, deployment, Some(request.inner().signal())).await
 }
 
 /// Executes a Native-signed conditional delete through the configured issuer.
@@ -103,6 +103,7 @@ pub(crate) async fn execute_delete_plan(
     env: &Env,
     plan: &StorageWorkPlan,
     publication: &StorageBindingPublication,
+    client_signal: Option<worker::web_sys::AbortSignal>,
 ) -> Result<StorageWorkResult> {
     let StorageWorkOperation::DeleteIfMatches {
         claim_id,
@@ -142,7 +143,7 @@ pub(crate) async fn execute_delete_plan(
     publication
         .snapshot
         .authorizes(plan, &deployment, config.clock().observed_at)?;
-    let result = execute_authorized(env, config, work, publication, deployment).await?;
+    let result = execute_authorized(env, config, work, publication, deployment, client_signal).await?;
     let outcome = match result.outcome {
         Outcome::DeleteAcknowledged { etag, .. } => StorageWorkOutcome::ObjectDeleted { etag },
         Outcome::DeleteAbsent => StorageWorkOutcome::NotFound,
@@ -252,6 +253,7 @@ pub(crate) async fn execute_probe_plan(
     env: &Env,
     plan: &StorageWorkPlan,
     publication: &StorageBindingPublication,
+    client_signal: Option<worker::web_sys::AbortSignal>,
 ) -> Result<StorageWorkResult> {
     let (path, purpose) = match &plan.operation {
         StorageWorkOperation::PutProbe { path, .. } => (path, "write"),
@@ -323,7 +325,7 @@ pub(crate) async fn execute_probe_plan(
     publication
         .snapshot
         .authorizes(plan, &deployment, config.clock().observed_at)?;
-    let result = execute_authorized(env, config, work, publication, deployment).await?;
+    let result = execute_authorized(env, config, work, publication, deployment, client_signal).await?;
     let (outcome, source_bytes) = match result.outcome {
         Outcome::PutAcknowledged => (StorageWorkOutcome::ProbeAcknowledged, 0),
         Outcome::HistoricalHead { object: None } => (StorageWorkOutcome::NotFound, 0),
@@ -331,6 +333,7 @@ pub(crate) async fn execute_probe_plan(
             object: Some(object),
         } => (
             StorageWorkOutcome::Head {
+                guarded_source: None,
                 object: aos_hub_core::storage_work::StorageObjectIdentity {
                     key: plan.object_key(path)?,
                     size: object.bytes.parse()?,
@@ -377,6 +380,7 @@ async fn execute_authorized(
     mut work: ExternalObjectRequest,
     publication: &StorageBindingPublication,
     deployment: String,
+    client_signal: Option<worker::web_sys::AbortSignal>,
 ) -> Result<ExternalObjectResult> {
     let (path, effect, bytes, purpose) = match &work.plan.operation {
         StorageWorkOperation::PutMetadata {
@@ -555,6 +559,7 @@ async fn execute_authorized(
             &floor,
             expected,
             path,
+            client_signal,
         )
         .await?
     } else {
@@ -579,7 +584,7 @@ async fn execute_authorized(
         }
         let provider = Request::new_with_init(&url, &init)?;
 
-        // No awaited helper lies between this validation and actual provider Fetch.
+        // The configured capacity wait repeats these checks immediately before Fetch.
         // This is bounded new-dispatch revocation, not immediate global deny/drain.
         let validated = config.verifier()?.validate_lease(
             work.lease.as_bytes(),
@@ -591,7 +596,19 @@ async fn execute_authorized(
             config.clock(),
         )?;
         work.check_dispatch_time(&publication.snapshot, &validated, &floor, config.clock())?;
-        let mut response = Fetch::Request(provider).send().await?;
+        let fresh = || {
+            let validated = config.verifier()?.validate_lease(
+                work.lease.as_bytes(), cohort, &config.timing_profile,
+                &floor, &scope.full_key, intent.effect.lease_effect(), config.clock(),
+            )?;
+            work.check_dispatch_time(&publication.snapshot, &validated, &floor, config.clock())?;
+            Ok(())
+        };
+        let mut response = super::request_capacity::send(
+            env, provider, work.plan.expires_at, config.clock_uncertainty,
+            client_signal, crate::direct_upload::provider_capacity::Class::Metadata,
+            &fresh,
+        ).await?;
         let outcome = match &intent.effect {
             Effect::Put { .. } => {
                 ensure!(
@@ -636,19 +653,7 @@ async fn execute_authorized(
                     .get("etag")?
                     .ok_or_else(|| anyhow::anyhow!("probe ETag absent"))?;
                 let provider_version = response.headers().get("x-amz-version-id")?;
-                let mut stream = response.stream()?;
-                let mut collected = Vec::new();
-                while let Some(chunk) = stream.next().await {
-                    let chunk = chunk?;
-                    ensure!(
-                        collected
-                            .len()
-                            .checked_add(chunk.len())
-                            .is_some_and(|size| size <= *maximum_bytes as usize),
-                        "probe body oversized"
-                    );
-                    collected.extend_from_slice(&chunk);
-                }
+                let collected = response.read_bounded(*maximum_bytes as usize).await?;
                 ensure!(
                     collected.len().to_string() == bytes,
                     "probe body length changed"

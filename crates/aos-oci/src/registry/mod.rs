@@ -15,6 +15,8 @@ mod push;
 #[cfg(test)]
 mod request_tests;
 
+pub use push::verified_release_graph;
+
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};

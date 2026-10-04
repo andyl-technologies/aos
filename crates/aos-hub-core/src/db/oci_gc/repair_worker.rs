@@ -97,6 +97,16 @@ impl Database {
                  WHERE repair.repair_kind = 'delete'
                    AND ((repair.state = 'pending' AND repair.next_attempt_at <= ?1)
                      OR (repair.state = 'claimed' AND repair.lease_expires_at <= ?1))
+                   AND NOT EXISTS (
+                     SELECT 1 FROM staged_release_objects staged_object
+                     JOIN staged_release_revisions staged_revision
+                       ON staged_revision.registry_id = staged_object.registry_id
+                      AND staged_revision.stage_id = staged_object.stage_id
+                      AND staged_revision.revision = staged_object.revision
+                     WHERE staged_object.registry_id = repair.registry_id
+                       AND staged_object.object_key = repair.object_key
+                       AND (staged_revision.retire_after IS NULL
+                         OR staged_revision.retire_after > ?1))
                    AND EXISTS (SELECT 1 FROM oci_registry_state registry_state
                      JOIN oci_provider_inventory_heads head
                        ON head.registry_id = registry_state.registry_id
@@ -161,6 +171,16 @@ impl Database {
                      WHERE id = ?1 AND resource_version = ?5
                        AND ((state = 'pending' AND next_attempt_at <= ?6)
                          OR (state = 'claimed' AND lease_expires_at <= ?6))
+                       AND NOT EXISTS (
+                         SELECT 1 FROM staged_release_objects staged_object
+                         JOIN staged_release_revisions staged_revision
+                           ON staged_revision.registry_id = staged_object.registry_id
+                          AND staged_revision.stage_id = staged_object.stage_id
+                          AND staged_revision.revision = staged_object.revision
+                         WHERE staged_object.registry_id = oci_untracked_repair_plans.registry_id
+                           AND staged_object.object_key = oci_untracked_repair_plans.object_key
+                           AND (staged_revision.retire_after IS NULL
+                             OR staged_revision.retire_after > ?6))
                        AND EXISTS (SELECT 1 FROM oci_registry_state registry_state
                          JOIN oci_provider_inventory_heads head
                            ON head.registry_id = registry_state.registry_id

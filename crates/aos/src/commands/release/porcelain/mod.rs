@@ -1,4 +1,4 @@
-//! Maintainer porcelain: `aos release new / advance / status / explain /
+//! Maintainer porcelain: `aos maintain release new / advance / status / explain /
 //! review / fitness`.
 //!
 //! The porcelain operates one release from the maintainer configuration
@@ -48,7 +48,7 @@ use aos_core::nix::NixRunner;
 use aos_core::output::Printer;
 use aos_release::canonical;
 use aos_release::manifest::ManifestEnvelopeV1;
-use aos_release::plan::ReleasePlan;
+use aos_release::plan::{ReleasePlan, ReleasePlanRequest};
 
 use super::capture;
 use super::config::MaintainerConfig;
@@ -61,6 +61,7 @@ use workdir::{ReleaseIndex, WorkDir};
 /// Returns an error when the command fails, or when it requires Nix.
 pub(super) async fn run_offline(command: &ReleaseCommand, printer: &Printer) -> Result<()> {
     match command {
+        ReleaseCommand::Publish(args) => advance::publish(args, printer).await,
         ReleaseCommand::Status(args) => status::run(args, printer),
         ReleaseCommand::Explain(args) => explain::run(args, printer),
         ReleaseCommand::Review(args) => review::run(args, printer).await,
@@ -105,6 +106,9 @@ struct Session {
     plan_bytes: Vec<u8>,
     /// Parsed frozen plan.
     plan: ReleasePlan,
+    /// Whether the request planned a registry's first release, whose base
+    /// `step bootstrap` must install on each surface before publication.
+    first_release: bool,
 }
 
 impl Session {
@@ -134,6 +138,7 @@ impl Session {
         if plan.release_id != index.release_id || plan.version != index.version {
             bail!("release.toml and plan.json name different releases");
         }
+        let first_release = planned_first_release(&work, &plan)?;
         Ok(Self {
             config_path,
             config,
@@ -141,6 +146,7 @@ impl Session {
             index,
             plan_bytes,
             plan,
+            first_release,
         })
     }
 
@@ -172,6 +178,28 @@ impl Session {
             format!("planned destinations: {}", planned.join(", "))
         })
     }
+}
+
+/// Reads whether the release's request planned a registry's first release.
+///
+/// `new` writes the request before it freezes the plan, so a work directory
+/// without one, or with a request for another release or base, is refused
+/// rather than treated as an ordinary release.
+///
+/// # Errors
+/// Returns an error for a missing or malformed request, or one that names a
+/// different release or registry base than the plan.
+fn planned_first_release(work: &WorkDir, plan: &ReleasePlan) -> Result<bool> {
+    let bytes = capture::control_file(&work.request(), "plan request")
+        .with_context(|| format!("{} has no derived request", work.root().display()))?;
+    let request: ReleasePlanRequest = canonical::from_slice(&bytes, "plan request")?;
+    if request.release_id != plan.release_id
+        || request.registry != plan.registry
+        || request.registry_base_commit != plan.registry_base_commit
+    {
+        bail!("request.json and plan.json name different releases or registry bases");
+    }
+    Ok(request.first_release)
 }
 
 /// Prints the single `Waiting:` instruction of a human step.

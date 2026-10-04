@@ -93,6 +93,7 @@ pub(super) fn original() -> ExternalCopyOriginal {
         part_bytes: LeaseInteger::new(MIN_DIRECT_PART_BYTES as i64).unwrap(),
         expected_sha256: None,
         source_receipt_digest: None,
+        transfer: None,
     }
 }
 

@@ -7,7 +7,8 @@
 use std::collections::BTreeMap;
 
 use super::{CopyClaim, CurrentCopy, SurfaceObjectRecord};
-use crate::storage_work::telemetry::context::{fact_digest, ControlObservation};
+use crate::storage_work::telemetry::context::{ControlObservation, fact_digest};
+use aos_hub_core::storage_authority::external_object::copy::CopySourceBindingPin;
 
 pub(super) fn after_sql(
     observation: Option<ControlObservation>,
@@ -16,13 +17,19 @@ pub(super) fn after_sql(
     catalogue: Option<&SurfaceObjectRecord>,
     profile_digest: &str,
     snapshot_revision: &str,
+    source_pin: Option<&CopySourceBindingPin>,
 ) {
     let Some(observation) = observation else {
         return;
     };
-    let Some(commitments) =
-        commitments(current, claim, catalogue, profile_digest, snapshot_revision)
-    else {
+    let Some(commitments) = commitments(
+        current,
+        claim,
+        catalogue,
+        profile_digest,
+        snapshot_revision,
+        source_pin,
+    ) else {
         return;
     };
     observation.after_sql("external_copy_current_sql", commitments);
@@ -34,6 +41,7 @@ fn commitments(
     catalogue: Option<&SurfaceObjectRecord>,
     profile_digest: &str,
     snapshot_revision: &str,
+    source_pin: Option<&CopySourceBindingPin>,
 ) -> Option<BTreeMap<&'static str, String>> {
     let binding = &current.binding;
     let revision = &current.revision;
@@ -82,6 +90,40 @@ fn commitments(
         grant.revoked_at,
         grant.resource_version,
     );
+    let source = &current.source_binding;
+    let source_binding_fact = serde_json::json!([
+        source.id,
+        source.org_id,
+        source.stable_id,
+        source.owner_scope_key,
+        source.kind,
+        source.is_instance_default,
+        source.local_root_path,
+        source.object_bucket,
+        source.object_prefix,
+        source.endpoint_scheme,
+        source.endpoint_host_kind,
+        source.endpoint_host_bytes,
+        source.endpoint_port,
+        source.signing_region,
+        source.access_mode,
+        source.resource_version,
+    ]);
+    let source_grant = &current.source_grant;
+    let source_grant_fact = (
+        &source_grant.resource_kind,
+        &source_grant.resource_stable_id,
+        source_grant.resource_generation,
+        &source_grant.consumer_scope_key,
+        source_grant.grant_generation,
+        &source_grant.grant_kind,
+        &source_grant.state,
+        &source_grant.granted_by,
+        source_grant.granted_at,
+        &source_grant.revoked_by,
+        source_grant.revoked_at,
+        source_grant.resource_version,
+    );
     let catalogue_fact = catalogue.map(|object| {
         (
             object.id,
@@ -107,6 +149,15 @@ fn commitments(
             fact_digest(&current.destination)?,
         ),
         ("bindingStateSha256", fact_digest(&binding_fact)?),
+        (
+            "sourceBindingStateSha256",
+            fact_digest(&source_binding_fact)?,
+        ),
+        (
+            "sourceConsumerGrantStateSha256",
+            fact_digest(&source_grant_fact)?,
+        ),
+        ("sourceReadPinsSha256", fact_digest(&source_pin)?),
         ("writeRevisionStateSha256", fact_digest(&revision_fact)?),
         ("consumerGrantStateSha256", fact_digest(&grant_fact)?),
         ("claimSha256", fact_digest(&claim)?),

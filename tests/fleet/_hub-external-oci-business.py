@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import re
 import shlex
 import time
 
@@ -158,5 +159,84 @@ def switch_external_oci_native(native, tools, prepared, processes, registry, can
         candidate["candidateReference"]["sha256"])
     if str(ready["identity"]["executableBytes"]) != provenance["testExecutableBytes"]:
         raise ValueError("Actual External helper size differs from the selected installed ELF")
-    return {"process": process, "readiness": ready, "stoppedStockNative": stopped, "input": input_ref,
+    return {"process": process, "readiness": ready, "stoppedStockNative": stopped,
+        "input": input_ref, "inputValue": offered,
         "scope": "separate actual controlled Native helper; stock-service byte inventory remains separate"}
+
+
+def external_inventory_restart_input(original, native_root):
+    """Change only private observation destinations for the second Native epoch."""
+    if (not isinstance(native_root, str)
+            or not re.fullmatch(r"/var/lib/hybrid-native/external-oci/[0-9a-f]{32}", native_root)):
+        raise ValueError("inventory restart root is outside the actual selected run")
+    changed = dict(original)
+    for field, suffix in (("readinessFile", "ready"), ("terminalFile", "terminal"),
+            ("shutdownFile", "shutdown")):
+        if original[field] != native_root + "/helper-" + suffix + ".json":
+            raise ValueError("inventory restart original does not name the first helper epoch")
+        changed[field] = native_root + "/inventory-restart-" + suffix + ".json"
+    return changed
+
+
+def restart_external_inventory_native(native, tools, prepared, processes, helper,
+                                      workflow, artifacts, ownership, *, observe_restart_fence):
+    """Restart the real maintenance owner with unchanged business configuration.
+
+    The caller must retain a live collecting checkpoint before invoking this
+    transition. Process exit and task registration are separate from provider
+    settlement and the later resumed-range/final-inventory observations.
+    """
+    root = prepared["coordinates"]["nativeRoot"]
+    raw = read_direct_guest_file(native, tools["python"], helper["input"]["file"], 1048576)
+    if hashlib.sha256(raw).hexdigest() != helper["input"]["sha256"]:
+        raise ValueError("inventory restart original private input changed")
+    offered = json.loads(raw)
+    if offered != helper["inputValue"]:
+        raise ValueError("inventory restart input no longer matches the actual serving epoch")
+    successor = external_inventory_restart_input(offered, root)
+    input_ref = install_direct_guest_file(native, tools["python"], root + "/inventory-restart-input.json",
+        json.dumps(successor, separators=(",", ":")).encode())
+
+    workflow.close(processes)
+    old_exit = shutdown_external_oci_helper(native, tools, prepared, helper)
+    ownership["helper"] = None
+    ownership["inventoryNativeExit"] = old_exit
+    ownership["processes"] = {key: value for key, value in processes.items() if key != "native"}
+    before_launch = {role: managed_private_log_position(
+        native if role.startswith("native") else workflow.worker, tools, position["path"])
+        for role, position in workflow.last_end.items()}
+    launch_boundary = int(private_guest_command(native, shlex.join([tools["python"], "-c",
+        "import time; print(time.time_ns() // 1000000)"])).strip())
+    process = launch_managed_process(native, tools, root, "native-inventory-restart", [tools["managedCleanupNativeHelper"],
+        "storage_work::external_oci::tests::fleet::actual_external_oci_fleet_origin", "--exact", "--ignored", "--nocapture"],
+        {"AOS_EXTERNAL_OCI_FLEET_INPUT": input_ref["file"], "SSL_CERT_FILE": "/etc/ssl/certs/ca-certificates.crt"})
+    ownership["processes"] = {**processes, "native": process}
+    if process["executableSha256"] != helper["process"]["executableSha256"]:
+        raise ValueError("inventory Native restart changes the selected actual executable")
+    # Controllers are registered before readiness is emitted. Observe their real
+    # current lease before a fast continuation can finish or review can await.
+    restarted_fence = observe_restart_fence({**processes, "native": process})
+    ready = await_external_oci_helper(native, tools, prepared, process, input_ref,
+        helper["readiness"]["identity"]["candidateSha256"], readiness_file=successor["readinessFile"])
+    if (ready["identity"]["expiresAt"] != helper["readiness"]["identity"]["expiresAt"]
+            or ready["backgroundControllers"] != helper["readiness"]["backgroundControllers"]):
+        raise ValueError("inventory restart changes its accepted lifetime or collector selection")
+    current = {"process": process, "readiness": ready, "input": input_ref, "inputValue": successor,
+        "previousEpochExit": old_exit, "launchBoundaryUnixMillis": launch_boundary,
+        "beforeLaunchProxyPositions": before_launch, "renewedCollectorFence": restarted_fence,
+        "providerEffectsSettled": None, "remoteDrain": None}
+    current_processes = {**processes, "native": process}
+    ownership.update(helper=current, processes=current_processes)
+    codec = select_external_storage_codec(tools, artifacts, process, prepared["coordinates"]["runId"],
+        "controlled_external_oci_native", epoch="inventory-restart")
+    workflow.boundaries = {**workflow.boundaries, **codec}
+    workflow.resume(prepared, current_processes, "controlled_external_oci_native")
+    capture = begin_managed_storage_window(native, workflow.worker, tools, workflow.prepared,
+        external_capture_processes(current_processes), workflow.boundaries, "external-inventory-resume")
+    # Start the independent subwindow after the old owner exited. The new
+    # exclusive log begins at byte zero, including controller calls before ready.
+    capture["positions"].update(before_launch)
+    capture["positions"]["nativeLog"]["byteSize"] = 0
+    current["restartCapture"] = capture
+    retain_direct_flow("external-oci-" + prepared["coordinates"]["runId"] + "-inventory-new-epoch.json", capture)
+    return {"helper": current, "processes": current_processes, "oldExit": old_exit}

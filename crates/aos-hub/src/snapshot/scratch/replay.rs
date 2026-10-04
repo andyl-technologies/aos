@@ -28,7 +28,7 @@ mod lifetimes;
 
 pub(super) fn verify<M: Read, P: Read>(
     inputs: ScratchVerificationInputs<M, P>,
-    catalogues: [CompiledSqliteSnapshotCatalogue; 6],
+    catalogues: [CompiledSqliteSnapshotCatalogue; 7],
     limits: ScratchVerificationLimits,
     budget: WorkBudget,
     projection: Option<Box<dyn super::ScratchProjection>>,
@@ -613,13 +613,13 @@ mod tests {
     #[tokio::test]
     async fn exact_compiled_corpus_has_no_seeds_triggers_or_retained_to_omitted_fks() {
         let catalogue = CompiledSqliteSnapshotCatalogue::load().await.unwrap();
-        assert_eq!(catalogue.schema().tables.len(), 279);
+        assert_eq!(catalogue.schema().tables.len(), 287);
         let limits = ScratchVerificationLimits::default();
         let budget = WorkBudget::new(limits, Default::default(), Default::default()).unwrap();
         // Construction traverses EVERY retained FK, fails unknown dispositions
         // and rejects unsupported kinds before any archive row is consumed.
         let mut scratch = MemoryReplay::new(catalogue, limits, budget).unwrap();
-        assert_eq!(scratch.tables.len(), 269);
+        assert_eq!(scratch.tables.len(), 277);
         assert_eq!(scratch.retained_rows, 0);
         for table in &scratch.catalogue.schema().tables {
             let count = scratch

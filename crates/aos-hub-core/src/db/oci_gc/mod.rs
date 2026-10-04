@@ -9,8 +9,10 @@
 
 use aos_oci_types::{MediaType, RepositoryName, Sha256Digest};
 
+mod cancel;
 mod inventory;
 mod inventory_model;
+mod inventory_progress;
 mod plan;
 mod plan_frontier;
 mod plan_model;
@@ -18,12 +20,15 @@ mod purge_plan;
 mod read;
 mod remediation;
 mod repair_worker;
+mod retirement;
 mod worker;
 
 #[cfg(test)]
 mod tests;
 
+pub use cancel::*;
 pub use inventory::*;
+pub use inventory_progress::*;
 pub use plan::*;
 pub use purge_plan::*;
 pub use remediation::*;
@@ -90,6 +95,9 @@ pub struct OciGcGenerationRecord {
     /// Authenticated actor that created and may apply the plan.
     pub actor_id: String,
     /// `planned`, `applying`, `complete`, `aborted`, or `failed`.
+    ///
+    /// `aborted` is terminal for a plan that expired or was cancelled before
+    /// apply; `last_error` records which.
     pub state: String,
     /// Registry mutation epoch frozen during planning.
     pub captured_mutation_epoch: i64,
@@ -137,6 +145,12 @@ pub struct OciGcGenerationRecord {
     pub last_error: Option<String>,
     /// Optimistic-concurrency version.
     pub resource_version: i64,
+    /// Whether the run retires the whole catalog ahead of registry deletion.
+    ///
+    /// A retiring run treats signed-release, tag, and tag-history roots as
+    /// retired and collects without grace, so apply revalidates under the same
+    /// reviewed mode.
+    pub retire_registry: bool,
 }
 
 /// One durable reason a plan failed closed.
@@ -262,7 +276,11 @@ pub struct OciRegistryPurgeBlockers {
     pub catalog_objects: u64,
     /// Active upload/publication/lease rows.
     pub active_sessions: u64,
-    /// Nonterminal GC runs or actions.
+    /// Applying runs, unexpired planned runs, and unfinished placement
+    /// actions of runs that were applied.
+    ///
+    /// An expired planned run can no longer be applied, and an aborted run
+    /// never will be, so neither (nor their never-claimable actions) blocks.
     pub gc_work: u64,
     /// Current provider-inventory keys still present and catalog-tracked.
     pub tracked_provider_objects: u64,

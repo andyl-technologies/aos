@@ -445,7 +445,7 @@ async fn current_destination_matches(
     let outcome = work.execute(&plan).await?.outcome;
     db.validate_mirror_import_authority(original).await?;
     match outcome {
-        StorageWorkOutcome::Head { object } => Ok(progress
+        StorageWorkOutcome::Head { object, .. } => Ok(progress
             .destination
             .as_ref()
             .is_some_and(|destination| destination.object == object)),

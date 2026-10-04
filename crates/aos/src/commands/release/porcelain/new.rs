@@ -1,4 +1,4 @@
-//! `aos release new`: derive the plan request and freeze the plan.
+//! `aos maintain release new`: derive the plan request and freeze the plan.
 //!
 //! The request (`aos.release.plan-request/v1`) comes from the maintainer
 //! configuration plus live state behind [`LiveState`]:
@@ -11,6 +11,20 @@
 //!   `info/refs` on a static surface (static surfaces always plan
 //!   generation 0 and compare-and-swap on the commit alone).
 //!
+//! A registry's first release has no publication to read. With
+//! `--first-release --source-registry <clone>`, `new` instead plans the root
+//! commit of the clean, single-commit authoring clone at generation 0 and
+//! records `first_release` in the request, after confirming that the staging
+//! surface holds no publication at all. `advance` then refuses to publish to
+//! a surface until `step bootstrap` has installed that base there. Without
+//! the flag, a staging surface without a publication is an error, and with it
+//! a staging surface that already has one is an error, so neither path can
+//! substitute for the other.
+//!
+//! Hub reads authenticate with the surface's `token_credential`, else
+//! `AOS_TOKEN`, else the active `aos hub login` profile for the surface
+//! origin.
+//!
 //! The destinations are the contract's destinations for the registry tier
 //! whose channel kind the version's class allows. The predecessor bundle is
 //! verified offline and names the qualification predecessor; the `step plan`
@@ -22,6 +36,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, bail};
 use aos_core::nix::NixRunner;
 use aos_core::output::Printer;
+use aos_package::registry::release::{RootRegistryBase, inspect_root_base};
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::plan::{
@@ -38,6 +53,7 @@ use async_trait::async_trait;
 use super::super::capture;
 use super::super::config::MaintainerConfig;
 use super::super::surface::readback;
+use super::super::tooling::ToolingEnvironment;
 use super::super::{contract, plan};
 use super::keys;
 use super::workdir::{self, ReleaseIndex, WORK_INDEX, WorkDir, digest_string};
@@ -67,8 +83,14 @@ pub(super) trait LiveState {
     /// Requires both configured surfaces to serve their configured identities.
     async fn verify_surfaces(&self, config: &MaintainerConfig) -> Result<()>;
 
-    /// Reads the registry base from the staging surface.
-    async fn registry_base(&self, config: &MaintainerConfig) -> Result<RegistryBase>;
+    /// Reads the registry base the staging surface serves.
+    ///
+    /// Returns `None` only when the surface holds no publication of the
+    /// registry at all, which is the precondition of a first release.
+    async fn staging_base(&self, config: &MaintainerConfig) -> Result<Option<RegistryBase>>;
+
+    /// Reads the root commit of a first release's authoring clone.
+    fn source_registry(&self, path: &Path) -> Result<RootRegistryBase>;
 }
 
 /// Live lookups over Nix, the surfaces' public routes, and Hub RPC.
@@ -119,54 +141,79 @@ impl LiveState for Live<'_> {
         Ok(())
     }
 
-    async fn registry_base(&self, config: &MaintainerConfig) -> Result<RegistryBase> {
+    async fn staging_base(&self, config: &MaintainerConfig) -> Result<Option<RegistryBase>> {
         let staging = &config.surfaces.staging;
         match staging.kind {
             SurfaceKind::Static => {
                 let planned = staging.planned(SurfaceRole::Staging);
                 let client = readback::public_client()?;
                 let base = readback::base_url(planned.readback())?;
-                let head = readback::fetch_small(&client, &base, "HEAD", MAX_HEAD_BYTES)
-                    .await?
-                    .context("the staging surface serves no registry HEAD; bootstrap it first")?;
+                // The registry head object is written last, so its absence
+                // means no publication was ever completed on the surface.
+                let Some(head) =
+                    readback::fetch_small(&client, &base, "HEAD", MAX_HEAD_BYTES).await?
+                else {
+                    return Ok(None);
+                };
                 let refs = readback::fetch_small(&client, &base, "info/refs", MAX_REFS_BYTES)
                     .await?
-                    .context("the staging surface serves no info/refs")?;
-                Ok(RegistryBase {
+                    .context("the staging surface serves a registry HEAD without info/refs")?;
+                Ok(Some(RegistryBase {
                     commit:
                         crate::commands::hub::publication::inventory::publication_default_commit(
                             &head, &refs,
                         )?,
                     generation: 0,
-                })
+                }))
             }
             SurfaceKind::Hub => {
-                let token = staging
-                    .token()?
-                    .context("reading the staging Hub registry base requires token_credential")?;
-                let hub = aos_remote::hub::HubClient::connect_with_token(&staging.origin, &token)?;
-                let listed = hub
+                let hub = crate::commands::hub::release_hub_client(
+                    &staging.origin,
+                    staging.token()?.as_deref(),
+                )
+                .await
+                .context("authenticating to the staging Hub")?;
+                let list = |state: &str| aos_proto_types::ListRegistryPublicationsRequest {
+                    registry: config.registry.clone(),
+                    state: state.to_owned(),
+                    page_size: 1,
+                    page_token: String::new(),
+                };
+
+                // Any publication, in any state, means the registry was
+                // bootstrapped or a bootstrap is under way.
+                let any = hub
                     .call_topology(
                         aos_remote::hub::hub_rpc::ListRegistryPublications,
-                        &aos_proto_types::ListRegistryPublicationsRequest {
-                            registry: config.registry.clone(),
-                            state: "ready".to_owned(),
-                            page_size: 1,
-                            page_token: String::new(),
-                        },
+                        &list(""),
                     )
                     .await?;
-                let current = listed
-                    .publications
-                    .first()
-                    .context("the staging Hub holds no ready publication; bootstrap it first")?;
-                Ok(RegistryBase {
+                if any.publications.is_empty() && any.next_page_token.is_empty() {
+                    return Ok(None);
+                }
+
+                let ready = hub
+                    .call_topology(
+                        aos_remote::hub::hub_rpc::ListRegistryPublications,
+                        &list("ready"),
+                    )
+                    .await?;
+                let current = ready.publications.first().context(
+                    "the staging Hub holds registry publications but none is ready; \
+                     finish or retire the pending publication first",
+                )?;
+                Ok(Some(RegistryBase {
                     commit: current.default_commit.clone(),
                     generation: u64::try_from(current.ordinal)
                         .context("staging Hub publication ordinal is negative")?,
-                })
+                }))
             }
         }
+    }
+
+    fn source_registry(&self, path: &Path) -> Result<RootRegistryBase> {
+        inspect_root_base(path)
+            .with_context(|| format!("reading the first release base from {}", path.display()))
     }
 }
 
@@ -177,14 +224,25 @@ impl LiveState for Live<'_> {
 /// directory that already holds a plan, a failed live lookup, or a plan the
 /// planner rejects.
 pub(super) async fn run(args: &ReleaseNewArgs, nix: &NixRunner, printer: &Printer) -> Result<()> {
+    // A plan frozen by a development build would bind no tooling closure;
+    // refuse before reading anything else.
+    let tooling = ToolingEnvironment::require()?;
     let (config_path, config) = MaintainerConfig::load(args.config.as_deref())?;
     let live = Live { nix, printer };
     let prepared = prepare(args, &config_path, &config, &live).await?;
     for (label, value) in &prepared.summary {
         printer.kv(label, value);
     }
+    printer.kv("tooling", &tooling.closure().display().to_string());
 
     let work = &prepared.work;
+    if args.request_only {
+        printer.success(&format!(
+            "Derived {}; rerun without --request-only to freeze the plan",
+            work.request().display()
+        ));
+        return Ok(());
+    }
     printer.info(&format!(
         "Planning {} destination(s) for {}",
         prepared.request.destinations.len(),
@@ -227,6 +285,16 @@ pub(super) async fn run(args: &ReleaseNewArgs, nix: &NixRunner, printer: &Printe
                 destination.rings.len()
             ),
         );
+    }
+    if prepared.request.first_release {
+        printer.info(&format!(
+            "First release: before advancing, install base {} on each surface with \
+             signed registry-bootstrap intents for this plan digest and \
+             aos maintain release step bootstrap --output {} (staging first, then {})",
+            plan.registry_base_commit,
+            work.bootstrap(SurfaceRole::Staging).display(),
+            work.bootstrap(SurfaceRole::Production).display(),
+        ));
     }
     printer.success(&format!(
         "Started {} in {}",
@@ -297,7 +365,7 @@ pub(super) async fn prepare(
 
     let contract = live.contract(&config.registry, &work.contract()).await?;
     live.verify_surfaces(config).await?;
-    let base = live.registry_base(config).await?;
+    let base = registry_base(args, config, live).await?;
     let images: Vec<ImagePlan> = canonical::from_slice(
         &capture::control_file(&args.images, "image decisions")?,
         "image decisions",
@@ -307,6 +375,7 @@ pub(super) async fn prepare(
         release_id: release_id.clone(),
         class,
         base,
+        first_release: args.first_release,
         predecessor: predecessor(config)?.map(|(predecessor, _)| predecessor),
         images,
     };
@@ -331,6 +400,69 @@ pub(super) async fn prepare(
     })
 }
 
+/// Derives the registry base: the staging surface's, or a first release's root.
+///
+/// # Errors
+/// Returns an error when the staging surface holds no publication without
+/// `--first-release`, already holds one with it, or the first release's
+/// authoring clone is unusable or names another registry.
+async fn registry_base(
+    args: &ReleaseNewArgs,
+    config: &MaintainerConfig,
+    live: &dyn LiveState,
+) -> Result<RegistryBase> {
+    let served = live.staging_base(config).await?;
+    match (args.first_release, served) {
+        (false, Some(base)) => Ok(base),
+        (false, None) => bail!(
+            "the staging surface holds no publication of {}; plan the registry's first \
+             release with --first-release --source-registry <clean authoring clone>",
+            config.registry
+        ),
+        (true, Some(base)) => bail!(
+            "--first-release requires a staging surface without any publication, but it \
+             serves {} at {} generation {}; plan an ordinary release instead",
+            config.registry,
+            base.commit,
+            base.generation
+        ),
+        (true, None) => {
+            let clone = args
+                .source_registry
+                .as_deref()
+                .context("--first-release requires --source-registry")?;
+            first_release_base(&config.registry, &live.source_registry(clone)?)
+        }
+    }
+}
+
+/// Plans a new registry's root commit as the base of its first release.
+///
+/// The clone's committed authoring name must be the registry's slash-free
+/// alias (`andyl-experimental` for `andyl/experimental`) or its bare name
+/// (`experimental`). A first release compares-and-swaps against nothing, so
+/// it plans generation 0.
+///
+/// # Errors
+/// Returns an error when the clone names a different registry.
+pub(super) fn first_release_base(registry: &str, root: &RootRegistryBase) -> Result<RegistryBase> {
+    let (owner, name) = registry
+        .split_once('/')
+        .with_context(|| format!("registry {registry} has no owner"))?;
+    let alias = format!("{owner}-{name}");
+    if root.name != alias && root.name != name {
+        bail!(
+            "the source registry clone is named {}, not {alias} or {name}; it does not \
+             author {registry}",
+            root.name
+        );
+    }
+    Ok(RegistryBase {
+        commit: root.commit.clone(),
+        generation: 0,
+    })
+}
+
 /// Values a request needs beyond the configuration and contract.
 pub(super) struct RequestInputs {
     /// Calendar version.
@@ -339,8 +471,10 @@ pub(super) struct RequestInputs {
     pub(super) release_id: String,
     /// Class derived from the version.
     pub(super) class: ReleaseClass,
-    /// Registry base read from the staging surface.
+    /// Registry base read from the staging surface or the first release's clone.
     pub(super) base: RegistryBase,
+    /// Whether the base is a new registry's root commit awaiting bootstrap.
+    pub(super) first_release: bool,
     /// Verified qualification predecessor, when configured.
     pub(super) predecessor: Option<QualificationPredecessor>,
     /// Reviewed Linux image decisions.
@@ -389,6 +523,7 @@ pub(super) fn assemble_request(
         registry: config.registry.clone(),
         registry_base_commit: inputs.base.commit.clone(),
         registry_base_generation: inputs.base.generation,
+        first_release: inputs.first_release,
         source: PlanningSource {
             protected_branch: config.protected_branch.clone(),
             source_tag: format!("release/{}", inputs.version),
@@ -434,8 +569,15 @@ pub(super) fn summary(
         (
             "Registry".to_owned(),
             format!(
-                "{} at {} generation {}",
-                request.registry, request.registry_base_commit, request.registry_base_generation
+                "{} at {} generation {}{}",
+                request.registry,
+                request.registry_base_commit,
+                request.registry_base_generation,
+                if request.first_release {
+                    " (first release: bootstrap both surfaces before publishing)"
+                } else {
+                    ""
+                }
             ),
         ),
         (

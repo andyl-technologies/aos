@@ -7,7 +7,21 @@
 //! Configuration is independently reviewed input, not provider qualification.
 //! No domain is enabled by this module or by its local fault fixture.
 
+#[cfg(target_arch = "wasm32")]
+mod request_capacity;
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) use request_capacity::raw::with_response as configured_provider_response;
+
 mod config;
+mod inspection;
+pub(crate) use inspection::batch::{
+    collect as collect_guarded_git_reads, decode_projection as decode_guarded_git_projection,
+};
+#[cfg(target_arch = "wasm32")]
+pub(crate) use inspection::installed_inventory_mode;
+#[cfg(any(test, target_arch = "wasm32"))]
+pub(crate) use inspection::InventoryDomainMode;
 mod copy;
 
 #[cfg(target_arch = "wasm32")]
@@ -56,7 +70,9 @@ pub use storage::ExternalObjectGuard;
 
 /// Selects only the independently installed external physical guard role.
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn projection_guard_key(env: &worker::Env) -> anyhow::Result<aos_hub_core::storage_work::StorageWorkKey> {
+pub(crate) fn projection_guard_key(
+    env: &worker::Env,
+) -> anyhow::Result<aos_hub_core::storage_work::StorageWorkKey> {
     storage::key(env)
 }
 
@@ -70,7 +86,9 @@ pub(crate) use stage::{
     prepare_direct_destination,
 };
 #[cfg(target_arch = "wasm32")]
-pub(crate) use stage::{execute_stage, execute_stage_observed, fetch as fetch_stage};
+pub(crate) use stage::{
+    execute_stage, execute_stage_observed, execute_stage_with_signal, fetch as fetch_stage,
+};
 #[cfg(target_arch = "wasm32")]
 pub(crate) use stage::{
     prepare_stage_read_recovery, prepare_stage_request, prepare_stage_request_with_cutoff,
@@ -93,3 +111,7 @@ pub(crate) use stage::execute_stage_observed_with_fault;
 
 #[cfg(all(feature = "do-e2e", target_arch = "wasm32"))]
 pub(crate) use stage::observation::Attempt as VerificationFaultAttempt;
+
+/// Executes existing typed parsers under current closed source ownership.
+#[cfg(target_arch = "wasm32")]
+pub(crate) use inspection::execute as execute_inspection;

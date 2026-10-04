@@ -319,7 +319,7 @@ async fn execute(control: &Control, env: &Env, state: &State) -> Result<serde_js
     authority
         .protected_material(env, &admission.placements[0])
         .await?;
-    super::provider_capacity::configure(u32::try_from(
+    super::provider_capacity::policy::configure_exact(env, u32::try_from(
         original.limits.maximum_provider_requests.get(),
     )?)?;
     let context = fixture::context(env, control, admission)?;

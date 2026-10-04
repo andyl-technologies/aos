@@ -9,14 +9,18 @@
 //! production, so its images must bake the production Hub; staging exercises
 //! them with an explicit cache override. A staging-only plan (every
 //! destination on the staging surface) bakes the staging Hub instead, which
-//! is what the `aos-testing-staging` variant provides. A static surface has
-//! no Hub control origin, so only the registry binding applies.
+//! is what the `aos-experimental-staging` variant provides. A qualification
+//! snapshot has no destinations at all: it stands in for the installed
+//! predecessor of a later public release, so it bakes the production Hub
+//! like the release it precedes. A static surface has no Hub control origin,
+//! so only the registry binding applies.
 
 use anyhow::{Context as _, Result, bail};
 use aos_core::nix::NixRunner;
 use aos_release::artifact_profile::ArtifactProfile;
 use aos_release::plan::{ReleasePlan, SurfaceKind, SurfaceRole};
 use aos_release::platform::MatrixCell;
+use aos_release::signing::SignerRole;
 
 /// Checks every image-producing platform against the exact release destination.
 pub(super) fn require_plan(nix: &NixRunner, plan: &ReleasePlan) -> Result<()> {
@@ -29,19 +33,22 @@ pub(super) fn require_plan(nix: &NixRunner, plan: &ReleasePlan) -> Result<()> {
         return Ok(());
     }
     super::plan::require_planned_source(nix.root(), &plan.source)?;
-    let consumer_role = if plan
+    let destination_surfaces: Vec<SurfaceRole> = plan
         .destinations
         .iter()
-        .any(|destination| destination.surface == SurfaceRole::Production)
-    {
-        SurfaceRole::Production
-    } else {
-        SurfaceRole::Staging
-    };
+        .map(|destination| destination.surface)
+        .collect();
+    let consumer_role = consumer_role(&destination_surfaces);
     let consumer_hub = plan
         .surfaces
         .iter()
         .find(|surface| surface.role == consumer_role && surface.kind == SurfaceKind::Hub);
+    let provenance_key_ids: Vec<String> = plan
+        .signers
+        .iter()
+        .filter(|signer| signer.role == SignerRole::Provenance)
+        .flat_map(|signer| signer.key_ids.iter().cloned())
+        .collect();
 
     for image in &plan.images {
         if image.system_variant.is_empty()
@@ -66,6 +73,14 @@ pub(super) fn require_plan(nix: &NixRunner, plan: &ReleasePlan) -> Result<()> {
                     image.system_variant, cell.platform
                 )
             })?;
+            profile
+                .require_root_owner_signers(&provenance_key_ids)
+                .with_context(|| {
+                    format!(
+                        "release profile root-owner signer mismatch for {} on {}",
+                        image.system_variant, cell.platform
+                    )
+                })?;
             if let Some(hub) = consumer_hub {
                 profile.require_hub(&hub.origin).with_context(|| {
                     format!(
@@ -77,4 +92,40 @@ pub(super) fn require_plan(nix: &NixRunner, plan: &ReleasePlan) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Selects the surface whose Hub the images must bake for these destinations.
+///
+/// Only a plan whose every destination is on staging consumes from staging.
+/// A plan with a production destination, or a qualification snapshot with
+/// none, bakes production.
+fn consumer_role(destination_surfaces: &[SurfaceRole]) -> SurfaceRole {
+    let staging_only = !destination_surfaces.is_empty()
+        && destination_surfaces
+            .iter()
+            .all(|surface| *surface == SurfaceRole::Staging);
+    if staging_only {
+        SurfaceRole::Staging
+    } else {
+        SurfaceRole::Production
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_staging_only_plans_consume_from_the_staging_hub() {
+        assert_eq!(consumer_role(&[]), SurfaceRole::Production);
+        assert_eq!(consumer_role(&[SurfaceRole::Staging]), SurfaceRole::Staging);
+        assert_eq!(
+            consumer_role(&[SurfaceRole::Staging, SurfaceRole::Production]),
+            SurfaceRole::Production
+        );
+        assert_eq!(
+            consumer_role(&[SurfaceRole::Production]),
+            SurfaceRole::Production
+        );
+    }
 }

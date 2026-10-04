@@ -37,6 +37,8 @@ struct RegistryState {
     stall_blob_once: AtomicBool,
     fail_patch_once: AtomicBool,
     cancel_failures_remaining: AtomicU64,
+    delay_cancel_response_once: AtomicBool,
+    cancel_response_stalled: Notify,
     stall_patch_once: AtomicBool,
     invalid_ack_once: AtomicBool,
     delay_tag_once: AtomicBool,
@@ -56,6 +58,116 @@ struct TestRegistry {
     reference: RegistryReference,
     origin: String,
     task: tokio::task::JoinHandle<()>,
+}
+
+#[test]
+fn verified_release_inventory_is_closed_sorted_and_rejects_missing_layers() {
+    let fixture = support::fixture();
+    let release = support::add_signed_release_graph(&fixture);
+    let graph = aos_oci::registry::verified_release_graph(fixture.root(), &release)
+        .expect("complete graph inventory");
+    assert_eq!(graph.len(), 18);
+    assert!(graph.windows(2).all(|pair| pair[0].digest < pair[1].digest));
+    assert!(
+        graph
+            .iter()
+            .any(|descriptor| descriptor.digest == fixture.layer_descriptor.digest)
+    );
+
+    fs::remove_file(
+        fixture
+            .root()
+            .join("blobs/sha256")
+            .join(fixture.layer_descriptor.digest.encoded()),
+    )
+    .expect("remove staged layer");
+    aos_oci::registry::verified_release_graph(fixture.root(), &release)
+        .expect_err("missing layer must prevent candidate inventory creation");
+}
+
+#[tokio::test]
+async fn signed_release_missing_layer_fails_before_any_network_request() {
+    let fixture = support::fixture();
+    let release = support::add_signed_release_graph(&fixture);
+    fs::remove_file(
+        fixture
+            .root()
+            .join("blobs/sha256")
+            .join(fixture.layer_descriptor.digest.encoded()),
+    )
+    .expect("remove staged layer");
+    let registry = spawn_registry(None, false, false, false).await;
+    let reference = RegistryReference::parse(&format!(
+        "{}/aos@{}",
+        registry.reference.authority(),
+        release.oci.index.digest
+    ))
+    .expect("immutable reference");
+    let client = RegistryClient::new(&reference, Some(&registry.origin), None).expect("client");
+    let state = tempfile::tempdir().expect("checkpoint directory");
+    let options = PushOptions::native(fixture.root().to_path_buf(), state.path().join("uploads"));
+
+    client
+        .push_release_graph(&reference, &options, &release, &[])
+        .await
+        .expect_err("incomplete graph fails before transfer");
+    assert!(registry.state.events.lock().expect("events").is_empty());
+}
+
+#[tokio::test]
+async fn interrupted_signed_release_graph_resumes_offsets_and_withholds_all_tags() {
+    let fixture = support::fixture();
+    let release = support::add_signed_release_graph(&fixture);
+    let registry = spawn_registry(None, false, true, false).await;
+    let reference = RegistryReference::parse(&format!(
+        "{}/aos@{}",
+        registry.reference.authority(),
+        release.oci.index.digest
+    ))
+    .expect("immutable reference");
+    let client = RegistryClient::new(&reference, Some(&registry.origin), None).expect("client");
+    let state = tempfile::tempdir().expect("checkpoint directory");
+    let mut options =
+        PushOptions::native(fixture.root().to_path_buf(), state.path().join("uploads"));
+    options.chunk_bytes = 11;
+
+    client
+        .push_release_graph(&reference, &options, &release, &[])
+        .await
+        .expect_err("first PATCH retains server bytes");
+    assert!(
+        registry
+            .state
+            .uploads
+            .lock()
+            .expect("uploads")
+            .values()
+            .any(|bytes| !bytes.is_empty()),
+        "the interruption must occur after the server accepts a prefix"
+    );
+    let pushed = client
+        .push_release_graph(&reference, &options, &release, &[])
+        .await
+        .expect("resume the exact immutable graph");
+    assert_eq!(pushed.root_index_digest, release.oci.index.digest);
+    assert_eq!(pushed.object_count, 18);
+    assert!(
+        registry
+            .state
+            .events
+            .lock()
+            .expect("events")
+            .iter()
+            .any(|event| event.starts_with("upload-query:"))
+    );
+    let manifests = registry.state.manifests.lock().expect("manifest lock");
+    assert!(
+        manifests
+            .keys()
+            .all(|reference| reference.starts_with("sha256:"))
+    );
+    assert!(!manifests.contains_key(&release.identity.release));
+    assert!(!manifests.contains_key("stable"));
 }
 
 #[tokio::test]
@@ -935,6 +1047,82 @@ async fn digest_delete_and_upload_cancellation_retries_transient_unavailability(
 }
 
 #[tokio::test]
+async fn upload_cancellation_retries_when_a_committed_response_stalls() {
+    let fixture = support::fixture();
+    let registry = spawn_registry(None, false, true, false).await;
+    let client = RegistryClient::new(&registry.reference, Some(&registry.origin), None)
+        .expect("registry client");
+    let state_directory = tempfile::tempdir().expect("upload state");
+    let upload_state = state_directory.path().join("uploads");
+    let options = PushOptions {
+        source: fixture.root().to_path_buf(),
+        platform: PlatformSelector::parse("linux/amd64").expect("platform"),
+        state_directory: upload_state.clone(),
+        chunk_bytes: 11,
+        cancellation: CancellationToken::new(),
+        events: None,
+    };
+    client
+        .push(&registry.reference, &options)
+        .await
+        .expect_err("interrupted upload fixture");
+
+    registry
+        .state
+        .delay_cancel_response_once
+        .store(true, Ordering::SeqCst);
+    let cancel_client = client.clone();
+    let cancel_reference = registry.reference.clone();
+    let cancel_state = upload_state.clone();
+    let cancellation = CancellationToken::new();
+    let cancel_task = tokio::spawn(async move {
+        cancel_client
+            .cancel_uploads(&cancel_reference, &cancel_state, &cancellation)
+            .await
+    });
+    registry.state.cancel_response_stalled.notified().await;
+    assert!(
+        fs::read_dir(&upload_state)
+            .expect("upload-state directory while response is stalled")
+            .any(|entry| entry
+                .expect("upload-state entry while response is stalled")
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "json")),
+        "an ambiguous committed request must retain its checkpoint"
+    );
+    assert_eq!(
+        cancel_task
+            .await
+            .expect("cancellation task")
+            .expect("retry cancellation after a stalled committed response"),
+        1
+    );
+    assert!(
+        !fs::read_dir(&upload_state)
+            .expect("upload-state directory after cancellation")
+            .any(|entry| entry
+                .expect("upload-state entry after cancellation")
+                .path()
+                .extension()
+                .is_some_and(|extension| extension == "json")),
+        "successful retry must remove the durable checkpoint"
+    );
+    assert_eq!(
+        registry
+            .state
+            .events
+            .lock()
+            .expect("events")
+            .iter()
+            .filter(|event| event.starts_with("DELETE:/v2/aos/blobs/uploads/"))
+            .count(),
+        2,
+        "a stalled first response must cause one idempotent retry"
+    );
+}
+
+#[tokio::test]
 async fn upload_cancellation_stops_at_the_retry_deadline_and_preserves_its_checkpoint() {
     let fixture = support::fixture();
     let registry = spawn_registry(None, false, true, false).await;
@@ -979,10 +1167,13 @@ async fn upload_cancellation_stops_at_the_retry_deadline_and_preserves_its_check
         .await
         .expect_err("persistent unavailability must stop at the retry deadline");
     assert!(
-        error
-            .to_string()
-            .contains("upload cancellation retry window elapsed"),
+        format!("{error:#}").contains("upload cancellation retry window elapsed"),
         "unexpected deadline error: {error:#}"
+    );
+    assert!(
+        format!("{error:#}")
+            .contains("last upload cancellation attempt returned HTTP 503 Service Unavailable"),
+        "persistent unavailability must identify the last response: {error:#}"
     );
     assert!(
         cancellation_started.elapsed() >= std::time::Duration::from_secs(7),
@@ -1591,6 +1782,8 @@ async fn spawn_registry(
         stall_blob_once: AtomicBool::new(false),
         fail_patch_once: AtomicBool::new(fail_patch_once),
         cancel_failures_remaining: AtomicU64::new(0),
+        delay_cancel_response_once: AtomicBool::new(false),
+        cancel_response_stalled: Notify::new(),
         stall_patch_once: AtomicBool::new(false),
         invalid_ack_once: AtomicBool::new(false),
         delay_tag_once: AtomicBool::new(false),
@@ -2050,12 +2243,27 @@ async fn upload_response(
         {
             return response(StatusCode::SERVICE_UNAVAILABLE, Body::empty());
         }
-        state
+        let removed = state
             .uploads
             .lock()
             .expect("upload lock")
-            .remove(identifier);
-        return response(StatusCode::NO_CONTENT, Body::empty());
+            .remove(identifier)
+            .is_some();
+        if state
+            .delay_cancel_response_once
+            .swap(false, Ordering::SeqCst)
+        {
+            state.cancel_response_stalled.notify_one();
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        }
+        return response(
+            if removed {
+                StatusCode::NO_CONTENT
+            } else {
+                StatusCode::NOT_FOUND
+            },
+            Body::empty(),
+        );
     }
     response(StatusCode::METHOD_NOT_ALLOWED, Body::empty())
 }

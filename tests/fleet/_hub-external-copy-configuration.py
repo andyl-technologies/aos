@@ -15,7 +15,7 @@ import shlex
 def observe_external_copy_contract(worker, tools, *, observation_root, report_sha256, label):
     """Read the ordinary run's exact report and execute its read-only projection."""
     if (observation_root != "/var/lib/hybrid-worker/provider-observation" and re.fullmatch(
-            r"/var/lib/hybrid-worker/external-oci/[0-9a-f]{32}/provider-observation", observation_root) is None
+            r"/var/lib/hybrid-worker/external-oci/[0-9a-f]{32}/(?:destination-)?provider-observation", observation_root) is None
             or re.fullmatch(r"[0-9a-f]{64}", report_sha256) is None
             or re.fullmatch(r"[a-z][a-z0-9-]{0,63}", label) is None):
         raise ValueError("Copy report selection differs")

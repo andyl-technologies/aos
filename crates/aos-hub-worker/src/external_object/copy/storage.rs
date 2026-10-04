@@ -12,14 +12,14 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use aos_hub_core::{
     direct_upload::WireInteger,
     storage_authority::{
         external_object::copy::{
+            ExternalCopyOriginal,
             control::CopyControl,
             session::{CopyAction, CopyOutcome, CopyPhase, CopyReceipt, CopySession},
-            ExternalCopyOriginal,
         },
         lease::{EpochLeaseFloor, LeaseEffect, LeaseInteger},
     },
@@ -28,11 +28,11 @@ use rand::TryRngCore as _;
 use worker::{Method, Request as HttpRequest, Response, Storage};
 
 use super::super::{
-    config::{configured, Config as ObjectConfig},
-    protocol::{digest, GUARD_HEADER, MAX_MESSAGE, SCOPE_HEADER},
+    config::{Config as ObjectConfig, configured},
+    protocol::{GUARD_HEADER, MAX_MESSAGE, SCOPE_HEADER, digest},
     state::{Head, MAX_RECEIPTS},
     storage::{
-        decode, error, key, load_head, transaction_string, ExternalObjectGuard, BINDING, HEAD,
+        BINDING, ExternalObjectGuard, HEAD, decode, error, key, load_head, transaction_string,
     },
 };
 use super::{
@@ -62,7 +62,14 @@ impl ExternalObjectGuard {
                 .ok_or_else(|| anyhow::anyhow!("object consumer disabled"))?;
             let config = config::configured(&self.env, &object)?
                 .ok_or_else(|| anyhow::anyhow!("copy consumer disabled"))?;
-            let domain = config.domain(&object, &message.original)?;
+            let domain = if matches!(message.operation, Operation::SourceRead { .. }) {
+                config.source_domain(&object, &message.original)?
+            } else {
+                config.domain(&object, &message.original)?
+            };
+            if !matches!(message.operation, Operation::SourceRead { .. }) {
+                config.validate_pair(&object, &message.original)?;
+            }
             ensure!(
                 domain.scope(
                     &object,
@@ -200,7 +207,7 @@ impl ExternalObjectGuard {
         }
         if let Operation::SourceRead { read_lease } = &message.operation {
             ensure!(
-                message.original.version == 1,
+                message.original.source_incarnation()? == aos_hub_core::storage_authority::external_object::copy::CopyIncarnationMode::ProviderVersion,
                 "protected source requires a held range guard"
             );
             crate::direct_guard::deny_legacy(&storage).await?;
@@ -356,7 +363,7 @@ impl ExternalObjectGuard {
                     BTreeMap::new(),
                 )
                 .await?;
-                let destination_stamp = if message.original.version == 2 {
+                let destination_stamp = if message.original.destination_incarnation()? == aos_hub_core::storage_authority::external_object::copy::CopyIncarnationMode::GuardedClosure {
                     Some(aos_hub_core::storage_authority::StorageGuardStamp {
                         physical_authority_id: message.scope.physical_authority_id.clone(),
                         incarnation: aos_hub_core::storage_authority::GuardIncarnation::parse(
@@ -396,7 +403,7 @@ impl ExternalObjectGuard {
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("copy physical owner absent"))?
                     .matches(&message.original)?;
-                if message.original.version == 2 {
+                if message.original.destination_incarnation()? == aos_hub_core::storage_authority::external_object::copy::CopyIncarnationMode::GuardedClosure {
                     if let CopyOutcome::Closed { destination, .. } = &receipt.outcome {
                         let stamp = destination
                             .guard_stamp
@@ -444,7 +451,7 @@ impl ExternalObjectGuard {
                     );
                     // Existing visible receipts describe the earlier incarnation.
                     // The new copy has its own actual versioned positive receipt.
-                    head.visible_receipt = if message.original.version == 2 {
+                    head.visible_receipt = if message.original.destination_incarnation()? == aos_hub_core::storage_authority::external_object::copy::CopyIncarnationMode::GuardedClosure {
                         Some(super::super::state::VisibleReceipt {
                             kind: super::super::state::VisibleKind::CopyDestination,
                             operation_id: receipt.turn.action_id.clone(),
@@ -712,7 +719,7 @@ pub(super) async fn closed_copy_source(
         anyhow::bail!("copy closure is not positive");
     };
     ensure!(
-        session.original().version == 2
+        session.original().destination_incarnation()? == aos_hub_core::storage_authority::external_object::copy::CopyIncarnationMode::GuardedClosure
             && session.original().fingerprint()? == visible.context_digest
             && visible.stage_configuration.as_ref() == Some(&session.original().profile_digest)
             && progress.phase == CopyPhase::Closed
@@ -747,7 +754,7 @@ async fn require_current_closed(
     object: &ObjectConfig,
     session: &CopySession,
 ) -> Result<()> {
-    if session.original().version == 2 && session.phase() == CopyPhase::Closed {
+    if session.original().destination_incarnation()? == aos_hub_core::storage_authority::external_object::copy::CopyIncarnationMode::GuardedClosure && session.phase() == CopyPhase::Closed {
         let head =
             head.ok_or_else(|| anyhow::anyhow!("protected copy lost current physical head"))?;
         let closure = closed_copy_source(storage, head, object).await?;

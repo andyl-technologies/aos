@@ -2,15 +2,11 @@
 
 use crucible::ContentHash;
 
-use super::{
-    LaunchProfileError, NodeIcountShift, QemuLaunchCommandError, canonical_node_icount_shift_lines,
-};
+use super::{LaunchProfileError, QemuLaunchCommandError, canonical_node_tick_scale_lines};
+use crucible::NodeId;
 
-pub(super) fn validate_node_icount_shifts(
-    scenario_shift: u8,
-    node_shifts: &[NodeIcountShift],
-) -> Result<(), LaunchProfileError> {
-    canonical_node_icount_shift_lines(scenario_shift, node_shifts)?;
+pub(super) fn validate_node_ids(node_ids: &[NodeId]) -> Result<(), LaunchProfileError> {
+    canonical_node_tick_scale_lines(node_ids)?;
     Ok(())
 }
 
@@ -76,9 +72,7 @@ pub(super) fn content_hash_hex(hash: ContentHash) -> String {
 }
 
 fn nibble_to_hex(nibble: u8) -> char {
-    match nibble {
-        0..=9 => (b'0' + nibble) as char,
-        10..=15 => (b'a' + (nibble - 10)) as char,
-        _ => unreachable!("nibble is masked to four bits"),
-    }
+    const LOWER_HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
+    char::from(LOWER_HEX_DIGITS[usize::from(nibble & 0x0f)])
 }

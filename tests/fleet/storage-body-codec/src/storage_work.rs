@@ -108,6 +108,24 @@ pub(super) fn decode_transport(
         StorageWorkOutcome::GitTreeEntries { page, .. } => {
             payload.selected_data_bytes = serde_json::to_vec(page)?.len().to_string();
         }
+        StorageWorkOutcome::GitPackProjection { projection } => {
+            payload.selected_data_bytes = sum_lengths(
+                projection
+                    .objects
+                    .iter()
+                    .map(|object| validated_base64_bytes(&object.content_base64)),
+            )?
+            .to_string();
+        }
+        StorageWorkOutcome::GitPackTreeProjection { projection } => {
+            payload.selected_data_bytes = projection
+                .page
+                .as_ref()
+                .map(|page| serde_json::to_vec(page).map(|bytes| bytes.len()))
+                .transpose()?
+                .unwrap_or(0)
+                .to_string();
+        }
         _ => {}
     }
     let class = if matches!(result.outcome, StorageWorkOutcome::NotFound) {
@@ -137,6 +155,8 @@ fn supported(operation: &StorageWorkOperation) -> bool {
             | StorageWorkOperation::InspectGitObject { .. }
             | StorageWorkOperation::InspectGitObjects { .. }
             | StorageWorkOperation::FilterGitTreeEntries { .. }
+            | StorageWorkOperation::InspectStoredGitPack { .. }
+            | StorageWorkOperation::FilterStoredGitPackTree { .. }
             | StorageWorkOperation::InspectMetadata { .. }
             | StorageWorkOperation::InspectMetadataObjects { .. }
             | StorageWorkOperation::InspectDocumentation { .. }

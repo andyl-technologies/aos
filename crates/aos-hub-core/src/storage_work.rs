@@ -81,6 +81,7 @@ mod binding_snapshot;
 mod frozen_cleanup;
 pub mod live_metadata_batch;
 mod metadata_batch;
+pub mod protected_inspection;
 
 pub use frozen_cleanup::{
     StorageFrozenCleanupAccess, StorageFrozenCleanupHeadResult, StorageFrozenCleanupOperation,
@@ -267,14 +268,21 @@ pub enum StorageWorkOperation {
         total: u64,
         /// Frozen strong provider tag from the inventory continuation.
         strong_etag: String,
-        /// Frozen provider upload version; required by the R2 executor.
+        /// Frozen provider upload version, absent for a protected source closure.
         #[serde(default)]
         expected_provider_version: Option<String>,
         /// Portable SHA-256 state after exactly `start` bytes.
         sha256_state: crate::db::OciSha256State,
+        /// Existing closed source for a protected versionless range; never read permission.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        guarded_source: Option<protected_inspection::ProtectedInspectionSource>,
     },
     /// Copies one frozen object between prefixes in the deployment R2 bucket.
     CopyObject {
+        /// Independently pinned source binding for paired External controls.
+        /// Ordinary same-binding execution omits this projection.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_binding_id: Option<i64>,
         /// Source placement frozen by the reviewed copy operation.
         source_placement_id: i64,
         /// Source placement resource version frozen by the copy operation.
@@ -656,7 +664,13 @@ pub enum StorageWorkOutcome {
     /// The selected object does not exist.
     NotFound,
     /// Provider metadata for one object.
-    Head { object: StorageObjectIdentity },
+    Head {
+        /// Object identity actually observed without consuming its body.
+        object: StorageObjectIdentity,
+        /// Existing immutable closure, when selected by the protected executor.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        guarded_source: Option<protected_inspection::ProtectedInspectionSource>,
+    },
     /// One ordered provider listing page.
     ListPage {
         /// Object identities observed in this page.
@@ -689,6 +703,9 @@ pub enum StorageWorkOutcome {
     },
     /// Matching tree entry fields observed after source hash verification.
     GitTreeEntries {
+        /// Existing closure evidence for guarded External reads; absent for old forms.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        guarded_source: Option<protected_inspection::ProtectedInspectionSource>,
         /// Exact provider snapshot of the selected loose object or bundle shard.
         source: StorageObjectIdentity,
         /// Bounded matching rows with predicate and source-bound continuation.
@@ -718,6 +735,9 @@ pub enum StorageWorkOutcome {
     },
     /// One exact bounded OCI range from a versioned object snapshot.
     OciRange {
+        /// Existing permanent closure for a guarded partial read, never a recomputed whole hash.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        guarded_source: Option<protected_inspection::ProtectedInspectionSource>,
         /// Source OCI blob identity and its total size.
         source: StorageObjectIdentity,
         /// Inclusive first and last bytes returned.
@@ -736,6 +756,9 @@ pub enum StorageWorkOutcome {
         end: u64,
         /// SHA-256 state after the exact range.
         sha256_state: crate::db::OciSha256State,
+        /// The same closed source retained throughout this protected read.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        guarded_source: Option<protected_inspection::ProtectedInspectionSource>,
     },
     /// Provider identities after a storage-local object copy.
     ObjectCopied {
@@ -1020,7 +1043,10 @@ impl StorageWorkPlan {
                 }
             }
             StorageWorkOperation::FilterStoredGitPackTree { query } => {
-                if self.binding_kind != "deployment_r2" || query.validate().is_err() {
+                // External execution additionally requires a current protected
+                // profile and physical closure at both adapters. Shape alone
+                // does not admit a provider or extend upstream mirror access.
+                if query.validate().is_err() {
                     return Err(StorageWorkError::InvalidPlan);
                 }
             }
@@ -1038,8 +1064,7 @@ impl StorageWorkPlan {
                 selections,
                 protected_profile_digest,
             } => {
-                if self.binding_kind != "deployment_r2"
-                    || index_path.len() > 512
+                if index_path.len() > 512
                     || aos_registry_surface::pack_index::companion_pack_path(index_path).is_none()
                     || !crate::direct_upload::valid_direct_digest(protected_profile_digest)
                     || crate::mirror_inspection::validate_selections(selections).is_err()
@@ -1182,6 +1207,7 @@ impl StorageWorkPlan {
                 strong_etag,
                 expected_provider_version,
                 sha256_state,
+                guarded_source,
             } => {
                 if !admitted_oci_blob_path(path)
                     || start > end
@@ -1197,8 +1223,21 @@ impl StorageWorkPlan {
                 {
                     return Err(StorageWorkError::InvalidPlan);
                 }
+                if let Some(source) = guarded_source {
+                    let key = self.object_key(path)?;
+                    if expected_provider_version.is_some()
+                        || source
+                            .validate_for(&source.scope.full_key, *total, strong_etag)
+                            .is_err()
+                        || !(source.scope.full_key == key
+                            || source.scope.full_key.ends_with(&format!("/{key}")))
+                    {
+                        return Err(StorageWorkError::InvalidPlan);
+                    }
+                }
             }
             StorageWorkOperation::CopyObject {
+                source_binding_id,
                 source_placement_id,
                 source_placement_resource_version,
                 source_prefix,
@@ -1210,8 +1249,13 @@ impl StorageWorkPlan {
                     || *source_placement_id == self.placement_id
                     || *source_placement_resource_version <= 0
                     || !valid_relative_path(source_prefix, true)
-                    || source_prefix.trim_end_matches('/')
-                        == self.placement_prefix.trim_end_matches('/')
+                    || match source_binding_id {
+                        Some(binding) => *binding <= 0 || *binding == self.binding_id,
+                        None => {
+                            source_prefix.trim_end_matches('/')
+                                == self.placement_prefix.trim_end_matches('/')
+                        }
+                    }
                     || !valid_relative_path(path, false)
                     || *expected_size > MAX_VERIFY_SOURCE_BYTES
                     || crate::surface_write::strong_if_match_etag(expected_etag).is_err()
@@ -1786,6 +1830,7 @@ mod tests {
         plan.binding_kind = "s3".into();
         plan.binding_snapshot_revision = Some(snapshot.revision().unwrap());
         plan.operation = StorageWorkOperation::CopyObject {
+            source_binding_id: None,
             source_placement_id: 11,
             source_placement_resource_version: 3,
             source_prefix: "tenant/source/".into(),
@@ -2344,6 +2389,7 @@ mod tests {
             total: 4,
             strong_etag: "\"object-version\"".into(),
             sha256_state: crate::db::OciSha256State::initial(),
+            guarded_source: None,
         };
         assert!(work.validate("deployment-1", 101).is_ok());
 
@@ -2373,6 +2419,7 @@ mod tests {
     fn placement_copy_plan_rejects_the_destination_as_its_source() {
         let mut work = plan(100);
         work.operation = StorageWorkOperation::CopyObject {
+            source_binding_id: None,
             source_placement_id: 11,
             source_placement_resource_version: 3,
             source_prefix: "tenant/source/".into(),

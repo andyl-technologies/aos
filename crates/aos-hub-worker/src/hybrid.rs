@@ -1602,7 +1602,21 @@ async fn execute_storage_work(
     };
     let operation_kind = plan.operation.kind();
 
-    let execution = if matches!(
+    let guarded_pack = if plan.binding_kind != "deployment_r2" && matches!(plan.operation,
+        aos_hub_core::storage_work::StorageWorkOperation::InspectStoredGitPack { .. }
+        | aos_hub_core::storage_work::StorageWorkOperation::FilterStoredGitPackTree { .. }) {
+        let publication = match crate::hybrid_binding::resolve_for_plan(env, &plan).await {
+            Ok(publication) => publication,
+            Err(_) => return Response::error("binding snapshot is unavailable", 409),
+        };
+        match crate::external_object::execute_inspection(env, &plan, &publication, &request.inner().signal()).await {
+            Ok(result) => result,
+            Err(_) => return Response::error("protected pair inspection refused", 409),
+        }
+    } else { None };
+    let execution = if let Some(result) = guarded_pack {
+        Ok(result)
+    } else if matches!(
         plan.operation,
         aos_hub_core::storage_work::StorageWorkOperation::InspectMirrorLiveMetadataBatch { .. }
     ) {

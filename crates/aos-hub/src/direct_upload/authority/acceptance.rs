@@ -240,6 +240,22 @@ impl NativeDirectUploadAcceptances {
         selected[0].profile.digest()
     }
 
+    /// Reports a retained External domain independently of its current expiry.
+    ///
+    /// This is only an applicability check. A caller must still select a current
+    /// verified profile before dispatch or accepting a protected result.
+    pub(crate) fn protects_external_binding(
+        &self,
+        binding_id: i64,
+        binding_stable_id: &str,
+    ) -> bool {
+        self.accepted.iter().any(|item| {
+            matches!(&item.profile, DirectProtectedProfile::External { profile, .. }
+                    if profile.selector.association.binding_id.get() == binding_id
+                        || profile.selector.association.binding_stable_id == binding_stable_id)
+        })
+    }
+
     pub(crate) fn profiles(
         &self,
         deployment: &str,

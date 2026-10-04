@@ -388,10 +388,11 @@ fn operation_query_is_singleton_canonical_and_covered_by_original_uri() {
 
 fn initial_route(fixture: &Fixture, repository: &RepositoryName) -> crate::oci::ResolvedOciRoute {
     crate::oci::ResolvedOciRoute {
-        registry_id: fixture.registry.id,
+        registry_id: Some(fixture.registry.id),
         authority: "registry.example.test".into(),
         scheme: "https".into(),
         access_policy_kind: "hub_auth".into(),
+        repository_prefix: None,
         request: crate::oci::OciRequest::BlobUploadCollection {
             repository: repository.clone(),
         },

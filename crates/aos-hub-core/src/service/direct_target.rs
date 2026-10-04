@@ -19,7 +19,7 @@ impl RpcService {
     ) -> Result<Vec<crate::db::SurfacePlacementRecord>, RpcError> {
         self.prepare_registry_publication_object_upload(publication, registry, object)
             .await?;
-        self.registry_publication_required_placements(
+        self.prepare_registry_publication_upload_placements(
             &publication.publication_id,
             &object.object_kind,
         )

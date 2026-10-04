@@ -122,7 +122,8 @@ impl QualifiedConfig {
                 "managed streamed copy needs source and upload capacity"
             );
         }
-        super::provider_capacity::configure(
+        super::provider_capacity::policy::configure_exact(
+            env,
             facts.runtime.maximum_parallel_provider_requests.get() as u32,
         )?;
         Ok(Self {

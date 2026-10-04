@@ -1,8 +1,12 @@
 {
   pkgs,
   lib,
+  campaignComposition ? null,
+  testing ? import ../../lib/testing {inherit pkgs lib;},
 }: let
-  phase0S4 = import ./phase0-s4.nix {inherit pkgs;};
+  phase0S4 = import ./phase0-s4.nix {
+    inherit pkgs lib campaignComposition testing;
+  };
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   engineTest = builtins.readFile ../../crates/crucible/tests/same_icount_tie_break.rs;
@@ -105,43 +109,64 @@
         needle = "sameIcountTieBreak = import ./phase1-same-icount-tie-break.nix";
       }
     ];
+  phase0ResultName =
+    if campaignComposition == null
+    then "result"
+    else "raw-result";
+  runtimeInputs = [pkgs.coreutils pkgs.grep];
+  runtimeScript = ''
+    set -eu
+    s4_result="${phase0S4}/${phase0ResultName}"
+    ${lib.optionalString (campaignComposition != null) ''
+      grep -Fxq 'campaign_mode=${campaignComposition.mode}' "$s4_result"
+      grep -Fxq \
+        'campaign_configuration_identity=${campaignComposition.system.config.aos.services.crucibleCampaign._runtimeIdentity}' \
+        "$s4_result"
+      grep -Fxq \
+        'campaign_toplevel=${campaignComposition.system.config.system.build.toplevel}' \
+        "$s4_result"
+    ''}
+
+    grep -q '^PASS$' "$s4_result"
+    grep -q '^tie_break_key=delivery_icount_src_node_seq$' "$s4_result"
+    grep -q '^injection_order_match=true$' "$s4_result"
+    grep -q '^arrival_order_negative_control_failed=true$' "$s4_result"
+
+    mkdir -p "$out"
+    cat > "$out/result" <<'RESULT'
+    PASS
+    check=checks.crucible.phase1.sameIcountTieBreak
+    tasks=T-DET-13
+    engine_order=virtual_time,consumer_node,producer_node,sequence
+    shmem_projection=delivery_icount,src_node,seq
+    arrival_order_visible=false
+    phase0_evidence=checks.crucible.phase0.s4ShmemVisibility
+    RESULT
+  '';
+  authoritativeGate = pkgs.mkDerivation {
+    pname = "crucible-phase1-same-icount-tie-break";
+    version = "0";
+    src = null;
+    buildDeps = runtimeInputs;
+    phases = [
+      {
+        name = "record-same-icount-tie-break";
+        script = runtimeScript;
+      }
+    ];
+  };
 in
   if failures != []
   then throw "crucible phase1 same-icount tie-break check failed:\n${builtins.concatStringsSep "\n" failures}"
-  else
-    pkgs.mkDerivation {
-      pname = "crucible-phase1-same-icount-tie-break";
-      version = "0";
-      src = null;
-
-      buildDeps = [
-        pkgs.coreutils
-        pkgs.grep
-      ];
-
-      phases = [
-        {
-          name = "record-same-icount-tie-break";
-          script = ''
-            set -eu
-            s4_result="${phase0S4}/result"
-
-            grep -q '^PASS$' "$s4_result"
-            grep -q '^tie_break_key=delivery_icount_src_node_seq$' "$s4_result"
-            grep -q '^injection_order_match=true$' "$s4_result"
-            grep -q '^arrival_order_negative_control_failed=true$' "$s4_result"
-
-            mkdir -p "$out"
-            cat > "$out/result" <<'RESULT'
-            PASS
-            check=checks.crucible.phase1.sameIcountTieBreak
-            tasks=T-DET-13
-            engine_order=virtual_time,consumer_node,producer_node,sequence
-            shmem_projection=delivery_icount,src_node,seq
-            arrival_order_visible=false
-            phase0_evidence=checks.crucible.phase0.s4ShmemVisibility
-            RESULT
-          '';
-        }
-      ];
+  else if campaignComposition != null
+  then
+    import ./phase9-campaign-mode-system-gate.nix {
+      inherit pkgs lib testing runtimeInputs runtimeScript;
+      inherit (campaignComposition) mode system;
+      gateName = "gate:same-icount-tie-break";
+      authoritativeAttr = "checks.crucible.phase1.sameIcountTieBreak";
+      executionFamily = "qemu-runtime";
+      name = "same-icount-tie-break";
+      runtimeClosures = [phase0S4];
     }
+  else authoritativeGate

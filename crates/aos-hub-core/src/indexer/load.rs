@@ -169,7 +169,10 @@ impl<'a> ObjectReader<'a> {
         self.loose_fetches.fetch_add(1, Ordering::Relaxed);
         let bytes = self
             .fetch
-            .fetch(&path)
+            .fetch_bounded(
+                &path,
+                usize::try_from(object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES)?,
+            )
             .await?
             .with_context(|| format!("loose object {path} is missing from the surface"))?;
         let decoded = object::decode_loose(&bytes, Some(oid))?;
@@ -1507,13 +1510,20 @@ mod bundle_tests {
 
     #[async_trait::async_trait]
     impl SurfaceFetch for InvalidBundleFetch {
-        async fn fetch(&self, _path: &str) -> Result<Option<Vec<u8>>> {
-            self.loose_reads.fetch_add(1, Ordering::SeqCst);
-            Ok(Some(self.loose.clone()))
+        async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
+            panic!("unexpected unbounded fetch for {path}")
         }
 
-        async fn fetch_bounded(&self, _path: &str, _max_bytes: usize) -> Result<Option<Vec<u8>>> {
-            Ok(Some(self.bundle.clone()))
+        // Loose-object fallback is bounded like bundle reads, so route by
+        // path: bundle shards return the corrupt bundle, anything else is
+        // the canonical loose object.
+        async fn fetch_bounded(&self, path: &str, _max_bytes: usize) -> Result<Option<Vec<u8>>> {
+            if path.starts_with(aos_registry_surface::object_bundle::DIRECTORY) {
+                return Ok(Some(self.bundle.clone()));
+            }
+
+            self.loose_reads.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(self.loose.clone()))
         }
 
         fn describe(&self) -> String {

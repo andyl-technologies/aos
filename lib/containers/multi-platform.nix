@@ -4,12 +4,18 @@
 ##! images into one canonical OCI index. A second, equivalent pipeline proves
 ##! that platform images, the coordinated index, unsigned evidence, and the
 ##! external-signing input bundle are byte reproducible.
+##!
+##! A Linux platform deferred by the release contract
+##! (`qualification/deferred-platforms.nix`) is omitted from the index: the
+##! release ships nothing on it and no container claim could qualify it. The
+##! remaining platforms keep the exact-set checks below.
 {
   lib,
   pkgs,
   oci,
   name,
   platformBuilds,
+  deferredPlatforms ? [],
 }: let
   discard = value:
     builtins.unsafeDiscardStringContext (builtins.toString value);
@@ -37,8 +43,17 @@
     )
     platformBuilds;
   first = builtins.head sortedBuilds;
-  expectedSystems = ["aarch64-linux" "x86_64-linux"];
-  expectedArchitectures = ["arm64" "amd64"];
+  # OCI architecture of every production Linux system. Attribute names are
+  # sorted, which is also the order of `sortedBuilds`.
+  linuxArchitectures = {
+    "aarch64-linux" = "arm64";
+    "x86_64-linux" = "amd64";
+  };
+  expectedSystems =
+    builtins.filter (system: !(builtins.elem system deferredPlatforms))
+    (builtins.attrNames linuxArchitectures);
+  expectedArchitectures = map (system: linuxArchitectures.${system}) expectedSystems;
+  expectedNames = values: lib.concatStringsSep " and " values;
   schedulerSystem = pkgs.stdenv.buildPlatform.system;
   executionMode = system:
     if schedulerSystem == system
@@ -53,14 +68,18 @@
   validated =
     if !builtins.isList platformBuilds
     then throw "container multi-platform coordinator: platformBuilds must be a list"
+    else if !lib.all (system: builtins.hasAttr system linuxArchitectures) deferredPlatforms
+    then throw "container multi-platform coordinator: only production Linux systems can be deferred"
+    else if expectedSystems == []
+    then throw "container multi-platform coordinator: every production system is deferred"
     else if systems != expectedSystems
     then
       throw
-      "container multi-platform coordinator: exact production systems must be aarch64-linux and x86_64-linux"
+      "container multi-platform coordinator: exact production systems must be ${expectedNames expectedSystems}"
     else if architectures != expectedArchitectures
     then
       throw
-      "container multi-platform coordinator: production systems do not map to the expected arm64 and amd64 platforms"
+      "container multi-platform coordinator: production systems do not map to the expected ${expectedNames expectedArchitectures} platforms"
     else if !lib.all (build: build.coordination.name == name) sortedBuilds
     then throw "container multi-platform coordinator: container names differ"
     else if
@@ -186,8 +205,13 @@
       publicationInputsRepeat
       ;
     inherit schedulerSystem;
-    armExecution = executionMode "aarch64-linux";
-    amdExecution = executionMode "x86_64-linux";
+    platforms =
+      map (system: {
+        inherit system;
+        architecture = linuxArchitectures.${system};
+        execution = executionMode system;
+      })
+      expectedSystems;
     platformChecks = map (build: build.qualification.reproducibility) sortedBuilds;
   };
 in
@@ -211,10 +235,7 @@ in
       execution = {
         inherit schedulerSystem;
         targetSystems = expectedSystems;
-        targetExecution = {
-          "aarch64-linux" = executionMode "aarch64-linux";
-          "x86_64-linux" = executionMode "x86_64-linux";
-        };
+        targetExecution = lib.genAttrs expectedSystems executionMode;
         requiresConfiguredBinfmt = builtins.filter (system: system != schedulerSystem) expectedSystems;
         nativeTargetBuilderRequired = false;
       };

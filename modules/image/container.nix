@@ -100,7 +100,7 @@
     ];
   };
   defaultAosDefinition =
-    (import ../../containers/aos.nix {
+    (import ./_container-definition.nix {
       inherit lib pkgs evidenceOverrides;
       goldenRoots = config.environment.systemPackages;
       aosSystem = pkgs.stdenv.hostPlatform.system;
@@ -234,14 +234,14 @@ in {
 
     aos.containers.definitions.aos = defaultAosDefinition;
     aos.containers.definitions.aos-hub =
-      (import ../../containers/aos-hub.nix {
+      (import ./_aos-hub.nix {
         inherit pkgs;
         aosSystem = pkgs.stdenv.hostPlatform.system;
       })
       .config;
 
     aos.containers.definitions.aos-hub-bootstrap =
-      (import ../../containers/aos-hub-bootstrap.nix {
+      (import ./_aos-hub-bootstrap.nix {
         inherit pkgs;
         aosSystem = pkgs.stdenv.hostPlatform.system;
       })

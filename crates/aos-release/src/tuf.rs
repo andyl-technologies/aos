@@ -38,6 +38,8 @@ use crate::signing::{
     TrustedEd25519Key, verify_ed25519_response,
 };
 
+pub mod staging;
+
 /// TUF specification profile implemented by canonical AOS releases.
 pub const TUF_SPEC_VERSION: &str = "1.0.31";
 /// Schema for root metadata.
@@ -1274,7 +1276,7 @@ fn require_not_expired(value: &str, now: std::time::SystemTime) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::{MAIN_REGISTRY, TESTING_REGISTRY};
+    use crate::registry::{MAIN_REGISTRY, EXPERIMENTAL_REGISTRY};
 
     fn key(id: &str, byte: u8) -> TufKeyV1 {
         TufKeyV1 {
@@ -1329,7 +1331,7 @@ mod tests {
         RootMetadataV1 {
             schema_version: TUF_ROOT_V1.to_owned(),
             spec_version: TUF_SPEC_VERSION.to_owned(),
-            registry: TESTING_REGISTRY.to_owned(),
+            registry: EXPERIMENTAL_REGISTRY.to_owned(),
             version: 1,
             expires: "2030-01-01T00:00:00Z".to_owned(),
             consistent_snapshot: true,
@@ -1459,7 +1461,7 @@ mod tests {
             delegated,
             snapshot,
         };
-        for registry in ["andyl/testing", "andyl/testing-v2"] {
+        for registry in ["andyl/experimental", "andyl/experimental-v2"] {
             let error = verify_immutable_set(
                 &set,
                 &TufRootTrust {

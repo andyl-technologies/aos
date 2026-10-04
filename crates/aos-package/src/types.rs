@@ -186,7 +186,7 @@ pub fn validate_branch_name(name: &str) -> Result<()> {
 /// shorthand, or contains characters or components that are invalid for
 /// registry channel references.
 pub fn validate_channel_name(name: &str) -> Result<()> {
-    validate_git_ref_shorthand(name, "channel name", false)
+    aos_registry_surface::channel::validate_channel_name(name)
 }
 
 /// Validate an exact Git commit object id.
@@ -2674,11 +2674,16 @@ pub struct RegistryState {
     /// Commit hash the local clone was last synced to.
     #[serde(default)]
     pub last_commit: Option<String>,
-    /// Channel tracking: monotonic semver floor — the highest release this
-    /// host has verified; a channel pointing at anything older is refused
-    /// (rollback-attack protection).
+    /// Verified channel selected explicitly or discovered from symbolic HEAD.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selected_channel: Option<String>,
+    /// Default channel retained across HEAD changes while tracking implicitly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_channel: Option<String>,
+    /// Last verified trust-roster commit, independent of the selected release.
     #[serde(default)]
     pub last_roster_commit: Option<String>,
+    /// Highest release verified by this host; older channel targets are refused.
     #[serde(default)]
     pub floor: Option<String>,
     /// Channel tracking: this host's stable rollout partition bucket
@@ -2735,7 +2740,7 @@ pub enum TrackingMode {
     Tag(String),
     /// Semver constraint applied to tags (e.g. `~2026.03`, `^2026`).
     Version(semver::VersionReq),
-    /// No tracking field set -- use default branch HEAD.
+    /// No tracking field set -- discover and verify the default release channel.
     Default,
 }
 
@@ -2977,7 +2982,7 @@ impl ProfileScope {
     /// The sysroot uses [`ProfileScope::profile_path`] for
     /// `/var/lib/profiles/system/state.json`, whose schema is
     /// [`ConfigGenerationState`]. Runtime system packages use a separate
-    /// package-generation database so `apm install --system` cannot corrupt
+    /// package-generation database so `apm image install` cannot corrupt
     /// or replace the sysroot generation pointer.
     pub fn package_profile_path(&self) -> PathBuf {
         match self {

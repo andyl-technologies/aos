@@ -170,7 +170,7 @@ pub(crate) async fn execute(
         lifetime: super::lifetime::Lifetime::new(signal.clone())?,
     };
     window.check()?;
-    crate::direct_upload::provider_capacity::configure(u32::from(domain.provider_concurrency))?;
+    crate::direct_upload::provider_capacity::policy::configure_bounded(env, u32::from(domain.provider_concurrency), 3)?;
     let permit = crate::direct_upload::provider_capacity::acquire_class_checked(
         1,
         if matches!(
@@ -212,7 +212,7 @@ pub(crate) async fn execute(
             )
             .await?;
             (
-                result.map_or(Outcome::NotFound, |object| Outcome::Head { object }),
+                result.map_or(Outcome::NotFound, |object| Outcome::Head { object, guarded_source: None }),
                 0,
             )
         }
@@ -463,6 +463,7 @@ pub(crate) async fn execute(
             .await?;
             (
                 Outcome::OciRangeHashed {
+                    guarded_source: None,
                     source: identity,
                     start: selection.start,
                     end: selection.end,

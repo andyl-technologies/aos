@@ -276,6 +276,7 @@ pub(super) async fn exercise(db: &Database, org_id: i64, binding_id: i64) {
             idempotency_key: "incarnation-plan".into(),
             expected_resource_version: 0,
             now: now + 5,
+            retire_registry: false,
         })
         .await
         .unwrap();

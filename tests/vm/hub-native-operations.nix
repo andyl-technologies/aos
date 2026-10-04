@@ -557,6 +557,15 @@ in
         exit 1
       fi
       ${pkgs.coreutils}/bin/cat /tmp/apr-publish-package.json
+      # The public catalog projects the default channel's released tree, so
+      # the published package becomes visible only through a signed release.
+      if ! HOME="$producer_home" PATH="$producer_path" \
+        ${pkgs.aos.apr}/bin/apr --json release 1.0.0 --registry maintenance \
+        --key-id maintainer --channel stable --init-channel \
+        >/tmp/apr-release-initial.json 2>&1; then
+        ${pkgs.coreutils}/bin/cat /tmp/apr-release-initial.json >&2
+        exit 1
+      fi
       HOME="$producer_home" PATH="$producer_path" \
         ${pkgs.aos.apr}/bin/apr --json web generate --registry maintenance \
         --output /tmp/producer-web >/tmp/apr-web-generate.json
@@ -651,10 +660,15 @@ in
         /tmp/publication-abort.json >/dev/null
       hub_cli_into /tmp/registry-channels.json registry channel list \
         operations/maintenance --page-size 1
-      ${pkgs.jq}/bin/jq -e '(.data.channels // []) == []' \
+      ${pkgs.jq}/bin/jq -e \
+        '.data.channels | any(.name == "stable" and .frontier == "1.0.0")' \
         /tmp/registry-channels.json >/dev/null
+      hub_cli_into /tmp/registry-channel-stable.json registry channel show \
+        operations/maintenance stable
+      ${pkgs.jq}/bin/jq -e '(.data.channel // .data).frontier == "1.0.0"' \
+        /tmp/registry-channel-stable.json >/dev/null
       expect_hub_error registry-channel-missing 'not.?found' \
-        registry channel show operations/maintenance stable
+        registry channel show operations/maintenance missing
 
       reviewed registry-mirror-set registry mirror set operations/maintenance \
         --source https://mirror.operations.example.test/registry/ \
@@ -785,6 +799,16 @@ in
       ${pkgs.jq}/bin/jq -e \
         '.cache_pointer_updated == true and .committed == true' \
         /tmp/apr-cache-b.json >/dev/null
+      if ! HOME="$producer_home" PATH="$producer_path" \
+        ${pkgs.aos.apr}/bin/apr --json release 1.0.1 --registry maintenance \
+        --key-id maintainer >/tmp/apr-release-cache-stack.json 2>&1 \
+        || ! HOME="$producer_home" PATH="$producer_path" \
+        ${pkgs.aos.apr}/bin/apr --json channel advance stable 1.0.1 \
+        --count 256 --registry maintenance --key-id maintainer \
+        >>/tmp/apr-release-cache-stack.json 2>&1; then
+        ${pkgs.coreutils}/bin/cat /tmp/apr-release-cache-stack.json >&2
+        exit 1
+      fi
       HOME="$producer_home" PATH="$producer_path" \
         ${pkgs.aos.apr}/bin/apr --json origin upload \
           --registry maintenance --upload-url "file://$producer_surface" \
@@ -1017,9 +1041,11 @@ in
       hub_cli cache integration list operations/build-cache --page-size 1 \
         >/tmp/cache-integration-list-empty.json
 
+      # Released 1.0.0 and 1.0.1 have verified snapshots; the exact 9.0.0
+      # selector names no release, so refreshing this policy must fail.
       reviewed cache-retention-set cache retention set operations/build-cache \
         --registry operations/maintenance --current-catalog --channel stable \
-        --recent-releases 2 --release 1.0.0 --semver '>=1.0.0,<2.0.0' \
+        --recent-releases 2 --release 9.0.0 --semver '>=1.0.0,<2.0.0' \
         --removal-grace 1h --if-version absent \
         >/tmp/cache-retention-set.json
       retention_version=$(resource_version /tmp/cache-retention-set.json)
@@ -1347,6 +1373,12 @@ in
       retained_apply resource-defaults-update instance resource-defaults update \
         >/tmp/resource-defaults-update.json
 
+      # Native Hubs run maintenance on their own schedule and have no durable
+      # queue for on-demand jobs, so an administrator's trigger is refused.
+      expect_hub_error maintenance-trigger-unavailable \
+        'cannot schedule maintenance on demand' \
+        instance maintenance trigger --job run_topology_probes
+
       echo '==> Exercise instance and organization topology-default inheritance'
       hub_cli instance topology-defaults show >/tmp/instance-topology-defaults.json
       reviewed instance-topology-clear instance topology-defaults clear --domain \
@@ -1428,22 +1460,24 @@ in
         >/tmp/disposable-registry-show.json
       disposable_registry_version=$(resource_version \
         /tmp/disposable-registry-show.json)
-      retained_plan disposable-registry-purge \
-        registry container gc purge-fence plan analytics/disposable \
-        --action begin --if-version "$disposable_registry_version" \
-        --idempotency-key disposable-registry-purge-plan
-      purge_plan_id=$(${pkgs.jq}/bin/jq -er .data.plan.plan_id \
-        /tmp/disposable-registry-purge-retained-plan.json)
-      purge_confirm_hash=$(${pkgs.jq}/bin/jq -er .data.plan.confirmation_hash \
-        /tmp/disposable-registry-purge-retained-plan.json)
-      hub_cli_into /tmp/disposable-registry-purge-apply.json \
-        registry container gc purge-fence apply \
-        --plan-id "$purge_plan_id" --confirm-hash "$purge_confirm_hash" \
-        --if-version 1 --idempotency-key disposable-registry-purge-apply \
-        --yes
+
+      # Reviewed deletion of a registry that never held container state is one
+      # apply: the deletion operation acquires the purge fence itself and, with
+      # no placements, deletes as soon as the fence is held.
       reviewed disposable-registry-delete registry delete analytics/disposable \
-        --if-version "$disposable_registry_version" \
+        --if-version "$disposable_registry_version" --wait --timeout 2m \
         >/tmp/disposable-registry-delete.json
+      ${pkgs.jq}/bin/jq -e \
+        '.data.deletion.phase == "deleted"
+          and .data.operation.operation.state == "succeeded"' \
+        /tmp/disposable-registry-delete.json >/dev/null || {
+        ${pkgs.coreutils}/bin/cat /tmp/disposable-registry-delete.json >&2
+        exit 1
+      }
+      if hub_cli registry show analytics/disposable >/dev/null 2>&1; then
+        echo 'deleted registry analytics/disposable is still readable' >&2
+        exit 1
+      fi
       reviewed binding-create binding create --org operations --name archive \
         --kind s3 --bucket operations-archive --prefix objects \
         --endpoint https://objects.example.test --region us-test-1 --access private \
@@ -1956,7 +1990,8 @@ in
         | ${pkgs.jq}/bin/jq -e '.data | tostring | contains("maintenance")' >/dev/null
       ${pkgs.aos}/bin/aos --json hub registry releases operations/maintenance \
         --hub "$hub_url" --token "$token" \
-        | ${pkgs.jq}/bin/jq -e '(.data.releases // []) == []' >/dev/null
+        | ${pkgs.jq}/bin/jq -e \
+          '[.data.releases[].semver] | sort == ["1.0.0", "1.0.1"]' >/dev/null
       ${pkgs.aos}/bin/aos --json hub registry package list operations/maintenance \
         --hub "$hub_url" --token "$token" \
         | ${pkgs.jq}/bin/jq -e \
@@ -1974,13 +2009,17 @@ in
       hub_pid=
 
       echo '==> Re-run native maintenance after a clean shutdown'
+      # The legacy `validate run` and `validate repair` operator commands
+      # were removed with legacy Hub validation; offline re-indexing is the
+      # remaining native maintenance command.
       $hub_exec --root "$hub_root" index operations/maintenance
       if $hub_exec --root "$hub_root" index missing/registry \
         >/tmp/index-missing.out 2>&1; then
-        echo 'index unexpectedly accepted a missing registry' >&2
+        echo 'indexing unexpectedly accepted a missing registry' >&2
         exit 1
       fi
-      ${pkgs.grep}/bin/grep -Eiq 'not found|unknown|missing' /tmp/index-missing.out
+      ${pkgs.grep}/bin/grep -Fq "no registry 'missing/registry'" \
+        /tmp/index-missing.out
 
       echo 'native Hub operator lifecycle: PASS'
     '';

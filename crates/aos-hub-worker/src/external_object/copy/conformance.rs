@@ -31,14 +31,14 @@ struct Input {
 ///
 /// # Errors
 /// Returns an error for malformed request framing or response construction.
-pub(crate) async fn fetch(mut request: Request) -> worker::Result<Response> {
-    match exercise(&mut request).await {
+pub(crate) async fn fetch(mut request: Request, env: &worker::Env) -> worker::Result<Response> {
+    match exercise(&mut request, env).await {
         Ok(value) => Response::from_json(&value),
         Err(_) => Response::error("external copy stream fixture refused", 409),
     }
 }
 
-async fn exercise(request: &mut Request) -> Result<serde_json::Value> {
+async fn exercise(request: &mut Request, env: &worker::Env) -> Result<serde_json::Value> {
     let body = crate::hybrid::read_bounded_body(request, 1024)
         .await?
         .ok_or_else(|| anyhow::anyhow!("copy fixture control oversized"))?;
@@ -65,7 +65,7 @@ async fn exercise(request: &mut Request) -> Result<serde_json::Value> {
         fresh: &|| Ok(()),
         lifetime: super::lifetime::Lifetime::new(signal.clone())?,
     };
-    crate::direct_upload::provider_capacity::configure(3)?;
+    crate::direct_upload::provider_capacity::policy::configure_bounded(env, 3, 3)?;
     let capacity = crate::direct_upload::provider_capacity::acquire_class_checked(
         2,
         crate::direct_upload::provider_capacity::Class::Bulk,

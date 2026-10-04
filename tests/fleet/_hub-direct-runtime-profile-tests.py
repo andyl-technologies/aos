@@ -43,6 +43,29 @@ class RuntimeSelectionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.check_runtime_profile_selection(self.selection, self.identity, self.measured)
 
+    def test_paired_profiles_match_both_current_cohorts_and_runtime(self):
+        runtime = {"controlledRuntime": True}
+        exports, profiles = [], []
+        for identity in ("7", "8"):
+            association = {"binding_id": identity, "binding_stable_id": "selected-" + identity}
+            read = {"association": association, "purpose": "read"}
+            write = {"association": association, "purpose": "write"}
+            issuer = {"selectedIssuer": "same-current-issuer"}
+            exports.append({"read_cohort": read, "write_cohort": write, "issuer_installation": issuer})
+            profiles.append({"profile": {"readCohort": read, "writeCohort": write,
+                "issuerInstallation": issuer, "selector": {"association": association}},
+                "runtimeQualification": runtime})
+        self.assertEqual(module.match_paired_runtime_profiles(list(reversed(profiles)), runtime, exports), profiles)
+        for index, section, field, changed in ((0, "profile", "writeCohort", {"changed": True}),
+                (1, "profile", "issuerInstallation", {"changed": True}),
+                (1, "wrapper", "runtimeQualification", {"changed": True})):
+            selected = copy.deepcopy(profiles)
+            (selected[index] if section == "wrapper" else selected[index]["profile"])[field] = changed
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                module.match_paired_runtime_profiles(selected, runtime, exports)
+        with self.assertRaises(ValueError):
+            module.match_paired_runtime_profiles(profiles, runtime, [exports[0], exports[0]])
+
 
 if __name__ == '__main__':
     unittest.main()

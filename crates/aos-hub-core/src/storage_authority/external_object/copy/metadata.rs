@@ -9,14 +9,14 @@
 //! reply = {request_digest, profile, retained: null | {original, progress}}
 //! ```
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
 use super::{
+    CopyPlacementPin, CopyTopologyOriginal, ExternalCopyOriginal,
     control::{CopyClaim, CopyProgress, MAX_EXTERNAL_COPY_CONTROL_BYTES},
     digest_string, identifier,
     original_lookup::CopyOriginalSelector,
-    CopyPlacementPin, CopyTopologyOriginal, ExternalCopyOriginal,
 };
 use crate::{
     direct_upload::{MAX_DIRECT_PART_BYTES, MIN_DIRECT_PART_BYTES},
@@ -54,6 +54,9 @@ pub struct CopyMetadataRequest {
     /// This read-only form still requires the exact current controller claim.
     #[serde(default, skip_serializing_if = "is_false")]
     pub profile_only: bool,
+    /// Independent source Read plan for different bindings; old queries omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_plan: Option<StorageWorkPlan>,
 }
 
 impl CopyMetadataRequest {
@@ -80,6 +83,37 @@ impl CopyMetadataRequest {
             plan,
             path,
             profile_only: false,
+            source_plan: None,
+        };
+        value.validate(&value.plan.deployment_id, now)?;
+        Ok(value)
+    }
+
+    /// Creates a paired query from independently resolved source/destination plans.
+    ///
+    /// # Errors
+    /// Refuses a missing source Read scope, changed pins or expired permission.
+    pub fn new_cross_binding(
+        topology: CopyTopologyOriginal,
+        source: CopyPlacementPin,
+        destination: CopyPlacementPin,
+        claim: Option<CopyClaim>,
+        plan: StorageWorkPlan,
+        source_plan: StorageWorkPlan,
+        path: String,
+        now: i64,
+    ) -> Result<Self> {
+        let value = Self {
+            version: 1,
+            domain: DOMAIN.into(),
+            topology,
+            source,
+            destination,
+            claim,
+            plan,
+            path,
+            profile_only: false,
+            source_plan: Some(source_plan),
         };
         value.validate(&value.plan.deployment_id, now)?;
         Ok(value)
@@ -114,6 +148,33 @@ impl CopyMetadataRequest {
             Some(now) => self.plan.validate(deployment, now)?,
             None => self.plan.validate_observation_shape(deployment)?,
         }
+        let binding_geometry = if let Some(source_plan) = &self.source_plan {
+            match now {
+                Some(now) => source_plan.validate(deployment, now)?,
+                None => source_plan.validate_observation_shape(deployment)?,
+            }
+            ensure!(
+                source_plan.binding_id == self.source.binding_id.get()
+                    && source_plan.placement_id == self.source.placement_id.get()
+                    && source_plan.placement_resource_version == self.source.resource_version.get()
+                    && source_plan.placement_prefix == self.source.prefix
+                    && matches!(&source_plan.operation, StorageWorkOperation::Head { path } if path == &self.path)
+                    && matches!(source_plan.binding_kind.as_str(), "s3" | "r2")
+                    && source_plan
+                        .binding_snapshot_revision
+                        .as_deref()
+                        .is_some_and(digest_string)
+                    && source_plan.credential_references.len() == 1
+                    && source_plan.credential_references[0].purpose == "read"
+                    && source_plan.issued_at == self.plan.issued_at
+                    && source_plan.expires_at == self.plan.expires_at,
+                "copy metadata source Read permission differs"
+            );
+            self.source.binding_id != self.destination.binding_id
+        } else {
+            self.source.binding_id == self.destination.binding_id
+                && self.source.prefix != self.destination.prefix
+        };
         ensure!(
             self.version == 1
                 && self.domain == DOMAIN
@@ -123,9 +184,8 @@ impl CopyMetadataRequest {
                 && self.plan.placement_resource_version == self.destination.resource_version.get()
                 && self.plan.placement_prefix == self.destination.prefix
                 && self.plan.binding_id == self.destination.binding_id.get()
-                && self.source.binding_id == self.destination.binding_id
+                && binding_geometry
                 && self.source.placement_id != self.destination.placement_id
-                && self.source.prefix != self.destination.prefix
                 && self.source.registry_id == self.destination.registry_id
                 && self.source.cache_id == self.destination.cache_id
                 && matches!(self.plan.binding_kind.as_str(), "s3" | "r2")
@@ -245,6 +305,9 @@ pub struct CopyMetadataReply {
     /// Absence never authorizes an unknown or discovered source object.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_closure: Option<super::source::CopySourceClosure>,
+    /// Independently installed source Read and destination mode projections.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer: Option<super::transfer::CopyTransferPins>,
 }
 
 impl CopyMetadataReply {
@@ -258,6 +321,32 @@ impl CopyMetadataReply {
             "profile-only metadata cannot contain physical owner evidence"
         );
         identifier(&self.profile.binding_stable_id)?;
+        let source_protected = match (&self.transfer, &request.source_plan) {
+            (Some(transfer), Some(plan)) => {
+                transfer.validate(&request.source, &request.destination)?;
+                ensure!(
+                    transfer.source_binding.binding_resource_version.get()
+                        == plan.binding_resource_version
+                        && plan.binding_snapshot_revision.as_ref()
+                            == Some(&transfer.source_binding.snapshot_revision)
+                        && plan
+                            .credential_references
+                            .first()
+                            .is_some_and(|credential| credential.purpose == "read"
+                                && credential.generation
+                                    == transfer.source_binding.read_generation.get())
+                        && self.profile.part_bytes.get()
+                            <= transfer.maximum_source_range_bytes.get()
+                        && (transfer.destination_incarnation
+                            == super::transfer::CopyIncarnationMode::GuardedClosure)
+                            == self.profile.protected_versionless,
+                    "copy installed source Read projection differs"
+                );
+                transfer.source_incarnation == super::transfer::CopyIncarnationMode::GuardedClosure
+            }
+            (None, None) => self.profile.protected_versionless,
+            _ => anyhow::bail!("copy metadata paired source projection absent"),
+        };
         ensure!(
             self.version == 1
                 && self.request_digest == canonical_digest(request)?
@@ -277,7 +366,7 @@ impl CopyMetadataReply {
         if let Some(closure) = &self.source_closure {
             closure.validate()?;
             ensure!(
-                self.profile.protected_versionless,
+                source_protected,
                 "versioned copy metadata cannot contain a protected closure"
             );
         }
@@ -295,15 +384,24 @@ impl CopyMetadataReply {
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("copy metadata snapshot absent"))?,
             profile_digest: self.profile.profile_digest.clone(),
+            transfer: self.transfer.clone(),
         };
         selector.validate()?;
         if let Some(retained) = &self.retained {
             selector.validate_retained(&retained.original, &retained.progress)?;
             ensure!(
-                (retained.original.version == 2) == self.profile.protected_versionless
+                (retained.original.destination_incarnation()?
+                    == super::transfer::CopyIncarnationMode::GuardedClosure)
+                    == self.profile.protected_versionless
                     && retained.original.binding_write_revision
                         == self.profile.binding_write_revision
-                    && retained.original.read_generation == self.profile.read_generation
+                    && retained.original.read_generation
+                        == self
+                            .transfer
+                            .as_ref()
+                            .map_or(self.profile.read_generation, |transfer| transfer
+                                .source_binding
+                                .read_generation)
                     && retained.original.write_generation == self.profile.write_generation
                     && retained.original.part_bytes == self.profile.part_bytes,
                 "retained copy installed purpose pins changed"

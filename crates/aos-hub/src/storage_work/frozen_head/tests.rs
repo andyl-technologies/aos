@@ -275,6 +275,7 @@ async fn fixture_with_inventory(versioned: bool) -> Fixture {
             idempotency_key: "reviewed-plan".into(),
             expected_resource_version: 0,
             now: now - 1,
+            retire_registry: false,
         })
         .await
         .unwrap();

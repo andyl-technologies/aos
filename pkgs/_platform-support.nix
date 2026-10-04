@@ -17,9 +17,27 @@ let
     "aarch64-darwin"
   ];
 
+  # Linux platforms whose release is deferred. The qualification contract
+  # reads the same list, so a deferred platform is both blocked here and
+  # optional there; see ../qualification/deferred-platforms.nix.
+  deferredPlatforms = let
+    listed = import ../qualification/deferred-platforms.nix;
+  in
+    if builtins.all (system: builtins.elem system ["x86_64-linux" "aarch64-linux"]) listed
+    then listed
+    else throw "package platform support: only Linux platforms can be deferred";
+
   # Wave 1: target-independent inputs and small leaf packages.  These establish
   # the data and low-level library closure used by later Darwin packages.
   independentWave1 = [
+    "spirv-headers"
+    "libclc"
+    "xorg-util-macros"
+    "libglvnd-headers"
+    "virglrenderer-headers"
+    "mathjax"
+    "xtrans"
+    "vulkan-headers"
     "docbook-xml-4-2"
     "docbook-xml-4-3"
     "encodings"
@@ -30,6 +48,7 @@ let
     "aos-hub-worker-dist"
     "ca-certificates"
     "docbook-xml"
+    "docbook-xml-4_2"
     "docbook-xsl"
     "edk2"
     "firmware"
@@ -160,6 +179,8 @@ let
     "mkfontscale"
     "perl-locale-gettext"
     "python3-jinja2"
+    "python3-pyparsing"
+    "python3-railroad-diagrams"
     "python3-smartypants"
     "python3-typogrify"
     "xxhash"
@@ -216,6 +237,9 @@ let
     "libtirpc"
     "libtpms"
     "libusb1"
+    "opus"
+    "spice-protocol"
+    "usbredir"
     "libuv"
     "libxcrypt"
     "libxml2"
@@ -257,6 +281,7 @@ let
     "perl-moo"
     "perl-net-ssleay"
     "perl-parallel-forkmanager"
+    "perl-parse-yapp"
     "perl-readonly"
     "perl-regexp-common"
     "perl-role-tiny"
@@ -289,6 +314,11 @@ let
   # Wave 3: compilers, interpreters and build systems.  These require a native
   # Linux compiler/interpreter package set distinct from Darwin target outputs.
   targetWave3 = [
+    "bindgen"
+    "cbindgen"
+    "python3-pyyaml"
+    "spirv-tools"
+    "spirv-llvm-translator"
     "accache"
     "cargo-c"
     "mdbook"
@@ -344,12 +374,17 @@ let
     "pip"
     "python3"
     "python3-3_12"
+    "python3-cffi"
+    "python3-cryptography"
+    "python3-dnspython"
     "python3-pefile"
     "python3-pyelftools"
     "python3-lxml"
+    "python3-pycparser"
     "python3-mako"
     "python3-markdown"
     "python3-markupsafe"
+    "python3-pygdbmi"
     "python3-pygments"
     "rust"
     "rust-1_74"
@@ -484,6 +519,26 @@ let
   # fixture, and downloader closures are outside the first Darwin release.
   # The Darwin AOS clients retain their non-VM commands without target GLib.
   linuxScoped = [
+    "wayland"
+    "wayland-protocols"
+    "libepoxy-headers"
+    "libx11"
+    "libxext"
+    "libxrender"
+    "libxrandr"
+    "libxxf86vm"
+    "libxshmfence"
+    "libdrm"
+    "libxfixes"
+    "libglvnd"
+    "libepoxy"
+    "libva"
+    "vulkan-loader"
+    "llvm-graphics"
+    "spirv-llvm-translator-graphics"
+    "glslang"
+    "mesa"
+    "virglrenderer"
     "aos-hub-cloudflare"
     # WebAssembly and Cargo developer tools for downstream project dev shells.
     # They are portable, but their Darwin cross builds are not yet qualified.
@@ -549,6 +604,7 @@ let
     "aos-var-policy-migrate"
     "aos-verity-root-guard"
     "attr"
+    "avahi-core"
     "audit"
     "btrfs-progs"
     "bridge-utils"
@@ -563,6 +619,7 @@ let
     "crucible-guest"
     "crucible-qemu-trace-plugin"
     "cryptsetup"
+    "cups-full"
     "darling"
     "delve"
     "device-mapper"
@@ -583,8 +640,10 @@ let
     "fuse3"
     "fuse-overlayfs"
     "getent"
+    "glusterfs-client"
     "glibc"
     "glibc-tools"
+    "gperftools"
     "hdparm"
     # The complete iperf3 build retains SCTP through Linux lksctp-tools.
     "iperf3"
@@ -606,6 +665,7 @@ let
     "libbsd"
     "libcap"
     "libcap-ng"
+    "libdaemon"
     "libmd"
     "libmnl"
     "libnetfilter_conntrack"
@@ -658,6 +718,8 @@ let
     "ripgrep"
     "rootlesskit"
     "runc"
+    "samba"
+    "samba-smbd"
     "semodule-utils"
     "setools"
     "slirp4netns"
@@ -783,6 +845,10 @@ let
 
   architectureOverrides = {
     darling = ["x86_64"];
+    # TODO: cross-compile the complete Samba suite. Its AD/DC Python modules
+    # need a target Python configuration and more reviewed Waf answers; only
+    # the samba-smbd helper QEMU requires is cross-built today.
+    samba = ["x86_64"];
     "go-1_4" = ["x86_64"];
     "openjdk-7" = ["x86_64"];
     "openjdk-8" = ["x86_64"];
@@ -872,7 +938,7 @@ let
     "darwin/_darwin-gcc.nix" = "cross-build-helper";
     "emulation/_darwin-signer.nix" = "linux-only-build-helper";
     "emulation/_darling-sources.nix" = "linux-only-source";
-    "emulation/qemu-patches/_series.nix" = "linux-only-source";
+    "emulation/qemu-patches/_atomic-patch.nix" = "linux-only-source";
     "kernel/_source.nix" = "linux-only-source";
     "kubernetes/_k3s-addon-entrypoints.nix" = "linux-only-build-helper";
     "kubernetes/_k3s-addon-images.nix" = "linux-only-build-helper";
@@ -1031,9 +1097,12 @@ let
     "toolchain/rust/_rust-darwin-build-tool.nix" = "cross-build-helper";
     "toolchain/rust/_rust-darwin.nix" = "cross-build-helper";
     "toolchain/rust/_rust-bootstrap.nix" = "native-build-helper";
+    "tools/aos/_release-tooling.nix" = "native-release-helper";
     "tools/aos/_tests.nix" = "native-test-helper";
     "tools/aos/_workspace-source.nix" = "target-independent-source";
     "tools/crucible/_cargo-deps-hash.nix" = "target-independent-source";
+    "tools/crucible/_cargo-source.nix" = "mixed-source";
+    "tools/crucible/_control-protocol-version.nix" = "target-independent-source";
     "tools/crucible/_packages.nix" = "target-independent-source";
     "tools/crucible/_release-manifest.nix" = "linux-only-release-helper";
     "tools/crucible/_source.nix" = "mixed-source";
@@ -1121,7 +1190,7 @@ let
     else builtins.head matched;
 in rec {
   schema = "aos.package-platform-support/v1";
-  inherit canonicalSystems darwinSystems packageInventory helperInventory factoryInventory resourceInventory;
+  inherit canonicalSystems darwinSystems deferredPlatforms packageInventory helperInventory factoryInventory resourceInventory;
 
   packageSupport = name:
     packageInventory.${name}
@@ -1182,9 +1251,13 @@ in rec {
       # The inventory blockers track the Linux-hosted Darwin cross-build
       # roadmap. Linux realizations and public runtime qualification are
       # separate release gates, so these reasons must not block Linux planning.
+      # A deferred Linux platform instead blocks every eligible cell, which
+      # also keeps its derivations out of release evaluation below.
       blockers =
         if isDarwin system
         then entry.blockers
+        else if builtins.elem system deferredPlatforms
+        then ["platform-release-deferred"]
         else [];
     }
     else {

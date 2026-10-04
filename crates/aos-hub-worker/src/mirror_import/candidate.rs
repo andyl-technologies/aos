@@ -72,7 +72,7 @@ pub(crate) fn load_profile(env: &Env, expected_profile: &str) -> Result<Candidat
         expected_profile == profile_digest,
         "mirror candidate original differs from actual protected material"
     );
-    crate::direct_upload::provider_capacity::configure(4)?;
+    crate::direct_upload::provider_capacity::policy::configure_bounded(env, 4, 2)?;
     Ok(CandidateMirrorAuthority {
         profile_digest,
         observed_at: aos_hub_core::clock::now_unix_secs(),

@@ -32,7 +32,7 @@ pub(super) async fn execute(
             status == 404 || (200..300).contains(&status)
         }
         "list" => {
-            let response = send(request, &surface.list_url(None, 1, now)?, Method::Get).await?;
+            let response = send(request, &surface.list_url("", None, 1, now)?, Method::Get).await?;
             let status = response.status_code();
             evidence.insert("listStatus".into(), status.into());
             (200..300).contains(&status)

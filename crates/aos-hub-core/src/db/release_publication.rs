@@ -21,12 +21,58 @@
 //! Channel names are a kind (`edge`, `candidate`, `stable`) with an optional
 //! per-train suffix; see [`is_release_channel_name`].
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use aos_release::digest::Sha256Digest;
 
 use crate::backend::CheckedStatement;
 
-use super::{validate_key_bytes, Database};
+use super::{Database, validate_key_bytes};
+
+/// Builds the timestamp continuity guard shared by staged and ordinary publication.
+pub(super) fn timestamp_publication_admission(
+    input: &NewReleaseTimestampPublication,
+    now: i64,
+) -> Result<CheckedStatement> {
+    validate_timestamp(input)?;
+    Ok(CheckedStatement::exact(
+        "INSERT INTO release_timestamp_publications
+               (registry_id, snapshot_digest, snapshot_version,
+                timestamp_version, timestamp_digest, publication_id,
+                committed_at)
+                 SELECT publication.registry_id, ?2, ?3, ?4, ?5,
+                    publication.publication_id, ?7
+               FROM registry_publications publication
+              WHERE publication.publication_id = ?6
+                AND publication.registry_id = ?1
+                AND publication.state IN ('preparing', 'writing_pointers', 'ready')
+                AND EXISTS (SELECT 1 FROM registry_publication_objects declared
+                    JOIN surface_objects object ON object.id = declared.surface_object_id
+                   WHERE declared.publication_id = publication.publication_id
+                     AND object.object_key = ?8
+                     AND declared.object_kind = 'mutable_pointer'
+                     AND ('sha256:' || declared.expected_hash) = ?5)
+                AND EXISTS (SELECT 1 FROM registry_publication_objects declared
+                    JOIN surface_objects object ON object.id = declared.surface_object_id
+                   WHERE declared.publication_id = publication.publication_id
+                     AND object.object_key = ?9
+                     AND declared.object_kind = 'immutable'
+                     AND ('sha256:' || declared.expected_hash) = ?2)
+                AND ?4 = COALESCE((SELECT MAX(timestamp_version) + 1
+                    FROM release_timestamp_publications WHERE registry_id = ?1), 1)",
+        vals![
+            input.registry_id,
+            input.snapshot_digest,
+            input.snapshot_version,
+            input.timestamp_version,
+            input.timestamp_digest,
+            input.publication_id,
+            now,
+            input.timestamp_path,
+            input.snapshot_path
+        ],
+        1,
+    ))
+}
 
 /// Immutable identity admitted for one release bundle.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -673,44 +719,7 @@ impl Database {
             return Ok(());
         }
         self.backend
-            .checked_batch(&[CheckedStatement::exact(
-                "INSERT INTO release_timestamp_publications
-               (registry_id, snapshot_digest, snapshot_version,
-                timestamp_version, timestamp_digest, publication_id,
-                committed_at)
-                 SELECT publication.registry_id, ?2, ?3, ?4, ?5,
-                    publication.publication_id, ?7
-               FROM registry_publications publication
-              WHERE publication.publication_id = ?6
-                AND publication.registry_id = ?1
-                AND publication.state IN ('preparing', 'writing_pointers', 'ready')
-                AND EXISTS (SELECT 1 FROM registry_publication_objects declared
-                    JOIN surface_objects object ON object.id = declared.surface_object_id
-                   WHERE declared.publication_id = publication.publication_id
-                     AND object.object_key = ?8
-                     AND declared.object_kind = 'mutable_pointer'
-                     AND ('sha256:' || declared.expected_hash) = ?5)
-                AND EXISTS (SELECT 1 FROM registry_publication_objects declared
-                    JOIN surface_objects object ON object.id = declared.surface_object_id
-                   WHERE declared.publication_id = publication.publication_id
-                     AND object.object_key = ?9
-                     AND declared.object_kind = 'immutable'
-                     AND ('sha256:' || declared.expected_hash) = ?2)
-                AND ?4 = COALESCE((SELECT MAX(timestamp_version) + 1
-                    FROM release_timestamp_publications WHERE registry_id = ?1), 1)",
-                vals![
-                    input.registry_id,
-                    input.snapshot_digest,
-                    input.snapshot_version,
-                    input.timestamp_version,
-                    input.timestamp_digest,
-                    input.publication_id,
-                    now,
-                    input.timestamp_path,
-                    input.snapshot_path
-                ],
-                1,
-            )])
+            .checked_batch(&[timestamp_publication_admission(input, now)?])
             .await
     }
 
@@ -925,7 +934,7 @@ impl Database {
             [&input.staging_receipt_digest, &input.qualification_digest, &input.production_receipt_digest]).await
     }
 
-    async fn release_timestamp_matches(
+    pub(super) async fn release_timestamp_matches(
         &self,
         input: &NewReleaseTimestampPublication,
     ) -> Result<bool> {
@@ -1347,9 +1356,11 @@ mod tests {
             .find(|channel| channel.name == "edge")
             .unwrap();
         assert_eq!(channel.frontier.as_deref(), Some("2026.03.0"));
-        assert!(channel.partitions[..32]
-            .iter()
-            .all(|release| release.as_deref() == Some("2026.03.0")));
+        assert!(
+            channel.partitions[..32]
+                .iter()
+                .all(|release| release.as_deref() == Some("2026.03.0"))
+        );
         assert!(channel.partitions[32..].iter().all(Option::is_none));
         let mut stale = edge.clone();
         stale.operation_digest = "8".repeat(64);
@@ -1445,11 +1456,13 @@ mod tests {
             .import_release_qualification(&qualification, 15)
             .await
             .unwrap();
-        assert!(production_db
-            .release_bundle_publication(&production_bundle.bundle_digest, "staging")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            production_db
+                .release_bundle_publication(&production_bundle.bundle_digest, "staging")
+                .await
+                .unwrap()
+                .is_none()
+        );
         ready_publication(
             &production_db,
             production_registry_id,
@@ -1475,15 +1488,19 @@ mod tests {
             qualification_digest: "4".repeat(64),
             production_receipt_digest: "6".repeat(64),
         };
-        assert!(production_db
-            .promote_release_bundle(&publication, &discontinuous, 16)
-            .await
-            .is_err());
-        assert!(production_db
-            .release_bundle_publication(&production_bundle.bundle_digest, "production")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            production_db
+                .promote_release_bundle(&publication, &discontinuous, 16)
+                .await
+                .is_err()
+        );
+        assert!(
+            production_db
+                .release_bundle_publication(&production_bundle.bundle_digest, "production")
+                .await
+                .unwrap()
+                .is_none()
+        );
 
         discontinuous.staging_receipt_digest = "3".repeat(64);
         production_db
@@ -1531,10 +1548,11 @@ mod tests {
             receipt_json: "{}".into(),
             staging_receipt_digest: None,
         };
-        assert!(db
-            .record_release_bundle_publication(&wrong, 12)
-            .await
-            .is_err());
+        assert!(
+            db.record_release_bundle_publication(&wrong, 12)
+                .await
+                .is_err()
+        );
         let promotion = NewReleasePromotion {
             bundle_digest: bundle.bundle_digest,
             staging_receipt_digest: "3".repeat(64),
@@ -1599,10 +1617,11 @@ mod tests {
             timestamp_digest: format!("sha256:{}", "4".repeat(64)),
             ..first.clone()
         };
-        assert!(db
-            .record_release_timestamp_publication(&wrong_bytes, 12)
-            .await
-            .is_err());
+        assert!(
+            db.record_release_timestamp_publication(&wrong_bytes, 12)
+                .await
+                .is_err()
+        );
         ready_publication(
             &db,
             registry_id,
@@ -1631,10 +1650,11 @@ mod tests {
             timestamp_path: "tuf/timestamp.json".into(),
             snapshot_path: "tuf/2.snapshot.json".into(),
         };
-        assert!(db
-            .record_release_timestamp_publication(&skipped, 12)
-            .await
-            .is_err());
+        assert!(
+            db.record_release_timestamp_publication(&skipped, 12)
+                .await
+                .is_err()
+        );
     }
 
     const STAGING_RECEIPT: char = '3';
@@ -1944,10 +1964,11 @@ mod tests {
         for malformed in ["stable-2026.13", "nightly", "stable-"] {
             let operation = advance(&bundle, "staging-deployment", malformed, STAGING_RECEIPT);
             assert!(db.advance_release_channel(&operation, 14).await.is_err());
-            assert!(db
-                .release_channel_operation(bundle.registry_id, malformed, 1)
-                .await
-                .is_err());
+            assert!(
+                db.release_channel_operation(bundle.registry_id, malformed, 1)
+                    .await
+                    .is_err()
+            );
         }
     }
 
@@ -1965,7 +1986,18 @@ mod tests {
         // must refuse serving; the additive SQL copy is tested separately.
         let connection = rusqlite::Connection::open(&path).unwrap();
         connection
-            .execute_batch("DROP TABLE release_channel_advances")
+            .execute_batch(
+                "DROP TABLE registry_oci_namespaces;
+                 DROP TABLE instance_oci_routes;
+                 DROP TABLE release_channel_advances;
+                 DROP TABLE staged_release_store_roots;
+                 DROP TABLE staged_release_objects;
+                 DROP TABLE staged_release_revision_chunks;
+                 DROP TABLE staged_release_revisions;
+                 DROP TABLE staged_releases;
+                 DROP TABLE registry_public_catalog_heads;
+                 ALTER TABLE oci_gc_runs DROP COLUMN retire_registry;",
+            )
             .unwrap();
         connection
             .execute(

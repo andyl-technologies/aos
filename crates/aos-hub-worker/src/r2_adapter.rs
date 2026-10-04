@@ -8,7 +8,10 @@ use anyhow::{bail, Context as _, Result};
 use async_trait::async_trait;
 
 use aos_hub_core::fetch::WORKER_MAX_SURFACE_LIST_CURSOR_BYTES;
-use aos_hub_core::surface_write::{MultipartAbortOutcome, PartTag};
+use aos_hub_core::surface_write::{
+    strong_if_match_etag, MultipartAbortOutcome, PartTag, SurfaceDeleteOutcome,
+    SurfaceDeletePrecondition,
+};
 
 /// Cloudflare's maximum number of parts in one R2 multipart completion.
 pub const MAX_R2_MULTIPART_PARTS: usize = 10_000;
@@ -113,9 +116,59 @@ where
             aos_hub_core::storage_work::valid_provider_version(&object.version),
             "R2 head {key} returned an invalid upload version"
         );
-        let etag = aos_hub_core::surface_write::strong_if_match_etag(&object.etag)
+        let etag = strong_if_match_etag(&object.etag)
             .with_context(|| format!("R2 head {key} returned an invalid strong ETag"))?;
         Ok(Some(R2HeadObject { etag, ..object }))
+    }
+
+    /// Deletes one object only while its provider identity still matches the
+    /// reviewed inventory.
+    ///
+    /// The Workers R2 binding has no conditional `delete`, so this is a fenced
+    /// head-then-delete rather than one atomic provider operation. It is sound
+    /// only for the deployment bucket, which the Hub alone writes: keys are
+    /// content-addressed, the catalog row is already tombstoned, and pushes
+    /// refuse to re-adopt a digest whose blob row is not active while the GC
+    /// registry lock is held. Nothing can therefore replace the key with new
+    /// content between the identity check and the delete, so the acknowledged
+    /// ETag is the one that was observed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error without a strong expected ETag, for an invalid provider
+    /// ETag, or when the binding fails.
+    pub async fn delete_if_matches(
+        &self,
+        key: &str,
+        expected: &SurfaceDeletePrecondition,
+    ) -> Result<SurfaceDeleteOutcome> {
+        let supplied_etag = expected
+            .etag
+            .as_deref()
+            .filter(|etag| !etag.is_empty())
+            .context("R2 identity-checked deletion requires a strong ETag")?;
+        let expected_etag = strong_if_match_etag(supplied_etag)?;
+
+        let Some(current) = self.head(key).await? else {
+            return Ok(SurfaceDeleteOutcome::NotFound);
+        };
+        let current_etag = strong_if_match_etag(&current.etag)?;
+        let size_matches = expected
+            .size
+            .is_none_or(|size| u64::try_from(size).ok() == Some(current.size));
+        if current_etag != expected_etag || !size_matches {
+            return Ok(SurfaceDeleteOutcome::PreconditionFailed {
+                detail: "backend object identity changed after inventory".to_string(),
+            });
+        }
+
+        self.adapter.delete(key).await?;
+        // Acknowledge the identity exactly as the caller supplied it. The R2
+        // read path reports the bare `etag` property while the If-Match form
+        // is quoted, and callers compare the acknowledgement verbatim.
+        Ok(SurfaceDeleteOutcome::ConditionalDeleteAcknowledged {
+            etag: supplied_etag.to_string(),
+        })
     }
 
     /// Lists and validates one raw R2 page.
@@ -418,5 +471,68 @@ mod tests {
             .complete_multipart("o", "u", &duplicate)
             .await
             .is_err());
+    }
+
+    fn precondition(etag: Option<&str>, size: Option<i64>) -> SurfaceDeletePrecondition {
+        SurfaceDeletePrecondition {
+            etag: etag.map(str::to_string),
+            content_hash: None,
+            size,
+            expected_provider_version: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn contract_fences_deletion_on_observed_identity() {
+        let present = fake(4, b"body".to_vec());
+        let outcome = present
+            .delete_if_matches("k", &precondition(Some("fixture-etag"), Some(4)))
+            .await
+            .unwrap();
+        assert!(matches!(
+            outcome,
+            SurfaceDeleteOutcome::ConditionalDeleteAcknowledged { ref etag }
+                if etag == "fixture-etag"
+        ));
+        assert_eq!(*present.adapter.calls.borrow(), vec!["head:k", "delete:k"]);
+
+        // Neither a different ETag nor a different size deletes anything.
+        let mismatched = fake(4, b"body".to_vec());
+        assert!(matches!(
+            mismatched
+                .delete_if_matches("k", &precondition(Some("other-etag"), Some(4)))
+                .await
+                .unwrap(),
+            SurfaceDeleteOutcome::PreconditionFailed { .. }
+        ));
+        assert!(matches!(
+            mismatched
+                .delete_if_matches("k", &precondition(Some("fixture-etag"), Some(5)))
+                .await
+                .unwrap(),
+            SurfaceDeleteOutcome::PreconditionFailed { .. }
+        ));
+        assert_eq!(*mismatched.adapter.calls.borrow(), vec!["head:k", "head:k"]);
+
+        let absent = R2Contract::new(RecordingR2 {
+            calls: RefCell::new(Vec::new()),
+            size: None,
+            body: None,
+            abort_fails: Cell::new(false),
+        });
+        assert!(matches!(
+            absent
+                .delete_if_matches("k", &precondition(Some("fixture-etag"), None))
+                .await
+                .unwrap(),
+            SurfaceDeleteOutcome::NotFound
+        ));
+        assert!(
+            absent
+                .delete_if_matches("k", &precondition(None, Some(4)))
+                .await
+                .is_err()
+        );
+        assert_eq!(*absent.adapter.calls.borrow(), vec!["head:k"]);
     }
 }

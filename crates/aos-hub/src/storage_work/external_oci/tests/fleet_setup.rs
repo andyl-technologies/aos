@@ -10,6 +10,7 @@
 //! ```text
 //! AOS_EXTERNAL_OCI_SETUP_INPUT -> private closed JSON
 //! phase=profile   -> profile.json, setup-receipt.json
+//! phase=profile, profileRole=destination -> distinct destination-profile custody
 //! phase=candidate -> profile.json, candidate.json, candidate.signature,
 //!                    setup-receipt.json
 //! ```
@@ -48,11 +49,19 @@ enum Phase {
     Candidate,
 }
 
+#[derive(Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum ProfileRole {
+    Destination,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct Input {
     version: u8,
     phase: Phase,
+    #[serde(default)]
+    profile_role: Option<ProfileRole>,
     run_id: String,
     deployment_id: String,
     source_digest: String,
@@ -109,10 +118,21 @@ impl Input {
                 && hex_value(&self.provider_review_sha256, 64),
             "External OCI setup selection differs"
         );
+        let destination = self.profile_role == Some(ProfileRole::Destination);
+        let profile_output = if destination {
+            "destination-profile"
+        } else {
+            "profile"
+        };
+        let placement_suffix = if destination {
+            "destination/registry"
+        } else {
+            "registry"
+        };
         ensure!(
             self.placement_prefix
                 == format!(
-                    ".aos-direct-qualification/external-oci/{}/registry",
+                    ".aos-direct-qualification/external-oci/{}/{placement_suffix}",
                     self.run_id
                 ),
             "External OCI setup placement leaves its reserved run"
@@ -123,22 +143,24 @@ impl Input {
                 && self
                     .output_directory
                     .file_name()
-                    .is_some_and(|name| name == "profile" || name == "candidate"),
+                    .is_some_and(|name| name == profile_output || name == "candidate"),
             "External OCI setup output leaves its private run"
         );
         match self.phase {
             Phase::Profile => ensure!(
                 self.output_directory
                     .file_name()
-                    .is_some_and(|name| name == "profile")
+                    .is_some_and(|name| name == profile_output)
                     && self.placement_id.is_none()
                     && self.expected_profile_sha256.is_none(),
                 "profile preparation cannot assert a ready placement"
             ),
             Phase::Candidate => ensure!(
-                self.output_directory
-                    .file_name()
-                    .is_some_and(|name| name == "candidate")
+                self.profile_role.is_none()
+                    && self
+                        .output_directory
+                        .file_name()
+                        .is_some_and(|name| name == "candidate")
                     && self.placement_id.is_some_and(|id| id > 0)
                     && self
                         .expected_profile_sha256
@@ -319,6 +341,17 @@ async fn current_snapshot(
         latest,
         latest.checked_add(30).context("snapshot window overflow")?,
     )?;
+    if input.profile_role == Some(ProfileRole::Destination) {
+        ensure!(
+            snapshot.binding_stable_id == format!("external-destination-{}", input.run_id)
+                && snapshot.object_prefix
+                    == format!(
+                        ".aos-direct-qualification/external-oci/{}/destination",
+                        input.run_id
+                    ),
+            "destination profile selected another current binding or prefix"
+        );
+    }
     if let Some(id) = input.placement_id {
         let placement = db
             .surface_placement(id)
@@ -609,4 +642,301 @@ fn candidate_requires_actual_placement_and_unchanged_profile_selection() {
             .validate()
             .is_err()
     );
+}
+
+fn destination_input() -> Value {
+    let mut input = synthetic_input();
+    input["profileRole"] = json!("destination");
+    input["placementPrefix"] = json!(format!(
+        ".aos-direct-qualification/external-oci/{}/destination/registry",
+        "a".repeat(32)
+    ));
+    input["outputDirectory"] = json!(format!(
+        "/var/lib/hybrid-native/external-oci/{}/destination-profile",
+        "a".repeat(32)
+    ));
+    input
+}
+
+#[test]
+fn destination_profile_has_separate_closed_custody_without_candidate_authority() {
+    serde_json::from_value::<Input>(destination_input())
+        .unwrap()
+        .validate()
+        .unwrap();
+
+    for (field, value) in [
+        ("phase", json!("candidate")),
+        ("placementId", json!(5)),
+        ("expectedProfileSha256", json!("d".repeat(64))),
+        (
+            "placementPrefix",
+            synthetic_input()["placementPrefix"].clone(),
+        ),
+        (
+            "outputDirectory",
+            synthetic_input()["outputDirectory"].clone(),
+        ),
+    ] {
+        let mut changed = destination_input();
+        changed[field] = value;
+        assert!(serde_json::from_value::<Input>(changed)
+            .unwrap()
+            .validate()
+            .is_err());
+    }
+
+    let mut wrong_role = destination_input();
+    wrong_role["profileRole"] = json!("source");
+    assert!(serde_json::from_value::<Input>(wrong_role).is_err());
+    let mut absent_role = destination_input();
+    absent_role.as_object_mut().unwrap().remove("profileRole");
+    assert!(serde_json::from_value::<Input>(absent_role)
+        .unwrap()
+        .validate()
+        .is_err());
+}
+
+// This material exercises shared codecs over real in-memory SQL pins. It is
+// neither independently accepted provider evidence nor an OCI artifact.
+fn structural_profile(snapshot: &StorageBindingSnapshot, now: i64) -> ExternalOciProfile {
+    use aos_hub_core::storage_authority::{
+        ApproveStorageAuthorityAlias, AssociateStorageAuthorityBinding,
+        AttestStorageAuthorityExclusivity, CreatePhysicalStorageAuthority,
+        PhysicalStorageAuthorityId, SetStorageAuthorityAdmission, StorageAuthorityAdmissionState,
+        StorageAuthorityAliasSpec, StorageAuthorityCredentialMember, StorageAuthorityHost,
+    };
+
+    let executor = "destination-profile-test-executor";
+    let authority = CreatePhysicalStorageAuthority {
+        authority_id: PhysicalStorageAuthorityId::parse("00000000-0000-4000-8000-000000000001")
+            .unwrap(),
+        guard_namespace_id: "destination-profile-test-guard".into(),
+        physical_resource_evidence_digest: "1".repeat(64),
+        qualification_digest: "2".repeat(64),
+        qualified_managed_prefix: snapshot.object_prefix.clone(),
+    };
+    let alias = ApproveStorageAuthorityAlias {
+        alias_id: "destination-profile-test-alias".into(),
+        authority_id: authority.authority_id.clone(),
+        spec: StorageAuthorityAliasSpec {
+            host: StorageAuthorityHost::Dns("s3.fleet.test".into()),
+            port: 443,
+            bucket: snapshot.object_bucket.clone(),
+        },
+        equivalence_evidence_digest: "3".repeat(64),
+    };
+    let association = AssociateStorageAuthorityBinding {
+        association_id: "destination-profile-test-association".into(),
+        authority_id: authority.authority_id.clone(),
+        alias_id: alias.alias_id.clone(),
+        binding_id: snapshot.binding_id,
+        binding_stable_id: snapshot.binding_stable_id.clone(),
+        binding_resource_version: snapshot.binding_resource_version,
+        binding_write_revision: 1,
+        binding_prefix: snapshot.object_prefix.clone(),
+    };
+    let attestation = AttestStorageAuthorityExclusivity {
+        attestation_id: "destination-profile-test-attestation".into(),
+        authority_id: authority.authority_id.clone(),
+        managed_prefix: snapshot.object_prefix.clone(),
+        qualification_digest: authority.qualification_digest.clone(),
+        provider_policy_evidence_digest: "4".repeat(64),
+        executor_identity: executor.into(),
+        credentials: snapshot
+            .credentials
+            .iter()
+            .map(|reference| StorageAuthorityCredentialMember {
+                association_id: association.association_id.clone(),
+                purpose: reference.purpose.clone(),
+                generation: reference.generation,
+                secret_version_ref: reference.secret_version_ref.clone(),
+                credential_fingerprint: reference.fingerprint.clone(),
+            })
+            .collect(),
+        valid_until: now + 600,
+    };
+    let admission = SetStorageAuthorityAdmission {
+        authority_id: authority.authority_id.clone(),
+        expected_generation: 0,
+        expected_digest: None,
+        guard_namespace_id: authority.guard_namespace_id.clone(),
+        state: StorageAuthorityAdmissionState::Admitted,
+        attestation_id: Some(attestation.attestation_id.clone()),
+        association_ids: vec![association.association_id.clone()],
+    };
+    let publication = StorageAuthorityPublication {
+        authority: authority.clone(),
+        aliases: vec![alias],
+        associations: vec![association.clone()],
+        attestation: Some(attestation),
+        digest: digest(&serde_json::to_vec(&admission).unwrap()),
+        admission,
+        generation: 1,
+    };
+    let cohort = |purpose, effects| {
+        LeaseCohort::from_publication(
+            &publication,
+            executor,
+            &association.association_id,
+            purpose,
+            &snapshot.object_prefix,
+            effects,
+        )
+        .unwrap()
+    };
+
+    ExternalOciProfile {
+        issuer_installation: aos_hub_core::storage_authority::lease::control::IssuerInstallation {
+            format_version: 1,
+            authority,
+            issuer_resource_id: "destination-profile-test-resource".into(),
+            runtime_identity: "destination-profile-test-runtime".into(),
+            executor_identity: executor.into(),
+        },
+        read_cohort: cohort(
+            LeasePurpose::Read,
+            vec![LeaseEffect::Head, LeaseEffect::Read],
+        ),
+        write_cohort: cohort(
+            LeasePurpose::Write,
+            vec![
+                LeaseEffect::Put,
+                LeaseEffect::MultipartCreate,
+                LeaseEffect::MultipartPart,
+                LeaseEffect::MultipartComplete,
+                LeaseEffect::MultipartAbort,
+            ],
+        ),
+        binding_spec_revision: snapshot.binding_spec_revision().unwrap(),
+        private_policy: DirectPrivateStagePolicyRef {
+            policy_id: "destination-profile-test-policy".into(),
+            policy_digest: "5".repeat(64),
+            namespace: "destination-profile-test-guard".into(),
+        },
+        maximum_blob_bytes: 16 * 1024 * 1024,
+        maximum_chunk_bytes:
+            aos_hub_core::storage_authority::external_object::oci::MAX_EXTERNAL_OCI_CHUNK_BYTES,
+        part_bytes: aos_hub_core::storage_authority::external_object::oci::EXTERNAL_OCI_PART_BYTES,
+        versionless_conditional_reads: false,
+    }
+}
+
+#[tokio::test]
+async fn destination_profile_rechecks_actual_selected_binding_and_current_credentials() {
+    let backend = SqlxBackend::connect_sqlite(":memory:").await.unwrap();
+    let SqlxBackend::Sqlite(pool) = &backend else {
+        panic!("SQLite fixture");
+    };
+    let observer = SqlxBackend::Sqlite(pool.clone());
+    let db = Database::with_backend(Box::new(backend)).await.unwrap();
+    let org = db
+        .create_org("profile-bindings", "Profile bindings")
+        .await
+        .unwrap();
+    let owner = db.org_by_id(org).await.unwrap().unwrap();
+    let mut ids = Vec::new();
+    for name in ["source", "destination"] {
+        let run = "a".repeat(32);
+        let stable_id = format!("external-{name}-{run}");
+        let prefix = if name == "destination" {
+            format!(".aos-direct-qualification/external-oci/{run}/destination")
+        } else {
+            format!(".aos-direct-qualification/external-oci/{run}")
+        };
+        let id = db
+            .create_topology_binding(
+                Some(org),
+                &stable_id,
+                &owner.stable_id,
+                name,
+                "s3",
+                None,
+                Some("qualified-bucket"),
+                Some(&prefix),
+                Some("https"),
+                Some("dns"),
+                Some(b"s3.fleet.test"),
+                Some(443),
+                Some("test-region"),
+                Some("private"),
+            )
+            .await
+            .unwrap();
+        for purpose in ["read", "write", "presign"] {
+            let credential = db
+                .set_binding_credential_revision(
+                    id,
+                    purpose,
+                    &format!("secret://fixture/{purpose}/v1"),
+                    0,
+                    &"4".repeat(64),
+                    "system:test",
+                )
+                .await
+                .unwrap();
+            db.validate_binding_credential_revision(
+                id,
+                purpose,
+                credential.generation,
+                "valid",
+                None,
+                credential.head_resource_version,
+            )
+            .await
+            .unwrap();
+        }
+        ids.push(id);
+    }
+    assert_ne!(ids[0], ids[1]);
+    let mut input: Input = serde_json::from_value(destination_input()).unwrap();
+    input.binding_id = ids[1];
+    input.deployment_id = "deployment-1".into();
+    input.validate().unwrap();
+    let now = aos_hub_core::clock::now_unix_secs();
+    let selected = current_snapshot(&db, &input, now).await.unwrap();
+    let profile = structural_profile(&selected, now);
+    profile.validate_snapshot(&selected, now).unwrap();
+
+    input.binding_id = ids[0];
+    assert!(current_snapshot(&db, &input, now).await.is_err());
+    input.profile_role = None;
+    let other_binding = current_snapshot(&db, &input, now).await.unwrap();
+    assert!(profile.validate_snapshot(&other_binding, now).is_err());
+    input.binding_id = ids[1];
+    input.profile_role = Some(ProfileRole::Destination);
+    let credential = db
+        .set_binding_credential_revision(
+            ids[1],
+            "read",
+            "secret://fixture/read/v2",
+            1,
+            &"5".repeat(64),
+            "system:test",
+        )
+        .await
+        .unwrap();
+    db.validate_binding_credential_revision(
+        ids[1],
+        "read",
+        credential.generation,
+        "valid",
+        None,
+        credential.head_resource_version,
+    )
+    .await
+    .unwrap();
+    let changed_current = current_snapshot(&db, &input, now).await.unwrap();
+    assert!(profile.validate_snapshot(&changed_current, now).is_err());
+    observer
+        .execute(
+            "UPDATE bindings SET object_prefix = ?1 WHERE id = ?2",
+            &[
+                aos_hub_core::value::Value::Text("wrong/destination".into()),
+                aos_hub_core::value::Value::Int(ids[1]),
+            ],
+        )
+        .await
+        .unwrap();
+    assert!(current_snapshot(&db, &input, now).await.is_err());
 }

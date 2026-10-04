@@ -150,9 +150,82 @@ def bootstrap_external_oci_binding(controls, worker, tools, coordinates, selecti
         "operatorVersions": versions, "credentialOperations": operations, "qualification": None}
 
 
+def bootstrap_external_oci_destination(controls, worker, tools, coordinates,
+                                       source_credentials, provider_material, operator,
+                                       database_host, private_command):
+    """Create a second binding and independently validate its queued originals.
+
+    Only the already provisioned read-only SQL login is copied to separate
+    private operator custody. Provider values, version references and staging
+    originals are retained independently for this destination binding.
+    """
+    _control_pair(controls, coordinates)
+    run = coordinates["runId"]
+    organization = source_credentials["organization"]
+    source = source_credentials["binding"]
+    if (organization["slug"] != "external-" + run
+            or source["ownerScopeKey"] != organization["ownerScopeKey"]):
+        raise ValueError("destination binding requires the selected original organization")
+    prefix = coordinates["placementPrefix"].rsplit("/", 1)[0] + "/destination"
+    provider = {**source["spec"]["s3"], "prefix": prefix}
+    stable_id = "external-destination-" + run
+    label = "external-destination-" + run
+    binding = controls.reviewed("BindingService", "PlanCreateBinding", "CreateBinding", {
+        "stableId": stable_id, "ownerScopeKey": organization["ownerScopeKey"],
+        "expectedResourceVersion": "", "spec": {"name": "destination", "s3": provider},
+    }, label + "-binding")["binding"]
+    if (binding["stableId"] != stable_id or binding["stableId"] == source["stableId"]
+            or binding["ownerScopeKey"] != organization["ownerScopeKey"]
+            or binding["spec"]["name"] != "destination"
+            or binding["spec"]["s3"] != provider):
+        raise ValueError("actual destination binding differs from its independent selection")
+
+    original_root = coordinates["workerRoot"] + "/operator"
+    root = original_root + "/destination"
+    # This private command emits no URL, password, provider value or digest.
+    program = (
+        "import os, stat\nfrom pathlib import Path\n"
+        f"original=Path({original_root!r})\nroot=Path({root!r})\n"
+        "root.mkdir(mode=0o700,exist_ok=False)\n"
+        "for name in ('sql.url','sql-password'):\n"
+        "    with os.fdopen(os.open(original/name,os.O_RDONLY|os.O_NOFOLLOW),'rb') as source:\n"
+        "        metadata=os.fstat(source.fileno())\n"
+        "        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_uid!=os.getuid()\n"
+        "                or metadata.st_mode&0o077 or metadata.st_nlink!=1):\n"
+        "            raise ValueError('destination reader custody differs')\n"
+        "        body=source.read(8193)\n"
+        "        if not 0<len(body)<=8192: raise ValueError('destination reader input exceeds bound')\n"
+        "    with os.fdopen(os.open(root/name,os.O_WRONLY|os.O_CREAT|os.O_EXCL,0o600),'wb') as output:\n"
+        "        output.write(body)\n        output.flush()\n        os.fsync(output.fileno())\n"
+    )
+    private_command(worker, shlex.join([tools["python"], "-c", program]))
+    references = {purpose: f"secret://fleet/external-oci/{run}/destination/{purpose}/v1"
+        for purpose in ("presign", "read", "list", "write")}
+    versions = operator.install_operator_provider_versions(worker, tools["python"],
+        provider_material, references, operator_root=root)
+
+    def stage(operation_id, purpose):
+        return operator.stage_queued_provider_credential(worker, tools["python"],
+            tools["authorityBootstrap"], operation_id, purpose, tools["deploymentId"],
+            PUBLIC_ORIGIN, tools["storageWorkKeyFile"], versions["manifestFile"], operator_root=root)
+
+    operations = controls.validate_external_credentials(organization["slug"], "destination",
+        references, versions["materialSha256"], stage, label_prefix=label)
+    binding = controls.get_external_binding(organization["slug"], "destination")
+    if (binding["stableId"] != stable_id or binding["ownerScopeKey"] != organization["ownerScopeKey"]
+            or binding["spec"]["name"] != "destination" or binding["spec"]["s3"] != provider):
+        raise ValueError("validated destination binding changed its independent scope")
+    pins = operator.read_operator_binding_pins(worker, tools["postgres"], database_host, binding,
+        operator_root=root, database_name=coordinates["databaseName"], operator_role=coordinates["operatorRole"])
+    if pins["bindingId"] == source_credentials["currentSqlPins"]["bindingId"]:
+        raise ValueError("destination SQL identity aliases the source binding")
+    return {"organization": organization, "binding": binding, "currentSqlPins": pins,
+        "operatorVersions": versions, "credentialOperations": operations, "qualification": None}
+
+
 def export_external_oci_setup(native, worker, tools, coordinates, files, selected,
                               credential_report, controls, control_module, private_command,
-                              observed_native_time):
+                              observed_native_time, *, additional_associations=None):
     """Admit independently selected actual facts and invoke current SQL exporters.
 
     `selected` comes from independent review of this fresh namespace, provider,
@@ -166,19 +239,44 @@ def export_external_oci_setup(native, worker, tools, coordinates, files, selecte
         raise ValueError("authority setup files differ")
     for path in files.values():
         _absolute(path)
-    authority = control_module.admit_external_fixture_authority(controls,
-        credential_report["organization"]["slug"], credential_report["binding"],
+    arguments = (controls, credential_report["organization"]["slug"], credential_report["binding"],
         credential_report["currentSqlPins"], selected, observed_native_time)
+    if additional_associations is None:
+        authority = control_module.admit_external_fixture_authority(*arguments)
+    else:
+        authority = control_module.admit_external_fixture_authority(*arguments,
+            additional_associations=additional_associations)
+    return export_external_oci_cohorts(worker, tools, coordinates, files, selected,
+        credential_report, authority, private_command)
+
+
+def export_external_oci_cohorts(worker, tools, coordinates, files, selected,
+                               credential_report, authority, private_command, *, operator_root=None):
+    """Export one actual association after the complete authority admission.
+
+    A paired caller invokes this for each independently admitted binding. Each
+    exporter reopens current SQL; no cohort, profile or publication is copied.
+    """
+    setup_coordinates(coordinates)
+    required_files = {"restrictedSqlUrlFile", "issuerConfigurationFile", "issuerPublicKeyFile",
+        "storageWorkKeyFile", "secretVersionManifestFile", "nativeDatabaseUrlFile"}
+    if set(files) != required_files:
+        raise ValueError("authority cohort export files differ")
+    for path in files.values():
+        _absolute(path)
+    root = operator_root or coordinates["workerRoot"] + "/operator"
+    if root not in {coordinates["workerRoot"] + "/operator", coordinates["workerRoot"] + "/operator/destination"}:
+        raise ValueError("authority cohort export leaves the selected binding roots")
     association = selected["associationId"]
     prefix = credential_report["binding"]["spec"]["s3"]["prefix"]
-    output = coordinates["workerRoot"] + "/operator/authority-export"
+    output = root + "/authority-export"
     base = [tools["authorityBootstrap"], "--database-url-file", files["restrictedSqlUrlFile"]]
     _invoke(worker, private_command, base + ["export", "--authority-id", selected["authorityId"],
         "--association-id", association, "--deployment-id", tools["deploymentId"],
         "--issuer-configuration", files["issuerConfigurationFile"],
         "--issuer-public-key-file", files["issuerPublicKeyFile"],
         "--admitted-prefix", prefix, "--output", output])
-    list_output = coordinates["workerRoot"] + "/operator/list-export"
+    list_output = root + "/list-export"
     _invoke(worker, private_command, base + ["export-list-cohort", "--authority-id", selected["authorityId"],
         "--association-id", association, "--issuer-configuration", files["issuerConfigurationFile"],
         "--admitted-prefix", prefix, "--output", list_output])
@@ -225,8 +323,14 @@ def project_external_oci_consumers(exports, profile, profile_receipt, selected_p
     fields = {"contract_id", "evidence_digest", "versioned_conditional_range_read",
         "versioned_multipart_complete", "private_incomplete_upload", "completed_upload_rejects_late_parts",
         "abort_closes_upload_id", "upload_part_checksum_enforced", "versioned_empty_put"}
-    if set(contract) not in (fields, fields | {"protected_versionless"}):
+    optional = {"protected_versionless", "maximum_copy_read_range_bytes"}
+    if not fields.issubset(contract) or set(contract) - fields - optional:
         raise ValueError("Copy/List provider contract differs")
+    observed_range = contract.get("maximum_copy_read_range_bytes")
+    if observed_range is not None and (not isinstance(observed_range, str)
+            or not re.fullmatch(r"[1-9][0-9]*", observed_range)
+            or not 1 <= int(observed_range) <= 64 * 1024 * 1024):
+        raise ValueError("Copy conditional-read bound is not an explicit admitted integer")
     if contract["evidence_digest"] != report_sha or not isinstance(contract["contract_id"], str) or not contract["contract_id"]:
         raise ValueError("Copy/List provider report commitment differs")
     common = ("private_incomplete_upload", "completed_upload_rejects_late_parts",
@@ -271,10 +375,63 @@ def project_external_oci_consumers(exports, profile, profile_receipt, selected_p
     return json.loads(json.dumps(result))
 
 
-def hydrate_external_oci_setup(native, worker, tools, coordinates, files, exports, private_command):
+def combine_external_oci_consumers(source, destination):
+    """Combine independently exported domains for the initial common-capacity epoch.
+
+    This projection preserves each actual cohort, provider report and profile.
+    The later signed capacity producer supplies the installed version-two
+    ceilings; this initial version-one configuration keeps both bounds at three.
+    """
+    keys = {"HUB_EXTERNAL_OBJECT_CONSUMER", "HUB_EXTERNAL_COPY_CONSUMER",
+        "HUB_EXTERNAL_OCI_CONSUMER", "HUB_EXTERNAL_STAGING_CONSUMER"}
+    if set(source) != keys or set(destination) != keys:
+        raise ValueError("paired initial consumers differ from their selected closed domains")
+    left, right = (value["HUB_EXTERNAL_OBJECT_CONSUMER"] for value in (source, destination))
+    common = set(left) - {"cohorts"}
+    if (set(left) != set(right) or any(left[key] != right[key] for key in common)
+            or len(left["cohorts"]) != 3 or len(right["cohorts"]) != 3):
+        raise ValueError("paired consumer issuer, publication or timing differs")
+    domains = [value["HUB_EXTERNAL_COPY_CONSUMER"] for value in (source, destination)]
+    if any(value["version"] != 1 or len(value["domains"]) != 1
+            or value["domains"][0]["provider_concurrency"] != 3 for value in domains):
+        raise ValueError("paired initial Copy domains require the same actual capacity three")
+    associations = [value["domains"][0]["read_cohort"]["association"] for value in domains]
+    if (associations[0]["binding_id"] == associations[1]["binding_id"]
+            or associations[0]["binding_stable_id"] == associations[1]["binding_stable_id"]):
+        raise ValueError("paired consumers alias the same binding")
+    result = json.loads(json.dumps(source))
+    result["HUB_EXTERNAL_OBJECT_CONSUMER"]["cohorts"].extend(json.loads(json.dumps(right["cohorts"])))
+    for key, member in (("HUB_EXTERNAL_COPY_CONSUMER", "domains"),
+            ("HUB_EXTERNAL_OCI_CONSUMER", "profiles"), ("HUB_EXTERNAL_STAGING_CONSUMER", "domains")):
+        if (set(source[key]) != {"version", member} or set(destination[key]) != {"version", member}
+                or source[key]["version"] != 1 or destination[key]["version"] != 1
+                or len(source[key][member]) != 1 or len(destination[key][member]) != 1):
+            raise ValueError("paired consumer domain shape differs")
+        result[key][member].extend(json.loads(json.dumps(destination[key][member])))
+    for value in (source, destination):
+        domain = value["HUB_EXTERNAL_COPY_CONSUMER"]["domains"][0]
+        stage = value["HUB_EXTERNAL_STAGING_CONSUMER"]["domains"][0]
+        profile = value["HUB_EXTERNAL_OCI_CONSUMER"]["profiles"][0]
+        object_consumer = value["HUB_EXTERNAL_OBJECT_CONSUMER"]
+        if (object_consumer["cohorts"] != [domain["read_cohort"], domain["list_cohort"], domain["write_cohort"]]
+                or stage["publication"] != object_consumer["publications"][0]
+                or any(domain[name] != stage[name] or domain[name] != profile[name]
+                    for name in ("issuer_installation", "read_cohort", "write_cohort"))):
+            raise ValueError("paired profile, staging and Copy select different actual exports")
+    if len(json.dumps(result["HUB_EXTERNAL_OBJECT_CONSUMER"], separators=(",", ":")).encode()) > 128 * 1024:
+        raise ValueError("paired full object consumer exceeds its unchanged bound")
+    return result
+
+
+def hydrate_external_oci_setup(native, worker, tools, coordinates, files, exports, private_command,
+                               *, operator_root=None):
     """Deliver current protected metadata after real issuer/consumer installation."""
     setup_coordinates(coordinates)
-    output = coordinates["workerRoot"] + "/operator/hydration"
+    root = operator_root or coordinates["workerRoot"] + "/operator"
+    if root not in {coordinates["workerRoot"] + "/operator",
+            coordinates["workerRoot"] + "/operator/destination"}:
+        raise ValueError("hydration leaves the selected binding roots")
+    output = root + "/hydration"
     _invoke(worker, private_command, [tools["authorityBootstrap"], "--database-url-file",
         files["restrictedSqlUrlFile"], "hydrate", "--bootstrap", exports["bootstrapFile"]["path"],
         "--worker-url", PUBLIC_ORIGIN, "--storage-work-key-file", files["storageWorkKeyFile"],
@@ -310,14 +467,21 @@ def invoke_external_oci_preparation(native, tools, coordinates, input_file, phas
     if phase not in {"profile", "candidate"} or PurePosixPath(input_file).parent != PurePosixPath(coordinates["nativeRoot"]):
         raise ValueError("setup invocation leaves the selected private run")
     offered, offered_ref = _read_json(native, private_command, tools["python"], input_file, maximum=65536)
+    role = offered.get("profileRole")
+    if role not in {None, "destination"} or (role is not None and phase != "profile"):
+        raise ValueError("offered setup profile role differs from its phase")
+    destination = role == "destination"
+    output_name = "destination-profile" if destination else phase
+    prefix = (coordinates["placementPrefix"].rsplit("/", 1)[0] + "/destination/registry"
+        if destination else coordinates["placementPrefix"])
     if (offered.get("runId") != coordinates["runId"] or offered.get("phase") != phase
-            or offered.get("placementPrefix") != coordinates["placementPrefix"]
-            or offered.get("outputDirectory") != coordinates["nativeRoot"] + "/" + phase):
+            or offered.get("placementPrefix") != prefix
+            or offered.get("outputDirectory") != coordinates["nativeRoot"] + "/" + output_name):
         raise ValueError("offered setup input names another original or output")
     _invoke(native, private_command, [tools["env"], "AOS_EXTERNAL_OCI_SETUP_INPUT=" + _absolute(input_file),
         _absolute(tools["managedCleanupNativeHelper"]), SETUP_SELECTOR,
         "--exact", "--ignored", "--nocapture"], timeout=120)
-    output = coordinates["nativeRoot"] + "/" + phase
+    output = coordinates["nativeRoot"] + "/" + output_name
     receipt, reference = _read_json(native, private_command, tools["python"], output + "/setup-receipt.json")
     profile, profile_ref = _read_json(native, private_command, tools["python"], output + "/profile.json")
     _, after_ref = _read_json(native, private_command, tools["python"], input_file, maximum=65536)

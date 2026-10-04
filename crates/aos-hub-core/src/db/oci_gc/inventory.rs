@@ -1,16 +1,16 @@
 //! Exact provider inventory and conditional-delete capability persistence.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use aos_oci_types::Sha256Digest;
 use serde::Serialize;
 use uuid::Uuid;
 
+use super::OCI_GC_MAX_INVENTORY_OBJECTS;
 use super::inventory_model::{
     inventory_entry_statements, validate_capability_input, validate_inventory_page,
 };
-use super::OCI_GC_MAX_INVENTORY_OBJECTS;
 use crate::backend::Statement;
-use crate::db::{validate_key_bytes, Database};
+use crate::db::{Database, validate_key_bytes};
 
 /// Observed conditional-delete capability for one immutable binding revision.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,6 +119,8 @@ pub struct OciProviderInventoryGenerationRecord {
     pub completed_at: Option<i64>,
     /// Optimistic-concurrency version.
     pub resource_version: i64,
+    /// Bounded canonical partial object observation; never provider authority.
+    pub object_progress: Option<super::inventory_progress::OciInventoryProgress>,
 }
 
 /// Input for beginning one provider enumeration generation.
@@ -297,7 +299,12 @@ impl Database {
         if now < 0 || limit == 0 || limit > 100 {
             bail!("OCI conditional-delete due selector is invalid");
         }
-        let oldest = now.saturating_sub(super::OCI_GC_MAX_INVENTORY_AGE_SECONDS);
+        // Re-probe once an observation is older than half the planner's
+        // maximum age. The cron period equals that maximum, so treating a
+        // full-age observation as fresh let a tick that ran seconds after its
+        // predecessor skip the binding and leave planning blocked for a
+        // further period.
+        let oldest = now.saturating_sub(super::OCI_GC_MAX_INVENTORY_AGE_SECONDS / 2);
         self.backend
             .query(
                 "SELECT placement.id, placement.name,
@@ -485,7 +492,7 @@ impl Database {
                         takeover_count,
                         started_at, observed_at,
                         completed_at, resource_version,
-                        purge_fence_resource_version
+                        purge_fence_resource_version, object_progress
                  FROM oci_provider_inventory_generations
                  WHERE state IN('collecting', 'sealing')
                    AND collector_lease_expires_at <= ?1
@@ -819,6 +826,38 @@ impl Database {
                 page_digest: &page_digest_string,
             })?);
         let lease_expires_at = input.now.saturating_add(input.lease_seconds);
+        let prior_progress = current
+            .object_progress
+            .as_ref()
+            .map(|value| value.encode().map(String::into_bytes))
+            .transpose()?;
+        if let Some(progress) = &current.object_progress {
+            progress.validate_for(&current)?;
+            let object = &progress.object;
+            let entry = input
+                .entries
+                .first()
+                .context("partial inventory page lost its sole entry")?;
+            let observed_hash = object.sha_state()?.final_digest()?;
+            if input.entries.len() != 1
+                || input.last_listed_key.as_deref() != Some(object.object_key.as_str())
+                || input.next_provider_cursor != progress.next_provider_cursor
+                || object.next_offset != object.expected_size
+                || entry.object_key != object.object_key
+                || entry.object_digest.to_string() != object.object_digest
+                || entry.observed_hash != observed_hash
+                || observed_hash != entry.object_digest
+                || entry.byte_size != object.expected_size
+                || entry.strong_etag != object.strong_etag
+                || entry.provider_version != object.provider_version
+            {
+                bail!("inventory page differs from its completed durable object");
+            }
+        }
+        let prior_progress_value = prior_progress
+            .map(crate::value::Value::Bytes)
+            .unwrap_or(crate::value::Value::Null);
+
         let mut statements = inventory_entry_statements(
             &input.generation_id,
             &input.collector_id,
@@ -830,6 +869,7 @@ impl Database {
             Statement::new(
                 "UPDATE oci_provider_inventory_generations
                  SET checkpoint_ordinal = ?5, provider_cursor = ?6,
+                     object_progress = NULL,
                      checkpoint_last_key = ?7, checkpoint_digest = ?8,
                      checkpoint_page_digest = ?9,
                      object_count = object_count + ?10,
@@ -842,7 +882,9 @@ impl Database {
                    AND checkpoint_ordinal = ?13
                    AND (provider_cursor = ?14
                      OR (provider_cursor IS NULL AND CAST(?14 AS VARCHAR) IS NULL))
-                   AND object_count + ?10 <= ?15",
+                   AND object_count + ?10 <= ?15
+                   AND resource_version = ?16
+                   AND (object_progress = ?17 OR (object_progress IS NULL AND ?17 IS NULL))",
                 vals![
                     input.generation_id,
                     input.collector_id,
@@ -858,7 +900,9 @@ impl Database {
                     lease_expires_at,
                     i64::try_from(input.expected_checkpoint_ordinal)?,
                     input.expected_provider_cursor,
-                    i64::try_from(OCI_GC_MAX_INVENTORY_OBJECTS)?
+                    i64::try_from(OCI_GC_MAX_INVENTORY_OBJECTS)?,
+                    current.resource_version,
+                    prior_progress_value
                 ],
             )
             .expecting(1),
@@ -898,6 +942,7 @@ impl Database {
                    AND collector_claim_token = ?3
                    AND collector_lease_expires_at > ?4
                    AND checkpoint_ordinal = ?5 AND provider_cursor IS NULL
+                   AND object_progress IS NULL
                    AND state = 'collecting'",
                 &vals![
                     input.generation_id,
@@ -930,6 +975,7 @@ impl Database {
             }
             if current.checkpoint_ordinal != input.expected_checkpoint_ordinal
                 || current.provider_cursor.is_some()
+                || current.object_progress.is_some()
             {
                 bail!("OCI provider inventory completion checkpoint conflicts");
             }
@@ -991,6 +1037,7 @@ impl Database {
                        AND collector_lease_expires_at > ?8
                        AND state = 'sealing'
                        AND checkpoint_ordinal = ?10 AND provider_cursor IS NULL
+                       AND object_progress IS NULL
                        AND object_count = ?4 AND byte_count = ?5
                        AND EXISTS (SELECT 1 FROM oci_registry_state registry_state
                          WHERE registry_state.registry_id =
@@ -1094,7 +1141,7 @@ impl Database {
                         takeover_count,
                         started_at, observed_at,
                         completed_at, resource_version,
-                        purge_fence_resource_version
+                        purge_fence_resource_version, object_progress
                  FROM oci_provider_inventory_generations WHERE id = ?1",
                 &vals![generation_id],
             )
@@ -1134,7 +1181,7 @@ impl Database {
                         inventory.checkpoint_digest, inventory.takeover_count,
                         inventory.started_at, inventory.observed_at,
                         inventory.completed_at, inventory.resource_version,
-                        inventory.purge_fence_resource_version
+                        inventory.purge_fence_resource_version, inventory.object_progress
                  FROM oci_provider_inventory_heads head
                  JOIN oci_provider_inventory_generations inventory
                    ON inventory.id = head.generation_id
@@ -1179,7 +1226,7 @@ impl Database {
                         takeover_count,
                         started_at, observed_at,
                         completed_at, resource_version,
-                        purge_fence_resource_version
+                        purge_fence_resource_version, object_progress
                  FROM oci_provider_inventory_generations
                  WHERE placement_id = ?1 AND state IN('collecting', 'sealing')",
                 &vals![placement_id],
@@ -1209,7 +1256,7 @@ impl Database {
                         provider_cursor, checkpoint_last_key, checkpoint_digest,
                         takeover_count, started_at, observed_at,
                         completed_at, resource_version,
-                        purge_fence_resource_version
+                        purge_fence_resource_version, object_progress
                  FROM oci_provider_inventory_generations
                  WHERE registry_id = ?1 AND placement_id = ?2
                    AND collector_id = ?3 AND idempotency_key = ?4",
@@ -1405,5 +1452,13 @@ pub(super) fn row_to_inventory_generation(
         observed_at: row.get(25)?,
         completed_at: row.get(26)?,
         resource_version: row.get(27)?,
+        object_progress: row
+            .get::<Option<Vec<u8>>>(29)?
+            .map(|bytes| {
+                let encoded = std::str::from_utf8(&bytes)
+                    .map_err(|_| anyhow::anyhow!("persisted OCI progress is not UTF-8"))?;
+                super::inventory_progress::OciInventoryProgress::decode(encoded)
+            })
+            .transpose()?,
     })
 }

@@ -65,7 +65,7 @@ def install_direct_provider_hold(s3, tools, *, partial_prefixes=None):
     if partial and (not isinstance(partial_prefixes, list) or not 1 <= len(partial_prefixes) <= 2
             or len(set(partial_prefixes)) != len(partial_prefixes)
             or any(not isinstance(prefix, str) or re.fullmatch(
-                r"/fleet-s3/\.aos-direct-qualification/external-oci/[0-9a-f]{32}/registry/", prefix) is None
+                r"/fleet-s3/(\.aos-direct-qualification/external-oci/([0-9a-f]{32}))/\1/registry/", prefix) is None
                 for prefix in partial_prefixes)):
         raise ValueError("Copy partial response prefixes differ from the planned fresh pairs")
     root = "/var/lib/hybrid-s3/copy-partial" if partial else "/var/lib/hybrid-s3/read-timeout"
@@ -213,15 +213,23 @@ def direct_provider_hold_command(s3, tools, installation, request):
 def direct_copy_partial_command(s3, tools, installation, request):
     """Control only one initially selected partial-response case."""
     fields = {"version", "kind", "targetPrefix"}
-    if isinstance(request, dict) and request.get("kind") == "arm":
-        fields.add("holdUntilUnixMillis")
+    if isinstance(request, dict) and request.get("kind") in {"arm", "arm_inventory", "arm_inventory_after_first_range"}:
+        fields.add("fixtureCutoffUnixMillis" if request["kind"] == "arm_inventory_after_first_range" else "holdUntilUnixMillis")
+        if request["kind"] != "arm":
+            fields.update({"sourceKey", "rangeStart"})
     if (not isinstance(request, dict) or set(request) != fields
             or type(request.get("version")) is not int or request["version"] != 1
-            or request.get("kind") not in {"arm", "state", "release"}
+            or request.get("kind") not in {"arm", "state", "release",
+                "arm_inventory", "arm_inventory_after_first_range", "state_inventory", "release_inventory"}
             or installation.get("root") != "/var/lib/hybrid-s3/copy-partial"
             or request.get("targetPrefix") not in installation.get("partialPrefixes", [])
             or installation.get("ready", {}).get("controlSocket") != installation["root"] + "/control.sock"
-            or request["kind"] == "arm" and type(request["holdUntilUnixMillis"]) is not int):
+            or request["kind"] in {"arm", "arm_inventory"} and type(request["holdUntilUnixMillis"]) is not int
+            or request["kind"] == "arm_inventory_after_first_range" and type(request["fixtureCutoffUnixMillis"]) is not int
+            or request["kind"] in {"arm_inventory", "arm_inventory_after_first_range"} and (type(request["rangeStart"]) is not int
+                or request["rangeStart"] != 8388608 or not isinstance(request["sourceKey"], str)
+                or re.fullmatch(re.escape(request["targetPrefix"] + "oci/blobs/sha256/")
+                    + r"[0-9a-f]{64}", request["sourceKey"]) is None)):
         raise ValueError("Copy partial control differs from its initial selected listener")
     return _direct_provider_listener_exchange(s3, tools, installation,
         json.dumps(request, sort_keys=True).encode())

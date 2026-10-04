@@ -11,6 +11,7 @@
 
 mod config;
 mod copy_contract;
+mod copy_capacity;
 mod profile_digest;
 mod journal;
 mod model;
@@ -75,4 +76,22 @@ pub fn export_provider_copy_contract(
 /// profile facts, and file errors.
 pub fn export_provider_profile_digest(profile_file: &Path) -> Result<String> {
     profile_digest::project(profile_file)
+}
+
+/// Projects explicit Copy configuration ceilings beneath verified runtime capacity.
+///
+/// The closed declaration supplies administrative ceilings, not measured peaks.
+/// Existing artifact verification supplies actual capacity and protected profiles.
+/// This read-only projection creates no provider or cohort permission.
+///
+/// # Errors
+/// Refuses invalid signature, audience, expiry, reviewer, declared profile or
+/// bounds; oversized or insecure inputs; and an existing or inaccessible output.
+pub fn export_provider_copy_capacity(
+    artifact_file: &Path,
+    reviewer_public_key_file: &Path,
+    declaration_file: &Path,
+    output: &Path,
+) -> Result<String> {
+    copy_capacity::project(artifact_file, reviewer_public_key_file, declaration_file, output)
 }

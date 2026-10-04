@@ -86,7 +86,7 @@ pub const OCI_MAX_SESSION_SECONDS: i64 = 24 * 60 * 60;
 /// Returns the canonical registry-surface key for an OCI content digest.
 #[must_use]
 pub fn oci_blob_object_key(digest: Sha256Digest) -> String {
-    format!("oci/blobs/sha256/{}", digest.encoded())
+    format!("{}{}", crate::keymap::OCI_BLOB_KEY_PREFIX, digest.encoded())
 }
 
 /// Computes the stable digest of one frozen closed catalog declaration.
@@ -4530,6 +4530,24 @@ mod tests {
             )
             .await
             .unwrap();
+        assert!(db
+            .staged_release_commit_indexed(registry_id, release_tag, source_commit)
+            .await
+            .unwrap());
+        assert!(!db
+            .staged_release_commit_indexed(registry_id, release_tag, "a different candidate")
+            .await
+            .unwrap());
+        assert!(
+            db.oci_manifest_for_repository(
+                repository.id,
+                &ManifestReference::Tag(Tag::parse(release_tag).unwrap()),
+            )
+            .await
+            .unwrap()
+            .is_none(),
+            "signed Git indexing alone must not create an OCI version tag"
+        );
         let signed_root_insert = "INSERT INTO oci_release_roots
                (registry_id, release_id, release_tag, repository_id,
                 container_name, index_digest, source_commit, verified_tag_oid,
@@ -4759,6 +4777,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(ready.state, "ready");
+        let version = db
+            .oci_manifest_for_repository(
+                repository.id,
+                &ManifestReference::Tag(Tag::parse(release_tag).unwrap()),
+            )
+            .await
+            .unwrap()
+            .expect("published immutable version pull");
+        assert_eq!(version.digest, catalog.root_digest);
         assert_eq!(
             db.commit_oci_publication(
                 &publication.id,

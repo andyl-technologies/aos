@@ -30,6 +30,7 @@ fn request() -> ExternalCopyRequest {
         ],
         placement_prefix: original.destination.prefix.clone(),
         operation: StorageWorkOperation::CopyObject {
+            source_binding_id: None,
             source_placement_id: original.source.placement_id.get(),
             source_placement_resource_version: original.source.resource_version.get(),
             source_prefix: original.source.prefix.clone(),
@@ -170,20 +171,24 @@ fn retained_copy_observation_preserves_correlation_without_renewing_permission()
     let mut noncanonical = request_bytes.clone();
     noncanonical.push(b' ');
     assert!(decode_copy_control_observation(&noncanonical, &reply_bytes, "deployment").is_err());
-    assert!(decode_copy_control_observation(
-        &request_bytes,
-        &reply_bytes[..reply_bytes.len() - 1],
-        "deployment"
-    )
-    .is_err());
+    assert!(
+        decode_copy_control_observation(
+            &request_bytes,
+            &reply_bytes[..reply_bytes.len() - 1],
+            "deployment"
+        )
+        .is_err()
+    );
     let mut reply = reply;
     reply.progress.copied_bytes = LeaseInteger::new(1).unwrap();
-    assert!(decode_copy_control_observation(
-        &request_bytes,
-        &serde_json::to_vec(&reply).unwrap(),
-        "deployment"
-    )
-    .is_err());
+    assert!(
+        decode_copy_control_observation(
+            &request_bytes,
+            &serde_json::to_vec(&reply).unwrap(),
+            "deployment"
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -229,6 +234,7 @@ fn retained_copy_metadata_observation_keeps_installed_profile_and_owner_exact() 
             progress: progress(),
         }),
         source_closure: None,
+        transfer: None,
     };
     let request_bytes = serde_json::to_vec(&query).unwrap();
     let reply_bytes = serde_json::to_vec(&reply).unwrap();
@@ -238,18 +244,186 @@ fn retained_copy_metadata_observation_keeps_installed_profile_and_owner_exact() 
     let mut changed = reply.clone();
     changed.profile.write_generation =
         LeaseInteger::new(original.write_generation.get() + 1).unwrap();
-    assert!(decode_copy_metadata_observation(
-        &request_bytes,
-        &serde_json::to_vec(&changed).unwrap(),
-        "deployment"
-    )
-    .is_err());
+    assert!(
+        decode_copy_metadata_observation(
+            &request_bytes,
+            &serde_json::to_vec(&changed).unwrap(),
+            "deployment"
+        )
+        .is_err()
+    );
     changed = reply;
     changed.retained.as_mut().unwrap().original.path = "another-object".into();
-    assert!(decode_copy_metadata_observation(
-        &request_bytes,
-        &serde_json::to_vec(&changed).unwrap(),
-        "deployment"
+    assert!(
+        decode_copy_metadata_observation(
+            &request_bytes,
+            &serde_json::to_vec(&changed).unwrap(),
+            "deployment"
+        )
+        .is_err()
+    );
+}
+
+fn paired_request() -> ExternalCopyRequest {
+    use crate::storage_authority::PhysicalStorageAuthorityId;
+    use crate::storage_authority::external_object::copy::{
+        CopyIncarnationMode, CopySourceBindingPin, CopyTransferPins,
+    };
+    let mut value = request();
+    value.original.version = 3;
+    value.original.source.binding_id = LeaseInteger::new(2).unwrap();
+    value.original.source.prefix = value.original.destination.prefix.clone();
+    value.original.expected_sha256 = Some("d".repeat(64));
+    value.original.transfer = Some(CopyTransferPins {
+        source_binding: CopySourceBindingPin {
+            binding_id: value.original.source.binding_id,
+            binding_stable_id: "independent-source".into(),
+            binding_resource_version: LeaseInteger::new(7).unwrap(),
+            snapshot_revision: "f".repeat(64),
+            profile_digest: "c".repeat(64),
+            binding_read_revision: LeaseInteger::new(9).unwrap(),
+            read_generation: value.original.read_generation,
+            physical_authority_id: PhysicalStorageAuthorityId::parse(
+                "00000000-0000-4000-8000-000000000001",
+            )
+            .unwrap(),
+        },
+        source_incarnation: CopyIncarnationMode::ProviderVersion,
+        destination_incarnation: CopyIncarnationMode::ProviderVersion,
+        destination_physical_authority_id: PhysicalStorageAuthorityId::parse(
+            "00000000-0000-4000-8000-000000000002",
+        )
+        .unwrap(),
+        maximum_source_range_bytes: value.original.part_bytes,
+    });
+    if let StorageWorkOperation::CopyObject {
+        source_binding_id,
+        source_prefix,
+        ..
+    } = &mut value.plan.operation
+    {
+        *source_binding_id = Some(2);
+        *source_prefix = value.original.source.prefix.clone();
+    }
+    // Destination Read is independently selected; it is not the source generation.
+    value.plan.credential_references[0].generation = 19;
+    let mut source = value.plan.clone();
+    source.plan_id = "f".repeat(32);
+    source.binding_id = 2;
+    source.binding_resource_version = 7;
+    source.binding_snapshot_revision = Some("f".repeat(64));
+    source.placement_id = value.original.source.placement_id.get();
+    source.placement_resource_version = value.original.source.resource_version.get();
+    source.placement_prefix = value.original.source.prefix.clone();
+    source.operation = StorageWorkOperation::Head {
+        path: value.original.path.clone(),
+    };
+    source.credential_references = vec![StorageCredentialSelector {
+        purpose: "read".into(),
+        generation: value.original.read_generation.get(),
+    }];
+    ExternalCopyRequest::new_cross_binding(
+        value.original,
+        value.claim,
+        value.plan,
+        source,
+        CopyControl::Advance,
+        100,
     )
-    .is_err());
+    .unwrap()
+}
+
+#[test]
+fn paired_control_authenticates_both_plans_and_preserves_equal_relative_prefixes() {
+    let value = paired_request();
+    let key = StorageWorkKey::new("p".repeat(32)).unwrap();
+    let (body, signature) = value.sign(&key, "deployment", 100).unwrap();
+    assert_eq!(
+        ExternalCopyRequest::authenticate(&key, &signature, &body, "deployment", 101).unwrap(),
+        value
+    );
+    for mutate in 0..5 {
+        let mut changed = value.clone();
+        let source = changed.source_plan.as_mut().unwrap();
+        match mutate {
+            0 => source.binding_id = changed.plan.binding_id,
+            1 => source.binding_snapshot_revision = changed.plan.binding_snapshot_revision.clone(),
+            2 => source.credential_references[0].generation += 1,
+            3 => source.expires_at -= 1,
+            _ => source.placement_prefix = "other-prefix".into(),
+        }
+        assert!(changed.validate("deployment", 100).is_err());
+    }
+    let mut missing = value.clone();
+    missing.source_plan = None;
+    assert!(missing.validate("deployment", 100).is_err());
+    if let StorageWorkOperation::CopyObject {
+        source_binding_id, ..
+    } = &mut missing.plan.operation
+    {
+        *source_binding_id = None;
+    }
+    assert!(missing.plan.validate("deployment", 100).is_err());
+}
+
+#[test]
+fn paired_metadata_retains_independent_read_profile_and_refuses_source_drift() {
+    use crate::storage_authority::external_object::copy::metadata::{
+        CopyMetadataProfile, CopyMetadataReply, CopyMetadataRequest,
+    };
+    let value = paired_request();
+    let mut destination = value.plan.clone();
+    destination.operation = StorageWorkOperation::Head {
+        path: value.original.path.clone(),
+    };
+    destination.credential_references.truncate(1);
+    let query = CopyMetadataRequest::new_cross_binding(
+        value.original.topology.clone(),
+        value.original.source.clone(),
+        value.original.destination.clone(),
+        Some(value.claim.clone()),
+        destination,
+        value.source_plan.clone().unwrap(),
+        value.original.path.clone(),
+        100,
+    )
+    .unwrap();
+    let mut reply = CopyMetadataReply {
+        version: 1,
+        request_digest: canonical_digest(&query).unwrap(),
+        profile: CopyMetadataProfile {
+            binding_stable_id: value.original.binding_stable_id.clone(),
+            binding_write_revision: value.original.binding_write_revision,
+            profile_digest: value.original.profile_digest.clone(),
+            part_bytes: value.original.part_bytes,
+            read_generation: LeaseInteger::new(19).unwrap(),
+            write_generation: value.original.write_generation,
+            protected_versionless: false,
+        },
+        retained: None,
+        source_closure: None,
+        transfer: value.original.transfer.clone(),
+    };
+    let selector = reply.selector(&query).unwrap();
+    assert_eq!(selector.transfer, value.original.transfer);
+    reply
+        .transfer
+        .as_mut()
+        .unwrap()
+        .source_binding
+        .read_generation = LeaseInteger::new(3).unwrap();
+    assert!(reply.selector(&query).is_err());
+    reply.transfer = None;
+    assert!(reply.selector(&query).is_err());
+}
+
+#[test]
+fn legacy_control_omits_all_paired_fields() {
+    let value = request();
+    let json = serde_json::to_value(&value).unwrap();
+    assert!(json.get("source_plan").is_none());
+    assert!(json["plan"]["operation"].get("source_binding_id").is_none());
+    let bytes = serde_json::to_vec(&value).unwrap();
+    let decoded: ExternalCopyRequest = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(serde_json::to_vec(&decoded).unwrap(), bytes);
 }

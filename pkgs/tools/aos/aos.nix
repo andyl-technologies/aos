@@ -212,6 +212,22 @@
     buildDeps = [buildPerl buildPkgConfig buildProtobuf buildCmake];
     runtimeDeps = [openssl sqlite libssh2 zlib];
   };
+
+  # Compiles every application test target, including the `tests/`
+  # integration crates that `cargo test --lib` skips, without running them.
+  # This gives a fast compile gate that does not wait on the full suite.
+  testTargets = mkCargoPackage {
+    pname = "aos-test-targets";
+    inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
+    cargoRoot = "crates";
+    cargoBuildCommands = [
+      "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${applicationTestFlags}"
+    ];
+    buildDeps = [buildPerl buildPkgConfig buildProtobuf buildCmake];
+    runtimeDeps = [openssl sqlite libssh2 zlib];
+    installBins = false;
+    doCheck = false;
+  };
 in
   mkCargoPackage {
     pname = "aos";
@@ -238,7 +254,7 @@ in
     # scheduler time to satisfy their production-sized deadlines on large hosts.
     cargoNextestMaxTestThreads = 16;
     passthru = {
-      inherit cargoArtifacts cargoDeps cargoEnv;
+      inherit cargoArtifacts cargoDeps cargoEnv testTargets;
     };
 
     # cmake builds git2's vendored libgit2 from source. OpenSSL, SQLite, and
@@ -253,7 +269,18 @@ in
     # the `aos` runtime closure because maintainer commands create, inspect,
     # commit, and publish isolated Git worktrees without host tools.
     buildDeps =
-      [buildPerl buildPkgConfig buildProtobuf buildCmake buildGitMinimal buildNix buildOpenSsh buildZstd remove-references-to ca-certificates]
+      [
+        buildPerl
+        buildPkgConfig
+        buildProtobuf
+        buildCmake
+        buildGitMinimal
+        buildNix
+        buildOpenSsh
+        buildZstd
+        ca-certificates
+        remove-references-to
+      ]
       ++ lib.optionals isDarwinCross [buildPackages.aos];
     runtimeDeps =
       [openssl sqlite libssh2 zlib]
@@ -284,6 +311,10 @@ in
       export OPENSSL_NO_VENDOR=1
       export OPENSSL_STATIC=0
       export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
+      # SDK clients created by loopback HTTP tests still initialize rustls.
+      # Give them the source-built trust roots rather than builder-local roots.
+      export SSL_CERT_FILE="${ca-certificates}/etc/ssl/certs/ca-bundle.crt"
+      unset SSL_CERT_DIR
       export PROTOC="${buildProtobuf}/bin/protoc"
       export AOS_MCOPY="${mtools}/bin/mcopy"
       ${lib.optionalString (!isDarwinCross) ''export AOS_QEMU_IMG="${qemu-img}/bin/qemu-img"''}

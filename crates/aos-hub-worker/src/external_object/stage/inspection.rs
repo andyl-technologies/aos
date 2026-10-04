@@ -20,7 +20,7 @@ use aos_hub_core::{
     storage_work::StorageCredentialSelector,
 };
 use sha2::{Digest as _, Sha256};
-use worker::{Env, Fetch, Headers, Method, Request, RequestInit, RequestRedirect};
+use worker::{Env, Headers, Method, Request, RequestInit, RequestRedirect};
 
 use super::super::config::configured;
 use super::{
@@ -102,6 +102,7 @@ pub(crate) async fn read_stage_metadata(
     closed: &ExternalStageResult,
     verified: &ExternalStageResult,
     maximum: usize,
+    held: &crate::direct_upload::provider_capacity::Permit,
 ) -> Result<Vec<u8>> {
     ensure!(
         matches!(&admission.intent.target, DirectUploadTarget::CacheObject { path, .. } if path.ends_with(".narinfo"))
@@ -198,7 +199,7 @@ pub(crate) async fn read_stage_metadata(
         .with_headers(headers)
         .with_redirect(RequestRedirect::Manual);
     let request = Request::new_with_init(&url, &init)?;
-    object.verifier()?.validate_lease(
+    let validated = object.verifier()?.validate_lease(
         lease.as_bytes(),
         &domain.read_cohort,
         &object.timing_profile,
@@ -207,37 +208,77 @@ pub(crate) async fn read_stage_metadata(
         LeaseEffect::Read,
         object.clock(),
     )?;
-    let response = Fetch::Request(request).send().await?;
-    ensure!(
-        response.status_code() == 200,
-        "external metadata GET not positively acknowledged"
-    );
-    let returned_etag = response
-        .headers()
-        .get("etag")?
-        .ok_or_else(|| anyhow::anyhow!("external metadata ETag absent"))?;
-    ensure!(
-        aos_hub_core::surface_write::strong_if_match_etag(&returned_etag)?
-            == aos_hub_core::surface_write::strong_if_match_etag(etag)?,
-        "external metadata returned incarnation changed"
-    );
-    let original = crate::direct_upload::observation::Object::new(
-        &admission.session_id,
-        &admission.logical_fingerprint,
-        &admission.intent,
-        placement_id,
-        &verified.receipt_digest,
-    );
-    let mut observed = crate::direct_upload::observation::Read::metadata(original);
-    let bytes = crate::direct_digest::read_bounded_native_observed(response, maximum, &|bytes| {
-        observed.consumed(bytes)
-    })
-    .await?;
-    ensure!(
-        bytes.len() as u64 == admission.intent.byte_size.get()
-            && hex::encode(Sha256::digest(&bytes)) == admission.intent.expected_sha256,
-        "external metadata original full SHA or size changed"
-    );
-    observed.positive();
-    Ok(bytes)
+    let cutoff = i64::try_from(admission.expires_at.get())?.min(validated.payload.not_after.get());
+    let fresh = || {
+        validate_domain_publication(
+            domain,
+            &publication,
+            &deployment,
+            object.clock().observed_at,
+        )?;
+        object.verifier()?.validate_lease(
+            lease.as_bytes(),
+            &domain.read_cohort,
+            &object.timing_profile,
+            &proof.floor,
+            &source_key,
+            LeaseEffect::Read,
+            object.clock(),
+        )?;
+        anyhow::ensure!(
+            u64::try_from(object.clock().observed_at)?
+                .saturating_add(u64::try_from(object.clock_uncertainty)?)
+                < admission.expires_at.get(),
+            "external metadata original admission expired"
+        );
+        Ok(())
+    };
+    super::super::request_capacity::raw::with_response(
+        env,
+        request,
+        cutoff,
+        object.clock_uncertainty,
+        None,
+        crate::direct_upload::provider_capacity::Class::Metadata,
+        Some(held),
+        &fresh,
+        &|| {},
+        false,
+        |response| async {
+            ensure!(
+                response.status_code() == 200,
+                "external metadata GET not positively acknowledged"
+            );
+            let returned_etag = response
+                .headers()
+                .get("etag")?
+                .ok_or_else(|| anyhow::anyhow!("external metadata ETag absent"))?;
+            ensure!(
+                aos_hub_core::surface_write::strong_if_match_etag(&returned_etag)?
+                    == aos_hub_core::surface_write::strong_if_match_etag(etag)?,
+                "external metadata returned incarnation changed"
+            );
+            let original = crate::direct_upload::observation::Object::new(
+                &admission.session_id,
+                &admission.logical_fingerprint,
+                &admission.intent,
+                placement_id,
+                &verified.receipt_digest,
+            );
+            let mut observed = crate::direct_upload::observation::Read::metadata(original);
+            let bytes =
+                crate::direct_digest::read_bounded_native_observed(response, maximum, &|bytes| {
+                    observed.consumed(bytes)
+                })
+                .await?;
+            ensure!(
+                bytes.len() as u64 == admission.intent.byte_size.get()
+                    && hex::encode(Sha256::digest(&bytes)) == admission.intent.expected_sha256,
+                "external metadata original full SHA or size changed"
+            );
+            observed.positive();
+            Ok(bytes)
+        },
+    )
+    .await
 }

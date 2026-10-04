@@ -31,20 +31,22 @@ use serde::{Deserialize, Serialize};
 
 use super::super::protocol::{digest, digest_string, MAX_MESSAGE};
 
-pub(super) const PATH: &str = "/copy-source";
-pub(super) const DOMAIN: &str = "aos.external-copy-protected-source.v2";
+pub(in crate::external_object) const PATH: &str = "/copy-source";
+pub(in crate::external_object) const DOMAIN: &str = "aos.external-copy-protected-source.v2";
 const REPLY_DOMAIN: &[u8] = b"aos.external-copy-protected-source-reply.v2\0";
-pub(super) const RECEIPT_HEADER: &str = "x-aos-copy-source-closure";
+pub(in crate::external_object) const RECEIPT_HEADER: &str = "x-aos-copy-source-closure";
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct Request {
+pub(in crate::external_object) struct Request {
     pub domain: String,
     pub nonce: String,
     pub profile_digest: String,
     pub expires_at: LeaseInteger,
     pub scope: StorageAuthorityObjectScope,
     pub selector: Option<CopyOriginalSelector>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inspection: Option<super::super::inspection::selection::Selection>,
     pub plan: StorageWorkPlan,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capacity_transfer: Option<crate::direct_upload::provider_capacity::transfer::Ticket>,
@@ -53,8 +55,9 @@ pub(super) struct Request {
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub(super) enum Operation {
+pub(in crate::external_object) enum Operation {
     Lookup,
+    InspectLookup { read_lease: String },
     Check {
         original: ExternalCopyOriginal,
     },
@@ -78,17 +81,22 @@ impl Request {
     ///
     /// # Errors
     /// Refuses malformed physical/original pins, excessive geometry or absent lease.
-    pub(super) fn validate(&self) -> Result<()> {
+    pub(in crate::external_object) fn validate(&self) -> Result<()> {
         self.scope.guard_name()?;
         self.plan
             .validate_observation_shape(&self.plan.deployment_id)?;
         if let Some(ticket) = &self.capacity_transfer {
             ticket.validate()?;
             ensure!(
-                matches!(self.operation, Operation::Range { .. })
+                (matches!(self.operation, Operation::Range { .. })
+                        || self.inspection.is_some() && matches!(self.operation, Operation::InspectRange { .. }))
                     && ticket.request_digest == self.capacity_digest()?,
                 "protected capacity transfer differs from its exact range"
             );
+        }
+        if let Some(inspection) = &self.inspection {
+            inspection.validate(&self.plan)?;
+            ensure!(self.selector.is_none(), "inspection cannot borrow a copy selector");
         }
         if let Some(selector) = &self.selector {
             selector.validate()?;
@@ -100,13 +108,25 @@ impl Request {
                 && self
                     .selector
                     .as_ref()
-                    .is_none_or(|selector| self.profile_digest == selector.profile_digest)
+                    .is_none_or(|selector| self.profile_digest == selector.transfer.as_ref().map_or(selector.profile_digest.as_str(), |transfer| transfer.source_binding.profile_digest.as_str()))
                 && self.expires_at.get() == self.plan.expires_at
                 && self.expires_at.get() > 0
                 && serde_json::to_vec(self)?.len() <= MAX_MESSAGE,
             "protected source selector malformed or oversized"
         );
         if let Some(selector) = &self.selector {
+            if let Some(transfer) = &selector.transfer {
+                let binding = &transfer.source_binding;
+                ensure!(self.plan.binding_id == binding.binding_id.get()
+                    && self.plan.binding_resource_version == binding.binding_resource_version.get()
+                    && self.plan.binding_snapshot_revision.as_ref() == Some(&binding.snapshot_revision)
+                    && self.plan.placement_id == selector.source.placement_id.get()
+                    && self.plan.placement_resource_version == selector.source.resource_version.get()
+                    && self.plan.placement_prefix == selector.source.prefix
+                    && self.plan.credential_references.iter().any(|credential|
+                        credential.purpose == "read" && credential.generation == binding.read_generation.get()),
+                    "protected source selects another independently authorized source binding");
+            } else {
             ensure!(
                 self.plan.binding_id == selector.destination.binding_id.get()
                     && self.plan.binding_resource_version
@@ -119,9 +139,12 @@ impl Request {
                     && self.plan.placement_prefix == selector.destination.prefix,
                 "protected source application selects another current destination"
             );
+            }
             match &self.plan.operation {
                 StorageWorkOperation::Head { path } => ensure!(
-                    matches!(self.operation, Operation::Lookup) && path == &selector.path,
+                    (matches!(self.operation, Operation::Lookup)
+                        || selector.transfer.is_some() && matches!(self.operation,
+                            Operation::Check { .. } | Operation::Range { .. })) && path == &selector.path,
                     "protected metadata lookup path differs"
                 ),
                 StorageWorkOperation::CopyObject {
@@ -131,7 +154,9 @@ impl Request {
                     path,
                     expected_size,
                     expected_etag,
+                    ..
                 } => {
+                    ensure!(selector.transfer.is_none(), "cross-binding protected read lacks independent source plan");
                     let original = match &self.operation {
                         Operation::Check { original } | Operation::Range { original, .. } => {
                             original
@@ -153,6 +178,9 @@ impl Request {
             }
         }
         match &self.operation {
+            Operation::InspectLookup { read_lease } => {
+                ensure!(self.inspection.is_some() && !read_lease.is_empty(), "inspection lookup lacks a typed read lease");
+            }
             Operation::Lookup => {
                 ensure!(
                     self.selector.is_some()
@@ -166,7 +194,7 @@ impl Request {
             Operation::Check { original } | Operation::Range { original, .. } => {
                 original.validate()?;
                 ensure!(
-                    original.version == 2
+                    original.source_incarnation()? == aos_hub_core::storage_authority::external_object::copy::CopyIncarnationMode::GuardedClosure
                         && self.selector.as_ref()
                             == Some(&CopyOriginalSelector::from_original(original)?),
                     "protected source original differs from its selector"
@@ -212,6 +240,26 @@ impl Request {
                             "protected inspection exceeds signed hash bounds"
                         );
                     }
+                    _ if self.inspection.is_some() => {
+                        ensure!(!matches!(self.plan.operation, StorageWorkOperation::Head { .. }),
+                            "protected metadata HEAD cannot authorize a source range");
+                        let selection = self.inspection.as_ref().ok_or_else(|| anyhow::anyhow!("typed selection absent"))?;
+                        ensure!(closure.bytes.get() as u64 <= selection.maximum_bytes
+                            && selection.expected_sha256.as_ref().is_none_or(|hash| hash == &closure.sha256),
+                            "typed inspection closure exceeds source bounds");
+                        if let StorageWorkOperation::InspectOciRange { start, end, .. } = &self.plan.operation {
+                            ensure!(*offset >= *start && offset.checked_add(*bytes)
+                                .is_some_and(|limit| end.checked_add(1).is_some_and(|signed| limit <= signed)),
+                                "typed OCI subinterval differs from its exact signed range");
+                        }
+                        if let StorageWorkOperation::HashOciRange { start, end, guarded_source, .. } = &self.plan.operation {
+                            let guarded = guarded_source.as_ref().ok_or_else(|| anyhow::anyhow!("protected inventory closure absent"))?;
+                            ensure!(guarded.scope == self.scope && guarded.closure == *closure
+                                && *offset >= *start && offset.checked_add(*bytes)
+                                    .is_some_and(|limit| end.checked_add(1).is_some_and(|signed| limit <= signed)),
+                                "protected inventory changed its closed source or signed interval");
+                        }
+                    }
                     _ => anyhow::bail!("protected inspection lacks a signed read operation"),
                 }
             }
@@ -239,7 +287,7 @@ impl Request {
     ///
     /// # Errors
     /// Returns an error if canonical serialization fails.
-    pub(super) fn capacity_digest(&self) -> Result<String> {
+    pub(in crate::external_object) fn capacity_digest(&self) -> Result<String> {
         let mut original = self.clone();
         original.capacity_transfer = None;
         digest(&original)
@@ -249,7 +297,7 @@ impl Request {
     ///
     /// # Errors
     /// Refuses elapsed deadlines or an unbounded request lifetime.
-    pub(super) fn current(&self, latest_now: i64) -> Result<()> {
+    pub(in crate::external_object) fn current(&self, latest_now: i64) -> Result<()> {
         self.validate()?;
         ensure!(
             self.expires_at
@@ -273,7 +321,7 @@ struct Reply {
 ///
 /// # Errors
 /// Refuses oversized, unauthenticated, noncanonical or intrinsically invalid bytes.
-pub(super) fn authenticate(key: &StorageWorkKey, signature: &str, body: &[u8]) -> Result<Request> {
+pub(in crate::external_object) fn authenticate(key: &StorageWorkKey, signature: &str, body: &[u8]) -> Result<Request> {
     ensure!(
         body.len() <= MAX_MESSAGE,
         "protected source request oversized"
@@ -292,7 +340,7 @@ pub(super) fn authenticate(key: &StorageWorkKey, signature: &str, body: &[u8]) -
 ///
 /// # Errors
 /// Refuses changed incarnation, malformed closure or an excessive response.
-pub(super) fn sign_reply(
+pub(in crate::external_object) fn sign_reply(
     key: &StorageWorkKey,
     request: &Request,
     closure: CopySourceClosure,
@@ -323,7 +371,7 @@ pub(super) fn sign_reply(
 ///
 /// # Errors
 /// Refuses another request, wrong MAC/domain, malformed or noncanonical metadata.
-pub(super) fn verify_reply(
+pub(in crate::external_object) fn verify_reply(
     key: &StorageWorkKey,
     request: &Request,
     signature: &str,
@@ -357,3 +405,60 @@ pub(super) fn verify_reply(
 
 #[cfg(test)]
 mod tests;
+
+/// Authenticated transient lookup result, never permission or durable absence.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(in crate::external_object) struct InspectionLookup {
+    pub request_digest: String,
+    pub closure: Option<CopySourceClosure>,
+    pub etag: Option<String>,
+}
+
+const INSPECTION_REPLY_DOMAIN: &[u8] = b"aos.external-protected-inspection-lookup.v1\0";
+
+pub(in crate::external_object) fn sign_inspection_lookup(
+    key: &StorageWorkKey, request: &Request,
+    closure: Option<CopySourceClosure>, etag: Option<String>,
+) -> Result<(Vec<u8>, String)> {
+    request.validate()?;
+    ensure!(matches!(request.operation, Operation::InspectLookup { .. }), "lookup result lacks typed request");
+    let reply = InspectionLookup { request_digest: digest(request)?, closure, etag };
+    validate_inspection_lookup(request, &reply)?;
+    let body = serde_json::to_vec(&reply)?;
+    ensure!(body.len() <= MAX_MESSAGE, "inspection lookup result oversized");
+    let signature = key.sign_body(&[INSPECTION_REPLY_DOMAIN, &body].concat())?;
+    Ok((body, signature))
+}
+
+pub(in crate::external_object) fn verify_inspection_lookup(
+    key: &StorageWorkKey, request: &Request, signature: &str, body: &[u8],
+) -> Result<InspectionLookup> {
+    request.validate()?;
+    ensure!(body.len() <= MAX_MESSAGE, "inspection lookup reply oversized");
+    key.verify_body(signature, &[INSPECTION_REPLY_DOMAIN, body].concat())?;
+    let reply: InspectionLookup = serde_json::from_slice(body)?;
+    ensure!(serde_json::to_vec(&reply)? == body, "inspection lookup reply noncanonical");
+    validate_inspection_lookup(request, &reply)?;
+    Ok(reply)
+}
+
+fn validate_inspection_lookup(request: &Request, reply: &InspectionLookup) -> Result<()> {
+    ensure!(matches!(request.operation, Operation::InspectLookup { .. })
+        && reply.request_digest == digest(request)?, "inspection lookup correlation differs");
+    match (&reply.closure, &reply.etag) {
+        (None, None) => Ok(()),
+        (Some(closure), Some(etag)) => {
+            closure.validate()?;
+            request.scope.validate_stamp(&closure.guard_stamp)?;
+            aos_hub_core::surface_write::strong_if_match_etag(etag)?;
+            let selected = request.inspection.as_ref().ok_or_else(|| anyhow::anyhow!("inspection source absent"))?;
+            ensure!(closure.bytes.get() as u64 <= selected.maximum_bytes
+                && closure.etag.as_ref().is_none_or(|actual| actual == etag)
+                && selected.expected_sha256.as_ref().is_none_or(|actual| actual == &closure.sha256),
+                "inspection lookup closure differs");
+            Ok(())
+        }
+        _ => anyhow::bail!("inspection lookup has incomplete source identity"),
+    }
+}

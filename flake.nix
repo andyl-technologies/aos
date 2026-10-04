@@ -3,6 +3,16 @@
 
   inputs = {};
 
+  # Dedicated public Nix key from the testing authority inventory. An empty
+  # or unavailable production testing cache may fall back to source builds.
+  nixConfig = {
+    extra-substituters = ["https://cdn.aos.andyl.org/andyl/experimental/"];
+    extra-trusted-public-keys = [
+      "andyl-experimental-nix-cache-v1:1eydap438KfoN+1wAumCXOewnzzg2Cc5mq9WwEb9z/I="
+    ];
+    fallback = true;
+  };
+
   outputs = _: let
     systems = [
       "x86_64-linux"
@@ -70,8 +80,14 @@
       # scheduling the derivations on x86_64.
       coordinatorSystem = "x86_64-linux";
       coordinator = aosFor coordinatorSystem;
-      platformBuilds = [
+      # The release contract and package inventory share this platform list.
+      # Deferred platforms are omitted for every named container.
+      deferredPlatforms = import ./qualification/deferred-platforms.nix;
+      released = system: !(builtins.elem system deferredPlatforms);
+      platformBuilds =
+        coordinator.lib.optional (released "x86_64-linux")
         coordinator.systems.${variant}.build.containers.${name}
+        ++ coordinator.lib.optional (released "aarch64-linux")
         (import ./. {
           system = coordinatorSystem;
           crossSystem = "aarch64-linux";
@@ -84,8 +100,7 @@
         .containers
         .${
           name
-        }
-      ];
+        };
       oci = import ./lib/build/oci {
         inherit (coordinator) lib;
         inherit (coordinator.pkgs) mkDerivation coreutils findutils gzip jq tar;
@@ -93,11 +108,11 @@
     in
       import ./lib/containers/multi-platform.nix {
         inherit (coordinator) lib pkgs;
-        inherit oci platformBuilds name;
+        inherit oci platformBuilds deferredPlatforms name;
       };
 
     productionContainer = coordinatedContainer "server" "aos";
-    testingContainer = coordinatedContainer "aos-testing" "aos";
+    experimentalContainer = coordinatedContainer "aos-experimental" "aos";
 
     # Flatten systems into flake packages:
     #   server-image-raw, server-image-qcow2, edge-image-raw, etc.
@@ -108,7 +123,7 @@
       # A variant that defers signing to the release finalizer has no final
       # image in Nix at all: `build.image` and `imageArtifacts` stay undefined
       # and the unsigned assembly is the only buildable output. Signed disks
-      # for those variants come from `aos release step finalize-image`.
+      # for those variants come from `aos maintain release step finalize-image`.
       externallyFinalized = name: assembly: {
         "${name}-unsigned-image-assembly" = assembly;
       };
@@ -206,18 +221,18 @@
         ) (builtins.attrNames aos.containerImages)
       );
 
-    testingContainerPackages = system: aos: coordinated: let
-      container = aos.systems.aos-testing.build.defaultContainer;
+    experimentalContainerPackages = system: aos: coordinated: let
+      container = aos.systems.aos-experimental.build.defaultContainer;
       platform = container.platforms.${system};
     in {
-      container-aos-testing-oci = platform.ociLayout;
-      container-aos-testing-docker = platform.dockerArchive;
-      container-aos-testing-metadata = platform.metadata;
-      container-aos-testing-index = coordinated.ociIndex;
-      container-aos-testing-platform-index = container.ociIndex;
-      container-aos-testing-evidence = coordinated.evidence;
-      container-aos-testing-publication-inputs = coordinated.publicationInputs;
-      container-aos-testing-qualification = coordinated.check;
+      container-aos-experimental-oci = platform.ociLayout;
+      container-aos-experimental-docker = platform.dockerArchive;
+      container-aos-experimental-metadata = platform.metadata;
+      container-aos-experimental-index = coordinated.ociIndex;
+      container-aos-experimental-platform-index = container.ociIndex;
+      container-aos-experimental-evidence = coordinated.evidence;
+      container-aos-experimental-publication-inputs = coordinated.publicationInputs;
+      container-aos-experimental-qualification = coordinated.check;
     };
   in {
     aosSystems = genAttrs systems (system: (aosFor system).systems);
@@ -231,11 +246,11 @@
       system: let
         aos = aosFor system;
         production = productionContainer system;
-        testing = testingContainer system;
+        experimental = experimentalContainer system;
         individualPackages = pkgPackages aos;
         containers =
           containerPackages system aos production
-          // testingContainerPackages system aos testing;
+          // experimentalContainerPackages system aos experimental;
         allPackages = aos.pkgs.mkDerivation {
           pname = "aos-all-packages";
           version = "0";
@@ -255,10 +270,18 @@
         {
           default = aos.pkgs.aos;
           aos = aos.pkgs.aos;
+
+          crucible-envoy-network-smoke = import ./tests/crucible/_envoy-network-smoke.nix {
+            pkgs = aos.pkgs;
+          };
           apm = aos.pkgs.aos.apm;
           apr = aos.pkgs.aos.apr;
+          release-tooling = aos.releaseTooling;
           all = allPackages;
           crucible-nginx-curl-guest = import ./tests/crucible/_nginx-curl-http-200-guest.nix {
+            pkgs = aos.pkgs;
+          };
+          crucible-envoy-network-guest = import ./tests/crucible/_envoy-network-guest.nix {
             pkgs = aos.pkgs;
           };
         }
@@ -271,11 +294,17 @@
     devShells = genAttrs systems (
       system: let
         aos = aosFor system;
-        aosCli = aos.pkgs.aos.overrideAttrs (_: {doCheck = false;});
+        devNixConfig = import ./tools/dev/nix-config.nix;
+        devLauncher = aos.pkgs.writeShellScriptBin "aos-dev" ''
+          exec ${aos.pkgs.bash}/bin/bash "''${AOS_DEV_ROOT:?Enter the AOS dev shell first}/tools/dev/aos-dev" "$@"
+        '';
         packages = [
-          aosCli
-          aosCli.apm
-          aosCli.apr
+          devLauncher
+          aos.pkgs.aos
+          aos.pkgs.bash
+          aos.pkgs.nix
+          aos.pkgs.alejandra
+          aos.pkgs.acl
           aos.pkgs.just
           aos.pkgs.rust
           aos.pkgs.rust.dev
@@ -287,10 +316,7 @@
           aos.pkgs.openssl
           aos.pkgs.sqlite
           aos.pkgs.protobuf
-          # Runtime tools the aos/apm/apr binaries shell out to by bare name
-          # (see runtimeTools in pkgs/tools/aos/aos.nix), so impure cargo runs
-          # in the dev shell resolve the same AOS-built tools the hermetic build
-          # uses instead of falling back to whatever is installed on the host.
+          # Runtime tools for CLI binaries built incrementally in this shell.
           aos.pkgs.git
           aos.pkgs.gnupg
           aos.pkgs.openssh
@@ -328,6 +354,20 @@
               else ""
             )
             + ''
+              # Prefer the live checkout so edits to the script are immediately
+              # visible. Explicit flake paths outside a checkout use the snapshot;
+              # AOS_DEV_ROOT can select a live checkout in that case.
+              if [ -z "''${AOS_DEV_ROOT:-}" ]; then
+                aos_dev_checkout=$(${aos.pkgs.git}/bin/git rev-parse --show-toplevel 2>/dev/null || true)
+                if [ -f "$aos_dev_checkout/tools/dev/aos-dev" ]; then
+                  export AOS_DEV_ROOT="$aos_dev_checkout"
+                else
+                  export AOS_DEV_ROOT="${./.}"
+                fi
+                unset aos_dev_checkout
+              fi
+              export NIX_CONFIG="''${NIX_CONFIG:+$NIX_CONFIG
+              }${devNixConfig.text}"
               export RUST_SRC_PATH="${aos.pkgs.rust.dev}/lib/rustlib/src/rust/library"
               export OPENSSL_DIR="${aos.pkgs.openssl}"
               export OPENSSL_NO_VENDOR=1
@@ -341,6 +381,23 @@
               # the `nix` subprocesses they launch.
               export ${cargoHostRustflagsVar}="-C link-arg=-Wl,-rpath,${aos.pkgs.openssl}/lib -C link-arg=-Wl,-rpath,${aos.pkgs.sqlite}/lib"
             '';
+        };
+
+        # The operator shell for canonical releases: only the installed
+        # release tooling closure, whose wrappers export AOS_RELEASE_TOOLING
+        # so `aos release` binds that closure and finds its executors.
+        release = builtins.derivation {
+          name = "aos-release";
+          inherit system;
+          outputs = ["out"];
+          builder = "${aos.pkgs.bash}/bin/bash";
+          args = [
+            "-c"
+            "echo 'Use nix develop .#release, not nix build' >&2; ${aos.pkgs.coreutils}/bin/mkdir -p $out"
+          ];
+          shellHook = ''
+            export PATH="${aos.releaseTooling}/bin''${PATH:+:$PATH}"
+          '';
         };
       }
     );
@@ -378,6 +435,7 @@
           eval = aos.checks.eval;
           rust-cargo-artifacts = aos.checks.rust.cargo-artifacts;
           rust-aos = aos.checks.rust.aos;
+          rust-aos-test-targets = aos.checks.rust.aos-test-targets;
           rust-crucible-controller = aos.checks.rust.crucible-controller;
           rust-crucible-qemu-plugin = aos.checks.rust.crucible-qemu-plugin;
           rust-crucible-guest = aos.checks.rust.crucible-guest;

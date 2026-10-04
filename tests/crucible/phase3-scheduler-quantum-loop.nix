@@ -115,7 +115,7 @@
       }
       {
         label = "RESOLVE due events";
-        needle = "resolve_due_scheduled_events(\n            &mut self.pending_events";
+        needle = "resolve_due_scheduled_events(&mut self.pending_events, &selected_node, after_time)?;";
       }
       {
         label = "EMIT helper";
@@ -130,12 +130,12 @@
         needle = "fn step_quantum";
       }
       {
-        label = "STEP derives the scheduler frontier from node counters";
-        needle = "let frontier = frontier_for(&self.nodes, self.timeline.shift())?;";
+        label = "STEP derives the scheduler frontier from exact node ticks";
+        needle = "let frontier = frontier_for(&self.nodes, Some(self.frontier))?;";
       }
       {
         label = "STEP updates scheduler frontier";
-        needle = "self.frontier = frontier;";
+        needle = "self.frontier = frontier_for(&self.nodes, Some(self.frontier))?;";
       }
       {
         label = "STEP counts one quantum";

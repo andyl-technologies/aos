@@ -19,7 +19,8 @@ use super::{
     transport::{self, Request, Response},
 };
 
-const FIRST_PART: usize = 5 * 1024 * 1024;
+// The conditional Read experiment independently covers the selected 8 MiB copy part.
+const FIRST_PART: usize = 8 * 1024 * 1024;
 const OBJECT_SIZE: usize = FIRST_PART + 32 * 1024;
 const METADATA_LIMIT: u64 = 512 * 1024;
 

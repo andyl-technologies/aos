@@ -147,6 +147,7 @@ pub async fn run(command: &ContainerCommand, printer: &Printer) -> Result<()> {
             expected_tag_digest,
             idempotency_key,
             stage_only,
+            registry_stage,
             registry_origin,
             registry_token,
             hub,
@@ -166,6 +167,7 @@ pub async fn run(command: &ContainerCommand, printer: &Printer) -> Result<()> {
                     expected_tag_digest: expected_tag_digest.as_deref(),
                     idempotency_key,
                     stage_only: *stage_only,
+                    registry_stage: registry_stage.as_deref(),
                     registry_origin: registry_origin.as_deref(),
                     registry_token: registry_token.as_deref(),
                     hub: hub.as_deref(),
@@ -587,6 +589,7 @@ struct PublishInput<'a> {
     expected_tag_digest: Option<&'a str>,
     idempotency_key: &'a str,
     stage_only: bool,
+    registry_stage: Option<&'a Path>,
     registry_origin: Option<&'a str>,
     registry_token: Option<&'a str>,
     hub: Option<&'a str>,
@@ -607,6 +610,7 @@ async fn publish(input: PublishInput<'_>, printer: &Printer) -> Result<()> {
         expected_tag_digest,
         idempotency_key,
         stage_only,
+        registry_stage,
         registry_origin,
         registry_token,
         hub,
@@ -622,6 +626,10 @@ async fn publish(input: PublishInput<'_>, printer: &Printer) -> Result<()> {
         !idempotency_key.is_empty() && idempotency_key.len() <= 120,
         "--idempotency-key must contain 1..120 bytes"
     );
+    // A destination under the registry's own slug addresses the registry OCI
+    // namespace of an instance-owned route. Distribution transfers keep the
+    // full wire name; the Hub tracks the registry-local remainder.
+    let (hub_repository, namespace) = split_registry_namespace(reference.repository(), registry);
     let release_bytes = read_release_sidecar(release_path)?;
     let release = ContainerRelease::from_canonical_json(&release_bytes)
         .context("validating signed container release sidecar")?;
@@ -636,6 +644,47 @@ async fn publish(input: PublishInput<'_>, printer: &Printer) -> Result<()> {
         release.nix.definition.attribute
     );
     validate_signature_input(signature_input_path, &release)?;
+    ensure!(
+        !stage_only || registry_stage.is_some(),
+        "--stage-only requires --registry-stage with a real prepared candidate"
+    );
+    let staged = registry_stage
+        .map(
+            |path| -> Result<aos_registry_surface::staging::StageRecord> {
+                let bytes = read_bounded_json_file_with_limit(
+                    path,
+                    "registry stage record",
+                    aos_registry_surface::staging::wire::MAX_DECODED_REVISION_BYTES as u64,
+                )?;
+                let record: aos_registry_surface::staging::StageRecord =
+                    serde_json::from_slice(&bytes)?;
+                record.revision.validate()?;
+                ensure!(
+                    matches!(
+                        record.state,
+                        aos_registry_surface::staging::StageState::Draft
+                            | aos_registry_surface::staging::StageState::Ready
+                    ),
+                    "registry stage is frozen or discarded"
+                );
+                ensure!(
+                    record.revision.registry == registry
+                        && record.revision.release_id == release.identity.release,
+                    "registry stage identity differs from this signed release"
+                );
+                let graph = aos_package::registry::container_stage::prepare_container_stage(
+                    release_layout,
+                    hub_repository.as_str(),
+                    &release,
+                )?;
+                ensure!(
+                    record.revision.container.as_ref() == Some(&graph),
+                    "registry stage does not retain this exact complete OCI graph and repository"
+                );
+                Ok(record)
+            },
+        )
+        .transpose()?;
 
     let target_tag = match reference.manifest_reference() {
         ManifestReference::Tag(tag) => Some(tag.to_string()),
@@ -677,7 +726,7 @@ async fn publish(input: PublishInput<'_>, printer: &Printer) -> Result<()> {
     ))?;
     let default_registry_origin = immutable_reference.default_origin()?.to_string();
     let registry_origin = registry_origin.unwrap_or(&default_registry_origin);
-    let control_access = if !stage_only || registry_token.is_none() {
+    let control_access = if !stage_only || staged.is_some() || registry_token.is_none() {
         crate::commands::hub_auth::prepare_hub_access(hub, token).await?;
         let (control_origin, control_token) =
             crate::commands::hub_auth::resolve_access(hub, token)?;
@@ -685,6 +734,23 @@ async fn publish(input: PublishInput<'_>, printer: &Printer) -> Result<()> {
             "verified publication requires an authenticated Hub profile or explicit --token",
         )?;
         Some((control_origin, control_token))
+    } else {
+        None
+    };
+    let stage_client = if let Some(record) = &staged {
+        let (control_origin, control_token) = control_access
+            .as_ref()
+            .context("registry stage requires authenticated Hub access")?;
+        let client = aos_package::registry::hub_stage::HubStageClient::connect(
+            control_origin,
+            registry,
+            Some(control_token),
+        )
+        .await?;
+        client
+            .upsert(&record.revision, record.revision.revision - 1, None)
+            .await?;
+        Some(client)
     } else {
         None
     };
@@ -700,13 +766,20 @@ async fn publish(input: PublishInput<'_>, printer: &Printer) -> Result<()> {
     let registry_client = RegistryClient::new(
         &immutable_reference,
         Some(registry_origin),
-        Some(registry_token),
+        Some(registry_token.clone()),
     )?;
     #[cfg(unix)]
     let registry_client = registry_client.with_direct_upload_options(direct.options());
     let cancellation = CancellationToken::new();
     let signal = cancellation_on_signal(cancellation.clone());
-    let (events, reporter) = progress_reporter(printer, "Publishing");
+    let (events, reporter) = progress_reporter(
+        printer,
+        if staged.is_some() {
+            "Staging"
+        } else {
+            "Publishing"
+        },
+    );
     let options = PushOptions {
         source: prepared.root().to_path_buf(),
         // Complete release publication is platform-independent. This field is
@@ -718,9 +791,47 @@ async fn publish(input: PublishInput<'_>, printer: &Printer) -> Result<()> {
         cancellation: cancellation.clone(),
         events,
     };
-    let graph = registry_client
-        .push_release_graph(&immutable_reference, &options, &release, &mount_from)
-        .await;
+    let graph = if let Some(record) = &staged {
+        // Capture must not precreate the checkpoint directory: the uploader
+        // claims that directory by writing its repository ownership marker.
+        let object_directory = options
+            .state_directory
+            .parent()
+            .context("OCI upload-state directory lacks a parent")?
+            .join("registry-stages")
+            .join(
+                options
+                    .state_directory
+                    .file_name()
+                    .context("OCI upload-state directory lacks its repository key")?,
+            )
+            .join(&record.revision.id)
+            .join("objects");
+        let container = record
+            .revision
+            .container
+            .as_ref()
+            .context("registry stage container graph is absent")?;
+        aos_package::registry::container_stage::capture_layout_objects(
+            prepared.root(),
+            container,
+            &object_directory,
+        )?;
+        aos_package::registry::container_stage::upload_container_stage_with_options(
+            &record.revision,
+            &object_directory,
+            registry_origin,
+            namespace,
+            Some(registry_token),
+            &options,
+            &mount_from,
+        )
+        .await
+    } else {
+        registry_client
+            .push_release_graph(&immutable_reference, &options, &release, &mount_from)
+            .await
+    };
     drop(options);
     let report = finish_reporter(reporter).await;
     if let Err(error) = report {
@@ -735,8 +846,22 @@ async fn publish(input: PublishInput<'_>, printer: &Printer) -> Result<()> {
         }
     };
 
-    if stage_only {
+    if stage_only || staged.is_some() {
         signal.abort();
+        let stage = match &stage_client {
+            Some(client) => Some(
+                client
+                    .show(
+                        &staged
+                            .as_ref()
+                            .context("stage record is absent")?
+                            .revision
+                            .id,
+                    )
+                    .await?,
+            ),
+            None => None,
+        };
         let response = json!({
             "schema": OUTPUT_SCHEMA,
             "operation": "publish",
@@ -749,6 +874,8 @@ async fn publish(input: PublishInput<'_>, printer: &Printer) -> Result<()> {
             "object_count": graph.object_count,
             "tag_updated": false,
             "verification": "pending-control-plane-commit",
+            "registry_stage": stage.as_ref().map(|stage| &stage.record),
+            "missing_paths": stage.as_ref().map(|stage| &stage.missing_paths),
         });
         if !printer.json_if_active(&response) {
             printer.success(&format!(
@@ -772,7 +899,7 @@ async fn publish(input: PublishInput<'_>, printer: &Printer) -> Result<()> {
     };
     let request = VerifiedPublicationRequest {
         registry: registry.to_string(),
-        repository: reference.repository().clone(),
+        repository: hub_repository,
         release,
         target_kind: target_kind.to_string(),
         target_tag,
@@ -847,17 +974,30 @@ fn validate_signature_input(path: &Path, release: &ContainerRelease) -> Result<(
 }
 
 fn read_bounded_json_file(path: &Path, label: &str) -> Result<Vec<u8>> {
+    read_bounded_json_file_with_limit(path, label, 4 * 1024 * 1024)
+}
+
+fn read_bounded_json_file_with_limit(
+    path: &Path,
+    label: &str,
+    maximum_bytes: u64,
+) -> Result<Vec<u8>> {
+    use std::io::Read as _;
     let metadata = fs::metadata(path)
         .with_context(|| format!("reading {label} metadata {}", path.display()))?;
     ensure!(metadata.is_file(), "{label} is not a file");
     ensure!(
-        metadata.len() <= 4 * 1024 * 1024,
-        "{label} exceeds the 4 MiB limit"
+        metadata.len() <= maximum_bytes,
+        "{label} exceeds the {maximum_bytes}-byte limit"
     );
-    let bytes = fs::read(path).with_context(|| format!("reading {label} {}", path.display()))?;
+    let mut bytes = Vec::new();
+    File::open(path)?
+        .take(maximum_bytes + 1)
+        .read_to_end(&mut bytes)
+        .with_context(|| format!("reading {label} {}", path.display()))?;
     ensure!(
-        bytes.len() <= 4 * 1024 * 1024,
-        "{label} grew beyond the 4 MiB limit"
+        u64::try_from(bytes.len())? <= maximum_bytes,
+        "{label} grew beyond the {maximum_bytes}-byte limit"
     );
     Ok(bytes)
 }
@@ -1277,6 +1417,28 @@ fn render_push_result(
         printer.success(&format!("Pushed {source_label} -> {reference}"));
     }
     Ok(())
+}
+
+/// Splits a destination repository into its Hub-local name and the registry
+/// namespace it travels under.
+///
+/// Instance-owned OCI routes serve a registry's repositories beneath the
+/// registry slug, so `acme/containers/aos` pushed to registry `acme/containers`
+/// is the Hub repository `aos` in the `acme/containers` namespace. A
+/// destination outside the slug is the registry-local name itself.
+fn split_registry_namespace<'a>(
+    repository: &RepositoryName,
+    registry: &'a str,
+) -> (RepositoryName, Option<&'a str>) {
+    let local = repository
+        .as_str()
+        .strip_prefix(registry)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .and_then(|rest| RepositoryName::parse(rest).ok());
+    match local {
+        Some(local) => (local, Some(registry)),
+        None => (repository.clone(), None),
+    }
 }
 
 fn parse_mount_sources(
@@ -1833,6 +1995,26 @@ mod tests {
     use std::sync::Arc;
     use std::sync::Mutex;
 
+    #[test]
+    fn destination_under_the_registry_slug_names_its_namespace() {
+        let wire = RepositoryName::parse("acme/containers/tools/aos").unwrap();
+        let (local, namespace) = split_registry_namespace(&wire, "acme/containers");
+        assert_eq!(local.as_str(), "tools/aos");
+        assert_eq!(namespace, Some("acme/containers"));
+
+        // A bare slug or a different prefix is a registry-local name.
+        let bare = RepositoryName::parse("acme/containers").unwrap();
+        assert_eq!(
+            split_registry_namespace(&bare, "acme/containers"),
+            (bare.clone(), None)
+        );
+        let other = RepositoryName::parse("acme/containers-private/aos").unwrap();
+        assert_eq!(
+            split_registry_namespace(&other, "acme/containers"),
+            (other.clone(), None)
+        );
+    }
+
     struct MockPublicationHook {
         calls: Mutex<Vec<&'static str>>,
         fail_commit: bool,
@@ -1956,7 +2138,7 @@ mod tests {
             "aos"
         ));
         assert!(definition_attribute_matches_image(
-            "systems.aos-testing.build.containers.aos",
+            "systems.aos-experimental.build.containers.aos",
             "aos"
         ));
         assert!(!definition_attribute_matches_image(

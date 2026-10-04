@@ -54,7 +54,7 @@ async fn empty_initializes_and_current_reopens_without_writes() {
         .query("SELECT version FROM schema_version", &[])
         .await
         .unwrap();
-    assert_eq!(current[0].get::<i64>(0).unwrap(), 8);
+    assert_eq!(current[0].get::<i64>(0).unwrap(), 12);
     let identity = backend
         .query("SELECT identity FROM hub_schema_identity", &[])
         .await
@@ -144,7 +144,7 @@ async fn concurrent_fresh_starters_share_actual_file_lock() {
         .await
         .unwrap();
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].get::<i64>(0).unwrap(), 8);
+    assert_eq!(rows[0].get::<i64>(0).unwrap(), 12);
 }
 
 #[cfg(any(feature = "postgres", feature = "mysql"))]

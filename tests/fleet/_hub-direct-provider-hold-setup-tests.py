@@ -2,6 +2,7 @@
 
 import copy
 import importlib.util
+import json
 from pathlib import Path
 import unittest
 
@@ -37,7 +38,7 @@ class ProviderReadinessTests(unittest.TestCase):
         self.assertIs(self.validate(self.ready), self.ready)
 
     def test_partial_owner_requires_exact_initial_prefixes_and_distinct_transport(self):
-        prefixes = ["/fleet-s3/.aos-direct-qualification/external-oci/" + "1" * 32 + "/registry/"]
+        prefixes = ["/fleet-s3/" + (".aos-direct-qualification/external-oci/" + "1" * 32 + "/") * 2 + "registry/"]
         prepared = {**self.prepared, "root": "/var/lib/hybrid-s3/copy-partial", "partialPrefixes": prefixes}
         ready = copy.deepcopy(self.ready)
         ready.pop("bodyBound")
@@ -56,7 +57,7 @@ class ProviderReadinessTests(unittest.TestCase):
                 setup.validate_direct_provider_hold_ready(changed, prepared, self.process)
 
     def test_partial_control_refuses_other_case_and_authority_fields_before_dispatch(self):
-        prefix = "/fleet-s3/.aos-direct-qualification/external-oci/" + "1" * 32 + "/registry/"
+        prefix = "/fleet-s3/" + (".aos-direct-qualification/external-oci/" + "1" * 32 + "/") * 2 + "registry/"
         installation = {"root": "/var/lib/hybrid-s3/copy-partial", "partialPrefixes": [prefix],
             "ready": {"controlSocket": "/var/lib/hybrid-s3/copy-partial/control.sock"}}
         for request in ({"version": 1, "kind": "state", "targetPrefix": prefix + "other/"},
@@ -65,6 +66,30 @@ class ProviderReadinessTests(unittest.TestCase):
                 {"version": 1, "kind": "delete", "targetPrefix": prefix}):
             with self.subTest(request=request), self.assertRaises(ValueError):
                 setup.direct_copy_partial_command(None, {}, installation, request)
+
+    def test_inventory_control_selects_only_exact_blob_and_fixed_continuation(self):
+        prefix = "/fleet-s3/" + (".aos-direct-qualification/external-oci/" + "1" * 32 + "/") * 2 + "registry/"
+        installation = {"root": "/var/lib/hybrid-s3/copy-partial", "partialPrefixes": [prefix],
+            "ready": {"controlSocket": "/var/lib/hybrid-s3/copy-partial/control.sock"}}
+        request = {"version": 1, "kind": "arm_inventory", "targetPrefix": prefix,
+            "sourceKey": prefix + "oci/blobs/sha256/" + "a" * 64,
+            "rangeStart": 8388608, "holdUntilUnixMillis": 10000}
+        calls = []
+        original = setup._direct_provider_listener_exchange
+        setup._direct_provider_listener_exchange = lambda machine, tools, selected, body: calls.append(
+            (selected, json.loads(body))) or {"version": 1, "status": "armed"}
+        try:
+            setup.direct_copy_partial_command(None, {}, installation, request)
+            self.assertEqual(calls, [(installation, request)])
+            for field, changed in (("rangeStart", 0), ("rangeStart", True),
+                    ("sourceKey", prefix + "oci/blobs/sha256/extra/" + "a" * 64),
+                    ("sourceKey", request["sourceKey"] + "?credential=private"),
+                    ("targetPrefix", prefix.replace("1" * 32, "2" * 32))):
+                with self.subTest(field=field), self.assertRaises(ValueError):
+                    setup.direct_copy_partial_command(None, {}, installation, {**request, field: changed})
+            self.assertEqual(len(calls), 1)
+        finally:
+            setup._direct_provider_listener_exchange = original
 
     def test_other_child_lifetime_configuration_or_endpoint_refuses(self):
         for name, value in (("pid", 102), ("startTicks", "203"), ("ownerUid", 1),

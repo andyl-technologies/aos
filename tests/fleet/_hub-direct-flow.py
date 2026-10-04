@@ -359,9 +359,10 @@ def direct_provider_observations(worker, s3, tools, selected, *,
     if not access or not secret:
         raise RuntimeError("actual Garage material capture failed")
     if observation_root != "/var/lib/hybrid-worker/provider-observation" and re.fullmatch(
-            r"/var/lib/hybrid-worker/external-oci/[0-9a-f]{32}/provider-observation", observation_root) is None:
+            r"/var/lib/hybrid-worker/external-oci/[0-9a-f]{32}/(?:destination-)?provider-observation", observation_root) is None:
         raise ValueError("Provider observations leave their selected private run")
-    if artifact_label != "provider" and re.fullmatch(r"external-oci-[0-9a-f]{32}-provider", artifact_label) is None:
+    if artifact_label != "provider" and re.fullmatch(
+            r"external-oci-[0-9a-f]{32}-(?:destination-)?provider", artifact_label) is None:
         raise ValueError("Provider observation retention label differs")
     root = observation_root
     documents = {

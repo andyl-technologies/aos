@@ -47,8 +47,11 @@ authority.
 | Flake outputs | [`flake.nix`](../../../flake.nix) | Expose deterministic release inventory and publication roots for all four targets; expose images only for Linux. |
 
 The existing `apr publish`, `apr channel`, cache, origin, and verification
-commands remain available as lower-level diagnostics and repair tools. The
-top-level release coordinator owns normal release sequencing.
+commands remain available as lower-level diagnostics and repair tools.
+Ordinary registry maintainers use the stable `apr release <version>`
+porcelain. The AOS-specific `aos maintain release` coordinator adds source
+planning and qualification through shared libraries. `aos release` is removed
+without an alias. See [release stages](../../registry/release-stages.md).
 
 ## New crates and module layout
 
@@ -232,23 +235,23 @@ object receipts. A failed version is not reusable.
 
 ## CLI contract
 
-The porcelain (`aos release new`, `advance`, `status`, `explain`, `review`,
+The porcelain (`aos maintain release new`, `advance`, `publish`, `status`, `explain`, `review`,
 and `fitness`) drives these leaf commands in process from a maintainer
 configuration and a work directory. The leaf command surface is:
 
 | Command | Effect |
 | --- | --- |
-| `aos release step plan` | Read-only evaluation; writes a new plan only to an explicitly named output. |
-| `aos release step build` | Realizes the planned matrix twice as required and records build evidence. |
-| `aos release step finalize` | Uses role-bound external signers, finalizes images and registry metadata, and emits the closed bundle. |
-| `aos release step compose-surface --to` | Verifies and atomically composes the registry/cache base, delegated manifest target, immutable TUF set, and fresh timestamp for one destination's surface. |
-| `aos release step publish --to` | Uploads the exact bundle to one destination's surface, admitting the signed staging qualification for a production destination, and records its receipt. |
-| `aos release step qualify-run --to` | Dispatches one destination's gates for a phase to native Linux and Darwin adapters over exact public bytes and signs the aggregate result. |
-| `aos release step channel advance --to --ring` | Performs one planned ring's compare-and-swap partition transition after public read-back. |
-| `aos release step channel complete --to` | Verifies the full signed rollout and threshold-approved retention/handoff evidence before closing the destination. |
-| `aos release step timestamp refresh --to` | Signs a timestamp over an already-authorized snapshot with the restricted timestamp role. |
-| `aos release step status` | Reconciles the journal with immutable local and public state without mutation. |
-| `aos release step verify` | Verifies plan, bundle, evidence, signatures, receipts, matrix completeness, and state transitions offline. |
+| `aos maintain release step plan` | Read-only evaluation; writes a new plan only to an explicitly named output. |
+| `aos maintain release step build` | Realizes the planned matrix twice as required and records build evidence. |
+| `aos maintain release step finalize` | Uses role-bound external signers, finalizes images and registry metadata, and emits the closed bundle. |
+| `aos maintain release step compose-surface --to` | Verifies and atomically composes the registry/cache base, delegated manifest target, immutable TUF set, and fresh timestamp for one destination's surface. |
+| `aos maintain release step publish --to` | Uploads the exact bundle to one destination's surface, admitting the signed staging qualification for a production destination, and records its receipt. |
+| `aos maintain release step qualify-run --to` | Dispatches one destination's gates for a phase to native Linux and Darwin adapters over exact public bytes and signs the aggregate result. |
+| `aos maintain release step channel advance --to --ring` | Performs one planned ring's compare-and-swap partition transition after public read-back. |
+| `aos maintain release step channel complete --to` | Verifies the full signed rollout and threshold-approved retention/handoff evidence before closing the destination. |
+| `aos maintain release step timestamp refresh --to` | Signs a timestamp over an already-authorized snapshot with the restricted timestamp role. |
+| `aos maintain release step status` | Reconciles the journal with immutable local and public state without mutation. |
+| `aos maintain release step verify` | Verifies plan, bundle, evidence, signatures, receipts, matrix completeness, and state transitions offline. |
 
 Every command supports stable JSON results. Mutating commands require an exact
 journal precondition and refuse ambiguous discovery. High-level commands do not
@@ -285,9 +288,9 @@ The implementation:
 
 Calling current `apr publish --no-commit` repeatedly against the real authoring
 clone is not an implementation of this transaction: a later failure would
-leave partial files and state behind. Compatibility `apr release` may wrap the
-new transaction for one-entry development releases, but production uses the
-manifest-driven API.
+leave partial files and state behind. Canonical `apr release <version>` and the
+AOS maintainer coordinator compose the shared transaction library; production
+uses its manifest-driven API.
 
 ## Signing protocol and adapters
 
@@ -481,7 +484,7 @@ under the named item; their public contract does not change between those PRs.
 - Implement plan, manifest, matrix, evidence, receipt, and state types.
 - Add malicious fixtures for unknown fields, duplicate keys, traversal,
   aliases, extra files, digest mismatch, illegal transitions, and role replay.
-- Add `aos release verify` and JSON output.
+- Add `aos maintain release step verify` and JSON output.
 
 Exit criterion: an offline verifier can validate or reject a synthetic complete
 bundle without Git, Nix, network, Hub, or private keys.
@@ -491,7 +494,7 @@ bundle without Git, Nix, network, Hub, or private keys.
 - Generalize `_platform-support.nix` and make unclassified packages fail
   evaluation.
 - Emit versioned release-inventory JSON from Nix.
-- Add `aos release plan` with protected-source, registry-base, version, matrix,
+- Add `aos maintain release step plan` with protected-source, registry-base, version, matrix,
   gate, deployment, signer-role, and retention checks.
 - Add full-matrix evaluation fixtures, including Darwin image rejection and
   stable blocked-cell rejection.
@@ -514,7 +517,7 @@ refs unchanged; a successful multi-platform transaction creates one commit.
 
 ### PR 4: Build, evidence, journal, and staging package bundle
 
-- Add `aos release build`, `status`, and journal transitions.
+- Add `aos maintain release step build`, `status`, and journal transitions.
 - Run planned derivations and repeat-build comparisons.
 - Generate source/license inventory, SPDX SBOM, provenance aggregation, and
   advisory evidence.

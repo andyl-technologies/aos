@@ -301,6 +301,29 @@ impl DirectUploadCoordinator {
     /// Refuses stale/changed discovery, source/placement mismatches, unknown or
     /// refused control state, unexpected responses, journal failures or timeout.
     pub async fn finish(&self, timeout: Duration) -> Result<(), DirectClientError> {
+        self.finish_phase(timeout, None).await
+    }
+
+    /// Completes retained content while leaving visibility requests in the journal.
+    ///
+    /// Stage-only publication uses the same sealed manifest and durable run as
+    /// ordinary publication. This barrier selects only original Content intents;
+    /// a later [`Self::finish`] still replays both content and visibility originals.
+    /// It never rewrites a session, completion request or manifest commitment.
+    ///
+    /// # Errors
+    /// Refuses stale discovery, invalid retained content, mismatched completion
+    /// replies, blocked state, an empty content journal or the original timeout.
+    pub async fn finish_staged_content(&self, timeout: Duration) -> Result<(), DirectClientError> {
+        self.finish_phase(timeout, Some(DirectDependencyPhase::Content))
+            .await
+    }
+
+    async fn finish_phase(
+        &self,
+        timeout: Duration,
+        phase: Option<DirectDependencyPhase>,
+    ) -> Result<(), DirectClientError> {
         let _phase_clock = PhaseClock {
             started: std::time::Instant::now(),
             total: &self.barrier_millis,
@@ -325,9 +348,16 @@ impl DirectUploadCoordinator {
                     ),
                 )
                 .await?;
-                if !page.items.is_empty() {
-                    let mut requests = Vec::with_capacity(page.items.len());
-                    for item in &page.items {
+                // Traverse every bounded journal page, including pages containing
+                // only visibility requests. Selection never changes its cursor.
+                let items: Vec<_> = page
+                    .items
+                    .iter()
+                    .filter(|item| phase.is_none_or(|phase| item.intent.dependency_phase == phase))
+                    .collect();
+                if !items.is_empty() {
+                    let mut requests = Vec::with_capacity(items.len());
+                    for item in &items {
                         let placements: Vec<_> = item
                             .request
                             .manifests
@@ -361,7 +391,7 @@ impl DirectUploadCoordinator {
                     let request = DirectUploadRequest::CompleteBatch(batch);
                     let response =
                         before_deadline(deadline, execute_retry(&self.control, &request)).await?;
-                    if response.sessions.len() != page.items.len() || !response.grants.is_empty() {
+                    if response.sessions.len() != items.len() || !response.grants.is_empty() {
                         return Err(DirectClientError::Invalid);
                     }
                     let mut seen = std::collections::BTreeSet::new();
@@ -369,8 +399,7 @@ impl DirectUploadCoordinator {
                         if !seen.insert(&status.session.session_id) {
                             return Err(DirectClientError::Invalid);
                         }
-                        let item = page
-                            .items
+                        let item = items
                             .iter()
                             .find(|item| item.request.session == status.session)
                             .ok_or(DirectClientError::Invalid)?;
@@ -391,7 +420,7 @@ impl DirectUploadCoordinator {
                         }
                     }
                     count = count
-                        .checked_add(page.items.len() as u64)
+                        .checked_add(items.len() as u64)
                         .ok_or(DirectClientError::Invalid)?;
                 }
                 let Some(next) = page.next_after else {
@@ -878,3 +907,6 @@ impl Drop for PhaseClock<'_> {
         );
     }
 }
+
+#[cfg(test)]
+mod completion_tests;

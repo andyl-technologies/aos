@@ -27,15 +27,15 @@
       }
       {
         label = "scheduler-only ceiling publisher";
-        needle = "pub fn publish_scheduler_ceiling";
+        needle = "pub fn publish_scheduler_advance";
       }
       {
         label = "release ceiling store";
-        needle = ".store(ceiling.max_advance_icount, Ordering::Release)";
+        needle = ".store(max_advance_icount, Ordering::Release)";
       }
       {
         label = "node acquire ceiling load";
-        needle = "self.max_advance_icount.load(Ordering::Acquire)";
+        needle = "self.load_scheduler_advance()";
       }
       {
         label = "node-side advance check";
@@ -126,6 +126,10 @@
       {
         label = "private futex operation";
         needle = "FUTEX_PRIVATE_FLAG";
+      }
+      {
+        label = "raw scheduler ceiling loader";
+        needle = "pub fn load_node_ceiling";
       }
     ]
     ++ failuresFor "crates/crucible-shmem/tests/advance_ceiling_handoff.rs" handoffTest [

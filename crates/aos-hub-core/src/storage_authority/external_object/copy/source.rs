@@ -9,11 +9,11 @@
 //! closure = {guard_stamp, receipt_digest, sha256, bytes, etag?: strong quoted tag}
 //! ```
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
-use super::{digest_string, ExternalCopyOriginal};
-use crate::storage_authority::{lease::LeaseInteger, StorageGuardStamp};
+use super::{ExternalCopyOriginal, digest_string};
+use crate::storage_authority::{StorageGuardStamp, lease::LeaseInteger};
 
 /// Projects one actual positive source receipt without granting provider access.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,7 +53,7 @@ impl CopySourceClosure {
         Ok(())
     }
 
-    /// Checks the exact retained v2 source and trusted catalogue declaration.
+    /// Checks the exact retained guarded source and trusted catalogue declaration.
     ///
     /// # Errors
     /// Refuses another incarnation, receipt, tag, byte count or trusted hash.
@@ -61,7 +61,7 @@ impl CopySourceClosure {
         self.validate()?;
         original.validate()?;
         ensure!(
-            original.version == 2
+            original.source_incarnation()? == super::CopyIncarnationMode::GuardedClosure
                 && original.source_object.guard_stamp.as_ref() == Some(&self.guard_stamp)
                 && original.source_receipt_digest.as_ref() == Some(&self.receipt_digest)
                 && original.expected_sha256.as_ref() == Some(&self.sha256)

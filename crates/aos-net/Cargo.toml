@@ -26,6 +26,7 @@ md-5 = { workspace = true }
 # S3
 aws-sdk-s3 = { workspace = true }
 aws-config = { workspace = true }
+aws-types = { workspace = true }
 
 # SSH/SFTP
 ssh2 = { workspace = true }
@@ -46,6 +47,7 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 
 # Misc
+tempfile = { workspace = true }
 rand = { workspace = true }
 
 [dev-dependencies]

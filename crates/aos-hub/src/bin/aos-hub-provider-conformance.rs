@@ -22,6 +22,20 @@ enum Command {
         #[arg(long)]
         profile_file: PathBuf,
     },
+    CopyCapacity {
+        /// Read the actual signed Direct runtime qualification artifact.
+        #[arg(long)]
+        artifact_file: PathBuf,
+        /// Read the independently selected reviewer public key as 64 lowercase hex bytes.
+        #[arg(long)]
+        reviewer_public_key_file: PathBuf,
+        /// Read the private canonical audience and domain ceiling declaration.
+        #[arg(long)]
+        declaration_file: PathBuf,
+        /// Create a new private initial capacity projection.
+        #[arg(long)]
+        output: PathBuf,
+    },
     CopyContract {
         /// Read the actual complete bounded provider observation report.
         #[arg(long)]
@@ -57,6 +71,17 @@ async fn main() -> std::process::ExitCode {
         Command::ProfileDigest { profile_file } => {
             aos_hub::provider_conformance::export_provider_profile_digest(&profile_file)
         }
+        Command::CopyCapacity {
+            artifact_file,
+            reviewer_public_key_file,
+            declaration_file,
+            output,
+        } => aos_hub::provider_conformance::export_provider_copy_capacity(
+            &artifact_file,
+            &reviewer_public_key_file,
+            &declaration_file,
+            &output,
+        ),
         Command::CopyContract {
             report_file,
             journal_directory,

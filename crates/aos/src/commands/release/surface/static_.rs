@@ -47,7 +47,8 @@ mod upload;
 use super::readback;
 use super::{
     ChannelAdvance, ChannelExpectation, PublicationRequest, PublishedSurface, SignedReceipt,
-    SurfaceClient, SurfaceObject, SurfaceSigners, TimestampPublication, TimestampReceipt,
+    StagedSurface, SurfaceClient, SurfaceObject, SurfaceSigners, TimestampPublication,
+    TimestampReceipt,
 };
 use crate::commands::hub::publication::inventory::{
     PinnedPublication, publication_default_commit, publication_from_root,
@@ -164,21 +165,23 @@ impl StaticSurface {
             return Ok(());
         }
         let snapshot = named_snapshot(pinned, object)?;
-        self.backend
-            .put_static_file(
-                &object.path,
-                snapshot.path(),
-                Some(&object.media_type),
-                Some(if immutable {
-                    IMMUTABLE_CACHE_CONTROL
-                } else {
-                    MUTABLE_CACHE_CONTROL
-                }),
-                None,
-                Some(&object.sha256),
-            )
-            .await
-            .with_context(|| format!("uploading static surface object {}", object.path))
+        if immutable {
+            aos_package::registry::transport::RegistryStorage::new(self.backend.as_ref())
+                .put_object(&object.path, snapshot.path(), &object.sha256)
+                .await
+        } else {
+            self.backend
+                .put_static_file(
+                    &object.path,
+                    snapshot.path(),
+                    Some(&object.media_type),
+                    Some(MUTABLE_CACHE_CONTROL),
+                    None,
+                    Some(&object.sha256),
+                )
+                .await
+        }
+        .with_context(|| format!("uploading static surface object {}", object.path))
     }
 
     async fn holds_identical(&self, object: &RegistryPublicationObjectInput) -> Result<bool> {
@@ -316,6 +319,180 @@ impl SurfaceClient for StaticSurface {
         let selected: Vec<_> = pinned.request.objects.iter().collect();
         self.upload(&pinned, &selected, printer).await?;
         published(&pinned, None)
+    }
+
+    async fn stage_surface(
+        &self,
+        root: &Path,
+        revision: &aos_registry_surface::staging::StageRevision,
+        printer: &Printer,
+    ) -> Result<StagedSurface> {
+        revision.validate()?;
+        if let Some(graph) = &revision.container {
+            aos_package::registry::container_stage::verify_container_stage_objects(
+                graph,
+                &root.join("oci/blobs/sha256"),
+            )?;
+        }
+        let pinned = publication_from_root(root, &self.registry)?;
+        let mut objects = Vec::new();
+        // Static origins retain complete OCI graphs as immutable digest bytes.
+        // The root is an owned verified projection; backends hash each source
+        // again before admission, without retaining one open file per object.
+        for declared in &revision.inventory {
+            let object = RegistryPublicationObjectInput {
+                path: declared.path.clone(),
+                sha256: declared
+                    .sha256
+                    .strip_prefix("sha256:")
+                    .context("stage object has no SHA-256")?
+                    .into(),
+                byte_size: i64::try_from(declared.byte_size)?,
+                kind: "immutable".into(),
+                media_type: declared.media_type.clone(),
+            };
+            objects.push(aos_package::registry::transport::ImmutableUpload {
+                path: object.path.clone(),
+                source: root.join(&object.path),
+                sha256: object.sha256.clone(),
+                byte_size: u64::try_from(object.byte_size)?,
+                phase: if object.path.starts_with("images/")
+                    && !object.path.ends_with("image-info.json")
+                {
+                    aos_package::registry::transport::ImmutableUploadPhase::ImageDisk
+                } else if object.path.starts_with("publication-receipts/") {
+                    aos_package::registry::transport::ImmutableUploadPhase::Receipt
+                } else {
+                    aos_package::registry::transport::ImmutableUploadPhase::Catalog
+                },
+            });
+        }
+        aos_package::registry::transport::upload_immutable_inventory(
+            &objects,
+            &[(&self.planned.origin, self.backend.as_ref())],
+            printer,
+        )
+        .await?;
+        let mut publication = published(&pinned, None)?;
+        publication.objects.retain(|object| !object.mutable);
+        for object in revision
+            .inventory
+            .iter()
+            .filter(|object| object.path.starts_with("oci/"))
+        {
+            publication.objects.push(SurfaceObject {
+                path: object.path.clone(),
+                sha256: object
+                    .sha256
+                    .strip_prefix("sha256:")
+                    .context("stage object has no SHA-256")?
+                    .into(),
+                byte_size: object.byte_size,
+                mutable: false,
+                media_type: object.media_type.clone(),
+            });
+        }
+        self.read_back(&publication.objects).await?;
+        Ok(StagedSurface {
+            publication,
+            record: aos_registry_surface::staging::StageRecord {
+                revision: revision.clone(),
+                state: aos_registry_surface::staging::StageState::Ready,
+                released_version: None,
+            },
+        })
+    }
+
+    async fn finalize_stage(
+        &self,
+        root: &Path,
+        revision: &aos_registry_surface::staging::StageRevision,
+        base_commit: &str,
+        _printer: &Printer,
+    ) -> Result<PublishedSurface> {
+        revision.validate()?;
+        let pinned = publication_from_root(root, &self.registry)?;
+        anyhow::ensure!(
+            pinned.request.default_commit == base_commit,
+            "candidate publication differs from the approved registry base"
+        );
+        let objects = revision
+            .inventory
+            .iter()
+            .map(|object| {
+                Ok(SurfaceObject {
+                    path: object.path.clone(),
+                    sha256: object
+                        .sha256
+                        .strip_prefix("sha256:")
+                        .context("stage object has no SHA-256")?
+                        .into(),
+                    byte_size: object.byte_size,
+                    mutable: false,
+                    media_type: object.media_type.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.read_back(&objects).await?;
+        // Validate every current pointer before exposing any prepared pointer.
+        let mut pointers = Vec::new();
+        for pointer in &revision.publication {
+            let current = self
+                .backend
+                .get_static_object(&pointer.path, MAX_REFS_BYTES)
+                .await?;
+            let expected = match current {
+                Some((bytes, _)) if bytes == pointer.bytes => continue,
+                Some((bytes, version)) => {
+                    anyhow::ensure!(
+                        pointer.expected_sha256.as_deref()
+                            == Some(
+                                format!("sha256:{}", Sha256Digest::of_bytes(bytes).hex()).as_str()
+                            ),
+                        "candidate pointer changed before publication: {}",
+                        pointer.path
+                    );
+                    Expectation::Version(version)
+                }
+                None => {
+                    anyhow::ensure!(
+                        pointer.expected_sha256.is_none(),
+                        "candidate pointer disappeared before publication: {}",
+                        pointer.path
+                    );
+                    Expectation::Absent
+                }
+            };
+            pointers.push((pointer, expected));
+        }
+        pointers.sort_by_key(|(pointer, _)| {
+            aos_package::registry::transport::pointer_upload_rank(&pointer.path)
+        });
+        for (pointer, expectation) in pointers {
+            let source = temporary_file(&pointer.bytes)?;
+            match self
+                .backend
+                .put_static_file_conditional(
+                    &pointer.path,
+                    source.path(),
+                    Some(aos_package::registry::surface_keymap::content_type(
+                        &pointer.path,
+                    )),
+                    Some(MUTABLE_CACHE_CONTROL),
+                    expectation,
+                )
+                .await?
+            {
+                ConditionalOutcome::Written(_) => {}
+                ConditionalOutcome::PreconditionFailed { .. } => bail!(
+                    "candidate pointer changed during publication: {}",
+                    pointer.path
+                ),
+            }
+        }
+        let publication = published(&pinned, None)?;
+        self.read_back(&publication.objects).await?;
+        Ok(publication)
     }
 
     async fn read_back(&self, objects: &[SurfaceObject]) -> Result<()> {
@@ -630,6 +807,77 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn immutable_backend_conflict_preserves_bytes_and_withholds_head() {
+        use sha2::{Digest as _, Sha256};
+
+        let source = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(source.path().join("objects/aa")).unwrap();
+        std::fs::create_dir_all(destination.path().join("objects/aa")).unwrap();
+        std::fs::write(source.path().join("objects/aa/object"), b"admitted object").unwrap();
+        std::fs::write(source.path().join("HEAD"), b"new head").unwrap();
+        std::fs::write(
+            destination.path().join("objects/aa/object"),
+            b"foreign object",
+        )
+        .unwrap();
+        std::fs::write(destination.path().join("HEAD"), b"old head").unwrap();
+        let object = RegistryPublicationObjectInput {
+            path: "objects/aa/object".into(),
+            kind: "immutable".into(),
+            byte_size: 15,
+            sha256: hex::encode(Sha256::digest(b"admitted object")),
+            media_type: "application/octet-stream".into(),
+        };
+        let head = RegistryPublicationObjectInput {
+            path: "HEAD".into(),
+            kind: "mutable_pointer".into(),
+            byte_size: 8,
+            sha256: hex::encode(Sha256::digest(b"new head")),
+            media_type: "text/plain".into(),
+        };
+        let pinned = PinnedPublication {
+            request: aos_remote::hub_types::BeginRegistryPublicationRequest {
+                objects: vec![object.clone(), head.clone()],
+                ..Default::default()
+            },
+            root: std::fs::File::open(source.path()).unwrap().into(),
+        };
+        let origin = Url::from_directory_path(destination.path())
+            .unwrap()
+            .to_string();
+        let surface = StaticSurface::connect(
+            PlannedSurface {
+                role: SurfaceRole::Production,
+                kind: SurfaceKind::Static,
+                origin,
+                readback_origin: None,
+                identity: "conditional-backend".into(),
+            },
+            "example/registry",
+            &aos_cache::backend::AuthOptions::default(),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let error = surface
+            .upload(&pinned, &[&head, &object], &Printer::new(0, true, false))
+            .await
+            .unwrap_err();
+
+        assert!(format!("{error:#}").contains("conflict"));
+        assert_eq!(
+            std::fs::read(destination.path().join("objects/aa/object")).unwrap(),
+            b"foreign object"
+        );
+        assert_eq!(
+            std::fs::read(destination.path().join("HEAD")).unwrap(),
+            b"old head"
+        );
+    }
+
     #[test]
     fn receipts_live_under_the_bundle_digest() {
         let digest = Sha256Digest::of_bytes("bundle");
@@ -656,7 +904,7 @@ mod tests {
         };
         let result = StaticSurface::connect(
             planned,
-            "andyl/testing",
+            "andyl/experimental",
             &aos_cache::backend::AuthOptions::default(),
             None,
         )

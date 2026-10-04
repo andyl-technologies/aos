@@ -1,4 +1,4 @@
-// Confined partial-body observation for a real conditional Copy source read.
+// Confined partial-body observation for real conditional Copy and inventory reads.
 // This listener never creates authority or objects. The untouched provider
 // response and actual Worker observations must be joined independently.
 import { createHash } from 'node:crypto';
@@ -30,12 +30,14 @@ function selectedIdentity(request, configuration) {
   if (request.method !== 'GET' || header(request.rawHeaders, 'host') !== configuration.host) return null;
   const rawTarget = request.url;
   if (typeof rawTarget !== 'string' || rawTarget.length > 8192
-      || !rawTarget.split('?')[0].startsWith(configuration.targetPrefix)) return null;
+      || !rawTarget.split('?')[0].startsWith(configuration.targetPrefix)
+      || configuration.sourceKey !== null && rawTarget.split('?')[0] !== configuration.sourceKey) return null;
   const etag = header(request.rawHeaders, 'if-match');
   const range = header(request.rawHeaders, 'range');
+  const interval = /^bytes=(0|[1-9][0-9]*)-([1-9][0-9]*)$/.exec(range ?? '');
   if (!/^"[!\x23-\x7e]{1,256}"$/.test(etag ?? '')
-      || !/^bytes=0-[1-9][0-9]*$/.test(range ?? '')
-      || BigInt(range.slice(8)) < BigInt(PREFIX_BYTES)
+      || interval === null || interval[1] !== String(configuration.rangeStart)
+      || BigInt(interval[2]) - BigInt(interval[1]) < BigInt(PREFIX_BYTES)
       || header(request.rawHeaders, 'transfer-encoding') !== null
       || ![null, '0'].includes(header(request.rawHeaders, 'content-length'))) return null;
   const url = new URL(rawTarget, 'http://selected.invalid');
@@ -54,7 +56,7 @@ function selectedIdentity(request, configuration) {
   if (!['host', 'if-match', 'range'].every(name => signedHeaders.includes(name))) return null;
   // The signer shape is an observation selector, never verification. The real
   // unchanged request still goes to Garage, which accepts or refuses it.
-  return { method: request.method, targetSha256: sha(rawTarget), host: configuration.host,
+  return { method: request.method, targetSha256: sha(rawTarget.split('?')[0]), host: configuration.host,
     ifMatch: etag, range, signatureVerification: null };
 }
 
@@ -130,8 +132,17 @@ export async function createCopyPartialHold(
   for (const [index, targetPrefix] of configuration.targetPrefixes.entries()) {
     const caseRoot = `${root}/case-${index}`;
     await fs.mkdir(caseRoot, { mode: 0o700 });
-    cases.push({ root: caseRoot, targetPrefix, ceiling: null, used: false, selected: false,
-      prefixReceipt: null, releaseHeld: null, ordinal: 0, recorderHealthy: true, terminal: null });
+    cases.push({ root: caseRoot, targetPrefix, lane: 'copy', sourceKey: null, rangeStart: 0,
+      ceiling: null, used: false, selected: false,
+      prefixReceipt: null, releaseHeld: null, ordinal: 0, recorderHealthy: true, terminal: null,
+      selectedRange: null, selectedIfMatch: null, continuationReceipts: [], continuationAttempts: 0 });
+    const inventoryRoot = `${root}/inventory-case-${index}`;
+    await fs.mkdir(inventoryRoot, { mode: 0o700 });
+    cases.push({ root: inventoryRoot, targetPrefix, lane: 'inventory', sourceKey: null, rangeStart: 8388608,
+      ceiling: null, used: false, selected: false,
+      prefixReceipt: null, releaseHeld: null, ordinal: 0, recorderHealthy: true, terminal: null,
+      selectedRange: null, selectedIfMatch: null, continuationReceipts: [], continuationAttempts: 0,
+      awaitingFirstRange: false, fixtureCutoff: null, firstRangeReceipt: null, firstIfMatch: null });
   }
   const tasks = new Set(), sockets = new Set();
 
@@ -145,9 +156,17 @@ export async function createCopyPartialHold(
     requireFact(Buffer.byteLength(JSON.stringify(reply.rawHeaders)) <= HEADER_BOUND,
       'Selected real headers exceed bound');
     const length = header(reply.rawHeaders, 'content-length');
+    const contentRange = header(reply.rawHeaders, 'content-range');
+    const actualInterval = /^bytes ([0-9]+)-([0-9]+)\/([0-9]+)$/.exec(contentRange ?? '');
+    const inventoryRangeMatches = state.lane !== 'inventory'
+      || reply.statusCode === 206 && actualInterval !== null
+        && actualInterval[1] === String(state.rangeStart)
+        && identity.range === `bytes=${actualInterval[1]}-${actualInterval[2]}`
+        && BigInt(actualInterval[2]) < BigInt(actualInterval[3])
+        && String(BigInt(actualInterval[2]) - BigInt(actualInterval[1]) + 1n) === length;
     if (![200, 206].includes(reply.statusCode) || header(reply.rawHeaders, 'etag') !== identity.ifMatch
         || typeof length !== 'string' || !/^[1-9][0-9]*$/.test(length)
-        || BigInt(length) <= BigInt(PREFIX_BYTES)) {
+        || BigInt(length) <= BigInt(PREFIX_BYTES) || !inventoryRangeMatches) {
       await event(state, 'response_not_held', { status: reply.statusCode, providerSettlement: null });
       response.writeHead(reply.statusCode, reply.rawHeaders);
       await new Promise((resolve_, reject) => {
@@ -155,7 +174,9 @@ export async function createCopyPartialHold(
       });
       return;
     }
-    const headersReceipt = await retain(state.root, 'response-headers.private', encode(reply.rawHeaders));
+    const headersReceipt = await retain(state.root, 'response-headers.private', encode({
+      status: reply.statusCode, contentLength: length, contentRange,
+    }));
     response.writeHead(reply.statusCode, reply.rawHeaders);
     const blocks = [];
     let offered = 0, remainder = Buffer.alloc(0), sourceEof = false;
@@ -204,16 +225,75 @@ export async function createCopyPartialHold(
       downstreamOfferedBytes: String(offered), workerConsumedBytes: null, remoteDrain: null });
   }
 
+  async function forwardInventoryContinuation(state, response, reply, identity, startedUnixMillis, firstRange = false) {
+    // Four exact continuation attempts bound custody independently of traffic.
+    // Exceeding that budget leaves the observer incomplete; forwarding persists.
+    if (state.continuationAttempts >= 4) {
+      state.recorderHealthy = false;
+      response.writeHead(reply.statusCode, reply.rawHeaders);
+      await new Promise((resolve_, reject) => {
+        reply.once('error', reject); reply.once('end', resolve_); reply.pipe(response);
+      });
+      return;
+    }
+    const ordinal = firstRange ? 'first' : state.continuationAttempts++;
+    const headersObservedUnixMillis = String(Date.now());
+    const digest = createHash('sha256');
+    let bytes = 0;
+    reply.on('data', block => { bytes += block.length; digest.update(block); });
+    response.writeHead(reply.statusCode, reply.rawHeaders);
+    await new Promise((resolve_, reject) => {
+      reply.once('error', reject); reply.once('end', resolve_); reply.pipe(response);
+    });
+    const receipt = await retain(state.root, `continuation-${ordinal}.json`, encode({
+      version: 1, scope: 'actual_selected_inventory_range_response', identity, startedUnixMillis, headersObservedUnixMillis,
+      completedUnixMillis: String(Date.now()), status: reply.statusCode,
+      contentRange: header(reply.rawHeaders, 'content-range'),
+      contentLength: header(reply.rawHeaders, 'content-length'),
+      responseBytes: String(bytes), responseSha256: digest.digest('hex'),
+      upstreamComplete: reply.complete, workerConsumedBytes: null, remoteDrain: null,
+    }));
+    if (firstRange) state.firstRangeReceipt = receipt;
+    else state.continuationReceipts.push(receipt);
+  }
+
   const server = createServer({ maxHeaderSize: HEADER_BOUND }, (request, response) => {
+    const startedUnixMillis = String(Date.now());
     const task = (async () => {
       let timeout = null;
-      const state = cases.find(value => value.ceiling !== null && !value.selected
-        && Date.now() < value.ceiling && request.url?.split('?')[0].startsWith(value.targetPrefix));
-      let identity = null;
-      try {
-        if (state) identity = selectedIdentity(request, { ...configuration, targetPrefix: state.targetPrefix });
-      } catch { /* A malformed selector remains an ordinary unchanged provider request. */ }
-      if (identity) state.selected = true;
+      let state = null, identity = null, hold = false, firstRange = false;
+      for (const candidate of cases) {
+        if (candidate.lane === 'inventory' && candidate.awaitingFirstRange) {
+          if (Date.now() >= candidate.fixtureCutoff) continue;
+          try {
+            const observed = selectedIdentity(request, { ...configuration, targetPrefix: candidate.targetPrefix,
+              sourceKey: candidate.sourceKey, rangeStart: 0 });
+            if (observed?.range === 'bytes=0-8388607') {
+              candidate.awaitingFirstRange = false;
+              candidate.firstIfMatch = observed.ifMatch;
+              candidate.ceiling = Math.min(candidate.fixtureCutoff, Date.now() + 35000);
+              state = candidate; identity = observed; firstRange = true;
+              await event(state, 'first_range_observed', { ceilingUnixMillis: String(state.ceiling) });
+              break;
+            }
+          } catch { /* Unmatched first intervals retain ordinary forwarding. */ }
+          continue;
+        }
+        if (candidate.ceiling === null || candidate.selected && candidate.lane !== 'inventory'
+            || !candidate.selected && Date.now() >= candidate.ceiling) continue;
+        try {
+          const observed = selectedIdentity(request, { ...configuration, targetPrefix: candidate.targetPrefix,
+            sourceKey: candidate.sourceKey, rangeStart: candidate.rangeStart });
+          if (observed !== null && (candidate.firstIfMatch === null || candidate.firstIfMatch === undefined
+              || candidate.firstIfMatch === observed.ifMatch) && (!candidate.selected
+              || observed.range === candidate.selectedRange && observed.ifMatch === candidate.selectedIfMatch)) {
+            state = candidate; identity = observed; hold = !candidate.selected; break;
+          }
+        } catch { /* A malformed selector remains an ordinary unchanged provider request. */ }
+      }
+      if (identity && hold) {
+        state.selected = true; state.selectedRange = identity.range; state.selectedIfMatch = identity.ifMatch;
+      }
       const upstream = upstreamRequest({ hostname: '127.0.0.1', port: ports.upstream,
         method: request.method, path: request.url, headers: request.rawHeaders,
         setHost: false, maxHeaderSize: HEADER_BOUND, agent: false });
@@ -227,17 +307,22 @@ export async function createCopyPartialHold(
       });
       request.once('aborted', () => upstream.destroy());
       try {
-        const requestReceipt = identity ? await retain(state.root, 'request.private.json', encode({
-          method: request.method, target: request.url, rawHeaders: request.rawHeaders,
+        // Retain only the selected conditional headers and bounded identity.
+        // The original signed target and headers are forwarded unchanged.
+        const requestReceipt = identity && hold ? await retain(state.root, 'request.private.json', encode({
+          method: identity.method, targetSha256: identity.targetSha256, host: identity.host,
+          range: identity.range, ifMatch: identity.ifMatch,
         })) : null;
-        if (identity) timeout = setTimeout(() => {
+        if (identity && hold) timeout = setTimeout(() => {
           upstream.destroy(); response.destroy(); state.releaseHeld?.();
         }, Math.max(1, state.ceiling - Date.now()));
         await new Promise((resolve_, reject) => {
           upstream.once('error', reject);
           upstream.once('response', reply => {
-            if (identity) {
+            if (identity && hold) {
               forwardPrefix(state, response, reply, identity, requestReceipt).then(resolve_, reject);
+            } else if (identity) {
+              forwardInventoryContinuation(state, response, reply, identity, startedUnixMillis, firstRange).then(resolve_, reject);
             } else {
               response.writeHead(reply.statusCode, reply.rawHeaders);
               reply.once('error', reject); reply.once('end', resolve_); reply.pipe(response);
@@ -262,24 +347,47 @@ export async function createCopyPartialHold(
   server.on('connection', socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); });
 
   async function command(value) {
-    const state = cases.find(candidate => candidate.targetPrefix === value?.targetPrefix);
+    const deferred = value?.kind === 'arm_inventory_after_first_range';
+    const inventory = deferred || ['arm_inventory', 'state_inventory', 'release_inventory'].includes(value?.kind);
+    const state = cases.find(candidate => candidate.targetPrefix === value?.targetPrefix
+      && candidate.lane === (inventory ? 'inventory' : 'copy'));
     requireFact(state, 'Unknown initial partial Copy prefix');
-    if (closed(value, ['version', 'kind', 'targetPrefix']) && value.version === 1 && value.kind === 'state') {
+    const kind = deferred ? 'arm' : inventory ? value.kind.slice(0, -10) : value?.kind;
+    if (closed(value, ['version', 'kind', 'targetPrefix']) && value.version === 1 && kind === 'state') {
       return { version: 1, targetPrefix: state.targetPrefix, selected: state.selected,
         prefixReceipt: state.prefixReceipt, recorderHealthy: state.recorderHealthy,
-        terminal: state.terminal, pendingLocalHold: state.releaseHeld !== null, providerSettlement: null };
+        terminal: state.terminal, pendingLocalHold: state.releaseHeld !== null, providerSettlement: null,
+        ...(inventory ? { continuationReceipts: state.continuationReceipts,
+          firstRangeReceipt: state.firstRangeReceipt, awaitingFirstRange: state.awaitingFirstRange,
+          holdUntilUnixMillis: state.ceiling, fixtureCutoffUnixMillis: state.fixtureCutoff } : {}) };
     }
-    if (closed(value, ['version', 'kind', 'targetPrefix']) && value.version === 1 && value.kind === 'release') {
+    if (closed(value, ['version', 'kind', 'targetPrefix']) && value.version === 1 && kind === 'release') {
       requireFact(state.releaseHeld !== null && Date.now() < state.ceiling, 'No current partial hold to release');
       await event(state, 'fixture_released', { remoteDrain: null }); state.releaseHeld();
       return { version: 1, status: 'released', providerSettlement: null };
     }
-    requireFact(closed(value, ['version', 'kind', 'targetPrefix', 'holdUntilUnixMillis']) && value.version === 1
-      && value.kind === 'arm' && !state.used && Number.isSafeInteger(value.holdUntilUnixMillis)
-      && value.holdUntilUnixMillis > Date.now() && value.holdUntilUnixMillis - Date.now() <= 35000,
+    const clockField = deferred ? 'fixtureCutoffUnixMillis' : 'holdUntilUnixMillis';
+    const fields = ['version', 'kind', 'targetPrefix', clockField];
+    if (inventory) fields.push('sourceKey', 'rangeStart');
+    requireFact(closed(value, fields) && value.version === 1
+      && kind === 'arm' && !state.used && Number.isSafeInteger(value[clockField])
+      && value[clockField] > Date.now() && value[clockField] - Date.now() <= (deferred ? 900000 : 35000),
     'Partial hold arm differs');
-    state.used = true; state.ceiling = value.holdUntilUnixMillis;
-    await event(state, 'armed', { ceilingUnixMillis: String(state.ceiling) });
+    if (inventory) {
+      requireFact(value.rangeStart === 8388608 && typeof value.sourceKey === 'string'
+        && value.sourceKey.startsWith(state.targetPrefix + 'oci/blobs/sha256/')
+        && /^[0-9a-f]{64}$/.test(value.sourceKey.slice((state.targetPrefix + 'oci/blobs/sha256/').length)),
+      'Inventory hold requires one exact selected blob and continuation offset');
+      state.sourceKey = value.sourceKey;
+    }
+    state.used = true;
+    if (deferred) {
+      state.fixtureCutoff = value.fixtureCutoffUnixMillis;
+      state.awaitingFirstRange = true;
+    } else state.ceiling = value.holdUntilUnixMillis;
+    await event(state, deferred ? 'awaiting_first_range' : 'armed', {
+      ceilingUnixMillis: state.ceiling === null ? null : String(state.ceiling),
+      fixtureCutoffUnixMillis: deferred ? String(state.fixtureCutoff) : null });
     return { version: 1, status: 'armed' };
   }
   const control = controlServer({ allowHalfOpen: true }, socket => {

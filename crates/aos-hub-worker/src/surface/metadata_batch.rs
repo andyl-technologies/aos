@@ -18,7 +18,7 @@ use aos_hub_core::storage_work::{
 ///
 /// Returns an error for an invalid cursor, provider failure, oversized object,
 /// or metadata observations that cannot fit the result contract.
-pub(super) async fn inspect(
+pub(crate) async fn inspect(
     fetcher: &dyn SurfaceFetch,
     plan: &StorageWorkPlan,
     paths: &[String],

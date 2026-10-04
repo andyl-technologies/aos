@@ -10,8 +10,8 @@ pub(crate) fn admits_base_image_definition(package: &str, image: &str, attribute
             attribute,
             "containerImages.aos"
                 | "systems.server.build.containers.aos"
-                | "systems.aos-testing.build.containers.aos"
-                | "systems.aos-testing-staging.build.containers.aos"
+                | "systems.aos-experimental.build.containers.aos"
+                | "systems.aos-experimental-staging.build.containers.aos"
         )
 }
 
@@ -24,8 +24,8 @@ mod tests {
         for attribute in [
             "containerImages.aos",
             "systems.server.build.containers.aos",
-            "systems.aos-testing.build.containers.aos",
-            "systems.aos-testing-staging.build.containers.aos",
+            "systems.aos-experimental.build.containers.aos",
+            "systems.aos-experimental-staging.build.containers.aos",
         ] {
             assert!(admits_base_image_definition("aos", "aos", attribute));
         }

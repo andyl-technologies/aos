@@ -11,15 +11,15 @@
 //! dispatch = {turn, floor, source_state}
 //! ```
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use aos_hub_core::{
     db::OciSha256State,
     storage_authority::{
         control::StorageAuthorityObjectScope,
         external_object::copy::{
+            ExternalCopyOriginal,
             control::{CopyControl, CopyProgress},
             session::{CopyAction, CopyReceipt, CopyTurn},
-            ExternalCopyOriginal,
         },
         lease::{EpochLeaseFloor, LeaseInteger},
     },
@@ -27,7 +27,7 @@ use aos_hub_core::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::super::protocol::{digest, digest_string, MAX_MESSAGE};
+use super::super::protocol::{MAX_MESSAGE, digest, digest_string};
 
 pub(super) const DOMAIN: &str = "aos.external-copy-private-turn.v1";
 pub(super) const PATH: &str = "/copy-turn";
@@ -181,9 +181,9 @@ impl Reply {
                 Operation::Begin { .. },
             ) => {
                 ensure!(
-                    match (request.original.version, destination_stamp) {
-                        (1, None) => true,
-                        (2, Some(stamp)) =>
+                    match (request.original.destination_incarnation()?, destination_stamp) {
+                        (aos_hub_core::storage_authority::external_object::copy::CopyIncarnationMode::ProviderVersion, None) => true,
+                        (aos_hub_core::storage_authority::external_object::copy::CopyIncarnationMode::GuardedClosure, Some(stamp)) =>
                             stamp.physical_authority_id == request.scope.physical_authority_id,
                         _ => false,
                     },

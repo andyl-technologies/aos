@@ -18,6 +18,9 @@ mod connected;
 #[path = "tests/telemetry.rs"]
 mod telemetry;
 
+#[path = "tests/paired.rs"]
+mod paired;
+
 const MATERIAL: &[u8] = b"fixture-access:fixture-secret:fixture-region";
 
 #[tokio::test]

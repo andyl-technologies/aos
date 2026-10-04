@@ -21,13 +21,13 @@
 //! and a trusted whole-object catalogue hash and size. Absent version-two fields
 //! are omitted from version-one canonical bytes and authentication domains.
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
 use crate::db::{SurfacePlacementRecord, TopologyOperationRecord, TopologyOperationTargetRecord};
-use crate::direct_upload::{MAX_DIRECT_PARTS, MAX_DIRECT_PART_BYTES, MIN_DIRECT_PART_BYTES};
+use crate::direct_upload::{MAX_DIRECT_PART_BYTES, MAX_DIRECT_PARTS, MIN_DIRECT_PART_BYTES};
 use crate::domain::Permission;
-use crate::storage_authority::{canonical_digest, lease::LeaseInteger, StorageGuardStamp};
+use crate::storage_authority::{StorageGuardStamp, canonical_digest, lease::LeaseInteger};
 
 /// Compact physical ownership and positive receipt transitions.
 pub mod session;
@@ -46,6 +46,11 @@ pub mod source;
 
 /// Historical exact codec observations without transport or dispatch permission.
 pub mod observation;
+
+/// Independently pinned source and destination domains for cross-binding copies.
+pub mod transfer;
+
+pub use transfer::{CopyIncarnationMode, CopySourceBindingPin, CopyTransferPins};
 
 /// Maximum encoded immutable original retained in the physical guard.
 pub const MAX_EXTERNAL_COPY_ORIGINAL_BYTES: usize = 16 * 1024;
@@ -310,13 +315,13 @@ impl CopySourceObject {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExternalCopyOriginal {
-    /// One selects immutable provider versions; two selects protected versionless sources.
+    /// One/two retain same-binding forms; three independently pins both bindings.
     pub version: u8,
     /// Original Native and Worker deployment identity.
     pub deployment_id: String,
     /// Existing durable topology operation and exact sealed targets.
     pub topology: CopyTopologyOriginal,
-    /// One actual binding shared by both placements.
+    /// Actual destination binding, shared by both placements in versions one/two.
     pub binding_id: LeaseInteger,
     /// Immutable logical binding identity.
     pub binding_stable_id: String,
@@ -349,6 +354,9 @@ pub struct ExternalCopyOriginal {
     /// Absence preserves the original version-one byte contract.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_receipt_digest: Option<String>,
+    /// Independent cross-binding domains; omitted from old canonical originals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfer: Option<transfer::CopyTransferPins>,
 }
 
 impl ExternalCopyOriginal {
@@ -365,25 +373,53 @@ impl ExternalCopyOriginal {
         identifier(&self.deployment_id)?;
         identifier(&self.binding_stable_id)?;
         let part_bytes = self.part_bytes.get() as u64;
-        ensure!(
-            (match self.version {
-                1 =>
-                    self.source_object.provider_version.is_some()
-                        && self.source_receipt_digest.is_none(),
-                2 =>
-                    self.source_object.guard_stamp.is_some()
-                        && self
-                            .source_receipt_digest
+        let binding_geometry = match (&self.transfer, self.version) {
+            (None, 1 | 2) => {
+                self.source.binding_id == self.binding_id
+                    && self.source.prefix != self.destination.prefix
+            }
+            (Some(transfer), 3) => {
+                transfer.validate(&self.source, &self.destination)?;
+                ensure!(
+                    transfer.source_binding.binding_stable_id != self.binding_stable_id
+                        && transfer.source_binding.read_generation == self.read_generation
+                        && part_bytes <= transfer.maximum_source_range_bytes.get() as u64,
+                    "cross-binding source identity or multipart range differs"
+                );
+                true
+            }
+            _ => false,
+        };
+        let source_incarnation = match self.source_incarnation()? {
+            transfer::CopyIncarnationMode::ProviderVersion => {
+                self.source_object.provider_version.is_some()
+                    && self.source_receipt_digest.is_none()
+            }
+            transfer::CopyIncarnationMode::GuardedClosure => {
+                self.source_object.guard_stamp.is_some()
+                    && self
+                        .source_receipt_digest
+                        .as_ref()
+                        .is_some_and(|value| digest_string(value))
+                    && self.expected_sha256.is_some()
+                    && self.transfer.as_ref().is_none_or(|transfer| {
+                        self.source_object
+                            .guard_stamp
                             .as_ref()
-                            .is_some_and(|value| digest_string(value))
-                        && self.expected_sha256.is_some(),
-                _ => false,
-            }) && self.binding_id.get() > 0
+                            .is_some_and(|stamp| {
+                                stamp.physical_authority_id
+                                    == transfer.source_binding.physical_authority_id
+                            })
+                    })
+            }
+        };
+        ensure!(
+            source_incarnation
+                && binding_geometry
+                && self.binding_id.get() > 0
                 && self.binding_resource_version.get() > 0
-                && self.source.binding_id == self.binding_id
                 && self.destination.binding_id == self.binding_id
                 && self.source.placement_id != self.destination.placement_id
-                && (self.source.prefix != self.destination.prefix)
                 && self.source.registry_id == self.destination.registry_id
                 && self.source.cache_id == self.destination.cache_id
                 && digest_string(&self.snapshot_revision)
@@ -420,19 +456,62 @@ impl ExternalCopyOriginal {
             "copy destination length differs"
         );
         ensure!(
-            match self.version {
-                1 => destination.provider_version.is_some(),
-                2 => destination
+            match self.destination_incarnation()? {
+                transfer::CopyIncarnationMode::ProviderVersion =>
+                    destination.provider_version.is_some(),
+                transfer::CopyIncarnationMode::GuardedClosure => destination
                     .guard_stamp
                     .as_ref()
-                    .zip(self.source_object.guard_stamp.as_ref())
-                    .is_some_and(|(destination, source)| destination.physical_authority_id
-                        == source.physical_authority_id),
-                _ => false,
+                    .is_some_and(|destination| match &self.transfer {
+                        Some(transfer) =>
+                            destination.physical_authority_id
+                                == transfer.destination_physical_authority_id,
+                        None => self
+                            .source_object
+                            .guard_stamp
+                            .as_ref()
+                            .is_some_and(|source| {
+                                destination.physical_authority_id == source.physical_authority_id
+                            }),
+                    }),
             },
             "copy destination incarnation protocol differs"
         );
         Ok(())
+    }
+
+    /// Returns the declared source incarnation mode without granting Read permission.
+    ///
+    /// # Errors
+    /// Refuses an unknown version or a missing version-three transfer projection.
+    pub fn source_incarnation(&self) -> Result<transfer::CopyIncarnationMode> {
+        match self.version {
+            1 => Ok(transfer::CopyIncarnationMode::ProviderVersion),
+            2 => Ok(transfer::CopyIncarnationMode::GuardedClosure),
+            3 => self
+                .transfer
+                .as_ref()
+                .map(|pins| pins.source_incarnation)
+                .ok_or_else(|| anyhow::anyhow!("cross-binding source mode absent")),
+            _ => anyhow::bail!("copy incarnation version unknown"),
+        }
+    }
+
+    /// Returns the independently declared destination completion protocol.
+    ///
+    /// # Errors
+    /// Refuses an unknown version or a missing version-three transfer projection.
+    pub fn destination_incarnation(&self) -> Result<transfer::CopyIncarnationMode> {
+        match self.version {
+            1 => Ok(transfer::CopyIncarnationMode::ProviderVersion),
+            2 => Ok(transfer::CopyIncarnationMode::GuardedClosure),
+            3 => self
+                .transfer
+                .as_ref()
+                .map(|pins| pins.destination_incarnation)
+                .ok_or_else(|| anyhow::anyhow!("cross-binding destination mode absent")),
+            _ => anyhow::bail!("copy incarnation version unknown"),
+        }
     }
 
     /// Returns the canonical immutable original commitment.

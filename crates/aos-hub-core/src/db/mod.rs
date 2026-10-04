@@ -554,15 +554,26 @@ mod oci_admin;
 pub use oci_admin::*;
 mod oci_gc;
 pub use oci_gc::*;
+mod oci_namespaces;
+pub use oci_namespaces::*;
+mod oci_release_projection;
 mod package_documentation_reads;
 mod placement_policy;
 mod publication_admission;
 mod publish_lease;
 mod registry_delete;
 mod registry_accounting;
+pub use registry_delete::*;
+mod registry_delete_operation;
+pub use registry_delete_operation::*;
+mod registry_delete_readiness;
+pub use registry_delete_readiness::*;
 mod registry_index_build;
 mod release_browse;
 mod release_publication;
+mod staged_releases;
+#[cfg(test)]
+mod staged_retention_tests;
 pub use release_browse::*;
 mod documentation_tree;
 pub use documentation_tree::*;
@@ -578,6 +589,7 @@ pub use placement_policy::*;
 pub use publication_admission::*;
 pub use registry_index_build::*;
 pub use release_publication::*;
+pub use staged_releases::*;
 pub use signing_keys::*;
 pub use topology::*;
 pub use worker_jobs::*;
@@ -613,6 +625,9 @@ pub(crate) fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// The first entry is the immutable first stable production baseline. Databases
 /// from development histories must be reset before deploying this checkpoint;
 /// subsequent production changes require new forward migrations.
+///
+/// Versions 1 through 8 retain the Hybrid production history. Versions 9 through
+/// 11 append private release drafts, reviewed OCI retirement, and namespace routes.
 pub const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
     include_str!("002-r2-gc-incarnation.sql"),
@@ -622,6 +637,10 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("006-mirror-import-generations.sql"),
     include_str!("007-catalogue-lifetimes.sql"),
     include_str!("release_channel_advances.sql"),
+    include_str!("staged_releases.sql"),
+    include_str!("oci_registry_retirement.sql"),
+    include_str!("oci_namespace_routes.sql"),
+    include_str!("012-oci-inventory-progress.sql"),
 ];
 
 // Shared by production initialization and trusted disposable schema compilation.
@@ -632,7 +651,10 @@ pub(crate) const SCHEMA_VERSION_DDL: &str =
 ///
 /// Historical development ledgers are incompatible even when their integer
 /// version happens to match a production migration.
-pub const SCHEMA_IDENTITY: &str = "aos-hub/canonical-serving/8";
+pub const SCHEMA_IDENTITY: &str = "aos-hub/canonical-serving/12";
+
+/// Identifies immutable generation-eight archives independently of serving DDL.
+pub const SNAPSHOT_SCHEMA_IDENTITY_8: &str = "aos-hub/canonical-serving/8";
 
 /// Identifies genuine generation-three through generation-seven archives.
 ///
@@ -647,7 +669,8 @@ pub const HISTORICAL_SCHEMA_IDENTITY: &str = "aos-hub/production-baseline/1";
 pub fn snapshot_schema_identity(generation: usize) -> Result<&'static str> {
     match generation {
         3..=7 => Ok(HISTORICAL_SCHEMA_IDENTITY),
-        8 => Ok(SCHEMA_IDENTITY),
+        8 => Ok(SNAPSHOT_SCHEMA_IDENTITY_8),
+        12 => Ok(SCHEMA_IDENTITY),
         _ => anyhow::bail!("unsupported snapshot schema generation"),
     }
 }
@@ -3102,6 +3125,10 @@ pub struct NewTopologyOperation {
 pub struct IndexSnapshot {
     /// The commit the snapshot was loaded from.
     pub commit: String,
+    /// Verified release commit selected by the default signed channel.
+    pub public_catalog_commit: Option<String>,
+    /// Exact release tag selected by the default signed channel.
+    pub public_catalog_release: Option<String>,
     /// Committed registry name.
     pub name: String,
     /// Committed registry description.
@@ -4031,6 +4058,18 @@ impl Database {
         indexed_placement_id: Option<i64>,
         image_presence: Option<(&[VerifiedRegistryImageObject], i64)>,
     ) -> Result<()> {
+        match (
+            &snapshot.public_catalog_commit,
+            &snapshot.public_catalog_release,
+        ) {
+            (None, None) => {}
+            (Some(commit), Some(tag))
+                if snapshot.releases.iter().any(|release| {
+                    release.semver == *tag && release.commit_oid == *commit
+                }) => {}
+            _ => bail!("public catalog selection is not a verified release in this snapshot"),
+        }
+
         self.assert_registry_index_mutation_source(registry_id, indexed_placement_id)
             .await?;
         let registry = self
@@ -4061,6 +4100,15 @@ impl Database {
             .release_artifact_snapshots
             .iter()
             .any(|release| release.container_release.is_some());
+        // An unchanged rewrite keeps the OCI mutation epoch, so the periodic
+        // re-index does not invalidate provider inventories and GC plans.
+        let unchanged_projection_epoch =
+            if had_container_admin_projections || has_container_admin_projections {
+                self.unchanged_container_release_projection_epoch(registry_id, snapshot)
+                    .await?
+            } else {
+                None
+            };
         // Assign surrogate ids client-side so the whole snapshot is one
         // self-contained batch (HubDb has no mid-batch `last_insert_rowid`). The
         // bases are read once before the batch; the indexer runs sequentially
@@ -4896,6 +4944,18 @@ impl Database {
             ]
             .to_vec(),
         ));
+        stmts.push(Statement::new(
+            "INSERT INTO registry_public_catalog_heads(registry_id, source_commit, release_tag)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(registry_id) DO UPDATE SET
+               source_commit = excluded.source_commit, release_tag = excluded.release_tag",
+            vals![
+                registry_id,
+                snapshot.public_catalog_commit,
+                snapshot.public_catalog_release
+            ]
+            .to_vec(),
+        ));
         if registry.org_id.is_some() {
             let event = crate::webhook::WebhookEvent::IndexCompleted {
                 registry: registry.slug.clone(),
@@ -4949,16 +5009,15 @@ impl Database {
                     vals![registry_id, indexed_at],
                 )
                 .unchecked(),
-                Statement::new(
-                    "UPDATE oci_registry_state
-                     SET mutation_epoch = mutation_epoch + 1, updated_at = ?2
-                     WHERE registry_id = ?1
-                       AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
-                         WHERE registry_lock.registry_id = ?1)",
-                    vals![registry_id, indexed_at],
-                )
-                .expecting(1),
+                oci_release_projection::container_release_projection_epoch_statement(
+                    registry_id,
+                    indexed_at,
+                    unchanged_projection_epoch,
+                ),
             ]);
+        }
+        if has_container_admin_projections && self.oci_catalog_retired(registry_id).await? {
+            bail!("registry OCI catalog is retired; container releases cannot be re-projected");
         }
         for release in &snapshot.release_artifact_snapshots {
             if let Some(root) = &release.container_release {
@@ -5176,6 +5235,10 @@ impl Database {
             ),
             Statement::new(
                 "DELETE FROM release_artifact_snapshots WHERE registry_id = ?1",
+                vals![registry_id].to_vec(),
+            ),
+            Statement::new(
+                "DELETE FROM registry_public_catalog_heads WHERE registry_id = ?1",
                 vals![registry_id].to_vec(),
             ),
             Statement::new(
@@ -8151,6 +8214,14 @@ impl Database {
                completed_at = CASE WHEN ?3 IN ('ready','failed') THEN ?4 ELSE completed_at END,
                retired_at = CASE WHEN ?3 = 'retired' THEN ?4 ELSE retired_at END
              WHERE publication_id = ?1 AND state = ?2
+               AND (?3 <> 'writing_pointers' OR NOT EXISTS (
+                 SELECT 1 FROM staged_release_revisions revision
+                 JOIN staged_releases stage
+                   ON stage.registry_id = revision.registry_id
+                  AND stage.stage_id = revision.stage_id
+                 WHERE revision.publication_id = ?1
+                   AND (revision.revision <> stage.current_revision
+                     OR stage.state <> 'releasing')))
                AND (?3 <> 'ready' OR (EXISTS (
                  SELECT 1 FROM registry_publication_placements pp
                  WHERE pp.publication_id = ?1 AND pp.required = 1)
@@ -8188,7 +8259,9 @@ impl Database {
                     "UPDATE registry_publications
                      SET state = 'failed', completed_at = ?2
                      WHERE publication_id = ?1
-                       AND state IN ('preparing', 'writing_pointers')",
+                       AND state IN ('preparing', 'writing_pointers')
+                       AND NOT EXISTS (SELECT 1 FROM staged_releases stage
+                         WHERE stage.publication_id = ?1 AND stage.state = 'releasing')",
                     vals![publication_id, at],
                 )
                 .expecting(1),
@@ -11118,13 +11191,32 @@ impl Database {
              WHERE id = ?1 AND resource_version = ?2 AND lifecycle_state = 'active'
                AND registry_id IS NOT NULL
                AND NOT EXISTS (
+                 SELECT 1 FROM staged_release_objects staged_object
+                 JOIN staged_release_revisions staged_revision
+                   ON staged_revision.registry_id = staged_object.registry_id
+                  AND staged_revision.stage_id = staged_object.stage_id
+                  AND staged_revision.revision = staged_object.revision
+                 WHERE staged_object.registry_id = surface_objects.registry_id
+                   AND staged_object.object_key = surface_objects.object_key
+                   AND (staged_revision.retire_after IS NULL
+                     OR staged_revision.retire_after > ?3))
+               AND NOT EXISTS (
                  SELECT 1 FROM registry_image_roots root
                  WHERE root.surface_object_id = ?1)
                AND NOT EXISTS (
                  SELECT 1 FROM registry_publication_objects po
                  JOIN registry_publications pub
                    ON pub.publication_id = po.publication_id
-                 WHERE po.surface_object_id = ?1 AND pub.state <> 'retired')",
+                 WHERE po.surface_object_id = ?1 AND pub.state <> 'retired'
+                   AND (NOT EXISTS (SELECT 1 FROM staged_release_revisions revision
+                     WHERE revision.publication_id = pub.publication_id)
+                     OR EXISTS (SELECT 1 FROM staged_release_revisions revision
+                       WHERE revision.publication_id = pub.publication_id
+                         AND (revision.retire_after IS NULL OR revision.retire_after > ?3))))
+               AND NOT EXISTS (
+                 SELECT 1 FROM registry_publication_multipart_uploads upload
+                 WHERE upload.surface_object_id = ?1
+                   AND upload.state IN('active', 'completing'))",
                 &vals![id, expected_version, tombstoned_at],
             )
             .await?
@@ -14428,6 +14520,28 @@ impl Database {
             .is_some())
     }
 
+    /// Reports whether a reviewed catalog retirement has started for the registry.
+    ///
+    /// Once a retiring GC run is applying or complete, signed-release roots
+    /// must not be re-projected by indexing: the roots were deliberately
+    /// retired and the collector relies on them staying absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn oci_catalog_retired(&self, registry_id: i64) -> Result<bool> {
+        Ok(self
+            .backend
+            .query_opt(
+                "SELECT 1 FROM oci_gc_runs
+                 WHERE registry_id = ?1 AND retire_registry = 1
+                   AND state IN('applying', 'complete') LIMIT 1",
+                &vals![registry_id],
+            )
+            .await?
+            .is_some())
+    }
+
     /// Records exact storage presence for signed image roots on the indexed placement.
     ///
     /// # Errors
@@ -14670,6 +14784,15 @@ impl Database {
                    SELECT 1 FROM image_snapshot_references reference
                    WHERE reference.digest = snapshot.digest)
                    AND NOT EXISTS (
+                     SELECT 1 FROM staged_release_objects staged_object
+                     JOIN staged_release_revisions staged_revision
+                       ON staged_revision.registry_id = staged_object.registry_id
+                      AND staged_revision.stage_id = staged_object.stage_id
+                      AND staged_revision.revision = staged_object.revision
+                     WHERE staged_object.sha256 = snapshot.digest
+                       AND (staged_revision.retire_after IS NULL
+                         OR staged_revision.retire_after > ?2))
+                   AND NOT EXISTS (
                      SELECT 1 FROM image_snapshot_leases lease
                      WHERE lease.digest = snapshot.digest AND lease.expires_at > ?2)
                  ORDER BY digest LIMIT ?1",
@@ -14758,6 +14881,15 @@ impl Database {
                  WHERE digest = ?1 AND NOT EXISTS (
                    SELECT 1 FROM image_snapshot_references reference
                    WHERE reference.digest = image_snapshots.digest)
+                   AND NOT EXISTS (
+                     SELECT 1 FROM staged_release_objects staged_object
+                     JOIN staged_release_revisions staged_revision
+                       ON staged_revision.registry_id = staged_object.registry_id
+                      AND staged_revision.stage_id = staged_object.stage_id
+                      AND staged_revision.revision = staged_object.revision
+                     WHERE staged_object.sha256 = image_snapshots.digest
+                       AND (staged_revision.retire_after IS NULL
+                         OR staged_revision.retire_after > ?2))
                    AND NOT EXISTS (
                      SELECT 1 FROM image_snapshot_leases lease
                      WHERE lease.digest = image_snapshots.digest AND lease.expires_at > ?2)",
@@ -26743,6 +26875,8 @@ fn index_snapshot_digest(snapshot: &IndexSnapshot) -> Result<String> {
         })
         .collect::<Vec<_>>();
     let document = serde_json::json!({
+        "public_catalog_commit": snapshot.public_catalog_commit,
+        "public_catalog_release": snapshot.public_catalog_release,
         "commit": snapshot.commit,
         "name": snapshot.name,
         "description": snapshot.description,
@@ -27457,8 +27591,8 @@ source_nar_hash = ""
     fn fresh_schema_is_final_and_foreign_key_clean() {
         assert_eq!(
             MIGRATIONS.len(),
-            8,
-            "immutable migrations 001–007 plus the channel ledger"
+            12,
+            "immutable Hybrid history plus serving additions 009–012"
         );
         let connection = Connection::open_in_memory().unwrap();
         connection
@@ -27956,6 +28090,8 @@ source_nar_hash = ""
             }));
         let mut snapshot = IndexSnapshot {
             commit: "c".repeat(64),
+            public_catalog_commit: Some("c".repeat(64)),
+            public_catalog_release: Some("1.0.0".into()),
             name: "demo".into(),
             description: None,
             readme: None,
@@ -28807,9 +28943,34 @@ source_nar_hash = ""
             .get(0)
             .unwrap();
         assert_eq!(epoch_after_shared_root, epoch_before_shared_root + 1);
+
+        async fn mutation_epoch(db: &Database, registry_id: i64) -> i64 {
+            db.backend
+                .query_opt(
+                    "SELECT mutation_epoch FROM oci_registry_state WHERE registry_id = ?1",
+                    &vals![registry_id],
+                )
+                .await
+                .unwrap()
+                .unwrap()
+                .get(0)
+                .unwrap()
+        }
+
+        // Dropping the second release changes the projection again.
         db.apply_snapshot_from_placement(registry_id, &snapshot, Some(placement.id))
             .await
             .unwrap();
+        let epoch_after_revert = mutation_epoch(&db, registry_id).await;
+        assert_eq!(epoch_after_revert, epoch_after_shared_root + 1);
+
+        // The periodic re-index rewrites an unchanged projection. Keeping the
+        // epoch keeps provider inventories and GC plans of the registry current.
+        db.apply_snapshot_from_placement(registry_id, &snapshot, Some(placement.id))
+            .await
+            .unwrap();
+        assert_eq!(mutation_epoch(&db, registry_id).await, epoch_after_revert);
+        assert!(db.has_container_release_catalog(registry_id).await.unwrap());
 
         db.backend
             .execute(
@@ -28989,6 +29150,8 @@ source_nar_hash = ""
         let package = signed_image_package();
         let mut snapshot = IndexSnapshot {
             commit: "c".repeat(64),
+            public_catalog_commit: Some("c".repeat(64)),
+            public_catalog_release: Some("2026.8.0".into()),
             name: "AOS system".into(),
             packages: vec![package.clone()],
             releases: vec![ReleaseRow {
@@ -33825,6 +33988,8 @@ source_nar_hash = ""
             .unwrap();
         let snapshot = IndexSnapshot {
             commit: "c".repeat(64),
+            public_catalog_commit: None,
+            public_catalog_release: None,
             name: "generation guard".into(),
             description: None,
             readme: None,

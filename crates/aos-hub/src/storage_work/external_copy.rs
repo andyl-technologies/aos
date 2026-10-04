@@ -5,7 +5,7 @@
 //! source: a replacement HEAD can never silently become the old copy's source.
 //! Native receives compact progress only and never reads an object body.
 
-use anyhow::{ensure, Context as _, Result};
+use anyhow::{Context as _, Result, ensure};
 use aos_hub_core::{
     db::{
         BindingRecord, BindingWriteRevisionRecord, ConsumerScopeGrantRecord, SurfaceObjectRecord,
@@ -14,26 +14,27 @@ use aos_hub_core::{
     fetch::SurfaceListedEvidence,
     storage_authority::{
         external_object::copy::{
+            CopyIncarnationMode, CopyPlacementPin, CopySourceBindingPin, CopySourceObject,
+            CopyTopologyOriginal, ExternalCopyOriginal,
             control::{
-                CopyClaim, CopyControl, CopyProgress, ExternalCopyReply, ExternalCopyRequest,
-                EXTERNAL_COPY_PATH, MAX_EXTERNAL_COPY_CONTROL_BYTES,
+                CopyClaim, CopyControl, CopyProgress, EXTERNAL_COPY_PATH, ExternalCopyReply,
+                ExternalCopyRequest, MAX_EXTERNAL_COPY_CONTROL_BYTES,
             },
             metadata::{
-                CopyMetadataReply, CopyMetadataRequest, RetainedCopyOriginal,
-                EXTERNAL_COPY_METADATA_PATH,
+                CopyMetadataReply, CopyMetadataRequest, EXTERNAL_COPY_METADATA_PATH,
+                RetainedCopyOriginal,
             },
             session::CopyPhase,
-            CopyPlacementPin, CopySourceObject, CopyTopologyOriginal, ExternalCopyOriginal,
         },
         lease::LeaseInteger,
     },
-    storage_work::{StorageWorkOperation, StorageWorkOutcome, STORAGE_WORK_SIGNATURE_HEADER},
+    storage_work::{STORAGE_WORK_SIGNATURE_HEADER, StorageWorkOperation, StorageWorkOutcome},
 };
 use base64::Engine as _;
 
 use super::{
-    read_observed_response, telemetry::ExchangeTelemetry, HybridSurfaceWrites,
-    RemoteStorageWorkClient,
+    HybridSurfaceWrites, RemoteStorageWorkClient, read_observed_response,
+    telemetry::ExchangeTelemetry,
 };
 
 mod context;
@@ -193,8 +194,10 @@ struct CurrentCopy {
     topology: CopyTopologyOriginal,
     source: CopyPlacementPin,
     destination: CopyPlacementPin,
+    source_binding: BindingRecord,
     binding: BindingRecord,
     revision: BindingWriteRevisionRecord,
+    source_grant: ConsumerScopeGrantRecord,
     grant: ConsumerScopeGrantRecord,
 }
 
@@ -211,9 +214,7 @@ impl HybridSurfaceWrites {
         let current = self
             .current_copy(operation, source, destination, true)
             .await?;
-        self.work
-            .ensure_remote_binding_snapshot(&self.db, &current.binding)
-            .await?;
+        self.ensure_copy_snapshots(&current).await?;
         let claim = self
             .recheck_copy(&current, operation, claim_token, source, destination)
             .await?;
@@ -224,18 +225,15 @@ impl HybridSurfaceWrites {
             StorageWorkOperation::Head { path: path.into() },
             now,
         )?;
-        let mut query = CopyMetadataRequest::new(
-            current.topology.clone(),
-            current.source.clone(),
-            current.destination.clone(),
-            Some(claim),
-            plan,
-            path.into(),
-            now,
-        )?;
+        let mut query = self.copy_metadata_query(&current, source, Some(claim), plan, path, now)?;
         query.profile_only = true;
         let metadata = self.work.external_copy_metadata(&query).await?;
         let selector = metadata.selector(&query)?;
+        self.check_source_selector(
+            &current,
+            selector.transfer.as_ref().map(|pins| &pins.source_binding),
+        )
+        .await?;
         ensure!(
             selector.binding_stable_id == current.binding.stable_id
                 && metadata.profile.binding_write_revision.get() == current.revision.revision
@@ -249,7 +247,12 @@ impl HybridSurfaceWrites {
             .await?;
         Ok(aos_hub_core::surface_write::PlacementCopyPolicy {
             profile_digest: metadata.profile.profile_digest,
-            catalogue_only: metadata.profile.protected_versionless,
+            catalogue_only: metadata
+                .transfer
+                .as_ref()
+                .map_or(metadata.profile.protected_versionless, |pins| {
+                    pins.source_incarnation == CopyIncarnationMode::GuardedClosure
+                }),
         })
     }
 
@@ -272,9 +275,7 @@ impl HybridSurfaceWrites {
         let current = self
             .current_copy(operation, source, destination, false)
             .await?;
-        self.work
-            .ensure_remote_binding_snapshot(&self.db, &current.binding)
-            .await?;
+        self.ensure_copy_snapshots(&current).await?;
         let now = aos_hub_core::clock::now_unix_secs();
         let plan = self.work.plan_for_placement(
             destination,
@@ -282,21 +283,18 @@ impl HybridSurfaceWrites {
             StorageWorkOperation::Head { path: path.into() },
             now,
         )?;
-        let query = CopyMetadataRequest::new(
-            current.topology.clone(),
-            current.source.clone(),
-            current.destination.clone(),
-            None,
-            plan,
-            path.into(),
-            now,
-        )?;
+        let query = self.copy_metadata_query(&current, source, None, plan, path, now)?;
         let (reply, observation) = self.work.external_copy_metadata_observed(&query).await?;
         let latest = self
             .current_copy(operation, source, destination, false)
             .await?;
         compare_current(&current, &latest)?;
         let selector = reply.selector(&query)?;
+        self.check_source_selector(
+            &current,
+            selector.transfer.as_ref().map(|pins| &pins.source_binding),
+        )
+        .await?;
         ensure!(
             selector.binding_stable_id == current.binding.stable_id
                 && reply.profile.binding_write_revision.get() == current.revision.revision
@@ -313,6 +311,7 @@ impl HybridSurfaceWrites {
             None,
             &reply.profile.profile_digest,
             &selector.snapshot_revision,
+            selector.transfer.as_ref().map(|pins| &pins.source_binding),
         );
         Ok(reply.retained)
     }
@@ -362,9 +361,7 @@ impl HybridSurfaceWrites {
             .and_then(|object| object.content_hash.as_deref())
             .map(catalogue_sha256)
             .transpose()?;
-        self.work
-            .ensure_remote_binding_snapshot(&self.db, &current.binding)
-            .await?;
+        self.ensure_copy_snapshots(&current).await?;
         let claim = self
             .recheck_copy(&current, operation, claim_token, source, destination)
             .await?;
@@ -375,25 +372,28 @@ impl HybridSurfaceWrites {
             StorageWorkOperation::Head { path: path.into() },
             now,
         )?;
-        let query = CopyMetadataRequest::new(
-            current.topology.clone(),
-            current.source.clone(),
-            current.destination.clone(),
-            Some(claim),
-            plan,
-            path.into(),
-            now,
-        )?;
+        let query = self.copy_metadata_query(&current, source, Some(claim), plan, path, now)?;
         let (metadata, metadata_observation) =
             self.work.external_copy_metadata_observed(&query).await?;
         self.recheck_catalogue(source, path, &catalogue).await?;
         self.recheck_copy(&current, operation, claim_token, source, destination)
             .await?;
         let selector = metadata.selector(&query)?;
+        self.check_source_selector(
+            &current,
+            selector.transfer.as_ref().map(|pins| &pins.source_binding),
+        )
+        .await?;
         if let Some(policy) = policy {
             ensure!(
                 metadata.profile.profile_digest == policy.profile_digest
-                    && metadata.profile.protected_versionless == policy.catalogue_only,
+                    && metadata
+                        .transfer
+                        .as_ref()
+                        .map_or(metadata.profile.protected_versionless, |pins| pins
+                            .source_incarnation
+                            == CopyIncarnationMode::GuardedClosure)
+                        == policy.catalogue_only,
                 "installed placement copy policy changed before object dispatch"
             );
         }
@@ -432,6 +432,11 @@ impl HybridSurfaceWrites {
                     catalogue.as_ref(),
                     &retained.original.profile_digest,
                     &retained.original.snapshot_revision,
+                    retained
+                        .original
+                        .transfer
+                        .as_ref()
+                        .map(|pins| &pins.source_binding),
                 );
                 return Ok(Some(retained.original.source_object.bytes.get() as u64));
             }
@@ -444,7 +449,7 @@ impl HybridSurfaceWrites {
             let listed = listed.context("external copy requires actual inventory evidence")?;
             let plan = self.work.plan_for_placement(
                 source,
-                &current.binding,
+                &current.source_binding,
                 StorageWorkOperation::Head { path: path.into() },
                 aos_hub_core::clock::now_unix_secs(),
             )?;
@@ -454,7 +459,12 @@ impl HybridSurfaceWrites {
                 .await?;
             self.check_snapshot(&current, &selector.snapshot_revision)
                 .await?;
-            let StorageWorkOutcome::Head { object } = result.outcome else {
+            self.check_source_selector(
+                &current,
+                selector.transfer.as_ref().map(|pins| &pins.source_binding),
+            )
+            .await?;
+            let StorageWorkOutcome::Head { object, .. } = result.outcome else {
                 anyhow::bail!("external copy source has no current versioned HEAD");
             };
             ensure!(
@@ -476,30 +486,51 @@ impl HybridSurfaceWrites {
                     "copy source size differs from current catalogue"
                 );
             }
-            let protected =
-                if metadata.profile.protected_versionless {
-                    let closure = metadata
-                        .source_closure
-                        .as_ref()
-                        .context("versionless copy requires a current positive source receipt")?;
-                    closure.validate()?;
-                    let trusted = expected_sha256
-                        .as_ref()
-                        .context("versionless copy refuses an uncatalogued source hash")?;
-                    let logical = catalogue
-                        .as_ref()
-                        .context("versionless copy requires the exact current catalogue object")?;
-                    ensure!(logical.size == Some(closure.bytes.get())
-                    && closure.bytes.get() as u64 == object.size && &closure.sha256 == trusted
-                    && closure.etag.as_ref().is_none_or(|etag| etag == &object.etag)
-                    && object.provider_version.is_none(),
-                    "versionless source closure differs from trusted catalogue or observed HEAD");
-                    Some(closure)
-                } else {
-                    None
-                };
+            let source_protected = metadata
+                .transfer
+                .as_ref()
+                .map_or(metadata.profile.protected_versionless, |pins| {
+                    pins.source_incarnation == CopyIncarnationMode::GuardedClosure
+                });
+            if metadata.transfer.is_some() {
+                ensure!(
+                    expected_sha256.is_some()
+                        && catalogue.as_ref().and_then(|object| object.size)
+                            == Some(i64::try_from(object.size)?),
+                    "cross-binding copy requires a trusted catalogue hash and exact size"
+                );
+            }
+            let protected = if source_protected {
+                let closure = metadata
+                    .source_closure
+                    .as_ref()
+                    .context("versionless copy requires a current positive source receipt")?;
+                closure.validate()?;
+                let trusted = expected_sha256
+                    .as_ref()
+                    .context("versionless copy refuses an uncatalogued source hash")?;
+                let logical = catalogue
+                    .as_ref()
+                    .context("versionless copy requires the exact current catalogue object")?;
+                ensure!(
+                    logical.size == Some(closure.bytes.get())
+                        && closure.bytes.get() as u64 == object.size
+                        && &closure.sha256 == trusted
+                        && closure
+                            .etag
+                            .as_ref()
+                            .is_none_or(|etag| etag == &object.etag)
+                        && object.provider_version.is_none(),
+                    "versionless source closure differs from trusted catalogue or observed HEAD"
+                );
+                Some(closure)
+            } else {
+                None
+            };
             ExternalCopyOriginal {
-                version: if metadata.profile.protected_versionless {
+                version: if metadata.transfer.is_some() {
+                    3
+                } else if metadata.profile.protected_versionless {
                     2
                 } else {
                     1
@@ -525,13 +556,19 @@ impl HybridSurfaceWrites {
                     bytes: LeaseInteger::new(i64::try_from(object.size)?)?,
                     guard_stamp: protected.map(|closure| closure.guard_stamp.clone()),
                 },
-                read_generation: metadata.profile.read_generation,
+                read_generation: metadata
+                    .transfer
+                    .as_ref()
+                    .map_or(metadata.profile.read_generation, |pins| {
+                        pins.source_binding.read_generation
+                    }),
                 write_generation: metadata.profile.write_generation,
                 binding_write_revision: metadata.profile.binding_write_revision,
                 profile_digest: metadata.profile.profile_digest,
                 part_bytes: metadata.profile.part_bytes,
                 expected_sha256,
                 source_receipt_digest: protected.map(|closure| closure.receipt_digest.clone()),
+                transfer: metadata.transfer,
             }
         };
         original.validate()?;
@@ -546,6 +583,7 @@ impl HybridSurfaceWrites {
             catalogue.as_ref(),
             &original.profile_digest,
             &original.snapshot_revision,
+            original.transfer.as_ref().map(|pins| &pins.source_binding),
         );
         // Create + ordered parts + Complete. Each iteration is a new metadata
         // permission over the same original; it never invents another upload.
@@ -559,10 +597,20 @@ impl HybridSurfaceWrites {
                 .await?;
             self.check_snapshot(&current, &original.snapshot_revision)
                 .await?;
+            self.check_source_selector(
+                &current,
+                original.transfer.as_ref().map(|pins| &pins.source_binding),
+            )
+            .await?;
+            let now = aos_hub_core::clock::now_unix_secs();
             let plan = self.work.plan_for_placement(
                 destination,
                 &current.binding,
                 StorageWorkOperation::CopyObject {
+                    source_binding_id: original
+                        .transfer
+                        .as_ref()
+                        .map(|pins| pins.source_binding.binding_id.get()),
                     source_placement_id: source.id,
                     source_placement_resource_version: source.resource_version,
                     source_prefix: source.prefix.clone(),
@@ -570,16 +618,27 @@ impl HybridSurfaceWrites {
                     expected_size: original.source_object.bytes.get() as u64,
                     expected_etag: original.source_object.etag.clone(),
                 },
-                aos_hub_core::clock::now_unix_secs(),
+                now,
             )?;
             self.recheck_catalogue(source, path, &catalogue).await?;
-            let request = ExternalCopyRequest::new(
-                original.clone(),
-                claim,
-                plan,
-                CopyControl::Advance,
-                aos_hub_core::clock::now_unix_secs(),
-            )?;
+            let request = if original.transfer.is_some() {
+                let source_plan = self.work.plan_for_placement(
+                    source,
+                    &current.source_binding,
+                    StorageWorkOperation::Head { path: path.into() },
+                    now,
+                )?;
+                ExternalCopyRequest::new_cross_binding(
+                    original.clone(),
+                    claim,
+                    plan,
+                    source_plan,
+                    CopyControl::Advance,
+                    now,
+                )?
+            } else {
+                ExternalCopyRequest::new(original.clone(), claim, plan, CopyControl::Advance, now)?
+            };
             let (progress, observation) =
                 self.work.external_copy_control_observed(&request).await?;
             self.recheck_catalogue(source, path, &catalogue).await?;
@@ -587,6 +646,11 @@ impl HybridSurfaceWrites {
                 .await?;
             self.check_snapshot(&current, &original.snapshot_revision)
                 .await?;
+            self.check_source_selector(
+                &current,
+                original.transfer.as_ref().map(|pins| &pins.source_binding),
+            )
+            .await?;
             progress.validate(&original)?;
             ensure!(
                 !progress.pending,
@@ -601,6 +665,7 @@ impl HybridSurfaceWrites {
                     catalogue.as_ref(),
                     &original.profile_digest,
                     &original.snapshot_revision,
+                    original.transfer.as_ref().map(|pins| &pins.source_binding),
                 );
                 return Ok(Some(original.source_object.bytes.get() as u64));
             }
@@ -615,9 +680,97 @@ impl HybridSurfaceWrites {
                 catalogue.as_ref(),
                 &original.profile_digest,
                 &original.snapshot_revision,
+                original.transfer.as_ref().map(|pins| &pins.source_binding),
             );
         }
         anyhow::bail!("external copy exceeded its original bounded action count")
+    }
+
+    async fn ensure_copy_snapshots(&self, current: &CurrentCopy) -> Result<()> {
+        self.work
+            .ensure_remote_binding_snapshot(&self.db, &current.binding)
+            .await?;
+        if current.source_binding.id != current.binding.id {
+            self.work
+                .ensure_remote_binding_snapshot(&self.db, &current.source_binding)
+                .await?;
+        }
+        Ok(())
+    }
+
+    fn copy_metadata_query(
+        &self,
+        current: &CurrentCopy,
+        source: &SurfacePlacementRecord,
+        claim: Option<CopyClaim>,
+        plan: aos_hub_core::storage_work::StorageWorkPlan,
+        path: &str,
+        now: i64,
+    ) -> Result<CopyMetadataRequest> {
+        if current.source_binding.id == current.binding.id {
+            return CopyMetadataRequest::new(
+                current.topology.clone(),
+                current.source.clone(),
+                current.destination.clone(),
+                claim,
+                plan,
+                path.into(),
+                now,
+            );
+        }
+        let source_plan = self.work.plan_for_placement(
+            source,
+            &current.source_binding,
+            StorageWorkOperation::Head { path: path.into() },
+            now,
+        )?;
+        CopyMetadataRequest::new_cross_binding(
+            current.topology.clone(),
+            current.source.clone(),
+            current.destination.clone(),
+            claim,
+            plan,
+            source_plan,
+            path.into(),
+            now,
+        )
+    }
+
+    async fn check_source_selector(
+        &self,
+        current: &CurrentCopy,
+        pin: Option<&CopySourceBindingPin>,
+    ) -> Result<()> {
+        let Some(pin) = pin else {
+            ensure!(
+                current.source_binding.id == current.binding.id,
+                "independent source pins absent"
+            );
+            return Ok(());
+        };
+        ensure!(
+            pin.binding_id.get() == current.source_binding.id
+                && pin.binding_stable_id == current.source_binding.stable_id
+                && pin.binding_resource_version.get() == current.source_binding.resource_version,
+            "copy source Read binding differs from current SQL"
+        );
+        let credentials = self
+            .db
+            .list_current_binding_credentials(current.source_binding.id)
+            .await?;
+        self.work.validate_published_binding_snapshot(
+            &current.source_binding,
+            &credentials,
+            &pin.snapshot_revision,
+        )?;
+        ensure!(
+            credentials
+                .iter()
+                .any(|credential| credential.purpose == "read"
+                    && credential.generation == pin.read_generation.get()),
+            "copy current source Read generation differs"
+        );
+        Ok(())
     }
 
     async fn copy_catalogue(
@@ -743,11 +896,20 @@ impl HybridSurfaceWrites {
             .binding(destination.binding_id)
             .await?
             .context("copy binding disappeared")?;
+        let source_binding = if source.binding_id == binding.id {
+            binding.clone()
+        } else {
+            self.db
+                .binding(source.binding_id)
+                .await?
+                .context("copy source binding disappeared")?
+        };
         ensure!(
-            source.binding_id == destination.binding_id
-                && matches!(binding.kind.as_str(), "s3" | "r2")
-                && !binding.is_instance_default,
-            "external copy requires one admitted external binding"
+            matches!(binding.kind.as_str(), "s3" | "r2")
+                && !binding.is_instance_default
+                && matches!(source_binding.kind.as_str(), "s3" | "r2")
+                && !source_binding.is_instance_default,
+            "external copy requires independently admitted external bindings"
         );
         let revision = self
             .db
@@ -777,12 +939,21 @@ impl HybridSurfaceWrites {
             .db
             .placement_copy_consumer_grant(&binding, &owner)
             .await?;
+        let source_grant = if source_binding.id == binding.id {
+            grant.clone()
+        } else {
+            self.db
+                .placement_copy_consumer_grant(&source_binding, &owner)
+                .await?
+        };
         Ok(CurrentCopy {
             topology,
             source: source_pin,
             destination: destination_pin,
+            source_binding,
             binding,
             revision,
+            source_grant,
             grant,
         })
     }
@@ -820,9 +991,12 @@ fn compare_current(pinned: &CurrentCopy, current: &CurrentCopy) -> Result<()> {
         current.topology == pinned.topology
             && current.source == pinned.source
             && current.destination == pinned.destination
+            && current.source_binding.resource_version == pinned.source_binding.resource_version
+            && current.source_binding.stable_id == pinned.source_binding.stable_id
             && current.binding.resource_version == pinned.binding.resource_version
             && current.binding.stable_id == pinned.binding.stable_id
             && current.revision == pinned.revision
+            && current.source_grant == pinned.source_grant
             && current.grant == pinned.grant,
         "copy current SQL authority changed"
     );
@@ -839,7 +1013,7 @@ fn require_retained_catalogue_size(
     original_bytes: i64,
     catalogue: Option<&SurfaceObjectRecord>,
 ) -> Result<()> {
-    if version == 2 {
+    if matches!(version, 2 | 3) {
         ensure!(
             catalogue.and_then(|object| object.size) == Some(original_bytes),
             "retained protected copy lacks exact current catalogue size"

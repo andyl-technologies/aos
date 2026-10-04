@@ -98,6 +98,16 @@ impl<R: Read> Reader<R> {
         Ok(())
     }
 
+    pub fn select_exact<T: Serialize>(&mut self, expected: &[T]) -> Result<usize> {
+        let actual = self.line()?.ok_or_else(|| anyhow::anyhow!("object requirement header is absent"))?;
+        for (index, header) in expected.iter().enumerate() {
+            if actual.as_slice() == encode(header)?.as_slice() {
+                return Ok(index);
+            }
+        }
+        anyhow::bail!("object requirement header differs")
+    }
+
     pub fn finish(&mut self) -> Result<()> {
         ensure!(
             self.line()?.is_none() && self.decoder.summary().is_some(),

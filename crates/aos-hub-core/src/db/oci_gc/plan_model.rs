@@ -1,6 +1,6 @@
 //! Canonical reviewed-plan records, validation, and SQL fence builders.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context as _, Result};
 use aos_oci_types::Sha256Digest;
 use serde::Serialize;
 
@@ -21,6 +21,13 @@ pub struct PlanOciGc {
     pub expected_resource_version: i64,
     /// Planning time in Unix seconds.
     pub now: i64,
+    /// Retire the whole catalog ahead of registry deletion.
+    ///
+    /// Signed-release, tag, and tag-history roots stop protecting objects and
+    /// the untagged grace period is zero, so repeated plan/apply rounds drain
+    /// the catalog. Planning fails closed while any enabled route still serves
+    /// the registry's OCI surface.
+    pub retire_registry: bool,
 }
 
 /// Input for applying a reviewed OCI retention generation.
@@ -142,6 +149,23 @@ pub(super) fn validate_apply_input(input: &ApplyOciGc) -> Result<()> {
 
 pub(super) fn digest_json(value: &(impl Serialize + ?Sized)) -> Result<Sha256Digest> {
     Ok(Sha256Digest::digest(&serde_json::to_vec(value)?))
+}
+
+/// Returns the unreferenced-since cutoff below which objects are collectable.
+///
+/// A retiring run uses no grace: every unreferenced object observed at or
+/// before planning time is a candidate, so repeated rounds drain the catalog.
+pub(super) fn oci_gc_grace_cutoff(
+    policy: &EffectivePolicy,
+    now: i64,
+    retire_registry: bool,
+) -> Result<i64> {
+    if retire_registry {
+        return Ok(now);
+    }
+    let grace =
+        i64::try_from(policy.untagged_grace_seconds).context("OCI untagged grace exceeds int64")?;
+    Ok(now.saturating_sub(grace))
 }
 
 pub(super) fn policy_guard_statement(

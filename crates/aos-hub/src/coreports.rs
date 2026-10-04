@@ -149,7 +149,7 @@ impl aos_hub_core::topology_probe::StorageCredentialProbeProvider
                 status.is_success() || status == reqwest::StatusCode::NOT_FOUND
             }
             "list" => {
-                let url = surface.list_url(None, 1, now)?;
+                let url = surface.list_url("", None, 1, now)?;
                 let status = self.send(reqwest::Method::GET, &url).await?;
                 statuses.insert("listStatus".into(), status.as_u16().into());
                 status.is_success()
@@ -417,6 +417,7 @@ impl core_fetch::SurfaceFetch for crate::fetch::LocalFsFetch {
 
     async fn list_page(
         &self,
+        prefix: &str,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<core_fetch::SurfaceListPage> {
@@ -428,8 +429,22 @@ impl core_fetch::SurfaceFetch for crate::fetch::LocalFsFetch {
             cursor.is_none_or(|value| value.len() <= core_fetch::MAX_SURFACE_LIST_CURSOR_BYTES),
             "filesystem listing cursor is too large"
         );
+        core_fetch::validate_surface_list_prefix(prefix)?;
         let root = self.root().to_path_buf();
-        let mut pending = vec![root.clone()];
+        // Root the walk at the prefix's directory so sibling namespaces (the
+        // binary cache beside the OCI blobs) are never read. The prefix may
+        // end mid-component, so entries under that directory are still
+        // matched against the full prefix below.
+        let (prefix_directory, _) = prefix.rsplit_once('/').unwrap_or(("", prefix));
+        let walk_root = if prefix_directory.is_empty() {
+            root.clone()
+        } else {
+            root.join(prefix_directory)
+        };
+        crate::fetch::ensure_within_root(&root, &walk_root)
+            .await
+            .map_err(native_placement_read_error)?;
+        let mut pending = vec![walk_root];
         let mut paths = std::collections::BTreeSet::new();
         let mut has_more = false;
         let mut budget = core_fetch::SurfaceListingBudget::default();
@@ -475,7 +490,7 @@ impl core_fetch::SurfaceFetch for crate::fetch::LocalFsFetch {
                         error,
                     ))
                 })?;
-                if file_type.is_symlink() {
+                if file_type.is_symlink() || !relative.starts_with(prefix) {
                     continue;
                 }
                 if file_type.is_dir() {
@@ -2051,6 +2066,7 @@ impl core_fetch::SurfaceFetch for S3Fetch {
 
     async fn list_page(
         &self,
+        prefix: &str,
         cursor: Option<&str>,
         limit: usize,
     ) -> Result<core_fetch::SurfaceListPage> {
@@ -2064,7 +2080,7 @@ impl core_fetch::SurfaceFetch for S3Fetch {
         );
         let url = self
             .surface
-            .list_url(cursor, limit, aos_hub_core::clock::now_unix_secs())?;
+            .list_url(prefix, cursor, limit, aos_hub_core::clock::now_unix_secs())?;
         let response = send_s3_request(&self.http, reqwest::Method::GET, &url, None, None, None)
             .await
             .with_context(|| format!("s3 list {}", self.surface.describe()))?;
@@ -2086,6 +2102,10 @@ impl core_fetch::SurfaceFetch for S3Fetch {
         for key in keys {
             if let Some(relative) = self.surface.relative_from_key(&key) {
                 if !relative.is_empty() {
+                    anyhow::ensure!(
+                        relative.starts_with(prefix),
+                        "S3 listing returned an object outside the requested prefix"
+                    );
                     paths.push(relative);
                     anyhow::ensure!(
                         paths.len() <= limit,

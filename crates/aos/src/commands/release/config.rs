@@ -3,8 +3,10 @@
 //! One TOML document (`aos.release.maintainer-config/v1`) describes a single
 //! registry's maintainer machine: its work and fitness roots, the public Git
 //! identity of registry release commits, both publication surfaces, the
-//! external signer and its role keys, TUF trust, native executors, the
-//! reviewer key, and the alert path. Leaf commands read only the
+//! external signer and its role keys, TUF trust, the reviewer key, and the
+//! alert path. The coordinator's own closure and the native qualification
+//! executors are not configured here; they come from the installed
+//! [tooling environment](super::tooling). Leaf commands read only the
 //! sections they need (for example `step publish` reads a static surface's
 //! credentials and the `surface-receipt` signer); the porcelain reads all of it.
 //!
@@ -15,12 +17,11 @@
 //! schema_version = "aos.release.maintainer-config/v1"
 //! work_root = "/var/lib/aos-release-coordinator/releases"
 //! fitness_root = "/var/lib/aos-release-coordinator/fitness"
-//! registry = "andyl/testing"
+//! registry = "andyl/experimental"
 //! protected_branch = "master"
 //! contributor_authorization = "/etc/aos-release/release-contributor-authorization.json"
 //! retention_policy = "/etc/aos-release/release-retention-policy.md"
 //! restricted_operator_policy = "/etc/aos-release/restricted-operator-policy.md"
-//! tooling_closure = "/nix/store/...-aos"
 //! trusted_keys = ["release-evidence-v1=/etc/aos-release/keys/release-evidence-v1.pub"]
 //!
 //! [git]                                    # author and committer of registry release commits and tags
@@ -32,12 +33,14 @@
 //! origin = "https://aos.staging.example"
 //! identity = "staging-2026-09"
 //! receipt_keys = ["staging-publication-v1=/etc/aos-release/keys/staging-publication-v1.pub"]
+//! # Optional: without it, AOS_TOKEN, else the active `aos hub login` profile
+//! # for this origin authenticates the porcelain.
 //! token_credential = "staging-token"
 //!
 //! [surfaces.production]
 //! kind = "static"
-//! origin = "s3://aos-registry/andyl-testing"
-//! readback_origin = "https://cdn.example.org/andyl-testing"
+//! origin = "s3://aos-registry/andyl-experimental"
+//! readback_origin = "https://cdn.example.org/andyl-experimental"
 //! identity = "cdn-2026-09"
 //! s3_region = "us-east-1"
 //!
@@ -78,11 +81,12 @@ pub(super) const MAINTAINER_CONFIG: &str = "aos.release.maintainer-config/v1";
 /// Environment variable naming an explicit maintainer configuration path.
 const CONFIG_ENVIRONMENT: &str = "AOS_RELEASE_CONFIG";
 
+/// Environment variable holding a Hub access token for surfaces without
+/// `token_credential`.
+const TOKEN_ENVIRONMENT: &str = "AOS_TOKEN";
+
 /// System-wide configuration path used when no explicit path is given.
 const SYSTEM_CONFIG_PATH: &str = "/etc/aos-release/maintainer.toml";
-
-/// Domain separating the tooling-closure fitness binding.
-const TOOLING_DOMAIN: &str = "aos.release.tooling-closure/v1";
 
 /// Domain separating the alert-configuration fitness binding.
 const ALERT_DOMAIN: &str = "aos.release.alert-config/v1";
@@ -113,9 +117,6 @@ pub(super) struct MaintainerConfig {
     /// Retained predecessor bundle used for change scope and update cases.
     #[serde(default)]
     pub(super) predecessor_bundle: Option<PathBuf>,
-    /// Store path of the coordinator tooling; bound by `tooling` fitness.
-    #[serde(default)]
-    pub(super) tooling_closure: Option<String>,
     /// Release-evidence verification keys as `KEY_ID=PATH`.
     #[serde(default)]
     pub(super) trusted_keys: Vec<String>,
@@ -128,10 +129,7 @@ pub(super) struct MaintainerConfig {
     /// TUF root trust.
     #[serde(default)]
     pub(super) tuf: Option<TufConfig>,
-    /// Native qualification executors keyed by platform.
-    #[serde(default)]
-    pub(super) executors: BTreeMap<String, ExecutorConfig>,
-    /// Reviewer key used by `aos release review`.
+    /// Reviewer key used by `aos maintain release review`.
     #[serde(default)]
     pub(super) reviewer: Option<ReviewerConfig>,
     /// Alert delivery path exercised by `alert-delivery` fitness.
@@ -205,6 +203,10 @@ pub(super) struct SurfaceConfig {
     #[serde(default)]
     pub(super) receipt_keys: Vec<String>,
     /// Hub access token credential name or absolute path.
+    ///
+    /// Optional: without it the porcelain uses `AOS_TOKEN`, else the active
+    /// `aos hub login` profile for the surface origin (see
+    /// [`SurfaceConfig::token`]).
     #[serde(default)]
     pub(super) token_credential: Option<String>,
     /// AWS region for an S3 origin.
@@ -253,12 +255,28 @@ impl SurfaceConfig {
         Ok(())
     }
 
-    /// Resolves the configured Hub access token, if any.
+    /// Resolves the Hub access token the porcelain presents to this surface.
+    ///
+    /// The order is `token_credential`, then a non-empty `AOS_TOKEN`. `None`
+    /// means neither is set: the Hub client then uses the renewable
+    /// `aos hub login` profile stored for the surface origin, which must be
+    /// the active profile, exactly as the `aos hub` commands resolve it.
+    ///
+    /// # Errors
+    /// Returns an error when the configured credential cannot be read.
     pub(super) fn token(&self) -> Result<Option<String>> {
-        self.token_credential
-            .as_deref()
-            .map(resolve_credential)
-            .transpose()
+        let environment = std::env::var(TOKEN_ENVIRONMENT).ok();
+        self.token_with_environment(environment.as_deref())
+    }
+
+    /// Resolves the Hub access token against an explicit `AOS_TOKEN` value.
+    fn token_with_environment(&self, environment: Option<&str>) -> Result<Option<String>> {
+        if let Some(reference) = self.token_credential.as_deref() {
+            return resolve_credential(reference).map(Some);
+        }
+        Ok(environment
+            .filter(|token| !token.is_empty())
+            .map(str::to_owned))
     }
 
     /// Resolves static-origin transport credentials.
@@ -409,16 +427,6 @@ pub(super) struct TufConfig {
     pub(super) trusted_root_threshold: u16,
 }
 
-/// One native qualification executor.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct ExecutorConfig {
-    /// Absolute executor path.
-    pub(super) path: PathBuf,
-    /// Expected executor identity.
-    pub(super) identity: String,
-}
-
 /// Reviewer key used to sign pending decisions.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -530,14 +538,6 @@ impl MaintainerConfig {
             .collect()
     }
 
-    /// Returns the digest bound by `tooling` fitness, when a closure is configured.
-    pub(super) fn tooling_digest(&self) -> Result<Option<Sha256Digest>> {
-        self.tooling_closure
-            .as_ref()
-            .map(|closure| Sha256Digest::of_canonical(TOOLING_DOMAIN, closure))
-            .transpose()
-    }
-
     /// Returns the digest bound by `alert-config` fitness, when alerts are configured.
     pub(super) fn alert_config_digest(&self) -> Result<Option<Sha256Digest>> {
         self.alert
@@ -599,7 +599,7 @@ mod tests {
 schema_version = "aos.release.maintainer-config/v1"
 work_root = "/var/lib/aos-release/releases"
 fitness_root = "/var/lib/aos-release/fitness"
-registry = "andyl/testing"
+registry = "andyl/experimental"
 protected_branch = "master"
 contributor_authorization = "/etc/aos-release/authorization.json"
 retention_policy = "/etc/aos-release/retention.md"
@@ -616,8 +616,8 @@ identity = "staging-2026-09"
 
 [surfaces.production]
 kind = "static"
-origin = "s3://registry/andyl-testing"
-readback_origin = "https://cdn.example/andyl-testing"
+origin = "s3://registry/andyl-experimental"
+readback_origin = "https://cdn.example/andyl-experimental"
 identity = "cdn-2026-09"
 
 [signer]
@@ -656,8 +656,8 @@ keys = [
     #[test]
     fn rejects_unknown_fields_roles_and_mixed_key_forms() {
         let unknown = MINIMAL.replace(
-            "registry = \"andyl/testing\"",
-            "registry = \"andyl/testing\"\nextra = 1",
+            "registry = \"andyl/experimental\"",
+            "registry = \"andyl/experimental\"\nextra = 1",
         );
         assert!(MaintainerConfig::parse(unknown.as_bytes()).is_err());
 
@@ -722,13 +722,66 @@ keys = [
     }
 
     #[test]
+    fn hub_tokens_prefer_the_credential_then_the_environment() -> Result<()> {
+        let mut config = MaintainerConfig::parse(MINIMAL.as_bytes())?;
+        let staging = &mut config.surfaces.staging;
+
+        // Neither source: the Hub client falls back to the login profile.
+        assert_eq!(staging.token_with_environment(None)?, None);
+        assert_eq!(staging.token_with_environment(Some(""))?, None);
+        assert_eq!(
+            staging.token_with_environment(Some("environment-token"))?,
+            Some("environment-token".to_owned())
+        );
+
+        let directory = tempfile::tempdir()?;
+        let credential = directory.path().join("staging-token");
+        std::fs::write(&credential, b"  credential-token\n")?;
+        staging.token_credential = Some(credential.display().to_string());
+        assert_eq!(
+            staging.token_with_environment(Some("environment-token"))?,
+            Some("credential-token".to_owned())
+        );
+
+        // A configured but unreadable credential fails closed rather than
+        // falling through to another source.
+        staging.token_credential = Some(directory.path().join("absent").display().to_string());
+        assert!(
+            staging
+                .token_with_environment(Some("environment-token"))
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
     fn fitness_digests_follow_configured_sections() -> Result<()> {
         let mut config = MaintainerConfig::parse(MINIMAL.as_bytes())?;
-        assert_eq!(config.tooling_digest()?, None);
-        config.tooling_closure = Some("/nix/store/aaaa-aos".to_owned());
-        let first = config.tooling_digest()?;
-        config.tooling_closure = Some("/nix/store/bbbb-aos".to_owned());
-        assert_ne!(first, config.tooling_digest()?);
+        assert_eq!(config.alert_config_digest()?, None);
+        config.alert = Some(AlertConfig {
+            program: PathBuf::from("/etc/aos-release/bin/alert"),
+            destination: "oncall@example.org".to_owned(),
+        });
+        let first = config.alert_config_digest()?;
+        config.alert = Some(AlertConfig {
+            program: PathBuf::from("/etc/aos-release/bin/alert"),
+            destination: "backup@example.org".to_owned(),
+        });
+        assert_ne!(first, config.alert_config_digest()?);
         Ok(())
+    }
+
+    #[test]
+    fn rejects_tooling_and_executor_paths() {
+        let tooling = MINIMAL.replace(
+            "registry = \"andyl/experimental\"",
+            "registry = \"andyl/experimental\"\ntooling_closure = \"/nix/store/aaaa-aos\"",
+        );
+        assert!(MaintainerConfig::parse(tooling.as_bytes()).is_err());
+
+        let executors = format!(
+            "{MINIMAL}\n[executors.x86_64-linux]\npath = \"/nix/store/aaaa-executor/bin/run\"\nidentity = \"x\"\n"
+        );
+        assert!(MaintainerConfig::parse(executors.as_bytes()).is_err());
     }
 }

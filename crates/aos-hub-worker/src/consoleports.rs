@@ -130,7 +130,7 @@ pub(crate) async fn probe_storage_credential(
             status == 404 || (200..300).contains(&status)
         }
         "list" => {
-            let url = surface.list_url(None, 1, now)?;
+            let url = surface.list_url("", None, 1, now)?;
             let response = egress
                 .send(&url, "GET", None, None, None, None, None)
                 .await?;

@@ -72,6 +72,21 @@ pub(super) async fn configure(
     Arc<RpcService>,
     String,
 ) {
+    configure_bindings(db, &[binding_id], root).await
+}
+
+pub(super) async fn configure_bindings(
+    db: Arc<Database>,
+    binding_ids: &[i64],
+    root: &Path,
+) -> (
+    AuthorityConfiguration,
+    Value,
+    Value,
+    Arc<RpcService>,
+    String,
+) {
+    assert!(!binding_ids.is_empty() && binding_ids.len() <= 2);
     let user = db
         .create_user("copy-owner@example.test", None)
         .await
@@ -166,38 +181,47 @@ pub(super) async fn configure(
         "alias",
     )
     .await;
-    let binding = db.binding(binding_id).await.unwrap().unwrap();
-    decision(
-        &rpc,
-        &auth,
-        Input::AssociateBinding(pb::AssociateStorageAuthorityBindingDecision {
-            association_id: "copy-association".into(),
-            authority_id: AUTHORITY.into(),
-            alias_id: "copy-alias".into(),
-            binding_id: binding_id.to_string(),
-            binding_stable_id: binding.stable_id,
-            binding_resource_version: binding.resource_version.to_string(),
-            binding_write_revision: "1".into(),
-            binding_prefix: "managed/binding".into(),
-        }),
-        &binding.resource_version.to_string(),
-        "association",
-    )
-    .await;
     let mut members = Vec::new();
-    for purpose in ["list", "read", "write"] {
-        let revision = db
-            .current_binding_credential(binding_id, purpose)
-            .await
-            .unwrap()
-            .unwrap();
-        members.push(pb::StorageAuthorityCredentialMember {
-            association_id: "copy-association".into(),
-            purpose: purpose.into(),
-            generation: revision.generation.to_string(),
-            secret_version_ref: revision.secret_version_ref,
-            credential_fingerprint: revision.credential_fingerprint,
-        });
+    let mut association_ids = Vec::new();
+    for (index, &binding_id) in binding_ids.iter().enumerate() {
+        let association_id = if index == 0 {
+            "copy-association".into()
+        } else {
+            format!("copy-association-{index}")
+        };
+        association_ids.push(association_id.clone());
+        let binding = db.binding(binding_id).await.unwrap().unwrap();
+        decision(
+            &rpc,
+            &auth,
+            Input::AssociateBinding(pb::AssociateStorageAuthorityBindingDecision {
+                association_id: association_id.clone(),
+                authority_id: AUTHORITY.into(),
+                alias_id: "copy-alias".into(),
+                binding_id: binding_id.to_string(),
+                binding_stable_id: binding.stable_id,
+                binding_resource_version: binding.resource_version.to_string(),
+                binding_write_revision: "1".into(),
+                binding_prefix: binding.object_prefix.clone().unwrap(),
+            }),
+            &binding.resource_version.to_string(),
+            &format!("association-{index}"),
+        )
+        .await;
+        for purpose in ["list", "read", "write"] {
+            let revision = db
+                .current_binding_credential(binding_id, purpose)
+                .await
+                .unwrap()
+                .unwrap();
+            members.push(pb::StorageAuthorityCredentialMember {
+                association_id: association_id.clone(),
+                purpose: purpose.into(),
+                generation: revision.generation.to_string(),
+                secret_version_ref: revision.secret_version_ref,
+                credential_fingerprint: revision.credential_fingerprint,
+            });
+        }
     }
     decision(
         &rpc,
@@ -226,7 +250,7 @@ pub(super) async fn configure(
             guard_namespace_id: NAMESPACE.into(),
             state: pb::StorageAuthorityDesiredState::Admitted as i32,
             attestation_id: Some("copy-attestation".into()),
-            association_ids: vec!["copy-association".into()],
+            association_ids: association_ids.clone(),
         }),
         "0",
         "admit",
@@ -253,40 +277,57 @@ pub(super) async fn configure(
         maximum_lifetime: LeaseInteger::new(30).unwrap(),
         maximum_clock_uncertainty: LeaseInteger::new(4).unwrap(),
     };
-    let cohort = |purpose, effects| {
-        LeaseCohort::from_publication(
-            &publication,
-            EXECUTOR,
-            "copy-association",
-            purpose,
-            "managed/binding",
-            effects,
-        )
-        .unwrap()
-    };
-    let read = cohort(
-        LeasePurpose::Read,
-        vec![LeaseEffect::Head, LeaseEffect::Read],
-    );
-    let list = cohort(LeasePurpose::List, vec![LeaseEffect::List]);
-    let write = cohort(
-        LeasePurpose::Write,
-        vec![
-            LeaseEffect::MultipartCreate,
-            LeaseEffect::MultipartPart,
-            LeaseEffect::MultipartComplete,
-            LeaseEffect::MultipartAbort,
-        ],
-    );
+    let mut cohorts = Vec::new();
+    let mut domains = Vec::new();
+    for (index, association_id) in association_ids.iter().enumerate() {
+        let binding = db.binding(binding_ids[index]).await.unwrap().unwrap();
+        let cohort = |purpose, effects| {
+            LeaseCohort::from_publication(
+                &publication,
+                EXECUTOR,
+                association_id,
+                purpose,
+                binding.object_prefix.as_deref().unwrap(),
+                effects,
+            )
+            .unwrap()
+        };
+        let read = cohort(
+            LeasePurpose::Read,
+            vec![LeaseEffect::Head, LeaseEffect::Read],
+        );
+        let list = cohort(LeasePurpose::List, vec![LeaseEffect::List]);
+        let write = cohort(
+            LeasePurpose::Write,
+            vec![
+                LeaseEffect::MultipartCreate,
+                LeaseEffect::MultipartPart,
+                LeaseEffect::MultipartComplete,
+                LeaseEffect::MultipartAbort,
+            ],
+        );
+        let mut contract = json!({"contract_id":"controlled-versioned-provider","evidence_digest":"7".repeat(64),
+            "versioned_conditional_range_read":true,"versioned_multipart_complete":true,"private_incomplete_upload":true,
+            "completed_upload_rejects_late_parts":true,"abort_closes_upload_id":true,"upload_part_checksum_enforced":true,"versioned_empty_put":false});
+        if binding_ids.len() == 2 {
+            // The controlled business gate exercises these actual 5 MiB source ranges.
+            // This fixture declaration is not Hosted provider acceptance.
+            contract["maximum_copy_read_range_bytes"] =
+                json!(LeaseInteger::new(5 * 1024 * 1024).unwrap());
+        }
+        domains.push(
+            json!({"issuer_installation":installation,"producer_profile_digest":"6".repeat(64),
+            "provider_contract":contract,"read_cohort":read,"list_cohort":list,"write_cohort":write,
+            "part_bytes":LeaseInteger::new(if index == 0 {5*1024*1024} else {8*1024*1024}).unwrap(),
+            "provider_concurrency":if index == 0 {3} else {5},
+            "maximum_list_page_objects":128,"maximum_list_pages":4}),
+        );
+        cohorts.extend([read, list, write]);
+    }
     let object = json!({"version":1,"guard_namespace_id":NAMESPACE,"executor_identity":EXECUTOR,
         "issuer_key_id":"copy-fixture-issuer", "issuer_public_key":hex::encode(ed25519_dalek::SigningKey::from_bytes(&[17;32]).verifying_key().to_bytes()),
-        "timing_profile":timing,"clock_uncertainty":2,"aliases":publication.aliases,"cohorts":[read,list,write],"publications":[publication]});
-    let copy = json!({"version":1,"domains":[{"issuer_installation":installation,"producer_profile_digest":"6".repeat(64),
-        "provider_contract":{"contract_id":"controlled-versioned-provider","evidence_digest":"7".repeat(64),
-            "versioned_conditional_range_read":true,"versioned_multipart_complete":true,"private_incomplete_upload":true,
-            "completed_upload_rejects_late_parts":true,"abort_closes_upload_id":true,"upload_part_checksum_enforced":true,"versioned_empty_put":false},
-        "read_cohort":read,"list_cohort":list,"write_cohort":write,"part_bytes":LeaseInteger::new(5*1024*1024).unwrap(),"provider_concurrency":3,
-        "maximum_list_page_objects":128,"maximum_list_pages":4}]});
+        "timing_profile":timing,"clock_uncertainty":2,"aliases":publication.aliases,"cohorts":cohorts,"publications":[publication]});
+    let copy = json!({"version":if binding_ids.len() == 1 {1} else {2},"domains":domains});
     let configuration = AuthorityConfiguration {
         format_version: 1,
         listen: "127.0.0.1:0".parse().unwrap(),

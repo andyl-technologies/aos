@@ -111,7 +111,7 @@ impl FrozenR2Surface {
             .await?
         {
             StorageWorkOutcome::NotFound => Ok(None),
-            StorageWorkOutcome::Head { object } => Ok(Some(object)),
+            StorageWorkOutcome::Head { object, .. } => Ok(Some(object)),
             _ => bail!("storage Worker returned an unexpected frozen head result"),
         }
     }

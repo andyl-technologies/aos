@@ -56,6 +56,20 @@ pub(super) async fn begin(
     admission: &DirectUploadAdmission,
     context: &DirectRequestContext,
 ) -> Result<()> {
+    begin_with_signal(env, authority, admission, context, None).await
+}
+
+/// Creates original private stages with the actual request cancellation signal.
+///
+/// # Errors
+/// Refuses expired authority, changed originals or unresolved provider effects.
+pub(super) async fn begin_with_signal(
+    env: &Env,
+    authority: &dyn StageAuthority,
+    admission: &DirectUploadAdmission,
+    context: &DirectRequestContext,
+    signal: Option<worker::web_sys::AbortSignal>,
+) -> Result<()> {
     // External EmptyPut has no qualified exact-incarnation deletion primitive.
     // Reject the whole object before creating any of its required placements.
     ensure!(
@@ -112,7 +126,12 @@ pub(super) async fn begin(
                         .await?;
                         current(authority, context, admission)?;
                         Ok(CreatedStage::External {
-                            result: crate::external_object::execute_stage(env, &work).await?,
+                            result: crate::external_object::execute_stage_with_signal(
+                                env,
+                                &work,
+                                signal.clone(),
+                            )
+                            .await?,
                         })
                     }
                 }
@@ -331,6 +350,21 @@ pub(super) async fn abort_one(
     abort: &DirectAbortRequest,
     context: &DirectRequestContext,
 ) -> Result<DirectAbortEvidence> {
+    abort_one_with_signal(env, qualified, admission, abort, context, None).await
+}
+
+/// Aborts the exact original stage while retaining caller cancellation ownership.
+///
+/// # Errors
+/// Refuses changed originals, expired authority or absent positive closure.
+pub(super) async fn abort_one_with_signal(
+    env: &Env,
+    qualified: &QualifiedConfig,
+    admission: &DirectUploadAdmission,
+    abort: &DirectAbortRequest,
+    context: &DirectRequestContext,
+    signal: Option<worker::web_sys::AbortSignal>,
+) -> Result<DirectAbortEvidence> {
     current(qualified, context, admission)?;
     storage::call(
         env,
@@ -408,7 +442,12 @@ pub(super) async fn abort_one(
                         )
                         .await?;
                         current(qualified, context, admission)?;
-                        let result = crate::external_object::execute_stage(env, &work).await?;
+                        let result = crate::external_object::execute_stage_with_signal(
+                            env,
+                            &work,
+                            signal.clone(),
+                        )
+                        .await?;
                         ensure!(
                             matches!(result.outcome, ExternalStageOutcome::Aborted { .. }),
                             "direct external abort positive receipt absent"

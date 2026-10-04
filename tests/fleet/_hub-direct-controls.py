@@ -312,8 +312,10 @@ class DirectBootstrapControls:
                 "completedScan": completed_scan, "authority": authority}
 
     def validate_external_credentials(self, org_slug, binding_name, versions,
-                                      fingerprint, stage_original):
+                                      fingerprint, stage_original, *, label_prefix="fleet-direct"):
         """Exercise actual unstaged refusal, Worker staging and controller validation."""
+        if not re.fullmatch(r"[a-z][a-z0-9-]{0,79}", label_prefix):
+            raise ValueError("credential workflow idempotency prefix is invalid")
         if not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
             raise ValueError("provider material fingerprint is invalid")
         purposes = [purpose for purpose in ("presign", "read", "list", "delete", "write")
@@ -333,7 +335,7 @@ class DirectBootstrapControls:
                     "credentialFingerprint": fingerprint,
                     "expectedResourceVersion": binding["resourceVersion"],
                     "expectedCurrentGeneration": "0",
-                }, "fleet-direct-credential-" + purpose,
+                }, label_prefix + "-credential-" + purpose,
             )["credential"]
             if (
                 credential["bindingId"] != binding["stableId"]
@@ -349,7 +351,7 @@ class DirectBootstrapControls:
                     "bindingId": binding["stableId"], "purpose": purpose,
                     "generation": str(credential["generation"]),
                     "expectedResourceVersion": credential["resourceVersion"],
-                }, "fleet-direct-validate-" + purpose,
+                }, label_prefix + "-validate-" + purpose,
             )["operation"]
             operation_id = queued["operationId"]
             initial_failure = self.wait_operation(operation_id, {"failed"})
@@ -359,7 +361,7 @@ class DirectBootstrapControls:
             current_failure = self.operation(operation_id)
             if current_failure["resourceVersion"] != initial_failure["resourceVersion"]:
                 raise ValueError("unstaged original changed before its explicit retry")
-            self.retry_failed_operation(current_failure, "fleet-direct-retry-" + purpose)
+            self.retry_failed_operation(current_failure, label_prefix + "-retry-" + purpose)
             completed = self.wait_operation(operation_id, {"succeeded"})
             validated[purpose] = {
                 "credential": credential, "operationId": operation_id,
@@ -407,7 +409,7 @@ class DirectBootstrapControls:
 
 
 def admit_external_fixture_authority(controls, org_slug, binding, sql_pins, reviewed,
-                                     observed_native_time):
+                                     observed_native_time, *, additional_associations=None):
     """Apply only independently selected authority inputs with actual SQL/API pins."""
     fields = {
         "authorityId", "aliasId", "associationId", "attestationId", "guardNamespaceId",
@@ -466,10 +468,15 @@ def admit_external_fixture_authority(controls, org_slug, binding, sql_pins, revi
         "bindingWriteRevision": sql_pins["currentWriteRevision"],
         "bindingPrefix": sql_pins["bindingPrefix"],
     }}, binding["resourceVersion"], "fleet-direct-association")
+    additional_members, additional_ids = [], []
+    if additional_associations is not None:
+        additional_members, additional_ids = _associate_external_fixture_destinations(
+            controls, org_slug, binding, sql_pins, reviewed, additional_associations)
     members = [{"associationId": reviewed["associationId"], **{
         key: credential[key] for key in
         ("purpose", "generation", "secretVersionRef", "credentialFingerprint")
     }} for credential in sql_pins["credentials"]]
+    members.extend(additional_members)
     controls.authority_decision({"attest": {
         "attestationId": reviewed["attestationId"], "authorityId": reviewed["authorityId"],
         "managedPrefix": reviewed["qualifiedManagedPrefix"],
@@ -483,8 +490,61 @@ def admit_external_fixture_authority(controls, org_slug, binding, sql_pins, revi
         "guardNamespaceId": reviewed["guardNamespaceId"],
         "state": "STORAGE_AUTHORITY_DESIRED_STATE_ADMITTED",
         "attestationId": reviewed["attestationId"],
-        "associationIds": [reviewed["associationId"]],
+        "associationIds": [reviewed["associationId"]] + additional_ids,
     }}, "0", "fleet-direct-admission")
     return controls.call("StorageAuthorityService", "GetAuthority", {
         "authorityId": reviewed["authorityId"],
     })
+
+
+def _associate_external_fixture_destinations(controls, org_slug, source_binding, source_sql,
+                                            reviewed, associations):
+    """Associate independently created bindings before the single admission.
+
+    The caller supplies actual public bindings, current private SQL pins and
+    independently selected association IDs. Shared authority evidence does not
+    substitute for each binding's current validated credential generations.
+    """
+    if not isinstance(associations, list) or len(associations) != 1:
+        raise ValueError("External fixture requires one explicitly selected independent destination")
+    selected = associations[0]
+    if set(selected) != {"binding", "sqlPins", "associationId"}:
+        raise ValueError("External destination association selection differs")
+    binding, pins, association_id = selected["binding"], selected["sqlPins"], selected["associationId"]
+    source_provider = {key: value for key, value in source_binding["spec"]["s3"].items() if key != "prefix"}
+    provider = {key: value for key, value in binding["spec"]["s3"].items() if key != "prefix"}
+    if (not isinstance(association_id, str) or not association_id
+            or association_id == reviewed["associationId"]
+            or binding["stableId"] == source_binding["stableId"]
+            or binding["spec"]["name"] == source_binding["spec"]["name"]
+            or pins["bindingId"] == source_sql["bindingId"]
+            or pins["bindingStableId"] != binding["stableId"]
+            or pins["bindingResourceVersion"] != binding["resourceVersion"]
+            or pins["bindingPrefix"] != binding["spec"]["s3"]["prefix"]
+            or not pins["bindingPrefix"].startswith(reviewed["qualifiedManagedPrefix"].rstrip("/") + "/")
+            or provider != source_provider):
+        raise ValueError("External destination does not bind an independent current association")
+    writer = controls.call("BindingService", "GetBindingWriteRevision", {
+        "binding": {"organization": {"orgSlug": org_slug, "name": binding["spec"]["name"]}},
+        "revision": pins["currentWriteRevision"],
+    })["revision"]
+    credentials = {credential["purpose"]: credential for credential in pins["credentials"]}
+    if len(credentials) != len(pins["credentials"]) or set(credentials) != {"read", "write", "list", "presign"}:
+        raise ValueError("External destination credential observations are incomplete")
+    credential = credentials["write"]
+    if (writer["bindingId"] != binding["stableId"]
+            or str(writer["revision"]) != pins["currentWriteRevision"]
+            or str(writer["writeCredentialGeneration"]) != credential["generation"]
+            or writer["writeCredentialVersionRef"] != credential["secretVersionRef"]
+            or writer["validationState"] != "valid" or writer["writesSupported"] is not True
+            or any(item["validationState"] != "valid" for item in credentials.values())):
+        raise ValueError("External destination writer lacks matching current validation")
+    controls.authority_decision({"associateBinding": {
+        "associationId": association_id, "authorityId": reviewed["authorityId"],
+        "aliasId": reviewed["aliasId"], "bindingId": pins["bindingId"],
+        "bindingStableId": binding["stableId"], "bindingResourceVersion": binding["resourceVersion"],
+        "bindingWriteRevision": pins["currentWriteRevision"], "bindingPrefix": pins["bindingPrefix"],
+    }}, binding["resourceVersion"], "fleet-direct-destination-association")
+    members = [{"associationId": association_id, **{key: item[key] for key in
+        ("purpose", "generation", "secretVersionRef", "credentialFingerprint")}} for item in pins["credentials"]]
+    return members, [association_id]

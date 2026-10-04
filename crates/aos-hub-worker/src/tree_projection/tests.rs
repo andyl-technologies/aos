@@ -374,3 +374,54 @@ async fn provider_source_limits_and_declared_lengths_are_checked_before_acceptin
         assert!(execute(&source, &plan(oid, names, None)).await.is_err());
     }
 }
+
+struct GuardedObjects {
+    objects: Objects,
+    request: StorageWorkPlan,
+    incarnation: u64,
+}
+
+#[async_trait::async_trait]
+impl super::SourceReader for GuardedObjects {
+    async fn read(&self, path: &str, maximum: usize) -> Result<Option<super::VerifiedSource>> {
+        use aos_hub_core::storage_authority::{control::StorageAuthorityObjectScope,
+            external_object::copy::source::CopySourceClosure, lease::LeaseInteger,
+            GuardIncarnation, PhysicalStorageAuthorityId, StorageGuardStamp};
+        use aos_hub_core::storage_work::protected_inspection::ProtectedInspectionSource;
+        use sha2::{Digest as _, Sha256};
+
+        let Some((bytes, identity)) = super::read_source(&self.objects, &self.request, path, maximum).await? else {
+            return Ok(None);
+        };
+        let authority = PhysicalStorageAuthorityId::parse("11111111-1111-4111-8111-111111111111")?;
+        let guarded = ProtectedInspectionSource {
+            version: 1,
+            scope: StorageAuthorityObjectScope { guard_namespace_id: "controlled-source".into(),
+                physical_authority_id: authority.clone(), full_key: format!("binding/{}", identity.key) },
+            closure: CopySourceClosure { guard_stamp: StorageGuardStamp { physical_authority_id: authority,
+                incarnation: GuardIncarnation::parse(self.incarnation.to_string())? },
+                receipt_digest: "a".repeat(64), sha256: hex::encode(Sha256::digest(&bytes)),
+                bytes: LeaseInteger::new(bytes.len() as i64)?, etag: Some(identity.etag.clone()) },
+        };
+        Ok(Some(super::VerifiedSource { bytes, identity, guarded: Some(guarded) }))
+    }
+}
+
+#[tokio::test]
+async fn closed_tree_reader_preserves_fallback_and_refuses_same_tag_new_incarnation_cursor() {
+    let (objects, oid, names) = fixture(40, "\"unchanged-provider-tag\"");
+    let request = plan(oid, names.clone(), None);
+    let mut reader = GuardedObjects { objects, request: request.clone(), incarnation: 1 };
+    let (outcome, _) = super::inspect_with_reader(&reader, &request, &oid.to_hex(), &names, None).await.unwrap();
+    let StorageWorkOutcome::GitTreeEntries { source, guarded_source, page } = outcome else { panic!() };
+    assert!(guarded_source.is_some());
+    assert_eq!(source.etag, "\"unchanged-provider-tag\"");
+    assert_eq!(reader.objects.reads.lock().unwrap().len(), 2);
+    let cursor = page.next_cursor.unwrap();
+    super::inspect_with_reader(&reader, &request, &oid.to_hex(), &names, Some(&cursor)).await.unwrap();
+
+    reader.incarnation = 2;
+    assert!(super::inspect_with_reader(&reader, &request, &oid.to_hex(), &names, Some(&cursor)).await.is_err());
+    reader.objects.objects.insert(oid.loose_path(), object::encode_loose(ObjectKind::Tree, b"wrong").unwrap());
+    assert!(super::inspect_with_reader(&reader, &request, &oid.to_hex(), &names, None).await.is_err());
+}

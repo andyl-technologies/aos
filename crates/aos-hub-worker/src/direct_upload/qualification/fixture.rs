@@ -155,7 +155,7 @@ pub(crate) async fn original(
         (2..=32).contains(&maximum_parallel_objects.get()),
         "qualification object capacity invalid"
     );
-    provider_capacity::configure(u32::try_from(limits.maximum_provider_requests.get())?)?;
+    provider_capacity::policy::configure_exact(env, u32::try_from(limits.maximum_provider_requests.get())?)?;
     let uncertainty = uncertainty(env)?;
     let material = match provider {
         Provider::Managed => {

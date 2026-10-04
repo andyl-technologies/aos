@@ -19,7 +19,7 @@ pub(super) struct ConfigFixture {
     pub(super) config: MaintainerConfig,
 }
 
-/// Writes a complete `andyl/testing` configuration with a Hub staging
+/// Writes a complete `andyl/experimental` configuration with a Hub staging
 /// surface and a static production surface.
 pub(super) fn config_fixture() -> Result<ConfigFixture> {
     let directory = tempfile::tempdir()?;
@@ -42,12 +42,11 @@ pub(super) fn config_fixture() -> Result<ConfigFixture> {
         r#"schema_version = "aos.release.maintainer-config/v1"
 work_root = "{root}/releases"
 fitness_root = "{root}/fitness"
-registry = "andyl/testing"
+registry = "andyl/experimental"
 protected_branch = "master"
 contributor_authorization = "{root}/authorization.json"
 retention_policy = "{root}/retention.md"
 restricted_operator_policy = "{root}/operator.md"
-tooling_closure = "/nix/store/0000000000000000000000000000000a-aos"
 trusted_keys = ["evidence-1={root}/keys/evidence-1.pub", "evidence-2={root}/keys/evidence-2.pub"]
 
 [git]

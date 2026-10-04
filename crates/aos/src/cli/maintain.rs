@@ -24,6 +24,11 @@ pub struct MaintainArgs {
 
 #[derive(Subcommand)]
 pub enum MaintainCommand {
+    /// Plan, build, verify, and publish canonical AOS releases
+    Release {
+        #[command(subcommand)]
+        command: super::ReleaseCommand,
+    },
     /// Evaluate and validate the repository-bound maintenance inventory
     Inventory(MaintainInventoryArgs),
     /// Refresh bounded direct-upstream and advisory evidence

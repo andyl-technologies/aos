@@ -21,7 +21,7 @@ use aos_hub_core::storage_authority::{
 use aos_hub_core::storage_work::{
     StorageBindingPublication, StorageCredentialSelector, StorageWorkKey,
 };
-use worker::{Env, Fetch, Headers, Method, Request, RequestInit, RequestRedirect, Response};
+use worker::{Env, Headers, Method, Request, RequestInit, RequestRedirect, Response};
 
 use super::super::{
     config::{configured, coordinates, Config as ObjectConfig},
@@ -62,7 +62,7 @@ pub(crate) async fn fetch(mut request: Request, env: &Env) -> worker::Result<Res
             &deployment,
             aos_hub_core::clock::now_unix_secs(),
         )?;
-        execute_stage(env, &work).await
+        execute_stage_with_signal(env, &work, Some(request.inner().signal())).await
     }
     .await;
     match result {
@@ -88,7 +88,28 @@ pub(crate) async fn execute_stage(
     env: &Env,
     work: &ExternalStageRequest,
 ) -> Result<ExternalStageResult> {
-    execute_stage_observed(env, work, &|| {}).await
+    execute_stage_with_signal(env, work, None).await
+}
+
+/// Executes the original stage with its actual caller signal when available.
+///
+/// # Errors
+/// Returns the same current authority and unresolved-effect errors as [`execute_stage`].
+pub(crate) async fn execute_stage_with_signal(
+    env: &Env,
+    work: &ExternalStageRequest,
+    signal: Option<worker::web_sys::AbortSignal>,
+) -> Result<ExternalStageResult> {
+    execute_stage_observed_inner(
+        env,
+        work,
+        &|| {},
+        signal,
+        None,
+        #[cfg(feature = "do-e2e")]
+        None,
+    )
+    .await
 }
 
 /// Observes actual provider dispatch while preserving retained terminal replay.
@@ -103,11 +124,14 @@ pub(crate) async fn execute_stage_observed(
     env: &Env,
     work: &ExternalStageRequest,
     before_dispatch: &dyn Fn(),
+    held: &crate::direct_upload::provider_capacity::Permit,
 ) -> Result<ExternalStageResult> {
     execute_stage_observed_inner(
         env,
         work,
         before_dispatch,
+        None,
+        Some(held),
         #[cfg(feature = "do-e2e")]
         None,
     )
@@ -124,14 +148,17 @@ pub(crate) async fn execute_stage_observed_with_fault(
     work: &ExternalStageRequest,
     before_dispatch: &dyn Fn(),
     observation: Option<&super::observation::Attempt>,
+    held: &crate::direct_upload::provider_capacity::Permit,
 ) -> Result<ExternalStageResult> {
-    execute_stage_observed_inner(env, work, before_dispatch, observation).await
+    execute_stage_observed_inner(env, work, before_dispatch, None, Some(held), observation).await
 }
 
 async fn execute_stage_observed_inner(
     env: &Env,
     work: &ExternalStageRequest,
     before_dispatch: &dyn Fn(),
+    signal: Option<worker::web_sys::AbortSignal>,
+    held: Option<&crate::direct_upload::provider_capacity::Permit>,
     #[cfg(feature = "do-e2e")] observation: Option<&super::observation::Attempt>,
 ) -> Result<ExternalStageResult> {
     executor_key(env)?;
@@ -318,6 +345,8 @@ async fn execute_stage_observed_inner(
         &parts,
         direct_permission_expires_at,
         before_dispatch,
+        signal,
+        held,
         #[cfg(feature = "do-e2e")]
         observation,
     )
@@ -373,7 +402,7 @@ pub(super) async fn recovery_read(env: &Env, intent: &Intent) -> Result<Turn> {
 }
 
 async fn dispatch(
-    _env: &Env,
+    env: &Env,
     work: &ExternalStageRequest,
     object: &ObjectConfig,
     config: &Config,
@@ -387,6 +416,8 @@ async fn dispatch(
     parts: &[DirectManifestPart],
     direct_permission_expires_at: Option<aos_hub_core::direct_upload::WireInteger>,
     before_dispatch: &dyn Fn(),
+    signal: Option<worker::web_sys::AbortSignal>,
+    held: Option<&crate::direct_upload::provider_capacity::Permit>,
     #[cfg(feature = "do-e2e")] observation: Option<&super::observation::Attempt>,
 ) -> Result<(Outcome, Option<String>)> {
     let now = object.clock().observed_at;
@@ -516,30 +547,6 @@ async fn dispatch(
     } else {
         (&work.write_lease, &domain.write_cohort)
     };
-    let validated = object.verifier()?.validate_lease(
-        lease.as_bytes(),
-        cohort,
-        &object.timing_profile,
-        floor,
-        &turn.intent.scope()?.full_key,
-        super::state::effect(&work.operation, work.context.intent.byte_size.get() == 0),
-        object.clock(),
-    )?;
-    let source_validated = if work.operation.destination() {
-        let source =
-            source.ok_or_else(|| anyhow::anyhow!("destination lacks immutable read admission"))?;
-        Some(object.verifier()?.validate_lease(
-            work.read_lease.as_bytes(),
-            &domain.read_cohort,
-            &object.timing_profile,
-            &source.floor,
-            &work.context.stage_key()?,
-            LeaseEffect::Read,
-            object.clock(),
-        )?)
-    } else {
-        None
-    };
     // This snapshot precedes the final eligibility observation. It does not
     // claim dispatch; the actual provider request must be joined independently.
     #[cfg(feature = "do-e2e")]
@@ -560,158 +567,213 @@ async fn dispatch(
 
     // Both crypto validations and all async guard/manifest/binding work finish
     // before a fresh scalar observation. Actual JS Fetch starts synchronously.
-    let final_clock = object.clock();
-    work.check_dispatch_time(&publication.snapshot, &validated, floor, final_clock)?;
-    ensure!(
-        u64::try_from(final_clock.observed_at)?
-            .saturating_add(u64::try_from(final_clock.uncertainty)?)
-            < work.expires_at.get(),
-        "external original invocation expired before Fetch"
-    );
-    if let Some(validated) = source_validated.as_ref() {
-        let source = source.ok_or_else(|| anyhow::anyhow!("destination lost source floor"))?;
-        work.check_dispatch_time(&publication.snapshot, validated, &source.floor, final_clock)?;
-    }
-    if let Some(expires_at) = direct_permission_expires_at {
+    let fresh = || {
+        validate_publication(
+            object,
+            config,
+            work,
+            publication,
+            &publication.snapshot.deployment_id,
+        )?;
+        let validated = object.verifier()?.validate_lease(
+            lease.as_bytes(),
+            cohort,
+            &object.timing_profile,
+            floor,
+            &turn.intent.scope()?.full_key,
+            super::state::effect(&work.operation, work.context.intent.byte_size.get() == 0),
+            object.clock(),
+        )?;
+        let source_validated = if work.operation.destination() {
+            let source =
+                source.ok_or_else(|| anyhow::anyhow!("destination lost immutable source"))?;
+            Some(object.verifier()?.validate_lease(
+                work.read_lease.as_bytes(),
+                &domain.read_cohort,
+                &object.timing_profile,
+                &source.floor,
+                &work.context.stage_key()?,
+                LeaseEffect::Read,
+                object.clock(),
+            )?)
+        } else {
+            None
+        };
+        let final_clock = object.clock();
+        work.check_dispatch_time(&publication.snapshot, &validated, floor, final_clock)?;
         ensure!(
             u64::try_from(final_clock.observed_at)?
                 .saturating_add(u64::try_from(final_clock.uncertainty)?)
-                < expires_at.get(),
-            "direct external Native publication permission expired before Fetch"
+                < work.expires_at.get(),
+            "external original invocation expired before Fetch"
         );
-    }
-    before_dispatch();
-    crate::direct_upload::provider_capacity::record_dispatch();
-    let response = Fetch::Request(request).send().await?;
-    // Only the actual positively acknowledged closure response supplies a version.
-    let provider_version = if matches!(
-        work.operation,
-        Action::CompleteStage { .. } | Action::CompleteDestination { .. }
-    ) || (matches!(
-        work.operation,
-        Action::CreateStage | Action::CreateDestination { .. }
-    ) && work.context.intent.byte_size.get() == 0)
-    {
-        ensure!(response.status_code() == 200, "closure not acknowledged");
-        super::closed::response_version(response.headers().get("x-amz-version-id")?.as_deref())?
-    } else {
-        None
+        if let Some(validated) = source_validated.as_ref() {
+            let source = source.ok_or_else(|| anyhow::anyhow!("destination lost source floor"))?;
+            work.check_dispatch_time(&publication.snapshot, validated, &source.floor, final_clock)?;
+        }
+        if let Some(expires_at) = direct_permission_expires_at {
+            ensure!(
+                u64::try_from(final_clock.observed_at)?
+                    .saturating_add(u64::try_from(final_clock.uncertainty)?)
+                    < expires_at.get(),
+                "direct external Native publication permission expired before Fetch"
+            );
+        }
+        Ok(())
     };
-    let outcome: Result<Outcome> = match &work.operation {
-        Action::CreateStage | Action::CreateDestination { .. }
-            if work.context.intent.byte_size.get() == 0 =>
-        {
-            ensure!(
-                response.status_code() == 200,
-                "empty staging PUT unacknowledged"
-            );
-            let etag = response
-                .headers()
-                .get("etag")?
-                .ok_or_else(|| anyhow::anyhow!("empty stage ETag absent"))?;
-            Ok(Outcome::EmptyClosed {
-                etag,
-                guard_stamp: stamp(turn)?,
-            })
-        }
-        Action::CreateStage | Action::CreateDestination { .. } => {
-            ensure!(
-                response.status_code() == 200,
-                "multipart Create unacknowledged"
-            );
-            let xml = provider_metadata(response).await?;
-            let upload_id = s3surface::parse_direct_create_multipart(
-                &xml,
-                &publication.snapshot.object_bucket,
-                &turn.intent.scope()?.full_key,
-            )?;
-            Ok(Outcome::Created { upload_id })
-        }
-        Action::CompleteStage { upload_id, .. } | Action::CompleteDestination { upload_id, .. } => {
-            ensure!(
-                response.status_code() == 200,
-                "multipart Complete unacknowledged"
-            );
-            let xml = provider_metadata(response).await?;
-            let positive = s3surface::parse_direct_complete_multipart(
-                &xml,
-                &publication.snapshot.object_bucket,
-                &turn.intent.scope()?.full_key,
-            )?;
-            Ok(Outcome::Closed {
-                upload_id: upload_id.clone(),
-                etag: positive.etag,
-                guard_stamp: stamp(turn)?,
-            })
-        }
-        Action::VerifyClosedStage {
-            close_receipt_digest,
-            ..
-        } => {
-            let status = response.status_code();
-            let headers = response.headers().clone();
-            // Attach native cancellation before any fallible status or header
-            // checks. Refusal drops this exact unpolled reader; success transfers
-            // the same owner into full-object integrity verification.
-            let reader = crate::direct_digest::response_reader(response)?;
-            let closed = closed.ok_or_else(|| anyhow::anyhow!("verification closure absent"))?;
-            let etag = headers.get("etag")?;
-            let version = headers.get("x-amz-version-id")?;
-            let reader = super::closed::select_response(
-                reader,
-                closed,
-                status,
-                etag.as_deref(),
-                version.as_deref(),
-            )?;
-            let original = crate::direct_upload::observation::Object::new(
-                &work.context.session_id,
-                &work.context.logical_fingerprint,
-                &work.context.intent,
-                work.context.placement.placement_id,
-                &work.operation_id,
-            );
-            let mut observed = crate::direct_upload::observation::Read::new(original);
-            let verified = crate::direct_digest::verify_reader_observed(
-                reader,
-                &work.context.intent,
-                parts,
-                &|bytes| observed.consumed(bytes),
-            )
-            .await?;
-            observed.positive();
-            Ok(Outcome::Verified {
-                sha256: verified.sha256,
-                byte_size: aos_hub_core::direct_upload::WireInteger::new(verified.byte_size),
-                close_receipt_digest: close_receipt_digest.clone(),
-            })
-        }
-        Action::CopyDestinationPart { part, .. } => {
-            ensure!(
-                response.status_code() == 200,
-                "multipart Copy unacknowledged"
-            );
-            let xml = provider_metadata(response).await?;
-            let positive = s3surface::parse_direct_upload_part_copy(&xml)?;
-            Ok(Outcome::Copied {
-                part: part.clone(),
-                etag: positive.etag,
-            })
-        }
-        Action::AbortStage { upload_id } | Action::AbortDestination { upload_id, .. } => {
-            // Exact positive Abort is provider-qualified UploadId visibility
-            // closure. It does not prove drain/reclamation of outstanding parts.
-            ensure!(
-                response.status_code() == 204,
-                "multipart Abort unacknowledged"
-            );
-            Ok(Outcome::Aborted {
-                upload_id: upload_id.clone(),
-            })
-        }
-        _ => anyhow::bail!("metadata operation reached provider"),
-    };
-    Ok((outcome?, provider_version))
+    let cutoff = direct_permission_expires_at.map_or(work.expires_at.get(), |permission| {
+        work.expires_at.get().min(permission.get())
+    });
+    super::super::request_capacity::raw::with_response(
+        env,
+        request,
+        i64::try_from(cutoff)?,
+        object.clock_uncertainty,
+        signal,
+        crate::direct_upload::provider_capacity::Class::Foreground,
+        held,
+        &fresh,
+        before_dispatch,
+        true,
+        |response| async {
+            // Only the actual positively acknowledged closure response supplies a version.
+            let provider_version = if matches!(
+                work.operation,
+                Action::CompleteStage { .. } | Action::CompleteDestination { .. }
+            ) || (matches!(
+                work.operation,
+                Action::CreateStage | Action::CreateDestination { .. }
+            ) && work.context.intent.byte_size.get() == 0)
+            {
+                ensure!(response.status_code() == 200, "closure not acknowledged");
+                super::closed::response_version(
+                    response.headers().get("x-amz-version-id")?.as_deref(),
+                )?
+            } else {
+                None
+            };
+            let outcome: Result<Outcome> = match &work.operation {
+                Action::CreateStage | Action::CreateDestination { .. }
+                    if work.context.intent.byte_size.get() == 0 =>
+                {
+                    ensure!(
+                        response.status_code() == 200,
+                        "empty staging PUT unacknowledged"
+                    );
+                    let etag = response
+                        .headers()
+                        .get("etag")?
+                        .ok_or_else(|| anyhow::anyhow!("empty stage ETag absent"))?;
+                    Ok(Outcome::EmptyClosed {
+                        etag,
+                        guard_stamp: stamp(turn)?,
+                    })
+                }
+                Action::CreateStage | Action::CreateDestination { .. } => {
+                    ensure!(
+                        response.status_code() == 200,
+                        "multipart Create unacknowledged"
+                    );
+                    let xml = provider_metadata(response).await?;
+                    let upload_id = s3surface::parse_direct_create_multipart(
+                        &xml,
+                        &publication.snapshot.object_bucket,
+                        &turn.intent.scope()?.full_key,
+                    )?;
+                    Ok(Outcome::Created { upload_id })
+                }
+                Action::CompleteStage { upload_id, .. }
+                | Action::CompleteDestination { upload_id, .. } => {
+                    ensure!(
+                        response.status_code() == 200,
+                        "multipart Complete unacknowledged"
+                    );
+                    let xml = provider_metadata(response).await?;
+                    let positive = s3surface::parse_direct_complete_multipart(
+                        &xml,
+                        &publication.snapshot.object_bucket,
+                        &turn.intent.scope()?.full_key,
+                    )?;
+                    Ok(Outcome::Closed {
+                        upload_id: upload_id.clone(),
+                        etag: positive.etag,
+                        guard_stamp: stamp(turn)?,
+                    })
+                }
+                Action::VerifyClosedStage {
+                    close_receipt_digest,
+                    ..
+                } => {
+                    let status = response.status_code();
+                    let headers = response.headers().clone();
+                    // Attach native cancellation before any fallible status or header
+                    // checks. Refusal drops this exact unpolled reader; success transfers
+                    // the same owner into full-object integrity verification.
+                    let reader = crate::direct_digest::response_reader(response)?;
+                    let closed =
+                        closed.ok_or_else(|| anyhow::anyhow!("verification closure absent"))?;
+                    let etag = headers.get("etag")?;
+                    let version = headers.get("x-amz-version-id")?;
+                    let reader = super::closed::select_response(
+                        reader,
+                        closed,
+                        status,
+                        etag.as_deref(),
+                        version.as_deref(),
+                    )?;
+                    let original = crate::direct_upload::observation::Object::new(
+                        &work.context.session_id,
+                        &work.context.logical_fingerprint,
+                        &work.context.intent,
+                        work.context.placement.placement_id,
+                        &work.operation_id,
+                    );
+                    let mut observed = crate::direct_upload::observation::Read::new(original);
+                    let verified = crate::direct_digest::verify_reader_observed(
+                        reader,
+                        &work.context.intent,
+                        parts,
+                        &|bytes| observed.consumed(bytes),
+                    )
+                    .await?;
+                    observed.positive();
+                    Ok(Outcome::Verified {
+                        sha256: verified.sha256,
+                        byte_size: aos_hub_core::direct_upload::WireInteger::new(
+                            verified.byte_size,
+                        ),
+                        close_receipt_digest: close_receipt_digest.clone(),
+                    })
+                }
+                Action::CopyDestinationPart { part, .. } => {
+                    ensure!(
+                        response.status_code() == 200,
+                        "multipart Copy unacknowledged"
+                    );
+                    let xml = provider_metadata(response).await?;
+                    let positive = s3surface::parse_direct_upload_part_copy(&xml)?;
+                    Ok(Outcome::Copied {
+                        part: part.clone(),
+                        etag: positive.etag,
+                    })
+                }
+                Action::AbortStage { upload_id } | Action::AbortDestination { upload_id, .. } => {
+                    // Exact positive Abort is provider-qualified UploadId visibility
+                    // closure. It does not prove drain/reclamation of outstanding parts.
+                    ensure!(
+                        response.status_code() == 204,
+                        "multipart Abort unacknowledged"
+                    );
+                    Ok(Outcome::Aborted {
+                        upload_id: upload_id.clone(),
+                    })
+                }
+                _ => anyhow::bail!("metadata operation reached provider"),
+            };
+            Ok((outcome?, provider_version))
+        },
+    )
+    .await
 }
 
 pub(super) fn validate_publication(

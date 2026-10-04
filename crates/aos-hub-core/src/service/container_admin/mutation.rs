@@ -6,7 +6,7 @@ use super::*;
 use crate::clock;
 use crate::db::{
     AppliedOciAdminMutation, ApplyOciAdminMutation, ApplyOciGc, ApplyOciRegistryPurgeFence,
-    ApplyOciUntrackedRepair, OciAdminMutationRecord, OciManualTagMutationOperation,
+    ApplyOciUntrackedRepair, CancelOciGc, OciAdminMutationRecord, OciManualTagMutationOperation,
     OciRegistryPurgeFenceAction, OciRepositoryMutationOperation, OciUntrackedRepairKind, PlanOciGc,
     PlanOciManualTagMutation, PlanOciRegistryPurgeFence, PlanOciRepositoryMutation,
     PlanOciRetentionPolicy, PlanOciUntrackedRepair, RequeueOciGcPlacementAction,
@@ -484,6 +484,7 @@ impl RpcService {
                 idempotency_key: req.idempotency_key,
                 expected_resource_version,
                 now: clock::now_unix_secs(),
+                retire_registry: req.retire_registry,
             })
             .await
             .map_err(plan_error)?;
@@ -560,6 +561,62 @@ impl RpcService {
                 state: result.state,
                 created_at: result.created_at,
             }),
+        })
+    }
+
+    /// Cancels one unapplied reviewed GC plan so it stops blocking deletion.
+    ///
+    /// Any registry configurator may cancel a plan, not only its author, since
+    /// a forgotten diagnostic plan otherwise blocks registry deletion until it
+    /// expires. Cancellation is idempotent by state: a run that is already
+    /// terminal is returned unchanged, so the idempotency key needs no durable
+    /// record of its own.
+    ///
+    /// # Errors
+    ///
+    /// Returns authentication, authorization, rollout, validation, not-found,
+    /// or database errors, and a failed precondition for an applying run or a
+    /// stale resource version.
+    pub async fn cancel_container_gc_run(
+        &self,
+        auth: Option<&str>,
+        req: pb::CancelContainerGcRunRequest,
+    ) -> Result<pb::ContainerGcRunResponse, RpcError> {
+        let (_, registry) = self
+            .container_registry_for_mutation(auth, &req.registry, Permission::RegistryConfigure)
+            .await?;
+        if !self.container_rollout.garbage_collection {
+            return Err(container_gc_rollout_unavailable());
+        }
+        let expected_resource_version = resource_version(&req.expected_resource_version, true)?
+            .ok_or_else(|| RpcError::invalid("expectedResourceVersion is required"))?;
+        if req.idempotency_key.is_empty() {
+            return Err(RpcError::invalid("idempotencyKey is required"));
+        }
+        self.db
+            .oci_gc_generation(registry.id, &req.run_id)
+            .await
+            .map_err(RpcError::internal)?
+            .ok_or_else(|| RpcError::not_found("container GC run"))?;
+
+        let run = self
+            .db
+            .cancel_oci_gc_plan(&CancelOciGc {
+                registry_id: registry.id,
+                generation_id: req.run_id,
+                expected_resource_version,
+                now: clock::now_unix_secs(),
+            })
+            .await
+            .map_err(plan_error)?;
+        let blockers = self
+            .db
+            .list_oci_gc_blockers(&run.id)
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(pb::ContainerGcRunResponse {
+            run: Some(gc_run_message(&registry.slug, &run, &blockers)),
+            blockers: blockers.iter().map(gc_blocker_message).collect(),
         })
     }
 
@@ -1036,14 +1093,7 @@ fn gc_topology_plan(
             format!("topology_digest={}", run.topology_digest),
             format!("plan_digest={}", run.plan_digest),
         ],
-        effects: vec![
-            format!("delete {} immutable OCI objects", run.planned_objects),
-            format!("reclaim {} compressed bytes", run.planned_bytes),
-            format!(
-                "execute {} conditional placement deletions",
-                run.placement_action_count
-            ),
-        ],
+        effects: gc_plan_effects(run),
         warnings: blockers
             .iter()
             .map(|blocker| format!("{}: {}", blocker.kind, blocker.detail))
@@ -1051,6 +1101,26 @@ fn gc_topology_plan(
         confirmation_hash: run.confirmation_hash.to_string(),
         pin_impacts: Vec::new(),
     }
+}
+
+/// Lists the reviewed effects of one GC run; a retiring run additionally
+/// retires the catalog roots that would otherwise protect its candidates.
+fn gc_plan_effects(run: &crate::db::OciGcGenerationRecord) -> Vec<String> {
+    let mut effects = Vec::with_capacity(4);
+    if run.retire_registry {
+        effects.push(
+            "retire signed-release, tag, and tag-history roots of every candidate".to_string(),
+        );
+    }
+    effects.extend([
+        format!("delete {} immutable OCI objects", run.planned_objects),
+        format!("reclaim {} compressed bytes", run.planned_bytes),
+        format!(
+            "execute {} conditional placement deletions",
+            run.placement_action_count
+        ),
+    ]);
+    effects
 }
 
 fn plan_error(error: anyhow::Error) -> RpcError {

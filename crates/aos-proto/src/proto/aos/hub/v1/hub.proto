@@ -23,8 +23,13 @@ service RegistryService {
   rpc GetRegistryMetadata(GetRegistryRequest) returns (RegistryMetadataResponse);
   rpc PlanUpdateRegistryMetadata(PlanUpdateRegistryMetadataRequest) returns (TopologyPlanResponse);
   rpc UpdateRegistryMetadata(ApplyRegistryMutationRequest) returns (RegistryMetadataChangeResponse);
-  rpc PlanDeleteRegistry(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
-  rpc DeleteRegistry(ApplyDeleteTopologyResourceRequest) returns (DeleteTopologyResourceResponse);
+  // Plans deletion and reports exactly what blocks it or what the deletion
+  // operation will do first.
+  rpc PlanDeleteRegistry(PlanDeleteTopologyResourceRequest) returns (RegistryDeletePlanResponse);
+  // Starts the reviewed registry deletion operation. The operation acquires
+  // the purge fence, scans and inventories placements, and deletes the
+  // registry once every precondition holds.
+  rpc DeleteRegistry(ApplyDeleteTopologyResourceRequest) returns (OperationResponse);
 }
 
 // Orgs, membership, and invitations (RFC-0004 "Tenancy and IAM").
@@ -315,8 +320,40 @@ service InstanceService {
   rpc PlanSetInstanceSettings(PlanSetInstanceSettingsRequest)
       returns (TopologyPlanResponse);
   // Apply one reviewed instance-settings plan exactly once.
+  // Enqueues one scheduled maintenance job immediately instead of waiting
+  // for the deployment's maintenance tick.
+  rpc TriggerInstanceMaintenance(TriggerInstanceMaintenanceRequest)
+      returns (InstanceMaintenanceTriggerResponse);
   rpc SetInstanceSettings(ApplyTopologyPlanRequest)
       returns (GetInstanceSettingsResponse);
+  // Instance-owned OCI root routes serve every registry whose OCI namespace
+  // is enabled under `<host>/<registry-slug>/<repository>`. Every method
+  // requires iam.admin at the instance root.
+  rpc ListInstanceOciRoutes(ListInstanceOciRoutesRequest)
+      returns (ListInstanceOciRoutesResponse);
+  rpc GetInstanceOciRoute(GetTopologyResourceRequest)
+      returns (InstanceOciRouteResponse);
+  rpc PlanCreateInstanceOciRoute(PlanInstanceOciRouteMutationRequest)
+      returns (TopologyPlanResponse);
+  rpc CreateInstanceOciRoute(ApplyTopologyPlanRequest)
+      returns (InstanceOciRouteResponse);
+  rpc PlanUpdateInstanceOciRoute(PlanInstanceOciRouteMutationRequest)
+      returns (TopologyPlanResponse);
+  rpc UpdateInstanceOciRoute(ApplyTopologyPlanRequest)
+      returns (InstanceOciRouteResponse);
+  rpc PlanDeleteInstanceOciRoute(PlanDeleteTopologyResourceRequest)
+      returns (TopologyPlanResponse);
+  rpc DeleteInstanceOciRoute(ApplyDeleteTopologyResourceRequest)
+      returns (DeleteTopologyResourceResponse);
+  // Convert a registry-bound hub-proxy OCI route at a host root into an
+  // instance OCI route in place. The rendered URL and its permanent
+  // reservation are unchanged, the registry's namespace is enabled, and the
+  // registry becomes the route's default so unnamespaced references keep
+  // resolving until an operator clears it.
+  rpc PlanConvertRouteToInstanceOciRoute(PlanConvertRouteToInstanceOciRouteRequest)
+      returns (TopologyPlanResponse);
+  rpc ConvertRouteToInstanceOciRoute(ApplyTopologyPlanRequest)
+      returns (InstanceOciRouteResponse);
 }
 
 // SQL-backed configuration change-sets (RFC-0004 "Configuration
@@ -422,9 +459,22 @@ service ContainerService {
       returns (TopologyPlanResponse);
   rpc SetContainerRetentionPolicy(ApplyContainerMutationRequest)
       returns (ContainerRetentionPolicyResponse);
+  // Reviewed OCI exposure of one registry through instance OCI routes under
+  // its slug. Requires registry.configure on the registry.
+  rpc GetContainerNamespace(GetContainerNamespaceRequest)
+      returns (ContainerNamespaceResponse);
+  rpc PlanSetContainerNamespace(PlanSetContainerNamespaceRequest)
+      returns (TopologyPlanResponse);
+  rpc SetContainerNamespace(ApplyTopologyPlanRequest)
+      returns (ContainerNamespaceResponse);
   rpc PlanRunContainerGc(PlanRunContainerGcRequest)
       returns (ContainerGcPlanResponse);
   rpc RunContainerGc(ApplyContainerMutationRequest) returns (OperationResponse);
+  // Discards one unapplied reviewed GC plan so it stops blocking registry
+  // deletion. Applying runs cannot be cancelled; terminal runs are returned
+  // unchanged.
+  rpc CancelContainerGcRun(CancelContainerGcRunRequest)
+      returns (ContainerGcRunResponse);
   rpc GetContainerGcRun(GetContainerGcRunRequest)
       returns (ContainerGcRunResponse);
   rpc ListContainerGcRuns(ListContainerGcRunsRequest)
@@ -466,6 +516,11 @@ service ContainerService {
 // every required placement has verified every immutable object and mutable
 // pointer. No resource-slug upload facade exists.
 service PublishService {
+  rpc UpsertStagedRelease(UpsertStagedReleaseRequest) returns (StagedRelease);
+  rpc GetStagedRelease(GetStagedReleaseRequest) returns (StagedRelease);
+  rpc ListStagedReleases(ListStagedReleasesRequest) returns (ListStagedReleasesResponse);
+  rpc FinalizeStagedRelease(FinalizeStagedReleaseRequest) returns (StagedRelease);
+  rpc DiscardStagedRelease(DiscardStagedReleaseRequest) returns (StagedRelease);
   rpc BeginRegistryPublication(BeginRegistryPublicationRequest)
       returns (RegistryPublication);
   rpc BeginRegistryPublicationManifest(
@@ -1205,17 +1260,51 @@ message PlanSetContainerRetentionPolicyRequest {
   string idempotency_key = 4;
 }
 
+// Reviewed OCI exposure of one registry under its slug on instance routes.
+message ContainerNamespace {
+  string registry = 1;
+  bool enabled = 2;
+  // Zero until the namespace has been set once.
+  string resource_version = 3;
+  int64 updated_at = 4;
+}
+
+message GetContainerNamespaceRequest { string registry = 1; }
+
+message ContainerNamespaceResponse { ContainerNamespace namespace = 1; }
+
+message PlanSetContainerNamespaceRequest {
+  string registry = 1;
+  bool enabled = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+
 // Requests a reviewed garbage-collection generation bound to the effective
 // retention policy version, complete placement inventory, and mutation epoch.
 message PlanRunContainerGcRequest {
   string registry = 1;
   string expected_resource_version = 2;
   string idempotency_key = 3;
+  // Retire the whole catalog ahead of registry deletion: signed-release, tag,
+  // and tag-history roots stop protecting objects and no grace applies. The
+  // plan fails closed while any enabled route still serves the OCI surface.
+  bool retire_registry = 4;
 }
 
 message GetContainerGcRunRequest {
   string registry = 1;
   string run_id = 2;
+}
+
+// Cancels one planned (unapplied) GC run. The resource version binds the
+// exact reviewed run; replaying the request after the run reached a terminal
+// state returns that run unchanged.
+message CancelContainerGcRunRequest {
+  string registry = 1;
+  string run_id = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
 }
 
 message ListContainerGcRunsRequest {
@@ -1296,6 +1385,8 @@ message ContainerGcRun {
   string policy_digest = 28;
   // Provider bytes across all exact frozen placement inventories.
   uint64 inventory_byte_size = 29;
+  // Whether the run was reviewed as a catalog retirement.
+  bool retire_registry = 30;
 }
 
 message ContainerGcRunResponse {
@@ -1740,6 +1831,12 @@ message Registry {
   string authorization_scope_key = 18;
   // Exact scope that owns shared infrastructure usable by this registry.
   string owner_scope_key = 19;
+  // Exact ready OCI route origin, including HTTP(S) scheme; empty until ready.
+  string oci_distribution_origin = 20;
+  // Repository-name prefix clients must use on that origin when the registry
+  // is served through an instance OCI route under its slug; empty when the
+  // origin is registry-bound or serves this registry as its default.
+  string oci_repository_namespace = 21;
 }
 
 message ConsumerCacheStackEntry {
@@ -2575,6 +2672,73 @@ message InstanceSettings {
   int64 max_upload_bytes = 12;
   // Whether cache discovery is visible to unauthenticated visitors.
   bool caches_public = 13;
+}
+
+// Requests immediate execution of one scheduled maintenance job.
+message TriggerInstanceMaintenanceRequest {
+  // One of `dispatch_maintenance` (the whole scheduled tick),
+  // `run_topology_probes`, `recover_cache_writes`, `recover_oci_uploads`,
+  // `run_cache_gc`, `rebuild_directory`, `inventory_oci_providers`,
+  // `probe_oci_conditional_deletes`, or `run_oci_gc`.
+  string job = 1;
+}
+
+message InstanceMaintenanceTriggerResponse {
+  string job = 1;
+}
+
+// Desired configuration of one instance-owned OCI root route.
+message InstanceOciRouteSpec {
+  string endpoint_id = 1;
+  int64 endpoint_generation = 2;
+  // Only public and hub_auth policies are accepted.
+  DeliveryAccessPolicy access_policy = 3;
+  // Registry slug served for repository names without an enabled namespace
+  // prefix; empty serves none.
+  string default_registry = 4;
+  bool enabled = 5;
+}
+
+message InstanceOciRoute {
+  string stable_id = 1;
+  InstanceOciRouteSpec spec = 2;
+  // Immutable canonical host-root URL, including scheme.
+  string canonical_rendered_url = 3;
+  // Whether the endpoint chain currently admits Hub serving.
+  bool ready = 4;
+  string resource_version = 5;
+  int64 created_at = 6;
+  int64 updated_at = 7;
+}
+
+message InstanceOciRouteResponse { InstanceOciRoute route = 1; }
+
+message ListInstanceOciRoutesRequest {}
+
+message ListInstanceOciRoutesResponse { repeated InstanceOciRoute routes = 1; }
+
+message PlanInstanceOciRouteMutationRequest {
+  string stable_id = 1;
+  InstanceOciRouteSpec spec = 2;
+  // Required for updates; forbidden for creation.
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+  // Update only: spec.endpoint_generation, spec.access_policy,
+  // spec.default_registry, spec.enabled.
+  repeated string update_mask = 5;
+  // Creation only: bind an existing permanent URL reservation for this host
+  // root instead of refusing it. Reservations stop one tenant from taking over
+  // another tenant's former URL; the instance is not a tenant.
+  bool bind_existing_reservation = 6;
+}
+
+message PlanConvertRouteToInstanceOciRouteRequest {
+  // Registry-bound hub-proxy route at a host root that serves only OCI.
+  string route_id = 1;
+  string expected_resource_version = 2;
+  // Stable id for the new instance route; generated when empty.
+  string stable_id = 3;
+  string idempotency_key = 4;
 }
 
 message GetInstanceSettingsRequest {}
@@ -4579,6 +4743,79 @@ message ApplyDeleteTopologyResourceRequest {
 
 message DeleteTopologyResourceResponse { bool deleted = 1; }
 
+// Exact counts of every condition that prevents or delays final registry
+// deletion. Each count is independent; zero means the condition is absent.
+message RegistryDeletionBlockers {
+  // OCI repositories that still exist; the catalog must be retired first.
+  uint64 repositories = 1;
+  // OCI catalog blobs that remain after repository retirement.
+  uint64 catalog_objects = 2;
+  // Active OCI upload or publication sessions and unexpired OCI leases.
+  uint64 active_sessions = 3;
+  // Active registry publications, multipart uploads, or publish leases.
+  uint64 active_publications = 4;
+  // Binary-cache retention roots supplied by the registry.
+  uint64 retained_cache_roots = 5;
+  // Unretired staged-release objects that hold container blobs.
+  uint64 staged_container_objects = 6;
+  // OCI GC runs that are applying; they must finish first.
+  uint64 applying_gc_runs = 7;
+  // OCI GC placement actions that are pending, claimed, or failed.
+  uint64 pending_gc_actions = 8;
+  // Untracked-object repairs that are planned or in progress.
+  uint64 active_untracked_repairs = 9;
+  // Live tracked objects in the placements' latest provider inventories.
+  uint64 tracked_provider_objects = 10;
+  // Live untracked objects in the placements' latest provider inventories.
+  uint64 untracked_provider_objects = 11;
+  // Placements without a complete empty inventory under the deletion fence.
+  uint64 placements_needing_inventory = 12;
+  // Image snapshot references and snapshot lease holds.
+  uint64 snapshot_references = 13;
+  // Planned, never-applied OCI GC runs the deletion operation abandons.
+  uint64 abandonable_gc_runs = 14;
+  // Placements that cannot be inventoried, for example offline placements.
+  uint64 unavailable_placements = 15;
+  // 1 while the registry's OCI namespace is enabled on instance OCI routes.
+  uint64 enabled_oci_namespaces = 16;
+  // Instance OCI routes that name the registry as their default registry.
+  uint64 instance_oci_route_defaults = 17;
+}
+
+// Deletion readiness of one registry placement.
+message RegistryDeletionPlacement {
+  string placement_name = 1;
+  // ready, needs_inventory, collecting, needs_scan, has_objects, or unavailable.
+  string inventory_state = 2;
+  // Human-readable explanation of the state.
+  string detail = 3;
+  uint64 tracked_provider_objects = 4;
+  uint64 untracked_provider_objects = 5;
+  // Observation time of the latest complete inventory, or zero.
+  int64 inventory_observed_at = 6;
+}
+
+// Exact registry deletion readiness shared by the plan and the operation.
+message RegistryDeletionReadiness {
+  // blocked: the apply is refused until blocking_reasons are resolved.
+  // automatic: the deletion operation resolves automatic_steps itself.
+  // ready: the registry can be deleted immediately.
+  string verdict = 1;
+  RegistryDeletionBlockers blockers = 2;
+  repeated RegistryDeletionPlacement placements = 3;
+  // One sentence per condition that only an operator can resolve.
+  repeated string blocking_reasons = 4;
+  // One sentence per step the deletion operation performs before deleting.
+  repeated string automatic_steps = 5;
+  // Whether a registry purge fence currently blocks new registry writes.
+  bool purge_fence_held = 6;
+}
+
+message RegistryDeletePlanResponse {
+  TopologyPlan plan = 1;
+  RegistryDeletionReadiness readiness = 2;
+}
+
 // A delivery workflow coordinates existing topology resources without changing
 // their ownership or granting cross-scope permissions implicitly.
 message DeliveryEndpointReference {
@@ -5958,4 +6195,64 @@ message DirectCapabilitiesTarget {
   string registry = 4;
   string repository = 5;
   string delivery_url = 6;
+}
+
+// A private mutable draft, distinct from deployment staging receipts.
+message UpsertStagedReleaseRequest {
+  string registry = 1;
+  // Canonical portable aos.registry-stage/v1 JSON.
+  string revision_json = 2;
+  // Zero creates a draft; later edits compare-and-swap the current revision.
+  uint64 expected_revision = 3;
+  // The ordinary upload publication; may be attached after draft creation.
+  string publication_id = 4;
+  // Gzip-compressed canonical revision JSON; exclusive with revision_json.
+  bytes revision_gzip = 5;
+}
+message GetStagedReleaseRequest { string registry = 1; string stage_id = 2; }
+message ListStagedReleasesRequest {
+  string registry = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+message ListStagedReleasesResponse {
+  repeated StagedRelease stages = 1;
+  string next_page_token = 2;
+}
+message FinalizeStagedReleaseRequest {
+  string registry = 1;
+  string stage_id = 2;
+  uint64 expected_revision = 3;
+  string release_id = 4;
+}
+message DiscardStagedReleaseRequest {
+  string registry = 1;
+  string stage_id = 2;
+  uint64 expected_revision = 3;
+}
+message StagedRelease {
+  string registry = 1;
+  string stage_id = 2;
+  string revision_json = 3;
+  // draft, ready, releasing, released, or discarded.
+  string state = 4;
+  string publication_id = 5;
+  uint64 total_bytes = 6;
+  uint64 uploaded_bytes = 7;
+  repeated string missing_paths = 8;
+  int64 created_at = 9;
+  int64 updated_at = 10;
+  string released_version = 11;
+  uint64 revision = 12;
+  string release_id = 13;
+  string source_branch = 14;
+  string commit = 15;
+  string inventory_digest = 16;
+  uint64 object_count = 17;
+  uint64 missing_object_count = 18;
+  // Gzip-compressed canonical revision JSON; exclusive with revision_json.
+  bytes revision_gzip = 19;
+  // Complete objects verified at every required placement; uploaded_bytes also
+  // includes durable accepted multipart and OCI offsets.
+  uint64 verified_bytes = 20;
 }

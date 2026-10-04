@@ -48,10 +48,15 @@ mod registry_accounting_tests;
 mod external_copy_tests;
 mod direct_target;
 mod instance_settings;
+mod oci_namespaces;
 mod publication_manifest;
+mod registry_delete;
 mod registry_metadata;
 mod registry_policy;
 mod release_publication;
+mod staged_releases;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod staged_releases_tests;
 #[cfg(test)]
 mod release_publication_tests;
 mod surface_topology;
@@ -73,6 +78,7 @@ use crate::clock;
 use crate::db::{Database, IndexStatus, PlacementReadRequirement, RegistryRecord, SurfaceTarget};
 use crate::domain::iam::{self, claims_principal, token_allows};
 use crate::domain::{Permission, Principal, PrincipalKind, Role, Scope};
+use crate::jobs::Job;
 use crate::fetch::{SurfaceFetch, SurfaceProvider};
 use crate::keymap;
 use crate::lease::PublishLease;
@@ -855,15 +861,6 @@ struct RegistryCreatePlanInput {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct RegistryUpdatePlanInput {
     request: pb::PlanUpdateRegistryRequest,
-    registry_id: i64,
-    owner_scope_key: String,
-    expected_resource_version: i64,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct RegistryDeletePlanInput {
-    stable_id: String,
-    slug: String,
     registry_id: i64,
     owner_scope_key: String,
     expected_resource_version: i64,
@@ -2644,6 +2641,12 @@ pub struct RpcService {
     pub identity_domain_verifier: Option<Arc<dyn crate::topology_probe::IdentityDomainVerifier>>,
     /// Runtime-owned active and retained route-reservation HMAC keys.
     pub route_reservation_keyring: Option<Arc<dyn RouteReservationKeyring>>,
+    /// Durable queue that runs scheduled maintenance jobs on demand.
+    ///
+    /// `None` (the default) makes `TriggerContainerMaintenance` unavailable;
+    /// the Worker wires its Cloudflare queue so operators can run the OCI
+    /// probe, inventory, and GC jobs without waiting for the cron schedule.
+    pub maintenance_jobs: Option<Arc<dyn crate::jobs::Queue>>,
     /// Restricted deployment authority for release and channel evidence.
     pub release_evidence: Option<Arc<dyn crate::release_evidence::ReleaseEvidenceAuthority>>,
     /// Serializes memory-bounded Git pack/index verification within the process or Worker isolate.
@@ -8506,7 +8509,7 @@ impl RpcService {
         &self,
         surface: SurfaceTarget,
         owner_scope_key: &str,
-        spec: pb::RouteSpec,
+        mut spec: pb::RouteSpec,
     ) -> Result<(crate::db::RouteSpec, String, crate::db::EndpointRecord), RpcError> {
         if spec.surface.as_ref() != Some(&self.route_surface_message(surface).await?) {
             return Err(RpcError::invalid(
@@ -8525,7 +8528,7 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("endpoint generation"))?;
-        let base_path = Self::normalize_route_base_path(&spec.base_path)?;
+        let mut base_path = Self::normalize_route_base_path(&spec.base_path)?;
         let target = spec
             .target
             .and_then(|target| target.target)
@@ -8591,6 +8594,24 @@ impl RpcService {
                     .await
                     .map_err(RpcError::internal)?
                     .ok_or_else(|| RpcError::not_found("gateway generation"))?;
+                // A direct route is reachable only through its gateway, so
+                // its path and policy derive from the gateway generation and
+                // placement unless the caller pins them explicitly. The
+                // database rejects any other path, so deriving here lets a
+                // client omit what it cannot choose.
+                if base_path.is_empty() {
+                    base_path = crate::db::join_route_segments(
+                        &gateway.spec.client_base_path,
+                        &placement.prefix,
+                    )
+                    .map_err(|error| RpcError::invalid(format!("direct route path: {error:#}")))?;
+                }
+                if spec.access_policy.is_none() {
+                    spec.access_policy = Some(
+                        serde_json::from_str(&gateway.spec.access_policy_json)
+                            .map_err(RpcError::internal)?,
+                    );
+                }
                 gateway_id = Some(gateway.gateway_id);
                 gateway_generation = Some(gateway.generation);
                 target_binding_id = Some(placement.binding_id);
@@ -10196,6 +10217,7 @@ impl RpcService {
             domain_probe_terminator: None,
             identity_domain_verifier: None,
             route_reservation_keyring: None,
+            maintenance_jobs: None,
             release_evidence: None,
             pack_validation: pack_validation_gate(),
         }
@@ -10287,6 +10309,13 @@ impl RpcService {
         keyring: Arc<dyn RouteReservationKeyring>,
     ) -> Self {
         self.route_reservation_keyring = Some(keyring);
+        self
+    }
+
+    /// Attaches the durable queue used to run maintenance jobs on demand.
+    #[must_use]
+    pub fn with_maintenance_jobs(mut self, queue: Arc<dyn crate::jobs::Queue>) -> Self {
+        self.maintenance_jobs = Some(queue);
         self
     }
 
@@ -11053,6 +11082,7 @@ impl RpcService {
             generation: 0,
             content_digest: None,
         });
+        let exposure = self.container_distribution_exposure(record.id).await?;
         Ok(pb::Registry {
             slug: record.slug.clone(),
             name: status.name.unwrap_or_default(),
@@ -11072,6 +11102,13 @@ impl RpcService {
             updated_at: record.updated_at,
             authorization_scope_key: record.scope_key.clone(),
             owner_scope_key: record.owner_scope_key.clone(),
+            oci_distribution_origin: exposure
+                .as_ref()
+                .map(|exposure| exposure.origin.clone())
+                .unwrap_or_default(),
+            oci_repository_namespace: exposure
+                .and_then(|exposure| exposure.namespace)
+                .unwrap_or_default(),
         })
     }
 
@@ -19173,6 +19210,57 @@ impl RpcService {
         })
     }
 
+    /// Enqueues one scheduled maintenance job immediately.
+    ///
+    /// Maintenance normally runs on the deployment's tick. Registry
+    /// retirement and incident response need the probe, inventory, GC, and
+    /// recovery jobs between reviewed steps, so an instance administrator may
+    /// run any scheduled job on demand. Each job still applies its own durable
+    /// fences and bounded page size; the OCI jobs additionally require the
+    /// garbage-collection rollout.
+    ///
+    /// # Errors
+    ///
+    /// Returns authentication or authorization errors, an invalid-argument
+    /// error for an unknown job, an unavailable error when the runtime has no
+    /// durable queue or the job's rollout is disabled, and an internal error
+    /// when the queue rejects the job.
+    pub async fn trigger_instance_maintenance(
+        &self,
+        auth: Option<&str>,
+        req: pb::TriggerInstanceMaintenanceRequest,
+    ) -> Result<pb::InstanceMaintenanceTriggerResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        self.require_permission(&claims, Permission::IamAdmin, &Scope::root())
+            .await?;
+        let job = match req.job.as_str() {
+            "dispatch_maintenance" => Job::DispatchMaintenance,
+            "run_topology_probes" => Job::RunTopologyProbes,
+            "recover_cache_writes" => Job::RecoverCacheWrites,
+            "recover_oci_uploads" => Job::RecoverOciUploads,
+            "run_cache_gc" => Job::RunCacheGc,
+            "rebuild_directory" => Job::RebuildDirectory,
+            "inventory_oci_providers" => Job::InventoryOciProviders,
+            "probe_oci_conditional_deletes" => Job::ProbeOciConditionalDeletes,
+            "run_oci_gc" => Job::RunOciGc,
+            _ => {
+                return Err(RpcError::invalid(
+                    "job must name one scheduled maintenance job (see TriggerInstanceMaintenanceRequest)",
+                ));
+            }
+        };
+        if !job.enabled_for(self.container_rollout) {
+            return Err(RpcError::Unavailable(
+                "this deployment has not enabled OCI garbage collection".into(),
+            ));
+        }
+        let queue = self.maintenance_jobs.as_ref().ok_or_else(|| {
+            RpcError::Unavailable("this deployment cannot schedule maintenance on demand".into())
+        })?;
+        queue.enqueue(&job).await.map_err(RpcError::internal)?;
+        Ok(pb::InstanceMaintenanceTriggerResponse { job: req.job })
+    }
+
     /// Persists an immutable, exact-version instance-settings plan.
     pub async fn plan_set_instance_settings(
         &self,
@@ -22814,138 +22902,6 @@ impl RpcService {
         Ok(response)
     }
 
-    /// Plans deletion of one unused registry identity.
-    pub async fn plan_delete_registry(
-        &self,
-        auth: Option<&str>,
-        mut req: pb::PlanDeleteTopologyResourceRequest,
-    ) -> Result<pb::TopologyPlanResponse, RpcError> {
-        let claims = self.require_claims(auth)?;
-        let registry = self.registry_or_not_found(&req.stable_id).await?;
-        self.require_permission(
-            &claims,
-            Permission::RegistryConfigure,
-            &self.registry_scope(&registry).await?,
-        )
-        .await?;
-        let expected = req
-            .expected_resource_version
-            .as_deref()
-            .ok_or_else(|| RpcError::invalid("expectedResourceVersion is required"))
-            .and_then(|value| parse_resource_version(value, 0))?;
-        if expected != registry.resource_version {
-            return Err(RpcError::FailedPrecondition(
-                "registry resource version is stale".to_string(),
-            ));
-        }
-        let idempotency_key = std::mem::take(&mut req.idempotency_key);
-        let input = RegistryDeletePlanInput {
-            stable_id: registry.stable_id.clone(),
-            slug: registry.slug.clone(),
-            registry_id: registry.id,
-            owner_scope_key: registry.owner_scope_key.clone(),
-            expected_resource_version: expected,
-        };
-        let confirmation_hash = hex::encode(Sha256::digest(
-            serde_json::to_vec(&input).map_err(RpcError::internal)?,
-        ));
-        self.create_control_plan(
-            &claims,
-            "delete_registry",
-            &registry.scope_key,
-            &input,
-            &idempotency_key,
-            vec![
-                format!("delete registry identity '{}'", registry.slug),
-                "retire its routes, placements, and terminal publication metadata".to_string(),
-            ],
-            vec![
-                "physical placement objects are not deleted".to_string(),
-                "active publication work or retained cache roots prevent deletion".to_string(),
-            ],
-            Some(confirmation_hash),
-        )
-        .await
-    }
-
-    /// Applies a quiescent registry deletion plan exactly once.
-    pub async fn apply_delete_registry(
-        &self,
-        auth: Option<&str>,
-        req: pb::ApplyDeleteTopologyResourceRequest,
-    ) -> Result<pb::DeleteTopologyResourceResponse, RpcError> {
-        if let Some(response) = self
-            .replayed_control_result(
-                auth,
-                &req.plan_id,
-                "delete_registry",
-                Some(&req.confirmation_hash),
-                &req.idempotency_key,
-            )
-            .await?
-        {
-            return Ok(response);
-        }
-        self.begin_control_plan_apply(
-            auth,
-            &req.plan_id,
-            "delete_registry",
-            &req.idempotency_key,
-            Some(&req.confirmation_hash),
-        )
-        .await?;
-        let (plan, input): (_, RegistryDeletePlanInput) = self
-            .load_control_plan(
-                auth,
-                &req.plan_id,
-                "delete_registry",
-                Some(&req.confirmation_hash),
-            )
-            .await?;
-        let claims = self.require_claims(auth)?;
-        self.require_permission(
-            &claims,
-            Permission::RegistryConfigure,
-            &Scope::parse(&input.stable_id),
-        )
-        .await?;
-        if let Some(registry) = self
-            .db
-            .registry_by_id(input.registry_id)
-            .await
-            .map_err(RpcError::internal)?
-        {
-            if registry.stable_id != input.stable_id
-                || registry.owner_scope_key != input.owner_scope_key
-            {
-                return Err(RpcError::FailedPrecondition(
-                    "registry identity changed after planning".to_string(),
-                ));
-            }
-            if !self
-                .db
-                .delete_registry_at_version(
-                    input.registry_id,
-                    input.expected_resource_version,
-                    &plan.plan_id,
-                    &claims.owner_kind,
-                    Some(claims.owner_id),
-                    &claims.sub,
-                )
-                .await
-                .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?
-            {
-                return Err(RpcError::FailedPrecondition(
-                    "registry changed after planning".to_string(),
-                ));
-            }
-        }
-        let response = pb::DeleteTopologyResourceResponse { deleted: true };
-        self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
-            .await?;
-        Ok(response)
-    }
-
     /// Creates a managed registry attributed to an already-reserved plan.
     ///
     /// The registry is created at the canonical path `{org}/{project_path}/{name}`
@@ -25377,6 +25333,19 @@ impl RpcService {
             .verified_registry_object_accounting_eligibility(object.surface_object_id)
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+
+        if let Some(state) = self
+            .db
+            .staged_publication_state(&publication.publication_id)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            if matches!(state.as_str(), "discarded" | "superseded") {
+                return Err(RpcError::FailedPrecondition(
+                    "staged release inventory is retired".into(),
+                ));
+            }
+        }
         if object.object_kind == "immutable" && publication.state != "preparing" {
             return Err(RpcError::FailedPrecondition(
                 "immutable upload phase is closed".into(),
@@ -25384,6 +25353,18 @@ impl RpcService {
         }
         if object.object_kind != "mutable_pointer" {
             return Ok(());
+        }
+        if let Some(state) = self
+            .db
+            .staged_publication_state(&publication.publication_id)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            if state != "releasing" {
+                return Err(RpcError::FailedPrecondition(
+                    "staged release pointers require explicit finalization".into(),
+                ));
+            }
         }
         if !self
             .db
@@ -25444,7 +25425,38 @@ impl RpcService {
         Ok(())
     }
 
+    /// Reads required upload destinations without changing publication watermarks.
     async fn registry_publication_required_placements(
+        &self,
+        publication_id: &str,
+    ) -> Result<Vec<crate::db::SurfacePlacementRecord>, RpcError> {
+        let progress = self
+            .db
+            .registry_publication_placement_records(publication_id)
+            .await
+            .map_err(RpcError::internal)?;
+        let mut placements = Vec::new();
+        for required in progress.iter().filter(|placement| placement.required) {
+            let placement = self
+                .db
+                .surface_placement(required.placement_id)
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| {
+                    RpcError::FailedPrecondition("required placement disappeared".into())
+                })?;
+            placements.push(placement);
+        }
+        if placements.is_empty() {
+            return Err(RpcError::FailedPrecondition(
+                "publication has no required placements".into(),
+            ));
+        }
+        Ok(placements)
+    }
+
+    /// Opens mutable watermark advances only for an admitted object upload.
+    async fn prepare_registry_publication_upload_placements(
         &self,
         publication_id: &str,
         object_kind: &str,
@@ -25554,7 +25566,10 @@ impl RpcService {
             return Err(RpcError::Internal);
         }
         let mut current = self
-            .registry_publication_required_placements(&upload.publication_id, &object.object_kind)
+            .prepare_registry_publication_upload_placements(
+                &upload.publication_id,
+                &object.object_kind,
+            )
             .await?;
         current.sort_by_key(|placement| placement.id);
         if current.len() != backends.len()
@@ -25614,7 +25629,10 @@ impl RpcService {
             return Err(RpcError::Internal);
         }
         let required = self
-            .registry_publication_required_placements(&upload.publication_id, &object.object_kind)
+            .prepare_registry_publication_upload_placements(
+                &upload.publication_id,
+                &object.object_kind,
+            )
             .await?;
         if required.len() != backends.len() {
             return Err(RpcError::FailedPrecondition(
@@ -25759,7 +25777,7 @@ impl RpcService {
         }
 
         let placements = self
-            .registry_publication_required_placements(
+            .prepare_registry_publication_upload_placements(
                 &publication.publication_id,
                 &object.object_kind,
             )
@@ -26404,7 +26422,7 @@ impl RpcService {
 
         let mut uploads = Vec::new();
         for placement in self
-            .registry_publication_required_placements(publication_id, &object.object_kind)
+            .prepare_registry_publication_upload_placements(publication_id, &object.object_kind)
             .await?
         {
             let writer = self
@@ -26620,6 +26638,18 @@ impl RpcService {
         let scope = self.registry_scope(&registry).await?;
         self.require_permission(&claims, Permission::Publish, &scope)
             .await?;
+        if let Some(state) = self
+            .db
+            .staged_publication_state(&req.publication_id)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            if !matches!(state.as_str(), "releasing" | "released") {
+                return Err(RpcError::FailedPrecondition(
+                    "staged release publication requires explicit finalization".into(),
+                ));
+            }
+        }
         if publication.state == "ready" {
             // A retry is also the explicit recovery path when publication
             // succeeded but its derived index did not. Returning immediately
@@ -26826,6 +26856,18 @@ impl RpcService {
         let scope = self.registry_scope(&registry).await?;
         self.require_permission(&claims, Permission::Publish, &scope)
             .await?;
+        if let Some(state) = self
+            .db
+            .staged_publication_state(&req.publication_id)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            if state == "releasing" {
+                return Err(RpcError::FailedPrecondition(
+                    "frozen staged release finalization must be resumed".into(),
+                ));
+            }
+        }
         if publication.state == "failed" {
             self.lease.release(registry.id, &req.publication_id).await;
             return self
@@ -33238,7 +33280,7 @@ impl RpcService {
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
         if matches!(
             updated.operation_kind.as_str(),
-            "scan_placement" | "replicate_placement" | "repair_placement"
+            "scan_placement" | "replicate_placement" | "repair_placement" | "delete_registry"
         ) {
             self.topology_probes
                 .wake_controller()
@@ -36939,7 +36981,7 @@ mod publication_upload_limit_tests {
 }
 
 #[cfg(test)]
-mod cache_upload_tests {
+pub(crate) mod cache_upload_tests {
     use std::collections::{BTreeMap, VecDeque};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -37263,7 +37305,7 @@ mod cache_upload_tests {
         injected_service_with_sealer(fetch_behaviors, write_behaviors, vec![]).await
     }
 
-    pub(super) async fn delivery_test_service() -> (RpcService, Arc<Database>) {
+    pub(crate) async fn delivery_test_service() -> (RpcService, Arc<Database>) {
         let (service, database, _, _) = injected_service(vec![], vec![]).await;
         (service, database)
     }

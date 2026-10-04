@@ -54,7 +54,7 @@ use crate::frozen_surface_access::{
 use crate::keymap;
 use crate::r2_adapter::{R2BucketAdapter, R2Contract, R2HeadObject, R2ListObject, R2ListPage};
 
-mod metadata_batch;
+pub(crate) mod metadata_batch;
 
 #[derive(Clone)]
 struct WorkerR2BucketAdapter {
@@ -79,7 +79,12 @@ pub(crate) async fn execute_external_storage_work(
     signal: &worker::web_sys::AbortSignal,
 ) -> Result<Option<StorageWorkResult>> {
     if matches!(plan.operation, StorageWorkOperation::DeleteIfMatches { .. }) {
-        return crate::external_object::execute_delete_plan(env, plan, publication)
+        return crate::external_object::execute_delete_plan(
+            env,
+            plan,
+            publication,
+            Some(signal.clone()),
+        )
             .await
             .map(Some);
     }
@@ -92,9 +97,17 @@ pub(crate) async fn execute_external_storage_work(
         _ => false,
     };
     if probe {
-        return crate::external_object::execute_probe_plan(env, plan, publication)
+        return crate::external_object::execute_probe_plan(
+            env,
+            plan,
+            publication,
+            Some(signal.clone()),
+        )
             .await
             .map(Some);
+    }
+    if let Some(result) = crate::external_object::execute_inspection(env, plan, publication, signal).await? {
+        return Ok(Some(result));
     }
     if let Some(result) = crate::external_object::execute_scan_read(env, plan, publication, signal).await? {
         return Ok(Some(result));
@@ -250,6 +263,7 @@ pub(crate) async fn execute_external_storage_work(
                     .context("external storage HEAD has no ETag")?;
                 let etag = aos_hub_core::surface_write::strong_if_match_etag(&etag)?;
                 StorageWorkOutcome::Head {
+                    guarded_source: None,
                     object: StorageObjectIdentity {
                         key: plan.object_key(path)?,
                         size,
@@ -450,6 +464,7 @@ pub(crate) async fn execute_external_storage_work(
             strong_etag,
             expected_provider_version,
             sha256_state,
+            ..
         } => {
             hash_oci_range(
                 &fetcher,
@@ -521,6 +536,7 @@ pub(crate) async fn execute_r2_storage_work(
             // physical-key guard so unknown writes/deletes cannot prove absence.
             let outcome = match crate::hybrid_object::head(env, &key).await? {
                 Some(head) => StorageWorkOutcome::Head {
+                    guarded_source: None,
                     object: storage_object_identity(key, head),
                 },
                 None => StorageWorkOutcome::NotFound,
@@ -683,6 +699,7 @@ pub(crate) async fn execute_r2_storage_work(
             strong_etag,
             expected_provider_version,
             sha256_state,
+            ..
         } => {
             hash_oci_range(
                 &fetcher,
@@ -698,12 +715,15 @@ pub(crate) async fn execute_r2_storage_work(
             .await?
         }
         StorageWorkOperation::CopyObject {
+            source_binding_id,
             source_prefix,
             path,
             expected_size,
             expected_etag,
             ..
         } => {
+            anyhow::ensure!(source_binding_id.is_none(), "generic copy lacks independent source binding authority");
+            anyhow::ensure!(source_binding_id.is_none(), "generic copy lacks independent source binding authority");
             let source_key = keymap::r2_key(source_prefix, path);
             let destination_key = plan.object_key(path)?;
             let source = fetcher
@@ -1029,21 +1049,44 @@ async fn compose_oci_blob(
     })
 }
 
-async fn inspect_git_objects(
+pub(crate) async fn inspect_git_objects(
     fetcher: &dyn SurfaceFetch,
     plan: &StorageWorkPlan,
     oids: &[String],
+) -> Result<(StorageWorkOutcome, u64)> {
+    inspect_git_objects_with_policy(fetcher, plan, oids, false).await
+}
+
+/// Projects a guarded batch within its retained source buffer budget.
+///
+/// # Errors
+/// Propagates source, OID, decoding and bounded result failures.
+pub(crate) async fn inspect_guarded_git_objects(
+    fetcher: &dyn SurfaceFetch,
+    plan: &StorageWorkPlan,
+    oids: &[String],
+) -> Result<(StorageWorkOutcome, u64)> {
+    inspect_git_objects_with_policy(fetcher, plan, oids, true).await
+}
+
+async fn inspect_git_objects_with_policy(
+    fetcher: &dyn SurfaceFetch,
+    plan: &StorageWorkPlan,
+    oids: &[String],
+    guarded: bool,
 ) -> Result<(StorageWorkOutcome, u64)> {
     let mut shards = std::collections::BTreeMap::<&str, Vec<&str>>::new();
     for oid in oids {
         shards.entry(&oid[..2]).or_default().push(oid);
     }
-    let inspections = futures_util::future::try_join_all(
-        shards
-            .into_iter()
-            .map(|(shard, oids)| inspect_git_shard(fetcher, plan, shard, oids)),
-    )
-    .await?;
+    let reads = shards
+        .into_iter()
+        .map(|(shard, oids)| inspect_git_shard(fetcher, plan, shard, oids, guarded));
+    let inspections = if guarded {
+        crate::external_object::collect_guarded_git_reads(reads, 2).await?
+    } else {
+        futures_util::future::try_join_all(reads).await?
+    };
     let mut objects = Vec::with_capacity(oids.len());
     let mut source_bytes = 0_u64;
     let mut missing = false;
@@ -1066,10 +1109,31 @@ async fn inspect_git_objects(
     Ok((outcome, source_bytes))
 }
 
-async fn inspect_git_object(
+pub(crate) async fn inspect_git_object(
     fetcher: &dyn SurfaceFetch,
     plan: &StorageWorkPlan,
     oid: &str,
+) -> Result<(Option<StorageGitObjectProjection>, u64)> {
+    inspect_git_object_with_policy(fetcher, plan, oid, false).await
+}
+
+/// Projects one guarded Git object within the compact reply's content limit.
+///
+/// # Errors
+/// Propagates source, OID, decoding and bounded result failures.
+pub(crate) async fn inspect_guarded_git_object(
+    fetcher: &dyn SurfaceFetch,
+    plan: &StorageWorkPlan,
+    oid: &str,
+) -> Result<(Option<StorageGitObjectProjection>, u64)> {
+    inspect_git_object_with_policy(fetcher, plan, oid, true).await
+}
+
+async fn inspect_git_object_with_policy(
+    fetcher: &dyn SurfaceFetch,
+    plan: &StorageWorkPlan,
+    oid: &str,
+    guarded: bool,
 ) -> Result<(Option<StorageGitObjectProjection>, u64)> {
     let oid_value = object::Oid::from_hex(oid)?;
     let shard = &oid[..2];
@@ -1119,7 +1183,7 @@ async fn inspect_git_object(
             .checked_add(source.size)
             .context("Git inspection source byte count overflowed")?
     };
-    Ok((Some(project_git_loose(oid, &loose, source)?), source_bytes))
+    Ok((Some(project_git_loose(oid, &loose, source, guarded)?), source_bytes))
 }
 
 async fn inspect_git_shard(
@@ -1127,6 +1191,7 @@ async fn inspect_git_shard(
     plan: &StorageWorkPlan,
     shard: &str,
     oids: Vec<&str>,
+    guarded: bool,
 ) -> Result<(Vec<Option<StorageGitObjectProjection>>, u64)> {
     let shard_path = object_bundle::shard_path(shard)?;
     let bundled =
@@ -1144,11 +1209,11 @@ async fn inspect_git_shard(
         },
         None => std::collections::BTreeMap::new(),
     };
-    let inspections = futures_util::future::try_join_all(oids.into_iter().map(|oid| async {
+    let reads = oids.into_iter().map(|oid| async {
         let oid_value = object::Oid::from_hex(oid)?;
         if let (Some(loose), Some((_, source))) = (entries.get(&oid_value), bundled.as_ref()) {
             return Ok::<_, anyhow::Error>((
-                Some(project_git_loose(oid, loose, source.clone())?),
+                Some(project_git_loose(oid, loose, source.clone(), guarded)?),
                 0_u64,
             ));
         }
@@ -1164,9 +1229,13 @@ async fn inspect_git_shard(
             return Ok((None, 0));
         };
         let source_bytes = source.size;
-        Ok((Some(project_git_loose(oid, &loose, source)?), source_bytes))
-    }))
-    .await?;
+        Ok((Some(project_git_loose(oid, &loose, source, guarded)?), source_bytes))
+    });
+    let inspections = if guarded {
+        crate::external_object::collect_guarded_git_reads(reads, 1).await?
+    } else {
+        futures_util::future::try_join_all(reads).await?
+    };
     let mut projections = Vec::with_capacity(inspections.len());
     let mut source_bytes = bundle_bytes;
     for (projection, loose_bytes) in inspections {
@@ -1182,9 +1251,17 @@ fn project_git_loose(
     oid: &str,
     loose: &[u8],
     source: StorageObjectIdentity,
+    guarded: bool,
 ) -> Result<StorageGitObjectProjection> {
     let oid_value = object::Oid::from_hex(oid)?;
-    let (kind, content) = object::decode_loose(loose, Some(oid_value))?;
+    // A successful projection already requires this content bound. Guarded
+    // readers reserve framing space before inflation instead of allocating a
+    // full 64MiB object just to reject its oversized compact reply afterwards.
+    let (kind, content) = if guarded {
+        crate::external_object::decode_guarded_git_projection(loose, oid_value)?
+    } else {
+        object::decode_loose(loose, Some(oid_value))?
+    };
     anyhow::ensure!(
         content.len() <= MAX_GIT_INSPECTION_CONTENT_BYTES,
         "Git object projection exceeds the semantic response limit"
@@ -1197,7 +1274,7 @@ fn project_git_loose(
     })
 }
 
-async fn read_bounded_source(
+pub(crate) async fn read_bounded_source(
     fetcher: &dyn SurfaceFetch,
     plan: &StorageWorkPlan,
     path: &str,
@@ -1242,7 +1319,7 @@ async fn read_bounded_source(
     Ok(Some((bytes, source)))
 }
 
-async fn inspect_documentation(
+pub(crate) async fn inspect_documentation(
     fetcher: &dyn SurfaceFetch,
     package_name: &str,
     package_version: &str,
@@ -1315,6 +1392,7 @@ async fn inspect_oci_range(
     );
     Ok((
         StorageWorkOutcome::OciRange {
+            guarded_source: None,
             source: StorageObjectIdentity {
                 key: plan.object_key(path)?,
                 size: read.total,
@@ -1360,6 +1438,7 @@ async fn hash_oci_range(
     next_state.update(&chunk.bytes)?;
     Ok((
         StorageWorkOutcome::OciRangeHashed {
+            guarded_source: None,
             source: StorageObjectIdentity {
                 key: plan.object_key(path)?,
                 size: chunk.total,
@@ -2606,12 +2685,18 @@ impl SurfaceFetch for R2SurfaceFetch {
             .await
     }
 
-    async fn list_page(&self, cursor: Option<&str>, limit: usize) -> Result<SurfaceListPage> {
+    async fn list_page(
+        &self,
+        prefix: &str,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<SurfaceListPage> {
         anyhow::ensure!(
             limit > 0 && limit <= aos_hub_core::fetch::WORKER_MAX_SURFACE_LIST_PAGE_OBJECTS,
             "invalid R2 listing page limit"
         );
-        let listing_prefix = keymap::r2_key(&self.prefix, "");
+        aos_hub_core::fetch::validate_surface_list_prefix(prefix)?;
+        let listing_prefix = keymap::r2_key(&self.prefix, prefix);
         let page = self.contract.list(&listing_prefix, cursor, limit).await?;
         let mut entries = Vec::with_capacity(page.objects.len());
         for object in page.objects {
@@ -2695,6 +2780,7 @@ impl SurfaceFetch for R2SurfaceFetch {
             .await?
             .map(|head| {
                 Ok(SurfaceInventoryHead {
+                    guarded_source: None,
                     size: i64::try_from(head.size).context("R2 object size exceeds i64")?,
                     strong_etag: Some(head.etag),
                     provider_version: Some(head.version),
@@ -2869,7 +2955,12 @@ impl SurfaceFetch for S3SurfaceFetch {
         Ok(Some(bytes))
     }
 
-    async fn list_page(&self, cursor: Option<&str>, limit: usize) -> Result<SurfaceListPage> {
+    async fn list_page(
+        &self,
+        prefix: &str,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<SurfaceListPage> {
         anyhow::ensure!(
             limit > 0 && limit <= aos_hub_core::fetch::WORKER_MAX_SURFACE_LIST_PAGE_OBJECTS,
             "invalid S3 listing page limit"
@@ -2882,7 +2973,7 @@ impl SurfaceFetch for S3SurfaceFetch {
         );
         let mut parsed_keys = 0_usize;
         let now = aos_hub_core::clock::now_unix_secs();
-        let url = self.surface.list_url(cursor, limit, now)?;
+        let url = self.surface.list_url(prefix, cursor, limit, now)?;
         let mut response = self
             .egress
             .send(&url, "GET", None, None, None, None, None)
@@ -3302,6 +3393,18 @@ impl SurfaceWriteProvider for R2SurfaceWriteProvider {
         expected_binding_resource_version: i64,
         delete_credential_generation: i64,
     ) -> Result<Box<dyn SurfaceWrite>> {
+        // The deployment bucket is deleted through the Worker binding itself;
+        // every other object store needs exact external delete credentials.
+        if let Some(deleter) = self
+            .deployment_r2_deleter(
+                placement.binding_id,
+                expected_binding_resource_version,
+                &placement.prefix,
+            )
+            .await?
+        {
+            return Ok(deleter);
+        }
         let surface = placement_s3_delete_surface(
             &self.db,
             self.credentials.as_ref(),
@@ -3321,8 +3424,13 @@ impl SurfaceWriteProvider for R2SurfaceWriteProvider {
         access: &FrozenSurfaceAccess,
     ) -> Result<Box<dyn SurfaceWrite>> {
         let binding = frozen_access_binding(&self.db, access).await?;
-        if binding.is_instance_default || binding.kind == "deployment_r2" {
-            anyhow::bail!("deployment R2 cannot enforce atomic conditional deletion");
+        if binding.kind == "deployment_r2" {
+            return Ok(Box::new(
+                self.deployment_r2_writer(&access.placement_prefix),
+            ));
+        }
+        if binding.is_instance_default {
+            anyhow::bail!("instance-default object stores cannot enforce conditional deletion");
         }
         anyhow::ensure!(
             matches!(binding.kind.as_str(), "s3" | "r2"),
@@ -3341,6 +3449,43 @@ impl SurfaceWriteProvider for R2SurfaceWriteProvider {
             surface,
             egress: Arc::clone(&self.egress),
         }))
+    }
+}
+
+impl R2SurfaceWriteProvider {
+    /// Returns the bound deployment bucket as a fenced deleter when the
+    /// placement's binding is the Worker's own `deployment_r2` binding.
+    ///
+    /// The binding resource version is checked exactly like the external
+    /// object-store path so a retargeted binding cannot reuse a reviewed plan.
+    async fn deployment_r2_deleter(
+        &self,
+        binding_id: i64,
+        expected_binding_resource_version: i64,
+        prefix: &str,
+    ) -> Result<Option<Box<dyn SurfaceWrite>>> {
+        let binding = self
+            .db
+            .binding(binding_id)
+            .await?
+            .context("deletion placement references a missing binding")?;
+        if binding.kind != "deployment_r2" {
+            return Ok(None);
+        }
+        anyhow::ensure!(
+            binding.resource_version == expected_binding_resource_version,
+            "deployment R2 binding changed after deletion was planned"
+        );
+        Ok(Some(Box::new(self.deployment_r2_writer(prefix))))
+    }
+
+    fn deployment_r2_writer(&self, prefix: &str) -> R2Write {
+        R2Write {
+            contract: R2Contract::new(WorkerR2BucketAdapter {
+                bucket: self.bucket.as_ref().clone(),
+            }),
+            prefix: prefix.to_string(),
+        }
     }
 }
 
@@ -3382,6 +3527,15 @@ impl SurfaceWrite for R2Write {
     async fn delete(&self, path: &str) -> Result<()> {
         let key = keymap::r2_key(&self.prefix, path);
         self.contract.delete(&key).await
+    }
+
+    async fn delete_if_matches(
+        &self,
+        path: &str,
+        expected: &aos_hub_core::surface_write::SurfaceDeletePrecondition,
+    ) -> Result<aos_hub_core::surface_write::SurfaceDeleteOutcome> {
+        let key = keymap::r2_key(&self.prefix, path);
+        self.contract.delete_if_matches(&key, expected).await
     }
 
     async fn create_multipart(&self, path: &str) -> Result<String> {

@@ -694,29 +694,38 @@ impl SurfaceFetch for DoE2eSurface {
         Ok(self.load_object(path)?.map(|object| object.bytes))
     }
 
-    async fn list_page(&self, cursor: Option<&str>, limit: usize) -> Result<SurfaceListPage> {
+    async fn list_page(
+        &self,
+        prefix: &str,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<SurfaceListPage> {
         anyhow::ensure!(limit > 0, "test surface listing limit must be positive");
+        aos_hub_core::fetch::validate_surface_list_prefix(prefix)?;
         let query_limit = i64::try_from(
             limit
                 .checked_add(1)
                 .context("test surface listing limit overflowed")?,
         )
         .context("test surface listing limit exceeds SQLite")?;
-        let prefix = match self.prefix.trim_matches('/') {
+        let placement_prefix = match self.prefix.trim_matches('/') {
             "" => String::new(),
-            prefix => format!("{prefix}/"),
+            placement => format!("{placement}/"),
         };
+        // The SQL prefix match is the scoped listing: keys outside the
+        // requested namespace are never read from the table.
+        let listing_prefix = format!("{placement_prefix}{prefix}");
         let after_key = cursor
             .map(|cursor| self.object_key(cursor))
-            .unwrap_or_else(|| prefix.clone());
+            .unwrap_or_else(|| listing_prefix.clone());
         let cursor = self.sql.exec(
             "SELECT object_key, byte_size, strong_etag, provider_version
              FROM aos_e2e_surface_objects
              WHERE substr(object_key, 1, ?) = ? AND object_key > ?
              ORDER BY object_key LIMIT ?",
             Some(vec![
-                SqlStorageValue::Integer(i64::try_from(prefix.len())?),
-                SqlStorageValue::String(prefix.clone()),
+                SqlStorageValue::Integer(i64::try_from(listing_prefix.len())?),
+                SqlStorageValue::String(listing_prefix),
                 SqlStorageValue::String(after_key),
                 SqlStorageValue::Integer(query_limit),
             ]),
@@ -732,7 +741,7 @@ impl SurfaceFetch for DoE2eSurface {
             };
             anyhow::ensure!(*byte_size >= 0, "test object has a negative byte size");
             let path = object_key
-                .strip_prefix(&prefix)
+                .strip_prefix(&placement_prefix)
                 .context("test object escaped its placement prefix")?
                 .to_string();
             paths.push(path.clone());
@@ -774,6 +783,7 @@ impl SurfaceFetch for DoE2eSurface {
             anyhow::bail!("test inventory metadata row had an invalid shape");
         };
         Ok(Some(SurfaceInventoryHead {
+            guarded_source: None,
             size: *size,
             strong_etag: Some(etag.clone()),
             provider_version: Some(version.clone()),

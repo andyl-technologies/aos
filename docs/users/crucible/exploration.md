@@ -41,8 +41,15 @@ Advanced searches may load schedule-named assertion truths:
 --schedule-named-truths truths.toml
 ```
 
-The retained-evidence input visible in source is an internal gate surface and
-is hidden from production help. Do not build operator workflows around it.
+Backend-retained assertion evidence is a public, authenticated search input:
+
+```sh
+--retained-evidence retained-evidence.toml
+```
+
+The CLI validates the current evidence schema and its scenario, node,
+configuration, and white-box bindings before search. The packaged-QEMU route
+retains the exact source in the guarded campaign finding-oracle proof.
 
 Search is currently local. `--daemon` search is rejected.
 
@@ -54,7 +61,7 @@ basic-block coverage back into later selection:
 ```sh
 ./result/bin/crucible \
   --seed 0x2a \
-  fuzz builtin:fault-campaign \
+  fuzz fault-campaign.fam \
   --runs 100 \
   --coverage basic-block \
   --corpus .crucible/corpus \
@@ -64,7 +71,7 @@ basic-block coverage back into later selection:
 The family may be supplied as a positional argument or with `--family`, but not
 both. Accepted sources are:
 
-- `builtin:fault-campaign`;
+- `fault-campaign.fam`;
 - a family TOML file; or
 - a `blake3:<hash>` in `--store`.
 
@@ -122,7 +129,7 @@ Compare a result with another content-addressed triage result using:
 By default, triage reports go to `--artifact-dir`, and triage objects use the
 same default `<artifact-dir>/store` as other offline operations.
 
-Search and fuzz write a signed v3 ledger automatically when they retain at
+Search and fuzz write a signed v4 ledger automatically when they retain at
 least one finding. Its default location is
 `<artifact-dir>/findings/<digest>.crucible-findings`; use
 `--findings-out <path>` on either command when automation needs a fixed path.

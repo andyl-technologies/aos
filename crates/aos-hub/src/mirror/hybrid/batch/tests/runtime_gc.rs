@@ -79,7 +79,7 @@ impl Controls<'_> {
             .await
             .unwrap();
         match result.outcome {
-            StorageWorkOutcome::Head { object } => Some(object),
+            StorageWorkOutcome::Head { object, .. } => Some(object),
             StorageWorkOutcome::NotFound => None,
             other => panic!("unexpected physical HEAD result: {other:?}"),
         }

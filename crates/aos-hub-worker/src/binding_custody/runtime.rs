@@ -351,6 +351,7 @@ pub(crate) async fn handle(
                 env,
                 storage,
                 binding_id,
+                request.inner().signal(),
             )
             .await
         }

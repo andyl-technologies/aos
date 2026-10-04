@@ -1,12 +1,17 @@
 //! Exact planned Nix realization, reproducibility checks, and build evidence.
+//!
+//! Every planned derivation is realized and then repeat-built with Nix
+//! `--check`. The plan's registry tier decides what a failed check means:
+//! production fails the step closed, while the testing tier records each
+//! affected output as [`ReproducibilityResult::NotReproduced`] and continues.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail};
-use aos_core::nix::NixRunner;
+use aos_core::nix::{CheckReport, NixRunner};
 use aos_core::output::Printer;
 use aos_release::build::{
     BUILD_REPORT_V1, BuildOutputEvidence, BuildReportV1, BuildSourceEvidence,
@@ -16,6 +21,7 @@ use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::plan::ReleasePlan;
 use aos_release::platform::{MatrixCell, Platform};
+use aos_release::registry::{RegistryTier, registry_policy};
 use aos_release::sbom::SpdxDocument;
 use aos_release::state::{JournalEntry, ReleaseState};
 use serde::Deserialize;
@@ -46,6 +52,7 @@ pub(super) fn run(args: &ReleaseBuildArgs, nix: &NixRunner, printer: &Printer) -
     let plan: ReleasePlan = canonical::from_slice(&plan_bytes, "release plan")?;
     plan.validate()?;
     super::artifact_profiles::require_plan(nix, &plan)?;
+    let tier = registry_policy(&plan.registry)?.tier();
     let plan_digest = Sha256Digest::of_bytes(&plan_bytes);
     let planned = planned_nix_outputs(&plan)?;
     let derivations = planned
@@ -64,7 +71,9 @@ pub(super) fn run(args: &ReleaseBuildArgs, nix: &NixRunner, printer: &Printer) -
     ));
     nix.realise_derivations(&derivations, false)?;
     printer.info("Repeat-building planned derivations with Nix --check...");
-    nix.realise_derivations(&derivations, true)?;
+    let checks = nix.check_derivations(&derivations)?;
+    let unreproduced = admit_check_failures(tier, &checks)?;
+    warn_unreproduced(printer, tier, &unreproduced);
 
     let source_paths = planned
         .values()
@@ -106,7 +115,7 @@ pub(super) fn run(args: &ReleaseBuildArgs, nix: &NixRunner, printer: &Printer) -
             nar_size: info.nar_size,
             closure_size: info.closure_size,
             references: info.references,
-            reproducibility: ReproducibilityResult::Reproduced,
+            reproducibility: reproducibility_of(expected.derivation, &unreproduced),
         });
     }
     let sources = source_paths
@@ -159,16 +168,83 @@ pub(super) fn run(args: &ReleaseBuildArgs, nix: &NixRunner, printer: &Printer) -
         "plan_digest": plan_digest,
         "outputs": report.outputs.len(),
         "derivations": derivations.len(),
+        "not_reproduced": unreproduced,
         "output": args.output,
     })) {
         return Ok(());
     }
+    let not_reproduced = report.not_reproduced().count();
+    let summary = if not_reproduced == 0 {
+        String::new()
+    } else {
+        format!(" ({not_reproduced} recorded as not reproduced)")
+    };
     printer.success(&format!(
-        "Built and repeat-checked {} planned outputs; evidence written to {}",
+        "Built and repeat-checked {} planned outputs{summary}; evidence written to {}",
         report.outputs.len(),
         args.output.display()
     ));
     Ok(())
+}
+
+/// Decides which failed repeat builds the plan's registry tier admits.
+///
+/// Returns each derivation to record as not reproduced, keyed by store path,
+/// with the one-line reason its check failed. A tier that does not accept
+/// unreproduced outputs fails closed with the full failure report, exactly
+/// as the check pass did before tiers could record them.
+///
+/// # Errors
+///
+/// Returns the check pass's [`aos_core::error::AosError::NixBuild`] report
+/// when any derivation failed its check and `tier` does not accept
+/// unreproduced outputs.
+fn admit_check_failures(
+    tier: RegistryTier,
+    checks: &CheckReport,
+) -> Result<BTreeMap<String, String>> {
+    if !tier.accepts_not_reproduced_outputs() {
+        checks.require_all_reproduced()?;
+    }
+
+    let unreproduced = checks
+        .failures()
+        .iter()
+        .map(|failure| (failure.derivation.display().to_string(), failure.reason()))
+        .collect();
+    Ok(unreproduced)
+}
+
+/// Returns the recorded repeat-build result for an output's derivation.
+fn reproducibility_of(
+    derivation: &str,
+    unreproduced: &BTreeMap<String, String>,
+) -> ReproducibilityResult {
+    if unreproduced.contains_key(derivation) {
+        ReproducibilityResult::NotReproduced
+    } else {
+        ReproducibilityResult::Reproduced
+    }
+}
+
+/// Lists every derivation the release records as not reproduced.
+fn warn_unreproduced(
+    printer: &Printer,
+    tier: RegistryTier,
+    unreproduced: &BTreeMap<String, String>,
+) {
+    if unreproduced.is_empty() {
+        return;
+    }
+
+    printer.warning(&format!(
+        "{} derivations did not reproduce under Nix --check; the {tier} registry tier \
+         records their outputs as not-reproduced and the release proceeds:",
+        unreproduced.len()
+    ));
+    for (derivation, reason) in unreproduced {
+        printer.warning(&format!("  {derivation}: {reason}"));
+    }
 }
 
 fn instantiate_planned_roots(
@@ -311,6 +387,8 @@ fn require_utc_time(value: &str, label: &str) -> Result<std::time::SystemTime> {
 
 #[cfg(test)]
 mod tests {
+    use aos_core::nix::CheckFailure;
+
     use super::*;
 
     #[test]
@@ -343,6 +421,95 @@ mod tests {
         persist_build_tree(&output, b"plan", b"report", b"sbom", b"journal")?;
         assert!(persist_build_tree(&output, b"other", b"other", b"other", b"other").is_err());
         assert_eq!(fs::read(output.join("release-plan.json"))?, b"plan");
+        Ok(())
+    }
+
+    fn failed_check(derivation: &str, exit_code: i32, detail: &str) -> CheckFailure {
+        CheckFailure {
+            derivation: PathBuf::from(derivation),
+            exit_code: Some(exit_code),
+            detail: detail.to_owned(),
+        }
+    }
+
+    fn mixed_check_pass() -> CheckReport {
+        CheckReport::new(
+            3,
+            vec![
+                failed_check(
+                    "/nix/store/a-nondeterministic.drv",
+                    104,
+                    "error: derivation '/nix/store/a-nondeterministic.drv' may not be deterministic",
+                ),
+                failed_check(
+                    "/nix/store/b-overloaded.drv",
+                    100,
+                    "building...\nerror: builder for '/nix/store/b-overloaded.drv' failed",
+                ),
+            ],
+        )
+    }
+
+    #[test]
+    fn testing_tier_records_failed_checks_against_their_outputs() -> Result<()> {
+        let unreproduced = admit_check_failures(RegistryTier::Testing, &mixed_check_pass())?;
+
+        assert_eq!(
+            unreproduced
+                .get("/nix/store/a-nondeterministic.drv")
+                .map(String::as_str),
+            Some("error: derivation '/nix/store/a-nondeterministic.drv' may not be deterministic")
+        );
+        assert_eq!(
+            unreproduced
+                .get("/nix/store/b-overloaded.drv")
+                .map(String::as_str),
+            Some("error: builder for '/nix/store/b-overloaded.drv' failed")
+        );
+
+        // Every output of a failed derivation is unreproduced; others are not.
+        assert_eq!(
+            reproducibility_of("/nix/store/a-nondeterministic.drv", &unreproduced),
+            ReproducibilityResult::NotReproduced
+        );
+        assert_eq!(
+            reproducibility_of("/nix/store/b-overloaded.drv", &unreproduced),
+            ReproducibilityResult::NotReproduced
+        );
+        assert_eq!(
+            reproducibility_of("/nix/store/c-reproduced.drv", &unreproduced),
+            ReproducibilityResult::Reproduced
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn production_tier_fails_closed_on_any_failed_check() {
+        let error = admit_check_failures(RegistryTier::Production, &mixed_check_pass())
+            .expect_err("production must not record unreproduced outputs");
+
+        let Some(aos_core::error::AosError::NixBuild { exit_code, stderr }) =
+            error.downcast_ref::<aos_core::error::AosError>()
+        else {
+            panic!("expected the check pass's Nix build report, got {error:#}");
+        };
+        assert_eq!(*exit_code, 104);
+        assert!(stderr.contains("/nix/store/a-nondeterministic.drv (exit code 104)"));
+        assert!(stderr.contains("/nix/store/b-overloaded.drv (exit code 100)"));
+    }
+
+    #[test]
+    fn every_tier_admits_a_fully_reproduced_check_pass() -> Result<()> {
+        let clean = CheckReport::new(3, vec![]);
+
+        for tier in [RegistryTier::Production, RegistryTier::Testing] {
+            let unreproduced = admit_check_failures(tier, &clean)?;
+            assert!(unreproduced.is_empty());
+            assert_eq!(
+                reproducibility_of("/nix/store/a-x.drv", &unreproduced),
+                ReproducibilityResult::Reproduced
+            );
+        }
         Ok(())
     }
 

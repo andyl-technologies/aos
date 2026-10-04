@@ -41,7 +41,7 @@ impl RpcService {
             ));
         }
         let required = self
-            .registry_publication_required_placements(publication_id, &object.object_kind)
+            .prepare_registry_publication_upload_placements(publication_id, &object.object_kind)
             .await?;
         if required.len() > MAX_HYBRID_PUBLICATION_PLACEMENTS {
             return Err(RpcError::ResourceExhausted(

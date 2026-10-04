@@ -28,9 +28,9 @@ fn qemu_quantum_preserves_backpressured_due_frame_for_retry() {
             .is_ok()
     );
     let pending = hot_path
-        .start_quantum(horizon(5))
+        .start_quantum(horizon(5), crate::QemuQuantumStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("delivery quantum should start: {error}"));
-    slot.publish_reached_icount(5, 0)
+    slot.publish_reached_icount(5)
         .unwrap_or_else(|error| panic!("plugin boundary should publish: {error}"));
     plugin_mark_inbound_retained(&hot_path, 5);
 
@@ -65,9 +65,9 @@ fn qemu_quantum_caps_horizon_at_retained_fifo_head_retry() {
         })
         .unwrap_or_else(|error| panic!("retained head should enqueue: {error}"));
     let first = hot_path
-        .start_quantum(horizon(5))
+        .start_quantum(horizon(5), crate::QemuQuantumStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("first delivery quantum should start: {error}"));
-    slot.publish_reached_icount(5, 0)
+    slot.publish_reached_icount(5)
         .unwrap_or_else(|error| panic!("first delivery boundary should publish: {error}"));
     plugin_mark_inbound_retained(&hot_path, 5);
     hot_path
@@ -83,7 +83,10 @@ fn qemu_quantum_caps_horizon_at_retained_fifo_head_retry() {
         })
         .unwrap_or_else(|error| panic!("later pending frame should enqueue: {error}"));
     let retry = hot_path
-        .start_quantum(horizon(FRAME_DELIVERY_RETRY_INTERVAL_ICOUNT + 10))
+        .start_quantum(
+            horizon(FRAME_DELIVERY_RETRY_INTERVAL_ICOUNT + 10),
+            QemuQuantumStopCondition::Ceiling,
+        )
         .unwrap_or_else(|error| panic!("retained retry quantum should start: {error}"));
 
     assert_eq!(
@@ -95,6 +98,7 @@ fn qemu_quantum_caps_horizon_at_retained_fifo_head_retry() {
         retry.completion_fence,
         Some(QemuAdvanceCompletionFence {
             initial_publish_generation,
+            stop_condition: crate::QemuQuantumStopCondition::Ceiling,
         })
     );
 }
@@ -102,10 +106,12 @@ fn qemu_quantum_caps_horizon_at_retained_fifo_head_retry() {
 #[test]
 fn qemu_quantum_accepts_canonical_retained_frame_behind_current_icount() {
     let slot = NodeSlot::default();
-    if let Err(error) = slot.publish_scheduler_ceiling(ceiling(0, 5)) {
+    if let Err(error) =
+        slot.publish_scheduler_advance(ceiling(0, 5), crucible_shmem::AdvanceStopCondition::Ceiling)
+    {
         panic!("test ceiling should publish: {error}");
     }
-    if let Err(error) = slot.publish_reached_icount(5, 0) {
+    if let Err(error) = slot.publish_reached_icount(5) {
         panic!("test current icount should publish: {error}");
     }
     let inbound_ring = RingHeader::new();
@@ -127,7 +133,7 @@ fn qemu_quantum_accepts_canonical_retained_frame_behind_current_icount() {
     plugin_mark_inbound_retained(&hot_path, 5);
 
     let pending = hot_path
-        .start_quantum(horizon(5))
+        .start_quantum(horizon(5), crate::QemuQuantumStopCondition::Ceiling)
         .unwrap_or_else(|error| panic!("retained-frame quantum should start: {error}"));
     let report = hot_path
         .finish_quantum(pending)

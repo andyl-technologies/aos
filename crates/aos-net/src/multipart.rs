@@ -55,6 +55,18 @@ pub enum MultipartFailurePolicy {
     Preserve,
 }
 
+/// Confirms that a provider no longer retains an admitted multipart session.
+#[derive(Debug)]
+pub struct MultipartSessionMissing;
+
+impl std::fmt::Display for MultipartSessionMissing {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("multipart provider confirmed that the upload session is absent")
+    }
+}
+
+impl std::error::Error for MultipartSessionMissing {}
+
 /// State returned when a backend admits a multipart upload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MultipartSessionState {

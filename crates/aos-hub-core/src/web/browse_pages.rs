@@ -40,6 +40,7 @@ use crate::web::console_render::{
     ago, live_table, page_with_session, table_raw_headers, urlencode, Pager, SessionIndicator,
     StateLine,
 };
+use crate::web::host_delivery::{HostDelivery, HostRoutes};
 use crate::web::release_browse::ReleaseContext;
 use crate::web::render::{
     escape, hash_value, hash_value_link, human_size, key_fingerprint, table, trust_key_value,
@@ -199,10 +200,11 @@ impl RegistrySetup {
         self
     }
 
-    fn add_command(&self) -> Option<String> {
+    fn add_command(&self, system: bool) -> Option<String> {
         let url = self.registry_url.as_deref()?;
         let mut command = format!(
-            "apm registry add {} --name {}",
+            "apm registry {}add {} --name {}",
+            if system { "--system " } else { "" },
             shell_argument(url),
             shell_argument(&self.client_name)
         );
@@ -212,19 +214,25 @@ impl RegistrySetup {
         Some(command)
     }
 
-    /// Builds an installation command whose registry is pinned to this release.
-    fn install_commands(&self, package: &str, release: Option<&str>) -> Option<String> {
+    /// Builds a package command with a registry setup in the selected scope.
+    fn package_commands(
+        &self,
+        package: &str,
+        release: Option<&str>,
+        subcommand: &str,
+        system: bool,
+    ) -> Option<String> {
         let mut selected = self.clone();
         if let Some(release) = release {
             selected.client_name = format!("{}-{release}", self.client_name);
         }
-        let mut command = selected.add_command()?;
+        let mut command = selected.add_command(system)?;
         if let Some(release) = release {
             let _ = write!(command, " --tag {}", shell_argument(release));
         }
         let _ = write!(
             command,
-            "\napm install {} --registry {}",
+            "\napm {subcommand} {} --registry {}",
             shell_argument(package),
             shell_argument(&selected.client_name)
         );
@@ -309,12 +317,17 @@ fn store_path_link(setup: &RegistrySetup, path: &str) -> String {
 /// `session` renders the masthead identity (signed-in email + logout, or a
 /// log-in link), so the same builder serves the native hub's session-aware
 /// browse and the Cloudflare Worker's.
+///
+/// `host_routes`, when the route dispatcher supplied it, marks each registry
+/// that the request's host does not deliver through a ready route. The slug
+/// still links to the registry home, which explains the status.
 pub fn instance_home(
     rows: &[(RegistryRecord, Option<IndexStatus>)],
     query: Option<&str>,
     page_number: usize,
     started: Instant,
     session: &SessionIndicator,
+    host_routes: Option<&HostRoutes>,
 ) -> String {
     let needle = query.map(str::to_lowercase);
     let matches: Vec<&(RegistryRecord, Option<IndexStatus>)> = rows
@@ -345,8 +358,17 @@ pub fn instance_home(
         .slice(&matches)
         .iter()
         .map(|(reg, status)| {
+            let mut slug = format!("<a href=\"/{0}/\">{0}</a>", escape(&reg.slug));
+            if let Some(badge) = host_routes
+                .map(|routes| routes.delivery(&reg.slug))
+                .and_then(HostDelivery::badge_html)
+            {
+                slug.push(' ');
+                slug.push_str(badge);
+            }
+
             vec![
-                format!("<a href=\"/{0}/\">{0}</a>", escape(&reg.slug)),
+                slug,
                 escape(
                     status
                         .as_ref()
@@ -411,6 +433,11 @@ pub fn instance_home(
 }
 
 /// Renders registry identity, client setup, and current release rollouts.
+///
+/// `delivery` is the registry's status on the request's host, when known. A
+/// registry that host does not deliver gets an explanatory notice under its
+/// identity; the rest of the page (trust anchors, releases, setup) still
+/// renders, since the control authority can always show what was published.
 #[allow(clippy::too_many_arguments)]
 pub fn registry_home(
     registry: &RegistryRecord,
@@ -422,6 +449,7 @@ pub fn registry_home(
     manage_link: bool,
     started: Instant,
     session: &SessionIndicator,
+    delivery: Option<HostDelivery>,
 ) -> String {
     let slug = &registry.slug;
     let display_name = status
@@ -431,6 +459,9 @@ pub fn registry_home(
     let _ = write!(body, "<h1>{}</h1>", escape(display_name));
     if let Some(description) = status.and_then(|status| status.description.as_deref()) {
         let _ = write!(body, "<p class=\"lede\">{}</p>", escape(description));
+    }
+    if let Some(notice) = delivery.and_then(HostDelivery::notice_html) {
+        body.push_str(notice);
     }
     if let Some(release) = context.selected() {
         let _ = write!(
@@ -461,7 +492,7 @@ pub fn registry_home(
         body.push_str("<p class=\"warn\">The registry could not be refreshed. Published release contents are shown from the last successful index.</p>");
     }
     body.push_str("<section class=\"registry-setup\"><h2>Get started</h2>");
-    if let Some(command) = setup.add_command() {
+    if let Some(command) = setup.add_command(false) {
         let _ = write!(
             body,
             "<p>Add this registry:</p><pre>{}</pre>",
@@ -1251,7 +1282,14 @@ pub fn package_page(
     body.push_str(&table(&["field", "value"], &meta_rows));
 
     body.push_str("<h2 id=\"install\">Install</h2>\n");
-    if let Some(command) = setup.install_commands(&detail.name, snapshot) {
+    let subcommand = if detail.sysroot {
+        "image install"
+    } else {
+        "install"
+    };
+    if let Some(command) =
+        setup.package_commands(&detail.name, snapshot, subcommand, detail.sysroot)
+    {
         let instruction = if snapshot.is_some() {
             "Add a registry pinned to this release, then install:"
         } else {
@@ -2363,8 +2401,13 @@ fn image_download_commands(
     hub_url: &str,
 ) -> String {
     let apm_command = setup
-        .install_commands(&image.package, Some(&image.release))
-        .map(|command| format!("{command} --image {}", shell_argument(&image.format)));
+        .package_commands(
+            &image.package,
+            Some(&image.release),
+            "image download",
+            false,
+        )
+        .map(|command| format!("{command} --format {}", shell_argument(&image.format)));
     let mut hub_command = String::from("aos image download");
     for (flag, value) in [
         ("hub", hub_url),
@@ -3294,7 +3337,7 @@ mod tests {
             &anon(),
         );
         assert!(html.contains("Download with APM"));
-        assert!(html.contains("apm install aos-system --registry demo-2026.08 --image raw"));
+        assert!(html.contains("apm image download aos-system --registry demo-2026.08 --format raw"));
         assert!(html.contains("--tag 2026.08"));
         assert!(html.contains("Pins this release."));
         assert!(html.contains("aos image download --hub=https://hub.example --registry=demo --package=aos-system --release=2026.08 --architecture=x86_64 --format=raw"));
@@ -3442,7 +3485,9 @@ mod tests {
     async fn registry_home_escapes_and_links() {
         let registry = registry();
         let caches = [("https://cache.example".into(), 40)];
-        let setup = setup(&registry, "http://127.0.0.1:8420/demo", &caches);
+        let cache_key = "demo-cache:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        let setup = setup(&registry, "http://127.0.0.1:8420/demo", &caches)
+            .with_nix_cache_public_keys(vec![cache_key.into()]);
         let html = registry_home(
             &registry,
             None,
@@ -3453,6 +3498,7 @@ mod tests {
             false,
             Instant::now(),
             &anon(),
+            None,
         );
         assert!(html.find("<h2>Get started").unwrap() < html.find("Signing keys").unwrap());
         assert!(!html.contains("<summary>Binary cache health and diagnostics</summary>"));
@@ -3468,6 +3514,10 @@ mod tests {
         // One canonical registry URL serves Git, AOS, and stock-Nix clients;
         // physical cache routes remain visible in the signed topology table.
         assert!(html.contains("substituters = http://127.0.0.1:8420/demo"));
+        assert!(
+            html.contains(&format!("trusted-public-keys = {cache_key}")),
+            "{html}"
+        );
         assert!(html.contains("--trust-key demo:Ed25519:AAAA"));
         // Unvalidated caches say so; the health page is linked.
         assert!(!html.contains("not yet validated"));
@@ -3496,6 +3546,7 @@ mod tests {
             false,
             Instant::now(),
             &anon(),
+            None,
         );
 
         assert!(html.contains(
@@ -3519,6 +3570,38 @@ mod tests {
             refs: refs.iter().map(|r| (*r).to_string()).collect(),
             images: Vec::new(),
         }
+    }
+
+    #[test]
+    fn system_image_package_page_uses_system_registry_and_image_install() {
+        let detail = PackageDetail {
+            name: "aos-system".into(),
+            description: "Operating system image".into(),
+            homepage: None,
+            license: "MIT".into(),
+            maintainer: "aos".into(),
+            sysroot: true,
+            versions: Vec::new(),
+        };
+        let registry = registry();
+        let setup = setup(&registry, "https://download.example/demo", &[]);
+
+        let html = package_page(
+            &registry,
+            None,
+            &detail,
+            &[],
+            &setup,
+            &release_context("2026.08"),
+            None,
+            false,
+            Instant::now(),
+            &anon(),
+        );
+
+        assert!(html.contains("apm registry --system add https://download.example/demo/"));
+        assert!(html.contains("apm image install aos-system --registry demo-2026.08"));
+        assert!(!html.contains("apm install aos-system"));
     }
 
     #[tokio::test]
@@ -3943,7 +4026,7 @@ mod tests {
                 content_digest: None,
             }),
         )];
-        let html = instance_home(&rows, None, 1, Instant::now(), &anon());
+        let html = instance_home(&rows, None, 1, Instant::now(), &anon(), None);
         assert!(html.contains(">slug</th>"));
         assert!(html.contains(">name</th>"));
         assert!(html.contains(">description</th>"));
@@ -3953,9 +4036,9 @@ mod tests {
         assert!(!html.contains(">outdated</span>"));
         assert!(!html.contains("<bad&state>"));
 
-        let html = instance_home(&rows, Some("fixture"), 1, Instant::now(), &anon());
+        let html = instance_home(&rows, Some("fixture"), 1, Instant::now(), &anon(), None);
         assert!(html.contains("1 of 1 registries match"));
-        let html = instance_home(&rows, Some("zzz"), 1, Instant::now(), &anon());
+        let html = instance_home(&rows, Some("zzz"), 1, Instant::now(), &anon(), None);
         assert!(html.contains("0 of 1 registries match"));
         assert!(html.contains("No registries match."));
     }

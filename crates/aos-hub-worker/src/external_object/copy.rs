@@ -10,11 +10,11 @@ mod observation;
 
 mod hash_range;
 
-mod config;
+pub(super) mod config;
 
 mod protocol;
 
-mod source_protocol;
+pub(super) mod source_protocol;
 
 mod discovery;
 
@@ -27,10 +27,10 @@ mod provider_receipt;
 pub(in crate::external_object) mod state;
 
 #[cfg(target_arch = "wasm32")]
-mod closure;
+pub(super) mod closure;
 
 #[cfg(target_arch = "wasm32")]
-mod source;
+pub(super) mod source;
 
 #[cfg(target_arch = "wasm32")]
 mod storage;
@@ -54,13 +54,13 @@ pub(crate) use executor::fetch as fetch_control;
 pub(crate) use metadata::fetch as fetch_metadata;
 
 #[cfg(target_arch = "wasm32")]
-mod stream;
+pub(super) mod stream;
 
 #[cfg(target_arch = "wasm32")]
-mod window;
+pub(super) mod window;
 
 #[cfg(target_arch = "wasm32")]
-mod lifetime;
+pub(super) mod lifetime;
 
 #[cfg(all(target_arch = "wasm32", feature = "do-e2e"))]
 mod conformance;

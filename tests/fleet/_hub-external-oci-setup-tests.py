@@ -22,6 +22,7 @@ def load(name, filename):
 
 setup = load("external_oci_setup", "_hub-external-oci-setup.py")
 operator = load("external_oci_operator", "_hub-direct-operator.py")
+authority_controls = load("external_authority_controls", "_hub-direct-controls.py")
 
 
 def coordinates():
@@ -83,6 +84,20 @@ class SetupTests(unittest.TestCase):
         self.assertTrue(result["HUB_EXTERNAL_COPY_CONSUMER"]["domains"][0]["provider_contract"]["private_incomplete_upload"])
         self.assertNotIn("acceptance", result)
 
+    def test_observed_range_is_preserved_without_writer_geometry_inference(self):
+        values = projection()
+        legacy = setup.project_external_oci_consumers(*values)
+        self.assertNotIn("maximum_copy_read_range_bytes",
+            legacy["HUB_EXTERNAL_COPY_CONSUMER"]["domains"][0]["provider_contract"])
+        values[3]["providerContract"]["maximum_copy_read_range_bytes"] = "8388608"
+        result = setup.project_external_oci_consumers(*values)
+        self.assertEqual(result["HUB_EXTERNAL_COPY_CONSUMER"]["domains"][0]
+            ["provider_contract"]["maximum_copy_read_range_bytes"], "8388608")
+        for wrong in (8388608, "08388608", "0", "67108865", "unknown"):
+            values[3]["providerContract"]["maximum_copy_read_range_bytes"] = wrong
+            with self.assertRaises(ValueError):
+                setup.project_external_oci_consumers(*values)
+
     def test_unknown_or_rewritten_provider_facts_refuse_before_scan(self):
         for mutation in (
                 lambda a: a[0]["listExport"]["publication"].update(aliases=["foreign"]),
@@ -97,6 +112,31 @@ class SetupTests(unittest.TestCase):
             mutation(values)
             with self.assertRaises(ValueError):
                 setup.project_external_oci_consumers(*values)
+
+    def test_paired_initial_consumers_preserve_independent_exports_and_refuse_aliases(self):
+        def consumer(identity):
+            values = copy.deepcopy(projection())
+            association = {"binding_id": identity, "binding_stable_id": "binding-" + identity}
+            for row in (values[0]["bootstrap"]["read_cohort"], values[0]["bootstrap"]["write_cohort"],
+                    values[0]["listExport"]["list_cohort"]):
+                row["association"] = association
+            result = setup.project_external_oci_consumers(*values)
+            result["HUB_EXTERNAL_STAGING_CONSUMER"] = {"version": 1, "domains": [{
+                "publication": values[0]["bootstrap"]["publication"], **{name: values[1][name]
+                    for name in ("issuer_installation", "read_cohort", "write_cohort")}}]}
+            return result
+        source, destination = consumer("7"), consumer("8")
+        combined = setup.combine_external_oci_consumers(source, destination)
+        self.assertEqual(len(combined["HUB_EXTERNAL_OBJECT_CONSUMER"]["cohorts"]), 6)
+        for key, member in (("HUB_EXTERNAL_COPY_CONSUMER", "domains"),
+                ("HUB_EXTERNAL_OCI_CONSUMER", "profiles"), ("HUB_EXTERNAL_STAGING_CONSUMER", "domains")):
+            self.assertEqual(combined[key][member], source[key][member] + destination[key][member])
+        with self.assertRaises(ValueError):
+            setup.combine_external_oci_consumers(source, source)
+        changed = copy.deepcopy(destination)
+        changed["HUB_EXTERNAL_STAGING_CONSUMER"]["domains"][0]["read_cohort"]["association"]["binding_id"] = "9"
+        with self.assertRaises(ValueError):
+            setup.combine_external_oci_consumers(source, changed)
 
     def test_scan_uses_normal_writer_original_and_refuses_missing_list(self):
         calls = []
@@ -226,6 +266,52 @@ class SetupTests(unittest.TestCase):
         finally:
             setup._read_json, setup._invoke = original_read, original_invoke
 
+    def test_second_binding_has_separate_versions_stage_roots_and_idempotency_labels(self):
+        coord = coordinates()
+        run = coord["runId"]
+        source = {"organization": {"slug": "external-" + run, "ownerScopeKey": "controlled-owner"},
+            "binding": {"stableId": "source-binding", "ownerScopeKey": "controlled-owner",
+                "spec": {"name": "objects", "s3": {"bucket": "selected", "prefix": "selected/source",
+                    "endpoint": {"scheme": "https", "dnsName": "selected.test", "port": 443},
+                    "signingRegion": "selected", "accessMode": "private"}}},
+            "currentSqlPins": {"bindingId": "7"}}
+        calls, private = [], []
+        def reviewed(service, plan, apply, request, label):
+            calls.append((service, request, label))
+            return {"binding": {"stableId": request["stableId"], "ownerScopeKey": request["ownerScopeKey"],
+                "resourceVersion": "1", "spec": request["spec"]}}
+        def validated(org, name, references, digest, stage, **options):
+            calls.append(("credentials", name, references, options))
+            return {purpose: stage("controlled-operation-" + purpose, purpose) for purpose in references}
+        controls = types.SimpleNamespace(origin=setup.PUBLIC_ORIGIN,
+            evidence_root=coord["clientRoot"] + "/controls", reviewed=reviewed,
+            validate_external_credentials=validated,
+            get_external_binding=lambda *a: {"stableId": calls[0][1]["stableId"],
+                "ownerScopeKey": calls[0][1]["ownerScopeKey"], "spec": calls[0][1]["spec"]})
+        op = types.SimpleNamespace(
+            install_operator_provider_versions=lambda *a, **k: {
+                "manifestFile": k["operator_root"] + "/provider-versions/manifest.json", "materialSha256": "b" * 64},
+            stage_queued_provider_credential=lambda *a, **k: {"root": k["operator_root"], "operation": a[3]},
+            read_operator_binding_pins=lambda *a, **k: {"bindingId": "8"})
+        def private_command(machine, command):
+            import shlex
+            program = shlex.split(command)[2]
+            compile(program, "private-reader-custody", "exec")
+            private.append(program)
+        tools = {"python": sys.executable, "authorityBootstrap": "/nix/store/selected/bin/bootstrap",
+            "deploymentId": "controlled-deployment", "storageWorkKeyFile": "/private/work.key", "postgres": "/nix/store/selected/bin"}
+        result = setup.bootstrap_external_oci_destination(controls, None, tools, coord,
+            source, b"controlled-source-material", op, "database", private_command)
+        self.assertEqual(calls[0][0], "BindingService")
+        self.assertEqual(calls[0][1]["spec"]["s3"]["prefix"], coord["placementPrefix"].rsplit("/", 1)[0] + "/destination")
+        self.assertEqual(calls[1][3]["label_prefix"], "external-destination-" + run)
+        self.assertTrue(all("/destination/" in reference for reference in calls[1][2].values()))
+        self.assertTrue(all(value["root"].endswith("/operator/destination") for value in result["credentialOperations"].values()))
+        self.assertIn("os.O_NOFOLLOW", private[0])
+        self.assertIn("metadata.st_nlink!=1", private[0])
+        self.assertNotIn("print(", private[0])
+        self.assertIsNone(result["qualification"])
+
     def test_binding_requires_fresh_credential_references_before_any_api_effect(self):
         coord = coordinates()
         calls = []
@@ -241,6 +327,55 @@ class SetupTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             setup.bootstrap_external_oci_binding(controls, None, {}, coord, selected, None, "database")
         self.assertEqual(calls, [])
+
+    def test_paired_authority_attests_both_actual_bindings_before_admission(self):
+        decisions = []
+        def selected_binding(name, identity):
+            prefix = ".aos-direct-qualification/selected" + ("/destination" if name == "destination" else "")
+            binding = {"stableId": name, "resourceVersion": "2", "spec": {"name": name,
+                "s3": {"bucket": "selected", "prefix": prefix, "endpoint": {"dnsName": "selected.test", "port": 443}}}}
+            pins = {"bindingId": str(identity), "bindingStableId": name, "bindingResourceVersion": "2",
+                "bindingPrefix": prefix, "currentWriteRevision": "3", "credentials": [{"purpose": purpose,
+                    "generation": "4", "secretVersionRef": "secret://selected/" + name + "/" + purpose,
+                    "credentialFingerprint": "a" * 64, "validationState": "valid"}
+                    for purpose in ("read", "write", "list", "presign")]}
+            return binding, pins
+        source, source_sql = selected_binding("objects", 7)
+        destination, destination_sql = selected_binding("destination", 8)
+        selected = {key: "controlled-" + key for key in ("authorityId", "aliasId", "associationId",
+            "attestationId", "guardNamespaceId", "physicalResourceEvidenceDigest", "qualificationDigest",
+            "equivalenceEvidenceDigest", "providerPolicyEvidenceDigest", "executorIdentity")}
+        selected.update(qualifiedManagedPrefix=".aos-direct-qualification/selected", attestationLifetimeSeconds=300)
+        def call(service, method, request):
+            if method == "GetAuthority":
+                return {"resourceVersion": "1"}
+            pins = source_sql if request["binding"]["organization"]["name"] == "objects" else destination_sql
+            write = next(item for item in pins["credentials"] if item["purpose"] == "write")
+            return {"revision": {"bindingId": pins["bindingStableId"], "revision": "3",
+                "writeCredentialGeneration": "4", "writeCredentialVersionRef": write["secretVersionRef"],
+                "validationState": "valid", "writesSupported": True}}
+        controls = types.SimpleNamespace(call=call, authority_decision=lambda decision, version, label:
+            decisions.append((decision, version, label)))
+        extra = [{"binding": destination, "sqlPins": destination_sql, "associationId": "selected-destination"}]
+        authority_controls.admit_external_fixture_authority(controls, "selected-org", source, source_sql,
+            selected, 100, additional_associations=extra)
+        kinds = [next(iter(item[0])) for item in decisions]
+        self.assertEqual(kinds, ["create", "approveAlias", "associateBinding", "associateBinding", "attest", "setAdmission"])
+        members = decisions[-2][0]["attest"]["credentials"]
+        self.assertEqual(len(members), 8)
+        self.assertEqual({item["associationId"] for item in members},
+            {selected["associationId"], "selected-destination"})
+        self.assertEqual(decisions[-1][0]["setAdmission"]["associationIds"],
+            [selected["associationId"], "selected-destination"])
+        for name, value in (("bindingId", "7"), ("bindingResourceVersion", "99"),
+                ("bindingPrefix", "outside/destination")):
+            changed = copy.deepcopy(extra)
+            changed[0]["sqlPins"][name] = value
+            before = len(decisions)
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                authority_controls._associate_external_fixture_destinations(controls,
+                    "selected-org", source, source_sql, selected, changed)
+            self.assertEqual(len(decisions), before)
 
 
 if __name__ == "__main__":

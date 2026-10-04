@@ -11,9 +11,9 @@
   pluginPackageNix = builtins.readFile ../../pkgs/emulation/crucible-qemu-plugin.nix;
   qemuPackageNix = builtins.readFile ../../pkgs/emulation/qemu.nix;
   sourceNix = builtins.readFile ../../pkgs/tools/crucible/_source.nix;
+  cargoSourceNix = builtins.readFile ../../pkgs/tools/crucible/_cargo-source.nix;
   defaultChecks = builtins.readFile ./default.nix;
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
-  protocolLib = builtins.readFile ../../crates/crucible-protocol/src/lib.rs;
   doorbellAbi = builtins.readFile ../../crates/crucible-protocol/src/doorbell_abi.rs;
   apiRpcAbi = builtins.readFile ../../crates/crucible-api/src/rpc_abi.rs;
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
@@ -34,11 +34,7 @@
   crucibleVersion = sourceStringConst "Crucible package version" "  version = \"" cruciblePackageNix;
   pluginCargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix;
   shmemAbiVersion = sourceConst "shmem ABI version" "pub const ABI_VERSION: u32 = " shmemLib;
-  guestHostProtocolVersion =
-    sourceConst
-    "guest-host protocol version"
-    "pub const CONTROL_PROTOCOL_VERSION: u32 = "
-    protocolLib;
+  guestHostProtocolVersion = import ../../pkgs/tools/crucible/_control-protocol-version.nix {};
   doorbellInstructionAbiVersion =
     sourceConst
     "doorbell instruction ABI version"
@@ -54,29 +50,56 @@
   rpcAbi = "crucible-rpc-abi-v${rpcAbiVersion}+${rpcProtocolBuild}";
   qemuPackageMetadataProbe = import ../../pkgs/emulation/qemu.nix {
     inherit lib;
-    inherit (pkgs) bash buildPackages stdenv libcap-ng libusb1 libgcrypt gnutls fuse3 gcc-libs;
     pname = "qemu-crucible";
     enablePlugins = true;
-    applyCruciblePatches = true;
+    applyCruciblePatch = true;
     mkDerivation = args: let
       passthru = args.passthru or {};
     in
       args // passthru;
     fetchurl = args: args;
     gnumake = null;
+    bash = "/aos-bash";
+    perl = "/aos-perl";
     pkg-config = null;
     meson = null;
     ninja = null;
     python3 = "/aos-python3";
+    stdenv = {
+      isCross = false;
+      hostPlatform = {
+        isDarwin = false;
+        isLinux = true;
+        constraints.cpu = "x86_64";
+      };
+    };
+    buildPackages = {};
     setuptools = null;
     distlib = null;
-    pip = null;
-    wheel = null;
+    python3-pygdbmi = null;
     glib = null;
     pixman = null;
     zlib = null;
     libslirp = null;
     dtc = null;
+    libcap-ng = null;
+    libusb1 = null;
+    libgcrypt = null;
+    gnutls = null;
+    fuse3 = null;
+    gcc-libs = "/aos-gcc-libs";
+    libisoburn = null;
+    mtools = null;
+    socat = null;
+    zstd = null;
+    samba-smbd = {
+      outPath = "/aos-samba-smbd";
+      version = "4.24.7";
+      src = {
+        outputHash = "sha256-Rbd0ekdFLv8rIVmkTMY+tDaQ0zn9EGkIjgI6AV/tBsc=";
+        outputHashAlgo = "sha256";
+      };
+    };
   };
   releaseManifest = import ../../pkgs/tools/crucible/_release-manifest.nix {
     inherit lib;
@@ -157,14 +180,14 @@
     ++ lib.optionals (manifest.crucible.source.sourceStoreHash != sourceStoreHash) [
       "release manifest source store hash ${manifest.crucible.source.sourceStoreHash} does not match filtered source hash ${sourceStoreHash}"
     ]
-    ++ lib.optionals (manifest.qemu.version != qemuPackageMetadataProbe.series.qemuVersion) [
-      "release manifest QEMU version ${manifest.qemu.version} does not match QEMU series ${qemuPackageMetadataProbe.series.qemuVersion}"
+    ++ lib.optionals (manifest.qemu.version != qemuPackageMetadataProbe.atomicPatch.qemuVersion) [
+      "release manifest QEMU version ${manifest.qemu.version} does not match the atomic descriptor ${qemuPackageMetadataProbe.atomicPatch.qemuVersion}"
     ]
-    ++ lib.optionals (manifest.qemu.sourceHash != qemuPackageMetadataProbe.series.qemuSourceHash) [
-      "release manifest QEMU source hash does not match QEMU series"
+    ++ lib.optionals (manifest.qemu.sourceHash != qemuPackageMetadataProbe.atomicPatch.qemuSourceHash) [
+      "release manifest QEMU source hash does not match the atomic descriptor"
     ]
-    ++ lib.optionals (manifest.qemu.patchSeriesHash != qemuPackageMetadataProbe.patchSeriesHash) [
-      "release manifest QEMU patch series hash does not match qemu-crucible passthru"
+    ++ lib.optionals (manifest.qemu.atomicPatchHash != qemuPackageMetadataProbe.atomicPatchHash) [
+      "release manifest QEMU atomic patch hash does not match qemu-crucible passthru"
     ]
     ++ lib.optionals (manifest.qemu.patchBranchBundleHash != qemuPackageMetadataProbe.patchBranchBundleHash) [
       "release manifest QEMU patch branch bundle hash does not match qemu-crucible passthru"
@@ -275,8 +298,8 @@
     ++ lib.optionals (!(builtins.elem "qemu.sourceHash" manifest.reproducibility.pinnedHashes)) [
       "release manifest pinned hash list does not include qemu.sourceHash"
     ]
-    ++ lib.optionals (!(builtins.elem "qemu.patchSeriesHash" manifest.reproducibility.pinnedHashes)) [
-      "release manifest pinned hash list does not include qemu.patchSeriesHash"
+    ++ lib.optionals (!(builtins.elem "qemu.atomicPatchHash" manifest.reproducibility.pinnedHashes)) [
+      "release manifest pinned hash list does not include qemu.atomicPatchHash"
     ]
     ++ lib.optionals (!(builtins.elem "crucible.cargoDeps.hash" manifest.reproducibility.pinnedHashes)) [
       "release manifest pinned hash list does not include crucible.cargoDeps.hash"
@@ -284,8 +307,8 @@
     ++ lib.optionals (!(builtins.elem "crucible.source.sourceStoreHash" manifest.reproducibility.pinnedHashes)) [
       "release manifest pinned hash list does not include crucible.source.sourceStoreHash"
     ]
-    ++ lib.optionals (!(builtins.elem "qemu_patch_series_hash" manifest.reproducibility.qemuBuildIdentityFields)) [
-      "release manifest QEMU build identity field list does not include qemu_patch_series_hash"
+    ++ lib.optionals (!(builtins.elem "qemu_atomic_patch_hash" manifest.reproducibility.qemuBuildIdentityFields)) [
+      "release manifest QEMU build identity field list does not include qemu_atomic_patch_hash"
     ]
     ++ lib.optionals (!(builtins.elem "qemu_shmem_abi_version" manifest.reproducibility.qemuBuildIdentityFields)) [
       "release manifest QEMU build identity field list does not include qemu_shmem_abi_version"
@@ -305,11 +328,11 @@
       }
       {
         label = "manifest records QEMU source hash";
-        needle = "sourceHash = qemuSeries.qemuSourceHash;";
+        needle = "sourceHash = atomicPatch.qemuSourceHash;";
       }
       {
-        label = "manifest records QEMU patch series hash";
-        needle = "patchSeriesHash = qemuPassthru.patchSeriesHash;";
+        label = "manifest records QEMU atomic patch hash";
+        needle = "atomicPatchHash = qemuPassthru.atomicPatchHash;";
       }
       {
         label = "manifest records QEMU build identity";
@@ -321,7 +344,7 @@
       }
       {
         label = "manifest records guest-host ABI source";
-        needle = "pub const CONTROL_PROTOCOL_VERSION: u32 = ";
+        needle = "guestHostProtocolVersion = import ./_control-protocol-version.nix {};";
       }
       {
         label = "manifest records doorbell instruction ABI source";
@@ -388,12 +411,12 @@
     ]
     ++ failuresFor "pkgs/emulation/qemu.nix" qemuPackageNix [
       {
-        label = "QEMU source hash pinned from series";
-        needle = "hash = series.qemuSourceHash;";
+        label = "QEMU source hash pinned from atomic descriptor";
+        needle = "hash = atomicPatch.qemuSourceHash;";
       }
       {
-        label = "QEMU patch series hash calculated from patch files";
-        needle = "patchSeriesHash = builtins.hashString \"sha256\" patchSeriesHashMaterial;";
+        label = "QEMU atomic patch hash calculated from the artifact";
+        needle = "actual = builtins.hashFile \"sha256\" atomicPatchPath;";
       }
       {
         label = "QEMU build identity installed";
@@ -424,8 +447,14 @@
         needle = "base != \"target\"";
       }
       {
-        label = "source filter excludes result";
-        needle = "base != \"result\"";
+        label = "source filter excludes only the repository-root result";
+        needle = "pathString != \"\${repoRootString}/result\"";
+      }
+    ]
+    ++ failuresFor "pkgs/tools/crucible/_cargo-source.nix" cargoSourceNix [
+      {
+        label = "cargo source filter excludes only the repository-root result";
+        needle = "pathString != \"\${repoRootString}/result\"";
       }
     ]
     ++ failuresFor "release manifest env" manifestEnv [
@@ -435,11 +464,11 @@
       }
       {
         label = "QEMU version";
-        needle = "qemu_version=${qemuPackageMetadataProbe.series.qemuVersion}";
+        needle = "qemu_version=${qemuPackageMetadataProbe.atomicPatch.qemuVersion}";
       }
       {
-        label = "QEMU patch series hash";
-        needle = "qemu_patch_series_hash=${qemuPackageMetadataProbe.patchSeriesHash}";
+        label = "QEMU atomic patch hash";
+        needle = "qemu_atomic_patch_hash=${qemuPackageMetadataProbe.atomicPatchHash}";
       }
       {
         label = "QEMU build identity";
@@ -500,8 +529,8 @@
         needle = "\"schemaVersion\":1";
       }
       {
-        label = "QEMU patch series hash";
-        needle = "\"patchSeriesHash\":\"${qemuPackageMetadataProbe.patchSeriesHash}\"";
+        label = "QEMU atomic patch hash";
+        needle = "\"atomicPatchHash\":\"${qemuPackageMetadataProbe.atomicPatchHash}\"";
       }
       {
         label = "Crucible source store hash";
@@ -575,7 +604,7 @@ in
           grep -q "^crucible_source_store_name=$CRUCIBLE_SOURCE_STORE_NAME$" "$manifest_env"
           grep -q "^crucible_source_store_hash=$CRUCIBLE_SOURCE_STORE_HASH$" "$manifest_env"
           grep -q "^qemu_version=$QEMU_VERSION$" "$manifest_env"
-          grep -q "^qemu_patch_series_hash=$QEMU_PATCH_SERIES_HASH$" "$manifest_env"
+          grep -q "^qemu_atomic_patch_hash=$QEMU_ATOMIC_PATCH_HASH$" "$manifest_env"
           grep -q "^qemu_build_id=$QEMU_BUILD_ID$" "$manifest_env"
           grep -q "^shmem_abi=$SHMEM_ABI$" "$manifest_env"
           grep -q "^guest_host_protocol_abi=$GUEST_HOST_PROTOCOL_ABI$" "$manifest_env"
@@ -602,7 +631,7 @@ in
           grep -q '^publication_raw_qemu_allowed=false$' "$manifest_env"
           grep -q '^publication_policy=aggregate-direct-reference-pair$' "$manifest_env"
           grep -q "\"sourceStoreHash\":\"$CRUCIBLE_SOURCE_STORE_HASH\"" "$manifest_json"
-          grep -q "\"patchSeriesHash\":\"$QEMU_PATCH_SERIES_HASH\"" "$manifest_json"
+          grep -q "\"atomicPatchHash\":\"$QEMU_ATOMIC_PATCH_HASH\"" "$manifest_json"
           grep -q "\"buildId\":\"$QEMU_BUILD_ID\"" "$manifest_json"
           grep -q "\"label\":\"$RPC_ABI\"" "$manifest_json"
 
@@ -613,11 +642,16 @@ in
             printf 'crucible_version=%s\n' "$CRUCIBLE_VERSION"
             printf 'crucible_source_store_hash=%s\n' "$CRUCIBLE_SOURCE_STORE_HASH"
             printf 'qemu_version=%s\n' "$QEMU_VERSION"
-            printf 'qemu_patch_series_hash=%s\n' "$QEMU_PATCH_SERIES_HASH"
+            printf 'qemu_atomic_patch_hash=%s\n' "$QEMU_ATOMIC_PATCH_HASH"
             printf 'qemu_build_id=%s\n' "$QEMU_BUILD_ID"
             printf 'shmem_abi=%s\n' "$SHMEM_ABI"
             printf 'guest_host_protocol_abi=%s\n' "$GUEST_HOST_PROTOCOL_ABI"
             printf 'rpc_abi=%s\n' "$RPC_ABI"
+            printf 'crucible_package_store_path=%s\n' "$CRUCIBLE_PACKAGE"
+            manifest_env_digest=$(sha256sum "$manifest_env")
+            manifest_json_digest=$(sha256sum "$manifest_json")
+            printf 'release_manifest_env_sha256=%s\n' "''${manifest_env_digest%% *}"
+            printf 'release_manifest_json_sha256=%s\n' "''${manifest_json_digest%% *}"
             printf '%s\n' 'cargo_deps=fetchCargoVendor'
             printf '%s\n' 'cargo_deps_vendored=true'
             printf '%s\n' 'timestamp_policy=no-wall-clock-timestamps'
@@ -631,8 +665,8 @@ in
       CRUCIBLE_VERSION = crucibleVersion;
       CRUCIBLE_SOURCE_STORE_NAME = sourceStoreName;
       CRUCIBLE_SOURCE_STORE_HASH = sourceStoreHash;
-      QEMU_VERSION = qemuPackageMetadataProbe.series.qemuVersion;
-      QEMU_PATCH_SERIES_HASH = qemuPackageMetadataProbe.patchSeriesHash;
+      QEMU_VERSION = qemuPackageMetadataProbe.atomicPatch.qemuVersion;
+      QEMU_ATOMIC_PATCH_HASH = qemuPackageMetadataProbe.atomicPatchHash;
       QEMU_BUILD_ID = qemuPackageMetadataProbe.qemuBuildIdentity;
       SHMEM_ABI = shmemAbi;
       GUEST_HOST_PROTOCOL_ABI = guestHostProtocolAbi;

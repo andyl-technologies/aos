@@ -44,7 +44,9 @@ Consumer registry configuration is available below `apm registry`; producer
 operations are available only through `apr`. `aos` has no package subcommand,
 and private on-host lifecycle operations run through `aos-package-runtime`.
 Registry producer implementations are in
-`crates/aos-package/src/registry_ops.rs`.
+`crates/aos-package/src/registry_ops/`. AOS-specific release planning and
+qualification run through `aos maintain release`, using shared libraries;
+`aos release` has no compatibility alias.
 
 ---
 
@@ -64,9 +66,10 @@ Implemented producer behavior:
   and with `--add` appends it to the roster. `add` validates key ids and
   registry-bound `registry:Ed25519:<base64>` keys; `retire` moves an active id
   to `[[revoked]]`, requires an active survivor key, records/derives the
-  survivor `--vouched-by` id, and **re-signs** the channel partition tags and
-  release tags whose only valid signer was the retired key using the vouching
-  key (`--no-resign` skips and lists the affected tags). Because they modify
+  survivor `--vouched-by` id, and fails before roster mutation when a published release would lose active-key
+  trust. Semver tags remain immutable; `--no-resign` explicitly permits
+  revocation that leaves affected releases untrusted. Partition-only re-signing
+  requires release signatures that still verify with surviving keys. Because they modify
   `keys.toml`, `add` and `retire` require `--key`/`--key-id` and produce a
   **signed** commit (an empty roster seeded by `apr create --trust-key` is the
   only unsigned exception). These commands commit and refresh static git indexes
@@ -74,8 +77,9 @@ Implemented producer behavior:
 - `apr publish`, `apr unpublish`, and release signing commands update package
   metadata/tag state and then refresh the object-store view with
   `objects/info/alternates` and `git update-server-info`.
-- `apr tag` creates signed release tag objects. `apr sign <tag>` re-signs an
-  existing release tag. Both accept either `--key <private-key-path>` for
+- `apr tag` creates signed release tag objects. Existing semver refs are
+  immutable, including unsigned and lightweight refs. `apr sign <tag>` signs
+  only nonrelease maintenance tags. Both accept either `--key <private-key-path>` for
   direct one-off signing or `--key-id <keys.toml-id>` to resolve a local private
   key path from `[registry.signing_keys]` in the selected
   `registries.d/<name>.toml`. `--key-id` validates the committed `keys.toml`
@@ -122,6 +126,20 @@ Implemented producer behavior:
   generation.
 
 ---
+
+### Unpublished release candidates
+
+`apr release <version> --stage <id>` retains an isolated candidate with an exact
+inventory. `apr stage list` and `apr stage show <id>` report it;
+`apr stage discard <id> --stage-revision N` checks the observed revision before
+discard. Candidate update, resume, and finalization name `--stage-revision`;
+`--from-stage <id>` selects the reviewed revision for release.
+
+An unfinished stage does not move published default catalogs or channel
+partitions. Maintainer branches are workspaces; configured channel branch
+names reserve the frontier schema. Direct refs/digests/cache URLs may expose
+candidate bytes. Stages work without a Hub, and Hub permissioned views use the
+same inventory and revision contract. See [release stages](release-stages.md).
 
 ## 4. Consumer state
 
@@ -234,15 +252,15 @@ Implemented trust pieces:
   anchors. Re-running `pin` appends an overlap key; `pin --replace` is the
   explicit out-of-band re-pin path for compromised-key recovery.
 - `apr keys generate/list/add/retire` is the producer-side roster surface (§3).
-  Roster-modifying commands sign their commits; retirement re-signs affected
-  tags. Release/channel signing can select a committed active key id via
+  Roster-modifying commands sign their commits; retirement preserves release
+  identities and rejects lost active-key release trust by default. Release/channel signing can select a committed active key id via
   `--key-id`, with the local private key path stored outside the registry in
   `[registry.signing_keys]`.
 - `registry::verify` parses tag objects, enforces name-binding, verifies
   `tag -> tag -> commit` release chains against the trusted set, and rejects
   non-semver release names where semver is required.
-- `apr tag --key`, `apr sign <tag> --key`, and channel partition commands create
-  signed tag objects rather than signing commits.
+- `apr tag --key` and channel partition commands create signed tag objects.
+  `apr sign <tag> --key` is restricted to nonrelease maintenance tags.
 
 ---
 

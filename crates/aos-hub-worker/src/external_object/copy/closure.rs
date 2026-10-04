@@ -20,7 +20,7 @@ use super::super::{
 ///
 /// # Errors
 /// Refuses unknown/discovered keys, active owners or missing/altered producer proof.
-pub(super) async fn current(
+pub(in crate::external_object) async fn current(
     env: &Env,
     storage: &Storage,
     head: &Head,

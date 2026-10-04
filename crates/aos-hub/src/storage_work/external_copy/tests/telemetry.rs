@@ -66,6 +66,7 @@ async fn requests() -> (ExternalCopyRequest, CopyMetadataRequest, StorageWorkKey
         part_bytes: LeaseInteger::new(5 * 1024 * 1024).unwrap(),
         expected_sha256: None,
         source_receipt_digest: None,
+        transfer: None,
     };
     let mut plan = StorageWorkPlan {
         version: 1,
@@ -91,6 +92,7 @@ async fn requests() -> (ExternalCopyRequest, CopyMetadataRequest, StorageWorkKey
         ],
         placement_prefix: destination.prefix.clone(),
         operation: StorageWorkOperation::CopyObject {
+            source_binding_id: None,
             source_placement_id: source.id,
             source_placement_resource_version: source.resource_version,
             source_prefix: source.prefix.clone(),
@@ -150,6 +152,7 @@ async fn exchange(
             },
             retained: None,
             source_closure: None,
+            transfer: None,
         };
         reply.sign(&key, &query).unwrap()
     } else {

@@ -36,10 +36,12 @@ impl<'a> Selection<'a> {
             strong_etag,
             expected_provider_version,
             sha256_state,
+            guarded_source,
         } = operation
         else {
             anyhow::bail!("external inventory hash operation differs");
         };
+        ensure!(guarded_source.is_none(), "guarded OCI continuation requires the protected source executor");
         let bytes = end
             .checked_sub(*start)
             .and_then(|value| value.checked_add(1))
@@ -103,6 +105,7 @@ mod tests {
 
     fn operation() -> StorageWorkOperation {
         StorageWorkOperation::HashOciRange {
+            guarded_source: None,
             path: format!("oci/blobs/sha256/{}", "a".repeat(64)),
             start: 0,
             end: 2,

@@ -18,14 +18,16 @@ use sha2::Digest as _;
 
 use crate::db::{
     AppendOciProviderInventoryPage, BeginOciProviderInventory, CompleteOciProviderInventory,
-    Database, OciProviderInventoryEntryInput, OciProviderInventoryGenerationRecord,
-    OCI_GC_INVENTORY_BATCH_SIZE, OCI_GC_MAX_INVENTORY_KEY_BYTES, OCI_GC_MAX_INVENTORY_OBJECTS,
+    Database, OCI_GC_INVENTORY_BATCH_SIZE, OCI_GC_MAX_INVENTORY_KEY_BYTES,
+    OCI_GC_MAX_INVENTORY_OBJECTS, OciProviderInventoryEntryInput,
+    OciProviderInventoryGenerationRecord,
 };
 use crate::fetch::{
-    SurfaceFetch, SurfaceListingBudget, SurfaceProvider, MAX_SURFACE_LIST_CURSOR_BYTES,
-    MAX_SURFACE_LIST_OBJECTS, MAX_SURFACE_LIST_PATH_BYTES, WORKER_MAX_SURFACE_LIST_CURSOR_BYTES,
+    MAX_SURFACE_LIST_CURSOR_BYTES, MAX_SURFACE_LIST_OBJECTS, MAX_SURFACE_LIST_PATH_BYTES,
+    SurfaceFetch, SurfaceListingBudget, SurfaceProvider, WORKER_MAX_SURFACE_LIST_CURSOR_BYTES,
     WORKER_MAX_SURFACE_LIST_OBJECTS, WORKER_MAX_SURFACE_LIST_PATH_BYTES,
 };
+use crate::keymap::OCI_BLOB_KEY_PREFIX;
 
 // An object may span many queue dispatches, but its total modeled size remains
 // bounded. Each dispatch reads only small exact ranges and carries the existing
@@ -33,8 +35,26 @@ use crate::fetch::{
 const MAX_OCI_INVENTORY_OBJECT_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_PLACEMENTS_PER_PASS: usize = 100;
 const INVENTORY_CLAIM_LEASE_SECONDS: i64 = 60 * 60;
+
+// One listing page is one provider object. An `InventoryObjectContinuation`
+// binds to the page's requested cursor and the object key, and a page's
+// entries are appended only once every object on it is hashed, so a larger
+// page would force a dispatch that stops mid-object either to rehash its
+// finished siblings or to skip them. The listing is scoped to the blob
+// namespace, so every page is a blob rather than a binary-cache or git key.
 const INVENTORY_PAGE_SIZE: usize = 1;
-const OCI_BLOB_PREFIX: &str = "oci/blobs/sha256/";
+
+// A durable provider cursor is meaningful only for the listing prefix that
+// produced it. The tag records that the cursor came from a blob-scoped
+// listing; a stored cursor without it belongs to a generation begun by an
+// earlier release that walked the whole placement, and resuming it against a
+// scoped listing would silently skip or repeat keys, so such a generation
+// fails and a fresh one is collected.
+const INVENTORY_CURSOR_SCOPE_TAG: &str = "oci-blobs-v1:";
+
+// Bound on a stored (tagged) provider cursor and on the cursor carried by an
+// object continuation. It matches the database page-checkpoint check.
+const MAX_STORED_PROVIDER_CURSOR_BYTES: usize = 512;
 
 /// Native provider work admitted by one maintenance dispatch.
 pub const NATIVE_OCI_INVENTORY_DISPATCH_BUDGET: OciInventoryDispatchBudget =
@@ -166,6 +186,7 @@ impl InventoryDispatchTracker {
             remaining_object_bytes
                 .min(self.remaining_object_bytes())
                 .min(self.limits.max_chunk_bytes)
+                .min(crate::storage_work::MAX_OCI_HASH_RANGE_BYTES as u64)
         })
         .filter(|bytes| *bytes > 0)
     }
@@ -197,6 +218,19 @@ impl InventoryDispatchTracker {
         );
         Ok(())
     }
+}
+
+/// Progress of one bounded inventory dispatch for an exact placement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OciPlacementInventoryProgress {
+    /// A complete inventory head was published for the placement.
+    Completed,
+    /// The dispatch budget ended; resume with this opaque continuation.
+    Continue(String),
+    /// The generation failed durably; a new attempt needs a new seed.
+    Failed,
+    /// Another collector holds a live lease on the placement's inventory.
+    Busy,
 }
 
 /// Produces exact provider inventories for ready OCI placements.
@@ -422,6 +456,206 @@ impl OciProviderInventoryController {
         Ok(stats)
     }
 
+    /// Runs one bounded inventory dispatch for exactly one placement.
+    ///
+    /// Registry deletion uses this to collect the post-fence inventory of the
+    /// registry's own placements on demand instead of waiting for the
+    /// maintenance schedule. `idempotency_seed` identifies one attempt: the
+    /// same seed reopens the same generation and receipt after response loss,
+    /// and a new seed starts a fresh generation after a durable failure. A
+    /// live generation owned by another collector is never taken over before
+    /// its lease expires.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid selector, continuation, or budget, a
+    /// placement that cannot be inventoried, or a database failure that
+    /// prevents durable checkpoint or failure recording.
+    pub async fn inventory_placement_bounded(
+        &self,
+        collector_id: &str,
+        idempotency_seed: &str,
+        now: i64,
+        placement_id: i64,
+        continuation: Option<&str>,
+        dispatch_budget: OciInventoryDispatchBudget,
+    ) -> Result<OciPlacementInventoryProgress> {
+        anyhow::ensure!(
+            !collector_id.is_empty()
+                && collector_id.len() <= 128
+                && !idempotency_seed.is_empty()
+                && idempotency_seed.len() <= 128
+                && now >= 0
+                && placement_id > 0,
+            "invalid OCI placement inventory selector"
+        );
+        let mut dispatch = InventoryDispatchTracker::new(dispatch_budget)?;
+        let claim_token = inventory_claim_token(idempotency_seed, placement_id);
+
+        let resumed = match continuation {
+            Some(cursor) => {
+                self.resume_placement_continuation(collector_id, now, placement_id, cursor)
+                    .await?
+            }
+            None => None,
+        };
+        let (generation, object) = match resumed {
+            Some(resumed) => resumed,
+            None => match self
+                .begin_or_claim_placement(
+                    collector_id,
+                    idempotency_seed,
+                    &claim_token,
+                    now,
+                    placement_id,
+                )
+                .await?
+            {
+                Some(generation) => (generation, None),
+                None => return Ok(OciPlacementInventoryProgress::Busy),
+            },
+        };
+        match generation.state.as_str() {
+            "complete" => return Ok(OciPlacementInventoryProgress::Completed),
+            "failed" => return Ok(OciPlacementInventoryProgress::Failed),
+            _ => {}
+        }
+
+        let placement = self
+            .db
+            .surface_placement(generation.placement_id)
+            .await?
+            .context("inventoried placement disappeared")?;
+        let mut stats = OciInventoryControllerStats::default();
+        let continuation = self
+            .process_generation(
+                &placement,
+                &generation,
+                collector_id,
+                now,
+                &mut stats,
+                &mut dispatch,
+                object,
+            )
+            .await?;
+        Ok(match continuation {
+            Some(cursor) => OciPlacementInventoryProgress::Continue(cursor),
+            None if stats.completed > 0 => OciPlacementInventoryProgress::Completed,
+            None => OciPlacementInventoryProgress::Failed,
+        })
+    }
+
+    /// Reopens the generation named by a continuation, when it is still live.
+    async fn resume_placement_continuation(
+        &self,
+        collector_id: &str,
+        now: i64,
+        placement_id: i64,
+        cursor: &str,
+    ) -> Result<
+        Option<(
+            OciProviderInventoryGenerationRecord,
+            Option<InventoryObjectContinuation>,
+        )>,
+    > {
+        let continuation = parse_inventory_continuation(cursor)?;
+        anyhow::ensure!(
+            continuation.placement_id == placement_id,
+            "OCI inventory continuation names another placement"
+        );
+        let Some(generation) = self
+            .db
+            .oci_provider_inventory_generation(&continuation.generation_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        if !matches!(generation.state.as_str(), "collecting" | "sealing")
+            || generation.collector_claim_token != continuation.claim_token
+        {
+            return Ok(None);
+        }
+        continuation.validate_identity_for_generation(&generation)?;
+        let generation = self
+            .db
+            .claim_oci_provider_inventory(
+                &generation.id,
+                collector_id,
+                &continuation.claim_token,
+                inventory_now(now),
+                INVENTORY_CLAIM_LEASE_SECONDS,
+            )
+            .await?;
+        let object = continuation.resumable_object_for_generation(&generation)?;
+        Ok(Some((generation, object)))
+    }
+
+    /// Claims this attempt's live generation or begins a new one.
+    ///
+    /// Returns `Ok(None)` while another collector holds a live lease on the
+    /// placement's active generation.
+    async fn begin_or_claim_placement(
+        &self,
+        collector_id: &str,
+        idempotency_seed: &str,
+        claim_token: &str,
+        now: i64,
+        placement_id: i64,
+    ) -> Result<Option<OciProviderInventoryGenerationRecord>> {
+        if let Some(active) = self.db.active_oci_provider_inventory(placement_id).await? {
+            let owned = active.collector_claim_token == claim_token;
+            let expired = active
+                .collector_lease_expires_at
+                .is_some_and(|expires_at| expires_at <= now);
+            if !owned && !expired {
+                return Ok(None);
+            }
+            return self
+                .db
+                .claim_oci_provider_inventory(
+                    &active.id,
+                    collector_id,
+                    claim_token,
+                    inventory_now(now),
+                    INVENTORY_CLAIM_LEASE_SECONDS,
+                )
+                .await
+                .map(Some);
+        }
+
+        let placement = self
+            .db
+            .surface_placement(placement_id)
+            .await?
+            .context("OCI inventory placement does not exist")?;
+        let registry_id = placement
+            .registry_id
+            .context("OCI inventory placement does not belong to a registry")?;
+        let observation_version = placement
+            .observation_version
+            .context("OCI inventory placement has never been observed")?;
+        self.db
+            .begin_oci_provider_inventory(&BeginOciProviderInventory {
+                registry_id,
+                placement_id,
+                expected_placement_resource_version: placement.resource_version,
+                expected_placement_observation_version: observation_version,
+                collector_id: collector_id.to_string(),
+                collector_claim_token: claim_token.to_string(),
+                collector_lease_seconds: INVENTORY_CLAIM_LEASE_SECONDS,
+                idempotency_key: inventory_idempotency_key(
+                    idempotency_seed,
+                    registry_id,
+                    placement_id,
+                    placement.resource_version,
+                    observation_version,
+                ),
+                now,
+            })
+            .await
+            .map(Some)
+    }
+
     async fn process_generation(
         &self,
         placement: &crate::db::SurfacePlacementRecord,
@@ -492,7 +726,7 @@ impl OciProviderInventoryController {
         collector_id: &str,
         now: i64,
         dispatch: &mut InventoryDispatchTracker,
-        object: Option<InventoryObjectContinuation>,
+        _object: Option<InventoryObjectContinuation>,
     ) -> Result<InventoryGenerationProgress> {
         anyhow::ensure!(
             placement.id == generation.placement_id
@@ -519,6 +753,12 @@ impl OciProviderInventoryController {
             "OCI provider inventory binding drifted after begin"
         );
 
+        let object = if let Some(progress) = &generation.object_progress {
+            progress.validate_for(generation)?;
+            Some(progress.object.clone())
+        } else {
+            None
+        };
         let fetch = self.surfaces.placement_fetcher(placement).await?;
         let checkpoint_ordinal = match self
             .enumerate_and_append(
@@ -563,7 +803,9 @@ impl OciProviderInventoryController {
     ) -> Result<InventoryEnumerationProgress> {
         if generation.state == "sealing" {
             anyhow::ensure!(
-                generation.checkpoint_ordinal > 0 && generation.provider_cursor.is_none(),
+                generation.checkpoint_ordinal > 0
+                    && generation.provider_cursor.is_none()
+                    && generation.object_progress.is_none(),
                 "sealing OCI provider inventory has an incomplete checkpoint"
             );
             return Ok(InventoryEnumerationProgress::Complete(
@@ -575,10 +817,18 @@ impl OciProviderInventoryController {
             "OCI provider inventory is not resumable"
         );
         if generation.checkpoint_ordinal > 0 && generation.provider_cursor.is_none() {
+            anyhow::ensure!(
+                generation.object_progress.is_none(),
+                "terminal inventory checkpoint has pending object progress"
+            );
             return Ok(InventoryEnumerationProgress::Complete(
                 generation.checkpoint_ordinal,
             ));
         }
+        // Fail a legacy unscoped checkpoint before any provider I/O or claim
+        // heartbeat; the caller records the failure and due selection begins
+        // a fresh generation.
+        provider_cursor_for_listing(generation.provider_cursor.as_deref())?;
 
         let page_limit = INVENTORY_PAGE_SIZE.min(OCI_GC_INVENTORY_BATCH_SIZE);
         let page_bound = listing_page_bound(page_limit);
@@ -603,7 +853,8 @@ impl OciProviderInventoryController {
                 "OCI provider inventory exceeded page bound"
             );
             let heartbeat = inventory_now(started_at);
-            self.db
+            let mut active_generation = self
+                .db
                 .claim_oci_provider_inventory(
                     &generation.id,
                     collector_id,
@@ -612,21 +863,34 @@ impl OciProviderInventoryController {
                     INVENTORY_CLAIM_LEASE_SECONDS,
                 )
                 .await?;
+            // The durable checkpoint and the object continuation both carry
+            // the tagged cursor; only the provider call sees the raw one.
             let requested_cursor = cursor.clone();
+            let listing_cursor = provider_cursor_for_listing(requested_cursor.as_deref())?;
             let Some(page) = before_dispatch_deadline(
                 dispatch,
-                fetch.list_page_with_prefix(
-                    OCI_BLOB_PREFIX,
-                    requested_cursor.as_deref(),
-                    page_limit,
-                ),
+                fetch.list_page(OCI_BLOB_KEY_PREFIX, listing_cursor, page_limit),
             )
             .await?
             else {
                 return Ok(InventoryEnumerationProgress::Continue(object));
             };
             dispatch.record_page();
-            page.validate(page_limit, requested_cursor.as_deref())?;
+            page.validate(page_limit, OCI_BLOB_KEY_PREFIX, listing_cursor)?;
+            let next_cursor = page
+                .next_cursor
+                .as_deref()
+                .map(tag_provider_cursor)
+                .transpose()?;
+            if let Some(saved) = &active_generation.object_progress {
+                saved.validate_for(&active_generation)?;
+                anyhow::ensure!(
+                    page.paths.as_slice() == [saved.object.object_key.as_str()]
+                        && next_cursor == saved.next_provider_cursor,
+                    "OCI inventory sole provider page changed during continuation"
+                );
+                object = Some(saved.object.clone());
+            }
             let mut page_entries = Vec::new();
             for path in &page.paths {
                 budget.record(path)?;
@@ -635,17 +899,12 @@ impl OciProviderInventoryController {
                     "OCI provider inventory pages are not globally ordered"
                 );
                 prior_path = Some(path.clone());
-                let Some(object_digest) = canonical_oci_blob_digest(path)? else {
-                    anyhow::ensure!(
-                        object.is_none(),
-                        "OCI inventory continuation object no longer occupies its provider page"
-                    );
-                    continue;
-                };
+                let object_digest = canonical_oci_blob_digest(path)?
+                    .context("provider listing returned a key outside the OCI blob namespace")?;
                 inventory_budget.record(path)?;
                 let progress = match object.take() {
                     Some(progress) => {
-                        progress.validate_for(generation, requested_cursor.as_deref())?;
+                        progress.validate_for(&active_generation, requested_cursor.as_deref())?;
                         anyhow::ensure!(
                             progress.object_key == *path
                                 && progress.object_digest == object_digest.to_string(),
@@ -673,7 +932,7 @@ impl OciProviderInventoryController {
                             require_provider_version,
                             head.provider_version.as_deref(),
                         )?;
-                        InventoryObjectContinuation::initial(
+                        let mut selected = InventoryObjectContinuation::initial(
                             generation.placement_id,
                             checkpoint_ordinal,
                             requested_cursor.clone(),
@@ -682,17 +941,36 @@ impl OciProviderInventoryController {
                             declared_size,
                             strong_etag,
                             head.provider_version,
-                        )?
+                        )?;
+                        selected.guarded_source = head.guarded_source;
+                        selected.validate()?;
+                        selected
                     }
                 };
+                if active_generation.object_progress.is_none() {
+                    active_generation = self
+                        .db
+                        .persist_oci_inventory_progress(
+                            &active_generation,
+                            &crate::db::OciInventoryProgress {
+                                version: 1,
+                                generation_id: generation.id.clone(),
+                                next_provider_cursor: next_cursor.clone(),
+                                object: progress.clone(),
+                            },
+                            inventory_now(started_at),
+                        )
+                        .await?;
+                }
                 let entry = match self
                     .resume_inventory_object(
                         fetch,
                         require_provider_version,
-                        generation,
+                        &mut active_generation,
                         collector_id,
                         started_at,
                         dispatch,
+                        next_cursor.clone(),
                         progress,
                     )
                     .await?
@@ -705,7 +983,6 @@ impl OciProviderInventoryController {
                 dispatch.record_object()?;
                 page_entries.push(entry);
             }
-            let next_cursor = page.next_cursor.clone();
             let checkpoint = self
                 .db
                 .append_oci_provider_inventory_page(&AppendOciProviderInventoryPage {
@@ -722,8 +999,8 @@ impl OciProviderInventoryController {
                 })
                 .await?;
             checkpoint_ordinal = checkpoint.checkpoint_ordinal;
-            cursor = checkpoint.provider_cursor;
-            prior_path = checkpoint.checkpoint_last_key;
+            cursor = checkpoint.provider_cursor.clone();
+            prior_path = checkpoint.checkpoint_last_key.clone();
             if next_cursor.is_none() {
                 return Ok(InventoryEnumerationProgress::Complete(checkpoint_ordinal));
             }
@@ -734,10 +1011,11 @@ impl OciProviderInventoryController {
         &self,
         fetch: &dyn SurfaceFetch,
         require_provider_version: bool,
-        generation: &OciProviderInventoryGenerationRecord,
+        generation: &mut OciProviderInventoryGenerationRecord,
         collector_id: &str,
         started_at: i64,
         dispatch: &mut InventoryDispatchTracker,
+        next_provider_cursor: Option<String>,
         mut progress: InventoryObjectContinuation,
     ) -> Result<InventoryObjectProgress> {
         require_inventory_version(
@@ -763,7 +1041,8 @@ impl OciProviderInventoryController {
             ensure_inventory_identity(head.as_ref(), &progress, "between inventory chunks")?;
 
             let heartbeat = inventory_now(started_at);
-            self.db
+            *generation = self
+                .db
                 .claim_oci_provider_inventory(
                     &generation.id,
                     collector_id,
@@ -774,13 +1053,14 @@ impl OciProviderInventoryController {
                 .await?;
             let Some(chunk) = before_dispatch_deadline(
                 dispatch,
-                fetch.inventory_hash_chunk_bounded(
+                fetch.inventory_hash_chunk_guarded_bounded(
                     &progress.object_key,
                     progress.next_offset,
                     progress.expected_size,
                     chunk_limit,
                     &progress.strong_etag,
                     progress.provider_version.as_deref(),
+                    progress.guarded_source.as_ref(),
                     sha_state.clone(),
                 ),
             )
@@ -793,7 +1073,8 @@ impl OciProviderInventoryController {
                 chunk.total == progress.expected_size
                     && chunk.range.0 == progress.next_offset
                     && chunk.strong_etag == progress.strong_etag
-                    && chunk.provider_version == progress.provider_version,
+                    && chunk.provider_version == progress.provider_version
+                    && chunk.guarded_source == progress.guarded_source,
                 "OCI provider inventory chunk did not match its continuation identity"
             );
             let chunk_len = chunk
@@ -821,6 +1102,19 @@ impl OciProviderInventoryController {
             sha_state = chunk.sha256_state;
             progress.next_offset = expected_next;
             progress.set_sha_state(&sha_state)?;
+            *generation = self
+                .db
+                .persist_oci_inventory_progress(
+                    generation,
+                    &crate::db::OciInventoryProgress {
+                        version: 1,
+                        generation_id: generation.id.clone(),
+                        next_provider_cursor: next_provider_cursor.clone(),
+                        object: progress.clone(),
+                    },
+                    inventory_now(started_at),
+                )
+                .await?;
             dispatch.record_chunk(chunk_len)?;
         }
 
@@ -872,7 +1166,8 @@ fn ensure_inventory_identity(
                 .transpose()?
                 .as_deref()
                 == Some(progress.strong_etag.as_str())
-            && head.provider_version == progress.provider_version,
+            && head.provider_version == progress.provider_version
+            && head.guarded_source == progress.guarded_source,
         "OCI provider object identity changed {phase}"
     );
     Ok(())
@@ -944,6 +1239,27 @@ impl InventoryContinuation {
         generation: &OciProviderInventoryGenerationRecord,
     ) -> Result<Option<InventoryObjectContinuation>> {
         self.validate_identity_for_generation(generation)?;
+        if let Some(progress) = &generation.object_progress {
+            progress.validate_for(generation)?;
+            if let Some(hint) = &self.object {
+                if hint.checkpoint_ordinal == generation.checkpoint_ordinal {
+                    hint.validate_for(generation, generation.provider_cursor.as_deref())?;
+                    anyhow::ensure!(
+                        hint.next_offset <= progress.object.next_offset,
+                        "OCI inventory queue hint is ahead of durable progress"
+                    );
+                    if hint.next_offset == progress.object.next_offset {
+                        let mut expected = progress.object.clone();
+                        expected.guarded_source = None;
+                        anyhow::ensure!(
+                            *hint == expected,
+                            "OCI inventory queue hint differs from durable progress"
+                        );
+                    }
+                }
+            }
+            return Ok(Some(progress.object.clone()));
+        }
         let Some(object) = &self.object else {
             return Ok(None);
         };
@@ -959,119 +1275,7 @@ impl InventoryContinuation {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct InventoryObjectContinuation {
-    placement_id: i64,
-    checkpoint_ordinal: u64,
-    provider_cursor: Option<String>,
-    object_key: String,
-    object_digest: String,
-    expected_size: u64,
-    strong_etag: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    provider_version: Option<String>,
-    next_offset: u64,
-    sha_version: u32,
-    sha_words: [u32; 8],
-    sha_total_bytes: u64,
-    sha_tail_hex: String,
-}
-
-impl InventoryObjectContinuation {
-    fn initial(
-        placement_id: i64,
-        checkpoint_ordinal: u64,
-        provider_cursor: Option<String>,
-        object_key: &str,
-        object_digest: Sha256Digest,
-        expected_size: u64,
-        strong_etag: String,
-        provider_version: Option<String>,
-    ) -> Result<Self> {
-        let state = crate::db::OciSha256State::initial();
-        let continuation = Self {
-            placement_id,
-            checkpoint_ordinal,
-            provider_cursor,
-            object_key: object_key.to_string(),
-            object_digest: object_digest.to_string(),
-            expected_size,
-            strong_etag,
-            provider_version,
-            next_offset: 0,
-            sha_version: state.version,
-            sha_words: state.words,
-            sha_total_bytes: state.total_bytes,
-            sha_tail_hex: state.tail_hex,
-        };
-        continuation.validate()?;
-        Ok(continuation)
-    }
-
-    fn validate(&self) -> Result<()> {
-        anyhow::ensure!(
-            self.placement_id > 0
-                && self.object_key.len() <= 512
-                && self.expected_size <= MAX_OCI_INVENTORY_OBJECT_BYTES
-                && self.next_offset <= self.expected_size
-                && self.sha_total_bytes == self.next_offset
-                && self.strong_etag.len() <= 512
-                && self
-                    .provider_cursor
-                    .as_ref()
-                    .is_none_or(|cursor| !cursor.is_empty() && cursor.len() <= 512),
-            "OCI inventory object continuation is invalid"
-        );
-        require_inventory_version(false, self.provider_version.as_deref())?;
-        crate::surface_write::strong_if_match_etag(&self.strong_etag)?;
-        let object_digest = Sha256Digest::parse(&self.object_digest)?;
-        anyhow::ensure!(
-            canonical_oci_blob_digest(&self.object_key)? == Some(object_digest),
-            "OCI inventory continuation key and digest differ"
-        );
-        self.sha_state()?.validate()
-    }
-
-    fn validate_for(
-        &self,
-        generation: &OciProviderInventoryGenerationRecord,
-        provider_cursor: Option<&str>,
-    ) -> Result<()> {
-        self.validate()?;
-        anyhow::ensure!(
-            self.placement_id == generation.placement_id
-                && self.checkpoint_ordinal == generation.checkpoint_ordinal
-                && self.provider_cursor.as_deref() == provider_cursor,
-            "OCI inventory object continuation does not bind the durable checkpoint"
-        );
-        Ok(())
-    }
-
-    fn sha_state(&self) -> Result<crate::db::OciSha256State> {
-        let state = crate::db::OciSha256State {
-            version: self.sha_version,
-            words: self.sha_words,
-            total_bytes: self.sha_total_bytes,
-            tail_hex: self.sha_tail_hex.clone(),
-        };
-        state.validate()?;
-        Ok(state)
-    }
-
-    fn set_sha_state(&mut self, state: &crate::db::OciSha256State) -> Result<()> {
-        state.validate()?;
-        anyhow::ensure!(
-            state.total_bytes == self.next_offset,
-            "OCI inventory hash continuation offset differs from its byte count"
-        );
-        self.sha_version = state.version;
-        self.sha_words = state.words;
-        self.sha_total_bytes = state.total_bytes;
-        self.sha_tail_hex.clone_from(&state.tail_hex);
-        Ok(())
-    }
-}
+type InventoryObjectContinuation = crate::db::OciInventoryObjectProgress;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum InventoryGenerationProgress {
@@ -1120,8 +1324,10 @@ async fn enumerate_oci_inventory(
             pages <= page_bound,
             "OCI provider inventory exceeded page bound"
         );
-        let page = fetch.list_page(cursor.as_deref(), page_limit).await?;
-        page.validate(page_limit, cursor.as_deref())?;
+        let page = fetch
+            .list_page(OCI_BLOB_KEY_PREFIX, cursor.as_deref(), page_limit)
+            .await?;
+        page.validate(page_limit, OCI_BLOB_KEY_PREFIX, cursor.as_deref())?;
         for path in &page.paths {
             budget.record(path)?;
             anyhow::ensure!(
@@ -1129,9 +1335,8 @@ async fn enumerate_oci_inventory(
                 "OCI provider inventory pages are not globally ordered"
             );
             prior_path = Some(path.clone());
-            let Some(object_digest) = canonical_oci_blob_digest(path)? else {
-                continue;
-            };
+            let object_digest = canonical_oci_blob_digest(path)?
+                .context("provider listing returned a key outside the OCI blob namespace")?;
             inventory_budget.record(path)?;
             entries.push(
                 inventory_entry(fetch, path, object_digest, MAX_OCI_INVENTORY_OBJECT_BYTES).await?,
@@ -1223,9 +1428,43 @@ where
     }
 }
 
+/// Tags a raw provider cursor for durable storage.
+///
+/// See [`INVENTORY_CURSOR_SCOPE_TAG`]; the tagged form is what the generation
+/// checkpoint and the object continuation carry.
+fn tag_provider_cursor(provider_cursor: &str) -> Result<String> {
+    anyhow::ensure!(
+        !provider_cursor.is_empty(),
+        "provider listing returned an empty continuation cursor"
+    );
+    let tagged = format!("{INVENTORY_CURSOR_SCOPE_TAG}{provider_cursor}");
+    anyhow::ensure!(
+        tagged.len() <= MAX_STORED_PROVIDER_CURSOR_BYTES,
+        "provider listing cursor exceeds the durable inventory cursor bound"
+    );
+    Ok(tagged)
+}
+
+/// Recovers the raw provider cursor from a stored (tagged) checkpoint cursor.
+///
+/// A stored cursor without the scope tag was produced by an unscoped
+/// placement walk and cannot resume a blob-scoped listing.
+fn provider_cursor_for_listing(stored: Option<&str>) -> Result<Option<&str>> {
+    let Some(stored) = stored else {
+        return Ok(None);
+    };
+    let provider_cursor = stored.strip_prefix(INVENTORY_CURSOR_SCOPE_TAG).context(
+        "inventory generation predates blob-scoped listing; a fresh generation will be collected",
+    )?;
+    anyhow::ensure!(
+        !provider_cursor.is_empty(),
+        "stored OCI provider inventory cursor is empty"
+    );
+    Ok(Some(provider_cursor))
+}
+
 fn canonical_oci_blob_digest(path: &str) -> Result<Option<Sha256Digest>> {
-    const PREFIX: &str = "oci/blobs/sha256/";
-    let Some(encoded) = path.strip_prefix(PREFIX) else {
+    let Some(encoded) = path.strip_prefix(OCI_BLOB_KEY_PREFIX) else {
         return Ok(None);
     };
     anyhow::ensure!(
@@ -1263,6 +1502,12 @@ fn inventory_continuation(
     generation: &OciProviderInventoryGenerationRecord,
     object: Option<InventoryObjectContinuation>,
 ) -> Result<String> {
+    // SQL owns the source receipt and portable state. The legacy queue object
+    // remains a bounded hint; imported evidence never replaces durable progress.
+    let object = object.map(|mut hint| {
+        hint.guarded_source = None;
+        hint
+    });
     let continuation = InventoryContinuation {
         version: INVENTORY_CONTINUATION_VERSION,
         generation_id: generation.id.clone(),
@@ -1334,6 +1579,7 @@ mod tests {
             size: 10,
             strong_etag: Some("\"same-etag\"".into()),
             provider_version: Some("upload-v1".into()),
+            guarded_source: None,
         };
         assert!(ensure_inventory_identity(Some(&head), &progress, "before hashing").is_ok());
 
@@ -1371,6 +1617,7 @@ mod tests {
 
         async fn list_page(
             &self,
+            _prefix: &str,
             cursor: Option<&str>,
             _limit: usize,
         ) -> Result<crate::fetch::SurfaceListPage> {
@@ -1401,10 +1648,17 @@ mod tests {
         }
     }
 
+    /// Provider double for the controller.
+    ///
+    /// With scripted `pages`, a cursor is the index of the next page. With no
+    /// scripted pages, the double lists `objects` itself: keys under the
+    /// requested prefix, after the cursor (the last key of the prior page),
+    /// `limit` at a time, like a real bucket.
     #[derive(Clone)]
     struct SharedInventoryFetch {
         pages: Arc<Vec<SurfaceListPage>>,
         objects: Arc<Mutex<BTreeMap<String, Vec<u8>>>>,
+        requested_prefixes: Arc<Mutex<Vec<String>>>,
         requested_cursors: Arc<Mutex<Vec<Option<String>>>>,
         requested_ranges: Arc<Mutex<Vec<(u64, u64)>>>,
         evidence_delay_ms: Arc<AtomicU64>,
@@ -1428,13 +1682,43 @@ mod tests {
                 .map(|bytes| bytes.len() as u64))
         }
 
-        async fn list_page(&self, cursor: Option<&str>, _limit: usize) -> Result<SurfaceListPage> {
+        async fn list_page(
+            &self,
+            prefix: &str,
+            cursor: Option<&str>,
+            limit: usize,
+        ) -> Result<SurfaceListPage> {
+            self.requested_prefixes
+                .lock()
+                .unwrap()
+                .push(prefix.to_string());
             self.requested_cursors
                 .lock()
                 .unwrap()
                 .push(cursor.map(str::to_string));
-            let index = cursor.map_or(0, |value| value.parse().unwrap());
-            Ok(self.pages[index].clone())
+            if !self.pages.is_empty() {
+                let index = cursor.map_or(0, |value| value.parse().unwrap());
+                return Ok(self.pages[index].clone());
+            }
+            let mut paths = self
+                .objects
+                .lock()
+                .unwrap()
+                .keys()
+                .filter(|key| {
+                    key.starts_with(prefix) && cursor.is_none_or(|after| after < key.as_str())
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let next_cursor = (paths.len() > limit).then(|| {
+                paths.truncate(limit);
+                paths.last().cloned().unwrap()
+            });
+            Ok(SurfaceListPage {
+                paths,
+                evidence: BTreeMap::new(),
+                next_cursor,
+            })
         }
 
         async fn inventory_evidence_bounded(
@@ -1464,6 +1748,7 @@ mod tests {
                     size: bytes.len() as i64,
                     strong_etag: Some(format!("\"{}\"", hex::encode(Sha256::digest(bytes)))),
                     provider_version: self.provider_version.lock().unwrap().clone(),
+                    guarded_source: None,
                 }
             }))
         }
@@ -1548,7 +1833,24 @@ mod tests {
         SurfacePlacementRecord,
         Arc<SharedInventoryProvider>,
     ) {
-        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        inventory_fixture_with_db(
+            Arc::new(Database::open_in_memory().await.unwrap()),
+            pages,
+            objects,
+        )
+        .await
+    }
+
+    async fn inventory_fixture_with_db(
+        db: Arc<Database>,
+        pages: Vec<SurfaceListPage>,
+        objects: BTreeMap<String, Vec<u8>>,
+    ) -> (
+        Arc<Database>,
+        i64,
+        SurfacePlacementRecord,
+        Arc<SharedInventoryProvider>,
+    ) {
         let org_id = db
             .create_org("inventory-controller", "Inventory Controller")
             .await
@@ -1653,6 +1955,7 @@ mod tests {
             fetch: SharedInventoryFetch {
                 pages: Arc::new(pages),
                 objects: Arc::new(Mutex::new(objects)),
+                requested_prefixes: Arc::new(Mutex::new(Vec::new())),
                 requested_cursors: Arc::new(Mutex::new(Vec::new())),
                 requested_ranges: Arc::new(Mutex::new(Vec::new())),
                 evidence_delay_ms: Arc::new(AtomicU64::new(0)),
@@ -1669,7 +1972,7 @@ mod tests {
         let digest = hex::encode(Sha256::digest(bytes));
         let key = format!("oci/blobs/sha256/{digest}");
         let pages = vec![SurfaceListPage {
-            paths: vec!["config.json".into(), key.clone()],
+            paths: vec![key.clone()],
             evidence: BTreeMap::new(),
             next_cursor: None,
         }];
@@ -1712,20 +2015,37 @@ mod tests {
 
     #[tokio::test]
     async fn enumeration_rejects_reordered_pages() {
+        // Two valid blobs whose pages arrive in descending key order.
+        let (pages, objects) = two_page_inventory();
         let provider = MemoryInventory {
             pages: vec![
                 SurfaceListPage {
-                    paths: vec!["z-non-oci".into()],
+                    paths: pages[1].paths.clone(),
                     evidence: BTreeMap::new(),
                     next_cursor: Some("1".into()),
                 },
                 SurfaceListPage {
-                    paths: vec!["a-non-oci".into()],
+                    paths: pages[0].paths.clone(),
                     evidence: BTreeMap::new(),
                     next_cursor: None,
                 },
             ],
-            objects: Mutex::new(BTreeMap::new()),
+            objects: Mutex::new(objects),
+        };
+        assert!(enumerate_oci_inventory(&provider).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn enumeration_rejects_keys_outside_the_blob_namespace() {
+        let (provider, key) = provider_with_blob(b"scoped bytes");
+        let page = SurfaceListPage {
+            paths: vec!["nar/aaaa.nar.zst".into(), key],
+            evidence: BTreeMap::new(),
+            next_cursor: None,
+        };
+        let provider = MemoryInventory {
+            pages: vec![page],
+            objects: provider.objects,
         };
         assert!(enumerate_oci_inventory(&provider).await.is_err());
     }
@@ -1874,7 +2194,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(active.checkpoint_ordinal, 1);
-        assert_eq!(active.provider_cursor.as_deref(), Some("1"));
+        assert_eq!(active.provider_cursor.as_deref(), Some("oci-blobs-v1:1"));
 
         let second = controller
             .run_due_bounded(
@@ -2014,9 +2334,8 @@ mod tests {
         assert_eq!(advanced.object.as_ref().unwrap().checkpoint_ordinal, 1);
 
         // A retry of the parent delivery carries the older object cursor. The
-        // DB checkpoint is authoritative, so the current second page is
-        // rehashed from offset zero and the stale first-page SHA state is not
-        // applied at the new provider key.
+        // SQL progress selects the second page and its committed prefix; the
+        // stale first-page SHA state cannot overwrite that newer postimage.
         let replay = controller
             .run_due_bounded(
                 "worker",
@@ -2032,7 +2351,7 @@ mod tests {
         assert!(replay.continuation.is_none());
         assert_eq!(
             *provider.fetch.requested_ranges.lock().unwrap(),
-            vec![(0, 1), (2, 7), (0, 1), (0, 7)]
+            vec![(0, 1), (2, 7), (0, 1), (2, 7)]
         );
     }
 
@@ -2135,10 +2454,12 @@ mod tests {
         let tampered = serde_json::to_string(&decoded).unwrap();
         let ranges_before = provider.fetch.requested_ranges.lock().unwrap().clone();
 
-        assert!(controller
-            .run_due_bounded("worker", "ignored", now + 1, 1, Some(&tampered), budget,)
-            .await
-            .is_err());
+        assert!(
+            controller
+                .run_due_bounded("worker", "ignored", now + 1, 1, Some(&tampered), budget,)
+                .await
+                .is_err()
+        );
         assert_eq!(
             *provider.fetch.requested_ranges.lock().unwrap(),
             ranges_before
@@ -2169,32 +2490,31 @@ mod tests {
         let generation_id = decoded.generation_id.clone();
         let tampered = serde_json::to_string(&decoded).unwrap();
 
-        let resumed = controller
-            .run_due_bounded(
-                "worker",
-                "ignored",
-                now + 1,
-                1,
-                Some(&tampered),
-                test_dispatch_budget(1, 1, 1024, Duration::from_secs(5)),
-            )
-            .await
-            .unwrap();
-        assert_eq!((resumed.completed, resumed.failed), (0, 1));
-        assert!(resumed.continuation.is_none());
-        assert_eq!(
-            db.oci_provider_inventory_generation(&generation_id)
+        assert!(
+            controller
+                .run_due_bounded(
+                    "worker",
+                    "ignored",
+                    now + 1,
+                    1,
+                    Some(&tampered),
+                    test_dispatch_budget(1, 1, 1024, Duration::from_secs(5)),
+                )
                 .await
-                .unwrap()
-                .unwrap()
-                .state,
-            "failed"
+                .is_err()
         );
-        assert_eq!(
+        let current = db
+            .oci_provider_inventory_generation(&generation_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(current.state, "collecting");
+        assert_eq!(current.object_progress.unwrap().object.next_offset, 8);
+        assert!(
             db.active_oci_provider_inventory(placement.id)
                 .await
-                .unwrap(),
-            None
+                .unwrap()
+                .is_some()
         );
     }
 
@@ -2236,11 +2556,12 @@ mod tests {
             *provider.fetch.requested_ranges.lock().unwrap(),
             vec![(0, 7)]
         );
-        assert!(db
-            .active_oci_provider_inventory(placement.id)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            db.active_oci_provider_inventory(placement.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -2279,15 +2600,16 @@ mod tests {
             *provider.fetch.requested_ranges.lock().unwrap(),
             vec![(0, 7)]
         );
-        assert!(db
-            .active_oci_provider_inventory(placement.id)
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            db.active_oci_provider_inventory(placement.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
-    async fn expired_range_owner_is_taken_over_and_rehashes_from_zero() {
+    async fn expired_range_owner_is_taken_over_without_discarding_committed_sql_progress() {
         let bytes = b"takeover-restarts-exact-bytes".to_vec();
         let digest = hex::encode(Sha256::digest(&bytes));
         let key = format!("oci/blobs/sha256/{digest}");
@@ -2325,7 +2647,7 @@ mod tests {
         assert_eq!((takeover.attempted, takeover.completed), (1, 1));
         assert_eq!(
             *provider.fetch.requested_ranges.lock().unwrap(),
-            vec![(0, 7), (0, bytes.len() as u64 - 1)]
+            vec![(0, 7), (8, bytes.len() as u64 - 1)]
         );
 
         let stale = controller
@@ -2480,7 +2802,7 @@ mod tests {
             collector_claim_token: "old-token".into(),
             expected_checkpoint_ordinal: 0,
             expected_provider_cursor: None,
-            next_provider_cursor: Some("1".into()),
+            next_provider_cursor: Some("oci-blobs-v1:1".into()),
             last_listed_key: Some(blobs[0].0.clone()),
             entries: vec![first_entry.clone()],
             now,
@@ -2493,13 +2815,13 @@ mod tests {
         db.claim_oci_provider_inventory(&generation.id, "worker", &resume_token, now + 2, 1)
             .await
             .unwrap();
-        assert!(db
-            .append_oci_provider_inventory_page(&AppendOciProviderInventoryPage {
+        assert!(
+            db.append_oci_provider_inventory_page(&AppendOciProviderInventoryPage {
                 generation_id: generation.id.clone(),
                 collector_id: "crashed".into(),
                 collector_claim_token: "old-token".into(),
                 expected_checkpoint_ordinal: 1,
-                expected_provider_cursor: Some("1".into()),
+                expected_provider_cursor: Some("oci-blobs-v1:1".into()),
                 next_provider_cursor: None,
                 last_listed_key: Some(blobs[1].0.clone()),
                 entries: vec![first_entry],
@@ -2507,7 +2829,8 @@ mod tests {
                 lease_seconds: 1,
             })
             .await
-            .is_err());
+            .is_err()
+        );
         provider.fetch.requested_cursors.lock().unwrap().clear();
 
         let controller = OciProviderInventoryController::new(db.clone(), provider.clone());
@@ -2529,10 +2852,226 @@ mod tests {
                 .state,
             "complete"
         );
-        assert!(db
+        assert!(
+            db.active_oci_provider_inventory(placement.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn listing_is_scoped_to_the_blob_namespace_one_object_per_page() {
+        let blobs = [
+            b"first blob".to_vec(),
+            b"second blob".to_vec(),
+            b"third blob".to_vec(),
+        ]
+        .into_iter()
+        .map(|bytes| {
+            let digest = hex::encode(Sha256::digest(&bytes));
+            (format!("{OCI_BLOB_KEY_PREFIX}{digest}"), bytes)
+        })
+        .collect::<BTreeMap<_, _>>();
+        // The placement also holds the binary cache and git objects, which
+        // sort on both sides of the blob namespace.
+        let mut objects = blobs.clone();
+        for key in [
+            "0000000000000000000000000000000.narinfo",
+            "nar/0000-aaaa.nar.zst",
+            "nar/zzzz-bbbb.nar.zst",
+            "nix-cache-info",
+            "objects/ab/cd",
+            "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz.narinfo",
+        ] {
+            objects.insert(key.to_string(), b"not a blob".to_vec());
+        }
+        let (db, _registry_id, placement, provider) = inventory_fixture(Vec::new(), objects).await;
+        let controller = OciProviderInventoryController::new(db.clone(), provider.clone());
+        let now = crate::clock::now_unix_secs();
+        let keys = blobs.keys().cloned().collect::<Vec<_>>();
+
+        let first = controller
+            .run_due_bounded(
+                "worker",
+                "scoped",
+                now,
+                1,
+                None,
+                test_dispatch_budget(1, 1, MAX_OCI_INVENTORY_OBJECT_BYTES, Duration::from_secs(5)),
+            )
+            .await
+            .unwrap();
+        let continuation = first.continuation.unwrap();
+        let active = db
             .active_oci_provider_inventory(placement.id)
             .await
             .unwrap()
-            .is_none());
+            .unwrap();
+        assert_eq!(active.checkpoint_ordinal, 1);
+        assert_eq!(
+            active.provider_cursor,
+            Some(format!("oci-blobs-v1:{}", keys[0]))
+        );
+
+        let finished = controller
+            .run_due_bounded(
+                "worker",
+                "ignored-on-continuation",
+                now + 1,
+                1,
+                Some(&continuation),
+                NATIVE_OCI_INVENTORY_DISPATCH_BUDGET,
+            )
+            .await
+            .unwrap();
+        assert_eq!((finished.completed, finished.failed), (1, 0));
+        assert!(finished.continuation.is_none());
+
+        let prefixes = provider.fetch.requested_prefixes.lock().unwrap().clone();
+        assert_eq!(prefixes.len(), blobs.len());
+        assert!(prefixes.iter().all(|prefix| prefix == OCI_BLOB_KEY_PREFIX));
+        assert_eq!(
+            *provider.fetch.requested_cursors.lock().unwrap(),
+            vec![None, Some(keys[0].clone()), Some(keys[1].clone())]
+        );
+        let generation = db
+            .oci_provider_inventory_generation(&active.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(generation.state, "complete");
+        assert_eq!(generation.object_count, 3);
+        assert_eq!(generation.checkpoint_ordinal, 3);
     }
+
+    #[tokio::test]
+    async fn legacy_unscoped_checkpoint_fails_and_a_fresh_generation_is_collected() {
+        let (pages, objects) = two_page_inventory();
+        let (db, registry_id, placement, provider) = inventory_fixture(pages, objects).await;
+        let now = crate::clock::now_unix_secs();
+        let frozen = db
+            .list_due_oci_provider_inventory_placements(now, 1)
+            .await
+            .unwrap()
+            .pop()
+            .unwrap();
+        let generation = db
+            .begin_oci_provider_inventory(&BeginOciProviderInventory {
+                registry_id,
+                placement_id: placement.id,
+                expected_placement_resource_version: frozen.placement_resource_version,
+                expected_placement_observation_version: frozen.placement_observation_version,
+                collector_id: "previous-release".into(),
+                collector_claim_token: "legacy-token".into(),
+                collector_lease_seconds: 1,
+                idempotency_key: inventory_idempotency_key(
+                    "legacy",
+                    registry_id,
+                    placement.id,
+                    frozen.placement_resource_version,
+                    frozen.placement_observation_version,
+                ),
+                now,
+            })
+            .await
+            .unwrap();
+        // A release that walked the whole placement checkpointed the raw
+        // provider cursor after an empty page of binary-cache keys.
+        db.append_oci_provider_inventory_page(&AppendOciProviderInventoryPage {
+            generation_id: generation.id.clone(),
+            collector_id: "previous-release".into(),
+            collector_claim_token: "legacy-token".into(),
+            expected_checkpoint_ordinal: 0,
+            expected_provider_cursor: None,
+            next_provider_cursor: Some("1".into()),
+            last_listed_key: Some("nar/aaaa.nar.zst".into()),
+            entries: Vec::new(),
+            now,
+            lease_seconds: 1,
+        })
+        .await
+        .unwrap();
+
+        let controller = OciProviderInventoryController::new(db.clone(), provider.clone());
+        let recovered = controller
+            .run_due("worker", "recover", now + 4, 1)
+            .await
+            .unwrap();
+        assert_eq!(
+            (recovered.attempted, recovered.completed, recovered.failed),
+            (1, 0, 1)
+        );
+        assert!(recovered.continuation.is_none());
+        assert_eq!(
+            db.oci_provider_inventory_generation(&generation.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .state,
+            "failed"
+        );
+        assert!(provider.fetch.requested_cursors.lock().unwrap().is_empty());
+        assert!(
+            db.active_oci_provider_inventory(placement.id)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let fresh = controller
+            .run_due("worker", "fresh", now + 5, 1)
+            .await
+            .unwrap();
+        assert_eq!((fresh.attempted, fresh.completed, fresh.failed), (1, 1, 0));
+        assert_eq!(
+            *provider.fetch.requested_cursors.lock().unwrap(),
+            vec![None, Some("1".into())]
+        );
+    }
+
+    #[test]
+    fn durable_cursors_carry_the_listing_scope_tag() {
+        let tagged = tag_provider_cursor("opaque-cursor").unwrap();
+        assert_eq!(tagged, "oci-blobs-v1:opaque-cursor");
+        assert_eq!(
+            provider_cursor_for_listing(Some(&tagged)).unwrap(),
+            Some("opaque-cursor")
+        );
+        assert_eq!(provider_cursor_for_listing(None).unwrap(), None);
+        assert!(tag_provider_cursor("").is_err());
+        assert!(provider_cursor_for_listing(Some("oci-blobs-v1:")).is_err());
+        let legacy = provider_cursor_for_listing(Some("opaque-cursor")).unwrap_err();
+        assert!(
+            legacy.to_string().contains("predates blob-scoped listing"),
+            "{legacy:#}"
+        );
+
+        // The tagged form fits every bound it crosses: the durable checkpoint
+        // column, the object continuation, and the platform cursor limits.
+        let longest =
+            "c".repeat(MAX_STORED_PROVIDER_CURSOR_BYTES - INVENTORY_CURSOR_SCOPE_TAG.len());
+        let tagged = tag_provider_cursor(&longest).unwrap();
+        assert_eq!(tagged.len(), MAX_STORED_PROVIDER_CURSOR_BYTES);
+        assert!(tagged.len() <= WORKER_MAX_SURFACE_LIST_CURSOR_BYTES);
+        assert!(tagged.len() <= MAX_SURFACE_LIST_CURSOR_BYTES);
+        assert!(tag_provider_cursor(&format!("{longest}c")).is_err());
+
+        let key = format!("{OCI_BLOB_KEY_PREFIX}{}", hex::encode(Sha256::digest(b"")));
+        let digest = canonical_oci_blob_digest(&key).unwrap().unwrap();
+        let continuation = InventoryObjectContinuation::initial(
+            1,
+            1,
+            Some(tagged.clone()),
+            &key,
+            digest,
+            0,
+            "\"etag\"".into(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(continuation.provider_cursor, Some(tagged));
+    }
+
+    mod durable_progress;
 }

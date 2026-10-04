@@ -12,7 +12,6 @@ use aos_oci_types::{
 use aos_release::artifact::{ArtifactKind, ArtifactRelation, ArtifactRelationship, Compression};
 use aos_release::digest::Sha256Digest;
 use aos_release::plan::ReleasePlan;
-use aos_release::platform::Platform;
 
 use super::{ArtifactAttributes, PayloadBuilder};
 
@@ -43,7 +42,7 @@ pub(super) fn assemble(
         .validate_final_release(&release)
         .map_err(anyhow::Error::msg)
         .context("binding container release to its signature input")?;
-    validate_plan_binding(&release, plan)?;
+    super::super::container_binding::validate(&release, plan)?;
     let registry_bytes = super::super::capture::control_file(
         &registry.join(CONTAINER_RELEASE_SIDECAR_PATH),
         "registry container sidecar",
@@ -77,7 +76,10 @@ pub(super) fn assemble(
                 .platform
                 .as_ref()
                 .context("container platform manifest lacks a platform")?;
-            Ok((descriptor.digest.to_string(), release_platform(platform)?))
+            Ok((
+                descriptor.digest.to_string(),
+                super::super::container_binding::release_platform(platform)?,
+            ))
         })
         .collect::<Result<BTreeMap<_, _>>>()?;
     let index_digest = release.oci.index.digest.to_string();
@@ -177,44 +179,6 @@ pub(super) fn require_absent(registry: &Path) -> Result<()> {
         Err(error) => Err(error)
             .with_context(|| format!("checking registry container sidecar {}", path.display())),
         Ok(_) => bail!("finalized registry contains an unassembled container sidecar"),
-    }
-}
-
-fn validate_plan_binding(release: &ContainerRelease, plan: &ReleasePlan) -> Result<()> {
-    if release.identity.release != plan.version {
-        bail!("container release identity differs from the release plan");
-    }
-    let publication = plan
-        .packages
-        .iter()
-        .find(|package| package.name == release.identity.package)
-        .and_then(|package| package.publication.as_ref())
-        .context("container package is not publishable in the release plan")?;
-    if publication.version != release.identity.package_version {
-        bail!("container package version differs from the release plan");
-    }
-
-    let attribute = &release.nix.definition.attribute;
-    let variant = attribute
-        .strip_prefix("systems.")
-        .and_then(|rest| rest.strip_suffix(".build.containers.aos"));
-    match variant {
-        Some(variant)
-            if plan
-                .images
-                .iter()
-                .any(|image| image.system_variant == variant) =>
-        {
-            Ok(())
-        }
-        Some(variant) => {
-            bail!("container system variant '{variant}' is absent from the release plan")
-        }
-        None if attribute == "containerImages.aos" && plan.images.len() == 1 => Ok(()),
-        None if attribute == "containerImages.aos" => {
-            bail!("legacy container definitions require one planned system variant")
-        }
-        None => bail!("container release has an unsupported Nix definition attribute"),
     }
 }
 
@@ -321,18 +285,6 @@ fn require_exact_blob_set(layout: &Path, graph: &BTreeMap<String, GraphNode>) ->
         bail!("finalized OCI layout contains missing or unreferenced blobs");
     }
     Ok(())
-}
-
-fn release_platform(platform: &aos_oci_types::Platform) -> Result<Platform> {
-    match (platform.os.as_str(), platform.architecture.as_str()) {
-        ("linux", "amd64") => Ok(Platform::X86_64Linux),
-        ("linux", "arm64") => Ok(Platform::Aarch64Linux),
-        _ => bail!(
-            "container platform {}/{} is outside the release matrix",
-            platform.os,
-            platform.architecture
-        ),
-    }
 }
 
 fn descriptor_compression(media_type: MediaType) -> Compression {

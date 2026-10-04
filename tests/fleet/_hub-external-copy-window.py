@@ -1,6 +1,6 @@
 """Exercise reviewed replication and repair against actual missing inventories.
 
-Each target is a new prefix on the source's genuine External binding. The
+Each target is a new prefix on the explicitly selected External binding. The
 controller's scan and per-object presence records establish completeness;
 HTTP success alone never establishes a copy or a Native bulk-byte result.
 """
@@ -130,8 +130,33 @@ def require_external_copy_operation(detail, kind, source, destination, object_co
     return facts
 
 
+def external_copy_destination(binding, source, kind, run_id, destination_binding=None):
+    """Select a target prefix from the genuine same or independent binding.
+
+    An explicit destination must be independent by stable identity and name.
+    Selecting a different prefix alone does not establish a second binding.
+    """
+    if kind not in {"replicate", "repair"} or not re.fullmatch(r"[0-9a-f]{32}", run_id):
+        raise ValueError("copy destination lacks the selected workflow/run")
+    source_prefix = binding["spec"]["s3"]["prefix"].rstrip("/")
+    if (source["bindingName"] != binding["spec"]["name"]
+            or not source["prefix"].startswith(source_prefix + "/")):
+        raise ValueError("copy source is outside the actual selected External binding")
+    if destination_binding is None:
+        return binding, source["prefix"] + "-" + kind + "-" + run_id
+
+    destination_prefix = destination_binding["spec"]["s3"]["prefix"].rstrip("/")
+    if (destination_binding["stableId"] == binding["stableId"]
+            or destination_binding["spec"]["name"] == binding["spec"]["name"]
+            or destination_prefix == source_prefix
+            or not destination_prefix
+            or any(part in {"", ".", ".."} for part in destination_prefix.split("/"))):
+        raise ValueError("cross-binding destination must have independent identity and prefix")
+    return destination_binding, destination_prefix + "/registry-" + kind + "-" + run_id
+
+
 def run_external_placement_copy(controls, registry, binding, catalogue_observation, *,
-                                run_id, retain, read_sql):
+                                run_id, retain, read_sql, destination_binding=None):
     """Run both real workflows on a small already published signed registry."""
     if not re.fullmatch(r"[0-9a-f]{32}", run_id):
         raise ValueError("copy workflow requires the actual canonical fresh run")
@@ -146,17 +171,14 @@ def run_external_placement_copy(controls, registry, binding, catalogue_observati
     })["placement"]
     if source["observation"]["completeness"] != "complete":
         raise ValueError("copy source lacks actual complete authoritative inventory")
-    binding_prefix = binding["spec"]["s3"]["prefix"].rstrip("/")
-    if (source["bindingName"] != binding["spec"]["name"]
-            or not source["prefix"].startswith(binding_prefix + "/")):
-        raise ValueError("copy source is outside the actual selected External binding")
     results = {}
     for kind in ("replicate", "repair"):
         name = "copy-" + run_id[:12] + "-" + kind
         label = "copy-" + run_id + "-" + kind
-        prefix = source["prefix"] + "-" + kind + "-" + run_id
+        target_binding, prefix = external_copy_destination(
+            binding, source, kind, run_id, destination_binding)
         controls.reviewed("TopologyService", "PlanCreatePlacement", "CreatePlacement", {
-            "surface": surface, "name": name, "bindingId": binding["stableId"],
+            "surface": surface, "name": name, "bindingId": target_binding["stableId"],
             "prefix": prefix, "kind": "complete", "desiredState": "active",
             "desiredReadEnabled": True, "readOrder": "10", "requiresConditionalWrites": False,
             "expectedResourceVersion": "",
@@ -164,9 +186,9 @@ def run_external_placement_copy(controls, registry, binding, catalogue_observati
         target = controls.call("TopologyService", "GetPlacement", {
             "surface": surface, "name": name,
         })["placement"]
-        if (target["bindingName"] != source["bindingName"] or target["prefix"] != prefix
-                or target["prefix"] == source["prefix"]):
-            raise ValueError("actual target is not a different prefix on the same binding")
+        if (target["bindingName"] != target_binding["spec"]["name"]
+                or target["prefix"] != prefix or target["prefix"] == source["prefix"]):
+            raise ValueError("actual target differs from the selected binding and prefix")
         scan = controls.reviewed("TopologyService", "PlanScanPlacement", "ScanPlacement", {
             "surface": surface, "placementName": name,
             "expectedResourceVersion": target["resourceVersion"],
@@ -208,7 +230,8 @@ def run_external_placement_copy(controls, registry, binding, catalogue_observati
         replay = controls.call("TopologyService", method, apply)["operation"]
         if replay["operationId"] != original["operationId"]:
             raise ValueError("exact reviewed copy replay allocated another operation")
-        results[kind] = {"plan": plan, "apply": apply, "original": original,
+        results[kind] = {"sourceBinding": binding, "destinationBinding": target_binding,
+            "destinationPrefix": prefix, "plan": plan, "apply": apply, "original": original,
             "missingScan": missing_scan, "presenceBefore": before, "completed": completed,
             "controllerFacts": facts, "presenceAfter": after, "replayedOriginal": replay,
             "nativeBulkBytes": None, "replayProviderDispatches": None,

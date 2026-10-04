@@ -15,7 +15,6 @@
   pluginNetworkRx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_rx.rs;
   pluginNetworkTx = builtins.readFile ../../crates/crucible-qemu-plugin/src/network_tx.rs;
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
-  liveQuantumGate = builtins.readFile ../../crates/crucible-qemu/src/live_plugin_quantum_gate.rs;
   defaultChecks = builtins.readFile ./default.nix;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
 
@@ -194,24 +193,6 @@
       {
         label = "clock advance metadata";
         needle = "pub struct PluginClockAdvance";
-      }
-    ]
-    ++ failuresFor "crates/crucible-qemu/src/live_plugin_quantum_gate.rs" liveQuantumGate [
-      {
-        label = "installed plugin host schedule";
-        needle = "host_observable_schedule: Vec<SimDoubleHostScheduleEvent>";
-      }
-      {
-        label = "host-load schedule equality";
-        needle = "reference.host_observable_schedule != second.host_observable_schedule";
-      }
-      {
-        label = "live SimDouble comparison";
-        needle = "fn assert_sim_double_schedule_matches";
-      }
-      {
-        label = "canonical schedule comparison";
-        needle = "sim_double_host_schedule_canonical_bytes";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [

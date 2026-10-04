@@ -23,7 +23,7 @@ impl PluginStorageHistoryLimits {
     /// Returns the compiled maximum used by internal test fixtures.
     #[must_use]
     #[cfg(test)]
-    pub const fn compiled_maximum() -> Self {
+    pub(crate) const fn compiled_maximum() -> Self {
         Self {
             epochs: HARD_STORAGE_COMPLETED_HISTORY_EPOCHS,
             gaps: HARD_STORAGE_COMPLETED_HISTORY_GAPS,

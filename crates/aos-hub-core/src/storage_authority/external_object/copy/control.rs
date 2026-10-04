@@ -11,13 +11,13 @@
 //! reply = {version, request_digest, original_digest, progress}
 //! ```
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 
 use crate::storage_authority::{canonical_digest, lease::LeaseInteger};
 use crate::storage_work::{StorageWorkKey, StorageWorkOperation, StorageWorkPlan};
 
-use super::{digest_string, session::CopyPhase, CopySourceObject, ExternalCopyOriginal};
+use super::{CopySourceObject, ExternalCopyOriginal, digest_string, session::CopyPhase};
 
 /// Internal metadata-only control endpoint, rejected by older executors.
 pub const EXTERNAL_COPY_PATH: &str = "/_internal/storage/external-copy/v1";
@@ -67,6 +67,9 @@ pub struct ExternalCopyRequest {
     pub plan: StorageWorkPlan,
     /// Bounded control; physical action selection belongs to the guard.
     pub control: CopyControl,
+    /// Independently signed source Read plan for a version-three original.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_plan: Option<StorageWorkPlan>,
 }
 
 impl ExternalCopyRequest {
@@ -88,6 +91,32 @@ impl ExternalCopyRequest {
             claim,
             plan,
             control,
+            source_plan: None,
+        };
+        value.validate(&value.original.deployment_id, now)?;
+        Ok(value)
+    }
+
+    /// Constructs fresh paired permission without changing the retained original.
+    ///
+    /// # Errors
+    /// Refuses a foreign source Read plan, changed pins or expired claim.
+    pub fn new_cross_binding(
+        original: ExternalCopyOriginal,
+        claim: CopyClaim,
+        plan: StorageWorkPlan,
+        source_plan: StorageWorkPlan,
+        control: CopyControl,
+        now: i64,
+    ) -> Result<Self> {
+        let value = Self {
+            version: 1,
+            domain: DOMAIN.into(),
+            original,
+            claim,
+            plan,
+            control,
+            source_plan: Some(source_plan),
         };
         value.validate(&value.original.deployment_id, now)?;
         Ok(value)
@@ -127,6 +156,36 @@ impl ExternalCopyRequest {
         }
         let original = &self.original;
         let claim = &self.claim;
+        match (&original.transfer, &self.source_plan) {
+            (Some(transfer), Some(source)) => {
+                match now {
+                    Some(now) => source.validate(deployment, now)?,
+                    None => source.validate_observation_shape(deployment)?,
+                }
+                ensure!(
+                    source.placement_id == original.source.placement_id.get()
+                        && source.placement_resource_version
+                            == original.source.resource_version.get()
+                        && source.placement_prefix == original.source.prefix
+                        && source.binding_id == transfer.source_binding.binding_id.get()
+                        && source.binding_resource_version
+                            == transfer.source_binding.binding_resource_version.get()
+                        && source.binding_snapshot_revision.as_ref()
+                            == Some(&transfer.source_binding.snapshot_revision)
+                        && matches!(source.binding_kind.as_str(), "s3" | "r2")
+                        && matches!(&source.operation, StorageWorkOperation::Head { path } if path == &original.path)
+                        && source.credential_references.len() == 1
+                        && source.credential_references[0].purpose == "read"
+                        && source.credential_references[0].generation
+                            == original.read_generation.get()
+                        && source.issued_at == self.plan.issued_at
+                        && source.expires_at == self.plan.expires_at,
+                    "copy fresh source Read permission differs from original"
+                );
+            }
+            (None, None) => {}
+            _ => anyhow::bail!("copy paired source Read permission absent"),
+        }
         ensure!(
             self.version == 1
                 && self.domain == DOMAIN
@@ -155,12 +214,14 @@ impl ExternalCopyRequest {
         ensure!(
             selectors.len() == 2
                 && selectors[0].purpose == "read"
-                && selectors[0].generation == original.read_generation.get()
+                && (original.version == 3
+                    || selectors[0].generation == original.read_generation.get())
                 && selectors[1].purpose == "write"
                 && selectors[1].generation == original.write_generation.get(),
             "external copy purpose generations differ"
         );
         let StorageWorkOperation::CopyObject {
+            source_binding_id,
             source_placement_id,
             source_placement_resource_version,
             source_prefix,
@@ -172,7 +233,12 @@ impl ExternalCopyRequest {
             anyhow::bail!("external copy requires a closed CopyObject plan");
         };
         ensure!(
-            *source_placement_id == original.source.placement_id.get()
+            *source_binding_id
+                == original
+                    .transfer
+                    .as_ref()
+                    .map(|pins| pins.source_binding.binding_id.get())
+                && *source_placement_id == original.source.placement_id.get()
                 && *source_placement_resource_version == original.source.resource_version.get()
                 && *source_prefix == original.source.prefix
                 && *path == original.path

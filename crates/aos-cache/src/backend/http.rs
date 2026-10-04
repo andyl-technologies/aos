@@ -375,13 +375,21 @@ impl CacheBackend for HttpBackend {
         // metadata. Read the representation itself and hash those exact bytes
         // before allowing publication to reuse a remote image object.
         let snapshot = tempfile::NamedTempFile::new().context("creating static readback file")?;
-        let req = self
-            .add_headers(TransferRequest::get_to_file(
-                &url,
-                snapshot.path().to_path_buf(),
-            ))
-            .await?;
-        let result = self.engine.execute(req).await?;
+        let req = self.add_headers(TransferRequest::get_to_file(
+            &url,
+            snapshot.path().to_path_buf(),
+        )).await?;
+        let result = match self.engine.execute(req).await {
+            Ok(result) => result,
+            Err(error)
+                if error
+                    .downcast_ref::<aos_net::protocol::http::HttpStatusError>()
+                    .is_some_and(|status| status.status == 404) =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
         if result.status == 404 {
             return Ok(None);
         }
@@ -749,6 +757,12 @@ impl CacheBackend for HttpBackend {
         self.multipart_v1.load(Ordering::Relaxed)
     }
 
+    fn multipart_resume_namespace(&self) -> Option<String> {
+        self.is_hub
+            .load(Ordering::Relaxed)
+            .then(|| self.base_url.clone())
+    }
+
     async fn initiate_multipart(
         &self,
         nar_path: &str,
@@ -808,11 +822,20 @@ impl CacheBackend for HttpBackend {
         let mut req = TransferRequest::put(&url, data.to_vec());
         add_static_metadata_headers(&mut req, Some("application/x-nix-nar"), None, None, None);
         let req = self.add_headers(req).await?;
-        let result = self
-            .engine
-            .execute(req)
-            .await
-            .context("uploading multipart part")?;
+        let result = match self.engine.execute(req).await {
+            Ok(result) => result,
+            Err(error)
+                if error
+                    .downcast_ref::<aos_net::protocol::http::HttpStatusError>()
+                    .is_some_and(|status| status.status == 404) =>
+            {
+                return Err(super::MultipartSessionExpired.into());
+            }
+            Err(error) => return Err(error).context("uploading multipart part"),
+        };
+        if result.status == 404 {
+            return Err(super::MultipartSessionExpired.into());
+        }
         if result.status >= 400 {
             anyhow::bail!(
                 "upload multipart part {part_number}: HTTP {} for {nar_path}",
@@ -854,11 +877,20 @@ impl CacheBackend for HttpBackend {
         let mut req = TransferRequest::post(&url, payload);
         add_connect_json_headers(&mut req);
         let req = self.add_headers(req).await?;
-        let result = self
-            .engine
-            .execute(req)
-            .await
-            .context("completing multipart upload")?;
+        let result = match self.engine.execute(req).await {
+            Ok(result) => result,
+            Err(error)
+                if error
+                    .downcast_ref::<aos_net::protocol::http::HttpStatusError>()
+                    .is_some_and(|status| status.status == 404) =>
+            {
+                return Err(super::MultipartSessionExpired.into());
+            }
+            Err(error) => return Err(error).context("completing multipart upload"),
+        };
+        if result.status == 404 {
+            return Err(super::MultipartSessionExpired.into());
+        }
         if result.status >= 400 {
             anyhow::bail!(
                 "complete multipart upload: HTTP {} for {nar_path}",
@@ -1142,6 +1174,139 @@ mod tests {
             ..Default::default()
         };
         HttpBackend::new(base_url, &auth, engine).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn static_file_identity_treats_only_not_found_as_absent() -> anyhow::Result<()> {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        use tokio::net::TcpListener;
+
+        for status in [404, 401] {
+            let listener = TcpListener::bind("127.0.0.1:0").await?;
+            let origin = format!("http://{}", listener.local_addr()?);
+            let server = tokio::spawn(async move {
+                let (mut connection, _) = listener.accept().await?;
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                    let count = connection.read(&mut buffer).await?;
+                    anyhow::ensure!(count > 0 && request.len() < 8192, "invalid test request");
+                    request.extend_from_slice(&buffer[..count]);
+                }
+                assert!(request.starts_with(b"GET /objects/pack/test.pack HTTP/1.1\r\n"));
+                let reason = if status == 404 {
+                    "Not Found"
+                } else {
+                    "Unauthorized"
+                };
+                let response = format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                connection.write_all(response.as_bytes()).await?;
+                Ok::<_, anyhow::Error>(())
+            });
+            let backend = make_backend(&origin).await;
+
+            let identity = backend.static_file_identity("objects/pack/test.pack").await;
+
+            if status == 404 {
+                assert!(identity?.is_none());
+            } else {
+                let error = identity.unwrap_err();
+                assert_eq!(
+                    error
+                        .downcast_ref::<aos_net::protocol::http::HttpStatusError>()
+                        .map(|error| error.status),
+                    Some(401)
+                );
+            }
+            tokio::time::timeout(std::time::Duration::from_secs(5), server).await???;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn multipart_requests_classify_only_not_found_as_expired() -> anyhow::Result<()> {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        use tokio::net::TcpListener;
+
+        for complete in [false, true] {
+            for status in [404, 401] {
+                let listener = TcpListener::bind("127.0.0.1:0").await?;
+                let origin = format!("http://{}", listener.local_addr()?);
+                let server = tokio::spawn(async move {
+                    let (mut connection, _) = listener.accept().await?;
+                    let mut request = Vec::new();
+                    let mut buffer = [0_u8; 1024];
+                    let head_end = loop {
+                        let count = connection.read(&mut buffer).await?;
+                        anyhow::ensure!(count > 0 && request.len() < 8192, "invalid test request");
+                        request.extend_from_slice(&buffer[..count]);
+                        if let Some(index) =
+                            request.windows(4).position(|bytes| bytes == b"\r\n\r\n")
+                        {
+                            break index + 4;
+                        }
+                    };
+                    let head = std::str::from_utf8(&request[..head_end])?.to_ascii_lowercase();
+                    let content_length = head
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length:"))
+                        .map(|length| length.trim().parse::<usize>())
+                        .transpose()?
+                        .unwrap_or(0);
+                    while request.len() < head_end + content_length {
+                        let count = connection.read(&mut buffer).await?;
+                        anyhow::ensure!(count > 0, "test upload body ended early");
+                        request.extend_from_slice(&buffer[..count]);
+                    }
+                    let expected = if complete {
+                        "post /aos.hub.v1.binarycacheservice/completecachemultipartupload "
+                    } else {
+                        "put /aos.hub.v1.binarycacheservice/uploadpart/expired/1 "
+                    };
+                    assert!(head.starts_with(expected));
+                    let reason = if status == 404 {
+                        "Not Found"
+                    } else {
+                        "Unauthorized"
+                    };
+                    let response = format!(
+                        "HTTP/1.1 {status} {reason}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    );
+                    connection.write_all(response.as_bytes()).await?;
+                    Ok::<_, anyhow::Error>(())
+                });
+                let mut config = TransferEngineConfig::default();
+                config.retry.max_attempts = 1;
+                let engine = Arc::new(TransferEngine::new(config));
+                let backend = HttpBackend::new(&origin, &AuthOptions::default(), engine).await?;
+
+                let result = if complete {
+                    backend
+                        .complete_multipart("nar/exact", "expired", &[(1, "etag".into())])
+                        .await
+                } else {
+                    backend
+                        .upload_part("nar/exact", "expired", 1, b"x")
+                        .await
+                        .map(|_| ())
+                };
+
+                let error = result.unwrap_err();
+                assert_eq!(
+                    error
+                        .downcast_ref::<super::super::MultipartSessionExpired>()
+                        .is_some(),
+                    status == 404
+                );
+                if status == 401 {
+                    assert!(format!("{error:#}").contains("HTTP 401"));
+                }
+                tokio::time::timeout(std::time::Duration::from_secs(5), server).await???;
+            }
+        }
+        Ok(())
     }
 
     #[tokio::test]

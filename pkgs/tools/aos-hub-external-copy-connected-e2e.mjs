@@ -29,6 +29,18 @@ const counters = { creates: 0, parts: 0, completes: 0, completeRequests: 0, abor
 const uploads = new Map();
 const destinations = new Map();
 const sourceAliases = new Set([setup.sourceKey]);
+const credentialProbePrefixes = setup.object.cohorts
+  .map(cohort => `${cohort.association.binding_prefix}/.aos/credential-probes/`);
+let capacityBinding = "";
+if (setup.copy.version === 2) {
+  assert.match(setup.sourceDigest, /^[0-9a-f]{64}$/);
+  const wasm = await readFile(join(dist, "index.wasm"));
+  assert(wasm.includes(Buffer.from(setup.sourceDigest)), "Actual selected compiled source marker");
+  capacityBinding = `,(name="HUB_PROVIDER_CAPACITY_POLICY",text=${quote(JSON.stringify({
+    version: 1, deployment_id: "fixture-deployment", source_digest: setup.sourceDigest,
+    script_version: `emulated-${setup.sourceDigest}`, maximum_provider_requests: 3,
+  }))})`;
+}
 let catalogueRace = false;
 let currentSourceVersion = "source-version-1";
 let scanTail = false;
@@ -103,7 +115,7 @@ async function provider(request, response) {
     xml(`<ListMultipartUploadsResult><Bucket>fixture-bucket</Bucket><Prefix>${escape(prefix)}</Prefix><IsTruncated>false</IsTruncated>${matches.map(([id, upload]) => `<Upload><Key>${escape(upload.key)}</Key><UploadId>${id}</UploadId></Upload>`).join("")}</ListMultipartUploadsResult>`);
     return;
   }
-  if (request.method === "POST" && url.searchParams.has("uploads") && key.startsWith("managed/binding/.aos/credential-probes/")) {
+  if (request.method === "POST" && url.searchParams.has("uploads") && credentialProbePrefixes.some(prefix => key.startsWith(prefix))) {
     counters.credentialProbes++;
     const upload = `credential-probe-${counters.credentialProbes}`;
     uploads.set(upload, { key, parts: new Map(), closed: false, probe: true });
@@ -249,7 +261,7 @@ const main :Workerd.Worker = (
  (name="HUB_STORAGE_WORK_KEY",text=${quote(setup.application)}),(name="HUB_EXTERNAL_OBJECT_GUARD_KEY",text=${quote(setup.guard)}),
  (name="HUB_AUTHORITY_RENEWAL_KEY",text=${quote(setup.renewal)}),
  (name="HUB_EXTERNAL_OBJECT_CONSUMER",text=${quote(JSON.stringify(setup.object))}),
- (name="HUB_EXTERNAL_COPY_CONSUMER",text=${quote(JSON.stringify(setup.copy))})]
+ (name="HUB_EXTERNAL_COPY_CONSUMER",text=${quote(JSON.stringify(setup.copy))})${capacityBinding}]
 );
 `;
 await writeFile(join(root, "worker.capnp"), config, { flag: "wx", mode: 0o600 });

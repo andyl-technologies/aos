@@ -479,6 +479,9 @@ fn ContainerGcPlanner(
             registry: plan_registry.clone(),
             expected_resource_version: version.clone(),
             idempotency_key: key.clone(),
+            // Catalog retirement is a maintainer CLI operation reviewed
+            // alongside registry deletion; the console only runs ordinary GC.
+            retire_registry: false,
         };
         pending.set(None);
         exact.set(None);
@@ -611,7 +614,7 @@ fn ContainerGcRuns(client: ApiClient, registry: String) -> impl IntoView {
                         Ok(runs) => view! { <div class="binding-list">{runs.iter().cloned().map(|run| {
                             let run_id = run.run_id.clone();
                             view! {
-                                <button type="button" class="binding-card" on:click=move |_| selected.set(Some(run_id.clone()))><div class="compact-list-row"><div><strong>{run.run_id}</strong><code>{run.mutation_epoch}</code></div><StatusBadge state=run.state.clone() positive=run.state == "complete"/></div><div class="resource-identity"><div><span>"Planned"</span><strong>{format!("{} · {}", run.candidate_object_count, format_bytes(run.reclaimable_byte_size))}</strong></div><div><span>"Finalized"</span><strong>{format!("{} · {}", run.deleted_object_count, format_bytes(run.deleted_byte_size))}</strong></div><div><span>"Actions"</span><strong>{run.placement_action_count}</strong></div></div>{(!run.failure.is_empty()).then(|| view! { <InlineError detail=run.failure/> })}</button>
+                                <button type="button" class="binding-card" on:click=move |_| selected.set(Some(run_id.clone()))><div class="compact-list-row"><div><strong>{run.run_id}</strong><code>{run.mutation_epoch}</code></div><StatusBadge state=run.state.clone() positive=run.state == "complete"/></div><div class="resource-identity"><div><span>"Planned"</span><strong>{format!("{} · {}", run.candidate_object_count, format_bytes(run.reclaimable_byte_size))}</strong></div><div><span>"Finalized"</span><strong>{format!("{} · {}", run.deleted_object_count, format_bytes(run.deleted_byte_size))}</strong></div><div><span>"Actions"</span><strong>{run.placement_action_count}</strong></div></div>{run_outcome(&run.state, run.failure)}</button>
                             }
                         }).collect_view()}</div> }.into_any(),
                         Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any(),
@@ -623,8 +626,24 @@ fn ContainerGcRuns(client: ApiClient, registry: String) -> impl IntoView {
     }
 }
 
+/// Renders a run's terminal detail; an aborted run expired or was cancelled
+/// before apply, which is an outcome rather than a failure.
+fn run_outcome(state: &str, failure: String) -> Option<AnyView> {
+    if failure.is_empty() {
+        return None;
+    }
+    Some(if state == "aborted" {
+        view! { <p class="muted">{failure}</p> }.into_any()
+    } else {
+        view! { <InlineError detail=failure/> }.into_any()
+    })
+}
+
 #[component]
 fn ContainerGcRunDetail(client: ApiClient, registry: String, run_id: String) -> impl IntoView {
+    let can_manage = client.allows("registry.configure");
+    let cancel_client = client.clone();
+    let cancel_registry = registry.clone();
     let detail = LocalResource::new(move || {
         let client = client.clone();
         let registry = registry.clone();
@@ -678,40 +697,95 @@ fn ContainerGcRunDetail(client: ApiClient, registry: String, run_id: String) -> 
         <section class="panel resource-panel container-gc-run-detail">
             <div class="section-heading"><div><p class="section-kicker">"Exact deletion evidence"</p><h2>"GC run detail"</h2><p>"Candidate and placement-action previews are bounded to the first 100 records; use the CLI for cursor continuation."</p></div></div>
             <Suspense fallback=move || view! { <p class="loading-row">"Loading GC evidence…"</p> }>
-                {move || Suspend::new(async move {
-                    match detail.await.as_ref() {
-                        Ok((run, candidates, blockers, actions)) => {
-                            let run = run.run.clone().unwrap_or_default();
-                            view! {
-                                <div class="resource-identity"><div><span>"Generation"</span><code>{run.run_id}</code></div><div><span>"Root set"</span><code>{run.root_set_digest}</code></div><div><span>"Inventory"</span><code>{run.placement_inventory_digest}</code></div><div><span>"Topology"</span><code>{run.topology_digest}</code></div></div>
-                                {(!blockers.blockers.is_empty()).then(|| view! { <div class="notice warning"><strong>"Blockers"</strong><ul>{blockers.blockers.iter().cloned().map(|blocker| view! { <li><code>{blocker.kind}</code>" — "{blocker.detail}</li> }).collect_view()}</ul></div> })}
-                                <div class="subworkflow-grid"><div class="subworkflow"><h3>"Candidate preview"</h3><p>{format!("{} loaded{}", candidates.candidates.len(), if candidates.next_page_token.is_empty() { "" } else { " · more available" })}</p><ul>{candidates.candidates.iter().cloned().map(|candidate| view! { <li><code>{candidate.digest}</code>" · "{format_bytes(candidate.byte_size)}</li> }).collect_view()}</ul></div><div class="subworkflow"><h3>"Placement actions"</h3><p>{format!("{} loaded{}", actions.actions.len(), if actions.next_page_token.is_empty() { "" } else { " · more available" })}</p><ul>{actions.actions.iter().cloned().map(|action| {
-                                    let object_version = action.expected_provider_version
-                                        .filter(|version| !version.is_empty())
-                                        .unwrap_or_else(|| "Not recorded".into());
-                                    let action_evidence = format!(
-                                        "{} · ETag {} · binding revision {} · credential generation {} · action version {}",
-                                        action.object_key,
-                                        action.expected_strong_etag,
-                                        action.binding_write_revision,
-                                        action.delete_credential_generation,
-                                        action.resource_version,
-                                    );
+                {move || {
+                    let cancel_client = cancel_client.clone();
+                    let cancel_registry = cancel_registry.clone();
+                    Suspend::new(async move {
+                        match detail.await.as_ref() {
+                            Ok((run, candidates, blockers, actions)) => {
+                                let run = run.run.clone().unwrap_or_default();
+                                // Only an unapplied review can be discarded; applying
+                                // runs belong to physical recovery.
+                                let cancellable = can_manage && run.state == "planned";
+                                let cancel_run = run.clone();
+                                view! {
+                                    <div class="resource-identity"><div><span>"Generation"</span><code>{run.run_id}</code></div><div><span>"State"</span><strong>{run.state}</strong></div><div><span>"Root set"</span><code>{run.root_set_digest}</code></div><div><span>"Inventory"</span><code>{run.placement_inventory_digest}</code></div><div><span>"Topology"</span><code>{run.topology_digest}</code></div></div>
+                                    {cancellable.then(|| view! { <ContainerGcRunCancel client=cancel_client registry=cancel_registry run=cancel_run/> })}
+                                    {(!blockers.blockers.is_empty()).then(|| view! { <div class="notice warning"><strong>"Blockers"</strong><ul>{blockers.blockers.iter().cloned().map(|blocker| view! { <li><code>{blocker.kind}</code>" — "{blocker.detail}</li> }).collect_view()}</ul></div> })}
+                                    <div class="subworkflow-grid"><div class="subworkflow"><h3>"Candidate preview"</h3><p>{format!("{} loaded{}", candidates.candidates.len(), if candidates.next_page_token.is_empty() { "" } else { " · more available" })}</p><ul>{candidates.candidates.iter().cloned().map(|candidate| view! { <li><code>{candidate.digest}</code>" · "{format_bytes(candidate.byte_size)}</li> }).collect_view()}</ul></div><div class="subworkflow"><h3>"Placement actions"</h3><p>{format!("{} loaded{}", actions.actions.len(), if actions.next_page_token.is_empty() { "" } else { " · more available" })}</p><ul>{actions.actions.iter().cloned().map(|action| {
+                                        let object_version = action.expected_provider_version
+                                            .filter(|version| !version.is_empty())
+                                            .unwrap_or_else(|| "Not recorded".into());
+                                        let action_evidence = format!(
+                                            "{} · ETag {} · binding revision {} · credential generation {} · action version {}",
+                                            action.object_key,
+                                            action.expected_strong_etag,
+                                            action.binding_write_revision,
+                                            action.delete_credential_generation,
+                                            action.resource_version,
+                                        );
 
-                                    view! {
-                                        <li>
-                                            <code>{action.placement_name}</code>" · "{action.state}" · "<code>{action.digest}</code>
-                                            <span class="muted">{action_evidence}</span>
-                                            <span class="muted">"Object version: "<code>{object_version}</code></span>
-                                        </li>
-                                    }
-                                }).collect_view()}</ul></div></div>
-                            }.into_any()
+                                        view! {
+                                            <li>
+                                                <code>{action.placement_name}</code>" · "{action.state}" · "<code>{action.digest}</code>
+                                                <span class="muted">{action_evidence}</span>
+                                                <span class="muted">"Object version: "<code>{object_version}</code></span>
+                                            </li>
+                                        }
+                                    }).collect_view()}</ul></div></div>
+                                }.into_any()
+                            }
+                            Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any(),
                         }
-                        Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any(),
-                    }
-                })}
+                    })
+                }}
             </Suspense>
         </section>
+    }
+}
+
+/// Discards one unapplied GC plan so it stops blocking registry deletion.
+///
+/// The request binds the run's reviewed resource version; a run that already
+/// reached a terminal state is returned unchanged by the Hub.
+#[component]
+fn ContainerGcRunCancel(
+    client: ApiClient,
+    registry: String,
+    run: aos_proto_types::ContainerGcRun,
+) -> impl IntoView {
+    let error = RwSignal::new(None::<String>);
+    let busy = RwSignal::new(false);
+    let on_cancel = move |_| {
+        let client = client.clone();
+        let request = aos_proto_types::CancelContainerGcRunRequest {
+            registry: registry.clone(),
+            run_id: run.run_id.clone(),
+            expected_resource_version: run.resource_version.clone(),
+            idempotency_key: idempotency_key("container-gc-cancel"),
+        };
+        error.set(None);
+        busy.set(true);
+        spawn_local(async move {
+            match client
+                .call::<_, aos_proto_types::ContainerGcRunResponse>(
+                    aos_proto_types::CONTAINER_SERVICE_CANCEL_CONTAINER_GC_RUN_PATH,
+                    &request,
+                )
+                .await
+            {
+                Ok(_) => refresh(),
+                Err(failure) => error.set(Some(failure.to_string())),
+            }
+            busy.set(false);
+        });
+    };
+
+    view! {
+        <div class="subworkflow">
+            <p>"This plan has not been applied. Cancelling it discards the review, so it no longer blocks registry deletion."</p>
+            <button class="secondary-button" type="button" disabled=move || busy.get() on:click=on_cancel>"Cancel plan"</button>
+            {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}
+        </div>
     }
 }

@@ -1,0 +1,576 @@
+# `andyl/experimental` registry runbook
+
+This runbook owns every routine operation for the experimental hosted registry.
+The registry is public but uses experimental build and release infrastructure
+and may be rebuilt from scratch. It carries the `edge` channel only: each
+release is published to `staging/edge` and then to `production/edge` under the
+`smoke` profile, the same destinations and profile that `andyl/main` uses for
+its own `edge`. What differs is the infrastructure underneath: candidate and
+stable streams, and the edge stream that leads to them, belong to
+`andyl/main`; the experimental registry is where a change to the release mechanism itself is
+rehearsed first. Its signing material remains separate from `andyl/main`.
+
+`andyl/experimental` does not use an HSM. Its release signer is the
+[file-backed adapter](canonical-releases.md#file-backed-signer-for-registries-without-an-hsm)
+reading operator-held key files. The intended key management for
+`andyl/main` is documented in [Registry key management](registry-key-management.md).
+
+The experimental TUF root keeps a separate key for each of the root, targets,
+stable, candidate, edge, snapshot, and timestamp roles. Each role uses a
+one-of-one threshold in this experimental registry. Because the experimental registry plans only
+edge versions, the stable and candidate delegated roles sign no release. The
+stronger multi-key thresholds remain mandatory for `andyl/main`.
+
+The [public key inventory](registry-experimental-public-keys.json) records separate
+experimental and production Hub receipt authorities. A prepared key is not an
+activated release authority: signed trust metadata and the applicable release
+gates still establish where it is accepted. Custody and recovery records are
+maintained separately from the public inventory.
+
+`configured` means the production registry or Hub has loaded the public anchor
+or signing configuration. It does not claim that release metadata has been
+published or that a prepared release-signing authority has been activated.
+
+Use the shared [qualification contract](qualification.md) and
+[release checklist](release-checklist.md). This runbook owns registry-specific
+identity and lifecycle operations, not a separate experimental qualification process.
+
+The package-manager delivery endpoint baked into the experimental registry disk images and OCI
+containers is `https://cdn.aos.andyl.org/andyl/experimental/`, with alias
+`andyl-experimental` and the epoch-one trust key below. The Hub management API stays
+at `https://aos.andyl.org`. A CDN attachment alone does not activate delivery:
+the explicit delivery workflow must verify the storage publication and route
+before advertising that URL.
+
+The production Hub serves OCI through an instance-owned root route, and the
+experimental registry is exposed on it as the `andyl/experimental` namespace.
+Container references therefore carry the registry slug:
+`<host>/andyl/experimental/aos:<tag>`, so `TESTING_OCI_REFERENCE` is
+`<host>/andyl/experimental/aos:<edge version>` and `aos container publish`
+strips the `andyl/experimental/` prefix when it records the Hub repository.
+Generic clients pull `<host>/andyl/experimental/aos:<tag>` unchanged.
+
+While a requested CDN destination is pending, browse pages withhold consumer
+setup commands instead of enrolling new clients on the outgoing Hub route.
+After activation, public OCI blob GETs may redirect to the CDN when the exact
+object has matching publication and placement evidence. Distribution control,
+manifests, private requests, and conditional requests continue through the Hub.
+
+## Preconditions
+
+1. Use the designated maintainer machine and a clean checkout of the current
+   `origin/master` commit.
+2. Complete the contributor-authorization check in
+   [`contributor-licensing.md`](contributor-licensing.md).
+3. For each Hub surface, deploy and validate that exact Hub build in staging
+   and production using [`aos-hub-deployment.md`](aos-hub-deployment.md). An
+   empty experimental-only Hub reset may use that runbook's direct-production setup
+   procedure; it does not substitute for the staging publication required by
+   `production/edge`. A [static surface](canonical-releases.md#static-surfaces)
+   needs only its origin, read-back route, and `.aos-surface` identity.
+4. Take and verify the backup set in
+   [`aos-hub-backup-recovery.md`](aos-hub-backup-recovery.md), unless this is an
+   explicitly approved empty rebuild.
+5. Load only experimental credentials. Main-registry signing keys and production Hub
+   tokens must not be present during experimental authoring or staging.
+
+Record the source commit, surface identities, registry base commit and
+generation, experimental root epoch, operator, UTC start time, and intended release
+version in the operation log. Experimental destinations require no fitness
+attestations; the maintainer machine's weekly checks still run.
+
+## Inspect live state
+
+Run these read-only checks before and after every mutation:
+
+```sh
+aos hub registry show --hub https://aos.andyl.org andyl/experimental
+aos hub registry releases --hub https://aos.andyl.org andyl/experimental
+aos hub registry cache-stack show --hub https://aos.andyl.org andyl/experimental
+aos hub registry cache-stack validate --hub https://aos.andyl.org andyl/experimental
+aos hub registry mirror show --hub https://aos.andyl.org andyl/experimental
+```
+
+Repeat them against staging when the operation has a staging phase. Treat a
+configured mirror or consumer cache stack as part of the signed release and
+recovery inventory; follow the generic
+[registry hosting guide](../users/registry/hosting.md) for those subresources.
+
+## Create epoch one
+
+The epoch-one image is pinned to this prepared public anchor:
+
+```text
+andyl-experimental:Ed25519:AAAAC3NzaC1lZDI1NTE5AAAAIPYTer3cRwGWxUbdiEA2FRYkWlY9YmSHkCRyZEKtCXp4
+```
+
+Before release, retrieve the `experimental-v1` private key from operator custody,
+prove that its derived public key is exactly the line above, and test recovery
+from an encrypted independent backup. The previous prepared anchor was replaced
+before production use; the image definition and this runbook carry the same new
+epoch-one anchor. Do not regenerate a different key under the epoch-one identity
+after publishing images. A later abandoned root follows the destructive epoch
+reset procedure below.
+
+Verify the restored private key with the AOS-built OpenSSH tool before loading
+it into APR:
+
+```sh
+openssh="$(nix build .#pkg-openssh --no-link --print-out-paths)"
+derived_public="$("$openssh/bin/ssh-keygen" -y -f "$ANDYL_EXPERIMENTAL_REGISTRY_KEY")"
+test "andyl-experimental:Ed25519:${derived_public#ssh-ed25519 }" = \
+  "$ANDYL_EXPERIMENTAL_TRUST_KEY"
+```
+
+For a future registry or trust-root epoch, mint the dedicated OpenSSH Ed25519
+registry key before baking its printed public line into the matching profile:
+
+```sh
+apr keys generate <epoch-key-id> --registry <slash-free-epoch-alias>
+```
+
+Create the epoch-one slash-free authoring clone with the pinned public trust
+line and its matching private key, then retain its SHA-256 Git root commit as
+the first canonical registry base:
+
+```sh
+apr create andyl-experimental \
+  --trust-key "$ANDYL_EXPERIMENTAL_TRUST_KEY" \
+  --trust-key-id experimental-v1 \
+  --key "$ANDYL_EXPERIMENTAL_REGISTRY_KEY"
+```
+
+The Hub slug and signed release identity are `andyl/experimental`; the clone name and
+trust-line prefix are `andyl-experimental`. Keep this clone clean and at its
+single root commit: the first release plans exactly that commit as its base
+and refuses a clone with any other commit, reference, or uncommitted change.
+
+After the `andyl` organization exists in staging, create the public registry
+topology there with the ordinary reviewed Hub plan/apply protocol. Plan first:
+
+```sh
+aos hub registry create \
+  --hub https://aos.staging.andyl.org \
+  --org andyl \
+  --name experimental \
+  --visibility public \
+  --trust-key "$ANDYL_EXPERIMENTAL_TRUST_KEY" \
+  --if-version "" \
+  --idempotency-key create-andyl-experimental-v1 \
+  --plan
+```
+
+Review the returned effect manifest, then apply only that exact plan:
+
+```sh
+aos hub registry create \
+  --hub https://aos.staging.andyl.org \
+  --plan-id <plan-id> \
+  --confirm-hash <effect-manifest-hash> \
+  --yes
+
+aos hub registry show \
+  --hub https://aos.staging.andyl.org \
+  andyl/experimental
+```
+
+Inspect the staging row, then repeat the topology plan/apply/show against
+`https://aos.andyl.org` with the production access profile and idempotency
+key. The topology row and the base publication are separate: the rows hold no
+publication, and nothing installs the base yet. Its threshold-signed bootstrap
+intents bind the first release's plan digest, so `aos maintain release step
+bootstrap` installs the base on each surface as part of
+[the first edge release](#publish-the-first-or-a-later-edge-release).
+Bootstrap refuses a destination that already contains a publication.
+
+## Prepare the image signing authorities
+
+The `aos-experimental` variant is a canonical release image: `aos.image` emits only
+`system.build.unsignedImageAssembly` and every signature is applied later by
+`aos maintain release step finalize-image` through the registry's signer adapter. Four public
+trust inputs are therefore committed, and their private halves are prepared once
+and held in operator custody with the registry and TUF keys.
+
+| Custody file | Public half in the repository | Signer key id |
+| --- | --- | --- |
+| `image/db.key` + `image/db.crt` | `systems/andyl-experimental-authorities/db.crt` | `andyl-experimental-secure-boot-db-v1` |
+| `image/modsign.key` + `image/modsign.crt` | `systems/andyl-experimental-authorities/modsign.crt` | `andyl-experimental-kernel-module-v1` |
+| `image/pcr.key` | `systems/andyl-experimental-authorities/pcr.pem` | `andyl-experimental-pcr-policy-v1` |
+| `image/PK.key`, `image/KEK.key` | `systems/andyl-experimental-authorities/enrollment/*.auth` | offline only |
+| `provenance/andyl-experimental-provenance-v1` | registry roster trust line | `andyl-experimental-provenance-v1` |
+
+Secure Boot db, kernel module signing, and PCR policy are three separate trust
+domains and must stay three separate keys; the profile asserts that their signer
+roles are distinct. The Platform and Key Exchange keys sign only the enrollment
+blobs and never participate in a release, so they stay offline after generation.
+
+Regenerating the `.auth` blobs from the same certificates reproduces identical
+bytes: both the owner GUID and the signing timestamp are fixed. Do not mint a
+different key under an already-published identity: that is a trust-root epoch
+reset, not a key rotation.
+
+The file-backed adapter reads all of these from one configuration; see the
+file-backed signer section of
+[`canonical-releases.md`](canonical-releases.md). Confirm the adapter resolves
+every role before planning a release:
+
+```sh
+aos-release-signer show
+```
+
+## Publish the first or a later edge release
+
+The prepared first-release profile uses
+`2026.9.0-dev.20260927.1`. For every later edge release, update
+`aos.system.version` in the experimental profile to the next calendar SemVer
+`YYYY.M.P-dev.YYYYMMDD.N` through the reviewed source-update workflow before
+building. That value is the disk version and the OCI signed release identity;
+the `aos` package version remains separate provenance.
+
+Before freezing the epoch-one public `.1` plan, create and retain the
+[non-public qualification predecessor](canonical-releases.md#create-a-first-qualification-predecessor)
+at `2026.9.0-dev.20260917.0`. Its protected source revision carries the `.0`
+experimental profile and uses the reserved snapshot release id and source tag. After
+offline verification, advance the profile to `.1` in a later reviewed protected
+source revision.
+
+A plan request freezes four policy digests. Only
+`public_evidence_policy_digest` is checked against anything: planning recomputes
+it from the Nix qualification contract and refuses a request that disagrees.
+The other three are operator inputs, digested from whatever bytes the file
+holds, so a document that lives outside the repository makes its digest
+unreproducible for anyone auditing the release.
+
+Both public documents are therefore committed, and the experimental maintainer
+configuration names them by path in `contributor_authorization` and
+`retention_policy`:
+
+| Digest | Document |
+| --- | --- |
+| `source.contributor_authorization_digest` | [`release-contributor-authorization.json`](release-contributor-authorization.json) |
+| `retention.policy_digest` | [`release-retention-policy.md`](release-retention-policy.md) |
+
+`restricted_operator_policy_digest` is the deliberate exception. It commits to
+the content of a restricted document without publishing it, so that document
+stays in operator custody and its digest is an attestation rather than a
+reproducible derivation.
+
+Plan the snapshot while the `.0` revision is still the head of `master`.
+Planning derives its source identity from the checked-out commit and refuses
+one that is merely an ancestor: `aos maintain release step plan` requires `HEAD` to
+equal the protected branch head, and accepts no protected branch other than
+`master`. The hotfix-branch exception applies only to main plans that carry a
+profile override. Merging the `.0` and `.1` revisions together therefore
+leaves no revision from which the snapshot can be planned, and recovering means
+putting `.0` back at the head of `master` before trying again. Land `.0`, plan
+and build the snapshot, and only then land `.1`. Do not upload the `.0`
+snapshot or use its isolated registry commit as the public registry base. The
+`.1` plan names the snapshot's verified release id and manifest digest while
+retaining the approved empty base commit and generation.
+
+Set the experimental configuration's `predecessor_bundle` to the retained
+snapshot and write the reviewed Linux image decisions to `images.json`.
+
+### Deferred platforms
+
+[`qualification/deferred-platforms.nix`](../../qualification/deferred-platforms.nix)
+lists Linux platforms a release defers; it is empty, so every edge release
+ships both Linux platforms. A listed platform ships nothing: the contract
+exports it as `deferred_platforms` (check with `aos maintain release step
+contract --registry andyl/experimental --json`), every package cell on it is
+blocked with `platform-release-deferred`, `images.json` must give its image
+cell the [blocked decision](canonical-releases.md#prepare-a-plan-request), the
+container bundle omits its manifest, and the frozen plan records all of it.
+Deferring or releasing a platform is a reviewed source change followed by a
+later edge release. The x86_64 maintainer tooling closure carries both the
+native x86_64 executor and the hosted aarch64 executor (QEMU TCG), so no extra
+machine is needed to qualify aarch64 claims.
+
+Both Hub surfaces authenticate through their `aos hub login` profiles unless
+the configuration sets `token_credential`. Only the active profile is used
+(see [Hub credentials](canonical-releases.md#hub-credentials)): sign in to
+`https://aos.staging.andyl.org` before the staging steps below and to
+`https://aos.andyl.org` before the production ones.
+
+The epoch's first release starts from Hubs that hold only the topology rows
+created above. Freeze its plan from the epoch-one clone's root commit with the
+exact prepared version:
+
+```sh
+aos maintain release new --registry andyl/experimental \
+  --version 2026.9.0-dev.20260917.1 --images images.json \
+  --first-release \
+  --source-registry ~/.local/share/apm/registries/andyl-experimental
+```
+
+Check the printed summary: registry `andyl/experimental` (or the active epoch
+identity), the edge version, destinations `staging/edge` (`build`) and
+`production/edge` (`smoke`), the clone's root commit at generation 0 marked as
+a first release, the surface identities verified above, the change scope, and
+complete package and image decisions with all required signer roles. `new`
+refuses a staging Hub that already holds any publication, a dirty clone, a
+clone with more than its root commit, and a clone named other than
+`andyl-experimental` or `experimental`.
+
+Then install that base on both surfaces before publishing, following
+[Bootstrap the first registry base](canonical-releases.md#bootstrap-the-first-registry-base):
+
+1. Write the staging and production `aos.release.registry-bootstrap-intent/v1`
+   payloads for the printed plan digest and base commit, with the deployment
+   identities of `https://aos.staging.andyl.org` and `https://aos.andyl.org`,
+   and have every `release-evidence` key holder sign each with
+   `aos-release-signer sign-evidence`.
+2. Export the clone's root commit:
+   `apr origin upload --registry andyl-experimental --upload-url file://$PWD/base-registry-surface`.
+3. While signed in to staging, run `aos maintain release step bootstrap
+   --environment staging ... --output "$WORK/bootstrap/staging"`; then, signed
+   in to production, the same with `--environment production` and
+   `--output "$WORK/bootstrap/production"`. `$WORK` is the work directory
+   `new` printed.
+4. Copy the clean clone to `$WORK/inputs/source-registry/`.
+
+Then publish with:
+
+```sh
+aos maintain release advance --to staging/edge
+aos maintain release advance --to production/edge
+```
+
+`advance` stops with a `Waiting:` instruction before reaching a surface whose
+`bootstrap/<role>/` evidence is missing. Every later edge release omits
+`--first-release` and `--source-registry`: `new` reads the base commit and
+generation from the staging Hub's current ready publication, and refuses to
+plan while staging holds none.
+
+Follow the [release checklist](release-checklist.md), using
+[`canonical-releases.md`](canonical-releases.md) for command arguments.
+
+For the experimental OCI artifact, externally finalize the exact Nix publication
+inputs before `prepare-registry`. The signing key must be the active experimental
+registry key, never a main-registry key:
+
+```sh
+nix build .#container-aos-experimental-publication-inputs
+openssh="$(nix build .#pkg-openssh --no-link --print-out-paths)"
+aos container prepare-signature ./result \
+  --output container-signature.pae
+"$openssh/bin/ssh-keygen" -Y sign \
+  -f "$ANDYL_EXPERIMENTAL_REGISTRY_KEY" \
+  -n aos-container-signature-dsse-v1 \
+  container-signature.pae
+aos container finalize-signature ./result \
+  --signer "$ANDYL_EXPERIMENTAL_TRUST_KEY" \
+  --signature container-signature.pae.sig \
+  --output final-experimental-container
+```
+
+Upload the immutable OCI graph without a tag or Hub mutation before registry
+finalization:
+
+```sh
+aos container publish aos "$TESTING_OCI_REFERENCE" \
+  --release final-experimental-container/container-release.json \
+  --release-layout final-experimental-container/layout \
+  --signature-input final-experimental-container/signature-input.json \
+  --registry andyl/experimental \
+  --idempotency-key "experimental-${AOS_RELEASE_VERSION}-oci-stage" \
+  --registry-origin "$TESTING_OCI_ORIGIN" \
+  --registry-token "$TESTING_OCI_TOKEN" \
+  --stage-only
+```
+
+Place those exact `container-release.json` and `signature-input.json` files
+where `aos maintain release advance` asks for the OCI sidecar; it passes them to both
+`step prepare-registry` and `step finalize-registry`. The generated
+transaction's reviewed catalog digest includes the sidecar, and finalization
+verifies its exact bytes again. After the signed registry release is published
+to `production/edge` and the production Hub has indexed it, rerun the same
+`aos container publish` command without `--stage-only`, add the production Hub
+credentials, and use a new stable idempotency key. Record the returned
+verified root and tag resource version. Do not use a generic OCI push for the
+release tag.
+
+Do not skip the staging destination even though experimental data is disposable:
+`production/edge` accepts only smoke evidence collected against the staging
+publication. Each step consumes the prior phase's exact evidence, refuses
+replacement outputs, and binds `andyl/experimental` into the signed values. Preserve the closed release
+bundle, plan request, plan, journal, receipts, TUF set, source checkout identity,
+and signer audit records.
+
+After publication, verify anonymously from a clean client that has only the
+experimental image's baked anchor:
+
+```sh
+apm update --registry andyl-experimental
+apm search aos --registry andyl-experimental
+```
+
+Also boot the published disk image, confirm `/etc/aos/release-profile`, the
+console/SSH warning, and `AOS_REGISTRY=andyl/experimental` in `/etc/os-release`. Run
+the OCI image and check the same profile and warning files before recording the
+rollout complete.
+
+## Update packages
+
+Use `aos maintain` to prepare source updates, not to mutate the registry:
+
+```sh
+aos maintain scan --repology-fallback --repology-limit 400
+aos maintain report --outdated
+aos maintain report --advisory
+aos maintain report --vulnerable
+aos maintain report --license-change
+aos maintain plan <unit>
+# Or plan one atomic update cohort:
+aos maintain plan --campaign <cohort>
+
+# For a manually edited package without complete artifact contracts:
+aos maintain refresh-hashes <unit> --check
+aos maintain refresh-hashes <unit>
+
+aos maintain run --plan <plan> --confirm-plan <plan-digest>
+aos maintain diff <run> --patch
+aos maintain accept <run> --confirm <patch-digest>
+aos maintain commit <run> --confirm <run>
+aos maintain test <run> --final
+aos maintain evidence <run>
+aos maintain prepare-pr <run>
+aos maintain publish-pr <run> \
+  --expected-remote-head absent \
+  --confirm <publication-request-digest>
+aos maintain observe-pr <run> \
+  --authorization-check <required-check-name>
+aos maintain handoff <run> --confirm <protected-merge-commit>
+```
+
+The fallback probes a same-named Repology project only when the package does
+not already declare a reviewed Repology mapping. It is a first-signal source:
+newer-version, vulnerable-version, and license-drift records enter the
+maintainer report, but they cannot select or materialize an update. A declared
+direct provider must still identify the exact release, and the source URL,
+hash, and any required signature checks must succeed before a candidate can be
+accepted. Review fallback mappings that do not corroborate the package's
+current version before promoting them into package metadata.
+
+Repology requests are cached for 24 hours, paced to at most one request per
+second, and bounded by `--repology-limit`. Use a smaller limit for a quick
+sample. Re-running the command reuses fresh cached observations and can extend
+an earlier bounded scan without repeating those requests.
+
+If the remote branch already exists, replace `absent` with its exact expected
+head. `prepare-pr` prints the publication request and confirmation digest;
+publication fails closed if either the local candidate or remote head changed.
+Merge only after required review and contributor authorization, and record the
+observed protected merge with `handoff`. Then create a new edge release from
+that merge commit. Do not edit a previous release, tag, immutable TUF metadata
+version, or content-addressed Hub object. Channel and timestamp pointers
+advance only through their dedicated `aos maintain release` operations.
+
+## Rotate keys without resetting trust
+
+Use the signed APR roster transition for an ordinary registry key rotation:
+
+```sh
+apr keys generate <new-id> --registry andyl-experimental --add
+apr keys list --registry andyl-experimental
+```
+
+Publish an overlap release, verify a clean client can sync from the old baked
+anchor and learn the new active key, and only then retire the old key with the
+survivor-vouched APR operation. TUF, release-evidence, qualification, Hub
+receipt, Secure Boot, module, PCR, and cache roles follow their own threshold
+rotation procedures; never collapse them into the APR key merely because one
+machine holds the credentials.
+
+If the Hub registry resource's publication trust set changes, update it with
+the complete overlap set, never only the newly generated key. Capture the exact
+resource version with `registry show`, plan the update, and apply its returned
+plan exactly:
+
+```sh
+aos hub registry update \
+  --hub https://aos.andyl.org \
+  andyl/experimental \
+  --trust-key "$OLD_TRUST_KEY" \
+  --trust-key "$NEW_TRUST_KEY" \
+  --if-version <exact-resource-version> \
+  --idempotency-key overlap-andyl-experimental-keys \
+  --plan
+
+aos hub registry update \
+  --hub https://aos.andyl.org \
+  andyl/experimental \
+  --plan-id <plan-id> \
+  --confirm-hash <effect-manifest-hash> \
+  --yes
+```
+
+Repeat in staging first. Removing the retired key is a second reviewed update
+after the overlap release and clean-client verification.
+
+Other registry configuration changes use the same exact-version plan/apply
+contract. Supply only reviewed fields such as `--visibility`, `--crawl-policy`,
+`--llms-txt-body`, or `--clear-llms-txt`; review and apply in staging before
+repeating against production. The experimental registry remains public. A configuration change
+does not authorize a release, key rotation, mirror, cache-stack, or channel
+mutation.
+
+## Destructive root reset
+
+Use this only when the experimental history or out-of-band root can no longer be
+trusted or intentionally becomes incompatible.
+
+1. Stop new experimental release work and retain the old public evidence.
+2. Select the next unused identity, for example `andyl/experimental-v2`, and matching
+   alias such as `andyl-experimental-v2`.
+3. Generate a new root and all role keys. Do not sign the new root with a
+   compromised or intentionally abandoned old root.
+4. Update the experimental profile's identity, `rootEpoch`, URL, alias, and public
+   anchor; build new disk and OCI artifacts.
+5. Bootstrap the new empty registry in staging, qualify an edge release, then
+   bootstrap and publish it in production.
+6. Verify old images reject the new registry and new images use only the new
+   epoch.
+7. Mark the old registry read-only, retain it for the recorded migration window,
+   then remove its Hub data according to the approved destructive plan.
+
+Changing only the bytes behind `andyl/experimental` is forbidden.
+
+Delete a retired experimental registry only after its evidence and object-retention
+decision are recorded. Capture its exact resource version with `registry show`,
+then use the same two-step mutation contract:
+
+```sh
+aos hub registry delete \
+  --hub https://aos.andyl.org \
+  andyl/experimental \
+  --if-version <exact-resource-version> \
+  --idempotency-key retire-andyl-experimental-v1 \
+  --plan
+
+aos hub registry delete \
+  --hub https://aos.andyl.org \
+  andyl/experimental \
+  --plan-id <plan-id> \
+  --confirm-hash <effect-manifest-hash> \
+  --yes
+```
+
+Repeat independently in staging. Registry deletion is not an R2 backup or
+garbage-collection command; reconcile retained objects under the reviewed Hub
+storage-retention procedure.
+
+## Audit, rollback, and retirement
+
+Use `aos maintain release step verify` with independently supplied public keys for every
+retained release bundle. Compare the public deployment probe, registry release,
+channel partitions, timestamp, and object digests to the operation log. A bad
+edge release is fixed forward with a new immutable release; channel rollback is
+an explicit signed channel operation, never an overwrite of release bytes.
+
+For Hub corruption or deletion, follow
+[`aos-hub-backup-recovery.md`](aos-hub-backup-recovery.md). Because the experimental registry is
+disposable, an approved full reset may instead create a new trust-root epoch and
+redeploy from empty state. Revoke tokens, archive public evidence, remove the
+old image outputs from discovery, and record the terminal registry generation
+when retiring an epoch.

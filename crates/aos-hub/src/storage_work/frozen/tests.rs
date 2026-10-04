@@ -151,6 +151,7 @@ async fn frozen_hybrid_cleanup_keeps_old_address_after_placement_and_capability_
                         let object_key = plan.object_key(path).unwrap();
                         match objects.get(&object_key) {
                             Some(size) => StorageWorkOutcome::Head {
+                                guarded_source: None,
                                 object: StorageObjectIdentity {
                                     provider_version: Some("current-upload-v2".into()),
                                     key: object_key,

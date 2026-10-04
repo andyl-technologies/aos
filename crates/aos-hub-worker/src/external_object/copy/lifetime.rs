@@ -22,11 +22,11 @@ thread_local! {
 
 #[cfg(feature = "do-e2e")]
 /// Counts actual native request-signal callbacks in the controlled artifact.
-pub(super) fn signal_closes() -> u64 {
+pub(in crate::external_object) fn signal_closes() -> u64 {
     SIGNAL_CLOSES.with(Cell::get)
 }
 
-pub(super) struct Lifetime {
+pub(in crate::external_object) struct Lifetime {
     signal: worker::web_sys::AbortSignal,
     callback: Closure<dyn FnMut(JsValue)>,
     resources: Rc<Resources>,
@@ -43,7 +43,7 @@ struct Resources {
     trace: RefCell<Option<Rc<super::observation::Trace>>>,
 }
 
-pub(super) struct Registration {
+pub(in crate::external_object) struct Registration {
     resources: Rc<Resources>,
     object: JsValue,
 }
@@ -53,7 +53,7 @@ impl Lifetime {
     ///
     /// # Errors
     /// Refuses an unavailable listener API or an already canceled request.
-    pub(super) fn new(signal: worker::web_sys::AbortSignal) -> Result<Self> {
+    pub(in crate::external_object) fn new(signal: worker::web_sys::AbortSignal) -> Result<Self> {
         let resources = Rc::new(Resources::default());
         let observed = Rc::clone(&resources);
         let callback = Closure::new(move |_| {
@@ -78,7 +78,7 @@ impl Lifetime {
     ///
     /// # Errors
     /// Returns an error once the request's native signal has closed the owner.
-    pub(super) fn check(&self) -> Result<()> {
+    pub(in crate::external_object) fn check(&self) -> Result<()> {
         ensure!(!self.resources.closed.get(), "copy invocation closed");
         Ok(())
     }
@@ -87,7 +87,7 @@ impl Lifetime {
     ///
     /// # Errors
     /// Refuses a closed owner or repeated capacity attachment.
-    pub(super) fn retain_capacity(&self, permit: Permit) -> Result<()> {
+    pub(in crate::external_object) fn retain_capacity(&self, permit: Permit) -> Result<()> {
         self.check()?;
         ensure!(
             self.resources.capacity.borrow().is_none(),
@@ -101,7 +101,7 @@ impl Lifetime {
     ///
     /// # Errors
     /// Refuses canceled ownership or more than the two bounded pass transfers.
-    pub(super) fn retain_transfer(
+    pub(in crate::external_object) fn retain_transfer(
         &self,
         cancellation: crate::direct_upload::provider_capacity::transfer::Cancellation,
     ) -> Result<()> {
@@ -114,12 +114,12 @@ impl Lifetime {
 
     #[cfg(feature = "do-e2e")]
     /// Attaches a private bracket without changing any resource ownership.
-    pub(super) fn observe(&self, trace: Option<Rc<super::observation::Trace>>) {
+    pub(in crate::external_object) fn observe(&self, trace: Option<Rc<super::observation::Trace>>) {
         *self.resources.trace.borrow_mut() = trace;
     }
 
     #[cfg(feature = "do-e2e")]
-    pub(super) fn observe_transfer(
+    pub(in crate::external_object) fn observe_transfer(
         &self,
         ticket: &crate::direct_upload::provider_capacity::transfer::Ticket,
     ) {
@@ -129,7 +129,7 @@ impl Lifetime {
     }
 
     #[cfg(feature = "do-e2e")]
-    pub(super) fn observe_progress(&self, bytes: u64, eof: bool) {
+    pub(in crate::external_object) fn observe_progress(&self, bytes: u64, eof: bool) {
         if let Some(trace) = self.resources.trace.borrow().as_ref() {
             trace.progress(bytes, eof);
         }
@@ -139,7 +139,7 @@ impl Lifetime {
     ///
     /// # Errors
     /// Refuses a canceled owner or repeated source-gate attachment.
-    pub(super) fn retain_source_gate(
+    pub(in crate::external_object) fn retain_source_gate(
         &self,
         gate: futures_util::lock::OwnedMutexGuard<()>,
     ) -> Result<()> {
@@ -156,7 +156,7 @@ impl Lifetime {
     ///
     /// # Errors
     /// Refuses canceled invocation, excessive resources or absent native method.
-    pub(super) fn register(&self, object: JsValue, method: &'static str) -> Result<Registration> {
+    pub(in crate::external_object) fn register(&self, object: JsValue, method: &'static str) -> Result<Registration> {
         self.check()?;
         function(&object, method)?;
         ensure!(

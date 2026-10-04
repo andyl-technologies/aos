@@ -57,7 +57,7 @@ async fn schema_callback_runs_after_both_headers_and_before_any_row() {
         Cursor::new(&f.output.private),
         StreamLimits::default(),
         |manifest| {
-            assert_eq!(manifest.version, 8);
+            assert_eq!(manifest.version, 12);
             assert!(!called.replace(true));
             Ok(())
         },
@@ -68,7 +68,7 @@ async fn schema_callback_runs_after_both_headers_and_before_any_row() {
     )
     .unwrap();
     assert!(called.get());
-    assert_eq!(report.counts().tables, 279);
+    assert_eq!(report.counts().tables, 287);
 
     let mut bad = fixture().await;
     let (metadata, private) = plaintext(&bad);
@@ -231,7 +231,7 @@ async fn actual_sqlite_capture_reconstructs_every_retained_row_and_omits_session
     )
     .unwrap();
     assert_eq!(report.counts(), &f.output.counts);
-    assert_eq!(report.counts().tables, 279);
+    assert_eq!(report.counts().tables, 287);
     assert_eq!(users.len(), 2);
     assert!(report.counts().private_cells >= 2);
     assert!(report.counts().omitted_rows >= 3);
@@ -355,13 +355,13 @@ async fn empty_tables_and_explicit_omission_counts_are_all_present() {
         meta.iter()
             .filter(|line| line["kind"] == "table_start")
             .count(),
-        279
+        287
     );
     assert_eq!(
         meta.iter()
             .filter(|line| line["kind"] == "table_end")
             .count(),
-        279
+        287
     );
     assert!(meta
         .iter()
@@ -1022,7 +1022,7 @@ fn distinct_postgres_header_requires_exact_closed_source_and_generation() {
             declared_foreign_keys: "passed".into(),
             checked_expressions: "1200".into(),
         },
-        source: Some(PostgresSource::expected()),
+        source: Some(PostgresSource::expected_for_generation(12).unwrap()),
     };
     check_header(&header, &classifier, "test-archive", "metadata").unwrap();
     for (field, value) in [
@@ -1039,9 +1039,19 @@ fn distinct_postgres_header_requires_exact_closed_source_and_generation() {
     }
     header.source = None;
     assert!(check_header(&header, &classifier, "test-archive", "metadata").is_err());
-    header.source = Some(PostgresSource::expected());
+    header.source = Some(PostgresSource::expected_for_generation(12).unwrap());
     header.profile = PROFILE.into();
     assert!(check_header(&header, &classifier, "test-archive", "metadata").is_err());
+    // The retained generation-eight declaration is independently pinned and
+    // remains readable; it cannot be borrowed for a generation-twelve archive.
+    let historical = SnapshotClassifier::for_supported_generation(8).unwrap();
+    header.profile = POSTGRES_PROFILE.into();
+    header.schema = schema(&historical).unwrap();
+    header.table_count = historical.tables.len().to_string();
+    assert!(check_header(&header, &historical, "test-archive", "metadata").is_err());
+    header.source = PostgresSource::expected_for_generation(8);
+    check_header(&header, &historical, "test-archive", "metadata").unwrap();
+
     let legacy = SnapshotClassifier::for_supported_generation(7).unwrap();
     header.profile = POSTGRES_PROFILE.into();
     header.schema = schema(&legacy).unwrap();

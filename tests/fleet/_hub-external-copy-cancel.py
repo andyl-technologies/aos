@@ -148,7 +148,8 @@ def run_external_copy_cancel_window(native, worker, s3, tools, prepared, process
     retain_direct_flow(label + "-missing-scan.json", missing)
     lifetime = managed_fixture_module(tools["externalCopyLifetime"], "external_copy_lifetime_" + run)
     installation = tools["externalCopyPartialInstallation"]
-    provider_prefix = "/fleet-s3/" + source_prefix + "/"
+    provider_prefix = external_oci_provider_prefix(binding["spec"]["s3"]["bucket"],
+        binding["spec"]["s3"]["prefix"], source_prefix)
     token, finished = None, False
 
     def begin_window(window_label):

@@ -197,7 +197,7 @@ fn replace_mirror_original(metadata: &mut [Json], private: &mut [Json], original
 }
 
 #[tokio::test]
-async fn generation8_replays_mirror_child_before_registry_with_exact_private_originals() {
+async fn current_generation_replays_mirror_child_before_registry_with_exact_private_originals() {
     let (fixture, original) = mirror_fixture().await;
     let mut recovered = Vec::new();
     aos_hub_core::snapshot::archive::records::verify_database_capture(
@@ -218,8 +218,8 @@ async fn generation8_replays_mirror_child_before_registry_with_exact_private_ori
     .unwrap();
     assert_eq!(recovered, vec![mirror_row(&original)]);
     let report = scratch(&fixture).await.unwrap();
-    assert_eq!(report.records().counts().tables, 279);
-    assert_eq!(report.checked_tables(), 269);
+    assert_eq!(report.records().counts().tables, 287);
+    assert_eq!(report.checked_tables(), 277);
     assert_eq!(report.synthetic_lineage_rows(), 2);
     let (metadata, _) = plaintext(&fixture);
     let names = lines(&metadata)

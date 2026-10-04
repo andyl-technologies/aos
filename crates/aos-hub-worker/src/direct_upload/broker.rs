@@ -17,7 +17,7 @@ use super::{
     complete,
     config::QualifiedConfig,
     control::{self, Transport},
-    effects::{abort_one, begin, grant},
+    effects::{abort_one_with_signal, begin_with_signal, grant},
     journal,
     storage::{self, Operation, Reply},
 };
@@ -114,7 +114,14 @@ async fn execute(request: &mut Request, env: &Env) -> Result<DirectUploadRespons
                 reply.admissions.iter().map(|admission| async {
                     (
                         &admission.intent.client_operation_id,
-                        begin(env, &qualified, admission, &context).await,
+                        begin_with_signal(
+                            env,
+                            &qualified,
+                            admission,
+                            &context,
+                            Some(request.inner().signal()),
+                        )
+                        .await,
                     )
                 }),
                 maximum,
@@ -311,10 +318,19 @@ async fn execute(request: &mut Request, env: &Env) -> Result<DirectUploadRespons
                     )?;
                     let qualified = &qualified;
                     let context = &context;
+                    let signal = request.inner().signal();
                     Some(async move {
                         (
                             &abort.operation_id,
-                            abort_one(env, qualified, admission, abort, context).await,
+                            abort_one_with_signal(
+                                env,
+                                qualified,
+                                admission,
+                                abort,
+                                context,
+                                Some(signal),
+                            )
+                            .await,
                         )
                     })
                 }),

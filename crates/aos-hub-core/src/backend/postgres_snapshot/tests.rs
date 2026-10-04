@@ -6,6 +6,46 @@ use crate::value::Value;
 use sqlx::Row as _;
 
 #[tokio::test]
+#[ignore = "requires the dedicated disposable PostgreSQL 18 catalogue source"]
+async fn current_catalogue_is_derived_from_actual_translated_serving_schema() {
+    let path = std::env::var_os("AOS_PG_SNAPSHOT_TEST_URL_FILE").expect("private scratch URL file");
+    let url = std::fs::read_to_string(path).unwrap();
+    let backend = SqlxBackend::connect_postgres(url.trim()).await.unwrap();
+    backend.migrate_schema().await.unwrap();
+    let SqlxBackend::Postgres(pool) = backend else {
+        panic!("PostgreSQL required")
+    };
+    let identity: String = sqlx::query_scalar("SELECT identity FROM hub_schema_identity")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let generation: i64 = sqlx::query_scalar("SELECT version FROM schema_version")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(identity, crate::db::SCHEMA_IDENTITY);
+    assert_eq!(generation, 12);
+    let storage: String = sqlx::query_scalar("SELECT data_type FROM information_schema.columns WHERE table_schema='public' AND table_name='oci_provider_inventory_generations' AND column_name='object_progress'")
+        .fetch_one(&pool).await.unwrap();
+    assert_eq!(storage, "bytea");
+
+    let mut transaction = pool
+        .begin_with("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        .await
+        .unwrap();
+    let facts = catalogue::read(&mut transaction).await.unwrap();
+    let digest = catalogue::digest(&facts).unwrap();
+    assert_eq!(digest.len(), 64);
+    if let Some(output) = std::env::var_os("AOS_PG_CATALOGUE_DIGEST_OUTPUT") {
+        // Local calibration retains the production normalizer's result; it
+        // does not admit a source or substitute a catalogue expectation.
+        std::fs::write(output, format!("{digest}\n")).unwrap();
+    }
+    transaction.rollback().await.unwrap();
+    pool.close().await;
+}
+
+#[tokio::test]
 #[ignore = "requires the dedicated disposable PostgreSQL 18 test source"]
 async fn held_snapshot_covers_original_rows_and_refuses_mutation_schema_and_oversize() {
     let path = std::env::var_os("AOS_PG_SNAPSHOT_TEST_URL_FILE").expect("private scratch URL file");
@@ -71,7 +111,7 @@ async fn held_snapshot_covers_original_rows_and_refuses_mutation_schema_and_over
     let mut source = PostgresSnapshotReader::open(url.trim(), PostgresSnapshotLimits::default())
         .await
         .unwrap();
-    assert_eq!(source.schema().version, 8);
+    assert_eq!(source.schema().version, 12);
     assert_eq!(
         source.audit().catalogue_sha256(),
         catalogue::expected_sha256()
@@ -185,10 +225,12 @@ async fn held_snapshot_covers_original_rows_and_refuses_mutation_schema_and_over
         .await
         .unwrap();
     let mut oversized_cursor = oversized.table("users").unwrap();
-    assert!(oversized_cursor
-        .next_page(Default::default())
-        .await
-        .is_err());
+    assert!(
+        oversized_cursor
+            .next_page(Default::default())
+            .await
+            .is_err()
+    );
     assert!(oversized_cursor.last_locator_for_test().is_none());
     drop(oversized_cursor);
     oversized.close().await.unwrap();
@@ -218,15 +260,17 @@ async fn held_snapshot_covers_original_rows_and_refuses_mutation_schema_and_over
         .execute(&mut *exclusive)
         .await
         .unwrap();
-    assert!(PostgresSnapshotReader::open(
-        url.trim(),
-        PostgresSnapshotLimits {
-            lock_timeout: Duration::from_millis(100),
-            ..Default::default()
-        }
-    )
-    .await
-    .is_err());
+    assert!(
+        PostgresSnapshotReader::open(
+            url.trim(),
+            PostgresSnapshotLimits {
+                lock_timeout: Duration::from_millis(100),
+                ..Default::default()
+            }
+        )
+        .await
+        .is_err()
+    );
     exclusive.rollback().await.unwrap();
 
     sqlx::query("ALTER TABLE sessions DISABLE TRIGGER ALL")
@@ -249,7 +293,7 @@ async fn held_snapshot_covers_original_rows_and_refuses_mutation_schema_and_over
             .await
             .unwrap();
     let original_view = original_view.trim().trim_end_matches(';');
-    let compiled = CompiledSqliteSnapshotCatalogue::load_generation(8)
+    let compiled = CompiledSqliteSnapshotCatalogue::load_generation(12)
         .await
         .unwrap();
     let compiled_view = compiled

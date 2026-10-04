@@ -15,12 +15,15 @@ use aos_hub_core::{
     secret_version::{ResolvedSecretVersion, SecretVersionResolver},
     value::Value as SqlValue,
 };
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 
 use super::*;
 
 #[path = "configuration.rs"]
 mod configuration;
+
+#[path = "connected/scheduling.rs"]
+mod scheduling;
 
 struct FixtureProcess(Child);
 
@@ -202,7 +205,7 @@ async fn close_legacy_original(
         )
         .unwrap();
     let observed = work.execute(&head_plan).await.unwrap();
-    let StorageWorkOutcome::Head { object } = observed.outcome else {
+    let StorageWorkOutcome::Head { object, .. } = observed.outcome else {
         panic!("actual legacy source HEAD absent")
     };
     original.source_object = CopySourceObject {
@@ -223,6 +226,7 @@ async fn close_legacy_original(
                 destination,
                 &current.binding,
                 StorageWorkOperation::CopyObject {
+                    source_binding_id: None,
                     source_placement_id: source.id,
                     source_placement_resource_version: source.resource_version,
                     source_prefix: source.prefix.clone(),
@@ -247,6 +251,16 @@ async fn close_legacy_original(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires explicitly pinned AOS Node/workerd/Worker artifact and retained evidence directory"]
 async fn actual_native_copy_guard_issuer_and_cold_terminal_replay() {
+    run_connected(false).await;
+}
+
+#[tokio::test]
+#[ignore = "requires exact same-source AOS Node/workerd/Worker and a fresh retained evidence directory"]
+async fn actual_cross_binding_copy_and_cold_terminal_replay() {
+    run_connected(true).await;
+}
+
+async fn run_connected(cross_binding: bool) {
     let root = PathBuf::from(std::env::var("AOS_COPY_CONNECTED_ROOT").unwrap());
     std::fs::create_dir(&root).unwrap();
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -261,10 +275,18 @@ async fn actual_native_copy_guard_issuer_and_cold_terminal_replay() {
             .await
             .unwrap(),
     );
-    let (old_writer, operation, source, destination, token) =
-        fixture_with_database(db.clone()).await;
+    let (old_writer, operation, source, destination, token) = if cross_binding {
+        super::paired::fixture_with_database(db.clone()).await
+    } else {
+        fixture_with_database(db.clone()).await
+    };
+    let binding_ids = if cross_binding {
+        vec![destination.binding_id, source.binding_id]
+    } else {
+        vec![source.binding_id]
+    };
     let (configuration, object, copy, rpc, auth) =
-        configuration::configure(db.clone(), source.binding_id, &root).await;
+        configuration::configure_bindings(db.clone(), &binding_ids, &root).await;
     private_file(
         &configuration.publisher_key_file,
         b"fixture-copy-publisher-independent-role-key",
@@ -319,6 +341,13 @@ async fn actual_native_copy_guard_issuer_and_cold_terminal_replay() {
     let _callback_task = IssuerTask(tokio::spawn(async move {
         axum::serve(callback_listener, callback).await.unwrap();
     }));
+    let source_digest = if cross_binding {
+        let path = std::env::var("AOS_COPY_WORKER_SOURCE_PATH").unwrap();
+        assert!(path.starts_with("/nix/store/") && Path::new(&path).is_dir());
+        Some(hex::encode(sha2::Sha256::digest(path.as_bytes())))
+    } else {
+        None
+    };
     private_file(
         &root.join("setup.json"),
         &serde_json::to_vec(&json!({
@@ -329,7 +358,9 @@ async fn actual_native_copy_guard_issuer_and_cold_terminal_replay() {
             "application": configuration::APPLICATION,
             "guard": configuration::GUARD,
             "renewal": configuration::RENEWAL,
-            "sourceKey": "managed/binding/objects/source/nar/source.nar",
+            "sourceDigest": source_digest,
+            "sourceKey": if cross_binding {"managed/source-binding/objects/source/nar/source.nar"}
+                else {"managed/binding/objects/source/nar/source.nar"},
             "destinationKey": "managed/binding/objects/destination/nar/source.nar"
         }))
         .unwrap(),
@@ -414,123 +445,133 @@ async fn actual_native_copy_guard_issuer_and_cold_terminal_replay() {
     client.http = controlled_http.clone();
     client.semantic_observation_http = controlled_http;
     let work = Arc::new(client);
-    let binding = db.binding(source.binding_id).await.unwrap().unwrap();
-    // Operator staging and the real Worker probe retain genuine queued SQL
-    // originals. This does not grant provider capability or settle those tasks.
-    for purpose in ["list", "read", "write"] {
-        let credential = db
-            .current_binding_credential(binding.id, purpose)
-            .await
-            .unwrap()
-            .unwrap();
-        let plan = rpc
-            .plan_validate_binding_credential(
-                Some(&auth),
-                aos_proto_types::hub_v1::PlanValidateBindingCredentialRequest {
-                    binding_id: binding.stable_id.clone(),
-                    purpose: purpose.into(),
-                    generation: credential.generation,
-                    expected_resource_version: credential.head_resource_version.to_string(),
-                    idempotency_key: format!("copy-custody-{purpose}-plan"),
-                },
-            )
-            .await
-            .unwrap()
-            .plan
-            .unwrap();
-        let operation = rpc
-            .validate_binding_credential(
-                Some(&auth),
-                aos_proto_types::hub_v1::ApplyTopologyPlanRequest {
-                    plan_id: plan.plan_id,
-                    confirmation_hash: plan.confirmation_hash,
-                    idempotency_key: format!("copy-custody-{purpose}-apply"),
-                },
-            )
-            .await
-            .unwrap()
-            .operation
-            .unwrap();
-        let queued = db
-            .topology_operation(&operation.operation_id)
-            .await
-            .unwrap()
-            .unwrap();
-        let detail: Value = serde_json::from_str(&queued.detail_json).unwrap();
-        let write_state = db.binding_write_state(binding.id).await.unwrap().unwrap();
-        assert_eq!(detail["credentialGeneration"], credential.generation);
-        assert_eq!(
-            detail["credentialHeadResourceVersion"],
-            credential.head_resource_version
-        );
-        assert_eq!(
-            detail["bindingWriteStateResourceVersion"],
-            write_state.resource_version
-        );
-        assert_eq!(
-            detail["bindingWriteRevision"],
-            write_state.current_write_revision.unwrap_or(0)
-        );
-        assert_eq!(queued.primary_target_stable_id, binding.stable_id);
-        assert_eq!(
-            queued.primary_target_generation_key,
-            binding.resource_version
-        );
-        let now = aos_hub_core::clock::now_unix_secs();
-        let request = aos_hub_core::storage_work::binding_custody::StorageCredentialCustodyProbe {
-            version: 1,
-            nonce: hex::encode(rand::random::<[u8; 32]>()),
-            issued_at: now,
-            expires_at: now + 30,
-            operation_id: queued.operation_id.clone(),
-            probe_token: detail["probeToken"].as_str().unwrap().into(),
-            head_resource_version: credential.head_resource_version,
-            snapshot: aos_hub_core::storage_work::StorageBindingSnapshot::for_credential_probe(
-                work.deployment_id().into(),
-                &binding,
-                &credential,
-                now,
-            )
-            .unwrap(),
-        };
-        work.stage_credential_custody(request, &Resolver, now + 3600)
-            .await
-            .unwrap();
-        assert_eq!(
-            db.topology_operation(&operation.operation_id)
+    // Each binding independently stages and probes its actual credential originals.
+    for &binding_id in &binding_ids {
+        let binding = db.binding(binding_id).await.unwrap().unwrap();
+        // Operator staging and the real Worker probe retain genuine queued SQL
+        // originals. This does not grant provider capability or settle those tasks.
+        for purpose in ["list", "read", "write"] {
+            let credential = db
+                .current_binding_credential(binding.id, purpose)
                 .await
                 .unwrap()
-                .unwrap(),
-            queued
-        );
-        let queued = db
-            .topology_operation(&operation.operation_id)
-            .await
-            .unwrap()
-            .unwrap();
-        let detail: Value = serde_json::from_str(&queued.detail_json).unwrap();
-        let proof = work
-            .probe_retained_credential(
-                &binding,
-                &credential,
-                &operation.operation_id,
-                detail["probeToken"].as_str().unwrap(),
-            )
-            .await
-            .unwrap();
-        assert!(proof.valid);
-        assert_eq!(
-            db.topology_operation(&operation.operation_id)
+                .unwrap();
+            let plan = rpc
+                .plan_validate_binding_credential(
+                    Some(&auth),
+                    aos_proto_types::hub_v1::PlanValidateBindingCredentialRequest {
+                        binding_id: binding.stable_id.clone(),
+                        purpose: purpose.into(),
+                        generation: credential.generation,
+                        expected_resource_version: credential.head_resource_version.to_string(),
+                        idempotency_key: format!("copy-custody-{}-{purpose}-plan", binding.id),
+                    },
+                )
                 .await
                 .unwrap()
+                .plan
+                .unwrap();
+            let operation = rpc
+                .validate_binding_credential(
+                    Some(&auth),
+                    aos_proto_types::hub_v1::ApplyTopologyPlanRequest {
+                        plan_id: plan.plan_id,
+                        confirmation_hash: plan.confirmation_hash,
+                        idempotency_key: format!("copy-custody-{}-{purpose}-apply", binding.id),
+                    },
+                )
+                .await
                 .unwrap()
-                .state,
-            "pending"
-        );
+                .operation
+                .unwrap();
+            let queued = db
+                .topology_operation(&operation.operation_id)
+                .await
+                .unwrap()
+                .unwrap();
+            let detail: Value = serde_json::from_str(&queued.detail_json).unwrap();
+            let write_state = db.binding_write_state(binding.id).await.unwrap().unwrap();
+            assert_eq!(detail["credentialGeneration"], credential.generation);
+            assert_eq!(
+                detail["credentialHeadResourceVersion"],
+                credential.head_resource_version
+            );
+            assert_eq!(
+                detail["bindingWriteStateResourceVersion"],
+                write_state.resource_version
+            );
+            assert_eq!(
+                detail["bindingWriteRevision"],
+                write_state.current_write_revision.unwrap_or(0)
+            );
+            assert_eq!(queued.primary_target_stable_id, binding.stable_id);
+            assert_eq!(
+                queued.primary_target_generation_key,
+                binding.resource_version
+            );
+            let now = aos_hub_core::clock::now_unix_secs();
+            let request =
+                aos_hub_core::storage_work::binding_custody::StorageCredentialCustodyProbe {
+                    version: 1,
+                    nonce: hex::encode(rand::random::<[u8; 32]>()),
+                    issued_at: now,
+                    expires_at: now + 30,
+                    operation_id: queued.operation_id.clone(),
+                    probe_token: detail["probeToken"].as_str().unwrap().into(),
+                    head_resource_version: credential.head_resource_version,
+                    snapshot:
+                        aos_hub_core::storage_work::StorageBindingSnapshot::for_credential_probe(
+                            work.deployment_id().into(),
+                            &binding,
+                            &credential,
+                            now,
+                        )
+                        .unwrap(),
+                };
+            work.stage_credential_custody(request, &Resolver, now + 3600)
+                .await
+                .unwrap();
+            assert_eq!(
+                db.topology_operation(&operation.operation_id)
+                    .await
+                    .unwrap()
+                    .unwrap(),
+                queued
+            );
+            let queued = db
+                .topology_operation(&operation.operation_id)
+                .await
+                .unwrap()
+                .unwrap();
+            let detail: Value = serde_json::from_str(&queued.detail_json).unwrap();
+            let proof = work
+                .probe_retained_credential(
+                    &binding,
+                    &credential,
+                    &operation.operation_id,
+                    detail["probeToken"].as_str().unwrap(),
+                )
+                .await
+                .unwrap();
+            assert!(proof.valid);
+            assert_eq!(
+                db.topology_operation(&operation.operation_id)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .state,
+                "pending"
+            );
+        }
+        work.ensure_binding_snapshot(&db, &binding, &Resolver)
+            .await
+            .unwrap();
     }
-    work.ensure_binding_snapshot(&db, &binding, &Resolver)
-        .await
-        .unwrap();
+    let (operation, token, destination) = if cross_binding {
+        scheduling::replicate_claim(&db, &rpc, &auth, &source, &destination).await
+    } else {
+        (operation, token, destination)
+    };
     let writer = Arc::new(HybridSurfaceWrites::new(db.clone(), work.clone()));
     let provider = Arc::new(super::super::super::HybridSurfaceProvider::new(
         db.clone(),
@@ -541,7 +582,7 @@ async fn actual_native_copy_guard_issuer_and_cold_terminal_replay() {
         fetch.fetch("nar/source.nar").await.is_err(),
         "Native generic bulk fallback must remain refused"
     );
-    let listed = fetch.list_page(None, 128).await.unwrap();
+    let listed = fetch.list_page("", None, 128).await.unwrap();
     assert_eq!(listed.paths, ["nar/source.nar"]);
     let evidence = listed.evidence.get("nar/source.nar").unwrap();
     let mut changed_incarnation = evidence.clone();
@@ -558,11 +599,9 @@ async fn actual_native_copy_guard_issuer_and_cold_terminal_replay() {
         )
         .await
         .unwrap_err();
-    assert!(
-        refused_incarnation
-            .to_string()
-            .contains("source changed after inventory")
-    );
+    assert!(refused_incarnation
+        .to_string()
+        .contains("source changed after inventory"));
     for effect in [
         "creates",
         "parts",
@@ -618,6 +657,21 @@ async fn actual_native_copy_guard_issuer_and_cold_terminal_replay() {
             .unwrap(),
         Some(8 * 1024 * 1024)
     );
+    if cross_binding {
+        assert_eq!(retained.original.version, 3);
+        let pins = retained.original.transfer.as_ref().unwrap();
+        assert_eq!(pins.source_binding.binding_id.get(), source.binding_id);
+        assert_eq!(retained.original.binding_id.get(), destination.binding_id);
+        assert_ne!(
+            pins.source_binding.profile_digest,
+            retained.original.profile_digest
+        );
+        assert_ne!(
+            pins.source_binding.snapshot_revision,
+            retained.original.snapshot_revision
+        );
+        assert_eq!(pins.maximum_source_range_bytes.get(), 5 * 1024 * 1024);
+    }
     let cold_replay = admin(administrative, "inspect").await;
     for effect in [
         "creates",
@@ -642,19 +696,17 @@ async fn actual_native_copy_guard_issuer_and_cold_terminal_replay() {
         8 * 1024 * 1024,
     )
     .await;
-    assert!(
-        writer
-            .copy_external_claimed(
-                &operation,
-                &token,
-                &source,
-                &destination,
-                "nar/source.nar",
-                Some(evidence)
-            )
-            .await
-            .is_err()
-    );
+    assert!(writer
+        .copy_external_claimed(
+            &operation,
+            &token,
+            &source,
+            &destination,
+            "nar/source.nar",
+            Some(evidence)
+        )
+        .await
+        .is_err());
     set_catalogue(
         &db,
         &catalogue_backend,
@@ -664,19 +716,17 @@ async fn actual_native_copy_guard_issuer_and_cold_terminal_replay() {
         8 * 1024 * 1024 - 1,
     )
     .await;
-    assert!(
-        writer
-            .copy_external_claimed(
-                &operation,
-                &token,
-                &source,
-                &destination,
-                "nar/source.nar",
-                Some(evidence)
-            )
-            .await
-            .is_err()
-    );
+    assert!(writer
+        .copy_external_claimed(
+            &operation,
+            &token,
+            &source,
+            &destination,
+            "nar/source.nar",
+            Some(evidence)
+        )
+        .await
+        .is_err());
     set_catalogue(
         &db,
         &catalogue_backend,
@@ -688,40 +738,36 @@ async fn actual_native_copy_guard_issuer_and_cold_terminal_replay() {
     .await;
     let mut wrong_surface = source.clone();
     wrong_surface.registry_id = Some(source.registry_id.unwrap() + 10000);
-    assert!(
-        writer
-            .copy_external_claimed(
-                &operation,
-                &token,
-                &wrong_surface,
-                &destination,
-                "nar/source.nar",
-                Some(evidence)
-            )
-            .await
-            .is_err()
-    );
-    assert!(
-        writer
-            .copy_external_claimed(
-                &operation,
-                &token,
-                &source,
-                &destination,
-                "../nar/source.nar",
-                Some(evidence)
-            )
-            .await
-            .is_err()
-    );
+    assert!(writer
+        .copy_external_claimed(
+            &operation,
+            &token,
+            &wrong_surface,
+            &destination,
+            "nar/source.nar",
+            Some(evidence)
+        )
+        .await
+        .is_err());
+    assert!(writer
+        .copy_external_claimed(
+            &operation,
+            &token,
+            &source,
+            &destination,
+            "../nar/source.nar",
+            Some(evidence)
+        )
+        .await
+        .is_err());
     assert_eq!(admin(administrative, "inspect").await["creates"], 1);
     admin(administrative, "populate-scan-tail").await;
     let destination_fetch = provider.placement_fetcher(&destination).await.unwrap();
-    let first = destination_fetch.list_page(None, 1000).await.unwrap();
+    let first = destination_fetch.list_page("", None, 1000).await.unwrap();
     assert_eq!(first.paths.len(), 128);
     let cursor = first.next_cursor.as_deref().unwrap();
     let second = destination_fetch
-        .list_page(Some(cursor), 1000)
+        .list_page("", Some(cursor), 1000)
         .await
         .unwrap();
     assert_eq!(second.paths.len(), 2);
@@ -734,20 +780,18 @@ async fn actual_native_copy_guard_issuer_and_cold_terminal_replay() {
     assert_eq!(paths.len(), 130);
     let before = admin(administrative, "inspect").await["listRequests"].clone();
     let changed = format!("{cursor}x");
-    assert!(
-        destination_fetch
-            .list_page(Some(&changed), 1000)
-            .await
-            .is_err()
-    );
+    assert!(destination_fetch
+        .list_page("", Some(&changed), 1000)
+        .await
+        .is_err());
     assert_eq!(
         admin(administrative, "inspect").await["listRequests"],
         before
     );
     // A real failed operation is retried through the current authorized API;
     // the normal controller then scans and commits the recovered destination.
-    assert!(
-        db.finish_claimed_surface_placement_scan_operation(
+    assert!(db
+        .finish_claimed_surface_placement_scan_operation(
             &operation.operation_id,
             operation.resource_version,
             &token,
@@ -759,8 +803,7 @@ async fn actual_native_copy_guard_issuer_and_cold_terminal_replay() {
             aos_hub_core::clock::now_unix_secs()
         )
         .await
-        .unwrap()
-    );
+        .unwrap());
     let failed = db
         .topology_operation(&operation.operation_id)
         .await
@@ -797,11 +840,9 @@ async fn actual_native_copy_guard_issuer_and_cold_terminal_replay() {
         )
         .await
         .unwrap();
-    assert!(
-        presence
-            .iter()
-            .any(|copy| copy.placement_name == "destination" && copy.state == "present")
-    );
+    assert!(presence
+        .iter()
+        .any(|copy| copy.placement_name == "destination" && copy.state == "present"));
     let detail: Value = serde_json::from_str(&settled.detail_json).unwrap();
     assert_eq!(detail["listedObjects"], 130);
     assert_eq!(detail["unknownObjects"], 129);
@@ -811,32 +852,45 @@ async fn actual_native_copy_guard_issuer_and_cold_terminal_replay() {
     );
     assert_eq!(admin(administrative, "inspect").await["creates"], 1);
     admin(administrative, "restore-source-version-1").await;
+    let repair_operation = if cross_binding {
+        Some(
+            scheduling::repair_incomplete_target(
+                &db,
+                &rpc,
+                &auth,
+                &source,
+                &destination,
+                &controller,
+            )
+            .await,
+        )
+    } else {
+        None
+    };
     let before_unknown = admin(administrative, "inspect").await;
     let (unresolved, unknown_token) =
         new_claim(&db, &source, &destination, "connected-copy-unknown-create").await;
-    let current_source = fetch.list_page(None, 128).await.unwrap();
+    let current_source = fetch.list_page("", None, 128).await.unwrap();
     let current_evidence = current_source.evidence.get("nar/source.nar").unwrap();
     admin(administrative, "lose-create-reply").await;
-    assert!(
-        writer
-            .copy_external_claimed(
-                &unresolved,
-                &unknown_token,
-                &source,
-                &destination,
-                "nar/source.nar",
-                Some(current_evidence)
-            )
-            .await
-            .is_err()
-    );
+    assert!(writer
+        .copy_external_claimed(
+            &unresolved,
+            &unknown_token,
+            &source,
+            &destination,
+            "nar/source.nar",
+            Some(current_evidence)
+        )
+        .await
+        .is_err());
     let before_restart = admin(administrative, "inspect").await;
     assert_eq!(
         before_restart["creates"],
         before_unknown["creates"].as_u64().unwrap() + 1
     );
-    assert!(
-        db.finish_claimed_surface_placement_scan_operation(
+    assert!(db
+        .finish_claimed_surface_placement_scan_operation(
             &unresolved.operation_id,
             unresolved.resource_version,
             &unknown_token,
@@ -848,8 +902,7 @@ async fn actual_native_copy_guard_issuer_and_cold_terminal_replay() {
             aos_hub_core::clock::now_unix_secs()
         )
         .await
-        .unwrap()
-    );
+        .unwrap());
     admin(administrative, "restart-replace-source").await;
     let failed = db
         .topology_operation(&unresolved.operation_id)
@@ -903,21 +956,19 @@ async fn actual_native_copy_guard_issuer_and_cold_terminal_replay() {
     admin(administrative, "enable-race-source").await;
     let (race, race_token) =
         new_claim(&db, &source, &destination, "connected-copy-catalogue-race").await;
-    let listed_race = fetch.list_page(None, 128).await.unwrap();
+    let listed_race = fetch.list_page("", None, 128).await.unwrap();
     let before_race = admin(administrative, "inspect").await;
-    assert!(
-        writer
-            .copy_external_claimed(
-                &race,
-                &race_token,
-                &source,
-                &destination,
-                "nar/race.nar",
-                listed_race.evidence.get("nar/race.nar")
-            )
-            .await
-            .is_err()
-    );
+    assert!(writer
+        .copy_external_claimed(
+            &race,
+            &race_token,
+            &source,
+            &destination,
+            "nar/race.nar",
+            listed_race.evidence.get("nar/race.nar")
+        )
+        .await
+        .is_err());
     assert_eq!(
         db.surface_object_named(surface, "nar/race.nar")
             .await
@@ -931,38 +982,38 @@ async fn actual_native_copy_guard_issuer_and_cold_terminal_replay() {
         before_race["creates"]
     );
     admin(administrative, "restore-source-version-1").await;
-    set_catalogue(
-        &db,
-        &catalogue_backend,
-        surface,
-        "nar/legacy.nar",
-        expected_hash,
-        8 * 1024 * 1024,
-    )
-    .await;
-    admin(administrative, "enable-legacy-source").await;
-    let (legacy, legacy_token) =
-        new_claim(&db, &source, &destination, "connected-copy-legacy-unpinned").await;
-    close_legacy_original(
-        &writer,
-        &work,
-        &legacy,
-        &legacy_token,
-        &source,
-        &destination,
-        &retained.original,
-    )
-    .await;
-    let old_positive = writer
-        .retained_external_copy_original(&legacy, &source, &destination, "nar/legacy.nar")
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(old_positive.progress.phase, CopyPhase::Closed);
-    assert!(old_positive.original.expected_sha256.is_none());
-    let before_legacy = admin(administrative, "inspect").await;
-    assert!(
-        writer
+    if !cross_binding {
+        set_catalogue(
+            &db,
+            &catalogue_backend,
+            surface,
+            "nar/legacy.nar",
+            expected_hash,
+            8 * 1024 * 1024,
+        )
+        .await;
+        admin(administrative, "enable-legacy-source").await;
+        let (legacy, legacy_token) =
+            new_claim(&db, &source, &destination, "connected-copy-legacy-unpinned").await;
+        close_legacy_original(
+            &writer,
+            &work,
+            &legacy,
+            &legacy_token,
+            &source,
+            &destination,
+            &retained.original,
+        )
+        .await;
+        let old_positive = writer
+            .retained_external_copy_original(&legacy, &source, &destination, "nar/legacy.nar")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(old_positive.progress.phase, CopyPhase::Closed);
+        assert!(old_positive.original.expected_sha256.is_none());
+        let before_legacy = admin(administrative, "inspect").await;
+        assert!(writer
             .copy_external_claimed(
                 &legacy,
                 &legacy_token,
@@ -972,12 +1023,12 @@ async fn actual_native_copy_guard_issuer_and_cold_terminal_replay() {
                 None
             )
             .await
-            .is_err()
-    );
-    assert_eq!(
-        admin(administrative, "inspect").await["creates"],
-        before_legacy["creates"]
-    );
+            .is_err());
+        assert_eq!(
+            admin(administrative, "inspect").await["creates"],
+            before_legacy["creates"]
+        );
+    }
     admin(administrative, "select-source-version-2").await;
     db.create_surface_object(&aos_hub_core::db::SetSurfaceObject {
         surface: SurfaceTarget::Registry(source.registry_id.unwrap()),
@@ -1002,22 +1053,20 @@ async fn actual_native_copy_guard_issuer_and_cold_terminal_replay() {
         .unwrap();
     let (mismatch, mismatch_token) =
         new_claim(&db, &source, &destination, "connected-copy-sha-mismatch").await;
-    let changed_source = fetch.list_page(None, 128).await.unwrap();
+    let changed_source = fetch.list_page("", None, 128).await.unwrap();
     let changed_evidence = changed_source.evidence.get("nar/mismatch.nar").unwrap();
     let before_mismatch = admin(administrative, "inspect").await;
-    assert!(
-        writer
-            .copy_external_claimed(
-                &mismatch,
-                &mismatch_token,
-                &source,
-                &destination,
-                "nar/mismatch.nar",
-                Some(changed_evidence)
-            )
-            .await
-            .is_err()
-    );
+    assert!(writer
+        .copy_external_claimed(
+            &mismatch,
+            &mismatch_token,
+            &source,
+            &destination,
+            "nar/mismatch.nar",
+            Some(changed_evidence)
+        )
+        .await
+        .is_err());
     let mismatch_original = writer
         .retained_external_copy_original(&mismatch, &source, &destination, "nar/mismatch.nar")
         .await
@@ -1051,19 +1100,17 @@ async fn actual_native_copy_guard_issuer_and_cold_terminal_replay() {
     admin(administrative, "null-source-version").await;
     let (unsupported, unsupported_token) =
         new_claim(&db, &source, &destination, "connected-copy-null-version").await;
-    assert!(
-        writer
-            .copy_external_claimed(
-                &unsupported,
-                &unsupported_token,
-                &source,
-                &destination,
-                "nar/source.nar",
-                Some(current_evidence)
-            )
-            .await
-            .is_err()
-    );
+    assert!(writer
+        .copy_external_claimed(
+            &unsupported,
+            &unsupported_token,
+            &source,
+            &destination,
+            "nar/source.nar",
+            Some(current_evidence)
+        )
+        .await
+        .is_err());
     assert_eq!(
         admin(administrative, "inspect").await["creates"],
         before_unsupported["creates"]
@@ -1085,7 +1132,9 @@ async fn actual_native_copy_guard_issuer_and_cold_terminal_replay() {
     assert!(observed["nativeBoundary"]["requestBytes"].as_u64().unwrap() < 2 * 1024 * 1024);
     assert!(observed["nativeBoundary"]["replyBytes"].as_u64().unwrap() < 2 * 1024 * 1024);
     private_file(&root.join("receipt.json"), &serde_json::to_vec_pretty(&json!({
-        "version":1,"actualSqlOperation":settled.operation_id,"state":settled.state,"provider":admin(administrative,"inspect").await,
+        "version":1,"crossBinding":cross_binding,"sourceBinding":source.binding_id,
+        "destinationBinding":destination.binding_id,"actualRepairOperation":repair_operation,
+        "actualSqlOperation":settled.operation_id,"state":settled.state,"provider":admin(administrative,"inspect").await,
         "scope":"Controlled actual SQL, Native issuer, persistent Worker guard and TLS fixture; no hosted provider qualification"
     })).unwrap());
 }

@@ -28,16 +28,57 @@ pub(crate) async fn inspect(
     names: &[String],
     cursor: Option<&GitTreeCursor>,
 ) -> Result<(StorageWorkOutcome, u64)> {
+    inspect_with_reader(&OrdinaryReader { fetcher, plan }, plan, oid, names, cursor).await
+}
+
+/// Carries verified encoded bytes and an optional permanent source incarnation.
+pub(crate) struct VerifiedSource {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) identity: StorageObjectIdentity,
+    pub(crate) guarded: Option<aos_hub_core::storage_work::protected_inspection::ProtectedInspectionSource>,
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+pub(crate) trait SourceReader: aos_hub_core::backend::BackendBounds {
+    async fn read(&self, path: &str, maximum: usize) -> Result<Option<VerifiedSource>>;
+}
+
+struct OrdinaryReader<'a> {
+    fetcher: &'a dyn SurfaceFetch,
+    plan: &'a StorageWorkPlan,
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl SourceReader for OrdinaryReader<'_> {
+    async fn read(&self, path: &str, maximum: usize) -> Result<Option<VerifiedSource>> {
+        Ok(read_source(self.fetcher, self.plan, path, maximum).await?
+            .map(|(bytes, identity)| VerifiedSource { bytes, identity, guarded: None }))
+    }
+}
+
+/// Projects an exact tree with its reader-supplied source incarnation.
+///
+/// # Errors
+/// Refuses malformed Git content, stale cursors or mismatched source evidence.
+pub(crate) async fn inspect_with_reader(
+    reader: &dyn SourceReader,
+    plan: &StorageWorkPlan,
+    oid: &str,
+    names: &[String],
+    cursor: Option<&GitTreeCursor>,
+) -> Result<(StorageWorkOutcome, u64)> {
     tree_projection::validate_request(oid, names, cursor)?;
     let selected_oid = object::Oid::from_hex(oid)?;
     let shard = &oid[..2];
     let shard_path = object_bundle::shard_path(shard)?;
-    let bundle = read_source(fetcher, plan, &shard_path, object_bundle::MAX_BUNDLE_BYTES).await?;
-    let bundle_bytes = bundle.as_ref().map_or(0, |(_, source)| source.size);
+    let bundle = reader.read(&shard_path, object_bundle::MAX_BUNDLE_BYTES).await?;
+    let bundle_bytes = bundle.as_ref().map_or(0, |source| source.identity.size);
     let selected =
         bundle
             .as_ref()
-            .and_then(|(bytes, _)| match object_bundle::decode(shard, bytes) {
+            .and_then(|source| match object_bundle::decode(shard, &source.bytes) {
                 Ok(entries) => entries
                     .into_iter()
                     .find(|(entry, _)| *entry == selected_oid),
@@ -50,18 +91,16 @@ pub(crate) async fn inspect(
                 // member must retain the canonical loose-path compatibility.
                 object::decode_loose_with_limit(loose, Some(selected_oid), MAX_TREE_INFLATED_BYTES).is_ok()
             });
-    let (loose, source, source_bytes) = match selected {
+    let (loose, source, guarded_source, source_bytes) = match selected {
         Some((_, loose)) => {
             let source = bundle
                 .as_ref()
-                .map(|(_, source)| source.clone())
+                .map(|source| (source.identity.clone(), source.guarded.clone()))
                 .context("selected tree bundle source disappeared")?;
-            (loose, source, bundle_bytes)
+            (loose, source.0, source.1, bundle_bytes)
         }
         None => {
-            let Some((loose, source)) = read_source(
-                fetcher,
-                plan,
+            let Some(read) = reader.read(
                 &selected_oid.loose_path(),
                 object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES as usize,
             )
@@ -70,9 +109,9 @@ pub(crate) async fn inspect(
                 return Ok((StorageWorkOutcome::NotFound, bundle_bytes));
             };
             let total = bundle_bytes
-                .checked_add(source.size)
+                .checked_add(read.identity.size)
                 .context("tree inspection source accounting overflowed")?;
-            (loose, source, total)
+            (read.bytes, read.identity, read.guarded, total)
         }
     };
     let (kind, content) =
@@ -81,10 +120,10 @@ pub(crate) async fn inspect(
         kind == ObjectKind::Tree,
         "selected Git object is not a tree"
     );
-    let commitment = tree_projection::source_commitment(&source)?;
+    let commitment = tree_projection::guarded_source_commitment(&source, guarded_source.as_ref())?;
     let page = tree_projection::project_tree(oid, &content, names, cursor, &commitment)?;
     Ok((
-        StorageWorkOutcome::GitTreeEntries { source, page },
+        StorageWorkOutcome::GitTreeEntries { guarded_source, source, page },
         source_bytes,
     ))
 }

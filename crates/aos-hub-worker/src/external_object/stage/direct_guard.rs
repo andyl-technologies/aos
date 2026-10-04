@@ -12,7 +12,7 @@ use aos_hub_core::storage_authority::{
     lease::LeaseEffect,
 };
 use aos_hub_core::storage_work::StorageCredentialSelector;
-use worker::{Env, Fetch, Method, Request, RequestInit, RequestRedirect, Storage};
+use worker::{Env, Method, Request, RequestInit, RequestRedirect, Storage};
 
 use super::super::{
     config::configured,
@@ -78,6 +78,7 @@ pub(crate) async fn direct_baseline(
     admission: &DirectUploadAdmission,
     placement_id: WireInteger,
     expires_at: u64,
+    signal: Option<worker::web_sys::AbortSignal>,
 ) -> Result<DirectDestinationBaselineState> {
     check_direct_available(env, storage, admission, placement_id).await?;
     let deployment = env.var("HUB_DEPLOYMENT_ID")?.to_string();
@@ -177,8 +178,8 @@ pub(crate) async fn direct_baseline(
     )?;
     head.floor = validated.next_floor;
     storage.put(HEAD, serde_json::to_string(&head)?).await?;
-    // Floor advancement is durable before the final synchronous lease check.
-    object.verifier()?.validate_lease(
+    // Floor advancement remains durable before request admission.
+    let validated = object.verifier()?.validate_lease(
         lease.as_bytes(),
         &domain.read_cohort,
         &object.timing_profile,
@@ -187,50 +188,85 @@ pub(crate) async fn direct_baseline(
         LeaseEffect::Read,
         object.clock(),
     )?;
-    ensure!(
-        u64::try_from(object.clock().observed_at)?
-            .saturating_add(u64::try_from(object.clock_uncertainty)?)
-            < expires_at,
-        "external baseline authorization expired"
-    );
-    let response = Fetch::Request(provider).send().await?;
-    if response.status_code() == 404 {
-        return Ok(DirectDestinationBaselineState::Missing {});
-    }
-    ensure!(
-        response.status_code() == 200,
-        "external baseline GET not positively acknowledged"
-    );
-    let etag = response
-        .headers()
-        .get("etag")?
-        .ok_or_else(|| anyhow::anyhow!("external baseline ETag absent"))?;
-    let etag = aos_hub_core::surface_write::strong_if_match_etag(&etag)?;
-    let length: u64 = response
-        .headers()
-        .get("content-length")?
-        .ok_or_else(|| anyhow::anyhow!("external baseline length absent"))?
-        .parse()?;
-    ensure!(
-        length <= MAX_DIRECT_OBJECT_BYTES,
-        "external baseline object exceeds bound"
-    );
-    let provider_version = response
-        .headers()
-        .get("x-amz-version-id")?
-        .filter(|value| value != "null");
-    let measured = crate::direct_digest::hash_response(response, MAX_DIRECT_OBJECT_BYTES).await?;
-    ensure!(
-        measured.byte_size == length,
-        "external baseline stream length differs"
-    );
-    Ok(DirectDestinationBaselineState::Present {
-        byte_size: WireInteger::new(length),
-        sha256: measured.sha256,
-        etag,
-        provider_version,
-        guard_stamp: None,
-    })
+    let cutoff = i64::try_from(expires_at)?.min(validated.payload.not_after.get());
+    let fresh = || {
+        validate_domain_publication(
+            domain,
+            &publication,
+            &deployment,
+            object.clock().observed_at,
+        )?;
+        // Floor advancement is durable before the final synchronous lease check.
+        object.verifier()?.validate_lease(
+            lease.as_bytes(),
+            &domain.read_cohort,
+            &object.timing_profile,
+            &head.floor,
+            &scope.full_key,
+            LeaseEffect::Read,
+            object.clock(),
+        )?;
+        ensure!(
+            u64::try_from(object.clock().observed_at)?
+                .saturating_add(u64::try_from(object.clock_uncertainty)?)
+                < expires_at,
+            "external baseline authorization expired"
+        );
+        Ok(())
+    };
+    super::super::request_capacity::raw::with_response(
+        env,
+        provider,
+        cutoff,
+        object.clock_uncertainty,
+        signal,
+        crate::direct_upload::provider_capacity::Class::Foreground,
+        None,
+        &fresh,
+        &|| {},
+        false,
+        |response| async {
+            if response.status_code() == 404 {
+                return Ok(DirectDestinationBaselineState::Missing {});
+            }
+            ensure!(
+                response.status_code() == 200,
+                "external baseline GET not positively acknowledged"
+            );
+            let etag = response
+                .headers()
+                .get("etag")?
+                .ok_or_else(|| anyhow::anyhow!("external baseline ETag absent"))?;
+            let etag = aos_hub_core::surface_write::strong_if_match_etag(&etag)?;
+            let length: u64 = response
+                .headers()
+                .get("content-length")?
+                .ok_or_else(|| anyhow::anyhow!("external baseline length absent"))?
+                .parse()?;
+            ensure!(
+                length <= MAX_DIRECT_OBJECT_BYTES,
+                "external baseline object exceeds bound"
+            );
+            let provider_version = response
+                .headers()
+                .get("x-amz-version-id")?
+                .filter(|value| value != "null");
+            let measured =
+                crate::direct_digest::hash_response(response, MAX_DIRECT_OBJECT_BYTES).await?;
+            ensure!(
+                measured.byte_size == length,
+                "external baseline stream length differs"
+            );
+            Ok(DirectDestinationBaselineState::Present {
+                byte_size: WireInteger::new(length),
+                sha256: measured.sha256,
+                etag,
+                provider_version,
+                guard_stamp: None,
+            })
+        },
+    )
+    .await
 }
 
 /// Reads the exact retained terminal destination receipt without provider I/O.
