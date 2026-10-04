@@ -30,6 +30,8 @@ use crate::phase0_probe::{
 };
 use crate::{HostError, Result};
 
+pub(crate) mod canary;
+
 const PROBE_DIRECTORY: &str = "/var/lib/aos/sandbox-host-phase0";
 const PROBE_RECORD: &str = "probe-v2";
 const PROBE_PUBLIC_KEY: &str = "phase0-probe-public-key-v1";
@@ -40,6 +42,39 @@ const HOST_FILTER_PROPERTIES: &[&str] = &[
     "SystemCallArchitectures",
     "SystemCallErrorNumber",
 ];
+
+#[derive(Clone, Copy)]
+enum DeploymentOriginV1<'startup> {
+    Ordinary,
+    Canary(&'startup canary::HostCanaryStartupV1),
+}
+
+impl DeploymentOriginV1<'_> {
+    fn packaged(self, evidence: &ProtectedBackendReadinessEvidence) -> Result<VerifiedPackagedRuntimeV1> {
+        match self {
+            Self::Ordinary => evidence.verify_packaged_runtime(),
+            Self::Canary(original) => evidence.verify_canary_packaged_runtime(original),
+        }
+    }
+
+    fn revalidate(self, packaged: &VerifiedPackagedRuntimeV1, evidence: &ProtectedBackendReadinessEvidence)
+        -> Result<()>
+    {
+        match self {
+            Self::Ordinary => packaged.revalidate(evidence),
+            Self::Canary(original) => packaged.revalidate_canary(evidence, original),
+        }
+    }
+
+    async fn require_service(self, packaged: &VerifiedPackagedRuntimeV1,
+        evidence: &ProtectedBackendReadinessEvidence, systemd: &SystemdClient) -> Result<()>
+    {
+        match self {
+            Self::Ordinary => packaged.verify_live_pid1_service(evidence, systemd).await,
+            Self::Canary(original) => packaged.verify_canary_pid1_service(evidence, systemd, original).await,
+        }
+    }
+}
 
 // PID 1 uses this profile's filter tokens. The sorted syscall expansion pins
 // systemd 261.2 on x86_64 and must be requalified against live PID 1 on change.
@@ -222,6 +257,32 @@ pub async fn verify_optional_phase0_claim_v1(
     nspawn_executable: &str,
     selinux_policy: &str,
 ) -> Result<Option<VerifiedPhase0ClaimV1>> {
+    verify_phase0_claim_origin(
+        credential_directory, state_root, nspawn_executable, selinux_policy,
+        DeploymentOriginV1::Ordinary,
+    ).await
+}
+
+pub(crate) async fn verify_original_canary_phase0_claim_v1(
+    original: &canary::HostCanaryStartupV1,
+    credential_directory: &Path,
+    state_root: &Path,
+    nspawn_executable: &str,
+    selinux_policy: &str,
+) -> Result<VerifiedPhase0ClaimV1> {
+    verify_phase0_claim_origin(
+        credential_directory, state_root, nspawn_executable, selinux_policy,
+        DeploymentOriginV1::Canary(original),
+    ).await?.ok_or_else(|| HostError::State("original Host canary phase-0 claim is absent".to_owned()))
+}
+
+async fn verify_phase0_claim_origin(
+    credential_directory: &Path,
+    state_root: &Path,
+    nspawn_executable: &str,
+    selinux_policy: &str,
+    origin: DeploymentOriginV1<'_>,
+) -> Result<Option<VerifiedPhase0ClaimV1>> {
     let probe = verify_optional_protected_phase0_probe(
         credential_directory,
         nspawn_executable,
@@ -255,18 +316,16 @@ pub async fn verify_optional_phase0_claim_v1(
         return Ok(None);
     };
 
-    let packaged = readiness.verify_packaged_runtime()?;
+    let packaged = origin.packaged(&readiness)?;
     let live_mac = VerifiedLiveSelinuxPolicyV1::verify(selinux_policy)?;
     let systemd = SystemdClient::connect()
         .await
         .map_err(|error| HostError::State(format!("PID 1 bus unavailable: {error}")))?;
-    packaged
-        .verify_live_pid1_service(&readiness, &systemd)
-        .await?;
+    origin.require_service(&packaged, &readiness, &systemd).await?;
     live_mac.revalidate(selinux_policy)?;
     let (probe_digest, observation) = matching_signed_probe(readiness.phase0_probe_claim(), probe)?;
     verify_host_shifted_target_access(&systemd, observation).await?;
-    packaged.revalidate(&readiness)?;
+    origin.revalidate(&packaged, &readiness)?;
     let policy_digest = live_mac.digest();
     live_mac.revalidate(selinux_policy)?;
 
@@ -277,7 +336,7 @@ pub async fn verify_optional_phase0_claim_v1(
         state_root,
         nspawn_executable,
     )?;
-    packaged.revalidate(&final_readiness)?;
+    origin.revalidate(&packaged, &final_readiness)?;
     let final_probe = verify_optional_protected_phase0_probe(
         credential_directory,
         nspawn_executable,

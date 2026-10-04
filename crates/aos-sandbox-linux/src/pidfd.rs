@@ -20,7 +20,10 @@ mod identity;
 mod proc_observations;
 
 pub use identity::PidFdProcessIdentity;
-pub use proc_observations::PidFdProcObservationsV1;
+pub use proc_observations::{
+    HostCanaryLocalChildOriginalsV1, HostCanaryReceivedChildErrorV1,
+    HostCanaryReceivedChildOriginalsV1, PidFdProcObservationsV1,
+};
 
 const LIVENESS_POLL_INTERRUPT_LIMIT: usize = 8;
 
@@ -210,7 +213,7 @@ impl PidFd {
 
     // All callers use this sole checker and its original error precedence.
     // The retaining caller leaves ownership in its guarded received slot.
-    fn validate_owned_kind(fd: BorrowedFd<'_>) -> Result<()> {
+    pub(crate) fn validate_owned_kind(fd: BorrowedFd<'_>) -> Result<()> {
         uapi::ensure_cloexec(fd)?;
         match uapi::pidfd_info(fd) {
             Ok(info) if info.mask & PidFdInfo::PID_PRESENT != 0 => Ok(()),
@@ -295,13 +298,19 @@ impl PidFd {
     /// Returns an error when polling fails, is interrupted too many times, or
     /// reports invalid or unexpected readiness flags.
     pub fn is_alive(&self) -> Result<bool> {
+        Self::poll_original_liveness(self.fd.as_fd())
+    }
+
+    // The selected namespace-local channel shares the exact exit-poll engine;
+    // it never constructs a strict PidFd or synthesizes visible PID information.
+    fn poll_original_liveness(fd: BorrowedFd<'_>) -> Result<bool> {
         let timeout = rustix::event::Timespec {
             tv_sec: 0,
             tv_nsec: 0,
         };
         for attempt in 0..LIVENESS_POLL_INTERRUPT_LIMIT {
             let mut descriptors = [rustix::event::PollFd::new(
-                &self.fd,
+                fd,
                 rustix::event::PollFlags::IN | rustix::event::PollFlags::RDNORM,
             )];
             match rustix::event::poll(&mut descriptors, Some(&timeout)) {
@@ -353,6 +362,23 @@ impl PidFd {
         })
     }
 
+    pub(crate) fn require_ancestor_host_original(fd: BorrowedFd<'_>) -> Result<(u64, u64)> {
+        if !cfg!(all(target_pointer_width = "64", any(target_arch = "x86_64", target_arch = "aarch64"))) {
+            return Err(Error::invalid("ancestor Host pin", "unsupported pidfs inode width"));
+        }
+        uapi::ensure_cloexec(fd)?;
+        match uapi::pidfd_info(fd) {
+            Err(Error::Syscall { source, .. }) if source.raw_os_error() == Some(libc::EREMOTE) => {}
+            Err(cause) => return Err(cause),
+            Ok(_) => return Err(Error::invalid("ancestor Host pin", "process is visible in this PID namespace")),
+        }
+        let stat = uapi::fstat(fd)?;
+        if stat.st_ino == 0 || !Self::poll_original_liveness(fd)? {
+            return Err(Error::invalid("ancestor Host pin", "original process is unavailable"));
+        }
+        Ok((stat.st_dev as u64, stat.st_ino as u64))
+    }
+
     /// Duplicates one descriptor from the pinned process with `pidfd_getfd`.
     ///
     /// This operation remains subject to the kernel's ptrace access check.
@@ -375,6 +401,10 @@ impl PidFd {
     /// Returns an error if the process exited, access is denied, the requested
     /// namespace is unavailable, or the returned descriptor is not `nsfs`.
     pub fn namespace(&self, kind: NamespaceKind) -> Result<NamespaceFd> {
+        NamespaceFd::from_owned(self.acquire_namespace_original(kind)?, kind)
+    }
+
+    fn acquire_namespace_original(&self, kind: NamespaceKind) -> Result<OwnedFd> {
         let request = match kind {
             NamespaceKind::Mount => NamespaceIoctl::Mount,
             NamespaceKind::Network => NamespaceIoctl::Network,
@@ -382,7 +412,7 @@ impl PidFd {
             NamespaceKind::User => NamespaceIoctl::User,
             NamespaceKind::Uts => NamespaceIoctl::Uts,
         };
-        NamespaceFd::from_owned(uapi::pidfd_namespace(self.fd.as_fd(), request)?, kind)
+        uapi::pidfd_namespace(self.fd.as_fd(), request)
     }
 }
 
@@ -634,25 +664,31 @@ impl NamespaceFd {
     /// Returns an error if `fd` is not an `nsfs` descriptor, has a different
     /// namespace kind, or cannot be inspected.
     pub fn from_owned(fd: OwnedFd, kind: NamespaceKind) -> Result<Self> {
-        uapi::ensure_cloexec(fd.as_fd())?;
-        if !uapi::is_namespace(fd.as_fd())? {
+        let identity = Self::validate_original_kind(fd.as_fd(), kind)?;
+        Ok(Self { fd, kind, identity })
+    }
+
+    // Selected received records keep their raw descriptors resident until all
+    // roles pass this same strict checker. No raw descriptor factory escapes.
+    pub(crate) fn validate_original_kind(
+        fd: BorrowedFd<'_>,
+        kind: NamespaceKind,
+    ) -> Result<NamespaceIdentity> {
+        uapi::ensure_cloexec(fd)?;
+        if !uapi::is_namespace(fd)? {
             return Err(Error::WrongDescriptorType {
                 expected: "nsfs namespace",
             });
         }
-        if uapi::namespace_type(fd.as_fd())? != kind.clone_flag() {
+        if uapi::namespace_type(fd)? != kind.clone_flag() {
             return Err(Error::WrongDescriptorType {
                 expected: "requested namespace kind",
             });
         }
-        let stat = uapi::fstat(fd.as_fd())?;
-        Ok(Self {
-            fd,
-            kind,
-            identity: NamespaceIdentity {
-                device: stat.st_dev,
-                inode: stat.st_ino,
-            },
+        let stat = uapi::fstat(fd)?;
+        Ok(NamespaceIdentity {
+            device: stat.st_dev,
+            inode: stat.st_ino,
         })
     }
 

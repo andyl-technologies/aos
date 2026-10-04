@@ -10,7 +10,7 @@ use std::fmt;
 use std::num::NonZeroU64;
 use std::os::fd::{AsFd as _, OwnedFd};
 
-use super::{KernelAuthorizedRecordSubject, RecordCredentials, SeqpacketError, checked_pid};
+use super::{AncestorHostRecordPinV1, KernelAuthorizedRecordSubject, RecordCredentials, SeqpacketError, checked_pid};
 use crate::pidfd::PidFd;
 use crate::uapi::{self, RawAncillary, RawReceiveObservationV1, ReceiveCustodyPolicyV1};
 
@@ -102,6 +102,8 @@ pub(crate) struct CapturedMessageV1 {
     pub(crate) raw: RawReceiveObservationV1,
     credentials: Option<RecordCredentials>,
     partial_pidfd: Option<PidFd>,
+    ancestor_credentials: Option<(u32, u32)>,
+    pub(crate) ancestor: Option<AncestorHostRecordPinV1>,
     pub(crate) subject: Option<KernelAuthorizedRecordSubject>,
     pub(crate) socket_context: Option<Vec<u8>>,
 }
@@ -111,6 +113,7 @@ pub(crate) enum SubjectProfileV1 {
     Ordinary,
     Descriptors { expected: usize, allow_empty: bool },
     Stream,
+    AncestorHost { credentials: (u32, u32), pin: (u64, u64) },
 }
 
 impl CapturedMessageV1 {
@@ -120,6 +123,8 @@ impl CapturedMessageV1 {
             raw: RawReceiveObservationV1::empty(),
             credentials: None,
             partial_pidfd: None,
+            ancestor_credentials: None,
+            ancestor: None,
             subject: None,
             socket_context: None,
         }
@@ -171,12 +176,47 @@ impl CapturedMessageV1 {
                     return Err(SeqpacketError::Ancillary("missing SCM_SECURITY"));
                 }
             }
-            SubjectProfileV1::Ordinary => {}
+            SubjectProfileV1::Ordinary | SubjectProfileV1::AncestorHost { .. } => {}
         }
 
         // Keep encounter-order pidfd validation: a later structural error must
         // not hide an earlier kernel failure, nor the converse.
         for index in 0..self.raw.ancillary.len() {
+            if let SubjectProfileV1::AncestorHost { credentials, pin } = profile {
+                match self.raw.ancillary[index].as_ref() {
+                    Some(RawAncillary::Credentials(raw)) => {
+                        if self.ancestor_credentials.is_some() {
+                            return Err(SeqpacketError::Ancillary("duplicate SCM_CREDENTIALS"));
+                        }
+                        self.ancestor_credentials = Some((raw.uid, raw.gid));
+                        if raw.pid != 0 || (raw.uid, raw.gid) != credentials {
+                            return Err(SeqpacketError::Ancillary("ancestor Host credentials changed"));
+                        }
+                        continue;
+                    }
+                    Some(RawAncillary::PidFd(fd)) => {
+                        if self.ancestor.is_some() {
+                            return Err(SeqpacketError::Ancillary("duplicate SCM_PIDFD"));
+                        }
+                        let observed = PidFd::require_ancestor_host_original(fd.as_fd());
+                        match observed {
+                            Ok(observed) if observed == pin => {}
+                            Ok(_) => return Err(SeqpacketError::Ancillary("ancestor Host pin changed")),
+                            Err(source) => {
+                                self.raw.screen_failed_pidfd(index);
+                                return Err(source.into());
+                            }
+                        }
+                        // The actual staged kernel slot moves only after all
+                        // fallible admission checks, directly into this owner.
+                        if let Some(RawAncillary::PidFd(fd)) = self.raw.ancillary[index].take() {
+                            self.ancestor = Some(AncestorHostRecordPinV1 { fd, identity: pin });
+                        }
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
             match self.raw.ancillary[index].as_ref() {
                 Some(RawAncillary::Credentials(raw)) if self.credentials.is_none() => {
                     let pid = checked_pid(raw.pid)
@@ -222,6 +262,12 @@ impl CapturedMessageV1 {
                 }
                 None => {}
             }
+        }
+        if matches!(profile, SubjectProfileV1::AncestorHost { .. }) {
+            if self.ancestor_credentials.is_none() || self.ancestor.is_none() {
+                return Err(SeqpacketError::Ancillary("missing ancestor Host credentials or SCM_PIDFD"));
+            }
+            return Ok(());
         }
         let credentials = self.credentials.ok_or(SeqpacketError::Ancillary("missing SCM_CREDENTIALS"))?;
         let pidfd = self.partial_pidfd.as_ref().ok_or(SeqpacketError::Ancillary("missing SCM_PIDFD"))?;

@@ -88,7 +88,7 @@ where
     }
 }
 
-fn fixed_guest_features() -> Result<AgentFeatureSetV1> {
+pub(crate) fn fixed_guest_features() -> Result<AgentFeatureSetV1> {
     AgentFeatureSetV1::new(vec![
         AgentFeatureV1::Readiness,
         AgentFeatureV1::ExecutionHandoff,

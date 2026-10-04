@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::Read as _;
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd as _, OwnedFd};
 use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
 use std::time::{Duration, Instant};
 
@@ -27,7 +27,10 @@ use aos_sandbox_linux::immutable_file::SealedMemfdMapping;
 use aos_sandbox_linux::inherited_fd::{
     duplicate_inherited_descriptor, mark_inherited_descriptor_close_on_exec,
 };
-use aos_sandbox_linux::seqpacket::{SeqpacketError, SeqpacketSocket};
+use aos_sandbox_linux::seqpacket::{
+    GuestAncestorHostChannelV1, GuestAncestorHostRecordV1,
+    RetainedSeqpacketReceiveErrorV1, SeqpacketError, SeqpacketSocket,
+};
 use ed25519_dalek::{Signer as _, SigningKey};
 use sha2::{Digest as _, Sha256};
 
@@ -69,6 +72,213 @@ const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 const RETRY_INTERVAL: Duration = Duration::from_millis(2);
 const MAX_OPERATIONS: usize = 4_096;
 const HANDSHAKE_SIGNATURE_DOMAIN: &[u8] = b"aos-sandbox-agent-handshake-signature-v1\0";
+
+/// Compares private canary challenge DATA with the canonical sealed launch tuple.
+///
+/// The result is only the supplied original deadline. It is not a job approval,
+/// a visible Host identity, a current session or permission to perform effects.
+/// The selected caller must retain its genuine inherited channel and canonical
+/// provisioning originals; Host independently checks the supplied deadline.
+///
+/// # Errors
+/// Refuses any width, framing, runtime, channel-binding or deadline mismatch.
+pub fn require_host_canary_challenge_v1(
+    bytes: &[u8],
+    runtime: &[u8; 104],
+    channel: [u8; 32],
+) -> Result<u64, ProtectedGuestAgentErrorV1> {
+    if bytes.len() != 200 || &bytes[..8] != b"AOSHCR01"
+        || bytes[8..12] != [0, 1, 0, 0]
+        || bytes[12..16] != 200_u32.to_be_bytes()
+        || bytes[160..176] != [0; 16]
+        || bytes[112..144] != runtime[..32]
+        || bytes[144..152] != runtime[32..40]
+        || bytes[152..160] != runtime[72..80]
+        || bytes[16..48] == [0; 32] || bytes[48..80] == [0; 32]
+        || bytes[80..112] == [0; 32] || bytes[176..192] == [0; 16]
+    {
+        return Err(ProtectedGuestAgentErrorV1::ProvisioningMismatch);
+    }
+    let mut binding = Sha256::new();
+    binding.update(b"aos.sandbox.host.canary-agent-channel.v1\0");
+    binding.update(&bytes[48..80]);
+    binding.update(&bytes[80..112]);
+    binding.update(&bytes[176..192]);
+    binding.update(&bytes[16..48]);
+    if <[u8; 32]>::from(binding.finalize()) != channel {
+        return Err(ProtectedGuestAgentErrorV1::ProvisioningMismatch);
+    }
+    let deadline = u64::from_be_bytes(bytes[192..200].try_into()
+        .map_err(|_| ProtectedGuestAgentErrorV1::InvalidProvisioning)?);
+    if deadline == 0 {
+        return Err(ProtectedGuestAgentErrorV1::InvalidProvisioning);
+    }
+    Ok(deadline)
+}
+
+// No effect owner is created for this selected entry. Its actual channel,
+// secret, received records and first failure stay resident until Host Stop or
+// the original D. Error/unwind terminates before releasing those originals.
+struct HostCanaryAgentReadinessV1 {
+    channel: GuestAncestorHostChannelV1,
+    original_provisioning: Option<OwnedFd>,
+    provisioning_bytes: [u8; GUEST_AGENT_PROVISIONING_BYTES_V1],
+    provisioning: Option<Provisioning>,
+    records: [Option<GuestAncestorHostRecordV1>; 3],
+    receive_failure: Option<RetainedSeqpacketReceiveErrorV1>,
+    response: Vec<u8>,
+    deadline: u64,
+    armed: bool,
+    first_failure: Option<Box<dyn std::error::Error>>,
+}
+
+impl HostCanaryAgentReadinessV1 {
+    fn run(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        self.channel.capture_agent_original()
+            .map_err(|_| "selected Agent channel capture failed; original cause remains resident")?;
+        self.original_provisioning = Some(duplicate_inherited_descriptor(PROVISIONING_DESCRIPTOR)?);
+        mark_inherited_descriptor_close_on_exec(CHANNEL_DESCRIPTOR)?;
+        mark_inherited_descriptor_close_on_exec(PROVISIONING_DESCRIPTOR)?;
+        aos_sandbox_linux::guest_confinement::require_guest_owner()?;
+
+        let duplicate = self.original_provisioning.as_ref()
+            .ok_or("selected Agent provisioning is absent")?.as_fd().try_clone_to_owned()?;
+        SealedMemfdMapping::run(
+            duplicate,
+            GUEST_AGENT_PROVISIONING_BYTES_V1 as u64,
+            GUEST_AGENT_PROVISIONING_BYTES_V1 as u64,
+            |bytes, _identity| self.provisioning_bytes.copy_from_slice(bytes),
+        )?;
+        self.provisioning = Some(decode_provisioning(&self.provisioning_bytes)?);
+        let provisioning = self.provisioning.as_ref().ok_or("selected Agent provisioning is absent")?;
+        verify_package_credential(provisioning.package_binding)?;
+        let mask = provisioning.features.as_slice().iter().fold(0_u16, |mask, feature| {
+            mask | (1_u16 << (*feature as u8 - 1))
+        });
+        if mask != crate::guest_root_publication::CONCRETE_GUEST_FEATURE_MASK_V1 {
+            return Err(ProtectedGuestAgentErrorV1::UnsupportedFeature.into());
+        }
+        aos_sandbox_linux::guest_confinement::require_guest_owner()?;
+
+        let prechallenge = aos_sandbox_linux::seqpacket::bounded::boottime()?
+            .checked_add(30_000_000_000).ok_or(ProtectedGuestAgentErrorV1::Deadline)?;
+        self.receive_original(0, 200, prechallenge)?;
+        let challenge = self.records[0].as_ref().ok_or("selected Agent challenge is absent")?;
+        let provisioning = self.provisioning.as_ref().ok_or("selected Agent provisioning is absent")?;
+        self.deadline = require_host_canary_challenge_v1(
+            challenge.payload(),
+            &encode_agent_runtime_binding_v1(provisioning.runtime),
+            *provisioning.channel.as_bytes(),
+        )?;
+        self.require_before(self.deadline)?;
+        self.receive_original(1, MAX_AGENT_FRAME_BYTES, self.deadline)?;
+
+        let record = self.records[1].as_ref().ok_or("selected Agent handshake is absent")?;
+        let request = match decode_frame_v1(record.payload())? {
+            AgentFrameV1::HandshakeRequest(request) => request,
+            _ => return Err(ProtectedGuestAgentErrorV1::UnexpectedFrame.into()),
+        };
+        let provisioning = self.provisioning.as_ref().ok_or("selected Agent provisioning is absent")?;
+        if request.runtime() != &provisioning.runtime
+            || request.host_channel_binding() != provisioning.channel
+        {
+            return Err(ProtectedGuestAgentErrorV1::ProvisioningMismatch.into());
+        }
+        let binding = AgentSessionBindingV1::derive(&request, &provisioning.instance)?;
+        let response = sign_handshake(&request, binding, provisioning)?;
+        self.response = encode_frame_v1(&AgentFrameV1::HandshakeResponse(response));
+        loop {
+            self.require_before(self.deadline)?;
+            match self.channel.send(&self.response) {
+                Ok(()) => break,
+                Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
+                    std::thread::sleep(RETRY_INTERVAL);
+                }
+                Err(cause) => return Err(cause.into()),
+            }
+        }
+        self.require_before(self.deadline)?;
+
+        // The actual signing process must remain live for Host physical
+        // postchecks. No operations, attach, renewal or execution loop exists.
+        self.receive_original(2, MAX_AGENT_FRAME_BYTES, self.deadline)?;
+        Err(ProtectedGuestAgentErrorV1::UnexpectedFrame.into())
+    }
+
+    fn receive_original(&mut self, slot: usize, maximum: usize, deadline: u64) -> Result<(), Box<dyn std::error::Error>> {
+        loop {
+            self.require_before(deadline)?;
+            match self.channel.receive_retaining(maximum) {
+                Ok(record) => {
+                    self.records[slot] = Some(record);
+                    self.require_before(deadline)?;
+                    self.channel.require_record_original(
+                        self.records[slot].as_ref().ok_or("selected Agent record is absent")?,
+                    )?;
+                    return Ok(());
+                }
+                Err(cause) if cause.is_nonconsuming_would_block() || cause.is_nonconsuming_interrupted() => {
+                    std::thread::sleep(RETRY_INTERVAL);
+                }
+                Err(cause) => {
+                    self.receive_failure = Some(cause);
+                    return Err("selected Agent receive failed; original cause remains resident".into());
+                }
+            }
+        }
+    }
+
+    fn require_before(&self, deadline: u64) -> Result<(), Box<dyn std::error::Error>> {
+        if aos_sandbox_linux::seqpacket::bounded::boottime()? >= deadline {
+            return Err(ProtectedGuestAgentErrorV1::Deadline.into());
+        }
+        Ok(())
+    }
+}
+
+impl Drop for HostCanaryAgentReadinessV1 {
+    fn drop(&mut self) {
+        if self.armed {
+            std::process::abort();
+        }
+        self.provisioning_bytes.fill(0);
+    }
+}
+
+/// Runs the fixed selected Host-canary handshake without a Guest effect owner.
+///
+/// This consumes only genuine inherited slots 3/4, the sealed canonical launch
+/// record and fixed package credential. It remains alive until actual Host Stop
+/// or original D; neither a signature nor the private challenge yields runtime
+/// execution authority, currentness, teardown or Drain.
+///
+/// # Errors
+/// Captured first failures remain resident before process termination. No
+/// failed or interrupted owner can be reused, and the deadline is never renewed.
+pub fn run_host_canary_readiness_v1() -> Result<(), Box<dyn std::error::Error>> {
+    let mut owner = HostCanaryAgentReadinessV1 {
+        channel: GuestAncestorHostChannelV1::new(),
+        original_provisioning: None,
+        provisioning_bytes: [0; GUEST_AGENT_PROVISIONING_BYTES_V1],
+        provisioning: None,
+        records: std::array::from_fn(|_| None),
+        receive_failure: None,
+        response: Vec::new(),
+        deadline: 0,
+        armed: true,
+        first_failure: None,
+    };
+    match owner.run() {
+        Ok(()) => {
+            owner.armed = false;
+            Ok(())
+        }
+        Err(cause) => {
+            owner.first_failure = Some(cause);
+            Err("selected Host canary Agent failed; original cause remains resident".into())
+        }
+    }
+}
 
 struct Provisioning {
     runtime: AgentRuntimeBindingV1,
@@ -1165,6 +1375,73 @@ pub enum ProtectedGuestAgentErrorV1 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn canary_challenge_data() -> ([u8; 200], [u8; 104], [u8; 32]) {
+        let mut runtime = [0; 104];
+        runtime[..16].fill(1);
+        runtime[16..32].fill(2);
+        runtime[32..40].copy_from_slice(&3_u64.to_be_bytes());
+        runtime[72..80].copy_from_slice(&4_u64.to_be_bytes());
+
+        let mut bytes = [0; 200];
+        bytes[..8].copy_from_slice(b"AOSHCR01");
+        bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        bytes[12..16].copy_from_slice(&200_u32.to_be_bytes());
+        bytes[16..48].fill(5);
+        bytes[48..80].fill(6);
+        bytes[80..112].fill(7);
+        bytes[112..144].copy_from_slice(&runtime[..32]);
+        bytes[144..152].copy_from_slice(&runtime[32..40]);
+        bytes[152..160].copy_from_slice(&runtime[72..80]);
+        bytes[176..192].fill(8);
+        bytes[192..200].copy_from_slice(&9_u64.to_be_bytes());
+
+        let mut binding = Sha256::new();
+        binding.update(b"aos.sandbox.host.canary-agent-channel.v1\0");
+        binding.update(&bytes[48..80]);
+        binding.update(&bytes[80..112]);
+        binding.update(&bytes[176..192]);
+        binding.update(&bytes[16..48]);
+        (bytes, runtime, binding.finalize().into())
+    }
+
+    #[test]
+    fn canary_challenge_returns_only_the_exact_supplied_deadline_data() {
+        let (bytes, runtime, channel) = canary_challenge_data();
+
+        assert_eq!(
+            require_host_canary_challenge_v1(&bytes, &runtime, channel).unwrap(),
+            9,
+        );
+        assert!(require_host_canary_challenge_v1(&bytes[..199], &runtime, channel).is_err());
+    }
+
+    #[test]
+    fn canary_challenge_rejects_changed_framing_runtime_binding_and_zero_deadline() {
+        let (bytes, runtime, channel) = canary_challenge_data();
+        let offsets = [8, 10, 12, 16, 48, 80, 112, 128, 144, 152, 160, 168, 176];
+
+        for offset in offsets {
+            let mut changed = bytes;
+            changed[offset] ^= 1;
+
+            assert!(
+                require_host_canary_challenge_v1(&changed, &runtime, channel).is_err(),
+                "changed challenge byte {offset} must refuse",
+            );
+        }
+
+        let mut changed_channel = channel;
+        changed_channel[0] ^= 1;
+        assert!(require_host_canary_challenge_v1(&bytes, &runtime, changed_channel).is_err());
+
+        let mut zero_deadline = bytes;
+        zero_deadline[192..200].fill(0);
+        assert!(matches!(
+            require_host_canary_challenge_v1(&zero_deadline, &runtime, channel),
+            Err(ProtectedGuestAgentErrorV1::InvalidProvisioning),
+        ));
+    }
 
     #[test]
     fn launch_record_round_trips_the_exact_sealed_layout() {

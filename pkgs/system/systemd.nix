@@ -160,6 +160,7 @@ in
       ./patches/0019-fixed-fuse-worker-private-transport.patch
       ./patches/0020-bounded-controller-publisher-policy-credential.patch
       ./patches/0021-fixed-source-launcher-image-loan.patch
+      ./patches/0021-nspawn-host-readiness-report.patch
     ];
 
     buildDeps = [
@@ -621,6 +622,18 @@ in
           cp ${./payload-root-policy-v1} "$out/share/aos/payload-root-policy-v1"
           # Meson leaves the phase in build/, one level below patched source.
           cp ../src/nspawn/nspawn-seccomp.c "$out/share/aos/nspawn-seccomp-source-v1"
+          ${if stdenv.isCross then ''
+            # No target execution or substitute host artifact is implied. The
+            # selected canary's expected-program producer remains unavailable
+            # for cross builds; ordinary package features are unchanged.
+          '' else ''
+            ./test-nspawn-seccomp --aos-export-payload-programs-v1 \
+              > "$out/share/aos/payload-filter-programs-v1"
+            program_bytes=$(${coreutils}/bin/stat -c %s \
+              "$out/share/aos/payload-filter-programs-v1")
+            test "$program_bytes" -gt 176
+            test "$program_bytes" -le 98504
+          ''}
           pid1_digest=$(sha256sum "$out/lib/systemd/systemd")
           nspawn_digest=$(sha256sum "$out/bin/systemd-nspawn")
           payload_filter_digest=$(sha256sum "$out/share/aos/nspawn-seccomp-source-v1")

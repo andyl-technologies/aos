@@ -646,19 +646,32 @@ impl SeqpacketSocket {
         payload: &[u8],
         disposition: SeqpacketSendDispositionV1,
     ) -> Result<(), SeqpacketError> {
+        match disposition {
+            SeqpacketSendDispositionV1::Legacy => Self::send_original(
+                &mut self.fd,
+                payload,
+                OriginalSenderDispositionV1::Legacy,
+            ),
+            SeqpacketSendDispositionV1::Retained => Self::send_original(
+                &mut self.retained_send_flight,
+                payload,
+                OriginalSenderDispositionV1::Retained,
+            ),
+        }
+    }
+
+    fn send_original(
+        fd: &mut Option<OwnedFd>,
+        payload: &[u8],
+        disposition: OriginalSenderDispositionV1,
+    ) -> Result<(), SeqpacketError> {
         if payload.is_empty() {
             return Err(SeqpacketError::EmptyRecord);
         }
-        let fd = match disposition {
-            SeqpacketSendDispositionV1::Legacy => self.borrow_fd()?,
-            SeqpacketSendDispositionV1::Retained => self.retained_send_flight.as_ref()
-                .map(AsFd::as_fd).ok_or(SeqpacketError::Closed)?,
-        };
-        let sent = uapi::send_seqpacket(fd, payload).map_err(map_kernel_error)?;
+        let original = fd.as_ref().map(AsFd::as_fd).ok_or(SeqpacketError::Closed)?;
+        let sent = uapi::send_seqpacket(original, payload).map_err(map_kernel_error)?;
         if sent != payload.len() {
-            if matches!(disposition, SeqpacketSendDispositionV1::Legacy) {
-                self.fd.take();
-            }
+            disposition.end(fd);
             return Err(SeqpacketError::PartialSend {
                 expected: payload.len(),
                 actual: sent,
@@ -678,19 +691,28 @@ impl SeqpacketSocket {
         payload: &[u8],
         descriptors: &[BorrowedFd<'_>],
     ) -> Result<(), SeqpacketError> {
+        Self::send_original_with_descriptors(&mut self.fd, payload, descriptors, OriginalSenderDispositionV1::Legacy)
+    }
+
+    fn send_original_with_descriptors(
+        fd: &mut Option<OwnedFd>,
+        payload: &[u8],
+        descriptors: &[BorrowedFd<'_>],
+        disposition: OriginalSenderDispositionV1,
+    ) -> Result<(), SeqpacketError> {
         if payload.is_empty() || descriptors.is_empty() || descriptors.len() > 5 {
             return Err(SeqpacketError::InvalidMaximum);
         }
         let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(5))];
         let mut control = SendAncillaryBuffer::new(&mut space);
         if !control.push(SendAncillaryMessage::ScmRights(descriptors)) {
-            self.fd.take();
+            disposition.end(fd);
             return Err(SeqpacketError::Ancillary(
                 "SCM_RIGHTS descriptor table exceeded its fixed buffer",
             ));
         }
         let result = sendmsg(
-            self.borrow_fd()?,
+            fd.as_ref().map(AsFd::as_fd).ok_or(SeqpacketError::Closed)?,
             &[IoSlice::new(payload)],
             &mut control,
             SendFlags::DONTWAIT | SendFlags::NOSIGNAL,
@@ -705,13 +727,13 @@ impl SeqpacketSocket {
             Ok(written) => written,
             Err(error) => {
                 if error.is_fatal() {
-                    self.fd.take();
+                    disposition.end(fd);
                 }
                 return Err(error);
             }
         };
         if written != payload.len() {
-            self.fd.take();
+            disposition.end(fd);
             return Err(SeqpacketError::PartialSend {
                 expected: payload.len(),
                 actual: written,
@@ -818,6 +840,58 @@ impl SeqpacketSocket {
         );
         attempt.disarm();
         Ok(record)
+    }
+
+    /// Checks a canary report's same original carrier without releasing rights.
+    ///
+    /// This is only socket-origin DATA. The Host must independently bind the
+    /// record subject, actual launch, job and donated inspection objects.
+    ///
+    /// # Errors
+    /// Refuses a changed socket or foreign report. The selected purpose owner
+    /// must fence the operation and retain its socket, record and first cause;
+    /// this borrowed check neither closes custody nor proves process drain.
+    pub fn require_host_canary_report_original_v1(
+        &mut self,
+        record: &descriptor_subject::ReceivedDescriptorRecord,
+    ) -> Result<(), SeqpacketError> {
+        (|| {
+            let fd = self.borrow_fd()?;
+            let current = ConnectedSocketBinding::capture_peer(fd)?;
+            if current != self.peer.binding {
+                return Err(SeqpacketError::PeerIdentity("original canary carrier changed"));
+            }
+            record.require_origin(current).map_err(|_| {
+                SeqpacketError::PeerIdentity("canary report belongs to another carrier")
+            })
+        })()
+    }
+
+    /// Compares a resident canary response with this original channel by borrow.
+    ///
+    /// This establishes transport continuity DATA only. The caller retains the
+    /// response, actual subject and first failure before its purpose checks;
+    /// neither the response nor the channel is discarded by this observation.
+    ///
+    /// # Errors
+    /// Returns the same original-binding error as the existing record validator.
+    pub fn require_host_canary_response_original_v1(
+        &self,
+        original: &ReceivedRecord,
+    ) -> Result<(), RecordBindingError> {
+        self.require_record_origin(original)
+    }
+
+    pub(crate) fn require_host_canary_cookie(&mut self, original: NonZeroU64)
+        -> Result<(), SeqpacketError>
+    {
+        (|| {
+            let current = ConnectedSocketBinding::capture_peer(self.borrow_fd()?)?;
+            if current != self.peer.binding || current.socket_cookie() != original {
+                return Err(SeqpacketError::PeerIdentity("original canary carrier changed"));
+            }
+            Ok(())
+        })()
     }
 
     fn receive_retaining_attempt(
@@ -1153,6 +1227,399 @@ impl SeqpacketSocket {
             .as_ref()
             .map(AsFd::as_fd)
             .ok_or(SeqpacketError::Closed)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum OriginalSenderDispositionV1 {
+    Legacy,
+    Retained,
+    GuestAncestorHost,
+}
+
+impl OriginalSenderDispositionV1 {
+    fn end(self, fd: &mut Option<OwnedFd>) {
+        match self {
+            Self::Legacy => { fd.take(); }
+            Self::Retained => {}
+            Self::GuestAncestorHost => {
+                if let Some(fd) = fd {
+                    let _ = rustix::net::shutdown(fd, rustix::net::Shutdown::Both);
+                }
+            }
+        }
+    }
+}
+
+// A kernel-returned pin outside the calling PID namespace. This deliberately
+// has no conversion into PidFd, PidFdInfo or a strict nominated subject.
+#[derive(Debug)]
+struct AncestorHostRecordPinV1 {
+    fd: OwnedFd,
+    identity: (u64, u64),
+}
+
+/// Retains a selected inherited Host channel without inventing a visible PID.
+///
+/// PID0, EREMOTE and the original pidfs inode are namespace-local continuity
+/// DATA, not ancestry, writer authentication or application authority. Only
+/// fixed Guest startup slots can be captured. Sealed provisioning, the approved
+/// job and Host-side physical observations remain separate requirements.
+#[must_use]
+pub struct GuestAncestorHostChannelV1 {
+    fd: Option<OwnedFd>,
+    peer_pin: Option<OwnedFd>,
+    credentials: Option<(u32, u32)>,
+    pin: Option<(u64, u64)>,
+    binding: Option<ConnectedSocketBinding>,
+    attempted: bool,
+    closed: bool,
+    first_failure: Option<SeqpacketError>,
+}
+
+/// Owns a complete record from the same selected inherited Host pin.
+///
+/// There is no public constructor, descriptor accessor or strict subject. The
+/// payload remains DATA until its actual selected consumer verifies the sealed
+/// launch tuple and the original, never-renewed deadline.
+#[derive(Debug)]
+pub struct GuestAncestorHostRecordV1 {
+    payload: Vec<u8>,
+    pin: AncestorHostRecordPinV1,
+    origin: ReceivedSocketOrigin,
+}
+
+impl GuestAncestorHostRecordV1 {
+    /// Borrows the exact consumed payload without releasing its original pin.
+    #[must_use]
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+}
+
+impl GuestAncestorHostChannelV1 {
+    /// Creates empty resident slots without reading inherited descriptors.
+    pub const fn new() -> Self {
+        Self {
+            fd: None,
+            peer_pin: None,
+            credentials: None,
+            pin: None,
+            binding: None,
+            attempted: false,
+            closed: true,
+            first_failure: None,
+        }
+    }
+
+    /// Captures only original Guest Agent FD3 through the inherited-FD engine.
+    ///
+    /// # Errors
+    /// Retains the first actual duplicate, socket, cookie or kernel-pin failure.
+    /// Failed and interrupted capture is permanent for this instance.
+    pub fn capture_agent_original(&mut self) -> Result<(), &SeqpacketError> {
+        let result = (|| {
+            self.begin_capture()?;
+            self.fd = Some(crate::inherited_fd::duplicate_inherited_descriptor(3)?);
+            self.finish_capture()
+        })();
+        self.complete_capture(result)
+    }
+
+    /// Captures only the already retained fixed Guest report slot.
+    ///
+    /// # Errors
+    /// Retains the first original-holder, duplicate or peer failure. This does
+    /// not accept a caller-chosen descriptor or confer a report authority.
+    pub fn capture_report_original(
+        &mut self,
+        original: &crate::inherited_fd::GuestCanaryReportOriginalV1,
+    ) -> Result<(), &SeqpacketError> {
+        let result = (|| {
+            self.begin_capture()?;
+            self.fd = Some(crate::inherited_fd::duplicate_descriptor(original.descriptor()?)?);
+            self.finish_capture()
+        })();
+        self.complete_capture(result)
+    }
+
+    fn begin_capture(&mut self) -> Result<(), SeqpacketError> {
+        if self.attempted {
+            self.closed = true;
+            return Err(SeqpacketError::Closed);
+        }
+        self.attempted = true;
+        self.closed = true;
+        Ok(())
+    }
+
+    fn finish_capture(&mut self) -> Result<(), SeqpacketError> {
+        let fd = self.fd.as_ref().ok_or(SeqpacketError::Closed)?.as_fd();
+        uapi::prepare_seqpacket(fd)?;
+        self.binding = Some(ConnectedSocketBinding::capture_peer(fd)?);
+        let credentials = uapi::peer_credentials(fd)?;
+        self.credentials = Some((credentials.uid, credentials.gid));
+        if credentials.pid != 0 {
+            return Err(SeqpacketError::PeerIdentity("selected Host peer is not namespace-local PID0"));
+        }
+        // Park the real kernel return before CLOEXEC, ioctl, stat and polling.
+        self.peer_pin = Some(uapi::peer_pidfd(fd)?);
+        self.pin = Some(PidFd::require_ancestor_host_original(
+            self.peer_pin.as_ref().ok_or(SeqpacketError::Closed)?.as_fd(),
+        )?);
+        self.require_original_inner()
+    }
+
+    fn complete_capture(&mut self, result: Result<(), SeqpacketError>) -> Result<(), &SeqpacketError> {
+        match result {
+            Ok(()) => {
+                self.closed = false;
+                Ok(())
+            }
+            Err(cause) => {
+                self.end_original();
+                Err(self.first_failure.get_or_insert(cause))
+            }
+        }
+    }
+
+    fn require_original_inner(&self) -> Result<(), SeqpacketError> {
+        let fd = self.fd.as_ref().ok_or(SeqpacketError::Closed)?.as_fd();
+        let binding = self.binding.ok_or(SeqpacketError::Closed)?;
+        if ConnectedSocketBinding::capture_peer(fd)? != binding {
+            return Err(SeqpacketError::PeerIdentity("original ancestor Host socket changed"));
+        }
+        let credentials = uapi::peer_credentials(fd)?;
+        if credentials.pid != 0 || Some((credentials.uid, credentials.gid)) != self.credentials {
+            return Err(SeqpacketError::PeerIdentity("original ancestor Host credentials changed"));
+        }
+        let pin = self.peer_pin.as_ref().ok_or(SeqpacketError::Closed)?;
+        if Some(PidFd::require_ancestor_host_original(pin.as_fd())?) != self.pin {
+            return Err(SeqpacketError::PeerIdentity("original ancestor Host pidfs pin changed"));
+        }
+        if ConnectedSocketBinding::capture_peer(fd)? != binding {
+            return Err(SeqpacketError::PeerIdentity("original ancestor Host socket changed"));
+        }
+        Ok(())
+    }
+
+    /// Compares two genuinely captured channels' same original kernel peer.
+    ///
+    /// # Errors
+    /// Refuses closed, changed, exited or distinct original pins. This is
+    /// continuity DATA; the two endpoint cookies need not be equal.
+    pub fn require_same_host_original(&mut self, other: &mut Self) -> Result<(), SeqpacketError> {
+        if self.closed || other.closed {
+            return Err(SeqpacketError::Closed);
+        }
+        self.closed = true;
+        other.closed = true;
+        self.require_original_inner()?;
+        other.require_original_inner()?;
+        if self.credentials != other.credentials || self.pin != other.pin {
+            return Err(SeqpacketError::PeerIdentity("selected channels name different original Host pins"));
+        }
+        self.closed = false;
+        other.closed = false;
+        Ok(())
+    }
+
+    /// Receives one bounded record with retained lower failure custody.
+    ///
+    /// # Errors
+    /// Only an initial nonconsuming EAGAIN/EINTR can retry. Every other failure
+    /// permanently ends this same socket before any retained originals drop.
+    pub fn receive_retaining(&mut self, maximum: usize) -> Result<GuestAncestorHostRecordV1, RetainedSeqpacketReceiveErrorV1> {
+        if self.closed {
+            return Err(RetainedSeqpacketReceiveErrorV1::before_receive(SeqpacketError::Closed));
+        }
+        self.closed = true;
+        let result = (|| {
+            self.require_original_inner().map_err(RetainedSeqpacketReceiveErrorV1::before_receive)?;
+            if maximum == 0 {
+                return Err(RetainedSeqpacketReceiveErrorV1::before_receive(SeqpacketError::InvalidMaximum));
+            }
+            let binding = self.binding.ok_or_else(|| RetainedSeqpacketReceiveErrorV1::before_receive(SeqpacketError::Closed))?;
+            let fd = self.fd.as_ref().ok_or_else(|| RetainedSeqpacketReceiveErrorV1::before_receive(SeqpacketError::Closed))?.as_fd();
+            let attempt = receive_custody::ReceiveAttemptV1::capture(fd, binding.socket_cookie())?;
+            let profile = receive_custody::SubjectProfileV1::AncestorHost {
+                credentials: self.credentials.ok_or_else(|| RetainedSeqpacketReceiveErrorV1::before_receive(SeqpacketError::Closed))?,
+                pin: self.pin.ok_or_else(|| RetainedSeqpacketReceiveErrorV1::before_receive(SeqpacketError::Closed))?,
+            };
+            let mut attempt = receive_custody::receive_packet(attempt, maximum, profile)?;
+            if let Err(cause) = self.require_original_inner() {
+                return Err(attempt.reject(cause));
+            }
+            let message = &mut attempt.messages[1];
+            let Some(pin) = message.ancestor.take() else {
+                return Err(attempt.reject(SeqpacketError::Ancillary("missing ancestor Host pin")));
+            };
+            let record = GuestAncestorHostRecordV1 {
+                payload: std::mem::take(&mut message.payload),
+                pin,
+                origin: binding.received_origin(),
+            };
+            attempt.disarm();
+            Ok(record)
+        })();
+        match result {
+            Ok(record) => {
+                self.closed = false;
+                Ok(record)
+            }
+            Err(mut cause) => {
+                if cause.is_nonconsuming_would_block() || cause.is_nonconsuming_interrupted() {
+                    self.closed = false;
+                } else {
+                    cause.record_shutdown_failure(self.end_original());
+                }
+                Err(cause)
+            }
+        }
+    }
+
+    /// Requires a complete record's same socket, original pin and liveness.
+    ///
+    /// # Errors
+    /// Permanently fences a changed origin, dead pin or failed observation.
+    pub fn require_record_original(&mut self, record: &GuestAncestorHostRecordV1) -> Result<(), SeqpacketError> {
+        if self.closed {
+            return Err(SeqpacketError::Closed);
+        }
+        self.closed = true;
+        self.require_original_inner()?;
+        let binding = self.binding.ok_or(SeqpacketError::Closed)?;
+        record.origin.require_binding(binding)
+            .map_err(|_| SeqpacketError::PeerIdentity("ancestor record socket origin changed"))?;
+        if Some(record.pin.identity) != self.pin
+            || PidFd::require_ancestor_host_original(record.pin.fd.as_fd())? != record.pin.identity
+        {
+            return Err(SeqpacketError::PeerIdentity("ancestor record pin changed"));
+        }
+        self.require_original_inner()?;
+        self.closed = false;
+        Ok(())
+    }
+
+    /// Sends a complete record on this selected original endpoint.
+    ///
+    /// # Errors
+    /// Returns the existing atomic sender's errors, without retrying a consumed
+    /// or partial send. A fatal error permanently fences this owner.
+    pub fn send(&mut self, payload: &[u8]) -> Result<(), SeqpacketError> {
+        self.send_selected(payload, None)
+    }
+
+    /// Sends the fixed first original-child report without exposing its FDs.
+    ///
+    /// This mechanically donates the actual pidfd/image/maps/stat/status from
+    /// the captured local-child owner. It authenticates no job or image; the
+    /// genuine bootstrap must bind the supplied original report header.
+    ///
+    /// # Errors
+    /// Refuses wrong order, unavailable originals or native sender failure.
+    /// Only nonconsuming backpressure/interruption may retry the same stage;
+    /// fatal or post-send failure fences the same original-child owner.
+    pub fn send_host_canary_child_first_v1(
+        &mut self,
+        originals: &mut crate::pidfd::HostCanaryLocalChildOriginalsV1,
+        original_header: &[u8; 176],
+    ) -> Result<(), SeqpacketError> {
+        self.send_host_canary_child_stage(originals, original_header, 0)
+    }
+
+    /// Sends the fixed second context/user/mount/network/pid namespace report.
+    ///
+    /// # Errors
+    /// Preserves the first report's ordering, custody and retry constraints;
+    /// no additional child, namespace, FD role or header length is accepted.
+    pub fn send_host_canary_child_second_v1(
+        &mut self,
+        originals: &mut crate::pidfd::HostCanaryLocalChildOriginalsV1,
+        original_header: &[u8; 176],
+    ) -> Result<(), SeqpacketError> {
+        self.send_host_canary_child_stage(originals, original_header, 1)
+    }
+
+    fn send_host_canary_child_stage(
+        &mut self,
+        originals: &mut crate::pidfd::HostCanaryLocalChildOriginalsV1,
+        original_header: &[u8; 176],
+        stage: u8,
+    ) -> Result<(), SeqpacketError> {
+        originals.require_report_stage(stage)?;
+        let mut header = *original_header;
+        let kind = if stage == 0 { 7_u16 } else { 8_u16 };
+        header[10..12].copy_from_slice(&kind.to_be_bytes());
+        header[12..16].copy_from_slice(&176_u32.to_be_bytes());
+        header[168..176].copy_from_slice(&(originals.local_child_pid()? as u64).to_be_bytes());
+
+        let result = {
+            let descriptors = if stage == 0 {
+                originals.first_report_descriptors()?
+            } else {
+                originals.second_report_descriptors()?
+            };
+            self.send_with_descriptors(&header, &descriptors)
+        };
+        match result {
+            Ok(()) => {
+                originals.record_sent_stage(stage);
+                originals.recheck_original()?;
+                Ok(())
+            }
+            Err(cause @ (SeqpacketError::WouldBlock | SeqpacketError::Interrupted)) => Err(cause),
+            Err(cause) => {
+                originals.fence();
+                Err(cause)
+            }
+        }
+    }
+
+    /// Donates exactly one to five real descriptors on this original endpoint.
+    ///
+    /// # Errors
+    /// Preserves the existing sender's descriptor bounds, flags and failures.
+    pub fn send_with_descriptors(&mut self, payload: &[u8], descriptors: &[BorrowedFd<'_>]) -> Result<(), SeqpacketError> {
+        self.send_selected(payload, Some(descriptors))
+    }
+
+    fn send_selected(&mut self, payload: &[u8], descriptors: Option<&[BorrowedFd<'_>]>) -> Result<(), SeqpacketError> {
+        if self.closed {
+            return Err(SeqpacketError::Closed);
+        }
+        self.closed = true;
+        self.require_original_inner()?;
+        let result = match descriptors {
+            Some(descriptors) => SeqpacketSocket::send_original_with_descriptors(&mut self.fd, payload, descriptors, OriginalSenderDispositionV1::GuestAncestorHost),
+            None => SeqpacketSocket::send_original(&mut self.fd, payload, OriginalSenderDispositionV1::GuestAncestorHost),
+        };
+        if matches!(&result, Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted)) {
+            self.closed = false;
+            return result;
+        }
+        result?;
+        self.require_original_inner()?;
+        self.closed = false;
+        Ok(())
+    }
+
+    fn end_original(&mut self) -> Option<std::io::Error> {
+        self.closed = true;
+        self.fd.as_ref().and_then(|fd|
+            rustix::net::shutdown(fd, rustix::net::Shutdown::Both).err().map(std::io::Error::from))
+    }
+}
+
+impl Default for GuestAncestorHostChannelV1 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for GuestAncestorHostChannelV1 {
+    fn drop(&mut self) {
+        self.end_original();
     }
 }
 

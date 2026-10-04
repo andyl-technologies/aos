@@ -13,8 +13,14 @@ use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_linux::mount::DetachedMount;
 use aos_sandbox_linux::seqpacket::SeqpacketError;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
+use aos_sandbox_linux::seqpacket::descriptor_subject::ReceivedDescriptorRecord;
+use aos_sandbox_linux::seqpacket::{
+    RetainedSeqpacketAdmissionErrorV1, RetainedSeqpacketReceiveErrorV1,
+};
 use aos_sandbox_protocol::storage_root_export::{
     STORAGE_ROOT_EXPORT_RESPONSE_BYTES_V1, StorageRootExportRequestV1, StorageRootExportResponseV1,
+    STORAGE_CANARY_EXPORT_RESPONSE_BYTES_V1, StorageCanaryExportRequestV1,
+    StorageCanaryExportResponseV1,
 };
 use rand::{TryRngCore as _, rngs::OsRng};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
@@ -25,6 +31,213 @@ use crate::{HostError, Result};
 const EXPORT_SOCKET: &str = "/run/aos/sandbox-storage/root-export.sock";
 const STORAGE_CGROUP: &str = "aos.slice/aos-control.slice/aos-storaged.service";
 const EXPORT_DEADLINE_NANOSECONDS: u64 = 130_000_000_000;
+
+/// Keeps selected prefix custody separate from ordinary detached-mount export.
+///
+/// Only the concrete catalog donates the service anchor. The installed
+/// Coordinator supplies its independently admitted job and baseline originals;
+/// this owner never constructs a launch permit or a generation0 acknowledgment.
+pub(crate) struct HostCanaryRootExportOriginalV1 {
+    storage_cgroup: Option<std::result::Result<RetainedCgroupAnchor, aos_sandbox_linux::Error>>,
+    socket: Option<std::result::Result<DescriptorSubjectSocket, RetainedSeqpacketAdmissionErrorV1>>,
+    reply: Option<std::result::Result<ReceivedDescriptorRecord, RetainedSeqpacketReceiveErrorV1>>,
+    request: Option<StorageCanaryExportRequestV1>,
+    response: Option<StorageCanaryExportResponseV1>,
+    first_failure: Option<CanaryExportCause>,
+    attempted: bool,
+    closed: bool,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum CanaryExportCause {
+    #[error(transparent)]
+    Linux(#[from] aos_sandbox_linux::Error),
+    #[error(transparent)]
+    Kernel(#[from] rustix::io::Errno),
+    #[error(transparent)]
+    Protocol(#[from] aos_sandbox_protocol::storage_root_export::StorageRootExportProtocolErrorV1),
+    #[error(transparent)]
+    Binding(#[from] aos_sandbox_linux::seqpacket::RecordBindingError),
+    #[error(transparent)]
+    Host(#[from] HostError),
+}
+
+type CanaryExportResult<T> = std::result::Result<T, CanaryExportCause>;
+
+impl HostCanaryRootExportOriginalV1 {
+    pub(crate) fn new() -> Self {
+        Self {
+            storage_cgroup: None,
+            socket: None,
+            reply: None,
+            request: None,
+            response: None,
+            first_failure: None,
+            attempted: false,
+            closed: false,
+        }
+    }
+
+    pub(crate) fn retain_catalog_original(&mut self, root: &CgroupV2Root) -> Result<()> {
+        if self.storage_cgroup.is_some() || self.closed || self.attempted {
+            return Err(canary_export_refusal());
+        }
+        self.closed = true;
+        self.storage_cgroup = Some(root.resolve(Path::new(STORAGE_CGROUP)));
+        let result = self.storage_cgroup.as_ref().ok_or_else(canary_export_refusal)?
+            .as_ref().map_err(|_| canary_export_refusal())?
+            .validate_current().map_err(Into::into);
+        self.finish_observation(result)
+    }
+
+    /// Executes only the measured prefix on its retained original channel.
+    ///
+    /// Actual received rights and subjects remain in the reply slot on error.
+    /// An independently authenticated baseline hash is DATA, not full-account
+    /// admission. No method accepts a caller-built request or an ACK digest.
+    pub(crate) fn measure_original(
+        &mut self,
+        workspace: &ResolvedWorkspace,
+        original: &crate::broker::canary_job::OriginalHostCanaryJobV1,
+        baseline_digest: [u8; 32],
+    ) -> Result<()> {
+        if self.closed || self.attempted || self.storage_cgroup.is_none() {
+            return Err(canary_export_refusal());
+        }
+        self.attempted = true;
+        self.closed = true;
+        let result = self.measure_inner(workspace, original, baseline_digest);
+        self.finish_observation(result)
+    }
+
+    fn measure_inner(
+        &mut self,
+        workspace: &ResolvedWorkspace,
+        original: &crate::broker::canary_job::OriginalHostCanaryJobV1,
+        baseline_digest: [u8; 32],
+    ) -> CanaryExportResult<()> {
+        let proof = workspace.guest_root_publication().ok_or_else(canary_export_refusal)?;
+        if boottime()? >= original.deadline {
+            return Err(canary_export_refusal().into());
+        }
+        self.require_service_original()?;
+        self.request = Some(StorageCanaryExportRequestV1 {
+            nonce: original.nonce,
+            job_digest: original.digest,
+            deadline_boottime_nanoseconds: original.deadline,
+            proof,
+            boot_id: original.boot_id,
+            baseline_digest,
+        });
+        let bytes = self.request.as_ref().ok_or_else(canary_export_refusal)?
+            .encode()?;
+
+        self.socket = Some(DescriptorSubjectSocket::connect_retaining(Path::new(EXPORT_SOCKET)));
+        let socket = self.socket.as_mut().ok_or_else(canary_export_refusal)?
+            .as_mut().map_err(|_| canary_export_refusal())?;
+        socket.begin_original_retention_v1();
+        send_request(socket, &bytes, original.deadline)?;
+
+        loop {
+            if boottime()? >= original.deadline {
+                return Err(canary_export_refusal().into());
+            }
+            self.reply = Some(self.socket.as_mut().ok_or_else(canary_export_refusal)?
+                .as_mut().map_err(|_| canary_export_refusal())?
+                .receive_optional_descriptor_reply_retaining(STORAGE_CANARY_EXPORT_RESPONSE_BYTES_V1));
+            match self.reply.as_ref().ok_or_else(canary_export_refusal)? {
+                Ok(_) => break,
+                Err(error) if error.is_nonconsuming_would_block() || error.is_nonconsuming_interrupted() => {
+                    // These two errors have no consumed record or received
+                    // rights. Every terminal lower failure remains parked.
+                    self.reply = None;
+                    let socket = self.socket.as_ref().ok_or_else(canary_export_refusal)?
+                        .as_ref().map_err(|_| canary_export_refusal())?;
+                    wait_until(socket, PollFlags::IN, original.deadline)?;
+                }
+                Err(_) => return Err(canary_export_refusal().into()),
+            }
+        }
+
+        let record = self.reply.as_ref().ok_or_else(canary_export_refusal)?
+            .as_ref().map_err(|_| canary_export_refusal())?;
+        self.socket.as_mut().ok_or_else(canary_export_refusal)?
+            .as_mut().map_err(|_| canary_export_refusal())?
+            .validate_received_origin_retaining(record)?;
+        let credentials = record.subject().credentials();
+        let service = self.storage_cgroup.as_ref().ok_or_else(canary_export_refusal)?
+            .as_ref().map_err(|_| canary_export_refusal())?;
+        let info = service.verify_exact_membership(record.subject().pidfd())?;
+        if credentials.uid() != 0 || credentials.gid() != 0
+            || info.pid() != credentials.pid().get() || info.thread_group_id() != info.pid()
+            || !record.subject().is_alive()?
+            || record.descriptors().len() != 1
+        {
+            return Err(canary_export_refusal().into());
+        }
+        self.response = Some(StorageCanaryExportResponseV1::decode(record.payload())?);
+        let response = self.response.as_ref().ok_or_else(canary_export_refusal)?;
+        let request = self.request.as_ref().ok_or_else(canary_export_refusal)?;
+        let root = record.descriptors().first().ok_or_else(canary_export_refusal)?;
+        let stat = rustix::fs::fstat(root)?;
+        let mount = aos_sandbox_linux::inventory::MountId::from_fd(root)?;
+        if response.nonce != request.nonce
+            || response.request_digest != request.digest()?
+            || response.root_device != workspace.device || response.root_inode != workspace.inode
+            || stat.st_dev != response.root_device || stat.st_ino != response.root_inode
+            || mount.get() != response.detached_mount_id
+            || service.verify_exact_membership(record.subject().pidfd())? != info
+            || !record.subject().is_alive()?
+            || boottime()? >= original.deadline
+        {
+            return Err(canary_export_refusal().into());
+        }
+        self.require_service_original()
+    }
+
+    pub(crate) fn measured_original(&self) -> Result<&StorageCanaryExportResponseV1> {
+        if self.closed || !self.attempted {
+            return Err(canary_export_refusal());
+        }
+        self.response.as_ref().ok_or_else(canary_export_refusal)
+    }
+
+    fn require_service_original(&self) -> CanaryExportResult<()> {
+        self.storage_cgroup.as_ref().ok_or_else(canary_export_refusal)?
+            .as_ref().map_err(|_| canary_export_refusal())?
+            .validate_current().map_err(Into::into)
+    }
+
+    fn finish_observation(&mut self, result: CanaryExportResult<()>) -> Result<()> {
+        match result {
+            Ok(()) => {
+                self.closed = false;
+                Ok(())
+            }
+            Err(cause) => {
+                if self.first_failure.is_none() {
+                    self.first_failure = Some(cause);
+                }
+                if let Some(Ok(socket)) = self.socket.as_mut() {
+                    socket.close();
+                }
+                Err(canary_export_refusal())
+            }
+        }
+    }
+}
+
+impl Drop for HostCanaryRootExportOriginalV1 {
+    fn drop(&mut self) {
+        if let Some(Ok(socket)) = self.socket.as_mut() {
+            socket.close();
+        }
+    }
+}
+
+fn canary_export_refusal() -> HostError {
+    HostError::State("Host canary root prefix is unavailable".to_owned())
+}
 
 /// Retains the exact Storage service cgroup for detached-root replies.
 #[derive(Debug)]

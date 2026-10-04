@@ -890,6 +890,12 @@ impl PayloadRootContinuityProjectionV1<'_> {
                             descriptors.push((Fd::from(descriptor), role.to_owned()));
                         }
                     }
+                    if let Some(report) = &spec.host_canary_report {
+                        let descriptor = report.pin.try_clone().map_err(|error| {
+                            invalid(format!("cannot duplicate Host canary report descriptor: {error}"))
+                        })?;
+                        descriptors.push((Fd::from(descriptor), "aos-host-readiness-report".to_owned()));
+                    }
                     Some(complex_property(name, descriptors)?)
                 }
                 UnitPropertyPolicyV1::Environment {

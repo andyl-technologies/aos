@@ -57,6 +57,14 @@ mod runtime_deployment_sidecar_history;
 #[cfg(target_os = "linux")]
 mod storage_native_issuance_history;
 #[cfg(target_os = "linux")]
+mod storage_canary_export_history;
+#[cfg(target_os = "linux")]
+pub use storage_canary_export_history::{
+    StorageCanaryBootstrapPrimaryHistoryDataV1,
+    StorageCanaryExportEdgeDataV1, StorageCanaryExportHistoryCursorV1,
+    StorageCanaryExportHistoryDataV1, StorageCanaryExportHistoryErrorV1,
+};
+#[cfg(target_os = "linux")]
 pub use storage_native_issuance_history::{
     StorageNativeIssuanceEdgeDataV1, StorageNativeIssuanceHistoryCursorV1,
     StorageNativeIssuanceHistoryDataV1, StorageNativeIssuanceHistoryErrorV1,

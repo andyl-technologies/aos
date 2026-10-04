@@ -12,6 +12,7 @@ use super::StorageRuntimeError;
 enum DrainPhase {
     Open,
     TerminalHeld,
+    CanaryHeld([u8; 32]),
     Draining,
     Quiesced,
 }
@@ -81,6 +82,60 @@ impl RepairWorkerDispatchGate {
         Ok(())
     }
 
+    /// Excludes ordinary dispatch for one separately retained canary export.
+    ///
+    /// The identity is private continuity DATA. The canary owner must retain
+    /// the actual authenticated request, native history and original worker;
+    /// this gate neither manufactures those originals nor proves quiescence.
+    pub(super) fn begin_canary_hold(&self, identity: [u8; 32]) -> Result<(), ()> {
+        let mut state = self.state.lock().map_err(|_| ())?;
+        if identity == [0; 32] || state.phase != DrainPhase::Open || state.in_flight != 0 {
+            return Err(());
+        }
+
+        state.phase = DrainPhase::CanaryHeld(identity);
+        Ok(())
+    }
+
+    pub(super) fn require_canary_hold(&self, identity: &[u8; 32]) -> Result<(), ()> {
+        let state = self.state.lock().map_err(|_| ())?;
+        if state.phase != DrainPhase::CanaryHeld(*identity) {
+            return Err(());
+        }
+        Ok(())
+    }
+
+    /// Admits only the same selected export under its already closed gate.
+    pub(super) fn enter_canary_hold(
+        &self,
+        identity: &[u8; 32],
+    ) -> Result<WorkerDispatchLease, ()> {
+        let mut state = self.state.lock().map_err(|_| ())?;
+        if state.phase != DrainPhase::CanaryHeld(*identity) || state.in_flight != 0 {
+            return Err(());
+        }
+
+        state.in_flight = 1;
+        Ok(WorkerDispatchLease {
+            state: Arc::clone(&self.state),
+        })
+    }
+
+    /// Reopens after the actual private owner has durably settled its hold.
+    ///
+    /// Cold callers must first scan every fixed worker scope and authenticate
+    /// the exact named Settled history. A digest cannot recreate a worker or
+    /// substitute for that owner-specific settlement.
+    pub(super) fn settle_canary_hold(&self, identity: &[u8; 32]) -> Result<(), ()> {
+        let mut state = self.state.lock().map_err(|_| ())?;
+        if state.phase != DrainPhase::CanaryHeld(*identity) || state.in_flight != 0 {
+            return Err(());
+        }
+
+        state.phase = DrainPhase::Open;
+        Ok(())
+    }
+
     /// Closes admission before checking whether existing calls have returned.
     pub(super) fn begin_drain(&self) -> Result<(), ()> {
         let mut state = self.state.lock().map_err(|_| ())?;
@@ -136,6 +191,46 @@ mod tests {
 
     use super::{RepairWorkerDispatchGate, close_and_drain_worker_scopes};
     use crate::StorageRuntimeError;
+
+    #[test]
+    fn canary_hold_is_distinct_from_repair_and_requires_the_same_identity() {
+        let gate = RepairWorkerDispatchGate::new();
+        let identity = [7; 32];
+
+        gate.begin_canary_hold(identity).unwrap();
+
+        assert!(gate.enter().is_err());
+        assert!(gate.begin_terminal_hold().is_err());
+        assert!(gate.settle_terminal_hold().is_err());
+        assert!(gate.begin_drain().is_err());
+        assert!(gate.enter_canary_hold(&[8; 32]).is_err());
+        assert!(gate.settle_canary_hold(&[8; 32]).is_err());
+        gate.require_canary_hold(&identity).unwrap();
+
+        let original = gate.enter_canary_hold(&identity).unwrap();
+        assert!(gate.enter_canary_hold(&identity).is_err());
+        assert!(gate.settle_canary_hold(&identity).is_err());
+        drop(original);
+
+        gate.settle_canary_hold(&identity).unwrap();
+        assert!(gate.enter().is_ok());
+    }
+
+    #[test]
+    fn canary_hold_cannot_hide_an_existing_dispatch_or_replace_another_hold() {
+        let gate = RepairWorkerDispatchGate::new();
+        let original = gate.enter().unwrap();
+
+        assert!(gate.begin_canary_hold([1; 32]).is_err());
+        drop(original);
+        assert!(gate.begin_canary_hold([0; 32]).is_err());
+        gate.begin_canary_hold([1; 32]).unwrap();
+
+        assert!(gate.begin_canary_hold([1; 32]).is_err());
+        assert!(gate.begin_canary_hold([2; 32]).is_err());
+        assert!(gate.settle_canary_hold(&[2; 32]).is_err());
+        assert!(!gate.is_open());
+    }
 
     #[test]
     fn terminal_hold_excludes_all_new_dispatch_and_is_not_a_repair_drain() {

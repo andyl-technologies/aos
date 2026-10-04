@@ -14,6 +14,7 @@ require {
     type fs_t;
     type lib_t;
     type ld_so_t;
+    type nsfs_t;
     type proc_t;
     type root_t;
     type security_t;
@@ -115,6 +116,17 @@ allow aos_filesystem_fuse_worker_t security_t:file { getattr open read };
 type aos_sandbox_host_t;
 typeattribute aos_sandbox_host_t domain;
 role system_r types aos_sandbox_host_t;
+
+# PID 1 creates only the selected StateDirectory; Host creates the three
+# fixed originals there. This type deliberately inherits no file_type grants.
+# The private native owner still checks names, singleton inodes and mount.
+type aos_sandbox_host_canary_state_t;
+allow init_t aos_sandbox_host_canary_state_t:dir { create getattr open read relabelfrom relabelto search setattr };
+allow aos_sandbox_host_canary_state_t fs_t:filesystem associate;
+allow aos_sandbox_host_t aos_sandbox_host_canary_state_t:dir { add_name getattr open read search write };
+allow aos_sandbox_host_t aos_sandbox_host_canary_state_t:file { create getattr ioctl open read setattr write };
+allowxperm aos_sandbox_host_t aos_sandbox_host_canary_state_t:file ioctl { 0x6601 };
+type_transition aos_sandbox_host_t aos_sandbox_host_canary_state_t:file aos_sandbox_host_canary_state_t;
 
 # Host pins the worker's actual immutable executable before submitting the
 # fixed role table. This type-wide inspection grant is narrowed by its closed
@@ -302,6 +314,25 @@ allow init_t aos_nspawn_exec_t:file { execute getattr map open read };
 allow init_t aos_nspawn_t:process transition;
 allow aos_nspawn_t aos_nspawn_exec_t:file entrypoint;
 type_transition init_t aos_nspawn_exec_t:process aos_nspawn_t;
+
+# Mapping after the transition uses the new supervisor SID. The selected
+# report retains fixed self-proc objects and an inherited Host-created socket;
+# none of these cells permits a same-SID exec or a new connection.
+allow aos_nspawn_t init_t:fd use;
+allow aos_nspawn_t aos_nspawn_exec_t:file { execute getattr map open read };
+allow aos_nspawn_t proc_t:dir search;
+allow aos_nspawn_t proc_t:lnk_file read;
+allow aos_nspawn_t self:dir search;
+allow aos_nspawn_t self:lnk_file read;
+allow aos_nspawn_t self:file { getattr open read };
+allow aos_nspawn_t nsfs_t:file { getattr open read };
+allow aos_nspawn_t aos_sandbox_host_t:fd use;
+allow aos_nspawn_t aos_sandbox_host_t:unix_stream_socket { getattr getopt read write };
+allow aos_sandbox_host_t aos_nspawn_t:fd use;
+allow aos_sandbox_host_t aos_nspawn_t:file { getattr ioctl read };
+allowxperm aos_sandbox_host_t aos_nspawn_t:file ioctl { 0xff0b };
+allow aos_sandbox_host_t aos_nspawn_exec_t:file { getattr read };
+
 allow aos_nspawn_t self:capability { sys_admin sys_chroot };
 allow aos_nspawn_t self:process setexec;
 allow aos_nspawn_t aos_sandbox_guest_owner_t:process transition;
@@ -323,7 +354,16 @@ allow aos_sandbox_host_t aos_sandbox_payload_systemd_exec_t:file { getattr open 
 # pidfs namespace ioctls use file read/ioctl against the target task SID.
 # Host's unit sandbox still carries no CAP_SYS_PTRACE or CAP_SYS_ADMIN.
 allow aos_sandbox_host_t aos_sandbox_payload_t:file { ioctl read };
-allow aos_sandbox_host_t aos_sandbox_guest_owner_t:file { ioctl read };
+allow aos_sandbox_host_t aos_sandbox_guest_owner_t:file { getattr ioctl read };
+allow aos_sandbox_host_t aos_sandbox_guest_owner_t:fd use;
+allow aos_sandbox_host_t aos_sandbox_guest_owner_t:process getattr;
+
+# Only kind inspection of actual inherited namespace objects is delegated.
+# Host cannot open namespace paths; the same measured Guest child donates them.
+allow aos_sandbox_host_t nsfs_t:file { getattr ioctl read };
+allowxperm aos_sandbox_host_t nsfs_t:file ioctl { 0xb703 };
+allow aos_sandbox_guest_owner_t nsfs_t:file { getattr ioctl open read };
+allowxperm aos_sandbox_guest_owner_t nsfs_t:file ioctl { 0xb703 };
 
 # The existing fixed guest-root publisher, not the Storage broker or init_t,
 # projects and reads back the immutable substrate. Its entrypoint/domain is

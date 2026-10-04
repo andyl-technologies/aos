@@ -13,11 +13,11 @@ use std::time::Duration;
 
 use aos_sandbox_broker_session_security::{
     ProductionBrokerSessionActivationErrorV1, ProductionBrokerSessionActivationV1,
-    ProductionHostBrokerServiceErrorV1, production_deadline_after,
+    ProductionHostBrokerServiceErrorV1, ProductionHostBrokerServiceV1, production_deadline_after,
 };
 use aos_sandbox_host::DormantHostBrokerCompositionV1;
 use aos_sandbox_host::authorization::HostAuthorityV1;
-use aos_sandbox_host::broker::HostBroker;
+use aos_sandbox_host::broker::{HostBroker, HostCanaryCoordinatorV1};
 use aos_sandbox_host::catalog::{FileHostCatalog, FileHostCatalogPublisher};
 use aos_sandbox_host::plan::{GuardianConfig, verify_optional_phase0_claim_v1};
 use aos_sandbox_host::state::FileHostStateStore;
@@ -47,25 +47,37 @@ fn run() -> Result<()> {
             "host broker must start with real and effective UID zero".to_owned(),
         ));
     }
-    let (_legacy_controller_identity, nspawn_executable, guardian_executable, selinux_policy) =
+    let (_legacy_controller_identity, nspawn_executable, guardian_executable, selinux_policy, selected_canary) =
         arguments()?;
+
+    // Only the selected branch captures the complete five-entry table. It is
+    // retained outside every later admission/effect future and cannot fall
+    // back to the ordinary three-listener activation on rejection.
+    let mut canary = selected_canary.then(HostCanaryCoordinatorV1::new);
 
     // SAFETY: this is the single-threaded entrypoint before any operation can
     // allocate or mutate a descriptor. PID 1 owns and transfers exactly FDs 3
     // and 4 under the fixed controller and RootMount descriptor names.
-    let activation =
-        unsafe { ProductionBrokerSessionActivationV1::adopt_host() }.map_err(production_error)?;
+    let activation = match canary.as_mut() {
+        Some(original) => {
+            original.capture_original()?;
+            let mut startup = original.original_startup()?;
+            ProductionBrokerSessionActivationV1::adopt_original_host_canary(&mut startup)
+                .map_err(production_error)?
+        }
+        None => unsafe { ProductionBrokerSessionActivationV1::adopt_host() }.map_err(production_error)?,
+    };
     let mut service = activation.into_host_service().map_err(production_error)?;
 
     // This probe is diagnostic only. Protected backend readiness remains the
     // sole authority for enabling Host Launch.
-    let _pidfd_namespace_probe = match PidfdNamespaceAccessProbe::current_service() {
+    let _pidfd_namespace_probe = if selected_canary { None } else { match PidfdNamespaceAccessProbe::current_service() {
         Ok(probe) => Some(probe),
         Err(error) => {
             eprintln!("aos-sandbox-hostd: pidfd namespace self-probe unavailable: {error}");
             None
         }
-    };
+    }};
 
     let cgroup_root = open_cgroup_root()?;
     let root_export_descriptor = cgroup_root
@@ -88,6 +100,26 @@ fn run() -> Result<()> {
         .enable_all()
         .build()
         .map_err(|error| HostError::State(error.to_string()))?;
+
+    if let Some(original) = canary.as_mut() {
+        if std::path::Path::new(&credential_directory)
+            != std::path::Path::new("/run/credentials/aos-sandbox-hostd.service")
+        {
+            return Err(HostError::State("selected Host credential delivery differs".to_owned()));
+        }
+        runtime.block_on(original.admit_original(
+            std::path::Path::new(&credential_directory), std::path::Path::new(STATE_ROOT),
+            &nspawn_executable, &selinux_policy,
+        ))?;
+        original.retain_catalog_original(&catalog)?;
+        let worker = SystemdOneShotWorker::new(cgroup_root);
+        let mut broker = runtime.block_on(HostBroker::open_original_canary(
+            catalog, state, worker, authority, guardian, original,
+        ))?;
+        runtime.block_on(broker.run_original_canary(original))?;
+        let mut host = DormantHostBrokerCompositionV1::new(&mut broker);
+        return serve_host(&runtime, &mut service, &mut host, &catalog_publisher);
+    }
     let _phase0_claim = runtime.block_on(verify_optional_phase0_claim_v1(
         std::path::Path::new(&credential_directory),
         std::path::Path::new(STATE_ROOT),
@@ -100,12 +132,21 @@ fn run() -> Result<()> {
         .with_guardian(guardian)
         .with_protected_agent_launch();
     let mut host = DormantHostBrokerCompositionV1::new(&mut broker);
-    runtime.block_on(async move {
+    serve_host(&runtime, &mut service, &mut host, &catalog_publisher)
+}
+
+fn serve_host(
+    runtime: &tokio::runtime::Runtime,
+    service: &mut ProductionHostBrokerServiceV1,
+    host: &mut dyn aos_sandbox_host::DormantHostBrokerCallsiteV1,
+    catalog_publisher: &FileHostCatalogPublisher,
+) -> Result<()> {
+    runtime.block_on(async {
         loop {
             let request_deadline = production_deadline_after(REQUEST_TIMEOUT)
                 .map_err(|error| HostError::State(error.to_string()))?;
             match service
-                .serve_next(&mut host, &catalog_publisher, request_deadline)
+                .serve_next(host, catalog_publisher, request_deadline)
                 .await
             {
                 Ok(()) => {}
@@ -127,7 +168,7 @@ fn production_error(error: ProductionBrokerSessionActivationErrorV1) -> HostErro
     HostError::State(error.to_string())
 }
 
-fn arguments() -> Result<((u32, u32), String, String, String)> {
+fn arguments() -> Result<((u32, u32), String, String, String, bool)> {
     let mut arguments = env::args();
     let _program = arguments.next();
     let uid = parse_identity(arguments.next(), "controller UID")?;
@@ -141,14 +182,18 @@ fn arguments() -> Result<((u32, u32), String, String, String)> {
     let selinux_policy = arguments
         .next()
         .ok_or_else(|| HostError::State("production SELinux policy path is absent".to_owned()))?;
-    if arguments.next().is_some() {
+    let selected_canary = match arguments.next().as_deref() {
+        None => false,
+        Some("--host-canary-v1") if arguments.next().is_none() => true,
+        Some(_) => {
         return Err(HostError::State(
             "usage: aos-sandbox-hostd CONTROLLER_UID CONTROLLER_GID NSPAWN_PATH GUARDIAN_PATH SELINUX_POLICY_PATH"
                 .to_owned(),
         ));
-    }
+        }
+    };
 
-    Ok(((uid, gid), nspawn, guardian, selinux_policy))
+    Ok(((uid, gid), nspawn, guardian, selinux_policy, selected_canary))
 }
 
 fn parse_identity(value: Option<String>, label: &str) -> Result<u32> {

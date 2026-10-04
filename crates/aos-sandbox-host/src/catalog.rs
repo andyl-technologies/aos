@@ -80,6 +80,16 @@ pub enum HostCatalogPublicationReadback {
 }
 
 impl FileHostCatalog {
+    pub(crate) fn retain_canary_root_export_original(
+        &self,
+        owner: &mut crate::storage_root_export::HostCanaryRootExportOriginalV1,
+    ) -> Result<()> {
+        let root = self.root_export_cgroup.as_ref().ok_or_else(|| {
+            HostError::Catalog("Storage root export cgroup is unavailable".to_owned())
+        })?;
+        owner.retain_catalog_original(root)
+    }
+
     /// Constructs a catalog reader from a pre-opened private directory.
     #[must_use]
     pub const fn new(root: BeneathRoot) -> Self {

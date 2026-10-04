@@ -559,6 +559,7 @@ pub struct SandboxUnitSpec {
     resources: SandboxResources,
     devices: Vec<SandboxDevice>,
     guest_agent_descriptors: Option<SandboxGuestAgentDescriptorsV1>,
+    pub(crate) host_canary_report: Option<SandboxDescriptorPath>,
     launch_binding: Option<[u8; 32]>,
     timeout_start: Duration,
     timeout_stop: Duration,
@@ -619,6 +620,7 @@ impl SandboxUnitSpec {
             resources,
             devices: Vec::new(),
             guest_agent_descriptors: None,
+            host_canary_report: None,
             launch_binding: None,
             timeout_start,
             timeout_stop,
@@ -719,6 +721,56 @@ impl SandboxUnitSpec {
         Ok(self)
     }
 
+    /// Previews only the fixed Agent and Host-canary report argument semantics.
+    ///
+    /// This is nonauthorizing DATA for resolving the launch-binding/Agent-
+    /// channel dependency. The launch owner must later pin all real originals
+    /// and compare the actual semantics before binding or starting a unit.
+    /// Descriptor aliases and credential contents are not hash inputs in the
+    /// ordinary semantics codec either.
+    ///
+    /// # Errors
+    /// Refuses an already bound or provisioned unit and oversized fixed argv.
+    pub fn host_canary_semantic_preview_v1(&self) -> Result<[u8; 32]> {
+        if self.launch_binding.is_some()
+            || self.guest_agent_descriptors.is_some()
+            || self.host_canary_report.is_some()
+        {
+            return Err(invalid("canary roles must precede launch binding"));
+        }
+        let arguments = self.host_canary_arguments();
+        validate_arguments(&arguments)?;
+        Ok(self.semantic_digest_for_arguments(&arguments))
+    }
+
+    /// Pins the four fixed selected Agent and Host-canary report descriptors.
+    ///
+    /// This composes the existing three-role Agent handoff with the one report
+    /// role. Descriptor continuity is not job, process or readiness authority.
+    ///
+    /// # Errors
+    /// Refuses bound or provisioned units, failed descriptor pins or argv bounds.
+    pub fn with_host_canary_descriptors_v1(
+        self,
+        channel: BorrowedFd<'_>,
+        provisioning: BorrowedFd<'_>,
+        attach_trust: BorrowedFd<'_>,
+        report: BorrowedFd<'_>,
+    ) -> Result<Self> {
+        let mut spec = self.with_guest_agent_descriptors(channel, provisioning, attach_trust)?;
+        spec.host_canary_report = Some(SandboxDescriptorPath::for_current_process(report)
+            .map_err(|error| invalid(format!("cannot pin Host canary report: {error}")))?);
+        spec.arguments = spec.host_canary_arguments();
+        validate_arguments(&spec.arguments)?;
+        Ok(spec)
+    }
+
+    fn host_canary_arguments(&self) -> Vec<String> {
+        let mut arguments = self.command.arguments(self.paths.attachment_anchor_pin.is_some(), true);
+        arguments.push("--aos-host-readiness-report".to_owned());
+        arguments
+    }
+
     /// Returns the incarnation-derived service name.
     #[must_use]
     pub fn name(&self) -> &SandboxUnitName {
@@ -776,17 +828,21 @@ impl SandboxUnitSpec {
     /// choice which changes the transient-unit contract.
     #[must_use]
     pub fn semantic_digest_v1(&self) -> [u8; 32] {
+        self.semantic_digest_for_arguments(&self.arguments)
+    }
+
+    fn semantic_digest_for_arguments(&self, arguments: &[String]) -> [u8; 32] {
         const DOMAIN: &[u8] = b"aos.systemd.sandbox-unit-semantics.v1\0";
 
         let mut hash = Sha256::new();
         hash.update(DOMAIN);
         semantic_string(&mut hash, self.name.as_str());
         hash.update(
-            u64::try_from(self.arguments.len())
+            u64::try_from(arguments.len())
                 .unwrap_or(u64::MAX)
                 .to_be_bytes(),
         );
-        for argument in &self.arguments {
+        for argument in arguments {
             semantic_string(&mut hash, argument);
         }
         hash.update(self.command.uid_range_start.to_be_bytes());

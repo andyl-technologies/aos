@@ -64,36 +64,51 @@ impl RetainedHostLimitAttemptV1 {
     }
 }
 
-enum LaunchInputV1 {
+pub(super) enum LaunchInputV1<'owner> {
     Local(PreparedLaunch),
     Retained([u8; 16]),
+    Canary(&'owner mut super::HostCanaryCoordinatorV1),
+}
+
+impl LaunchInputV1<'_> {
+    fn original_canary(&self) -> Option<&super::HostCanaryCoordinatorV1> {
+        match self {
+            Self::Canary(owner) => Some(owner),
+            Self::Local(_) | Self::Retained(_) => None,
+        }
+    }
 }
 
 enum VerifiedLaunchV1 {
     Local(BoundPayloadVerification),
     Retained { request: [u8; 16], point: usize },
+    Canary,
 }
 
 impl VerifiedLaunchV1 {
     fn metadata(
         &self,
         attempts: &std::collections::BTreeMap<[u8; 16], RetainedHostLimitAttemptV1>,
+        canary: Option<&super::HostCanaryCoordinatorV1>,
     ) -> Result<(Option<[u8; 32]>, [u8; 16], RuntimeProofSnapshot)> {
         let verified = match self {
             Self::Local(verified) => verified,
             Self::Retained { request, point } => attempts.get(request)
                 .ok_or_else(retained_launch_missing)?.points[*point].verified()?,
+            Self::Canary => canary.ok_or_else(retained_launch_missing)?
+                .readback.verified()?,
         };
         Ok((verified.binding, verified.invocation_id, verified.proof))
     }
 }
 
-enum CompletionObservationV1 {
+enum CompletionObservationV1<'owner> {
     Local(WorkerObservation),
     Retained { request: [u8; 16], point: usize },
+    Canary(&'owner super::HostCanaryCoordinatorV1),
 }
 
-impl CompletionObservationV1 {
+impl CompletionObservationV1<'_> {
     fn borrow<'a>(
         &'a self,
         attempts: &'a std::collections::BTreeMap<[u8; 16], RetainedHostLimitAttemptV1>,
@@ -102,6 +117,7 @@ impl CompletionObservationV1 {
             Self::Local(observation) => Ok(observation),
             Self::Retained { request, point } => Ok(&attempts.get(request)
                 .ok_or_else(retained_launch_missing)?.points[*point].verified()?.observation),
+            Self::Canary(owner) => Ok(&owner.readback.verified()?.observation),
         }
     }
 }
@@ -124,17 +140,29 @@ where
     where
         W: Sync,
     {
+        self.prepare_composite_stop_original(request.fence(), *request.header().request_id(), request_digest).await
+    }
+
+    pub(super) async fn prepare_composite_stop_original(
+        &self,
+        fence: &ValidatedAssignmentFence,
+        request_id: [u8; 16],
+        request_digest: [u8; 32],
+    ) -> Result<DurableExecution>
+    where
+        W: Sync,
+    {
         if let Some(record) = self
             .state
-            .composite_stop_execution(request.header().request_id())
+            .composite_stop_execution(&request_id)
         {
             return Ok(DurableExecution::CompositeStop(record));
         }
 
-        let identity = HostRuntimeIdentity::from(request.fence());
+        let identity = HostRuntimeIdentity::from(fence);
         let lineage = self.state.completed_guardian_lineage(
-            request.fence().sandbox_id(),
-            request.fence().incarnation_id(),
+            fence.sandbox_id(),
+            fence.incarnation_id(),
             &self.authority,
         )?;
         let target = if let GuardianLineage::Complete(lineage) = lineage {
@@ -152,9 +180,9 @@ where
                 },
             }
         } else {
-            match self.state.current_execution(request.fence().sandbox_id()) {
+            match self.state.current_execution(fence.sandbox_id()) {
                 Some((_, HostAction::Launch, incarnation_id, execution))
-                    if incarnation_id == *request.fence().incarnation_id()
+                    if incarnation_id == *fence.incarnation_id()
                         && execution.guardian_attempt().is_some_and(|attempt| {
                             matches!(attempt.phase, GuardianLaunchPhase::Compensated { .. })
                         }) =>
@@ -182,13 +210,13 @@ where
         };
         let context = ExecutionContext {
             action: HostAction::Stop,
-            request_id: *request.header().request_id(),
+            request_id,
             request_digest,
-            sandbox_id: *request.fence().sandbox_id(),
-            incarnation_id: *request.fence().incarnation_id(),
-            assignment_epoch: request.fence().assignment_epoch(),
-            desired_generation: request.fence().desired_generation(),
-            assignment_digest: *request.fence().assignment_digest(),
+            sandbox_id: *fence.sandbox_id(),
+            incarnation_id: *fence.incarnation_id(),
+            assignment_epoch: fence.assignment_epoch(),
+            desired_generation: fence.desired_generation(),
+            assignment_digest: *fence.assignment_digest(),
             receipt_present: false,
         };
         DurableExecution::composite_stop(context, target)
@@ -480,14 +508,14 @@ where
         }
     }
 
-    async fn advance_guardian_start_inner(
+    pub(super) async fn advance_guardian_start_inner(
         &mut self,
         fence: &ValidatedAssignmentFence,
         request_id: [u8; 16],
         request_digest: [u8; 32],
         effect: &BrokerEffectIntentV1,
         spec: GuardianUnitSpec,
-        payload: LaunchInputV1,
+        mut payload: LaunchInputV1<'_>,
         pending_agent: Option<HostAgentPendingSessionV1>,
         maximum_response_bytes: u32,
         trusted_clock: &mut (impl FnMut() -> Result<RawPairedClockSample> + Send),
@@ -505,7 +533,7 @@ where
         let attempt = self.state.guardian_attempt(&request_id).ok_or_else(|| {
             HostError::State("Guardian launch lost its durable attempt".to_owned())
         })?;
-        if attempt.agent_required != pending_agent.is_some() {
+        if attempt.agent_required != (pending_agent.is_some() || payload.original_canary().is_some()) {
             return Err(HostError::AgentLaunchQuarantined);
         }
         let binding = attempt.binding;
@@ -604,10 +632,17 @@ where
                         })
                         .map_err(HostError::from)
                 };
+                if let LaunchInputV1::Canary(owner) = &mut payload {
+                    owner.recheck_original_before_effect().await?;
+                }
                 self.worker
                     .start_guardian(&spec, &identity, &mut before_effect)
                     .await?
             };
+            if let LaunchInputV1::Canary(owner) = &mut payload {
+                let invocation = start.observation.invocation_id.ok_or_else(retained_launch_missing)?;
+                owner.observe_guardian_resources(0, &identity, binding, invocation).await?;
+            }
             let payload_observation =
                 guardian_unit_observation(self.worker.observe_bound_payload(&identity).await?);
             let decision = decide_guardian_launch(GuardianDecisionInput {
@@ -773,7 +808,7 @@ where
                     })
                     .map_err(HostError::from)
             };
-            match &payload {
+            match &mut payload {
                 LaunchInputV1::Local(payload) => self.worker
                 .start_bound_payload(
                     payload.spec(),
@@ -797,9 +832,15 @@ where
                         .map(|()| (VerifiedLaunchV1::Retained { request: *request, point: 0 },
                             StartJobEvidence::DoneForCurrentSubmission))
                 }
+                LaunchInputV1::Canary(owner) => {
+                    let loan = self.worker.retained_payload_worker().ok_or_else(retained_launch_missing)?;
+                    owner.start_payload(&loan, &identity, *guardian_invocation, &mut before_effect)
+                        .await.map(|()| (VerifiedLaunchV1::Canary,
+                            StartJobEvidence::DoneForCurrentSubmission))
+                }
             }
         } else {
-            match &payload {
+            match &mut payload {
                 LaunchInputV1::Local(payload) => self.worker
                     .prove_bound_payload(payload.spec(), payload.pins(), &identity)
                     .await
@@ -811,6 +852,11 @@ where
                         &mut attempt.points[0]).await
                         .map(|()| (VerifiedLaunchV1::Retained { request: *request, point: 0 },
                             StartJobEvidence::RecoveredExactProof))
+                }
+                LaunchInputV1::Canary(owner) => {
+                    let loan = self.worker.retained_payload_worker().ok_or_else(retained_launch_missing)?;
+                    owner.prove_payload(&loan, &identity).await
+                        .map(|()| (VerifiedLaunchV1::Canary, StartJobEvidence::RecoveredExactProof))
                 }
             }
         };
@@ -830,7 +876,9 @@ where
             }
         };
         let guardian = guardian_unit_observation(self.worker.observe_guardian(&identity).await?);
-        let (verified_binding, verified_invocation, verified_proof) = verified.metadata(&self.live_limit_attempts)?;
+        let (verified_binding, verified_invocation, verified_proof) = verified.metadata(
+            &self.live_limit_attempts, payload.original_canary(),
+        )?;
         let payload_observation = UnitObservation::Present {
             binding: verified_binding,
             invocation: verified_invocation,
@@ -921,7 +969,7 @@ where
         request_id: [u8; 16],
         request_digest: [u8; 32],
         effect: &BrokerEffectIntentV1,
-        payload: LaunchInputV1,
+        mut payload: LaunchInputV1<'_>,
         pending_agent: Option<HostAgentPendingSessionV1>,
         maximum_response_bytes: u32,
         identity: HostRuntimeIdentity,
@@ -937,7 +985,28 @@ where
             .guardian_attempt(&request_id)
             .ok_or_else(|| HostError::State("Guardian launch lost its durable attempt".to_owned()))?
             .agent_required;
-        let authenticated = if agent_required {
+        let authenticated = if let LaunchInputV1::Canary(owner) = &mut payload {
+            if !agent_required || pending_agent.is_some() {
+                return Err(HostError::AgentLaunchQuarantined);
+            }
+            let supervisor = owner.readback.verified()?.proof.supervisor.pid;
+            owner.live_policy = Some(owner.config.as_ref().ok_or_else(retained_launch_missing)?
+                .observe_original_supervisor_policy(
+                    owner.manager.as_ref().ok_or_else(retained_launch_missing)?,
+                    owner.payload.as_ref().ok_or_else(retained_launch_missing)?,
+                    supervisor,
+                ).await?);
+            let deadline = owner.deadline.ok_or_else(retained_launch_missing)?;
+            if owner.readback.authenticate_original_agent(&mut owner.agent, &mut owner.job, deadline)
+                .is_err()
+            {
+                return self.begin_guardian_compensation(
+                    &identity, request_id, request_digest, effect,
+                    maximum_response_bytes, binding,
+                ).await;
+            }
+            None
+        } else if agent_required {
             let pending = pending_agent.ok_or(HostError::AgentLaunchQuarantined)?;
             match Self::authenticate_protected_agent(pending) {
                 Ok(session) => Some(session),
@@ -993,7 +1062,7 @@ where
         request_id: [u8; 16],
         request_digest: [u8; 32],
         effect: &BrokerEffectIntentV1,
-        payload: LaunchInputV1,
+        mut payload: LaunchInputV1<'_>,
         maximum_response_bytes: u32,
         identity: HostRuntimeIdentity,
         binding: [u8; 32],
@@ -1014,7 +1083,7 @@ where
                 "Guardian finalization lost its verified payload phase".to_owned(),
             ));
         };
-        let verification = match &payload {
+        let verification = match &mut payload {
             LaunchInputV1::Local(payload) => self.worker
                 .prove_bound_payload(payload.spec(), payload.pins(), &identity).await
                 .map(|proof| VerifiedLaunchV1::Local(proof.verification)),
@@ -1024,6 +1093,10 @@ where
                 loan.prove(attempt.payload.spec(), attempt.payload.pins(), &identity,
                     &mut attempt.points[1]).await
                     .map(|()| VerifiedLaunchV1::Retained { request: *request, point: 1 })
+            }
+            LaunchInputV1::Canary(owner) => {
+                let loan = self.worker.retained_payload_worker().ok_or_else(retained_launch_missing)?;
+                owner.prove_payload(&loan, &identity).await.map(|()| VerifiedLaunchV1::Canary)
             }
         };
         let verified = match verification {
@@ -1043,13 +1116,18 @@ where
         };
         let guardian = guardian_unit_observation(self.worker.observe_guardian(&identity).await?);
         let freshness = guardian_authority_freshness(&self.authority, effect, trusted_clock);
-        let (verified_binding, verified_invocation, verified_proof) = verified.metadata(&self.live_limit_attempts)?;
+        let (verified_binding, verified_invocation, verified_proof) = verified.metadata(
+            &self.live_limit_attempts, payload.original_canary(),
+        )?;
         let verified_phase = GuardianLaunchPhase::PayloadVerified {
             guardian_invocation,
             payload_invocation,
             observation_sequence,
             worker_proof,
         };
+        if let LaunchInputV1::Canary(owner) = &mut payload {
+            owner.observe_guardian_resources(1, &identity, binding, guardian_invocation).await?;
+        }
         let decision = decide_guardian_launch(GuardianDecisionInput {
             binding,
             phase: &verified_phase,
@@ -1077,6 +1155,13 @@ where
                 VerifiedLaunchV1::Retained { request, point } => self.complete_guardian_launch(
                     request_id, request_digest, effect, maximum_response_bytes, identity,
                     observation_sequence, CompletionObservationV1::Retained { request, point },
+                    verified_phase,
+                ),
+                VerifiedLaunchV1::Canary => self.complete_guardian_launch(
+                    request_id, request_digest, effect, maximum_response_bytes, identity,
+                    observation_sequence,
+                    CompletionObservationV1::Canary(payload.original_canary()
+                        .ok_or_else(retained_launch_missing)?),
                     verified_phase,
                 ),
             },
@@ -1130,7 +1215,7 @@ where
         maximum_response_bytes: u32,
         identity: HostRuntimeIdentity,
         observation_sequence: u64,
-        observation: CompletionObservationV1,
+        observation: CompletionObservationV1<'_>,
         verified_phase: GuardianLaunchPhase,
     ) -> Result<Vec<u8>> {
         let GuardianLaunchPhase::PayloadVerified {
@@ -1172,6 +1257,10 @@ where
             CompletionObservationV1::Retained { request, point } => {
                 self.retain_original_runtime_observation(identity, request, point)?;
             }
+            // The selected readiness-only child never owns a public runtime
+            // handle or GuestProcessEffects session. Its actual originals stay
+            // in the coordinator until the same strict Stop has completed.
+            CompletionObservationV1::Canary(_) => {}
         }
         self.commit_state(&proposed)?;
         Ok(response)

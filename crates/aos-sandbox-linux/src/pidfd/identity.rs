@@ -90,6 +90,23 @@ pub(super) struct ProcStatIdentity {
     start_time_ticks: u64,
 }
 
+impl ProcStatIdentity {
+    /// Returns the process ID in the original procfs mount's PID namespace.
+    pub(super) const fn pid(self) -> u32 {
+        self.pid
+    }
+
+    /// Returns the parent ID in that same original procfs namespace.
+    pub(super) const fn parent_pid(self) -> u32 {
+        self.parent_pid
+    }
+
+    /// Returns the parsed boot-relative start time without branding identity.
+    pub(super) const fn start_time_ticks(self) -> u64 {
+        self.start_time_ticks
+    }
+}
+
 fn read_proc_stat(pid: u32) -> Result<ProcStatIdentity> {
     let pid = NonZeroU32::new(pid).ok_or_else(|| {
         Error::invalid("pidfd process identity", "kernel returned process ID zero")

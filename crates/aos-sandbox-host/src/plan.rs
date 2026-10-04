@@ -55,6 +55,9 @@ mod selinux_policy;
 pub use deployment::{
     VerifiedPhase0ClaimV1, verify_optional_backend_deployment_v1, verify_optional_phase0_claim_v1,
 };
+pub use deployment::canary::HostCanaryStartupV1;
+pub(crate) use deployment::canary::CanaryNspawnConfigV1;
+pub(crate) use deployment::verify_original_canary_phase0_claim_v1;
 pub use readiness::{
     BackendReadiness, BackendReadinessBlocker, ProtectedBackendReadinessEvidence,
     VerifiedCompiledSupervisorProfileV1, VerifiedLiveSupervisorPolicyV1, VerifiedPackagedRuntimeV1,
@@ -444,6 +447,34 @@ impl GuardianConfig {
 }
 
 impl PreparedLaunch {
+    pub(crate) fn prepare_canary_role_snapshot(&mut self) -> Result<()> {
+        self.snapshot.spec_semantic_digest = self.spec.host_canary_semantic_preview_v1()
+            .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        self.snapshot.agent_required = true;
+        Ok(())
+    }
+
+    pub(crate) fn pin_original_canary_roles(
+        &mut self,
+        agent: &crate::live_agent::HostCanaryAgentOwnerV1,
+        report: BorrowedFd<'_>,
+        execution: &crate::state::transition::DurableExecution,
+    ) -> Result<()> {
+        let binding = execution.guardian_binding().ok_or_else(|| {
+            HostError::InvalidPlan("original canary Guardian binding is unavailable".to_owned())
+        })?;
+        let spec = agent.pin_original_spec(self.spec.clone(), report)
+            .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        if spec.semantic_digest_v1() != self.snapshot.spec_semantic_digest
+            || !self.snapshot.agent_required
+        {
+            return Err(HostError::InvalidPlan("actual canary role semantics differ".to_owned()));
+        }
+        self.spec = spec.into_bound(binding)
+            .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
+        Ok(())
+    }
+
     /// Returns the fixed transient-unit specification.
     #[must_use]
     pub const fn spec(&self) -> &SandboxUnitSpec {
@@ -653,7 +684,69 @@ impl NspawnConfig {
         resolved: ResolvedLaunchResources,
         root_mount: DetachedMount,
     ) -> Result<PreparedLaunch> {
-        self.revalidate()?;
+        compile_resolved_recipe(
+            LaunchRecipeV1::Ready(self),
+            fence,
+            plan,
+            resolved,
+            root_mount,
+        )
+    }
+}
+
+enum LaunchRecipeV1<'a> {
+    Ready(&'a NspawnConfig),
+    Canary(&'a deployment::canary::CanaryNspawnConfigV1),
+}
+
+impl LaunchRecipeV1<'_> {
+    fn revalidate(&self) -> Result<()> {
+        match self {
+            Self::Ready(config) => config.revalidate(),
+            Self::Canary(config) => config.revalidate_executable(),
+        }
+    }
+
+    fn executable_pin(&self) -> BorrowedFd<'_> {
+        match self {
+            Self::Ready(config) => config.readiness.executable_pin(),
+            Self::Canary(config) => config.executable_pin(),
+        }
+    }
+
+    fn executable_pin_arc(&self) -> &Arc<OwnedFd> {
+        match self {
+            Self::Ready(config) => config.readiness.executable_pin_arc(),
+            Self::Canary(config) => config.executable_pin_arc(),
+        }
+    }
+
+    fn timeouts(&self) -> (Duration, Duration) {
+        match self {
+            Self::Ready(config) => (config.timeout_start, config.timeout_stop),
+            Self::Canary(config) => config.timeouts(),
+        }
+    }
+}
+
+pub(crate) fn compile_original_canary_launch(
+    config: &deployment::canary::CanaryNspawnConfigV1,
+    fence: &ValidatedAssignmentFence,
+    plan: &ValidatedRuntimePlan,
+    resolved: ResolvedLaunchResources,
+    root_mount: DetachedMount,
+) -> Result<PreparedLaunch> {
+    compile_resolved_recipe(LaunchRecipeV1::Canary(config), fence, plan, resolved, root_mount)
+}
+
+fn compile_resolved_recipe(
+    recipe: LaunchRecipeV1<'_>,
+    fence: &ValidatedAssignmentFence,
+    plan: &ValidatedRuntimePlan,
+    resolved: ResolvedLaunchResources,
+    root_mount: DetachedMount,
+) -> Result<PreparedLaunch> {
+        recipe.revalidate()?;
         validate_backend_features(plan)?;
         let workspace = resolved.workspace;
         let guest_package_binding = workspace
@@ -715,7 +808,7 @@ impl NspawnConfig {
         }
 
         let executable_path =
-            SandboxDescriptorPath::for_current_process(self.readiness.executable_pin())
+            SandboxDescriptorPath::for_current_process(recipe.executable_pin())
                 .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
         let root_path = SandboxDescriptorPath::for_current_process(transferred_root.as_fd())
             .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
@@ -757,14 +850,14 @@ impl NspawnConfig {
             command,
             paths,
             resources,
-            self.timeout_start,
-            self.timeout_stop,
+            recipe.timeouts().0,
+            recipe.timeouts().1,
         )
         .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
-        let nspawn_identity = fstat(self.readiness.executable_pin())
+        let nspawn_identity = fstat(recipe.executable_pin())
             .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
         let nspawn_mount_id =
-            aos_sandbox_linux::inventory::MountId::from_fd(self.readiness.executable_pin())
+            aos_sandbox_linux::inventory::MountId::from_fd(recipe.executable_pin())
                 .map_err(|error| HostError::InvalidPlan(error.to_string()))?
                 .get();
         // A detached clone receives a new mount ID on each export. Durable
@@ -804,14 +897,13 @@ impl NspawnConfig {
             guest_package_binding,
             guest_feature_mask,
             pins: LaunchPins {
-                executable: Arc::clone(self.readiness.executable_pin_arc()),
+                executable: Arc::clone(recipe.executable_pin_arc()),
                 workspace: workspace.pin,
                 transferred_root,
                 network: network.pin,
                 attachment_anchor: attachment_anchor.pin,
             },
         })
-    }
 }
 
 fn open_executable_pin(path: &str) -> Result<OwnedFd> {
@@ -901,6 +993,26 @@ fn required_limit(plan: &ValidatedRuntimePlan, dimension: u8, label: &str) -> Re
         )));
     }
     Ok(value)
+}
+
+pub(crate) fn original_canary_payload_envelope(
+    plan: &ValidatedRuntimePlan,
+) -> Result<aos_sandbox_core::ResourceVector> {
+    use aos_sandbox_core::{ResourceDimension as Dimension, ResourceVector};
+
+    // Weight is not a finite CPU envelope. The selected canary therefore
+    // requires the same optional quota that the ordinary compiler supports,
+    // without changing the ordinary plan's acceptance conditions.
+    let quota = required_limit(plan, CPU_QUOTA, "canary CPU quota")?;
+    if quota > MICROS_PER_SECOND {
+        return Err(HostError::ResourceExhausted);
+    }
+    let cpu_per_period = quota.checked_add(9).ok_or(HostError::ResourceExhausted)? / 10;
+    Ok(ResourceVector::ZERO
+        .with(Dimension::CpuMicrosPerPeriod, cpu_per_period)
+        .with(Dimension::MemoryBytes, required_limit(plan, MEMORY, "memory")?)
+        .with(Dimension::Pids, required_limit(plan, PROCESSES, "process")?)
+        .with(Dimension::OpenFiles, required_limit(plan, OPEN_FILES, "open-file")?))
 }
 
 fn optional_limit(plan: &ValidatedRuntimePlan, dimension: u8) -> Option<u64> {

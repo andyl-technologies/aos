@@ -796,6 +796,167 @@ impl BoundPayloadReadbackV1 {
     }
 }
 
+/// Keeps the selected canary's actual report and readback originals resident.
+///
+/// This is private bootstrap custody, not a runtime-handle registry. Success
+/// still requires independent package, manager, mapping and cgroup checks,
+/// followed by the actual Guardian/Stop cleanup before readiness can escape.
+pub(crate) struct HostCanaryPayloadReadbackV1 {
+    limits: BoundPayloadReadbackV1,
+    originals: aos_sandbox_linux::pidfd::HostCanaryReceivedChildOriginalsV1,
+    report_socket: Option<aos_sandbox_linux::seqpacket::SeqpacketSocket>,
+    child_channel: Option<OwnedFd>,
+    reports: [Option<aos_sandbox_linux::seqpacket::descriptor_subject::ReceivedDescriptorRecord>; 7],
+    program_report: Option<aos_sandbox_linux::seqpacket::ReceivedRecord>,
+    receive_failure: Option<aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1>,
+    workspace: Option<BeneathRoot>,
+    images: [Option<aos_sandbox_linux::path::ResolvedFile>; 3],
+    receive_cursor: usize,
+    received: bool,
+    attempted: bool,
+    closed: bool,
+    failure: Option<CanaryPayloadFailureV1>,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum CanaryPayloadFailureV1 {
+    #[error(transparent)]
+    Host(#[from] HostError),
+    #[error(transparent)]
+    Native(#[from] aos_sandbox_linux::Error),
+    #[error(transparent)]
+    Descriptor(#[from] rustix::io::Errno),
+    #[error(transparent)]
+    Carrier(#[from] aos_sandbox_linux::seqpacket::SeqpacketError),
+    #[error(transparent)]
+    Binding(#[from] aos_sandbox_linux::seqpacket::RecordBindingError),
+    #[error(transparent)]
+    Original(#[from] aos_sandbox_linux::pidfd::HostCanaryReceivedChildErrorV1),
+    #[error("native canary report failed at phase {phase} with error {error}")]
+    Report { phase: u16, error: i32 },
+    #[error("canary receive failed; original partials and cause remain resident")]
+    Receive,
+    #[error("canary original report deadline expired")]
+    Deadline,
+    #[error("canary original report differs from the admitted launch")]
+    Mismatch,
+}
+
+impl HostCanaryPayloadReadbackV1 {
+    pub(crate) fn new() -> Self {
+        Self {
+            limits: BoundPayloadReadbackV1::new(),
+            originals: aos_sandbox_linux::pidfd::HostCanaryReceivedChildOriginalsV1::new(),
+            report_socket: None,
+            child_channel: None,
+            reports: std::array::from_fn(|_| None),
+            program_report: None,
+            receive_failure: None,
+            workspace: None,
+            images: std::array::from_fn(|_| None),
+            receive_cursor: 0,
+            received: false,
+            attempted: false,
+            closed: false,
+            failure: None,
+        }
+    }
+
+    pub(crate) fn prepare_original_channel(&mut self) -> Result<()> {
+        if self.attempted {
+            return Err(systemd::resident_readback_missing("canary original channel"));
+        }
+        self.attempted = true;
+        self.closed = true;
+        let result = aos_sandbox_linux::seqpacket::SeqpacketSocket::pair_with_record_subjects();
+        match result {
+            Ok((socket, child)) => {
+                // The existing pair constructor still owns its unreturned
+                // prefix. Both returned originals enter this owner together.
+                self.report_socket = Some(socket);
+                self.child_channel = Some(child);
+                self.closed = false;
+                Ok(())
+            }
+            Err(cause) => {
+                self.failure = Some(cause.into());
+                Err(systemd::resident_readback_missing("canary channel; cause retained"))
+            }
+        }
+    }
+
+    pub(crate) fn child_channel(&self) -> Result<BorrowedFd<'_>> {
+        if self.closed {
+            return Err(systemd::resident_readback_missing("fenced canary channel"));
+        }
+        self.child_channel.as_ref().map(AsFd::as_fd)
+            .ok_or_else(|| systemd::resident_readback_missing("canary child channel"))
+    }
+
+    pub(crate) fn report_socket(&mut self)
+        -> Result<&mut aos_sandbox_linux::seqpacket::SeqpacketSocket>
+    {
+        if self.closed {
+            return Err(systemd::resident_readback_missing("fenced canary report socket"));
+        }
+        self.report_socket.as_mut()
+            .ok_or_else(|| systemd::resident_readback_missing("canary report socket"))
+    }
+
+    pub(crate) fn failure_cause(&self) -> Option<&dyn std::error::Error> {
+        self.receive_failure.as_ref().map(|cause| cause as &dyn std::error::Error)
+            .or_else(|| self.limits.failure_cause())
+            .or_else(|| self.failure.as_ref().map(|cause| cause as &dyn std::error::Error))
+    }
+
+    pub(crate) fn verified(&self) -> Result<&BoundPayloadVerification> {
+        if self.closed || !self.received {
+            return Err(systemd::resident_readback_missing("original canary proof"));
+        }
+        self.limits.verified()
+    }
+
+    fn original_observation(&self) -> Option<&WorkerObservation> {
+        self.limits.verification.as_ref().map(|proof| &proof.observation)
+            .or(self.limits.observation.as_ref())
+    }
+
+    pub(crate) fn authenticate_original_agent(
+        &mut self,
+        agent: &mut crate::live_agent::HostCanaryAgentOwnerV1,
+        job: &mut crate::broker::canary_job::HostCanaryJobOwnerV1,
+        deadline: std::time::Instant,
+    ) -> Result<()> {
+        self.verified()?;
+        agent.authenticate_original(
+            job,
+            &mut self.originals,
+            self.report_socket.as_mut()
+                .ok_or_else(|| systemd::resident_readback_missing("original canary channel"))?,
+            deadline,
+        ).map_err(|_| systemd::resident_readback_missing("original canary handshake"))
+    }
+
+    pub(crate) fn borrow_original_call<'owner>(
+        &'owner mut self,
+        job: &'owner mut crate::broker::canary_job::HostCanaryJobOwnerV1,
+        startup: &'owner crate::plan::HostCanaryStartupV1,
+        host_probe: &'owner PidfdNamespaceAccessProbe,
+    ) -> CanaryWorkerCallV1<'owner> {
+        CanaryWorkerCallV1 { state: self, job, startup, host_probe }
+    }
+}
+
+// These loans exist only during a genuine selected worker call. They retain
+// the independent job and original startup artifact, rather than accepting a
+// caller-created expected hash or synthesizing a public worker observation.
+pub(crate) struct CanaryWorkerCallV1<'owner> {
+    state: &'owner mut HostCanaryPayloadReadbackV1,
+    job: &'owner mut crate::broker::canary_job::HostCanaryJobOwnerV1,
+    startup: &'owner crate::plan::HostCanaryStartupV1,
+    host_probe: &'owner PidfdNamespaceAccessProbe,
+}
+
 impl BoundPayloadVerification {
     /// Borrows the shifted-payload readback produced by an exact bound start.
     ///
@@ -1031,6 +1192,12 @@ pub trait HostWorker {
 #[derive(Debug)]
 pub struct SystemdOneShotWorker {
     cgroup_root: BeneathRoot,
+}
+
+impl SystemdOneShotWorker {
+    pub(crate) fn original_canary_cgroup_root(&self) -> &BeneathRoot {
+        &self.cgroup_root
+    }
 }
 
 #[async_trait]

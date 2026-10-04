@@ -103,6 +103,26 @@ class FakePolicy:
             for transition in effective_policy.TRANSITIONS
         }
         self.xperms: dict[effective_policy.Access, list[FakeXpermRule]] = {}
+        for subject in effective_policy.HOST_CANARY_NAMESPACE_SUBJECTS:
+            access = effective_policy.Access(subject, "nsfs_t", "file", "ioctl")
+            self.xperms[access] = [FakeXpermRule(
+                "fixed namespace kind selector",
+                perms=frozenset({effective_policy.HOST_CANARY_NAMESPACE_SELECTOR}),
+            )]
+        native_pidfs = effective_policy.Access(
+            "aos_sandbox_host_t", "aos_nspawn_t", "file", "ioctl",
+        )
+        self.xperms[native_pidfs] = [FakeXpermRule(
+            "fixed native GET_INFO selector",
+            perms=frozenset({effective_policy.HOST_CANARY_NATIVE_PIDFS_SELECTOR}),
+        )]
+        state = effective_policy.Access(
+            "aos_sandbox_host_t", effective_policy.HOST_CANARY_STATE_TYPE, "file", "ioctl",
+        )
+        self.xperms[state] = [FakeXpermRule(
+            "fixed native GETFLAGS selector",
+            perms=frozenset({effective_policy.HOST_CANARY_STATE_SELECTOR}),
+        )]
 
     def lookup_type(self, domain: str) -> FakeType:
         if domain in (*effective_policy.owner_policy.ONLINE_NIX_KNOWN_DOMAINS,
@@ -1757,11 +1777,219 @@ class EffectivePolicyTest(unittest.TestCase):
             effective_policy.check_policy(FAKE_SETOOLS, policy)
 
 
+class HostCanaryStateIoctlTest(unittest.TestCase):
+    """Checks closed native-storage permissions, not capacity or funding."""
+
+    def test_getflags_is_the_only_enabled_cell_selector(self) -> None:
+        policy = FakePolicy()
+
+        evidence = effective_policy._check_host_canary_state_ioctls(FAKE_SETOOLS, policy)
+
+        self.assertEqual(evidence, [
+            "allowxperm\taos_sandbox_host_t\taos_sandbox_host_canary_state_t\tfile\tioctl\t0x6601",
+        ])
+
+    def test_missing_inactive_extra_or_foreign_selectors_refuse(self) -> None:
+        access = effective_policy.Access(
+            "aos_sandbox_host_t", effective_policy.HOST_CANARY_STATE_TYPE, "file", "ioctl",
+        )
+        for rules in (
+            [],
+            [FakeXpermRule("inactive GETFLAGS", active=False, perms=frozenset({0x6601}))],
+            [FakeXpermRule("SETFLAGS", perms=frozenset({0x6602}))],
+            [FakeXpermRule("extra mutation", perms=frozenset({0x6601, 0x6602}))],
+        ):
+            with self.subTest(rules=rules):
+                policy = FakePolicy()
+                policy.xperms[access] = rules
+
+                with self.assertRaisesRegex(ValueError, "native state"):
+                    effective_policy._check_host_canary_state_ioctls(FAKE_SETOOLS, policy)
+
+        for axis, member in (("source", access.source), ("target", access.target)):
+            with self.subTest(axis=axis):
+                policy = FakePolicy()
+                policy.xperms[access] = [replace(
+                    policy.xperms[access][0],
+                    **{axis: FakeTypeAttribute({member, "foreign_t"})},
+                )]
+
+                with self.assertRaisesRegex(ValueError, "forbidden.*native state"):
+                    effective_policy._check_host_canary_state_ioctls(FAKE_SETOOLS, policy)
+
+    def test_native_bank_removal_execution_and_foreign_owners_stay_denied(self) -> None:
+        negative = set(effective_policy.NEGATIVE_ACCESS)
+        for permission in ("execute", "execute_no_trans", "map", "rename", "unlink"):
+            self.assertIn(effective_policy.Access(
+                "aos_sandbox_host_t", effective_policy.HOST_CANARY_STATE_TYPE,
+                "file", permission,
+            ), negative)
+        for subject in effective_policy.owner_policy.ENFORCING:
+            self.assertIn(effective_policy.Access(
+                subject, effective_policy.HOST_CANARY_STATE_TYPE, "file", "open",
+            ), negative)
+
+
+class HostCanaryNamespaceIoctlTest(unittest.TestCase):
+    """Checks fixed namespace-kind DATA access, not donated-object authority."""
+
+    def test_only_exact_kind_selector_is_enabled_for_both_cells(self) -> None:
+        policy = FakePolicy()
+
+        evidence = effective_policy._check_host_canary_namespace_ioctls(
+            FAKE_SETOOLS, policy,
+        )
+
+        self.assertEqual(evidence, [
+            f"allowxperm\t{subject}\tnsfs_t\tfile\tioctl\t0xb703"
+            for subject in effective_policy.HOST_CANARY_NAMESPACE_SUBJECTS
+        ])
+        for query in policy.queries:
+            self.assertIs(query["source_indirect"], True)
+            self.assertIs(query["target_indirect"], True)
+            self.assertNotIn("xperms", query)
+
+    def test_other_or_malformed_selectors_refuse_even_when_disabled(self) -> None:
+        for selectors in (
+            frozenset({0xb701}),
+            frozenset({0xb702, 0xb703}),
+            frozenset(range(0xb700, 0xb800)),
+            frozenset({"0xb703"}),
+        ):
+            for active in (False, True):
+                with self.subTest(selectors=selectors, active=active):
+                    policy = FakePolicy()
+                    access = next(iter(policy.xperms))
+                    policy.xperms[access].append(FakeXpermRule(
+                        "foreign namespace selector", active=active, perms=selectors,
+                    ))
+
+                    with self.assertRaisesRegex(ValueError, "forbidden.*namespace"):
+                        effective_policy._check_host_canary_namespace_ioctls(
+                            FAKE_SETOOLS, policy,
+                        )
+
+    def test_attribute_foreign_target_or_subject_refuses(self) -> None:
+        for axis in ("source", "target"):
+            policy = FakePolicy()
+            access = next(iter(policy.xperms))
+            member = access.source if axis == "source" else access.target
+            policy.xperms[access] = [replace(
+                policy.xperms[access][0],
+                **{axis: FakeTypeAttribute({member, "foreign_t"})},
+            )]
+
+            with self.subTest(axis=axis):
+                with self.assertRaisesRegex(ValueError, "forbidden.*namespace"):
+                    effective_policy._check_host_canary_namespace_ioctls(
+                        FAKE_SETOOLS, policy,
+                    )
+
+    def test_host_path_open_and_mutation_remain_negative(self) -> None:
+        negative = set(effective_policy.NEGATIVE_ACCESS)
+        self.assertIn(
+            effective_policy.Access("aos_sandbox_host_t", "nsfs_t", "file", "open"),
+            negative,
+        )
+        for subject in effective_policy.HOST_CANARY_NAMESPACE_SUBJECTS:
+            for permission in ("write", "execute", "execute_no_trans", "map", "setattr"):
+                self.assertIn(
+                    effective_policy.Access(subject, "nsfs_t", "file", permission),
+                    negative,
+                )
+
+
+class HostCanaryNativePidfsIoctlTest(unittest.TestCase):
+    """Checks native mapping and original-object DATA access, not readiness."""
+
+    def test_missing_guest_attr_observation_cell_refuses(self) -> None:
+        policy = FakePolicy()
+        access = effective_policy.Access(
+            "aos_sandbox_host_t", effective_policy.GUEST_OWNER, "process", "getattr",
+        )
+        del policy.allows[access]
+
+        with self.assertRaisesRegex(ValueError, "missing effective allow"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_fixed_get_info_selector_preserves_namespace_selectors(self) -> None:
+        policy = FakePolicy()
+
+        evidence = effective_policy._check_host_canary_native_pidfs_ioctls(
+            FAKE_SETOOLS, policy,
+        )
+
+        self.assertEqual(evidence, [
+            "allowxperm\taos_sandbox_host_t\taos_nspawn_t\tfile\tioctl\t0xff0b",
+        ])
+        self.assertEqual(len(effective_policy._check_host_canary_namespace_ioctls(
+            FAKE_SETOOLS, policy,
+        )), 2)
+
+    def test_missing_inactive_or_extra_selector_refuses(self) -> None:
+        access = effective_policy.Access(
+            "aos_sandbox_host_t", "aos_nspawn_t", "file", "ioctl",
+        )
+        cases = (
+            [],
+            [FakeXpermRule("inactive", active=False, perms=frozenset({0xff0b}))],
+            [FakeXpermRule("foreign", active=False, perms=frozenset({0xff01}))],
+            [FakeXpermRule("extra", perms=frozenset({0xff0b, 0xff01}))],
+        )
+        for rules in cases:
+            with self.subTest(rules=rules):
+                policy = FakePolicy()
+                policy.xperms[access] = rules
+
+                with self.assertRaisesRegex(ValueError, "native pidfs"):
+                    effective_policy._check_host_canary_native_pidfs_ioctls(
+                        FAKE_SETOOLS, policy,
+                    )
+
+    def test_expanded_foreign_subject_or_target_refuses(self) -> None:
+        access = effective_policy.Access(
+            "aos_sandbox_host_t", "aos_nspawn_t", "file", "ioctl",
+        )
+        for axis, member in (("source", access.source), ("target", access.target)):
+            with self.subTest(axis=axis):
+                policy = FakePolicy()
+                policy.xperms[access] = [replace(
+                    policy.xperms[access][0],
+                    **{axis: FakeTypeAttribute({member, "foreign_t"})},
+                )]
+
+                with self.assertRaisesRegex(ValueError, "forbidden.*native pidfs"):
+                    effective_policy._check_host_canary_native_pidfs_ioctls(
+                        FAKE_SETOOLS, policy,
+                    )
+
+    def test_mapping_and_report_cells_keep_execution_and_connection_cuts(self) -> None:
+        positive = set(effective_policy.POSITIVE_ACCESS)
+        negative = set(effective_policy.NEGATIVE_ACCESS)
+
+        self.assertIn(effective_policy.Access(
+            "aos_nspawn_t", "aos_nspawn_exec_t", "file", "execute",
+        ), positive)
+        self.assertIn(effective_policy.Access(
+            "aos_nspawn_t", "aos_sandbox_host_t", "unix_stream_socket", "write",
+        ), positive)
+        for access in (
+            effective_policy.Access("aos_nspawn_t", "aos_nspawn_exec_t", "file", "execute_no_trans"),
+            effective_policy.Access("aos_nspawn_t", "aos_nspawn_t", "process", "transition"),
+            effective_policy.Access("aos_nspawn_t", "nsfs_t", "file", "ioctl"),
+            effective_policy.Access("aos_nspawn_t", "aos_sandbox_host_t", "unix_stream_socket", "connectto"),
+            effective_policy.Access("aos_sandbox_host_t", "aos_nspawn_exec_t", "file", "execute"),
+        ):
+            self.assertIn(access, negative)
+
+
 class SelectedLauncherImageIoctlTest(unittest.TestCase):
     """Checks closed offline image expectations without genuine FD authority."""
 
     def _selected_policy(self) -> FakePolicy:
         policy = FakePolicy()
+        # This fixture exercises only the separate image-selector checker.
+        policy.xperms.clear()
         cells = effective_policy.owner_policy.SELECTED_LAUNCHER_IMAGE_IOCTL_CELLS
         for source, target in cells:
             access = effective_policy.Access(source, target, "file", "ioctl")
@@ -1790,7 +2018,10 @@ class SelectedLauncherImageIoctlTest(unittest.TestCase):
         policy = EffectivePolicyTest()._storage_policy()
         evidence = effective_policy.check_policy(FAKE_SETOOLS, policy)
 
-        self.assertFalse(any(line.startswith("allowxperm\t") for line in evidence))
+        self.assertFalse(any(
+            line.startswith("allowxperm\t") and "\tinit_exec_t\t" in line
+            for line in evidence
+        ))
         self.assertEqual(evidence[-1], (
             f"deny\t{effective_policy.NEGATIVE_ACCESS[-1].source}\t"
             f"{effective_policy.NEGATIVE_ACCESS[-1].target}\t"
@@ -2002,6 +2233,8 @@ class OnlineNixPolicyTest(unittest.TestCase):
                 return FakeType(name, name in self.permissive)
 
         policy = SelectedPolicy()
+        # This fixture exercises only the separate online image-selector checker.
+        policy.xperms.clear()
         source, target = effective_policy.owner_policy.ONLINE_NIX_IMAGE_IOCTL_CELLS[0]
         access = effective_policy.Access(source, target, "file", "ioctl")
         policy.allows[access] = [FakeRule("online fixed base ioctl")]

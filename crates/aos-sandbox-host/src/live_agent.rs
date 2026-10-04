@@ -67,6 +67,579 @@ const SEED_CREDENTIAL_BYTES: usize = 72;
 const ATTACH_PRIVATE_KEY_FILE: &str = "openssh-attach-host-private-key-v1";
 const MAX_ATTACH_PRIVATE_KEY_BYTES: u64 = 16 * 1024;
 
+const CANARY_CREDENTIAL_NAMES: [&str; 4] = [
+    SEED_FILE,
+    ATTACH_PRIVATE_KEY_FILE,
+    "openssh-attach-trust.json",
+    "openssh-attach-grant-public-key",
+];
+const CANARY_CREDENTIAL_BOUNDS: [(usize, usize); 4] = [
+    (SEED_CREDENTIAL_BYTES, SEED_CREDENTIAL_BYTES),
+    (1, MAX_ATTACH_PRIVATE_KEY_BYTES as usize),
+    (1, 2_048),
+    (32, 32),
+];
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct CanaryCredentialIdentityV1 {
+    device: u64,
+    inode: u64,
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    links: u64,
+    length: u64,
+    modified: (u64, u64),
+    changed: (u64, u64),
+}
+
+#[derive(Debug, thiserror::Error)]
+enum CanaryAgentFailureV1 {
+    #[error(transparent)]
+    Native(#[from] rustix::io::Errno),
+    #[error(transparent)]
+    Read(#[from] aos_sandbox_linux::protected_file::ExactReadFailure),
+    #[error(transparent)]
+    Inspection(#[from] aos_sandbox_linux::Error),
+    #[error(transparent)]
+    ChildOriginal(#[from] aos_sandbox_linux::pidfd::HostCanaryReceivedChildErrorV1),
+    #[error(transparent)]
+    ResponseOriginal(#[from] aos_sandbox_linux::seqpacket::RecordBindingError),
+    #[error(transparent)]
+    Agent(#[from] HostAgentLiveErrorV1),
+    #[error(transparent)]
+    Host(#[from] crate::HostError),
+    #[error("Host canary credential originals differ")]
+    Original,
+    #[error("Host canary credential allocation failed")]
+    Allocation,
+}
+
+// This owner is selected only by the genuine installed canary coordinator.
+// The original seed, private key and partial reads survive every later gate;
+// neither a decoded key nor a job digest stands in for their fixed custody.
+pub(crate) struct HostCanaryAgentOwnerV1 {
+    bytes: [Zeroizing<Vec<u8>>; 4],
+    readback: [Zeroizing<Vec<u8>>; 4],
+    files: [Option<File>; 4],
+    directory: Option<File>,
+    identities: [Option<CanaryCredentialIdentityV1>; 5],
+    seed: Option<Zeroizing<[u8; 32]>>,
+    trust: Option<HostOpenSshStaticTrustV1>,
+    attach: Option<GuestAttachTrustRecordV1>,
+    record: Option<GuestAgentLaunchRecordV1>,
+    provisioning_bytes: Zeroizing<Vec<u8>>,
+    attach_bytes: Zeroizing<Vec<u8>>,
+    socket: Option<SeqpacketSocket>,
+    guest_channel: Option<OwnedFd>,
+    provisioning: Option<SealedReadOnlyCredential>,
+    attach_provisioning: Option<SealedReadOnlyCredential>,
+    instance: [u8; 16],
+    handshake_session: [u8; 16],
+    handshake_challenge: [u8; 32],
+    handshake: Option<AgentHandshakeRequestV1>,
+    response: Option<AgentHandshakeResponseV1>,
+    original_challenge: [u8; 200],
+    handshake_frame: Vec<u8>,
+    response_record: Option<aos_sandbox_linux::seqpacket::ReceivedRecord>,
+    receive_failure: Option<aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1>,
+    report_challenges_attempted: bool,
+    report_challenges_sent: u8,
+    handshake_attempted: bool,
+    attempted: bool,
+    closed: bool,
+    first_failure: Option<CanaryAgentFailureV1>,
+}
+
+impl HostCanaryAgentOwnerV1 {
+    pub(crate) fn new() -> Self {
+        Self {
+            bytes: std::array::from_fn(|_| Zeroizing::new(Vec::new())),
+            readback: std::array::from_fn(|_| Zeroizing::new(Vec::new())),
+            files: std::array::from_fn(|_| None),
+            directory: None,
+            identities: [None; 5],
+            seed: None,
+            trust: None,
+            attach: None,
+            record: None,
+            provisioning_bytes: Zeroizing::new(Vec::new()),
+            attach_bytes: Zeroizing::new(Vec::new()),
+            socket: None,
+            guest_channel: None,
+            provisioning: None,
+            attach_provisioning: None,
+            instance: [0; 16],
+            handshake_session: [0; 16],
+            handshake_challenge: [0; 32],
+            handshake: None,
+            response: None,
+            original_challenge: [0; 200],
+            handshake_frame: Vec::new(),
+            response_record: None,
+            receive_failure: None,
+            report_challenges_attempted: false,
+            report_challenges_sent: 0,
+            handshake_attempted: false,
+            attempted: false,
+            closed: false,
+            first_failure: None,
+        }
+    }
+
+    pub(crate) fn prepare_original(
+        &mut self,
+        job: &mut crate::broker::canary_job::HostCanaryJobOwnerV1,
+        payload: &PreparedLaunch,
+        execution: &crate::state::transition::DurableExecution,
+    ) -> Result<(), HostAgentLiveErrorV1> {
+        if self.attempted {
+            return Err(HostAgentLiveErrorV1::RecoveryRequired);
+        }
+        self.attempted = true;
+        self.closed = true;
+        let result = self.prepare_inner(job, payload, execution);
+        match result {
+            Ok(()) => {
+                self.closed = false;
+                Ok(())
+            }
+            Err(cause) => {
+                self.first_failure = Some(cause);
+                Err(HostAgentLiveErrorV1::RecoveryRequired)
+            }
+        }
+    }
+
+    fn prepare_inner(
+        &mut self,
+        job: &mut crate::broker::canary_job::HostCanaryJobOwnerV1,
+        payload: &PreparedLaunch,
+        execution: &crate::state::transition::DurableExecution,
+    ) -> Result<(), CanaryAgentFailureV1> {
+        use aos_sandbox_core::{
+            AssignmentEpoch, DesiredGeneration, IncarnationId, NamespaceGeneration, SandboxId,
+        };
+        use aos_sandbox_linux::protected_file::{
+            open_nofollow_child, read_exact_positioned_retaining_cause,
+        };
+
+        job.recheck()?;
+        let original = job.originals()?;
+        if payload.guest_package_binding() != Some(original.pins[7])
+            || payload.guest_feature_mask()
+                != Some(aos_sandbox_agent::guest_root_publication::CONCRETE_GUEST_FEATURE_MASK_V1)
+        {
+            return Err(CanaryAgentFailureV1::Original);
+        }
+        let fence = original.launch.fence();
+        let runtime = AgentRuntimeBindingV1::new(
+            SandboxId::from_bytes(*fence.sandbox_id()),
+            IncarnationId::from_bytes(*fence.incarnation_id()),
+            AssignmentEpoch::new(fence.assignment_epoch()),
+            ObjectDigest::from_bytes(*fence.assignment_digest()),
+            DesiredGeneration::new(fence.desired_generation()),
+            NamespaceGeneration::new(original.namespace_generation),
+            original.payload_boot_id,
+        ).map_err(HostAgentLiveErrorV1::from)?;
+        let mut channel = Sha256::new();
+        channel.update(b"aos.sandbox.host.canary-agent-channel.v1\0");
+        channel.update(original.digest);
+        channel.update(execution.guardian_binding().ok_or(CanaryAgentFailureV1::Original)?);
+        channel.update(original.boot_id);
+        channel.update(original.nonce);
+        let channel_binding = ObjectDigest::from_bytes(channel.finalize().into());
+
+        // This transport binds the inherited channel to the original approved
+        // job and D. It supplies no physical measurement or execution claim.
+        self.original_challenge[..8].copy_from_slice(b"AOSHCR01");
+        self.original_challenge[8..10].copy_from_slice(&1_u16.to_be_bytes());
+        self.original_challenge[12..16].copy_from_slice(&200_u32.to_be_bytes());
+        self.original_challenge[16..48].copy_from_slice(&original.nonce);
+        self.original_challenge[48..80].copy_from_slice(&original.digest);
+        self.original_challenge[80..112].copy_from_slice(
+            &execution.guardian_binding().ok_or(CanaryAgentFailureV1::Original)?,
+        );
+        self.original_challenge[112..128].copy_from_slice(fence.sandbox_id());
+        self.original_challenge[128..144].copy_from_slice(fence.incarnation_id());
+        self.original_challenge[144..152]
+            .copy_from_slice(&fence.assignment_epoch().to_be_bytes());
+        self.original_challenge[152..160]
+            .copy_from_slice(&fence.desired_generation().to_be_bytes());
+        self.original_challenge[176..192].copy_from_slice(&original.boot_id);
+        self.original_challenge[192..200].copy_from_slice(&original.deadline.to_be_bytes());
+
+        let descriptor = open(
+            SEED_DIRECTORY,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?;
+        self.directory = Some(File::from(descriptor));
+        let directory = self.directory.as_ref().ok_or(CanaryAgentFailureV1::Original)?;
+        let metadata = rustix::fs::fstat(directory)?;
+        if rustix::fs::FileType::from_raw_mode(metadata.st_mode) != rustix::fs::FileType::Directory
+            || metadata.st_uid != 0 || metadata.st_mode & 0o022 != 0
+        {
+            return Err(CanaryAgentFailureV1::Original);
+        }
+        self.identities[0] = Some(canary_credential_identity(directory)?);
+
+        for slot in 0..4 {
+            let descriptor = open_nofollow_child(
+                self.directory.as_ref().ok_or(CanaryAgentFailureV1::Original)?,
+                CANARY_CREDENTIAL_NAMES[slot],
+            )?;
+            self.files[slot] = Some(File::from(descriptor));
+            let file = self.files[slot].as_ref().ok_or(CanaryAgentFailureV1::Original)?;
+            let identity = canary_credential_identity(file)?;
+            let length = usize::try_from(identity.length)
+                .map_err(|_| CanaryAgentFailureV1::Original)?;
+            let (minimum, maximum) = CANARY_CREDENTIAL_BOUNDS[slot];
+            if rustix::fs::FileType::from_raw_mode(identity.mode) != rustix::fs::FileType::RegularFile
+                || identity.uid != 0 || identity.links != 1
+                || identity.mode & 0o277 != 0 || identity.mode & 0o400 == 0
+                || !(minimum..=maximum).contains(&length)
+            {
+                return Err(CanaryAgentFailureV1::Original);
+            }
+            self.identities[slot + 1] = Some(identity);
+            self.bytes[slot].try_reserve_exact(length)
+                .map_err(|_| CanaryAgentFailureV1::Allocation)?;
+            self.bytes[slot].resize(length, 0);
+            self.readback[slot].try_reserve_exact(length)
+                .map_err(|_| CanaryAgentFailureV1::Allocation)?;
+            self.readback[slot].resize(length, 0);
+            read_exact_positioned_retaining_cause(file, &mut self.bytes[slot])?;
+            self.require_original_credentials()?;
+        }
+
+        self.seed = Some(decode_seed_credential(&self.bytes[0])?);
+        if SigningKey::from_bytes(self.seed.as_ref().ok_or(CanaryAgentFailureV1::Original)?)
+            .verifying_key().to_bytes() != original.guest_public_key
+            || self.bytes[3].as_slice() != original.attach_public_key
+        {
+            return Err(CanaryAgentFailureV1::Original);
+        }
+        self.trust = Some(HostOpenSshStaticTrustV1::decode_original_canary(&self.bytes[2])
+            .map_err(|_| CanaryAgentFailureV1::Original)?);
+        let trust = self.trust.as_ref().ok_or(CanaryAgentFailureV1::Original)?;
+        if trust.credential_digest() != original.pins[8] {
+            return Err(CanaryAgentFailureV1::Original);
+        }
+        self.attach = Some(GuestAttachTrustRecordV1::new(
+            runtime,
+            self.bytes[1].to_vec(),
+            trust.host_public_key().as_bytes().to_vec(),
+            trust.trusted_user_ca_public_key().as_bytes().to_vec(),
+        ).map_err(HostAgentLiveErrorV1::from)?);
+
+        OsRng.try_fill_bytes(&mut self.instance)
+            .map_err(|_| HostAgentLiveErrorV1::Entropy)?;
+        self.record = Some(GuestAgentLaunchRecordV1::new(
+            runtime,
+            channel_binding,
+            self.instance,
+            **self.seed.as_ref().ok_or(CanaryAgentFailureV1::Original)?,
+            crate::broker::agent_launch::fixed_guest_features()
+                .map_err(CanaryAgentFailureV1::Host)?,
+            ObjectDigest::from_bytes(original.pins[7]),
+        ).map_err(|_| HostAgentLiveErrorV1::Binding)?);
+
+        // The lower pair/sealing constructors still have pre-return prefixes.
+        // Every value they actually return enters this resident owner first.
+        let (socket, channel) = SeqpacketSocket::pair_with_record_subjects()
+            .map_err(HostAgentLiveErrorV1::from)?;
+        self.socket = Some(socket);
+        self.guest_channel = Some(channel);
+        let record = self.record.as_ref().ok_or(CanaryAgentFailureV1::Original)?;
+        self.provisioning_bytes = Zeroizing::new(record.encode());
+        self.provisioning = Some(SealedReadOnlyCredential::create(
+            "aos-sandbox-agent-provisioning-v1",
+            &self.provisioning_bytes,
+            PROVISIONING_BYTES,
+        ).map_err(HostAgentLiveErrorV1::from)?);
+        self.attach_bytes = self.attach.as_ref().ok_or(CanaryAgentFailureV1::Original)?.encode();
+        self.attach_provisioning = Some(SealedReadOnlyCredential::create(
+            "aos-sandbox-guest-attach-trust-v1",
+            &self.attach_bytes,
+            MAX_GUEST_ATTACH_TRUST_BYTES,
+        ).map_err(HostAgentLiveErrorV1::from)?);
+        self.recheck_credentials_inner()?;
+        job.recheck()?;
+        Ok(())
+    }
+
+    fn require_original_credentials(&self) -> Result<(), CanaryAgentFailureV1> {
+        use rustix::fs::AtFlags;
+
+        let directory = self.directory.as_ref().ok_or(CanaryAgentFailureV1::Original)?;
+        if Some(canary_credential_identity(directory)?) != self.identities[0] {
+            return Err(CanaryAgentFailureV1::Original);
+        }
+        let named = rustix::fs::statat(rustix::fs::CWD, SEED_DIRECTORY, AtFlags::SYMLINK_NOFOLLOW)?;
+        let held = self.identities[0].ok_or(CanaryAgentFailureV1::Original)?;
+        if named.st_dev != held.device || named.st_ino != held.inode {
+            return Err(CanaryAgentFailureV1::Original);
+        }
+        for slot in 0..4 {
+            let Some(expected) = self.identities[slot + 1] else { continue };
+            let file = self.files[slot].as_ref().ok_or(CanaryAgentFailureV1::Original)?;
+            let named = rustix::fs::statat(directory, CANARY_CREDENTIAL_NAMES[slot], AtFlags::SYMLINK_NOFOLLOW)?;
+            if canary_credential_identity(file)? != expected
+                || named.st_dev != expected.device || named.st_ino != expected.inode
+            {
+                return Err(CanaryAgentFailureV1::Original);
+            }
+        }
+        Ok(())
+    }
+
+    fn recheck_credentials_inner(&mut self) -> Result<(), CanaryAgentFailureV1> {
+        self.require_original_credentials()?;
+        for slot in 0..4 {
+            aos_sandbox_linux::protected_file::read_exact_positioned_retaining_cause(
+                self.files[slot].as_ref().ok_or(CanaryAgentFailureV1::Original)?,
+                &mut self.readback[slot],
+            )?;
+            if self.readback[slot] != self.bytes[slot] {
+                return Err(CanaryAgentFailureV1::Original);
+            }
+        }
+        self.require_original_credentials()
+    }
+
+    pub(crate) fn pin_original_spec(
+        &self,
+        spec: SandboxUnitSpec,
+        report: BorrowedFd<'_>,
+    ) -> Result<SandboxUnitSpec, HostAgentLiveErrorV1> {
+        use std::os::fd::AsFd as _;
+
+        if self.closed || self.record.is_none() {
+            return Err(HostAgentLiveErrorV1::RecoveryRequired);
+        }
+        spec.with_host_canary_descriptors_v1(
+            self.guest_channel.as_ref().ok_or(HostAgentLiveErrorV1::RecoveryRequired)?.as_fd(),
+            self.provisioning.as_ref().ok_or(HostAgentLiveErrorV1::RecoveryRequired)?.as_fd(),
+            self.attach_provisioning.as_ref().ok_or(HostAgentLiveErrorV1::RecoveryRequired)?.as_fd(),
+            report,
+        ).map_err(HostAgentLiveErrorV1::from)
+    }
+
+    // Queue the three fixed report challenges before guarded start. The native
+    // supervisor, Guest bootstrap and final Guest manager each consume one on
+    // the same inherited endpoint. Partial sends stay charged to this attempt;
+    // neither a retry nor a later Agent handshake may renew the original D.
+    pub(crate) fn send_original_report_challenges(
+        &mut self,
+        job: &mut crate::broker::canary_job::HostCanaryJobOwnerV1,
+        report_socket: &mut SeqpacketSocket,
+        deadline: Instant,
+    ) -> Result<(), HostAgentLiveErrorV1> {
+        if self.closed || self.report_challenges_attempted || self.record.is_none() {
+            return Err(HostAgentLiveErrorV1::RecoveryRequired);
+        }
+        self.report_challenges_attempted = true;
+        self.closed = true;
+        let result = self.send_report_challenges_inner(job, report_socket, deadline);
+        match result {
+            Ok(()) => {
+                self.closed = false;
+                Ok(())
+            }
+            Err(cause) => {
+                self.first_failure = Some(cause);
+                Err(HostAgentLiveErrorV1::RecoveryRequired)
+            }
+        }
+    }
+
+    fn send_report_challenges_inner(
+        &mut self,
+        job: &mut crate::broker::canary_job::HostCanaryJobOwnerV1,
+        report_socket: &mut SeqpacketSocket,
+        deadline: Instant,
+    ) -> Result<(), CanaryAgentFailureV1> {
+        job.recheck()?;
+        self.recheck_credentials_inner()?;
+        let original = job.originals()?;
+        for _ in 0..3 {
+            send_frame(
+                report_socket,
+                &self.original_challenge,
+                deadline,
+                Some(original.deadline),
+            )?;
+            self.report_challenges_sent += 1;
+        }
+        check_deadline(deadline, Some(original.deadline))?;
+        self.recheck_credentials_inner()?;
+        job.recheck()?;
+        Ok(())
+    }
+
+    // This proves only the actual private channel's signed readiness handshake.
+    // The coordinator still joins its nominated subject to the same measured
+    // payload/Agent and completes cleanup before producing backend readiness.
+    pub(crate) fn authenticate_original(
+        &mut self,
+        job: &mut crate::broker::canary_job::HostCanaryJobOwnerV1,
+        child: &mut aos_sandbox_linux::pidfd::HostCanaryReceivedChildOriginalsV1,
+        report_socket: &mut SeqpacketSocket,
+        deadline: Instant,
+    ) -> Result<(), HostAgentLiveErrorV1> {
+        if self.closed || self.handshake_attempted || self.record.is_none()
+            || self.report_challenges_sent != 3
+        {
+            return Err(HostAgentLiveErrorV1::RecoveryRequired);
+        }
+        self.handshake_attempted = true;
+        self.closed = true;
+        match self.authenticate_inner(job, child, report_socket, deadline) {
+            Ok(()) => {
+                self.closed = false;
+                Ok(())
+            }
+            Err(cause) => {
+                self.first_failure = Some(cause);
+                Err(HostAgentLiveErrorV1::RecoveryRequired)
+            }
+        }
+    }
+
+    fn authenticate_inner(
+        &mut self,
+        job: &mut crate::broker::canary_job::HostCanaryJobOwnerV1,
+        child: &mut aos_sandbox_linux::pidfd::HostCanaryReceivedChildOriginalsV1,
+        report_socket: &mut SeqpacketSocket,
+        deadline: Instant,
+    ) -> Result<(), CanaryAgentFailureV1> {
+        job.recheck()?;
+        self.recheck_credentials_inner()?;
+        let original = job.originals()?;
+        let record = self.record.as_ref().ok_or(CanaryAgentFailureV1::Original)?;
+        let socket = self.socket.as_mut().ok_or(CanaryAgentFailureV1::Original)?;
+        send_frame(
+            socket,
+            &self.original_challenge,
+            deadline,
+            Some(original.deadline),
+        )?;
+
+        self.handshake = Some(fresh_handshake(
+            *record.runtime(),
+            record.channel_binding(),
+            &mut self.handshake_session,
+            &mut self.handshake_challenge,
+        )?);
+        let handshake = self.handshake.as_ref().ok_or(CanaryAgentFailureV1::Original)?;
+        self.handshake_frame = encode_frame_v1(&AgentFrameV1::HandshakeRequest(handshake.clone()));
+        let socket = self.socket.as_mut().ok_or(CanaryAgentFailureV1::Original)?;
+        send_frame(socket, &self.handshake_frame, deadline, Some(original.deadline))?;
+        receive_record_into(
+            socket,
+            512,
+            deadline,
+            Some(original.deadline),
+            AgentReceiveDispositionV1::Canary {
+                record: &mut self.response_record,
+                failure: &mut self.receive_failure,
+            },
+        )?;
+        self.require_original_agent_subject(child, report_socket)?;
+        let bytes = self.response_record.as_ref().ok_or(CanaryAgentFailureV1::Original)?.payload();
+        self.response = Some(match decode_frame_v1(bytes).map_err(HostAgentLiveErrorV1::from)? {
+            AgentFrameV1::HandshakeResponse(response) => response,
+            _ => return Err(HostAgentLiveErrorV1::Unauthenticated.into()),
+        });
+        verify_original_handshake(
+            handshake,
+            self.response.as_ref().ok_or(CanaryAgentFailureV1::Original)?,
+            &self.instance,
+            record.features(),
+            original.guest_public_key,
+        )?;
+        check_deadline(deadline, Some(original.deadline))?;
+        self.require_original_agent_subject(child, report_socket)?;
+        self.recheck_credentials_inner()?;
+        job.recheck()?;
+        Ok(())
+    }
+
+    pub(crate) fn require_completed_canary_handshake(&mut self) -> Result<(), HostAgentLiveErrorV1> {
+        if self.closed || self.first_failure.is_some() || !self.handshake_attempted
+            || self.response_record.is_none() || self.response.is_none()
+            || self.handshake.is_none() || self.report_challenges_sent != 3
+        {
+            return Err(HostAgentLiveErrorV1::RecoveryRequired);
+        }
+        // This checks retained completion of the genuine earlier exchange.
+        // After exact Stop it intentionally makes no same-child liveness
+        // claim and does not create a public Agent execution session.
+        // A failed or unwinding readback must not leave completion usable.
+        self.closed = true;
+        match self.recheck_credentials_inner() {
+            Ok(()) => {
+                self.closed = false;
+                Ok(())
+            }
+            Err(cause) => {
+                self.first_failure.get_or_insert(cause);
+                Err(HostAgentLiveErrorV1::RecoveryRequired)
+            }
+        }
+    }
+
+    fn require_original_agent_subject(
+        &self,
+        child: &mut aos_sandbox_linux::pidfd::HostCanaryReceivedChildOriginalsV1,
+        report_socket: &mut SeqpacketSocket,
+    ) -> Result<(), CanaryAgentFailureV1> {
+        use std::os::fd::AsFd as _;
+
+        // The signature authenticates bytes, not execution provenance. Join the
+        // actual response's SCM_PIDFD to the same child donated by the measured
+        // Guest bootstrap. The coordinator still checks that bootstrap, its
+        // root/package/mapping and its invocation before this exchange.
+        child.recheck_original(report_socket)?;
+        let response = self.response_record.as_ref().ok_or(CanaryAgentFailureV1::Original)?;
+        self.socket.as_ref().ok_or(CanaryAgentFailureV1::Original)?
+            .require_host_canary_response_original_v1(response)?;
+        let actual = response.subject();
+        let nominated = child.child()?;
+        let before = nominated.info()?;
+        let nominee_inode = rustix::fs::fstat(nominated.as_fd())?;
+        let actual_inode = rustix::fs::fstat(actual.pidfd().as_fd())?;
+        if actual.initial_info() != before
+            || actual.pidfd().info()? != before
+            || (actual_inode.st_dev, actual_inode.st_ino)
+                != (nominee_inode.st_dev, nominee_inode.st_ino)
+            || !actual.is_alive()?
+            || !nominated.is_alive()?
+            || nominated.info()? != before
+        {
+            return Err(CanaryAgentFailureV1::Original);
+        }
+        child.recheck_original(report_socket)?;
+        Ok(())
+    }
+}
+
+fn canary_credential_identity(file: &File) -> Result<CanaryCredentialIdentityV1, rustix::io::Errno> {
+    let metadata = rustix::fs::fstat(file)?;
+    Ok(CanaryCredentialIdentityV1 {
+        device: metadata.st_dev,
+        inode: metadata.st_ino,
+        mode: metadata.st_mode,
+        uid: metadata.st_uid,
+        gid: metadata.st_gid,
+        links: u64::from(metadata.st_nlink),
+        length: u64::try_from(metadata.st_size).map_err(|_| rustix::io::Errno::INVAL)?,
+        modified: (metadata.st_mtime as u64, metadata.st_mtime_nsec as u64),
+        changed: (metadata.st_ctime as u64, metadata.st_ctime_nsec as u64),
+    })
+}
+
 /// Reports a stale launch binding or a failed authenticated channel exchange.
 #[derive(Debug, thiserror::Error)]
 pub enum HostAgentLiveErrorV1 {
@@ -519,18 +1092,7 @@ impl HostAgentPendingSessionV1 {
         self.validate_claim(claim)?;
         let mut session = [0; 16];
         let mut challenge = [0; 32];
-        OsRng
-            .try_fill_bytes(&mut session)
-            .map_err(|_| HostAgentLiveErrorV1::Entropy)?;
-        OsRng
-            .try_fill_bytes(&mut challenge)
-            .map_err(|_| HostAgentLiveErrorV1::Entropy)?;
-        let handshake = AgentHandshakeRequestV1::new(
-            AgentSessionIdV1::new(session)?,
-            self.runtime,
-            AgentNonceV1::new(challenge)?,
-            self.channel_binding,
-        )?;
+        let handshake = fresh_handshake(self.runtime, self.channel_binding, &mut session, &mut challenge)?;
 
         send_frame(
             &mut self.socket,
@@ -547,26 +1109,13 @@ impl HostAgentPendingSessionV1 {
             AgentFrameV1::HandshakeResponse(response) => response,
             _ => return Err(HostAgentLiveErrorV1::Unauthenticated),
         };
-        let binding = AgentSessionBindingV1::derive(&handshake, response.agent_instance())?;
-        if response.session_binding() != binding
-            || response.agent_instance() != &self.agent_instance
-            || response.features() != &self.features
-        {
-            return Err(HostAgentLiveErrorV1::Unauthenticated);
-        }
-        let message = agent_handshake_signing_message_v1(
+        let binding = verify_original_handshake(
             &handshake,
-            binding,
-            response.agent_instance(),
-            response.features(),
-        );
-        let key = VerifyingKey::from_bytes(&self.public_key)
-            .map_err(|_| HostAgentLiveErrorV1::Unauthenticated)?;
-        key.verify_strict(
-            &message,
-            &Signature::from_bytes(response.challenge_signature()),
-        )
-        .map_err(|_| HostAgentLiveErrorV1::Unauthenticated)?;
+            &response,
+            &self.agent_instance,
+            &self.features,
+            self.public_key,
+        )?;
         self.validate_claim(claim)?;
 
         Ok(HostAgentLiveSessionV1 {
@@ -898,6 +1447,49 @@ fn agent_runtime(
     )?)
 }
 
+fn fresh_handshake(
+    runtime: AgentRuntimeBindingV1,
+    channel_binding: ObjectDigest,
+    session: &mut [u8; 16],
+    challenge: &mut [u8; 32],
+) -> Result<AgentHandshakeRequestV1, HostAgentLiveErrorV1> {
+    OsRng.try_fill_bytes(session).map_err(|_| HostAgentLiveErrorV1::Entropy)?;
+    OsRng.try_fill_bytes(challenge).map_err(|_| HostAgentLiveErrorV1::Entropy)?;
+    Ok(AgentHandshakeRequestV1::new(
+        AgentSessionIdV1::new(*session)?,
+        runtime,
+        AgentNonceV1::new(*challenge)?,
+        channel_binding,
+    )?)
+}
+
+fn verify_original_handshake(
+    handshake: &AgentHandshakeRequestV1,
+    response: &AgentHandshakeResponseV1,
+    agent_instance: &[u8; 16],
+    features: &aos_sandbox_agent::AgentFeatureSetV1,
+    public_key: [u8; 32],
+) -> Result<AgentSessionBindingV1, HostAgentLiveErrorV1> {
+    let binding = AgentSessionBindingV1::derive(handshake, response.agent_instance())?;
+    if response.session_binding() != binding
+        || response.agent_instance() != agent_instance
+        || response.features() != features
+    {
+        return Err(HostAgentLiveErrorV1::Unauthenticated);
+    }
+    let message = agent_handshake_signing_message_v1(
+        handshake,
+        binding,
+        response.agent_instance(),
+        response.features(),
+    );
+    let key = VerifyingKey::from_bytes(&public_key)
+        .map_err(|_| HostAgentLiveErrorV1::Unauthenticated)?;
+    key.verify_strict(&message, &Signature::from_bytes(response.challenge_signature()))
+        .map_err(|_| HostAgentLiveErrorV1::Unauthenticated)?;
+    Ok(binding)
+}
+
 fn decode_seed_credential(bytes: &[u8]) -> Result<Zeroizing<[u8; 32]>, HostAgentLiveErrorV1> {
     if bytes.len() != SEED_CREDENTIAL_BYTES {
         return Err(HostAgentLiveErrorV1::SeedUnavailable);
@@ -1052,14 +1644,52 @@ fn receive_record(
     deadline: Instant,
     deadline_boottime_nanoseconds: Option<u64>,
 ) -> Result<Vec<u8>, HostAgentLiveErrorV1> {
+    receive_record_into(socket, maximum_bytes, deadline, deadline_boottime_nanoseconds,
+        AgentReceiveDispositionV1::Legacy)?
+        .ok_or(HostAgentLiveErrorV1::RecoveryRequired)
+}
+
+enum AgentReceiveDispositionV1<'a> {
+    Legacy,
+    Canary {
+        record: &'a mut Option<aos_sandbox_linux::seqpacket::ReceivedRecord>,
+        failure: &'a mut Option<aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1>,
+    },
+}
+
+fn receive_record_into(
+    socket: &mut SeqpacketSocket,
+    maximum_bytes: usize,
+    deadline: Instant,
+    deadline_boottime_nanoseconds: Option<u64>,
+    mut disposition: AgentReceiveDispositionV1<'_>,
+) -> Result<Option<Vec<u8>>, HostAgentLiveErrorV1> {
     loop {
         check_deadline(deadline, deadline_boottime_nanoseconds)?;
-        match socket.receive(maximum_bytes) {
-            Ok(record) => return Ok(record.payload().to_vec()),
-            Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
-                std::thread::sleep(RETRY_INTERVAL);
+        match &mut disposition {
+            AgentReceiveDispositionV1::Legacy => match socket.receive(maximum_bytes) {
+                Ok(record) => return Ok(Some(record.payload().to_vec())),
+                Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
+                    std::thread::sleep(RETRY_INTERVAL);
+                }
+                Err(error) => return Err(error.into()),
+            },
+            AgentReceiveDispositionV1::Canary { record, failure } => {
+                match socket.receive_retaining(maximum_bytes) {
+                    Ok(original) => {
+                        **record = Some(original);
+                        return Ok(None);
+                    }
+                    Err(error) if error.is_nonconsuming_would_block()
+                        || error.is_nonconsuming_interrupted() => {
+                        std::thread::sleep(RETRY_INTERVAL);
+                    }
+                    Err(error) => {
+                        **failure = Some(error);
+                        return Err(HostAgentLiveErrorV1::RecoveryRequired);
+                    }
+                }
             }
-            Err(error) => return Err(error.into()),
         }
     }
 }

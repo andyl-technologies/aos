@@ -1138,6 +1138,20 @@ pub struct HostOpenSshStaticTrustV1 {
 }
 
 impl HostOpenSshStaticTrustV1 {
+    // The selected canary keeps the real fixed credential and read prefix.
+    // This decoder shares canonical public DATA validation, not custody or
+    // live gate authority, with the ordinary protected loader below.
+    pub(crate) fn decode_original_canary(
+        bytes: &[u8],
+    ) -> Result<Self, HostOpenSshAttachRouteErrorV1> {
+        let (trust, credential_digest) = decode_deployment_trust(bytes)?;
+        Ok(Self {
+            host_public_key: trust.host_public_key,
+            trusted_user_ca_public_key: trust.trusted_user_ca_public_key,
+            credential_digest,
+        })
+    }
+
     /// Loads the fixed root-owned credential and validates its canonical pins.
     ///
     /// # Errors

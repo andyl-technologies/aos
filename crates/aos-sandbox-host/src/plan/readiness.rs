@@ -41,6 +41,12 @@ const MAXIMUM_PAYLOAD_FILTER_SOURCE_BYTES: usize = 256 * 1024;
 const EXECUTABLE_HASH_BUFFER_BYTES: usize = 64 * 1024;
 const READINESS_BINDING_DOMAIN: &[u8] = b"aos.sandbox.host-readiness-binding.v1\0";
 
+#[derive(Clone, Copy)]
+enum Pid1PackageOriginV1<'owner> {
+    ExecutedManager,
+    OriginalHostLaunch(&'owner super::deployment::canary::HostCanaryStartupV1),
+}
+
 /// Measures the fixed packaged nspawn executable against its policy artifact.
 ///
 /// The descriptor hash is surrounded by complete metadata snapshots, so a
@@ -66,14 +72,11 @@ pub fn verified_packaged_nspawn_digest(path: &str) -> Result<[u8; 32]> {
 
 /// Proves that the exact node-local nspawn backend passed all executable gates.
 ///
-/// The type intentionally has no production constructor yet. Protected phase-0
-/// evidence is represented by [`ProtectedBackendReadinessEvidence`]. The
-/// closed unit compiler now supplies a root-continuity policy witness, and the
-/// worker verifies point-in-time payload-root identity, but the artifact still
-/// does not independently bind the deployed profile or prove pidfd namespace
-/// access to a user-namespace-shifted payload. Until those checks can be
-/// combined mechanically, hostd cannot construct this token and does not
-/// advertise runtime launch.
+/// The selected private canary coordinator can construct this value only after
+/// its real measured payload, independent manager policy and Agent exchange
+/// have completed and the same Guardian/Stop state has been durably exported.
+/// Protected phase-0 DATA alone still has no conversion into readiness. The
+/// ordinary/default route retains its closed behavior.
 #[derive(Debug)]
 pub struct BackendReadiness {
     pub(super) binding: ReadinessBindingV1,
@@ -177,6 +180,27 @@ impl VerifiedPackagedRuntimeV1 {
         evidence: &ProtectedBackendReadinessEvidence,
         systemd: &SystemdClient,
     ) -> Result<()> {
+        self.verify_live_pid1_service_origin(evidence, systemd, Pid1PackageOriginV1::ExecutedManager)
+            .await
+    }
+
+    pub(super) async fn verify_canary_pid1_service(
+        &self,
+        evidence: &ProtectedBackendReadinessEvidence,
+        systemd: &SystemdClient,
+        original: &super::deployment::canary::HostCanaryStartupV1,
+    ) -> Result<()> {
+        self.verify_live_pid1_service_origin(
+            evidence, systemd, Pid1PackageOriginV1::OriginalHostLaunch(original),
+        ).await
+    }
+
+    async fn verify_live_pid1_service_origin(
+        &self,
+        evidence: &ProtectedBackendReadinessEvidence,
+        systemd: &SystemdClient,
+        origin: Pid1PackageOriginV1<'_>,
+    ) -> Result<()> {
         const HARDENING_PROPERTIES: &[&str] = &[
             "NoNewPrivileges",
             "PrivateDevices",
@@ -196,7 +220,7 @@ impl VerifiedPackagedRuntimeV1 {
             .await
             .map_err(|error| HostError::State(format!("PID 1 service readback failed: {error}")))?;
         verify_host_service_hardening(&values)?;
-        self.revalidate(evidence)
+        self.revalidate_origin(evidence, origin)
     }
 
     /// Rechecks the same protected claim, package, and live PID 1 generation.
@@ -205,7 +229,23 @@ impl VerifiedPackagedRuntimeV1 {
     ///
     /// Returns an error after a boot, executable, package, or PID 1 change.
     pub fn revalidate(&self, evidence: &ProtectedBackendReadinessEvidence) -> Result<()> {
-        let current = evidence.verify_packaged_runtime()?;
+        self.revalidate_origin(evidence, Pid1PackageOriginV1::ExecutedManager)
+    }
+
+    pub(super) fn revalidate_canary(
+        &self,
+        evidence: &ProtectedBackendReadinessEvidence,
+        original: &super::deployment::canary::HostCanaryStartupV1,
+    ) -> Result<()> {
+        self.revalidate_origin(evidence, Pid1PackageOriginV1::OriginalHostLaunch(original))
+    }
+
+    fn revalidate_origin(
+        &self,
+        evidence: &ProtectedBackendReadinessEvidence,
+        origin: Pid1PackageOriginV1<'_>,
+    ) -> Result<()> {
+        let current = evidence.verify_packaged_runtime_origin(origin)?;
         if current.binding_identity != self.binding_identity
             || current.pid1_snapshot != self.pid1_snapshot
             || current.pid1_digest != self.pid1_digest
@@ -380,7 +420,7 @@ impl ReadinessBindingV1 {
         })
     }
 
-    fn revalidate(&self, current_boot_id: [u8; 16]) -> Result<()> {
+    pub(super) fn revalidate(&self, current_boot_id: [u8; 16]) -> Result<()> {
         if current_boot_id != self.boot_id
             || self.artifact_sha256 == [0; 32]
             || self.executable_sha256 == [0; 32]
@@ -411,6 +451,49 @@ impl ReadinessBindingV1 {
 }
 
 impl ProtectedBackendReadinessEvidence {
+    pub(in crate::plan) fn complete_original_canary(
+        &self,
+        packaged: &VerifiedPackagedRuntimeV1,
+        live: &VerifiedLiveSupervisorPolicyV1,
+        payload: &super::PreparedLaunch,
+        readback: &crate::worker::HostCanaryPayloadReadbackV1,
+        startup: &super::HostCanaryStartupV1,
+    ) -> Result<BackendReadiness> {
+        packaged.revalidate_canary(self, startup)?;
+        let proof = readback.verified()?;
+        if proof.binding != payload.spec().launch_binding()
+            || proof.binding.is_none() || proof.invocation_id == [0; 16]
+            || proof.proof.host_boot_id != self.binding.boot_id
+            || proof.shifted_payload_inspection().is_none()
+        {
+            return Err(HostError::State("completed canary physical proof differs".to_owned()));
+        }
+        live.require_original_canary_join(self, payload.spec(), proof.proof.supervisor.pid)?;
+        // The pin is the same original Arc: this creates no descriptor or
+        // independent image observation. The coordinator owns the cleanup
+        // and native-export prerequisite before this private composition.
+        let binding = ReadinessBindingV1 {
+            publisher_generation: self.binding.publisher_generation,
+            boot_id: self.binding.boot_id,
+            artifact_sha256: self.binding.artifact_sha256,
+            executable_path: self.binding.executable_path.clone(),
+            executable_pin: Arc::clone(&self.binding.executable_pin),
+            executable_snapshot: self.binding.executable_snapshot,
+            executable_sha256: self.binding.executable_sha256,
+            identity: self.binding.identity,
+        };
+        Ok(BackendReadiness {
+            binding,
+            mac_policy_digest: startup.original_policy_digest()?,
+            supervisor_profile_digest: payload.spec().payload_root_continuity_policy().digest(),
+            payload_filter_digest: packaged.payload_filter_digest,
+        })
+    }
+
+    pub(super) fn canary_original_binding(&self) -> &ReadinessBindingV1 {
+        &self.binding
+    }
+
     pub(super) const fn phase0_probe_claim(&self) -> [u8; 32] {
         self.claims.probe_digest
     }
@@ -519,6 +602,20 @@ impl ProtectedBackendReadinessEvidence {
     /// Returns an error for missing or malformed package evidence, changed
     /// protected currentness, an unrecognized policy, or foreign PID 1 bytes.
     pub fn verify_packaged_runtime(&self) -> Result<VerifiedPackagedRuntimeV1> {
+        self.verify_packaged_runtime_origin(Pid1PackageOriginV1::ExecutedManager)
+    }
+
+    pub(super) fn verify_canary_packaged_runtime(
+        &self,
+        original: &super::deployment::canary::HostCanaryStartupV1,
+    ) -> Result<VerifiedPackagedRuntimeV1> {
+        self.verify_packaged_runtime_origin(Pid1PackageOriginV1::OriginalHostLaunch(original))
+    }
+
+    fn verify_packaged_runtime_origin(
+        &self,
+        origin: Pid1PackageOriginV1<'_>,
+    ) -> Result<VerifiedPackagedRuntimeV1> {
         let policy = PayloadRootContinuityPolicyV1::fixed();
         let compiler = self.verify_compiled_supervisor_profile(policy)?;
         let artifact = read_backend_policy_artifact(&self.binding.executable_path)?;
@@ -550,13 +647,21 @@ impl ProtectedBackendReadinessEvidence {
             ));
         }
 
-        let pid1 = open(
-            "/proc/1/exe",
-            OFlags::RDONLY | OFlags::CLOEXEC,
-            Mode::empty(),
-        )
-        .map_err(|error| HostError::State(error.to_string()))?;
-        let pid1_stat = fstat(&pid1).map_err(|error| HostError::State(error.to_string()))?;
+        let current = match origin {
+            Pid1PackageOriginV1::ExecutedManager => Some(open(
+                "/proc/1/exe",
+                OFlags::RDONLY | OFlags::CLOEXEC,
+                Mode::empty(),
+            ).map_err(|error| HostError::State(error.to_string()))?),
+            Pid1PackageOriginV1::OriginalHostLaunch(_) => None,
+        };
+        let pid1 = match origin {
+            Pid1PackageOriginV1::ExecutedManager => current.as_ref()
+                .ok_or_else(|| HostError::State("PID 1 descriptor is absent".to_owned()))?
+                .as_fd(),
+            Pid1PackageOriginV1::OriginalHostLaunch(original) => original.pid1_original()?,
+        };
+        let pid1_stat = fstat(pid1).map_err(|error| HostError::State(error.to_string()))?;
         if FileType::from_raw_mode(pid1_stat.st_mode) != FileType::RegularFile
             || pid1_stat.st_uid != 0
             || pid1_stat.st_mode & 0o022 != 0
@@ -728,7 +833,7 @@ fn current_boot_id() -> Result<[u8; 16]> {
         .map_err(|error| HostError::State(error.to_string()))
 }
 
-fn snapshot_and_hash_executable(
+pub(super) fn snapshot_and_hash_executable(
     descriptor: BorrowedFd<'_>,
 ) -> Result<(NspawnExecutableSnapshot, [u8; 32])> {
     snapshot_and_hash_executable_with_progress(descriptor, |_| {})

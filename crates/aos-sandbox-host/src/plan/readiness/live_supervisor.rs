@@ -7,7 +7,8 @@
 use aos_systemd::{OwnedValue, PayloadRootContinuityPolicyV1, SandboxUnitSpec, SystemdClient};
 
 use super::{
-    ProtectedBackendReadinessEvidence, ReadinessBindingIdentityV1, VerifiedPackagedRuntimeV1,
+    Pid1PackageOriginV1, ProtectedBackendReadinessEvidence, ReadinessBindingIdentityV1,
+    VerifiedPackagedRuntimeV1,
 };
 use crate::{HostError, Result};
 
@@ -56,7 +57,34 @@ impl VerifiedPackagedRuntimeV1 {
         spec: &SandboxUnitSpec,
         supervisor_pid: u32,
     ) -> Result<VerifiedLiveSupervisorPolicyV1> {
-        self.revalidate(evidence)?;
+        self.verify_live_supervisor_policy_origin(
+            evidence, systemd, spec, supervisor_pid, Pid1PackageOriginV1::ExecutedManager,
+        ).await
+    }
+
+    pub(in crate::plan) async fn verify_original_canary_supervisor_policy(
+        &self,
+        evidence: &ProtectedBackendReadinessEvidence,
+        systemd: &SystemdClient,
+        spec: &SandboxUnitSpec,
+        supervisor_pid: u32,
+        startup: &crate::plan::HostCanaryStartupV1,
+    ) -> Result<VerifiedLiveSupervisorPolicyV1> {
+        self.verify_live_supervisor_policy_origin(
+            evidence, systemd, spec, supervisor_pid,
+            Pid1PackageOriginV1::OriginalHostLaunch(startup),
+        ).await
+    }
+
+    async fn verify_live_supervisor_policy_origin(
+        &self,
+        evidence: &ProtectedBackendReadinessEvidence,
+        systemd: &SystemdClient,
+        spec: &SandboxUnitSpec,
+        supervisor_pid: u32,
+        origin: Pid1PackageOriginV1<'_>,
+    ) -> Result<VerifiedLiveSupervisorPolicyV1> {
+        self.revalidate_origin(evidence, origin)?;
         let policy = spec.payload_root_continuity_policy();
         if spec.executable() != evidence.binding.executable_path
             || policy.digest() != self.policy_digest
@@ -75,7 +103,7 @@ impl VerifiedPackagedRuntimeV1 {
             .await
             .map_err(|error| HostError::State(format!("supervisor readback failed: {error}")))?;
         verify_live_supervisor_properties(&values, policy)?;
-        self.revalidate(evidence)?;
+        self.revalidate_origin(evidence, origin)?;
 
         Ok(VerifiedLiveSupervisorPolicyV1 {
             binding_identity: self.binding_identity,
@@ -86,6 +114,21 @@ impl VerifiedPackagedRuntimeV1 {
 }
 
 impl VerifiedLiveSupervisorPolicyV1 {
+    pub(in crate::plan) fn require_original_canary_join(
+        &self,
+        evidence: &ProtectedBackendReadinessEvidence,
+        spec: &SandboxUnitSpec,
+        supervisor_pid: u32,
+    ) -> Result<()> {
+        if self.binding_identity != evidence.binding.identity
+            || self.unit_semantics_digest != spec.semantic_digest_v1()
+            || self.supervisor_pid != supervisor_pid || supervisor_pid == 0
+        {
+            return Err(HostError::State("completed canary supervisor provenance differs".to_owned()));
+        }
+        Ok(())
+    }
+
     /// Repeats the live unit and package checks for the admitted supervisor.
     ///
     /// # Errors

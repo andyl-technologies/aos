@@ -75,6 +75,55 @@ pub struct HostAuthorityV1 {
 }
 
 impl HostAuthorityV1 {
+    /// Admits only a retained independent startup job through the real engine.
+    pub(crate) fn admit_original_canary(
+        &self,
+        owner: &mut crate::broker::canary_job::HostCanaryJobOwnerV1,
+        action: crate::broker::canary_job::CanaryAction,
+        current_clock: &RawPairedClockSample,
+        prior_fence: Option<&[u8]>,
+    ) -> crate::Result<VerifiedHostAdmissionV1> {
+        owner.recheck()?;
+        owner.require_key_separation(self)?;
+        let job = owner.originals()?;
+        if current_clock.host_boot_id() != job.boot_id
+            || current_clock.boottime_nanoseconds() < job.not_before
+            || current_clock.boottime_nanoseconds() >= job.deadline
+        {
+            return Err(crate::HostError::Authority(HostAdmissionError::FenceRejected));
+        }
+        let (template, index, request_id) = match action {
+            crate::broker::canary_job::CanaryAction::Launch => (&job.launch, 0, job.request_ids[0]),
+            crate::broker::canary_job::CanaryAction::Stop => (&job.stop, 1, job.request_ids[1]),
+        };
+        let semantics = aos_sandbox_protocol::semantics::canonical_host_template_semantics_v1(template)
+            .map_err(|_| HostAdmissionError::RequestMismatch)?;
+        let artifacts = owner.authorization(matches!(action, crate::broker::canary_job::CanaryAction::Stop))?;
+        let admitted = self.authority.admit(
+            &artifacts,
+            AdmissionRequest {
+                audience: BrokerAudience::Host,
+                protocol: ProtocolId::HostBroker,
+                protocol_version: ProtocolVersion::new(1, 0),
+                assignment: template.fence().broker_assignment()
+                    .map_err(|_| HostAdmissionError::RequestMismatch)?,
+                request_id,
+                request_body: owner.segment(index)?,
+                descriptor_count: 0,
+                verb: semantics.verb(),
+                target: semantics.target(),
+                argument_commitment: semantics.commitment(),
+                request_deadline_boottime_nanoseconds: job.deadline,
+            },
+            current_clock,
+            prior_fence,
+        )?;
+        if admitted.fence.node().as_bytes() != &job.node_id {
+            return Err(crate::HostError::Authority(HostAdmissionError::RequestMismatch));
+        }
+        Ok(admitted)
+    }
+
     /// Constructs host authority from already validated protected anchors.
     ///
     /// # Errors

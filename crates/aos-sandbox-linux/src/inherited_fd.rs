@@ -9,7 +9,7 @@
 
 use std::collections::BTreeSet;
 use std::os::fd::{AsFd as _, BorrowedFd, FromRawFd as _, OwnedFd, RawFd};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::{Error, Result};
@@ -142,6 +142,169 @@ impl Drop for ControllerInitialActivationTableV1 {
 }
 
 struct AbortInitialCaptureUnwind;
+
+/// Retains Host's fixed three listeners and two original launch-file entries.
+///
+/// This closed observation shares the existing initial-table fence, duplicate
+/// owner and complete-table scanners. The descriptors remain DATA: the Host
+/// startup owner independently checks their five exact names and roles.
+#[must_use]
+pub struct HostCanaryInitialActivationTableV1 {
+    original: ControllerInitialActivationTableV1,
+}
+
+impl HostCanaryInitialActivationTableV1 {
+    /// Creates resident storage without reading the inherited process table.
+    pub const fn new() -> Self {
+        Self {
+            original: ControllerInitialActivationTableV1::new(),
+        }
+    }
+
+    /// Observes exactly the original entries 3 through 7 once.
+    ///
+    /// # Errors
+    ///
+    /// Retains the first actual duplicate, flag or full-table failure. Failed
+    /// and abandoned owners retain their originals until intentional process
+    /// termination; the underlying armed Drop fence remains unchanged.
+    pub fn observe_once(&mut self) -> std::result::Result<(), &Error> {
+        self.original.observe_once(5)
+    }
+
+    /// Borrows the actual permanently retained first observation failure.
+    pub fn failure(&self) -> Option<&Error> {
+        self.original.failure()
+    }
+
+    /// Transfers only the complete five-entry table without a new observation.
+    ///
+    /// The caller parks this array before fallible name, role or image checks.
+    #[must_use]
+    pub fn take_completed_entries(&mut self) -> Option<[Option<OwnedFd>; 5]> {
+        let [first, second, third, fourth, fifth, _unused] =
+            self.original.take_completed_entries()?;
+        Some([first, second, third, fourth, fifth])
+    }
+}
+
+impl Default for HostCanaryInitialActivationTableV1 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Keeps the optional fixed Guest canary-report slot and its first failure.
+///
+/// This holder observes only original FD8 before Guest startup opens. It is
+/// descriptor DATA, not job approval, Guest identity or report authority. The
+/// original stays open but CLOEXEC for the one Agent spawn; only the same
+/// completed holder can subsequently prepare that slot for Guest-systemd.
+#[must_use]
+pub struct GuestCanaryReportOriginalV1 {
+    descriptor: Option<OwnedFd>,
+    attempted: bool,
+    prepared: bool,
+    closed: bool,
+    failure: Option<Error>,
+}
+
+impl GuestCanaryReportOriginalV1 {
+    /// Creates empty resident slots without touching the process table.
+    pub const fn new() -> Self {
+        Self {
+            descriptor: None,
+            attempted: false,
+            prepared: false,
+            closed: false,
+            failure: None,
+        }
+    }
+
+    /// Observes only the optional original FD8 once, before other startup opens.
+    ///
+    /// # Errors
+    /// Retains the first claim, duplication or CLOEXEC failure. Only an actual
+    /// EBADF at the original duplicate is admitted as the old absent route.
+    pub fn capture_original(&mut self) -> std::result::Result<bool, &Error> {
+        if self.attempted {
+            self.closed = true;
+            return Err(self.failure.get_or_insert_with(|| {
+                Error::invalid("Guest canary report", "capture is closed")
+            }));
+        }
+        self.attempted = true;
+        self.closed = true;
+        let observed = self.capture_inner();
+        match observed {
+            Ok(present) => {
+                self.closed = false;
+                Ok(present)
+            }
+            Err(cause) => Err(self.failure.get_or_insert(cause)),
+        }
+    }
+
+    fn capture_inner(&mut self) -> Result<bool> {
+        drop(reserve_descriptor_numbers(&[8])?);
+        match duplicate_inherited_descriptor(8) {
+            Ok(descriptor) => self.descriptor = Some(descriptor),
+            Err(Error::Syscall { source, .. })
+                if source.raw_os_error() == Some(libc::EBADF) => return Ok(false),
+            Err(cause) => return Err(cause),
+        }
+        mark_inherited_descriptor_close_on_exec(8)?;
+        Ok(true)
+    }
+
+    /// Borrows the same captured duplicate without exposing the original number.
+    ///
+    /// # Errors
+    /// Refuses absent, failed or incomplete capture. The borrow conveys only
+    /// descriptor continuity; the Guest checks its actual socket and job tuple.
+    pub fn descriptor(&self) -> Result<BorrowedFd<'_>> {
+        if !self.attempted || self.closed {
+            return Err(Error::invalid("Guest canary report", "capture is closed"));
+        }
+        self.descriptor.as_ref().map(AsFd::as_fd)
+            .ok_or_else(|| Error::invalid("Guest canary report", "slot is absent"))
+    }
+
+    /// Prepares only original FD8 for the immediate fixed Guest-systemd exec.
+    ///
+    /// # Errors
+    /// Retains a first actual flag error and permanently closes the holder.
+    /// The caller must already have completed its original report/peer checks
+    /// and Agent spawn; no authority or executable is selected by this method.
+    pub fn prepare_systemd_exec(&mut self) -> std::result::Result<(), &Error> {
+        if !self.attempted || self.prepared || self.closed || self.descriptor.is_none() {
+            self.closed = true;
+            return Err(self.failure.get_or_insert_with(|| {
+                Error::invalid("Guest canary report", "capture is closed")
+            }));
+        }
+        self.prepared = true;
+        self.closed = true;
+        match mark_inherited_exec_disposition(8, InheritedExecDisposition::GuestSystemdReport) {
+            Ok(()) => {
+                self.closed = false;
+                Ok(())
+            }
+            Err(cause) => Err(self.failure.get_or_insert(cause)),
+        }
+    }
+
+    /// Borrows the first native cause without moving or replacing it.
+    pub fn failure(&self) -> Option<&Error> {
+        self.failure.as_ref()
+    }
+}
+
+impl Default for GuestCanaryReportOriginalV1 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl Drop for AbortInitialCaptureUnwind {
     fn drop(&mut self) {
@@ -693,6 +856,16 @@ pub fn duplicate_inherited_descriptor(raw: RawFd) -> Result<OwnedFd> {
 /// Returns an error for a negative or closed number, a failed flag update, or
 /// a kernel readback that does not retain `FD_CLOEXEC`.
 pub fn mark_inherited_descriptor_close_on_exec(raw: RawFd) -> Result<()> {
+    mark_inherited_exec_disposition(raw, InheritedExecDisposition::Close)
+}
+
+#[derive(Clone, Copy)]
+enum InheritedExecDisposition {
+    Close,
+    GuestSystemdReport,
+}
+
+fn mark_inherited_exec_disposition(raw: RawFd, disposition: InheritedExecDisposition) -> Result<()> {
     if raw < 0 {
         return Err(Error::invalid(
             "inherited descriptor",
@@ -706,9 +879,16 @@ pub fn mark_inherited_descriptor_close_on_exec(raw: RawFd) -> Result<()> {
     if flags < 0 {
         return Err(Error::syscall("fcntl(F_GETFD)"));
     }
+    let replacement = match disposition {
+        InheritedExecDisposition::Close => flags | libc::FD_CLOEXEC,
+        InheritedExecDisposition::GuestSystemdReport if raw == 8 => flags & !libc::FD_CLOEXEC,
+        InheritedExecDisposition::GuestSystemdReport => {
+            return Err(Error::invalid("Guest canary report", "foreign original slot"));
+        }
+    };
     // SAFETY: the same numeric table entry was checked above during the fixed
     // single-threaded startup interval; no Rust descriptor ownership changes.
-    if unsafe { libc::fcntl(raw, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+    if unsafe { libc::fcntl(raw, libc::F_SETFD, replacement) } < 0 {
         return Err(Error::syscall("fcntl(F_SETFD)"));
     }
     // SAFETY: readback inspects only descriptor-table flags for this entry.
@@ -716,7 +896,8 @@ pub fn mark_inherited_descriptor_close_on_exec(raw: RawFd) -> Result<()> {
     if observed < 0 {
         return Err(Error::syscall("fcntl(F_GETFD)"));
     }
-    if observed & libc::FD_CLOEXEC == 0 {
+    let expected_close = matches!(disposition, InheritedExecDisposition::Close);
+    if (observed & libc::FD_CLOEXEC != 0) != expected_close {
         return Err(Error::invalid(
             "inherited descriptor",
             "close-on-exec was not retained",
@@ -743,24 +924,30 @@ impl ExclusiveRawDescriptors {
     /// The caller must exclusively own every present numeric table entry and
     /// keep the descriptor table stable until the returned value is dropped.
     unsafe fn reserve(numbers: &[RawFd]) -> Result<Self> {
-        let mut claimed = CLAIMED_DESCRIPTOR_NUMBERS.lock().map_err(|_| {
-            Error::invalid(
-                "inherited descriptor registry",
-                "process-local claim registry is poisoned",
-            )
-        })?;
-        if numbers.iter().any(|number| claimed.contains(number)) {
-            return Err(Error::invalid(
-                "inherited descriptor range",
-                "overlaps a prior claim",
-            ));
-        }
-        claimed.extend(numbers.iter().copied());
+        let _claimed = reserve_descriptor_numbers(numbers)?;
 
         Ok(Self {
             numbers: numbers.to_vec(),
         })
     }
+}
+
+fn reserve_descriptor_numbers(numbers: &[RawFd]) -> Result<MutexGuard<'static, BTreeSet<RawFd>>> {
+    let mut claimed = CLAIMED_DESCRIPTOR_NUMBERS.lock().map_err(|_| {
+        Error::invalid(
+            "inherited descriptor registry",
+            "process-local claim registry is poisoned",
+        )
+    })?;
+    if numbers.iter().any(|number| claimed.contains(number)) {
+        return Err(Error::invalid(
+            "inherited descriptor range",
+            "overlaps a prior claim",
+        ));
+    }
+    claimed.extend(numbers.iter().copied());
+
+    Ok(claimed)
 }
 
 impl Drop for ExclusiveRawDescriptors {

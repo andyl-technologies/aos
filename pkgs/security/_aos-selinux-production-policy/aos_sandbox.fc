@@ -34,6 +34,8 @@
 /run/current-system -l system_u:object_r:var_run_t
 /run/etc -d system_u:object_r:var_run_t
 /var/lib/aos/sandbox -d system_u:object_r:aos_sandbox_view_parent_t
+/var/lib/aos/sandbox-host/canary-capacity-v1 -d system_u:object_r:aos_sandbox_host_canary_state_t
+/var/lib/aos/sandbox-host/canary-capacity-v1/(baseline|cell-0|cell-1) -- system_u:object_r:aos_sandbox_host_canary_state_t
 /var/lib/aos/sandbox-nix-floor-provision -d system_u:object_r:aos_nix_offline_prepare_state_t
 /var/lib/aos/sandbox-nix-floor-provision/(installation\.lock|candidate-private-v3|candidate-public-v3|approved-job-v3|approved-effect-v4|approved-recovery-v4|provisioning-v4\.journal(\.lock)?) -- system_u:object_r:aos_nix_offline_prepare_state_t
 /run/credentials/aos-sandbox-nix-floor-provision\.service -d system_u:object_r:aos_nix_offline_prepare_credential_t

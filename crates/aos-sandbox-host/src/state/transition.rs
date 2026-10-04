@@ -143,6 +143,106 @@ pub(crate) struct HostExecutionHandoffRecord {
 }
 
 impl DurableExecution {
+    /// Checks the closed persisted edge after the real Guardian reducer chose it.
+    pub(crate) fn canary_guardian_follows(&self, before: &Self) -> bool {
+        let (Self::GuardianLaunch(old), Self::GuardianLaunch(new)) = (before, self) else {
+            return false;
+        };
+        if old.evidence != new.evidence || old.phase == new.phase {
+            return false;
+        }
+
+        use GuardianLaunchPhase as Phase;
+        match (&old.phase, &new.phase) {
+            (Phase::Authorized, Phase::GuardianStartIssued)
+            | (Phase::GuardianStartIssued, Phase::GuardianReady { .. }) => true,
+            (Phase::GuardianReady { guardian_invocation: old },
+                Phase::PayloadStartIssued { guardian_invocation }) => old == guardian_invocation,
+            (Phase::PayloadStartIssued { guardian_invocation: old },
+                Phase::PayloadVerified { guardian_invocation, .. }) => old == guardian_invocation,
+            (Phase::PayloadVerified { guardian_invocation: old_guardian,
+                payload_invocation: old_payload, observation_sequence: old_sequence,
+                worker_proof: old_proof },
+                Phase::Complete { guardian_invocation, payload_invocation,
+                    observation_sequence, worker_proof }) => {
+                old_guardian == guardian_invocation && old_payload == payload_invocation
+                    && old_sequence == observation_sequence && old_proof == worker_proof
+            }
+            (Phase::Authorized | Phase::GuardianStartIssued | Phase::GuardianReady { .. }
+                | Phase::PayloadStartIssued { .. } | Phase::PayloadVerified { .. },
+                Phase::Compensated { .. }) => true,
+            (Phase::CleanupIssued { payload: old_payload, guardian: old_guardian, progress: old },
+                Phase::CleanupIssued { payload, guardian, progress }) => {
+                old_payload == payload && old_guardian == guardian
+                    && cleanup_rank(*progress) > cleanup_rank(*old)
+            }
+            (_, Phase::CleanupIssued { payload, guardian, .. }) => {
+                let known_guardian = match &old.phase {
+                    Phase::GuardianReady { guardian_invocation }
+                    | Phase::PayloadStartIssued { guardian_invocation }
+                    | Phase::PayloadVerified { guardian_invocation, .. } => Some(*guardian_invocation),
+                    Phase::Authorized | Phase::GuardianStartIssued => None,
+                    _ => return false,
+                };
+                let known_payload = match &old.phase {
+                    Phase::PayloadVerified { payload_invocation, .. } => Some(*payload_invocation),
+                    _ => None,
+                };
+                let matches_known = |target: &ExactUnitTarget, known: Option<[u8; 16]>| {
+                    match (target, known) {
+                        (ExactUnitTarget::Absent, _) | (_, None) => true,
+                        (ExactUnitTarget::Exact { binding, invocation }, Some(original)) => {
+                            *binding == old.evidence.binding && *invocation == original
+                        }
+                    }
+                };
+                matches_known(payload, known_payload) && matches_known(guardian, known_guardian)
+            }
+            (Phase::CleanupIssued { .. }, Phase::Compensated { .. }) => true,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn canary_stop_follows(&self, before: &Self) -> bool {
+        let (Self::CompositeStop(old), Self::CompositeStop(new)) = (before, self) else {
+            return false;
+        };
+        if old.target != new.target || old.phase == new.phase {
+            return false;
+        }
+        match (&old.phase, &new.phase) {
+            (CompositeStopPhase::StopAuthorized, CompositeStopPhase::StopEffectIssued { .. }
+                | CompositeStopPhase::Complete { .. }) => true,
+            (CompositeStopPhase::StopEffectIssued { progress: old },
+                CompositeStopPhase::StopEffectIssued { progress }) => stop_rank(*progress) > stop_rank(*old),
+            (CompositeStopPhase::StopEffectIssued { .. }, CompositeStopPhase::Complete { .. }) => true,
+            _ => false,
+        }
+    }
+
+    pub(crate) fn canary_remaining_guardian(&self) -> Option<u64> {
+        let attempt = self.guardian_attempt()?;
+        Some(match attempt.phase {
+            GuardianLaunchPhase::Authorized => 11,
+            GuardianLaunchPhase::GuardianStartIssued => 10,
+            GuardianLaunchPhase::GuardianReady { .. } => 9,
+            GuardianLaunchPhase::PayloadStartIssued { .. } => 8,
+            GuardianLaunchPhase::PayloadVerified { .. } => 7,
+            GuardianLaunchPhase::Complete { .. } => 6,
+            GuardianLaunchPhase::Compensated { .. } => 0,
+            GuardianLaunchPhase::CleanupIssued { progress, .. } => 4 - cleanup_rank(*progress),
+        })
+    }
+
+    pub(crate) fn canary_remaining_stop(&self) -> Option<u64> {
+        let record = self.composite_stop_record()?;
+        Some(match record.phase {
+            CompositeStopPhase::StopAuthorized => 5,
+            CompositeStopPhase::StopEffectIssued { progress } => 4 - stop_rank(progress),
+            CompositeStopPhase::Complete { .. } => 0,
+        })
+    }
+
     /// Creates the execution kind for an authenticated direct lifecycle action.
     pub(crate) const fn direct_lifecycle(action: HostAction) -> Option<Self> {
         match action {
@@ -423,6 +523,24 @@ impl DurableExecution {
             target: CompositeStopTarget::Absent,
             phase: CompositeStopPhase::StopAuthorized,
         })
+    }
+}
+
+fn cleanup_rank(progress: CleanupProgress) -> u64 {
+    match progress {
+        CleanupProgress::PayloadPending => 0,
+        CleanupProgress::PayloadAwaitingAbsence => 1,
+        CleanupProgress::GuardianPending => 2,
+        CleanupProgress::GuardianAwaitingAbsence => 3,
+    }
+}
+
+fn stop_rank(progress: StopProgress) -> u64 {
+    match progress {
+        StopProgress::PayloadPending => 0,
+        StopProgress::PayloadAwaitingAbsence => 1,
+        StopProgress::GuardianPending => 2,
+        StopProgress::GuardianAwaitingAbsence => 3,
     }
 }
 

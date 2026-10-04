@@ -133,6 +133,9 @@ macro_rules! verify_bound_payload_recipe {
 }
 
 macro_rules! bound_call_finish {
+    (Canary, $worker:ident, $client:ident, $spec:ident, $pins:ident, $identity:ident, $state:ident) => {
+        $worker.verify_original_canary(&$client, $spec, $pins, $identity, $state).await
+    };
     (LocalStart, $worker:ident, $client:ident, $spec:ident, $pins:ident, $identity:ident, $state:ident) => {
         Ok(CurrentJobDone {
             verification: $worker.verify_bound_payload(&$client, $spec, $pins, $identity).await?,
@@ -200,8 +203,319 @@ macro_rules! prove_bound_payload_recipe {
     }};
 }
 
-fn resident_readback_missing(field: &str) -> HostError {
+pub(super) fn resident_readback_missing(field: &str) -> HostError {
     HostError::Worker(format!("resident payload readback lost {field}"))
+}
+
+impl HostCanaryPayloadReadbackV1 {
+    async fn receive_original_reports(
+        &mut self,
+        job: &mut crate::broker::canary_job::HostCanaryJobOwnerV1,
+    ) -> std::result::Result<(), CanaryPayloadFailureV1> {
+        if self.received || self.receive_cursor != 0 {
+            return Err(CanaryPayloadFailureV1::Mismatch);
+        }
+        // The native supervisor, same loaded filter, bootstrap, actual Agent
+        // child and final Guest manager have one fixed serialized report order.
+        // No successful or consumed attempt can be retried after a refusal.
+        while self.receive_cursor < 8 {
+            require_canary_deadline(job)?;
+            let socket = self.report_socket.as_mut().ok_or(CanaryPayloadFailureV1::Mismatch)?;
+            if self.receive_cursor == 1 {
+                match socket.receive_retaining(98_504) {
+                    Ok(record) => self.program_report = Some(record),
+                    Err(cause) if cause.is_nonconsuming_would_block()
+                        || cause.is_nonconsuming_interrupted() =>
+                    {
+                        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                        continue;
+                    }
+                    Err(cause) => {
+                        self.receive_failure = Some(cause);
+                        return Err(CanaryPayloadFailureV1::Receive);
+                    }
+                }
+            } else {
+                let slot = if self.receive_cursor == 0 { 0 } else { self.receive_cursor - 1 };
+                let count = [3, 5, 5, 1, 5, 5, 1][slot];
+                match socket.receive_with_descriptors_retaining(176, count) {
+                    Ok(record) => self.reports[slot] = Some(record),
+                    Err(cause) if cause.is_nonconsuming_would_block()
+                        || cause.is_nonconsuming_interrupted() =>
+                    {
+                        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                        continue;
+                    }
+                    Err(cause) => {
+                        self.receive_failure = Some(cause);
+                        return Err(CanaryPayloadFailureV1::Receive);
+                    }
+                }
+            }
+            // The complete return is parked before time, job or later report
+            // checks. A failing bookend keeps its original subject and rights.
+            self.receive_cursor += 1;
+            job.recheck()?;
+            require_canary_deadline(job)?;
+        }
+        self.received = true;
+        Ok(())
+    }
+
+    fn capture_received_originals(&mut self)
+        -> std::result::Result<(), CanaryPayloadFailureV1>
+    {
+        if !self.received || self.reports.iter().any(Option::is_none) {
+            return Err(CanaryPayloadFailureV1::Mismatch);
+        }
+        let socket = self.report_socket.as_mut().ok_or(CanaryPayloadFailureV1::Mismatch)?;
+        let Some(supervisor) = self.reports[0].take() else { std::process::abort() };
+        self.originals.capture_original_supervisor_report(supervisor, socket)?;
+
+        // Each group was checked for occupancy before any infallible move.
+        // The lower owner parks every complete group before checking its roles.
+        let (Some(root), Some(metadata), Some(executable)) = (
+            self.reports[1].take(), self.reports[2].take(), self.reports[3].take(),
+        ) else { std::process::abort() };
+        self.originals.capture_original_bootstrap_reports(root, metadata, executable, socket)?;
+        let (Some(first), Some(second)) = (self.reports[4].take(), self.reports[5].take())
+            else { std::process::abort() };
+        self.originals.capture_original_reports(first, second, socket)?;
+        let Some(systemd) = self.reports[6].take() else { std::process::abort() };
+        self.originals.capture_original_systemd_report(systemd, socket)?;
+        Ok(())
+    }
+
+    fn require_report_scope(
+        &self,
+        job: &crate::broker::canary_job::HostCanaryJobOwnerV1,
+        spec: &SandboxUnitSpec,
+    ) -> std::result::Result<(), CanaryPayloadFailureV1> {
+        let original = job.originals()?;
+        let fence = original.launch.fence();
+        let binding = spec.launch_binding().ok_or(CanaryPayloadFailureV1::Mismatch)?;
+        let header = self.originals.original_report_header()?;
+        if header.len() != 176
+            || header[16..48] != original.nonce
+            || header[48..80] != original.digest
+            || header[80..112] != binding
+            || header[112..128] != *fence.sandbox_id()
+            || header[128..144] != *fence.incarnation_id()
+            || header[144..152] != fence.assignment_epoch().to_be_bytes()
+            || header[152..160] != fence.desired_generation().to_be_bytes()
+        {
+            return Err(CanaryPayloadFailureV1::Mismatch);
+        }
+        Ok(())
+    }
+
+    fn require_loaded_programs(&self, artifact: &[u8])
+        -> std::result::Result<(), CanaryPayloadFailureV1>
+    {
+        let record = self.program_report.as_ref().ok_or(CanaryPayloadFailureV1::Mismatch)?;
+        self.report_socket.as_ref().ok_or(CanaryPayloadFailureV1::Mismatch)?
+            .require_host_canary_response_original_v1(record)?;
+        let observed = record.payload();
+        let (native, _) = self.originals.supervisor_observation()?;
+        if record.subject().initial_info() != native.initial_info()
+            || record.subject().pidfd().info()? != native.initial_info()
+            || !record.subject().is_alive()?
+        {
+            return Err(CanaryPayloadFailureV1::Mismatch);
+        }
+        if observed.len() == 184 && observed[..12] == *b"AOSHCR01\0\x01\0\x09" {
+            let original = self.originals.original_report_header()?;
+            let phase = u16::from_be_bytes(observed[176..178].try_into()
+                .map_err(|_| CanaryPayloadFailureV1::Mismatch)?);
+            let error = i32::from_be_bytes(observed[180..184].try_into()
+                .map_err(|_| CanaryPayloadFailureV1::Mismatch)?);
+            if observed[12..16] != 184_u32.to_be_bytes()
+                || observed[16..176] != original[16..176]
+                || phase != 2
+                || observed[178..180] != [0; 2]
+                || error >= 0
+            {
+                return Err(CanaryPayloadFailureV1::Mismatch);
+            }
+            return Err(CanaryPayloadFailureV1::Report { phase, error });
+        }
+        let original = self.originals.original_report_header()?;
+        if artifact.len() <= 176 || artifact.len() > 98_504
+            || observed.len() != artifact.len()
+            || artifact[..12] != *b"AOSHCR01\0\x01\0\x02"
+            || observed[..12] != artifact[..12]
+            || observed[12..16] != (observed.len() as u32).to_be_bytes()
+            || artifact[12..16] != observed[12..16]
+            || artifact[16..160] != [0; 144]
+            || observed[16..160] != original[16..160]
+            || artifact[164..176] != [0; 12]
+            || observed[164..176] != [0; 12]
+            || artifact[160..164] != observed[160..164]
+            || observed[176..] != artifact[176..]
+        {
+            return Err(CanaryPayloadFailureV1::Mismatch);
+        }
+        // The target-built artifact and report are compared as the complete
+        // canonical architecture/program sequence. The native producer exports
+        // the SAME contexts that each successful seccomp_load consumed.
+        let count = u32::from_be_bytes(artifact[160..164].try_into()
+            .map_err(|_| CanaryPayloadFailureV1::Mismatch)?);
+        if count == 0 || count > 3 {
+            return Err(CanaryPayloadFailureV1::Mismatch);
+        }
+        Ok(())
+    }
+
+    fn require_supervisor_and_root(&self, pins: &LaunchPins)
+        -> std::result::Result<(), CanaryPayloadFailureV1>
+    {
+        let observation = self.original_observation().ok_or(CanaryPayloadFailureV1::Mismatch)?;
+        let leader = observation.leader.as_ref().ok_or(CanaryPayloadFailureV1::Mismatch)?;
+        let (subject, actual) = self.originals.supervisor_observation()?;
+        let (image, network) = self.originals.supervisor_image_and_network()?;
+        let before = leader.pidfd().info()?;
+        let nominated = rustix::fs::fstat(subject.pidfd().as_fd())?;
+        let main = rustix::fs::fstat(leader.pidfd().as_fd())?;
+        let (root, _) = self.originals.bootstrap_root_and_image()?;
+        let actual_root = rustix::fs::fstat(root)?;
+        let expected_root = rustix::fs::fstat(pins.workspace())?;
+        if before != subject.initial_info()
+            || before.pid() != actual.pid()
+            || (nominated.st_dev, nominated.st_ino) != (main.st_dev, main.st_ino)
+            || network != pins.network().identity()
+            || (actual_root.st_dev, actual_root.st_ino) != (expected_root.st_dev, expected_root.st_ino)
+            || !same_original_image(image, pins.executable())?
+            || leader.pidfd().info()? != before || !leader.pidfd().is_alive()?
+        {
+            return Err(CanaryPayloadFailureV1::Mismatch);
+        }
+        Ok(())
+    }
+
+    fn capture_original_images(&mut self, pins: &LaunchPins)
+        -> std::result::Result<(), CanaryPayloadFailureV1>
+    {
+        if self.workspace.is_some() || self.images.iter().any(Option::is_some) {
+            return Err(CanaryPayloadFailureV1::Mismatch);
+        }
+        let root = pins.workspace().try_clone_to_owned().map_err(|source|
+            HostError::Descriptor { operation: "duplicate canary published workspace", source })?;
+        self.workspace = Some(BeneathRoot::from_owned(root)?);
+        let workspace = self.workspace.as_ref().ok_or(CanaryPayloadFailureV1::Mismatch)?;
+        for (slot, path) in [
+            "usr/libexec/aos-sandbox-guest-init",
+            "usr/libexec/aos-sandbox-guest-agent",
+            "usr/lib/systemd/systemd",
+        ].into_iter().enumerate() {
+            self.images[slot] = Some(workspace.open_regular(Path::new(path))?);
+        }
+        // These are opened beneath the actual protected published root, not
+        // caller paths or supplied binary hashes. Existing lower constructors
+        // retain their unreturned-prefix limitations; returned owners stay here.
+        Ok(())
+    }
+
+    fn require_original_images(&self)
+        -> std::result::Result<(), CanaryPayloadFailureV1>
+    {
+        let (_, bootstrap) = self.originals.bootstrap_root_and_image()?;
+        let actual = [bootstrap, self.originals.executed_image()?, self.originals.systemd_executed_image()?];
+        for (slot, received) in actual.into_iter().enumerate() {
+            let expected = self.images[slot].as_ref().ok_or(CanaryPayloadFailureV1::Mismatch)?;
+            if !same_original_image(received, expected.as_fd())? {
+                return Err(CanaryPayloadFailureV1::Mismatch);
+            }
+        }
+        Ok(())
+    }
+
+    fn original_proof(
+        &self,
+        pins: &LaunchPins,
+        job: &crate::broker::canary_job::HostCanaryJobOwnerV1,
+    ) -> std::result::Result<RuntimeProofSnapshot, CanaryPayloadFailureV1> {
+        let (_, supervisor) = self.originals.supervisor_observation()?;
+        let (payload, local) = self.originals.bootstrap_observation()?;
+        let (root, _) = self.originals.bootstrap_root_and_image()?;
+        let [user, mount, network, _] = self.originals.namespace_coordinates()?;
+        let supervisor_cgroup = supervisor.cgroup_id().ok_or(CanaryPayloadFailureV1::Mismatch)?;
+        let payload_cgroup = payload.cgroup_id().ok_or(CanaryPayloadFailureV1::Mismatch)?;
+        let proof = RuntimeProofSnapshot {
+            host_boot_id: job.originals()?.boot_id,
+            supervisor: ProcessProofSnapshot {
+                pid: supervisor.pid(),
+                thread_group_id: supervisor.thread_group_id(),
+                parent_pid: supervisor.parent_pid(),
+                cgroup_id: supervisor_cgroup,
+                start_time_ticks: supervisor.start_time_ticks(),
+            },
+            payload: ProcessProofSnapshot {
+                pid: payload.pid(),
+                thread_group_id: payload.thread_group_id(),
+                parent_pid: payload.parent_pid(),
+                cgroup_id: payload_cgroup,
+                start_time_ticks: local.2,
+            },
+            supervisor_cgroup_id: supervisor_cgroup,
+            payload_cgroup_id: payload_cgroup,
+            workspace_mount_id: MountId::from_fd(pins.workspace())?.get(),
+            payload_root_mount_id: MountId::from_fd(root)?.get(),
+            network_namespace: NamespaceProofSnapshot { device: network.device, inode: network.inode },
+            mount_namespace: NamespaceProofSnapshot { device: mount.device, inode: mount.inode },
+            user_namespace: NamespaceProofSnapshot { device: user.device, inode: user.inode },
+        };
+        if !proof.validate() {
+            return Err(CanaryPayloadFailureV1::Mismatch);
+        }
+        Ok(proof)
+    }
+}
+
+fn same_original_image(actual: BorrowedFd<'_>, expected: BorrowedFd<'_>)
+    -> std::result::Result<bool, rustix::io::Errno>
+{
+    let flags = rustix::fs::fcntl_getfl(actual)?;
+    let actual = rustix::fs::fstat(actual)?;
+    let expected = rustix::fs::fstat(expected)?;
+    Ok(rustix::fs::FileType::from_raw_mode(actual.st_mode) == rustix::fs::FileType::RegularFile
+        && actual.st_size > 0 && expected.st_uid == 0 && expected.st_mode & 0o022 == 0
+        && flags & rustix::fs::OFlags::ACCMODE == rustix::fs::OFlags::RDONLY
+        && !flags.contains(rustix::fs::OFlags::PATH)
+        && (actual.st_dev, actual.st_ino, actual.st_size)
+            == (expected.st_dev, expected.st_ino, expected.st_size))
+}
+
+fn require_canary_deadline(job: &crate::broker::canary_job::HostCanaryJobOwnerV1)
+    -> std::result::Result<(), CanaryPayloadFailureV1>
+{
+    let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+    let nanoseconds = u64::try_from(now.tv_sec).ok()
+        .and_then(|seconds| seconds.checked_mul(1_000_000_000))
+        .and_then(|base| u64::try_from(now.tv_nsec).ok().and_then(|fraction| base.checked_add(fraction)))
+        .ok_or(CanaryPayloadFailureV1::Deadline)?;
+    let original = job.originals()?;
+    if nanoseconds < original.not_before || nanoseconds >= original.deadline {
+        return Err(CanaryPayloadFailureV1::Deadline);
+    }
+    Ok(())
+}
+
+fn finish_original_canary_call(
+    state: &mut HostCanaryPayloadReadbackV1,
+    result: Result<()>,
+) -> Result<()> {
+    match result {
+        Ok(()) => {
+            state.closed = false;
+            Ok(())
+        }
+        Err(cause) => {
+            if state.failure.is_none() {
+                state.failure = Some(cause.into());
+            }
+            Err(resident_readback_missing("canary worker flight; cause retained"))
+        }
+    }
 }
 
 fn retain_native_limit_result<T>(
@@ -217,6 +531,45 @@ fn retain_native_limit_result<T>(
 }
 
 fn check_limit_membership(state: &mut BoundPayloadReadbackV1) -> Result<()> {
+    require_original_limit_membership(state, None)
+}
+
+fn require_original_limit_membership(
+    state: &mut BoundPayloadReadbackV1,
+    canary: Option<&aos_sandbox_linux::pidfd::HostCanaryReceivedChildOriginalsV1>,
+) -> Result<()> {
+    if let Some(originals) = canary {
+        let (subject, supervisor) = retain_native_limit_result(
+            originals.supervisor_observation(), &mut state.native_failure,
+        )?;
+        let (payload, _) = retain_native_limit_result(
+            originals.bootstrap_observation(), &mut state.native_failure,
+        )?;
+        let service = state.anchors[3].as_ref()
+            .ok_or_else(|| resident_readback_missing("canary service membership"))?;
+        let payload_anchor = state.payload_anchor.as_ref()
+            .ok_or_else(|| resident_readback_missing("canary payload membership"))?;
+        retain_native_limit_result(service.validate_active(), &mut state.native_failure)?;
+        retain_native_limit_result(payload_anchor.validate_active(), &mut state.native_failure)?;
+        let observation = state.verification.as_ref().map(|verified| &verified.observation)
+            .or(state.observation.as_ref());
+        let leader = observation.and_then(|observation| observation.leader.as_ref())
+            .ok_or_else(|| resident_readback_missing("canary supervisor membership"))?;
+        // These are actual kernel cgroup IDs, not path-derived caller DATA.
+        // The selected payload has donated its own proc originals; never run
+        // the ordinary remote-proc membership adapter for that shifted task.
+        let main = retain_native_limit_result(leader.pidfd().info(), &mut state.native_failure)?;
+        let alive = retain_native_limit_result(subject.is_alive(), &mut state.native_failure)?;
+        if main != subject.initial_info()
+            || supervisor.cgroup_id() != main.cgroup_id()
+            || payload.cgroup_id() != Some(payload_anchor.kernel_id())
+            || payload.parent_pid() != main.pid()
+            || !alive
+        {
+            return Err(resident_readback_missing("canary kernel membership differs"));
+        }
+        return Ok(());
+    }
     let observation = state.observation.as_ref()
         .ok_or_else(|| resident_readback_missing("membership observation"))?;
     let leader = observation.leader.as_ref()
@@ -314,6 +667,51 @@ fn fixed_limit_paths(service: &SandboxCgroupPath) -> [&str; 4] {
 }
 
 impl RetainedPayloadWorkerV1<'_> {
+    pub(crate) async fn start_original_canary(
+        &self,
+        payload: &crate::plan::PreparedLaunch,
+        identity: &HostRuntimeIdentity,
+        guardian_invocation_id: [u8; 16],
+        before_effect: &mut (dyn FnMut() -> Result<()> + Send),
+        context: &mut CanaryWorkerCallV1<'_>,
+    ) -> Result<()> {
+        if context.state.closed || !context.state.attempted || context.state.received {
+            return Err(resident_readback_missing("canary start admission"));
+        }
+        context.state.closed = true;
+        let worker = self.worker;
+        let spec = payload.spec();
+        let pins = payload.pins();
+        let result = async {
+            context.job.recheck()?;
+            start_bound_payload_recipe!(worker, spec, pins, identity, guardian_invocation_id,
+                before_effect, Canary, context)
+        }.await;
+        finish_original_canary_call(context.state, result)
+    }
+
+    pub(crate) async fn prove_original_canary(
+        &self,
+        payload: &crate::plan::PreparedLaunch,
+        identity: &HostRuntimeIdentity,
+        context: &mut CanaryWorkerCallV1<'_>,
+    ) -> Result<()> {
+        if context.state.closed || !context.state.received
+            || context.state.limits.phase != BoundReadbackPhaseV1::Ready
+        {
+            return Err(resident_readback_missing("canary original recheck admission"));
+        }
+        context.state.closed = true;
+        let worker = self.worker;
+        let spec = payload.spec();
+        let pins = payload.pins();
+        let result = async {
+            context.job.recheck()?;
+            prove_bound_payload_recipe!(worker, spec, pins, identity, Canary, context)
+        }.await;
+        finish_original_canary_call(context.state, result)
+    }
+
     pub(crate) fn start<'a>(
         &'a self,
         spec: &'a SandboxUnitSpec,
@@ -500,10 +898,135 @@ impl SystemdOneShotWorker {
         verify_bound_payload_recipe!(self, client, spec, pins, identity, Local, unused)
     }
 
+    async fn verify_original_canary(
+        &self,
+        client: &SystemdClient,
+        spec: &SandboxUnitSpec,
+        pins: &LaunchPins,
+        identity: &HostRuntimeIdentity,
+        context: &mut CanaryWorkerCallV1<'_>,
+    ) -> Result<()> {
+        // The original report owner stays armed throughout this asynchronous
+        // flight. Cancellation cannot reopen it or discard received prefixes.
+        let result = self.verify_original_canary_inner(
+            client, spec, pins, identity, context,
+        ).await;
+        match result {
+            Ok(()) => Ok(()),
+            Err(cause) => {
+                if context.state.failure.is_none() {
+                    context.state.failure = Some(cause);
+                }
+                Err(resident_readback_missing("canary physical proof; cause retained"))
+            }
+        }
+    }
+
+    async fn verify_original_canary_inner(
+        &self,
+        client: &SystemdClient,
+        spec: &SandboxUnitSpec,
+        pins: &LaunchPins,
+        identity: &HostRuntimeIdentity,
+        context: &mut CanaryWorkerCallV1<'_>,
+    ) -> std::result::Result<(), CanaryPayloadFailureV1> {
+        let before = self.observe_bound_payload(identity).await?;
+        if before.state != GuardianObservedState::ActiveRunning
+            || before.binding != spec.launch_binding()
+            || before.invocation_id.is_none()
+        {
+            return Err(CanaryPayloadFailureV1::Mismatch);
+        }
+        if context.state.original_observation().is_none() {
+            context.state.limits.observation = Some(self.observe_with_client(client, identity).await?);
+        }
+        if context.state.original_observation().is_none_or(|observation|
+            observation.state != ObservedRuntimeState::Ready
+                || observation.invocation_id != before.invocation_id)
+        {
+            return Err(CanaryPayloadFailureV1::Mismatch);
+        }
+
+        let first_flight = !context.state.received;
+        if first_flight {
+            context.state.receive_original_reports(context.job).await?;
+            context.state.capture_received_originals()?;
+        }
+        context.job.recheck()?;
+        context.state.require_report_scope(context.job, spec)?;
+        context.state.require_loaded_programs(context.startup.original_programs()?)?;
+        context.state.require_supervisor_and_root(pins)?;
+        if first_flight {
+            context.state.capture_original_images(pins)?;
+        }
+        context.state.require_original_images()?;
+
+        let invocation = before.invocation_id.ok_or(CanaryPayloadFailureV1::Mismatch)?;
+        let observed_proof = context.state.original_proof(pins, context.job)?;
+        if context.state.limits.proof.is_some_and(|original| original != observed_proof) {
+            return Err(CanaryPayloadFailureV1::Mismatch);
+        }
+        context.state.limits.proof = Some(observed_proof);
+        let proof = context.state.limits.proof.as_ref().ok_or(CanaryPayloadFailureV1::Mismatch)?;
+        let shifted = VerifiedShiftedPayloadInspectionV1::inspect_original_canary(
+            identity, spec, invocation, &context.state.originals, context.host_probe, proof,
+        )?;
+        let original_shifted = context.state.limits.verification.as_ref()
+            .and_then(|verified| verified.shifted_payload_inspection.as_ref())
+            .or(context.state.limits.shifted.as_ref());
+        if let Some(original) = original_shifted {
+            if original.encode()? != shifted.encode()? {
+                return Err(CanaryPayloadFailureV1::Mismatch);
+            }
+        } else {
+            context.state.limits.shifted = Some(shifted);
+        }
+        if first_flight {
+            self.capture_service_limits_inner(spec, &mut context.state.limits, Some(&context.state.originals))?;
+        }
+
+        let socket = context.state.report_socket.as_mut().ok_or(CanaryPayloadFailureV1::Mismatch)?;
+        context.state.originals.recheck_original(socket)?;
+        context.state.require_original_images()?;
+        context.job.recheck()?;
+        if self.observe_bound_payload(identity).await? != before {
+            return Err(CanaryPayloadFailureV1::Mismatch);
+        }
+        self.recheck_service_limits_inner(spec, &mut context.state.limits, Some(&context.state.originals))?;
+        if self.observe_bound_payload(identity).await? != before {
+            return Err(CanaryPayloadFailureV1::Mismatch);
+        }
+        if context.state.limits.verification.is_none() {
+            // Every fallible gate precedes this complete move. The selected
+            // proof deliberately contains no public payload runtime handle;
+            // the actual child originals remain in the same canary owner.
+            let observation = context.state.limits.observation.take()
+                .ok_or(CanaryPayloadFailureV1::Mismatch)?;
+            context.state.limits.verification = Some(BoundPayloadVerification {
+                binding: before.binding,
+                invocation_id: invocation,
+                observation,
+                proof: observed_proof,
+                shifted_payload_inspection: context.state.limits.shifted.take(),
+            });
+        }
+        context.state.limits.phase = BoundReadbackPhaseV1::Ready;
+        Ok(())
+    }
+
     fn capture_service_limits(
         &self,
         spec: &SandboxUnitSpec,
         state: &mut BoundPayloadReadbackV1,
+    ) -> Result<()> {
+        self.capture_service_limits_inner(spec, state, None)
+    }
+
+    fn capture_service_limits_inner(
+        &self,
+        spec: &SandboxUnitSpec,
+        state: &mut BoundPayloadReadbackV1,
+        canary: Option<&aos_sandbox_linux::pidfd::HostCanaryReceivedChildOriginalsV1>,
     ) -> Result<()> {
         // Root/directory constructors still have their existing pre-return
         // acquisition gaps. Every successfully returned owner is parked here
@@ -534,7 +1057,7 @@ impl SystemdOneShotWorker {
         state.payload_anchor = Some(retain_native_limit_result(
             service.resolve_descendant(Path::new("payload")), &mut state.native_failure,
         )?);
-        check_limit_membership(state)?;
+        require_original_limit_membership(state, canary)?;
         let limits = &state.limits[3];
         let expected = spec.resources();
         if limit_decimal(limits, CgroupLimitControlV1::PidsMax)? != expected.tasks_max()
@@ -552,7 +1075,16 @@ impl SystemdOneShotWorker {
         spec: &SandboxUnitSpec,
         state: &mut BoundPayloadReadbackV1,
     ) -> Result<()> {
-        check_limit_membership(state)?;
+        self.recheck_service_limits_inner(spec, state, None)
+    }
+
+    fn recheck_service_limits_inner(
+        &self,
+        spec: &SandboxUnitSpec,
+        state: &mut BoundPayloadReadbackV1,
+        canary: Option<&aos_sandbox_linux::pidfd::HostCanaryReceivedChildOriginalsV1>,
+    ) -> Result<()> {
+        require_original_limit_membership(state, canary)?;
         for index in 0..4 {
             let anchor = state.anchors[index].as_ref()
                 .ok_or_else(|| resident_readback_missing("final ancestor"))?;
@@ -572,7 +1104,7 @@ impl SystemdOneShotWorker {
                 return Err(HostError::Worker("named service ancestry changed during limit readback".to_owned()));
             }
         }
-        check_limit_membership(state)
+        require_original_limit_membership(state, canary)
     }
 
     pub(super) fn verify_absent_cgroup(&self, name: &SandboxUnitName) -> Result<()> {

@@ -34,6 +34,12 @@ PROVISIONER_DOMAIN = "aos_sandbox_runtime_roots_t"
 HANDOFF_DOMAIN = "aos_sandbox_runtime_roots_handoff_t"
 HANDOFF_EXECUTABLE = "aos_sandbox_runtime_roots_handoff_exec_t"
 GUEST_OWNER = "aos_sandbox_guest_owner_t"
+HOST_CANARY_NAMESPACE_SUBJECTS = ("aos_sandbox_host_t", GUEST_OWNER)
+HOST_CANARY_NAMESPACE_SELECTOR = 0xb703
+HOST_CANARY_NATIVE_PIDFS_SUBJECTS = ("aos_sandbox_host_t",)
+HOST_CANARY_NATIVE_PIDFS_SELECTOR = 0xff0b
+HOST_CANARY_STATE_TYPE = "aos_sandbox_host_canary_state_t"
+HOST_CANARY_STATE_SELECTOR = 0x6601
 GUEST_TENANT = "aos_sandbox_payload_t"
 GUEST_FILE_TYPE_COHORTS = guest_file_policy.cohorts(GUEST_OWNER, GUEST_TENANT)
 EXPLICIT_LOADER_ATTRIBUTE = "aos_explicit_loader_domain"
@@ -116,7 +122,10 @@ PROTECTED_DIRECTORIES = (
     "aos_sandbox_network_spent_final_t",
 )
 PROTECTED_OBJECT_TYPES = (*PROTECTED_DIRECTORIES, *PROTECTED_RECORDS)
-GUARDED_OBJECT_TYPES = (*PROTECTED_OBJECT_TYPES, *fuse_worker_policy.WORKER_OBJECT_TYPES)
+GUARDED_OBJECT_TYPES = (
+    *PROTECTED_OBJECT_TYPES, *fuse_worker_policy.WORKER_OBJECT_TYPES,
+    HOST_CANARY_STATE_TYPE,
+)
 
 
 @dataclass(frozen=True, order=True)
@@ -502,6 +511,25 @@ POSITIVE_ACCESS = (
     Access("aos_nspawn_t", "aos_nspawn_t", "capability", "sys_admin"),
     Access("aos_nspawn_t", "aos_nspawn_t", "capability", "sys_chroot"),
     Access("aos_nspawn_t", "aos_nspawn_t", "process", "setexec"),
+    Access("aos_nspawn_t", "init_t", "fd", "use"),
+    *accesses(
+        "aos_nspawn_t", "aos_nspawn_exec_t", "file",
+        ("execute", "getattr", "map", "open", "read"),
+    ),
+    Access("aos_nspawn_t", "proc_t", "dir", "search"),
+    Access("aos_nspawn_t", "proc_t", "lnk_file", "read"),
+    Access("aos_nspawn_t", "aos_nspawn_t", "dir", "search"),
+    Access("aos_nspawn_t", "aos_nspawn_t", "lnk_file", "read"),
+    *accesses("aos_nspawn_t", "aos_nspawn_t", "file", ("getattr", "open", "read")),
+    *accesses("aos_nspawn_t", "nsfs_t", "file", ("getattr", "open", "read")),
+    Access("aos_nspawn_t", "aos_sandbox_host_t", "fd", "use"),
+    *accesses(
+        "aos_nspawn_t", "aos_sandbox_host_t", "unix_stream_socket",
+        ("getattr", "getopt", "read", "write"),
+    ),
+    Access("aos_sandbox_host_t", "aos_nspawn_t", "fd", "use"),
+    *accesses("aos_sandbox_host_t", "aos_nspawn_t", "file", ("getattr", "ioctl", "read")),
+    *accesses("aos_sandbox_host_t", "aos_nspawn_exec_t", "file", ("getattr", "read")),
     Access("aos_nspawn_t", GUEST_OWNER, "process", "transition"),
     *accesses(
         "aos_nspawn_t", GUEST_OWNER, "process2", ("nnp_transition", "nosuid_transition")
@@ -572,7 +600,11 @@ POSITIVE_ACCESS = (
     ),
     Access("aos_sandbox_host_t", "aos_sandbox_payload_t", "file", "read"),
     Access("aos_sandbox_host_t", "aos_sandbox_payload_t", "file", "ioctl"),
-    *accesses("aos_sandbox_host_t", GUEST_OWNER, "file", ("ioctl", "read")),
+    *accesses("aos_sandbox_host_t", GUEST_OWNER, "file", ("getattr", "ioctl", "read")),
+    Access("aos_sandbox_host_t", GUEST_OWNER, "fd", "use"),
+    Access("aos_sandbox_host_t", GUEST_OWNER, "process", "getattr"),
+    *accesses("aos_sandbox_host_t", "nsfs_t", "file", ("getattr", "ioctl", "read")),
+    *accesses(GUEST_OWNER, "nsfs_t", "file", ("getattr", "ioctl", "open", "read")),
     *accesses(
         GUEST_OWNER,
         "aos_sandbox_host_t",
@@ -669,6 +701,55 @@ def negative_access() -> tuple[Access, ...]:
     """Builds the complete deny matrix for protected roles."""
 
     checks: list[Access] = []
+
+    # The native bank is not an executable, a namespace donor or a generic
+    # shared state directory. Ordinary owners cannot borrow or mutate it.
+    checks.extend(accesses(
+        "aos_sandbox_host_t", HOST_CANARY_STATE_TYPE, "file",
+        ("append", "execute", "execute_no_trans", "link", "map", "rename",
+         "relabelfrom", "relabelto", "unlink"),
+    ))
+    checks.extend(accesses(
+        "aos_sandbox_host_t", HOST_CANARY_STATE_TYPE, "dir",
+        ("create", "relabelfrom", "relabelto", "remove_name", "rename", "rmdir", "setattr"),
+    ))
+    for subject in (*DOMAINS, *owner_policy.ENFORCING, GUEST_ROOT_PUBLISHER):
+        if subject == "aos_sandbox_host_t":
+            continue
+        checks.extend(accesses(
+            subject, HOST_CANARY_STATE_TYPE, "file",
+            ("create", "getattr", "ioctl", "open", "read", "setattr", "write"),
+        ))
+        checks.extend(accesses(
+            subject, HOST_CANARY_STATE_TYPE, "dir",
+            ("add_name", "getattr", "open", "read", "remove_name", "search", "write"),
+        ))
+
+    # Native self-report objects do not delegate execution or namespace entry.
+    checks.append(Access("aos_nspawn_t", "aos_nspawn_exec_t", "file", "execute_no_trans"))
+    checks.append(Access("aos_nspawn_t", "aos_nspawn_t", "process", "transition"))
+    checks.extend(accesses(
+        "aos_sandbox_host_t", "aos_nspawn_exec_t", "file",
+        ("open", "map", "execute", "execute_no_trans"),
+    ))
+    checks.extend(accesses(
+        "aos_nspawn_t", "aos_sandbox_host_t", "unix_stream_socket",
+        ("bind", "connectto", "accept", "create", "setopt"),
+    ))
+    checks.extend(accesses(
+        "aos_nspawn_t", "nsfs_t", "file", ("ioctl", "map", "write", "execute"),
+    ))
+
+    # Read-only kind inspection never delegates namespace entry or mutation.
+    checks.append(Access("aos_sandbox_host_t", "nsfs_t", "file", "open"))
+    for subject in HOST_CANARY_NAMESPACE_SUBJECTS:
+        checks.extend(accesses(
+            subject,
+            "nsfs_t",
+            "file",
+            ("append", "create", "execute", "execute_no_trans", "link", "map",
+             "rename", "relabelfrom", "relabelto", "setattr", "unlink", "write"),
+        ))
 
     for source, target, object_class, permissions in fuse_worker_policy.negative_groups(DOMAINS):
         checks.extend(accesses(source, target, object_class, permissions))
@@ -1060,6 +1141,29 @@ POSITIVE_ACCESS = (*POSITIVE_ACCESS, *OWNER_POSITIVE)
 TRANSITIONS = (*TRANSITIONS, *OWNER_TRANSITIONS)
 NEGATIVE_ACCESS = (*negative_access(), *OWNER_NEGATIVE)
 
+# New fixed native cells follow all existing positive/transition checks so
+# their presence does not reorder ordinary owner diagnostics.
+POSITIVE_ACCESS = (
+    *POSITIVE_ACCESS,
+    Access(HOST_CANARY_STATE_TYPE, "fs_t", "filesystem", "associate"),
+    *accesses(
+        "init_t", HOST_CANARY_STATE_TYPE, "dir",
+        ("create", "getattr", "open", "read", "relabelfrom", "relabelto", "search", "setattr"),
+    ),
+    *accesses(
+        "aos_sandbox_host_t", HOST_CANARY_STATE_TYPE, "dir",
+        ("add_name", "getattr", "open", "read", "search", "write"),
+    ),
+    *accesses(
+        "aos_sandbox_host_t", HOST_CANARY_STATE_TYPE, "file",
+        ("create", "getattr", "ioctl", "open", "read", "setattr", "write"),
+    ),
+)
+TRANSITIONS = (
+    *TRANSITIONS,
+    Transition("aos_sandbox_host_t", HOST_CANARY_STATE_TYPE, "file", HOST_CANARY_STATE_TYPE),
+)
+
 
 def allow_rules(setools: Any, policy: Any, access: Access) -> list[Any]:
     """Returns attribute-expanded allow rules matching one access tuple."""
@@ -1298,6 +1402,81 @@ def _check_online_nix_policy(setools: Any, policy: Any) -> list[str]:
     )
 
 
+def _check_host_canary_namespace_ioctls(setools: Any, policy: Any) -> list[str]:
+    """Checks complete expanded selector sets for the two fixed nsfs cells."""
+
+    return _check_host_canary_original_ioctls(
+        setools, policy, HOST_CANARY_NAMESPACE_SUBJECTS, "nsfs_t",
+        HOST_CANARY_NAMESPACE_SELECTOR, "namespace",
+    )
+
+
+def _check_host_canary_native_pidfs_ioctls(setools: Any, policy: Any) -> list[str]:
+    """Checks only GET_INFO on the fixed Host/native pidfs cell."""
+
+    return _check_host_canary_original_ioctls(
+        setools, policy, HOST_CANARY_NATIVE_PIDFS_SUBJECTS, "aos_nspawn_t",
+        HOST_CANARY_NATIVE_PIDFS_SELECTOR, "native pidfs",
+    )
+
+
+def _check_host_canary_state_ioctls(setools: Any, policy: Any) -> list[str]:
+    """Checks GETFLAGS only on Host's original native cell objects."""
+
+    return _check_host_canary_original_ioctls(
+        setools, policy, ("aos_sandbox_host_t",), HOST_CANARY_STATE_TYPE,
+        HOST_CANARY_STATE_SELECTOR, "native state",
+    )
+
+
+def _check_host_canary_original_ioctls(
+    setools: Any, policy: Any, subjects: tuple[str, ...], target: str,
+    selector: int, description: str,
+) -> list[str]:
+    """Shares the exact expanded integer-set check for closed original cells."""
+
+    if str(policy.lookup_type(target)) != target:
+        raise ValueError(f"Host canary {description} target is aliased")
+
+    evidence = []
+    for subject in subjects:
+        if str(policy.lookup_type(subject)) != subject:
+            raise ValueError(f"Host canary {description} source is aliased: {subject}")
+
+        query = setools.TERuleQuery(
+            policy,
+            ruletype=[setools.TERuletype.allowxperm],
+            source=subject,
+            source_indirect=True,
+            target=target,
+            target_indirect=True,
+            tclass=["file"],
+            perms=["ioctl"],
+        )
+        enabled_selectors = set()
+        for rule in query.results():
+            sources = {str(member) for member in rule.source.expand()}
+            targets = {str(member) for member in rule.target.expand()}
+            selectors = set(rule.perms)
+            if (
+                sources != {subject}
+                or targets != {target}
+                or rule.xperm_type != "ioctl"
+                or not selectors
+                or any(type(selector) is not int for selector in selectors)
+                or selectors != {selector}
+            ):
+                raise ValueError(f"forbidden Host canary {description} ioctl selectors: {rule}")
+            if rule.enabled():
+                enabled_selectors.update(selectors)
+
+        if enabled_selectors != {selector}:
+            raise ValueError(f"missing Host canary {description} ioctl selector: {subject}")
+        evidence.append(f"allowxperm\t{subject}\t{target}\tfile\tioctl\t0x{selector:x}")
+
+    return evidence
+
+
 def check_policy(setools: Any, policy: Any, *, git_read_delegation: bool = False) -> list[str]:
     """Returns deterministic evidence lines or raises on a policy mismatch."""
 
@@ -1444,6 +1623,10 @@ def check_policy(setools: Any, policy: Any, *, git_read_delegation: bool = False
             f"allow\t{access.source}\t{access.target}\t"
             f"{access.object_class}\t{access.permission}"
         )
+
+    evidence.extend(_check_host_canary_namespace_ioctls(setools, policy))
+    evidence.extend(_check_host_canary_native_pidfs_ioctls(setools, policy))
+    evidence.extend(_check_host_canary_state_ioctls(setools, policy))
 
     for access in NEGATIVE_ACCESS:
         rules = allow_rules(setools, policy, access)

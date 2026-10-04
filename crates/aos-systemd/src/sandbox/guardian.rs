@@ -506,6 +506,7 @@ pub struct GuardianUnitSpec {
     binding: [u8; 32],
     incarnation_hex: String,
     timeout_start: Duration,
+    host_canary_limits: Option<[u64; 4]>,
 }
 
 impl GuardianUnitSpec {
@@ -550,7 +551,36 @@ impl GuardianUnitSpec {
             binding,
             incarnation_hex: super::encode_hex(incarnation),
             timeout_start,
+            host_canary_limits: None,
         })
+    }
+
+    /// Adds the private Host readiness canary's finite sibling-service limits.
+    ///
+    /// The values describe CPU microseconds per 100ms, memory bytes, tasks and
+    /// file descriptors. They are specification DATA, not resource funding or
+    /// authority; the genuine Host caller separately admits their original
+    /// profile and observes PID 1's effective configuration.
+    ///
+    /// # Errors
+    ///
+    /// Refuses repeated selection, zero/nonfinite limits, unaligned CPU or
+    /// memory values, or overflow converting CPU to the manager's one-second
+    /// representation. The ordinary constructor has no selected limits.
+    pub fn with_host_canary_limits(
+        mut self,
+        cpu_micros_per_period: u64,
+        memory_bytes: u64,
+        tasks: u64,
+        open_files: u64,
+    ) -> Result<Self> {
+        let limits = [cpu_micros_per_period, memory_bytes, tasks, open_files];
+        if self.host_canary_limits.is_some() {
+            return Err(invalid("Host canary Guardian limits are not finite canonical values"));
+        }
+        require_host_canary_limits(limits)?;
+        self.host_canary_limits = Some(limits);
+        Ok(self)
     }
 
     /// Returns the incarnation-derived guardian service name.
@@ -575,7 +605,7 @@ impl GuardianUnitSpec {
         descriptors.push(self.executable.transferred()?);
         descriptors.extend(self.credentials.transferred()?);
         let state_directory = format!("{GUARDIAN_STATE_PREFIX}/{}", self.incarnation_hex);
-        Ok(vec![
+        let mut properties = vec![
             string_property("Description", format!("AOS lease guardian {}", self.name)),
             string_property("Type", "notify"),
             string_property("NotifyAccess", "main"),
@@ -655,8 +685,32 @@ impl GuardianUnitSpec {
                     GUARDIAN_EXECUTABLE_LAUNCH_ARGUMENT.to_owned(),
                 ],
             )?,
-        ])
+        ];
+        if let Some(limits) = self.host_canary_limits {
+            let cpu_per_second = limits[0].checked_mul(10)
+                .ok_or_else(|| invalid("Host canary Guardian CPU limit overflow"))?;
+            properties.extend([
+                u64_property("CPUQuotaPerSecUSec", cpu_per_second),
+                u64_property("CPUQuotaPeriodUSec", 100_000),
+                u64_property("MemoryMax", limits[1]),
+                u64_property("TasksMax", limits[2]),
+                u64_property("LimitNOFILE", limits[3]),
+                u64_property("LimitNOFILESoft", limits[3]),
+            ]);
+        }
+        Ok(properties)
     }
+}
+
+fn require_host_canary_limits(limits: [u64; 4]) -> Result<()> {
+    if limits.iter().any(|value| *value == 0 || *value > i64::MAX as u64)
+        || limits[0] % 1000 != 0
+        || limits[0].checked_mul(10).is_none()
+        || limits[1] % 4096 != 0
+    {
+        return Err(invalid("Host canary Guardian limits are not finite canonical values"));
+    }
+    Ok(())
 }
 
 /// Reports the manager-retained identity and state of one Guardian unit.
@@ -753,6 +807,28 @@ mod tests {
     use aos_sandbox_linux::immutable_file::SealedReadOnlyCredential;
 
     use super::*;
+
+    #[test]
+    fn canary_limits_keep_one_hundred_millisecond_cpu_units() {
+        assert!(require_host_canary_limits([50_000, 4096, 8, 32]).is_ok());
+        assert_eq!(50_000_u64.checked_mul(10), Some(500_000));
+    }
+
+    #[test]
+    fn canary_limits_reject_nonfinite_unaligned_or_overflowing_values() {
+        for limits in [
+            [0, 4096, 8, 32],
+            [50_000, 0, 8, 32],
+            [50_000, 4096, 0, 32],
+            [50_000, 4096, 8, 0],
+            [50_001, 4096, 8, 32],
+            [50_000, 4097, 8, 32],
+            [2_000_000_000_000_000_000, 4096, 8, 32],
+            [50_000, 4096, u64::MAX, 32],
+        ] {
+            assert!(require_host_canary_limits(limits).is_err(), "{limits:?}");
+        }
+    }
 
     #[test]
     fn expiry_during_preparation_prevents_submission() {

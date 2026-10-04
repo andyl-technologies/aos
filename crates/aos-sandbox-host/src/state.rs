@@ -45,12 +45,14 @@ use crate::worker::HostRuntimeIdentity;
 use crate::{HostError, Result};
 
 mod existing_output;
+mod canary_capacity;
 mod fuse_worker_launch;
 mod no_apply_handoff;
 mod scope_handle;
 pub(crate) mod transition;
 
 use existing_output::DurableExistingOutputObservation;
+pub use canary_capacity::HostProductionStateStoreV1;
 use fuse_worker_launch::DurableFuseWorkerLaunchV1;
 pub(crate) use no_apply_handoff::host_execution_receipt_digest;
 use scope_handle::DurableScopeHandle;
@@ -241,6 +243,336 @@ struct ObservationSequence {
 }
 
 impl HostState {
+    // These complete specimens are encoded capacity DATA only. In particular,
+    // their upper-value MAC bytes and future observations are never admitted,
+    // authenticated, returned as HostState, or sent to HostStateStore::commit.
+    pub(crate) fn preview_original_canary_closure(
+        &self,
+        job: &crate::broker::canary_job::OriginalHostCanaryJobV1,
+        bodies: &mut [Vec<u8>; 17],
+    ) -> Result<()> {
+        use transition::{
+            CleanupProgress, CompositeStopPhase, CompositeStopRecord, CompositeStopTarget,
+            ExactUnitTarget, GuardianLaunchPhase, NamespaceProofSnapshot, ProcessProofSnapshot,
+            RuntimeProofSnapshot, StopProgress, StopUnitTarget,
+        };
+
+        if self.requests.len().checked_add(1).is_none_or(|count| count > MAXIMUM_REQUESTS)
+            || self.observation_sequences.get(job.launch.fence().incarnation_id())
+                .copied().unwrap_or(0).checked_add(17).is_none()
+            || job.maximum_response_bytes.iter().any(|maximum| *maximum > 4096)
+        {
+            return Err(HostError::ResourceExhausted);
+        }
+
+        let launch = self.requests.get(&job.request_ids[0])
+            .ok_or_else(|| HostError::State("canary preview lost its real admitted Launch".to_owned()))?;
+        let DurableExecution::GuardianLaunch(original) = &launch.execution else {
+            return Err(HostError::State("canary preview requires its real Guardian record".to_owned()));
+        };
+        if !matches!(original.phase, GuardianLaunchPhase::Authorized) {
+            return Err(HostError::State("canary preview cannot restart an issued effect".to_owned()));
+        }
+        let binding = self.guardian_attempt(&job.request_ids[0])
+            .ok_or(HostError::ResourceExhausted)?.binding;
+        let guardian_invocation = [255; 16];
+        let payload_invocation = [254; 16];
+        let namespace = NamespaceProofSnapshot { device: u64::MAX, inode: u64::MAX };
+        let proof = RuntimeProofSnapshot {
+            host_boot_id: [255; 16],
+            supervisor: ProcessProofSnapshot {
+                pid: u32::MAX, thread_group_id: u32::MAX, parent_pid: u32::MAX,
+                cgroup_id: u64::MAX, start_time_ticks: u64::MAX,
+            },
+            payload: ProcessProofSnapshot {
+                pid: u32::MAX - 1, thread_group_id: u32::MAX - 1, parent_pid: u32::MAX,
+                cgroup_id: u64::MAX, start_time_ticks: u64::MAX,
+            },
+            supervisor_cgroup_id: u64::MAX,
+            payload_cgroup_id: u64::MAX,
+            workspace_mount_id: u64::MAX,
+            payload_root_mount_id: u64::MAX,
+            network_namespace: namespace,
+            mount_namespace: namespace,
+            user_namespace: namespace,
+        };
+        let complete = GuardianLaunchPhase::Complete {
+            guardian_invocation, payload_invocation,
+            observation_sequence: u64::MAX, worker_proof: proof,
+        };
+        let cleanup = |progress| GuardianLaunchPhase::CleanupIssued {
+            payload: ExactUnitTarget::Exact { binding, invocation: payload_invocation },
+            guardian: ExactUnitTarget::Exact { binding, invocation: guardian_invocation },
+            progress,
+        };
+        let launch_phases = [
+            GuardianLaunchPhase::Authorized,
+            GuardianLaunchPhase::GuardianStartIssued,
+            GuardianLaunchPhase::GuardianReady { guardian_invocation },
+            GuardianLaunchPhase::PayloadStartIssued { guardian_invocation },
+            GuardianLaunchPhase::PayloadVerified {
+                guardian_invocation, payload_invocation,
+                observation_sequence: u64::MAX, worker_proof: proof,
+            },
+            cleanup(CleanupProgress::PayloadPending),
+            cleanup(CleanupProgress::PayloadAwaitingAbsence),
+            cleanup(CleanupProgress::GuardianPending),
+            cleanup(CleanupProgress::GuardianAwaitingAbsence),
+            GuardianLaunchPhase::Compensated { observation_sequence: u64::MAX },
+            complete.clone(),
+        ];
+        for (index, phase) in launch_phases.into_iter().enumerate() {
+            let mut specimen = self.clone();
+            specimen.upper_canary_launch_record(job.request_ids[0], phase)?;
+            specimen.observation_sequences.insert(*job.launch.fence().incarnation_id(), u64::MAX);
+            bodies[index] = specimen.encode()?;
+            require_canary_preview_body(&bodies[index])?;
+        }
+
+        let stop_phases = [
+            CompositeStopPhase::StopAuthorized,
+            CompositeStopPhase::StopEffectIssued { progress: StopProgress::PayloadPending },
+            CompositeStopPhase::StopEffectIssued { progress: StopProgress::PayloadAwaitingAbsence },
+            CompositeStopPhase::StopEffectIssued { progress: StopProgress::GuardianPending },
+            CompositeStopPhase::StopEffectIssued { progress: StopProgress::GuardianAwaitingAbsence },
+            CompositeStopPhase::Complete { observation_sequence: u64::MAX },
+        ];
+        for (index, phase) in stop_phases.into_iter().enumerate() {
+            let mut specimen = self.clone();
+            specimen.upper_canary_launch_record(job.request_ids[0], complete.clone())?;
+            let mut stop = launch.clone();
+            stop.request_id = job.request_ids[1];
+            stop.request_digest = [255; 32];
+            stop.action = HostAction::Stop.code();
+            stop.fence.witness_request_id = job.request_ids[1];
+            stop.fence.assignment_epoch = job.stop.fence().assignment_epoch();
+            stop.fence.desired_generation = job.stop.fence().desired_generation();
+            stop.fence.authorization.fill(255);
+            stop.effect.resize(launch.effect.len().checked_add(4096)
+                .ok_or(HostError::ResourceExhausted)?, 255);
+            stop.effect.fill(255);
+            stop.execution_authentication.fill(255);
+            stop.receipt = Some(vec![255; 4096]);
+            stop.execution = DurableExecution::CompositeStop(CompositeStopRecord {
+                target: CompositeStopTarget::GuardianComposite {
+                    source_launch_request_id: job.request_ids[0],
+                    incarnation_id: *job.launch.fence().incarnation_id(),
+                    launch_binding: binding,
+                    payload: StopUnitTarget::Exact { binding: Some(binding), invocation: payload_invocation },
+                    guardian: StopUnitTarget::Exact { binding: Some(binding), invocation: guardian_invocation },
+                },
+                phase,
+            });
+            specimen.fences.insert(stop.fence.sandbox_id, stop.fence.clone());
+            specimen.requests.insert(stop.request_id, stop);
+            specimen.observation_sequences.insert(*job.launch.fence().incarnation_id(), u64::MAX);
+            bodies[11 + index] = specimen.encode()?;
+            require_canary_preview_body(&bodies[11 + index])?;
+        }
+        Ok(())
+    }
+
+    fn upper_canary_launch_record(
+        &mut self,
+        request_id: [u8; 16],
+        phase: transition::GuardianLaunchPhase,
+    ) -> Result<()> {
+        let record = self.requests.get_mut(&request_id)
+            .ok_or(HostError::ResourceExhausted)?;
+        let DurableExecution::GuardianLaunch(launch) = &mut record.execution else {
+            return Err(HostError::ResourceExhausted);
+        };
+        let terminal = matches!(phase, transition::GuardianLaunchPhase::Complete { .. }
+            | transition::GuardianLaunchPhase::Compensated { .. });
+        launch.phase = phase;
+        record.execution_authentication.fill(255);
+        record.fence.authorization.fill(255);
+        record.effect.fill(255);
+        if terminal {
+            record.effect.resize(record.effect.len().checked_add(4096)
+                .ok_or(HostError::ResourceExhausted)?, 255);
+            record.receipt = Some(vec![255; 4096]);
+        }
+        Ok(())
+    }
+
+    // Unknown retained scope/output/worker or tenant activity cannot become
+    // zero debt. Only exact authenticated terminal current records are
+    // classifiable here; the installed worker still checks the actual canary
+    // units and cgroup population before effects and after cleanup.
+    pub(crate) fn original_canary_baseline_debt(&self) -> Result<aos_sandbox_core::ResourceVector> {
+        use aos_sandbox_core::{ResourceDimension, ResourceVector};
+        if !self.scope_replays.is_empty() || !self.scope_handles.is_empty()
+            || !self.existing_output_observations.is_empty() || !self.fuse_worker_launches.is_empty()
+            || self.requests.values().any(|record| record.receipt.is_none())
+        {
+            return Err(HostError::State("unclassified Host canary baseline debt".to_owned()));
+        }
+        for fence in self.fences.values() {
+            let record = self.requests.get(&fence.witness_request_id)
+                .ok_or(HostError::ResourceExhausted)?;
+            let terminal = match &record.execution {
+                DurableExecution::CompositeStop(stop) => matches!(stop.phase,
+                    transition::CompositeStopPhase::Complete { .. }),
+                DurableExecution::GuardianLaunch(launch) => matches!(launch.phase,
+                    transition::GuardianLaunchPhase::Compensated { .. }),
+                DurableExecution::DirectLifecycle | DurableExecution::HostExecutionHandoff(_) => false,
+            };
+            if !terminal {
+                return Err(HostError::State("live or uncertain Host baseline cannot be omitted".to_owned()));
+            }
+        }
+        for record in self.requests.values() {
+            if let DurableExecution::GuardianLaunch(launch) = &record.execution {
+                let retired = matches!(launch.phase,
+                    transition::GuardianLaunchPhase::Compensated { .. })
+                    || self.requests.values().any(|stop| {
+                        matches!(&stop.execution,
+                            DurableExecution::CompositeStop(stop)
+                                if matches!(stop.phase, transition::CompositeStopPhase::Complete { .. })
+                                    && matches!(&stop.target,
+                                        transition::CompositeStopTarget::GuardianComposite {
+                                            source_launch_request_id, ..
+                                        } if *source_launch_request_id == record.request_id))
+                    });
+                if !retired {
+                    return Err(HostError::State("historical live or uncertain Guardian is baseline debt".to_owned()));
+                }
+            }
+        }
+        let bytes = u64::try_from(self.encode()?.len()).map_err(|_| HostError::ResourceExhausted)?;
+        let rows = self.fences.len().checked_add(self.requests.len())
+            .and_then(|rows| rows.checked_add(self.observation_sequences.len()))
+            .and_then(|rows| u64::try_from(rows).ok()).ok_or(HostError::ResourceExhausted)?;
+        Ok(ResourceVector::ZERO
+            // The independently admitted Host memory/CPU/task/file envelope
+            // accounts for this owner's in-memory history. Encoding length
+            // is not substituted for allocator footprint or heap funding.
+            .with(ResourceDimension::StorageBytes, bytes)
+            .with(ResourceDimension::PinnedBytes, bytes)
+            .with(ResourceDimension::MetadataEntries, rows))
+    }
+
+    fn canary_reservation_is_issued(&self, requests: [[u8; 16]; 2]) -> bool {
+        self.requests.get(&requests[0]).is_some_and(|record| {
+            matches!(&record.execution, DurableExecution::GuardianLaunch(launch)
+                if !matches!(launch.phase, transition::GuardianLaunchPhase::Authorized))
+        })
+    }
+
+    fn canary_cleanup_is_complete(&self, requests: [[u8; 16]; 2]) -> bool {
+        self.requests.get(&requests[0]).is_some_and(|record| {
+            matches!(&record.execution, DurableExecution::GuardianLaunch(launch)
+                if matches!(launch.phase, transition::GuardianLaunchPhase::Compensated { .. }))
+        }) || self.requests.get(&requests[1]).is_some_and(|record| {
+            matches!(&record.execution, DurableExecution::CompositeStop(stop)
+                if matches!(stop.phase, transition::CompositeStopPhase::Complete { .. }))
+        })
+    }
+
+    fn canary_rows_preserve(
+        &self,
+        baseline: &Self,
+        sandbox: [u8; 16],
+        incarnation: [u8; 16],
+        requests: [[u8; 16]; 2],
+    ) -> bool {
+        if baseline.requests.keys().any(|key| requests.contains(key))
+            || self.scope_replays != baseline.scope_replays
+            || self.scope_handles != baseline.scope_handles
+            || self.existing_output_observations != baseline.existing_output_observations
+            || self.fuse_worker_launches != baseline.fuse_worker_launches
+        {
+            return false;
+        }
+
+        let old_requests_retained = baseline.requests.iter().all(|(key, value)| {
+            self.requests.get(key) == Some(value)
+        });
+        let only_selected_requests = self.requests.iter().all(|(key, value)| {
+            if !requests.contains(key) {
+                return baseline.requests.get(key) == Some(value);
+            }
+            value.fence.sandbox_id == sandbox
+                && value.fence.incarnation_id == incarnation
+                && value.action == if *key == requests[0] { 1 } else { 2 }
+        });
+        let old_fences_retained = baseline.fences.iter().all(|(key, value)| {
+            *key == sandbox || self.fences.get(key) == Some(value)
+        });
+        let only_selected_fence = self.fences.iter().all(|(key, value)| {
+            *key == sandbox || baseline.fences.get(key) == Some(value)
+        });
+        let old_sequences_retained = baseline.observation_sequences.iter().all(|(key, value)| {
+            *key == incarnation || self.observation_sequences.get(key) == Some(value)
+        });
+        let only_selected_sequence = self.observation_sequences.iter().all(|(key, value)| {
+            if *key == incarnation {
+                return *value >= baseline.observation_sequences.get(key).copied().unwrap_or(0);
+            }
+            baseline.observation_sequences.get(key) == Some(value)
+        });
+
+        old_requests_retained && only_selected_requests
+            && old_fences_retained && only_selected_fence
+            && old_sequences_retained && only_selected_sequence
+    }
+
+    fn canary_follows(&self, before: &Self, requests: [[u8; 16]; 2]) -> bool {
+        let launch_before = before.requests.get(&requests[0]);
+        let launch_after = self.requests.get(&requests[0]);
+        let stop_before = before.requests.get(&requests[1]);
+        let stop_after = self.requests.get(&requests[1]);
+
+        match (launch_before, launch_after, stop_before, stop_after) {
+            (None, Some(launch), None, None) => launch.execution.guardian_attempt()
+                .is_some_and(|attempt| matches!(attempt.phase, transition::GuardianLaunchPhase::Authorized)),
+            (Some(old), Some(new), None, None) => {
+                same_canary_request(old, new)
+                    && new.execution.canary_guardian_follows(&old.execution)
+            }
+            (Some(old), Some(new), None, Some(stop)) => {
+                old == new
+                    && stop.execution.composite_stop_record().is_some_and(|record| {
+                        let Some((guardian, payload)) = old.execution.guardian_completed_invocations() else {
+                            return false;
+                        };
+                        matches!(record.phase, transition::CompositeStopPhase::StopAuthorized)
+                            && matches!(&record.target, transition::CompositeStopTarget::GuardianComposite {
+                                source_launch_request_id, incarnation_id, launch_binding,
+                                payload: transition::StopUnitTarget::Exact { binding: payload_binding, invocation: payload_invocation },
+                                guardian: transition::StopUnitTarget::Exact { binding: guardian_binding, invocation: guardian_invocation },
+                            } if *source_launch_request_id == requests[0]
+                                && *incarnation_id == old.fence.incarnation_id
+                                && Some(*launch_binding) == old.execution.guardian_binding()
+                                && *payload_binding == Some(*launch_binding)
+                                && *guardian_binding == Some(*launch_binding)
+                                && *payload_invocation == payload && *guardian_invocation == guardian)
+                    })
+            }
+            (Some(old_launch), Some(new_launch), Some(old), Some(new)) => {
+                old_launch == new_launch
+                    && same_canary_request(old, new)
+                    && new.execution.canary_stop_follows(&old.execution)
+            }
+            _ => false,
+        }
+    }
+
+    fn canary_remaining(&self, requests: [[u8; 16]; 2]) -> Result<u64> {
+        if let Some(stop) = self.requests.get(&requests[1]) {
+            return stop.execution.canary_remaining_stop().ok_or_else(|| {
+                HostError::State("canary Stop lost its closed cleanup phase".to_owned())
+            });
+        }
+        match self.requests.get(&requests[0]) {
+            Some(launch) => launch.execution.canary_remaining_guardian().ok_or_else(|| {
+                HostError::State("canary Launch lost its closed cleanup phase".to_owned())
+            }),
+            None => Ok(17),
+        }
+    }
+
     /// Authenticates every authority-bearing record and its structural links.
     ///
     /// Every current fence must be retained byte-exactly by at least one
@@ -1314,6 +1646,48 @@ impl HostState {
             .map(|request| request.effect.as_slice())
     }
 
+    // The selected cold route already authenticated the entire snapshot.
+    // Bind its retained sealed effect to the exact independently signed job
+    // request and coordinates, without evaluating another live admission.
+    pub(crate) fn require_original_canary_effect(
+        &self,
+        owner: &crate::broker::canary_job::HostCanaryJobOwnerV1,
+        action: crate::broker::canary_job::CanaryAction,
+        authority: &HostAuthorityV1,
+    ) -> Result<([u8; 32], aos_sandbox_broker::BrokerEffectIntentV1)> {
+        let job = owner.originals()?;
+        let (template, index, action_code) = match action {
+            crate::broker::canary_job::CanaryAction::Launch => (&job.launch, 0, 1),
+            crate::broker::canary_job::CanaryAction::Stop => (&job.stop, 1, 2),
+        };
+        let fence = template.fence();
+        let request_id = job.request_ids[index];
+        let request_digest: [u8; 32] = Sha256::digest(owner.segment(index)?).into();
+        let record = self.requests.get(&request_id)
+            .ok_or_else(|| HostError::State("canary cleanup lost its original effect".to_owned()))?;
+        if record.request_digest != request_digest
+            || record.action != action_code
+            || record.fence.sandbox_id != *fence.sandbox_id()
+            || record.fence.incarnation_id != *fence.incarnation_id()
+            || record.fence.assignment_epoch != fence.assignment_epoch()
+            || record.fence.desired_generation != fence.desired_generation()
+            || record.fence.assignment_digest != *fence.assignment_digest()
+        {
+            return Err(HostError::Fence("canary cleanup contradicts its original request"));
+        }
+        let opened_fence = authority.open_fence(&record.fence.sandbox_id, &record.fence.authorization)?;
+        let effect = authority.open_effect(&request_id, &record.effect)?;
+        if opened_fence.node().as_bytes() != &job.node_id
+            || effect.host_boot_id() != &job.boot_id
+            || effect.admitted_boottime_nanoseconds() < job.not_before
+            || effect.admitted_boottime_nanoseconds() >= job.deadline
+            || effect.effect_deadline_boottime_nanoseconds() > job.deadline
+        {
+            return Err(HostError::Fence("canary cleanup changed its original admission bounds"));
+        }
+        Ok((request_digest, effect))
+    }
+
     pub(crate) fn execution_handoff(
         &self,
         request_id: &[u8; 16],
@@ -1780,6 +2154,13 @@ impl HostState {
     }
 }
 
+fn same_canary_request(before: &RequestRecord, after: &RequestRecord) -> bool {
+    before.request_id == after.request_id
+        && before.request_digest == after.request_digest
+        && before.fence == after.fence
+        && before.action == after.action
+}
+
 impl DurableScopeReplay {
     fn new(locator: [u8; 32], binding: HostScopeReplayBindingV1, authentication: Vec<u8>) -> Self {
         Self {
@@ -1834,6 +2215,13 @@ impl DurableScopeReplay {
             protected_boot_id: self.protected_boot_id,
         }
     }
+}
+
+fn require_canary_preview_body(bytes: &[u8]) -> Result<()> {
+    if bytes.is_empty() || bytes.len() > MAXIMUM_STATE_BYTES {
+        return Err(HostError::ResourceExhausted);
+    }
+    Ok(())
 }
 
 fn encode_scope_replay_binding(binding: &HostScopeReplayBindingV1) -> Vec<u8> {
@@ -2506,11 +2894,25 @@ impl FileHostStateStore {
     }
 
     fn write_atomic(&self, bytes: &[u8]) -> Result<()> {
+        self.write_atomic_inner(bytes, None)
+    }
+
+    fn write_atomic_inner(
+        &self,
+        bytes: &[u8],
+        mut retained: Option<&mut canary_capacity::NativeStateReadbackV1>,
+    ) -> Result<()> {
         self.ensure_named_root()?;
         let root = self.directory_fd.as_ref();
-        match rustix::fs::unlinkat(root, "state.next", rustix::fs::AtFlags::empty()) {
-            Ok(()) | Err(rustix::io::Errno::NOENT) => {}
-            Err(error) => return Err(host_state_io(error)),
+        if retained.is_none() {
+            match rustix::fs::unlinkat(root, "state.next", rustix::fs::AtFlags::empty()) {
+                Ok(()) | Err(rustix::io::Errno::NOENT) => {}
+                Err(error) => return Err(host_state_io(error)),
+            }
+        } else if let Some(owner) = retained.as_ref() {
+            // An old selected export prefix is cold debt, not an unrelated
+            // temporary which this invocation may silently remove.
+            owner.require_empty_destination()?;
         }
         let output = rustix::fs::openat(
             root,
@@ -2522,23 +2924,43 @@ impl FileHostStateStore {
                 | rustix::fs::OFlags::CLOEXEC,
             rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
         )
-        .map_err(host_state_io)?;
-        let result = rustix::fs::fchmod(&output, rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR)
-            .map_err(host_state_io)
-            .and_then(|()| {
-                let mut output = File::from(output);
-                output
-                    .write_all(bytes)
-                    .and_then(|()| output.sync_all())
-                    .map_err(|error| HostError::State(error.to_string()))
-            })
+        .map_err(|error| match retained.as_deref_mut() {
+            None => host_state_io(error),
+            Some(owner) => owner.native(error),
+        })?;
+        let written = match retained.as_deref_mut() {
+            None => rustix::fs::fchmod(&output, rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR)
+                .map_err(host_state_io)
+                .and_then(|()| {
+                    let mut output = File::from(output);
+                    output
+                        .write_all(bytes)
+                        .and_then(|()| output.sync_all())
+                        .map_err(|error| HostError::State(error.to_string()))
+                }),
+            Some(owner) => {
+                owner.park(output);
+                rustix::fs::fchmod(owner.file()?, rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR)
+                    .map_err(|error| owner.native(error))?;
+                owner.write_original_body(bytes)
+            }
+        };
+        let result = written
             .and_then(|()| self.ensure_named_root())
             .and_then(|()| {
-                rustix::fs::renameat(root, "state.next", root, "state.bin").map_err(host_state_io)
+                rustix::fs::renameat(root, "state.next", root, "state.bin")
+                    .map_err(|error| match retained.as_deref_mut() {
+                        None => host_state_io(error),
+                        Some(owner) => owner.native(error),
+                    })
             })
-            .and_then(|()| rustix::fs::fsync(root).map_err(host_state_io))
+            .and_then(|()| rustix::fs::fsync(root)
+                .map_err(|error| match retained.as_deref_mut() {
+                    None => host_state_io(error),
+                    Some(owner) => owner.native(error),
+                }))
             .and_then(|()| self.ensure_named_root());
-        if result.is_err() {
+        if result.is_err() && retained.is_none() {
             let _ = rustix::fs::unlinkat(root, "state.next", rustix::fs::AtFlags::empty());
         }
         result
@@ -2547,6 +2969,19 @@ impl FileHostStateStore {
 
 impl HostStateStore for FileHostStateStore {
     fn load(&self) -> Result<HostState> {
+        let mut readback = canary_capacity::NativeStateReadbackV1::local();
+        self.load_into(&mut readback)
+    }
+
+    fn commit(&self, state: &HostState) -> Result<()> {
+        let bytes = encode_envelope(state)?;
+        self.write_atomic(&bytes)
+    }
+}
+
+impl FileHostStateStore {
+    fn load_into(&self, readback: &mut canary_capacity::NativeStateReadbackV1) -> Result<HostState> {
+        readback.require_empty_destination()?;
         self.ensure_named_root()?;
         let descriptor = match rustix::fs::openat(
             self.directory_fd.as_ref(),
@@ -2562,10 +2997,11 @@ impl HostStateStore for FileHostStateStore {
                 self.ensure_named_root()?;
                 return Ok(HostState::default());
             }
-            Err(error) => return Err(host_state_io(error)),
+            Err(error) => return Err(readback.native(error)),
         };
-        let metadata = rustix::fs::fstat(&descriptor).map_err(host_state_io)?;
-        let root = rustix::fs::fstat(self.directory_fd.as_ref()).map_err(host_state_io)?;
+        readback.park(descriptor);
+        let metadata = rustix::fs::fstat(readback.file()?).map_err(|error| readback.native(error))?;
+        let root = rustix::fs::fstat(self.directory_fd.as_ref()).map_err(|error| readback.native(error))?;
         if rustix::fs::FileType::from_raw_mode(metadata.st_mode)
             != rustix::fs::FileType::RegularFile
             || metadata.st_uid != root.st_uid
@@ -2583,15 +3019,12 @@ impl HostStateStore for FileHostStateStore {
                 "host state file length is outside its fixed bounds".to_owned(),
             ));
         }
-        let mut input = File::from(descriptor);
-        let mut bytes = vec![0; file_length];
-        input
-            .read_exact(&mut bytes)
-            .map_err(|error| HostError::State(error.to_string()))?;
+        readback.allocate(file_length)?;
+        readback.read_body()?;
         let mut trailing = [0];
-        if input
+        if readback.file_mut()?
             .read(&mut trailing)
-            .map_err(|error| HostError::State(error.to_string()))?
+            .map_err(|error| readback.io(error))?
             != 0
         {
             return Err(HostError::State(
@@ -2603,17 +3036,18 @@ impl HostStateStore for FileHostStateStore {
             "state.bin",
             rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
         )
-        .map_err(host_state_io)?;
+        .map_err(|error| readback.native(error))?;
         if named.st_dev != metadata.st_dev || named.st_ino != metadata.st_ino {
             return Err(HostError::State(
                 "HostState snapshot name changed during readback".to_owned(),
             ));
         }
         self.ensure_named_root()?;
-        decode_envelope(&bytes)
+        decode_envelope(readback.bytes())
     }
+}
 
-    fn commit(&self, state: &HostState) -> Result<()> {
+fn encode_envelope(state: &HostState) -> Result<Vec<u8>> {
         let body = state.encode()?;
         if body.len() > MAXIMUM_STATE_BYTES {
             return Err(HostError::State(
@@ -2630,8 +3064,7 @@ impl HostStateStore for FileHostStateStore {
         );
         bytes.extend_from_slice(&Sha256::digest(&body));
         bytes.extend_from_slice(&body);
-        self.write_atomic(&bytes)
-    }
+        Ok(bytes)
 }
 
 fn host_state_io(error: rustix::io::Errno) -> HostError {

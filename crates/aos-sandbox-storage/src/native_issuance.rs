@@ -611,6 +611,21 @@ impl StorageNativeIssuanceLedgerV1 {
         Ok(rows)
     }
 
+    /// Lends complete native history after the same owner's row and capacity checks.
+    ///
+    /// The returned loan is historical DATA. It cannot release active interests
+    /// or authorize a canary effect, floor update, append or positive ACK.
+    pub(crate) fn borrow_canary_bootstrap_native_original(
+        &mut self,
+        coordinator: &StorageAdmissionCoordinator,
+    ) -> Result<aos_sandbox::StorageNativeIssuanceHistoryDataV1<'_>, StorageNativeIssuanceErrorV1> {
+        self.validate_boundary()?;
+        let rows = self.rows()?;
+        self.preflight_retirements(&rows, None)?;
+        self.validate_active_holds(coordinator)?;
+        self.journal.capture_storage_native_issuance_history_v1().map_err(Into::into)
+    }
+
     fn preflight_retirements(
         &self,
         rows: &[NativeIssuanceRowV1],

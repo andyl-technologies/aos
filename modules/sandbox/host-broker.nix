@@ -69,6 +69,8 @@
       opensshAttachHostPrivateKey = "openssh-attach-host-private-key-v1";
       phase0ProbeSigningSeed = "phase0-probe-signing-seed-v1";
       phase0ProbePublicKey = "phase0-probe-public-key-v1";
+      canaryApprovalPublicKey = "host-canary-approval-public-key-v1";
+      canaryJob = "host-canary-job-v1";
     };
   configuredCredentials =
     lib.filterAttrs (name: _: cfg.credentials.${name} != null) credentialFields;
@@ -90,6 +92,108 @@
       "phase0-probe-public-key-v1:/run/credentials/@system/${cfg.credentials.phase0ProbePublicKey}"
     ]
     else [];
+  systemdLib = import ../../lib/modules/systemd/lib.nix {inherit lib pkgs;};
+  selectedHost = config.systemd.services.aos-sandbox-hostd;
+  pid1Image = "${config.systemd.package}/lib/systemd/systemd";
+  hostImage = "${cfg.package}/bin/aos-sandbox-hostd";
+  canaryArgv = [
+    hostImage
+    (toString controller.uid)
+    (toString controller.gid)
+    "${pkgs.systemd}/bin/systemd-nspawn"
+    "${cfg.guardianPackage}/bin/aos-sandbox-guardian"
+    canonicalReadbackPath
+    "--host-canary-v1"
+  ];
+  canaryOpenFiles = [
+    "${pid1Image}:aos-host-pid1-image:read-only"
+    "${canaryProfile}/profile.json:aos-host-startup-profile:read-only"
+  ];
+
+  # Render the same final merged service, substituting only the profile's
+  # complete OpenFile line. Removing that one self-reference avoids a unit /
+  # profile store-path cycle; no other command, property or byte is exempted.
+  normalizedHost = selectedHost // {
+    environment = config.systemd.globalEnvironment // selectedHost.environment;
+    serviceConfig = selectedHost.serviceConfig // {
+      OpenFile = [
+        "${pid1Image}:aos-host-pid1-image:read-only"
+        "@AOS_HOST_CANARY_PROFILE@:aos-host-startup-profile:read-only"
+      ];
+    };
+  };
+  renderedHost = systemdLib.serviceToUnit normalizedHost;
+  materializedHost = builtins.replaceStrings
+    (builtins.map (job: job.placeholder) renderedHost.jobScripts)
+    (builtins.map (job: job.path) renderedHost.jobScripts)
+    renderedHost.text;
+  canaryProfile = pkgs.runCommand "aos-host-canary-startup-profile" {
+    nativeBuildInputs = [pkgs.python3 pkgs.coreutils];
+    unitContract = materializedHost;
+    passAsFile = ["unitContract"];
+    argvContract = builtins.toJSON canaryArgv;
+    preContract = builtins.toJSON (selectedHost.serviceConfig.ExecStartPre or []);
+    postContract = builtins.toJSON (selectedHost.serviceConfig.ExecStartPost or []);
+    parentResourcesContract = builtins.toJSON cfg.nodeParentResources;
+    hostServiceLimitsContract = builtins.toJSON cfg.canaryHostServiceLimits;
+    guardianServiceLimitsContract = builtins.toJSON cfg.canaryGuardianServiceLimits;
+  } ''
+    set -eu
+    mkdir -p "$out"
+    ${pkgs.python3}/bin/python3 -B - "$out/profile.json" \
+      "$unitContractPath" ${pid1Image} ${hostImage} ${canonicalReadbackPath} \
+      ${pkgs.systemd}/share/aos/payload-filter-programs-v1 <<'PY'
+    import hashlib
+    import json
+    import os
+    import shlex
+    import sys
+    from pathlib import Path
+
+    output, unit_path, pid1, host, policy, programs = map(Path, sys.argv[1:])
+    unit = unit_path.read_bytes()
+    marker = b"OpenFile=@AOS_HOST_CANARY_PROFILE@:aos-host-startup-profile:read-only\n"
+    if not unit or len(unit) > 65536 or unit.splitlines(keepends=True).count(marker) != 1:
+        raise ValueError("Host canary unit must contain exactly its complete profile line")
+    argv = json.loads(os.environ["argvContract"])
+    expected = ("ExecStart=" + " ".join(argv) + "\n").encode()
+    commands = [line for line in unit.splitlines(keepends=True) if line.startswith(b"ExecStart=")]
+    if commands != [expected]:
+        raise ValueError("Host canary unit command differs from its fixed installed caller")
+
+    def digest(path):
+        return list(hashlib.sha256(path.read_bytes()).digest())
+
+    # These are only the existing generated command DATA. PID1 supplies its
+    # actual parsed command arrays independently during startup admission.
+    pre = [shlex.split(command) for command in json.loads(os.environ["preContract"])]
+    post = [shlex.split(command) for command in json.loads(os.environ["postContract"])]
+    profile = {
+        "version": 2,
+        "pid1_path": str(pid1),
+        "pid1_sha256": digest(pid1),
+        "host_path": str(host),
+        "host_sha256": digest(host),
+        "argv": argv,
+        "exec_start_pre": pre,
+        "exec_start_post": post,
+        "unit_sha256": list(hashlib.sha256(unit).digest()),
+        "policy_path": str(policy),
+        "policy_sha256": digest(policy),
+        "payload_programs_path": str(programs),
+        "payload_programs_sha256": digest(programs),
+        "parent_resources": json.loads(os.environ["parentResourcesContract"]),
+        "cpu_period_usec": 100000,
+        "host_service_limits": json.loads(os.environ["hostServiceLimitsContract"]),
+        "guardian_service_limits": json.loads(os.environ["guardianServiceLimitsContract"]),
+    }
+    encoded = json.dumps(profile, separators=(",", ":")).encode()
+    if len(encoded) > 1048576:
+        raise ValueError("Host canary profile exceeds its fixed admission bound")
+    output.write_bytes(encoded)
+    PY
+    chmod 0444 "$out/profile.json"
+  '';
 in {
   options.aos.sandbox.hostBroker = {
     enable = lib.mkEnableOption "the fixed AOS sandbox host broker";
@@ -106,6 +210,42 @@ in {
       default = pkgs.aos-sandbox-guardian;
       defaultText = "pkgs.aos-sandbox-guardian";
       description = "The descriptor-pinned per-assignment Guardian executable.";
+    };
+
+    canary = lib.mkEnableOption
+      "the independently approved private startup canary, not public runtime activation";
+
+    nodeParentResources = lib.mkOption {
+      type = lib.types.listOf (lib.types.addCheck lib.types.int
+        (value: value >= 0 && value <= 9223372036854775807));
+      default = [];
+      description = ''
+        Independently administered finite readiness-canary pool in the exact
+        ResourceDimension::ALL order. The 22 values are not derived from a job
+        and do not establish full-project accounting or physical reservation.
+      '';
+    };
+
+    canaryHostServiceLimits = lib.mkOption {
+      type = lib.types.listOf (lib.types.addCheck lib.types.int
+        (value: value > 0 && value <= 9223372036854775807));
+      default = [];
+      description = ''
+        Host CPU microseconds per 100ms, memory bytes, tasks and file descriptors.
+        Each independently configured value must fit its parent pool dimension;
+        these Host limits do not enforce the separate Guardian or payload unit.
+      '';
+    };
+
+    canaryGuardianServiceLimits = lib.mkOption {
+      type = lib.types.listOf (lib.types.addCheck lib.types.int
+        (value: value > 0 && value <= 9223372036854775807));
+      default = [];
+      description = ''
+        Independently selected Guardian CPU microseconds per 100ms, memory
+        bytes, tasks and file descriptors. These sibling limits do not replace
+        the signed workload limits or prove complete resource funding.
+      '';
     };
 
     controllerUid = lib.mkOption {
@@ -176,6 +316,42 @@ in {
         {
           assertion = cfg.credentials.backendReadiness == null || phase0ProbeActive;
           message = "phase-0 backend readiness requires the fixed shifted-target inspector credentials";
+        }
+        {
+          assertion = !cfg.canary || (phase0ProbeActive
+            && cfg.credentials.canaryApprovalPublicKey != null
+            && cfg.credentials.canaryJob != null
+            && cfg.credentials.guestAgentSigningSeed != null
+            && cfg.credentials.opensshAttachHostPrivateKey != null
+            && cfg.credentials.opensshAttachTrust != null
+            && cfg.credentials.opensshAttachGrantPublicKey != null);
+          message = "Host canary requires independent original job/key, phase-0 and Guest attach inputs";
+        }
+        {
+          assertion = !cfg.canary || (builtins.length cfg.nodeParentResources == 22
+            && builtins.length cfg.canaryHostServiceLimits == 4
+            && lib.all (index:
+              builtins.elemAt cfg.canaryHostServiceLimits index
+              <= builtins.elemAt cfg.nodeParentResources index) [0 1 2 3]
+            && builtins.div (builtins.elemAt cfg.canaryHostServiceLimits 0) 1000 * 1000
+              == builtins.elemAt cfg.canaryHostServiceLimits 0
+            && builtins.elemAt cfg.canaryHostServiceLimits 0 <= 922337203685477580
+            && builtins.div (builtins.elemAt cfg.canaryHostServiceLimits 1) 4096 * 4096
+              == builtins.elemAt cfg.canaryHostServiceLimits 1);
+          message = "Host canary requires an independent finite 22-resource pool and matching aligned Host limits";
+        }
+        {
+          assertion = !cfg.canary || (builtins.length cfg.nodeParentResources == 22
+            && builtins.length cfg.canaryGuardianServiceLimits == 4
+            && lib.all (index:
+              builtins.elemAt cfg.canaryGuardianServiceLimits index
+              <= builtins.elemAt cfg.nodeParentResources index) [0 1 2 3]
+            && builtins.div (builtins.elemAt cfg.canaryGuardianServiceLimits 0) 1000 * 1000
+              == builtins.elemAt cfg.canaryGuardianServiceLimits 0
+            && builtins.elemAt cfg.canaryGuardianServiceLimits 0 <= 922337203685477580
+            && builtins.div (builtins.elemAt cfg.canaryGuardianServiceLimits 1) 4096 * 4096
+              == builtins.elemAt cfg.canaryGuardianServiceLimits 1);
+          message = "Host canary requires independently configured finite sibling Guardian limits";
         }
       ];
 
@@ -267,7 +443,8 @@ in {
         ExecStartPre =
           ["${pkgs.coreutils}/bin/test -f ${pkgs.systemd}/share/aos/backend-policy-artifact-v2"]
           ++ brokerSessionConfiguration.installCommands;
-        ExecStart = "${cfg.package}/bin/aos-sandbox-hostd ${toString controller.uid} ${toString controller.gid} ${pkgs.systemd}/bin/systemd-nspawn ${cfg.guardianPackage}/bin/aos-sandbox-guardian ${canonicalReadbackPath}";
+        ExecStart = "${cfg.package}/bin/aos-sandbox-hostd ${toString controller.uid} ${toString controller.gid} ${pkgs.systemd}/bin/systemd-nspawn ${cfg.guardianPackage}/bin/aos-sandbox-guardian ${canonicalReadbackPath}"
+          + lib.optionalString cfg.canary " --host-canary-v1";
         # This public digest is pinned to the deployed immutable guest package,
         # independent of Storage's assignment-bound physical root proof.
         LoadCredential =
@@ -276,7 +453,10 @@ in {
           ++ ["guest-root-package-binding-v1:${pkgs.aos-sandbox-guest-root-template}/package-binding"];
         Restart = "on-failure";
         RestartSec = "2s";
-        StateDirectory = "aos/sandbox-host";
+        StateDirectory =
+          if cfg.canary
+          then ["aos/sandbox-host" "aos/sandbox-host/canary-capacity-v1"]
+          else "aos/sandbox-host";
         StateDirectoryMode = "0700";
         RuntimeDirectory = "aos/sandbox-host";
         RuntimeDirectoryMode = "0710";
@@ -308,6 +488,16 @@ in {
         SystemCallArchitectures = hostSyscallProfile.architectures;
         SystemCallFilter = hostSyscallProfile.filter;
         SystemCallErrorNumber = hostSyscallProfile.errorNumber;
+      } // lib.optionalAttrs cfg.canary {
+        OpenFile = canaryOpenFiles;
+        SELinuxContext = "system_u:system_r:aos_sandbox_host_t";
+        ExtraFileDescriptorNames = [];
+        FileDescriptorStoreMax = 0;
+        CPUQuota = "${toString (builtins.div (builtins.elemAt cfg.canaryHostServiceLimits 0) 1000)}%";
+        CPUQuotaPeriodSec = "100ms";
+        MemoryMax = builtins.elemAt cfg.canaryHostServiceLimits 1;
+        TasksMax = builtins.elemAt cfg.canaryHostServiceLimits 2;
+        LimitNOFILE = "${toString (builtins.elemAt cfg.canaryHostServiceLimits 3)}:${toString (builtins.elemAt cfg.canaryHostServiceLimits 3)}";
       };
     };
 

@@ -97,6 +97,12 @@ const MAXIMUM_OPERATIONS: usize = 256;
 const MATERIALIZED_RECORDS_PER_OPERATION: usize = 8;
 const GLOBAL_MATERIALIZED_RECORDS: usize = 3;
 const MAXIMUM_JOURNAL_RECORD_BYTES: usize = MAXIMUM_ATOMIC_SNAPSHOT_RECORD_BYTES;
+const CANARY_BOOTSTRAP_KEY_DOMAIN: &[u8] =
+    b"aos.sandbox.storage.canary-export-bootstrap-key.v1\0";
+const CANARY_BOOTSTRAP_RECORD_DOMAIN: &[u8] =
+    b"aos.sandbox.storage.canary-export-bootstrap-record.v1\0";
+const CANARY_BOOTSTRAP_TRANSACTION_DOMAIN: &[u8] =
+    b"aos.sandbox.storage.canary-export-bootstrap-transaction.v1\0";
 
 /// Reports durable storage state validation or transition failure.
 #[derive(Debug, thiserror::Error)]
@@ -104,6 +110,9 @@ pub enum StorageStateError {
     /// The journal failed validation, locking, or durable publication.
     #[error("storage journal failure: {0}")]
     Journal(#[from] aos_sandbox::JournalError),
+    /// Complete original-history capture retained its first native cause.
+    #[error(transparent)]
+    CanaryHistory(#[from] aos_sandbox::journal::StorageCanaryExportHistoryErrorV1),
     /// The authenticated storage record is malformed, corrupt, or from another key.
     #[error("storage transaction record authentication or structure failed")]
     CorruptRecord,
@@ -3194,6 +3203,65 @@ impl StorageTransactionStore {
             self.journal.snapshot_sequence(),
             self.journal.all_records(),
         ))
+    }
+
+    /// Lends all original primary history, not the resolver's final projection.
+    ///
+    /// The same writer remains retained; its exact opened eight-limit recipe
+    /// is checked before a cursor can observe all namespaces and DELETEs.
+    pub(crate) fn borrow_canary_bootstrap_primary_original(
+        &self,
+    ) -> Result<aos_sandbox::journal::StorageCanaryBootstrapPrimaryHistoryDataV1<'_>, StorageStateError> {
+        self.ensure_authority_readable()?;
+        let history = self.journal.capture_storage_canary_bootstrap_primary_history_v1()?;
+        if history.opened_limits() != journal_limits() {
+            return Err(aos_sandbox::JournalError::ProtectedBoundary.into());
+        }
+        Ok(history)
+    }
+
+    /// Authenticates an encountered fixed marker without granting fresh use.
+    ///
+    /// Every occurrence is retained debt, including a subsequent DELETE or
+    /// replacement. A complete absence still cannot rule out primary rollback.
+    pub(crate) fn observe_canary_bootstrap_marker_original(
+        &self,
+        transaction: &JournalTransaction,
+        record: &JournalRecord,
+    ) -> Result<Option<[u8; 208]>, StorageStateError> {
+        self.ensure_authority_readable()?;
+        let key: [u8; 32] = Sha256::digest(CANARY_BOOTSTRAP_KEY_DOMAIN).into();
+        if record.key() != key {
+            return Ok(None);
+        }
+        let bytes: [u8; 208] = record.value()
+            .and_then(|value| value.try_into().ok())
+            .ok_or(StorageStateError::CorruptRecord)?;
+        if record.namespace() != RecordNamespace::AuthorityPublication
+            || transaction.records().len() != 1
+            || &bytes[..8] != b"AOSCEB01"
+            || bytes[8..10] != 1u16.to_be_bytes()
+            || bytes[10..12] != [0; 2]
+            || bytes[12..16] != 208u32.to_be_bytes()
+            || bytes[16..176].chunks_exact(32).any(|field| field == [0; 32])
+        {
+            return Err(StorageStateError::CorruptRecord);
+        }
+        let mut mac = HmacSha256::new_from_slice(&self.key.secret)
+            .map_err(|_| StorageStateError::InvalidValue)?;
+        mac.update(CANARY_BOOTSTRAP_RECORD_DOMAIN);
+        mac.update(&key);
+        mac.update(&bytes[..176]);
+        mac.verify_slice(&bytes[176..]).map_err(|_| StorageStateError::CorruptRecord)?;
+
+        let mut digest = Sha256::new();
+        digest.update(CANARY_BOOTSTRAP_TRANSACTION_DOMAIN);
+        digest.update(bytes);
+        let digest = digest.finalize();
+        if transaction.id().as_slice() != &digest[..16] {
+            return Err(StorageStateError::CorruptRecord);
+        }
+        Ok(Some(bytes))
     }
 
     /// Reloads the durable physical head and operation records for resolution.

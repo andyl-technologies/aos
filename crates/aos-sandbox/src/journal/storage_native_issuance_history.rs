@@ -34,6 +34,25 @@ const MAXIMUM_ROWS: usize = 1024;
 // This is a capture ceiling, never a live reservation or a limit increase.
 const MAXIMUM_TRANSACTIONS: usize = 8 * MAXIMUM_ROWS;
 
+/// Selects fixed Storage history recipes, never caller-chosen geometry.
+#[derive(Clone, Copy)]
+enum StorageHistoryPurpose {
+    NativeIssuance,
+    CanaryExport,
+    PrimaryBootstrap,
+}
+
+pub(super) const CANARY_EXPORT_LIMITS: JournalLimits = JournalLimits {
+    maximum_journal_bytes: 16_384,
+    maximum_record_bytes: 2048,
+    maximum_key_bytes: 32,
+    maximum_records_per_transaction: 1,
+    maximum_transaction_bytes: 4096,
+    maximum_transactions: 4,
+    maximum_materialized_bytes: 2048,
+    maximum_materialized_records: 1,
+};
+
 type State = BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>;
 type Result<T> = std::result::Result<T, StorageNativeIssuanceHistoryErrorV1>;
 
@@ -84,6 +103,7 @@ enum HistoryPhase {
 /// The writer cannot be mutably used while this borrow lives.
 pub struct StorageNativeIssuanceHistoryDataV1<'journal> {
     journal: &'journal Journal,
+    purpose: StorageHistoryPurpose,
     witness: ProtectedWriterNameWitness,
     transactions: Vec<NativeTransactionData>,
     committed_records: usize,
@@ -177,7 +197,7 @@ impl<'journal> StorageNativeIssuanceHistoryDataV1<'journal> {
     }
 
     fn recheck_cut(&self) -> std::result::Result<(), JournalError> {
-        require_bookend(self.journal, &self.witness)
+        require_purpose_bookend(self.journal, &self.witness, self.purpose)
     }
 }
 
@@ -350,20 +370,54 @@ struct NativeTransactionData {
 
 // Only the closed parser observer can construct retained native DATA.
 pub(super) struct StorageHistoryObserverV1 {
+    purpose: StorageHistoryPurpose,
     limits: JournalLimits,
     physical_bytes: u64,
     transactions: Vec<NativeTransactionData>,
     retained_bytes: usize,
     maximum_retained_bytes: usize,
+    primary_records: usize,
     next_sequence: u64,
     end_offset: u64,
 }
 
 impl StorageHistoryObserverV1 {
     fn new(limits: JournalLimits, physical_bytes: u64) -> std::result::Result<Self, JournalError> {
-        require_capture_limits(limits, physical_bytes)?;
+        Self::new_for_purpose(limits, physical_bytes, StorageHistoryPurpose::NativeIssuance)
+    }
+
+    fn new_for_purpose(
+        limits: JournalLimits,
+        physical_bytes: u64,
+        purpose: StorageHistoryPurpose,
+    ) -> std::result::Result<Self, JournalError> {
+        match purpose {
+            StorageHistoryPurpose::NativeIssuance => require_capture_limits(limits, physical_bytes)?,
+            StorageHistoryPurpose::CanaryExport => {
+                validate_limits(limits)?;
+                if limits != CANARY_EXPORT_LIMITS {
+                    return Err(JournalError::ProtectedBoundary);
+                }
+                if physical_bytes > limits.maximum_journal_bytes {
+                    return Err(JournalError::JournalTooLarge);
+                }
+            }
+            StorageHistoryPurpose::PrimaryBootstrap => {
+                validate_limits(limits)?;
+                if physical_bytes > limits.maximum_journal_bytes {
+                    return Err(JournalError::JournalTooLarge);
+                }
+            }
+        }
+        let record_overhead = if matches!(purpose, StorageHistoryPurpose::PrimaryBootstrap) {
+            size_of::<JournalRecord>()
+                .checked_mul(limits.maximum_records_per_transaction)
+                .ok_or_else(retention_limit)?
+        } else {
+            size_of::<JournalRecord>()
+        };
         let overhead = size_of::<NativeTransactionData>()
-            .checked_add(size_of::<JournalRecord>())
+            .checked_add(record_overhead)
             .and_then(|size| size.checked_mul(limits.maximum_transactions))
             .ok_or_else(retention_limit)?;
         let maximum_retained_bytes = usize::try_from(physical_bytes)
@@ -371,11 +425,13 @@ impl StorageHistoryObserverV1 {
             .and_then(|bytes| bytes.checked_add(overhead))
             .ok_or_else(retention_limit)?;
         Ok(Self {
+            purpose,
             limits,
             physical_bytes,
             transactions: Vec::new(),
             retained_bytes: 0,
             maximum_retained_bytes,
+            primary_records: 0,
             next_sequence: 1,
             end_offset: 0,
         })
@@ -389,6 +445,11 @@ impl StorageHistoryObserverV1 {
         begin_offset: u64,
         end_offset: u64,
     ) -> std::result::Result<(), JournalError> {
+        if matches!(self.purpose, StorageHistoryPurpose::PrimaryBootstrap) {
+            return self.observe_primary(
+                transaction, begin_sequence, commit_sequence, begin_offset, end_offset,
+            );
+        }
         let [record] = transaction.records() else {
             return Err(JournalError::ProtectedBoundary);
         };
@@ -399,7 +460,12 @@ impl StorageHistoryObserverV1 {
         let next_sequence = commit_sequence.checked_add(1)
             .filter(|next| *next != u64::MAX)
             .ok_or(JournalError::SequenceExhausted)?;
-        if record.key().len() != KEY_BYTES
+        let expected_key_bytes = match self.purpose {
+            StorageHistoryPurpose::NativeIssuance => KEY_BYTES,
+            StorageHistoryPurpose::CanaryExport => 32,
+            StorageHistoryPurpose::PrimaryBootstrap => return Err(JournalError::ProtectedBoundary),
+        };
+        if record.key().len() != expected_key_bytes
             || transaction.id() == &[0; 16]
             || &transaction.id()[8..] == b"compact1"
             || begin_sequence != self.next_sequence
@@ -407,6 +473,11 @@ impl StorageHistoryObserverV1 {
             || begin_offset != self.end_offset
             || end_offset <= begin_offset
             || end_offset > self.physical_bytes
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        if matches!(self.purpose, StorageHistoryPurpose::CanaryExport)
+            && (value.len() != 1040 || record.key() == &[0; 32])
         {
             return Err(JournalError::ProtectedBoundary);
         }
@@ -450,7 +521,91 @@ impl StorageHistoryObserverV1 {
         Ok(())
     }
 
+    // Primary includes every namespace, ordered record and DELETE. The sole
+    // parser already validates its grammar; retention charges every record,
+    // not the issuance recipe's single-PUT overhead.
+    fn observe_primary(
+        &mut self,
+        transaction: &JournalTransaction,
+        begin_sequence: u64,
+        commit_sequence: u64,
+        begin_offset: u64,
+        end_offset: u64,
+    ) -> std::result::Result<(), JournalError> {
+        let records_count = transaction.records().len();
+        let next_sequence = commit_sequence.checked_add(1)
+            .filter(|next| *next != u64::MAX)
+            .ok_or(JournalError::SequenceExhausted)?;
+        let expected_commit = u64::try_from(records_count).ok()
+            .and_then(|records| begin_sequence.checked_add(records))
+            .and_then(|sequence| sequence.checked_add(1));
+        if transaction.id() == &[0; 16]
+            || &transaction.id()[8..] == b"compact1"
+            || records_count == 0
+            || records_count > self.limits.maximum_records_per_transaction
+            || begin_sequence != self.next_sequence
+            || expected_commit != Some(commit_sequence)
+            || begin_offset != self.end_offset
+            || end_offset <= begin_offset
+            || end_offset > self.physical_bytes
+            || self.transactions.len() >= self.limits.maximum_transactions
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+
+        let mut charge = self.retained_bytes.checked_add(size_of::<NativeTransactionData>())
+            .ok_or_else(retention_limit)?;
+        for record in transaction.records() {
+            charge = charge.checked_add(size_of::<JournalRecord>())
+                .and_then(|bytes| bytes.checked_add(record.key().len()))
+                .and_then(|bytes| bytes.checked_add(record.value().map_or(0, <[u8]>::len)))
+                .filter(|bytes| *bytes <= self.maximum_retained_bytes)
+                .ok_or_else(retention_limit)?;
+        }
+        let primary_records = self.primary_records.checked_add(records_count)
+            .ok_or_else(retention_limit)?;
+        let encoded_bytes = encoded_transaction_append_bytes(transaction)?;
+        if begin_offset.checked_add(encoded_bytes) != Some(end_offset) {
+            return Err(JournalError::StaleAuthoritySnapshot);
+        }
+
+        self.transactions.try_reserve_exact(1).map_err(|_| retention_limit())?;
+        let mut records = Vec::new();
+        records.try_reserve_exact(records_count).map_err(|_| retention_limit())?;
+        for record in transaction.records() {
+            let key = copy_bytes(record.key())?;
+            records.push(match record.value() {
+                Some(value) => JournalRecord::put(record.namespace(), key, copy_bytes(value)?),
+                None => JournalRecord::delete(record.namespace(), key),
+            });
+        }
+        self.transactions.push(NativeTransactionData {
+            transaction: JournalTransaction::new(*transaction.id(), records)?,
+            begin_sequence,
+            commit_sequence,
+            next_sequence,
+            begin_offset,
+            end_offset,
+        });
+        self.retained_bytes = charge;
+        self.primary_records = primary_records;
+        self.next_sequence = next_sequence;
+        self.end_offset = end_offset;
+        Ok(())
+    }
+
     fn finish(&self, replayed: &ReplayState) -> std::result::Result<(), JournalError> {
+        if matches!(self.purpose, StorageHistoryPurpose::PrimaryBootstrap) {
+            if self.transactions.len() != replayed.committed_transactions
+                || self.primary_records != replayed.committed_records
+                || self.next_sequence != replayed.next_sequence
+                || self.end_offset != self.physical_bytes
+                || replayed.durable_end != self.physical_bytes
+            {
+                return Err(JournalError::StaleAuthoritySnapshot);
+            }
+            return Ok(());
+        }
         if self.transactions.len() != replayed.committed_transactions
             || self.transactions.len() != replayed.committed_records
             || self.next_sequence != replayed.next_sequence
@@ -541,21 +696,55 @@ impl Journal {
         &self,
     ) -> Result<StorageNativeIssuanceHistoryDataV1<'_>> {
         require_fixed_location(self)?;
+        self.capture_storage_history_for_purpose(StorageHistoryPurpose::NativeIssuance)
+    }
+
+    pub(super) fn capture_storage_canary_history_inner(
+        &self,
+    ) -> Result<StorageNativeIssuanceHistoryDataV1<'_>> {
+        require_purpose_location(self, StorageHistoryPurpose::CanaryExport)?;
+        self.capture_storage_history_for_purpose(StorageHistoryPurpose::CanaryExport)
+    }
+
+    pub(super) fn capture_storage_primary_history_inner(
+        &self,
+    ) -> Result<StorageNativeIssuanceHistoryDataV1<'_>> {
+        require_purpose_location(self, StorageHistoryPurpose::PrimaryBootstrap)?;
+        self.capture_storage_history_for_purpose(StorageHistoryPurpose::PrimaryBootstrap)
+    }
+
+    fn capture_storage_history_for_purpose(
+        &self,
+        purpose: StorageHistoryPurpose,
+    ) -> Result<StorageNativeIssuanceHistoryDataV1<'_>> {
         let witness = self.protected_writer_name_witness()?;
         let result = (|| {
-            let mut observer = StorageHistoryObserverV1::new(self.limits, witness.file.size)?;
+            let mut observer = match purpose {
+                StorageHistoryPurpose::NativeIssuance => {
+                    StorageHistoryObserverV1::new(self.limits, witness.file.size)?
+                }
+                StorageHistoryPurpose::CanaryExport | StorageHistoryPurpose::PrimaryBootstrap => {
+                    StorageHistoryObserverV1::new_for_purpose(self.limits, witness.file.size, purpose)?
+                }
+            };
             let mut reader = ReadAtCursorV1::new(&self.file, witness.file.size);
             let replayed = replay_original_observed(
                 &mut reader, self.limits, None,
                 Some(DeploymentHistoryObserverV1::Storage(&mut observer)),
             )?;
             observer.finish(&replayed)?;
-            require_replayed_snapshot(self, &replayed, witness.file.size)?;
+            if matches!(purpose, StorageHistoryPurpose::PrimaryBootstrap) {
+                require_primary_replayed_snapshot(self, &replayed, witness.file.size)?;
+            } else {
+                require_replayed_snapshot(self, &replayed, witness.file.size)?;
+            }
             Ok((observer.transactions, replayed.committed_records))
         })();
-        let (transactions, committed_records) = combine(result, require_bookend(self, &witness))?;
+        let (transactions, committed_records) =
+            combine(result, require_purpose_bookend(self, &witness, purpose))?;
         Ok(StorageNativeIssuanceHistoryDataV1 {
             journal: self,
+            purpose,
             witness,
             transactions,
             committed_records,
@@ -576,6 +765,38 @@ fn require_bookend(
 ) -> std::result::Result<(), JournalError> {
     require_fixed_location(journal)?;
     journal.validate_protected_writer_name_witness(witness)
+}
+
+fn require_purpose_location(
+    journal: &Journal,
+    purpose: StorageHistoryPurpose,
+) -> std::result::Result<(), JournalError> {
+    match purpose {
+        StorageHistoryPurpose::NativeIssuance => require_fixed_location(journal),
+        StorageHistoryPurpose::CanaryExport => journal.require_protected_named_location(
+            Path::new(DIRECTORY),
+            "storage-canary-export.journal",
+            0,
+            CANARY_EXPORT_LIMITS,
+        ),
+        StorageHistoryPurpose::PrimaryBootstrap => journal.require_protected_named_location(
+            Path::new(DIRECTORY), "storage-state.journal", 0, journal.limits,
+        ),
+    }
+}
+
+fn require_purpose_bookend(
+    journal: &Journal,
+    witness: &ProtectedWriterNameWitness,
+    purpose: StorageHistoryPurpose,
+) -> std::result::Result<(), JournalError> {
+    match purpose {
+        StorageHistoryPurpose::NativeIssuance => require_bookend(journal, witness),
+        StorageHistoryPurpose::CanaryExport | StorageHistoryPurpose::PrimaryBootstrap => {
+            require_purpose_location(journal, purpose)?;
+            journal.validate_protected_writer_name_witness(witness)
+        }
+    }
 }
 
 fn require_capture_limits(
@@ -633,6 +854,31 @@ fn require_replayed_snapshot(
     Ok(())
 }
 
+fn require_primary_replayed_snapshot(
+    journal: &Journal,
+    replayed: &ReplayState,
+    physical_bytes: u64,
+) -> std::result::Result<(), JournalError> {
+    if replayed.durable_end != physical_bytes
+        || replayed.next_sequence != journal.next_sequence
+        || replayed.committed_transactions != journal.committed_transactions
+        || replayed.transaction_ids != journal.transaction_ids
+        || replayed.committed_namespaces != journal.committed_namespaces
+        || replayed.state != journal.state
+        || replayed.materialized_bytes != journal.materialized_bytes
+        || replayed.idempotency != journal.idempotency
+        || !replayed.source_challenge_history.is_empty()
+        || !journal.source_challenge_history.is_empty()
+        || replayed.source_original_replay.has_dependencies()
+        || journal.source_original_replay.has_dependencies()
+        || replayed.source_history_compacted
+        || journal.source_history_compacted
+    {
+        return Err(JournalError::StaleAuthoritySnapshot);
+    }
+    Ok(())
+}
+
 fn combine<T>(
     result: std::result::Result<T, JournalError>,
     bookend: std::result::Result<(), JournalError>,
@@ -667,6 +913,112 @@ mod tests {
     use std::io::{Seek as _, Write as _};
 
     use super::*;
+
+    #[test]
+    fn canary_recipe_requires_every_exact_opened_limit() {
+        let original = CANARY_EXPORT_LIMITS;
+        let mut cases = [original; 8];
+        cases[0].maximum_journal_bytes += 1;
+        cases[1].maximum_record_bytes += 1;
+        cases[2].maximum_key_bytes += 1;
+        cases[3].maximum_records_per_transaction += 1;
+        cases[4].maximum_transaction_bytes += 1;
+        cases[5].maximum_transactions += 1;
+        cases[6].maximum_materialized_bytes += 1;
+        cases[7].maximum_materialized_records += 1;
+
+        assert!(StorageHistoryObserverV1::new_for_purpose(
+            original, 0, StorageHistoryPurpose::CanaryExport,
+        ).is_ok());
+        for (index, changed) in cases.into_iter().enumerate() {
+            assert!(StorageHistoryObserverV1::new_for_purpose(
+                changed, 0, StorageHistoryPurpose::CanaryExport,
+            ).is_err(), "changed ceiling {index}");
+        }
+        assert!(matches!(
+            StorageHistoryObserverV1::new_for_purpose(
+                original,
+                original.maximum_journal_bytes + 1,
+                StorageHistoryPurpose::CanaryExport,
+            ),
+            Err(JournalError::JournalTooLarge),
+        ));
+    }
+
+    #[test]
+    fn primary_observer_retains_every_namespace_record_and_delete() {
+        let mut opened = limits();
+        opened.maximum_records_per_transaction = 7;
+        let transaction = JournalTransaction::new(
+            [3; 16],
+            vec![
+                JournalRecord::put(RecordNamespace::DesiredState, vec![1], vec![2, 3]),
+                JournalRecord::delete(RecordNamespace::AuthorityPublication, vec![4]),
+            ],
+        ).unwrap();
+        let extent = encoded_transaction_append_bytes(&transaction).unwrap();
+        let mut observer = StorageHistoryObserverV1::new_for_purpose(
+            opened, extent, StorageHistoryPurpose::PrimaryBootstrap,
+        ).unwrap();
+
+        observer.observe(&transaction, 1, 4, 0, extent).unwrap();
+
+        assert_eq!(observer.primary_records, 2);
+        assert_eq!(observer.next_sequence, 5);
+        assert_eq!(observer.transactions[0].transaction, transaction);
+        assert!(observer.transactions[0].transaction.records()[1].value().is_none());
+    }
+
+    #[test]
+    fn primary_observer_refuses_sequence_or_compacted_lineage() {
+        let mut opened = limits();
+        opened.maximum_records_per_transaction = 7;
+        let mut compact = [3; 16];
+        compact[8..].copy_from_slice(b"compact1");
+        for (id, commit) in [([3; 16], 3), (compact, 4)] {
+            let transaction = JournalTransaction::new(
+                id,
+                vec![
+                    JournalRecord::put(RecordNamespace::DesiredState, vec![1], vec![2]),
+                    JournalRecord::delete(RecordNamespace::AuthorityPublication, vec![4]),
+                ],
+            ).unwrap();
+            let extent = encoded_transaction_append_bytes(&transaction).unwrap();
+            let mut observer = StorageHistoryObserverV1::new_for_purpose(
+                opened, extent, StorageHistoryPurpose::PrimaryBootstrap,
+            ).unwrap();
+
+            assert!(observer.observe(&transaction, 1, commit, 0, extent).is_err());
+            assert!(observer.transactions.is_empty());
+            assert_eq!(observer.primary_records, 0);
+        }
+    }
+
+    #[test]
+    fn canary_observer_admits_only_fixed_key_and_value_shape() {
+        for (key, value, accepted) in [
+            (vec![1; 32], vec![2; 1040], true),
+            (vec![0; 32], vec![2; 1040], false),
+            (vec![1; 31], vec![2; 1040], false),
+            (vec![1; 48], vec![2; 1040], false),
+            (vec![1; 32], vec![2; 1039], false),
+            (vec![1; 32], vec![2; 1041], false),
+        ] {
+            let transaction = JournalTransaction::new(
+                [1; 16],
+                vec![JournalRecord::put(NAMESPACE, key, value)],
+            ).unwrap();
+            let extent = encoded_transaction_append_bytes(&transaction).unwrap();
+            let mut observer = StorageHistoryObserverV1::new_for_purpose(
+                CANARY_EXPORT_LIMITS, extent, StorageHistoryPurpose::CanaryExport,
+            ).unwrap();
+
+            let result = observer.observe(&transaction, 1, 3, 0, extent);
+
+            assert_eq!(result.is_ok(), accepted);
+            assert_eq!(observer.transactions.len(), usize::from(accepted));
+        }
+    }
 
     fn limits() -> JournalLimits {
         JournalLimits {

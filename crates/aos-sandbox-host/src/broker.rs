@@ -1,6 +1,7 @@
 //! Durable ordering and replay for fixed host runtime effects.
 
-mod agent_launch;
+pub(crate) mod agent_launch;
+pub(crate) mod canary_job;
 mod consumer_cgroup;
 mod existing_output;
 mod fuse_worker;
@@ -10,8 +11,13 @@ mod original_attach;
 mod payload_scope;
 mod runtime_pins;
 
+pub use canary_job::HostCanaryJobOwnerV1;
+
 use std::collections::BTreeMap;
 use std::future::Future;
+use std::ops::Deref;
+use std::sync::Arc;
+use std::sync::{Mutex, MutexGuard};
 use std::time::Instant;
 
 use aos_proto::aos::sandbox::local::v1::{
@@ -121,6 +127,784 @@ use crate::{HostError, Result};
 
 const MAXIMUM_INVENTORY_RUNTIMES: usize = 1_024;
 const MAXIMUM_SCOPE_HANDLE_ATTEMPTS: usize = 16;
+
+// Both arms lend already-admitted original bytes. The private canary arm
+// cannot manufacture a live Runtime request, peer or session provenance.
+enum GuardianOriginalInputV1<'original> {
+    Runtime(&'original ValidatedRuntimeRequest),
+    Canary(&'original canary_job::HostCanaryJobOwnerV1),
+}
+
+/// Retains one independently approved private Host canary and its originals.
+///
+/// The empty owner grants nothing. The installed caller captures the complete
+/// initial table before protected opens, then uses the same Host admission,
+/// Guardian and Stop engines. Rejection or cancellation keeps every returned
+/// resource in this owner. This is not a public runtime execution session.
+pub struct HostCanaryCoordinatorV1 {
+    job: canary_job::HostCanaryJobOwnerV1,
+    startup: Arc<Mutex<crate::plan::HostCanaryStartupV1>>,
+    manager: Option<aos_systemd::SystemdClient>,
+    config: Option<crate::plan::CanaryNspawnConfigV1>,
+    payload: Option<PreparedLaunch>,
+    agent: crate::live_agent::HostCanaryAgentOwnerV1,
+    readback: crate::worker::HostCanaryPayloadReadbackV1,
+    root_export: crate::storage_root_export::HostCanaryRootExportOriginalV1,
+    live_policy: Option<crate::plan::VerifiedLiveSupervisorPolicyV1>,
+    pending_nspawn: Option<NspawnConfig>,
+    closure_bodies: [Vec<u8>; 17],
+    guardian_observations: [Option<std::result::Result<Option<aos_systemd::GuardianUnitObservation>, aos_systemd::Error>>; 2],
+    guardian_resources: [Option<std::result::Result<(Vec<aos_systemd::OwnedValue>, Vec<aos_systemd::OwnedValue>), aos_systemd::Error>>; 2],
+    host_probe: Option<crate::worker::PidfdNamespaceAccessProbe>,
+    worker: Option<crate::worker::SystemdOneShotWorker>,
+    initial_payload: Option<std::result::Result<GuardianObservation, HostError>>,
+    initial_guardian: Option<std::result::Result<GuardianObservation, HostError>>,
+    negative_cleanup: Option<Result<Vec<u8>>>,
+    authority: Option<Arc<HostAuthorityV1>>,
+    store: Option<crate::state::HostProductionStateStoreV1>,
+    deadline: Option<Instant>,
+    captured: bool,
+    attempted: bool,
+    closed: bool,
+    finished: bool,
+    first_failure: Option<HostError>,
+}
+
+impl Default for HostCanaryCoordinatorV1 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HostCanaryCoordinatorV1 {
+    /// Creates empty fixed-purpose slots before the initial capture.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            job: canary_job::HostCanaryJobOwnerV1::new(),
+            startup: Arc::new(Mutex::new(crate::plan::HostCanaryStartupV1::new())),
+            manager: None,
+            config: None,
+            payload: None,
+            agent: crate::live_agent::HostCanaryAgentOwnerV1::new(),
+            readback: crate::worker::HostCanaryPayloadReadbackV1::new(),
+            root_export: crate::storage_root_export::HostCanaryRootExportOriginalV1::new(),
+            live_policy: None,
+            pending_nspawn: None,
+            closure_bodies: std::array::from_fn(|_| Vec::new()),
+            guardian_observations: std::array::from_fn(|_| None),
+            guardian_resources: std::array::from_fn(|_| None),
+            host_probe: None,
+            worker: None,
+            initial_payload: None,
+            initial_guardian: None,
+            negative_cleanup: None,
+            authority: None,
+            store: None,
+            deadline: None,
+            captured: false,
+            attempted: false,
+            closed: false,
+            finished: false,
+            first_failure: None,
+        }
+    }
+
+    /// Captures the complete five-entry startup table exactly once.
+    ///
+    /// # Errors
+    /// Refuses repeated, incomplete or foreign capture. Partial originals and
+    /// the actual lower cause remain in the selected startup owner.
+    pub fn capture_original(&mut self) -> Result<()> {
+        if self.captured || self.closed {
+            return Err(canary_unavailable());
+        }
+        self.captured = true;
+        self.closed = true;
+        let result = self.startup.lock()
+            .map_err(|_| canary_unavailable())?
+            .capture_original();
+        self.finish_observation(result)
+    }
+
+    /// Borrows the same startup for its sole complete listener handoff.
+    ///
+    /// # Errors
+    /// Refuses a poisoned selected owner. This does not admit a supplied table
+    /// or accept raw descriptors, names or profile fields from the caller.
+    pub fn original_startup(&mut self) -> Result<MutexGuard<'_, crate::plan::HostCanaryStartupV1>> {
+        self.startup.lock().map_err(|_| canary_unavailable())
+    }
+
+    /// Retains selected export custody from the actual concrete catalog.
+    ///
+    /// The catalog is borrowed before its single later move into this broker.
+    /// The private donor retains its fixed service anchor; it does not widen
+    /// the catalog trait or admit a caller-selected descriptor or path.
+    ///
+    /// # Errors
+    ///
+    /// Refuses unavailable original admission, repeated donation or a missing,
+    /// changed or inactive fixed Storage cgroup. Returned custody stays resident
+    /// on failure; lower unreturned resolve prefixes remain a separate gap.
+    pub fn retain_catalog_original(&mut self, catalog: &crate::catalog::FileHostCatalog) -> Result<()> {
+        if self.closed || !self.attempted || self.config.is_none() {
+            return Err(canary_unavailable());
+        }
+        self.closed = true;
+        let result = catalog.retain_canary_root_export_original(&mut self.root_export);
+        self.finish_observation(result)
+    }
+
+    /// Admits the fixed original job, startup and measured deployment once.
+    ///
+    /// # Errors
+    /// Refuses changed protected inputs, missing
+    /// independent deployment evidence, or unavailable kernel observations.
+    /// Returned manager/probe objects stay resident on subsequent failures;
+    /// their constructors' unreturned prefixes are not claimed as retained.
+    /// An expired job may retain originals for authenticated, already-issued
+    /// negative containment; it cannot admit another Launch or readiness.
+    pub async fn admit_original(
+        &mut self,
+        credential_directory: &std::path::Path,
+        state_root: &std::path::Path,
+        nspawn_executable: &str,
+        selinux_policy: &str,
+    ) -> Result<()> {
+        if self.attempted || self.closed {
+            return Err(canary_unavailable());
+        }
+        self.attempted = true;
+        self.closed = true;
+        let result = self.admit_inner(
+            credential_directory, state_root, nspawn_executable, selinux_policy,
+        ).await;
+        self.finish_observation(result)
+    }
+
+    async fn admit_inner(
+        &mut self,
+        credential_directory: &std::path::Path,
+        state_root: &std::path::Path,
+        nspawn_executable: &str,
+        selinux_policy: &str,
+    ) -> Result<()> {
+        self.job.capture_original()?;
+        self.manager = Some(aos_systemd::SystemdClient::connect().await
+            .map_err(|error| HostError::State(error.to_string()))?);
+        let manager = self.manager.as_ref().ok_or_else(canary_unavailable)?;
+        let mut startup = self.startup.lock().map_err(|_| canary_unavailable())?;
+        startup.admit_original(self.job.originals()?, manager).await?;
+        let phase0 = crate::plan::verify_original_canary_phase0_claim_v1(
+            &startup, credential_directory, state_root, nspawn_executable, selinux_policy,
+        ).await?;
+        self.config = Some(crate::plan::CanaryNspawnConfigV1::retain_original_phase0(
+            phase0, Arc::clone(&self.startup),
+        ));
+        self.job.recheck()?;
+        startup.recheck_original(self.job.originals()?, manager).await?;
+        drop(startup);
+
+        self.config.as_mut().ok_or_else(canary_unavailable)?.admit_original(self.job.originals()?)?;
+        self.host_probe = Some(crate::worker::PidfdNamespaceAccessProbe::current_service()?);
+        let now = canary_boottime()?;
+        let original = self.job.recheck()?;
+        if let Some(remaining) = original.deadline.checked_sub(now).filter(|remaining| *remaining > 0) {
+            self.deadline = Some(Instant::now().checked_add(std::time::Duration::from_nanos(remaining))
+                .ok_or_else(canary_unavailable)?);
+        }
+        Ok(())
+    }
+
+    fn finish_observation(&mut self, result: Result<()>) -> Result<()> {
+        match result {
+            Ok(()) => {
+                self.closed = false;
+                Ok(())
+            }
+            Err(cause) => {
+                if self.first_failure.is_none() {
+                    self.first_failure = Some(cause);
+                }
+                Err(canary_unavailable())
+            }
+        }
+    }
+
+    async fn start_payload(
+        &mut self,
+        worker: &crate::worker::RetainedPayloadWorkerV1<'_>,
+        identity: &HostRuntimeIdentity,
+        guardian_invocation: [u8; 16],
+        before_effect: &mut (impl FnMut() -> Result<()> + Send),
+    ) -> Result<()> {
+        self.recheck_original_before_effect().await?;
+        let startup = self.startup.lock().map_err(|_| canary_unavailable())?;
+        let payload = self.payload.as_ref().ok_or_else(canary_unavailable)?;
+        let probe = self.host_probe.as_ref().ok_or_else(canary_unavailable)?;
+        let mut originals = self.readback.borrow_original_call(&mut self.job, &startup, probe);
+        worker.start_original_canary(payload, identity, guardian_invocation, before_effect, &mut originals)
+            .await
+    }
+
+    async fn prove_payload(
+        &mut self,
+        worker: &crate::worker::RetainedPayloadWorkerV1<'_>,
+        identity: &HostRuntimeIdentity,
+    ) -> Result<()> {
+        self.recheck_original_before_effect().await?;
+        let startup = self.startup.lock().map_err(|_| canary_unavailable())?;
+        let payload = self.payload.as_ref().ok_or_else(canary_unavailable)?;
+        let probe = self.host_probe.as_ref().ok_or_else(canary_unavailable)?;
+        let mut originals = self.readback.borrow_original_call(&mut self.job, &startup, probe);
+        worker.prove_original_canary(payload, identity, &mut originals).await
+    }
+
+    async fn recheck_original_before_effect(&mut self) -> Result<()> {
+        self.job.recheck()?;
+        if canary_boottime()? >= self.job.originals()?.deadline {
+            return Err(canary_unavailable());
+        }
+        self.startup.lock().map_err(|_| canary_unavailable())?
+            .recheck_original(
+                self.job.originals()?, self.manager.as_ref().ok_or_else(canary_unavailable)?,
+            ).await?;
+        self.job.recheck()?;
+        if canary_boottime()? >= self.job.originals()?.deadline {
+            return Err(canary_unavailable());
+        }
+        Ok(())
+    }
+
+    async fn observe_guardian_resources(
+        &mut self,
+        point: usize,
+        identity: &HostRuntimeIdentity,
+        binding: [u8; 32],
+        invocation: [u8; 16],
+    ) -> Result<()> {
+        self.recheck_original_before_effect().await?;
+        const PROPERTIES: &[&str] = &[
+            "ControlGroup", "CPUQuotaPerSecUSec", "CPUQuotaPeriodUSec",
+            "MemoryMax", "TasksMax", "LimitNOFILE", "LimitNOFILESoft",
+        ];
+        if point >= 2 || self.guardian_observations[point].is_some()
+            || self.guardian_resources[point].is_some()
+        {
+            return Err(canary_unavailable());
+        }
+        self.job.recheck()?;
+        if canary_boottime()? >= self.job.originals()?.deadline {
+            return Err(canary_unavailable());
+        }
+        let (_, expected) = self.startup.lock().map_err(|_| canary_unavailable())?
+            .service_limits()?;
+        let manager = self.manager.as_ref().ok_or_else(canary_unavailable)?;
+        let name = aos_systemd::SandboxUnitName::from_incarnation(*identity.incarnation_id());
+        self.guardian_observations[point] = Some(manager.observe_guardian_unit(&name).await);
+        let observation = self.guardian_observations[point].as_ref()
+            .ok_or_else(canary_unavailable)?.as_ref().map_err(|_| canary_unavailable())?
+            .as_ref().ok_or_else(canary_unavailable)?;
+        if observation.binding != Some(binding) || observation.invocation_id != Some(invocation)
+            || observation.active_state != "active" || observation.sub_state != "running"
+        {
+            return Err(canary_unavailable());
+        }
+        let main_pid = observation.main_pid.ok_or_else(canary_unavailable)?.get();
+        let cgroup = observation.cgroup.as_ref().ok_or_else(canary_unavailable)?;
+        self.guardian_resources[point] = Some(manager.observe_pid1_service_startup_properties(
+            name.guardian(), main_pid, PROPERTIES, &["InvocationID"],
+        ).await);
+        let (service, unit) = self.guardian_resources[point].as_ref()
+            .ok_or_else(canary_unavailable)?.as_ref().map_err(|_| canary_unavailable())?;
+        let [observed_cgroup, cpu, period, memory, tasks, files, files_soft] = service.as_slice() else {
+            return Err(canary_unavailable());
+        };
+        let [observed_invocation] = unit.as_slice() else {
+            return Err(canary_unavailable());
+        };
+        let aos_systemd::Value::Array(bytes) = &**observed_invocation else {
+            return Err(canary_unavailable());
+        };
+        if <&str>::try_from(observed_cgroup).ok() != Some(cgroup.as_str())
+            || bytes.len() != invocation.len()
+            || bytes.inner().iter().zip(invocation)
+                .any(|(actual, expected)| !matches!(actual, aos_systemd::Value::U8(byte) if *byte == expected))
+            || u64::try_from(cpu).ok() != expected[0].checked_mul(10)
+            || u64::try_from(period).ok() != Some(100_000)
+            || u64::try_from(memory).ok() != Some(expected[1])
+            || u64::try_from(tasks).ok() != Some(expected[2])
+            || u64::try_from(files).ok() != Some(expected[3])
+            || u64::try_from(files_soft).ok() != Some(expected[3])
+        {
+            return Err(canary_unavailable());
+        }
+        // Returned replies remain resident through the real original/time
+        // postcheck. Manager limits are configuration, not a new kernel proof.
+        self.job.recheck()?;
+        if canary_boottime()? >= self.job.originals()?.deadline {
+            return Err(canary_unavailable());
+        }
+        Ok(())
+    }
+}
+
+impl Drop for HostCanaryCoordinatorV1 {
+    fn drop(&mut self) {
+        // A selected owner cannot dispose of originals after a partial
+        // admission/effect, cancellation or unwind. Process termination is
+        // not population drain; authenticated native debt remains for cold
+        // recovery under the same exact binding and cleanup reducer.
+        if self.captured && (!self.finished || self.closed) {
+            std::process::abort();
+        }
+    }
+}
+
+fn canary_unavailable() -> HostError {
+    HostError::Worker("original private Host canary is unavailable".to_owned())
+}
+
+fn canary_boottime() -> Result<u64> {
+    let clock = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
+    u64::try_from(clock.tv_sec).ok()
+        .and_then(|seconds| seconds.checked_mul(1_000_000_000))
+        .and_then(|seconds| u64::try_from(clock.tv_nsec).ok()
+            .and_then(|nanoseconds| seconds.checked_add(nanoseconds)))
+        .ok_or_else(canary_unavailable)
+}
+
+impl HostBroker<
+    crate::catalog::FileHostCatalog,
+    crate::state::HostProductionStateStoreV1,
+    crate::worker::SystemdOneShotWorker,
+> {
+    /// Opens the selected canary through its resident native state owner.
+    ///
+    /// # Errors
+    /// Refuses incomplete original admission, foreign or ambiguous cold state,
+    /// changed protected authority, or unavailable fixed capacity. The store
+    /// and authority remain in `original` until the complete admitted handoff;
+    /// ordinary Host opening continues to use its existing inline owner.
+    pub async fn open_original_canary(
+        catalog: crate::catalog::FileHostCatalog,
+        state: crate::state::FileHostStateStore,
+        worker: crate::worker::SystemdOneShotWorker,
+        authority: HostAuthorityV1,
+        guardian: GuardianConfig,
+        original: &mut HostCanaryCoordinatorV1,
+    ) -> Result<Self> {
+        if original.closed || original.config.is_none() || original.authority.is_some()
+            || original.store.is_some()
+        {
+            return Err(canary_unavailable());
+        }
+        original.closed = true;
+        original.authority = Some(Arc::new(authority));
+        original.store = Some(crate::state::HostProductionStateStoreV1::ordinary(state));
+        original.worker = Some(worker);
+        original.job.recheck()?;
+        let result = (|| {
+            original.startup.lock().map_err(|_| canary_unavailable())?
+                .capture_parent_original(original.worker.as_ref().ok_or_else(canary_unavailable)?)?;
+            let authority = original.authority.as_ref().ok_or_else(canary_unavailable)?;
+            let store = original.store.as_mut().ok_or_else(canary_unavailable)?;
+            store.retain_canary_authority(Arc::clone(authority))?;
+            let startup = original.startup.lock().map_err(|_| canary_unavailable())?;
+            let state = store.prepare_original(&mut original.job, &startup)?;
+            if let Some(state) = &state {
+                state.validate_authenticated(authority)?;
+            }
+            Ok(state)
+        })();
+        let retained_state = match result {
+            Ok(state) => state,
+            Err(cause) => {
+                original.finish_observation(Err(cause))?;
+                return Err(canary_unavailable());
+            }
+        };
+
+        // Existing cells and their sealed reducer records are authenticated
+        // before demanding positive lifetime or absence. These actual unit
+        // Results stay resident even when a cold or fresh check refuses.
+        let identity = HostRuntimeIdentity::from(original.job.originals()?.launch.fence());
+        original.initial_payload = Some(original.worker.as_ref().ok_or_else(canary_unavailable)?
+            .observe_bound_payload(&identity).await);
+        if original.initial_payload.as_ref().is_none_or(Result::is_err) {
+            original.finish_observation(Err(canary_unavailable()))?;
+            return Err(canary_unavailable());
+        }
+        original.initial_guardian = Some(original.worker.as_ref().ok_or_else(canary_unavailable)?
+            .observe_guardian(&identity).await);
+        if original.initial_guardian.as_ref().is_none_or(Result::is_err) {
+            original.finish_observation(Err(canary_unavailable()))?;
+            return Err(canary_unavailable());
+        }
+        let result = (|| {
+            let job = original.job.recheck()?;
+            let has_original_effect = retained_state.as_ref().is_some_and(|state| {
+                state.effect(&job.request_ids[0]).is_some()
+                    || state.effect(&job.request_ids[1]).is_some()
+            });
+            let payload = original.initial_payload.as_ref().ok_or_else(canary_unavailable)?
+                .as_ref().map_err(|_| canary_unavailable())?;
+            let guardian = original.initial_guardian.as_ref().ok_or_else(canary_unavailable)?
+                .as_ref().map_err(|_| canary_unavailable())?;
+            if has_original_effect {
+                return retained_state.ok_or_else(canary_unavailable);
+            }
+
+            if canary_boottime()? >= job.deadline {
+                return Err(canary_unavailable());
+            }
+            if payload.state != GuardianObservedState::Absent
+                || guardian.state != GuardianObservedState::Absent
+            {
+                return Err(canary_unavailable());
+            }
+            match retained_state {
+                // Authentic existing generation0 is not evidence that the
+                // unimplemented full component producers observed its debt.
+                // Issued effects took the negative cold route above; an
+                // unissued bank cannot resume a positive Launch here.
+                Some(_) => Err(canary_unavailable()),
+                None => {
+                    // Measure the real prefix before any fresh bank write.
+                    // The original catalog has already donated its concrete
+                    // service custody; it still moves exactly once below.
+                    let fence = *job.launch.fence();
+                    let plan = job.launch.launch_plan().ok_or_else(canary_unavailable)?;
+                    let resolved = catalog.resolve(&fence, plan)?;
+                    let store = original.store.as_ref().ok_or_else(canary_unavailable)?;
+                    let baseline = store.retain_prefix_baseline_original(&mut original.job)?;
+                    original.root_export.measure_original(
+                        &resolved.workspace, original.job.originals()?, baseline,
+                    )?;
+                    store.require_complete_prefix_components_original(
+                        original.root_export.measured_original()?,
+                    )?;
+                    original.store.as_mut().ok_or_else(canary_unavailable)?
+                        .prepare_fresh_original(&mut original.job, payload, guardian)
+                }
+            }
+        })();
+        let state = match result {
+            Ok(state) => state,
+            Err(cause) => {
+                original.finish_observation(Err(cause))?;
+                return Err(canary_unavailable());
+            }
+        };
+        let authority = Arc::clone(original.authority.as_ref().ok_or_else(canary_unavailable)?);
+        let store = original.store.take().ok_or_else(canary_unavailable)?;
+        let worker = original.worker.take().ok_or_else(canary_unavailable)?;
+        let mut broker = Self::from_admitted_state(
+            catalog, store, worker, None, HostAuthorityCustodyV1::Canary(authority), state,
+        );
+        broker.guardian = Some(guardian);
+        original.closed = false;
+        Ok(broker)
+    }
+
+    /// Runs the independently approved readiness-only Launch and exact Stop.
+    ///
+    /// # Errors
+    /// Refuses an already attempted coordinator, original drift, unresolved
+    /// debt, expired positive authority, failed physical/report readback, or
+    /// incomplete cleanup. No public execution session or readiness escapes
+    /// before actual terminal cleanup. Cancellation pre-arms this same
+    /// resident coordinator closed.
+    /// Authenticated cold issued containment may finish after expiry, but
+    /// always returns negatively without readiness or native retirement.
+    pub async fn run_original_canary(&mut self, original: &mut HostCanaryCoordinatorV1) -> Result<()> {
+        if original.closed || original.finished || original.payload.is_some() {
+            return Err(canary_unavailable());
+        }
+        original.closed = true;
+        let result = self.run_original_canary_inner(original).await;
+        if result.is_ok() {
+            original.finished = true;
+        }
+        original.finish_observation(result)
+    }
+
+    async fn run_original_canary_inner(&mut self, original: &mut HostCanaryCoordinatorV1) -> Result<()> {
+        original.job.recheck()?;
+        let sandbox = *original.job.originals()?.launch.fence().sandbox_id();
+        let request_id = original.job.originals()?.request_ids[0];
+        if self.state.effect(&request_id).is_some() {
+            return self.contain_original_canary_cold(original).await;
+        }
+        original.recheck_original_before_effect().await?;
+        let admitted = self.authority.admit_original_canary(
+            &mut original.job, canary_job::CanaryAction::Launch,
+            &crate::service::trusted_paired_clock_sample()?,
+            self.state.prior_authorization(&sandbox),
+        )?;
+        let job = original.job.originals()?;
+        let fence = *job.launch.fence();
+        let maximum_response = job.maximum_response_bytes[0];
+        let request_digest: [u8; 32] = Sha256::digest(original.job.segment(0)?).into();
+        let plan = job.launch.launch_plan().ok_or_else(canary_unavailable)?;
+        let resolved = self.catalog.resolve(&fence, plan)?;
+        let root = self.catalog.export_root_mount(&resolved.workspace)?;
+        original.payload = Some(crate::plan::compile_original_canary_launch(
+            original.config.as_ref().ok_or_else(canary_unavailable)?,
+            &fence, plan, resolved, root,
+        )?);
+        let payload = original.payload.as_mut().ok_or_else(canary_unavailable)?;
+        payload.prepare_canary_role_snapshot()?;
+        let artifacts = original.job.authorization(false)?;
+        let (execution, guardian) = self.prepare_guardian_execution_original(
+            GuardianOriginalInputV1::Canary(&original.job), &artifacts, &admitted,
+            request_digest, payload.snapshot(),
+        )?;
+        let (_, limits) = original.startup.lock().map_err(|_| canary_unavailable())?
+            .service_limits()?;
+        let guardian = guardian.with_host_canary_limits(limits[0], limits[1], limits[2], limits[3])
+            .map_err(|error| HostError::Worker(error.to_string()))?;
+        original.readback.prepare_original_channel()?;
+        original.agent.prepare_original(&mut original.job, payload, &execution)
+            .map_err(|_| canary_unavailable())?;
+        payload.pin_original_canary_roles(
+            &original.agent, original.readback.child_channel()?, &execution,
+        )?;
+        original.agent.send_original_report_challenges(
+            &mut original.job, original.readback.report_socket()?,
+            original.deadline.ok_or_else(canary_unavailable)?,
+        ).map_err(|_| canary_unavailable())?;
+
+        let sealed_fence = self.authority.seal_fence(fence.sandbox_id(), &admitted.fence)?;
+        let sealed_effect = self.authority.seal_effect(&request_id, &admitted.effect)?;
+        let mut proposed = self.state.clone();
+        ensure_pending_runtime_admission(proposed.admit_guardian(
+            &fence, request_id, request_digest, execution, sealed_fence,
+            &admitted, sealed_effect, &self.authority,
+        )?)?;
+        proposed.preview_original_canary_closure(original.job.originals()?, &mut original.closure_bodies)?;
+        self.commit_state(&proposed)?;
+
+        let launch = self.advance_guardian_start_inner(
+            &fence, request_id, request_digest, &admitted.effect, guardian,
+            guardian_transaction::LaunchInputV1::Canary(original), None,
+            maximum_response, &mut crate::service::trusted_paired_clock_sample,
+        ).await;
+        if let Err(cause) = launch {
+            if original.first_failure.is_none() {
+                original.first_failure = Some(cause);
+            }
+            let attempt = self.state.guardian_attempt(&request_id)
+                .ok_or_else(canary_unavailable)?;
+            let binding = attempt.binding;
+            let phase = attempt.phase.clone();
+            if matches!(phase,
+                crate::state::transition::GuardianLaunchPhase::Complete { .. }
+                    | crate::state::transition::GuardianLaunchPhase::Compensated { .. })
+            {
+                // A terminal Launch cannot mint a Stop or another cleanup
+                // transition because a later selected readback failed.
+                return Err(HostError::AgentLaunchQuarantined);
+            }
+
+            // Existing issued cleanup resumes only its exact saved targets.
+            // Other hot phases go through the same negative reducer; there
+            // is no new launch permission or deadline renewal here.
+            let identity = HostRuntimeIdentity::from(&fence);
+            original.negative_cleanup = Some(if matches!(phase,
+                crate::state::transition::GuardianLaunchPhase::CleanupIssued { .. })
+            {
+                self.advance_guardian_compensation(
+                    &identity, request_id, request_digest, &admitted.effect,
+                    maximum_response, binding,
+                ).await
+            } else {
+                self.begin_guardian_compensation(
+                    &identity, request_id, request_digest, &admitted.effect,
+                    maximum_response, binding,
+                ).await
+            });
+            return Err(canary_unavailable());
+        }
+        if !matches!(self.state.guardian_attempt(&request_id).map(|attempt| attempt.phase),
+            Some(crate::state::transition::GuardianLaunchPhase::Complete { .. }))
+        {
+            return Err(canary_unavailable());
+        }
+
+        original.job.recheck()?;
+        let stop_fence = *original.job.originals()?.stop.fence();
+        let stop_id = original.job.originals()?.request_ids[1];
+        let stop_maximum = original.job.originals()?.maximum_response_bytes[1];
+        let stop_digest: [u8; 32] = Sha256::digest(original.job.segment(1)?).into();
+        let stop = self.authority.admit_original_canary(
+            &mut original.job, canary_job::CanaryAction::Stop,
+            &crate::service::trusted_paired_clock_sample()?,
+            self.state.prior_authorization(stop_fence.sandbox_id()),
+        )?;
+        let stop_execution = self.prepare_composite_stop_original(&stop_fence, stop_id, stop_digest).await?;
+        let stop_fence_bytes = self.authority.seal_fence(stop_fence.sandbox_id(), &stop.fence)?;
+        let stop_effect = self.authority.seal_effect(&stop_id, &stop.effect)?;
+        let mut proposed = self.state.clone();
+        ensure_pending_runtime_admission(proposed.admit_composite_stop(
+            &stop_fence, stop_id, stop_digest, stop_execution, stop_fence_bytes,
+            &stop, stop_effect, &self.authority,
+        )?)?;
+        self.commit_state(&proposed)?;
+        self.advance_composite_stop(
+            &stop_fence, stop_id, stop_digest, &stop.effect, stop_maximum,
+            &mut crate::service::trusted_paired_clock_sample,
+        ).await?;
+        let identity = HostRuntimeIdentity::from(&stop_fence);
+        if self.worker.observe_bound_payload(&identity).await?.state != GuardianObservedState::Absent
+            || self.worker.observe_guardian(&identity).await?.state != GuardianObservedState::Absent
+        {
+            return Err(canary_unavailable());
+        }
+        original.job.recheck()?;
+        let mut startup = original.startup.lock().map_err(|_| canary_unavailable())?;
+        startup.recheck_original(original.job.originals()?,
+            original.manager.as_ref().ok_or_else(canary_unavailable)?).await?;
+        drop(startup);
+        if canary_boottime()? >= original.job.originals()?.deadline {
+            return Err(canary_unavailable());
+        }
+        original.agent.require_completed_canary_handshake()
+            .map_err(|_| canary_unavailable())?;
+        let proof = original.readback.verified()?;
+        let launch = self.state.guardian_attempt(&request_id).ok_or_else(canary_unavailable)?;
+        let crate::state::transition::GuardianLaunchPhase::Complete {
+            payload_invocation, worker_proof, ..
+        } = launch.phase else {
+            return Err(canary_unavailable());
+        };
+        if worker_proof != &proof.proof || *payload_invocation != proof.invocation_id
+            || proof.binding != Some(launch.binding)
+            || original.guardian_observations.iter().any(Option::is_none)
+            || original.guardian_resources.iter().any(Option::is_none)
+        {
+            return Err(canary_unavailable());
+        }
+        self.store.export_original_cleanup(&self.state)?;
+        original.pending_nspawn = Some(original.config.as_ref().ok_or_else(canary_unavailable)?
+            .complete_original_canary(
+                original.payload.as_ref().ok_or_else(canary_unavailable)?,
+                &original.readback,
+                original.live_policy.as_ref().ok_or_else(canary_unavailable)?,
+            )?);
+        // Readiness remains in the prearmed coordinator until the same writer
+        // and current native cell have both been read back once more. There
+        // is no fallible operation after the final installed-owner transfer.
+        self.store.require_original_export(&self.state)?;
+        original.job.recheck()?;
+        if canary_boottime()? >= original.job.originals()?.deadline {
+            return Err(canary_unavailable());
+        }
+        self.store.retire_original_cells(&self.state)?;
+        self.nspawn = original.pending_nspawn.take();
+        Ok(())
+    }
+
+    async fn contain_original_canary_cold(
+        &mut self,
+        original: &mut HostCanaryCoordinatorV1,
+    ) -> Result<()> {
+        original.job.recheck()?;
+        original.startup.lock().map_err(|_| canary_unavailable())?
+            .recheck_original(original.job.originals()?,
+                original.manager.as_ref().ok_or_else(canary_unavailable)?).await?;
+        original.job.recheck()?;
+        original.job.require_key_separation(&self.authority)?;
+        self.state.validate_authenticated(&self.authority)?;
+
+        let job = original.job.originals()?;
+        let launch_id = job.request_ids[0];
+        let stop_id = job.request_ids[1];
+        let (launch_digest, launch) = self.state.require_original_canary_effect(
+            &original.job, canary_job::CanaryAction::Launch, &self.authority,
+        )?;
+        if original.negative_cleanup.is_some() {
+            return Err(canary_unavailable());
+        }
+
+        if let Some(stop) = self.state.composite_stop_execution(&stop_id) {
+            if !matches!(stop.phase, crate::state::transition::CompositeStopPhase::StopEffectIssued { .. }) {
+                return Err(HostError::AgentLaunchQuarantined);
+            }
+            let stop_fence = *job.stop.fence();
+            let stop_maximum = job.maximum_response_bytes[1];
+            let (stop_digest, effect) = self.state.require_original_canary_effect(
+                &original.job, canary_job::CanaryAction::Stop, &self.authority,
+            )?;
+            if effect.status() != BrokerEffectStatusV1::Pending {
+                return Err(HostError::AgentLaunchQuarantined);
+            }
+            original.negative_cleanup = Some(self.advance_composite_stop(
+                &stop_fence, stop_id, stop_digest, &effect, stop_maximum,
+                &mut crate::service::trusted_paired_clock_sample,
+            ).await);
+        } else {
+            let attempt = self.state.guardian_attempt(&launch_id).ok_or_else(canary_unavailable)?;
+            if !matches!(attempt.phase, crate::state::transition::GuardianLaunchPhase::CleanupIssued { .. }) {
+                // A completed Launch without an issued Stop cannot acquire a
+                // new Stop or compensation permission from expired job DATA.
+                return Err(HostError::AgentLaunchQuarantined);
+            }
+            let binding = attempt.binding;
+            let identity = HostRuntimeIdentity::from(job.launch.fence());
+            let maximum = job.maximum_response_bytes[0];
+            if launch.status() != BrokerEffectStatusV1::Pending {
+                return Err(HostError::AgentLaunchQuarantined);
+            }
+            original.negative_cleanup = Some(self.advance_guardian_compensation(
+                &identity, launch_id, launch_digest, &launch, maximum, binding,
+            ).await);
+        }
+
+        if original.negative_cleanup.as_ref().is_none_or(Result::is_err) {
+            return Err(canary_unavailable());
+        }
+        original.job.recheck()?;
+        original.startup.lock().map_err(|_| canary_unavailable())?
+            .recheck_original(original.job.originals()?,
+                original.manager.as_ref().ok_or_else(canary_unavailable)?).await?;
+        original.job.recheck()?;
+        self.state.validate_authenticated(&self.authority)?;
+
+        // Both the actual terminal bytes and an actual failed reducer Result
+        // remain in this negative owner. Even successful containment cannot
+        // export readiness, renew D, reconstruct an Agent channel, or retire
+        // native cells into ordinary dispatch.
+        Err(HostError::AgentLaunchQuarantined)
+    }
+}
+
+impl GuardianOriginalInputV1<'_> {
+    fn request_id(&self) -> Result<[u8; 16]> {
+        match self {
+            Self::Runtime(request) => Ok(*request.header().request_id()),
+            Self::Canary(job) => Ok(job.originals()?.request_ids[0]),
+        }
+    }
+
+    fn fence(&self) -> Result<&ValidatedAssignmentFence> {
+        match self {
+            Self::Runtime(request) => Ok(request.fence()),
+            Self::Canary(job) => Ok(job.originals()?.launch.fence()),
+        }
+    }
+
+    fn guardian_pair(&self) -> Result<(&[u8], &[u8])> {
+        match self {
+            Self::Runtime(request) => {
+                let companion = request.guardian_arm().ok_or_else(request_mismatch)?;
+                Ok((companion.broker_plan(), companion.broker_plan_signature()))
+            }
+            Self::Canary(job) => Ok((job.segment(4)?, job.segment(5)?)),
+        }
+    }
+}
 #[cfg(test)]
 pub(crate) struct RuntimeEffectQueryContext<'a> {
     pub(crate) original_request_bytes: &'a [u8],
@@ -136,7 +920,7 @@ pub struct HostBroker<C, S, W> {
     catalog: C,
     store: S,
     worker: W,
-    authority: HostAuthorityV1,
+    authority: HostAuthorityCustodyV1,
     nspawn: Option<NspawnConfig>,
     guardian: Option<GuardianConfig>,
     protected_agent_launch: bool,
@@ -149,6 +933,24 @@ pub struct HostBroker<C, S, W> {
     fuse_workers: BTreeMap<[u8; 16], fuse_worker::RetainedOriginalHostFuseWorkerV1>,
     #[cfg(test)]
     fail_runtime_retention: bool,
+}
+
+// Ordinary authority remains inline in its original field position. Only the
+// selected coordinator shares this same actual owner with its native store.
+enum HostAuthorityCustodyV1 {
+    Inline(HostAuthorityV1),
+    Canary(Arc<HostAuthorityV1>),
+}
+
+impl Deref for HostAuthorityCustodyV1 {
+    type Target = HostAuthorityV1;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Inline(authority) => authority,
+            Self::Canary(authority) => authority,
+        }
+    }
 }
 
 /// Proves a Host execution grant was durably reserved in the shared lease fence.
@@ -528,9 +1330,38 @@ where
         nspawn: Option<NspawnConfig>,
         authority: HostAuthorityV1,
     ) -> Result<Self> {
+        Self::open_with_authority_custody(
+            catalog,
+            store,
+            worker,
+            nspawn,
+            HostAuthorityCustodyV1::Inline(authority),
+        )
+    }
+
+    fn open_with_authority_custody(
+        catalog: C,
+        store: S,
+        worker: W,
+        nspawn: Option<NspawnConfig>,
+        authority: HostAuthorityCustodyV1,
+    ) -> Result<Self> {
         let state = store.load()?;
         state.validate_authenticated(&authority)?;
-        Ok(Self {
+        Ok(Self::from_admitted_state(catalog, store, worker, nspawn, authority, state))
+    }
+
+    // Construction after the existing load/authentication gates is infallible.
+    // The selected caller checks while its store is still externally resident.
+    fn from_admitted_state(
+        catalog: C,
+        store: S,
+        worker: W,
+        nspawn: Option<NspawnConfig>,
+        authority: HostAuthorityCustodyV1,
+        state: HostState,
+    ) -> Self {
+        Self {
             catalog,
             store,
             worker,
@@ -547,7 +1378,7 @@ where
             fuse_workers: BTreeMap::new(),
             #[cfg(test)]
             fail_runtime_retention: false,
-        })
+        }
     }
 
     /// Installs the fixed production Guardian executable profile.
@@ -2573,6 +3404,20 @@ where
         transport_request_digest: [u8; 32],
         payload_snapshot: &crate::state::transition::PayloadLaunchSnapshot,
     ) -> Result<(DurableExecution, GuardianUnitSpec)> {
+        self.prepare_guardian_execution_original(
+            GuardianOriginalInputV1::Runtime(request), artifacts, admitted,
+            transport_request_digest, payload_snapshot,
+        )
+    }
+
+    fn prepare_guardian_execution_original(
+        &self,
+        original: GuardianOriginalInputV1<'_>,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        admitted: &aos_sandbox_broker::VerifiedBrokerAdmission,
+        transport_request_digest: [u8; 32],
+        payload_snapshot: &crate::state::transition::PayloadLaunchSnapshot,
+    ) -> Result<(DurableExecution, GuardianUnitSpec)> {
         const MAXIMUM_PLAN_BYTES: usize = 256 * 1024;
         const MAXIMUM_LEASE_BYTES: usize = 64 * 1024;
         const MAXIMUM_SIGNATURE_BYTES: usize = 64 * 1024;
@@ -2593,21 +3438,23 @@ where
             HostError::State("Guardian protected credential order is invalid".to_owned())
         })?;
 
+        let request_id = original.request_id()?;
         let execution =
-            if let Some(execution) = self.state.guardian_execution(request.header().request_id()) {
+            if let Some(execution) = self.state.guardian_execution(&request_id) {
                 execution
             } else {
-                let companion = request.guardian_arm().ok_or_else(request_mismatch)?;
+                let (guardian_plan, guardian_signature) = original.guardian_pair()?;
                 let lease = admitted.effect.local_lease_record();
+                let fence = original.fence()?;
                 let context = ExecutionContext {
                     action: HostAction::Launch,
-                    request_id: *request.header().request_id(),
+                    request_id,
                     request_digest: transport_request_digest,
-                    sandbox_id: *request.fence().sandbox_id(),
-                    incarnation_id: *request.fence().incarnation_id(),
-                    assignment_epoch: request.fence().assignment_epoch(),
-                    desired_generation: request.fence().desired_generation(),
-                    assignment_digest: *request.fence().assignment_digest(),
+                    sandbox_id: *fence.sandbox_id(),
+                    incarnation_id: *fence.incarnation_id(),
+                    assignment_epoch: fence.assignment_epoch(),
+                    desired_generation: fence.desired_generation(),
+                    assignment_digest: *fence.assignment_digest(),
                     receipt_present: false,
                 };
                 DurableExecution::guardian_launch(
@@ -2617,8 +3464,8 @@ where
                     *admitted.effect.host_boot_id(),
                     lease.lease_generation(),
                     *admitted.effect.lease_digest().as_bytes(),
-                    companion.broker_plan(),
-                    companion.broker_plan_signature(),
+                    guardian_plan,
+                    guardian_signature,
                     artifacts.ownership_lease(),
                     artifacts.ownership_lease_signature(),
                     protected_snapshots.clone(),
@@ -2700,7 +3547,7 @@ where
         let credentials = GuardianCredentialDescriptors::from_descriptors(descriptors)
             .map_err(|error| HostError::InvalidPlan(error.to_string()))?;
         let spec = config.prepare(
-            *request.fence().incarnation_id(),
+            *original.fence()?.incarnation_id(),
             credentials,
             attempt.binding,
         )?;

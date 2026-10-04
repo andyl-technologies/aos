@@ -1,0 +1,548 @@
+diff --git a/src/shared/aos-host-readiness.h b/src/shared/aos-host-readiness.h
+new file mode 100644
+--- /dev/null
++++ b/src/shared/aos-host-readiness.h
+@@ -0,0 +1,174 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++#pragma once
++
++#include <errno.h>
++#include <fcntl.h>
++#include <poll.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++#include <sys/stat.h>
++#include <time.h>
++#include <unistd.h>
++
++#include "socket-util.h"
++#include "unaligned.h"
++
++#define AOS_HOST_REPORT_HEADER_BYTES 176U
++#define AOS_HOST_REPORT_CHALLENGE_BYTES 200U
++#define AOS_HOST_REPORT_MAX_BYTES 98504U
++#define AOS_HOST_REPORT_FD_NAME "aos-host-readiness-report"
++#define AOS_HOST_REPORT_GUEST_FD 8
++
++/* Private inherited transport DATA. These bytes never replace Host's actual
++ * MainPID/invocation, measured executable, same-child pidfd or cleanup gates.
++ * Native returned originals and partial challenge stay resident through an
++ * error; process termination is not a population/drain certificate. */
++typedef struct AosHostReport {
++        int fd;
++        int originals[3];
++        uint8_t challenge[AOS_HOST_REPORT_CHALLENGE_BYTES];
++        bool attempted;
++        bool ready;
++        int first_error;
++} AosHostReport;
++
++#define AOS_HOST_REPORT_INIT { .fd = -EBADF, .originals = { -EBADF, -EBADF, -EBADF } }
++
++static int aos_host_report_before(const AosHostReport *report) {
++        struct timespec ts;
++        uint64_t now, deadline;
++
++        if (!report->ready)
++                return -ESTALE;
++        if (clock_gettime(CLOCK_BOOTTIME, &ts) < 0)
++                return -errno;
++        if (ts.tv_sec < 0 || ts.tv_nsec < 0 || ts.tv_nsec >= 1000000000 ||
++            (uint64_t) ts.tv_sec > UINT64_MAX / 1000000000U)
++                return -EOVERFLOW;
++        now = (uint64_t) ts.tv_sec * 1000000000U;
++        if (now > UINT64_MAX - (uint64_t) ts.tv_nsec)
++                return -EOVERFLOW;
++        now += (uint64_t) ts.tv_nsec;
++        deadline = unaligned_read_be64(report->challenge + 192);
++        return now < deadline ? 0 : -ETIMEDOUT;
++}
++
++static int aos_host_report_challenge(AosHostReport *report) {
++        CMSG_BUFFER_TYPE(CMSG_SPACE(sizeof(struct ucred)) + CMSG_SPACE(sizeof(int))) control = {};
++        struct iovec iov = { .iov_base = report->challenge, .iov_len = sizeof(report->challenge) };
++        struct msghdr message = {
++                .msg_iov = &iov,
++                .msg_iovlen = 1,
++                .msg_control = control.buf,
++                .msg_controllen = sizeof(control.buf),
++        };
++        struct pollfd wait = { .fd = report->fd, .events = POLLIN };
++        ssize_t n;
++        int r;
++
++        if (report->attempted || report->fd < 0)
++                return -ESTALE;
++        report->attempted = true;
++        /* This finite pre-challenge wait cannot renew the supplied original D.
++         * The complete record is checked before any selected report or exec. */
++        r = poll(&wait, 1, 30000);
++        if (r < 0)
++                return report->first_error = -errno;
++        if (r == 0 || wait.revents != POLLIN)
++                return report->first_error = r == 0 ? -ETIMEDOUT : -EIO;
++        n = recvmsg_safe(report->fd, &message, MSG_DONTWAIT|MSG_CMSG_CLOEXEC);
++        /* The shared ancillary disposer owns every returned nominated pidfd.
++         * No strict global peer identity is fabricated inside the child PID
++         * namespace. Host independently associates every outgoing report. */
++        if (n < 0)
++                return report->first_error = (int) n;
++        cmsg_close_all(&message);
++        if (n != sizeof(report->challenge) || message.msg_flags & (MSG_TRUNC|MSG_CTRUNC) ||
++            memcmp(report->challenge, "AOSHCR01", 8) != 0 ||
++            unaligned_read_be16(report->challenge + 8) != 1 ||
++            unaligned_read_be16(report->challenge + 10) != 0 ||
++            unaligned_read_be32(report->challenge + 12) != sizeof(report->challenge) ||
++            unaligned_read_be32(report->challenge + 160) != 0 ||
++            unaligned_read_be32(report->challenge + 164) != 0 ||
++            unaligned_read_be64(report->challenge + 168) != 0 ||
++            unaligned_read_be64(report->challenge + 192) == 0)
++                return report->first_error = -EBADMSG;
++        report->ready = true;
++        r = aos_host_report_before(report);
++        if (r < 0) {
++                report->ready = false;
++                report->first_error = r;
++        }
++        return r;
++}
++
++static int aos_host_report_send(
++                AosHostReport *report,
++                uint16_t kind,
++                uint64_t sequence,
++                uint8_t *bytes,
++                size_t size,
++                const int *fds,
++                size_t n_fds) {
++        CMSG_BUFFER_TYPE(CMSG_SPACE(3 * sizeof(int))) control = {};
++        struct iovec iov = { .iov_base = bytes, .iov_len = size };
++        struct msghdr message = { .msg_iov = &iov, .msg_iovlen = 1 };
++        int r;
++
++        if (size < AOS_HOST_REPORT_HEADER_BYTES || size > AOS_HOST_REPORT_MAX_BYTES || n_fds > 3)
++                return -EINVAL;
++        memcpy(bytes, report->challenge, 160);
++        unaligned_write_be16(bytes + 10, kind);
++        unaligned_write_be32(bytes + 12, size);
++        unaligned_write_be32(bytes + 164, 0);
++        unaligned_write_be64(bytes + 168, sequence);
++        if (n_fds > 0) {
++                struct cmsghdr *cmsg;
++
++                message.msg_control = control.buf;
++                message.msg_controllen = CMSG_SPACE(n_fds * sizeof(int));
++                cmsg = CMSG_FIRSTHDR(&message);
++                cmsg->cmsg_level = SOL_SOCKET;
++                cmsg->cmsg_type = SCM_RIGHTS;
++                cmsg->cmsg_len = CMSG_LEN(n_fds * sizeof(int));
++                memcpy(CMSG_DATA(cmsg), fds, n_fds * sizeof(int));
++        }
++        for (;;) {
++                struct pollfd wait = { .fd = report->fd, .events = POLLOUT };
++                ssize_t n;
++
++                r = aos_host_report_before(report);
++                if (r < 0)
++                        return r;
++                n = sendmsg(report->fd, &message, MSG_DONTWAIT|MSG_NOSIGNAL);
++                if (n >= 0)
++                        return n == size ? aos_host_report_before(report) : -EIO;
++                if (!IN_SET(errno, EAGAIN, EINTR))
++                        return -errno;
++                r = poll(&wait, 1, 2);
++                if (r < 0 && errno != EINTR)
++                        return -errno;
++        }
++}
++
++static int aos_host_report_originals(AosHostReport *report, bool guest_manager) {
++        uint8_t bytes[AOS_HOST_REPORT_HEADER_BYTES] = {};
++        static const char *const paths[] = { "/proc/self/exe", "/proc/self/ns/net", "/proc/self/stat" };
++        size_t count = guest_manager ? 1 : 3;
++        int r;
++
++        for (size_t i = 0; i < count; i++) {
++                if (report->originals[i] >= 0)
++                        return -ESTALE;
++                report->originals[i] = open(paths[i], O_RDONLY|O_CLOEXEC);
++                if (report->originals[i] < 0)
++                        return -errno;
++                r = aos_host_report_before(report);
++                if (r < 0)
++                        return r;
++        }
++        return aos_host_report_send(report, guest_manager ? 6 : 1, guest_manager ? 3 : 0,
++                                    bytes, sizeof(bytes), report->originals, count);
++}
+diff --git a/src/core/main.c b/src/core/main.c
+--- a/src/core/main.c
++++ b/src/core/main.c
+@@ -12,1 +12,2 @@
+ #include "sd-daemon.h"
++#include "aos-host-readiness.h"
+@@ -3467,1 +3468,2 @@ int main(int argc, char *argv[]) {
+         FDSet *fds = NULL;
++        AosHostReport aos_report = AOS_HOST_REPORT_INIT;
+@@ -3469,1 +3471,23 @@ int main(int argc, char *argv[]) {
+         assert_se(argc > 0 && !isempty(argv[0]));
++
++        /* Selected fixed Guest-init exec only; ordinary manager entry, argv,
++         * activation and collect_fds paths remain unchanged. The report is
++         * emitted by this post-exec image, never inferred from bootstrap exe. */
++        if (argc == 2 && streq(argv[1], "--aos-host-readiness-report")) {
++                if (getpid_cached() != 1 || geteuid() != 0)
++                        return EXIT_FAILURE;
++                aos_report.fd = AOS_HOST_REPORT_GUEST_FD;
++                r = fd_cloexec(aos_report.fd, true);
++                if (r < 0)
++                        return EXIT_FAILURE;
++                r = aos_host_report_challenge(&aos_report);
++                if (r >= 0)
++                        r = aos_host_report_originals(&aos_report, true);
++                if (r < 0)
++                        return EXIT_FAILURE;
++                aos_report.fd = safe_close(aos_report.fd);
++                for (size_t i = 0; i < ELEMENTSOF(aos_report.originals); i++)
++                        aos_report.originals[i] = safe_close(aos_report.originals[i]);
++                argc = 1;
++                argv[1] = NULL;
++        }
+diff --git a/src/nspawn/nspawn-root-fd.h b/src/nspawn/nspawn-root-fd.h
+--- a/src/nspawn/nspawn-root-fd.h
++++ b/src/nspawn/nspawn-root-fd.h
+@@ -18,3 +18,4 @@
+ int aos_root_directory_acquire(
+                 bool with_attachment_anchor,
+                 bool with_guest_agent,
++                bool with_host_report,
+@@ -25,1 +26,2 @@
+-                int ret_guest_fds[3]);
++                int ret_guest_fds[3],
++                int *ret_host_report);
+diff --git a/src/nspawn/nspawn-root-fd.c b/src/nspawn/nspawn-root-fd.c
+--- a/src/nspawn/nspawn-root-fd.c
++++ b/src/nspawn/nspawn-root-fd.c
+@@ -16,1 +16,2 @@
+ #include "alloc-util.h"
++#include "aos-host-readiness.h"
+@@ -277,3 +278,4 @@
+ int aos_root_directory_acquire(
+                 bool with_attachment_anchor,
+                 bool with_guest_agent,
++                bool with_host_report,
+@@ -285,2 +287,3 @@
+-                int ret_guest_fds[3]) {
++                int ret_guest_fds[3],
++                int *ret_host_report) {
+         _cleanup_strv_free_ char **names = NULL;
+@@ -298,2 +301,2 @@
+         guest_base = with_attachment_anchor ? 3 : 1;
+-        expected = guest_base + (with_guest_agent ? 3 : 0);
++        expected = guest_base + (with_guest_agent ? 3 : 0) + (with_host_report ? 1 : 0);
+@@ -307,1 +310,3 @@
+-              !streq_ptr(names[guest_base + 2], AOS_GUEST_ATTACH_TRUST_FD_NAME))))
++              !streq_ptr(names[guest_base + 2], AOS_GUEST_ATTACH_TRUST_FD_NAME))) ||
++            (with_host_report &&
++             (!with_guest_agent || !streq_ptr(names[guest_base + 3], AOS_HOST_REPORT_FD_NAME))))
+@@ -333,4 +339,19 @@
+                 }
+         }
+ 
++        if (r >= 0 && with_host_report) {
++                int fd;
++
++                assert(ret_host_report);
++                fd = fcntl(SD_LISTEN_FDS_START + guest_base + 3, F_DUPFD_CLOEXEC, 16);
++                if (fd < 0)
++                        r = -errno;
++                else {
++                        /* Park before the same exact connected-seqpacket role
++                         * validator. Failed native prefixes remain owned. */
++                        *ret_host_report = fd;
++                        r = aos_guest_agent_descriptor_validate(fd, 0);
++                }
++        }
++
+         for (int i = 0; i < n; i++)
+diff --git a/src/nspawn/test-nspawn-root-fd.c b/src/nspawn/test-nspawn-root-fd.c
+--- a/src/nspawn/test-nspawn-root-fd.c
++++ b/src/nspawn/test-nspawn-root-fd.c
+@@ -130,2 +130,3 @@
+                                                         c->with_anchor,
+                                                         false,
++                                                        false,
+@@ -137,1 +138,2 @@
+-                                                        NULL),
++                                                        NULL,
++                                                        NULL),
+diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
+--- a/src/nspawn/nspawn.c
++++ b/src/nspawn/nspawn.c
+@@ -41,1 +41,2 @@
+ #include "alloc-util.h"
++#include "aos-host-readiness.h"
+@@ -153,1 +154,3 @@
+ static int arg_aos_guest_fds[3] = { -EBADF, -EBADF, -EBADF };
++static bool arg_aos_host_report_selected = false;
++static AosHostReport arg_aos_host_report = AOS_HOST_REPORT_INIT;
+@@ -1200,1 +1203,8 @@
++                OPTION_LONG("aos-host-readiness-report", NULL,
++                            "Report fixed original Host canary observations"):
++                        if (arg_aos_host_report_selected)
++                                return -EINVAL;
++                        arg_aos_host_report_selected = true;
++                        break;
++
+                 OPTION_LONG("restrict-address-families", "LIST", "Restrict socket address families to the given allowlist"):
+@@ -3790,1 +3802,10 @@
++        if (arg_aos_host_report_selected) {
++                if (dup3(arg_aos_host_report.fd, AOS_HOST_REPORT_GUEST_FD, 0) < 0)
++                        return -errno;
++                /* The SAME selected context is exported after final rules and
++                 * its successful load, before the actual bootstrap exec. */
++                r = setup_aos_payload_seccomp_report(arg_aos_host_report.fd, arg_aos_host_report.challenge);
++                if (r < 0)
++                        return r;
++        } else
+         /* This is intentionally the last nspawn setup operation before payload
+@@ -6472,2 +6492,3 @@
+                                 arg_aos_attachment_anchor_fd,
+                                 arg_aos_guest_agent_fds,
++                                arg_aos_host_report_selected,
+@@ -6479,1 +6500,2 @@
+-                                arg_aos_guest_fds);
++                                arg_aos_guest_fds,
++                                &arg_aos_host_report.fd);
+@@ -6698,1 +6720,16 @@
++        if (arg_aos_host_report_selected) {
++                if (!arg_aos_guest_agent_fds || !arg_aos_root_directory_fd ||
++                    !arg_aos_payload_seccomp_profile) {
++                        r = -EINVAL;
++                        goto finish;
++                }
++                r = aos_host_report_challenge(&arg_aos_host_report);
++                if (r >= 0)
++                        r = aos_host_report_originals(&arg_aos_host_report, false);
++                if (r < 0)
++                        goto finish;
++                r = fdset_put(fds, arg_aos_host_report.fd);
++                if (r < 0)
++                        goto finish;
++        }
+         r = make_reaper_process(true);
+diff --git a/src/shared/seccomp-util.h b/src/shared/seccomp-util.h
+--- a/src/shared/seccomp-util.h
++++ b/src/shared/seccomp-util.h
+@@ -28,1 +28,4 @@
+ extern DLSYM_PROTOTYPE(seccomp_syscall_resolve_num_arch);
++
++/* Selected AOS export only; ordinary dlopen symbol requirements are unchanged. */
++int aos_seccomp_export_bpf_mem(scmp_filter_ctx context, void *buffer, size_t *size);
+diff --git a/src/shared/seccomp-util.c b/src/shared/seccomp-util.c
+--- a/src/shared/seccomp-util.c
++++ b/src/shared/seccomp-util.c
+@@ -2602,3 +2602,6 @@
++#if HAVE_SECCOMP
++static void *libseccomp_dl = NULL;
++#endif
++
+ int dlopen_libseccomp(int log_level) {
+ #if HAVE_SECCOMP
+-        static void *libseccomp_dl = NULL;
+@@ -2634,1 +2636,19 @@
++#if HAVE_SECCOMP
++int aos_seccomp_export_bpf_mem(scmp_filter_ctx context, void *buffer, size_t *size) {
++        DLSYM_PROTOTYPE(seccomp_export_bpf_mem);
++        int r;
++
++        r = dlopen_libseccomp(LOG_ERR);
++        if (r < 0)
++                return r;
++        /* Resolve from the SAME pinned already-loaded library. This symbol is
++         * not added to the ordinary loader's required symbol set. */
++        dlerror();
++        sym_seccomp_export_bpf_mem = dlsym(libseccomp_dl, "seccomp_export_bpf_mem");
++        if (!sym_seccomp_export_bpf_mem || dlerror())
++                return -EOPNOTSUPP;
++        return sym_seccomp_export_bpf_mem(context, buffer, size);
++}
++#endif
++
+ bool seccomp_errno_or_action_is_valid(int n) {
+diff --git a/src/nspawn/nspawn-seccomp.h b/src/nspawn/nspawn-seccomp.h
+--- a/src/nspawn/nspawn-seccomp.h
++++ b/src/nspawn/nspawn-seccomp.h
+@@ -7,1 +7,3 @@
+ int setup_aos_payload_seccomp(void);
++int setup_aos_payload_seccomp_report(int report_fd, const uint8_t challenge[200]);
++int export_aos_payload_seccomp_programs(void);
+diff --git a/src/nspawn/nspawn-seccomp.c b/src/nspawn/nspawn-seccomp.c
+--- a/src/nspawn/nspawn-seccomp.c
++++ b/src/nspawn/nspawn-seccomp.c
+@@ -9,1 +9,2 @@
+ #include "log.h"
++#include "aos-host-readiness.h"
+@@ -39,1 +40,5 @@
+-int setup_aos_payload_seccomp(void) {
++static int setup_aos_payload_seccomp_inner(int report_fd, const uint8_t *challenge, bool export_only, uint8_t *programs) {
++        AosHostReport report = AOS_HOST_REPORT_INIT;
++        size_t used = AOS_HOST_REPORT_HEADER_BYTES;
++        uint32_t count = 0;
++        bool selected = report_fd >= 0 || export_only;
+@@ -91,1 +97,1 @@
+-        if (!is_seccomp_available())
++        if (!export_only && !is_seccomp_available())
+@@ -95,8 +101,28 @@
+-        r = prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0);
+-        if (r < 0)
+-                return log_error_errno(errno, "Failed to query no-new-privileges before AOS payload filter: %m");
+-        if (r == 0)
+-                return log_error_errno(SYNTHETIC_ERRNO(EPERM),
+-                                       "AOS payload profile requires no-new-privileges.");
++        if (!export_only) {
++                r = prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0);
++                if (r < 0)
++                        return log_error_errno(errno, "Failed to query no-new-privileges before AOS payload filter: %m");
++                if (r == 0)
++                        return log_error_errno(SYNTHETIC_ERRNO(EPERM),
++                                               "AOS payload profile requires no-new-privileges.");
++        }
++        if (selected) {
++#if defined(__x86_64__)
++                static const uint32_t expected[] = { SCMP_ARCH_X86, SCMP_ARCH_X32, SCMP_ARCH_X86_64, SECCOMP_LOCAL_ARCH_END };
++#elif defined(__aarch64__)
++                static const uint32_t expected[] = { SCMP_ARCH_ARM, SCMP_ARCH_AARCH64, SECCOMP_LOCAL_ARCH_END };
++#else
++                return -EOPNOTSUPP;
++#endif
++#if defined(__x86_64__) || defined(__aarch64__)
++                if (memcmp(seccomp_local_archs, expected, sizeof(expected)) != 0)
++                        return -EOPNOTSUPP;
++#endif
++                if (report_fd >= 0) {
++                        report.fd = report_fd;
++                        memcpy(report.challenge, challenge, sizeof(report.challenge));
++                        report.ready = true;
++                }
++        }
+ 
+         SECCOMP_FOREACH_LOCAL_ARCH(arch) {
+@@ -154,6 +178,34 @@
+-                r = sym_seccomp_load(seccomp);
+-                if (r < 0)
+-                        return log_error_errno(r,
+-                                               "Failed to install AOS payload seccomp filter for %s: %m",
+-                                               seccomp_arch_to_string(arch));
++                if (selected) {
++                        size_t size = 32768;
++                        int deadline_rc;
++
++                        if (!export_only) {
++                                deadline_rc = aos_host_report_before(&report);
++                                if (deadline_rc < 0)
++                                        return deadline_rc;
++                        }
++                        if (count >= 3 || used > AOS_HOST_REPORT_MAX_BYTES - 8 - size)
++                                return -E2BIG;
++                        r = aos_seccomp_export_bpf_mem(seccomp, programs + used + 8, &size);
++                        if (r < 0)
++                                return r;
++                        if (size == 0 || size > 32768 || size % 8 != 0)
++                                return -EBADMSG;
++                        unaligned_write_be32(programs + used, arch);
++                        unaligned_write_be32(programs + used + 4, size);
++                        used += 8 + size;
++                        count++;
++                }
++                if (!export_only) {
++                        if (selected) {
++                                r = aos_host_report_before(&report);
++                                if (r < 0)
++                                        return r;
++                        }
++                        r = sym_seccomp_load(seccomp);
++                        if (r < 0)
++                                return log_error_errno(r,
++                                                       "Failed to install AOS payload seccomp filter for %s: %m",
++                                                       seccomp_arch_to_string(arch));
++                }
+         }
+@@ -161,2 +208,45 @@
+-        return 0;
++        if (!selected)
++                return 0;
++        unaligned_write_be32(programs + 160, count);
++        if (!export_only)
++                return aos_host_report_send(&report, 2, 0, programs, used, NULL, 0);
++
++        /* Artifact carries the same fixed canonical header/program suffix with
++         * zero job coordinates. Build-only export never installs a filter. */
++        memcpy(programs, "AOSHCR01", 8);
++        unaligned_write_be16(programs + 8, 1);
++        unaligned_write_be16(programs + 10, 2);
++        unaligned_write_be32(programs + 12, used);
++        return fwrite(programs, 1, used, stdout) == used && fflush(stdout) == 0 ? 0 : -EIO;
+ }
++
++int setup_aos_payload_seccomp(void) {
++        return setup_aos_payload_seccomp_inner(-EBADF, NULL, false, NULL);
++}
++
++int export_aos_payload_seccomp_programs(void) {
++        uint8_t programs[AOS_HOST_REPORT_MAX_BYTES] = {};
++
++        return setup_aos_payload_seccomp_inner(-EBADF, NULL, true, programs);
++}
++
++int setup_aos_payload_seccomp_report(int report_fd, const uint8_t challenge[200]) {
++        uint8_t programs[AOS_HOST_REPORT_MAX_BYTES] = {};
++        int r;
++
++        r = setup_aos_payload_seccomp_inner(report_fd, challenge, false, programs);
++        if (r < 0) {
++                AosHostReport report = AOS_HOST_REPORT_INIT;
++                uint8_t failure[184] = {};
++
++                report.fd = report_fd;
++                report.ready = true;
++                memcpy(report.challenge, challenge, sizeof(report.challenge));
++                unaligned_write_be16(failure + 176, 2);
++                unaligned_write_be32(failure + 180, (uint32_t) r);
++                /* Retain the original negative result; an unsent frame is
++                 * uncertainty, never success or erased native contact debt. */
++                (void) aos_host_report_send(&report, 9, 0, failure, sizeof(failure), NULL, 0);
++        }
++        return r;
++}
+diff --git a/src/nspawn/test-nspawn-seccomp.c b/src/nspawn/test-nspawn-seccomp.c
+--- a/src/nspawn/test-nspawn-seccomp.c
++++ b/src/nspawn/test-nspawn-seccomp.c
+@@ -50,1 +50,24 @@
+-DEFINE_TEST_MAIN(LOG_DEBUG);
++int main(int argc, char *argv[]) {
++        int (*_intro)(void) = NULL;
++        int (*_outro)(void) = NULL;
++        int _r, _q;
++
++        if (argc == 2 && streq(argv[1], "--aos-export-payload-programs-v1"))
++                return export_aos_payload_seccomp_programs() < 0 ? EXIT_FAILURE : EXIT_SUCCESS;
++
++        /* Literal DEFINE_TEST_MAIN_FULL expansion after the selected branch;
++         * existing test_prepare/table/destructor/exit order is unchanged. */
++        test_prepare(argc, argv, LOG_DEBUG);
++        _r = _intro ? _intro() : EXIT_SUCCESS;
++        if (_r == EXIT_SUCCESS)
++                _r = run_test_table(__start_SYSTEMD_TEST_TABLE, __stop_SYSTEMD_TEST_TABLE);
++        _q = _outro ? _outro() : EXIT_SUCCESS;
++        static_destruct();
++        if (_r < 0)
++                return EXIT_FAILURE;
++        if (_r != EXIT_SUCCESS)
++                return _r;
++        if (_q < 0)
++                return EXIT_FAILURE;
++        return _q;
++}

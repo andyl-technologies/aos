@@ -11,7 +11,8 @@ use aos_sandbox_linux::inventory::MountId;
 use aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket;
 use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError};
 use aos_sandbox_protocol::storage_root_export::{
-    STORAGE_ROOT_EXPORT_REQUEST_BYTES_V1, StorageRootExportRequestV1, StorageRootExportResponseV1,
+    STORAGE_CANARY_EXPORT_REQUEST_BYTES_V1,
+    StorageRootExportRequestV1, StorageRootExportResponseV1,
 };
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 
@@ -71,11 +72,18 @@ pub fn serve_root_export_once(
     let record = match receive_request(
         &mut connection,
         receive_deadline,
-        STORAGE_ROOT_EXPORT_REQUEST_BYTES_V1,
+        STORAGE_CANARY_EXPORT_REQUEST_BYTES_V1,
     ) {
         Ok(record) => record,
         Err(()) => return Ok(RootExportOutcome::Rejected),
     };
+    if record.payload().len() == STORAGE_CANARY_EXPORT_REQUEST_BYTES_V1 {
+        // The actual runtime owns both originals before selected parsing and
+        // history bookends. This branch is nonadmitting: no worker, positive
+        // reply or fresh journal/bank creation is permitted without a floor.
+        runtime.observe_canary_export_original(connection, record, verifier);
+        return Ok(RootExportOutcome::Rejected);
+    }
     let record = match connection.bind_received(record) {
         Ok(record) => record,
         Err(_) => return Ok(RootExportOutcome::Rejected),

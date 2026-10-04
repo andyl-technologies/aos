@@ -142,6 +142,36 @@ impl ProductionBrokerSessionActivationV1 {
         }
     }
 
+    /// Adopts the listeners from the genuine complete selected Host startup.
+    ///
+    /// The startup owner has already captured all five initial entries before
+    /// protected opens. This does not parse or duplicate another startup table,
+    /// and does not establish canary or backend readiness.
+    ///
+    /// # Errors
+    /// Refuses an incomplete, failed or previously transferred original table,
+    /// or a listener whose exact production filesystem path has changed.
+    pub fn adopt_original_host_canary(
+        startup: &mut aos_sandbox_host::plan::HostCanaryStartupV1,
+    ) -> Result<Self, ProductionBrokerSessionActivationErrorV1> {
+        // Reserve before transferring originals. Their same selected startup
+        // owner has already checked the exact paths; no new observation or
+        // allocation follows this complete handoff.
+        let mut listeners = Vec::with_capacity(3);
+        let (controller, root_mount, storage) = startup.take_original_listeners()
+            .map_err(|_| ProductionBrokerSessionActivationErrorV1::Activation(
+                "selected Host original table is incomplete",
+            ))?;
+        for (endpoint, listener) in [
+            (ProtectedBrokerSessionFixedEndpointV1::HostBroker, controller),
+            (ProtectedBrokerSessionFixedEndpointV1::RootMountHostBroker, root_mount),
+            (ProtectedBrokerSessionFixedEndpointV1::StorageHostBroker, storage),
+        ] {
+            listeners.push(FixedListenerV1 { endpoint, listener });
+        }
+        Ok(Self { storage_cold: None, listeners, launch_image: None })
+    }
+
     /// Adopts the complete fixed Host listener set for VM qualification.
     ///
     /// This is the descriptor-owned counterpart of [`Self::adopt_host`]. All three
@@ -153,6 +183,14 @@ impl ProductionBrokerSessionActivationV1 {
     /// Rejects any listener whose kernel socket properties or fixed path differ.
     #[cfg(test)]
     pub(crate) fn adopt_host_listeners(
+        controller: RecordSubjectListener,
+        root_mount: RecordSubjectListener,
+        storage: RecordSubjectListener,
+    ) -> Result<Self, ProductionBrokerSessionActivationErrorV1> {
+        Self::from_complete_host_listeners(controller, root_mount, storage)
+    }
+
+    fn from_complete_host_listeners(
         controller: RecordSubjectListener,
         root_mount: RecordSubjectListener,
         storage: RecordSubjectListener,

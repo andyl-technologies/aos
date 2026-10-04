@@ -771,6 +771,23 @@ impl StorageAdmissionCoordinator {
         self.transactions.append_git_coverage_v1(transaction)
     }
 
+    /// Lends complete primary lineage from this coordinator's actual writer.
+    pub(crate) fn borrow_canary_bootstrap_primary_original(
+        &self,
+    ) -> Result<aos_sandbox::journal::StorageCanaryBootstrapPrimaryHistoryDataV1<'_>, StorageBrokerError> {
+        self.transactions.borrow_canary_bootstrap_primary_original().map_err(Into::into)
+    }
+
+    /// Uses this original store's secret to observe one historical marker.
+    pub(crate) fn observe_canary_bootstrap_marker_original(
+        &self,
+        transaction: &aos_sandbox::JournalTransaction,
+        record: &aos_sandbox::JournalRecord,
+    ) -> Result<Option<[u8; 208]>, StorageBrokerError> {
+        self.transactions.observe_canary_bootstrap_marker_original(transaction, record)
+            .map_err(Into::into)
+    }
+
     /// Authenticates a read-only candidate against the current fenced catalog.
     ///
     /// The returned cut is not a durable reservation. The caller must repeat

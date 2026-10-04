@@ -168,6 +168,91 @@ pub struct VerifiedShiftedPayloadInspectionV1 {
 }
 
 impl VerifiedShiftedPayloadInspectionV1 {
+    pub(super) fn inspect_original_canary(
+        identity: &HostRuntimeIdentity,
+        spec: &SandboxUnitSpec,
+        invocation_id: [u8; 16],
+        originals: &aos_sandbox_linux::pidfd::HostCanaryReceivedChildOriginalsV1,
+        host: &super::PidfdNamespaceAccessProbe,
+        proof: &RuntimeProofSnapshot,
+    ) -> std::result::Result<Self, super::CanaryPayloadFailureV1> {
+        use super::CanaryPayloadFailureV1;
+
+        let (bootstrap, local) = originals.bootstrap_observation()?;
+        let child = originals.child()?.info()?;
+        let [user, mount, network, pid] = originals.namespace_coordinates()?;
+        let (host_start, mapping_count) = spec.private_user_range();
+        let (status, context, uid_map, gid_map) = originals.bootstrap_inspection_bytes()?;
+        let (_, child_status, child_context) = originals.inspection_bytes()?;
+        if spec.name() != &aos_systemd::SandboxUnitName::from_incarnation(*identity.incarnation_id())
+            || !proof.validate() || local.0 != 1 || local.1 != 0 || local.2 == 0
+            || bootstrap.pid() != proof.payload.pid
+            || bootstrap.parent_pid() != proof.supervisor.pid
+            || bootstrap.thread_group_id() != bootstrap.pid()
+            || bootstrap.cgroup_id() != Some(proof.payload.cgroup_id)
+            || local.2 != proof.payload.start_time_ticks
+            || child.parent_pid() != bootstrap.pid()
+            || namespace_snapshot(user) != proof.user_namespace
+            || namespace_snapshot(mount) != proof.mount_namespace
+            || namespace_snapshot(network) != proof.network_namespace
+            || user == host.user().identity() || pid == host.pid().identity()
+            || !host.process().is_alive()?
+        {
+            return Err(CanaryPayloadFailureV1::Mismatch);
+        }
+        let launch_binding = spec.launch_binding().ok_or(CanaryPayloadFailureV1::Mismatch)?;
+        parse_exact_id_map(uid_map, host_start, mapping_count)?;
+        parse_exact_id_map(gid_map, host_start, mapping_count)?;
+
+        // The donated status text is rendered in the genuine Guest opener's
+        // user namespace. GET_INFO is rendered in Host's namespace. Compare
+        // the two only through the exact sealed private-user map, never by
+        // direct numeric equality between those different coordinate systems.
+        require_original_owner_status(status)?;
+        require_original_owner_status(child_status)?;
+        require_original_owner_context(context)?;
+        require_original_owner_context(child_context)?;
+        for info in [bootstrap, child] {
+            let credentials = info.credentials().ok_or(CanaryPayloadFailureV1::Mismatch)?;
+            if [
+                credentials.real_user_id(), credentials.effective_user_id(),
+                credentials.saved_user_id(), credentials.filesystem_user_id(),
+                credentials.real_group_id(), credentials.effective_group_id(),
+                credentials.saved_group_id(), credentials.filesystem_group_id(),
+            ] != [host_start; 8]
+            {
+                return Err(CanaryPayloadFailureV1::Mismatch);
+            }
+        }
+
+        let record = ShiftedPayloadInspectionRecordV1 {
+            version: VERSION,
+            host_boot_id: proof.host_boot_id,
+            sandbox_id: *identity.sandbox_id(),
+            incarnation_id: *identity.incarnation_id(),
+            assignment_epoch: identity.assignment_epoch(),
+            desired_generation: identity.desired_generation(),
+            assignment_digest: *identity.assignment_digest(),
+            launch_binding,
+            invocation_id,
+            payload_pid: bootstrap.pid(),
+            payload_parent_pid: bootstrap.parent_pid(),
+            payload_start_time_ticks: local.2,
+            payload_cgroup_id: proof.payload.cgroup_id,
+            user_namespace: namespace_snapshot(user),
+            mount_namespace: namespace_snapshot(mount),
+            network_namespace: namespace_snapshot(network),
+            pid_namespace: namespace_snapshot(pid),
+            host_user_namespace: namespace_snapshot(host.user().identity()),
+            host_pid_namespace: namespace_snapshot(host.pid().identity()),
+            host_uid_start: host_start,
+            host_gid_start: host_start,
+            mapping_count,
+        };
+        record.validate()?;
+        Ok(Self { record })
+    }
+
     pub(super) fn inspect(
         identity: &HostRuntimeIdentity,
         spec: &SandboxUnitSpec,
@@ -311,6 +396,48 @@ fn namespace_snapshot(value: NamespaceIdentity) -> NamespaceProofSnapshot {
         device: value.device,
         inode: value.inode,
     }
+}
+
+fn require_original_owner_context(bytes: &[u8]) -> super::Result<()> {
+    let expected = aos_sandbox_linux::guest_confinement::GUEST_OWNER_CONTEXT.as_bytes();
+    if bytes != expected && bytes.strip_suffix(&[0]) != Some(expected)
+        && bytes.strip_suffix(b"\n") != Some(expected)
+    {
+        return Err(HostError::Worker("original Guest context is not Owner".to_owned()));
+    }
+    Ok(())
+}
+
+fn require_original_owner_status(bytes: &[u8]) -> super::Result<()> {
+    let mut present = [false; 3];
+    for line in bytes.split(|byte| *byte == b'\n') {
+        let Some(colon) = line.iter().position(|byte| *byte == b':') else { continue };
+        let name = &line[..colon];
+        let values = &line[colon + 1..];
+        let index = match name {
+            b"Uid" => 0,
+            b"Gid" => 1,
+            b"NoNewPrivs" => 2,
+            _ => continue,
+        };
+        if std::mem::replace(&mut present[index], true) {
+            return Err(HostError::Worker("original Guest status repeats a required field".to_owned()));
+        }
+        let fields = values.split(u8::is_ascii_whitespace)
+            .filter(|field| !field.is_empty()).collect::<Vec<_>>();
+        let matches = if index == 2 {
+            fields.as_slice() == [b"1".as_slice()]
+        } else {
+            fields.as_slice() == [b"0".as_slice(); 4]
+        };
+        if !matches {
+            return Err(HostError::Worker("original Guest local IDs or NNP differ".to_owned()));
+        }
+    }
+    if present != [true; 3] {
+        return Err(HostError::Worker("original Guest status lacks IDs or NNP".to_owned()));
+    }
+    Ok(())
 }
 
 fn read_exact_id_map(pid: u32, kind: &'static str, host_start: u32, count: u32) -> Result<()> {

@@ -26,6 +26,7 @@ mod operator_terminal_hold;
 mod native_readback;
 mod repair_worker_drain;
 mod operator_startup;
+mod canary_export_held;
 pub(crate) use native_acquire::{
     StorageNativeDeliveryOutcomeV2, original_fail_stop_deadline,
     validate_native_request_clock, validate_original_clock,
@@ -761,6 +762,7 @@ pub struct StorageBrokerRuntime {
     operator_startup: Option<operator_startup::DeferredOperatorStartupV4>,
     #[cfg(test)]
     fail_repair_completion_commit_for_test: bool,
+    canary_export: canary_export_held::CanaryExportHeldV1,
 }
 
 impl StorageBrokerRuntime {
@@ -770,6 +772,27 @@ impl StorageBrokerRuntime {
             return Err(StorageRuntimeError::Recovery);
         }
         Ok(())
+    }
+
+    /// Retains selected prefix DATA but never authorizes creation or dispatch.
+    pub(crate) fn observe_canary_export_original(
+        &mut self,
+        connection: aos_sandbox_linux::seqpacket::descriptor_subject::DescriptorSubjectSocket,
+        record: aos_sandbox_linux::seqpacket::descriptor_subject::ReceivedDescriptorRecord,
+        verifier: &crate::peer::HostRootExportPeerVerifier,
+    ) {
+        if !self.canary_export.is_unused() {
+            // An additional connection cannot replace the resident originals.
+            return;
+        }
+        self.canary_export.park_original(connection, record);
+        self.canary_export.observe_original(
+            &self.coordinator,
+            self.native_issuance.as_mut(),
+            &self.worker_dispatch,
+            &self.broker_instance_id,
+            verifier,
+        );
     }
 
     pub(crate) fn install_original_worker_startup(
@@ -1931,6 +1954,7 @@ impl StorageBrokerRuntime {
             operator_startup,
             #[cfg(test)]
             fail_repair_completion_commit_for_test: false,
+            canary_export: canary_export_held::CanaryExportHeldV1::new(),
         };
         if let Some((attempt, key)) = original.as_mut() {
             attempt.runtime = Some(runtime);
@@ -2021,6 +2045,7 @@ impl StorageBrokerRuntime {
             worker_dispatch: RepairWorkerDispatchGate::new(),
             operator_startup: None,
             fail_repair_completion_commit_for_test: false,
+            canary_export: canary_export_held::CanaryExportHeldV1::new(),
         };
         runtime.readiness = runtime.reconcile_startup()?;
 
@@ -2075,6 +2100,7 @@ impl StorageBrokerRuntime {
             worker_dispatch: RepairWorkerDispatchGate::new(),
             operator_startup: None,
             fail_repair_completion_commit_for_test: false,
+            canary_export: canary_export_held::CanaryExportHeldV1::new(),
         };
         runtime.readiness = runtime.reconcile_startup()?;
         Ok(runtime)
