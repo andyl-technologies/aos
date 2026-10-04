@@ -11,6 +11,7 @@ import ipaddress
 import json
 from pathlib import Path
 import re
+import textwrap
 
 
 MANAGED_PROCESS_PIN_FIELDS = frozenset((
@@ -76,7 +77,7 @@ def observe_managed_process(machine, tools, selected):
                 "original_argv", "nginx_linux_master_title"}):
         raise ValueError("Managed process pin differs")
     return json.loads(direct_guest_python(machine, tools["python"],
-        DIRECT_NGINX_PROCESS_OBSERVATION + r"""
+        DIRECT_NGINX_PROCESS_OBSERVATION + textwrap.dedent(r"""
         import hashlib, os, time
         from pathlib import Path
 
@@ -114,7 +115,7 @@ def observe_managed_process(machine, tools, selected):
             'commandLineBytes': str(len(command)),
             'environmentSha256': selected['environmentSha256'],
             'observedAtUnixMicros': str(time.time_ns() // 1000)}))
-        """, selected, timeout=30))
+        """), selected, timeout=30))
 
 
 def managed_private_log_position(machine, tools, path):

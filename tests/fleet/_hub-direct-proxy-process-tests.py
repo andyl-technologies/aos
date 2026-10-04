@@ -1,8 +1,12 @@
 """Exact Linux Nginx title observations without a runtime serving claim."""
 
+import ast
+import base64
 import hashlib
+import json
 from pathlib import Path
 import unittest
+from unittest.mock import patch
 
 
 SOURCE = Path(__file__).with_name('_hub-direct-storage-boundary.py')
@@ -47,6 +51,89 @@ class NginxProcessObservationTests(unittest.TestCase):
         self.assertEqual(first['expectedMasterTitle'], second['expectedMasterTitle'])
         self.assertNotEqual(first['commandLineSha256'], second['commandLineSha256'])
         self.assertNotEqual(first['commandLineBytes'], second['commandLineBytes'])
+
+
+class GuestProgramRenderingTests(unittest.TestCase):
+    def setUp(self):
+        self.renderer = {}
+        lifecycle = SOURCE.with_name('_hub-direct-worker-lifecycle.py')
+        exec(compile(lifecycle.read_bytes(), str(lifecycle), 'exec'), self.renderer)
+
+        self.managed = {}
+        managed = SOURCE.with_name('_hub-managed-storage-window.py')
+        exec(compile(managed.read_bytes(), str(managed), 'exec'), self.managed)
+        self.managed['DIRECT_NGINX_PROCESS_OBSERVATION'] = SCOPE['DIRECT_NGINX_PROCESS_OBSERVATION']
+
+        self.python = '/nix/store/fixture-python/bin/python3'
+        self.native = object()
+        self.worker = object()
+        self.pin = {name: 'fixture' for name in self.managed['MANAGED_PROCESS_PIN_FIELDS']}
+        self.pin.update(version=1, pid=123, ownerUid=0,
+            invocationObservationMode='nginx_linux_master_title',
+            arguments=['/nix/store/fixture-nginx/bin/nginx', '-c', '/private/nginx.conf'],
+            configurationFile='/private/nginx.conf', configurationSha256='a' * 64)
+
+    def capture_programs(self, scope, action):
+        """Compile actual renderer output without executing a guest command."""
+        captured = []
+
+        def private_command(machine, command, timeout=60):
+            header, program = command.split('\n', 1)
+            self.assertEqual(header, self.python + " - <<'DIRECT_PRIVATE_ACTION'")
+            ending = '\nDIRECT_PRIVATE_ACTION\n'
+            self.assertTrue(program.endswith(ending))
+            program = program.removesuffix(ending)
+
+            # Keep the same private renderer and verify its final shell payload.
+            # Executing the payload would inspect processes or start a proxy.
+            tree = ast.parse(program)
+            compile(tree, '<captured-private-guest-program>', 'exec')
+            definitions = {node.name for node in tree.body if isinstance(node, ast.FunctionDef)}
+            self.assertEqual(definitions, {'nginx_master_title', 'nginx_observed_command'})
+            selected = next(node for node in tree.body if isinstance(node, ast.Assign)
+                and any(isinstance(target, ast.Name) and target.id == 'selected'
+                    for target in node.targets))
+            encoded = selected.value.args[0].args[0].value
+            document = json.loads(base64.b64decode(encoded, validate=True))
+            captured.append({'machine': machine, 'timeout': timeout, 'selected': document})
+            return '{}'
+
+        with patch.dict(self.renderer, private_guest_command=private_command), patch.dict(scope,
+                direct_guest_python=self.renderer['direct_guest_python'],
+                retain_direct_flow=lambda *arguments: None):
+            action()
+        return captured
+
+    def test_proxy_startup_compiles_the_actual_private_guest_program(self):
+        tools = {'python': self.python, 'nginx': '/nix/store/fixture-nginx/bin/nginx'}
+        captured = self.capture_programs(SCOPE, lambda: SCOPE['start_direct_boundary_proxy'](
+            self.worker, tools, '/private/proxy', '/private/source.conf', ['/private/bodies']))
+
+        self.assertEqual(len(captured), 1)
+        self.assertIs(captured[0]['machine'], self.worker)
+        self.assertEqual(captured[0]['timeout'], 45)
+        self.assertEqual(captured[0]['selected'], {'root': '/private/proxy',
+            'configuration': '/private/source.conf', 'bodyRoots': ['/private/bodies'],
+            'nginx': tools['nginx'], 'prepareOnly': False})
+
+    def test_proxy_lifetimes_compile_for_both_selected_machines(self):
+        tools = {'python': self.python,
+            'storageBoundaryInstallation': {'nativeProxy': self.pin, 'workerProxy': self.pin}}
+        captured = self.capture_programs(SCOPE, lambda: SCOPE['observe_direct_boundary_lifetimes'](
+            self.native, self.worker, tools, 'baseline-start'))
+
+        self.assertEqual([row['machine'] for row in captured], [self.native, self.worker])
+        self.assertEqual([row['timeout'] for row in captured], [30, 30])
+        self.assertTrue(all(row['selected'] == self.pin for row in captured))
+
+    def test_managed_process_compiles_the_actual_private_guest_program(self):
+        captured = self.capture_programs(self.managed, lambda: self.managed['observe_managed_process'](
+            self.worker, {'python': self.python}, self.pin))
+
+        self.assertEqual(len(captured), 1)
+        self.assertIs(captured[0]['machine'], self.worker)
+        self.assertEqual(captured[0]['timeout'], 30)
+        self.assertEqual(captured[0]['selected'], self.pin)
 
 
 

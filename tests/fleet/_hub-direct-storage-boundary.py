@@ -11,6 +11,7 @@ import hashlib
 from pathlib import Path
 import re
 from decimal import Decimal, ROUND_CEILING
+import textwrap
 
 
 
@@ -43,7 +44,9 @@ def nginx_observed_command(command, arguments):
 
 def start_direct_boundary_proxy(machine, tools, root, configuration, body_roots, prepare_only=False):
     """Start the exact source-built TLS proxy and retain its actual lifetime."""
-    observed = json.loads(direct_guest_python(machine, tools["python"], DIRECT_NGINX_PROCESS_OBSERVATION + """
+    # Normalize the action before joining the shared column-zero definitions.
+    observed = json.loads(direct_guest_python(machine, tools["python"],
+        DIRECT_NGINX_PROCESS_OBSERVATION + textwrap.dedent("""
         import hashlib, os, stat, subprocess, time
         from pathlib import Path
 
@@ -114,7 +117,7 @@ def start_direct_boundary_proxy(machine, tools, root, configuration, body_roots,
         with os.fdopen(descriptor, 'w') as output:
             json.dump(receipt, output, sort_keys=True)
         print(json.dumps(receipt))
-    """, {"root": root, "configuration": configuration, "bodyRoots": body_roots,
+    """), {"root": root, "configuration": configuration, "bodyRoots": body_roots,
             "nginx": tools["nginx"], "prepareOnly": prepare_only}, timeout=45))
     return observed
 
@@ -180,7 +183,8 @@ def observe_direct_boundary_lifetimes(native, worker, tools, stage):
     observed = {}
     for role, machine in (("native", native), ("worker", worker)):
         selected = tools["storageBoundaryInstallation"][role + "Proxy"]
-        receipt = json.loads(direct_guest_python(machine, tools["python"], DIRECT_NGINX_PROCESS_OBSERVATION + """
+        receipt = json.loads(direct_guest_python(machine, tools["python"],
+            DIRECT_NGINX_PROCESS_OBSERVATION + textwrap.dedent("""
             import hashlib, os
             from pathlib import Path
 
@@ -203,7 +207,7 @@ def observe_direct_boundary_lifetimes(native, worker, tools, stage):
             print(json.dumps({'pid': selected['pid'], 'startTicks': before,
                 'ownerUid': root.stat().st_uid, 'executableSha256': executable,
                 'configurationSha256': config_sha, **identity}))
-        """, selected, timeout=30))
+        """), selected, timeout=30))
         observed[role] = receipt
     retain_direct_flow("actual-proxy-lifetimes-" + stage + ".json", observed)
     return observed
