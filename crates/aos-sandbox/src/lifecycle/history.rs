@@ -5,11 +5,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use aos_sandbox_core::{ObjectDigest, OperationId};
 use sha2::{Digest as _, Sha256};
 
-use super::format::record_digest;
+use super::format::{encode_retained_operation_record, record_digest};
 use super::{
     LifecycleCancelIdempotencyIndexV1, LifecycleCancelOutcomeV1, LifecycleCancelRequestV1,
     LifecycleIdempotencyIndexV1, LifecycleModelError, LifecycleOperationV1,
-    LifecycleRecordDigestV1, decode_operation_record_v1, encode_operation_record_v1,
+    LifecycleRecordDigestV1, decode_operation_record_v1,
 };
 
 /// Maximum records accepted by one replay.
@@ -94,6 +94,9 @@ impl LifecycleHistoryV1 {
 
     /// Captures a trusted compaction floor from this replay-validated state.
     pub(super) fn checkpoint(&self) -> Result<LifecycleHistoryCheckpointV1, LifecycleReplayError> {
+        if self.operations.values().any(LifecycleOperationV1::has_delete_batch_layout) {
+            return Err(LifecycleReplayError::Conflict);
+        }
         let mut history = self.clone();
         history.compact_materialization()?;
         Ok(LifecycleHistoryCheckpointV1 {
@@ -113,7 +116,7 @@ impl LifecycleHistoryV1 {
             .values()
             .try_fold(0_usize, |total, operation| {
                 total
-                    .checked_add(encode_operation_record_v1(operation)?.len())
+                    .checked_add(encode_retained_operation_record(operation)?.len())
                     .filter(|bytes| *bytes <= MAXIMUM_LIFECYCLE_HISTORY_BYTES)
                     .ok_or(LifecycleReplayError::Capacity)
             })?;
@@ -127,7 +130,7 @@ impl LifecycleHistoryV1 {
         let mut history = Self::default();
         let mut semantic_sequences = BTreeSet::new();
         for operation in operations {
-            let encoded = encode_operation_record_v1(operation)?;
+            let encoded = encode_retained_operation_record(operation)?;
             let digest = record_digest(&encoded)?;
             if history.operations.contains_key(&operation.operation_id()) {
                 return Err(LifecycleReplayError::Conflict);
@@ -262,7 +265,7 @@ impl LifecycleHistoryV1 {
         let outcome = cancellations.resolve(request, operation, digest);
         let mut next = self.clone();
         if let LifecycleCancelOutcomeV1::CanceledBeforeCommit(successor) = &outcome {
-            let encoded = encode_operation_record_v1(successor)?;
+            let encoded = encode_retained_operation_record(successor)?;
             next.apply(successor.clone(), record_digest(&encoded)?)?;
         }
         next.cancellations = cancellations;
@@ -275,7 +278,7 @@ impl LifecycleHistoryV1 {
         operation: LifecycleOperationV1,
         record_digest: LifecycleRecordDigestV1,
     ) -> Result<(), LifecycleReplayError> {
-        let encoded_length = encode_operation_record_v1(&operation)?.len();
+        let encoded_length = encode_retained_operation_record(&operation)?.len();
         let retained_records = self
             .retained_records
             .checked_add(1)
@@ -337,6 +340,11 @@ impl LifecycleHistoryV1 {
                     operation.terminal_result(),
                     operation.finished_at(),
                 )?;
+                let reconstructed = if previous.has_delete_batch_layout() {
+                    reconstructed.select_delete_batch_layout()?
+                } else {
+                    reconstructed
+                };
                 if reconstructed != operation {
                     return Err(LifecycleReplayError::Conflict);
                 }

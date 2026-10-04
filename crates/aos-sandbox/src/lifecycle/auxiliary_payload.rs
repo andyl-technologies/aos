@@ -38,6 +38,8 @@ pub(crate) enum LifecycleAuxiliaryPayloadLayoutV1 {
     LegacyWithoutHostBoot,
     /// Current payloads emitted by `AOSLIFA4` version 2.
     Current,
+    /// Purpose-selected D4 operations and DeleteBatch DATA in `AOSLIFA5`.
+    DeleteBatch,
 }
 
 /// Stores one complete reconstructing lifecycle auxiliary value.
@@ -55,6 +57,8 @@ pub enum LifecycleAuxiliaryPayloadV1 {
     BootInventory(LifecycleBootInventoryV1),
     /// Stores one stable cancellation-idempotency resolution.
     Cancellation(LifecycleCancellationRecordV1),
+    /// Stores the immutable selected native batch/outcome DATA.
+    DeleteBatch(super::LifecycleDeleteBatchRecordV1),
 }
 
 impl LifecycleAuxiliaryPayloadV1 {
@@ -68,6 +72,7 @@ impl LifecycleAuxiliaryPayloadV1 {
             Self::SuspendObservation(_) => LifecycleAuxiliaryKindV1::SuspendObservation,
             Self::BootInventory(_) => LifecycleAuxiliaryKindV1::BootInventory,
             Self::Cancellation(_) => LifecycleAuxiliaryKindV1::Cancellation,
+            Self::DeleteBatch(_) => LifecycleAuxiliaryKindV1::DeleteBatch,
         }
     }
 
@@ -81,6 +86,7 @@ impl LifecycleAuxiliaryPayloadV1 {
             Self::BootInventory(value) => Some(value.operation_revision()),
             Self::Cancellation(value) => Some(value.operation().record_revision()),
             Self::Coordination(_) => None,
+            Self::DeleteBatch(_) => None,
         }
     }
 
@@ -92,6 +98,7 @@ impl LifecycleAuxiliaryPayloadV1 {
             Self::SuspendObservation(value) => Some(value.operation()),
             Self::BootInventory(value) => Some(value.operation()),
             Self::Cancellation(value) => Some(value.operation().operation_id()),
+            Self::DeleteBatch(value) => Some(value.batch().operation()),
             Self::Coordination(_) | Self::RetentionLedger(_) => None,
         }
     }
@@ -106,14 +113,26 @@ impl LifecycleAuxiliaryPayloadV1 {
 pub fn encode_lifecycle_auxiliary_payload_v1(
     payload: &LifecycleAuxiliaryPayloadV1,
 ) -> Result<Vec<u8>, LifecycleModelError> {
-    let capacity = payload_encoded_length(payload)?;
+    encode_lifecycle_auxiliary_payload_with_layout_v1(payload, LifecycleAuxiliaryPayloadLayoutV1::Current)
+}
+
+pub(super) fn encode_lifecycle_auxiliary_payload_with_layout_v1(
+    payload: &LifecycleAuxiliaryPayloadV1,
+    layout: LifecycleAuxiliaryPayloadLayoutV1,
+) -> Result<Vec<u8>, LifecycleModelError> {
+    if let LifecycleAuxiliaryPayloadV1::DeleteBatch(_) = payload {
+        if layout != LifecycleAuxiliaryPayloadLayoutV1::DeleteBatch {
+            return Err(LifecycleModelError::InvalidModel);
+        }
+    }
+    let capacity = payload_encoded_length(payload, layout)?;
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(capacity)
         .map_err(|_| LifecycleModelError::Allocation)?;
     match payload {
         LifecycleAuxiliaryPayloadV1::Operation(value) => {
-            let operation = encode_operation_record_v1(value)?;
+            let operation = encode_operation_payload(value, layout)?;
             push_length(&mut bytes, operation.len())?;
             bytes.extend_from_slice(&operation);
         }
@@ -212,10 +231,11 @@ pub fn encode_lifecycle_auxiliary_payload_v1(
             };
             bytes.push(outcome);
             bytes.extend_from_slice(&[0; 7]);
-            let operation = encode_operation_record_v1(value.operation())?;
+            let operation = encode_operation_payload(value.operation(), layout)?;
             push_length(&mut bytes, operation.len())?;
             bytes.extend_from_slice(&operation);
         }
+        LifecycleAuxiliaryPayloadV1::DeleteBatch(value) => bytes.extend_from_slice(&value.encode()?),
     }
     if bytes.is_empty()
         || bytes.len() != capacity
@@ -228,10 +248,11 @@ pub fn encode_lifecycle_auxiliary_payload_v1(
 
 fn payload_encoded_length(
     payload: &LifecycleAuxiliaryPayloadV1,
+    layout: LifecycleAuxiliaryPayloadLayoutV1,
 ) -> Result<usize, LifecycleModelError> {
     let length = match payload {
         LifecycleAuxiliaryPayloadV1::Operation(value) => {
-            encode_operation_record_v1(value)?.len().checked_add(4)
+            encode_operation_payload(value, layout)?.len().checked_add(4)
         }
         LifecycleAuxiliaryPayloadV1::Coordination(value) => value
             .dependencies()
@@ -264,14 +285,29 @@ fn payload_encoded_length(
             .checked_mul(17)
             .and_then(|resources| 448_usize.checked_add(resources)),
         LifecycleAuxiliaryPayloadV1::Cancellation(value) => {
-            encode_operation_record_v1(value.operation())?
+            encode_operation_payload(value.operation(), layout)?
                 .len()
                 .checked_add(140)
         }
+        LifecycleAuxiliaryPayloadV1::DeleteBatch(value) => Some(value.encoded_length()),
     }
     .filter(|length| *length > 0 && *length <= MAXIMUM_LIFECYCLE_AUXILIARY_PAYLOAD_BYTES)
     .ok_or(LifecycleModelError::InvalidModel)?;
     Ok(length)
+}
+
+fn encode_operation_payload(
+    operation: &LifecycleOperationV1,
+    layout: LifecycleAuxiliaryPayloadLayoutV1,
+) -> Result<Vec<u8>, LifecycleModelError> {
+    if layout == LifecycleAuxiliaryPayloadLayoutV1::DeleteBatch {
+        if !operation.has_delete_batch_layout() {
+            return Err(LifecycleModelError::InvalidModel);
+        }
+        super::format::encode_retained_operation_record(operation)
+    } else {
+        encode_operation_record_v1(operation)
+    }
 }
 
 /// Decodes one complete lifecycle auxiliary payload.
@@ -309,6 +345,13 @@ pub(crate) fn decode_lifecycle_auxiliary_payload_with_layout_v1(
     preflight(kind, encoded, layout)?;
     let mut bytes = encoded;
     let payload = match kind {
+        LifecycleAuxiliaryKindV1::DeleteBatch => {
+            if layout != LifecycleAuxiliaryPayloadLayoutV1::DeleteBatch {
+                return Err(LifecycleModelError::CorruptEncoding);
+            }
+            bytes = &[];
+            LifecycleAuxiliaryPayloadV1::DeleteBatch(super::LifecycleDeleteBatchRecordV1::from_bytes(encoded)?)
+        }
         LifecycleAuxiliaryKindV1::Operation => {
             let length = read_length(&mut bytes)?;
             LifecycleAuxiliaryPayloadV1::Operation(decode_operation_record_v1(take_slice(
@@ -563,6 +606,16 @@ pub(crate) fn decode_lifecycle_auxiliary_payload_with_layout_v1(
     if !bytes.is_empty() {
         return Err(LifecycleModelError::CorruptEncoding);
     }
+    let operation = match &payload {
+        LifecycleAuxiliaryPayloadV1::Operation(value) => Some(value),
+        LifecycleAuxiliaryPayloadV1::Cancellation(value) => Some(value.operation()),
+        _ => None,
+    };
+    if operation.is_some_and(|value| value.has_delete_batch_layout()
+        != (layout == LifecycleAuxiliaryPayloadLayoutV1::DeleteBatch))
+    {
+        return Err(LifecycleModelError::CorruptEncoding);
+    }
     Ok(payload)
 }
 
@@ -571,8 +624,21 @@ fn preflight(
     encoded: &[u8],
     layout: LifecycleAuxiliaryPayloadLayoutV1,
 ) -> Result<(), LifecycleModelError> {
+    if layout == LifecycleAuxiliaryPayloadLayoutV1::DeleteBatch
+        && !matches!(kind, LifecycleAuxiliaryKindV1::Operation | LifecycleAuxiliaryKindV1::Cancellation | LifecycleAuxiliaryKindV1::DeleteBatch)
+    {
+        return Err(LifecycleModelError::CorruptEncoding);
+    }
     let mut bytes = encoded;
     match kind {
+        LifecycleAuxiliaryKindV1::DeleteBatch => {
+            if layout != LifecycleAuxiliaryPayloadLayoutV1::DeleteBatch {
+                return Err(LifecycleModelError::CorruptEncoding);
+            }
+            let header = take_slice(&mut bytes, 8)?;
+            let length = u32::from_be_bytes(header[4..8].try_into().map_err(|_| LifecycleModelError::CorruptEncoding)?) as usize;
+            take_slice(&mut bytes, length.checked_add(64).ok_or(LifecycleModelError::CorruptEncoding)?)?;
+        }
         LifecycleAuxiliaryKindV1::Operation => {
             let length = read_length(&mut bytes)?;
             take_slice(&mut bytes, length)?;
@@ -615,14 +681,14 @@ fn preflight(
         LifecycleAuxiliaryKindV1::SuspendObservation => {
             let host_boot_bytes = match layout {
                 LifecycleAuxiliaryPayloadLayoutV1::LegacyWithoutHostBoot => 0,
-                LifecycleAuxiliaryPayloadLayoutV1::Current => 16,
+                LifecycleAuxiliaryPayloadLayoutV1::Current | LifecycleAuxiliaryPayloadLayoutV1::DeleteBatch => 16,
             };
             take_slice(&mut bytes, 16 + 8 + 32 + 104 + host_boot_bytes + 32 + 8)?;
         }
         LifecycleAuxiliaryKindV1::BootInventory => {
             let host_boot_bytes = match layout {
                 LifecycleAuxiliaryPayloadLayoutV1::LegacyWithoutHostBoot => 0,
-                LifecycleAuxiliaryPayloadLayoutV1::Current => 16,
+                LifecycleAuxiliaryPayloadLayoutV1::Current | LifecycleAuxiliaryPayloadLayoutV1::DeleteBatch => 16,
             };
             take_slice(
                 &mut bytes,

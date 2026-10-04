@@ -35,6 +35,7 @@ use rustix::fs::{
 use sha2::{Digest, Sha256};
 
 pub mod canonical_map;
+mod delete_batch;
 #[cfg(target_os = "linux")]
 mod git_evidence_namespace;
 pub(crate) mod mount_manager_startup;
@@ -3478,6 +3479,7 @@ impl Journal {
             source_domain_policy_hold::require_no_mutation(&self.state, transaction)?;
         }
         validate_transaction(transaction, self.limits)?;
+        delete_batch::validate(&self.state, transaction, self.next_sequence, self.limits)?;
         let has_capacity_records = transaction
             .records()
             .iter()
@@ -3874,6 +3876,7 @@ impl Journal {
         #[cfg(not(target_os = "linux"))]
         cache_gate.check(self)?;
 
+        delete_batch::bound_preview_view(&self.state, &transactions, self.limits)?;
         let mut state = self.state.clone();
         let mut idempotency = self.idempotency.clone();
         let mut transaction_ids = self.transaction_ids.clone();
@@ -3982,6 +3985,7 @@ impl Journal {
                 return Err(JournalError::ProtectedBoundary);
             }
             validate_transaction(transaction, self.limits)?;
+            delete_batch::validate(&state, transaction, next_sequence, self.limits)?;
             if !transaction_ids.insert(transaction.id) {
                 return Err(JournalError::DuplicateTransaction);
             }
@@ -4069,6 +4073,9 @@ impl Journal {
     /// whose original native history must remain intact.
     pub fn compact(&mut self) -> Result<(), JournalError> {
         self.ensure_healthy()?;
+        if delete_batch::has_dependencies(&self.state) {
+            return Err(JournalError::ProtectedBoundary);
+        }
         #[cfg(target_os = "linux")]
         if self.q04_lower_history_present {
             // The initial Q04 slice retains exact completed lower native
@@ -5618,6 +5625,7 @@ enum DeploymentHistoryObserverV1<'observer, 'data> {
     Storage(&'observer mut storage_native_issuance_history::StorageHistoryObserverV1),
     NixOffline(&'observer mut nix_offline_provisioning::NativeHistoryV5),
     Q04(&'observer mut Q04NativeRecipeAuditV1<'data>),
+    Delete(&'observer mut delete_batch::NativeObserverV1),
 }
 
 #[cfg(target_os = "linux")]
@@ -5629,6 +5637,7 @@ impl DeploymentHistoryObserverV1<'_, '_> {
         commit_sequence: u64,
         begin_offset: u64,
         end_offset: u64,
+        native_digest: &[u8],
     ) -> Result<(), JournalError> {
         match self {
             Self::Main(history) => history.observe(transaction, begin_sequence, commit_sequence),
@@ -5641,6 +5650,9 @@ impl DeploymentHistoryObserverV1<'_, '_> {
             ),
             Self::NixOffline(history) => history.observe(
                 transaction, begin_sequence, begin_offset, end_offset,
+            ),
+            Self::Delete(history) => history.observe(
+                transaction, commit_sequence, end_offset, native_digest,
             ),
         }
     }
@@ -6375,11 +6387,13 @@ fn replay_original_observed<R: Read + Seek + Borrow<File>>(
                     records: transaction.records,
                 };
                 validate_transaction(&replay_transaction, limits)?;
+                delete_batch::validate(&state, &replay_transaction, begin_sequence, limits)?;
 
                 #[cfg(target_os = "linux")]
                 if let Some(history) = deployment_history.as_mut() {
                     history.observe(
                         &replay_transaction, begin_sequence, frame.sequence, begin_offset, offset,
+                        &frame.payload[4..],
                     )?;
                 }
 
@@ -6389,6 +6403,11 @@ fn replay_original_observed<R: Read + Seek + Borrow<File>>(
                 compaction_id[..8].copy_from_slice(&compaction_index.to_le_bytes());
                 compaction_id[8..].copy_from_slice(b"compact1");
                 if compaction_prefix && replay_transaction.id == compaction_id {
+                    if delete_batch::has_dependencies(&state)
+                        || delete_batch::selected(&replay_transaction)
+                    {
+                        return Err(JournalError::ProtectedBoundary);
+                    }
                     // Private compaction emits a sorted, PUT-only initial copy.
                     // Its IDs alone never exempt an ordinary logical mutation.
                     for record in replay_transaction.records() {

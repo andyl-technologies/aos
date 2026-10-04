@@ -4190,6 +4190,159 @@ pub(crate) fn effect_key(operation_id: OperationId, step: u32) -> [u8; EFFECT_KE
     key
 }
 
+/// Compares selected Delete admission DATA through the sole ledger codecs.
+///
+/// Offsets name the already checked native recipe, not a caller permission.
+/// This helper neither constructs a reconciler nor authenticates current
+/// authorization, graph membership, Source history or an independent floor.
+///
+/// # Errors
+///
+/// Returns typed ledger/codec errors for a malformed, reordered or mismatched
+/// recipe; runtime-authority rows remain explicitly unsupported here.
+pub(crate) fn validate_delete_batch_admission_records_v1(
+    batch: crate::lifecycle::delete_batch::DeleteBatchViewV1<'_>,
+    transaction: &JournalTransaction,
+    local_start: usize,
+    effects_start: usize,
+) -> Result<(), ReconcilerError> {
+    use crate::controller_query::PublicOperationMethodV1;
+    let invalid = || ReconcilerError::CorruptLedger("invalid Delete batch admission metadata");
+    let records = transaction.records();
+    let expected_effects_start = local_start
+        .checked_add(batch.count(0))
+        .and_then(|offset| offset.checked_add(batch.count(2)))
+        .and_then(|offset| offset.checked_add(1))
+        .ok_or_else(invalid)?;
+    if !matches!(local_start, 4 | 5)
+        || effects_start != expected_effects_start
+        || effects_start >= records.len()
+        || records.len() - effects_start > MAXIMUM_EFFECTS
+    {
+        return Err(invalid());
+    }
+    let operation_id = batch.operation();
+    let operation_row = records.get(1).ok_or_else(invalid)?;
+    let idempotency = records.get(2).ok_or_else(invalid)?;
+    let authorization = records.get(3).ok_or_else(invalid)?;
+    if operation_row.namespace() != RecordNamespace::Operation
+        || operation_row.key() != operation_id.as_bytes()
+        || operation_row.value().is_none_or(|bytes| bytes.len() != OPERATION_RECORD_V2_BYTES)
+        || idempotency.namespace() != RecordNamespace::Idempotency
+        || idempotency.key().is_empty() || idempotency.key().len() > 128
+        || idempotency.value().is_none_or(|bytes| bytes.len() != 48)
+        || authorization.namespace() != RecordNamespace::PublicOperationAuthorization
+        || authorization.key() != operation_id.as_bytes()
+        || authorization.value().is_none_or(|bytes| bytes.len() > 64 * 1024 + 68)
+    {
+        return Err(invalid());
+    }
+
+    let operation = decode_operation(operation_row.value().ok_or_else(invalid)?)?;
+    let public = operation.public_operation.ok_or_else(invalid)?;
+    let root = &batch.bytes()[65..81];
+    let root_row = batch.rows(0)
+        .find(|row| row[0] == 1 && &row[1..17] == root)
+        .ok_or_else(invalid)?;
+    let idempotency_value = idempotency.value().ok_or_else(invalid)?;
+    if operation.runtime_intent_digest.is_some()
+        || operation.ownership_gated != (local_start == 5)
+        || operation.state != if local_start == 5 {
+            OperationState::OwnershipPending
+        } else {
+            OperationState::Accepted
+        }
+        || operation.effect_count as usize != records.len() - effects_start
+        || operation.effect_count == 0
+        || public.method() != PublicOperationMethodV1::DeleteSandbox
+        || public.accepted_generation() != crate::lifecycle::delete_batch::raw64(&root_row[60..68])
+        || idempotency_value[..32] != batch.request_digest()
+        || idempotency_value[32..] != operation_id.as_bytes()[..]
+    {
+        return Err(invalid());
+    }
+    let scope = PublicOperationAuthorizationV1::decode(authorization.value().ok_or_else(invalid)?)?;
+    if scope.project() != batch.project()
+        || scope.resource_kind() != aos_sandbox_core::ResourceKind::Sandbox
+        || !matches!(scope.selector(), aos_sandbox_core::Selector::Resource { resource }
+            if resource.as_bytes().as_slice() == root)
+    {
+        return Err(invalid());
+    }
+    let gate = if local_start == 5 {
+        let gate_row = records.get(4).ok_or_else(invalid)?;
+        if gate_row.namespace() != RecordNamespace::OwnershipGate
+            || gate_row.key() != operation_id.as_bytes()
+        {
+            return Err(invalid());
+        }
+        let gate = decode_ownership_gate(gate_row.value().ok_or_else(invalid)?)?;
+        let OwnershipGateStatusV1::Pending(plan) = &gate else {
+            return Err(invalid());
+        };
+        if plan.operation_id() != operation_id
+            || plan.request_digest() != batch.request_digest()
+            || plan.idempotency_key().as_bytes() != idempotency.key()
+            || encode_ownership_gate(&gate)?.as_slice() != gate_row.value().ok_or_else(invalid)?
+        {
+            return Err(invalid());
+        }
+        Some(gate)
+    } else {
+        None
+    };
+
+    let mut delete_effects = 0_usize;
+    for (step, row) in records[effects_start..].iter().enumerate() {
+        let step = u32::try_from(step).map_err(|_| invalid())?;
+        if row.namespace() != RecordNamespace::Effect
+            || row.key() != effect_key(operation_id, step)
+        {
+            return Err(invalid());
+        }
+        let effect = decode_effect(row.value().ok_or_else(invalid)?)?;
+        if effect.state != EffectState::Planned
+            || effect.dispatch.is_some()
+            || effect.project_admission.is_some()
+            || encode_effect(&effect)?.as_slice() != row.value().ok_or_else(invalid)?
+        {
+            return Err(invalid());
+        }
+        if effect.plan.public_mutation_method() == Some(PublicOperationMethodV1::DeleteSandbox) {
+            let context = effect.plan.public_mutation_context()?.ok_or_else(invalid)?;
+            let crate::cli_model::DormantSandboxRequestKindV1::Delete(request) = context.validated_request()?
+            else {
+                return Err(invalid());
+            };
+            if context.project() != batch.project()
+                || request.sandbox_id.as_slice() != root
+                || request.expected_plan_digest.as_slice() != batch.graph_plan().as_slice()
+                || request.cascade != (batch.flags() & 1 != 0)
+                || request.force != (batch.flags() & 2 != 0)
+            {
+                return Err(invalid());
+            }
+            delete_effects += 1;
+        } else {
+            let binding = effect.plan.authority().ok_or_else(invalid)?;
+            let Some(OwnershipGateStatusV1::Pending(gate)) = gate.as_ref() else {
+                return Err(invalid());
+            };
+            if gate.publication_draft().bind_effect(binding.template_digest)?
+                .into_inner(operation_id, step)? != effect.plan
+            {
+                return Err(invalid());
+            }
+        }
+    }
+    if delete_effects != 1 {
+        return Err(invalid());
+    }
+    // Runtime-authority pending rows require the separate existing runtime
+    // owner/codec join. They are unsupported here, not certified by raw bytes.
+    Ok(())
+}
+
 fn decode_operation_key(bytes: &[u8]) -> Result<OperationId, ReconcilerError> {
     let value: [u8; OPERATION_KEY_BYTES] = bytes
         .try_into()

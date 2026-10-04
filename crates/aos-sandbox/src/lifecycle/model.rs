@@ -847,6 +847,9 @@ impl LifecycleSemanticCommitV1 {
 /// Stores one complete immutable-intent and monotone-progress snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LifecycleOperationV1 {
+    // Selected by the actual D4 envelope before any semantic fact exists.
+    // It is retained format DATA, never inferred from generic Delete intent.
+    delete_batch_layout: bool,
     operation_id: OperationId,
     caller: PrincipalId,
     project: ProjectId,
@@ -968,6 +971,7 @@ impl LifecycleOperationV1 {
         let normalized_request = super::format::normalized_request_digest_v1(&intent);
         Ok(Self {
             operation_id,
+            delete_batch_layout: false,
             caller,
             project,
             idempotency,
@@ -988,6 +992,27 @@ impl LifecycleOperationV1 {
             predecessor_digest,
         })
     }
+
+    pub(super) const fn has_delete_batch_layout(&self) -> bool {
+        self.delete_batch_layout
+    }
+
+    pub(super) fn select_delete_batch_layout(mut self) -> Result<Self, LifecycleModelError> {
+        if !matches!(self.intent, LifecycleIntentV1::DeleteSandbox { .. })
+            || self.terminal_result == Some(LifecycleTerminalResultV1::Succeeded)
+            || self.terminal_result == Some(LifecycleTerminalResultV1::CanceledBeforeCommit)
+            || self.semantic_commit.as_ref().is_some_and(|commit| {
+                !matches!(commit.facts(), super::LifecycleSemanticCommitFactV1::DeleteBatch { batch, .. }
+                    if batch.batch().view().is_ok_and(|view|
+                        view.project() == self.project && view.operation() == self.operation_id))
+            })
+        {
+            return Err(LifecycleModelError::InvalidModel);
+        }
+        self.delete_batch_layout = true;
+        Ok(self)
+    }
+
     /// Returns operation identity.
     #[must_use]
     pub const fn operation_id(&self) -> OperationId {
