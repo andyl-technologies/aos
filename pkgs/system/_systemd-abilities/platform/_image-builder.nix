@@ -619,11 +619,24 @@
             # observed GPT. The delivery envelope describes their encoding.
             ${pkgs.util-linux}/sbin/sfdisk --json image.raw > partition-table.json
             fat_volume_id=$(${pkgs.util-linux}/sbin/blkid -p -s UUID -o value esp.img)
+            metadata_certificate=""
+            if [ -n "$SB_CERT" ]; then
+              # Store optimisation may hardlink the public signing input. The
+              # strict metadata reader digests a private copy of the same bytes.
+              certificate_capture=$(mktemp -d "$PWD/metadata-certificate.XXXXXXXX")
+              metadata_certificate="$certificate_capture/db.crt"
+              cp -- "$SB_CERT" "$metadata_certificate"
+              chmod 0600 "$metadata_certificate"
+              test -f "$metadata_certificate" && test ! -L "$metadata_certificate"
+              test "$(stat -c %h "$metadata_certificate")" -eq 1
+              test "$(sha256sum "$SB_CERT" | cut -d ' ' -f1)" = \
+                "$(sha256sum "$metadata_certificate" | cut -d ' ' -f1)"
+            fi
             ${pkgs.jq}/bin/jq -n \
               --arg version "$IMAGE_VERSION" --arg variant ${lib.escapeShellArg systemVariant} \
               --arg platform "$IMAGE_PLATFORM" --arg out "$out" \
               --arg filename "$IMAGE_FILENAME" --arg fat "$fat_volume_id" \
-              --arg certificate "$SB_CERT" \
+              --arg certificate "$metadata_certificate" \
               --argjson verity ${
               if verityEnabled
               then "true"
