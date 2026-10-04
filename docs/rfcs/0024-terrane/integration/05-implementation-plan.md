@@ -908,18 +908,29 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   remain unqualified by this immutable-data prerequisite.
   Review of the repeatable maintenance candidate finds source-root searches
   over the entire supplied graph, including unrelated roots and an unreported
-  no-op owner check. The next shared source prerequisite retains only the
+  no-op owner check. The reviewed shared source prerequisite retains only the
   checked reachable roots and binds their immutable handles into discovery,
   with explicit lookup counters and constant-cost snapshot sharing. Maintenance
   qualification now requires five additional exact source-selection groups
   for unrelated graph growth, retained storage and occurrence contexts,
   geometry/revision refusal, flat snapshot sharing and counter overflow.
   These expand the existing evaluation check to sixteen exact groups;
-  declarations alone cannot qualify them. Maintenance corrections add
-  independent numerical multilevel work and phase totals, forced capacity cuts
-  and prolonged canonical resynchronization witnesses. They await full review
-  and shared-source qualification; five selected developmental groups do not
-  qualify the complete evaluation gate.
+  declarations alone cannot qualify them. Preserved combined candidate
+  `f9e77ddd7bc1` adopts the privately bound source snapshots and passes all 638
+  core tests with zero skipped, strict Clippy/rustdoc, both formatters, all
+  sixteen exact evaluation groups and the actual no-std gate. Its source
+  manifests remain identical through qualification. Source-adoption review
+  finds no additional binding, lifetime or algorithm defect, but cost review
+  still requires independent production split-before/reset and prolonged
+  recovery work totals. The existing literal multilevel growth trace, forced
+  capacity geometry and retained-middle proofs do not close that comparison.
+  The unrelated required `aos-test-targets` check fails because its attribute
+  is absent; that failure remains recorded. A separate shared verifier task
+  adds actual supplied-Node hashing and canonical reconstruction phase reports;
+  inherited selected traversal counters cannot substitute for those costs.
+  Revised numerical proofs and complete verifier reports await review and
+  combined qualification. These scoped checks do not qualify native index
+  behavior or the complete T1 aggregate.
   No formal task merge, checkbox or milestone freeze advances.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
