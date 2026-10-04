@@ -35,8 +35,34 @@
   configurationLowerEffect = builtins.hashString "sha256" (
     builtins.toJSON system.config.aos.abilities.configurationLower.operations.install.effects.image.contract.identity
   );
+  imageCommands = [
+    {
+      name = "mount";
+      package = pkgs.util-linux;
+      member = "bin/mount";
+    }
+    {
+      name = "umount";
+      package = pkgs.util-linux;
+      member = "bin/umount";
+    }
+    {
+      name = "blkid";
+      package = pkgs.util-linux;
+      member = "sbin/blkid";
+    }
+    {
+      name = "apm";
+      package = pkgs.aos.apm;
+      member = "bin/apm";
+    }
+  ];
 in
   assert assembly != null;
+  assert builtins.all (command:
+    builtins.elem (builtins.toString command.package)
+    (map builtins.toString system.config.environment.systemPackages))
+  imageCommands;
   assert builtins.length (builtins.filter (path: path == builtins.toString pkgs.coreutils) rootPaths) == 1;
   assert builtins.length (builtins.filter (path: path == builtins.toString pkgs.coreutils) runtimeRoots) == 1;
   assert !(builtins.elem (builtins.toString pkgs.linux) runtimeRoots);
@@ -85,6 +111,20 @@ in
             ${pkgs.libarchive}/bin/bsdtar --format=pax -cf initrd.tar @initrd.cpio
             ${pkgs.libarchive}/bin/bsdtar -xpf initrd.tar -C initrd-tree
             ${pkgs.erofs-utils}/bin/fsck.erofs --extract=root-tree ${assembly}/inputs/root.img
+            # Commands from both bin and sbin belong to the selected immutable
+            # system profile. Verify the exported link and its retained bytes.
+            test "$(readlink root-tree/usr/sbin)" = bin
+            ${lib.concatMapStringsSep "\n" (command: let
+                target = "${command.package}/${command.member}";
+                retained = "root-tree/usr/lib/aos/nix/store/${baseNameOf (builtins.toString command.package)}/${command.member}";
+              in ''
+                test "$(readlink root-tree/usr/bin/${command.name})" = ${lib.escapeShellArg target}
+                test -f ${lib.escapeShellArg retained}
+                test ! -L ${lib.escapeShellArg retained}
+                test -x ${lib.escapeShellArg retained}
+                ${pkgs.diffutils}/bin/cmp ${lib.escapeShellArg target} ${lib.escapeShellArg retained}
+              '')
+              imageCommands}
             # Boot restoration must bind to the selected lower effect, rather
             # than infer ownership from whichever file is visible at reboot.
             lower_effect=root-tree/usr/lib/aos/configuration-lower-effect
