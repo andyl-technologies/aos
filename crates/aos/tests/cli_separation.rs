@@ -1,6 +1,9 @@
-//! Command-surface contracts for the three independent public CLIs.
+//! Command-surface contracts for public CLIs and installed private helpers.
 
 use std::process::{Command, Output};
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 use anyhow::{Context, Result, bail};
 use tempfile::tempdir;
@@ -188,5 +191,82 @@ fn image_preparation_is_public_and_rejects_container_before_state_access() -> Re
         String::from_utf8_lossy(&output.stderr).contains("AOS containers support only user-scope")
     );
     assert_eq!(std::fs::read_dir(home.path())?.count(), 0);
+    Ok(())
+}
+
+#[cfg(unix)]
+fn run_boot_entry(binary: &str, entry: &str, arguments: &[&str]) -> Result<Output> {
+    Command::new(binary)
+        .arg0(entry)
+        .env_clear()
+        .env("TOKIO_WORKER_THREADS", "2")
+        .args(arguments)
+        .output()
+        .with_context(|| format!("running boot entry {entry}"))
+}
+
+#[cfg(unix)]
+#[test]
+fn shared_boot_entry_preserves_host_and_handoff_command_surfaces() -> Result<()> {
+    for entry in [
+        "aos-boot-configuration",
+        ".aos-boot-configuration-unwrapped",
+    ] {
+        for arguments in [vec!["--help"], vec!["handoff-initrd-store", "--help"]] {
+            let standalone = run_boot_entry(
+                env!("CARGO_BIN_EXE_aos-boot-configuration"),
+                entry,
+                &arguments,
+            )?;
+            let shared = run_boot_entry(env!("CARGO_BIN_EXE_apm"), entry, &arguments)?;
+
+            assert!(standalone.status.success());
+            assert!(shared.status.success());
+            assert_eq!(shared.stdout, standalone.stdout);
+            assert_eq!(shared.stderr, standalone.stderr);
+            assert!(String::from_utf8_lossy(&shared.stdout).contains("--admission-sha256"));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn shared_boot_entry_preserves_source_rejection_before_state_access() -> Result<()> {
+    let root = tempdir()?;
+    let input = root.path().to_str().context("fixture path is not UTF-8")?;
+    let digest = format!("sha256:{}", "0".repeat(64));
+    let arguments = [
+        "--input",
+        input,
+        "--state-directory",
+        input,
+        "--nix-store",
+        "/unreachable/bin/nix-store",
+        "--admission",
+        input,
+        "--admission-sha256",
+        &digest,
+    ];
+
+    let standalone = run_boot_entry(
+        env!("CARGO_BIN_EXE_aos-boot-configuration"),
+        "aos-boot-configuration",
+        &arguments,
+    )?;
+    let shared = run_boot_entry(
+        env!("CARGO_BIN_EXE_apm"),
+        ".aos-boot-configuration-unwrapped",
+        &arguments,
+    )?;
+
+    assert_eq!(standalone.status.code(), Some(1));
+    assert_eq!(shared.status.code(), Some(1));
+    assert!(shared.stdout.is_empty());
+    assert_eq!(shared.stderr, standalone.stderr);
+    assert!(String::from_utf8_lossy(&shared.stderr).contains(
+        "aos-boot-configuration: host metadata adoption requires the fixed verified image and system profile"
+    ));
+    assert_eq!(std::fs::read_dir(root.path())?.count(), 0);
     Ok(())
 }
