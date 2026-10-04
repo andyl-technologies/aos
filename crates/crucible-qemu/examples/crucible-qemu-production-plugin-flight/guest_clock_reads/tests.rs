@@ -2,6 +2,124 @@
 
 use super::*;
 use crucible::NodeId;
+use crucible_protocol::selectable_catalog_plan::{
+    SelectableCatalogPlanError, SelectablePlanPendingRequest,
+};
+use crucible_protocol::{SelectableRegister, SelectionRequest};
+
+fn register_readiness(plan: &mut SelectableCatalogPlan) {
+    let registration = SelectableRegister::new(
+        1,
+        super::super::READINESS_SELECTABLE_ID,
+        vec![1],
+        vec![1],
+        vec![String::from("readiness")],
+    )
+    .expect("original guest registration");
+    plan.apply_registration(&registration)
+        .expect("declared readiness selectable");
+    plan.apply_freeze().expect("original setup freeze");
+}
+
+fn pending_barrier(sequence: u64, instance: &str) -> SelectablePlanPendingRequest {
+    let request = SelectionRequest::new(
+        sequence,
+        super::super::READINESS_SELECTABLE_ID,
+        instance,
+        None,
+        128,
+    )
+    .expect("original barrier reply capacity");
+    SelectablePlanPendingRequest::new(request, 100, 5000, 0, 0x1000)
+}
+
+#[test]
+fn clock_profile_accepts_three_original_barriers_then_refuses_fourth_atomically() {
+    let mut plan = selectable_catalog_plan(true).expect("clock profile");
+    register_readiness(&mut plan);
+
+    for (sequence, instance) in [(2, "boot"), (3, "clock-0"), (4, "clock-1")] {
+        plan.apply_pending_request(pending_barrier(sequence, instance))
+            .expect("every original guest barrier fits the finite profile");
+        let reply = SelectionReply::rejected(
+            sequence,
+            SelectionReplyStatus::Unavailable,
+            [0; 32],
+            [0; 32],
+        )
+        .expect("original typed unavailable reply");
+        plan.apply_completed_reply(&reply)
+            .expect("exact reply completion counts once");
+    }
+
+    assert_eq!(plan.continuation().total_completed_requests(), 3);
+    assert_eq!(
+        plan.continuation().last_completed_request_sequence(),
+        Some(4)
+    );
+    let completed = plan.encode().expect("completed canonical plan");
+    assert_eq!(
+        SelectableCatalogPlan::decode(&completed).expect("canonical round trip"),
+        plan
+    );
+    assert!(matches!(
+        plan.apply_pending_request(pending_barrier(5, "extra")),
+        Err(SelectableCatalogPlanError::RequestLimitExceeded {
+            field: "total_requests",
+            actual: 4,
+            maximum: 3,
+        })
+    ));
+    assert_eq!(plan.encode().expect("refused plan"), completed);
+}
+
+#[test]
+fn default_profile_preserves_original_cold_plan_and_refuses_second_barrier() {
+    let declaration = SelectablePlanDeclaration::new(
+        "flight.ready",
+        vec![1],
+        vec![1],
+        vec![String::from("readiness")],
+        SelectablePlanPresence::Required,
+    )
+    .expect("original declaration");
+    let original = SelectableCatalogPlan::new(
+        SelectablePlanLimits::new(1, 1, 1).expect("original finite limits"),
+        vec![declaration],
+        SelectablePlanContinuation::cold(),
+    )
+    .expect("original cold plan");
+    let mut plan = selectable_catalog_plan(false).expect("default profile");
+    let clock = selectable_catalog_plan(true).expect("clock profile");
+
+    assert_eq!(
+        plan.encode().expect("default plan"),
+        original.encode().expect("original plan")
+    );
+    assert_eq!(clock.declarations(), original.declarations());
+    assert_eq!(clock.continuation(), original.continuation());
+    assert_eq!(clock.limits().declarations(), 1);
+    assert_eq!(clock.limits().requests_per_selectable(), 3);
+    assert_eq!(clock.limits().total_requests(), 3);
+
+    register_readiness(&mut plan);
+    plan.apply_pending_request(pending_barrier(2, "boot"))
+        .expect("original boot barrier");
+    let reply = SelectionReply::rejected(2, SelectionReplyStatus::Unavailable, [0; 32], [0; 32])
+        .expect("original typed unavailable reply");
+    plan.apply_completed_reply(&reply).expect("boot completion");
+    let completed = plan.encode().expect("completed default plan");
+
+    assert!(matches!(
+        plan.apply_pending_request(pending_barrier(3, "clock-0")),
+        Err(SelectableCatalogPlanError::RequestLimitExceeded {
+            field: "total_requests",
+            actual: 2,
+            maximum: 1,
+        })
+    ));
+    assert_eq!(plan.encode().expect("refused default plan"), completed);
+}
 
 fn detail(key: &str, value: GuestMeasurementValue) -> GuestSemanticMarkerDetail {
     GuestSemanticMarkerDetail {

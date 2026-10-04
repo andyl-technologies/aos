@@ -30,10 +30,7 @@ use crucible::{
     ObservableEvent, ObservableEventPayload, PreemptionDecision, PreemptionKind, SimulationBackend,
     VcpuId, VirtualTime,
 };
-use crucible_protocol::selectable_catalog_plan::{
-    SELECTABLE_NATIVE_HANDOFF_TICKS_PS, SelectableCatalogPlan, SelectablePlanContinuation,
-    SelectablePlanDeclaration, SelectablePlanLimits, SelectablePlanPresence,
-};
+use crucible_protocol::selectable_catalog_plan::SELECTABLE_NATIVE_HANDOFF_TICKS_PS;
 use crucible_protocol::{SelectionReply, SelectionReplyStatus};
 use crucible_qemu::{
     BoundedSchedulerPreemptionEvidence, LinuxQemuAttemptHostConfig, LinuxQemuAttemptHostFactory,
@@ -161,7 +158,8 @@ fn run() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    let selectable_catalog_plan = readiness_selectable_catalog_plan()?;
+    let clock_read_flight = guest_clock_reads::requested()?;
+    let selectable_catalog_plan = guest_clock_reads::selectable_catalog_plan(clock_read_flight)?;
     let config = QemuLiveNodeStepGateConfig::new(qemu, plugin, kernel, firmware, run_root)
         .with_initrd(idle_initrd)
         .with_vm_shape(128, 4)
@@ -177,7 +175,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         // host seconds. Keep a finite per-advance guard with measured headroom.
         .with_completion_timeout(Duration::from_secs(300));
 
-    if guest_clock_reads::requested()? {
+    if clock_read_flight {
         return guest_clock_reads::run(&mut factory, &config, qemu, reference_trace_output);
     }
 
@@ -1401,21 +1399,6 @@ fn authenticate_readiness_marker(
         ));
     }
     Ok(retired_icount.retired)
-}
-
-fn readiness_selectable_catalog_plan() -> Result<SelectableCatalogPlan, Box<dyn Error>> {
-    let declaration = SelectablePlanDeclaration::new(
-        READINESS_SELECTABLE_ID,
-        vec![1],
-        vec![1],
-        vec![String::from("readiness")],
-        SelectablePlanPresence::Required,
-    )?;
-    Ok(SelectableCatalogPlan::new(
-        SelectablePlanLimits::new(1, 1, 1)?,
-        vec![declaration],
-        SelectablePlanContinuation::cold(),
-    )?)
 }
 
 fn install_preemption(

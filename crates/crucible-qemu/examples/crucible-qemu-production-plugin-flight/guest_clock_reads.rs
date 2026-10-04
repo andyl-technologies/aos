@@ -13,6 +13,10 @@ use crucible::{
     AdvanceOutcome, GuestMeasurementValue, GuestSemanticMarkerDetail, Icount, ObservableEvent,
     ObservableEventPayload, SimulationBackend, VirtualTime,
 };
+use crucible_protocol::selectable_catalog_plan::{
+    SelectableCatalogPlan, SelectablePlanContinuation, SelectablePlanDeclaration,
+    SelectablePlanLimits, SelectablePlanPresence,
+};
 use crucible_protocol::{SelectionReply, SelectionReplyStatus};
 use crucible_qemu::{
     LinuxQemuAttemptHostFactory, QemuLiveNodeIdentity, QemuLiveNodeStepGateConfig, QemuNode,
@@ -55,6 +59,25 @@ struct RunEvidence {
     // Retain original public payloads, including all return details, rather
     // than publishing only the validator's derived comparison booleans.
     events: Vec<(u64, ObservableEventPayload)>,
+}
+
+pub(super) fn selectable_catalog_plan(
+    clock_read_flight: bool,
+) -> Result<SelectableCatalogPlan, Box<dyn Error>> {
+    let declaration = SelectablePlanDeclaration::new(
+        super::READINESS_SELECTABLE_ID,
+        vec![1],
+        vec![1],
+        vec![String::from("readiness")],
+        SelectablePlanPresence::Required,
+    )?;
+    // The clock payload reuses readiness for boot and both read batches.
+    let requests = if clock_read_flight { 3 } else { 1 };
+    Ok(SelectableCatalogPlan::new(
+        SelectablePlanLimits::new(1, requests, requests)?,
+        vec![declaration],
+        SelectablePlanContinuation::cold(),
+    )?)
 }
 
 pub(super) fn requested() -> Result<bool, Box<dyn Error>> {
