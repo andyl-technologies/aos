@@ -11,6 +11,14 @@
   version = "6.0.3";
   sitePackages = "lib/python3.14/site-packages";
   pythonPath = "${buildPackages.setuptools}/${sitePackages}:${buildPackages.cython}/${sitePackages}";
+
+  # Darwin extension modules are Mach-O bundles that resolve the Python C API
+  # from the loading interpreter, as the target sysconfig LDSHARED does; a
+  # -shared dylib must instead resolve every symbol at link time and fails.
+  extensionLinker =
+    if stdenv.hostPlatform.isDarwin
+    then "$CC -bundle -Wl,-undefined,dynamic_lookup"
+    else "$CC -shared";
 in
   mkDerivation {
     pname = "python3-pyyaml";
@@ -56,7 +64,7 @@ in
                 else "x86_64"
               }
               export CPPFLAGS="$CPPFLAGS -I${python3}/include/python3.14"
-              export LDSHARED="$CC -shared"
+              export LDSHARED="${extensionLinker}"
             ''}
             ${buildPackages.python3}/bin/python3 setup.py --with-libyaml build
           '';
