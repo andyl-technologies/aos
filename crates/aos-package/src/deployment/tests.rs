@@ -28,6 +28,7 @@ struct StoreState {
     admit_handlers: bool,
     retains: usize,
     fail_retain_at: Option<usize>,
+    fail_preflight: bool,
     fail_release: bool,
 }
 
@@ -45,6 +46,16 @@ impl HandlerArtifacts for Store {
 
     fn release(&mut self, _: &Effect) -> Result<()> {
         bail!("empty deployment should not release effects")
+    }
+
+    fn retain_batch(&mut self, effects: &[&Effect]) -> Result<()> {
+        if std::mem::take(&mut self.0.lock().unwrap().fail_preflight) {
+            bail!("simulated interruption before activation")
+        }
+        for effect in effects {
+            self.retain(effect)?;
+        }
+        Ok(())
     }
 }
 
@@ -230,7 +241,7 @@ fn native_journal_policy_keeps_capacity_limits_enforced() {
 fn recovers_prepared_generation_and_interrupted_pruning() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::default();
-    store.0.lock().unwrap().fail_retain_at = Some(2);
+    store.0.lock().unwrap().fail_preflight = true;
     let cancellation = CancellationToken::default();
     let deployment = empty_deployment("main");
     let open =
@@ -241,9 +252,16 @@ fn recovers_prepared_generation_and_interrupted_pruning() {
     assert!(transactions.apply(&deployment, &cancellation).is_err());
     assert!(transactions.current().is_none());
     assert!(transactions.next_sequence().is_err());
+    assert_eq!(store.0.lock().unwrap().retains, 1);
     drop(transactions);
 
+    // Recovery must re-admit the original inputs, even though the first
+    // process retained them before durably recording Prepared.
+    store.0.lock().unwrap().fail_retain_at = Some(2);
     let mut transactions = open();
+    assert!(transactions.resume(&cancellation).is_err());
+    assert!(transactions.current().is_none());
+    assert_eq!(transactions.pending_sequence(), Some(1));
     let recovered = transactions.resume(&cancellation).unwrap().unwrap();
     assert_eq!(recovered.sequence, 1);
     assert_eq!(transactions.next_sequence().unwrap(), 2);
@@ -334,7 +352,7 @@ fn convergence_preserves_generation_and_recovers_only_the_original_attempt() {
 fn convergence_resumes_pending_publication_without_starting_another_transaction() {
     let directory = tempfile::tempdir().unwrap();
     let store = Store::default();
-    store.0.lock().unwrap().fail_retain_at = Some(2);
+    store.0.lock().unwrap().fail_preflight = true;
     let deployment = empty_deployment("main");
     let cancellation = CancellationToken::default();
     let open =
@@ -386,9 +404,7 @@ fn restores_only_unpruned_and_pending_generation_roots_without_changing_journals
     transactions.apply(&deployment, &cancellation).unwrap();
     let committed = transactions.apply(&deployment, &cancellation).unwrap();
     transactions.prune(1).unwrap();
-    let mut state = store.0.lock().unwrap();
-    state.fail_retain_at = Some(state.retains + 2);
-    drop(state);
+    store.0.lock().unwrap().fail_preflight = true;
     assert!(transactions.apply(&deployment, &cancellation).is_err());
     assert_eq!(transactions.pending_sequence(), Some(3));
     drop(transactions);
@@ -801,7 +817,7 @@ fn inspection_never_creates_journals_and_distinguishes_pending_generation() {
     writer
         .apply(&deployment, &CancellationToken::default())
         .unwrap();
-    store.0.lock().unwrap().fail_retain_at = Some(4);
+    store.0.lock().unwrap().fail_preflight = true;
     assert!(
         writer
             .apply(&deployment, &CancellationToken::default())

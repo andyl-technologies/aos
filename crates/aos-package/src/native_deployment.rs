@@ -1098,7 +1098,9 @@ pub(crate) fn configure_profile_observer<S: crate::deployment::transaction::Depl
     configure_profile_observer_projected(consumer, profile, desired, None, cancellation)
 }
 
-fn configure_profile_observer_projected<S: crate::deployment::transaction::DeploymentStore>(
+pub(crate) fn configure_profile_observer_projected<
+    S: crate::deployment::transaction::DeploymentStore,
+>(
     consumer: &mut crate::profile::deployment::ProfileDeployment<'_, S>,
     profile: &crate::profile::Profile,
     desired: Option<(&Path, &Deployment)>,

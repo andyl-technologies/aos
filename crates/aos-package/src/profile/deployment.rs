@@ -451,8 +451,7 @@ mod tests {
     #[derive(Default)]
     struct Store {
         reject: bool,
-        fail_at: Option<usize>,
-        retains: usize,
+        fail_preflight: bool,
     }
 
     impl HandlerArtifacts for Store {
@@ -463,16 +462,21 @@ mod tests {
         fn release(&mut self, _: &Effect) -> Result<()> {
             bail!("empty profile must not release a handler")
         }
+
+        fn retain_batch(&mut self, effects: &[&Effect]) -> Result<()> {
+            if std::mem::take(&mut self.fail_preflight) {
+                bail!("simulated interruption before activation")
+            }
+            for effect in effects {
+                self.retain(effect)?;
+            }
+            Ok(())
+        }
     }
 
     impl DeploymentStore for Store {
         fn retain_generation(&mut self, _: &str, _: &Deployment) -> Result<()> {
-            self.retains += 1;
             ensure!(!self.reject, "artifact admission rejected");
-            ensure!(
-                self.fail_at != Some(self.retains),
-                "interrupted during pending generation"
-            );
             Ok(())
         }
 
@@ -602,7 +606,7 @@ mod tests {
         let mut consumer = ProfileDeployment::open(
             &profile,
             Store {
-                fail_at: Some(2),
+                fail_preflight: true,
                 ..Store::default()
             },
             JournalLimits::default(),
@@ -678,7 +682,7 @@ mod tests {
         let mut consumer = ProfileDeployment::open(
             &profile,
             Store {
-                fail_at: Some(2),
+                fail_preflight: true,
                 ..Store::default()
             },
             JournalLimits::default(),
@@ -696,6 +700,34 @@ mod tests {
             previous.number
         );
         drop(consumer);
+
+        // Prepared is durable, but recovery must still authenticate its
+        // original inputs before publishing the staged profile tree.
+        let mut rejected = ProfileDeployment::open(
+            &profile,
+            Store {
+                reject: true,
+                ..Store::default()
+            },
+            JournalLimits::default(),
+        )
+        .unwrap();
+        assert!(rejected.recover(&CancellationToken::default()).is_err());
+        assert_eq!(rejected.transactions.pending_sequence(), Some(1));
+        assert_eq!(
+            rejected
+                .transactions
+                .pending()
+                .unwrap()
+                .canonical_bytes()
+                .unwrap(),
+            deployment().canonical_bytes().unwrap()
+        );
+        assert_eq!(
+            profile.current_generation().unwrap().unwrap().number,
+            previous.number
+        );
+        drop(rejected);
 
         let mut recovered =
             ProfileDeployment::open(&profile, Store::default(), JournalLimits::default()).unwrap();
@@ -716,7 +748,7 @@ mod tests {
         let mut consumer = ProfileDeployment::open(
             &profile,
             Store {
-                fail_at: Some(2),
+                fail_preflight: true,
                 ..Store::default()
             },
             JournalLimits::default(),

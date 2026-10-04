@@ -538,6 +538,7 @@ pub(crate) struct Prepared {
     admission: RegistryAdmission,
     executable: PathBuf,
     evaluation_input: PathBuf,
+    observer: serde_json::Value,
     _temporary_roots: crate::store::temp_roots::TemporaryRoots,
     pub(crate) additional: Vec<(String, PackageMeta)>,
 }
@@ -929,17 +930,19 @@ fn prepare_with_inputs(
         retained_inputs,
         evaluation_input: Some(evaluation_input.clone()),
     };
-    let deployment = evaluation.evaluate(staging.path(), 60_000, cancellation.token())?;
+    let evaluated =
+        evaluation.evaluate_with_observer(staging.path(), 60_000, cancellation.token())?;
     ensure!(
         profile.scope == config.scope,
         "native install profile differs from configured scope"
     );
     Ok(Prepared {
         config: config.clone(),
-        deployment,
+        deployment: evaluated.deployment,
         admission,
         executable,
         evaluation_input,
+        observer: evaluated.observer,
         _temporary_roots: temporary_roots,
         additional,
     })
@@ -972,10 +975,11 @@ impl Prepared {
             self.admission,
         )?;
         let mut consumer = ProfileDeployment::open(profile, store, journal_limits())?;
-        crate::native_deployment::configure_profile_observer(
+        crate::native_deployment::configure_profile_observer_projected(
             &mut consumer,
             profile,
             Some((&self.evaluation_input, &self.deployment)),
+            Some(&self.observer),
             cancellation.token(),
         )?;
         consumer.apply(&self.deployment, generation, cancellation.token())
