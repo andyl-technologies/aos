@@ -125,6 +125,7 @@
       zfs
       aos-recovery
       pe-tools
+      nix
     ];
   systemdRuntimeLibraryPath = builtins.concatStringsSep ":" (
     map (dependency: "${dependency}/lib") systemdRuntimeLibraries
@@ -670,16 +671,16 @@ in
       {
         name = "install-native-platform-tools";
         script = ''
-          mkdir -p "$out/bin"
-          cat > "$out/bin/aos-systemd-credential-encrypt" << EOF
+          mkdir -p "$handlers/bin"
+          cat > "$handlers/bin/aos-systemd-credential-encrypt" << EOF
           #!${bash}/bin/bash
           exec "${aos-systemd-provider}/bin/aos-systemd-credential-encrypt" \\
             --systemd-creds "$out/bin/systemd-creds" \\
             "\$@"
           EOF
-          chmod +x "$out/bin/aos-systemd-credential-encrypt"
+          chmod +x "$handlers/bin/aos-systemd-credential-encrypt"
 
-          cat > "$out/bin/aos-systemd-boot-platform" << EOF
+          cat > "$handlers/bin/aos-systemd-boot-platform" << EOF
           #!${bash}/bin/bash
           exec "${aos-systemd-provider}/bin/aos-systemd-boot-platform" \\
             --bootctl "$out/bin/bootctl" \\
@@ -688,24 +689,24 @@ in
             --systemctl "$out/bin/systemctl" \\
             "\$@"
           EOF
-          chmod +x "$out/bin/aos-systemd-boot-platform"
+          chmod +x "$handlers/bin/aos-systemd-boot-platform"
 
-          cat > "$out/bin/aos-systemd-image-evidence" << EOF
+          cat > "$handlers/bin/aos-systemd-image-evidence" << EOF
           #!${bash}/bin/bash
           exec "${aos-systemd-provider}/bin/aos-systemd-image-evidence" \\
             --openssl "${openssl}/bin/openssl" \\
             --objcopy "${pe-tools}/bin/objcopy" \\
             "\$@"
           EOF
-          chmod +x "$out/bin/aos-systemd-image-evidence"
+          chmod +x "$handlers/bin/aos-systemd-image-evidence"
 
         '';
       }
       {
         name = "install-native-image-stage";
         script = ''
-          mkdir -p "$out/bin"
-          cat > "$out/bin/aos-systemd-image-stage" << EOF
+          mkdir -p "$handlers/bin"
+          cat > "$handlers/bin/aos-systemd-image-stage" << EOF
           #!${bash}/bin/bash
           exec "${aos-systemd-provider}/bin/aos-systemd-image-stage" \\
             --mount "${util-linux}/bin/mount" \\
@@ -716,7 +717,7 @@ in
             --nix-store "${nix}/bin/nix-store" \\
             "\$@"
           EOF
-          chmod +x "$out/bin/aos-systemd-image-stage"
+          chmod +x "$handlers/bin/aos-systemd-image-stage"
         '';
       }
       {
@@ -786,6 +787,14 @@ in
                 ;;
             esac
           done
+
+          for executable in aos-systemd-credential-encrypt aos-systemd-boot-platform aos-systemd-image-evidence aos-systemd-image-stage; do
+            test -x "$handlers/bin/$executable"
+            test ! -e "$out/bin/$executable"
+            test ! -L "$out/bin/$executable"
+          done
+          grep -F -- '--nix-store "${nix}/bin/nix-store"' \
+            "$handlers/bin/aos-systemd-image-stage" >/dev/null
 
           # Administrator state belongs to the live /etc overlay. Compiling
           # the output path into systemd would let runtime tools mutate the

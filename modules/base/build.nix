@@ -511,7 +511,7 @@ in {
                   ${lib.optionalString ((config.system.build.bootMetadataBinding or null) != null) ''
                     printf '%s' ${lib.escapeShellArg "${config.system.build.bootMetadataBinding}/binding.json"} > $out/meta/boot-metadata-binding
                   ''}
-                  printf '%s' "${pkgs.systemd}/bin/aos-systemd-image-stage" > $out/meta/image-stage-executable
+                  printf '%s' "${pkgs.systemd.handlers}/bin/aos-systemd-image-stage" > $out/meta/image-stage-executable
                   printf '%s' "${config.aos.system.name}" > $out/meta/package-name
                   printf '%s' "${config.aos.system.version}" > $out/meta/version
                   printf '%s' "${config.aos.system.stateVersion}" > $out/meta/state-version

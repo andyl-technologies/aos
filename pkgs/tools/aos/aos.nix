@@ -592,7 +592,7 @@ in
                   ;;
                 apm|aos-package-runtime)
                   cat << 'APM_ENVIRONMENT'
-      ${lib.optionalString (!isDarwinCross) ''export AOS_CREDENTIAL_ENCRYPT_PROVIDER="${systemd}/bin/aos-systemd-credential-encrypt"''}
+      ${lib.optionalString (!isDarwinCross) ''export AOS_CREDENTIAL_ENCRYPT_PROVIDER="${systemd.handlers}/bin/aos-systemd-credential-encrypt"''}
       export AOS_NIX_STORE="${nix}/bin/nix-store"
       export AOS_NIX_INSTANTIATE="${nix}/bin/nix-instantiate"
       export AOS_PACKAGE_MODULE_LIBRARY="${lib.packageModuleLibrary}"
