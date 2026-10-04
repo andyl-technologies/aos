@@ -13,6 +13,9 @@ in {
   tree-history-independence = sourceGate "tree-history-independence" ''
     cd crates
     ${runTests "tree_history_independence"}
-    printf 'PASS: persistent edits, deterministic replay, history independence, and subtree reuse\n' > "$out/result"
+    ${runTests "tree_builder::batch_tests::tree_history_independence_batches_overlapping_sparse_edits -- --exact"}
+    ${runTests "tree_builder::batch_tests::tree_history_independence_preserves_distant_subtrees_and_atomic_validation -- --exact"}
+    ${runTests "tree_builder::batch_tests::tree_history_independence_accounts_for_actual_boundary_work -- --exact"}
+    printf 'PASS: persistent batched edits, deterministic replay, measured boundary work, and subtree reuse\n' > "$out/result"
   '';
 }

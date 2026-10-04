@@ -622,6 +622,18 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   issuance, protected native propagation and historical registration sourcing stay
   separate unqualified requirements; combined candidate `9a4a4f733813`
   predates these cases as well.
+  Combined candidate `09eef8b223e5` now includes both reviewed prerequisites.
+  Both mandatory formatters and the actual property, signature, selector,
+  merge and no-std gates pass. The default aggregate and its complete
+  keep-going inventory both exit 1; the latter identifies 34 failed gate
+  dependencies. Default and runtime-independent test profiles expose two
+  unconditional Tokio test attributes in the historical family, although Tokio
+  is optional. The owning property profile enables Tokio and passes all three
+  cases. A focused feature-portability correction is required before joint
+  qualification can proceed; scoped success did not cover those profiles.
+  Backend compatibility, native disclosure qualification and the other actual
+  failed dependencies remain open. No task merges, checkboxes or milestone
+  exits follow this failed combined run.
   — satisfies TREE-14,
   PROP-1 to PROP-30;
   `checks.terrane.gates.property-resolution`,
@@ -725,6 +737,17 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   foundation only; runtime loading, indexed discovery, current policy and
   independent producer checks, incremental maintenance and native safe-index
   materialization remain required. No task checkbox advances.
+  A source audit finds sparse Tree edits still restart canonical rechunking
+  once per point, repeating overlapping suffix work; existing counters record
+  events without encoded or hashed byte totals and boundary-region attribution.
+  The next pure prerequisite batches affected streams at every level, retains
+  compatible intervening subtrees and measures actual physical work separately
+  from validation. The shared `tree-history-independence` gate now requires
+  three exact cases for overlapping edits, distant reuse with atomic validation,
+  and independently checked boundary-work accounting. Missing cases fail
+  explicitly. This strengthens a canonical editing prerequisite; index source
+  discovery, logical deltas, I/P/G updates, same-commit maintenance and native
+  qualification remain separate T-DRV-2 obligations.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route
