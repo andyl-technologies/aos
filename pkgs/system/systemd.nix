@@ -73,27 +73,10 @@
   # the configure phase's PYTHONPATH export). python3.nix pins 3.14.
   ukifyPythonPath = "${python3-pefile}/lib/python3.14/site-packages:${python3-pyelftools}/lib/python3.14/site-packages";
 
-  systemdRuntimeDeps = [
-    bash
-    python3
-    coreutils
-    cpio
-    dosfstools
-    e2fsprogs
-    erofs-utils
-    fakeroot
-    findutils
-    gcc-libs
-    gawk
-    gptfdisk
-    grep
-    iproute2
-    jq
-    less
-    mtools
-    sbsigntools
-    sed
-    tar
+  # Late RPATH entries retain dlopen libraries even without DT_NEEDED entries.
+  # Helper executables retain their own tools; adding those tool roots here
+  # would pull image assembly and Python into every PID 1 runtime closure.
+  systemdRuntimeLibraries = [
     bzip2
     util-linux
     kmod
@@ -101,7 +84,6 @@
     xz
     lz4
     zstd
-    zfs
     openssl
     libcap
     libxcrypt
@@ -115,11 +97,37 @@
     elfutils
     linux-pam
     tpm2-tss
-    aos-recovery
-    pe-tools
   ];
+
+  systemdRuntimeDeps =
+    systemdRuntimeLibraries
+    ++ [
+      bash
+      python3
+      coreutils
+      cpio
+      dosfstools
+      e2fsprogs
+      erofs-utils
+      fakeroot
+      findutils
+      gcc-libs
+      gawk
+      gptfdisk
+      grep
+      iproute2
+      jq
+      less
+      mtools
+      sbsigntools
+      sed
+      tar
+      zfs
+      aos-recovery
+      pe-tools
+    ];
   systemdRuntimeLibraryPath = builtins.concatStringsSep ":" (
-    map (dependency: "${dependency}/lib") systemdRuntimeDeps
+    map (dependency: "${dependency}/lib") systemdRuntimeLibraries
   );
 in
   mkDerivation {
@@ -763,6 +771,22 @@ in
       {
         name = "verify-runtime-configuration-paths";
         script = ''
+          # PID 1 must retain dlopen libraries without inheriting the tools
+          # used by separate assembly and native-handler executables.
+          pid1_rpath=$(patchelf --print-rpath "$out/lib/systemd/systemd")
+          case ":$pid1_rpath:" in
+            *":${cryptsetup}/lib:"*) ;;
+            *) echo "systemd PID 1 is missing its cryptsetup library path" >&2; exit 1 ;;
+          esac
+          for tool in ${lib.concatStringsSep " " (map toString [python3 cpio dosfstools erofs-utils fakeroot mtools aos-recovery pe-tools])}; do
+            case ":$pid1_rpath:" in
+              *":$tool/lib:"*)
+                echo "systemd PID 1 retains an unrelated tool library path: $tool" >&2
+                exit 1
+                ;;
+            esac
+          done
+
           # Administrator state belongs to the live /etc overlay. Compiling
           # the output path into systemd would let runtime tools mutate the
           # package through the writable /nix overlay.
