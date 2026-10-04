@@ -34,14 +34,42 @@
   version = "26.1.4";
   rustSources = import ./_mesa-rust-sources.nix {inherit fetchurl;};
   sitePackages = "lib/python3.14/site-packages";
-  pythonPath =
-    "${buildPackages.meson}/lib/python3/site-packages:"
-    + builtins.concatStringsSep ":" (map (package: "${package}/${sitePackages}") [
+
+  # Upstream's automatic aarch64 driver set includes etnaviv, whose hardware
+  # database generator parses C headers with pycparser at build time.
+  platformPythonModules = lib.optionals stdenv.hostPlatform.isAarch64 [
+    buildPackages.python3-pycparser
+  ];
+  pythonModules =
+    [
       buildPackages.python3-mako
       buildPackages.python3-markupsafe
       buildPackages.packaging
       buildPackages.python3-pyyaml
-    ]);
+    ]
+    ++ platformPythonModules;
+
+  # The aarch64 driver set also runs ISA code generators directly through
+  # their /usr/bin/env shebangs, and the etnaviv database generator invokes
+  # `cpp` through pycparser. Bind both to build-platform tools; the headers
+  # are architecture-neutral tables parsed with pycparser's fake libc.
+  platformDriverTools = lib.optionalString stdenv.hostPlatform.isAarch64 ''
+    grep -rlZ '^#!/usr/bin/env python3' src bin \
+      | xargs -0 sed -i '1s|^#!/usr/bin/env python3$|#!${buildPackages.python3}/bin/python3|'
+    mkdir -p .aos-build-tools
+    cat > .aos-build-tools/cpp <<BUILD_CPP
+    #!$CONFIG_SHELL
+    exec ''${CC_FOR_BUILD:-$CC} -E -x c "\$@"
+    BUILD_CPP
+    chmod 0755 .aos-build-tools/cpp
+    test "$(grep -c 'use_cpp=True, cpp_args=' src/etnaviv/hwdb/hwdb.h.py)" -eq 1
+    sed -i "s|use_cpp=True, cpp_args=|use_cpp=True, cpp_path='$PWD/.aos-build-tools/cpp', cpp_args=|" \
+      src/etnaviv/hwdb/hwdb.h.py
+  '';
+
+  pythonPath =
+    "${buildPackages.meson}/lib/python3/site-packages:"
+    + builtins.concatStringsSep ":" (map (package: "${package}/${sitePackages}") pythonModules);
 in
   mkDerivation {
     pname = "mesa";
@@ -70,6 +98,7 @@ in
         buildPackages.wayland
         buildPackages.llvm-graphics
       ]
+      ++ platformPythonModules
       ++ lib.optionals stdenv.isCross [buildPackages.cmake rust.passthru.buildTool];
     runtimeDeps = [
       libdrm
@@ -137,7 +166,38 @@ in
               [binaries]
               rust = ['${rust.passthru.buildTool}/bin/rustc', '--target', '${stdenv.hostPlatform.config}', '-C', 'linker=${stdenv.cc}/bin/cc']
               MESON_RUST
-            ''}
+
+              # bindgen's libclang reads dependency headers from
+              # C_INCLUDE_PATH but has no target C library. Give it the same
+              # glibc header directory the target compiler wrapper appends.
+              cat >> mesa-cross-rust.ini <<MESON_BINDGEN
+              [properties]
+              bindgen_clang_arguments = ['-idirafter', '$(cat ${stdenv.cc}/nix-support/orig-libc-dev)/include']
+              MESON_BINDGEN
+
+              # Rusticl's procedural macros run inside the build-platform
+              # compiler, so Meson needs a build-machine rustc. Meson links
+              # Rust with the build-machine C compiler, but the cross
+              # stdenv's NIX_LDFLAGS name the target runtime directories and
+              # Rust's -lgcc_s needs the build platform's libgcc_s. Give
+              # Meson a build compiler with that link environment and the
+              # same Rust toolchain's native standard library.
+              mkdir -p .aos-build-tools
+              cat > .aos-build-tools/build-cc <<BUILD_CC
+              #!$CONFIG_SHELL
+              unset NIX_LDFLAGS NIX_CFLAGS_COMPILE
+              exec $CC_FOR_BUILD \\
+                -L${buildPackages.gcc-libs}/lib \\
+                -Wl,-rpath,${buildPackages.gcc-libs}/lib \\
+                "\$@"
+              BUILD_CC
+              chmod 0755 .aos-build-tools/build-cc
+              cat > mesa-native-rust.ini <<MESON_NATIVE_RUST
+              [binaries]
+              c = ['$PWD/.aos-build-tools/build-cc']
+              rust = ['${rust.passthru.buildTool}/bin/rustc']
+              MESON_NATIVE_RUST
+            ''}${platformDriverTools}
           '';
         }
         {
@@ -151,7 +211,7 @@ in
             # Explicitly enable the public dispatch, video and OpenCL APIs.
             # Mesa's C++ RTTI setting must match LLVM's library ABI.
             ${buildPackages.python3}/bin/python3 -m mesonbuild.mesonmain \
-              setup build $mesonFlags ${lib.optionalString stdenv.isCross "--cross-file=mesa-cross-rust.ini -Dcmake_prefix_path=${llvm-graphics}"} --prefix="$out" --libdir=lib \
+              setup build $mesonFlags ${lib.optionalString stdenv.isCross "--cross-file=mesa-cross-rust.ini --native-file=mesa-native-rust.ini -Dcmake_prefix_path=${llvm-graphics}"} --prefix="$out" --libdir=lib \
               --buildtype=release --wrap-mode=nodownload \
               -Dcpp_rtti=false \
               -Dglvnd=enabled -Degl=enabled -Dgbm=enabled \
