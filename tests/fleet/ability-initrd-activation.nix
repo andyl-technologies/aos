@@ -15,6 +15,10 @@
     ../../systems/server-test.nix
     {
       aos.image.erofsCompressionLevel = 1;
+      aos.packages.aos = {
+        package = pkgs.aos;
+        bundle = true;
+      };
       aos.packages.aos-test-agent = {
         package = pkgs.aos-test-agent;
         bundle = true;
