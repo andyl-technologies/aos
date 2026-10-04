@@ -2,6 +2,8 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
+  stdenv,
   gnumake,
   file,
 }: let
@@ -34,13 +36,19 @@ in
       }
       {
         name = "configure";
-        script = ''
-          "$CONFIG_SHELL" ./configure \
-            $configureFlags \
-            --prefix="$out" \
-            --enable-shared \
-            --disable-static
-        '';
+        script =
+          # The setpgrp signature probe must run a target program. glibc
+          # and Darwin's default UNIX03 interface both declare setpgrp(void).
+          lib.optionalString stdenv.isCross ''
+            export ac_cv_func_setpgrp_void=yes
+          ''
+          + ''
+            "$CONFIG_SHELL" ./configure \
+              $configureFlags \
+              --prefix="$out" \
+              --enable-shared \
+              --disable-static
+          '';
       }
       {
         name = "build";
