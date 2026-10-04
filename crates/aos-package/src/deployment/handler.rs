@@ -11,6 +11,8 @@
 //! Other observation statuses are `absent`, `retry-safe`, and `indeterminate`.
 //! Artifact admission and durable store retention belong to the host's package
 //! store; subprocess limits and cancellation reuse the native handler transport.
+//! Bounded standard-error diagnostics stream to the operator while the handler
+//! runs, independently of its typed standard-output response.
 
 use std::process::Command;
 
@@ -24,7 +26,7 @@ use aos_contract::limits::{BoundedWriter, JsonLimits};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::process::{ProcessOutput, run_bounded};
+use super::process::{OperatorDiagnostics, ProcessOutput, run_handler};
 
 const MESSAGE_LIMITS: JsonLimits = JsonLimits {
     max_bytes: 256 * 1024,
@@ -141,12 +143,12 @@ impl<A: HandlerArtifacts> ProcessAdapter<A> {
                 invocation.effect.identity
             )
         };
-        let output = run_bounded(
+        let output = run_handler(
             &mut command,
-            Some(&input),
+            &input,
             MESSAGE_LIMITS.max_bytes,
             &budget,
-            &[],
+            &mut OperatorDiagnostics::stderr(),
         )
         .with_context(&handler_context)?;
         check_handler_status(&output).with_context(handler_context)?;

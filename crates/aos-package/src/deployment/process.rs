@@ -11,12 +11,63 @@ use std::io::{self, Read, Write};
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::process::CommandExt as _;
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::{OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use aos_ability_runtime::adapter::RuntimeControl;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(5);
 const MAX_HELPER_INPUT_BYTES: usize = 256 * 1024;
+
+const DIAGNOSTIC_CHUNK_BYTES: usize = 4096;
+const DIAGNOSTIC_QUEUE_CHUNKS: usize = 16;
+
+/// Decouples best-effort console writes from activation deadlines.
+pub(crate) struct OperatorDiagnostics {
+    sender: Option<mpsc::SyncSender<Vec<u8>>>,
+}
+
+impl OperatorDiagnostics {
+    pub(crate) fn stderr() -> Self {
+        static SENDER: OnceLock<Option<mpsc::SyncSender<Vec<u8>>>> = OnceLock::new();
+        let sender = SENDER.get_or_init(|| {
+            let (sender, receiver) = mpsc::sync_channel::<Vec<u8>>(DIAGNOSTIC_QUEUE_CHUNKS);
+            std::thread::Builder::new()
+                .name("handler-diagnostics".into())
+                .spawn(move || {
+                    let mut console = std::io::stderr();
+                    while let Ok(bytes) = receiver.recv() {
+                        if console.write_all(&bytes).is_err() {
+                            break;
+                        }
+                    }
+                })
+                .ok()
+                .map(|_| sender)
+        });
+        Self {
+            sender: sender.as_ref().cloned(),
+        }
+    }
+}
+
+impl Write for OperatorDiagnostics {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if let Some(sender) = &self.sender {
+            for chunk in bytes.chunks(DIAGNOSTIC_CHUNK_BYTES) {
+                if sender.try_send(chunk.to_vec()).is_err() {
+                    break;
+                }
+            }
+        }
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        // Never wait for the console worker; diagnostics cannot delay effects.
+        Ok(())
+    }
+}
 
 /// Supplies a fixed budget for effect-free catalog and drift probes.
 pub(crate) struct FixedBudgetControl {
@@ -81,6 +132,45 @@ pub(crate) fn run_bounded_with_input_limit(
     control: &dyn RuntimeControl,
     environment: &[(OsString, OsString)],
 ) -> Result<ProcessOutput, io::Error> {
+    run_with_diagnostics(
+        command,
+        input,
+        input_limit,
+        output_limit,
+        control,
+        environment,
+        None,
+    )
+}
+
+/// Streams bounded handler diagnostics independently of the typed result pipe.
+pub(crate) fn run_handler(
+    command: &mut Command,
+    input: &[u8],
+    output_limit: usize,
+    control: &dyn RuntimeControl,
+    diagnostics: &mut dyn Write,
+) -> Result<ProcessOutput, io::Error> {
+    run_with_diagnostics(
+        command,
+        Some(input),
+        MAX_HELPER_INPUT_BYTES,
+        output_limit,
+        control,
+        &[],
+        Some(diagnostics),
+    )
+}
+
+fn run_with_diagnostics(
+    command: &mut Command,
+    input: Option<&[u8]>,
+    input_limit: usize,
+    output_limit: usize,
+    control: &dyn RuntimeControl,
+    environment: &[(OsString, OsString)],
+    diagnostics: Option<&mut dyn Write>,
+) -> Result<ProcessOutput, io::Error> {
     if input.is_some_and(|bytes| bytes.len() > input_limit) {
         return Err(invalid("native handler input exceeds its size bound"));
     }
@@ -129,6 +219,7 @@ pub(crate) fn run_bounded_with_input_limit(
         output_limit,
         control,
         deadline,
+        diagnostics,
     );
     if result.is_err() {
         terminate_and_reap(&mut child, group);
@@ -144,6 +235,7 @@ fn exchange_io(
     output_limit: usize,
     control: &dyn RuntimeControl,
     deadline: Instant,
+    mut diagnostics: Option<&mut dyn Write>,
 ) -> Result<ProcessOutput, io::Error> {
     let mut stdout = child
         .stdout
@@ -202,7 +294,13 @@ fn exchange_io(
             stdout_eof = read_available(&mut stdout, &mut output, output_limit, control, deadline)?;
         }
         if !stderr_eof {
+            let previous_length = errors.len();
             stderr_eof = read_available(&mut stderr, &mut errors, output_limit, control, deadline)?;
+            if let Some(writer) = diagnostics.as_mut() {
+                // A closed operator console must not change mutation semantics.
+                let _ = writer.write_all(&errors[previous_length..]);
+                let _ = writer.flush();
+            }
         }
 
         if leader_succeeded.is_none() {
@@ -341,6 +439,106 @@ mod tests {
     fn bounded_process_helper() {
         print!("postcondition-established");
         eprint!("postcondition-established");
+    }
+
+    #[test]
+    fn stalled_diagnostic_console_does_not_delay_a_handler() {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        sender
+            .send(b"console-backpressure".to_vec())
+            .expect("fill queue");
+        let mut diagnostics = OperatorDiagnostics {
+            sender: Some(sender),
+        };
+        let mut command = helper_command();
+        let control = FixedBudgetControl::new(2_000);
+
+        let output = run_handler(&mut command, b"", 16 * 1024, &control, &mut diagnostics)
+            .expect("a full diagnostic queue cannot block the handler");
+
+        assert!(output.status.success());
+        assert_eq!(
+            receiver.recv().expect("original queued chunk"),
+            b"console-backpressure"
+        );
+        assert!(receiver.try_recv().is_err());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("postcondition-established"));
+    }
+
+    #[test]
+    fn handler_diagnostics_arrive_before_the_helper_exits() {
+        struct AcknowledgeDiagnostics {
+            marker: std::path::PathBuf,
+            bytes: Vec<u8>,
+        }
+
+        impl Write for AcknowledgeDiagnostics {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.bytes.extend_from_slice(bytes);
+                std::fs::write(&self.marker, b"observed")?;
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let temporary = tempfile::tempdir().expect("diagnostic test directory");
+        let marker = temporary.path().join("diagnostic-observed");
+        let mut diagnostics = AcknowledgeDiagnostics {
+            marker: marker.clone(),
+            bytes: Vec::new(),
+        };
+        let mut command = Command::new(std::env::current_exe().expect("test executable"));
+        command.args([
+            "--exact",
+            "deployment::process::tests::diagnostic_process_helper",
+            "--nocapture",
+        ]);
+        let control = FixedBudgetControl::new(5_000);
+
+        let output = run_handler(
+            &mut command,
+            marker.to_str().expect("test marker path").as_bytes(),
+            16 * 1024,
+            &control,
+            &mut diagnostics,
+        )
+        .expect("helper observes diagnostics before it can exit");
+
+        assert!(output.status.success());
+        assert!(marker.exists());
+        assert_eq!(diagnostics.bytes, output.stderr);
+        assert!(String::from_utf8_lossy(&output.stderr).contains("waiting-for-diagnostic-reader"));
+    }
+
+    #[test]
+    fn diagnostic_process_helper() {
+        if !std::env::args()
+            .any(|argument| argument == "deployment::process::tests::diagnostic_process_helper")
+        {
+            return;
+        }
+
+        let mut marker = String::new();
+        std::io::stdin()
+            .read_to_string(&mut marker)
+            .expect("helper input");
+        if marker.is_empty() {
+            return;
+        }
+
+        eprint!("waiting-for-diagnostic-reader");
+        std::io::stderr().flush().expect("helper diagnostic flush");
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !std::path::Path::new(&marker).exists() {
+            assert!(
+                Instant::now() < deadline,
+                "diagnostic reader did not acknowledge"
+            );
+            std::thread::sleep(POLL_INTERVAL);
+        }
     }
 
     fn helper_command() -> Command {
