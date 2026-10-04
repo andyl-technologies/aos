@@ -596,6 +596,8 @@ impl FixedProviderOwnerV1 {
         let expected = match step {
             Append::HeldPrepared => child.phase5.as_ref(),
             Append::HeldStored => child.phase6.as_ref(),
+            Append::RootDispositionPrepared => child.root_disposition.as_ref()
+                .and_then(root_accepted::OriginalSourceRootDispositionV5::phase7_record),
             _ => None,
         }.ok_or(ProviderLedgerError::Unavailable)?;
         let key = native_completion_key_v2(expected.original().acquisition_id);
