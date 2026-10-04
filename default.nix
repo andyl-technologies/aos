@@ -1989,6 +1989,7 @@ in rec {
         inherit pkgs lib;
         mkSystem = mkFixtureSystem;
       };
+      initrd-module-hardlinks = import ./tests/build/initrd-module-hardlinks.nix {inherit pkgs lib;};
       initrd-stage-contract = import ./tests/build/initrd-stage-contract.nix {
         inherit pkgs lib;
         mkSystem = mkFixtureSystem;
@@ -2044,7 +2045,7 @@ in rec {
     in
       {
         inherit toolchain-boundaries native-sandbox-boundary aos-dev-cli aos-cloud-vm aos-dev-cache-identity accache;
-        inherit artifact-consumption native-module-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe host-native-inputs initrd-native-inputs initrd-stage-contract native-stage-replay native-profile-replay kernel-config linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets;
+        inherit artifact-consumption native-module-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe host-native-inputs initrd-native-inputs initrd-module-hardlinks initrd-stage-contract native-stage-replay native-profile-replay kernel-config linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets;
         # These checks inspect realized closures, so keep them out of the pure evaluation layer.
         inherit config-eval config-materialize boot-configuration native-projection-input image-metadata darling-harness;
         config-manifest = config-manifest;
@@ -2064,7 +2065,7 @@ in rec {
               else []
             )
             ++ lib.optional (artifact-consumption != null) artifact-consumption
-            ++ [toolchain-boundaries.all native-sandbox-boundary aos-dev-cli aos-cloud-vm aos-dev-cache-identity accache native-module-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell initrd-stage-contract native-stage-replay native-profile-replay kernel-config linux-hosted-toolchain linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity config-eval config-materialize boot-configuration native-projection-input image-metadata darling-harness config-manifest configProvenanceChecks.all renderedEvalSuites.rendered-system]
+            ++ [toolchain-boundaries.all native-sandbox-boundary aos-dev-cli aos-cloud-vm aos-dev-cache-identity accache native-module-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell initrd-module-hardlinks initrd-stage-contract native-stage-replay native-profile-replay kernel-config linux-hosted-toolchain linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity config-eval config-materialize boot-configuration native-projection-input image-metadata darling-harness config-manifest configProvenanceChecks.all renderedEvalSuites.rendered-system]
             ++ builtins.attrValues (builtins.removeAttrs renderedEvalSuites ["rendered-system"])
             ++ builtins.attrValues hardening-probe
             ++ builtins.attrValues linux-hosted-llvm

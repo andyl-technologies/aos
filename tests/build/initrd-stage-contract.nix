@@ -110,6 +110,7 @@ in
             # permissions are restored after every child, even across directories.
             ${pkgs.libarchive}/bin/bsdtar --format=pax -cf initrd.tar @initrd.cpio
             ${pkgs.libarchive}/bin/bsdtar -xpf initrd.tar -C initrd-tree
+            ${pkgs.python3}/bin/python3 ${./_initrd-module-hardlinks.py} initrd-tree ${lib.escapeShellArg system.config.aos.kernel.selected.configuration.moduleTree}
             ${pkgs.erofs-utils}/bin/fsck.erofs --extract=root-tree ${assembly}/inputs/root.img
             # Commands from both bin and sbin belong to the selected immutable
             # system profile. Verify the exported link and its retained bytes.
