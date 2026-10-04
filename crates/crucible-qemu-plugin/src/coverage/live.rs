@@ -358,6 +358,8 @@ extern "C" fn live_coverage_tb_translate(tb: *mut QemuPluginTb, userdata: *mut c
     // callbacks before coverage adds its conditional observation callback.
     if let Some(whitebox) = state.whitebox_translation {
         whitebox.dispatch(tb);
+    } else {
+        crate::runtime::live_callbacks::time_ownership_witness::observe_translation(tb);
     }
     let instruction_count = (state.apis.tb_n_insns)(tb.cast_const());
     if instruction_count == 0 {

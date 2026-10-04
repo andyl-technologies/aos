@@ -38,6 +38,7 @@ mod marker;
 mod selectable;
 #[cfg(test)]
 mod test_restore;
+mod translation;
 use super::live_callbacks::SelectableVmstopHandoff;
 pub(crate) use api::LiveWhiteboxApis;
 pub(super) use api::QemuForceVcpuTbExitFn;
@@ -57,6 +58,8 @@ pub(crate) use marker::LiveWhiteboxMarkerShmemProducer;
 pub(crate) use selectable::LiveSelectableReplyShmemConsumer;
 #[cfg(test)]
 pub(super) use test_restore::install_app_random_restore_state_for_test;
+#[cfg(test)]
+pub(crate) use translation::tests::assert_original_translation as assert_original_translation_for_test;
 
 const QEMU_PLUGIN_CB_R_REGS: c_int = 1;
 const QEMU_PLUGIN_CB_NO_REGS: c_int = 0;
@@ -854,43 +857,10 @@ extern "C" fn crucible_qemu_plugin_live_whitebox_tb_trans_cb(
     // SAFETY: publication retains the state for QEMU's process lifetime, and
     // the validated single-threaded RR execution model serializes callbacks.
     let state = unsafe { state.as_mut() };
-    let count = (state.apis.tb_n_insns)(tb);
-    let mut registered_entry_callback = false;
-    for index in 0..count {
-        let insn = (state.apis.tb_get_insn)(tb, index);
-        if insn.is_null() {
-            continue;
-        }
-        let mut bytes = [0_u8; 4];
-        let copied = (state.apis.insn_data)(insn, bytes.as_mut_ptr().cast(), bytes.len());
-        let trap_bytes: &[u8] = match state.architecture {
-            QemuPluginTargetArchitecture::X86_64 => &WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES,
-            QemuPluginTargetArchitecture::Aarch64 => &WHITEBOX_DOORBELL_AARCH64_HINT_BYTES,
-        };
-        if bytes[..copied.min(bytes.len())] == *trap_bytes {
-            let location = match LiveWhiteboxInstructionLocation::new(count, index) {
-                Ok(location) => location,
-                Err(error) => {
-                    state.fail_loud(&error);
-                    return;
-                }
-            };
-            if !registered_entry_callback {
-                (state.apis.register_tb_exec_cb)(
-                    tb,
-                    Some(crucible_qemu_plugin_live_whitebox_tb_exec_cb),
-                    QEMU_PLUGIN_CB_NO_REGS,
-                    location.tb_userdata(),
-                );
-                registered_entry_callback = true;
-            }
-            (state.apis.register_insn_exec_cb)(
-                insn,
-                Some(crucible_qemu_plugin_live_whitebox_insn_exec_cb),
-                QEMU_PLUGIN_CB_R_REGS,
-                location.into_userdata(),
-            );
-        }
+    if let Err(error) =
+        translation::TranslationApis::from(state.apis).instrument(state.architecture, tb)
+    {
+        state.fail_loud(&error);
     }
 }
 

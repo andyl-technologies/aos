@@ -65,7 +65,7 @@ mod logical_restore;
 mod network_inbound;
 mod network_output_stop;
 mod preemption;
-mod time_ownership_witness;
+pub(crate) mod time_ownership_witness;
 pub use devices::LiveDeviceCallbackError;
 use devices::LiveDeviceCallbackState;
 pub use error::LiveVcpuTimeCallbackError;
@@ -73,6 +73,8 @@ use fingerprint_worker::LiveFingerprintDigestWorker;
 use logical_restore::raw_icount_publication_is_superseded;
 #[cfg(test)]
 pub(crate) mod test_support;
+#[cfg(test)]
+pub(crate) use super::live_whitebox::assert_original_translation_for_test;
 
 static LIVE_VCPU_TIME_STATE: AtomicPtr<LiveVcpuTimeCallbackState> =
     AtomicPtr::new(std::ptr::null_mut());
@@ -479,7 +481,10 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
             vcpu_init_callback,
             callback_state.cast(),
         );
-        time_ownership_witness::install(self.plugin_id);
+        time_ownership_witness::install(
+            self.plugin_id,
+            args.whitebox().is_on() || args.coverage().is_on(),
+        );
         Ok(mask)
     }
 }

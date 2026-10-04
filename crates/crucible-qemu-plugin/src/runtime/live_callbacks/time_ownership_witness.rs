@@ -1,7 +1,9 @@
 //! Bounded observations of original time ownership and native idle waits.
 //!
-//! The opt-in observer registers a first-TB callback after original time-control
-//! acquisition. TB entry is already debited, so its receipt keeps both the
+//! The opt-in observer composes first-TB instrumentation with the original
+//! whitebox/coverage translator after time-control acquisition. A standalone
+//! translator is registered only when both original consumers are disabled.
+//! TB entry is already debited, so its receipt keeps both the
 //! observed charge and QEMU's public, exact entry count. Idle observations begin
 //! only at an original `NextAuthenticatedIdle` request. At most 60 wait pairs
 //! and two ownership rows are emitted, each at most 256 bytes (31,232 bytes).
@@ -53,6 +55,17 @@ impl Witness {
             first_entry: AtomicBool::new(false),
             idle_active: AtomicBool::new(false),
             waits: AtomicU64::new(0),
+        }
+    }
+
+    fn instrument_translation(&self, tb: *mut QemuPluginTb) {
+        if tb.is_null() || self.first_entry.load(Ordering::Relaxed) {
+            return;
+        }
+        let count = (self.apis.tb_length)(tb);
+        if count != 0 {
+            // The callback's opaque userdata contains only the translated TB length.
+            (self.apis.register_execution)(tb, execute, 0, count as *mut c_void);
         }
     }
 
@@ -127,7 +140,7 @@ fn row(output: &mut impl Write, fields: std::fmt::Arguments<'_>) {
 }
 
 /// Installs observations after the original registration path acquired control.
-pub(super) fn install(plugin_id: QemuPluginId) {
+pub(super) fn install(plugin_id: QemuPluginId, authoritative_translation: bool) {
     // crucible-lint: allow host-nondeterminism-state -- the exact opt-in is cached once and affects only diagnostic callbacks.
     let enabled = std::env::var(ENVIRONMENT).as_deref() == Ok("1");
     if !enabled {
@@ -135,10 +148,32 @@ pub(super) fn install(plugin_id: QemuPluginId) {
     }
     let mut output = io::stderr().lock();
     if let Some(witness) = prepare(enabled, resolve_apis, &mut output) {
-        let apis = witness.apis;
-        if WITNESS.set(witness).is_ok() {
-            (apis.register_translation)(plugin_id, translate, std::ptr::null_mut());
-        }
+        install_prepared(plugin_id, authoritative_translation, witness, &WITNESS);
+    }
+}
+
+fn install_prepared(
+    plugin_id: QemuPluginId,
+    authoritative_translation: bool,
+    witness: Witness,
+    publication: &OnceLock<Witness>,
+) {
+    let apis = witness.apis;
+    if publication.set(witness).is_ok() && !authoritative_translation {
+        // QEMU retains one translation callback per plugin. Registering here
+        // when whitebox or coverage owns it would replace that genuine consumer.
+        (apis.register_translation)(plugin_id, translate, std::ptr::null_mut());
+    }
+}
+
+/// Adds first-TB observation without replacing the original translation owner.
+pub(crate) fn observe_translation(tb: *mut QemuPluginTb) {
+    #[cfg(test)]
+    if translation_tests::observe_for_test(tb) {
+        return;
+    }
+    if let Some(witness) = WITNESS.get() {
+        witness.instrument_translation(tb);
     }
 }
 
@@ -196,15 +231,7 @@ fn resolve_apis() -> Option<Apis> {
 }
 
 extern "C" fn translate(tb: *mut QemuPluginTb, _userdata: *mut c_void) {
-    let Some(witness) = WITNESS.get() else { return };
-    if tb.is_null() || witness.first_entry.load(Ordering::Relaxed) {
-        return;
-    }
-    let count = (witness.apis.tb_length)(tb);
-    if count != 0 {
-        // The callback's opaque userdata contains only the translated TB length.
-        (witness.apis.register_execution)(tb, execute, 0, count as *mut c_void);
-    }
+    observe_translation(tb);
 }
 
 extern "C" fn execute(vcpu: c_uint, userdata: *mut c_void) {
@@ -282,7 +309,7 @@ mod tests {
         false
     }
 
-    fn apis() -> Apis {
+    pub(super) fn apis() -> Apis {
         Apis {
             register_translation,
             register_execution,
@@ -434,3 +461,9 @@ mod tests {
         assert_eq!(witness.waits.load(Ordering::Relaxed), 1);
     }
 }
+
+#[cfg(test)]
+mod translation_tests;
+
+#[cfg(test)]
+pub(crate) use translation_tests::scoped_translation_witness;
