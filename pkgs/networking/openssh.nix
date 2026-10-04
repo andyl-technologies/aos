@@ -17,6 +17,18 @@
   nftables,
 }: let
   version = "10.5p1";
+  configureFor = prefix: ''
+    ./configure \
+      $configureFlags \
+      --prefix="${prefix}" \
+      --sysconfdir=/etc/ssh \
+      --with-ssl-dir=${openssl} \
+      --with-zlib=${zlib} \
+      --with-privsep-path=/var/empty \
+      --with-privsep-user=sshd \
+      --with-pam \
+      --disable-strip
+  '';
 in
   mkDerivation {
     platformSupport = {
@@ -106,6 +118,7 @@ in
     };
 
     inherit version;
+    outputs = ["out" "server"];
 
     src = fetchurl {
       urls = [
@@ -153,18 +166,7 @@ in
         # store path into those defaults, which makes `ssh-keygen -A`
         # refuse to regenerate keys because it sees the store's
         # pre-staged files and short-circuits.
-        script = ''
-          ./configure \
-            $configureFlags \
-            --prefix=$out \
-            --sysconfdir=/etc/ssh \
-            --with-ssl-dir=${openssl} \
-            --with-zlib=${zlib} \
-            --with-privsep-path=/var/empty \
-            --with-privsep-user=sshd \
-            --with-pam \
-            --disable-strip
-        '';
+        script = configureFor "$out";
       }
       {
         name = "build";
@@ -219,22 +221,50 @@ in
           '';
       }
       {
+        name = "build-server-output";
+        # A second build gives daemon helpers and key generation their own
+        # immutable prefix. Moving binaries from out would retain client paths.
+        script = ''
+          make distclean
+          ${configureFor "$server"}
+          make -j$NIX_BUILD_CORES
+          sed -i 's/-m 4711/-m 0755/g' Makefile
+          make install-nokeys DESTDIR="$server"
+          cp -a "$server$server/." "$server/"
+          rm -rf "$server/nix"
+
+          # Keep the server, its SFTP subsystem, and key-generation helpers.
+          # The default output still exposes every installed upstream command.
+          rm -f "$server/bin/ssh" "$server/bin/scp" "$server/bin/sftp" \
+            "$server/bin/ssh-add" "$server/bin/ssh-agent" "$server/bin/ssh-keyscan" \
+            "$server/libexec/ssh-keysign" "$server/etc/ssh/ssh_config"
+          rm -f "$server/share/man/man1/ssh.1" "$server/share/man/man1/scp.1" \
+            "$server/share/man/man1/sftp.1" "$server/share/man/man1/ssh-add.1" \
+            "$server/share/man/man1/ssh-agent.1" "$server/share/man/man1/ssh-keyscan.1" \
+            "$server/share/man/man5/ssh_config.5" "$server/share/man/man8/ssh-keysign.8"
+        '';
+      }
+      {
         name = "install-service-helpers";
         script = ''
-          mkdir -p "$out/libexec"
-          $CC -O2 -Wall -Wextra -Werror \
-            "-DSSH_KEYGEN_PATH=\"$out/bin/ssh-keygen\"" \
-            -o "$out/libexec/aos-openssh-host-key" \
-            ${./_openssh/host-key-helper.c}
-          $CC -O2 -Wall -Wextra -Werror \
-            -o "$out/libexec/aos-openssh-host-policy-wait" \
-            ${./_openssh/host-policy-wait.c}
+          for destination in "$out" "$server"; do
+            mkdir -p "$destination/libexec"
+            $CC -O2 -Wall -Wextra -Werror \
+              "-DSSH_KEYGEN_PATH=\"$destination/bin/ssh-keygen\"" \
+              -o "$destination/libexec/aos-openssh-host-key" \
+              ${./_openssh/host-key-helper.c}
+            $CC -O2 -Wall -Wextra -Werror \
+              -o "$destination/libexec/aos-openssh-host-policy-wait" \
+              ${./_openssh/host-policy-wait.c}
+          done
         '';
       }
     ];
 
     meta = {
       description = "OpenSSH — secure shell connectivity tools";
+      # The client suite and daemon payload have no shared executable entry point.
+      mainProgram = null;
       homepage = "https://www.openssh.com";
       license = "BSD-2-Clause";
     };
@@ -244,6 +274,42 @@ in
       self,
       pkgs,
     }: {
+      server-output = pkgs.mkDerivation {
+        pname = "openssh-server-output-check";
+        inherit version;
+        buildDeps = [self self.server pkgs.coreutils pkgs.diffutils];
+        exportReferencesGraph = ["server-closure" self.server];
+        phases = [
+          {
+            name = "check";
+            script = ''
+              while IFS= read -r entry; do
+                test "$entry" != "${self}"
+              done < server-closure
+              for command in ssh scp sftp ssh-add ssh-agent ssh-keyscan ssh-keygen; do
+                test -x "${self}/bin/$command"
+              done
+              for command in ssh scp sftp ssh-add ssh-agent ssh-keyscan; do
+                test ! -e "${self.server}/bin/$command"
+              done
+              for helper in sshd-auth sshd-session sftp-server ssh-sk-helper ssh-pkcs11-helper aos-openssh-host-key aos-openssh-host-policy-wait; do
+                test -x "${self.server}/libexec/$helper"
+              done
+              test -x "${self.server}/sbin/sshd"
+              ${self}/bin/ssh -V
+              ${self.server}/sbin/sshd -V
+              ${self.server}/bin/ssh-keygen -q -t ed25519 -N probe-passphrase -f probe-key
+              ${self.server}/bin/ssh-keygen -y -P probe-passphrase -f probe-key > derived-with-comment.pub
+              cut -d ' ' -f 1,2 derived-with-comment.pub > derived.pub
+              cut -d ' ' -f 1,2 probe-key.pub > expected.pub
+              cmp derived.pub expected.pub
+              mkdir -p "$out"
+              printf 'PASS\n' > "$out/result"
+            '';
+          }
+        ];
+      };
+
       version = testing.mkToolCheck {
         pname = "tool-openssh-version";
         tool = self;

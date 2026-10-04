@@ -36,7 +36,13 @@ let
   firewall = package "nftables" /pkgs/networking/_nftables [checks];
   bind = package "bind" /pkgs/networking/_bind [services firewall checks];
   dnsmasq = package "dnsmasq" /pkgs/networking/_dnsmasq [services firewall checks];
-  ssh = package "openssh" /pkgs/networking/_openssh [services filesystem firewall pam checks];
+  ssh =
+    (package "openssh" /pkgs/networking/_openssh [services filesystem firewall pam checks])
+    // {
+      outputs = ["out" "server"];
+      out = payload "openssh";
+      server = payload "openssh-server";
+    };
   audit = package "audit" /pkgs/security/_audit [services kernel checks];
   evaluate = enabled:
     lib.evalPackageModules {
