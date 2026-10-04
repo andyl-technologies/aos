@@ -107,6 +107,29 @@ pub(crate) struct OriginalHeldCarrierV1 {
     pub(crate) control_packet: Option<Vec<u8>>,
     pub(crate) sends: [Option<Result<(), aos_sandbox_linux::seqpacket::SeqpacketError>>; 2],
     pub(crate) first_failure: Option<OriginalHeldMeasurementErrorV3>,
+    pub(super) settlement: super::original_held_settlement::OriginalHeldSettlementV1,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct OriginalHeldCarrierReadV1<'owner> {
+    pub(super) child: Option<&'owner aos_sandbox_linux::seqpacket::SeqpacketSocket>,
+    pub(super) execution: Option<aos_sandbox_linux::pidfd::PidFdInfo>,
+    pub(super) records: &'owner [Option<OriginalHeldRecordV1>; 2],
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum OriginalHeldSigningPurposeV1 {
+    Offer,
+    Settlement,
+}
+
+pub(super) struct OriginalHeldSigningReadV1<'owner> {
+    pub(super) original: OriginalHeldCarrierReadV1<'owner>,
+    pub(super) prepared: Option<&'owner crate::native_issuance::held_completion::StorageHeldIssuanceRowV2>,
+    pub(super) before_sequence: Option<u64>,
+    pub(super) prepared_sequence: Option<u64>,
+    pub(super) relay_record: Option<&'owner OriginalHeldRecordV1>,
+    pub(super) purpose: OriginalHeldSigningPurposeV1,
 }
 
 pub(crate) struct OriginalHeldRecordV1 {
@@ -116,12 +139,12 @@ pub(crate) struct OriginalHeldRecordV1 {
 
 impl OriginalHeldCarrierV1 {
     fn first_cause(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.first_failure.as_ref()
+        self.settlement.first_cause().or_else(|| self.first_failure.as_ref()
             .map(|cause| cause as &(dyn std::error::Error + 'static))
             .or_else(|| self.sends.iter().find_map(|send| match send {
                 Some(Err(cause)) => Some(cause as &(dyn std::error::Error + 'static)),
                 _ => None,
-            }))
+            })))
     }
 
     pub(crate) fn unwind_fence(&self) -> OriginalHeldOfferUnwindV1 {
@@ -146,6 +169,7 @@ impl OriginalHeldCarrierV1 {
             control_packet: None,
             sends: [None, None],
             first_failure: None,
+            settlement: super::original_held_settlement::OriginalHeldSettlementV1::default(),
         }
     }
 }
@@ -178,6 +202,7 @@ pub(super) struct ResidentOriginalMeasurementsV3 {
     pub(super) failed_carrier: Option<OriginalHeldCarrierV1>,
     held_carrier_bytes: usize,
     pub(super) held_carrier_in_flight: bool,
+    settlement_data_bytes: usize,
 }
 
 pub(super) struct ResidentOriginalV3 {
@@ -404,6 +429,30 @@ impl StorageBrokerRuntime {
         Ok(OriginalHeldCarrierV1::empty())
     }
 
+    pub(crate) fn begin_original_held_settlement_carrier(&mut self) -> Result<OriginalHeldCarrierV1, StorageRuntimeError> {
+        let mut carrier = self.begin_original_held_carrier()?;
+        let bound = (|| {
+            let transient = self.native_issuance.as_mut()
+                .ok_or(OriginalHeldMeasurementErrorV3::Closed)?.held_transient_data_bound()?;
+            let reservation = carrier.settlement.prepare_inventory(transient)?;
+            let maximum = reservation.checked_mul(MAXIMUM_RESIDENT_ORIGINALS)
+                .ok_or(OriginalHeldMeasurementErrorV3::Bound)?;
+            // Keep the old offer counter and its limit literal. Connected DATA
+            // has its own monotone total; charging it there would incorrectly
+            // reject the next original against the old 16-MiB offer limit.
+            self.original_measurements.settlement_data_bytes = self.original_measurements.settlement_data_bytes
+                .checked_add(reservation)
+                .filter(|bytes| *bytes <= maximum)
+                .ok_or(OriginalHeldMeasurementErrorV3::Bound)?;
+            Ok::<_, OriginalHeldMeasurementErrorV3>(())
+        })();
+        if let Err(cause) = bound {
+            self.retain_original_held_carrier_failure(carrier, cause);
+            return Err(StorageRuntimeError::ReopenRequired);
+        }
+        Ok(carrier)
+    }
+
     pub(crate) fn retain_original_held_carrier_failure(
         &mut self, mut carrier: OriginalHeldCarrierV1, cause: OriginalHeldMeasurementErrorV3,
     ) {
@@ -433,6 +482,26 @@ impl StorageBrokerRuntime {
         authenticated: &'request AuthenticatedStorageNativeRequestV2<'trust>,
         trust: &'owner crate::live_export_request_trust::StorageLiveExportRequestTrustV1,
         carrier: &'owner OriginalHeldCarrierV1,
+        verifier: &'owner crate::peer::ProviderLiveExportPeerVerifier,
+    ) -> Result<StoredOriginalHeldSigningLoanV1<'owner, 'request, 'trust>, OriginalHeldMeasurementErrorV3> {
+        self.stored_original_signing_loan(index, authenticated, trust, OriginalHeldSigningReadV1 {
+            original: OriginalHeldCarrierReadV1 {
+                child: carrier.child.as_ref(), execution: carrier.execution, records: &carrier.records,
+            },
+            prepared: carrier.prepared.as_ref(),
+            before_sequence: carrier.readbacks[0],
+            prepared_sequence: carrier.readbacks[1],
+            relay_record: None,
+            purpose: OriginalHeldSigningPurposeV1::Offer,
+        }, verifier)
+    }
+
+    pub(super) fn stored_original_signing_loan<'owner, 'request, 'trust>(
+        &'owner mut self,
+        index: usize,
+        authenticated: &'request AuthenticatedStorageNativeRequestV2<'trust>,
+        trust: &'owner crate::live_export_request_trust::StorageLiveExportRequestTrustV1,
+        carrier: OriginalHeldSigningReadV1<'owner>,
         verifier: &'owner crate::peer::ProviderLiveExportPeerVerifier,
     ) -> Result<StoredOriginalHeldSigningLoanV1<'owner, 'request, 'trust>, OriginalHeldMeasurementErrorV3> {
         let original = &self.original_measurements.originals[index];
@@ -632,7 +701,7 @@ impl StorageBrokerRuntime {
     }
 }
 
-/// The concrete original startup/writer/physical carrier loan for unsigned2 only.
+/// The concrete original startup/writer/physical loan for unsigned2 or unsigned6.
 pub(crate) struct StoredOriginalHeldSigningLoanV1<'owner, 'request, 'trust> {
     inner: OriginalWorkerLoanV3<'owner, 'request, 'trust>,
 
@@ -643,7 +712,7 @@ pub(crate) struct StoredOriginalHeldSigningLoanV1<'owner, 'request, 'trust> {
     reply: &'owner aos_sandbox_source_provider_protocol::StorageNativeAcquireReplyV3,
 
     trust: &'owner crate::live_export_request_trust::StorageLiveExportRequestTrustV1,
-    carrier: &'owner OriginalHeldCarrierV1,
+    carrier: OriginalHeldSigningReadV1<'owner>,
     verifier: &'owner crate::peer::ProviderLiveExportPeerVerifier,
 
     unused: bool,
@@ -651,7 +720,7 @@ pub(crate) struct StoredOriginalHeldSigningLoanV1<'owner, 'request, 'trust> {
 
 impl StoredOriginalHeldSigningLoanV1<'_, '_, '_> {
     pub(crate) fn prepared(&self) -> Result<&aos_sandbox_source_provider_protocol::native_held_completion::frame::PreparedNativeHeldControlV1, OriginalHeldMeasurementErrorV3> {
-        self.carrier.prepared.as_ref().and_then(|row| row.suffix().prepared())
+        self.carrier.prepared.and_then(|row| row.suffix().prepared())
             .ok_or(OriginalHeldMeasurementErrorV3::Closed)
     }
 
@@ -670,10 +739,36 @@ impl StoredOriginalHeldSigningLoanV1<'_, '_, '_> {
         }
         self.unused = false;
         let prepared = self.prepared()?;
-        if prepared.kind() != Kind::StorageHeld
+        let expected_kind = match self.carrier.purpose {
+            OriginalHeldSigningPurposeV1::Offer => Kind::StorageHeld,
+            OriginalHeldSigningPurposeV1::Settlement => Kind::StorageSettled,
+        };
+        if prepared.kind() != expected_kind
             || prepared.signer() != &NativeHeldSignerV1::Storage(key.verifier().projection().0)
-            || prepared.section(Tag::NativeReply) != Some(self.reply.to_canonical_bytes().as_slice())
         {
+            return Err(OriginalHeldMeasurementErrorV3::Closed);
+        }
+        let matches_purpose = match self.carrier.purpose {
+            OriginalHeldSigningPurposeV1::Offer =>
+                prepared.section(Tag::NativeReply) == Some(self.reply.to_canonical_bytes().as_slice()),
+            OriginalHeldSigningPurposeV1::Settlement => {
+                let row = self.carrier.prepared.ok_or(OriginalHeldMeasurementErrorV3::Closed)?;
+                let relay = row.suffix().control(Kind::ProviderRelay)
+                    .ok_or(OriginalHeldMeasurementErrorV3::Closed)?;
+                let record = self.carrier.relay_record.ok_or(OriginalHeldMeasurementErrorV3::Closed)?;
+                let assertion = row.settlement()?.ok_or(OriginalHeldMeasurementErrorV3::Closed)?;
+                let settlement = aos_sandbox_source_provider_protocol::native_held_completion::assertion::NativeHeldSettlementV1::from_canonical_bytes(
+                    prepared.section(Tag::Settlement).ok_or(OriginalHeldMeasurementErrorV3::Closed)?)?;
+                record.bytes == relay.to_canonical_bytes()
+                    && prepared.predecessor() == relay.digest()
+                    && prepared.scope() == relay.scope()
+                    && settlement.disposition == assertion.disposition
+                    && settlement.root_disposition == assertion.root_disposition
+                    && settlement.storage_settlement == assertion.digest()?
+                    && settlement.provider_settlement == ObjectDigest::from_bytes([0; 32])
+            }
+        };
+        if !matches_purpose {
             return Err(OriginalHeldMeasurementErrorV3::Closed);
         }
         let NativeHeldOwnerWitnessV1::Storage(witness) =
@@ -684,7 +779,7 @@ impl StoredOriginalHeldSigningLoanV1<'_, '_, '_> {
         else {
             return Err(OriginalHeldMeasurementErrorV3::Closed);
         };
-        let next = self.ledger.held_row_readback(self.carrier.prepared.as_ref()
+        let next = self.ledger.held_row_readback(self.carrier.prepared
             .ok_or(OriginalHeldMeasurementErrorV3::Closed)?)?;
         self.ledger.require_original_held_roles(self.trust, key)?;
         let primary = self.inner.coordinator.native_metadata_readback_cut(Path::new("/var/lib/aos/sandbox-storage"))
@@ -692,9 +787,9 @@ impl StoredOriginalHeldSigningLoanV1<'_, '_, '_> {
         let workspace = self.workspaces.native_metadata_readback_cut(Path::new("/var/lib/aos/sandbox-storage"))
             .map_err(StorageRuntimeError::WorkspaceCatalog)?;
         let (trust_sequence, generation, file) = self.trust.held_trust_cut()?;
-        let child = self.carrier.child.as_ref().ok_or(OriginalHeldMeasurementErrorV3::Closed)?;
-        if self.carrier.readbacks[1] != Some(next)
-            || self.carrier.readbacks[0] != Some(witness.issuance_sequence)
+        let child = self.carrier.original.child.ok_or(OriginalHeldMeasurementErrorV3::Closed)?;
+        if self.carrier.prepared_sequence != Some(next)
+            || self.carrier.before_sequence != Some(witness.issuance_sequence)
             || witness.primary_sequence != primary.0
             || witness.workspace_sequence != workspace.journal_sequence()
             || witness.request_trust_sequence != trust_sequence
@@ -704,13 +799,16 @@ impl StoredOriginalHeldSigningLoanV1<'_, '_, '_> {
         {
             return Err(OriginalHeldMeasurementErrorV3::Closed);
         }
-        let execution = self.carrier.execution.ok_or(OriginalHeldMeasurementErrorV3::Closed)?;
+        let execution = self.carrier.original.execution.ok_or(OriginalHeldMeasurementErrorV3::Closed)?;
         if self.verifier.verify_connection_typed(child.peer())? != execution {
             return Err(OriginalHeldMeasurementErrorV3::Closed);
         }
-        for record in &self.carrier.records {
+        for record in self.carrier.original.records {
             self.verifier.verify_record_typed(execution, child.peer(),
                 &record.as_ref().ok_or(OriginalHeldMeasurementErrorV3::Closed)?.subject)?;
+        }
+        if let Some(record) = self.carrier.relay_record {
+            self.verifier.verify_record_typed(execution, child.peer(), &record.subject)?;
         }
         self.held.verify_mount()?;
         let clock = trusted_paired_clock_sample()?;

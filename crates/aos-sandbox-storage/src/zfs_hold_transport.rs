@@ -48,6 +48,29 @@ pub(crate) fn serve_original_held_offer_once(
     trust: &crate::runtime::StorageOriginalNativeTrustLoanV1<'_>,
     key: &StorageZfsHoldKeyV1,
 ) -> Result<StorageZfsHoldTransportOutcomeV1, StorageServiceError> {
+    serve_original_held_into(listener, runtime, verifier, trust, key,
+        crate::runtime::original_held_settlement::OriginalHeldServePurposeV1::OfferOnly)
+}
+
+pub(crate) fn serve_original_held_settlement_once(
+    listener: &mut RecordSubjectListener,
+    runtime: &mut StorageBrokerRuntime,
+    verifier: &ProviderLiveExportPeerVerifier,
+    trust: &crate::runtime::StorageOriginalNativeTrustLoanV1<'_>,
+    key: &StorageZfsHoldKeyV1,
+) -> Result<StorageZfsHoldTransportOutcomeV1, StorageServiceError> {
+    serve_original_held_into(listener, runtime, verifier, trust, key,
+        crate::runtime::original_held_settlement::OriginalHeldServePurposeV1::OfferAndSettle)
+}
+
+fn serve_original_held_into(
+    listener: &mut RecordSubjectListener,
+    runtime: &mut StorageBrokerRuntime,
+    verifier: &ProviderLiveExportPeerVerifier,
+    trust: &crate::runtime::StorageOriginalNativeTrustLoanV1<'_>,
+    key: &StorageZfsHoldKeyV1,
+    purpose: crate::runtime::original_held_settlement::OriginalHeldServePurposeV1,
+) -> Result<StorageZfsHoldTransportOutcomeV1, StorageServiceError> {
     use crate::runtime::original_held_measurement::{
         OriginalHeldMeasurementErrorV3 as Error, OriginalHeldRecordV1,
     };
@@ -56,7 +79,12 @@ pub(crate) fn serve_original_held_offer_once(
         frame::SignedNativeHeldControlV1,
     };
 
-    let mut carrier = runtime.begin_original_held_carrier()?;
+    let mut carrier = match purpose {
+        crate::runtime::original_held_settlement::OriginalHeldServePurposeV1::OfferOnly =>
+            runtime.begin_original_held_carrier()?,
+        crate::runtime::original_held_settlement::OriginalHeldServePurposeV1::OfferAndSettle =>
+            runtime.begin_original_held_settlement_carrier()?,
+    };
     let _crossing = carrier.unwind_fence();
     let received = (|| {
         verifier.validate_current()?;
@@ -109,7 +137,13 @@ pub(crate) fn serve_original_held_offer_once(
         runtime.retain_original_held_carrier_failure(carrier, cause);
         return Err(StorageRuntimeError::ReopenRequired.into());
     }
-    runtime.offer_original_held_native(carrier, trust.owner, verifier, key)
+    let offered = match purpose {
+        crate::runtime::original_held_settlement::OriginalHeldServePurposeV1::OfferOnly =>
+            runtime.offer_original_held_native(carrier, trust.owner, verifier, key),
+        crate::runtime::original_held_settlement::OriginalHeldServePurposeV1::OfferAndSettle =>
+            runtime.offer_original_held_native_into(carrier, trust.owner, verifier, key, purpose),
+    };
+    offered
         .map(|outcome| match outcome {
             StorageNativeDeliveryOutcomeV2::Delivered => StorageZfsHoldTransportOutcomeV1::Exported,
             StorageNativeDeliveryOutcomeV2::SendAmbiguous => StorageZfsHoldTransportOutcomeV1::SendAmbiguous,
@@ -119,7 +153,7 @@ pub(crate) fn serve_original_held_offer_once(
 
 // Polling borrows the same child. It neither consumes a record nor retries a
 // retaining receive whose actual lower cause already owns ambiguous custody.
-fn wait_original_record(
+pub(crate) fn wait_original_record(
     fd: std::os::fd::BorrowedFd<'_>, deadline: u64,
 ) -> Result<(), crate::runtime::original_held_measurement::OriginalHeldMeasurementErrorV3> {
     use crate::runtime::original_held_measurement::OriginalHeldMeasurementErrorV3 as Error;

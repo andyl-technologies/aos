@@ -107,7 +107,7 @@ impl StorageRunCompositionV1<'_> {
             },
             Self::Original { composition, trust } => {
                 let key = key.ok_or(StorageRuntimeError::Recovery)?;
-                composition.serve_original_held_offer_once(listener, verifier, trust, key)
+                composition.serve_original_held_settlement_once(listener, verifier, trust, key)
             }
         }
     }

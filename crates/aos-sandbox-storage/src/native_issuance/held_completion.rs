@@ -196,7 +196,7 @@ impl StorageHeldIssuanceRowV2 {
         Ok(retained)
     }
 
-    fn settlement(&self) -> Result<Option<StorageNativeSettlementAssertionV1>> {
+    pub(crate) fn settlement(&self) -> Result<Option<StorageNativeSettlementAssertionV1>> {
         let Some(root) = self.root_disposition()? else {
             return Ok(None);
         };

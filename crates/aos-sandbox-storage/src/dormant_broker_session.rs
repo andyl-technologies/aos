@@ -506,6 +506,28 @@ impl DormantStorageApplyCompositionV1 {
         )
     }
 
+    /// Offers the original root, then stores and sends its signed Storage6 once.
+    ///
+    /// The same child, request, reader and cutoff stay held. Local delivery
+    /// establishes neither Source receipt, retirement, public Acquire nor Drain.
+    ///
+    /// # Errors
+    ///
+    /// Retains the first concrete native cause and later debt before returning
+    /// reopen-required. Failure, interruption and backpressure never resend.
+    pub fn serve_original_held_settlement_once(
+        &mut self,
+        listener: &mut RecordSubjectListener,
+        verifier: &crate::peer::ProviderLiveExportPeerVerifier,
+        trust: &crate::runtime::StorageOriginalNativeTrustLoanV1<'_>,
+        key: &crate::storage_zfs_hold_key::StorageZfsHoldKeyV1,
+    ) -> Result<crate::zfs_hold_transport::StorageZfsHoldTransportOutcomeV1,
+        crate::service::StorageServiceError> {
+        crate::zfs_hold_transport::serve_original_held_settlement_once(
+            listener, &mut self.runtime, verifier, trust, key,
+        )
+    }
+
     /// Returns the retained runtime for explicit recovery coordination.
     #[must_use]
     pub const fn runtime(&self) -> &StorageBrokerRuntime {

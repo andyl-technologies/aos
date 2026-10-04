@@ -18,6 +18,7 @@
 //! settlement. Its terminal-only observation never materializes catalog rows.
 
 mod native_acquire;
+pub(crate) mod original_held_settlement;
 pub(crate) mod original_held_measurement;
 mod operator_terminal_hold;
 mod native_readback;
