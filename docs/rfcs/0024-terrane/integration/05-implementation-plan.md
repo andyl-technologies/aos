@@ -154,8 +154,19 @@ The core case qualifies original-view binding through
 exclusion preprocessing and fresh recipe replay; all incoming deltas are
 excluded, so it does not newly qualify conflict-policy winner selection or
 changed-domain preprocessing. Native historical sourcing and full native fold
-propagation remain unqualified. No formal task merge, checkbox, milestone exit
-or freeze follows.
+propagation remain unqualified. Reviewed native-read candidate `a557f6080593`
+installs independently supplied immutable view/root interpretations, retains
+the selection in each snapshot, and uses it for path resolution and all three
+immutable-read evaluator sites. Parent combined candidate `e6485b457f8b`
+passes the actual property, selector and no-std gates, both formatters and the
+complete golden gate (19 owning suites, 30-section inventory). Its aggregate
+exits 1 in `prov-commit-verify`: three required native disclosure cases remain
+missing or unqualified. The original native Nextest run records 356 passing,
+41 failing and two timed-out tests out of 399, with zero skips; strict native
+Clippy remains red on unowned dead code. Original authoring-root validation
+still uses current property semantics before recorded snapshot selection, so
+protected historical reads remain unqualified. No formal task merge, checkbox,
+milestone exit or freeze follows.
 
 Deployable as: a local tool that initializes a store under a `file://`
 root, commits a directory, forks and merges branches, and checks a commit
@@ -442,6 +453,20 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   configuration tests cannot qualify native historical verification, live ACL
   changes, merge propagation or original-policy admission. Those integrations
   remain separate requirements before T-PROP-1 or T-PROV-1 can complete.
+  Reviewed candidate `a557f6080593` now installs and retains that explicit
+  configuration. All three exact native cases pass the owning gate; they use
+  independently supplied ordinary configuration and a genuinely signed,
+  verified empty history for complete evaluator-byte comparisons. Parent
+  combined qualification passes property resolution, selector presets, no-std,
+  complete golden vectors and both formatters, but the current aggregate exits
+  1 in `prov-commit-verify` on three missing or unqualified disclosure cases.
+  Native full-suite and strict Clippy results remain failures. The original
+  authoring-root resolver still runs current semantics before snapshot
+  selection; these helper cases do not qualify protected historical reads or
+  original-context propagation. A subsequent read-only audit also finds
+  current-semantic original-scope calculations and a held-read adapter that
+  drops explicit configuration. These remain separate propagation gaps; the
+  task remains open.
   — satisfies TREE-14,
   PROP-1 to PROP-30;
   `checks.terrane.gates.property-resolution`,
