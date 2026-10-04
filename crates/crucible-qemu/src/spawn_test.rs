@@ -33,6 +33,7 @@ const PDEATH_CHILD_PID_PREFIX: &str = "CRUCIBLE_QEMU_SPAWN_PDEATH_CHILD_PID=";
 const ENV_CLEAR_PARENT_PROBE: &str = "CRUCIBLE_QEMU_SPAWN_ENV_CLEAR_PARENT_PROBE";
 const ENV_CLEAR_CHILD_PROBE: &str = "CRUCIBLE_QEMU_SPAWN_ENV_CLEAR_CHILD_PROBE";
 const INHERITED_ENV_SENTINEL: &str = "CRUCIBLE_QEMU_SPAWN_INHERITED_SENTINEL";
+const TIME_OWNERSHIP_EXPECTED: &str = "CRUCIBLE_QEMU_TIME_OWNERSHIP_EXPECTED";
 const EXPLICIT_ENV_SENTINEL: &str = "CRUCIBLE_QEMU_SPAWN_EXPLICIT_SENTINEL";
 const DESCENDANT_SUPERVISOR_ENV: &str = "CRUCIBLE_QEMU_DESCENDANT_SUPERVISOR";
 const GUARDED_PROBE_CHILD_MARKER: &str = "guarded-probe-child";
@@ -598,16 +599,7 @@ fn spawn_unpinned_test_process_with_resources(
         credentials: contract.credentials,
     });
 
-    let mut command = Command::new(executable);
-    command
-        .env_clear()
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit());
-    for (key, value) in envs {
-        command.env(key, value);
-    }
+    let mut command = guarded_qemu_process_command(executable, args, envs);
 
     // SAFETY: this test-only unpinned launcher exercises the descriptor and
     // containment setup without a run-directory fixture. Its closure has the
@@ -1716,6 +1708,11 @@ fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
         assert!(env::var_os(INHERITED_ENV_SENTINEL).is_none());
         assert!(env::var_os(ENV_CLEAR_PARENT_PROBE).is_none());
         assert_eq!(env::var(EXPLICIT_ENV_SENTINEL)?, "explicit-child-value");
+        let expected = env::var(TIME_OWNERSHIP_EXPECTED)?;
+        assert_eq!(
+            env::var("CRUCIBLE_TIME_OWNERSHIP_WITNESS").ok(),
+            (expected == "1").then(|| String::from("1")),
+        );
         child_probe_fixed_fds()?;
         return Ok(());
     }
@@ -1743,6 +1740,7 @@ fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
             &[
                 (ENV_CLEAR_CHILD_PROBE, "1"),
                 (EXPLICIT_ENV_SENTINEL, "explicit-child-value"),
+                (TIME_OWNERSHIP_EXPECTED, &env::var(TIME_OWNERSHIP_EXPECTED)?),
                 (SOURCE_FDS_ENV, &source_fds),
             ],
             "spawn child clean-environment probe",
@@ -1754,16 +1752,23 @@ fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
     }
 
     let current_exe = env::current_exe()?;
-    let mut parent = Command::new(current_exe)
-        .args([
-            "--exact",
-            "spawn::tests::qemu_spawn_clears_inherited_environment_and_preserves_explicit_values",
-        ])
-        .env(ENV_CLEAR_PARENT_PROBE, "1")
-        .env(INHERITED_ENV_SENTINEL, "parent-only-value")
-        .spawn()?;
+    for setting in [None, Some("0"), Some("1"), Some("2"), Some("01")] {
+        let mut command = Command::new(&current_exe);
+        command
+            .args([
+                "--exact",
+                "spawn::tests::qemu_spawn_clears_inherited_environment_and_preserves_explicit_values",
+            ])
+            .env(ENV_CLEAR_PARENT_PROBE, "1")
+            .env(INHERITED_ENV_SENTINEL, "parent-only-value")
+            .env(TIME_OWNERSHIP_EXPECTED, setting.unwrap_or("absent"))
+            .env_remove("CRUCIBLE_TIME_OWNERSHIP_WITNESS");
+        if let Some(setting) = setting {
+            command.env("CRUCIBLE_TIME_OWNERSHIP_WITNESS", setting);
+        }
 
-    assert!(parent.wait()?.success());
+        assert!(command.spawn()?.wait()?.success());
+    }
     Ok(())
 }
 

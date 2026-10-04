@@ -65,6 +65,7 @@ mod logical_restore;
 mod network_inbound;
 mod network_output_stop;
 mod preemption;
+mod time_ownership_witness;
 pub use devices::LiveDeviceCallbackError;
 use devices::LiveDeviceCallbackState;
 pub use error::LiveVcpuTimeCallbackError;
@@ -478,6 +479,7 @@ impl OwnedCallbackRegistrar for LiveVcpuTimeCallbackRegistrar {
             vcpu_init_callback,
             callback_state.cast(),
         );
+        time_ownership_witness::install(self.plugin_id);
         Ok(mask)
     }
 }
@@ -1617,10 +1619,15 @@ impl LiveVcpuTimeCallbackState {
                 }
             }
 
-            let Some(status) =
+            let witness = time_ownership_witness::begin_wait(
+                stop_condition == AdvanceStopCondition::NextAuthenticatedIdle,
+                vcpu_index,
+            );
+            let status =
                 self.idle_wake_wait
-                    .wait_once(vcpu_index, self.slot.get(), request.futex_wait())
-            else {
+                    .wait_once(vcpu_index, self.slot.get(), request.futex_wait());
+            time_ownership_witness::end_wait(witness, status);
+            let Some(status) = status else {
                 // The published wait was already runnable, so QEMU kept the BQL.
                 // Rescan inside this callback without crossing the FFI boundary.
                 continue;

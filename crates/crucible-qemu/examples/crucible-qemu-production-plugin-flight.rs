@@ -52,6 +52,9 @@ mod runtime_trace;
 #[path = "crucible-qemu-production-plugin-flight/partition_probe.rs"]
 mod partition_probe;
 
+#[path = "crucible-qemu-production-plugin-flight/time_ownership.rs"]
+mod time_ownership;
+
 const MEMORY_BYTES: u64 = 512 * 1024 * 1024;
 const DISK_BYTES: u64 = 1024 * 1024 * 1024;
 const RR_SWITCH_QUANTUM: u64 = 4096;
@@ -86,6 +89,7 @@ const PRODUCTION_RUNTIME_TRACE_BYTES: u64 = 256 * 1024 * 1024;
 const BLOCK_RECOVERY_ONLY_ENVIRONMENT: &str =
     "CRUCIBLE_PRODUCTION_PLUGIN_FLIGHT_BLOCK_RECOVERY_ONLY";
 const PHASE4_PARTITION_PROBE_ENVIRONMENT: &str = "CRUCIBLE_PHASE4_PARTITION_PROBE";
+const TIME_OWNERSHIP_ENVIRONMENT: &str = "CRUCIBLE_TIME_OWNERSHIP_WITNESS";
 
 fn main() -> ExitCode {
     match run() {
@@ -169,6 +173,26 @@ fn run() -> Result<(), Box<dyn Error>> {
         // The exact four-vCPU guest authenticated readiness after about 110
         // host seconds. Keep a finite per-advance guard with measured headroom.
         .with_completion_timeout(Duration::from_secs(300));
+
+    if std::env::var(TIME_OWNERSHIP_ENVIRONMENT).as_deref() == Ok("1") {
+        let reference = run_once(&mut factory, &config, qemu, false, None)?;
+        let hostile = run_once(&mut factory, &config, qemu, true, None)?;
+        compare_boundaries(
+            "clock ownership restart",
+            &reference.boundaries,
+            &hostile.boundaries,
+        )?;
+        if !idle_evidence_matches_across_runs(&reference.idle, &hostile.idle) {
+            return Err("clock ownership idle/wake evidence changed across runs".into());
+        }
+        fs::write(reference_trace_output, reference.diagnostics.trace.report())?;
+        println!("PASS");
+        println!("diagnostic_mode=time-ownership");
+        println!("loaded_production_plugin=true");
+        println!("idle_hold_clock_unchanged=true");
+        println!("authorized_exact_timer_wake_raw_unchanged=true");
+        return Ok(());
+    }
 
     if std::env::var_os(PHASE4_PARTITION_PROBE_ENVIRONMENT).is_some() {
         let coarse = run_once(
@@ -1236,6 +1260,10 @@ fn probe_idle_wake(node: &mut QemuNode) -> Result<IdleEvidence, Box<dyn Error>> 
         .into());
     }
     let prior_timer_witness = node.virtual_timer_fire_witness()?;
+
+    if std::env::var(TIME_OWNERSHIP_ENVIRONMENT).as_deref() == Ok("1") {
+        time_ownership::hold(node, armed_calibration)?;
+    }
 
     let wake = match SimulationBackend::step_to(
         node,

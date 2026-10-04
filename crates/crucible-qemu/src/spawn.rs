@@ -1126,6 +1126,13 @@ pub(crate) fn guarded_qemu_process_command(
     {
         command.env(AGGREGATE_DIAGNOSTICS, budget);
     }
+
+    // This exact diagnostic opt-in reaches the plugin without inheriting other
+    // host environment or changing deterministic launch inputs.
+    // crucible-lint: allow host-nondeterminism-state -- a default-off observation flag cannot change control decisions.
+    if std::env::var("CRUCIBLE_TIME_OWNERSHIP_WITNESS").as_deref() == Ok("1") {
+        command.env("CRUCIBLE_TIME_OWNERSHIP_WITNESS", "1");
+    }
     // The stage minimum is diagnostic-only and cannot escape the existing
     // witness opt-in. Invalid or noncanonical values leave stage notices off.
     if envs.contains(&("CRUCIBLE_CONTROL_CALLBACK_WITNESS", "1")) {

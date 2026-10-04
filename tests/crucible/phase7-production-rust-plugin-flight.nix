@@ -460,6 +460,9 @@
     inherit rootfsDeps;
     testScript = blockRecoveryTestScript;
   };
+  timeOwnershipDiagnostic = import ./phase7-time-ownership-live.nix {
+    inherit pkgs testing productionFlightCommand rootfsDeps attemptHostSetupScript;
+  };
   partitionDiagnostic = testing.mkVMTest {
     name = "crucible-phase4-qemu-clock-partition-diagnostic";
     memory = 8192;
@@ -498,6 +501,7 @@
             blockRecoveryDiagnostic
             blockRecoveryTestScript
             partitionDiagnostic
+            timeOwnershipDiagnostic
             ;
         };
     };

@@ -2949,6 +2949,7 @@ in rec {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase7.qemuRrControlBoundaryDeviceFlight";
     };
+    qemuTimeOwnershipLive = phase7.productionRustPluginFlight.rawGate.passthru.timeOwnershipDiagnostic;
     qemuHostParallel = import ./phase7-qemu-host-parallel.nix {
       inherit pkgs lib;
       productionPluginFlight = phase7.productionRustPluginFlight.rawGate;
