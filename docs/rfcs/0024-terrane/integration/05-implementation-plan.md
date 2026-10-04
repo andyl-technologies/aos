@@ -124,7 +124,8 @@ empty `terrane` binary.
 
 ### T1 — Local repository
 
-**Status:** In progress. Latest combined candidate `aab21813039a` retains
+**Status:** In progress. Latest completed full qualification records candidate
+`aab21813039a`, which retains
 reviewed source discovery, immutable lookup, repeatable I/P/G maintenance and
 separate verifier/preparation work. Its actual sixteen-group evaluation,
 three-group query, no-std and both mandatory formatters pass. The reviewed core
@@ -979,6 +980,27 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   exact structural-dispatch groups and exits 1 on zero selected tests before
   implementation. Record validation remains distinct from recipe replay,
   current producer checks and native index materialization.
+  Reviewed common replay candidate `9fadba97815c` passes all 650 core tests
+  with zero skips (Nextest run `e67f9315-54a2-4202-8d6c-fe8cbbd25775`),
+  strict all-target core Clippy and rustdoc, the nine exact replay groups,
+  Memo format, index evaluation/query, no-std and the exact mandatory formatters.
+  Replay uses the owning graft/overlay/merge/index algorithms, binds independent
+  checked contexts and returns complete owned Node closures. Every cache path
+  performs fresh replay; correctly keyed divergence requires explicit rebuild.
+  Conflict-base traversal uses an explicit work stack, with a bounded 96-frame
+  closure witness. Retained-byte and selected-counter
+  reports establish no total replay, copy-work or incremental bound.
+  Reviewed metadata candidate `1d738b04d38e` routes the existing Memo kind through
+  the common codec, retaining concrete errors under DRV-21 without adding Chunk
+  dependencies. All 130 default native tests pass with zero skips (Nextest run
+  `a7945ace-e3c7-4cca-bbee-8c98e1f5d389`); its four exact metadata groups,
+  build, rustdoc and mandatory formatters pass. Strict native Clippy remains red
+  on unowned baseline diagnostics, with no suppression or completion claim.
+  Combined dependency candidate `1ce3dbe9f62a` preserves all eight reviewed file
+  images. Its actual Memo format/replay/metadata, index evaluation/query, no-std
+  and exact mandatory formatter checks pass. Full current-trunk qualification
+  is running; these components do not qualify persisted lookup, complete native
+  admission/producer/coverage checks, root-associated retention or collection.
   No formal task merge, checkbox or milestone freeze advances.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
