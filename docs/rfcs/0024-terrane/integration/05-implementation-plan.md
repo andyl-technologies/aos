@@ -124,13 +124,14 @@ empty `terrane` binary.
 
 ### T1 — Local repository
 
-**Status:** In progress. Latest combined candidate `bddcd674cd72` retains
-the reviewed source-discovery tree, qualified with 625 passing core tests
-and zero skips. Both mandatory formatters pass. Its default and keep-going
-current-trunk aggregates both exit 1; the latter reports twelve failed gate
+**Status:** In progress. Latest combined candidate `aab21813039a` retains
+reviewed source discovery, immutable lookup, repeatable I/P/G maintenance and
+separate verifier/preparation work. Its actual sixteen-group evaluation,
+three-group query, no-std and both mandatory formatters pass. The reviewed core
+corrections pass 638 tests with zero skips. Its default and keep-going
+current-trunk aggregates both exit 1; the latter reports eleven failed gate
 dependencies, listed under T-DRV-2. Its observed native feature suite records
-362 passing and 43 failing tests out of 405; later profiles remain unqualified.
-Repeatable I/P/G maintenance is in progress on the shared checked prerequisites.
+377 passing and 28 failing tests out of 405; later profiles remain unqualified.
 No formal task merge, task checkbox, milestone exit or freeze advances.
 
 The reviewed owned-association candidate `28e8a7b6e5b9`
@@ -920,17 +921,47 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   core tests with zero skipped, strict Clippy/rustdoc, both formatters, all
   sixteen exact evaluation groups and the actual no-std gate. Its source
   manifests remain identical through qualification. Source-adoption review
-  finds no additional binding, lifetime or algorithm defect, but cost review
-  still requires independent production split-before/reset and prolonged
-  recovery work totals. The existing literal multilevel growth trace, forced
-  capacity geometry and retained-middle proofs do not close that comparison.
-  The unrelated required `aos-test-targets` check fails because its attribute
-  is absent; that failure remains recorded. A separate shared verifier task
-  adds actual supplied-Node hashing and canonical reconstruction phase reports;
-  inherited selected traversal counters cannot substitute for those costs.
-  Revised numerical proofs and complete verifier reports await review and
-  combined qualification. These scoped checks do not qualify native index
-  behavior or the complete T1 aggregate.
+  finds no additional binding, lifetime or algorithm defect. Reviewed correction
+  `34b113884e9c` now compares all seven production work fields against independent
+  forced split-before/reset and prolonged recovery-to-tail traces, including
+  both physical levels, seeks, completion and phase/closure conservation. Its
+  full 638-test run, sixteen exact evaluation groups, no-std, strict checks and
+  formatters pass without changing production bytes. The additional
+  `aos-test-targets` attempt fails because its attribute is absent; that failure
+  remains recorded.
+  Reviewed verifier correction `43a252ac569b` preserves actual supplied-Node
+  decoding and identity hashing separately from measured empty, insertion and
+  property reconstruction phases. Repeated contextual visits remain repeated
+  work. Lookup borrows the resulting report without cloning its traces.
+  Reviewed maintenance correction `a32b077d1780` moves every physical verifier
+  field into preparation, separately from retained-tree reconstruction. Its
+  gate-selected proof distinguishes eight contextual checks from six retained
+  roots and checks empty-root and primary-property phases. All 638 core tests
+  pass with zero skipped; actual sixteen-group evaluation, three-group query,
+  no-std, strict Clippy/rustdoc and formatters pass. A final comment-only fix
+  documents the two retention records per physical tree and passes strict
+  rustdoc and both formatters. These reports measure their defined operations,
+  excluding CPU instructions and allocator costs. Combined candidate
+  `aab21813039a` retains these reviewed changes. Its actual evaluation, query
+  and no-std gates bind the final source image and pass, as do both formatters.
+  All 5,742 tracked source-file hashes remain identical through qualification.
+  The actual `commit-order` gate also passes with the same final source image.
+  Its default and keep-going current-trunk aggregates both exit 1. The complete
+  failure inventory names `bucket-file-layout`, `dom-dedup-scope`,
+  `dom-reference-order`, `feature-matrix`, `index-generation-manifest`,
+  `prov-commit-verify`, `prov-disclosure-boundary`, `ref-advance-ordering`,
+  `ref-epoch-fencing`, `role-selection` and `store-idempotent-put`. The native
+  feature suite reports 377 passing and 28 failing tests out of 405; later
+  profiles remain unqualified. The earlier combined candidate reported twelve
+  failed dependencies and 362 passing/43 failing native tests. These scoped
+  improvements do not qualify the complete native index behavior or T1.
+  The common memo audit also confirms remaining DRV-19 to DRV-22 work: one typed
+  memo codec, shared recipe replay/refusal/rebuild and advisory cache behavior,
+  actual metadata admission and opaque lookup adapter, and root-associated
+  retention/collection. Recipe lookup hashes and immutable memo-object hashes
+  remain distinct; generic pack transport and attribute side tables cannot
+  substitute for this common mechanism. Current producer/trust checks, native
+  index materialization and the complete normative gates remain mandatory.
   No formal task merge, checkbox or milestone freeze advances.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
