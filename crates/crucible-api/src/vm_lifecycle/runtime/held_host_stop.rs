@@ -72,6 +72,73 @@ impl ProductionVmLifecycleLoop {
             .backend_network_output_time(pending.node(), Icount { retired: ticks })
     }
 
+    /// Authenticates a retained request as the already committed concurrent source.
+    ///
+    /// A source may be ahead of the global frontier while its completed peers
+    /// remain private. This read-only query permits discovery of that source;
+    /// it does not authorize a reply, release a hold, or change either clock.
+    /// Ordinary requests without the original held witness return `false`.
+    ///
+    /// # Errors
+    ///
+    /// Rejects poisoned or stale ownership, a changed physical pause, an
+    /// overflowing request boundary, or an absent admitted clock mapping.
+    pub fn pending_selectable_request_is_committed_source(
+        &self,
+        pending: &crucible_qemu::QemuNodeSelectablePendingRequest,
+    ) -> Result<bool, SchedulerError> {
+        if self.pending_held_host_outcomes.is_some()
+            || self.inner.live_network_preselection().is_some()
+        {
+            return Ok(false);
+        }
+        let Some(witness) = self.inner.held_host_stop_witness() else {
+            if self.inner.has_unsettled_host_continuation() {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: String::from(
+                        "guest request visibility cannot bypass an unsettled physical continuation",
+                    ),
+                });
+            }
+            return Ok(false);
+        };
+        self.inner.validate_held_host_stop(&witness)?;
+        if witness.kind() != crucible::HeldHostStopKind::GuestSelectable
+            || witness.node() != pending.node()
+            || !self
+                .inner
+                .backend()
+                .retained_selectable_request_matches(pending)
+        {
+            return Ok(false);
+        }
+        let boundary = pending
+            .pending()
+            .trap_tick_ps()
+            .checked_add(
+                crucible_protocol::selectable_catalog_plan::SELECTABLE_NATIVE_HANDOFF_TICKS_PS,
+            )
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("guest selectable pause boundary overflowed"),
+            })?;
+        if witness.physical_pause().ticks != boundary
+            || self
+                .inner
+                .backend()
+                .node_now(pending.node())
+                .map_err(SchedulerError::Backend)?
+                .ticks
+                != boundary
+        {
+            return Err(SchedulerError::BoundaryViolation {
+                message: String::from("guest request differs from the committed physical pause"),
+            });
+        }
+        // Validate the original physical-to-logical mapping without rebasing it.
+        self.pending_selectable_request_time(pending)?;
+        Ok(true)
+    }
+
     /// Applies one exact host-authorized selectable reply at the scheduler frontier.
     ///
     /// The scheduler stages its event-log transition before publishing the reply

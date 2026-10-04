@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use super::{QemuHostParallelismEvidence, QemuNodeSet};
+use super::{QemuHostParallelismEvidence, QemuNodeSelectablePendingRequest, QemuNodeSet};
 
 impl QemuNodeSet {
     /// Builds an empty node set.
@@ -23,6 +23,18 @@ impl QemuNodeSet {
     #[must_use]
     pub fn last_host_parallelism(&self) -> Option<&QemuHostParallelismEvidence> {
         self.last_host_parallelism.as_ref()
+    }
+
+    /// Reports whether a request matches the exact token already retained by this set.
+    ///
+    /// This reads only host-owned state. It never reads a channel, drains a
+    /// request, or authorizes a reply or resumed execution.
+    #[must_use]
+    pub fn retained_selectable_request_matches(
+        &self,
+        pending: &QemuNodeSelectablePendingRequest,
+    ) -> bool {
+        self.pending_selectable_requests.get(pending.node()) == Some(pending.pending())
     }
 
     /// Returns the number of live nodes in the set.

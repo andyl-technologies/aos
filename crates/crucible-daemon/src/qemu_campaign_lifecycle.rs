@@ -68,6 +68,7 @@ pub use interactive_session::{
 };
 
 mod failure_classification;
+mod guest_selectable;
 pub(crate) use failure_classification::{
     classify_production_lifecycle_failure, production_lifecycle_failure_class,
 };
@@ -369,6 +370,21 @@ pub trait QemuFreshAttemptLifecycleOwner {
         Ok(VirtualTime { ticks })
     }
 
+    /// Authenticates an already committed held source independently of peer time.
+    ///
+    /// The default grants no early visibility. Implementations must validate
+    /// original ownership and the exact retained request without effects.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when original held ownership cannot be authenticated.
+    fn pending_selectable_request_is_committed_source(
+        &self,
+        _pending: &QemuNodeSelectablePendingRequest,
+    ) -> Result<bool, SchedulerError> {
+        Ok(false)
+    }
+
     /// Applies one exact semantic reply at the authoritative scheduler frontier.
     ///
     /// # Errors
@@ -566,6 +582,13 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
         pending: &QemuNodeSelectablePendingRequest,
     ) -> Result<VirtualTime, SchedulerError> {
         ProductionVmLifecycleLoop::pending_selectable_request_time(self, pending)
+    }
+
+    fn pending_selectable_request_is_committed_source(
+        &self,
+        pending: &QemuNodeSelectablePendingRequest,
+    ) -> Result<bool, SchedulerError> {
+        ProductionVmLifecycleLoop::pending_selectable_request_is_committed_source(self, pending)
     }
 
     fn apply_selectable_reply(
@@ -840,49 +863,6 @@ impl QemuFreshAttemptLifecycle<'_> {
     /// Returns an error when queue state cannot be authenticated.
     pub fn campaign_network_queues_empty(&self) -> Result<bool, SchedulerError> {
         self.owner.campaign_network_queues_empty()
-    }
-
-    /// Drains node-qualified guest selectable requests at the paused boundary.
-    ///
-    /// The result remains untrusted guest input until the modeled driver binds
-    /// it to the scenario declaration and selects a legal value.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError`] when the live request stream is malformed.
-    pub fn drain_pending_selectable_requests(
-        &mut self,
-    ) -> Result<Vec<QemuNodeSelectablePendingRequest>, SchedulerError> {
-        self.owner.drain_pending_selectable_requests()
-    }
-
-    /// Projects a retained guest pause into the shared scheduler clock.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the pause overflows or its admitted mapping is absent.
-    pub fn pending_selectable_request_time(
-        &self,
-        pending: &QemuNodeSelectablePendingRequest,
-    ) -> Result<VirtualTime, SchedulerError> {
-        self.owner.pending_selectable_request_time(pending)
-    }
-
-    /// Applies one exact semantic reply at the authoritative scheduler frontier.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SchedulerError`] when the live request/reply binding fails.
-    pub fn apply_selectable_reply(
-        &mut self,
-        parent: &Configuration,
-        decision: SelectionDecision,
-        selected: &Configuration,
-        pending: &QemuNodeSelectablePendingRequest,
-        reply: &SelectionReply,
-    ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
-        self.owner
-            .apply_selectable_reply(parent, decision, selected, pending, reply)
     }
 
     /// Captures read-only production fault evidence at the current boundary.

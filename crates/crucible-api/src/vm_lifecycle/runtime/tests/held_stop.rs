@@ -243,6 +243,7 @@ fn production_reply_keeps_peer_request_private_until_once_only_publication() -> 
 
     lifecycle.apply_selectable_reply(&parent, decision, &selected, pending, &reply)?;
     assert!(lifecycle.pending_held_host_outcomes.is_some());
+    assert!(!lifecycle.pending_selectable_request_is_committed_source(pending)?);
     assert!(lifecycle.capture_checkpoint(&selected).is_err());
     assert!(lifecycle.capture_hot_fork_world_continuation().is_err());
     assert!(lifecycle.drain_pending_selectable_requests()?.is_empty());
@@ -261,6 +262,7 @@ fn production_reply_keeps_peer_request_private_until_once_only_publication() -> 
     let peer = lifecycle.drain_pending_selectable_requests()?;
     assert_eq!(peer.len(), 1);
     assert_ne!(peer[0].node(), pending.node());
+    assert!(lifecycle.pending_selectable_request_is_committed_source(&peer[0])?);
     let (parent, decision, selected, reply) = reply_for(&lifecycle, &peer[0])?;
     lifecycle.apply_selectable_reply(&parent, decision, &selected, &peer[0], &reply)?;
     assert!(lifecycle.pending_held_host_outcomes.is_none());
@@ -294,6 +296,35 @@ fn production_reply_refusal_retains_original_stop_and_request() -> TestResult {
     assert_eq!(lifecycle.drain_pending_selectable_requests()?.len(), 1);
     lifecycle.apply_selectable_reply(&parent, decision, &selected, &pending, &reply)?;
     assert!(!lifecycle.inner.has_unsettled_host_continuation());
+    lifecycle.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn committed_request_visibility_refuses_poisoned_ownership() -> TestResult {
+    let mut lifecycle = stopped_lifecycle(1)?;
+    let pending = lifecycle.drain_pending_selectable_requests()?.remove(0);
+    assert!(lifecycle.pending_selectable_request_is_committed_source(&pending)?);
+    let retained = lifecycle
+        .inner
+        .backend_mut()
+        .drain_pending_selectable_requests()?;
+
+    lifecycle.inner.abort_host_stop_settlement();
+
+    assert!(
+        lifecycle
+            .pending_selectable_request_is_committed_source(&pending)
+            .is_err()
+    );
+    assert!(lifecycle.inner.has_unsettled_host_continuation());
+    assert_eq!(
+        lifecycle
+            .inner
+            .backend_mut()
+            .drain_pending_selectable_requests()?,
+        retained
+    );
     lifecycle.shutdown()?;
     Ok(())
 }
@@ -501,6 +532,28 @@ fn production_marker_release_settles_zero_peer_hold_and_retains_refused_park() -
     lifecycle
         .inner
         .settle_pending_network_outputs_at_current_frontier()?;
+    lifecycle.shutdown()?;
+    Ok(())
+}
+
+#[test]
+fn committed_request_visibility_refuses_changed_source_counter() -> TestResult {
+    let mut lifecycle = stopped_lifecycle(0)?;
+    let pending = lifecycle.drain_pending_selectable_requests()?.remove(0);
+    assert!(lifecycle.pending_selectable_request_is_committed_source(&pending)?);
+
+    // Simulate a replacement counter without replacing the original hold.
+    lifecycle
+        .inner
+        .loop_impl_mut()
+        .rebase_restarted_backend_counter(pending.node(), crucible::NodeCounter { ticks: 1_000 })?;
+
+    assert!(
+        lifecycle
+            .pending_selectable_request_is_committed_source(&pending)
+            .is_err()
+    );
+    assert!(lifecycle.inner.has_unsettled_host_continuation());
     lifecycle.shutdown()?;
     Ok(())
 }
