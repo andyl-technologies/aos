@@ -310,6 +310,7 @@ pub(super) struct IntentBodyV1 {
 enum RecordScopeDataV1 {
     Broker(FloorProfileV1),
     Host([u8; 32]),
+    Online(OnlineFloorProfileV1),
 }
 
 impl RecordScopeDataV1 {
@@ -317,6 +318,7 @@ impl RecordScopeDataV1 {
         match self {
             Self::Broker(_) => RecordPurposeDataV1::BrokerV1,
             Self::Host(_) => RecordPurposeDataV1::RuntimeDeploymentV1,
+            Self::Online(_) => RecordPurposeDataV1::OnlineNixV1,
         }
     }
 
@@ -324,6 +326,7 @@ impl RecordScopeDataV1 {
         match self {
             Self::Broker(profile) => profile.scope(),
             Self::Host(scope) => scope,
+            Self::Online(profile) => profile.scope(),
         }
     }
 
@@ -331,6 +334,7 @@ impl RecordScopeDataV1 {
         match self {
             Self::Broker(_) => [0; 32],
             Self::Host(scope) => scope,
+            Self::Online(profile) => profile.scope(),
         }
     }
 }
@@ -769,6 +773,522 @@ impl HostFloorIntentDataV1 {
     }
 }
 
+/// Fixes the distinct independently supplied ONLINE profile width.
+pub(crate) const ONLINE_PROFILE_BYTES: usize = 532;
+
+/// Selects only the two independently provisioned ONLINE purposes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OnlineFloorRoleV1 {
+    Controller = 58,
+    Owner = 59,
+}
+
+impl OnlineFloorRoleV1 {
+    pub(crate) const fn physical_endpoint(self) -> super::super::NvCustodyEndpointV1 {
+        match self {
+            Self::Controller => super::super::NvCustodyEndpointV1::ControllerNix,
+            Self::Owner => super::super::NvCustodyEndpointV1::NixOwner,
+        }
+    }
+
+    pub(crate) const fn nv_index(self) -> u32 {
+        match self {
+            Self::Controller => 0x0180_a058,
+            Self::Owner => 0x0180_a059,
+        }
+    }
+
+    pub(crate) const fn directory(self) -> &'static str {
+        match self {
+            Self::Controller => "/var/lib/aos/sandboxd/broker-session/nix",
+            Self::Owner => "/var/lib/aos/sandbox-nix/broker-session/controller",
+        }
+    }
+
+    pub(crate) const fn unit(self) -> &'static str {
+        match self {
+            Self::Controller => "aos-sandboxd.service",
+            Self::Owner => "aos-sandbox-nixd.service",
+        }
+    }
+
+    fn nv_name(self) -> [u8; 34] {
+        let mut public = [0; 14];
+        public[..4].copy_from_slice(&self.nv_index().to_be_bytes());
+        public[4..6].copy_from_slice(&0x000b_u16.to_be_bytes());
+        public[6..10].copy_from_slice(&NV_ATTRIBUTES_WRITTEN.to_be_bytes());
+        public[12..14].copy_from_slice(&32_u16.to_be_bytes());
+
+        let mut name = [0; 34];
+        name[..2].copy_from_slice(&0x000b_u16.to_be_bytes());
+        name[2..].copy_from_slice(&hash_parts(b"", &[&public]));
+        name
+    }
+
+    fn route(self) -> [u8; 32] {
+        use sha2::{Digest as _, Sha256};
+
+        let mut digest = Sha256::new();
+        digest.update(b"aos.sandbox.nix.online-floor.route.v1\0");
+        digest.update([self as u8, aos_sandbox::RecordNamespace::BrokerSessionTraffic as u8]);
+        for name in [
+            "Nix/NodeController", self.directory(), "session.journal", "tpm-floor.journal",
+            "/run/aos/sandbox-nix/control.sock", self.unit(),
+        ] {
+            // All six fixed literals have lengths below u16::MAX.
+            digest.update((name.len() as u16).to_be_bytes());
+            digest.update(name.as_bytes());
+        }
+        digest.finalize().into()
+    }
+}
+
+/// Keeps the complete signed profile DATA distinct from the Broker112 schema.
+///
+/// Parsing these bytes creates no startup, journal, helper or floor owner.
+/// The physical consumer must compare every field to its genuine originals.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct OnlineFloorProfileV1 {
+    bytes: [u8; ONLINE_PROFILE_BYTES],
+    role: OnlineFloorRoleV1,
+}
+
+impl OnlineFloorProfileV1 {
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, FloorErrorV1> {
+        // Only the undeployed ONLINE purpose changes version. Broker/Host
+        // framing and all shared checkpoint/intent versions remain literal.
+        if bytes.len() != ONLINE_PROFILE_BYTES
+            || &bytes[..8] != b"AOSNXF02"
+            || bytes[8..12] != [0, 2, 0, 0]
+        {
+            return Err(FloorErrorV1::Encoding);
+        }
+        let role = match bytes[12] {
+            58 => OnlineFloorRoleV1::Controller,
+            59 => OnlineFloorRoleV1::Owner,
+            _ => return Err(FloorErrorV1::Encoding),
+        };
+        if bytes[13..16] != [0; 3]
+            || [(16, 32), (32, 64), (64, 80), (80, 96), (96, 128),
+                (128, 160), (160, 192), (192, 224), (224, 256), (256, 272),
+                (272, 304), (304, 336), (468, 500), (500, 532)]
+                .iter().any(|&(start, end)| bytes[start..end].iter().all(|byte| *byte == 0))
+            || bytes[336..338] != [0, 0x0b]
+            || bytes[338..370].iter().all(|byte| *byte == 0)
+            || bytes[370..404] != role.nv_name()
+            || bytes[468..500] != role.route()
+        {
+            return Err(FloorErrorV1::Encoding);
+        }
+        let limits = online_main_limit_words_v2();
+        for (index, expected) in limits.into_iter().enumerate() {
+            if u64::from_be_bytes(array(bytes, 404 + index * 8)?) != expected {
+                return Err(FloorErrorV1::Encoding);
+            }
+        }
+        Ok(Self { bytes: array(bytes, 0)?, role })
+    }
+
+    pub(crate) const fn role(self) -> OnlineFloorRoleV1 {
+        self.role
+    }
+
+    pub(crate) const fn encode(self) -> [u8; ONLINE_PROFILE_BYTES] {
+        self.bytes
+    }
+
+    pub(crate) fn scope(self) -> [u8; 32] {
+        hash_parts(b"aos.sandbox.nix.online-floor.scope.v2\0", &[&self.bytes])
+    }
+
+    pub(crate) fn node(self) -> [u8; 16] {
+        self.fixed(16)
+    }
+
+    pub(crate) fn stable_endpoint(self) -> [u8; 32] {
+        self.fixed(224)
+    }
+
+    pub(crate) fn salt_name(self) -> [u8; 34] {
+        self.fixed(336)
+    }
+
+    pub(crate) fn salt_key_name_digest(self) -> [u8; 32] {
+        hash_parts(b"", &[&self.salt_name()])
+    }
+
+    pub(crate) fn nv_name(self) -> [u8; 34] {
+        self.fixed(370)
+    }
+
+    pub(crate) fn genesis_id(self) -> [u8; 16] {
+        self.fixed(256)
+    }
+
+    pub(crate) fn issuer_digest(self) -> [u8; 32] {
+        self.fixed(272)
+    }
+
+    pub(crate) fn auth_digest(self) -> [u8; 32] {
+        self.fixed(304)
+    }
+
+    pub(crate) fn startup_digest(self) -> [u8; 32] {
+        self.fixed(192)
+    }
+
+    pub(crate) fn public_set_digest(self) -> [u8; 32] {
+        self.fixed(160)
+    }
+
+    pub(crate) fn snapshot_digest(self) -> [u8; 32] {
+        self.fixed(500)
+    }
+
+    pub(crate) fn deployment(self) -> [u8; 32] {
+        self.fixed(32)
+    }
+
+    pub(crate) fn endpoint(self) -> [u8; 16] {
+        self.fixed(64)
+    }
+
+    pub(crate) fn domain(self) -> [u8; 16] {
+        self.fixed(80)
+    }
+
+    pub(crate) fn domain_commitment(self) -> [u8; 32] {
+        self.fixed(96)
+    }
+
+    pub(crate) fn disclosure(self) -> [u8; 32] {
+        self.fixed(128)
+    }
+
+    fn fixed<const N: usize>(&self, offset: usize) -> [u8; N] {
+        let mut value = [0; N];
+        value.copy_from_slice(&self.bytes[offset..offset + N]);
+        value
+    }
+
+    pub(crate) fn main_limits(self) -> Result<aos_sandbox::JournalLimits, FloorErrorV1> {
+        let words = online_main_limit_words_v2();
+        let width = |index| usize::try_from(words[index]).map_err(|_| FloorErrorV1::Encoding);
+        Ok(aos_sandbox::JournalLimits {
+            maximum_journal_bytes: words[0],
+            maximum_record_bytes: width(1)?,
+            maximum_key_bytes: width(2)?,
+            maximum_records_per_transaction: width(3)?,
+            maximum_transaction_bytes: width(4)?,
+            maximum_transactions: width(5)?,
+            maximum_materialized_bytes: width(6)?,
+            maximum_materialized_records: width(7)?,
+        })
+    }
+}
+
+// An actual RequestPrepared writes traffic + fence + pending effect. Each
+// non-genesis transaction can add at most one fixed24 fence and one fixed24
+// effect key; terminal writes update the effect rather than add another key.
+// These ceilings derive from the existing transaction budget, not a funded
+// job reservation. The native writer still checks the real full transaction,
+// materialized map, all eight limits and remaining sequence space.
+fn online_main_limit_words_v2() -> [u64; 8] {
+    const TRANSACTIONS: u64 = 65_536;
+    const TRAFFIC_AND_SEED_BYTES: u64 = 67_242_902;
+    const FENCE_KEY_AND_VALUE_BYTES: u64 = 24 + 741;
+    const COMPLETE_EFFECT_KEY_AND_VALUE_BYTES: u64 = 24 + 649;
+    [
+        4_294_967_296,
+        67_242_238,
+        24,
+        3,
+        134_485_500,
+        TRANSACTIONS,
+        TRAFFIC_AND_SEED_BYTES + (TRANSACTIONS - 1)
+            * (FENCE_KEY_AND_VALUE_BYTES + COMPLETE_EFFECT_KEY_AND_VALUE_BYTES),
+        2 + (TRANSACTIONS - 1) * 2,
+    ]
+}
+
+/// Encodes ONLINE checkpoints over the same checked canonical body.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct OnlineFloorCheckpointV1 {
+    pub(super) body: CheckpointBodyV1,
+}
+
+impl OnlineFloorCheckpointV1 {
+    pub(crate) fn initial(
+        profile: OnlineFloorProfileV1,
+        cut: FloorCutV1,
+    ) -> Result<Self, FloorErrorV1> {
+        if cut.sequence() != 4 {
+            return Err(FloorErrorV1::Encoding);
+        }
+        Ok(Self {
+            body: CheckpointBodyV1::new(
+                RecordPurposeDataV1::OnlineNixV1, 1, profile.scope(), cut, [0; 32], [0; 32],
+            )?,
+        })
+    }
+
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, FloorErrorV1> {
+        Ok(Self { body: CheckpointBodyV1::decode(RecordPurposeDataV1::OnlineNixV1, bytes)? })
+    }
+
+    pub(crate) fn encode(self) -> [u8; CHECKPOINT_BYTES] {
+        self.body.encode(RecordPurposeDataV1::OnlineNixV1)
+    }
+
+    pub(crate) const fn cut(self) -> FloorCutV1 {
+        self.body.cut()
+    }
+
+    pub(crate) const fn ordinal(self) -> u64 {
+        self.body.ordinal
+    }
+
+    pub(crate) fn require_profile(self, profile: OnlineFloorProfileV1) -> Result<(), FloorErrorV1> {
+        self.body.require_scope(profile.scope())
+    }
+
+    pub(crate) fn nv_value(self) -> [u8; 32] {
+        self.body.nv_value(RecordPurposeDataV1::OnlineNixV1)
+    }
+
+    pub(crate) fn extend_input(self) -> [u8; 32] {
+        self.body.extend_input(RecordPurposeDataV1::OnlineNixV1)
+    }
+}
+
+/// Encodes ONLINE preparation over the same exact successor equation engine.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct OnlineFloorIntentV1 {
+    pub(super) body: IntentBodyV1,
+}
+
+impl OnlineFloorIntentV1 {
+    pub(crate) fn new(
+        profile: OnlineFloorProfileV1,
+        predecessor: OnlineFloorCheckpointV1,
+        target: FloorCutV1,
+        transaction: &JournalTransaction,
+    ) -> Result<Self, FloorErrorV1> {
+        Ok(Self {
+            body: IntentBodyV1::new(RecordScopeDataV1::Online(profile), predecessor.body, target, transaction)?,
+        })
+    }
+
+    pub(crate) fn decode(profile: OnlineFloorProfileV1, bytes: &[u8]) -> Result<Self, FloorErrorV1> {
+        Ok(Self { body: IntentBodyV1::decode(RecordScopeDataV1::Online(profile), bytes)? })
+    }
+
+    pub(crate) fn encode(self) -> [u8; INTENT_BYTES] {
+        self.body.encode(RecordPurposeDataV1::OnlineNixV1)
+    }
+
+    pub(crate) const fn predecessor(self) -> OnlineFloorCheckpointV1 {
+        OnlineFloorCheckpointV1 { body: self.body.predecessor }
+    }
+
+    pub(crate) const fn target(self) -> OnlineFloorCheckpointV1 {
+        OnlineFloorCheckpointV1 { body: self.body.target }
+    }
+
+    pub(crate) fn require_transaction(self, transaction: &JournalTransaction) -> Result<(), FloorErrorV1> {
+        self.body.require_transaction(RecordPurposeDataV1::OnlineNixV1, transaction)
+    }
+
+    pub(crate) fn require_predecessor(
+        self,
+        profile: OnlineFloorProfileV1,
+        predecessor: OnlineFloorCheckpointV1,
+    ) -> Result<(), FloorErrorV1> {
+        self.body.require_predecessor(RecordPurposeDataV1::OnlineNixV1, profile.scope(), predecessor.body)
+    }
+}
+
+/// Selects a closed DATA schema inside the existing physical floor algorithms.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FloorProfileDataV1 {
+    Broker(FloorProfileV1),
+    Online(OnlineFloorProfileV1),
+}
+
+impl FloorProfileDataV1 {
+    pub(crate) fn scope(self) -> [u8; 32] {
+        match self {
+            Self::Broker(profile) => profile.scope(),
+            Self::Online(profile) => profile.scope(),
+        }
+    }
+
+    pub(crate) fn nv_index(self) -> u32 {
+        match self {
+            Self::Broker(profile) => profile.endpoint().nv_index(),
+            Self::Online(profile) => profile.role().nv_index(),
+        }
+    }
+
+    pub(crate) fn nv_name(self) -> [u8; 34] {
+        match self {
+            Self::Broker(profile) => profile.nv_name(),
+            Self::Online(profile) => profile.nv_name(),
+        }
+    }
+
+    pub(crate) fn salt_digest(self) -> [u8; 32] {
+        match self {
+            Self::Broker(profile) => profile.salt_key_name_digest(),
+            Self::Online(profile) => hash_parts(b"", &[&profile.salt_name()]),
+        }
+    }
+
+    fn checkpoint(self, bytes: &[u8]) -> Result<FloorCheckpointDataV1, FloorErrorV1> {
+        match self {
+            Self::Broker(_) => FloorCheckpointV1::decode(bytes).map(FloorCheckpointDataV1::Broker),
+            Self::Online(_) => OnlineFloorCheckpointV1::decode(bytes).map(FloorCheckpointDataV1::Online),
+        }
+    }
+
+    fn intent(self, bytes: &[u8]) -> Result<FloorIntentDataV1, FloorErrorV1> {
+        match self {
+            Self::Broker(profile) => FloorIntentV1::decode(profile, bytes).map(FloorIntentDataV1::Broker),
+            Self::Online(profile) => OnlineFloorIntentV1::decode(profile, bytes).map(FloorIntentDataV1::Online),
+        }
+    }
+}
+
+/// Keeps checkpoint purpose tags beside the single checked canonical body.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FloorCheckpointDataV1 {
+    Broker(FloorCheckpointV1),
+    Online(OnlineFloorCheckpointV1),
+}
+
+impl FloorCheckpointDataV1 {
+    pub(crate) fn decode(profile: FloorProfileDataV1, bytes: &[u8]) -> Result<Self, FloorErrorV1> {
+        profile.checkpoint(bytes)
+    }
+
+    pub(crate) fn cut(self) -> FloorCutV1 {
+        match self {
+            Self::Broker(checkpoint) => checkpoint.cut(),
+            Self::Online(checkpoint) => checkpoint.cut(),
+        }
+    }
+
+    pub(crate) fn ordinal(self) -> u64 {
+        match self {
+            Self::Broker(checkpoint) => checkpoint.ordinal(),
+            Self::Online(checkpoint) => checkpoint.ordinal(),
+        }
+    }
+
+    pub(crate) fn require_profile(self, profile: FloorProfileDataV1) -> Result<(), FloorErrorV1> {
+        match (self, profile) {
+            (Self::Broker(checkpoint), FloorProfileDataV1::Broker(profile)) => checkpoint.require_profile(profile),
+            (Self::Online(checkpoint), FloorProfileDataV1::Online(profile)) => checkpoint.require_profile(profile),
+            _ => Err(FloorErrorV1::Provisioning),
+        }
+    }
+
+    pub(crate) fn encode(self) -> [u8; CHECKPOINT_BYTES] {
+        match self {
+            Self::Broker(checkpoint) => checkpoint.encode(),
+            Self::Online(checkpoint) => checkpoint.encode(),
+        }
+    }
+
+    pub(crate) fn extend_input(self) -> [u8; 32] {
+        match self {
+            Self::Broker(checkpoint) => checkpoint.extend_input(),
+            Self::Online(checkpoint) => checkpoint.extend_input(),
+        }
+    }
+
+    pub(crate) fn nv_value(self) -> [u8; 32] {
+        match self {
+            Self::Broker(checkpoint) => checkpoint.nv_value(),
+            Self::Online(checkpoint) => checkpoint.nv_value(),
+        }
+    }
+}
+
+/// Keeps the closed intent purpose beside the single exact successor reducer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FloorIntentDataV1 {
+    Broker(FloorIntentV1),
+    Online(OnlineFloorIntentV1),
+}
+
+impl FloorIntentDataV1 {
+    pub(crate) fn new(
+        profile: FloorProfileDataV1,
+        predecessor: FloorCheckpointDataV1,
+        target: FloorCutV1,
+        transaction: &JournalTransaction,
+    ) -> Result<Self, FloorErrorV1> {
+        match (profile, predecessor) {
+            (FloorProfileDataV1::Broker(profile), FloorCheckpointDataV1::Broker(predecessor)) => {
+                FloorIntentV1::new(profile, predecessor, target, transaction).map(Self::Broker)
+            }
+            (FloorProfileDataV1::Online(profile), FloorCheckpointDataV1::Online(predecessor)) => {
+                OnlineFloorIntentV1::new(profile, predecessor, target, transaction).map(Self::Online)
+            }
+            _ => Err(FloorErrorV1::Provisioning),
+        }
+    }
+
+    pub(crate) fn decode(profile: FloorProfileDataV1, bytes: &[u8]) -> Result<Self, FloorErrorV1> {
+        profile.intent(bytes)
+    }
+
+    pub(crate) fn predecessor(self) -> FloorCheckpointDataV1 {
+        match self {
+            Self::Broker(intent) => FloorCheckpointDataV1::Broker(intent.predecessor()),
+            Self::Online(intent) => FloorCheckpointDataV1::Online(intent.predecessor()),
+        }
+    }
+
+    pub(crate) fn target(self) -> FloorCheckpointDataV1 {
+        match self {
+            Self::Broker(intent) => FloorCheckpointDataV1::Broker(intent.target()),
+            Self::Online(intent) => FloorCheckpointDataV1::Online(intent.target()),
+        }
+    }
+
+    pub(crate) fn encode(self) -> [u8; INTENT_BYTES] {
+        match self {
+            Self::Broker(intent) => intent.encode(),
+            Self::Online(intent) => intent.encode(),
+        }
+    }
+
+    pub(crate) fn require_transaction(self, transaction: &JournalTransaction) -> Result<(), FloorErrorV1> {
+        match self {
+            Self::Broker(intent) => intent.require_transaction(transaction),
+            Self::Online(intent) => intent.require_transaction(transaction),
+        }
+    }
+
+    pub(crate) fn require_predecessor(
+        self,
+        profile: FloorProfileDataV1,
+        predecessor: FloorCheckpointDataV1,
+    ) -> Result<(), FloorErrorV1> {
+        match (self, profile, predecessor) {
+            (Self::Broker(intent), FloorProfileDataV1::Broker(profile), FloorCheckpointDataV1::Broker(predecessor)) => {
+                intent.require_predecessor(profile, predecessor)
+            }
+            (Self::Online(intent), FloorProfileDataV1::Online(profile), FloorCheckpointDataV1::Online(predecessor)) => {
+                intent.require_predecessor(profile, predecessor)
+            }
+            _ => Err(FloorErrorV1::Provisioning),
+        }
+    }
+}
+
 fn header(bytes: &mut [u8], magic: &[u8; 8]) {
     bytes[..8].copy_from_slice(magic);
     bytes[8..10].copy_from_slice(&1_u16.to_be_bytes());
@@ -790,4 +1310,81 @@ fn array<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], FloorEr
         .get(offset..offset + N)
         .and_then(|value| value.try_into().ok())
         .ok_or(FloorErrorV1::Encoding)
+}
+
+#[cfg(test)]
+mod online_profile_tests {
+    use super::*;
+
+    fn shape_only_profile(role: OnlineFloorRoleV1) -> [u8; ONLINE_PROFILE_BYTES] {
+        // Canonical DATA only: no original startup, provision, NV or journal
+        // owner can be constructed from this fixture.
+        let mut bytes = [1; ONLINE_PROFILE_BYTES];
+        bytes[..8].copy_from_slice(b"AOSNXF02");
+        bytes[8..12].copy_from_slice(&[0, 2, 0, 0]);
+        bytes[12] = role as u8;
+        bytes[13..16].fill(0);
+        bytes[336..338].copy_from_slice(&[0, 0x0b]);
+        bytes[370..404].copy_from_slice(&role.nv_name());
+        for (index, word) in online_main_limit_words_v2().into_iter().enumerate() {
+            bytes[404 + index * 8..412 + index * 8].copy_from_slice(&word.to_be_bytes());
+        }
+        bytes[468..500].copy_from_slice(&role.route());
+        bytes
+    }
+
+    #[test]
+    fn online_version_two_is_distinct_and_preserves_all_eight_limits() {
+        for role in [OnlineFloorRoleV1::Controller, OnlineFloorRoleV1::Owner] {
+            let bytes = shape_only_profile(role);
+            let profile = OnlineFloorProfileV1::decode(&bytes).unwrap();
+
+            assert_eq!(profile.encode(), bytes);
+            assert_eq!(profile.role(), role);
+            assert_eq!(profile.main_limits().unwrap(), aos_sandbox::JournalLimits {
+                maximum_journal_bytes: 4_294_967_296,
+                maximum_record_bytes: 67_242_238,
+                maximum_key_bytes: 24,
+                maximum_records_per_transaction: 3,
+                maximum_transaction_bytes: 134_485_500,
+                maximum_transactions: 65_536,
+                maximum_materialized_bytes: 161_482_232,
+                maximum_materialized_records: 131_072,
+            });
+
+            let mut legacy = bytes;
+            legacy[..8].copy_from_slice(b"AOSNXF01");
+            legacy[8..10].copy_from_slice(&1_u16.to_be_bytes());
+            assert_eq!(OnlineFloorProfileV1::decode(&legacy), Err(FloorErrorV1::Encoding));
+            assert!(FloorProfileV1::decode(&bytes).is_err());
+        }
+    }
+
+    #[test]
+    fn online_sidecar_geometry_uses_the_same_prepared_transaction_encoder() {
+        let profile = OnlineFloorProfileV1::decode(
+            &shape_only_profile(OnlineFloorRoleV1::Controller),
+        ).unwrap();
+        let main = profile.main_limits().unwrap();
+
+        assert_eq!(JournalTransaction::maximum_prepared_bytes_v1(main).unwrap(), 134_485_544);
+        assert_eq!(super::super::store::sidecar_limits(main).unwrap(), aos_sandbox::JournalLimits {
+            maximum_journal_bytes: 4_294_967_296,
+            maximum_record_bytes: 134_485_562,
+            maximum_key_bytes: 11,
+            maximum_records_per_transaction: 3,
+            maximum_transaction_bytes: 134_485_899,
+            maximum_transactions: 131_073,
+            maximum_materialized_bytes: 134_486_051,
+            maximum_materialized_records: 3,
+        });
+
+        let broker = FloorProfileV1::new(
+            FloorEndpointV1::ControllerStorageClient, [1; 16], [2; 16], [3; 32], [4; 32],
+        ).unwrap();
+        let bytes = broker.encode();
+        assert_eq!(bytes.len(), 112);
+        assert_eq!(&bytes[..12], b"AOSBTP01\0\x01\0\0");
+        assert_eq!(FloorProfileV1::decode(&bytes).unwrap(), broker);
+    }
 }

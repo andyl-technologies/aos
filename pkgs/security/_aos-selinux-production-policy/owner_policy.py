@@ -41,8 +41,20 @@ SELECTED_LAUNCHER_IMAGE_IOCTL_CELLS = (
     ("aos_source_provider_t", "aos_source_provider_exec_t"),
 )
 SELECTED_LAUNCHER_IMAGE_IOCTL_SELECTORS = frozenset()
-ENFORCING = (*OWNER_DOMAINS, *HELPER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE, OFFLINE_HELPER, *SELECTED_MOUNT_SOURCE_DOMAINS)
-NO_DEFAULT_ENTRY = (*OWNER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE, *SELECTED_MOUNT_SOURCE_DOMAINS)
+
+# One closed build-time initializer selects the online comparison DATA beside
+# its matching TE block. These roles do not inherit offline provisioning.
+ONLINE_NIX_KNOWN_DOMAINS = (
+    "aos_sandbox_nix_t",
+    "aos_nix_controller_floor_helper_t",
+    "aos_nix_owner_floor_helper_t",
+    "aos_nix_online_store_reader_t",
+)
+ONLINE_NIX_DOMAINS = ()
+ONLINE_NIX_HELPERS = ONLINE_NIX_DOMAINS[1:3]
+ONLINE_NIX_IMAGE_IOCTL_CELLS = (("aos_sandbox_nix_t", "aos_nix_online_store_t"),)
+ENFORCING = (*OWNER_DOMAINS, *HELPER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE, OFFLINE_HELPER, *SELECTED_MOUNT_SOURCE_DOMAINS, *ONLINE_NIX_DOMAINS)
+NO_DEFAULT_ENTRY = (*OWNER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE, *SELECTED_MOUNT_SOURCE_DOMAINS, *ONLINE_NIX_DOMAINS[:1])
 ROOT_CUSTODY_CUTS = (
     ("fd", "use"),
     ("unix_stream_socket", "read"),
@@ -606,11 +618,176 @@ def matrix(Access, Transition, accesses, ordinary_domains):
     negative.extend(selected_negative)
     transitions.extend(selected_transitions)
 
+    online_positive, online_negative, online_transitions = _online_nix_matrix(
+        Access, Transition, accesses, all_roles,
+    )
+    positive.extend(online_positive)
+    negative.extend(online_negative)
+    transitions.extend(online_transitions)
+
     view_positive, view_negative, view_transitions = view_policy.matrix(Access, Transition, accesses, all_roles)
     positive.extend(view_positive)
     negative.extend(view_negative)
     transitions.extend(view_transitions)
     return tuple(sorted(set(positive))), tuple(sorted(set(negative))), tuple(transitions)
+
+
+def _online_nix_matrix(Access, Transition, accesses, all_roles):
+    """Returns selected online owner/child cells for the same query engine."""
+
+    if not ONLINE_NIX_DOMAINS:
+        return (), (), ()
+    if ONLINE_NIX_DOMAINS != ONLINE_NIX_KNOWN_DOMAINS:
+        raise ValueError("unexpected online Nix owner cohort")
+
+    owner, controller_helper, owner_helper, reader = ONLINE_NIX_DOMAINS
+    controller = "aos_sandbox_controller_t"
+    positive = []
+    negative = []
+    transitions = []
+    file_read = ("getattr", "open", "read")
+    file_mutate = ("append", "create", "link", "lock", "rename", "setattr", "unlink", "write")
+    dir_mutate = ("add_name", "create", "remove_name", "rename", "rmdir", "setattr", "write")
+
+    positive.extend(accesses("init_t", "aos_sandbox_nix_exec_t", "file", ("execute", "getattr", "map", "open", "read")))
+    positive.extend((
+        Access("init_t", owner, "process", "transition"),
+        Access("init_t", owner, "process2", "nnp_transition"),
+        Access(owner, "aos_sandbox_nix_exec_t", "file", "entrypoint"),
+        Access(owner, "aos_sandbox_nix_exec_t", "file", "execute"),
+        Access(owner, "init_t", "fd", "use"),
+    ))
+    # Mapping the entered ELF does not permit another same-SID execution.
+    negative.append(Access(owner, "aos_sandbox_nix_exec_t", "file", "execute_no_trans"))
+    positive.extend(accesses(owner, owner, "capability", ("setuid", "setgid")))
+    positive.extend(accesses(owner, owner, "unix_stream_socket", (
+        "accept", "bind", "connect", "create", "getattr", "getopt", "listen", "read", "setopt", "shutdown", "write",
+    )))
+    positive.extend(accesses(owner, owner, "fifo_file", ("create", "getattr", "read", "write")))
+    positive.extend(accesses(owner, owner, "lnk_file", ("getattr", "read")))
+    positive.extend(accesses(owner, "init_exec_t", "file", file_read))
+    positive.extend(accesses(owner, "aos_nix_online_owner_credential_t", "file", file_read))
+    positive.extend(accesses(owner, "aos_nix_online_owner_credential_t", "dir", (*file_read, "search")))
+    positive.extend(accesses("init_t", "aos_nix_online_owner_credential_t", "file", CREDENTIAL_PID1_FILE_DELIVERY))
+    positive.extend(accesses("init_t", "aos_nix_online_owner_credential_t", "dir", CREDENTIAL_PID1_DIR_DELIVERY))
+    transitions.append(Transition("init_t", "aos_nix_online_owner_credential_t", "file", "aos_nix_online_owner_credential_t"))
+
+    for principal in (controller, owner):
+        positive.extend(accesses(principal, "aos_nix_startup_profile_t", "file", file_read))
+        positive.extend(accesses(principal, "aos_nix_startup_profile_t", "dir", (*file_read, "search")))
+    for source, target in ((controller, owner), (owner, controller)):
+        positive.extend(accesses(source, target, "file", file_read))
+        positive.extend(accesses(source, target, "dir", (*file_read, "search")))
+        negative.extend(accesses(source, target, "process", ("ptrace", "transition", "signal", "sigkill")))
+
+    # The fixed PID1 reader needs task-directory search and stat open/read only.
+    positive.append(Access(controller, "init_t", "dir", "search"))
+    positive.extend(accesses(controller, "init_t", "file", ("open", "read")))
+    negative.extend(accesses(controller, "init_t", "process", (
+        "ptrace", "transition", "dyntransition", "setexec", "setfscreate",
+        "setsockcreate", "signal", "sigkill", "sigstop",
+    )))
+    negative.extend(accesses(controller, "init_t", "file", (
+        *file_mutate, "ioctl", "execute", "execute_no_trans", "entrypoint", "map",
+        "relabelfrom", "relabelto",
+    )))
+    negative.extend(accesses(controller, "init_t", "dir", (
+        *dir_mutate, "ioctl", "lock", "mounton", "relabelfrom", "relabelto",
+    )))
+    negative.extend(accesses(controller, "init_t", "lnk_file", ("getattr", "read")))
+
+    positive.append(Access(controller, owner, "unix_stream_socket", "connectto"))
+    positive.append(Access(owner, controller, "fd", "use"))
+    positive.extend(accesses(owner, controller, "unix_stream_socket", ("getattr", "getopt", "read", "setopt", "shutdown", "write")))
+    positive.extend(accesses(controller, "aos_nix_online_runtime_t", "dir", ("getattr", "open", "search")))
+    positive.extend(accesses(controller, "aos_nix_online_runtime_t", "sock_file", (*file_read, "write")))
+    positive.extend(accesses(owner, "aos_nix_online_runtime_t", "dir", ("add_name", "getattr", "open", "read", "remove_name", "search", "write")))
+    positive.extend(accesses(owner, "aos_nix_online_runtime_t", "sock_file", ("create", "getattr", "open", "read", "setattr", "unlink", "write")))
+    transitions.append(Transition(owner, "aos_nix_online_runtime_t", "sock_file", "aos_nix_online_runtime_t"))
+
+    for principal, prefix in (
+        (controller, "aos_nix_online_controller"),
+        (owner, "aos_nix_online_owner"),
+    ):
+        state = prefix + "_state_t"
+        lock = prefix + "_lock_t"
+        positive.extend(accesses(principal, state, "dir", ("add_name", "getattr", "open", "read", "remove_name", "search", "write")))
+        positive.extend(accesses(principal, state, "file", ("append", "create", "getattr", "lock", "open", "read", "rename", "setattr", "unlink", "write")))
+        positive.extend(accesses(principal, lock, "file", ("getattr", "lock", "open", "read", "write")))
+        transitions.append(Transition(principal, state, "file", state))
+        for basename in ("session.journal.lock", "tpm-floor.journal.lock"):
+            transitions.append(Transition(principal, state, "file", lock, filename=basename))
+        for foreign in all_roles:
+            if foreign != principal:
+                negative.extend(accesses(foreign, state, "file", (*file_read, *file_mutate)))
+                negative.extend(accesses(foreign, state, "dir", dir_mutate))
+
+    children = (
+        (controller, controller_helper, "aos_nix_controller_floor_helper_exec_t", "aos_nix_online_controller_lock_t"),
+        (owner, owner_helper, "aos_nix_owner_floor_helper_exec_t", "aos_nix_online_owner_lock_t"),
+        (owner, reader, "aos_nix_online_store_reader_exec_t", None),
+    )
+    for parent, child, executable, lock in children:
+        positive.extend(accesses(parent, executable, "file", ("execute", "getattr", "map", "open", "read")))
+        positive.extend(accesses(parent, child, "process", ("getattr", "sigkill", "signal", "transition")))
+        positive.extend((
+            Access(parent, child, "process2", "nnp_transition"),
+            Access(child, executable, "file", "entrypoint"),
+            Access(child, executable, "file", "execute"),
+            Access(child, parent, "process", "sigchld"),
+            Access(child, parent, "fd", "use"),
+        ))
+        positive.extend(accesses(parent, child, "file", file_read))
+        positive.extend(accesses(parent, child, "dir", (*file_read, "search")))
+        positive.extend(accesses(parent, child, "lnk_file", ("getattr", "read")))
+        positive.extend(accesses(child, child, "lnk_file", ("getattr", "read")))
+        transitions.append(Transition(parent, executable, "process", child))
+        negative.append(Access(child, "*", "file", "execute_no_trans"))
+        negative.extend(accesses(child, "*", "unix_stream_socket", ("connect", "connectto", "create", "listen")))
+        if lock is not None:
+            positive.append(Access(child, child, "process", "setcap"))
+            positive.append(Access(parent, child, "fd", "use"))
+            positive.extend(accesses(child, parent, "unix_stream_socket", ("getattr", "getopt", "read", "setopt", "write")))
+            positive.extend(accesses(child, lock, "file", ("getattr", "read", "write")))
+            positive.extend(accesses(child, "aos_method46_tpm_device_t", "chr_file", (*file_read, "write")))
+            negative.extend(accesses(child, lock, "file", ("open", "lock", "append", "setattr", "rename", "unlink", "ioctl")))
+            negative.append(Access(child, "aos_method46_tpm_device_t", "chr_file", "ioctl"))
+        else:
+            positive.extend(accesses(child, child, "process", (
+                "fork", "getattr", "getsched", "setrlimit", "sigchld", "signal",
+            )))
+            positive.extend(accesses(child, parent, "fifo_file", ("getattr", "read", "write")))
+            negative.append(Access(child, "aos_method46_tpm_device_t", "chr_file", "open"))
+        for foreign in all_roles:
+            if foreign != parent:
+                negative.append(Access(foreign, child, "process", "transition"))
+
+    store = "aos_nix_online_store_t"
+    for principal in (owner, reader):
+        positive.extend(accesses(principal, store, "file", file_read))
+        positive.extend(accesses(principal, store, "dir", (*file_read, "search")))
+        positive.extend(accesses(principal, store, "lnk_file", ("getattr", "read")))
+        negative.extend(accesses(principal, store, "file", (*file_mutate, "map", "execute", "execute_no_trans", "relabelfrom", "relabelto")))
+        negative.extend(accesses(principal, store, "dir", (*dir_mutate, "mounton", "relabelfrom", "relabelto")))
+        negative.extend(accesses(principal, store, "lnk_file", ("create", "rename", "setattr", "unlink", "write", "relabelfrom", "relabelto")))
+    positive.append(Access(owner, store, "file", "ioctl"))
+    negative.append(Access(reader, store, "file", "ioctl"))
+    for foreign in all_roles:
+        if foreign not in (owner, reader):
+            negative.extend(accesses(foreign, store, "file", (*file_read, *file_mutate)))
+    for principal in (controller, owner):
+        negative.append(Access(principal, "aos_method46_tpm_device_t", "chr_file", "open"))
+    for foreign in all_roles:
+        if foreign not in (owner, "init_t"):
+            negative.extend(accesses(foreign, "aos_nix_online_owner_credential_t", "file", (*file_read, *file_mutate)))
+    for target in ("security_t", "cgroup_t", "sysctl_kernel_t", "systemd_unit_t", "etc_t"):
+        positive.extend(accesses(owner, target, "file", file_read))
+        negative.extend(accesses(owner, target, "file", file_mutate))
+    for permission in ("start", "stop", "reload", "enable", "disable"):
+        negative.append(Access(owner, "*", "service", permission))
+    for permission in ("start", "stop", "reload", "reboot", "halt"):
+        negative.append(Access(owner, "*", "system", permission))
+    return positive, negative, transitions
 
 
 GIT_READ_RUNTIME = "aos_git_read_delegate_runtime_t"
@@ -643,6 +820,20 @@ def git_read_matrix(Access, Transition, accesses, ordinary_domains):
         negative.extend(accesses(source, target, "dir", ("add_name", "create", "remove_name", "setattr", "write")))
         for foreign in (*ordinary_domains, *ENFORCING, "init_t"):
             if foreign not in (source, target):
+                # Keep existing exact parent reads out of this foreign-task deny
+                # recipe. The online exceptions require the complete known cohort.
+                if source == GIT_READ_CONTROLLER and (
+                    foreign == "aos_method46_controller_helper_t"
+                    or (
+                        ONLINE_NIX_DOMAINS == ONLINE_NIX_KNOWN_DOMAINS
+                        and foreign in (
+                            "init_t",
+                            "aos_sandbox_nix_t",
+                            "aos_nix_controller_floor_helper_t",
+                        )
+                    )
+                ):
+                    continue
                 negative.extend(accesses(source, foreign, "file", ("open", "read")))
     negative.extend(accesses(GATEWAY, GIT_READ_RUNTIME, "dir", ("add_name", "create", "remove_name", "setattr", "write")))
     negative.extend(accesses(GATEWAY, GIT_READ_RUNTIME, "sock_file", ("create", "setattr", "unlink")))

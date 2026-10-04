@@ -103,6 +103,8 @@ pub(crate) const fn salt_handle_v1(endpoint: NvCustodyEndpointV1) -> u32 {
         NvCustodyEndpointV1::ControllerStorageClient => 0x8100_a046,
         NvCustodyEndpointV1::StorageBroker => 0x8100_a047,
         NvCustodyEndpointV1::RuntimeDeployment => 0x8100_a055,
+        NvCustodyEndpointV1::ControllerNix => 0x8100_a058,
+        NvCustodyEndpointV1::NixOwner => 0x8100_a059,
     }
 }
 

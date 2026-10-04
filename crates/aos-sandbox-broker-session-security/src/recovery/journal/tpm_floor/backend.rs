@@ -7,6 +7,7 @@
 
 pub(crate) use super::format::NV_ATTRIBUTES_WRITTEN;
 use super::{FloorErrorV1, FloorIntentV1, FloorProfileV1};
+use crate::tpm_nv_custody::{FloorIntentDataV1, FloorProfileDataV1, OnlineFloorProfileV1};
 
 pub(super) mod confinement;
 mod helper_protocol;
@@ -59,7 +60,7 @@ pub(crate) struct AuthenticatedNvObservationV1 {
 
 /// Retains the fixed provisioning pin but grants no journal/readiness authority.
 pub(super) struct TpmNvExtendFloorBackendV1<Io> {
-    profile: FloorProfileV1,
+    profile: FloorProfileDataV1,
     io: Io,
 }
 
@@ -90,13 +91,17 @@ impl<Io: AuthenticatedTpmNvIoV1> TpmNvExtendFloorBackendV1<Io> {
     // The genuine production attempt parks this exact sealed IO before its
     // first authenticated read. This does not admit a profile or create IO.
     pub(super) fn retain(profile: FloorProfileV1, io: Io) -> Self {
-        Self { profile, io }
+        Self { profile: FloorProfileDataV1::Broker(profile), io }
+    }
+
+    pub(super) fn retain_online(profile: OnlineFloorProfileV1, io: Io) -> Self {
+        Self { profile: FloorProfileDataV1::Online(profile), io }
     }
 
     pub(super) fn read(&mut self) -> Result<[u8; 32], FloorErrorV1> {
-        let observed = self.io.read(self.profile.endpoint().nv_index())?;
-        if observed.salt_key_name_digest != self.profile.salt_key_name_digest()
-            || observed.index != self.profile.endpoint().nv_index()
+        let observed = self.io.read(self.profile.nv_index())?;
+        if observed.salt_key_name_digest != self.profile.salt_digest()
+            || observed.index != self.profile.nv_index()
             || observed.name != self.profile.nv_name()
             || observed.name_algorithm != 0x000b
             || observed.attributes != NV_ATTRIBUTES_WRITTEN
@@ -129,6 +134,16 @@ impl<Io: AuthenticatedTpmNvIoV1> TpmNvExtendFloorBackendV1<Io> {
         prepared: FloorIntentV1,
         require_held_cut: impl FnOnce() -> Result<(), FloorErrorV1>,
     ) -> Result<FloorAdvanceV1, FloorErrorV1> {
+        self.advance_purpose_with_held_cut(FloorIntentDataV1::Broker(prepared), require_held_cut)
+    }
+
+    // The only policy selection is the concrete typed purpose retained when
+    // this sealed backend was constructed. The caller cannot inject an IO owner.
+    pub(super) fn advance_purpose_with_held_cut(
+        &mut self,
+        prepared: FloorIntentDataV1,
+        require_held_cut: impl FnOnce() -> Result<(), FloorErrorV1>,
+    ) -> Result<FloorAdvanceV1, FloorErrorV1> {
         prepared.require_predecessor(self.profile, prepared.predecessor())?;
         let old = prepared.predecessor().nv_value();
         let target = prepared.target();
@@ -143,7 +158,7 @@ impl<Io: AuthenticatedTpmNvIoV1> TpmNvExtendFloorBackendV1<Io> {
         // Never blindly repeat an error: the command may already have extended.
         let _ambiguous_result = self
             .io
-            .extend(self.profile.endpoint().nv_index(), &target.extend_input());
+            .extend(self.profile.nv_index(), &target.extend_input());
         match self.read()? {
             value if value == target.nv_value() => Ok(FloorAdvanceV1::Advanced),
             value if value == old => Ok(FloorAdvanceV1::NotAdvanced),

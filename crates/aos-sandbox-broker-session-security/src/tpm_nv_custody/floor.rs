@@ -17,17 +17,21 @@ pub(super) use store::{
 
 pub(crate) use store::{
     BrokerSidecarStoreV1, CHECKPOINT_KEY, FinalSuffixPreflightV1, INTENT_KEY,
-    StoredBrokerFloorV1, TRANSACTION_KEY, sidecar_limits,
+    StoredBrokerFloorV1, StoredFloorDataV1, StoredFloorDataViewV1, TRANSACTION_KEY, sidecar_limits,
 };
 
 pub(crate) use digest::{
     broker_cut_from_records_v1, broker_transaction_digest_v1, hash_parts,
     sidecar_sequence_v1, successor_sequence,
+    online_cut_from_records_v1, online_transaction_digest_v1,
 };
 pub(crate) use format::{
     CHECKPOINT_BYTES, FloorCheckpointV1, FloorCutV1, FloorEndpointV1, FloorIntentV1,
     FloorProfileV1, HostFloorCheckpointDataV1, HostFloorIntentDataV1, INTENT_BYTES,
     NV_ATTRIBUTES_DEFINED, NV_ATTRIBUTES_WRITTEN, PROFILE_BYTES,
+    OnlineFloorCheckpointV1, OnlineFloorIntentV1, OnlineFloorProfileV1,
+    OnlineFloorRoleV1, ONLINE_PROFILE_BYTES,
+    FloorProfileDataV1, FloorCheckpointDataV1, FloorIntentDataV1,
 };
 
 use format::{CheckpointBodyV1, IntentBodyV1};
@@ -37,6 +41,7 @@ use format::{CheckpointBodyV1, IntentBodyV1};
 enum RecordPurposeDataV1 {
     BrokerV1,
     RuntimeDeploymentV1,
+    OnlineNixV1,
 }
 
 impl RecordPurposeDataV1 {
@@ -44,6 +49,7 @@ impl RecordPurposeDataV1 {
         match self {
             Self::BrokerV1 => b"AOSBTF01",
             Self::RuntimeDeploymentV1 => b"AOSRDF01",
+            Self::OnlineNixV1 => b"AOSNXC01",
         }
     }
 
@@ -51,6 +57,7 @@ impl RecordPurposeDataV1 {
         match self {
             Self::BrokerV1 => b"AOSBTI01",
             Self::RuntimeDeploymentV1 => b"AOSRDI01",
+            Self::OnlineNixV1 => b"AOSNXI01",
         }
     }
 
@@ -58,6 +65,7 @@ impl RecordPurposeDataV1 {
         match self {
             Self::BrokerV1 => b"aos.sandbox.broker-session.tpm-floor.extend.v1\0",
             Self::RuntimeDeploymentV1 => b"aos.runtime-deployment.tpm-floor.extend.v1\0",
+            Self::OnlineNixV1 => b"aos.sandbox.nix.online-floor.extend.v1\0",
         }
     }
 
@@ -65,6 +73,7 @@ impl RecordPurposeDataV1 {
         match self {
             Self::BrokerV1 => b"aos.sandbox.broker-session.tpm-floor.transaction.v1\0",
             Self::RuntimeDeploymentV1 => b"aos.runtime-deployment.tpm-floor.transaction.v1\0",
+            Self::OnlineNixV1 => b"aos.sandbox.nix.online-floor.transaction.v1\0",
         }
     }
 
@@ -72,6 +81,7 @@ impl RecordPurposeDataV1 {
         match self {
             Self::BrokerV1 => aos_sandbox::RecordNamespace::BrokerSessionTraffic,
             Self::RuntimeDeploymentV1 => aos_sandbox::RecordNamespace::HostCatalogReconciliation,
+            Self::OnlineNixV1 => aos_sandbox::RecordNamespace::BrokerSessionTraffic,
         }
     }
 }
@@ -151,6 +161,53 @@ pub(crate) fn reconcile_host_floor_data_v1(
         journal,
         nv,
     )
+}
+
+/// Compares independently authenticated ONLINE claims through the sole reducer.
+///
+/// # Errors
+/// Rejects scope, predecessor or cut/value disagreement. This DATA comparison
+/// does not authenticate a startup loan, a signed genesis or an NV observation.
+pub(crate) fn reconcile_online_floor_v1(
+    profile: OnlineFloorProfileV1,
+    checkpoint: OnlineFloorCheckpointV1,
+    prepared: Option<OnlineFloorIntentV1>,
+    journal: FloorCutV1,
+    nv: [u8; 32],
+) -> Result<FloorRecoveryV1, FloorErrorV1> {
+    reconcile_records_v1(
+        RecordPurposeDataV1::OnlineNixV1,
+        profile.scope(),
+        checkpoint.body,
+        prepared.map(|intent| intent.body),
+        journal,
+        nv,
+    )
+}
+
+/// Dispatches closed canonical DATA through the sole existing reconciler.
+pub(crate) fn reconcile_floor_data_v1(
+    profile: FloorProfileDataV1,
+    checkpoint: FloorCheckpointDataV1,
+    intent: Option<FloorIntentDataV1>,
+    cut: FloorCutV1,
+    nv: [u8; 32],
+) -> Result<FloorRecoveryV1, FloorErrorV1> {
+    match (profile, checkpoint, intent) {
+        (FloorProfileDataV1::Broker(profile), FloorCheckpointDataV1::Broker(checkpoint), None) => {
+            reconcile_floor_v1(profile, checkpoint, None, cut, nv)
+        }
+        (FloorProfileDataV1::Broker(profile), FloorCheckpointDataV1::Broker(checkpoint), Some(FloorIntentDataV1::Broker(intent))) => {
+            reconcile_floor_v1(profile, checkpoint, Some(intent), cut, nv)
+        }
+        (FloorProfileDataV1::Online(profile), FloorCheckpointDataV1::Online(checkpoint), None) => {
+            reconcile_online_floor_v1(profile, checkpoint, None, cut, nv)
+        }
+        (FloorProfileDataV1::Online(profile), FloorCheckpointDataV1::Online(checkpoint), Some(FloorIntentDataV1::Online(intent))) => {
+            reconcile_online_floor_v1(profile, checkpoint, Some(intent), cut, nv)
+        }
+        _ => Err(FloorErrorV1::Provisioning),
+    }
 }
 
 fn reconcile_records_v1(

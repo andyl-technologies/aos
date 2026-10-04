@@ -73,6 +73,8 @@ pub enum BrokerDomain {
     Storage,
     /// Network preparation and lease-gate effects.
     Network,
+    /// ONLINE Nix Resolve effects, independent of offline TPM provisioning.
+    Nix,
 }
 
 impl BrokerDomain {
@@ -82,6 +84,7 @@ impl BrokerDomain {
             Self::Mount => b"AOSMAJ\0\0",
             Self::Storage => b"AOSSAJ\0\0",
             Self::Network => b"AOSNAJ\0\0",
+            Self::Nix => b"AOSXAJ\0\0",
         }
     }
 
@@ -91,6 +94,7 @@ impl BrokerDomain {
             Self::Mount => b"aos.mount.journal-authentication.v1\0",
             Self::Storage => b"aos.storage.journal-authentication.v1\0",
             Self::Network => b"aos.network.journal-authentication.v1\0",
+            Self::Nix => b"aos.nix.journal-authentication.v1\0",
         }
     }
 
@@ -100,6 +104,7 @@ impl BrokerDomain {
             Self::Mount => b"AOSMAF\0\0",
             Self::Storage => b"AOSSAF\0\0",
             Self::Network => b"AOSNAF\0\0",
+            Self::Nix => b"AOSXAF\0\0",
         }
     }
 
@@ -109,6 +114,7 @@ impl BrokerDomain {
             Self::Mount => b"AOSMAE\0\0",
             Self::Storage => b"AOSSAE\0\0",
             Self::Network => b"AOSNAE\0\0",
+            Self::Nix => b"AOSXAE\0\0",
         }
     }
 }
@@ -551,6 +557,13 @@ impl BrokerEffectIntentV1 {
                 self.status == BrokerEffectStatusV1::Pending
                     && self.maximum_descriptors == 4
                     && self.maximum_request_bytes as usize <= HOST_WORKER_BODY_MAXIMUM_BYTES
+            }
+            (BrokerVerb::NixResolveProtectedRecipe, BrokerGrantTarget::Resource(_)) => {
+                self.maximum_descriptors == 0
+                    && self.maximum_request_bytes as usize
+                        <= aos_sandbox_protocol::nix_build::NIX_REQUEST_MAXIMUM_BYTES_V2
+                    && (self.status == BrokerEffectStatusV1::Pending
+                        || self.receipt.len() == 32)
             }
             (
                 BrokerVerb::MountCreate | BrokerVerb::MountMaterializeDestinationSlot,
@@ -1392,6 +1405,7 @@ const fn verb_code(domain: BrokerDomain, verb: BrokerVerb) -> u8 {
         (BrokerDomain::Storage, BrokerVerb::StorageRepairWorkspacePin) => 9,
         (BrokerDomain::Storage, BrokerVerb::StorageAtomicSnapshot) => 10,
         (BrokerDomain::Storage, BrokerVerb::StoragePopulateGuestRoot) => 11,
+        (BrokerDomain::Nix, BrokerVerb::NixResolveProtectedRecipe) => 1,
         _ => 0,
     }
 }
@@ -1437,6 +1451,7 @@ fn decode_verb(domain: BrokerDomain, code: u8) -> Result<BrokerVerb, Authorizati
         (BrokerDomain::Network, 3) => Ok(BrokerVerb::NetworkRenewLease),
         (BrokerDomain::Network, 4) => Ok(BrokerVerb::NetworkDisarm),
         (BrokerDomain::Network, 5) => Ok(BrokerVerb::NetworkDestroy),
+        (BrokerDomain::Nix, 1) => Ok(BrokerVerb::NixResolveProtectedRecipe),
         _ => Err(AuthorizationRecordError::InvalidPayload),
     }
 }
@@ -1530,6 +1545,54 @@ mod tests {
     use super::*;
     use aos_sandbox_core::InvalidBrokerAuthorizationPlan;
     use sha2::Digest as _;
+
+    #[test]
+    fn online_nix_native_widths_use_the_original_encoders() {
+        let key = NodeJournalMacKey::new(BrokerDomain::Nix, [90; 16], [91; 32]).unwrap();
+        let mut maximum_fence = fence();
+        maximum_fence.ownership_authority = KeyReference::new(
+            StableKeyId::new("k".repeat(255)).unwrap(),
+            4,
+            ObjectDigest::from_bytes([73; 32]),
+            KeyUsage::OwnershipLease,
+        );
+        let fence_key = [81; 24];
+        let effect_key = [82; 24];
+        let fence_bytes = seal_authorization_fence(
+            &key, RecordNamespace::BrokerSessionTraffic, &fence_key, &maximum_fence,
+        ).unwrap();
+        let mut pending = sample_intent();
+        pending.verb = BrokerVerb::NixResolveProtectedRecipe;
+        pending.target = BrokerGrantTarget::Resource(
+            BrokerResourceHandle::from_bytes([83; 32]).unwrap(),
+        );
+        let pending_bytes = seal_effect_intent(
+            &key, RecordNamespace::BrokerSessionTraffic, &effect_key, &pending,
+        ).unwrap();
+        let complete = pending.complete(vec![84; 32]).unwrap();
+        let complete_bytes = seal_effect_intent(
+            &key, RecordNamespace::BrokerSessionTraffic, &effect_key, &complete,
+        ).unwrap();
+
+        assert_eq!(fence_bytes.len(), 741);
+        assert_eq!(pending_bytes.len(), 617);
+        assert_eq!(complete_bytes.len(), 649);
+        assert_eq!(open_authorization_fence(
+            &key, RecordNamespace::BrokerSessionTraffic, &fence_key, &fence_bytes,
+        ).unwrap(), maximum_fence);
+        assert_eq!(open_effect_intent(
+            &key, RecordNamespace::BrokerSessionTraffic, &effect_key, &complete_bytes,
+        ).unwrap(), complete);
+
+        let transaction = aos_sandbox::JournalTransaction::new([85; 16], vec![
+            aos_sandbox::JournalRecord::put(RecordNamespace::BrokerSessionTraffic, vec![86; 1], vec![87; 16]),
+            aos_sandbox::JournalRecord::put(RecordNamespace::BrokerSessionTraffic, fence_key.to_vec(), fence_bytes),
+            aos_sandbox::JournalRecord::put(RecordNamespace::BrokerSessionTraffic, effect_key.to_vec(), pending_bytes),
+        ]).unwrap();
+        // Three payloads plus BEGIN4/COMMIT36 and five HEADER72 frames.
+        assert_eq!(aos_sandbox::journal::encoded_transaction_append_bytes(&transaction).unwrap(),
+                   (7 + 1 + 16) + (7 + 24 + 741) + (7 + 24 + 617) + 400);
+    }
 
     #[test]
     fn publisher_registration_does_not_expand_broker_journal_key_usage_codes() {

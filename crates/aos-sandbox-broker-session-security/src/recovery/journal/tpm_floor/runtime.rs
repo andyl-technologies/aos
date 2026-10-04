@@ -47,12 +47,24 @@ enum FloorStateV1 {
         launch_image: crate::production_startup::Pid1LaunchImageV1,
         attached: BrokerAttachmentAttemptV1,
     },
+    #[cfg(feature = "online-nix")]
+    Online {
+        provision: crate::nix_service::floor::OnlineProvisionV1,
+        attached: BrokerAttachmentAttemptV1,
+    },
 }
 
 impl BrokerFloorV1 {
+    #[cfg(feature = "online-nix")]
+    pub(in crate::recovery::journal) fn online(provision: crate::nix_service::floor::OnlineProvisionV1) -> Self {
+        Self { state: FloorStateV1::Online { provision, attached: BrokerAttachmentAttemptV1::fresh() } }
+    }
+
     pub(in crate::recovery::journal) fn check_cold_deadline(&mut self) -> Result<(), FloorErrorV1> {
         match &mut self.state {
             FloorStateV1::Required { attached, .. } => attached.check_cold_deadline(),
+            #[cfg(feature = "online-nix")]
+            FloorStateV1::Online { attached, .. } => attached.check_cold_deadline(),
             _ => Ok(()),
         }
     }
@@ -63,6 +75,8 @@ impl BrokerFloorV1 {
     ) -> Result<(), FloorErrorV1> {
         match &mut self.state {
             FloorStateV1::Required { attached, .. } => attached.bind_cold_deadline(deadline),
+            #[cfg(feature = "online-nix")]
+            FloorStateV1::Online { attached, .. } => attached.bind_cold_deadline(deadline),
             _ => Err(FloorErrorV1::Unavailable),
         }
     }
@@ -73,6 +87,8 @@ impl BrokerFloorV1 {
     ) -> Result<(), FloorErrorV1> {
         match &mut self.state {
             FloorStateV1::Required { attached, .. } => attached.retire_cold_deadline(deadline),
+            #[cfg(feature = "online-nix")]
+            FloorStateV1::Online { attached, .. } => attached.retire_cold_deadline(deadline),
             _ => Err(FloorErrorV1::Unavailable),
         }
     }
@@ -161,6 +177,10 @@ impl BrokerFloorV1 {
     }
 
     pub(in crate::recovery::journal) fn requires_existing(&self) -> bool {
+        #[cfg(feature = "online-nix")]
+        if matches!(&self.state, FloorStateV1::Online { .. }) {
+            return true;
+        }
         matches!(
             self.state,
             FloorStateV1::Required { .. } | FloorStateV1::Unavailable
@@ -170,6 +190,10 @@ impl BrokerFloorV1 {
     // Only this actual private state owns the resident attempt that must
     // survive unfinished operations. Other dispositions retain legacy Drop.
     pub(in crate::recovery::journal) fn has_resident_required_attempt(&self) -> bool {
+        #[cfg(feature = "online-nix")]
+        if matches!(&self.state, FloorStateV1::Online { .. }) {
+            return true;
+        }
         matches!(&self.state, FloorStateV1::Required { .. })
     }
 
@@ -178,6 +202,11 @@ impl BrokerFloorV1 {
         endpoint: &mut crate::recovery::journal::ProtectedEndpointV1,
     ) -> Result<(), crate::BrokerSessionSecurityError> {
         match &mut self.state {
+            #[cfg(feature = "online-nix")]
+            FloorStateV1::Online { attached, .. } => {
+                attached.fence();
+                Err(crate::BrokerSessionSecurityError::Currentness)
+            }
             FloorStateV1::Required { attached, .. } => {
                 // This borrows disjoint actual owner fields before extraction.
                 // A caught unwind fences the original attempt in place.
@@ -205,6 +234,20 @@ impl BrokerFloorV1 {
         owner: &mut ProtectedBrokerSessionJournalV1,
     ) -> Result<(), FloorErrorV1> {
         match &mut self.state {
+            #[cfg(feature = "online-nix")]
+            FloorStateV1::Online { provision, attached } => {
+                let operation = attached.begin(BrokerAttachmentPhaseV1::Fresh)?;
+                let result = (|| {
+                    provision.revalidate()?;
+                    let profile = provision.profile()?;
+                    if owner.endpoint.protected_protocol_and_node().1 != profile.node() {
+                        return Err(FloorErrorV1::Provisioning);
+                    }
+                    operation.attempt.admit_online(owner, provision)?;
+                    provision.revalidate()
+                })();
+                operation.finish(result)
+            }
             FloorStateV1::Required {
                 mode,
                 provision,
@@ -254,6 +297,16 @@ impl BrokerFloorV1 {
         match &mut self.state {
             FloorStateV1::NotScoped => Ok(()),
             FloorStateV1::Unavailable => Err(FloorErrorV1::Unavailable),
+            #[cfg(feature = "online-nix")]
+            FloorStateV1::Online { provision, attached } => {
+                let operation = attached.begin(BrokerAttachmentPhaseV1::Ready)?;
+                let result = (|| {
+                    provision.revalidate()?;
+                    operation.attempt.use_online(owner, provision.profile()?, None)?;
+                    provision.revalidate()
+                })();
+                operation.finish(result)
+            }
             FloorStateV1::Legacy { mode } => {
                 mode.revalidate()?;
                 require_no_floor_names(&owner.directory)?;
@@ -288,6 +341,15 @@ impl BrokerFloorV1 {
         let legacy = matches!(&self.state, FloorStateV1::Legacy { .. });
 
         match &mut self.state {
+            #[cfg(feature = "online-nix")]
+            FloorStateV1::Online { provision, attached } => {
+                let operation = attached.begin(BrokerAttachmentPhaseV1::Ready)?;
+                let result = (|| {
+                    operation.attempt.use_online(owner, provision.profile()?, Some(transaction))?;
+                    provision.revalidate()
+                })();
+                operation.finish(result)
+            }
             FloorStateV1::Required {
                 mode,
                 provision,
@@ -318,6 +380,14 @@ impl BrokerFloorV1 {
         &self,
         method: BrokerMethod,
     ) -> Result<(), FloorErrorV1> {
+        #[cfg(feature = "online-nix")]
+        if let FloorStateV1::Online { attached, .. } = &self.state {
+            if method != BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2
+                || !attached.is_ready()
+            {
+                return Err(FloorErrorV1::Unavailable);
+            }
+        }
         if method == BrokerMethod::BROKER_METHOD_STORAGE_RESERVE_EXECUTION_OUTPUT {
             if !METHOD46_INSTALLED_QUALIFIED
                 || !matches!(
@@ -337,9 +407,28 @@ impl BrokerFloorV1 {
         Ok(())
     }
 
+    #[cfg(feature = "online-nix")]
+    pub(in crate::recovery::journal) fn bind_online_request_deadline(
+        &mut self,
+        deadline: crate::handshake::OriginalBrokerColdDeadlineV1,
+    ) -> Result<(), FloorErrorV1> {
+        let FloorStateV1::Online { attached, .. } = &mut self.state else {
+            return Err(FloorErrorV1::Unavailable);
+        };
+        if !attached.is_ready() {
+            attached.fence();
+            return Err(FloorErrorV1::Unavailable);
+        }
+        attached.bind_online_request_deadline(deadline)
+    }
+
     // A failed (or abandoned in-progress) Required owner cannot touch current
     // names, release sidecar/TPM custody or replace its main writer on reopen.
     pub(in crate::recovery::journal) fn require_reopen_allowed(&self) -> Result<(), FloorErrorV1> {
+        #[cfg(feature = "online-nix")]
+        if matches!(&self.state, FloorStateV1::Online { .. }) {
+            return Err(FloorErrorV1::Unavailable);
+        }
         if matches!(&self.state, FloorStateV1::Required { attached, .. } if attached.is_failed()) {
             return Err(FloorErrorV1::Unavailable);
         }
@@ -350,14 +439,21 @@ impl BrokerFloorV1 {
         if let FloorStateV1::Required { attached, .. } = &mut self.state {
             attached.fence();
         }
+        #[cfg(feature = "online-nix")]
+        if let FloorStateV1::Online { attached, .. } = &mut self.state {
+            attached.fence();
+        }
     }
 
     pub(in crate::recovery::journal) fn record_native_failure(
         &mut self,
         cause: aos_sandbox::JournalError,
     ) {
-        if let FloorStateV1::Required { attached, .. } = &mut self.state {
-            attached.record_native_failure(cause);
+        match &mut self.state {
+            FloorStateV1::Required { attached, .. } => attached.record_native_failure(cause),
+            #[cfg(feature = "online-nix")]
+            FloorStateV1::Online { attached, .. } => attached.record_native_failure(cause),
+            _ => {}
         }
         // Unrelated/legacy owners retain their original redacted consuming
         // error contract; no missing lower cause is synthesized for them.

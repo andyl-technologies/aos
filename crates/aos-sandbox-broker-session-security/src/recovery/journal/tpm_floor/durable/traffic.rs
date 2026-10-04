@@ -12,12 +12,38 @@ use aos_sandbox::JournalLimits;
 use super::super::{FloorCutV1, FloorErrorV1, FloorIntentV1, FloorProfileV1};
 use super::store::FloorStoreV1;
 use crate::recovery::journal::ProtectedBrokerSessionJournalV1;
+use crate::tpm_nv_custody::{FloorIntentDataV1, FloorProfileDataV1};
 
 mod sealed {
     pub(super) trait Sealed {}
 }
 
 pub(super) trait HeldTrafficWriterV1: sealed::Sealed {
+    fn purpose_cuts(
+        &mut self,
+        profile: FloorProfileDataV1,
+        transaction: Option<&JournalTransaction>,
+    ) -> Result<(FloorCutV1, Option<FloorCutV1>), FloorErrorV1> {
+        match profile {
+            FloorProfileDataV1::Broker(profile) => self.cuts(profile, transaction),
+            FloorProfileDataV1::Online(_) => Err(FloorErrorV1::Provisioning),
+        }
+    }
+
+    fn commit_purpose_exact(
+        &mut self,
+        profile: FloorProfileDataV1,
+        intent: FloorIntentDataV1,
+        transaction: &JournalTransaction,
+    ) -> Result<(), FloorErrorV1> {
+        match (profile, intent) {
+            (FloorProfileDataV1::Broker(profile), FloorIntentDataV1::Broker(intent)) => {
+                self.commit_exact(profile, intent, transaction)
+            }
+            _ => Err(FloorErrorV1::Provisioning),
+        }
+    }
+
     fn cuts(
         &mut self,
         profile: FloorProfileV1,
@@ -104,6 +130,87 @@ impl HeldTrafficWriterV1 for BrokerTrafficWriterV1<'_> {
     }
 }
 
+/// Borrows the exact selected owner; it cannot open a replacement main writer.
+#[cfg(feature = "online-nix")]
+pub(super) struct OnlineTrafficWriterV1<'owner> {
+    owner: &'owner mut ProtectedBrokerSessionJournalV1,
+    native_failure: &'owner mut Option<aos_sandbox::JournalError>,
+}
+
+#[cfg(feature = "online-nix")]
+impl<'owner> OnlineTrafficWriterV1<'owner> {
+    pub(super) fn borrow(
+        owner: &'owner mut ProtectedBrokerSessionJournalV1,
+        native_failure: &'owner mut Option<aos_sandbox::JournalError>,
+    ) -> Self {
+        Self { owner, native_failure }
+    }
+}
+
+#[cfg(feature = "online-nix")]
+impl sealed::Sealed for OnlineTrafficWriterV1<'_> {}
+
+#[cfg(feature = "online-nix")]
+impl HeldTrafficWriterV1 for OnlineTrafficWriterV1<'_> {
+    fn purpose_cuts(&mut self, profile: FloorProfileDataV1, transaction: Option<&JournalTransaction>)
+        -> Result<(FloorCutV1, Option<FloorCutV1>), FloorErrorV1>
+    {
+        let FloorProfileDataV1::Online(profile) = profile else {
+            return Err(FloorErrorV1::Provisioning);
+        };
+        self.owner.online_floor_cuts(profile, transaction).map_err(|_| FloorErrorV1::Unavailable)
+    }
+
+    fn commit_purpose_exact(
+        &mut self, profile: FloorProfileDataV1, intent: FloorIntentDataV1,
+        transaction: &JournalTransaction,
+    ) -> Result<(), FloorErrorV1> {
+        let (FloorProfileDataV1::Online(profile), FloorIntentDataV1::Online(intent)) = (profile, intent) else {
+            return Err(FloorErrorV1::Provisioning);
+        };
+        intent.require_transaction(transaction)?;
+        let cuts = self.purpose_cuts(FloorProfileDataV1::Online(profile), Some(transaction))?;
+        if cuts.0 != intent.predecessor().cut() || cuts.1 != Some(intent.target().cut()) {
+            return Err(FloorErrorV1::Diverged);
+        }
+        commit_traffic_transaction_with_disposition(
+            self.owner.journal_mut().map_err(|_| FloorErrorV1::Unavailable)?,
+            transaction, NativeCauseDispositionV1::Retained(self.native_failure),
+        )?;
+        self.owner.validate_schema_only().map_err(|_| FloorErrorV1::Unavailable)?;
+        let after = self.purpose_cuts(FloorProfileDataV1::Online(profile), None)?.0;
+        if after != intent.target().cut() {
+            return Err(FloorErrorV1::Diverged);
+        }
+        Ok(())
+    }
+
+    fn cuts(&mut self, _: FloorProfileV1, _: Option<&JournalTransaction>)
+        -> Result<(FloorCutV1, Option<FloorCutV1>), FloorErrorV1>
+    {
+        Err(FloorErrorV1::Provisioning)
+    }
+
+    fn open_floor_store(&mut self) -> Result<FloorStoreV1, FloorErrorV1> {
+        // Production stages the actual retained sidecar opener before calling
+        // any postcheck; this trait entry cannot invent consuming custody.
+        Err(FloorErrorV1::Provisioning)
+    }
+
+    fn loan_lock_custody(&mut self) -> Result<ProtectedJournalLockCustodyV1, FloorErrorV1> {
+        self.owner.endpoint.revalidate().map_err(|_| FloorErrorV1::Unavailable)?;
+        let result = self.owner.journal_mut().map_err(|_| FloorErrorV1::Unavailable)?
+            .loan_protected_lock_custody();
+        NativeCauseDispositionV1::Retained(self.native_failure).project(result)
+    }
+
+    fn commit_exact(&mut self, _: FloorProfileV1, _: FloorIntentV1, _: &JournalTransaction)
+        -> Result<(), FloorErrorV1>
+    {
+        Err(FloorErrorV1::Provisioning)
+    }
+}
+
 fn require_exact_cuts(
     cuts: (FloorCutV1, Option<FloorCutV1>),
     intent: FloorIntentV1,
@@ -128,25 +235,43 @@ pub(super) fn commit_traffic_transaction(
     journal: &mut Journal,
     transaction: &JournalTransaction,
 ) -> Result<(), FloorErrorV1> {
-    journal
-        .validate_held_protected_names()
-        .map_err(|_| FloorErrorV1::Unavailable)?;
-    let mut authority = journal
-        .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
-        .map_err(|_| FloorErrorV1::Unavailable)?;
-    let preflight = authority
-        .preflight_transactions(core::slice::from_ref(transaction))
-        .map_err(|_| FloorErrorV1::Unavailable)?;
-    authority
-        .validate_preflight_for_effect(&preflight, core::slice::from_ref(transaction))
-        .map_err(|_| FloorErrorV1::Unavailable)?;
-    authority
-        .commit(transaction)
-        .map_err(|_| FloorErrorV1::Unavailable)?;
+    commit_traffic_transaction_with_disposition(journal, transaction, NativeCauseDispositionV1::Legacy)
+}
+
+enum NativeCauseDispositionV1<'cause> {
+    Legacy,
+    Retained(&'cause mut Option<aos_sandbox::JournalError>),
+}
+
+impl NativeCauseDispositionV1<'_> {
+    fn project<T>(&mut self, result: Result<T, aos_sandbox::JournalError>) -> Result<T, FloorErrorV1> {
+        match result {
+            Ok(value) => Ok(value),
+            Err(cause) => {
+                if let Self::Retained(first) = self {
+                    first.get_or_insert(cause);
+                    return Err(FloorErrorV1::Unavailable);
+                }
+                // Legacy disposes the same redacted provider error before the
+                // authority local unwinds, rather than keeping a new owner.
+                drop(cause);
+                Err(FloorErrorV1::Unavailable)
+            }
+        }
+    }
+}
+
+fn commit_traffic_transaction_with_disposition(
+    journal: &mut Journal, transaction: &JournalTransaction,
+    mut disposition: NativeCauseDispositionV1<'_>,
+) -> Result<(), FloorErrorV1> {
+    disposition.project(journal.validate_held_protected_names())?;
+    let mut authority = disposition.project(journal.claim_protected_authority(RecordNamespace::BrokerSessionTraffic))?;
+    let preflight = disposition.project(authority.preflight_transactions(core::slice::from_ref(transaction)))?;
+    disposition.project(authority.validate_preflight_for_effect(&preflight, core::slice::from_ref(transaction)))?;
+    disposition.project(authority.commit(transaction))?;
     drop(authority);
-    journal
-        .validate_held_protected_names()
-        .map_err(|_| FloorErrorV1::Unavailable)
+    disposition.project(journal.validate_held_protected_names())
 }
 
 #[cfg(test)]

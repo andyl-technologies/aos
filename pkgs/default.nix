@@ -1452,6 +1452,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   packageFactories = [
     "aos-uki"
     "dbus-conf"
+    "aos-nix-online-store-reader"
   ];
   uncheckedPackageNames = builtins.attrNames (
     builtins.removeAttrs discoveredPackages (["trivial-builders"] ++ packageFactories)
@@ -1763,6 +1764,17 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         callPackage ./security/_aos-normal-root-profile.nix arguments;
       aosNixOfflineStartupProfileWith = arguments:
         callPackage ./security/_aos-nix-offline-startup-profile.nix arguments;
+      # Public domain DATA flows downward to the fixed reader, then the same
+      # selected sandboxd artifacts. Profiles are built afterward; credentials
+      # and independently provisioned floors are never package inputs.
+      aosNixOnlineControllerWith = {domainIdHex}: let
+        nixOnlineStoreReader = (callPackage ./security/aos-nix-online-store-reader.nix {}) {
+          inherit domainIdHex;
+        };
+      in
+        callPackage ./tools/aos-sandboxd.nix {inherit nixOnlineStoreReader;};
+      aosNixStartupProfileWith = arguments:
+        callPackage ./security/_aos-nix-startup-profile.nix arguments;
       aosSelinuxKernelPolicyReadbackWith = arguments:
         callPackage ./security/aos-selinux-kernel-policy-readback.nix arguments;
       aosSelinuxKernelPolicyReadbackForKernel = kernel:

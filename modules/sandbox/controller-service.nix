@@ -18,6 +18,7 @@
     if policyAuthority.enable
     then policyAuthority._normalStartupProfile
     else null;
+  onlineNix = brokers.nixBroker;
   cacheSignerView = brokers.cacheSignerView or {enable = false;};
   sourceSignerView = brokers.sourceSignerView or {enable = false;};
   cacheSignerService = brokers.cacheSignerService or {enable = false;};
@@ -163,6 +164,19 @@
     "controller-source-successor-admin-seed-v2:/run/credentials/@system/controller-source-successor-admin-seed-v2"
     "controller-source-successor-intent-v2:/run/credentials/@system/controller-source-successor-intent-v2"
   ];
+  onlineNixCredentials = lib.optionals onlineNix.enable (
+    map (name: "${name}:/run/credentials/@system/${onlineNix.publicCredentials.${name}}") [
+      "nix-recipe-issuer-v2"
+      "nix-fixed-domain-pins-v2"
+      "nix-broker-session-manifest-v1"
+      "nix-preadmitted-recipes-v2"
+    ]
+    ++ [
+      "nix-online-floor-issuer-v1:/run/credentials/@system/${onlineNix.controllerFloor.issuer}"
+      "nix-online-floor-auth-v1:/run/credentials/@system/${onlineNix.controllerFloor.auth}"
+      "nix-online-floor-genesis-v1:/run/credentials/@system/${onlineNix.controllerFloor.genesis}"
+    ]
+  );
   q04PolicyCredentials = lib.optionals (cfg.createQ04PolicySubgate.enable
     && policyAuthority.credentials.deploymentPublicKey != null
     && policyAuthority.credentials.projectPublicKey != null) [
@@ -510,6 +524,18 @@ in {
           message = "aos.sandbox.controllerService requires aos.sandbox.networkBroker";
         }
         {
+          assertion = !onlineNix.enable || (
+            cfg.package == onlineNix._package
+            && !cfg.sourceSuccessorIssuance.enable
+            && !cfg.method46TpmFloor.required
+            && normalRootProfile != null
+            && brokers.policyAuthority.package == onlineNix._package
+            && cfg.credentials.brokerPlanSigningKey != null
+            && ownershipAuthority.enable
+          );
+          message = "online Resolve50 requires the exact selected Controller/Root package, genuine paired Root/Nix startup, independent plan/lease inputs, and no method46 or successor-issuance substitution";
+        }
+        {
           assertion = !ownershipAuthority.enable || ownershipAuthority.credentials.sessionKey != null;
           message = "aos.sandbox.controllerService ownership resumption requires the ownership session key";
         }
@@ -635,15 +661,24 @@ in {
           + lib.optionalString cfg.createQ04PolicySubgate.enable " --create-q04-policy-subgate"
           + lib.optionalString cfg.gitUploadBootstrap.enable " --git-upload-bootstrap"
           + lib.optionalString cfg.gitReadInspection.enable " --git-read-inspection=${toString config.aos.sandbox.gitGatewayTransport.uid}:${toString config.aos.sandbox.gitGatewayTransport.gid}"
-          + lib.optionalString cfg.sourceSuccessorIssuance.enable " --issue-source-successor";
+          + lib.optionalString cfg.sourceSuccessorIssuance.enable " --issue-source-successor"
+          + lib.optionalString onlineNix.enable " --nix-start-admission";
+        # The selected flag uses the existing paired initial-table capture.
+        # It does not activate methods51/52 or complete a Start operation.
         Sockets = lib.optional cfg.publisherIngress.enable "aos-sandboxd-publisher.socket";
         # Deliver the same configuration-selected inputs independently. Root's
         # original PID1 image never travels to Controller.
         OpenFile =
           lib.optional cfg.method46TpmFloor.required "/proc/1/exe:aos-method46-pid1-image:read-only"
-          ++ lib.optional (normalRootProfile != null) "${normalRootProfile}/profile.json:aos-normal-root-client-profile:read-only";
-        FileDescriptorStoreMax = lib.mkIf (cfg.method46TpmFloor.required || normalRootProfile != null) 0;
-        ExecStartPre = lib.optionals (!cfg.sourceSuccessorIssuance.enable) brokerSessionConfiguration.installCommands;
+          ++ lib.optional (normalRootProfile != null) "${normalRootProfile}/profile.json:aos-normal-root-client-profile:read-only"
+          ++ lib.optionals onlineNix.enable [
+            "/proc/1/exe:aos-nix-controller-pid1-image:read-only"
+            "${onlineNix._controllerProfile}/controller.json:aos-nix-controller-profile:read-only"
+          ];
+        FileDescriptorStoreMax = lib.mkIf (cfg.method46TpmFloor.required || normalRootProfile != null || onlineNix.enable) 0;
+        # The selected online binary is not a credential installer. Its fixed
+        # custody files must already match the independently delivered originals.
+        ExecStartPre = lib.optionals (!cfg.sourceSuccessorIssuance.enable && !onlineNix.enable) brokerSessionConfiguration.installCommands;
         LoadCredential =
           nodeCredentials
           ++ cacheReplayCredentials
@@ -666,14 +701,15 @@ in {
           ++ controllerSourceTreeSeedIssuerCredential
           ++ sourceGenesisPacketCredentials
           ++ q04PolicyCredentials
-          ++ sourceSuccessorCredentials;
-        Restart = if cfg.sourceSuccessorIssuance.enable then "no" else "on-failure";
+          ++ sourceSuccessorCredentials
+          ++ onlineNixCredentials;
+        Restart = if cfg.sourceSuccessorIssuance.enable || onlineNix.enable then "no" else "on-failure";
         RestartSec = "2s";
         # Population, not cgroup.procs, retains exiting TPM helper tasks until
         # kernel file-release work drains. Never time out that restart barrier.
-        ExitType = lib.mkIf cfg.method46TpmFloor.required "cgroup";
-        KillMode = lib.mkIf cfg.method46TpmFloor.required "control-group";
-        TimeoutStopSec = lib.mkIf cfg.method46TpmFloor.required "infinity";
+        ExitType = lib.mkIf (cfg.method46TpmFloor.required || onlineNix.enable) "cgroup";
+        KillMode = lib.mkIf (cfg.method46TpmFloor.required || onlineNix.enable) "control-group";
+        TimeoutStopSec = lib.mkIf (cfg.method46TpmFloor.required || onlineNix.enable) "infinity";
         TimeoutStartSec = "90s";
         User = "aos-sandboxd";
         Group = "aos-sandboxd";
@@ -699,14 +735,14 @@ in {
 
         CapabilityBoundingSet = "";
         DevicePolicy = "closed";
-        DeviceAllow = lib.optional cfg.method46TpmFloor.required "/dev/tpmrm0 rw";
+        DeviceAllow = lib.optional (cfg.method46TpmFloor.required || onlineNix.enable) "/dev/tpmrm0 rw";
         LimitCORE = 0;
-        LimitNOFILE = 128;
+        LimitNOFILE = if onlineNix.enable then 16384 else 128;
         LockPersonality = true;
-        MemoryMax = "512M";
+        MemoryMax = if onlineNix.enable then "4G" else "512M";
         MemoryDenyWriteExecute = true;
         NoNewPrivileges = true;
-        PrivateDevices = !cfg.method46TpmFloor.required;
+        PrivateDevices = !(cfg.method46TpmFloor.required || onlineNix.enable);
         PrivateNetwork = true;
         PrivateTmp = true;
         # Ordinary protected broker execution guards and original Root/issuer
@@ -721,7 +757,7 @@ in {
         ProtectKernelTunables = true;
         # Selected peers need their exact stat/attr observations. MAC still
         # denies generic foreign task contents; this is not ptrace authority.
-        ProtectProc = if cfg.gitReadInspection.enable then "default" else "invisible";
+        ProtectProc = if cfg.gitReadInspection.enable || onlineNix.enable then "default" else "invisible";
         ProtectSystem = "strict";
         RestrictAddressFamilies = ["AF_UNIX"];
         RestrictNamespaces = true;

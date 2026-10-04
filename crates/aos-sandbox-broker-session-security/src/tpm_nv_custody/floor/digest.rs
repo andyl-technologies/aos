@@ -22,8 +22,36 @@ pub(crate) fn broker_cut_from_records_v1<'a>(
     sequence: u64,
     records: impl IntoIterator<Item = (&'a [u8], &'a [u8])>,
 ) -> Result<FloorCutV1, FloorErrorV1> {
+    cut_from_records_v1(RecordPurposeDataV1::BrokerV1, [0; 32], sequence, records)
+}
+
+/// Hashes the complete ONLINE map, including its entire immutable signed seed.
+///
+/// # Errors
+/// Preserves key/order, count and sequence sentinel rejection. The profile's
+/// scope is DATA until joined to the original authenticated purpose owner.
+pub(crate) fn online_cut_from_records_v1<'a>(
+    profile: super::OnlineFloorProfileV1,
+    sequence: u64,
+    records: impl IntoIterator<Item = (&'a [u8], &'a [u8])>,
+) -> Result<FloorCutV1, FloorErrorV1> {
+    cut_from_records_v1(RecordPurposeDataV1::OnlineNixV1, profile.scope(), sequence, records)
+}
+
+fn cut_from_records_v1<'a>(
+    purpose: RecordPurposeDataV1,
+    scope: [u8; 32],
+    sequence: u64,
+    records: impl IntoIterator<Item = (&'a [u8], &'a [u8])>,
+) -> Result<FloorCutV1, FloorErrorV1> {
     let mut digest = Sha256::new();
-    digest.update(HEAD_DOMAIN);
+    match purpose {
+        RecordPurposeDataV1::OnlineNixV1 => {
+            digest.update(b"aos.sandbox.nix.online-floor.head.v1\0");
+            digest.update(scope);
+        }
+        _ => digest.update(HEAD_DOMAIN),
+    }
     digest.update([RecordNamespace::BrokerSessionTraffic as u8]);
     digest.update(sequence.to_be_bytes());
     let mut predecessor: Option<&[u8]> = None;
@@ -52,6 +80,14 @@ pub(crate) fn broker_transaction_digest_v1(
     transaction_digest_v1(RecordPurposeDataV1::BrokerV1, [0; 32], transaction)
 }
 
+/// Walks the exact ONLINE transaction using the existing ordered codec inputs.
+pub(crate) fn online_transaction_digest_v1(
+    profile: super::OnlineFloorProfileV1,
+    transaction: &JournalTransaction,
+) -> Result<[u8; 32], FloorErrorV1> {
+    transaction_digest_v1(RecordPurposeDataV1::OnlineNixV1, profile.scope(), transaction)
+}
+
 /// Walks exact ordered records using only a closed purpose's DATA domain.
 ///
 /// # Errors
@@ -64,7 +100,7 @@ pub(super) fn transaction_digest_v1(
 ) -> Result<[u8; 32], FloorErrorV1> {
     let mut digest = Sha256::new();
     digest.update(purpose.transaction_domain());
-    if purpose == RecordPurposeDataV1::RuntimeDeploymentV1 {
+    if purpose != RecordPurposeDataV1::BrokerV1 {
         digest.update(scope);
     }
     digest.update(transaction.id());

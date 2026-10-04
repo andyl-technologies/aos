@@ -105,6 +105,9 @@ class FakePolicy:
         self.xperms: dict[effective_policy.Access, list[FakeXpermRule]] = {}
 
     def lookup_type(self, domain: str) -> FakeType:
+        if domain in (*effective_policy.owner_policy.ONLINE_NIX_KNOWN_DOMAINS,
+                      "aos_nix_online_store_t"):
+            raise FakeInvalidType(domain)
         return FakeType(domain, domain in self.permissive)
 
 
@@ -1988,6 +1991,118 @@ class SelectedLauncherImageIoctlTest(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, "unsupported.*expectation"):
                 effective_policy._check_selected_launcher_image_ioctls(FAKE_SETOOLS, FakePolicy())
+
+
+class OnlineNixPolicyTest(unittest.TestCase):
+    """Exercises closed selected DATA without constructing a live owner."""
+
+    def _selected_policy(self) -> FakePolicy:
+        class SelectedPolicy(FakePolicy):
+            def lookup_type(self, name: str) -> FakeType:
+                return FakeType(name, name in self.permissive)
+
+        policy = SelectedPolicy()
+        source, target = effective_policy.owner_policy.ONLINE_NIX_IMAGE_IOCTL_CELLS[0]
+        access = effective_policy.Access(source, target, "file", "ioctl")
+        policy.allows[access] = [FakeRule("online fixed base ioctl")]
+        policy.xperms[access] = [FakeXpermRule(
+            "online fixed selector", perms=frozenset({0x6686}),
+        )]
+        return policy
+
+    def _check_selected(self, policy: FakePolicy) -> list[str]:
+        owner = effective_policy.owner_policy
+        with patch.object(owner, "ONLINE_NIX_DOMAINS", owner.ONLINE_NIX_KNOWN_DOMAINS):
+            return effective_policy._check_online_nix_policy(FAKE_SETOOLS, policy)
+
+    def test_default_is_empty_and_actual_checker_rejects_type_presence(self) -> None:
+        self.assertEqual(effective_policy.owner_policy.ONLINE_NIX_DOMAINS, ())
+        self.assertEqual(
+            effective_policy._check_online_nix_policy(FAKE_SETOOLS, FakePolicy()), [],
+        )
+
+        policy = EffectivePolicyTest()._storage_policy()
+        original_lookup = policy.lookup_type
+
+        def lookup_with_selected_type(name: str) -> FakeType:
+            if name == "aos_sandbox_nix_t":
+                return FakeType(name)
+            return original_lookup(name)
+
+        with patch.object(policy, "lookup_type", side_effect=lookup_with_selected_type):
+            with self.assertRaisesRegex(ValueError, "online Nix type present in default"):
+                effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+        # The appended negative gate runs after the old full matrix and the
+        # existing launcher ioctl queries, rather than replacing either one.
+        self.assertEqual(
+            [query["ruletype"] for query in policy.queries[-2:]],
+            [["allow"], ["allowxperm"]],
+        )
+
+    def test_selected_uses_same_full_native_selector_query(self) -> None:
+        policy = self._selected_policy()
+
+        evidence = self._check_selected(policy)
+
+        self.assertEqual(evidence, [
+            "allowxperm\taos_sandbox_nix_t\taos_nix_online_store_t\tfile\tioctl\t0x6686",
+        ])
+        self.assertEqual(len(policy.queries), 2)
+        for query in policy.queries:
+            self.assertIs(query["source_indirect"], True)
+            self.assertIs(query["target_indirect"], True)
+            self.assertNotIn("xperms", query)
+            self.assertNotIn("boolean", query)
+
+    def test_selected_rejects_excess_and_attribute_leaks_even_if_disabled(self) -> None:
+        for active in (False, True):
+            for violation in ("selector", "source", "target"):
+                with self.subTest(active=active, violation=violation):
+                    policy = self._selected_policy()
+                    access = next(iter(policy.xperms))
+                    rule = policy.xperms[access][0]
+                    if violation == "selector":
+                        rule = replace(rule, perms=frozenset({0x6686, 0x6687}))
+                    elif violation == "source":
+                        rule = replace(rule, source=FakeTypeAttribute({
+                            access.source, "aos_sandbox_storage_t",
+                        }))
+                    else:
+                        rule = replace(rule, target=FakeTypeAttribute({
+                            access.target, "other_store_t",
+                        }))
+                    policy.xperms[access].append(replace(rule, active=active))
+
+                    with self.assertRaisesRegex(ValueError, "forbidden.*(selectors|grant)"):
+                        self._check_selected(policy)
+
+    def test_selected_matrix_is_readonly_and_has_no_contradictory_cells(self) -> None:
+        owner = effective_policy.owner_policy
+        arguments = (
+            effective_policy.Access, effective_policy.Transition,
+            effective_policy.accesses, (*effective_policy.DOMAINS, *owner.ENFORCING, "init_t"),
+        )
+        self.assertEqual(owner._online_nix_matrix(*arguments), ((), (), ()))
+
+        with patch.object(owner, "ONLINE_NIX_DOMAINS", owner.ONLINE_NIX_KNOWN_DOMAINS):
+            positive, negative, transitions = owner._online_nix_matrix(*arguments)
+
+        self.assertFalse(set(positive).intersection(negative))
+        for principal in ("aos_sandbox_nix_t", "aos_nix_online_store_reader_t"):
+            self.assertIn(effective_policy.Access(
+                principal, "aos_nix_online_store_t", "file", "read",
+            ), positive)
+            self.assertIn(effective_policy.Access(
+                principal, "aos_nix_online_store_t", "file", "write",
+            ), negative)
+        self.assertIn(effective_policy.Access(
+            "aos_nix_online_store_reader_t", "aos_nix_online_store_t", "file", "ioctl",
+        ), negative)
+        self.assertIn(effective_policy.Transition(
+            "aos_sandbox_nix_t", "aos_nix_online_owner_state_t", "file",
+            "aos_nix_online_owner_lock_t", filename="session.journal.lock",
+        ), transitions)
 
 
 class GitReadDelegationTest(unittest.TestCase):

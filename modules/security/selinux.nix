@@ -17,6 +17,7 @@
   immutableStage0 = cfg.bootMode == "immutable-stage0";
   protectedSandboxNetworkRoots = cfg.protectedSandboxNetworkRoots.enable;
   selectedSourceMount = config.aos.sandbox.mountBroker.sourceProviderSession.enable;
+  selectedOnlineNix = config.aos.sandbox.nixBroker.enable;
   policyName = cfg.policy;
   refpolicy = pkgs.refpolicy;
   viewPreparers = [
@@ -43,11 +44,16 @@
   ];
   # Exact script outputs contain the image's real UID/GID values. Their
   # interpreter/tool paths do not depend on this policy, avoiding a cycle.
-  productionPolicy = pkgs.aosSelinuxProductionPolicyWith {
+  productionPolicy = pkgs.aosSelinuxProductionPolicyWith ({
     inherit viewPreparers homeContextAliases;
     gitReadDelegation = config.aos.sandbox.controllerService.gitReadInspection.enable;
     sourceProviderMount = selectedSourceMount;
-  };
+  } // lib.optionalAttrs selectedOnlineNix {
+    onlineNix = true;
+    aos-sandboxd = config.aos.sandbox.nixBroker._package;
+    aos-nix-runtime-tpm-helpers = pkgs.aos-nix-runtime-tpm-helpers;
+    aos-nix-online-store-reader = config.aos.sandbox.nixBroker._package.nixOnlineStoreReader;
+  });
   canonicalPolicyPath = "${productionPolicy}/etc/selinux/aos/policy/policy.33";
   # selinuxfs serializes the loaded policydb; its bytes are not the input file.
   # Bind the exact expected image to the selected deployment kernel.

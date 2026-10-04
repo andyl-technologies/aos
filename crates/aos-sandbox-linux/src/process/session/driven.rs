@@ -1,10 +1,12 @@
-//! Resident, output-only driving of the existing fixed descriptor supervisor.
+//! Resident, output-only driving of the existing fixed process supervisor.
 //!
 //! Preparation is pure DATA. A parent parks all original inputs before a loan
 //! can perform effects. Dropping the loan closes and signals, but retains the
 //! child, streams and first cause in that parent. Exact NOHANG waits use the
 //! same observer as the synchronous supervisor. Parent destruction retains the
 //! existing blocking cleanup fallback; neither endpoint proves owner drain.
+//! The closed PATH disposition uses the existing synchronous spawn engine;
+//! executable-image admission and purpose authority remain with its caller.
 
 use std::convert::Infallible;
 use std::fmt;
@@ -282,6 +284,12 @@ enum Finish {
     Failed,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum InvocationDisposition {
+    Descriptor,
+    Path,
+}
+
 /// Reports mechanics progress without currentness, terminal rights or Drain.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FixedProcessDrivenProgressV1 {
@@ -316,6 +324,7 @@ pub struct FixedProcessDrivenSessionV1 {
     cause: Option<FixedProcessDrivenCauseV1>,
     debt: Option<FixedProcessDrivenDebtV1>,
     outcome: Option<FixedProcessRetainedSessionOutcome<()>>,
+    invocation_disposition: InvocationDisposition,
     single_thread: PhantomData<Rc<()>>,
 }
 
@@ -342,8 +351,33 @@ impl FixedProcessDrivenSessionV1 {
             cause: None,
             debt: None,
             outcome: None,
+            invocation_disposition: InvocationDisposition::Descriptor,
             single_thread: PhantomData,
         }
+    }
+
+    /// Parks the same originals for the existing fixed PATH spawn engine.
+    ///
+    /// The prepared path is mechanical input, not execution authority. The
+    /// purpose owner must admit that exact immutable executable, retained
+    /// image, current startup and original boot/cut before driving. The
+    /// executable descriptor remains comparison custody; it is not an
+    /// alternate exec target. This route preserves the existing PATH engine's
+    /// ambient capability behavior and grants no capabilities itself.
+    ///
+    /// PATH exec confirmation and pidfd acquisition are synchronous. Their
+    /// provider-local pre-return interval is not captured by this parent or
+    /// universally preempted by its deadline. A spawn failure is neither a
+    /// no-effect claim nor proof of cleanup or Drain.
+    #[must_use]
+    pub fn park_path(
+        prepared: FixedProcessPreparedInvocationV1,
+        inputs: FixedProcessDrivenInputsV1,
+        cut: FixedProcessBoottimeCutV1,
+    ) -> Self {
+        let mut owner = Self::park(prepared, inputs, cut);
+        owner.invocation_disposition = InvocationDisposition::Path;
+        owner
     }
 
     /// Arms a borrowing closure guard synchronously, including unpolled use.
@@ -465,12 +499,20 @@ impl FixedProcessDrivenSessionV1 {
                 Error::invalid("fixed process executable", "original is absent"),
             )
         )?;
-        let spawned = self.prepared.invocation.begin_from_executable_descriptor_at_cut(
-            executable.as_fd(),
-            self.stdin.as_ref().map(|fd| fd.as_fd()),
-            &inherited_borrows,
-            self.cut,
-        ).map_err(FixedProcessDrivenCauseV1::Process)?;
+        let spawned = match self.invocation_disposition {
+            InvocationDisposition::Descriptor => {
+                self.prepared.invocation.begin_from_executable_descriptor_at_cut(
+                    executable.as_fd(),
+                    self.stdin.as_ref().map(|fd| fd.as_fd()),
+                    &inherited_borrows,
+                    self.cut,
+                )
+            }
+            InvocationDisposition::Path => self.prepared.invocation.spawn(
+                self.stdin.as_ref().map(|fd| fd.as_fd()),
+                &inherited_borrows,
+            ),
+        }.map_err(FixedProcessDrivenCauseV1::Process)?;
 
         // Successful fork is installed before the next fallible operation.
         // Move the exact prepared reservoir; the empty parent placeholder is
@@ -484,9 +526,11 @@ impl FixedProcessDrivenSessionV1 {
         ));
 
         drop(inherited_borrows);
-        drop(self.executable.take());
-        drop(std::mem::take(&mut self.inherited));
-        drop(self.stdin.take());
+        if self.invocation_disposition == InvocationDisposition::Descriptor {
+            drop(self.executable.take());
+            drop(std::mem::take(&mut self.inherited));
+            drop(self.stdin.take());
+        }
 
         self.check_cut()?;
         if let Some(run) = &mut self.run {
@@ -633,6 +677,32 @@ pub struct FixedProcessDrivingLoanV1<'a> {
 }
 
 impl FixedProcessDrivingLoanV1<'_> {
+    /// Borrows the resident original child and its first kernel observation.
+    ///
+    /// The tuple is observation DATA, not current liveness, image admission or
+    /// effect authority. It is absent outside healthy armed Running custody,
+    /// before the first kernel observation and after observed leader exit.
+    #[must_use]
+    pub fn original_child(&self) -> Option<(&crate::PidFd, crate::PidFdInfo)> {
+        if self.owner.phase != Phase::Running
+            || self.owner.cause.is_some()
+            || self.owner.debt.is_some()
+            || self.owner.kernel.state.leader_exited
+        {
+            return None;
+        }
+
+        let run = self.owner.run.as_ref()?;
+        if !run.guard.armed {
+            return None;
+        }
+
+        let original_info = self.owner.kernel.initial_info?;
+        let original_pidfd = run.guard.pidfd.as_ref()?;
+
+        Some((original_pidfd, original_info))
+    }
+
     /// Makes one bounded setup, shared kernel turn or cleanup observation.
     pub fn advance_once(&mut self) -> FixedProcessDrivenProgressV1 {
         match self.owner.phase {
@@ -816,6 +886,36 @@ mod tests {
 
         let cut = FixedProcessBoottimeCutV1::new(17).unwrap();
         assert_eq!(cut.exclusive_nanoseconds(), 17);
+    }
+
+    #[test]
+    fn original_child_is_absent_without_an_actual_returned_run_in_every_phase() {
+        // Only empty private availability DATA is exercised. No descriptor,
+        // PID, kernel observation or genuine child is fabricated by this test.
+        let prepared = prepare_fixed_process_driven_invocation_v1(FixedProcessRequest {
+            executable: std::path::Path::new("/aos/fixed-helper"), arguments: &[],
+            timeout: Duration::from_secs(1), maximum_stdout_bytes: 32,
+            maximum_stderr_bytes: 16,
+        }).unwrap();
+        let mut owner = FixedProcessDrivenSessionV1 {
+            run: None, prepared, executable: None, stdin: None, inherited: Vec::new(),
+            capture: FixedProcessCaptureV1::default(), cut: FixedProcessBoottimeCutV1(17),
+            timer: None, kernel: KernelState::pending(), phase: Phase::Parked,
+            finish: None, cause: None, debt: None, outcome: None,
+            invocation_disposition: InvocationDisposition::Path,
+            single_thread: PhantomData,
+        };
+
+        for phase in [Phase::Parked, Phase::Running, Phase::Cleaning, Phase::Ended, Phase::Debt] {
+            owner.phase = phase;
+            let loan = FixedProcessDrivingLoanV1 { owner: &mut owner };
+            assert!(loan.original_child().is_none());
+        }
+
+        owner.phase = Phase::Running;
+        owner.cause = Some(FixedProcessDrivenCauseV1::Cancelled);
+        let loan = FixedProcessDrivingLoanV1 { owner: &mut owner };
+        assert!(loan.original_child().is_none());
     }
 
     #[test]

@@ -12,6 +12,7 @@
 //! and an authenticated physical floor require separate genuine later owners.
 
 use std::path::Path;
+use std::sync::Arc;
 
 use aos_sandbox_linux::pidfd::PidFd;
 
@@ -63,9 +64,33 @@ impl OriginObservationV2<'_> {
 /// Security coordination must keep this loan live and recheck it itself.
 #[must_use = "retain the original selector borrow throughout later purpose coordination"]
 pub struct ControllerNixSessionFloorOriginV2<'origin> {
-    selector: &'origin ControllerNixStartRecipeSelectorV2,
+    selector: ControllerOriginParentV2<'origin>,
     node: PinnedSystemdCredential,
     health: OriginFailureLatchV2,
+}
+
+// Only an already-genuine loan can change its borrowed parent into a strong
+// owner. Pointer equality prevents replacing that parent with another selector.
+enum ControllerOriginParentV2<'origin> {
+    Borrowed(&'origin ControllerNixStartRecipeSelectorV2),
+    RetainedArc(Arc<ControllerNixStartRecipeSelectorV2>),
+}
+
+impl ControllerOriginParentV2<'_> {
+    fn as_ref(&self) -> &ControllerNixStartRecipeSelectorV2 {
+        match self {
+            Self::Borrowed(selector) => selector,
+            Self::RetainedArc(selector) => selector.as_ref(),
+        }
+    }
+}
+
+impl std::ops::Deref for ControllerOriginParentV2<'_> {
+    type Target = ControllerNixStartRecipeSelectorV2;
+
+    fn deref(&self) -> &Self::Target {
+        self.as_ref()
+    }
 }
 
 impl ControllerNixStartRecipeSelectorV2 {
@@ -89,7 +114,7 @@ impl ControllerNixStartRecipeSelectorV2 {
             return Err(NixStartAdmissionErrorV2::Invalid);
         }
         let mut origin = ControllerNixSessionFloorOriginV2 {
-            selector: self,
+            selector: ControllerOriginParentV2::Borrowed(self),
             node,
             health: OriginFailureLatchV2::default(),
         };
@@ -98,7 +123,88 @@ impl ControllerNixStartRecipeSelectorV2 {
     }
 }
 
-impl ControllerNixSessionFloorOriginV2<'_> {
+impl<'origin> ControllerNixSessionFloorOriginV2<'origin> {
+    /// Stages independent configured anchors under the original selector loan.
+    ///
+    /// Anchors are historical signature-verification DATA, not a Start, lease,
+    /// Session, floor or effect permit. The same caller slot retains a decoded
+    /// result even if the final original selector/node check fails or unwinds.
+    ///
+    /// # Errors
+    /// Preserves the original typed credential/startup/policy failure. Rejects
+    /// an occupied target or closed loan. Interruption permanently fences this
+    /// loan without discarding the caller's successfully decoded result.
+    pub fn retain_original_admission_anchors_into(
+        &mut self,
+        target: &mut Option<(
+            aos_sandbox_core::BrokerPlanTrustAnchor,
+            aos_sandbox_core::OwnershipLeaseTrustAnchor,
+            aos_sandbox_core::NodeId,
+        )>,
+    ) -> Result<(), NixStartAdmissionErrorV2> {
+        let observation = self.health.begin().ok_or(NixStartAdmissionErrorV2::Invalid)?;
+        let result = (|| {
+            if target.is_some() {
+                return Err(NixStartAdmissionErrorV2::Invalid);
+            }
+            Self::recheck_originals(self.selector.as_ref(), &self.node)?;
+            self.selector.retain_session_floor_admission_anchors_into_v2(target)?;
+            Self::recheck_originals(self.selector.as_ref(), &self.node)
+        })();
+        observation.finish(result)
+    }
+
+    /// Retains the exact original selector without replacing credential custody.
+    ///
+    /// The loan and supplied original Arc stay in caller slots throughout
+    /// validation, including caught unwind. Only successful pointer equality
+    /// and the existing original recheck permit the infallible final transfer.
+    /// This grants no Session, floor, clock, NV or operation authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns the actual recheck cause or `Invalid` for missing/occupied slots,
+    /// a closed loan or another parent. The caller must retain both input slots
+    /// and park the returned cause before another gate; no retry is granted.
+    pub fn retain_original_into(
+        loan: &mut Option<Self>,
+        original: &mut Option<Arc<ControllerNixStartRecipeSelectorV2>>,
+        target: &mut Option<ControllerNixSessionFloorOriginV2<'static>>,
+    ) -> Result<(), NixStartAdmissionErrorV2> {
+        {
+            let retained = loan.as_mut().ok_or(NixStartAdmissionErrorV2::Invalid)?;
+            let observation = retained.health.begin().ok_or(NixStartAdmissionErrorV2::Invalid)?;
+            let result = (|| {
+                let parent = original.as_ref().ok_or(NixStartAdmissionErrorV2::Invalid)?;
+                if target.is_some()
+                    || !std::ptr::eq(retained.selector.as_ref(), Arc::as_ref(parent))
+                {
+                    return Err(NixStartAdmissionErrorV2::Invalid);
+                }
+                Self::recheck_originals(retained.selector.as_ref(), &retained.node)
+            })();
+            observation.finish(result)?;
+        }
+
+        // Exclusive slot borrows make the missing case unreachable after the
+        // checks. Its defensive restoration also never discards an original.
+        match (loan.take(), original.take()) {
+            (Some(retained), Some(parent)) => {
+                *target = Some(ControllerNixSessionFloorOriginV2 {
+                    selector: ControllerOriginParentV2::RetainedArc(parent),
+                    node: retained.node,
+                    health: retained.health,
+                });
+                Ok(())
+            }
+            (retained, parent) => {
+                *loan = retained;
+                *original = parent;
+                Err(NixStartAdmissionErrorV2::Invalid)
+            }
+        }
+    }
+
     /// Rechecks the original selector bookends, separate node, then startup.
     ///
     /// # Errors
@@ -112,7 +218,7 @@ impl ControllerNixSessionFloorOriginV2<'_> {
             .begin()
             .ok_or(NixStartAdmissionErrorV2::Invalid)?;
 
-        let result = Self::recheck_originals(self.selector, &self.node);
+        let result = Self::recheck_originals(self.selector.as_ref(), &self.node);
         observation.finish(result)
     }
 

@@ -8,7 +8,11 @@
 //! created here. Future effect boundaries must join their own concrete owners.
 
 use aos_sandbox_core::RawPairedClockSample;
+use buffa::Message as _;
 use aos_sandbox_ownership_protocol::SignedOwnershipLease;
+use aos_proto::aos::sandbox::local::v1::{
+    AssignmentFence, Audience, NixBuildRequestV2, RequestHeader,
+};
 
 use super::*;
 use crate::cli_model::authorization_adapter::{
@@ -59,6 +63,10 @@ enum ContinuationFailureV2 {
     ClockPair(#[from] aos_sandbox_core::OwnershipLeaseVerificationError),
     #[error("original Start request failed: {0}")]
     Request(#[from] crate::public_mutation_compiler::PublicMutationResolutionErrorV1),
+    #[error("canonical Nix request validation failed: {0}")]
+    BrokerRequest(#[from] aos_sandbox_protocol::ProtocolValidationError),
+    #[error("canonical Nix authorization plan failed: {0}")]
+    BrokerPlan(#[from] aos_sandbox_core::InvalidBrokerAuthorizationPlan),
 }
 
 impl From<ContinuationFailureV2> for NixStartContinuationErrorV2 {
@@ -87,6 +95,44 @@ pub struct CurrentRetainedNixStartV2<'current> {
     clock: ControllerProtectedClockV1,
     decision: CurrentCapabilityDecisionV1,
     failed: bool,
+}
+
+/// Retains one fresh unsigned Resolve50 plan beside its original signed lease.
+///
+/// This historical draft still requires the installed Controller signer,
+/// authenticated Session, receiver admission and atomic physical-floor commit.
+/// It is not a currentness token or an executable store permit.
+pub struct NixResolveAuthorizationDraftV2 {
+    plan: aos_sandbox_core::BrokerAuthorizationPlan,
+    lease: SignedOwnershipLease,
+    request: Vec<u8>,
+    observed: RawPairedClockSample,
+}
+
+impl NixResolveAuthorizationDraftV2 {
+    /// Borrows the exact newly constructed unsigned plan.
+    #[must_use]
+    pub fn plan(&self) -> &aos_sandbox_core::BrokerAuthorizationPlan {
+        &self.plan
+    }
+
+    /// Borrows the original independently signed current assignment lease.
+    #[must_use]
+    pub fn lease(&self) -> &SignedOwnershipLease {
+        &self.lease
+    }
+
+    /// Borrows the exact canonical method body matched by the grant.
+    #[must_use]
+    pub fn request_bytes(&self) -> &[u8] {
+        &self.request
+    }
+
+    /// Returns the actual protected observation used to issue this draft.
+    #[must_use]
+    pub const fn observed(&self) -> RawPairedClockSample {
+        self.observed
+    }
 }
 
 impl std::fmt::Debug for CurrentRetainedNixStartV2<'_> {
@@ -211,6 +257,238 @@ impl ControllerNixStartRecipeSelectorV2 {
 }
 
 impl CurrentRetainedNixStartV2<'_> {
+    /// Computes purpose-separated input and predicted-output comparison data.
+    ///
+    /// Both fixed online owners use this same canonical typed serialization.
+    /// The output digest does not attest that predicted outputs exist, and
+    /// neither digest supplies local input, store, Session or floor authority.
+    ///
+    /// # Errors
+    /// Rejects an invalid recipe or failure to encode its canonical maps.
+    pub fn recipe_coordinate_digests_v2(
+        recipe: &aos_sandbox_protocol::nix_build::NixPreadmittedRecipeV2,
+    ) -> Result<([u8; 32], [u8; 32]), NixStartAdmissionErrorV2> {
+        recipe.validate()?;
+        let inputs = serde_json::to_vec(&recipe.inputs)?;
+        let outputs = serde_json::to_vec(&recipe.outputs)?;
+        Ok((
+            Sha256::new()
+                .chain_update(b"aos.sandbox.nix.resolve-input-map.v2\0")
+                .chain_update((inputs.len() as u64).to_be_bytes())
+                .chain_update(&inputs)
+                .finalize()
+                .into(),
+            Sha256::new()
+                .chain_update(b"aos.sandbox.nix.resolve-predicted-output-map.v2\0")
+                .chain_update((outputs.len() as u64).to_be_bytes())
+                .chain_update(&outputs)
+                .finalize()
+                .into(),
+        ))
+    }
+
+    /// Forms the fixed Resolve50 body from this same genuine pending Start.
+    ///
+    /// Only the request identity is caller-selected comparison data. The
+    /// assignment fence, admitted recipe, parent carrier and exclusive cutoff
+    /// come from the retained originals, never a supplied lease or deadline.
+    /// The body still delegates current-held evidence through the authenticated
+    /// Controller role; its scalar coordinates are not a remote live lease.
+    ///
+    /// # Errors
+    /// Rejects a closed owner, a sentinel request identity, any changed original
+    /// custody or expired cutoff, and bounded carrier/map encoding failure.
+    /// A returned error or caught unwind permanently closes this owner.
+    pub fn prepare_resolve_request_v2(
+        &mut self,
+        request_id: [u8; 16],
+    ) -> Result<NixBuildRequestV2, NixStartContinuationErrorV2> {
+        if self.failed || request_id == [0; 16] || request_id == [0xff; 16] {
+            return Err(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid).into());
+        }
+
+        // Pre-arm before the first check. Only this complete observation may
+        // reopen the same owner; abandonment cannot produce a reusable target.
+        self.failed = true;
+        self.recheck_inner()?;
+        let body = self.original_resolve_request_v2(request_id)?;
+        self.recheck_inner()?;
+        self.failed = false;
+        Ok(body)
+    }
+
+    fn original_resolve_request_v2(
+        &self,
+        request_id: [u8; 16],
+    ) -> Result<NixBuildRequestV2, NixStartContinuationErrorV2> {
+        let (inputs, outputs) = Self::recipe_coordinate_digests_v2(self.recipe.recipe())
+            .map_err(ContinuationFailureV2::from)?;
+        let parent = self.carrier.encode().map_err(ContinuationFailureV2::from)?;
+        let parent_digest: [u8; 32] = parent.get(parent.len().saturating_sub(32)..)
+            .ok_or(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid))?
+            .try_into()
+            .map_err(|_| ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid))?;
+        let binding = self.target.binding();
+        let manifest = binding.manifest().manifest();
+        let recipe = self.recipe.recipe();
+        let body = NixBuildRequestV2 {
+            header: Some(RequestHeader {
+                protocol_major: 1,
+                protocol_minor: 0,
+                request_id: request_id.to_vec(),
+                audience: Audience::AUDIENCE_NODE_CONTROLLER.into(),
+                deadline_boottime_nanoseconds: self.target.deadline_boottime_nanoseconds(),
+                maximum_response_bytes: aos_sandbox_protocol::nix_build::NIX_RESPONSE_MAXIMUM_BYTES_V2 as u32,
+                ..Default::default()
+            }).into(),
+            fence: Some(AssignmentFence {
+                sandbox_id: manifest.sandbox().as_bytes().to_vec(),
+                incarnation_id: manifest.incarnation().as_bytes().to_vec(),
+                assignment_epoch: manifest.epoch().get(),
+                desired_generation: manifest.desired_generation().get(),
+                assignment_digest: binding.assignment_digest().as_bytes().to_vec(),
+                ..Default::default()
+            }).into(),
+            operation_id: self.carrier.operation().as_bytes().to_vec(),
+            recipe_digest: self.recipe.digest().as_bytes().to_vec(),
+            domain_digest: recipe.domain_commitment.as_bytes().to_vec(),
+            disclosure_digest: recipe.disclosure.as_bytes().to_vec(),
+            environment_digest: recipe.environment.digest().as_bytes().to_vec(),
+            parent_admission_digest: parent_digest.to_vec(),
+            input_presentation_digest: inputs.to_vec(),
+            expected_output_map_digest: outputs.to_vec(),
+            ..Default::default()
+        };
+        Ok(body)
+    }
+
+    /// Stages a fresh canonical Resolve50 plan before the final original check.
+    ///
+    /// The body must equal the request constructed from this same Start. The
+    /// genuine current lease and protected clock select the assignment, signer
+    /// generation and exclusive expiry; the caller cannot nominate any of them.
+    /// Only the original request identity is comparison DATA. The unsigned
+    /// draft remains resident when the final check fails or unwinds.
+    ///
+    /// # Errors
+    /// Preserves actual original-custody, request, plan and clock causes. Rejects
+    /// a closed owner, occupied output, substituted request or expired bound.
+    /// Failure or interruption permanently fences this owner.
+    pub fn retain_resolve_authorization_into(
+        &mut self,
+        request: &NixBuildRequestV2,
+        target: &mut Option<NixResolveAuthorizationDraftV2>,
+    ) -> Result<(), NixStartContinuationErrorV2> {
+        if self.failed {
+            return Err(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid).into());
+        }
+        self.failed = true;
+        if target.is_some() {
+            return Err(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid).into());
+        }
+        self.recheck_inner()?;
+
+        let request_id = request.header.as_option()
+            .ok_or(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid))?
+            .request_id.as_slice().try_into()
+            .map_err(|_| ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid))?;
+        if request_id == [0; 16]
+            || request_id == [0xff; 16]
+            || request != &self.original_resolve_request_v2(request_id)?
+        {
+            return Err(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid).into());
+        }
+        let bytes = request.encode_to_vec();
+        let (lease, observed) = self.target.verified_plan_lease(
+            self.journal,
+            &mut || self.clock.sample(),
+        ).map_err(ContinuationFailureV2::from)?;
+        require_original_lease(&self.carrier.assignment, &lease)
+            .map_err(ContinuationFailureV2::from)?;
+
+        let identities = self.selector.pins.identities;
+        let checked = aos_sandbox_protocol::nix_build::decode_nix_build_request_v2(
+            &bytes,
+            aos_proto::aos::sandbox::local::v1::BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2,
+            aos_sandbox_protocol::PeerCredentials {
+                uid: identities[0],
+                gid: identities[1],
+                pid: None,
+            },
+            aos_sandbox_protocol::PeerPolicy {
+                uid: identities[0],
+                gid: Some(identities[1]),
+                audience: Audience::AUDIENCE_NODE_CONTROLLER,
+            },
+            observed.boottime_nanoseconds(),
+        ).map_err(ContinuationFailureV2::from)?;
+        let (policy_digest, revocation_scope) = {
+            let loan = self.selector.recheck_and_borrow_publics()
+                .map_err(ContinuationFailureV2::from)?;
+            let credentials = loan.publics()
+                .ok_or(ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::CredentialCustodyClosed))?;
+            let anchor = plan_anchor_from_publics(&credentials, 6)
+                .map_err(ContinuationFailureV2::from)?;
+            (ObjectDigest::from_bytes(Sha256::digest(credentials[6].bytes()).into()),
+                anchor.revocation_scope())
+        };
+
+        let binding = self.target.binding();
+        let manifest = binding.manifest().manifest();
+        let assignment = aos_sandbox_core::BrokerAssignment::new(
+            manifest.sandbox(),
+            manifest.incarnation(),
+            manifest.epoch(),
+            manifest.desired_generation(),
+            binding.assignment_digest(),
+        ).map_err(ContinuationFailureV2::from)?;
+        let target_handle = aos_sandbox_core::BrokerResourceHandle::from_bytes(
+            *self.recipe.recipe().domain_commitment.as_bytes(),
+        ).map_err(ContinuationFailureV2::from)?;
+        let commitment = aos_sandbox_core::BrokerArgumentCommitment::from_digest(
+            ObjectDigest::from_bytes(checked.commitment()),
+        ).map_err(ContinuationFailureV2::from)?;
+        let grant = aos_sandbox_core::BrokerGrant::new(
+            aos_sandbox_core::BrokerVerb::NixResolveProtectedRecipe,
+            aos_sandbox_core::BrokerGrantTarget::Resource(target_handle),
+            commitment,
+            aos_sandbox_protocol::nix_build::NIX_REQUEST_MAXIMUM_BYTES_V2 as u32,
+            0,
+        ).map_err(ContinuationFailureV2::from)?;
+        let features = [
+            "aos.sandbox.authorization.signed-plan-lease",
+            aos_sandbox_core::NIX_NARROWING_PROXY_FEATURE_NAMESPACE,
+        ].into_iter().map(|namespace| {
+            aos_sandbox_core::FeatureRef::new(namespace, 1, 0)
+                .map_err(|_| ContinuationFailureV2::Admission(NixStartAdmissionErrorV2::Invalid))
+        }).collect::<Result<Vec<_>, _>>()?;
+        let expires = self.target.expires_wall_seconds().min(lease.authority_expires_seconds());
+        let plan = aos_sandbox_core::BrokerAuthorizationPlan::new(
+            aos_sandbox_core::BrokerAudience::Nix,
+            aos_sandbox_core::ProtocolId::NixBuildBroker,
+            aos_sandbox_core::ProtocolVersion::new(1, 0),
+            assignment,
+            lease.node(),
+            lease.signer().clone(),
+            vec![grant],
+            policy_digest,
+            revocation_scope,
+            observed.wall_seconds(),
+            expires,
+            features,
+        ).map_err(ContinuationFailureV2::from)?;
+        *target = Some(NixResolveAuthorizationDraftV2 {
+            plan,
+            lease,
+            request: bytes,
+            observed,
+        });
+
+        self.recheck_inner()?;
+        self.failed = false;
+        Ok(())
+    }
+
     /// Returns the immutable accepted operation identity as data.
     #[must_use]
     pub fn operation_id(&self) -> OperationId {

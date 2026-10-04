@@ -14,6 +14,7 @@ use aos_sandbox::{
 use super::{
     CHECKPOINT_BYTES, INTENT_BYTES, FloorCheckpointV1, FloorErrorV1, FloorIntentV1,
     FloorProfileV1, HostFloorCheckpointDataV1, HostFloorIntentDataV1, hash_parts,
+    FloorCheckpointDataV1, FloorIntentDataV1, FloorProfileDataV1,
 };
 use crate::recovery::BrokerSidecarCustodyV1;
 use crate::tpm_nv_custody::host::{HostOwnedJournalErrorV1, HostSidecarCustodyV1};
@@ -26,6 +27,8 @@ const BROKER_FINALIZE_DOMAIN: &[u8] = b"aos.sandbox.broker-session.tpm-floor.fin
 const HOST_PREPARE_DOMAIN: &[u8] = b"aos.runtime-deployment.tpm-floor.prepare.v1\0";
 const HOST_FINALIZE_DOMAIN: &[u8] = b"aos.runtime-deployment.tpm-floor.finalize.v1\0";
 const HOST_INITIAL_DOMAIN: &[u8] = b"aos.runtime-deployment.tpm-floor.initial-sidecar.v1\0";
+const ONLINE_PREPARE_DOMAIN: &[u8] = b"aos.sandbox.nix.online-floor.prepare.v1\0";
+const ONLINE_FINALIZE_DOMAIN: &[u8] = b"aos.sandbox.nix.online-floor.finalize.v1\0";
 
 /// Holds only the original Broker constructor's opaque captured custody.
 pub(crate) struct BrokerSidecarStoreV1 {
@@ -40,6 +43,63 @@ pub(crate) struct StoredBrokerFloorV1 {
     sequence: u64,
 }
 
+/// Retains a decoded closed-purpose sidecar, not a currentness capability.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct StoredFloorDataV1 {
+    pub(crate) checkpoint: FloorCheckpointDataV1,
+    pub(crate) prepared: Option<(FloorIntentDataV1, JournalTransaction)>,
+    sequence: u64,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct StoredFloorDataViewV1<'stored> {
+    checkpoint: FloorCheckpointDataV1,
+    prepared: Option<(FloorIntentDataV1, &'stored JournalTransaction)>,
+    sequence: u64,
+}
+
+impl StoredFloorDataV1 {
+    pub(crate) fn view(&self) -> StoredFloorDataViewV1<'_> {
+        StoredFloorDataViewV1 {
+            checkpoint: self.checkpoint,
+            prepared: self.prepared.as_ref().map(|(intent, transaction)| (*intent, transaction)),
+            sequence: self.sequence,
+        }
+    }
+
+    pub(crate) fn into_broker(self) -> Result<StoredBrokerFloorV1, FloorErrorV1> {
+        let FloorCheckpointDataV1::Broker(checkpoint) = self.checkpoint else {
+            return Err(FloorErrorV1::Provisioning);
+        };
+        let prepared = match self.prepared {
+            None => None,
+            Some((FloorIntentDataV1::Broker(intent), transaction)) => Some((intent, transaction)),
+            Some(_) => return Err(FloorErrorV1::Provisioning),
+        };
+        Ok(StoredBrokerFloorV1 { checkpoint, prepared, sequence: self.sequence })
+    }
+}
+
+impl StoredBrokerFloorV1 {
+    fn view(&self) -> StoredFloorDataViewV1<'_> {
+        StoredFloorDataViewV1 {
+            checkpoint: FloorCheckpointDataV1::Broker(self.checkpoint),
+            prepared: self.prepared.as_ref().map(|(intent, transaction)| {
+                (FloorIntentDataV1::Broker(*intent), transaction)
+            }),
+            sequence: self.sequence,
+        }
+    }
+}
+
+impl PartialEq for StoredFloorDataViewV1<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.checkpoint == other.checkpoint
+            && self.prepared == other.prepared
+            && self.sequence == other.sequence
+    }
+}
+
 /// Retains the original Broker final suffix; it cannot be substituted for Host.
 pub(crate) struct FinalSuffixPreflightV1 {
     token: ProtectedJournalPreflight,
@@ -50,13 +110,14 @@ pub(crate) struct FinalSuffixPreflightV1 {
 #[derive(Clone, Copy)]
 enum SidecarIntentDataV1 {
     Broker(FloorIntentV1),
+    Online(super::OnlineFloorIntentV1),
     Host(HostFloorIntentDataV1),
 }
 
 impl SidecarIntentDataV1 {
     fn namespace(self) -> RecordNamespace {
         match self {
-            Self::Broker(_) => RecordNamespace::BrokerSessionTraffic,
+            Self::Broker(_) | Self::Online(_) => RecordNamespace::BrokerSessionTraffic,
             Self::Host(_) => RecordNamespace::HostCatalogReconciliation,
         }
     }
@@ -64,6 +125,7 @@ impl SidecarIntentDataV1 {
     fn prepare_domain(self) -> &'static [u8] {
         match self {
             Self::Broker(_) => BROKER_PREPARE_DOMAIN,
+            Self::Online(_) => ONLINE_PREPARE_DOMAIN,
             Self::Host(_) => HOST_PREPARE_DOMAIN,
         }
     }
@@ -71,6 +133,7 @@ impl SidecarIntentDataV1 {
     fn finalize_domain(self) -> &'static [u8] {
         match self {
             Self::Broker(_) => BROKER_FINALIZE_DOMAIN,
+            Self::Online(_) => ONLINE_FINALIZE_DOMAIN,
             Self::Host(_) => HOST_FINALIZE_DOMAIN,
         }
     }
@@ -78,6 +141,7 @@ impl SidecarIntentDataV1 {
     fn encode(self) -> [u8; INTENT_BYTES] {
         match self {
             Self::Broker(intent) => intent.encode(),
+            Self::Online(intent) => intent.encode(),
             Self::Host(intent) => intent.encode(),
         }
     }
@@ -85,7 +149,17 @@ impl SidecarIntentDataV1 {
     fn target_bytes(self) -> [u8; CHECKPOINT_BYTES] {
         match self {
             Self::Broker(intent) => intent.target().encode(),
+            Self::Online(intent) => intent.target().encode(),
             Self::Host(intent) => intent.target().encode(),
+        }
+    }
+}
+
+impl From<FloorIntentDataV1> for SidecarIntentDataV1 {
+    fn from(intent: FloorIntentDataV1) -> Self {
+        match intent {
+            FloorIntentDataV1::Broker(intent) => Self::Broker(intent),
+            FloorIntentDataV1::Online(intent) => Self::Online(intent),
         }
     }
 }
@@ -145,6 +219,13 @@ impl BrokerSidecarStoreV1 {
     }
 
     pub(crate) fn read(&mut self, profile: FloorProfileV1) -> Result<StoredBrokerFloorV1, FloorErrorV1> {
+        self.read_data(FloorProfileDataV1::Broker(profile))?.into_broker()
+    }
+
+    pub(crate) fn read_data(
+        &mut self,
+        profile: FloorProfileDataV1,
+    ) -> Result<StoredFloorDataV1, FloorErrorV1> {
         self.validate_held()?;
         let authority = self.custody.journal_mut()
             .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
@@ -158,10 +239,10 @@ impl BrokerSidecarStoreV1 {
         for (key, value) in authority.records().map_err(|_| FloorErrorV1::Unavailable)? {
             match key {
                 CHECKPOINT_KEY => {
-                    checkpoint = Some(FloorCheckpointV1::decode(value)?);
+                    checkpoint = Some(FloorCheckpointDataV1::decode(profile, value)?);
                 }
                 INTENT_KEY => {
-                    intent = Some(FloorIntentV1::decode(profile, value)?);
+                    intent = Some(FloorIntentDataV1::decode(profile, value)?);
                 }
                 TRANSACTION_KEY => {
                     transaction = Some(
@@ -190,7 +271,7 @@ impl BrokerSidecarStoreV1 {
         authority
             .validate_snapshot_for_effect(&snapshot)
             .map_err(|_| FloorErrorV1::Unavailable)?;
-        let stored = StoredBrokerFloorV1 {
+        let stored = StoredFloorDataV1 {
             checkpoint,
             prepared,
             sequence: snapshot.sequence(),
@@ -204,7 +285,15 @@ impl BrokerSidecarStoreV1 {
         stored: &StoredBrokerFloorV1,
         profile: FloorProfileV1,
     ) -> Result<(), FloorErrorV1> {
-        if &self.read(profile)? == stored {
+        self.require_same_data(stored.view(), FloorProfileDataV1::Broker(profile))
+    }
+
+    pub(crate) fn require_same_data(
+        &mut self,
+        stored: StoredFloorDataViewV1<'_>,
+        profile: FloorProfileDataV1,
+    ) -> Result<(), FloorErrorV1> {
+        if self.read_data(profile)?.view() == stored {
             Ok(())
         } else {
             Err(FloorErrorV1::Diverged)
@@ -218,16 +307,26 @@ impl BrokerSidecarStoreV1 {
         intent: FloorIntentV1,
         transaction: &JournalTransaction,
     ) -> Result<(), FloorErrorV1> {
-        self.require_same(old, profile)?;
+        self.prepare_data(FloorProfileDataV1::Broker(profile), old.view(), FloorIntentDataV1::Broker(intent), transaction)
+    }
+
+    pub(crate) fn prepare_data(
+        &mut self,
+        profile: FloorProfileDataV1,
+        old: StoredFloorDataViewV1<'_>,
+        intent: FloorIntentDataV1,
+        transaction: &JournalTransaction,
+    ) -> Result<(), FloorErrorV1> {
+        self.require_same_data(old, profile)?;
         if old.prepared.is_some() {
             return Err(FloorErrorV1::Diverged);
         }
         intent.require_predecessor(profile, old.checkpoint)?;
         intent.require_transaction(transaction)?;
         let prepare = prepare_transaction(
-            SidecarIntentDataV1::Broker(intent), transaction, self.main_limits,
+            intent.into(), transaction, self.main_limits,
         )?;
-        let finalize = finalize_transaction(SidecarIntentDataV1::Broker(intent))?;
+        let finalize = finalize_transaction(intent.into())?;
         let mut authority = self.custody.journal_mut()
             .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
             .map_err(|_| FloorErrorV1::Unavailable)?;
@@ -242,7 +341,7 @@ impl BrokerSidecarStoreV1 {
             .commit(&transactions[0])
             .map_err(|_| FloorErrorV1::Unavailable)?;
         drop(authority);
-        let retained = self.read(profile)?;
+        let retained = self.read_data(profile)?;
         if retained.checkpoint != old.checkpoint
             || !retained
                 .prepared
@@ -261,9 +360,17 @@ impl BrokerSidecarStoreV1 {
         stored: &StoredBrokerFloorV1,
         profile: FloorProfileV1,
     ) -> Result<FinalSuffixPreflightV1, FloorErrorV1> {
-        self.require_same(stored, profile)?;
+        self.preflight_final_data(stored.view(), FloorProfileDataV1::Broker(profile))
+    }
+
+    pub(crate) fn preflight_final_data(
+        &mut self,
+        stored: StoredFloorDataViewV1<'_>,
+        profile: FloorProfileDataV1,
+    ) -> Result<FinalSuffixPreflightV1, FloorErrorV1> {
+        self.require_same_data(stored, profile)?;
         let (intent, _) = stored.prepared.as_ref().ok_or(FloorErrorV1::Diverged)?;
-        let transaction = finalize_transaction(SidecarIntentDataV1::Broker(*intent))?;
+        let transaction = finalize_transaction((*intent).into())?;
         let authority = self.custody.journal_mut()
             .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
             .map_err(|_| FloorErrorV1::Unavailable)?;
@@ -280,9 +387,18 @@ impl BrokerSidecarStoreV1 {
         stored: &StoredBrokerFloorV1,
         profile: FloorProfileV1,
     ) -> Result<(), FloorErrorV1> {
-        self.require_same(stored, profile)?;
+        self.validate_final_preflight_data(suffix, stored.view(), FloorProfileDataV1::Broker(profile))
+    }
+
+    pub(crate) fn validate_final_preflight_data(
+        &mut self,
+        suffix: &FinalSuffixPreflightV1,
+        stored: StoredFloorDataViewV1<'_>,
+        profile: FloorProfileDataV1,
+    ) -> Result<(), FloorErrorV1> {
+        self.require_same_data(stored, profile)?;
         let (intent, _) = stored.prepared.as_ref().ok_or(FloorErrorV1::Diverged)?;
-        if suffix.transaction != finalize_transaction(SidecarIntentDataV1::Broker(*intent))? {
+        if suffix.transaction != finalize_transaction((*intent).into())? {
             return Err(FloorErrorV1::Diverged);
         }
         let authority = self.custody.journal_mut()
@@ -303,9 +419,17 @@ impl BrokerSidecarStoreV1 {
         profile: FloorProfileV1,
         stored: &StoredBrokerFloorV1,
     ) -> Result<(), FloorErrorV1> {
-        self.require_same(stored, profile)?;
+        self.finalize_data(FloorProfileDataV1::Broker(profile), stored.view())
+    }
+
+    pub(crate) fn finalize_data(
+        &mut self,
+        profile: FloorProfileDataV1,
+        stored: StoredFloorDataViewV1<'_>,
+    ) -> Result<(), FloorErrorV1> {
+        self.require_same_data(stored, profile)?;
         let (intent, _) = stored.prepared.as_ref().ok_or(FloorErrorV1::Diverged)?;
-        let transaction = finalize_transaction(SidecarIntentDataV1::Broker(*intent))?;
+        let transaction = finalize_transaction((*intent).into())?;
         let mut authority = self.custody.journal_mut()
             .claim_protected_authority(RecordNamespace::BrokerSessionTraffic)
             .map_err(|_| FloorErrorV1::Unavailable)?;
@@ -319,7 +443,7 @@ impl BrokerSidecarStoreV1 {
             .commit(&transaction)
             .map_err(|_| FloorErrorV1::Unavailable)?;
         drop(authority);
-        let retained = self.read(profile)?;
+        let retained = self.read_data(profile)?;
         if retained.checkpoint != intent.target() || retained.prepared.is_some() {
             return Err(FloorErrorV1::Diverged);
         }

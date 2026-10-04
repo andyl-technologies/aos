@@ -26,7 +26,7 @@ use floor::{
 
 pub(crate) use floor::{
     BrokerSidecarStoreV1, CHECKPOINT_KEY, FinalSuffixPreflightV1, INTENT_KEY,
-    StoredBrokerFloorV1, TRANSACTION_KEY, sidecar_limits,
+    StoredBrokerFloorV1, StoredFloorDataV1, StoredFloorDataViewV1, TRANSACTION_KEY, sidecar_limits,
 };
 
 // Sibling owners share only canonical DATA, never physical or durable permits.
@@ -36,6 +36,10 @@ pub(crate) use floor::{
     HostFloorIntentDataV1, INTENT_BYTES, NV_ATTRIBUTES_DEFINED, NV_ATTRIBUTES_WRITTEN,
     PROFILE_BYTES, broker_cut_from_records_v1, broker_transaction_digest_v1, hash_parts,
     reconcile_floor_v1, reconcile_host_floor_data_v1, sidecar_sequence_v1, successor_sequence,
+    OnlineFloorCheckpointV1, OnlineFloorIntentV1, OnlineFloorProfileV1,
+    OnlineFloorRoleV1, ONLINE_PROFILE_BYTES, reconcile_online_floor_v1,
+    online_cut_from_records_v1, online_transaction_digest_v1,
+    FloorProfileDataV1, FloorCheckpointDataV1, FloorIntentDataV1, reconcile_floor_data_v1,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,6 +47,8 @@ pub(crate) enum NvCustodyEndpointV1 {
     ControllerStorageClient,
     StorageBroker,
     RuntimeDeployment,
+    ControllerNix,
+    NixOwner,
 }
 
 impl NvCustodyEndpointV1 {
@@ -51,6 +57,8 @@ impl NvCustodyEndpointV1 {
             Self::ControllerStorageClient => 0x0180_a046,
             Self::StorageBroker => 0x0180_a047,
             Self::RuntimeDeployment => 0x0180_a055,
+            Self::ControllerNix => 0x0180_a058,
+            Self::NixOwner => 0x0180_a059,
         }
     }
 }

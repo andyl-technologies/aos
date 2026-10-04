@@ -143,12 +143,22 @@ impl BrokerAuthority {
         current_clock: &RawPairedClockSample,
         prior_fence: Option<&[u8]>,
     ) -> Result<VerifiedBrokerAdmission, BrokerAdmissionError> {
+        if self.domain == BrokerDomain::Nix && !is_online_nix_resolve_admission(&request) {
+            return Err(BrokerAdmissionError::RequestMismatch);
+        }
         self.admit_with_plan_rotation(
             artifacts,
             request,
             current_clock,
             prior_fence,
-            AdmissionPhase::BasePlan,
+            if self.domain == BrokerDomain::Nix {
+                // Resolve signs the exact original request commitment rather
+                // than borrowing a reusable assignment-wide plan. The same
+                // monotonic fence and local lease checks still reject rollback.
+                AdmissionPhase::ExactGrantRotation
+            } else {
+                AdmissionPhase::BasePlan
+            },
         )
     }
 
@@ -534,17 +544,23 @@ impl BrokerAuthority {
 
         let sandbox = request.assignment.sandbox();
         let sandbox_key = sandbox.as_bytes();
-        let prior = prior_fence
-            .map(|bytes| {
-                open_authorization_fence(
-                    &self.journal_mac_key,
-                    RecordNamespace::DesiredState,
-                    sandbox_key,
-                    bytes,
-                )
-            })
-            .transpose()
-            .map_err(|_| BrokerAdmissionError::FenceRejected)?;
+        let prior = if self.domain == BrokerDomain::Nix {
+            prior_fence
+                .map(|bytes| self.open_online_nix_fence(sandbox_key, bytes))
+                .transpose()?
+        } else {
+            prior_fence
+                .map(|bytes| {
+                    open_authorization_fence(
+                        &self.journal_mac_key,
+                        RecordNamespace::DesiredState,
+                        sandbox_key,
+                        bytes,
+                    )
+                })
+                .transpose()
+                .map_err(|_| BrokerAdmissionError::FenceRejected)?
+        };
         if matches!(
             phase,
             AdmissionPhase::ExistingMountFuseIntent | AdmissionPhase::ExistingHostFuseWorker
@@ -648,6 +664,76 @@ impl BrokerAuthority {
             bytes,
         )
         .map_err(|_| BrokerAdmissionError::FenceRejected)
+    }
+
+    /// Returns the fixed ONLINE Nix assignment-fence key as nonauthorizing DATA.
+    #[must_use]
+    pub fn online_nix_fence_key(sandbox_id: &[u8; 16]) -> [u8; 24] {
+        let mut key = [0; 24];
+        key[..8].copy_from_slice(b"AOSNXF01");
+        key[8..].copy_from_slice(sandbox_id);
+        key
+    }
+
+    /// Returns the fixed ONLINE Nix effect key as nonauthorizing DATA.
+    #[must_use]
+    pub fn online_nix_effect_key(request_id: &[u8; 16]) -> [u8; 24] {
+        let mut key = [0; 24];
+        key[..8].copy_from_slice(b"AOSNXE01");
+        key[8..].copy_from_slice(request_id);
+        key
+    }
+
+    /// Opens an ONLINE Nix fence at its exact namespace-47 location.
+    ///
+    /// # Errors
+    /// Rejects another broker purpose, sentinel identity, unauthenticated bytes,
+    /// or a fence relocated from its actual sandbox key.
+    pub fn open_online_nix_fence(
+        &self,
+        sandbox_id: &[u8; 16],
+        bytes: &[u8],
+    ) -> Result<BrokerAuthorizationFenceV1, BrokerAdmissionError> {
+        if self.domain != BrokerDomain::Nix || sandbox_id == &[0; 16] {
+            return Err(BrokerAdmissionError::FenceRejected);
+        }
+        let fence = open_authorization_fence(
+            &self.journal_mac_key,
+            RecordNamespace::BrokerSessionTraffic,
+            &Self::online_nix_fence_key(sandbox_id),
+            bytes,
+        )
+        .map_err(|_| BrokerAdmissionError::FenceRejected)?;
+        if fence.assignment().sandbox().as_bytes() != sandbox_id {
+            return Err(BrokerAdmissionError::FenceRejected);
+        }
+        Ok(fence)
+    }
+
+    /// Opens an ONLINE Nix effect at its exact namespace-47 location.
+    ///
+    /// # Errors
+    /// Rejects another broker purpose, sentinel identity, unauthenticated bytes,
+    /// or an effect relocated from its original request key.
+    pub fn open_online_nix_effect(
+        &self,
+        request_id: &[u8; 16],
+        bytes: &[u8],
+    ) -> Result<BrokerEffectIntentV1, BrokerAdmissionError> {
+        if self.domain != BrokerDomain::Nix || request_id == &[0; 16] {
+            return Err(BrokerAdmissionError::FenceRejected);
+        }
+        let effect = open_effect_intent(
+            &self.journal_mac_key,
+            RecordNamespace::BrokerSessionTraffic,
+            &Self::online_nix_effect_key(request_id),
+            bytes,
+        )
+        .map_err(|_| BrokerAdmissionError::FenceRejected)?;
+        if effect.request_id() != request_id {
+            return Err(BrokerAdmissionError::FenceRejected);
+        }
+        Ok(effect)
     }
 
     /// Authenticates an assignment fence retained with one exact operation.
@@ -800,6 +886,57 @@ impl BrokerAuthority {
         .map_err(|_| BrokerAdmissionError::FenceRejected)
     }
 
+    /// Seals an ONLINE Nix fence for its fixed namespace-47 location.
+    ///
+    /// # Errors
+    /// Rejects another broker purpose, sentinel or changed sandbox identity,
+    /// or an invalid fence. The value still requires the caller's atomic
+    /// RequestPrepared/fence/effect transaction and physical floor readback.
+    pub fn seal_online_nix_fence(
+        &self,
+        sandbox_id: &[u8; 16],
+        fence: &BrokerAuthorizationFenceV1,
+    ) -> Result<Vec<u8>, BrokerAdmissionError> {
+        if self.domain != BrokerDomain::Nix
+            || sandbox_id == &[0; 16]
+            || fence.assignment().sandbox().as_bytes() != sandbox_id
+        {
+            return Err(BrokerAdmissionError::FenceRejected);
+        }
+        seal_authorization_fence(
+            &self.journal_mac_key,
+            RecordNamespace::BrokerSessionTraffic,
+            &Self::online_nix_fence_key(sandbox_id),
+            fence,
+        )
+        .map_err(|_| BrokerAdmissionError::FenceRejected)
+    }
+
+    /// Seals an ONLINE Nix effect for its fixed namespace-47 location.
+    ///
+    /// # Errors
+    /// Rejects another broker purpose, sentinel or changed request identity,
+    /// or an invalid effect. Sealing is not a durable commit or effect permit.
+    pub fn seal_online_nix_effect(
+        &self,
+        request_id: &[u8; 16],
+        effect: &BrokerEffectIntentV1,
+    ) -> Result<Vec<u8>, BrokerAdmissionError> {
+        if self.domain != BrokerDomain::Nix
+            || request_id == &[0; 16]
+            || effect.request_id() != request_id
+        {
+            return Err(BrokerAdmissionError::FenceRejected);
+        }
+        seal_effect_intent(
+            &self.journal_mac_key,
+            RecordNamespace::BrokerSessionTraffic,
+            &Self::online_nix_effect_key(request_id),
+            effect,
+        )
+        .map_err(|_| BrokerAdmissionError::FenceRejected)
+    }
+
     /// Authenticates an assignment fence for one exact operation location.
     ///
     /// # Errors
@@ -904,6 +1041,17 @@ fn is_host_fuse_worker_admission(request: &AdmissionRequest<'_>) -> bool {
         && request.request_body.len() <= 4096
 }
 
+fn is_online_nix_resolve_admission(request: &AdmissionRequest<'_>) -> bool {
+    request.audience == BrokerAudience::Nix
+        && request.protocol == ProtocolId::NixBuildBroker
+        && request.protocol_version == ProtocolVersion::new(1, 0)
+        && request.verb == BrokerVerb::NixResolveProtectedRecipe
+        && matches!(request.target, BrokerGrantTarget::Resource(_))
+        && request.descriptor_count == 0
+        && request.request_body.len()
+            <= aos_sandbox_protocol::nix_build::NIX_REQUEST_MAXIMUM_BYTES_V2
+}
+
 fn supports_signed_admission(protocol: ProtocolId, version: ProtocolVersion) -> bool {
     negotiate_protocol(protocol, version).is_ok()
         && (version.minor() >= 1
@@ -913,6 +1061,7 @@ fn supports_signed_admission(protocol: ProtocolId, version: ProtocolVersion) -> 
                     | ProtocolId::MountBroker
                     | ProtocolId::StorageBroker
                     | ProtocolId::NetworkBroker
+                    | ProtocolId::NixBuildBroker
             ))
 }
 
@@ -1009,6 +1158,7 @@ impl BrokerDomain {
             Self::Mount => BrokerAudience::Mount,
             Self::Storage => BrokerAudience::Storage,
             Self::Network => BrokerAudience::Network,
+            Self::Nix => BrokerAudience::Nix,
         }
     }
 }
@@ -1127,5 +1277,23 @@ mod tests {
             ProtocolId::MountFuseBroker,
             ProtocolVersion::new(3, 0)
         ));
+    }
+
+    #[test]
+    fn online_keys_keep_seed_fence_and_effect_rows_disjoint() {
+        let identity = [7; 16];
+        let fence = BrokerAuthority::online_nix_fence_key(&identity);
+        let effect = BrokerAuthority::online_nix_effect_key(&identity);
+        let mut seed = [0; 24];
+        seed[..8].copy_from_slice(b"AOSNXK01");
+        seed[8..].copy_from_slice(&identity);
+
+        assert_ne!(fence, effect);
+        assert_ne!(fence, seed);
+        assert_ne!(effect, seed);
+        assert_eq!(&fence[8..], &identity);
+        assert_eq!(&effect[8..], &identity);
+        assert_ne!(BrokerAuthority::online_nix_fence_key(&[8; 16]), fence);
+        assert_ne!(BrokerAuthority::online_nix_effect_key(&[8; 16]), effect);
     }
 }

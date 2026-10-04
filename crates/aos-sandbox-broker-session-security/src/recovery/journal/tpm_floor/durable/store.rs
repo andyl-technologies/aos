@@ -17,6 +17,7 @@ use super::super::{FloorErrorV1, FloorIntentV1, FloorProfileV1};
 use crate::recovery::journal::owner::JournalOwnerV1;
 use crate::tpm_nv_custody::{
     BrokerSidecarStoreV1, CHECKPOINT_KEY as SHARED_CHECKPOINT_KEY, sidecar_limits,
+    FloorIntentDataV1, FloorProfileDataV1, OnlineFloorProfileV1, StoredFloorDataV1,
 };
 pub(super) use crate::tpm_nv_custody::{
     FinalSuffixPreflightV1, StoredBrokerFloorV1 as StoredFloorV1,
@@ -24,6 +25,21 @@ pub(super) use crate::tpm_nv_custody::{
 
 pub(super) const NAME: &str = "session-floor.journal";
 pub(super) const CHECKPOINT_KEY: &[u8] = SHARED_CHECKPOINT_KEY;
+
+#[derive(Clone, Copy)]
+enum SidecarNameV1 {
+    Broker,
+    Online,
+}
+
+impl SidecarNameV1 {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Broker => NAME,
+            Self::Online => "tpm-floor.journal",
+        }
+    }
+}
 
 /// Preserves the original private Broker store API and actual Storage callers.
 pub(super) struct FloorStoreV1 {
@@ -39,6 +55,7 @@ pub(crate) struct BrokerSidecarCustodyV1 {
     journal: Journal,
     main_limits: JournalLimits,
     custody: StoreCustodyV1,
+    name: SidecarNameV1,
 }
 
 enum StoreCustodyV1 {
@@ -59,6 +76,7 @@ pub(super) struct BrokerSidecarOpenV1 {
     limits: JournalLimits,
     started: bool,
     complete: bool,
+    name: SidecarNameV1,
 }
 
 #[derive(Debug)]
@@ -79,6 +97,8 @@ impl BrokerSidecarOpenErrorV1 {
 // The consuming arm keeps the returned Journal local through validation;
 // Required parks that same return before validation. Only storage differs.
 macro_rules! sidecar_open_step {
+    (Legacy, name $original:ident) => { NAME };
+    (Retained, name $original:ident) => { $original.name.as_str() };
     (Legacy, error $result:expr) => {
         $result.map_err(|_| FloorErrorV1::Unavailable)?
     };
@@ -101,12 +121,12 @@ macro_rules! sidecar_open_recipe {
     ($mode:ident, $original:ident, $owner:expr, $directory:expr, $limits:expr,
         $journal:ident) => {
         let ($journal, _) = sidecar_open_step!($mode, error
-            $owner.open_existing($directory, NAME, $limits));
+            $owner.open_existing($directory, sidecar_open_step!($mode, name $original), $limits));
         sidecar_open_step!($mode, stage $original, $journal);
         sidecar_open_step!($mode, error $owner.validate_held(
             sidecar_open_step!($mode, journal $original, $journal),
             $directory,
-            NAME,
+            sidecar_open_step!($mode, name $original),
         ));
     };
 }
@@ -126,6 +146,29 @@ impl BrokerSidecarOpenV1 {
             limits,
             started: false,
             complete: false,
+            name: SidecarNameV1::Broker,
+        })
+    }
+
+    pub(super) fn prepare_online(
+        owner: JournalOwnerV1,
+        directory: &Path,
+        profile: OnlineFloorProfileV1,
+    ) -> Result<Self, FloorErrorV1> {
+        if directory.as_os_str() != Path::new(profile.role().directory()).as_os_str() {
+            return Err(FloorErrorV1::Provisioning);
+        }
+        let main_limits = profile.main_limits()?;
+        let limits = sidecar_limits(main_limits)?;
+        Ok(Self {
+            journal: None,
+            owner,
+            directory: directory.to_path_buf(),
+            main_limits,
+            limits,
+            started: false,
+            complete: false,
+            name: SidecarNameV1::Online,
         })
     }
 
@@ -158,6 +201,7 @@ impl BrokerSidecarOpenV1 {
                     owner: self.owner,
                     directory,
                 },
+                name: self.name,
             };
             *target = Some(FloorStoreV1 {
                 inner: BrokerSidecarStoreV1::from_broker(custody),
@@ -183,6 +227,7 @@ impl BrokerSidecarCustodyV1 {
                 owner,
                 directory: directory.to_path_buf(),
             },
+            name: SidecarNameV1::Broker,
         })
     }
 
@@ -206,13 +251,14 @@ impl BrokerSidecarCustodyV1 {
                 uid,
                 directory: directory.to_path_buf(),
             },
+            name: SidecarNameV1::Broker,
         })
     }
 
     pub(crate) fn validate_held(&self) -> Result<(), FloorErrorV1> {
         let result = match &self.custody {
             StoreCustodyV1::Production { owner, directory } => {
-                owner.validate_held(&self.journal, directory, NAME)
+                owner.validate_held(&self.journal, directory, self.name.as_str())
             }
             #[cfg(test)]
             StoreCustodyV1::Fixture { uid, directory } => self
@@ -236,6 +282,30 @@ impl BrokerSidecarCustodyV1 {
 }
 
 impl FloorStoreV1 {
+    pub(super) fn read_data(&mut self, profile: FloorProfileDataV1) -> Result<StoredFloorDataV1, FloorErrorV1> {
+        self.inner.read_data(profile)
+    }
+
+    pub(super) fn require_same_data(&mut self, stored: &StoredFloorDataV1, profile: FloorProfileDataV1) -> Result<(), FloorErrorV1> {
+        self.inner.require_same_data(stored.view(), profile)
+    }
+
+    pub(super) fn prepare_data(&mut self, profile: FloorProfileDataV1, old: &StoredFloorDataV1, intent: FloorIntentDataV1, transaction: &JournalTransaction) -> Result<(), FloorErrorV1> {
+        self.inner.prepare_data(profile, old.view(), intent, transaction)
+    }
+
+    pub(super) fn preflight_final_data(&mut self, stored: &StoredFloorDataV1, profile: FloorProfileDataV1) -> Result<FinalSuffixPreflightV1, FloorErrorV1> {
+        self.inner.preflight_final_data(stored.view(), profile)
+    }
+
+    pub(super) fn validate_final_preflight_data(&mut self, suffix: &FinalSuffixPreflightV1, stored: &StoredFloorDataV1, profile: FloorProfileDataV1) -> Result<(), FloorErrorV1> {
+        self.inner.validate_final_preflight_data(suffix, stored.view(), profile)
+    }
+
+    pub(super) fn finalize_data(&mut self, profile: FloorProfileDataV1, stored: &StoredFloorDataV1) -> Result<(), FloorErrorV1> {
+        self.inner.finalize_data(profile, stored.view())
+    }
+
     pub(super) fn loan_lock_custody(&self) -> Result<ProtectedJournalLockCustodyV1, FloorErrorV1> {
         self.inner.loan_lock_custody()
     }
