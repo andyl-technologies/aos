@@ -211,6 +211,7 @@ impl QemuReplayValidationNodeLauncher {
             event_log: EventLog::new(),
             authority: Arc::new(QemuReplayObservationAuthority),
             next_generation: 0,
+            performance: ReplayPerformance::from_environment(),
             exact_observation_generation: None,
             thin_observation_generation: None,
         }

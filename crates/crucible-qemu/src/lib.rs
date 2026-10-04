@@ -82,6 +82,10 @@ mod qmp;
 mod quantum;
 mod quantum_boundary;
 mod realization;
+#[cfg(target_os = "linux")]
+// Opaque crate-local measurements keep host clock reads inside supervision.
+#[path = "supervision/replay_performance.rs"]
+mod replay_performance;
 mod shutdown;
 #[cfg(target_os = "linux")]
 mod spawn;
