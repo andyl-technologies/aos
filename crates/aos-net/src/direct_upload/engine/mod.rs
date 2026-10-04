@@ -143,6 +143,23 @@ pub trait DirectCheckpointStore: Send + Sync {
         Ok(())
     }
 
+    /// Admits sessions and identifies exact originals retained before this wave.
+    ///
+    /// A `true` position requires physical resume reconciliation before further
+    /// provider work. Stores that cannot atomically distinguish a newly retained
+    /// original return `true` conservatively. Implementations must retain the
+    /// entire wave before returning; the result follows the supplied order.
+    ///
+    /// # Errors
+    /// Refuses changed session/source/placement identities or failed persistence.
+    async fn admit_sessions_with_resume(
+        &self,
+        statuses: &[DirectSessionStatus],
+    ) -> Result<Vec<bool>, DirectClientError> {
+        self.admit_sessions(statuses).await?;
+        Ok(vec![true; statuses.len()])
+    }
+
     /// Durably reserves bounded grant ordinals before a whole delegation wave.
     ///
     /// # Errors

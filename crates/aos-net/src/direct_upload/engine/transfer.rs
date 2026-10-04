@@ -196,7 +196,10 @@ pub async fn upload_direct_batch<
         });
     }
 
-    store.admit_sessions(&admitted).await?;
+    let resumed = store.admit_sessions_with_resume(&admitted).await?;
+    if resumed.len() != work.len() {
+        return Err(DirectClientError::Checkpoint);
+    }
     for owner in &mut work {
         if owner.status.state == DirectSessionState::CompletingStaging {
             let original = store
@@ -211,8 +214,23 @@ pub async fn upload_direct_batch<
             owner.status.parts.clear();
             continue;
         }
-        owner.status =
-            status::reconcile(control, store, &owner.object, owner.status.clone()).await?;
+    }
+    let originals: Vec<_> = work
+        .iter()
+        .zip(resumed)
+        .filter(|(owner, _)| owner.status.state != DirectSessionState::CompletingStaging)
+        .map(|(owner, resumed)| status::ReconcileItem {
+            object: &owner.object,
+            status: owner.status.clone(),
+            resumed,
+        })
+        .collect();
+    let reconciled = status::reconcile_batch(control, store, originals).await?;
+    let mut reconciled = reconciled.into_iter();
+    for owner in &mut work {
+        if owner.status.state != DirectSessionState::CompletingStaging {
+            owner.status = reconciled.next().ok_or(DirectClientError::Invalid)?;
+        }
     }
 
     loop {

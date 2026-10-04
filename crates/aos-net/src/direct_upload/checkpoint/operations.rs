@@ -297,6 +297,13 @@ impl DirectCheckpointStore for SqliteDirectCheckpoints {
         &self,
         statuses: &[DirectSessionStatus],
     ) -> Result<(), DirectClientError> {
+        self.admit_sessions_with_resume(statuses).await.map(|_| ())
+    }
+
+    async fn admit_sessions_with_resume(
+        &self,
+        statuses: &[DirectSessionStatus],
+    ) -> Result<Vec<bool>, DirectClientError> {
         let _reservation = self.reserve().await?;
         bound(statuses)?;
         let sessions: Vec<Session> = statuses
@@ -304,7 +311,12 @@ impl DirectCheckpointStore for SqliteDirectCheckpoints {
             .map(Session::from_status)
             .collect::<Result<_, _>>()?;
         self.wave(_reservation, move |transaction| {
+            let mut retained = Vec::with_capacity(sessions.len());
+            let mut identities = std::collections::BTreeSet::new();
             for session in &sessions {
+                if !identities.insert(&session.session.session_id) {
+                    return Err(DirectClientError::Checkpoint);
+                }
                 let intent: DirectUploadIntent = sqlite::read(
                     transaction,
                     "intent",
@@ -316,25 +328,26 @@ impl DirectCheckpointStore for SqliteDirectCheckpoints {
                 if intent != session.intent {
                     return Err(DirectClientError::Checkpoint);
                 }
-                sqlite::immutable(
-                    transaction,
-                    "session",
-                    &format!("session-{}", session.session.session_id),
-                    0,
-                    0,
-                    session,
-                )?;
-                // One source/owner operation can never adopt a replacement session.
-                sqlite::immutable(
-                    transaction,
-                    "session",
-                    &format!("client-{}", session.intent.client_operation_id),
-                    0,
-                    0,
-                    session,
-                )?;
+
+                let session_key = format!("session-{}", session.session.session_id);
+                let client_key = format!("client-{}", session.intent.client_operation_id);
+                let previous: Option<Session> =
+                    sqlite::read(transaction, "session", &session_key, 0, 0)?;
+                let owner: Option<Session> =
+                    sqlite::read(transaction, "session", &client_key, 0, 0)?;
+                let existed = match (&previous, &owner) {
+                    (None, None) => false,
+                    (Some(previous), Some(owner)) if previous == session && owner == session => true,
+                    _ => return Err(DirectClientError::Checkpoint),
+                };
+
+                // Original identity and its reverse owner index commit together.
+                // No grant can precede this wave, so an absent original is fresh.
+                sqlite::immutable(transaction, "session", &session_key, 0, 0, session)?;
+                sqlite::immutable(transaction, "session", &client_key, 0, 0, session)?;
+                retained.push(existed);
             }
-            Ok(())
+            Ok(retained)
         })
         .await
     }

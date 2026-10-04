@@ -717,3 +717,79 @@ async fn oci_logical_allocation_unknown_reply_reuses_operation_and_refuses_secon
             .is_err()
     );
 }
+
+#[tokio::test]
+async fn session_resume_mask_commits_exact_originals_atomically_and_survives_restart() {
+    let directory = directory();
+    let path = directory.path().join("resume.sqlite");
+    let namespace = "ab".repeat(32);
+    let store = SqliteDirectCheckpoints::open(&path, &namespace, true)
+        .await
+        .unwrap();
+    let first = status(1);
+    let second = status(2);
+    store
+        .admit_intents(&[first.intent.clone(), second.intent.clone()])
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store
+            .admit_sessions_with_resume(&[first.clone()])
+            .await
+            .unwrap(),
+        vec![false]
+    );
+    assert_eq!(
+        store
+            .admit_sessions_with_resume(&[first.clone()])
+            .await
+            .unwrap(),
+        vec![true]
+    );
+    let mut changed = first.clone();
+    changed.placements[0].binding_resource_version = WireInteger::new(2);
+    assert_eq!(
+        store
+            .admit_sessions_with_resume(&[second.clone(), changed])
+            .await
+            .unwrap_err(),
+        DirectClientError::Checkpoint
+    );
+    // The preceding failed wave did not silently retain its earlier fresh item.
+    assert_eq!(
+        store
+            .admit_sessions_with_resume(&[second.clone()])
+            .await
+            .unwrap(),
+        vec![false]
+    );
+    assert_eq!(
+        store
+            .admit_sessions_with_resume(&[first.clone(), first.clone()])
+            .await
+            .unwrap_err(),
+        DirectClientError::Checkpoint
+    );
+    let mut foreign_session = first.clone();
+    foreign_session.session.session_id = "different-retained-session".into();
+    assert_eq!(
+        store
+            .admit_sessions_with_resume(&[foreign_session])
+            .await
+            .unwrap_err(),
+        DirectClientError::Checkpoint
+    );
+    drop(store);
+
+    let store = SqliteDirectCheckpoints::open(&path, &namespace, false)
+        .await
+        .unwrap();
+    assert_eq!(
+        store
+            .admit_sessions_with_resume(&[second, first])
+            .await
+            .unwrap(),
+        vec![true, true]
+    );
+}

@@ -75,6 +75,29 @@ impl DirectCheckpointStore for Store {
         Ok(())
     }
 
+    async fn admit_sessions_with_resume(
+        &self,
+        statuses: &[DirectSessionStatus],
+    ) -> Result<Vec<bool>, DirectClientError> {
+        let mut state = self.0.lock().unwrap();
+        let mut sessions = state.sessions.clone();
+        let mut retained = Vec::with_capacity(statuses.len());
+        for status in statuses {
+            let previous = sessions.get(&status.session.session_id);
+            if previous.is_some_and(|previous| {
+                previous.session != status.session
+                    || previous.intent != status.intent
+                    || previous.placements != status.placements
+            }) {
+                return Err(DirectClientError::Invalid);
+            }
+            retained.push(previous.is_some());
+            sessions.insert(status.session.session_id.clone(), status.clone());
+        }
+        state.sessions = sessions;
+        Ok(retained)
+    }
+
     async fn grant_attempt(
         &self,
         session: &DirectSessionRef,
@@ -1167,3 +1190,5 @@ async fn authenticated_delivery_discovery_keeps_exact_locator_echo_and_canonical
     );
     assert_eq!(provider.bytes.load(Ordering::SeqCst), b"cache-body".len());
 }
+
+mod resume;
