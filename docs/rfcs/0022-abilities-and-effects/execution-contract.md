@@ -68,6 +68,10 @@ until the operation or its removal no longer needs recovery.
 caller transaction receipt closes the crash window between those two commits.
 Recovery resumes pending work before accepting another generation. Retained
 generations supply rollback inputs; rollback is a new reconciliation transaction.
+Recovery first checks completed resource prerequisites through durable
+restoration intents, preserving the primary pending invocation and its original
+results. See [runtime recovery](../../users/aos/runtime-abilities.md#runtime-state-reconfiguration-and-recovery)
+for restoration ordering, repeated interruptions, and inspection semantics.
 Pruning removes old generation roots and journals interrupted cleanup. It does
 not compact the bounded journals.
 

@@ -16,6 +16,9 @@ mod socket_observer;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod restoration_tests;
+
 use std::collections::BTreeMap;
 
 use crate::adapter::CancellationToken;

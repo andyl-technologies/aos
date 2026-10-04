@@ -3,6 +3,8 @@
 //! Records carry a tagged JSON body inside the shared journal frame:
 //! `begin` retains the graph, `started` retains an exact invocation, `finished`
 //! retains checked results, and `commit` closes the active transaction.
+//! `restoration-started` and `restoration-finished` reestablish completed
+//! resources without replacing the primary intent or its consumed results.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -30,6 +32,12 @@ pub(super) enum Event {
     Finished {
         outputs: Value,
     },
+    RestorationStarted {
+        invocation: Box<Invocation>,
+    },
+    RestorationFinished {
+        outputs: Value,
+    },
     Released,
     Commit,
 }
@@ -44,8 +52,10 @@ impl JournalPayload for Event {
         };
         let values: Vec<&Value> = match self {
             Self::Begin { document, .. } => vec![document],
-            Self::Started { invocation } => vec![&invocation.input],
-            Self::Finished { outputs } => vec![outputs],
+            Self::Started { invocation } | Self::RestorationStarted { invocation } => {
+                vec![&invocation.input]
+            }
+            Self::Finished { outputs } | Self::RestorationFinished { outputs } => vec![outputs],
             Self::Released | Self::Commit => vec![],
         };
         for value in values {
@@ -77,6 +87,7 @@ pub(super) struct State {
     pub completed: Option<(String, String, BTreeMap<String, Value>)>,
     pub retire: Vec<String>,
     pub pending: Option<Invocation>,
+    pub restoration: Vec<Invocation>,
     pub retained: BTreeMap<String, Retained>,
     pub established: Vec<String>,
     pub retired: BTreeSet<String>,
@@ -92,7 +103,81 @@ impl State {
     // Reuse the validated graph when applying a Begin record. Inspection replays
     // every historical graph, so decoding it again would duplicate that work.
     fn check_event(&self, event: &Event) -> Result<Option<CheckedModuleGraph>> {
+        ensure!(
+            self.restoration.is_empty()
+                || matches!(
+                    event,
+                    Event::RestorationStarted { .. } | Event::RestorationFinished { .. }
+                ),
+            "activation has an unfinished restoration"
+        );
         match event {
+            Event::RestorationStarted { invocation } => {
+                let graph = self
+                    .active
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("restoration outside an activation"))?;
+                let retained = self
+                    .retained
+                    .get(&invocation.id)
+                    .ok_or_else(|| anyhow::anyhow!("restoration of unknown effect"))?;
+                ensure!(
+                    self.transaction_results.contains_key(&invocation.id)
+                        && invocation.action == Action::Apply
+                        && invocation.effect.lifetime != Lifetime::Transaction
+                        && matches!(invocation.effect.handler, Handler::Process { .. }),
+                    "restoration must name a completed non-transaction process effect"
+                );
+                let effect = graph.graph().nodes.get(&invocation.id).ok_or_else(|| {
+                    anyhow::anyhow!("restoration effect absent from active graph")
+                })?;
+                ensure!(
+                    canonical::to_vec(effect)? == canonical::to_vec(&invocation.effect)?
+                        && canonical::to_vec(&retained.invocation)?
+                            == canonical::to_vec(invocation.as_ref())?,
+                    "restoration differs from original completed invocation"
+                );
+                ensure!(
+                    self.releases.is_empty(),
+                    "restoration before artifact cleanup"
+                );
+                if let Some(parent) = self.restoration.last() {
+                    let order = &graph.graph().order;
+                    let earlier = order.iter().position(|id| id == &invocation.id);
+                    let later = order.iter().position(|id| id == &parent.id);
+                    ensure!(
+                        earlier
+                            .zip(later)
+                            .is_some_and(|(earlier, later)| earlier < later),
+                        "nested restoration must precede its suspended parent"
+                    );
+                }
+                ensure!(
+                    self.restoration.len() < graph.graph().nodes.len(),
+                    "restoration stack exceeds graph bounds"
+                );
+                ensure!(
+                    graph
+                        .graph()
+                        .order
+                        .iter()
+                        .take_while(|id| *id != &invocation.id)
+                        .all(|id| self.transaction_results.contains_key(id)),
+                    "restoration violates completed graph prefix"
+                );
+            }
+            Event::RestorationFinished { outputs } => {
+                let invocation = self
+                    .restoration
+                    .last()
+                    .ok_or_else(|| anyhow::anyhow!("restoration completion without intent"))?;
+                invocation.effect.check_results(outputs)?;
+                ensure!(
+                    canonical::to_vec(outputs)?
+                        == canonical::to_vec(&self.transaction_results[&invocation.id])?,
+                    "restoration changed already consumed outputs"
+                );
+            }
             Event::Begin {
                 transaction,
                 document,
@@ -262,6 +347,13 @@ impl State {
     pub fn apply(&mut self, event: &Event) -> Result<()> {
         let checked_graph = self.check_event(event)?;
         match event {
+            Event::RestorationStarted { invocation } => {
+                self.restoration.push(invocation.as_ref().clone());
+            }
+            Event::RestorationFinished { .. } => {
+                // Repair proves live state without replacing any consumed receipt.
+                self.restoration.pop();
+            }
             Event::Begin {
                 transaction,
                 retire,

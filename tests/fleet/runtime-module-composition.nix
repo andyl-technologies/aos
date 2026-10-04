@@ -403,7 +403,11 @@ in {
       report_effect, initial_report = advisory_node()
       first_report_invocation = advisory_failure()
       report_committed = inspection()
-      assert report_committed["pending"] is None and report_committed["completed"] is not None, report_committed
+      assert (
+          report_committed["pending"] is None
+          and report_committed["restoration"] is None
+          and report_committed["completed"] is not None
+      ), report_committed
       assert report_effect in report_committed["retainedOutputs"], report_committed
       initial_report_records = advisory_outcomes(report_committed, report_effect)
       assert [record["event"] for record in initial_report_records] == ["started", "finished"], initial_report_records
@@ -437,7 +441,11 @@ in {
       assert changed_report["revision"] != initial_report["revision"]
       assert changed_report["input"]["lifecycle"]["start"][0]["executable"]["arguments"] == ["report", "updated"]
       restarted_report = inspection()
-      assert restarted_report["pending"] is None and restarted_report["completed"] is not None, restarted_report
+      assert (
+          restarted_report["pending"] is None
+          and restarted_report["restoration"] is None
+          and restarted_report["completed"] is not None
+      ), restarted_report
       new_report_records = [record for record in advisory_outcomes(restarted_report, report_effect)
           if record["sequence"] > unchanged_report["records"][-1]["sequence"]
           and record["dispatch"]["revision"] != initial_dispatch_revision]

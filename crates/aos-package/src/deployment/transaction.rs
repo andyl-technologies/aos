@@ -809,6 +809,7 @@ impl Snapshot {
             || self.state.reconciliation.is_some()
             || self.state.pruning.is_some()
             || self.activation.transaction.is_some()
+            || self.activation.restoration.is_some()
     }
 
     /// Reports incomplete generation bytes without repairing them.

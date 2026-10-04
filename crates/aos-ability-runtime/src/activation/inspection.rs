@@ -47,7 +47,7 @@ impl DispatchIdentity {
 pub struct InspectionRecord {
     /// Orders complete records within the journal.
     pub sequence: u64,
-    /// Names the journal event: begin, started, finished, released, or commit.
+    /// Names the ordinary or restoration intent/outcome, begin, release, or commit.
     pub event: &'static str,
     /// Names the owning transaction when one is active.
     pub transaction: Option<String>,
@@ -92,6 +92,9 @@ pub struct ActivationInspection {
     pub transaction: Option<String>,
     /// Identifies its pending invocation, if any.
     pub pending: Option<DispatchIdentity>,
+    /// Identifies the active restoration intent without replacing the primary dispatch.
+    /// Suspended restoration parents remain represented by their original records.
+    pub restoration: Option<DispatchIdentity>,
     /// Reports the most recent completed transaction separately from pending work.
     pub completed: Option<CompletedTransaction>,
     /// Preserves the active checked native graph when a transaction is pending.
@@ -166,6 +169,7 @@ fn project_snapshot(snapshot: JournalSnapshot<Event>) -> Result<ActivationInspec
     let incomplete_tail_bytes = snapshot.incomplete_tail_bytes();
     let mut state = State::default();
     let mut pending_sequence = None;
+    let mut restoration_sequences = Vec::new();
     let mut records = Vec::with_capacity(snapshot.records().len());
     // Release each historical payload after replay instead of keeping every
     // graph and invocation alive while constructing the inspection result.
@@ -175,6 +179,14 @@ fn project_snapshot(snapshot: JournalSnapshot<Event>) -> Result<ActivationInspec
             Event::Started { invocation } => {
                 Some(DispatchIdentity::from_invocation(invocation, sequence))
             }
+            Event::RestorationStarted { invocation } => {
+                Some(DispatchIdentity::from_invocation(invocation, sequence))
+            }
+            Event::RestorationFinished { .. } => state
+                .restoration
+                .last()
+                .zip(restoration_sequences.last())
+                .map(|(invocation, intent)| DispatchIdentity::from_invocation(invocation, *intent)),
             Event::Finished { .. } => state
                 .pending
                 .as_ref()
@@ -186,6 +198,8 @@ fn project_snapshot(snapshot: JournalSnapshot<Event>) -> Result<ActivationInspec
             Event::Begin { .. } => "begin",
             Event::Started { .. } => "started",
             Event::Finished { .. } => "finished",
+            Event::RestorationStarted { .. } => "restoration-started",
+            Event::RestorationFinished { .. } => "restoration-finished",
             Event::Released => "released",
             Event::Commit => "commit",
         };
@@ -197,6 +211,10 @@ fn project_snapshot(snapshot: JournalSnapshot<Event>) -> Result<ActivationInspec
         match record.body() {
             Event::Started { .. } => pending_sequence = Some(sequence),
             Event::Finished { .. } => pending_sequence = None,
+            Event::RestorationStarted { .. } => restoration_sequences.push(sequence),
+            Event::RestorationFinished { .. } => {
+                restoration_sequences.pop();
+            }
             _ => {}
         }
         records.push(InspectionRecord {
@@ -231,6 +249,11 @@ fn project_snapshot(snapshot: JournalSnapshot<Event>) -> Result<ActivationInspec
             .as_ref()
             .zip(pending_sequence)
             .map(|(invocation, sequence)| DispatchIdentity::from_invocation(invocation, sequence)),
+        restoration: state
+            .restoration
+            .last()
+            .zip(restoration_sequences.last())
+            .map(|(invocation, sequence)| DispatchIdentity::from_invocation(invocation, *sequence)),
         completed: state
             .completed
             .as_ref()
