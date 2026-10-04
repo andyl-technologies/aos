@@ -25,7 +25,7 @@
           ${builtins.toJSON "${python3}/bin/python3"},
           [
               ${builtins.toJSON "${python3}/bin/python3"},
-              ${builtins.toJSON (builtins.toString ./_aos-ability-boundary-observer.py)},
+              ${builtins.toJSON "${./_aos-ability-boundary-observer.py}"},
               *arguments,
           ],
       )
@@ -110,6 +110,13 @@ in
           mkdir -p "$out/bin"
           ln -s ${controller}/bin/aos-ability-boundary-controller \
             "$out/bin/aos-ability-boundary-controller"
+        '';
+      }
+      {
+        # Source-level protocol tests do not exercise the retained launcher.
+        name = "check-installed";
+        script = ''
+          "$out/bin/aos-ability-boundary-controller" --version
         '';
       }
     ];
