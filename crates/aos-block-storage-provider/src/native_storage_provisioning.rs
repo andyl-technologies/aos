@@ -223,7 +223,7 @@ fn converge(desired: &Desired, context: &Context, target: &str, deadline: Instan
         }
     }
 
-    let rendered = render(desired, target)?;
+    let rendered = render_pending(desired, target, Path::new(SCRATCH_ROOT))?;
     let root_disk = root_disk(&context.lsblk, &desired.request.root_device, deadline)?;
     let targets = rendered_targets(&rendered, &root_disk)?;
 
@@ -391,7 +391,7 @@ fn inspect_state(
         return Ok(DiskState::Drifted(source));
     }
 
-    let rendered = render(desired, target)?;
+    let rendered = render(desired, target, Path::new(SCRATCH_ROOT), source.label())?;
     let root_disk = root_disk(&context.lsblk, &desired.request.root_device, deadline)?;
     checked_marker(desired, context, &marker, &root_disk, deadline, false)?;
     let targets = rendered_targets(&rendered, &root_disk)?;
@@ -480,18 +480,28 @@ struct RenderedTarget {
     definitions: String,
 }
 
-fn render(desired: &Desired, target: &str) -> Result<RenderedPlan> {
+/// Starts a transaction with a pending marker before any topology can change.
+fn render_pending(desired: &Desired, target: &str, scratch_root: &Path) -> Result<RenderedPlan> {
+    render(desired, target, scratch_root, PENDING_LABEL)
+}
+
+fn render(
+    desired: &Desired,
+    target: &str,
+    scratch_root: &Path,
+    marker_label: &str,
+) -> Result<RenderedPlan> {
     validate_repart_plan(&desired.plan)?;
     let mut plan = shared_plan(&desired.plan);
     let digest =
         aos_contract::Sha256Digest::of_canonical("aos.storage.provisioning-scratch/v1", &target)?;
-    let directory = Path::new(SCRATCH_ROOT).join(digest.hex());
+    let directory = scratch_root.join(digest.hex());
     fs::create_dir_all(&directory).with_context(|| format!("creating {}", directory.display()))?;
     render_provisioning_plan(
         &directory,
         &mut plan,
         desired.plan.measured_boot,
-        desired.plan.source.label(),
+        marker_label,
         &desired.plan.marker_uuid,
     )?;
     Ok(RenderedPlan { directory })
@@ -1161,6 +1171,48 @@ mod tests {
                     },
                 )]),
             },
+        }
+    }
+
+    #[test]
+    fn new_transactions_render_pending_markers_and_inspection_preserves_committed_labels() {
+        for source in [Source::Operator, Source::Fallback] {
+            let scratch = tempfile::tempdir().expect("private rendered transaction");
+            let mut desired = desired();
+            desired.plan.source = source;
+
+            let pending = render_pending(&desired, "first-boot", scratch.path())
+                .expect("render pending transaction");
+            let definitions = pending.directory.join(REPART_DIR).join("0000");
+            let marker_path = definitions.join("0000-aos-provisioning-marker.conf");
+            let partition_path = definitions.join("0010-var.conf");
+            let pending_marker = fs::read_to_string(&marker_path).expect("pending marker");
+            let partition = fs::read(&partition_path).expect("partition definition");
+            let plan = fs::read(pending.directory.join(STORAGE_PLAN_FILE)).expect("topology plan");
+
+            assert!(pending_marker.contains(&format!("Label={PENDING_LABEL}\n")));
+            assert!(!pending_marker.contains(source.label()));
+            assert!(pending_marker.contains(&format!("UUID={}\n", desired.plan.marker_uuid)));
+
+            let committed = render(&desired, "first-boot", scratch.path(), source.label())
+                .expect("render committed observation");
+
+            assert_eq!(committed.directory, pending.directory);
+            assert_eq!(
+                fs::read_to_string(&marker_path).expect("committed marker"),
+                pending_marker.replace(
+                    &format!("Label={PENDING_LABEL}\n"),
+                    &format!("Label={}\n", source.label()),
+                ),
+            );
+            assert_eq!(
+                fs::read(partition_path).expect("same partition definition"),
+                partition
+            );
+            assert_eq!(
+                fs::read(committed.directory.join(STORAGE_PLAN_FILE)).expect("same topology"),
+                plan
+            );
         }
     }
 
