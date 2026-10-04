@@ -36,7 +36,8 @@ in {
     };
     aos.activation.stages.host.configuration = [source];
   };
+  # Operator snapshots must also evaluate in the isolated initrd source view.
   hostModule = ''
-    imports = [ ${builtins.toJSON (builtins.toString source)} ];
+    aos.tests.executionObserver = ${asNix observerConfig};
   '';
 }
