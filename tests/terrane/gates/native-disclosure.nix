@@ -41,11 +41,18 @@
     "properties::tests::domain_reference_graft_overrides_and_dedup_scope"
     "properties::tests::domain_reference_conflict_candidates_checked_individually"
   ];
+
+  recordedCore = qualifySuite "terrane-core" "" "provenance::tests::disclosure::recorded::" [
+    "provenance::tests::disclosure::recorded::recorded_disclosure_preserves_selected_view_interpretations_and_actual_occurrences"
+    "provenance::tests::disclosure::recorded::recorded_disclosure_refuses_missing_associations_and_conflicting_dependency_scopes"
+    "provenance::tests::disclosure::recorded::recorded_disclosure_keeps_certificate_binding_public_retention_and_attribute_producer_checks"
+  ];
 in {
   # Discovery fails explicitly until the complete native boundary cases exist.
   # Successful pure codecs or empty filter selections do not qualify this gate.
   prov-disclosure-boundary = sourceGate "prov-disclosure-boundary" ''
     cd crates
+    ${recordedCore}
     ${nativeSuite "ref_advance::disclosure_tests::" boundaryTests}
     printf 'PASS: protected native disclosure, public original context and complete boundary verification\n' > "$out/result"
   '';

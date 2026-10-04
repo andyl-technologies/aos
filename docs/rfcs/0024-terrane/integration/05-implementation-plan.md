@@ -582,6 +582,19 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   evidence cannot qualify protected native historical inputs, certified cuts
   or independent registration sourcing. Combined candidate `9a4a4f733813`
   predates these cases. No task or milestone advances.
+  A separate core audit finds certified destination enumeration, retained-record
+  enumeration and dependency/final scope verification still use current
+  semantics. An additive recorded candidate must retain one immutable
+  caller-justified table, select each actual view/signed-root pair throughout
+  those calculations and match imported completed modern scopes before
+  consumption. Actual certificate bindings, public retention closure,
+  independent attribute producers, private cut rules and original authority
+  remain mandatory. Three exact pure-core cases are now required by selector
+  presets and the disclosure boundary gate, whose 19 native obligations remain
+  unchanged. Their implementation is pending. Recorded certificate issuance,
+  protected native propagation and historical registration sourcing stay
+  separate unqualified requirements; combined candidate `9a4a4f733813`
+  predates these cases as well.
   — satisfies TREE-14,
   PROP-1 to PROP-30;
   `checks.terrane.gates.property-resolution`,

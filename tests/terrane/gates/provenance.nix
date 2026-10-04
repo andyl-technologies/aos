@@ -79,6 +79,9 @@ in {
     ${runCase "provenance::trust::recorded_evaluation_tests::recorded_evaluator_keeps_one_interpretation_across_graft_prefixes"}
     ${runCase "provenance::trust::recorded_evaluation_tests::recorded_evaluator_refuses_missing_or_inconsistent_association"}
     ${runTest "root_context::recorded::recorded_scope_evaluators_require_matching_retained_interpretations"}
+    ${runTest "disclosure::recorded::recorded_disclosure_preserves_selected_view_interpretations_and_actual_occurrences"}
+    ${runTest "disclosure::recorded::recorded_disclosure_refuses_missing_associations_and_conflicting_dependency_scopes"}
+    ${runTest "disclosure::recorded::recorded_disclosure_keeps_certificate_binding_public_retention_and_attribute_producer_checks"}
     printf 'PASS: closed trust presets and verified entry preservation\n' > "$out/result"
   '';
 }
