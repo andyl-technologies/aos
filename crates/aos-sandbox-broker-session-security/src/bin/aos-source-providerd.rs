@@ -350,7 +350,8 @@ fn serve_selected_original(
                 | Ok(FixedProviderOriginalCompletionProgressV5::CompleteCommitted)
                 | Ok(FixedProviderOriginalCompletionProgressV5::HeldStored)
                 | Ok(FixedProviderOriginalCompletionProgressV5::ProviderHeldSent)
-                | Ok(FixedProviderOriginalCompletionProgressV5::CompleteSent) => {}
+                | Ok(FixedProviderOriginalCompletionProgressV5::CompleteSent)
+                | Ok(FixedProviderOriginalCompletionProgressV5::RootDispositionPrepared) => {}
                 Ok(FixedProviderOriginalCompletionProgressV5::Closed)
                 | Err(_) => terminate_selected_original(flight.ingress, &mut flight.original),
             }
@@ -403,6 +404,13 @@ fn serve_original_native_completion(
                     if let Some(cause) = owner.original_completion_failure_v5() {
                         eprintln!("original completion remains closed: {cause}");
                     }
+                }
+                Ok(FixedProviderOriginalCompletionProgressV5::RootDispositionPrepared) => {
+                    // This old driver cannot enter the selected receipt purpose.
+                    // Refuse any impossible progress without lending a permit.
+                    closed = true;
+                    owner.close_original_storage_offer_after_failure_v5();
+                    eprintln!("original completion remains closed: unexpected Root disposition");
                 }
                 Err(cause) => {
                     first_failure = Some(cause);

@@ -16,6 +16,8 @@ use aos_sandbox_source_provider_security::{
 use std::num::NonZeroU64;
 use sha2::Digest as _;
 
+mod root_accepted;
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum HeldStageV5 {
     Prepare,
@@ -41,6 +43,7 @@ pub(super) struct OriginalSourceHeldV5 {
     actions: [Option<Result<(), OriginalProducerErrorV5>>; 5],
     boundary: Option<OriginalProducerErrorV5>,
     postcheck_debt: Option<OriginalProducerErrorV5>,
+    root_disposition: Option<root_accepted::OriginalSourceRootDispositionV5>,
 }
 
 impl OriginalSourceHeldV5 {
@@ -58,6 +61,7 @@ impl OriginalSourceHeldV5 {
             actions: std::array::from_fn(|_| None),
             boundary: None,
             postcheck_debt: None,
+            root_disposition: None,
         }
     }
 
@@ -68,7 +72,10 @@ impl OriginalSourceHeldV5 {
             .or_else(|| self.actions.iter().find_map(|result| {
                 result.as_ref()?.as_ref().err().map(|cause| cause as _)
             }))
-            .or_else(|| self.signatures.failure())
+            .or_else(|| match &self.root_disposition {
+                Some(child) => child.failure(&self.signatures),
+                None => self.signatures.failure(),
+            })
             .or_else(|| self.postcheck_debt.as_ref().map(|cause| cause as _))
     }
 }

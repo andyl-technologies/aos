@@ -190,6 +190,23 @@ enum SelectedCarrierFailureV1 {
     Binding(RecordBindingError),
 }
 
+/// Owns a negative Root4 result, never an FD or transport permit.
+#[derive(thiserror::Error)]
+pub(crate) enum OriginalRootAcceptedCarrierFailureV5 {
+    #[error("original Root disposition receive failed")]
+    Native(#[source] RetainedSeqpacketReceiveErrorV1),
+    #[error("original Root disposition binding failed")]
+    Binding(#[source] RecordBindingError),
+    #[error("original Root disposition execution failed")]
+    Security(#[source] SourceProviderSecurityError),
+}
+
+impl core::fmt::Debug for OriginalRootAcceptedCarrierFailureV5 {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("OriginalRootAcceptedCarrierFailureV5([retained cause])")
+    }
+}
+
 /// Shares exactly one original-endpoint alias solely for irreversible shutdown.
 ///
 /// The empty owner is parked before any duplication or custody effect. Its
@@ -600,6 +617,36 @@ impl InertSourceProviderCarrierV1 {
             error.is_nonconsuming_would_block() || error.is_nonconsuming_interrupted()
         }) {
             self.original_receive_failure = None;
+        }
+    }
+
+    // The same optional-FD reader owns even an unexpected descriptor before the
+    // upper zero-FD check. Fatal native/binding custody moves as a whole, without
+    // a codec, allocation, observation or await between take and immediate park.
+    pub(crate) fn receive_original_root_accepted_retaining_v5(
+        &mut self,
+        record: &mut Option<RetainedSourceProviderRecordV5>,
+        failure: &mut Option<OriginalRootAcceptedCarrierFailureV5>,
+    ) -> Result<bool, CarrierFailureV1> {
+        if failure.is_some() || record.is_some() || self.original_binding_failure.is_some() {
+            return Err(CarrierFailureV1::Fatal(SourceProviderSecurityError::SessionContinuity));
+        }
+        let received = self.receive_original_positive_retaining_v5(
+            aos_sandbox_source_provider_protocol::native_held_completion::MAXIMUM_NATIVE_HELD_CONTROL_BYTES_V1,
+            record,
+        );
+        match received {
+            Err(CarrierFailureV1::Fatal(cause)) => {
+                if let Some(native) = self.original_receive_failure.take() {
+                    *failure = Some(OriginalRootAcceptedCarrierFailureV5::Native(native));
+                } else if let Some(binding) = self.original_binding_failure.take() {
+                    *failure = Some(OriginalRootAcceptedCarrierFailureV5::Binding(binding));
+                } else {
+                    *failure = Some(OriginalRootAcceptedCarrierFailureV5::Security(cause));
+                }
+                Err(CarrierFailureV1::Fatal(SourceProviderSecurityError::SessionContinuity))
+            }
+            result => result,
         }
     }
 
