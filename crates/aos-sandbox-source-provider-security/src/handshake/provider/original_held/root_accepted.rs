@@ -71,8 +71,25 @@ impl OriginalRootAcceptedV5 {
         }
     }
 
-    fn control(&self) -> Option<&SignedNativeHeldControlV1> {
+    pub(super) fn control(&self) -> Option<&SignedNativeHeldControlV1> {
         self.decoded.as_ref().and_then(|result| result.as_ref().ok())
+    }
+
+    /// Rechecks the original authenticated Root4 record without opening a cut.
+    ///
+    /// # Errors
+    ///
+    /// Refuses missing, failed or unreceived custody and stale record execution.
+    pub(super) fn revalidate_execution(
+        &self,
+        peer: &aos_sandbox_linux::seqpacket::ConnectionPeerIdentity,
+    ) -> Result<(), SourceProviderSecurityError> {
+        if self.failure().is_some() || self.stage != RootReceiptStageV5::Received {
+            return Err(SourceProviderSecurityError::SessionContinuity);
+        }
+        let record = self.record.as_ref().and_then(RetainedSourceProviderRecordV5::bound)
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        record.execution.revalidate(peer)
     }
 
     fn sample(

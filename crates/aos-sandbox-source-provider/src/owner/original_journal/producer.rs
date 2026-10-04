@@ -107,6 +107,7 @@ pub(in crate::owner) enum OriginalProducerAppendV5 {
     HeldPrepared,
     HeldStored,
     RootDispositionPrepared,
+    RelayStored,
 }
 
 impl OriginalProducerAppendV5 {
@@ -121,11 +122,12 @@ impl OriginalProducerAppendV5 {
             Self::HeldPrepared => 6,
             Self::HeldStored => 7,
             Self::RootDispositionPrepared => 8,
+            Self::RelayStored => 9,
         }
     }
 
     pub(super) const fn is_original_held(self) -> bool {
-        matches!(self, Self::HeldPrepared | Self::HeldStored | Self::RootDispositionPrepared)
+        matches!(self, Self::HeldPrepared | Self::HeldStored | Self::RootDispositionPrepared | Self::RelayStored)
     }
 }
 
@@ -147,7 +149,7 @@ pub(super) struct OriginalSourceProducerV5 {
     pub(super) signed: Option<SignedStorageNativeAcquireRequestV2>,
     provenance: Option<OriginalSourceProvenanceV5>,
     pub(super) staged: Option<StagedZfsHoldChallengeV1>,
-    appends: [Option<PreparedSourceOriginalV5>; 9],
+    appends: [Option<PreparedSourceOriginalV5>; 10],
     checkpoint: OriginalProducerCheckpointV5,
     pub(super) physical_plan: Option<crate::backend::AcquirePlanV1>,
     pub(super) selected_execution: Option<SourceSelectedNativeExecutionInputDataV1>,
@@ -264,6 +266,54 @@ impl OriginalSourceProducerV5 {
         let destination = &mut self.appends[OriginalProducerAppendV5::RootDispositionPrepared.index()];
         if destination.is_some() {
             return Err(ProviderLedgerError::InvalidTransition("original Root disposition slot occupied"));
+        }
+        Ok((completion, destination))
+    }
+
+    /// Observes the actual append9 slot, not a replay-derived live permit.
+    pub(super) fn relay_readback_present_v5(&self) -> bool {
+        self.appends[OriginalProducerAppendV5::RelayStored.index()]
+            .as_ref().is_some_and(|append| append.readback.is_some())
+    }
+
+    /// Borrows the signed cut and disjoint originals for one delivery check.
+    ///
+    /// # Errors
+    ///
+    /// Refuses absent readback, completion, selected file or original offer.
+    pub(super) fn relay_delivery_parts_v5(
+        &mut self,
+    ) -> Result<(
+        &OriginalSourceProtectedReadbackV5,
+        &mut super::completion::OriginalSourceCompletionV5,
+        &aos_sandbox_source_provider_security::ProtectedOriginalSelectedInputV1,
+        &mut super::storage_offer::OriginalStorageOfferV5,
+    ), ProviderLedgerError> {
+        let readback = self.appends[OriginalProducerAppendV5::RelayStored.index()]
+            .as_ref().and_then(|append| append.readback.as_ref())
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        let completion = self.original_completion.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
+        let selected = self.selected_archive.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        let offer = self.storage_offer.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
+        Ok((readback, completion, selected, offer))
+    }
+
+    /// Borrows the original completion and vacant append9 destination.
+    ///
+    /// # Errors
+    ///
+    /// Refuses missing completion or an already occupied destination.
+    pub(super) fn relay_preparation_parts_v5(
+        &mut self,
+    ) -> Result<(
+        &mut super::completion::OriginalSourceCompletionV5,
+        &mut Option<PreparedSourceOriginalV5>,
+    ), ProviderLedgerError> {
+        let completion = self.original_completion.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
+        let destination = &mut self.appends[OriginalProducerAppendV5::RelayStored.index()];
+        if destination.is_some() {
+            return Err(ProviderLedgerError::InvalidTransition("original relay slot occupied"));
         }
         Ok((completion, destination))
     }
@@ -501,7 +551,9 @@ impl FixedProviderOwnerV1 {
         &mut self,
         step: OriginalProducerAppendV5,
     ) -> Result<(), OriginalProducerErrorV5> {
-        if step == OriginalProducerAppendV5::RootDispositionPrepared {
+        if step == OriginalProducerAppendV5::RelayStored {
+            self.require_original_relay_current_v5()
+        } else if step == OriginalProducerAppendV5::RootDispositionPrepared {
             self.require_original_root_disposition_current_v5()
         } else if step.is_original_held() {
             self.require_original_held_current_v5()
@@ -910,7 +962,7 @@ impl FixedProviderOwnerV1 {
             OriginalProducerAppendV5::Applying | OriginalProducerAppendV5::StoragePrepared
             | OriginalProducerAppendV5::ChallengeSpent | OriginalProducerAppendV5::CompletionCommitted
             | OriginalProducerAppendV5::HeldPrepared | OriginalProducerAppendV5::HeldStored
-            | OriginalProducerAppendV5::RootDispositionPrepared => {
+            | OriginalProducerAppendV5::RootDispositionPrepared | OriginalProducerAppendV5::RelayStored => {
                 return Err(ProviderLedgerError::InvalidTransition("Applying is not a carrier").into());
             }
         };
@@ -945,7 +997,7 @@ impl FixedProviderOwnerV1 {
             OriginalProducerAppendV5::Applying | OriginalProducerAppendV5::StoragePrepared
             | OriginalProducerAppendV5::ChallengeSpent | OriginalProducerAppendV5::CompletionCommitted
             | OriginalProducerAppendV5::HeldPrepared | OriginalProducerAppendV5::HeldStored
-            | OriginalProducerAppendV5::RootDispositionPrepared => {
+            | OriginalProducerAppendV5::RootDispositionPrepared | OriginalProducerAppendV5::RelayStored => {
                 return Err(ProviderLedgerError::InvalidTransition("Applying is not a carrier").into());
             }
         }
@@ -956,7 +1008,7 @@ impl FixedProviderOwnerV1 {
             OriginalProducerAppendV5::Applying | OriginalProducerAppendV5::StoragePrepared
             | OriginalProducerAppendV5::ChallengeSpent | OriginalProducerAppendV5::CompletionCommitted
             | OriginalProducerAppendV5::HeldPrepared | OriginalProducerAppendV5::HeldStored
-            | OriginalProducerAppendV5::RootDispositionPrepared => {
+            | OriginalProducerAppendV5::RootDispositionPrepared | OriginalProducerAppendV5::RelayStored => {
                 return Err(ProviderLedgerError::InvalidTransition("Applying is not a carrier").into());
             }
         };

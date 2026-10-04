@@ -17,6 +17,7 @@ use ed25519_dalek::Signer as _;
 
 mod delivery;
 mod root_accepted;
+mod relay;
 
 #[derive(Clone, Copy)]
 enum OriginalHeldBindingPurposeV5<'control> {
@@ -30,6 +31,14 @@ enum OriginalHeldBindingPurposeV5<'control> {
         &'control SignedNativeHeldControlV1, &'control [u8],
         &'control SignedNativeHeldControlV1, &'control PreparedNativeHeldControlV1,
     ),
+    RelayPreparation(
+        &'control SignedNativeHeldControlV1, &'control [u8],
+        &'control SignedNativeHeldControlV1, &'control PreparedNativeHeldControlV1,
+    ),
+    RelayDelivery(
+        &'control SignedNativeHeldControlV1, &'control [u8],
+        &'control SignedNativeHeldControlV1, &'control SignedNativeHeldControlV1,
+    ),
 }
 
 impl OriginalHeldBindingPurposeV5<'_> {
@@ -37,13 +46,16 @@ impl OriginalHeldBindingPurposeV5<'_> {
         match self {
             Self::Preparation(prepared) => prepared,
             Self::Delivery(signed, _) => signed.prepared(),
-            Self::RootReceived(signed, _, _) | Self::RootDisposition(signed, _, _, _) => signed.prepared(),
+            Self::RootReceived(signed, _, _) | Self::RootDisposition(signed, _, _, _)
+                | Self::RelayPreparation(signed, _, _, _) | Self::RelayDelivery(signed, _, _, _) => signed.prepared(),
         }
     }
 }
 
 #[derive(thiserror::Error)]
 enum OriginalHeldCauseV5 {
+    #[error("original relay Storage first cause remains in the original transport")]
+    StorageRelay,
     #[error("original held custody failed")]
     Security(#[from] SourceProviderSecurityError),
     #[error("original held protected readback failed")]
@@ -80,6 +92,7 @@ pub struct OriginalProviderHeldSignaturesV5 {
     postcheck_debt: Option<OriginalHeldCauseV5>,
     delivery: delivery::OriginalHeldDeliveryV5,
     root_accepted: root_accepted::OriginalRootAcceptedV5,
+    relay: relay::OriginalProviderRelayV5,
 }
 
 impl OriginalProviderHeldSignaturesV5 {
@@ -96,10 +109,14 @@ impl OriginalProviderHeldSignaturesV5 {
             postcheck_debt: None,
             delivery: delivery::OriginalHeldDeliveryV5::pending(),
             root_accepted: root_accepted::OriginalRootAcceptedV5::pending(),
+            relay: relay::OriginalProviderRelayV5::pending(),
         }
     }
 
-    /// Borrows the actual first cause, before any later postcheck debt.
+    /// Borrows first-cause diagnostics before later postcheck debt.
+    ///
+    /// A relay Storage marker is resolved by the upper owner's immutable
+    /// transport borrower to its actual owning native error, not this marker.
     #[must_use]
     pub fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.cause.as_ref().map(|cause| cause as _)
@@ -109,6 +126,7 @@ impl OriginalProviderHeldSignaturesV5 {
             .or_else(|| self.postcheck_debt.as_ref().map(|cause| cause as _))
             .or_else(|| self.delivery.failure())
             .or_else(|| self.root_accepted.failure())
+            .or_else(|| self.relay.failure())
     }
 
     /// Borrows signed DATA only when this original attempt has no debt.
@@ -237,6 +255,12 @@ impl CurrentProviderIngressSessionV1 {
             OriginalHeldBindingPurposeV5::RootDisposition(signed, _, root4, relay) => journal.original_root_disposition_basis_v5(
                 readback, request.acquisition_id(), signed, root4, relay,
             )?,
+            OriginalHeldBindingPurposeV5::RelayPreparation(signed, _, root4, relay) => journal.original_relay_signing_basis_v5(
+                readback, request.acquisition_id(), signed, root4, relay,
+            )?,
+            OriginalHeldBindingPurposeV5::RelayDelivery(signed, _, root4, relay) => journal.original_relay_delivery_basis_v5(
+                readback, request.acquisition_id(), signed, root4, relay,
+            )?,
         };
         let provenance = origin.initial_floor().original_provenance().claims();
         let acquisition_key = provenance.records[1].key();
@@ -328,7 +352,9 @@ impl CurrentProviderIngressSessionV1 {
         }
         if let OriginalHeldBindingPurposeV5::Delivery(_, complete)
             | OriginalHeldBindingPurposeV5::RootReceived(_, complete, _)
-            | OriginalHeldBindingPurposeV5::RootDisposition(_, complete, _, _) = purpose
+            | OriginalHeldBindingPurposeV5::RootDisposition(_, complete, _, _)
+            | OriginalHeldBindingPurposeV5::RelayPreparation(_, complete, _, _)
+            | OriginalHeldBindingPurposeV5::RelayDelivery(_, complete, _, _) = purpose
         {
             delivery::require_original_complete_delivery_v5(
                 readback, provenance.records[0].key(), &acquisition, original,
@@ -336,7 +362,9 @@ impl CurrentProviderIngressSessionV1 {
             )?;
         }
         if let OriginalHeldBindingPurposeV5::RootReceived(signed, _, root4)
-            | OriginalHeldBindingPurposeV5::RootDisposition(signed, _, root4, _) = purpose
+            | OriginalHeldBindingPurposeV5::RootDisposition(signed, _, root4, _)
+            | OriginalHeldBindingPurposeV5::RelayPreparation(signed, _, root4, _)
+            | OriginalHeldBindingPurposeV5::RelayDelivery(signed, _, root4, _) = purpose
         {
             aos_sandbox_source_provider_protocol::verify_current_root_accepted_v5(
                 root.control(), root4, &self.session, inner.trust(), inner.root_authority(),
@@ -353,6 +381,26 @@ impl CurrentProviderIngressSessionV1 {
                 || assertion.descriptor_commitment != original.descriptor_commitment
                 || assertion.source_artifact.as_bytes().as_slice()
                     != signed.section(Tag::SourceArtifact).ok_or(SourceProviderSecurityError::SessionContinuity)?
+            {
+                return Err(SourceProviderSecurityError::SessionContinuity.into());
+            }
+        }
+        let relay = match purpose {
+            OriginalHeldBindingPurposeV5::RelayPreparation(_, _, _, relay) => Some(relay),
+            OriginalHeldBindingPurposeV5::RelayDelivery(_, _, _, relay) => Some(relay.prepared()),
+            _ => None,
+        };
+        if let Some(relay) = relay {
+            let root4 = match purpose {
+                OriginalHeldBindingPurposeV5::RelayPreparation(_, _, root4, _)
+                    | OriginalHeldBindingPurposeV5::RelayDelivery(_, _, root4, _) => root4,
+                _ => return Err(SourceProviderSecurityError::SessionContinuity.into()),
+            };
+            if relay.kind() != Kind::ProviderRelay
+                || relay.scope() != exact.scope()
+                || relay.signer() != exact.signer()
+                || relay.predecessor() != root4.digest()
+                || relay.section(Tag::RootDispositionControl) != Some(root4.to_canonical_bytes().as_slice())
             {
                 return Err(SourceProviderSecurityError::SessionContinuity.into());
             }

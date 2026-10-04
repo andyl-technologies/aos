@@ -392,6 +392,92 @@ pub struct OriginalStorageOfferTransportV5 {
     reply: Option<OriginalStorageReplyV5>,
     validation_failure: Option<OriginalStorageOfferErrorV5>,
     first_failure: Option<OriginalStorageOfferFailureV5>,
+    relay: Option<OriginalStorageRelayV5>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum OriginalStorageRelayStageV5 {
+    Staging,
+    Ready,
+    Attempting,
+    Sent,
+    Closed,
+}
+
+struct OriginalStorageRelayV5 {
+    stage: OriginalStorageRelayStageV5,
+    packet: Option<Vec<u8>>,
+    send: Option<Result<(), aos_sandbox_linux::seqpacket::RetainedSeqpacketSendErrorV1>>,
+    samples: [Option<Result<aos_sandbox_core::RawPairedClockSample, crate::SourceProviderSecurityError>>; 2],
+    first: Option<OriginalStorageRelayFailureV5>,
+    cause: Option<OriginalStorageOfferErrorV5>,
+    postchecks: [Option<Result<(), OriginalStorageOfferErrorV5>>; 2],
+}
+
+#[derive(Clone, Copy)]
+enum OriginalStorageRelayFailureV5 {
+    Send,
+    Sample(usize),
+    Validation,
+    Postcheck(usize),
+}
+
+impl OriginalStorageRelayV5 {
+    fn pending() -> Self {
+        Self {
+            stage: OriginalStorageRelayStageV5::Staging,
+            packet: None,
+            send: None,
+            samples: std::array::from_fn(|_| None),
+            first: None,
+            cause: None,
+            postchecks: std::array::from_fn(|_| None),
+        }
+    }
+
+    fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        let first: Option<&(dyn std::error::Error + 'static)> = match self.first {
+            Some(OriginalStorageRelayFailureV5::Send) => self.send.as_ref()
+                .and_then(|result| result.as_ref().err()).map(|cause| cause as _),
+            Some(OriginalStorageRelayFailureV5::Sample(index)) => self.samples[index].as_ref()
+                .and_then(|result| result.as_ref().err()).map(|cause| cause as _),
+            Some(OriginalStorageRelayFailureV5::Validation) => self.cause.as_ref().map(|cause| cause as _),
+            Some(OriginalStorageRelayFailureV5::Postcheck(index)) => self.postchecks[index].as_ref()
+                .and_then(|result| result.as_ref().err()).map(|cause| cause as _),
+            None => None,
+        };
+        first
+    }
+
+    fn retain_failure(&mut self, cause: OriginalStorageOfferErrorV5) {
+        if self.first.is_none() {
+            self.cause = Some(cause);
+            self.first = Some(OriginalStorageRelayFailureV5::Validation);
+        }
+        self.stage = OriginalStorageRelayStageV5::Closed;
+    }
+
+    fn retain_postcheck(&mut self, index: usize, result: Result<(), OriginalStorageOfferErrorV5>) {
+        self.postchecks[index] = Some(result);
+        if self.first.is_none() && self.postchecks[index].as_ref().is_some_and(Result::is_err) {
+            self.first = Some(OriginalStorageRelayFailureV5::Postcheck(index));
+        }
+    }
+
+    fn sample(
+        &mut self,
+        index: usize,
+        clock: &OriginalStorageOfferClockV5,
+    ) -> Result<(), OriginalStorageOfferErrorV5> {
+        self.samples[index] = Some(crate::handshake::original_kernel_clock());
+        let Some(Ok(later)) = &self.samples[index] else {
+            if self.first.is_none() {
+                self.first = Some(OriginalStorageRelayFailureV5::Sample(index));
+            }
+            return Err(OriginalStorageOfferErrorV5::Shape("original relay clock unavailable"));
+        };
+        clock.require_current(*later)
+    }
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -521,6 +607,7 @@ impl OriginalStorageOfferTransportV5 {
             reply: None,
             validation_failure: None,
             first_failure: None,
+            relay: None,
         }
     }
 
@@ -623,38 +710,40 @@ impl OriginalStorageOfferTransportV5 {
     /// Borrows the first actual resident cause instead of cloning or redacting it.
     #[must_use]
     pub fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self.first_failure? {
-            OriginalStorageOfferFailureV5::Admission => {
+        let first: Option<&(dyn std::error::Error + 'static)> = match self.first_failure {
+            Some(OriginalStorageOfferFailureV5::Admission) => {
                 self.connection.as_ref()?.as_ref().err().map(|cause| cause as _)
             }
-            OriginalStorageOfferFailureV5::SocketDuplicate => {
+            Some(OriginalStorageOfferFailureV5::SocketDuplicate) => {
                 self.socket_custody.as_ref()?.as_ref().err().map(|cause| cause as _)
             }
-            OriginalStorageOfferFailureV5::Send(index) => {
+            Some(OriginalStorageOfferFailureV5::Send(index)) => {
                 self.sends[index].as_ref()?.as_ref().err().map(|cause| cause as _)
             }
-            OriginalStorageOfferFailureV5::ControlReceive => {
+            Some(OriginalStorageOfferFailureV5::ControlReceive) => {
                 self.control_receive.as_ref()?.as_ref().err().map(|cause| cause as _)
             }
-            OriginalStorageOfferFailureV5::ControlBind => {
+            Some(OriginalStorageOfferFailureV5::ControlBind) => {
                 self.control_bind_failure.as_ref().map(|(cause, _)| cause as _)
             }
-            OriginalStorageOfferFailureV5::ReplyReceive => {
+            Some(OriginalStorageOfferFailureV5::ReplyReceive) => {
                 self.reply_receive.as_ref()?.as_ref().err().map(|cause| cause as _)
             }
-            OriginalStorageOfferFailureV5::ReplyBind => {
+            Some(OriginalStorageOfferFailureV5::ReplyBind) => {
                 self.reply_bind_failure.as_ref().map(|(cause, _)| cause as _)
             }
-            OriginalStorageOfferFailureV5::ClockSample(index) => {
+            Some(OriginalStorageOfferFailureV5::ClockSample(index)) => {
                 self.clock_samples[index].as_ref()?.as_ref().err().map(|cause| cause as _)
             }
-            OriginalStorageOfferFailureV5::ClockValidation(index) => {
+            Some(OriginalStorageOfferFailureV5::ClockValidation(index)) => {
                 self.clock_validations[index].as_ref()?.as_ref().err().map(|cause| cause as _)
             }
-            OriginalStorageOfferFailureV5::Validation => {
+            Some(OriginalStorageOfferFailureV5::Validation) => {
                 self.validation_failure.as_ref().map(|cause| cause as _)
             }
-        }
+            None => None,
+        };
+        first.or_else(|| self.relay.as_ref().and_then(OriginalStorageRelayV5::failure))
     }
 
     /// Borrows the actual control bytes only while the original attempt is open.
@@ -944,6 +1033,173 @@ impl OriginalStorageOfferTransportV5 {
     }
 }
 
+impl OriginalStorageOfferTransportV5 {
+    /// Arms one relay child on the already offered original connection.
+    ///
+    /// This creates no socket or authority and cannot revive an earlier attempt.
+    #[doc(hidden)]
+    pub fn begin_original_relay_v5(&mut self) -> bool {
+        if self.relay.is_some() {
+            if let Some(relay) = self.relay.as_mut() {
+                relay.retain_failure(OriginalStorageOfferErrorV5::Shape("original relay already armed"));
+            }
+            self.stage = OriginalStorageOfferStageV5::Closed;
+            return false;
+        }
+        self.relay = Some(OriginalStorageRelayV5::pending());
+        if self.stage != OriginalStorageOfferStageV5::Offered || self.first_failure.is_some() {
+            if let Some(relay) = self.relay.as_mut() {
+                relay.retain_failure(OriginalStorageOfferErrorV5::Shape("original relay requires offered Storage"));
+            }
+            self.stage = OriginalStorageOfferStageV5::Closed;
+            return false;
+        }
+        true
+    }
+
+    /// Parks the canonical relay5 packet on the same original Storage child.
+    ///
+    /// The caller independently verifies its signature and signed phase7 cut.
+    /// This transport retains bytes only and never supplies a signing permit.
+    ///
+    /// # Errors
+    ///
+    /// Rejects repeated staging, another kind, closure or a changed original cut.
+    #[doc(hidden)]
+    pub fn stage_original_relay_v5(
+        &mut self,
+        signed: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+    ) -> Result<(), OriginalStorageOfferErrorV5> {
+        use aos_sandbox_source_provider_protocol::native_held_completion::{
+            MAXIMUM_NATIVE_HELD_CONTROL_BYTES_V1, NativeHeldControlKindV1,
+        };
+
+        let _crossing = OriginalStorageOfferCrossingV5;
+        let action = (|| {
+            if !self.is_offered()
+                || self.relay.as_ref().is_none_or(|relay| relay.stage != OriginalStorageRelayStageV5::Staging)
+                || signed.kind() != NativeHeldControlKindV1::ProviderRelay
+            {
+                return Err(OriginalStorageOfferErrorV5::Shape("original relay staging state"));
+            }
+            self.revalidate_original()?;
+            let clock = self.clock.as_ref().ok_or(OriginalStorageOfferErrorV5::Shape("original clock absent"))?;
+            let relay = self.relay.as_mut().ok_or(OriginalStorageOfferErrorV5::Shape("original relay absent"))?;
+            // The typed control's sole canonical encoder already enforces this
+            // fixed bound. Park its return before any subsequent fallible gate.
+            relay.packet = Some(signed.to_canonical_bytes());
+            if relay.packet.as_ref().is_none_or(|packet| packet.len() > MAXIMUM_NATIVE_HELD_CONTROL_BYTES_V1) {
+                return Err(OriginalStorageOfferErrorV5::Shape("original relay packet ceiling"));
+            }
+            relay.sample(0, clock)?;
+            relay.stage = OriginalStorageRelayStageV5::Ready;
+            Ok(())
+        })();
+        if let Err(cause) = action {
+            self.stage = OriginalStorageOfferStageV5::Closed;
+            // The returned concrete cause is parked by the genuine upper owner.
+            // No successfully returned packet or lower owner is taken here.
+            return Err(cause);
+        }
+        Ok(())
+    }
+
+    /// Dispatches relay5 at most once with a whole owning send Result retained.
+    ///
+    /// A readiness-only pending observation performs no send. Once dispatched,
+    /// every Err is terminal, including EAGAIN/EINTR; it permits no resend. A
+    /// successful send is not an ACK, settlement or evidence of physical drain.
+    #[doc(hidden)]
+    pub fn advance_original_relay_v5(&mut self) -> bool {
+        if !self.is_offered()
+            || self.relay.as_ref().is_none_or(|relay| {
+                relay.failure().is_some()
+                    || !matches!(relay.stage, OriginalStorageRelayStageV5::Ready | OriginalStorageRelayStageV5::Sent)
+            })
+        {
+            // Closed observations cannot replace an earlier owning send,
+            // native sample or postcheck Result with a later observation.
+            return false;
+        }
+        let _crossing = OriginalStorageOfferCrossingV5;
+        let action = (|| {
+            let stage = self.relay.as_ref().map(|relay| relay.stage)
+                .ok_or(OriginalStorageOfferErrorV5::Shape("original relay absent"))?;
+            if !matches!(stage, OriginalStorageRelayStageV5::Ready | OriginalStorageRelayStageV5::Sent) {
+                return Err(OriginalStorageOfferErrorV5::Shape("original relay dispatch state"));
+            }
+            self.revalidate_original()?;
+            if stage == OriginalStorageRelayStageV5::Ready && !self.ready(rustix::event::PollFlags::OUT)? {
+                return Ok(false);
+            }
+
+            let clock = self.clock.as_ref().ok_or(OriginalStorageOfferErrorV5::Shape("original clock absent"))?;
+            let relay = self.relay.as_mut().ok_or(OriginalStorageOfferErrorV5::Shape("original relay absent"))?;
+            relay.sample(0, clock)?;
+            if stage == OriginalStorageRelayStageV5::Sent {
+                return Ok(true);
+            }
+            relay.stage = OriginalStorageRelayStageV5::Attempting;
+            let packet = relay.packet.as_deref().ok_or(OriginalStorageOfferErrorV5::Shape("original relay packet absent"))?;
+            let socket = self.connection.as_mut().and_then(|result| result.as_mut().ok())
+                .ok_or(OriginalStorageOfferErrorV5::Shape("original Storage socket absent"))?;
+            relay.send = Some(socket.send_retaining(packet));
+            if relay.send.as_ref().is_some_and(Result::is_err) {
+                if relay.first.is_none() {
+                    relay.first = Some(OriginalStorageRelayFailureV5::Send);
+                }
+                return Ok(false);
+            }
+            Ok(true)
+        })();
+        let dispatched = self.relay.as_ref()
+            .is_some_and(|relay| relay.stage == OriginalStorageRelayStageV5::Attempting);
+        let sent = match action {
+            Ok(sent) => sent,
+            Err(cause) => {
+                if let Some(relay) = self.relay.as_mut() {
+                    relay.retain_failure(cause);
+                }
+                false
+            }
+        };
+
+        // Fresh peer/subject checks precede the final trusted pair. A native
+        // send failure remains first even when the removed active FD makes this
+        // upper postcheck fail; its descriptor stays in that owning Err slot.
+        let peer = self.revalidate_inner();
+        if let Some(relay) = self.relay.as_mut() {
+            relay.retain_postcheck(0, peer);
+        }
+        let clock = (|| {
+            let clock = self.clock.as_ref().ok_or(OriginalStorageOfferErrorV5::Shape("original clock absent"))?;
+            let relay = self.relay.as_mut().ok_or(OriginalStorageOfferErrorV5::Shape("original relay absent"))?;
+            relay.sample(1, clock)
+        })();
+        if let Some(relay) = self.relay.as_mut() {
+            relay.retain_postcheck(1, clock);
+            if relay.failure().is_some() {
+                relay.stage = OriginalStorageRelayStageV5::Closed;
+                self.stage = OriginalStorageOfferStageV5::Closed;
+                return false;
+            }
+            if dispatched && sent {
+                relay.stage = OriginalStorageRelayStageV5::Sent;
+            }
+        }
+        sent
+    }
+
+    /// Observes completed local dispatch, without acknowledging remote receipt.
+    #[must_use]
+    #[doc(hidden)]
+    pub fn original_relay_sent_v5(&self) -> bool {
+        self.is_offered() && self.relay.as_ref().is_some_and(|relay| {
+            relay.stage == OriginalStorageRelayStageV5::Sent && relay.failure().is_none()
+        })
+    }
+}
+
 #[cfg(test)]
 mod original_offer_clock_tests {
     //! UNRUN comparison DATA only; no socket, role, Session or currentness proof.
@@ -986,5 +1242,28 @@ mod original_offer_clock_tests {
             Err(OriginalStorageOfferErrorV5::ClockContinuity(_))));
         assert!(matches!(original().require_current(sample(9, 11, 1)),
             Err(OriginalStorageOfferErrorV5::ClockContinuity(_))));
+    }
+
+    #[test]
+    fn empty_transport_cannot_arm_relay_or_open_a_socket() {
+        let mut transport = OriginalStorageOfferTransportV5::pending_original();
+
+        assert!(!transport.begin_original_relay_v5());
+        assert!(transport.is_closed());
+        assert!(transport.connection.is_none());
+        assert!(!transport.original_relay_sent_v5());
+        assert!(transport.failure().is_some());
+    }
+
+    #[test]
+    fn repeated_relay_arming_keeps_the_first_refusal() {
+        let mut transport = OriginalStorageOfferTransportV5::pending_original();
+        assert!(!transport.begin_original_relay_v5());
+        assert!(!transport.begin_original_relay_v5());
+
+        assert!(matches!(transport.failure()
+            .and_then(|cause| cause.downcast_ref::<OriginalStorageOfferErrorV5>()),
+            Some(OriginalStorageOfferErrorV5::Shape("original relay requires offered Storage"))));
+        assert!(transport.connection.is_none());
     }
 }

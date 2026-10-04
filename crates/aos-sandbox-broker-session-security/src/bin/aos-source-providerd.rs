@@ -351,7 +351,9 @@ fn serve_selected_original(
                 | Ok(FixedProviderOriginalCompletionProgressV5::HeldStored)
                 | Ok(FixedProviderOriginalCompletionProgressV5::ProviderHeldSent)
                 | Ok(FixedProviderOriginalCompletionProgressV5::CompleteSent)
-                | Ok(FixedProviderOriginalCompletionProgressV5::RootDispositionPrepared) => {}
+                | Ok(FixedProviderOriginalCompletionProgressV5::RootDispositionPrepared)
+                | Ok(FixedProviderOriginalCompletionProgressV5::RelayStored)
+                | Ok(FixedProviderOriginalCompletionProgressV5::RelaySent) => {}
                 Ok(FixedProviderOriginalCompletionProgressV5::Closed)
                 | Err(_) => terminate_selected_original(flight.ingress, &mut flight.original),
             }
@@ -405,7 +407,9 @@ fn serve_original_native_completion(
                         eprintln!("original completion remains closed: {cause}");
                     }
                 }
-                Ok(FixedProviderOriginalCompletionProgressV5::RootDispositionPrepared) => {
+                Ok(FixedProviderOriginalCompletionProgressV5::RootDispositionPrepared)
+                | Ok(FixedProviderOriginalCompletionProgressV5::RelayStored)
+                | Ok(FixedProviderOriginalCompletionProgressV5::RelaySent) => {
                     // This old driver cannot enter the selected receipt purpose.
                     // Refuse any impossible progress without lending a permit.
                     closed = true;
