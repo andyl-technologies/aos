@@ -155,6 +155,9 @@ fn require_kind2_installed_table(
 pub struct FixedMountSourceAcquisitionOwnerV2<'journal> {
     protected: aos_sandbox::MountManagerStartupJournalBorrowV1<'journal>,
     runtime: SourceAcquisitionRuntimeV2,
+    // Refusal only, captured from the exclusively borrowed original writer.
+    // False never replaces the existing admission/currentness checks.
+    git_coverage_denied: bool,
 }
 
 /// Retains source and manager capabilities between borrows of Mount's journal.
@@ -163,6 +166,7 @@ pub struct FixedMountSourceAcquisitionOwnerV2<'journal> {
 /// operate without a fresh borrow of the same fixed protected journal.
 pub(crate) struct SourceAcquisitionRuntimeV2 {
     table: SourceAcquisitionTableV2,
+    git_coverage_first_failure: Option<aos_sandbox::journal::JournalError>,
     broker_instance_id: [u8; 16],
     last_boottime_nanoseconds: Option<u64>,
     pending_provider: Option<SentProviderQueryV2>,
@@ -733,9 +737,10 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     /// noncanonical source-acquisition recovery graph.
     #[doc(hidden)]
     pub fn borrow_existing_fixed_journal(journal: &'journal mut Journal) -> Result<Self> {
+        let git_coverage_denied = journal.mount_git_coverage_denies_new_v1();
         let protected = aos_sandbox::MountManagerStartupJournalBorrowV1::borrow_fixed(journal)
             .map_err(|error| crate::MountError::State(error.to_string()))?;
-        Self::recover_with_journal(protected)
+        Self::recover_with_journal(protected, git_coverage_denied)
     }
 
     /// Replays the same physical journal for the closed kind2 local coordinator.
@@ -761,6 +766,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             return Err(state_error("kind2 owner output is occupied"));
         }
 
+        let git_coverage_denied = journal.mount_git_coverage_denies_new_v1();
         let mut protected =
             aos_sandbox::MountManagerStartupJournalBorrowV1::borrow_fixed_root_local_recovery_v4(
                 journal,
@@ -772,7 +778,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 .map_err(|error| crate::MountError::State(error.to_string()))?;
             SourceAcquisitionTableV2::from_state(writer.current_source_state()?)
         };
-        *slot = Some(Self::recover_with_table(protected, table)?);
+        *slot = Some(Self::recover_with_table(protected, table, git_coverage_denied)?);
         slot.as_mut()
             .ok_or_else(|| state_error("kind2 parked owner is absent"))?
             .install_and_retire_kind2_v4()
@@ -815,6 +821,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             return Err(state_error("Query reattach lost actual original owner"));
         }
 
+        let git_coverage_denied = journal.mount_git_coverage_denies_new_v1();
         let protected = if has_query {
             aos_sandbox::MountManagerStartupJournalBorrowV1::borrow_fixed_root_original_inventory_v6(
                 journal,
@@ -830,7 +837,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
 
         // No fallible work remains between this move and parking the owner.
         if let Some(runtime) = runtime_slot.take() {
-            *owner_slot = Some(Self { protected, runtime });
+            *owner_slot = Some(Self { protected, runtime, git_coverage_denied });
         }
 
         Ok(())
@@ -841,8 +848,72 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         self.runtime
     }
 
+    pub(crate) fn require_git_coverage_new_effect_v1(&mut self) -> Result<()> {
+        if !self.git_coverage_denied {
+            // This skips only a known in-process negative disposition while
+            // the same exclusive Journal loan is held. It is not permission
+            // or cross-process currentness: the genuine old authority and
+            // fresh common mutation/commit checks still run independently.
+            return Ok(());
+        }
+        if self.runtime.git_coverage_first_failure.is_some() {
+            return Err(crate::MountError::Fence("original Source cohort check failed"));
+        }
+        let checked = (|| {
+            let mut authority = self.protected.source_acquisition_authority()?;
+            authority.with_authority(|journal| {
+                journal.mount_source_git_coverage_denies_new_v1()
+            })
+        })();
+        let denied = match checked {
+            Ok(denied) => denied,
+            Err(cause) => {
+                // The original runtime retains the typed cause even after
+                // this exclusive Journal loan returns to the broker.
+                self.runtime.git_coverage_first_failure.get_or_insert(cause);
+                return Err(crate::MountError::Fence("original Source cohort check failed"));
+            }
+        };
+        if denied {
+            return Err(crate::MountError::Fence(
+                "exclusive Git cohort denies new Source effects",
+            ));
+        }
+        Ok(())
+    }
+
+    fn require_git_coverage_existing_send_v1(&mut self, attempt_id: [u8; 32]) -> Result<()> {
+        if !self.git_coverage_denied {
+            return Ok(());
+        }
+        let attempt = self.runtime.table.provider_attempts.get(&attempt_id)
+            .ok_or_else(|| state_error("retained Source send has no original attempt"))?;
+        match attempt.method {
+            ProviderMethodV2::Acquire => self.require_git_coverage_new_effect_v1(),
+            ProviderMethodV2::Release => {
+                let acquisition = self.runtime.table.acquisitions
+                    .get(&attempt.owner.owner_id())
+                    .ok_or_else(|| state_error("retained Release has no original acquisition"))?;
+                if acquisition.scope != attempt.scope {
+                    return Err(state_error("retained Release changed original scope"));
+                }
+                Ok(())
+            }
+            ProviderMethodV2::Inventory => {
+                if !self.runtime.table.provider_heads.contains_key(&(
+                    attempt.scope.holder_authority_id,
+                    attempt.scope.provider_authority_id,
+                )) {
+                    return Err(state_error("retained Inventory has no original scope"));
+                }
+                Ok(())
+            }
+        }
+    }
+
     fn recover_with_journal(
         mut protected: aos_sandbox::MountManagerStartupJournalBorrowV1<'journal>,
+        git_coverage_denied: bool,
     ) -> Result<Self> {
         let table = {
             let authority = protected
@@ -850,12 +921,13 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 .map_err(|error| crate::MountError::State(error.to_string()))?;
             SourceAcquisitionTableV2::recover_from_consumption_authority(&authority)?
         };
-        Self::recover_with_table(protected, table)
+        Self::recover_with_table(protected, table, git_coverage_denied)
     }
 
     fn recover_with_table(
         protected: aos_sandbox::MountManagerStartupJournalBorrowV1<'journal>,
         table: SourceAcquisitionTableV2,
+        git_coverage_denied: bool,
     ) -> Result<Self> {
         let mut broker_instance_id = [0_u8; 16];
         fill_random(&mut broker_instance_id)?;
@@ -872,8 +944,10 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         } = RecoveryMetadata::derive(&table)?;
         Ok(Self {
             protected,
+            git_coverage_denied,
             runtime: SourceAcquisitionRuntimeV2 {
                 table,
+                git_coverage_first_failure: None,
                 broker_instance_id,
                 last_boottime_nanoseconds: None,
                 pending_provider: None,
@@ -1139,6 +1213,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
             .last()
             .map(|presence| presence.custody_evidence().acquisition_id)
         {
+            self.require_git_coverage_new_effect_v1()?;
             let terminal = self
                 .exact_complete_terminal_attempt(acquisition_id, ProviderMethodV2::Acquire)?
                 .ok_or_else(|| state_error("startup source has no terminal Acquire"))?;
@@ -1363,6 +1438,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
     #[doc(hidden)]
     pub fn begin_manager_source_handoff(&mut self, acquisition_id: [u8; 32]) -> Result<Vec<u8>> {
         self.require_no_original_native_flight()?;
+        self.require_git_coverage_new_effect_v1()?;
         if self
             .runtime
             .manager_handoffs
@@ -1444,6 +1520,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         if self.runtime.manager_handoffs[index].accepted.is_none() {
             self.runtime.manager_handoffs[index].accepted = Some(accepted);
         }
+        self.require_git_coverage_new_effect_v1()?;
         let request = self.runtime.manager_handoffs[index].request.clone();
         let accepted = self.runtime.manager_handoffs[index]
             .accepted
@@ -1498,6 +1575,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         if self.runtime.manager_handoffs[index].present.is_none() {
             self.runtime.manager_handoffs[index].present = Some(present);
         }
+        self.require_git_coverage_new_effect_v1()?;
         let present = self.runtime.manager_handoffs[index]
             .present
             .clone()
@@ -2425,6 +2503,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         {
             return Err(state_error("another SourceProvider request is outstanding"));
         }
+        self.require_git_coverage_new_effect_v1()?;
         let now = self.current_boottime(protected_boot_id)?;
         let live_request = decode_acquire_mount_source_request(mount_request, peer, policy, now)?;
         let result = root
@@ -2515,6 +2594,9 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 ));
             }
         };
+        if expected_method == ProviderMethodV2::Acquire {
+            self.require_git_coverage_new_effect_v1()?;
+        }
         if self.runtime.pending_backend_recovery_replacement.is_none() {
             let live_attempt_id = self
                 .runtime
@@ -3151,6 +3233,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
                 expected_digest,
                 manager_presence,
             });
+        self.require_git_coverage_new_effect_v1()?;
         if manager_acquisition_id != acquisition_id {
             return Err(state_error(
                 "manager presence names a different source acquisition",
@@ -3172,6 +3255,7 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
     ) -> Result<()> {
         self.require_no_original_native_flight()?;
+        self.require_git_coverage_new_effect_v1()?;
         let mut retained = self.runtime.pending_manager_custody.pop();
         let acquisition_id = retained
             .as_ref()

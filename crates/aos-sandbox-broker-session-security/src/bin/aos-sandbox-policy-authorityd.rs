@@ -212,6 +212,7 @@ const CACHE_SIGNER_RPC_TIMEOUT: Duration = Duration::from_secs(75);
 #[derive(Clone, Copy)]
 enum HeadRequestMode {
     GitEvidenceView,
+    GitCoverageEnrollment,
     Query,
     Lease,
     SourceGenesis,
@@ -1199,6 +1200,11 @@ fn read_head_request(
         // parked before even missing-startup or malformed-purpose refusal.
         return Ok((request, HeadRequestMode::CreateQ04));
     }
+    if &request[..8] == aos_sandbox::policy_compiler::GIT_COVERAGE_ROOT_BOOTSTRAP_MAGIC_V1 {
+        // Inert complete recognition only. The selected owner parks this same
+        // startup, stream and packet before new-purpose checks or writer opens.
+        return Ok((request, HeadRequestMode::GitCoverageEnrollment));
+    }
     if &request[..8]
         == aos_sandbox::policy_compiler::consumer_read_flight::CONSUMER_READ_BOOTSTRAP_MAGIC_V1
     {
@@ -1539,6 +1545,21 @@ fn serve_current_head(
             // The first cause, original partials, both actual Root writers and
             // shutdown result are resident before diagnostics or process exit.
             let _ = writeln!(std::io::stderr().lock(), "aos-sandbox-policy-authorityd: original Q04 cut refused");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if matches!(mode, HeadRequestMode::GitCoverageEnrollment) {
+        let mut attempt = aos_sandbox::policy_compiler::RootGitCoverageEnrollmentOwnerV1::new(
+            startup, original, request,
+        );
+        if let Err(error) = attempt.serve_once(
+            packet, inputs, deployment_signer_generation, verifying_key,
+            project_signer_generation, project_key,
+        ) {
+            // Failed original writers, IO and typed causes stay resident until
+            // terminal exit; fallible diagnostics cannot select local disposal.
+            let _ = writeln!(std::io::stderr().lock(), "aos-sandbox-policy-authorityd: {error}");
             std::process::exit(1);
         }
         return Ok(());
@@ -4038,6 +4059,7 @@ fn select_project_source<'a>(
         | HeadRequestMode::CreateQ04
         | HeadRequestMode::ConsumerReadPreRoot
         | HeadRequestMode::GitEvidenceView
+        | HeadRequestMode::GitCoverageEnrollment
         | HeadRequestMode::ClosedBindingReplay
         | HeadRequestMode::RootEffectAck
         | HeadRequestMode::RootEffectAckReplay

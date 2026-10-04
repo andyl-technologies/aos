@@ -247,6 +247,8 @@ impl<'writers, 'profile, 'credentials>
         signer: &SigningKey,
     ) -> Result<SourceSuccessorApprovalDataV2, IssuerCause> {
         self.credentials.recheck()?;
+        self.journal.require_git_coverage_new_admission_v1()
+            .map_err(SourceGenesisErrorV1::from)?;
         let intent = self.credentials.intent()?;
         let source = self.source.as_deref_mut()
             .ok_or(SourceGenesisErrorV1::AdmissionClosed)?;

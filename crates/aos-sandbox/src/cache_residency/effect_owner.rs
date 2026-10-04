@@ -1360,6 +1360,105 @@ impl DormantCacheOwnerV1 {
         })
     }
 
+    /// Borrows the genuine empty physical cohort under its original owner lock.
+    ///
+    /// This is comparison DATA, not project attribution, admission, funding or
+    /// Drain. It uses the existing manifest replay and held-name checks; no
+    /// detached quantity, copied manifest or caller-selected pin proves empty.
+    /// The initial resident capture buffer is allowed because it contains the
+    /// already decoded original manifest, not a failed mutation outcome.
+    ///
+    /// # Errors
+    /// Refuses durable objects or negative entries, any pin, volatile payload,
+    /// orphan, byte charge, pending mutation, failed/unfinished resident step,
+    /// completed retained step debt, or changed physical/name custody.
+    pub fn empty_git_coverage_snapshot_v1(
+        &self,
+    ) -> Result<CacheOwnerHeldSnapshotV1<'_>, CacheOwnerErrorV1> {
+        let snapshot = self.held_snapshot()?;
+        let resident_debt = self.resident_manifest.as_ref().is_some_and(|progress| {
+            progress.pending.is_some()
+                || progress.temporary_file.is_some()
+                || progress.first_failure.is_some()
+                || progress.readback.is_some()
+        });
+        if !self.disk.is_empty()
+            || !self.negatives.is_empty()
+            || !self.pin_index.is_empty()
+            || !self.memory.is_empty()
+            || !self.orphans.is_empty()
+            || self.memory_bytes != 0
+            || self.disk_bytes != 0
+            || self.pinned_bytes != 0
+            || self.pending_manifest.is_some()
+            || resident_debt
+            || !self.completed_resident_manifests.is_empty()
+        {
+            return Err(CacheOwnerErrorV1::RecoveryMismatch);
+        }
+
+        snapshot.revalidate()?;
+        Ok(snapshot)
+    }
+
+    // The actual initializer supplies its already replay-validated complete
+    // partition set. Catalog signatures do not prove emptiness: the sole
+    // physical owner above must independently retain and recheck every map,
+    // charge, manifest, original root and exclusive lock.
+    pub(crate) fn compare_empty_git_coverage_catalog_v1(
+        &self,
+        catalog: &aos_sandbox_core::format::git_upload_enrollment::GitCoverageCatalogV1<'_>,
+        partitions: &[super::protected_journal::CacheResidencyReplayPartitionEvidenceV1],
+    ) -> Result<CacheOwnerHeldSnapshotV1<'_>, CacheOwnerErrorV1> {
+        use aos_sandbox_core::format::git_upload_enrollment::GitCoverageJournalProfileV1;
+
+        let snapshot = self.empty_git_coverage_snapshot_v1()?;
+        // Later replacement generations cannot prove an initially unused
+        // physical cohort from the current manifest alone. No reset, expiry
+        // or empty latest map discards that earlier unknown history.
+        if snapshot.current.generation() > 1 {
+            return Err(CacheOwnerErrorV1::RecoveryMismatch);
+        }
+        let manifest = snapshot.manifest_identity.ok_or(CacheOwnerErrorV1::RecoveryMismatch)?;
+        let mut origin = Sha256::new()
+            .chain_update(b"aos.sandbox.git-upload.native-origin.v1\0")
+            .chain_update(FIXED_CACHE_ROOT.as_bytes())
+            .chain_update([0]);
+        for (device, inode) in [
+            (snapshot.root_identity.device, snapshot.root_identity.inode),
+            (manifest.device, manifest.inode),
+            (snapshot.lock_identity.device, snapshot.lock_identity.inode),
+        ] {
+            origin.update(device.to_be_bytes());
+            origin.update(inode.to_be_bytes());
+        }
+        let origin: [u8; 32] = origin.finalize().into();
+        if partitions.is_empty()
+            || catalog.members().filter(|member| {
+                member.profile() == GitCoverageJournalProfileV1::CachePhysical
+            }).count() != partitions.len()
+        {
+            return Err(CacheOwnerErrorV1::RecoveryMismatch);
+        }
+        for partition in partitions {
+            if partition.partition.node().as_bytes() != &catalog.coordinates().0 {
+                return Err(CacheOwnerErrorV1::RecoveryMismatch);
+            }
+            let member = catalog.fixed_member(
+                GitCoverageJournalProfileV1::CachePhysical,
+                *partition.partition.digest().as_bytes(),
+            ).map_err(|_| CacheOwnerErrorV1::RecoveryMismatch)?;
+            if member.infrastructure_count() != 0
+                || member.provision_origin() != origin
+                || member.predecessor_prefix() != snapshot.current.digest().as_bytes()
+            {
+                return Err(CacheOwnerErrorV1::RecoveryMismatch);
+            }
+        }
+        snapshot.revalidate()?;
+        Ok(snapshot)
+    }
+
     /// Writes an empty durable manifest for the isolated physical-join VM fixture.
     ///
     /// The manifest gives the VM a named inode to replace with identical bytes.

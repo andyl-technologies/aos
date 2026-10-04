@@ -405,7 +405,11 @@ pub const GIT_WHOLE_ODB_READ_FEATURE_NAMESPACE: &str = "aos.sandbox.git.whole-od
 pub const GIT_UPLOAD_CAPACITY_FEATURE_NAMESPACE: &str =
     "aos.sandbox.git.upload-operation-capacity";
 
-const BASE_FEATURES: [FeatureDefinition; 24] = [
+/// Exact opt-in feature for exclusive owner-cohort coverage fences.
+pub const GIT_UPLOAD_COVERAGE_FEATURE_NAMESPACE: &str =
+    "aos.sandbox.git-upload.coverage-fence";
+
+const BASE_FEATURES: [FeatureDefinition; 25] = [
     feature("aos.sandbox.runtime.linux-systemd"),
     feature("aos.sandbox.identity.posix32"),
     feature("aos.sandbox.metadata.posix-acl"),
@@ -430,6 +434,7 @@ const BASE_FEATURES: [FeatureDefinition; 24] = [
     feature("aos.sandbox.quiesce.storage"),
     feature(GIT_WHOLE_ODB_READ_FEATURE_NAMESPACE),
     feature(GIT_UPLOAD_CAPACITY_FEATURE_NAMESPACE),
+    feature(GIT_UPLOAD_COVERAGE_FEATURE_NAMESPACE),
 ];
 
 const fn feature(namespace: &'static str) -> FeatureDefinition {

@@ -123,6 +123,23 @@ enum BrokerMethod {
   BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2 = 50;
   BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2 = 51;
   BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2 = 52;
+  // Opt-in denial-only coverage flights; no allocation or public RPC authority.
+  BROKER_METHOD_MOUNT_PREPARE_GIT_PROJECT_COVERAGE_V1 = 53;
+  BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1 = 54;
+  BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1 = 55;
+  BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1 = 56;
+}
+
+// One canonical zero-descriptor DATA carrier for the four fixed coverage flights.
+message GitProjectCoverageRequestV1 {
+  RequestHeader header = 1;
+  bytes coverage = 2;
+}
+
+// The existing signed outcome binds this request ID and complete bounded DATA.
+message GitProjectCoverageResponseV1 {
+  bytes request_id = 1;
+  bytes coverage = 2;
 }
 
 // Comparison coordinates only. Fixed owners independently join their admitted

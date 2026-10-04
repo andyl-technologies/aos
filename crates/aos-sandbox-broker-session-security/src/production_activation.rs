@@ -45,6 +45,12 @@ pub enum ProductionBrokerSessionActivationErrorV1 {
     /// The protected handshake rejected an accepted peer or local custody.
     #[error("broker-session handshake failed: {0}")]
     Handshake(#[from] DormantBrokerSessionHandshakeErrorV1),
+    /// The original Mount cohort failed before selected acceptance.
+    #[error(transparent)]
+    CoverageMount(aos_sandbox_mount::DormantMountBrokerCallErrorV1),
+    /// The original Storage/output cohort failed before selected acceptance.
+    #[error(transparent)]
+    CoverageStorage(aos_sandbox_storage::DormantStorageBrokerCallErrorV1),
     /// The next authenticated session did not arrive before its boot-time deadline.
     #[error("broker-session acceptance deadline expired")]
     Deadline,
@@ -336,6 +342,51 @@ impl ProductionBrokerSessionActivationV1 {
         &mut self,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<DormantAuthenticatedBrokerSessionV1, ProductionBrokerSessionActivationErrorV1> {
+        self.accept_authenticated_with_coverage_v1(deadline_boottime_nanoseconds, None)
+    }
+
+    /// Accepts the opt-in Mount profile only after its actual owner comparison.
+    ///
+    /// # Errors
+    /// Retains domain refusal before acceptance, or returns the unchanged
+    /// activation/handshake failure. Lower constructor custody is not widened.
+    pub fn accept_authenticated_mount_git_coverage_v1(
+        &mut self,
+        deadline_boottime_nanoseconds: u64,
+        mount: &mut dyn aos_sandbox_mount::DormantMountBrokerCallsiteV1,
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, ProductionBrokerSessionActivationErrorV1> {
+        mount.recheck_git_coverage_response_v1(deadline_boottime_nanoseconds)
+            .map_err(ProductionBrokerSessionActivationErrorV1::CoverageMount)?;
+        self.accept_authenticated_with_coverage_v1(
+            deadline_boottime_nanoseconds,
+            Some(aos_sandbox_core::format::git_upload_enrollment::GitCoverageBrokerRoleV1::Mount),
+        )
+    }
+
+    /// Accepts the opt-in Storage profile through the same retained cold engine.
+    ///
+    /// # Errors
+    /// Retains unavailable or changed Storage/output originals before
+    /// acceptance, or preserves the original activation/cold failure.
+    pub fn accept_authenticated_storage_git_coverage_v1(
+        &mut self,
+        deadline_boottime_nanoseconds: u64,
+        storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+        output: &aos_sandbox_storage::execution_output_credential::StorageExecutionOutputCustodyV1,
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, ProductionBrokerSessionActivationErrorV1> {
+        storage.recheck_git_coverage_response_v1(output, deadline_boottime_nanoseconds)
+            .map_err(ProductionBrokerSessionActivationErrorV1::CoverageStorage)?;
+        self.accept_authenticated_with_coverage_v1(
+            deadline_boottime_nanoseconds,
+            Some(aos_sandbox_core::format::git_upload_enrollment::GitCoverageBrokerRoleV1::Storage),
+        )
+    }
+
+    fn accept_authenticated_with_coverage_v1(
+        &mut self,
+        deadline_boottime_nanoseconds: u64,
+        coverage: Option<aos_sandbox_core::format::git_upload_enrollment::GitCoverageBrokerRoleV1>,
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, ProductionBrokerSessionActivationErrorV1> {
         if self.has_failed_storage_cold() {
             return Err(DormantBrokerSessionHandshakeErrorV1::Protected(
                 crate::BrokerSessionSecurityError::Currentness,
@@ -365,11 +416,15 @@ impl ProductionBrokerSessionActivationV1 {
                         deadline_boottime_nanoseconds,
                     );
                     return custody
-                        .complete_retained_storage_handshake(socket, deadline, &mut self.storage_cold)
+                        .complete_retained_storage_handshake_with_coverage_v1(
+                            socket, deadline, &mut self.storage_cold, coverage,
+                        )
                         .map_err(Into::into);
                 }
                 return custody
-                    .complete_production_broker_handshake(socket, deadline_boottime_nanoseconds)
+                    .complete_production_broker_handshake_with_coverage_v1(
+                        socket, deadline_boottime_nanoseconds, coverage,
+                    )
                     .map_err(Into::into);
             }
         }

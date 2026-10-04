@@ -8,6 +8,9 @@ use aos_proto::aos::sandbox::local::v1::BrokerMethod;
 use aos_sandbox_core::{ObjectDigest, ProtocolVersion};
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_protocol::mount_catalog::decode_mount_catalog_preparation;
+use aos_sandbox_protocol::git_project_coverage::{
+    decode_git_project_coverage_request_v1, encode_git_project_coverage_response_v1,
+};
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{
     PeerCredentials, PeerPolicy, decode_destination_slot_inventory_request,
@@ -65,6 +68,35 @@ impl DormantMountBrokerObservationV1 {
 /// Defines the closed Mount call surface accepted by session security.
 #[doc(hidden)]
 pub trait DormantMountBrokerCallsiteV1: sealed::Sealed {
+    /// Rechecks the same permanent cohort fence before a response crossing.
+    ///
+    /// # Errors
+    /// Retains changed inputs, original custody, native history or negative
+    /// debt. Success is only a DATA-response bookend, not effect authority.
+    fn recheck_git_coverage_response_v1(&mut self, deadline: u64)
+        -> Result<(), DormantMountBrokerCallErrorV1>;
+
+    /// Compares or permanently fences the same original unused Mount owner.
+    ///
+    /// The authenticated session remains responsible for the exact signed
+    /// request, current peer and outcome. The returned body is coverage DATA,
+    /// not an allocation, release, retirement or resource-account permit.
+    ///
+    /// # Errors
+    /// Rejects another method, stale original kernel/peer/header coordinates,
+    /// changed fixed inputs, nonempty custody or failed native readback.
+    fn consume_authenticated_git_coverage_v1(
+        &mut self,
+        method: BrokerMethod,
+        request_body: &[u8],
+        request_id: [u8; 16],
+        request_body_digest: ObjectDigest,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        protocol_version: ProtocolVersion,
+        protected_boot_id: [u8; 16],
+    ) -> Result<Vec<u8>, DormantMountBrokerCallErrorV1>;
+
     /// Executes one exact authenticated Mount Apply operation.
     ///
     /// # Errors
@@ -171,6 +203,54 @@ impl<W> DormantMountBrokerCallsiteV1 for DormantMountBrokerCompositionV1<'_, W>
 where
     W: MountWorker,
 {
+    fn recheck_git_coverage_response_v1(&mut self, deadline: u64)
+        -> Result<(), DormantMountBrokerCallErrorV1>
+    {
+        self.broker.compare_git_coverage_v1(Some(deadline))?;
+        Ok(())
+    }
+
+    fn consume_authenticated_git_coverage_v1(
+        &mut self,
+        method: BrokerMethod,
+        request_body: &[u8],
+        request_id: [u8; 16],
+        request_body_digest: ObjectDigest,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        protocol_version: ProtocolVersion,
+        protected_boot_id: [u8; 16],
+    ) -> Result<Vec<u8>, DormantMountBrokerCallErrorV1> {
+        if KernelBootId::current()
+            .map_err(|_| DormantMountBrokerCallErrorV1::StaleKernel)?
+            .into_bytes() != protected_boot_id
+            || ObjectDigest::from_bytes(Sha256::digest(request_body).into()) != request_body_digest
+        {
+            return Err(DormantMountBrokerCallErrorV1::StaleKernel);
+        }
+
+        let sample = crate::service::trusted_paired_clock_sample()?;
+        if sample.host_boot_id() != protected_boot_id
+            || self.last_boottime_nanoseconds
+                .is_some_and(|floor| sample.boottime_nanoseconds() < floor)
+        {
+            return Err(DormantMountBrokerCallErrorV1::StaleKernel);
+        }
+        self.last_boottime_nanoseconds = Some(sample.boottime_nanoseconds());
+        let original = decode_git_project_coverage_request_v1(
+            request_body, method, peer, policy, sample.boottime_nanoseconds(),
+        ).map_err(|_| DormantMountBrokerCallErrorV1::StaleKernel)?;
+        if original.header().request_id() != &request_id
+            || original.header().protocol_version() != protocol_version
+        {
+            return Err(DormantMountBrokerCallErrorV1::StaleKernel);
+        }
+
+        let readback = self.broker.consume_git_coverage_v1(&original)?;
+        encode_git_project_coverage_response_v1(&original, readback)
+            .map_err(|_| DormantMountBrokerCallErrorV1::StaleKernel)
+    }
+
     fn consume_authenticated_apply(
         &mut self,
         request_body: &[u8],

@@ -27,6 +27,7 @@
 //! mutations before calling it.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::mem::MaybeUninit;
 use std::os::fd::{BorrowedFd, OwnedFd};
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
@@ -512,6 +513,31 @@ pub struct DestinationSlotStoreV1 {
     kernel_boot_id: [u8; 16],
     records: BTreeMap<SlotKey, Record>,
     pins: BTreeMap<SlotKey, ResolvedPath>,
+    git_coverage_census: Option<Box<GitCoverageEmptyCensusV1>>,
+}
+
+/// Retains the selected census's actual handle, getdents storage and causes.
+///
+/// Ordinary recovery allocates none of these resources. The read handle is
+/// derived from the already retained root, never from a caller pathname. The
+/// fixed buffer also retains a rejected entry's original bytes until disposal.
+struct GitCoverageEmptyCensusV1 {
+    root_metadata: Option<std::result::Result<rustix::fs::Stat, rustix::io::Errno>>,
+    read_handle: Option<std::result::Result<OwnedFd, rustix::io::Errno>>,
+    buffer: [MaybeUninit<u8>; 4096],
+    first: Option<GitCoverageCensusCauseV1>,
+    final_bookend: Option<GitCoverageCensusCauseV1>,
+    closed: bool,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum GitCoverageCensusCauseV1 {
+    #[error("destination coverage census kernel operation failed: {0}")]
+    Kernel(#[from] rustix::io::Errno),
+    #[error("destination coverage census original identity failed: {0}")]
+    Linux(#[from] aos_sandbox_linux::Error),
+    #[error("destination coverage census refused: {0}")]
+    Refused(&'static str),
 }
 
 impl DestinationSlotStoreV1 {
@@ -570,6 +596,7 @@ impl DestinationSlotStoreV1 {
             kernel_boot_id,
             records,
             pins: BTreeMap::new(),
+            git_coverage_census: None,
         };
         value.recover_pins()?;
         Ok(value)
@@ -949,6 +976,134 @@ impl DestinationSlotStoreV1 {
         self.records.is_empty()
     }
 
+    /// Compares a genuinely empty catalog with its same original physical root.
+    ///
+    /// The caller holds the cohort's worker/mutation exclusion. This is only a
+    /// bounded observation, not a filesystem allocation or cleanup permit.
+    /// Every non-dot child refuses, including an unregistered empty directory.
+    /// A failed or abandoned census permanently retains its partial resources.
+    pub(crate) fn compare_empty_git_coverage_v1(&mut self) -> Result<()> {
+        if self.git_coverage_census.is_none() {
+            self.git_coverage_census = Some(Box::new(GitCoverageEmptyCensusV1 {
+                root_metadata: None,
+                read_handle: None,
+                buffer: [MaybeUninit::uninit(); 4096],
+                first: None,
+                final_bookend: None,
+                closed: false,
+            }));
+        }
+        let census = self.git_coverage_census.as_mut().ok_or_else(|| {
+            conflict("destination coverage census storage is unavailable")
+        })?;
+        if census.closed {
+            return Err(conflict("destination coverage census is permanently fenced"));
+        }
+        census.closed = true;
+
+        let result = (|| -> std::result::Result<(), GitCoverageCensusCauseV1> {
+            if !self.records.is_empty() || !self.pins.is_empty() {
+                return Err(GitCoverageCensusCauseV1::Refused("retained slot debt"));
+            }
+            if census.root_metadata.is_none() {
+                census.root_metadata = Some(rustix::fs::fstat(self.root.as_fd()));
+            }
+            let original_metadata = match census.root_metadata.as_ref() {
+                Some(Ok(metadata)) => metadata,
+                Some(Err(_)) => {
+                    return Err(GitCoverageCensusCauseV1::Refused("root metadata failed"));
+                }
+                None => return Err(GitCoverageCensusCauseV1::Refused("root metadata absent")),
+            };
+            require_git_coverage_census_root(
+                &self.root,
+                self.root_owner,
+                self.anchor_mount_id,
+                self.kernel_boot_id,
+                Some(original_metadata),
+                None,
+            )?;
+
+            if census.read_handle.is_none() {
+                census.read_handle = Some(rustix::fs::openat(
+                    self.root.as_fd(),
+                    ".",
+                    rustix::fs::OFlags::RDONLY
+                        | rustix::fs::OFlags::DIRECTORY
+                        | rustix::fs::OFlags::NOFOLLOW
+                        | rustix::fs::OFlags::CLOEXEC,
+                    rustix::fs::Mode::empty(),
+                ));
+            }
+            let handle = match census.read_handle.as_ref() {
+                Some(Ok(handle)) => handle,
+                Some(Err(_)) => {
+                    // The original native error remains in the owning Result.
+                    return Err(GitCoverageCensusCauseV1::Refused("read handle failed"));
+                }
+                None => return Err(GitCoverageCensusCauseV1::Refused("read handle absent")),
+            };
+            require_git_coverage_census_root(
+                &self.root,
+                self.root_owner,
+                self.anchor_mount_id,
+                self.kernel_boot_id,
+                Some(original_metadata),
+                Some(handle),
+            )?;
+            rustix::fs::seek(handle, rustix::fs::SeekFrom::Start(0))?;
+
+            // An empty directory has at most '.' and '..', followed by EOF.
+            // No recursive inventory, growth or unbounded collection occurs.
+            let mut directory = rustix::fs::RawDir::new(handle, &mut census.buffer);
+            let mut dot = false;
+            let mut parent = false;
+            for _ in 0..3 {
+                match directory.next() {
+                    None if dot && parent => return Ok(()),
+                    None => {
+                        return Err(GitCoverageCensusCauseV1::Refused("dot entries absent"));
+                    }
+                    Some(Err(error)) => return Err(error.into()),
+                    Some(Ok(entry)) => match entry.file_name().to_bytes() {
+                        b"." if !dot => dot = true,
+                        b".." if !parent => parent = true,
+                        _ => {
+                            return Err(GitCoverageCensusCauseV1::Refused(
+                                "unknown physical child or repeated dot entry",
+                            ));
+                        }
+                    },
+                }
+            }
+            Err(GitCoverageCensusCauseV1::Refused("directory did not reach bounded EOF"))
+        })();
+        if let Err(error) = result {
+            census.first = Some(error);
+        }
+
+        // Preserve the primary cause before independently checking the original
+        // root again. Later identity debt never replaces the owning first error.
+        let handle = census.read_handle.as_ref().and_then(|result| result.as_ref().ok());
+        let original_metadata = census.root_metadata.as_ref()
+            .and_then(|result| result.as_ref().ok());
+        if let Err(error) = require_git_coverage_census_root(
+            &self.root,
+            self.root_owner,
+            self.anchor_mount_id,
+            self.kernel_boot_id,
+            original_metadata,
+            handle,
+        ) {
+            census.final_bookend = Some(error);
+        }
+        if census.first.is_some() || census.final_bookend.is_some() {
+            return Err(conflict("destination coverage census retained failure"));
+        }
+        census.closed = false;
+        Ok(())
+    }
+
     /// Iterates the complete durable table in canonical logical-key order.
     pub(crate) fn resources(&self) -> impl Iterator<Item = DestinationSlotResourceV1> + '_ {
         self.records
@@ -1258,6 +1413,51 @@ impl DestinationSlotStoreV1 {
             Ok(())
         }
     }
+}
+
+fn require_git_coverage_census_root(
+    root: &BeneathRoot,
+    owner: u32,
+    mount: MountId,
+    boot: [u8; 16],
+    original_metadata: Option<&rustix::fs::Stat>,
+    read_handle: Option<&OwnedFd>,
+) -> std::result::Result<(), GitCoverageCensusCauseV1> {
+    let original = root.identity();
+    let stat = rustix::fs::fstat(root.as_fd())?;
+    if stat.st_uid != owner
+        || stat.st_mode & 0o7777 != PARENT_DIRECTORY_MODE
+        || rustix::fs::FileType::from_raw_mode(stat.st_mode) != rustix::fs::FileType::Directory
+        || stat.st_dev as u64 != original.device
+        || stat.st_ino as u64 != original.inode
+        || MountId::from_fd(root.as_fd())? != mount
+        || KernelBootId::current()?.into_bytes() != boot
+    {
+        return Err(GitCoverageCensusCauseV1::Refused("original root changed"));
+    }
+    if let Some(metadata) = original_metadata {
+        if stat.st_gid != metadata.st_gid
+            || stat.st_uid != metadata.st_uid
+            || stat.st_mode != metadata.st_mode
+            || stat.st_dev != metadata.st_dev
+            || stat.st_ino != metadata.st_ino
+        {
+            return Err(GitCoverageCensusCauseV1::Refused("original root metadata changed"));
+        }
+    }
+    if let Some(handle) = read_handle {
+        let readable = rustix::fs::fstat(handle)?;
+        if readable.st_uid != stat.st_uid
+            || readable.st_gid != stat.st_gid
+            || readable.st_mode != stat.st_mode
+            || readable.st_dev != stat.st_dev
+            || readable.st_ino != stat.st_ino
+            || MountId::from_fd(handle)? != mount
+        {
+            return Err(GitCoverageCensusCauseV1::Refused("read handle changed root"));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]

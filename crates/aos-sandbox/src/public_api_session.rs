@@ -44,6 +44,8 @@ pub(crate) use credentials::{
 pub(crate) use original_registration::CurrentOriginalPublicRegistrationV3;
 pub use stream::AuthenticatedPublicApiStream;
 pub use credentials::{
+    GitCoverageCredentialCustodyV1, GitCoverageCredentialDataV1,
+    GitCoverageCredentialErrorV1,
     PublisherPolicyBootstrapCredentialCustodyV1, PublisherPolicyBootstrapCredentialErrorV1,
 };
 

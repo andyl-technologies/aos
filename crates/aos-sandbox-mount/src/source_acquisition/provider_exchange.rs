@@ -255,6 +255,14 @@ impl<'journal> FixedMountSourceAcquisitionOwnerV2<'journal> {
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
     ) -> Result<()> {
         self.require_no_original_native_flight()?;
+        if self.git_coverage_denied {
+            let attempt = self.runtime.pending_provider_send.as_ref()
+                .ok_or_else(|| state_error("no SourceProvider send recovery is retained"))?
+                .attempt_id();
+            // Refuse Acquire before taking its real retry owner. Original
+            // Release/Inventory retain their old validation and send engine.
+            self.require_git_coverage_existing_send_v1(attempt)?;
+        }
         let recovery = self
             .runtime
             .pending_provider_send

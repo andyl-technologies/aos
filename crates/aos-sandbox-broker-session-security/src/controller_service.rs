@@ -157,6 +157,8 @@ pub(crate) mod execution_output_reserve;
 mod execution_output_storage_reserve;
 pub(crate) mod execution_output_storage_registration;
 mod guest_root;
+#[cfg(target_os = "linux")]
+mod git_coverage;
 mod git_read_inspection;
 #[allow(
     dead_code,
@@ -670,6 +672,8 @@ fn run_retained_controller(
     };
     let _unwind = AbortControllerCustodyUnwindV1;
 
+    originals.git_coverage_enabled = configuration.git_coverage;
+
     // Local propagation only: success is assigned immediately into an already
     // prepared field. No helper consumes an original or supplies authority.
     macro_rules! checked {
@@ -888,6 +892,11 @@ fn run_retained_controller(
         let controller = required!(controller.as_mut());
         let genesis = required!(genesis.as_ref()).as_ref();
         let profile = required!(profile.as_ref()).as_deref();
+        if configuration.git_coverage && genesis.is_some() {
+            worker.terminate(ControllerResidentCauseV1::Closed(
+                "exclusive Git cohort cannot create or reconstruct Source genesis",
+            ));
+        }
         let replay_genesis = checked!(
             genesis
                 .map(|input| controller.has_retained_provisioned_source_genesis_v1(input))
@@ -934,7 +943,7 @@ fn run_retained_controller(
                     .map_err(ControllerRuntimeError::from)
             );
         }
-        if let Some(bootstrap) = publisher_policy_bootstrap.as_mut() {
+        if let Some(bootstrap) = publisher_policy_bootstrap.as_mut().filter(|_| !configuration.git_coverage) {
             if cache_usage::selected_bookend(controller, bootstrap).is_err() {
                 worker.terminate(ControllerResidentCauseV1::CacheUsage);
             }
@@ -1165,6 +1174,7 @@ fn run_retained_controller(
 // observed optional absence. The worker only borrows a completed destination.
 #[derive(Default)]
 struct ControllerWorkerOriginalsV1 {
+    git_coverage_enabled: bool,
     git_read: Option<git_read_inspection::GitReadWorkerInputsV1>,
     publisher_attempt: Option<publisher_ingress::PublisherStartupAttemptV1>,
     publisher_registration: Option<Option<publisher_ingress::PublisherRegistrationOwnerV1>>,
@@ -1307,6 +1317,7 @@ impl ControllerWorkerOriginalsV1 {
             genesis: self.genesis.as_ref()?.as_ref(),
             publisher: self.publisher_registration.as_mut()?.as_mut(),
             cache_bootstrap: self.publisher_policy_bootstrap.as_mut(),
+            git_coverage_enabled: self.git_coverage_enabled,
             git_read: self.git_read.as_mut(),
             capabilities: self.capabilities.as_ref()?,
             sessions: self.sessions.as_ref()?,
@@ -1328,6 +1339,7 @@ struct ControllerWorkerLoanV1<'owner> {
     genesis: Option<&'owner ProvisionedControllerSourceGenesisInputV1>,
     publisher: Option<&'owner mut publisher_ingress::PublisherRegistrationOwnerV1>,
     cache_bootstrap: Option<&'owner mut publisher_policy_source::PublisherPolicyBootstrapAttemptV1>,
+    git_coverage_enabled: bool,
     git_read: Option<&'owner mut git_read_inspection::GitReadWorkerInputsV1>,
     capabilities: &'owner Arc<Mutex<CapabilityState>>,
     sessions: &'owner SharedControllerBrokerSessions,
@@ -1350,6 +1362,8 @@ enum ControllerResidentCauseV1 {
     PublisherPolicyBootstrap,
     // Actual Cache initialization/replay causes stay in the SAME Controller.
     CacheUsage,
+    // The local selected child retains its actual Root/Session/native causes.
+    GitCoverage,
     // Typed cause and every partial owner remain in SAME sessions' cold slot.
     StorageCold,
     // The first native cause stays with the SAME Storage pending-session slot.
@@ -1370,6 +1384,7 @@ impl ControllerResidentCauseV1 {
             Self::Publisher => "resident original Publisher startup failure",
             Self::PublisherPolicyBootstrap => "resident original Publisher policy bootstrap failure",
             Self::CacheUsage => "resident original Cache project observation failure",
+            Self::GitCoverage => "resident original Git cohort enrollment failure",
             Self::StorageCold => "resident original Storage cold admission failure",
             Self::OutputRegistration => "resident original output registration failure",
             Self::Closed(label) => label,
@@ -1670,6 +1685,7 @@ fn controller_worker(
             genesis: source_genesis_input.as_ref(),
             publisher: publisher_registration.as_mut(),
             cache_bootstrap: None,
+            git_coverage_enabled: false,
             git_read: None,
             capabilities: &capabilities,
             sessions: &sessions,
@@ -1711,12 +1727,36 @@ fn controller_worker_loop(
         genesis: source_genesis_input,
         publisher: mut publisher_registration,
         mut cache_bootstrap,
+        git_coverage_enabled,
         mut git_read,
         capabilities,
         sessions,
         commands,
         events,
     } = loan;
+    #[cfg(target_os = "linux")]
+    let mut coverage = if git_coverage_enabled {
+        let (Some(profile), Some(bootstrap), Some(terminal)) =
+            (normal_root_profile, cache_bootstrap.as_deref_mut(), custody)
+        else {
+            std::process::abort();
+        };
+        let mut owner = git_coverage::GitCoverageWorkerV1::new(profile);
+        let Ok(mut original_sessions) = sessions.lock() else {
+            terminal.terminate(ControllerResidentCauseV1::GitCoverage);
+        };
+        if owner.install_once(controller, bootstrap, &mut original_sessions, node_id).is_err() {
+            terminal.terminate(ControllerResidentCauseV1::GitCoverage);
+        }
+        Some(owner)
+    } else {
+        None
+    };
+    #[cfg(not(target_os = "linux"))]
+    if git_coverage_enabled {
+        std::process::abort();
+    }
+
     let mut ready = false;
     let mut next_cycle = Instant::now();
     let mut next_attach_poll = Instant::now();
@@ -1757,7 +1797,14 @@ fn controller_worker_loop(
                 return;
             }
             if let Some(bootstrap) = cache_bootstrap.as_mut() {
-                if cache_usage::selected_bookend(controller, bootstrap).is_err() {
+                #[cfg(target_os = "linux")]
+                let checked = match coverage.as_mut() {
+                    Some(owner) => owner.bookend(controller, bootstrap),
+                    None => cache_usage::selected_bookend(controller, bootstrap),
+                };
+                #[cfg(not(target_os = "linux"))]
+                let checked = cache_usage::selected_bookend(controller, bootstrap);
+                if checked.is_err() {
                     report_controller_worker_failure(events, custody, ControllerResidentCauseV1::CacheUsage);
                     return;
                 }
@@ -1772,7 +1819,14 @@ fn controller_worker_loop(
             ) {
                 Ok(catalog) => {
                     if let Some(bootstrap) = cache_bootstrap.as_mut() {
-                        if cache_usage::selected_bookend(controller, bootstrap).is_err() {
+                        #[cfg(target_os = "linux")]
+                        let checked = match coverage.as_mut() {
+                            Some(owner) => owner.bookend(controller, bootstrap),
+                            None => cache_usage::selected_bookend(controller, bootstrap),
+                        };
+                        #[cfg(not(target_os = "linux"))]
+                        let checked = cache_usage::selected_bookend(controller, bootstrap);
+                        if checked.is_err() {
                             report_controller_worker_failure(events, custody, ControllerResidentCauseV1::CacheUsage);
                             return;
                         }
@@ -3405,6 +3459,7 @@ struct RuntimeConfiguration {
     public_api: bool,
     publisher_ingress: bool,
     git_upload_bootstrap: bool,
+    git_coverage: bool,
     git_read_inspection: Option<(u32, u32)>,
     nix_start_admission: bool,
     issue_source_successor: bool,
@@ -3425,6 +3480,7 @@ impl RuntimeConfiguration {
         let mut public_api = false;
         let mut publisher_ingress = false;
         let mut git_upload_bootstrap = false;
+        let mut git_coverage = false;
         let mut git_read_inspection = None;
         let mut nix_start_admission = false;
         let mut issue_source_successor = false;
@@ -3434,6 +3490,7 @@ impl RuntimeConfiguration {
                 "--public-api" if !public_api => public_api = true,
                 "--publisher-ingress" if !publisher_ingress => publisher_ingress = true,
                 "--git-upload-bootstrap" if !git_upload_bootstrap => git_upload_bootstrap = true,
+                "--git-upload-coverage" if !git_coverage => git_coverage = true,
                 "--nix-start-admission" if !nix_start_admission => nix_start_admission = true,
                 "--issue-source-successor" if !issue_source_successor => {
                     issue_source_successor = true;
@@ -3474,6 +3531,7 @@ impl RuntimeConfiguration {
                 || publisher_ingress
                 || nix_start_admission
                 || git_upload_bootstrap
+                || git_coverage
                 || git_read_inspection.is_some()
                 || create_q04_policy_subgate)
         {
@@ -3491,6 +3549,11 @@ impl RuntimeConfiguration {
                 "Git bootstrap requires original publisher ingress",
             ));
         }
+        if git_coverage && (!cfg!(target_os = "linux") || !git_upload_bootstrap) {
+            return Err(ControllerRuntimeError::InvalidArguments(
+                "Git coverage requires the selected Linux original Cache bootstrap",
+            ));
+        }
         if git_read_inspection.is_some() && !(public_api && publisher_ingress && git_upload_bootstrap) {
             return Err(ControllerRuntimeError::InvalidArguments(
                 "Git inspection requires public credentials and original Cache bootstrap",
@@ -3504,6 +3567,7 @@ impl RuntimeConfiguration {
             public_api,
             publisher_ingress,
             git_upload_bootstrap,
+            git_coverage,
             git_read_inspection,
             nix_start_admission,
             issue_source_successor,
@@ -5485,6 +5549,56 @@ fn reject_unqualified_delete_effect(plan: &EffectPlan) -> Result<(), EffectFailu
 }
 
 impl SingleNodeEffectExecutor for ProductionEffectExecutor {
+    #[cfg(target_os = "linux")]
+    fn capture_existing_git_coverage_account_cut_v1(
+        &mut self,
+        journal: &mut Journal,
+        original_inputs: &mut aos_sandbox::public_api_session::GitCoverageCredentialCustodyV1,
+        original_bootstrap: &aos_sandbox::publisher_policy::GitUploadBootstrapAppendV1,
+        original_source: &aos_sandbox::publisher_policy::VerifiedPublisherPolicySourceV1,
+        original_capacity: &aos_sandbox_core::GitUploadCapacityV1,
+        original_bootstrap_credentials: &mut aos_sandbox::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
+        attempt: &mut aos_sandbox::policy_compiler::GitCoverageAccountAttemptV1<'_>,
+    ) -> Result<(), aos_sandbox::cache_residency::CacheResidentUnavailableV1> {
+        self.capture_existing_git_coverage_account_cut(
+            journal, original_inputs, original_bootstrap, original_source,
+            original_capacity, original_bootstrap_credentials, attempt,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    fn commit_existing_git_coverage_account_v1(
+        &mut self,
+        journal: &mut Journal,
+        original_inputs: &mut aos_sandbox::public_api_session::GitCoverageCredentialCustodyV1,
+        original_bootstrap: &aos_sandbox::publisher_policy::GitUploadBootstrapAppendV1,
+        original_source: &aos_sandbox::publisher_policy::VerifiedPublisherPolicySourceV1,
+        original_capacity: &aos_sandbox_core::GitUploadCapacityV1,
+        original_bootstrap_credentials: &mut aos_sandbox::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
+        attempt: &mut aos_sandbox::policy_compiler::GitCoverageAccountAttemptV1<'_>,
+    ) -> Result<(), aos_sandbox::cache_residency::CacheResidentUnavailableV1> {
+        self.commit_existing_git_coverage_account(
+            journal, original_inputs, original_bootstrap, original_source,
+            original_capacity, original_bootstrap_credentials, attempt,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    fn compare_existing_cache_git_coverage_v1(
+        &mut self,
+        original_inputs: &mut aos_sandbox::public_api_session::GitCoverageCredentialCustodyV1,
+        flight: aos_sandbox_core::format::git_upload_enrollment::GitCoverageFlightV1,
+        original_nonce: [u8; 16],
+        original_account: Option<&mut aos_sandbox::policy_compiler::GitCoverageAccountAttemptV1<'_>>,
+    ) -> Result<(
+        aos_sandbox_core::format::git_upload_enrollment::GitCoverageBirthFieldsV1,
+        aos_sandbox_core::format::git_upload_enrollment::GitCoverageFenceFieldsV1,
+        [u8; 32],
+        u64,
+    ), aos_sandbox::cache_residency::CacheResidentUnavailableV1> {
+        self.compare_existing_cache_git_coverage(original_inputs, flight, original_nonce, original_account)
+    }
+
     fn select_original_create_q04_policy_subgate_v1(
         &mut self,
         profile: Arc<aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1>,
@@ -7792,6 +7906,7 @@ mod tests {
             public_api: false,
             publisher_ingress: false,
             git_upload_bootstrap: false,
+            git_coverage: false,
             git_read_inspection: None,
             nix_start_admission: false,
             issue_source_successor: false,

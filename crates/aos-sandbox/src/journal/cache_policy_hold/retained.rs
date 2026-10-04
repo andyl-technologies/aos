@@ -9,7 +9,7 @@ use super::super::{
     Journal, JournalAuthorityInstance, JournalError, JournalLimits, JournalTransaction,
     ProtectedWriterNameWitness,
 };
-use super::{CachePolicyHoldStateV1, NAME, current_state, hold_limits, mutation_guard};
+use super::{CachePolicyGateStateV1, NAME, current_gate_state, hold_limits, mutation_guard};
 
 struct RetainedCacheTargetV1 {
     name: &'static str,
@@ -38,7 +38,7 @@ pub(crate) struct RetainedCacheGateChecksV1 {
     uid: u32,
     gate_witness: ProtectedWriterNameWitness,
     gate_sequence: u64,
-    state: CachePolicyHoldStateV1,
+    state: CachePolicyGateStateV1,
     targets: [RetainedCacheTargetV1; 2],
 }
 
@@ -59,6 +59,7 @@ impl CacheMutationGateV1<'_> {
         journal: &Journal,
         transactions: &[JournalTransaction],
     ) -> Result<(), JournalError> {
+        self.refuse_exclusive_mutation(journal)?;
         match self {
             Self::Ordinary => journal.preflight_transactions(transactions),
             Self::Retained(gate) => {
@@ -79,6 +80,7 @@ impl CacheMutationGateV1<'_> {
         journal: &mut Journal,
         transaction: &JournalTransaction,
     ) -> Result<super::super::CommitResult, JournalError> {
+        self.refuse_exclusive_mutation(journal)?;
         match self {
             Self::Ordinary => journal.commit(transaction),
             Self::Retained(gate) => journal.commit_with_retained_cache_gate_v1(transaction, gate),
@@ -104,13 +106,35 @@ impl CacheMutationGateV1<'_> {
             Self::Ordinary => mutation_guard(target),
             Self::Retained(gate) => {
                 gate.require_for_target(target)?;
+                gate.checks.state.require_new_mutation()?;
                 Ok(None)
             }
             Self::Resident(gate, checks) => {
                 checks.require_for_target(gate, target)?;
+                checks.state.require_new_mutation()?;
                 Ok(None)
             }
         }
+    }
+
+    // The ordinary arms add no check, allocation or I/O. A selected resident
+    // exclusive fence still permits its original read bookends, but cannot be
+    // used as a mutation gate by the same caller after that read succeeds.
+    fn refuse_exclusive_mutation(&mut self, target: &Journal) -> Result<(), JournalError> {
+        let exclusive = match self {
+            Self::Ordinary => false,
+            Self::Retained(gate) => {
+                gate.checks.state.is_exclusive()
+            }
+            Self::Resident(_, checks) => {
+                checks.state.is_exclusive()
+            }
+        };
+        if exclusive {
+            self.check(target)?;
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(())
     }
 
     pub(in crate::journal) fn own_successor(
@@ -228,10 +252,8 @@ impl Journal {
             false,
         )?;
         require_named(&gate, directory, NAME, *uid, hold_limits())?;
-        let current = current_state(&mut gate)?;
-        if current.hold.is_some_and(|hold| hold.is_held()) || current.v8_pending.is_some() {
-            return Err(JournalError::ProtectedBoundary);
-        }
+        let current = current_gate_state(&mut gate)?;
+        require_readable_state(current)?;
         Ok(HeldCacheMutationGateV1 {
             checks: RetainedCacheGateChecksV1 {
                 directory: directory.clone(),
@@ -273,10 +295,8 @@ impl Journal {
             retain_target(authority, directory, *uid, "authority.journal")?,
         ];
         require_named(gate, directory, NAME, *uid, hold_limits())?;
-        let current = current_state(gate)?;
-        if current.hold.is_some_and(|hold| hold.is_held()) || current.v8_pending.is_some() {
-            return Err(JournalError::ProtectedBoundary);
-        }
+        let current = current_gate_state(gate)?;
+        require_readable_state(current)?;
 
         Ok(BorrowedCacheMutationGateV1 {
             checks: RetainedCacheGateChecksV1 {
@@ -367,7 +387,7 @@ impl RetainedCacheGateChecksV1 {
         require_named(gate, &self.directory, NAME, self.uid, hold_limits())?;
         gate.validate_protected_writer_name_witness(&self.gate_witness)?;
         if gate.snapshot_sequence() != self.gate_sequence
-            || current_state(gate)? != self.state
+            || current_gate_state(gate)? != self.state
         {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
@@ -407,6 +427,7 @@ impl RetainedCacheGateChecksV1 {
         length: u64,
     ) -> Result<(), JournalError> {
         self.require_gate(gate)?;
+        self.state.require_new_mutation()?;
         let index = self.target_index(target)?;
         let original = &self.targets[index];
         require_named(
@@ -441,6 +462,15 @@ impl RetainedCacheGateChecksV1 {
         self.targets[index].witness = successor;
         Ok(())
     }
+}
+
+fn require_readable_state(state: CachePolicyGateStateV1) -> Result<(), JournalError> {
+    if let CachePolicyGateStateV1::Ordinary(state) = state {
+        if state.hold.is_some_and(|hold| hold.is_held()) || state.v8_pending.is_some() {
+            return Err(JournalError::ProtectedBoundary);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

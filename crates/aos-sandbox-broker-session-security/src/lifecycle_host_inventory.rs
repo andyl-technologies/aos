@@ -227,6 +227,7 @@ macro_rules! domain_inventory_owner {
                     pending: None,
                     authority_effects: ControllerAuthorityEffectExchangeV1::default(),
                     output_registration: None,
+                    git_coverage: None,
                 })
             }
 
@@ -509,9 +510,403 @@ struct DormantLifecycleInventorySessionV1 {
     pending: Option<DormantLifecycleInventoryQueryRecoveryV1>,
     authority_effects: ControllerAuthorityEffectExchangeV1,
     output_registration: Option<crate::controller_service::execution_output_storage_registration::OriginalControllerOutputRegistrationV1>,
+    git_coverage: Option<GitCoverageQueryCustodyV1>,
+}
+
+type GitCoverageReplyV1 = (
+    AuthenticatedBrokerMethodOutcomeV1,
+    ProtectedBrokerOutcomeCurrentnessOwnerV1,
+);
+type GitCoverageProofResultV1 = Result<
+    Vec<u8>,
+    aos_sandbox_core::format::git_upload_enrollment::GitCoverageDataErrorV1,
+>;
+
+#[derive(Debug)]
+pub(crate) enum GitCoverageQueryFailureV1 {
+    Protected(BrokerSessionSecurityError),
+    Readiness(crate::DormantBrokerSessionHandshakeErrorV1),
+    Refused,
+}
+
+impl std::fmt::Display for GitCoverageQueryFailureV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Protected(cause) => std::fmt::Display::fmt(cause, formatter),
+            Self::Readiness(cause) => std::fmt::Display::fmt(cause, formatter),
+            Self::Refused => formatter.write_str("Git coverage exchange is permanently refused"),
+        }
+    }
+}
+
+impl std::error::Error for GitCoverageQueryFailureV1 {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Protected(cause) => Some(cause),
+            Self::Readiness(cause) => Some(cause),
+            Self::Refused => None,
+        }
+    }
+}
+
+struct GitCoverageQueryCustodyV1 {
+    original_cut: u64,
+    first_failure: Option<GitCoverageQueryFailureV1>,
+    postcheck_debt: Option<GitCoverageQueryFailureV1>,
+    completed: Option<GitCoverageReplyV1>,
+}
+
+/// Owns one selected original Session and its two whole coverage replies.
+///
+/// This is private transport custody, not an enrollment or currentness factory.
+/// Its containing Controller attempt remains prearmed through all field drops.
+pub(crate) struct DormantGitCoverageQueryOwnerV1 {
+    inner: DormantLifecycleInventorySessionV1,
+    replies: [Option<GitCoverageReplyV1>; 2],
+    checkpoint: Option<Result<Vec<u8>, BrokerSessionSecurityError>>,
+    proof: Option<GitCoverageProofResultV1>,
+}
+
+impl DormantGitCoverageQueryOwnerV1 {
+    // Called only after the returned original Session is parked here. A
+    // mismatch keeps its actual cause and entire transport in this owner.
+    pub(crate) fn require_original_node(
+        &mut self,
+        node: [u8; 16],
+    ) -> Result<(), LifecyclePhase6ErrorV1> {
+        match self.inner.session.require_current_node(node) {
+            Ok(()) => Ok(()),
+            Err(cause) => Err(self.inner.query_protected_failure(cause)),
+        }
+    }
+
+    pub(crate) fn from_original_mount(
+        original: DormantMountLifecycleInventoryOwnerV1,
+        original_cut: u64,
+    ) -> Self {
+        Self::from_original_inner(original.0, original_cut)
+    }
+
+    pub(crate) fn from_original_storage(
+        original: DormantStorageLifecycleInventoryOwnerV1,
+        original_cut: u64,
+    ) -> Self {
+        Self::from_original_inner(original.0, original_cut)
+    }
+
+    fn from_original_inner(
+        mut inner: DormantLifecycleInventorySessionV1,
+        original_cut: u64,
+    ) -> Self {
+        let refused = inner.pending.is_some()
+            || inner.authority_effects.has_pending()
+            || inner.has_pending_output_registration();
+        if let Some(custody) = inner.git_coverage.as_mut() {
+            custody.first_failure.get_or_insert(GitCoverageQueryFailureV1::Refused);
+        } else {
+            inner.git_coverage = Some(GitCoverageQueryCustodyV1 {
+                original_cut,
+                first_failure: refused.then_some(GitCoverageQueryFailureV1::Refused),
+                postcheck_debt: None,
+                completed: None,
+            });
+        }
+        Self {
+            inner,
+            replies: [None, None],
+            checkpoint: None,
+            proof: None,
+        }
+    }
+
+    // The selected containing owner calls these only after the actual account
+    // CAS and local Root completion. Failure returns this WHOLE owning capsule;
+    // it cannot strip an IO owner or recreate a Session from proof DATA.
+    pub(crate) fn restore_original_mount(
+        mut self,
+    ) -> Result<DormantMountLifecycleInventoryOwnerV1, Self> {
+        if self.recheck(1).is_err() || self.proof().is_none()
+            || self.reply(0).map(|reply| reply.0.method())
+                != Some(BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_GIT_PROJECT_COVERAGE_V1)
+            || self.inner.pending.is_some()
+        {
+            return Err(self);
+        }
+        self.inner.git_coverage = None;
+        Ok(DormantMountLifecycleInventoryOwnerV1(self.inner))
+    }
+
+    pub(crate) fn restore_original_storage(
+        mut self,
+    ) -> Result<DormantStorageLifecycleInventoryOwnerV1, Self> {
+        if self.recheck(1).is_err() || self.proof().is_none()
+            || self.reply(0).map(|reply| reply.0.method())
+                != Some(BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1)
+            || self.inner.pending.is_some()
+        {
+            return Err(self);
+        }
+        self.inner.git_coverage = None;
+        Ok(DormantStorageLifecycleInventoryOwnerV1(self.inner))
+    }
+
+    pub(crate) fn exchange(
+        &mut self,
+        method: BrokerMethod,
+        body: &[u8],
+    ) -> Result<(), LifecyclePhase6ErrorV1> {
+        let slot = match method {
+            BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_GIT_PROJECT_COVERAGE_V1
+            | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1 => 0,
+            BrokerMethod::BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1
+            | BrokerMethod::BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1 => 1,
+            _ => return Err(self.inner.refuse_git_coverage()),
+        };
+        let Some(custody) = self.inner.git_coverage.as_ref() else {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        };
+        if custody.first_failure.is_some()
+            || self.replies[slot].is_some()
+            || self.checkpoint.as_ref().is_some_and(Result::is_err)
+            || (slot == 1 && !matches!(self.checkpoint.as_ref(), Some(Ok(_))))
+        {
+            return Err(self.inner.refuse_git_coverage());
+        }
+        let cut = custody.original_cut;
+        let result = self.inner.exact_request_complete(method, |session| {
+            session.prepare_git_coverage_request_v1(method, body, cut)
+        });
+        match result {
+            Ok(reply) => self.replies[slot] = Some(reply),
+            Err(cause) => {
+                self.inner.refuse_git_coverage();
+                return Err(cause);
+            }
+        }
+        let Some((outcome, _)) = self.replies[slot].as_ref() else {
+            return Err(self.inner.refuse_git_coverage());
+        };
+        let original_sequence = if slot == 0 { 1 } else { 2 };
+        if outcome.method() != method
+            || outcome.request().client_sequence() != original_sequence
+            || outcome.broker_sequence() != original_sequence
+        {
+            return Err(self.inner.refuse_git_coverage());
+        }
+
+        // The complete response/currentness is already resident before this
+        // independent live peer, full protected head and original-cut check.
+        self.recheck(slot)?;
+        if slot == 0 {
+            self.capture_prepare_checkpoint()?;
+        }
+        Ok(())
+    }
+
+    fn capture_prepare_checkpoint(&mut self) -> Result<(), LifecyclePhase6ErrorV1> {
+        use aos_sandbox_core::format::git_upload_enrollment::{
+            COVERAGE_BROKER_PROOF_HEADER_BYTES_V1,
+            MAXIMUM_COVERAGE_BROKER_PROOF_BYTES_V1,
+        };
+
+        if self.checkpoint.is_some() {
+            return Err(self.inner.refuse_git_coverage());
+        }
+        let Some((prepare, currentness)) = self.replies[0].as_ref() else {
+            return Err(self.inner.refuse_git_coverage());
+        };
+        let maximum = MAXIMUM_COVERAGE_BROKER_PROOF_BYTES_V1
+            .checked_sub(COVERAGE_BROKER_PROOF_HEADER_BYTES_V1)
+            .and_then(|remaining| remaining.checked_sub(prepare.request().canonical_packet().len()))
+            .and_then(|remaining| remaining.checked_sub(prepare.canonical_packet().len()))
+            .filter(|remaining| *remaining != 0);
+        let Some(maximum) = maximum else {
+            return Err(self.inner.refuse_git_coverage());
+        };
+
+        // Prepare is still the actual current outcome here. Later Read cannot
+        // regenerate this capture or pretend that Prepare's old head is live.
+        self.checkpoint = Some(self.inner.session.capture_git_coverage_checkpoint_v1(
+            currentness, maximum,
+        ));
+        let postcheck = self.recheck_original_outcome(0);
+        if self.checkpoint.as_ref().is_some_and(Result::is_err) {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        postcheck
+    }
+
+    pub(crate) fn recheck(&mut self, slot: usize) -> Result<(), LifecyclePhase6ErrorV1> {
+        if self.checkpoint.as_ref().is_some_and(Result::is_err)
+            || self.proof.as_ref().is_some_and(Result::is_err)
+        {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        if slot == 0 && self.replies[1].is_some() {
+            // Read already advanced the actual protected head. Prepare's
+            // historical pair must never be presented as current again.
+            return Err(self.inner.refuse_git_coverage());
+        }
+        self.recheck_original_outcome(slot)
+    }
+
+    // Used directly only for the independent postcheck after an encoding
+    // Result is parked. It preserves that first error and records later debt.
+    fn recheck_original_outcome(&mut self, slot: usize) -> Result<(), LifecyclePhase6ErrorV1> {
+        let Some(custody) = self.inner.git_coverage.as_ref() else {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        };
+        if custody.first_failure.is_some() {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        let cut = custody.original_cut;
+        let Some((outcome, currentness)) = self.replies.get(slot).and_then(Option::as_ref) else {
+            return Err(self.inner.refuse_git_coverage());
+        };
+        let deadline = cut.min(outcome.request().deadline_boottime_nanoseconds());
+        let before = crate::dormant_handshake::check_production_deadline(deadline);
+        if let Err(cause) = before {
+            return Err(self.retain_recheck_failure(GitCoverageQueryFailureV1::Readiness(cause)));
+        }
+        let comparison = self.inner.session.compare_git_coverage_outcome_v1(currentness);
+        if let Err(cause) = comparison {
+            return Err(self.retain_recheck_failure(GitCoverageQueryFailureV1::Protected(cause)));
+        }
+        if let Err(cause) = crate::dormant_handshake::check_production_deadline(deadline) {
+            return Err(self.retain_recheck_failure(GitCoverageQueryFailureV1::Readiness(cause)));
+        }
+        Ok(())
+    }
+
+    fn retain_recheck_failure(
+        &mut self,
+        cause: GitCoverageQueryFailureV1,
+    ) -> LifecyclePhase6ErrorV1 {
+        let encoding_failed = self.checkpoint.as_ref().is_some_and(Result::is_err)
+            || self.proof.as_ref().is_some_and(Result::is_err);
+        if let Some(custody) = self.inner.git_coverage.as_mut() {
+            if encoding_failed || custody.first_failure.is_some() {
+                custody.postcheck_debt.get_or_insert(cause);
+            } else {
+                custody.first_failure = Some(cause);
+            }
+        }
+        LifecyclePhase6ErrorV1::StaleAuthority
+    }
+
+    pub(crate) fn reply(&self, slot: usize) -> Option<&GitCoverageReplyV1> {
+        self.replies.get(slot).and_then(Option::as_ref)
+    }
+
+    pub(crate) fn assemble_proof(&mut self) -> Result<(), LifecyclePhase6ErrorV1> {
+        use aos_sandbox_core::format::git_upload_enrollment::{
+            GitCoverageBrokerProofV1, GitCoverageBrokerRoleV1,
+        };
+
+        if self.proof.is_some() {
+            return Err(self.inner.refuse_git_coverage());
+        }
+        self.recheck(1)?;
+        let Some((prepare, prepare_owner)) = self.replies[0].as_ref() else {
+            return Err(self.inner.refuse_git_coverage());
+        };
+        let Some((read, read_owner)) = self.replies[1].as_ref() else {
+            return Err(self.inner.refuse_git_coverage());
+        };
+        let role = match (prepare.method(), read.method()) {
+            (
+                BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_GIT_PROJECT_COVERAGE_V1,
+                BrokerMethod::BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1,
+            ) => GitCoverageBrokerRoleV1::Mount,
+            (
+                BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1,
+                BrokerMethod::BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1,
+            ) => GitCoverageBrokerRoleV1::Storage,
+            _ => return Err(self.inner.refuse_git_coverage()),
+        };
+        if prepare_owner.context != read_owner.context
+            || prepare_owner.transcript != read_owner.transcript
+        {
+            return Err(self.inner.refuse_git_coverage());
+        }
+        let Some(Ok(checkpoint)) = self.checkpoint.as_ref() else {
+            return Err(self.inner.refuse_git_coverage());
+        };
+
+        // The sole framing codec checks all five actual lengths before copying.
+        // Both original pairs and the earlier checkpoint remain resident.
+        self.proof = Some(GitCoverageBrokerProofV1::encode(role, [
+            checkpoint,
+            prepare.request().canonical_packet(),
+            prepare.canonical_packet(),
+            read.request().canonical_packet(),
+            read.canonical_packet(),
+        ]));
+        let postcheck = self.recheck_original_outcome(1);
+        if self.proof.as_ref().is_some_and(Result::is_err) {
+            return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+        }
+        postcheck
+    }
+
+    pub(crate) fn proof(&self) -> Option<&[u8]> {
+        if self.first_failure().is_some() {
+            return None;
+        }
+        self.proof.as_ref()?.as_ref().ok().map(Vec::as_slice)
+    }
+
+    // A missing observation is not success; the whole selected attempt and its
+    // independent postcheck result remain with the containing Controller owner.
+    pub(crate) fn first_failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        // An encoding error precedes its later independent postcheck debt.
+        // Those owning Results are never taken, cloned or formatted into a cause.
+        if let Some(Err(cause)) = &self.checkpoint {
+            return Some(cause);
+        }
+        if let Some(Err(cause)) = &self.proof {
+            return Some(cause);
+        }
+        self.inner.git_coverage.as_ref()?.first_failure.as_ref()
+            .map(|cause| cause as &(dyn std::error::Error + 'static))
+    }
+
+    pub(crate) fn postcheck_debt(&self) -> Option<&GitCoverageQueryFailureV1> {
+        self.inner.git_coverage.as_ref()?.postcheck_debt.as_ref()
+    }
 }
 
 impl DormantLifecycleInventorySessionV1 {
+    fn query_protected_failure(&mut self, cause: BrokerSessionSecurityError) -> LifecyclePhase6ErrorV1 {
+        if let Some(custody) = self.git_coverage.as_mut() {
+            if custody.first_failure.is_none() {
+                custody.first_failure = Some(GitCoverageQueryFailureV1::Protected(cause));
+            }
+        }
+        LifecyclePhase6ErrorV1::StaleAuthority
+    }
+
+    fn query_readiness_failure(
+        &mut self,
+        cause: crate::DormantBrokerSessionHandshakeErrorV1,
+    ) -> LifecyclePhase6ErrorV1 {
+        if let Some(custody) = self.git_coverage.as_mut() {
+            if custody.first_failure.is_none() {
+                custody.first_failure = Some(GitCoverageQueryFailureV1::Readiness(cause));
+            }
+        }
+        LifecyclePhase6ErrorV1::StaleAuthority
+    }
+
+    fn refuse_git_coverage(&mut self) -> LifecyclePhase6ErrorV1 {
+        if let Some(custody) = self.git_coverage.as_mut() {
+            if custody.first_failure.is_none() {
+                custody.first_failure = Some(GitCoverageQueryFailureV1::Refused);
+            }
+        }
+        LifecyclePhase6ErrorV1::StaleAuthority
+    }
+
     // Only the Storage-specific named loan can populate this slot. Keeping it
     // beside the original session prevents another exchange from replacing a
     // failed output attempt after a durable local terminal or postcheck debt.
@@ -545,7 +940,7 @@ impl DormantLifecycleInventorySessionV1 {
             return Err(LifecyclePhase6ErrorV1::StaleAuthority);
         }
         let prepared =
-            prepare(&mut self.session).map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+            prepare(&mut self.session).map_err(|cause| self.query_protected_failure(cause))?;
         let method = method.method();
         let prepared = match prepared {
             DormantBrokerRequestPreparationV1::Prepared(prepared) => prepared,
@@ -631,7 +1026,7 @@ impl DormantLifecycleInventorySessionV1 {
         match self
             .session
             .send_authenticated_request(prepared)
-            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?
+            .map_err(|cause| self.query_protected_failure(cause))?
         {
             DormantBrokerRequestSendProgressV1::Pending(prepared) => {
                 Ok(DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(
@@ -655,7 +1050,7 @@ impl DormantLifecycleInventorySessionV1 {
         match self
             .session
             .receive_authenticated_response(outstanding)
-            .map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?
+            .map_err(|cause| self.query_protected_failure(cause))?
         {
             DormantBrokerResponseProgressV1::Pending(outstanding) => {
                 Ok(DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(
@@ -675,13 +1070,16 @@ impl DormantLifecycleInventorySessionV1 {
                 })
             }
             DormantBrokerResponseProgressV1::Committed(
-                ProtectedBrokerOutcomeCommitResultV1::RecoveryRequired { recovery, .. },
-            ) => Ok(DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(
-                DormantLifecycleInventoryQueryRecoveryV1 {
-                    method,
-                    stage: DormantLifecycleInventoryQueryStageV1::Commit(recovery),
-                },
-            )),
+                ProtectedBrokerOutcomeCommitResultV1::RecoveryRequired { error, recovery },
+            ) => {
+                self.query_protected_failure(error);
+                Ok(DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(
+                    DormantLifecycleInventoryQueryRecoveryV1 {
+                        method,
+                        stage: DormantLifecycleInventoryQueryStageV1::Commit(recovery),
+                    },
+                ))
+            }
         }
     }
 
@@ -966,34 +1364,40 @@ impl DormantLifecycleInventorySessionV1 {
             return self.drive_complete(progress);
         }
         let prepared =
-            prepare(&mut self.session).map_err(|_| LifecyclePhase6ErrorV1::StaleAuthority)?;
+            prepare(&mut self.session).map_err(|cause| self.query_protected_failure(cause))?;
         let progress = match prepared {
             DormantBrokerRequestPreparationV1::Prepared(prepared) => {
                 self.send_query(method, prepared)?
             }
             DormantBrokerRequestPreparationV1::InitializationRecoveryRequired {
+                error,
                 recovery,
                 request,
-                ..
-            } => DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(
-                DormantLifecycleInventoryQueryRecoveryV1 {
-                    method,
-                    stage: DormantLifecycleInventoryQueryStageV1::Initialization {
-                        recovery,
-                        request,
+            } => {
+                self.query_protected_failure(error);
+                DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(
+                    DormantLifecycleInventoryQueryRecoveryV1 {
+                        method,
+                        stage: DormantLifecycleInventoryQueryStageV1::Initialization {
+                            recovery,
+                            request,
+                        },
                     },
-                },
-            ),
+                )
+            }
             DormantBrokerRequestPreparationV1::SuccessorRecoveryRequired {
+                error,
                 recovery,
                 request,
-                ..
-            } => DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(
-                DormantLifecycleInventoryQueryRecoveryV1 {
-                    method,
-                    stage: DormantLifecycleInventoryQueryStageV1::Successor { recovery, request },
-                },
-            ),
+            } => {
+                self.query_protected_failure(error);
+                DormantLifecycleInventoryQueryProgressV1::RecoveryRequired(
+                    DormantLifecycleInventoryQueryRecoveryV1 {
+                        method,
+                        stage: DormantLifecycleInventoryQueryStageV1::Successor { recovery, request },
+                    },
+                )
+            }
         };
         self.drive_complete(progress)
     }
@@ -1065,6 +1469,17 @@ impl DormantLifecycleInventorySessionV1 {
                     outcome,
                     currentness,
                 } => {
+                    if let Some(custody) = self.git_coverage.as_mut() {
+                        let deadline = custody.original_cut
+                            .min(outcome.request().deadline_boottime_nanoseconds());
+                        custody.completed = Some((outcome, currentness));
+                        if let Err(cause) = crate::dormant_handshake::check_production_deadline(deadline) {
+                            return Err(self.query_readiness_failure(cause));
+                        }
+                        return self.git_coverage.as_mut()
+                            .and_then(|custody| custody.completed.take())
+                            .ok_or(LifecyclePhase6ErrorV1::StaleAuthority);
+                    }
                     if require_live_deadline {
                         crate::dormant_handshake::check_production_deadline(
                             outcome.request().deadline_boottime_nanoseconds(),
@@ -1088,8 +1503,22 @@ impl DormantLifecycleInventorySessionV1 {
                     };
                     let Some((wants_write, deadline)) = readiness else {
                         self.pending = Some(recovery);
+                        if self.git_coverage.is_some() {
+                            self.refuse_git_coverage();
+                        }
                         return Err(LifecyclePhase6ErrorV1::StaleAuthority);
                     };
+                    // Selected custody is parked before the fallible readiness
+                    // loan. Ordinary callers keep their original local interval.
+                    let selected = self.git_coverage.is_some();
+                    let deadline = match self.git_coverage.as_ref() {
+                        Some(custody) => custody.original_cut.min(deadline),
+                        None => deadline,
+                    };
+                    let mut local_recovery = Some(recovery);
+                    if selected {
+                        self.pending = local_recovery.take();
+                    }
                     let wait = self.session.as_fd().and_then(|fd| {
                         crate::dormant_handshake::wait_for_handshake_readiness(
                             fd,
@@ -1100,12 +1529,18 @@ impl DormantLifecycleInventorySessionV1 {
                             crate::dormant_handshake::check_production_deadline(deadline)
                         })
                     });
-                    if wait.is_err() {
+                    if let Err(cause) = wait {
                         // Preserve exact custody on expiry or transport failure;
                         // no later inventory may overtake this request.
-                        self.pending = Some(recovery);
-                        return Err(LifecyclePhase6ErrorV1::StaleAuthority);
+                        if !selected {
+                            self.pending = local_recovery;
+                        }
+                        return Err(self.query_readiness_failure(cause));
                     }
+                    let recovery = if selected { self.pending.take() } else { local_recovery };
+                    let Some(recovery) = recovery else {
+                        return Err(self.refuse_git_coverage());
+                    };
                     progress = self.resume_query(recovery)?;
                 }
             }
@@ -1147,6 +1582,7 @@ impl DormantHostRuntimeInventoryOwnerV1 {
             pending: None,
             authority_effects: ControllerAuthorityEffectExchangeV1::default(),
             output_registration: None,
+            git_coverage: None,
         })
     }
 
@@ -1647,7 +2083,9 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
         &mut Option<crate::controller_service::execution_output_storage_registration::OriginalControllerOutputRegistrationV1>,
         &mut DormantAuthenticatedBrokerSessionV1,
     ), EffectFailure> {
-        if self.0.pending.is_some() || self.0.authority_effects.has_pending() {
+        if self.0.pending.is_some() || self.0.authority_effects.has_pending()
+            || self.0.git_coverage.is_some()
+        {
             return Err(EffectFailure::Retryable(
                 "Storage session retains another exact exchange".to_owned(),
             ));
@@ -2265,6 +2703,7 @@ impl DormantStorageLifecycleInventoryOwnerV1 {
             pending: None,
             authority_effects: ControllerAuthorityEffectExchangeV1::default(),
             output_registration: None,
+            git_coverage: None,
         })
     }
 

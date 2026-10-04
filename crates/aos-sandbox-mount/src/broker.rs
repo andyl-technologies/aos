@@ -64,6 +64,7 @@ use crate::worker::{
 use crate::{MountError, Result};
 
 mod fuse_intent;
+mod git_coverage;
 mod source_custody;
 
 /// Reports local original response progress without granting a capability.
@@ -327,6 +328,8 @@ pub struct MountBroker<W> {
     destination_slots: Option<DestinationSlotStoreV1>,
     source_runtime: Option<crate::source_acquisition::SourceAcquisitionRuntimeV2>,
     source_runtime_failed: bool,
+    git_coverage: Option<git_coverage::MountGitCoverageV1>,
+    git_coverage_persisted: bool,
 }
 
 /// Retains the selected broker's actual originals throughout one recovery.
@@ -1051,6 +1054,10 @@ impl<W: MountWorker> MountBroker<W> {
         broker_instance_id: [u8; 16],
         destination_slots: Option<DestinationSlotStoreV1>,
     ) -> Self {
+        let git_coverage_persisted = journal.all_records().any(|(namespace, key, _)| {
+            namespace == RecordNamespace::DesiredState
+                && (key == b"z-git-birth-v1" || key == b"z-git-fence-v1")
+        });
         Self {
             journal,
             worker,
@@ -1063,6 +1070,8 @@ impl<W: MountWorker> MountBroker<W> {
             destination_slots,
             source_runtime: None,
             source_runtime_failed: false,
+            git_coverage: None,
+            git_coverage_persisted,
         }
     }
 
@@ -1080,6 +1089,7 @@ impl<W: MountWorker> MountBroker<W> {
         &mut self,
         reservation: &FuseWorkerReservationV1,
     ) -> Result<()> {
+        self.require_git_coverage_new_admission_v1()?;
         self.journal.ensure_healthy()?;
         let resources = MountResourceTableV1::recover(
             &self.journal,
@@ -1167,7 +1177,12 @@ impl<W: MountWorker> MountBroker<W> {
             &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
         ) -> Result<R>,
     ) -> Result<R> {
-        self.with_original_inventory_source_owner_v6(session, operation)
+        self.with_original_inventory_source_owner_v6(session, |owner, session| {
+            // Stay inside the original restoration/revocation boundary. The
+            // Query entry remains available for genuine negative retirement.
+            owner.require_git_coverage_new_effect_v1()?;
+            operation(owner, session)
+        })
     }
 
     /// Lends the sole protected Mount journal to the source-acquisition owner.
@@ -1228,6 +1243,7 @@ impl<W: MountWorker> MountBroker<W> {
         &mut self,
         root: &mut aos_sandbox_source_provider_security::RootMountSourceProviderOwnerV1,
     ) -> Result<()> {
+        self.require_git_coverage_new_admission_v1()?;
         self.ensure_authority_healthy()?;
         if self.source_runtime_failed {
             return Err(MountError::State(
@@ -1351,6 +1367,18 @@ impl<W: MountWorker> MountBroker<W> {
             ));
         }
         let binding = destination_slot_binding(&request)?;
+        if self.git_coverage.is_some() || self.git_coverage_persisted {
+            // Only an actual retained slot may be retired. A fresh negative
+            // verb is not evidence that the corresponding original exists.
+            if request.action() != DestinationSlotAction::DESTINATION_SLOT_ACTION_REAP
+                || self.destination_slots.as_ref()
+                    .and_then(|slots| slots.get(&binding)).is_none()
+            {
+                return Err(MountError::Fence(
+                    "exclusive Git cohort permits only original destination cleanup",
+                ));
+            }
+        }
         let request_digest: [u8; 32] = Sha256::digest(request_bytes).into();
         let prior_fence = self
             .journal
@@ -1566,6 +1594,7 @@ impl<W: MountWorker> MountBroker<W> {
         request: &ValidatedMountCatalogPreparation,
         scope: ObservedMountScope,
     ) -> Result<Vec<u8>> {
+        self.require_git_coverage_new_admission_v1()?;
         self.ensure_authority_healthy()?;
         if scope.metadata().fence() != request.mount_request().fence()
             || scope.metadata().runtime_handle() != request.host_request().runtime_handle()
@@ -1618,6 +1647,17 @@ impl<W: MountWorker> MountBroker<W> {
             return Err(MountError::Protocol(
                 aos_sandbox_protocol::ProtocolValidationError::MethodMismatch,
             ));
+        }
+        if self.git_coverage.is_some() || self.git_coverage_persisted {
+            match request.action() {
+                MountAction::MOUNT_ACTION_DETACH | MountAction::MOUNT_ACTION_RELEASE => {
+                    // Resolve the original before idempotent replay or any
+                    // worker/catalog work. The old validator still checks its
+                    // exact assignment, state and signed cleanup admission.
+                    resource_for_supplied_handle(&self.resources, &request)?;
+                }
+                _ => self.require_git_coverage_new_admission_v1()?,
+            }
         }
         let request_digest: [u8; 32] = Sha256::digest(request_bytes).into();
         let handle = operation_handle(&request, request_digest)?;

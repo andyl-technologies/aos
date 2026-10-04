@@ -88,7 +88,14 @@
   gitEvidenceCredentials = {
     gitEvidenceProvision = "git-evidence-provision-v1";
   };
-  credentialFiles = requiredCredentials // projectCredentials // cacheCredentials // controllerCredentials // sourceCredentials // genesisCredentials // gitEvidenceCredentials;
+  gitCoverageCredentials = {
+    gitCoverageEnrollment = "git-upload-coverage-enrollment-v1";
+    gitCoverageOwnerCatalog = "git-upload-owner-catalog-v1";
+    gitCoverageMountSessionManifest = "git-upload-mount-session-manifest-v1";
+    gitCoverageStorageSessionManifest = "git-upload-storage-session-manifest-v1";
+  };
+  coverageSelected = cfg.credentials.gitCoverageEnrollment != null;
+  credentialFiles = requiredCredentials // projectCredentials // cacheCredentials // controllerCredentials // sourceCredentials // genesisCredentials // gitEvidenceCredentials // gitCoverageCredentials;
   cacheJournalSource = "/var/lib/aos/sandbox/cache-residency-journals";
   cacheJournalView = "/run/aos/sandbox-policy-cache-journals";
   prepareCacheJournalView = preparer.writeScript "aos-sandbox-cache-journal-view" ''
@@ -248,6 +255,19 @@ in {
       })
       requiredCredentials
       ++ [
+        {
+          assertion = lib.all (option: (cfg.credentials.${option} != null) == coverageSelected)
+            (builtins.attrNames gitCoverageCredentials);
+          message = "Root Git coverage requires enrollment, complete owner catalog and both fixed session manifests together";
+        }
+        {
+          assertion = !coverageSelected || (confined && cfg.package == pkgs.aos-sandboxd
+            && cfg.credentials.gitCoverageMountSessionManifest
+              == config.aos.sandbox.controllerService.credentials.brokerSessionMountManifest
+            && cfg.credentials.gitCoverageStorageSessionManifest
+              == config.aos.sandbox.controllerService.credentials.brokerSessionStorageManifest);
+          message = "Root coverage requires the selected normal Root and the same independently provisioned original Controller session manifests";
+        }
         {
           assertion = cfg.credentials.gitEvidenceProvision == null || (confined && cfg.package == pkgs.aos-sandboxd);
           message = "Git evidence provisioning requires the selected confined normal Root package";

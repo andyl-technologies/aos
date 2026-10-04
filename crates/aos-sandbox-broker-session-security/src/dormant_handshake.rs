@@ -44,6 +44,8 @@ use aos_sandbox_core::ProtocolVersion;
 use aos_sandbox_linux::immutable_file::SealedMemfdMapping;
 use aos_sandbox_linux::seqpacket::SeqpacketSocket;
 use aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerMethodRequestV1;
+
+pub(crate) mod git_coverage;
 use aos_sandbox_protocol::host_catalog::MAXIMUM_HOST_CATALOG_BYTES;
 use buffa::Message as _;
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
@@ -446,6 +448,12 @@ pub struct DormantReceivedBrokerRequestV1(AuthenticatedBrokerMethodRequestV1);
 /// Retains an exact protected terminal response selected by request replay.
 #[must_use = "resend or retain the exact protected terminal response"]
 pub struct DormantBrokerTerminalReplayV1(ProtectedBrokerOutcomeReplayV1);
+
+impl DormantBrokerTerminalReplayV1 {
+    pub(crate) fn method(&self) -> BrokerMethod {
+        self.0.method()
+    }
+}
 
 /// Retains a terminal Host scope replay until exact descriptor custody is reopened.
 #[must_use = "reopen and send the exact signed descriptor table or retain replay custody"]
@@ -5354,11 +5362,35 @@ impl DormantAuthenticatedBrokerSessionV1 {
         ) -> Result<BrokerRequestEnvelope, BrokerSessionSecurityError>,
         validate: impl FnOnce(&AuthenticatedBrokerMethodRequestV1) -> bool,
     ) -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError> {
+        self.prepare_authenticated_request_with_original_cut(
+            method, build, validate, None,
+        )
+    }
+
+    // Ordinary callers retain their original coordinates. Only the closed
+    // coverage adapter supplies an earlier original flight cutoff; this never
+    // renews the session's own request window or skips its admission engine.
+    fn prepare_authenticated_request_with_original_cut(
+        &mut self,
+        method: BrokerMethod,
+        build: impl FnOnce(
+            DormantBrokerRequestCoordinatesV1,
+        ) -> Result<BrokerRequestEnvelope, BrokerSessionSecurityError>,
+        validate: impl FnOnce(&AuthenticatedBrokerMethodRequestV1) -> bool,
+        original_cut: Option<u64>,
+    ) -> Result<DormantBrokerRequestPreparationV1, BrokerSessionSecurityError> {
         // One-shot issuers may durably record authority inside `build`.
         // Reject an unnegotiated method before invoking that callback.
         self.0.require_negotiated_client_method(method)?;
         let (request_id, deadline, maximum_response_bytes, protocol_version, audience) =
             self.0.client_request_coordinates()?;
+        let deadline = match original_cut {
+            // The same live header engine below rejects an expired cutoff
+            // before signing/reserving; no second clock or cause mapper is
+            // introduced here. The retaining flight also bookends its cut.
+            Some(cut) => deadline.min(cut),
+            None => deadline,
+        };
         let coordinates = DormantBrokerRequestCoordinatesV1 {
             request_id,
             deadline_boottime_nanoseconds: deadline,
@@ -6671,8 +6703,32 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         slot: &mut Option<handshake::RetainedStorageColdOpenV1>,
         node: [u8; 16],
     ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
+        self.connect_retained_storage_with_coverage_v1(deadline, slot, node, None)
+    }
+
+    // The selected coordinator uses the same verified-cold destination and
+    // handshake engine before any inventory request on this original session.
+    pub(crate) fn connect_retained_git_coverage_storage_session_v1(
+        self,
+        deadline: handshake::OriginalBrokerColdDeadlineV1,
+        slot: &mut Option<handshake::RetainedStorageColdOpenV1>,
+        node: [u8; 16],
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
+        self.connect_retained_storage_with_coverage_v1(
+            deadline, slot, node,
+            Some(aos_sandbox_core::format::git_upload_enrollment::GitCoverageBrokerRoleV1::Storage),
+        )
+    }
+
+    fn connect_retained_storage_with_coverage_v1(
+        self,
+        deadline: handshake::OriginalBrokerColdDeadlineV1,
+        slot: &mut Option<handshake::RetainedStorageColdOpenV1>,
+        node: [u8; 16],
+        coverage: Option<aos_sandbox_core::format::git_upload_enrollment::GitCoverageBrokerRoleV1>,
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
         self.connect_retained_storage_session_inner(
-            deadline, slot, node, ClientWitnessRetentionV1::Legacy,
+            deadline, slot, node, ClientWitnessRetentionV1::Legacy, coverage,
         )
     }
 
@@ -6684,7 +6740,7 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
     ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
         self.require_output_client_endpoint()?;
         self.connect_retained_storage_session_inner(
-            deadline, slot, node, ClientWitnessRetentionV1::Output,
+            deadline, slot, node, ClientWitnessRetentionV1::Output, None,
         )
     }
 
@@ -6694,6 +6750,7 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         slot: &mut Option<handshake::RetainedStorageColdOpenV1>,
         node: [u8; 16],
         retention: ClientWitnessRetentionV1,
+        coverage: Option<aos_sandbox_core::format::git_upload_enrollment::GitCoverageBrokerRoleV1>,
     ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
         if slot.is_some()
             || self.production_protocol()
@@ -6704,7 +6761,7 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         deadline.check()?;
         let socket = SeqpacketSocket::connect(Path::new(self.production_socket_path()))
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::Transport)?;
-        let mut handshake = self.begin_production_client_handshake(socket)?.0;
+        let mut handshake = self.begin_production_client_handshake_with_coverage_v1(socket, coverage)?.0;
         loop {
             deadline.check()?;
             match handshake.advance_retaining_storage()? {
@@ -6747,6 +6804,16 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         deadline: handshake::OriginalBrokerColdDeadlineV1,
         slot: &mut Option<handshake::RetainedStorageColdOpenV1>,
     ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
+        self.complete_retained_storage_handshake_with_coverage_v1(socket, deadline, slot, None)
+    }
+
+    pub(crate) fn complete_retained_storage_handshake_with_coverage_v1(
+        self,
+        socket: SeqpacketSocket,
+        deadline: handshake::OriginalBrokerColdDeadlineV1,
+        slot: &mut Option<handshake::RetainedStorageColdOpenV1>,
+        coverage: Option<aos_sandbox_core::format::git_upload_enrollment::GitCoverageBrokerRoleV1>,
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
         if slot.is_some()
             || self.production_protocol()
                 != aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1::Storage
@@ -6754,7 +6821,7 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
             return Err(DormantBrokerSessionHandshakeErrorV1::EndpointRole);
         }
         deadline.check()?;
-        let mut handshake = self.begin_production_broker_handshake(socket)?.0;
+        let mut handshake = self.begin_production_broker_handshake_with_coverage_v1(socket, coverage)?.0;
         loop {
             deadline.check()?;
             match handshake.advance_retaining_storage()? {
@@ -6815,7 +6882,7 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         let socket = SeqpacketSocket::connect(Path::new(self.production_socket_path()))
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::Transport)?;
         self.complete_client_handshake_inner(
-            socket, deadline_boottime_nanoseconds, ClientWitnessRetentionV1::Output,
+            socket, deadline_boottime_nanoseconds, ClientWitnessRetentionV1::Output, None,
         )
     }
 
@@ -6838,7 +6905,20 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         deadline_boottime_nanoseconds: u64,
     ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
         self.complete_client_handshake_inner(
+            socket, deadline_boottime_nanoseconds, ClientWitnessRetentionV1::Legacy, None,
+        )
+    }
+
+    pub(crate) fn connect_git_coverage_mount_session_v1(
+        self,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
+        remaining_handshake_nanoseconds(deadline_boottime_nanoseconds)?;
+        let socket = SeqpacketSocket::connect(Path::new(self.production_socket_path()))
+            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::Transport)?;
+        self.complete_client_handshake_inner(
             socket, deadline_boottime_nanoseconds, ClientWitnessRetentionV1::Legacy,
+            Some(aos_sandbox_core::format::git_upload_enrollment::GitCoverageBrokerRoleV1::Mount),
         )
     }
 
@@ -6847,9 +6927,10 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         socket: SeqpacketSocket,
         deadline_boottime_nanoseconds: u64,
         retention: ClientWitnessRetentionV1,
+        coverage: Option<aos_sandbox_core::format::git_upload_enrollment::GitCoverageBrokerRoleV1>,
     ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
         remaining_handshake_nanoseconds(deadline_boottime_nanoseconds)?;
-        let mut handshake = self.begin_production_client_handshake(socket)?;
+        let mut handshake = self.begin_production_client_handshake_with_coverage_v1(socket, coverage)?;
 
         loop {
             // Ready sockets bypass polling, but never bypass the activation deadline.
@@ -6904,8 +6985,19 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         socket: SeqpacketSocket,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
+        self.complete_production_broker_handshake_with_coverage_v1(
+            socket, deadline_boottime_nanoseconds, None,
+        )
+    }
+
+    pub(crate) fn complete_production_broker_handshake_with_coverage_v1(
+        self,
+        socket: SeqpacketSocket,
+        deadline_boottime_nanoseconds: u64,
+        coverage: Option<aos_sandbox_core::format::git_upload_enrollment::GitCoverageBrokerRoleV1>,
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
         remaining_handshake_nanoseconds(deadline_boottime_nanoseconds)?;
-        let mut handshake = self.begin_production_broker_handshake(socket)?;
+        let mut handshake = self.begin_production_broker_handshake_with_coverage_v1(socket, coverage)?;
 
         loop {
             remaining_handshake_nanoseconds(deadline_boottime_nanoseconds)?;
@@ -6941,12 +7033,35 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         self,
         socket: SeqpacketSocket,
     ) -> Result<DormantControllerClientHandshakeV1, DormantBrokerSessionHandshakeErrorV1> {
+        self.begin_production_client_handshake_with_coverage_v1(socket, None)
+    }
+
+    fn begin_production_client_handshake_with_coverage_v1(
+        self,
+        socket: SeqpacketSocket,
+        coverage: Option<aos_sandbox_core::format::git_upload_enrollment::GitCoverageBrokerRoleV1>,
+    ) -> Result<DormantControllerClientHandshakeV1, DormantBrokerSessionHandshakeErrorV1> {
         let protocol = self.production_protocol();
         let audience = self.production_audience();
         let maximum_response_bytes = u32::try_from(AUTHENTICATED_RESPONSE_MAXIMUM_BYTES)
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
-        let hello = production_broker_client_hello_v1(protocol, audience, maximum_response_bytes)
-            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+        let hello = match coverage {
+            None => production_broker_client_hello_v1(protocol, audience, maximum_response_bytes),
+            Some(role) => {
+                use aos_sandbox_core::format::git_upload_enrollment::GitCoverageBrokerRoleV1;
+                use aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1;
+                if audience != Audience::AUDIENCE_NODE_CONTROLLER {
+                    return Err(DormantBrokerSessionHandshakeErrorV1::EndpointRole);
+                }
+                match (role, protocol) {
+                    (GitCoverageBrokerRoleV1::Mount, BrokerSessionProtocolV1::Mount) =>
+                        aos_sandbox_broker_session_protocol::profile::git_coverage_mount_client_hello_v1(),
+                    (GitCoverageBrokerRoleV1::Storage, BrokerSessionProtocolV1::Storage) =>
+                        aos_sandbox_broker_session_protocol::profile::git_coverage_storage_client_hello_v1(),
+                    _ => return Err(DormantBrokerSessionHandshakeErrorV1::EndpointRole),
+                }
+            }
+        }.map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
         self.begin_client_handshake(socket, hello)
     }
 
@@ -6965,12 +7080,35 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
         self,
         socket: SeqpacketSocket,
     ) -> Result<DormantBrokerEndpointHandshakeV1, DormantBrokerSessionHandshakeErrorV1> {
+        self.begin_production_broker_handshake_with_coverage_v1(socket, None)
+    }
+
+    fn begin_production_broker_handshake_with_coverage_v1(
+        self,
+        socket: SeqpacketSocket,
+        coverage: Option<aos_sandbox_core::format::git_upload_enrollment::GitCoverageBrokerRoleV1>,
+    ) -> Result<DormantBrokerEndpointHandshakeV1, DormantBrokerSessionHandshakeErrorV1> {
         let protocol = self.production_protocol();
         let audience = self.production_audience();
         let maximum_response_bytes = u32::try_from(AUTHENTICATED_RESPONSE_MAXIMUM_BYTES)
             .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
-        let hello = production_broker_server_hello_v1(protocol, audience, maximum_response_bytes)
-            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
+        let hello = match coverage {
+            None => production_broker_server_hello_v1(protocol, audience, maximum_response_bytes),
+            Some(role) => {
+                use aos_sandbox_core::format::git_upload_enrollment::GitCoverageBrokerRoleV1;
+                use aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1;
+                if audience != Audience::AUDIENCE_NODE_CONTROLLER {
+                    return Err(DormantBrokerSessionHandshakeErrorV1::EndpointRole);
+                }
+                match (role, protocol) {
+                    (GitCoverageBrokerRoleV1::Mount, BrokerSessionProtocolV1::Mount) =>
+                        aos_sandbox_broker_session_protocol::profile::git_coverage_mount_server_hello_v1(),
+                    (GitCoverageBrokerRoleV1::Storage, BrokerSessionProtocolV1::Storage) =>
+                        aos_sandbox_broker_session_protocol::profile::git_coverage_storage_server_hello_v1(),
+                    _ => return Err(DormantBrokerSessionHandshakeErrorV1::EndpointRole),
+                }
+            }
+        }.map_err(|_| DormantBrokerSessionHandshakeErrorV1::RemoteInvalid)?;
         self.begin_broker_handshake(socket, hello)
     }
 

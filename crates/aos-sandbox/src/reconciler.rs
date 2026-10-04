@@ -766,6 +766,67 @@ impl EffectFailure {
 
 /// Executes idempotent single-node effects through fixed local boundaries.
 pub trait SingleNodeEffectExecutor {
+    /// Captures the fixed account cut using genuine resident original owners.
+    ///
+    /// # Errors
+    /// The default refuses before effects; it is not a fallback producer.
+    #[cfg(target_os = "linux")]
+    fn capture_existing_git_coverage_account_cut_v1(
+        &mut self,
+        _journal: &mut Journal,
+        _original_inputs: &mut crate::public_api_session::GitCoverageCredentialCustodyV1,
+        _original_bootstrap: &crate::publisher_policy::GitUploadBootstrapAppendV1,
+        _original_source: &crate::publisher_policy::VerifiedPublisherPolicySourceV1,
+        _original_capacity: &aos_sandbox_core::GitUploadCapacityV1,
+        _original_bootstrap_credentials: &mut crate::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
+        _attempt: &mut crate::policy_compiler::GitCoverageAccountAttemptV1<'_>,
+    ) -> Result<(), crate::cache_residency::CacheResidentUnavailableV1> {
+        Err(crate::cache_residency::CacheResidentUnavailableV1)
+    }
+
+    /// Commits the exact successor through the same retained account attempt.
+    ///
+    /// # Errors
+    /// The default refuses rather than constructing a substitute owner.
+    #[cfg(target_os = "linux")]
+    fn commit_existing_git_coverage_account_v1(
+        &mut self,
+        _journal: &mut Journal,
+        _original_inputs: &mut crate::public_api_session::GitCoverageCredentialCustodyV1,
+        _original_bootstrap: &crate::publisher_policy::GitUploadBootstrapAppendV1,
+        _original_source: &crate::publisher_policy::VerifiedPublisherPolicySourceV1,
+        _original_capacity: &aos_sandbox_core::GitUploadCapacityV1,
+        _original_bootstrap_credentials: &mut crate::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
+        _attempt: &mut crate::policy_compiler::GitCoverageAccountAttemptV1<'_>,
+    ) -> Result<(), crate::cache_residency::CacheResidentUnavailableV1> {
+        Err(crate::cache_residency::CacheResidentUnavailableV1)
+    }
+
+    /// Compares the fixed cohort through the same resident Cache owners.
+    ///
+    /// Coordinates and flight selection are DATA. The concrete installed
+    /// implementation retains actual owners, append outcomes and typed causes;
+    /// this default does not supply an alternative initialization producer.
+    ///
+    /// # Errors
+    /// Refuses unsupported executors or original-owner/census/append failures.
+    /// Failure never permits reconstruction, retry or allocation.
+    #[cfg(target_os = "linux")]
+    fn compare_existing_cache_git_coverage_v1(
+        &mut self,
+        _original_inputs: &mut crate::public_api_session::GitCoverageCredentialCustodyV1,
+        _flight: aos_sandbox_core::format::git_upload_enrollment::GitCoverageFlightV1,
+        _original_nonce: [u8; 16],
+        _original_account: Option<&mut crate::policy_compiler::GitCoverageAccountAttemptV1<'_>>,
+    ) -> Result<(
+        aos_sandbox_core::format::git_upload_enrollment::GitCoverageBirthFieldsV1,
+        aos_sandbox_core::format::git_upload_enrollment::GitCoverageFenceFieldsV1,
+        [u8; 32],
+        u64,
+    ), crate::cache_residency::CacheResidentUnavailableV1> {
+        Err(crate::cache_residency::CacheResidentUnavailableV1)
+    }
+
     /// Initializes the same fixed existing Cache and borrows local project usage.
     ///
     /// # Errors
@@ -1283,6 +1344,40 @@ where
         &mut self.journal
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) fn capture_existing_git_coverage_account_cut_v1(
+        &mut self,
+        original_inputs: &mut crate::public_api_session::GitCoverageCredentialCustodyV1,
+        original_bootstrap: &crate::publisher_policy::GitUploadBootstrapAppendV1,
+        original_source: &crate::publisher_policy::VerifiedPublisherPolicySourceV1,
+        original_capacity: &aos_sandbox_core::GitUploadCapacityV1,
+        original_bootstrap_credentials: &mut crate::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
+        attempt: &mut crate::policy_compiler::GitCoverageAccountAttemptV1<'_>,
+    ) -> Result<(), crate::cache_residency::CacheResidentUnavailableV1> {
+        self.ledger_validated = false;
+        self.executor.capture_existing_git_coverage_account_cut_v1(
+            &mut self.journal, original_inputs, original_bootstrap, original_source,
+            original_capacity, original_bootstrap_credentials, attempt,
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn commit_existing_git_coverage_account_v1(
+        &mut self,
+        original_inputs: &mut crate::public_api_session::GitCoverageCredentialCustodyV1,
+        original_bootstrap: &crate::publisher_policy::GitUploadBootstrapAppendV1,
+        original_source: &crate::publisher_policy::VerifiedPublisherPolicySourceV1,
+        original_capacity: &aos_sandbox_core::GitUploadCapacityV1,
+        original_bootstrap_credentials: &mut crate::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
+        attempt: &mut crate::policy_compiler::GitCoverageAccountAttemptV1<'_>,
+    ) -> Result<(), crate::cache_residency::CacheResidentUnavailableV1> {
+        self.ledger_validated = false;
+        self.executor.commit_existing_git_coverage_account_v1(
+            &mut self.journal, original_inputs, original_bootstrap, original_source,
+            original_capacity, original_bootstrap_credentials, attempt,
+        )
+    }
+
     pub(crate) fn existing_cache_project_usage_v1(
         &mut self,
         project: aos_sandbox_core::ProjectId,
@@ -1302,6 +1397,24 @@ where
         profile: std::sync::Arc<crate::normal_root::ProductionControllerNormalRootProfileV1>,
     ) -> Result<(), EffectFailure> {
         self.executor.select_original_create_q04_policy_subgate_v1(profile)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn compare_existing_cache_git_coverage_v1(
+        &mut self,
+        original_inputs: &mut crate::public_api_session::GitCoverageCredentialCustodyV1,
+        flight: aos_sandbox_core::format::git_upload_enrollment::GitCoverageFlightV1,
+        original_nonce: [u8; 16],
+        original_account: Option<&mut crate::policy_compiler::GitCoverageAccountAttemptV1<'_>>,
+    ) -> Result<(
+        aos_sandbox_core::format::git_upload_enrollment::GitCoverageBirthFieldsV1,
+        aos_sandbox_core::format::git_upload_enrollment::GitCoverageFenceFieldsV1,
+        [u8; 32],
+        u64,
+    ), crate::cache_residency::CacheResidentUnavailableV1> {
+        self.executor.compare_existing_cache_git_coverage_v1(
+            original_inputs, flight, original_nonce, original_account,
+        )
     }
 
     #[cfg(target_os = "linux")]
@@ -1588,6 +1701,8 @@ where
             IdempotencyOutcome::Conflict => return Err(ReconcilerError::IdempotencyConflict),
             IdempotencyOutcome::Vacant => {}
         }
+        #[cfg(target_os = "linux")]
+        self.journal.require_git_coverage_new_admission_v1()?;
         if self
             .journal
             .get(RecordNamespace::Operation, plan.operation_id.as_bytes())
@@ -1892,6 +2007,8 @@ where
             }
             OperationState::Accepted | OperationState::Applying => {}
         }
+        #[cfg(target_os = "linux")]
+        self.journal.require_git_coverage_new_admission_v1()?;
         if create_failure::has_prepare_floor(&self.journal, operation_id)? {
             return Ok(ReconcileOutcome::CreateFailurePending);
         }

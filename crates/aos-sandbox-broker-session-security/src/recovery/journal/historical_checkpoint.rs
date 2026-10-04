@@ -66,6 +66,14 @@ impl HistoricalSessionCheckpointV1 {
         self.0.encode().map_err(|_| BrokerSessionSecurityError::Currentness)
     }
 
+    pub(super) fn encode_bounded(
+        &self,
+        maximum_bytes: usize,
+    ) -> Result<Vec<u8>, BrokerSessionSecurityError> {
+        self.0.encode_bounded(maximum_bytes)
+            .map_err(|_| BrokerSessionSecurityError::Currentness)
+    }
+
     pub(super) fn decode(bytes: &[u8]) -> Result<Self, BrokerSessionSecurityError> {
         CanonicalHistoricalCheckpointV1::decode(bytes)
             .map(Self)

@@ -2604,6 +2604,46 @@ struct CacheClockFloorV1 {
     predecessor_unix_seconds: u64,
 }
 
+impl CacheResidencyProtectedOwnerV1 {
+    // Pure closed classification for the sole native observer. The original
+    // clock decoder, encoder and transaction-ID recipe stay authoritative for
+    // bytes; these coordinates do not construct a clock or currentness loan.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn compare_git_coverage_clock_transaction_v1(
+        transaction: &JournalTransaction,
+        previous: Option<(ObjectDigest, u64, u64)>,
+    ) -> Result<(ObjectDigest, u64, u64), crate::journal::JournalError> {
+        let [record] = transaction.records() else {
+            return Err(crate::journal::JournalError::ProtectedBoundary);
+        };
+        if record.namespace() != RecordNamespace::DesiredState || record.key() != CACHE_CLOCK_KEY {
+            return Err(crate::journal::JournalError::ProtectedBoundary);
+        }
+        let value = record.value().ok_or(crate::journal::JournalError::ProtectedBoundary)?;
+        let current = decode_cache_clock_floor(value)
+            .map_err(|_| crate::journal::JournalError::ProtectedBoundary)?;
+        let expected_transaction = cache_clock_transaction_id(value)
+            .map_err(|_| crate::journal::JournalError::ProtectedBoundary)?;
+        if current.owner_scope != cache_owner_scope() || transaction.id() != &expected_transaction {
+            return Err(crate::journal::JournalError::ProtectedBoundary);
+        }
+
+        let successor = match previous {
+            None => current.revision == 1 && current.predecessor_unix_seconds == 0,
+            Some((scope, revision, observed)) => {
+                scope == current.owner_scope
+                    && revision.checked_add(1) == Some(current.revision)
+                    && current.predecessor_unix_seconds == observed
+                    && current.observed_unix_seconds >= observed
+            }
+        };
+        if !successor {
+            return Err(crate::journal::JournalError::ProtectedBoundary);
+        }
+        Ok((current.owner_scope, current.revision, current.observed_unix_seconds))
+    }
+}
+
 pub(in crate::cache_residency) struct CacheClockWriterReadbackGuard<'clock> {
     clock: &'clock ProtectedCacheClockV1,
     witness: ProtectedWriterNameWitness,

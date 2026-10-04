@@ -12,6 +12,10 @@
 
 use std::io;
 
+use aos_sandbox_core::format::policy_signer_credential::{
+    PolicyVerifierRoleV1, decode_policy_verifier_credential_v1,
+    encode_policy_verifier_credential_v1,
+};
 use ed25519_dalek::VerifyingKey;
 use sha2::{Digest as _, Sha256};
 
@@ -31,6 +35,13 @@ pub enum PolicySignerRoleV1 {
 }
 
 impl PolicySignerRoleV1 {
+    fn verifier_role(self) -> PolicyVerifierRoleV1 {
+        match self {
+            Self::Deployment => PolicyVerifierRoleV1::Deployment,
+            Self::Project => PolicyVerifierRoleV1::Project,
+        }
+    }
+
     fn magic(self) -> &'static [u8; 8] {
         match self {
             Self::Deployment => DEPLOYMENT_MAGIC,
@@ -60,24 +71,8 @@ impl PinnedPolicySignerV1 {
     /// Rejects raw legacy keys, wrong roles, zero generations, malformed
     /// Ed25519 keys, and noncanonical or altered framing.
     pub fn decode(role: PolicySignerRoleV1, bytes: &[u8]) -> io::Result<Self> {
-        if bytes.len() != CREDENTIAL_BYTES || bytes.get(..8) != Some(role.magic()) {
-            return Err(invalid_credential());
-        }
-        let generation =
-            u64::from_be_bytes(bytes[8..16].try_into().map_err(|_| invalid_credential())?);
-        if generation == 0 {
-            return Err(invalid_credential());
-        }
-        let expected_checksum = Sha256::new()
-            .chain_update(role.domain())
-            .chain_update(&bytes[..48])
-            .finalize();
-        if bytes[48..] != expected_checksum[..] {
-            return Err(invalid_credential());
-        }
-        let key_bytes: [u8; 32] = bytes[16..48].try_into().map_err(|_| invalid_credential())?;
-        let verifying_key =
-            VerifyingKey::from_bytes(&key_bytes).map_err(|_| invalid_credential())?;
+        let (generation, verifying_key) =
+            decode_policy_verifier_credential_v1(role.verifier_role(), bytes)?;
         Ok(Self {
             generation,
             verifying_key,
@@ -111,19 +106,7 @@ pub fn encode_policy_signer_credential_v1(
     generation: u64,
     key: &VerifyingKey,
 ) -> io::Result<[u8; CREDENTIAL_BYTES]> {
-    if generation == 0 {
-        return Err(invalid_credential());
-    }
-    let mut bytes = [0_u8; CREDENTIAL_BYTES];
-    bytes[..8].copy_from_slice(role.magic());
-    bytes[8..16].copy_from_slice(&generation.to_be_bytes());
-    bytes[16..48].copy_from_slice(key.as_bytes());
-    let checksum = Sha256::new()
-        .chain_update(role.domain())
-        .chain_update(&bytes[..48])
-        .finalize();
-    bytes[48..].copy_from_slice(&checksum);
-    Ok(bytes)
+    encode_policy_verifier_credential_v1(role.verifier_role(), generation, key)
 }
 
 fn invalid_credential() -> io::Error {

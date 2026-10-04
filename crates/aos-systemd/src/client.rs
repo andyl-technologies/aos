@@ -22,6 +22,9 @@ use crate::error::{Error, Result, is_no_such_unit};
 use crate::manager_proxy::{ListUnitsEntry, ManagerProxy, ServiceProxy, UnitProxy};
 
 mod service_properties;
+pub(crate) use service_properties::{
+    ServicePropertyBookendV1, capture_mount_fd_store_bookend_v1,
+};
 mod git_source_socket;
 pub use git_source_socket::GitSourceSocketObservationV1;
 #[cfg(target_os = "linux")]

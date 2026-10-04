@@ -641,6 +641,8 @@ impl PendingStorageWorkspaceCatalogV1 {
         Ok(ValidatedPendingStorageWorkspaceCatalogV1 {
             pending: self,
             plan,
+            #[cfg(target_os = "linux")]
+            git_coverage_census: None,
         })
     }
 }
@@ -687,9 +689,236 @@ fn validate_plan_against_pending(
 pub(crate) struct ValidatedPendingStorageWorkspaceCatalogV1 {
     pending: PendingStorageWorkspaceCatalogV1,
     plan: StorageWorkspaceCatalogPlanV1,
+    #[cfg(target_os = "linux")]
+    git_coverage_census: Option<Box<GitCoverageWorkspaceCensusV1>>,
+}
+
+// This selected slot owns the two actual handles and bounded getdents buffer.
+// Opening PinRoot uses the existing fixed-root engine; its pre-return prefix
+// remains an explicit lower boundary, not recovered by these returned owners.
+#[cfg(target_os = "linux")]
+struct GitCoverageWorkspaceCensusV1 {
+    root: Option<Result<super::PinRoot, StorageWorkspaceCatalogError>>,
+    metadata: Option<Result<rustix::fs::Stat, rustix::io::Errno>>,
+    read_handle: Option<Result<std::os::fd::OwnedFd, rustix::io::Errno>>,
+    buffer: [std::mem::MaybeUninit<u8>; 4096],
+    first: Option<GitCoverageWorkspaceCensusCauseV1>,
+    final_bookend: Option<GitCoverageWorkspaceCensusCauseV1>,
+    closed: bool,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Debug, thiserror::Error)]
+enum GitCoverageWorkspaceCensusCauseV1 {
+    #[error("workspace census kernel operation failed: {0}")]
+    Kernel(#[from] rustix::io::Errno),
+    #[error("workspace census original observation failed: {0}")]
+    Linux(#[from] aos_sandbox_linux::Error),
+    #[error("workspace census refused: {0}")]
+    Refused(&'static str),
+}
+
+#[cfg(target_os = "linux")]
+impl GitCoverageWorkspaceCensusV1 {
+    fn new() -> Self {
+        Self {
+            root: None,
+            metadata: None,
+            read_handle: None,
+            buffer: [std::mem::MaybeUninit::uninit(); 4096],
+            first: None,
+            final_bookend: None,
+            closed: false,
+        }
+    }
+
+    fn compare(&mut self, boot: [u8; 16]) -> Result<(), GitCoverageWorkspaceCensusCauseV1> {
+        use std::os::fd::AsFd as _;
+        use GitCoverageWorkspaceCensusCauseV1::Refused;
+
+        if self.root.is_none() {
+            self.root = Some(super::PinRoot::open(Path::new(super::WORKSPACE_PIN_ROOT), 0));
+        }
+        let root = match self.root.as_ref() {
+            Some(Ok(root)) => root,
+            _ => return Err(Refused("fixed pin-root result failed and remains resident")),
+        };
+        if self.metadata.is_none() {
+            self.metadata = Some(rustix::fs::fstat(root.descriptor.as_fd()));
+        }
+        self.bookend(boot)?;
+
+        if self.read_handle.is_none() {
+            self.read_handle = Some(rustix::fs::openat(
+                root.descriptor.as_fd(),
+                ".",
+                rustix::fs::OFlags::RDONLY
+                    | rustix::fs::OFlags::DIRECTORY
+                    | rustix::fs::OFlags::NOFOLLOW
+                    | rustix::fs::OFlags::CLOEXEC,
+                rustix::fs::Mode::empty(),
+            ));
+        }
+        self.bookend(boot)?;
+        let handle = match self.read_handle.as_ref() {
+            Some(Ok(handle)) => handle,
+            _ => return Err(Refused("original read-handle result failed and remains resident")),
+        };
+        rustix::fs::seek(handle, rustix::fs::SeekFrom::Start(0))?;
+
+        // Names remain borrowed from this retained bounded buffer. The first
+        // unknown child refuses; neither a recursive inventory nor deletion
+        // can turn a physical residual into an inferred empty domain.
+        let mut directory = rustix::fs::RawDir::new(handle, &mut self.buffer);
+        let mut dot = false;
+        let mut parent = false;
+        for _ in 0..3 {
+            match directory.next() {
+                None if dot && parent => return Ok(()),
+                None => return Err(Refused("required dot entries are absent")),
+                Some(Err(cause)) => return Err(cause.into()),
+                Some(Ok(entry)) => match entry.file_name().to_bytes() {
+                    b"." if !dot => dot = true,
+                    b".." if !parent => parent = true,
+                    _ => return Err(Refused("unknown physical child or repeated dot entry")),
+                },
+            }
+        }
+        Err(Refused("fixed directory did not reach bounded EOF"))
+    }
+
+    fn bookend(&self, boot: [u8; 16]) -> Result<(), GitCoverageWorkspaceCensusCauseV1> {
+        use std::os::fd::AsFd as _;
+        use aos_sandbox_linux::{boot::KernelBootId, inventory::MountId};
+        use GitCoverageWorkspaceCensusCauseV1::Refused;
+
+        let root = match self.root.as_ref() {
+            Some(Ok(root)) => root,
+            _ => return Err(Refused("fixed root is not resident")),
+        };
+        let original = match self.metadata.as_ref() {
+            Some(Ok(metadata)) => metadata,
+            _ => return Err(Refused("original root metadata failed and remains resident")),
+        };
+        let current = rustix::fs::fstat(root.descriptor.as_fd())?;
+        let named = rustix::fs::statat(
+            rustix::fs::CWD,
+            super::WORKSPACE_PIN_ROOT,
+            rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+        )?;
+        if root.path != super::WORKSPACE_PIN_ROOT
+            || current.st_uid != 0
+            || current.st_gid != 0
+            || current.st_mode & 0o7777 != 0o700
+            || rustix::fs::FileType::from_raw_mode(current.st_mode)
+                != rustix::fs::FileType::Directory
+            || !same_root_stat(&current, original)
+            || !same_root_stat(&current, &named)
+            || MountId::from_fd(root.descriptor.as_fd())? != root.mount_id
+            || KernelBootId::current()?.into_bytes() != boot
+        {
+            return Err(Refused("original fixed root identity or boot changed"));
+        }
+        if let Some(result) = self.read_handle.as_ref() {
+            let handle = result.as_ref().map_err(|_| Refused("original read handle failed"))?;
+            let readable = rustix::fs::fstat(handle)?;
+            if !same_root_stat(&current, &readable)
+                || MountId::from_fd(handle)? != root.mount_id
+            {
+                return Err(Refused("read handle differs from the original fixed root"));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn same_root_stat(left: &rustix::fs::Stat, right: &rustix::fs::Stat) -> bool {
+    left.st_uid == right.st_uid
+        && left.st_gid == right.st_gid
+        && left.st_mode == right.st_mode
+        && left.st_dev == right.st_dev
+        && left.st_ino == right.st_ino
 }
 
 impl ValidatedPendingStorageWorkspaceCatalogV1 {
+    /// Compares the genuine unused workspace history and fixed physical root.
+    ///
+    /// A current empty map cannot erase old allocations. The same parser must
+    /// prove either a truly unused journal or only the canonical initial pool
+    /// head; the same fixed pin root must have no non-dot physical child.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn compare_unused_git_coverage_v1(
+        &mut self,
+        catalog: &aos_sandbox_core::format::git_upload_enrollment::GitCoverageCatalogV1<'_>,
+        boot: [u8; 16],
+    ) -> Result<crate::runtime::git_coverage::StorageNativeCutV1,
+        crate::runtime::git_coverage::StorageGitCoverageCauseV1>
+    {
+        use crate::runtime::git_coverage::{StorageGitCoverageCauseV1, cut_from_loan};
+
+        self.native_metadata_readback_cut(Path::new("/var/lib/aos/sandbox-storage"))?;
+        if !self.pending.records.is_empty() || !self.plan.rows.is_empty() {
+            return Err(StorageGitCoverageCauseV1::Refused(
+                "original workspace rows or planned obligations are nonempty",
+            ));
+        }
+        let expected_native = match self.pending.head.as_ref() {
+            Some(head) if head.generation == 1
+                && head.identity_pool == IdentityPoolWire::from(self.pending.identity_pool) => {
+                ((1, 1), Some((genesis_transaction_id(self.pending.identity_pool), 3)))
+            }
+            None => ((0, 0), None),
+            _ => return Err(StorageGitCoverageCauseV1::Refused(
+                "original workspace head is not its initial provisioning state",
+            )),
+        };
+
+        self.compare_git_coverage_pin_root_v1(boot)?;
+        let original = self.pending.journal.storage_workspace_git_coverage_prefix_v1(catalog)?;
+        if original.counts() != expected_native.0 || original.last_commit() != expected_native.1 {
+            return Err(StorageGitCoverageCauseV1::Refused(
+                "original workspace prefix contains a historical tenant allocation",
+            ));
+        }
+        cut_from_loan(original)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn compare_git_coverage_pin_root_v1(
+        &mut self,
+        boot: [u8; 16],
+    ) -> Result<(), crate::runtime::git_coverage::StorageGitCoverageCauseV1> {
+        use crate::runtime::git_coverage::StorageGitCoverageCauseV1;
+
+        if self.git_coverage_census.is_none() {
+            self.git_coverage_census = Some(Box::new(GitCoverageWorkspaceCensusV1::new()));
+        }
+        let census = self.git_coverage_census.as_mut().ok_or(
+            StorageGitCoverageCauseV1::Refused("workspace census storage is absent"),
+        )?;
+        if census.closed {
+            return Err(StorageGitCoverageCauseV1::Refused(
+                "original workspace census has permanently failed",
+            ));
+        }
+        census.closed = true;
+        let result = census.compare(boot);
+        if let Err(cause) = result {
+            census.first.get_or_insert(cause);
+        }
+        if let Err(cause) = census.bookend(boot) {
+            census.final_bookend.get_or_insert(cause);
+        }
+        if census.first.is_some() || census.final_bookend.is_some() {
+            return Err(StorageGitCoverageCauseV1::Refused(
+                "workspace census retains its original failure and identity debt",
+            ));
+        }
+        census.closed = false;
+        Ok(())
+    }
+
     /// Rejoins the fixed workspace writer for a metadata-only owner readback.
     ///
     /// # Errors

@@ -15,6 +15,7 @@ use aos_sandbox_core::{
     MOUNT_FUSE_PRESENTATION_FEATURE_NAMESPACE, validate_required_features,
     NIX_NARROWING_PROXY_FEATURE_NAMESPACE,
 };
+use aos_sandbox_core::registry::GIT_UPLOAD_COVERAGE_FEATURE_NAMESPACE;
 
 mod fuse_worker;
 
@@ -49,6 +50,8 @@ const NIX_PROXY_FEATURES: [BrokerSessionMethodFeatureV1; 2] = [
     BrokerSessionMethodFeatureV1::SignedPlanLease,
     BrokerSessionMethodFeatureV1::NixNarrowingProxy,
 ];
+const GIT_COVERAGE_FEATURES: [BrokerSessionMethodFeatureV1; 1] =
+    [BrokerSessionMethodFeatureV1::GitUploadCoverage];
 const HOST_EXECUTION_SPEC_FEATURES: [BrokerSessionMethodFeatureV1; 2] = [
     BrokerSessionMethodFeatureV1::SignedPlanLease,
     BrokerSessionMethodFeatureV1::HostExecutionSpecDescriptor,
@@ -93,7 +96,7 @@ const HOST_ARGUMENT_SOURCE_REQUEST_DESCRIPTOR_DISPOSITIONS: [BrokerDescriptorDis
 ///
 /// Registration is not production advertisement. Closed provisional carriers
 /// remain excluded until their protected issuers and Host owners are joined.
-pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 50] = [
+pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 54] = [
     BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_OBSERVE_RUNTIME,
     BrokerMethod::BROKER_METHOD_HOST_INVENTORY_RUNTIME,
@@ -144,6 +147,10 @@ pub const AUTHENTICATED_BROKER_METHODS_V1: [BrokerMethod; 50] = [
     BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2,
     BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2,
     BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2,
+    BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_GIT_PROJECT_COVERAGE_V1,
+    BrokerMethod::BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1,
+    BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1,
+    BrokerMethod::BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1,
 ];
 
 /// Number of non-sentinel methods in the authenticated broker profile.
@@ -175,6 +182,10 @@ pub fn authenticated_broker_methods_for_role_v1(
                     | BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
                     | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
                     | BrokerMethod::BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1
+                    | BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_GIT_PROJECT_COVERAGE_V1
+                    | BrokerMethod::BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1
+                    | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1
+                    | BrokerMethod::BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1
             )
         })
         .filter(|method| {
@@ -259,6 +270,90 @@ pub fn production_broker_server_hello_v1(
     })
 }
 
+/// Builds the opt-in Mount coverage client hello without altering defaults.
+///
+/// # Errors
+/// Returns the existing negotiation error for an invalid fixed response bound.
+pub fn git_coverage_mount_client_hello_v1() -> Result<BrokerClientHello, BrokerSessionNegotiationError> {
+    git_coverage_client_hello(BrokerSessionProtocolV1::Mount)
+}
+
+/// Builds the opt-in Storage coverage client hello without altering defaults.
+///
+/// # Errors
+/// Returns the existing negotiation error for an invalid fixed response bound.
+pub fn git_coverage_storage_client_hello_v1() -> Result<BrokerClientHello, BrokerSessionNegotiationError> {
+    git_coverage_client_hello(BrokerSessionProtocolV1::Storage)
+}
+
+/// Builds the opt-in Mount coverage server hello through the ordinary builder.
+///
+/// # Errors
+/// Returns the existing negotiation error for an invalid fixed response bound.
+pub fn git_coverage_mount_server_hello_v1() -> Result<BrokerServerHello, BrokerSessionNegotiationError> {
+    git_coverage_server_hello(BrokerSessionProtocolV1::Mount)
+}
+
+/// Builds the opt-in Storage coverage server hello through the ordinary builder.
+///
+/// # Errors
+/// Returns the existing negotiation error for an invalid fixed response bound.
+pub fn git_coverage_storage_server_hello_v1() -> Result<BrokerServerHello, BrokerSessionNegotiationError> {
+    git_coverage_server_hello(BrokerSessionProtocolV1::Storage)
+}
+
+fn git_coverage_methods(protocol: BrokerSessionProtocolV1) -> Vec<BrokerMethod> {
+    let mut methods = authenticated_broker_methods_for_role_v1(
+        protocol,
+        Audience::AUDIENCE_NODE_CONTROLLER,
+    );
+    // Only the four named public DATA builders reach this private helper.
+    // Preserve the ordinary profile and append its corresponding closed pair.
+    match protocol {
+        BrokerSessionProtocolV1::Mount => methods.extend([
+            BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_GIT_PROJECT_COVERAGE_V1,
+            BrokerMethod::BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1,
+        ]),
+        BrokerSessionProtocolV1::Storage => methods.extend([
+            BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1,
+            BrokerMethod::BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1,
+        ]),
+        _ => {}
+    }
+
+    methods
+}
+
+fn git_coverage_client_hello(
+    protocol: BrokerSessionProtocolV1,
+) -> Result<BrokerClientHello, BrokerSessionNegotiationError> {
+    let mut hello = production_broker_client_hello_v1(
+        protocol,
+        Audience::AUDIENCE_NODE_CONTROLLER,
+        4096,
+    )?;
+    let methods = git_coverage_methods(protocol);
+    hello.required_features = production_features_for_methods(&methods);
+    hello.required_methods = methods.into_iter().map(Into::into).collect();
+
+    Ok(hello)
+}
+
+fn git_coverage_server_hello(
+    protocol: BrokerSessionProtocolV1,
+) -> Result<BrokerServerHello, BrokerSessionNegotiationError> {
+    let mut hello = production_broker_server_hello_v1(
+        protocol,
+        Audience::AUDIENCE_NODE_CONTROLLER,
+        4096,
+    )?;
+    let methods = git_coverage_methods(protocol);
+    hello.features = production_features_for_methods(&methods);
+    hello.methods = methods.into_iter().map(Into::into).collect();
+
+    Ok(hello)
+}
+
 /// Defines whether a method carries the established authorization quartet.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BrokerSessionAuthorizationPresenceV1 {
@@ -296,6 +391,8 @@ pub enum BrokerSessionMethodFeatureV1 {
     MountFusePresentation,
     /// Requires exact fixed-domain narrowed Nix realization 1.0.
     NixNarrowingProxy,
+    /// Requires the independently enrolled denial-only owner cohort profile.
+    GitUploadCoverage,
 }
 
 impl BrokerSessionMethodFeatureV1 {
@@ -311,6 +408,7 @@ impl BrokerSessionMethodFeatureV1 {
             Self::HostFuseWorkerSession => HOST_FUSE_WORKER_SESSION_FEATURE_NAMESPACE,
             Self::MountFusePresentation => MOUNT_FUSE_PRESENTATION_FEATURE_NAMESPACE,
             Self::NixNarrowingProxy => NIX_NARROWING_PROXY_FEATURE_NAMESPACE,
+            Self::GitUploadCoverage => GIT_UPLOAD_COVERAGE_FEATURE_NAMESPACE,
         }
     }
 
@@ -469,7 +567,9 @@ pub const fn authenticated_broker_method_profile_v1(
             BrokerSessionProtocolV1::Storage
         }
         BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY
-        | BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE => {
+        | BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE
+        | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1
+        | BrokerMethod::BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1 => {
             BrokerSessionProtocolV1::Storage
         }
         BrokerMethod::BROKER_METHOD_MOUNT_APPLY
@@ -479,7 +579,9 @@ pub const fn authenticated_broker_method_profile_v1(
         | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_DESTINATION_SLOTS
         | BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
         | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
-        | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS => {
+        | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS
+        | BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_GIT_PROJECT_COVERAGE_V1
+        | BrokerMethod::BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1 => {
             BrokerSessionProtocolV1::Mount
         }
         BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1 => {
@@ -565,6 +667,10 @@ pub const fn authenticated_broker_method_profile_v1(
         BrokerSessionAuthorizationPresenceV1::Forbidden
     };
     let required_features: &'static [BrokerSessionMethodFeatureV1] = match method {
+        BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_GIT_PROJECT_COVERAGE_V1
+        | BrokerMethod::BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1
+        | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1
+        | BrokerMethod::BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1 => &GIT_COVERAGE_FEATURES,
         BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2
         | BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2
         | BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2 => &NIX_PROXY_FEATURES,
@@ -591,6 +697,10 @@ pub const fn authenticated_broker_method_profile_v1(
         _ => &NO_FEATURES,
     };
     let (total_request_maximum_bytes, cleared_request_maximum_bytes) = match method {
+        BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_GIT_PROJECT_COVERAGE_V1
+        | BrokerMethod::BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1
+        | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1
+        | BrokerMethod::BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1 => (4096, 3072),
         BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT => (
             AUTHENTICATED_HOST_QUERY_MAXIMUM_BYTES,
             crate::projection::AUTHENTICATED_HOST_QUERY_CLEARED_MAXIMUM_BYTES,
@@ -951,6 +1061,15 @@ fn validate_feature_conditions(
         required_methods,
         advertised_methods,
     )?;
+    let selects_git_coverage = required_methods.iter().chain(advertised_methods)
+        .copied().any(is_git_coverage_method);
+    if selects_git_coverage
+        && (!matches!(protocol, BrokerSessionProtocolV1::Mount | BrokerSessionProtocolV1::Storage)
+            || !has_feature(required_features, GIT_UPLOAD_COVERAGE_FEATURE_NAMESPACE)
+            || !has_feature(advertised_features, GIT_UPLOAD_COVERAGE_FEATURE_NAMESPACE))
+    {
+        return Err(BrokerSessionNegotiationError::FeatureCondition);
+    }
     let selects_nix_proxy = required_methods.iter().chain(advertised_methods)
         .copied().any(is_nix_proxy_method);
     if selects_nix_proxy
@@ -1111,6 +1230,8 @@ pub(crate) fn method_has_required_traffic_features(
 ) -> bool {
     (!method_requires_authorization(method)
         || has_feature(required_features, SIGNED_PLAN_LEASE_FEATURE))
+        && (!is_git_coverage_method(method)
+            || has_feature(required_features, GIT_UPLOAD_COVERAGE_FEATURE_NAMESPACE))
         && (!is_nix_proxy_method(method)
             || has_feature(required_features, NIX_NARROWING_PROXY_FEATURE_NAMESPACE))
         && (!is_mount_source_acquisition_method(method)
@@ -1135,6 +1256,16 @@ pub(crate) fn method_has_required_traffic_features(
             ))
         && (method != BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
             || has_feature(required_features, MOUNT_FUSE_PRESENTATION_FEATURE_NAMESPACE))
+}
+
+const fn is_git_coverage_method(method: BrokerMethod) -> bool {
+    matches!(
+        method,
+        BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_GIT_PROJECT_COVERAGE_V1
+            | BrokerMethod::BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1
+            | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1
+            | BrokerMethod::BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1
+    )
 }
 
 const fn is_nix_proxy_method(method: BrokerMethod) -> bool {
@@ -1171,6 +1302,97 @@ mod tests {
     use super::*;
 
     const RESPONSE_MAXIMUM: u32 = 65_536;
+
+    #[test]
+    fn named_coverage_hellos_add_only_their_closed_pair_to_the_default_profile() {
+        let profiles = [
+            (
+                BrokerSessionProtocolV1::Mount,
+                git_coverage_mount_client_hello_v1().unwrap(),
+                git_coverage_mount_server_hello_v1().unwrap(),
+                vec![4, 6, 14, 15, 16, 22, 23, 24, 53, 54],
+            ),
+            (
+                BrokerSessionProtocolV1::Storage,
+                git_coverage_storage_client_hello_v1().unwrap(),
+                git_coverage_storage_server_hello_v1().unwrap(),
+                vec![7, 18, 20, 21, 25, 31, 32, 55, 56],
+            ),
+        ];
+
+        for (protocol, client, broker, expected) in profiles {
+            let audience = Audience::AUDIENCE_NODE_CONTROLLER;
+            let ordinary = authenticated_broker_methods_for_role_v1(protocol, audience);
+            let client_methods = client.required_methods.iter()
+                .map(|method| method.as_known().unwrap() as i32)
+                .collect::<Vec<_>>();
+            let broker_methods = broker.methods.iter()
+                .map(|method| method.as_known().unwrap() as i32)
+                .collect::<Vec<_>>();
+
+            assert_eq!(client_methods, expected);
+            assert_eq!(broker_methods, expected);
+            assert_eq!(client_methods.len(), ordinary.len() + 2);
+            assert!(!ordinary.iter().copied().any(is_git_coverage_method));
+            assert_eq!(client.maximum_response_bytes, 4096);
+            assert_eq!(broker.maximum_response_bytes, 4096);
+
+            let (major, minor) = supported_broker_session_version_v1(protocol);
+            validate_authenticated_negotiation_v1(
+                &client,
+                &broker,
+                protocol,
+                major,
+                minor,
+                audience,
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn coverage_feature_is_required_on_both_sides_even_for_advertised_only_selection() {
+        for protocol in [
+            BrokerSessionProtocolV1::Mount,
+            BrokerSessionProtocolV1::Storage,
+        ] {
+            let methods = git_coverage_methods(protocol);
+            let exact = feature_refs(&production_features_for_methods(&methods)).unwrap();
+            let mut missing = exact.clone();
+            missing.retain(|feature| feature.namespace() != GIT_UPLOAD_COVERAGE_FEATURE_NAMESPACE);
+
+            for (required, advertised) in [
+                (&missing, &exact),
+                (&exact, &missing),
+                (&missing, &missing),
+            ] {
+                assert_eq!(
+                    validate_feature_conditions(protocol, required, advertised, &methods, &methods),
+                    Err(BrokerSessionNegotiationError::FeatureCondition),
+                );
+                assert_eq!(
+                    validate_feature_conditions(protocol, required, advertised, &[], &methods),
+                    Err(BrokerSessionNegotiationError::FeatureCondition),
+                );
+            }
+
+            let selected = methods.into_iter()
+                .filter(|method| is_git_coverage_method(*method));
+            for method in selected {
+                let profile = authenticated_broker_method_profile_v1(method).unwrap();
+                assert_eq!(
+                    profile.authorization(),
+                    BrokerSessionAuthorizationPresenceV1::Forbidden,
+                );
+                assert_eq!(profile.total_request_maximum_bytes(), 4096);
+                assert_eq!(profile.cleared_request_maximum_bytes(), 3072);
+                assert!(profile.request_descriptor_roles().is_empty());
+                assert!(profile.success_response_descriptor_roles().is_empty());
+                assert!(method_has_required_traffic_features(method, &exact));
+                assert!(!method_has_required_traffic_features(method, &missing));
+            }
+        }
+    }
 
     #[test]
     fn nix_methods_require_exact_protocol_authorization_and_proxy_features() {

@@ -18,6 +18,8 @@
 //! settlement. Its terminal-only observation never materializes catalog rows.
 
 mod native_acquire;
+#[cfg(target_os = "linux")]
+pub(crate) mod git_coverage;
 pub(crate) mod original_held_settlement;
 pub(crate) mod original_held_measurement;
 mod operator_terminal_hold;
@@ -742,6 +744,8 @@ pub struct StorageBrokerRuntime {
     native_escrow: native_acquire::StorageNativeEscrowV2,
     original_worker_startup: Option<crate::activation::StorageOriginalWorkerStartupV3>,
     original_measurements: original_held_measurement::ResidentOriginalMeasurementsV3,
+    #[cfg(target_os = "linux")]
+    git_coverage: Option<git_coverage::StorageGitCoverageV1>,
     #[cfg(test)]
     native_fixture: Option<native_acquire::SyntheticNativeRuntimeV2>,
     #[cfg(test)]
@@ -760,6 +764,14 @@ pub struct StorageBrokerRuntime {
 }
 
 impl StorageBrokerRuntime {
+    fn require_git_coverage_new_admission_v1(&self) -> Result<(), StorageRuntimeError> {
+        #[cfg(target_os = "linux")]
+        if self.git_coverage.is_some() || self.coordinator.git_coverage_denies_new_v1() {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        Ok(())
+    }
+
     pub(crate) fn install_original_worker_startup(
         &mut self,
         mut startup: crate::activation::StorageOriginalWorkerStartupV3,
@@ -1328,6 +1340,11 @@ impl StorageBrokerRuntime {
         let existing = self
             .coordinator
             .existing_atomic_dataset_snapshot(request.operation())?;
+        if existing.as_ref().is_none_or(|(phase, _, _)| {
+            *phase == crate::state::AtomicDatasetSnapshotPhaseV1::Prepared
+        }) {
+            self.require_git_coverage_new_admission_v1()?;
+        }
         if existing.is_none() && !self.readiness.permits_catalog_methods() {
             return Err(StorageRuntimeError::Recovery);
         }
@@ -1375,6 +1392,7 @@ impl StorageBrokerRuntime {
         operation: [u8; 16],
         commitment: ObjectDigest,
     ) -> Result<AtomicDatasetSnapshotMutationOutcomeV1, StorageRuntimeError> {
+        self.require_git_coverage_new_admission_v1()?;
         let marked = self
             .coordinator
             .mark_atomic_dataset_snapshot_ambiguous(operation, commitment);
@@ -1893,6 +1911,8 @@ impl StorageBrokerRuntime {
                 None => None,
             },
             original_measurements: original_held_measurement::ResidentOriginalMeasurementsV3::default(),
+            #[cfg(target_os = "linux")]
+            git_coverage: None,
             #[cfg(test)]
             native_fixture: None,
             #[cfg(test)]
@@ -1987,6 +2007,8 @@ impl StorageBrokerRuntime {
             native_escrow: native_acquire::StorageNativeEscrowV2::default(),
             original_worker_startup: None,
             original_measurements: original_held_measurement::ResidentOriginalMeasurementsV3::default(),
+            #[cfg(target_os = "linux")]
+            git_coverage: None,
             native_fixture: None,
             native_readback_fixture_uid: None,
             pin_contract,
@@ -2039,6 +2061,8 @@ impl StorageBrokerRuntime {
             native_escrow: native_acquire::StorageNativeEscrowV2::default(),
             original_worker_startup: None,
             original_measurements: original_held_measurement::ResidentOriginalMeasurementsV3::default(),
+            #[cfg(target_os = "linux")]
+            git_coverage: None,
             native_fixture: None,
             native_readback_fixture_uid: None,
             pin_contract,
@@ -2446,6 +2470,7 @@ impl StorageBrokerRuntime {
         policy: PeerPolicy,
         template: &ProtectedGuestRootTemplateV1,
     ) -> Result<GuestRootPublicationProofV1, StorageRuntimeError> {
+        self.require_git_coverage_new_admission_v1()?;
         let _dispatch = self
             .worker_dispatch
             .enter()
@@ -2770,6 +2795,7 @@ impl StorageBrokerRuntime {
     where
         F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
     {
+        self.require_git_coverage_new_admission_v1()?;
         if !self.is_prepare_ready() {
             return Err(StorageRuntimeError::Recovery);
         }
@@ -2850,6 +2876,7 @@ impl StorageBrokerRuntime {
     where
         F: FnMut() -> Result<RawPairedClockSample, StorageAdmissionError>,
     {
+        self.require_git_coverage_new_admission_v1()?;
         if !self.is_repair_ready() {
             return Err(StorageRuntimeError::Recovery);
         }
@@ -3048,6 +3075,7 @@ impl StorageBrokerRuntime {
             return Ok(WorkspacePinRepairExecutionOutcomeV1::ObservationRequired);
         }
 
+        self.require_git_coverage_new_admission_v1()?;
         let current_host_scope = self
             .pin_io
             .host_scope()
@@ -3195,6 +3223,7 @@ impl StorageBrokerRuntime {
         manifest: &CanonicalAssignmentManifestV1,
         sandbox_spec: &SandboxSpec,
     ) -> Result<StorageAdmissionOutcome, StorageRuntimeError> {
+        self.require_git_coverage_new_admission_v1()?;
         if self.apply_readiness == StorageApplyReadiness::WorkspaceBackendUnavailable
             || protocol_version != ProtocolVersion::new(1, 0)
         {
@@ -3313,6 +3342,7 @@ impl StorageBrokerRuntime {
         policy: PeerPolicy,
         current_clock: &RawPairedClockSample,
     ) -> Result<([u8; 16], StorageOperation, StorageAdmissionOutcome), StorageRuntimeError> {
+        self.require_git_coverage_new_admission_v1()?;
         if self.apply_readiness == StorageApplyReadiness::WorkspaceBackendUnavailable
             || protocol_version != ProtocolVersion::new(1, 0)
         {
@@ -3422,6 +3452,13 @@ impl StorageBrokerRuntime {
             prepared.catalog().plan(),
             crate::CatalogPlanV1::CreateWorkspace { .. } | crate::CatalogPlanV1::Clone { .. }
         );
+        if !matches!(prepared.catalog().plan(),
+            crate::CatalogPlanV1::ReleaseHold { .. }
+                | crate::CatalogPlanV1::DestroyDataset { .. }
+                | crate::CatalogPlanV1::DestroySnapshot { .. })
+        {
+            self.require_git_coverage_new_admission_v1()?;
+        }
         let removal = self
             .coordinator
             .workspace_remove_pin_requirement(&prepared)

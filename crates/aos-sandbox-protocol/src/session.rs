@@ -620,6 +620,10 @@ pub fn decode_request_envelope(
             | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2
             | BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
             | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
+            | BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_GIT_PROJECT_COVERAGE_V1
+            | BrokerMethod::BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1
+            | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1
+            | BrokerMethod::BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1
     ) {
         return Err(ProtocolValidationError::MethodMismatch);
     }
@@ -672,6 +676,10 @@ pub(crate) fn validate_decoded_request_envelope(
 
 const fn request_packet_maximum(method: BrokerMethod) -> usize {
     match method {
+        BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_GIT_PROJECT_COVERAGE_V1
+        | BrokerMethod::BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1
+        | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1
+        | BrokerMethod::BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1 => 4096,
         BrokerMethod::BROKER_METHOD_HOST_QUERY_RUNTIME_EFFECT => MAXIMUM_HOST_QUERY_PACKET_BYTES,
         BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_CATALOG => {
             MAXIMUM_MOUNT_CATALOG_PREPARATION_PACKET_BYTES
@@ -1915,6 +1923,8 @@ fn validate_method(
                 | BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
                 | BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
                 | BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS
+                | BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_GIT_PROJECT_COVERAGE_V1
+                | BrokerMethod::BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1
         ) | (
             ProtocolId::MountFuseBroker,
             BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
@@ -1927,6 +1937,8 @@ fn validate_method(
                 | BrokerMethod::BROKER_METHOD_STORAGE_POPULATE_GUEST_ROOT
                 | BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
                 | BrokerMethod::BROKER_METHOD_STORAGE_RECOVER_INVENTORY
+                | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1
+                | BrokerMethod::BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1
         ) | (
             ProtocolId::NetworkBroker,
             BrokerMethod::BROKER_METHOD_NETWORK_APPLY
@@ -1991,6 +2003,10 @@ fn validate_canonical_methods(
                 | BrokerMethod::BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2
                 | BrokerMethod::BROKER_METHOD_MOUNT_FUSE_RESERVE_INTENT_V1
                 | BrokerMethod::BROKER_METHOD_HOST_OBSERVE_MOUNT_SCOPE_IDENTITY_V1
+                | BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_GIT_PROJECT_COVERAGE_V1
+                | BrokerMethod::BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1
+                | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1
+                | BrokerMethod::BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1
         ) {
             return Err(ProtocolValidationError::MethodMismatch);
         }

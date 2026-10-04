@@ -724,6 +724,53 @@ impl StorageAdmissionCoordinator {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) fn git_coverage_catalog_v1(
+        &self,
+    ) -> Result<crate::state::VerifiedStorageResolverJournalV1, crate::state::StorageStateError> {
+        self.transactions.git_coverage_catalog_v1()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn git_coverage_native_v1(
+        &self,
+        catalog: &aos_sandbox_core::format::git_upload_enrollment::GitCoverageCatalogV1<'_>,
+    ) -> Result<
+        crate::runtime::git_coverage::StorageNativeCutV1,
+        crate::runtime::git_coverage::StorageGitCoverageCauseV1,
+    > {
+        crate::runtime::git_coverage::observe_native(&self.transactions, catalog)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn git_coverage_denies_new_v1(&self) -> bool {
+        self.transactions.git_coverage_denies_new_v1()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn git_coverage_durable_v1(
+        &self,
+    ) -> Result<
+        Option<(
+            aos_sandbox_core::format::git_upload_enrollment::GitCoverageBirthV1<'_>,
+            aos_sandbox_core::format::git_upload_enrollment::GitCoverageFenceV1<'_>,
+        )>,
+        crate::runtime::git_coverage::StorageGitCoverageCauseV1,
+    > {
+        self.transactions.git_coverage_durable_v1()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn append_git_coverage_v1(
+        &mut self,
+        transaction: &aos_sandbox::journal::JournalTransaction,
+    ) -> Result<
+        aos_sandbox::journal::CommitResult,
+        crate::runtime::git_coverage::StorageGitCoverageCauseV1,
+    > {
+        self.transactions.append_git_coverage_v1(transaction)
+    }
+
     /// Authenticates a read-only candidate against the current fenced catalog.
     ///
     /// The returned cut is not a durable reservation. The caller must repeat

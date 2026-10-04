@@ -45,6 +45,45 @@ pub enum ProductionBrokerResponseErrorV1 {
     /// Protected currentness or transport failed while sending a response.
     #[error("broker response transport failed: {0}")]
     Transport(#[from] DormantBrokerSessionHandshakeErrorV1),
+    /// A coverage response has no actual domain owner for fresh bookends.
+    #[error("coverage response requires its original domain owner")]
+    CoverageOwnerMissing,
+    /// The same Mount owner rejected a fresh response bookend.
+    #[error(transparent)]
+    CoverageMount(aos_sandbox_mount::DormantMountBrokerCallErrorV1),
+    /// The same Storage/output owners rejected a fresh response bookend.
+    #[error(transparent)]
+    CoverageStorage(aos_sandbox_storage::DormantStorageBrokerCallErrorV1),
+}
+
+// These are concrete loans into the two existing sealed owners, not a caller
+// predicate or a detached fence token. The ordinary recipe remains None.
+pub(crate) enum GitCoverageResponseOwnerV1<'owner> {
+    Mount(&'owner mut dyn aos_sandbox_mount::DormantMountBrokerCallsiteV1),
+    Storage {
+        storage: &'owner mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+        output: &'owner aos_sandbox_storage::execution_output_credential::StorageExecutionOutputCustodyV1,
+    },
+}
+
+impl GitCoverageResponseOwnerV1<'_> {
+    fn recheck(&mut self, deadline: u64) -> Result<(), ProductionBrokerResponseErrorV1> {
+        crate::dormant_handshake::check_production_deadline(deadline)?;
+        match self {
+            Self::Mount(mount) => mount.recheck_git_coverage_response_v1(deadline)
+                .map_err(ProductionBrokerResponseErrorV1::CoverageMount)?,
+            Self::Storage { storage, output } => storage
+                .recheck_git_coverage_response_v1(output, deadline)
+                .map_err(ProductionBrokerResponseErrorV1::CoverageStorage)?,
+        }
+        crate::dormant_handshake::check_production_deadline(deadline)?;
+        Ok(())
+    }
+}
+
+fn is_coverage_method(method: aos_proto::aos::sandbox::local::v1::BrokerMethod) -> bool {
+    crate::dormant_handshake::git_coverage::is_mount(method)
+        || crate::dormant_handshake::git_coverage::is_storage(method)
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
@@ -62,12 +101,24 @@ impl DormantAuthenticatedBrokerSessionV1 {
     /// observed-success recovery, protected response commit, or transport does
     /// not complete exactly before the boot-time deadline.
     pub fn finish_ordinary_dispatch<Domain>(
+        self,
+        dispatched: Result<
+            ProtectedBrokerOutcomeCommitResultV1,
+            DormantBrokerExecutionFailureV1<Domain>,
+        >,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<Self, ProductionBrokerResponseErrorV1> {
+        self.finish_dispatch_with_coverage_v1(dispatched, deadline_boottime_nanoseconds, None)
+    }
+
+    pub(crate) fn finish_dispatch_with_coverage_v1<Domain>(
         mut self,
         dispatched: Result<
             ProtectedBrokerOutcomeCommitResultV1,
             DormantBrokerExecutionFailureV1<Domain>,
         >,
         deadline_boottime_nanoseconds: u64,
+        owner: Option<GitCoverageResponseOwnerV1<'_>>,
     ) -> Result<Self, ProductionBrokerResponseErrorV1> {
         let committed = match dispatched {
             Ok(committed) => committed,
@@ -81,7 +132,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 .map_err(|_| ProductionBrokerResponseErrorV1::OutcomeRecovery)?,
         };
 
-        self.finish_authenticated_response(committed, deadline_boottime_nanoseconds)
+        self.finish_response_with_coverage_v1(committed, deadline_boottime_nanoseconds, owner)
     }
 
     /// Completes protected readback and atomically sends an ordinary response.
@@ -97,9 +148,18 @@ impl DormantAuthenticatedBrokerSessionV1 {
     /// remains ambiguous, transport currentness fails, or the boot-time
     /// deadline expires.
     pub fn finish_authenticated_response(
+        self,
+        committed: ProtectedBrokerOutcomeCommitResultV1,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<Self, ProductionBrokerResponseErrorV1> {
+        self.finish_response_with_coverage_v1(committed, deadline_boottime_nanoseconds, None)
+    }
+
+    fn finish_response_with_coverage_v1(
         mut self,
         committed: ProtectedBrokerOutcomeCommitResultV1,
         deadline_boottime_nanoseconds: u64,
+        mut owner: Option<GitCoverageResponseOwnerV1<'_>>,
     ) -> Result<Self, ProductionBrokerResponseErrorV1> {
         let committed = match committed {
             ProtectedBrokerOutcomeCommitResultV1::Committed(committed) => committed,
@@ -113,10 +173,25 @@ impl DormantAuthenticatedBrokerSessionV1 {
             }
         };
 
+        if is_coverage_method(committed.method()) && owner.is_none() {
+            return Err(ProductionBrokerResponseErrorV1::CoverageOwnerMissing);
+        }
         let mut pending = committed;
         loop {
             crate::dormant_handshake::check_production_deadline(deadline_boottime_nanoseconds)?;
-            match self.send_authenticated_response(pending)? {
+            if let Some(owner) = &mut owner {
+                owner.recheck(deadline_boottime_nanoseconds)?;
+            }
+            let sent = self.send_authenticated_response(pending);
+            // Keep the actual owning send result through the independent
+            // domain bookend. A transport error remains the first cause.
+            let postchecked = match &mut owner {
+                Some(owner) => owner.recheck(deadline_boottime_nanoseconds),
+                None => Ok(()),
+            };
+            let progress = sent?;
+            postchecked?;
+            match progress {
                 DormantBrokerResponseSendProgressV1::Sent(_) => {
                     return self.finish_sent_response(deadline_boottime_nanoseconds);
                 }
@@ -205,14 +280,36 @@ impl DormantAuthenticatedBrokerSessionV1 {
     /// Returns an error after consuming the session for descriptor-bearing
     /// replay, changed currentness, fatal transport, or deadline expiry.
     pub fn finish_authenticated_terminal_replay(
-        mut self,
+        self,
         replay: DormantBrokerTerminalReplayV1,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<Self, ProductionBrokerResponseErrorV1> {
+        self.finish_replay_with_coverage_v1(replay, deadline_boottime_nanoseconds, None)
+    }
+
+    pub(crate) fn finish_replay_with_coverage_v1(
+        mut self,
+        replay: DormantBrokerTerminalReplayV1,
+        deadline_boottime_nanoseconds: u64,
+        mut owner: Option<GitCoverageResponseOwnerV1<'_>>,
+    ) -> Result<Self, ProductionBrokerResponseErrorV1> {
+        if is_coverage_method(replay.method()) && owner.is_none() {
+            return Err(ProductionBrokerResponseErrorV1::CoverageOwnerMissing);
+        }
         let mut pending = replay;
         loop {
             crate::dormant_handshake::check_production_deadline(deadline_boottime_nanoseconds)?;
-            match self.send_authenticated_terminal_replay(pending)? {
+            if let Some(owner) = &mut owner {
+                owner.recheck(deadline_boottime_nanoseconds)?;
+            }
+            let sent = self.send_authenticated_terminal_replay(pending);
+            let postchecked = match &mut owner {
+                Some(owner) => owner.recheck(deadline_boottime_nanoseconds),
+                None => Ok(()),
+            };
+            let progress = sent?;
+            postchecked?;
+            match progress {
                 DormantBrokerTerminalReplaySendProgressV1::Sent(_) => {
                     return self.finish_sent_response(deadline_boottime_nanoseconds);
                 }

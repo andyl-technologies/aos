@@ -12,6 +12,8 @@ mod broker_authorization;
 mod cbor;
 mod execution;
 mod git_upload_capacity;
+pub mod git_upload_enrollment;
+pub mod policy_signer_credential;
 mod ownership_lease;
 mod policy;
 mod publisher;

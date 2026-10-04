@@ -752,6 +752,140 @@ pub struct StorageTransactionStore {
 type CatalogPreparationRecord = ([u8; 16], Vec<u8>);
 
 impl StorageTransactionStore {
+    /// Reuses the authenticated resolver reload for the selected empty cohort.
+    ///
+    /// The caller parks this whole result before comparing its physical
+    /// tables. No detached row vector or current-map absence proves coverage.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn git_coverage_catalog_v1(
+        &self,
+    ) -> Result<VerifiedStorageResolverJournalV1, StorageStateError> {
+        self.require_git_coverage_empty_state_v1()?;
+        self.verified_resolver_journal()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn require_git_coverage_empty_state_v1(&self) -> Result<(), StorageStateError> {
+        self.ensure_authority_readable()?;
+        let genesis = self.catalog_transitions.genesis_binding()
+            .ok_or(StorageStateError::InvalidTransition)?;
+        if self.catalog_transitions.head_binding() != Some(genesis)
+            || self.runtime_configuration.is_none()
+            || self.resolver_policy_floor.is_some()
+            || !self.records.is_empty()
+            || !self.publication_intents.is_empty()
+            || !self.pin_attempts.is_empty()
+            || !self.repair_intents.is_empty()
+            || !self.guest_root_attempts.is_empty()
+            || !self.atomic_snapshots.is_empty()
+            || !self.repair_guards.is_empty()
+        {
+            return Err(StorageStateError::InvalidTransition);
+        }
+        // The complete native comparison separately refuses undeclared
+        // reservations, historical tenant rows and deletions. A provisioned
+        // runtime/configuration and immutable genesis are not tenant debt.
+        self.journal.validate_held_root_owned_at(
+            "/var/lib/aos/sandbox-storage", "storage-state.journal",
+        )?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn git_coverage_native_v1<'journal>(
+        &'journal self,
+        catalog: &aos_sandbox_core::format::git_upload_enrollment::GitCoverageCatalogV1<'_>,
+    ) -> Result<aos_sandbox::journal::GitCoverageNativePrefixLoanV1<'journal>,
+        crate::runtime::git_coverage::StorageGitCoverageCauseV1>
+    {
+        self.require_git_coverage_empty_state_v1()?;
+        Ok(self.journal.storage_git_coverage_native_prefix_v1(catalog)?)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn git_coverage_denies_new_v1(&self) -> bool {
+        // A partial pair is negative debt, never an absent/unselected permit.
+        self.journal.get(RecordNamespace::DesiredState, b"z-git-birth-v1").is_some()
+            || self.journal.get(RecordNamespace::DesiredState, b"z-git-fence-v1").is_some()
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn git_coverage_durable_v1(
+        &self,
+    ) -> Result<Option<(
+        aos_sandbox_core::format::git_upload_enrollment::GitCoverageBirthV1<'_>,
+        aos_sandbox_core::format::git_upload_enrollment::GitCoverageFenceV1<'_>,
+    )>, crate::runtime::git_coverage::StorageGitCoverageCauseV1> {
+        use aos_sandbox_core::format::git_upload_enrollment::{
+            GitCoverageBirthV1, GitCoverageFenceV1,
+        };
+
+        self.ensure_authority_readable()?;
+        match (
+            self.journal.get(RecordNamespace::DesiredState, b"z-git-birth-v1"),
+            self.journal.get(RecordNamespace::DesiredState, b"z-git-fence-v1"),
+        ) {
+            (None, None) => Ok(None),
+            (Some(birth), Some(fence)) => {
+                let birth = GitCoverageBirthV1::decode(birth)?;
+                let fence = GitCoverageFenceV1::decode(fence)?;
+                fence.compare_birth(&birth)?;
+                Ok(Some((birth, fence)))
+            }
+            _ => Err(StorageStateError::CorruptRecord.into()),
+        }
+    }
+
+    /// Appends only the selected two-row denial fence to the same writer.
+    ///
+    /// Its actual result is returned for immediate resident parking. This
+    /// operation is neither an allocation grant nor an ordinary commit bypass.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn append_git_coverage_v1(
+        &mut self,
+        transaction: &JournalTransaction,
+    ) -> Result<aos_sandbox::journal::CommitResult,
+        crate::runtime::git_coverage::StorageGitCoverageCauseV1>
+    {
+        use aos_sandbox_core::format::git_upload_enrollment::{
+            GitCoverageBirthV1, GitCoverageFenceV1, GitCoverageOwnerKindV1,
+        };
+
+        self.require_git_coverage_empty_state_v1()?;
+        if self.git_coverage_durable_v1()?.is_some() {
+            return Err(StorageStateError::InvalidTransition.into());
+        }
+        let rows = transaction.records();
+        if rows.len() != 2
+            || rows[0].namespace() != RecordNamespace::DesiredState
+            || rows[0].key() != b"z-git-birth-v1"
+            || rows[1].namespace() != RecordNamespace::DesiredState
+            || rows[1].key() != b"z-git-fence-v1"
+        {
+            return Err(StorageStateError::CorruptRecord.into());
+        }
+        let birth = GitCoverageBirthV1::decode(
+            rows[0].value().ok_or(StorageStateError::CorruptRecord)?,
+        )?;
+        let fence = GitCoverageFenceV1::decode(
+            rows[1].value().ok_or(StorageStateError::CorruptRecord)?,
+        )?;
+        fence.compare_birth(&birth)?;
+        if birth.fields().owner != GitCoverageOwnerKindV1::StorageCatalog
+            || &birth.fields().transaction != transaction.id()
+            || self.journal.snapshot_sequence().checked_add(3)
+                != Some(birth.fields().commit_sequence)
+        {
+            return Err(StorageStateError::AuthorityLinkMismatch.into());
+        }
+        self.journal.preflight_transactions(std::slice::from_ref(transaction))?;
+        let result = self.journal.commit(transaction);
+        if result.is_err() {
+            self.commit_failed = true;
+        }
+        result.map_err(Into::into)
+    }
+
     /// Durably consumes one admitted guest-root effect before worker dispatch.
     ///
     /// An uncertain commit poisons the transaction store. Reopen can observe

@@ -24,6 +24,17 @@ pub(super) struct StorageNativeEscrowV2 {
     originals: BTreeMap<[u8; 32], NativeOriginalV2>,
 }
 
+#[cfg(target_os = "linux")]
+impl StorageNativeEscrowV2 {
+    /// Refuses original kernel-object debt; an absent escrow is not a cold proof.
+    pub(super) fn require_git_coverage_empty_v1(&self) -> Result<(), StorageRuntimeError> {
+        if !self.originals.is_empty() {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 impl StorageNativeEscrowV2 {
     pub(super) fn count_for_test(&self) -> usize {
@@ -198,6 +209,9 @@ impl StorageBrokerRuntime {
         let _crossing = carrier.unwind_fence();
         let mut resident_index = None;
         let result = (|| {
+            // Failure flows through the existing carrier-retention disposition
+            // below; never drop the incoming original merely to enforce deny.
+            self.require_git_coverage_new_admission_v1()?;
             let request = carrier.request.as_ref().ok_or(Error::Closed)?;
             let authenticated = trust.verify_native(request)?;
             let (index, new) = self.original_measurements.begin(&authenticated)?;
@@ -489,6 +503,7 @@ impl StorageBrokerRuntime {
         key: &StorageZfsHoldKeyV1,
         deliver: impl FnOnce(&[u8], BorrowedFd<'_>, u64) -> Result<(), ()>,
     ) -> Result<StorageNativeDeliveryOutcomeV2, StorageRuntimeError> {
+        self.require_git_coverage_new_admission_v1()?;
         if self.original_worker_startup.is_some() {
             return self.with_original_worker_native_delivery(authenticated, key, deliver);
         }

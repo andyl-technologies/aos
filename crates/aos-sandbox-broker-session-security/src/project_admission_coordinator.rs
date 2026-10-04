@@ -111,6 +111,9 @@ pub(crate) fn recover_source_project_admission_v1(
             }
             return recover_undispatched_flight(controller, source_domains, scope, &flight);
         }
+        // An absent reservation is not original Source debt. Reconstructing
+        // it is a NEW durable admission, even when Root has canceled an intent.
+        controller.require_git_coverage_new_admission_v1().map_err(io::Error::other)?;
         reserve_for_cancellation(source_domains, reservation)?;
         cancel_and_settle_reservation(controller, source_domains, scope, &flight)?;
         return Ok(());
@@ -154,6 +157,7 @@ fn recover_undispatched_flight(
     flight: &RetainedControllerProjectAdmissionV1,
 ) -> io::Result<()> {
     let reservation = flight.reservation();
+    controller.require_git_coverage_new_admission_v1().map_err(io::Error::other)?;
     preflight_source_project_negative_recovery_v1(source_domains, reservation)
         .map_err(io::Error::other)?;
     let packet = with_process_controller_hold_signer_v1(|generation, key| {
@@ -342,6 +346,7 @@ pub(crate) fn advance_create_project_admission_v1(
 
     // Root first retains cancellation capacity for the exact prospective
     // Source row. Only then may Source commit its own reservation.
+    controller.require_git_coverage_new_admission_v1().map_err(io::Error::other)?;
     let preview = prepare_current_create_project_admission_v1(
         controller,
         source_domains,

@@ -37,6 +37,12 @@ use sha2::{Digest, Sha256};
 pub mod canonical_map;
 mod delete_batch;
 #[cfg(target_os = "linux")]
+mod git_coverage_history;
+#[cfg(target_os = "linux")]
+pub use git_coverage_history::{
+    GitCoverageNativeHistoryErrorV1, GitCoverageNativePrefixLoanV1,
+};
+#[cfg(target_os = "linux")]
 mod git_evidence_namespace;
 pub(crate) mod mount_manager_startup;
 pub(crate) mod controller_source_successor_issuance;
@@ -104,6 +110,8 @@ mod cache_policy_hold;
 pub(crate) use cache_policy_hold::{
     BorrowedCacheMutationGateV1, CacheMutationGateV1, HeldCacheMutationGateV1,
 };
+#[cfg(target_os = "linux")]
+pub(crate) use cache_policy_hold::CacheGitCoverageObservationV1;
 mod capacity_reservation;
 pub use capacity_reservation::native_held;
 mod controller_policy_hold;
@@ -687,6 +695,10 @@ pub enum JournalError {
     /// Sequence space is exhausted and cannot safely wrap.
     #[error("journal sequence space is exhausted")]
     SequenceExhausted,
+    /// A coverage audit retains its first native cause and final bookend debt.
+    #[cfg(target_os = "linux")]
+    #[error("journal coverage native history failed: {0}")]
+    GitCoverageNativeHistory(#[source] Box<GitCoverageNativeHistoryErrorV1>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -747,6 +759,7 @@ pub struct Journal {
     poisoned: bool,
     protected: Option<ProtectedJournalLocation>,
     cache_policy_gate: Option<(PathBuf, u32)>,
+    mount_git_coverage_denied: bool,
     authority_instance: Arc<JournalAuthorityInstance>,
     source_challenge_history: Vec<source_original_native::SourceOriginalChallengeCheckpointV5>,
     source_original_replay: source_original_native::replay::SourceOriginalReplayCacheV5,
@@ -778,6 +791,7 @@ macro_rules! journal_from_original_replay {
             poisoned: false,
             protected: $protected,
             cache_policy_gate: None,
+            mount_git_coverage_denied: false,
             authority_instance: $authority,
             source_challenge_history: $replay.source_challenge_history,
             source_original_replay: $replay.source_original_replay,
@@ -3364,6 +3378,8 @@ impl Journal {
         if !nix_offline_provisioning_edge(root_local_edge) {
             require_no_nix_native_mutation(&self.state, transaction)?;
         }
+        #[cfg(target_os = "linux")]
+        cache_policy_hold::require_no_exclusive_mutation_v1(self, &self.state)?;
         let settling_reservation = if matches!(root_local_edge, Some(RootOwnerEdge::SourceOriginal)) {
             let (_, comparison) = self.source_original_replay.preview_transaction(
                 &self.state, transaction, self.limits,
@@ -3478,6 +3494,9 @@ impl Journal {
             #[cfg(not(target_os = "linux"))]
             source_domain_policy_hold::require_no_mutation(&self.state, transaction)?;
         }
+        self.require_mount_git_coverage_source_transition_v1(&self.state, transaction)?;
+        self.require_storage_git_coverage_transition_v1(&self.state, transaction)?;
+        self.require_owner_git_coverage_transition_v1(&self.state, transaction)?;
         validate_transaction(transaction, self.limits)?;
         delete_batch::validate(&self.state, transaction, self.next_sequence, self.limits)?;
         let has_capacity_records = transaction
@@ -3840,6 +3859,8 @@ impl Journal {
         successor_issuance_transitions: Option<&[controller_source_successor_issuance::Transition]>,
     ) -> Result<(), JournalError> {
         self.ensure_healthy()?;
+        #[cfg(target_os = "linux")]
+        cache_policy_hold::require_no_exclusive_mutation_v1(self, &self.state)?;
         if root_local_edge.is_some() && transactions.len() != 1
             && !nix_offline_provisioning_edge(root_local_edge)
         {
@@ -3887,6 +3908,8 @@ impl Journal {
 
         for index in 0..transactions.len() {
             let transaction = transactions.transaction(index);
+            #[cfg(target_os = "linux")]
+            cache_policy_hold::require_no_exclusive_mutation_v1(self, &state)?;
             if !nix_offline_provisioning_edge(root_local_edge) {
                 require_no_nix_native_mutation(&state, transaction)?;
             }
@@ -3972,6 +3995,9 @@ impl Journal {
                 #[cfg(not(target_os = "linux"))]
                 source_domain_policy_hold::require_no_mutation(&state, transaction)?;
             }
+            self.require_mount_git_coverage_source_transition_v1(&state, transaction)?;
+            self.require_storage_git_coverage_transition_v1(&state, transaction)?;
+            self.require_owner_git_coverage_transition_v1(&state, transaction)?;
             let has_capacity_records = transaction
                 .records()
                 .iter()
@@ -4073,6 +4099,9 @@ impl Journal {
     /// whose original native history must remain intact.
     pub fn compact(&mut self) -> Result<(), JournalError> {
         self.ensure_healthy()?;
+        if self.mount_git_coverage_denies_new_v1() {
+            return Err(JournalError::ProtectedBoundary);
+        }
         if delete_batch::has_dependencies(&self.state) {
             return Err(JournalError::ProtectedBoundary);
         }
@@ -4349,6 +4378,19 @@ impl ProtectedJournalAuthority<'_> {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
         self.validate_fixed_storage("/var/lib/aos/sandbox-mount", "mount.journal")
+    }
+
+    /// Rejoins the same fixed Source owner before observing its NEW-effect denial.
+    ///
+    /// This is a negative-only observation. An unselected result does not
+    /// replace any original Session, graph, request, clock or mutation check.
+    ///
+    /// # Errors
+    /// Rejects another purpose, changed names or an unhealthy original writer.
+    #[doc(hidden)]
+    pub fn mount_source_git_coverage_denies_new_v1(&self) -> Result<bool, JournalError> {
+        self.validate_mount_source_acquisition_authority()?;
+        Ok(self.journal.mount_git_coverage_denies_new_v1())
     }
 
     /// Iterates exact current namespace-40 records through an approved owner or startup scope.
@@ -5620,6 +5662,7 @@ fn replay_sidecar_observed<R: Read + Seek + Borrow<File>>(
 /// Selects closed original-history observers, never caller callbacks.
 #[cfg(target_os = "linux")]
 enum DeploymentHistoryObserverV1<'observer, 'data> {
+    GitCoverage(&'observer mut git_coverage_history::NativePrefixObserverV1<'data>),
     Main(&'observer mut runtime_deployment_history::HistoryAuditV1<'data>),
     Sidecar(&'observer mut runtime_deployment_sidecar_history::SidecarHistoryAuditV1),
     Storage(&'observer mut storage_native_issuance_history::StorageHistoryObserverV1),
@@ -5640,6 +5683,9 @@ impl DeploymentHistoryObserverV1<'_, '_> {
         native_digest: &[u8],
     ) -> Result<(), JournalError> {
         match self {
+            Self::GitCoverage(history) => history.observe(
+                transaction, begin_sequence, commit_sequence, begin_offset, end_offset,
+            ),
             Self::Main(history) => history.observe(transaction, begin_sequence, commit_sequence),
             Self::Sidecar(history) => history.observe(transaction, begin_sequence, commit_sequence),
             Self::Storage(history) => history.observe(

@@ -108,6 +108,35 @@ impl HistoricalSessionCheckpointV1 {
             .ok_or(HistoricalCheckpointErrorV1::Invalid)
     }
 
+    /// Encodes the original carrier only within a conservative caller bound.
+    ///
+    /// The existing encoder remains the sole byte assembly. This check runs
+    /// before collecting either hello into its output and uses the same 1024
+    /// byte context allowance as the global carrier limit. It can refuse a
+    /// near-bound carrier even when its exact context would fit.
+    ///
+    /// This method returns historical DATA, never a currentness or role permit.
+    ///
+    /// # Errors
+    /// Rejects checked size overflow or a conservative size above the caller
+    /// ceiling, followed by all unchanged errors of the ordinary encoder.
+    #[doc(hidden)]
+    pub fn encode_bounded(
+        &self,
+        maximum_bytes: usize,
+    ) -> Result<Vec<u8>, HistoricalCheckpointErrorV1> {
+        let conservative_bytes = HEADER_BYTES
+            .checked_add(1024)
+            .and_then(|size| size.checked_add(self.client_hello.len()))
+            .and_then(|size| size.checked_add(self.broker_hello.len()))
+            .and_then(|size| size.checked_add(DIGEST_BYTES))
+            .ok_or(HistoricalCheckpointErrorV1::Invalid)?;
+        if conservative_bytes > maximum_bytes {
+            return Err(HistoricalCheckpointErrorV1::Invalid);
+        }
+        self.encode()
+    }
+
     /// Encodes the exact bounded original AOSBSCP1 carrier.
     ///
     /// # Errors

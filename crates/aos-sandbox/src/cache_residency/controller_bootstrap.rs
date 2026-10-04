@@ -64,6 +64,16 @@ pub enum CacheReplayControllerBootstrapErrorV1 {
     /// The source contains foreign, mutable, incomplete, or invalid records.
     #[error("protected cache Replay bootstrap source is invalid")]
     InvalidSource,
+    /// Native comparison failed; the separate final Source failure remains owned.
+    #[cfg(target_os = "linux")]
+    #[error("protected cache coverage native comparison failed: {first}")]
+    CoverageNative {
+        /// The unchanged first native comparison failure.
+        #[source]
+        first: JournalError,
+        /// A later genuine original-Source bookend failure, if one occurred.
+        final_source: Option<Box<CacheReplayControllerBootstrapErrorV1>>,
+    },
 }
 
 /// Retains immutable, complete-partition bootstrap input from controller custody.
@@ -101,6 +111,66 @@ pub(crate) fn validate_controller_cache_source(
 }
 
 impl CacheReplayControllerBootstrapOwnerV1 {
+    // Copy only this fixed CacheBootstrap writer's native comparison DATA.
+    // The borrowed loan ends here; its real writer and errors remain owned.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn capture_git_coverage_native_cut_v1(
+        &mut self,
+        catalog: &aos_sandbox_core::format::git_upload_enrollment::GitCoverageCatalogV1<'_>,
+    ) -> Result<crate::policy_compiler::GitCoverageNativeCutDataV1, CacheReplayControllerBootstrapErrorV1> {
+        use aos_sandbox_core::format::git_upload_enrollment::GitCoverageJournalProfileV1;
+        use crate::policy_compiler::GitCoverageNativeCutDataV1;
+
+        self.recheck_existing()?;
+        let returned = (|| {
+            let mut native = self.journal.cache_bootstrap_coverage_native_prefix_v1(catalog)
+                .map_err(|cause| JournalError::GitCoverageNativeHistory(Box::new(cause)))?;
+            native.recheck()?;
+            if native.last_commit().is_none() {
+                return Err(JournalError::ProtectedBoundary);
+            }
+            Ok(GitCoverageNativeCutDataV1::from_original_loan(
+                GitCoverageJournalProfileV1::CacheBootstrap, &native,
+            ))
+        })();
+        let postcheck = self.recheck_existing();
+        match (returned, postcheck) {
+            (Ok(data), Ok(())) => Ok(data),
+            (Err(first), final_source) => Err(CacheReplayControllerBootstrapErrorV1::CoverageNative {
+                first,
+                final_source: final_source.err().map(Box::new),
+            }),
+            (Ok(_), Err(cause)) => Err(cause),
+        }
+    }
+
+    // Comparison DATA only. The existing complete manifest validator and
+    // original fixed writer remain the sole provisioning/currentness engines.
+    // The native loan checks actual UUIDs, PUT sequences and complete values;
+    // it neither exports this Journal nor opens another name.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn compare_git_coverage_catalog_v1(
+        &mut self,
+        catalog: &aos_sandbox_core::format::git_upload_enrollment::GitCoverageCatalogV1<'_>,
+    ) -> Result<(), CacheReplayControllerBootstrapErrorV1> {
+        self.recheck_existing()?;
+        let returned = match self.journal.cache_bootstrap_coverage_native_prefix_v1(catalog) {
+            Ok(mut native) => native.recheck(),
+            Err(cause) => Err(JournalError::GitCoverageNativeHistory(Box::new(cause))),
+        };
+        // Run the final original-source check even when native comparison
+        // returned a cause. Both genuine failures remain separately available.
+        let postcheck = self.recheck_existing();
+        match (returned, postcheck) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(first), final_source) => Err(CacheReplayControllerBootstrapErrorV1::CoverageNative {
+                first,
+                final_source: final_source.err().map(Box::new),
+            }),
+            (Ok(()), Err(cause)) => Err(cause),
+        }
+    }
+
     /// Opens and authenticates the fixed controller-side cache source journal.
     ///
     /// # Errors

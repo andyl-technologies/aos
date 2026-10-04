@@ -19,6 +19,7 @@
 pub mod authenticated_session;
 pub mod fencing;
 pub mod fuse_worker_preparation;
+pub mod git_project_coverage;
 pub mod host_argument_source;
 pub mod host_attach_gate;
 pub mod host_catalog;

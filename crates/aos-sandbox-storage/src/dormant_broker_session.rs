@@ -14,6 +14,9 @@ use aos_sandbox_core::{ObjectDigest, ProtocolVersion, RawPairedClockSample};
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::seqpacket::RecordSubjectListener;
 use aos_sandbox_protocol::semantics::CanonicalStorageRepairSemanticsV1;
+use aos_sandbox_protocol::git_project_coverage::{
+    decode_git_project_coverage_request_v1, encode_git_project_coverage_response_v1,
+};
 use aos_sandbox_protocol::semantics::storage_guest_root::CanonicalStorageGuestRootSemanticsV1;
 use aos_sandbox_protocol::session::ValidatedUntrustedAuthorizationArtifacts;
 use aos_sandbox_protocol::{PeerCredentials, PeerPolicy};
@@ -127,6 +130,28 @@ impl DormantStorageBrokerObservationV1 {
 /// public caller cannot replace Storage execution with fabricated success.
 #[doc(hidden)]
 pub trait DormantStorageBrokerCallsiteV1: sealed::Sealed {
+    /// Compares or permanently fences the same original unused Storage owners.
+    ///
+    /// Output custody is the actual independently held daemon owner, not a
+    /// caller quantity vector. The response is coverage DATA only.
+    ///
+    /// # Errors
+    /// Rejects foreign methods, stale peer/header/kernel evidence, changed
+    /// fixed inputs, nonempty history or physical custody, and failed readback.
+    #[cfg(target_os = "linux")]
+    fn consume_authenticated_git_coverage_v1(
+        &mut self,
+        method: BrokerMethod,
+        request_body: &[u8],
+        request_id: [u8; 16],
+        request_body_digest: ObjectDigest,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        protocol_version: ProtocolVersion,
+        protected_boot_id: [u8; 16],
+        output: &crate::execution_output_credential::StorageExecutionOutputCustodyV1,
+    ) -> Result<Vec<u8>, DormantStorageBrokerCallErrorV1>;
+
     /// Admits and, for a fresh Prepared row, executes one exact Apply body.
     ///
     /// # Errors
@@ -178,6 +203,43 @@ pub struct DormantStorageApplyCompositionV1 {
 }
 
 impl DormantStorageApplyCompositionV1 {
+    /// Rechecks the original cohort fence and separately held output writer.
+    ///
+    /// # Errors
+    /// Retains changed originals, nonempty domains or negative debt before
+    /// response transport. This comparison cannot authorize an allocation.
+    #[cfg(target_os = "linux")]
+    pub fn recheck_git_coverage_response_v1(
+        &mut self,
+        output: &crate::execution_output_credential::StorageExecutionOutputCustodyV1,
+        deadline: u64,
+    ) -> Result<(), DormantStorageBrokerCallErrorV1> {
+        self.runtime.compare_git_coverage_v1(output, Some(deadline))?;
+        Ok(())
+    }
+
+    /// Captures the fixed optional enrollment before this composition is served.
+    ///
+    /// # Errors
+    /// Retains duplicate installation or unsafe/missing original credentials.
+    #[cfg(target_os = "linux")]
+    pub fn install_git_coverage_v1(&mut self) -> Result<(), StorageRuntimeError> {
+        self.runtime.install_git_coverage_v1()
+    }
+
+    /// Audits all genuine fixed Storage owners before selected Ready.
+    ///
+    /// # Errors
+    /// Retains nonempty, missing, unclassified or changed originals and actual
+    /// negative debt; the borrowed output owner remains with its daemon.
+    #[cfg(target_os = "linux")]
+    pub fn audit_git_coverage_startup_v1(
+        &mut self,
+        output: &crate::execution_output_credential::StorageExecutionOutputCustodyV1,
+    ) -> Result<(), StorageRuntimeError> {
+        self.runtime.audit_git_coverage_startup_v1(output)
+    }
+
     /// Parks the exact authenticated pending request without observing or permitting it.
     ///
     /// The actual pending Session must retain the returned owner before its
@@ -632,6 +694,45 @@ impl DormantStorageApplyCompositionV1 {
 impl sealed::Sealed for DormantStorageApplyCompositionV1 {}
 
 impl DormantStorageBrokerCallsiteV1 for DormantStorageApplyCompositionV1 {
+    #[cfg(target_os = "linux")]
+    fn consume_authenticated_git_coverage_v1(
+        &mut self,
+        method: BrokerMethod,
+        request_body: &[u8],
+        request_id: [u8; 16],
+        request_body_digest: ObjectDigest,
+        peer: PeerCredentials,
+        policy: PeerPolicy,
+        protocol_version: ProtocolVersion,
+        protected_boot_id: [u8; 16],
+        output: &crate::execution_output_credential::StorageExecutionOutputCustodyV1,
+    ) -> Result<Vec<u8>, DormantStorageBrokerCallErrorV1> {
+        if KernelBootId::current()
+            .map_err(|_| DormantStorageBrokerCallErrorV1::StaleKernel)?
+            .into_bytes() != protected_boot_id
+            || ObjectDigest::from_bytes(Sha256::digest(request_body).into()) != request_body_digest
+        {
+            return Err(DormantStorageBrokerCallErrorV1::StaleKernel);
+        }
+
+        let sample = super::runtime::trusted_paired_clock_sample()?;
+        if sample.host_boot_id() != protected_boot_id {
+            return Err(DormantStorageBrokerCallErrorV1::StaleKernel);
+        }
+        let original = decode_git_project_coverage_request_v1(
+            request_body, method, peer, policy, sample.boottime_nanoseconds(),
+        ).map_err(|_| DormantStorageBrokerCallErrorV1::StaleKernel)?;
+        if original.header().request_id() != &request_id
+            || original.header().protocol_version() != protocol_version
+        {
+            return Err(DormantStorageBrokerCallErrorV1::StaleKernel);
+        }
+
+        let readback = self.runtime.consume_git_coverage_v1(&original, output)?;
+        encode_git_project_coverage_response_v1(&original, readback)
+            .map_err(|_| DormantStorageBrokerCallErrorV1::StaleKernel)
+    }
+
     fn consume_authenticated_apply(
         &mut self,
         request_body: &[u8],

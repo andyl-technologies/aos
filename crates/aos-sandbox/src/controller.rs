@@ -3151,6 +3151,82 @@ where
         self.reconciler.recheck_existing_cache_project_usage_v1()
     }
 
+    /// Compares fixed exclusive-cohort Cache originals through the real executor.
+    ///
+    /// The actual fixed credential reservoir and resident owners remain with
+    /// their installed callers. Returned native coordinates are DATA, not a
+    /// currentness token, allocation permit, account or remote release proof.
+    ///
+    /// # Errors
+    /// Retains original initialization, census, append or bookend failures in
+    /// the concrete owner. The caller must park the whole Result and recheck
+    /// its other original owners before using any returned coordinates.
+    #[cfg(target_os = "linux")]
+    #[doc(hidden)]
+    pub fn compare_existing_cache_git_coverage_v1(
+        &mut self,
+        original_inputs: &mut crate::public_api_session::GitCoverageCredentialCustodyV1,
+        flight: aos_sandbox_core::format::git_upload_enrollment::GitCoverageFlightV1,
+        original_nonce: [u8; 16],
+        original_account: Option<&mut crate::policy_compiler::GitCoverageAccountAttemptV1<'_>>,
+    ) -> Result<(
+        aos_sandbox_core::format::git_upload_enrollment::GitCoverageBirthFieldsV1,
+        aos_sandbox_core::format::git_upload_enrollment::GitCoverageFenceFieldsV1,
+        [u8; 32],
+        u64,
+    ), crate::cache_residency::CacheResidentUnavailableV1> {
+        self.reconciler.compare_existing_cache_git_coverage_v1(
+            original_inputs, flight, original_nonce, original_account,
+        )
+    }
+
+    /// Captures a fixed covered account cut through the original executor.
+    ///
+    /// Actual Source and Cache writers stay with the concrete executor; the
+    /// external-profile attempt parks returned observations and typed causes.
+    ///
+    /// # Errors
+    /// Refuses unavailable, changed or failed original owners. No account or
+    /// effect permission is produced before the separate exact successor CAS.
+    #[cfg(target_os = "linux")]
+    #[doc(hidden)]
+    pub fn capture_existing_git_coverage_account_cut_v1(
+        &mut self,
+        original_inputs: &mut crate::public_api_session::GitCoverageCredentialCustodyV1,
+        original_bootstrap: &crate::publisher_policy::GitUploadBootstrapAppendV1,
+        original_source: &crate::publisher_policy::VerifiedPublisherPolicySourceV1,
+        original_capacity: &aos_sandbox_core::GitUploadCapacityV1,
+        original_bootstrap_credentials: &mut crate::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
+        attempt: &mut crate::policy_compiler::GitCoverageAccountAttemptV1<'_>,
+    ) -> Result<(), crate::cache_residency::CacheResidentUnavailableV1> {
+        self.reconciler.capture_existing_git_coverage_account_cut_v1(
+            original_inputs, original_bootstrap, original_source, original_capacity,
+            original_bootstrap_credentials, attempt,
+        )
+    }
+
+    /// Commits the exact original covered account through its same owners.
+    ///
+    /// # Errors
+    /// Refuses changed predecessors, incomplete Root observations or failed
+    /// original custody. Ambiguous native results stay resident in the attempt.
+    #[cfg(target_os = "linux")]
+    #[doc(hidden)]
+    pub fn commit_existing_git_coverage_account_v1(
+        &mut self,
+        original_inputs: &mut crate::public_api_session::GitCoverageCredentialCustodyV1,
+        original_bootstrap: &crate::publisher_policy::GitUploadBootstrapAppendV1,
+        original_source: &crate::publisher_policy::VerifiedPublisherPolicySourceV1,
+        original_capacity: &aos_sandbox_core::GitUploadCapacityV1,
+        original_bootstrap_credentials: &mut crate::public_api_session::PublisherPolicyBootstrapCredentialCustodyV1,
+        attempt: &mut crate::policy_compiler::GitCoverageAccountAttemptV1<'_>,
+    ) -> Result<(), crate::cache_residency::CacheResidentUnavailableV1> {
+        self.reconciler.commit_existing_git_coverage_account_v1(
+            original_inputs, original_bootstrap, original_source, original_capacity,
+            original_bootstrap_credentials, attempt,
+        )
+    }
+
     /// Issues or replays a first public capability from signed deployment entitlement.
     ///
     /// The request supplies only an idempotency key. Fixed protected credential

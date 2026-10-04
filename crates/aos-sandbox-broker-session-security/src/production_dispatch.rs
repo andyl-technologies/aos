@@ -103,6 +103,29 @@ pub enum ProductionMountBrokerDispatchErrorV1 {
 }
 
 impl DormantAuthenticatedBrokerSessionV1 {
+    /// Receives one selected Storage cycle with the daemon's original output loan.
+    ///
+    /// Receipt, replay, dispatch, commit and response remain the same engines as
+    /// ordinary Storage. The concrete output loan only enables the four closed
+    /// coverage routes; it grants neither an output reservation nor allocation.
+    ///
+    /// # Errors
+    /// Returns the existing consuming request-cycle error on receive, owner
+    /// comparison, protected commit or transport failure. The selected daemon
+    /// must park that whole result before its own final owner bookend.
+    #[doc(hidden)]
+    pub fn serve_production_storage_request_with_git_coverage_v1(
+        self,
+        storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+        output: &aos_sandbox_storage::execution_output_credential::StorageExecutionOutputCustodyV1,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<Self, crate::ProductionBrokerServiceErrorV1> {
+        let (session, event) = self.receive_production_request(deadline_boottime_nanoseconds)?;
+        session.complete_storage_request_event_with_git_coverage_v1(
+            event, storage, output, deadline_boottime_nanoseconds,
+        ).map_err(Into::into)
+    }
+
     /// Completes one normalized Host request or replay event.
     ///
     /// # Errors
@@ -170,24 +193,64 @@ impl DormantAuthenticatedBrokerSessionV1 {
         storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<Self, ProductionBrokerResponseErrorV1> {
+        self.complete_storage_event_with_coverage_v1(
+            event, storage, deadline_boottime_nanoseconds, None,
+        )
+    }
+
+    /// Completes a selected Storage event while its real output owner stays held.
+    ///
+    /// # Errors
+    /// Preserves the ordinary disposition for old methods. Coverage refuses
+    /// missing/changed original domains and rechecks them before every send.
+    pub fn complete_storage_request_event_with_git_coverage_v1(
+        self,
+        event: ProductionBrokerRequestEventV1,
+        storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+        output: &aos_sandbox_storage::execution_output_credential::StorageExecutionOutputCustodyV1,
+        deadline_boottime_nanoseconds: u64,
+    ) -> Result<Self, ProductionBrokerResponseErrorV1> {
+        self.complete_storage_event_with_coverage_v1(
+            event, storage, deadline_boottime_nanoseconds, Some(output),
+        )
+    }
+
+    fn complete_storage_event_with_coverage_v1(
+        self,
+        event: ProductionBrokerRequestEventV1,
+        storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+        deadline_boottime_nanoseconds: u64,
+        output: Option<&aos_sandbox_storage::execution_output_credential::StorageExecutionOutputCustodyV1>,
+    ) -> Result<Self, ProductionBrokerResponseErrorV1> {
         match event {
             ProductionBrokerRequestEventV1::Request(request) => self
-                .dispatch_storage_request_to_completion(
+                .complete_storage_dispatch_with_coverage_v1(
                     request,
                     storage,
                     deadline_boottime_nanoseconds,
+                    output,
                 ),
             ProductionBrokerRequestEventV1::InFlightReplay(replay) => {
                 let request = replay
                     .into_unobserved_request()
                     .map_err(|_| ProductionBrokerResponseErrorV1::OutcomeRecovery)?;
-                self.dispatch_storage_request_to_completion(
+                self.complete_storage_dispatch_with_coverage_v1(
                     request,
                     storage,
                     deadline_boottime_nanoseconds,
+                    output,
                 )
             }
             ProductionBrokerRequestEventV1::TerminalReplay(replay) => {
+                if crate::dormant_handshake::git_coverage::is_storage(replay.method()) {
+                    let output = output.ok_or(ProductionBrokerResponseErrorV1::CoverageOwnerMissing)?;
+                    return self.finish_replay_with_coverage_v1(
+                        replay, deadline_boottime_nanoseconds,
+                        Some(crate::production_response::GitCoverageResponseOwnerV1::Storage {
+                            storage, output,
+                        }),
+                    );
+                }
                 self.finish_authenticated_terminal_replay(replay, deadline_boottime_nanoseconds)
             }
             ProductionBrokerRequestEventV1::DescriptorTerminalReplay(_) => {
@@ -253,6 +316,12 @@ impl DormantAuthenticatedBrokerSessionV1 {
                 .into_unobserved_request()
                 .map_err(|_| ProductionBrokerResponseErrorV1::OutcomeRecovery)?,
             ProductionBrokerRequestEventV1::TerminalReplay(replay) => {
+                if crate::dormant_handshake::git_coverage::is_mount(replay.method()) {
+                    return self.finish_replay_with_coverage_v1(
+                        replay, deadline_boottime_nanoseconds,
+                        Some(crate::production_response::GitCoverageResponseOwnerV1::Mount(mount)),
+                    );
+                }
                 return self
                     .finish_authenticated_terminal_replay(replay, deadline_boottime_nanoseconds);
             }
@@ -398,12 +467,34 @@ impl DormantAuthenticatedBrokerSessionV1 {
     /// recovery, protected commit, or bounded response transport cannot finish
     /// exactly. Reconnect and exact replay are then required.
     pub fn dispatch_storage_request_to_completion(
-        mut self,
+        self,
         request: DormantReceivedBrokerRequestV1,
         storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<Self, ProductionBrokerResponseErrorV1> {
-        let dispatched = self.dispatch_storage_request_and_commit(request, storage);
+        self.complete_storage_dispatch_with_coverage_v1(
+            request, storage, deadline_boottime_nanoseconds, None,
+        )
+    }
+
+    fn complete_storage_dispatch_with_coverage_v1(
+        mut self,
+        request: DormantReceivedBrokerRequestV1,
+        storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+        deadline_boottime_nanoseconds: u64,
+        output: Option<&aos_sandbox_storage::execution_output_credential::StorageExecutionOutputCustodyV1>,
+    ) -> Result<Self, ProductionBrokerResponseErrorV1> {
+        let coverage = crate::dormant_handshake::git_coverage::is_storage(request.method());
+        let dispatched = self.dispatch_storage_with_coverage_v1(request, storage, output);
+        if coverage {
+            let output = output.ok_or(ProductionBrokerResponseErrorV1::CoverageOwnerMissing)?;
+            return self.finish_dispatch_with_coverage_v1(
+                dispatched, deadline_boottime_nanoseconds,
+                Some(crate::production_response::GitCoverageResponseOwnerV1::Storage {
+                    storage, output,
+                }),
+            );
+        }
         self.finish_ordinary_dispatch(dispatched, deadline_boottime_nanoseconds)
     }
 
@@ -438,7 +529,14 @@ impl DormantAuthenticatedBrokerSessionV1 {
         catalog_scope: Option<aos_sandbox_mount::host_scope::ObservedMountScope>,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<Self, ProductionBrokerResponseErrorV1> {
+        let coverage = crate::dormant_handshake::git_coverage::is_mount(request.method());
         let dispatched = self.dispatch_mount_request_and_commit(request, mount, catalog_scope);
+        if coverage {
+            return self.finish_dispatch_with_coverage_v1(
+                dispatched, deadline_boottime_nanoseconds,
+                Some(crate::production_response::GitCoverageResponseOwnerV1::Mount(mount)),
+            );
+        }
         self.finish_ordinary_dispatch(dispatched, deadline_boottime_nanoseconds)
     }
 
@@ -634,7 +732,27 @@ impl DormantAuthenticatedBrokerSessionV1 {
         ProtectedBrokerOutcomeCommitResultV1,
         DormantBrokerExecutionFailureV1<ProductionStorageBrokerDispatchErrorV1>,
     > {
+        self.dispatch_storage_with_coverage_v1(request, storage, None)
+    }
+
+    fn dispatch_storage_with_coverage_v1(
+        &mut self,
+        request: DormantReceivedBrokerRequestV1,
+        storage: &mut aos_sandbox_storage::DormantStorageApplyCompositionV1,
+        output: Option<&aos_sandbox_storage::execution_output_credential::StorageExecutionOutputCustodyV1>,
+    ) -> Result<
+        ProtectedBrokerOutcomeCommitResultV1,
+        DormantBrokerExecutionFailureV1<ProductionStorageBrokerDispatchErrorV1>,
+    > {
         match request.method() {
+            BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1
+            | BrokerMethod::BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1 => {
+                let Some(output) = output else {
+                    return Err(before_effect_currentness(request));
+                };
+                self.execute_storage_git_coverage_and_commit_v1(request, storage, output)
+                    .map_err(|failure| map_execution_failure(failure, Into::into))
+            }
             BrokerMethod::BROKER_METHOD_STORAGE_APPLY
             | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_CATALOG
             | BrokerMethod::BROKER_METHOD_STORAGE_REPAIR_WORKSPACE_PIN
@@ -682,6 +800,10 @@ impl DormantAuthenticatedBrokerSessionV1 {
         DormantBrokerExecutionFailureV1<ProductionMountBrokerDispatchErrorV1>,
     > {
         match request.method() {
+            BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_GIT_PROJECT_COVERAGE_V1
+            | BrokerMethod::BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1 => self
+                .execute_mount_git_coverage_and_commit_v1(request, mount)
+                .map_err(|failure| map_execution_failure(failure, Into::into)),
             BrokerMethod::BROKER_METHOD_MOUNT_APPLY
             | BrokerMethod::BROKER_METHOD_MOUNT_APPLY_DESTINATION_SLOT => {
                 let Some(artifacts) = request.authorization_artifacts().cloned() else {

@@ -91,6 +91,7 @@ impl<W: MountWorker> MountBroker<W> {
         original: &AuthenticatedBrokerMethodRequestV1,
         scope: ObservedMountScope,
     ) -> Result<HeldMountFuseIntentPreparationV1<'owner, W>> {
+        self.require_git_coverage_new_admission_v1()?;
         self.ensure_authority_healthy()?;
         self.journal
             .validate_held_root_owned_at(STATE_DIRECTORY, "mount.journal")?;

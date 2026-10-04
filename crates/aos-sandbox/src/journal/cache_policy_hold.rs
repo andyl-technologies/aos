@@ -25,6 +25,11 @@ use std::{
 };
 
 use aos_sandbox_core::{ObjectDigest, ProjectId};
+#[cfg(target_os = "linux")]
+use aos_sandbox_core::format::git_upload_enrollment::{
+    GitCoverageBirthFieldsV1, GitCoverageBirthV1, GitCoverageFenceFieldsV1,
+    GitCoverageFenceV1, GitCoverageOwnerKindV1,
+};
 use sha2::{Digest as _, Sha256};
 
 use crate::policy_compiler::RootV8SettledGrantV1;
@@ -48,6 +53,8 @@ pub(crate) const NAME: &str = "policy-hold.journal";
 const GENESIS_KEY: &[u8] = b"\0aos-cache-policy-hold-genesis-v1\0";
 const HOLD_KEY: &[u8] = b"\0aos-cache-policy-hold-v1\0";
 const V8_PENDING_KEY: &[u8] = b"\0aos-cache-policy-v8-pending-settlement-v1\0";
+const GIT_BIRTH_KEY: &[u8] = b"\0aos-cache-policy-z-git-birth-v1\0";
+const GIT_FENCE_KEY: &[u8] = b"\0aos-cache-policy-z-git-fence-v1\0";
 const GENESIS: &[u8] = b"AOSCPG01";
 const MAGIC: &[u8; 8] = b"AOSCPH01";
 const CHECKSUM_DOMAIN: &[u8] = b"aos.sandbox.cache-policy-hold.v1\0";
@@ -177,6 +184,61 @@ impl CachePolicyV8PendingSettlementV1 {
 struct CachePolicyHoldStateV1 {
     hold: Option<CachePolicyHoldV1>,
     v8_pending: Option<CachePolicyV8PendingSettlementV1>,
+}
+
+// The ordinary state remains its exact prior type and decode path. Exclusive
+// state carries bounded DATA coordinates, not an allocation or Read permit.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CachePolicyGateStateV1 {
+    Ordinary(CachePolicyHoldStateV1),
+    #[cfg(target_os = "linux")]
+    Exclusive(CacheGitCoverageObservationV1),
+}
+
+/// Retains parser-validated denial coordinates, not Cache allocation authority.
+#[derive(Clone, Copy, Eq, PartialEq)]
+#[cfg(target_os = "linux")]
+pub(crate) struct CacheGitCoverageObservationV1 {
+    birth: GitCoverageBirthFieldsV1,
+    fence: GitCoverageFenceFieldsV1,
+    prefix: [u8; 32],
+    commit_sequence: u64,
+}
+
+#[cfg(target_os = "linux")]
+impl CacheGitCoverageObservationV1 {
+    pub(crate) fn enrollment(self) -> [u8; 32] {
+        self.birth.enrollment
+    }
+
+    pub(crate) fn catalog(self) -> [u8; 32] {
+        self.birth.catalog
+    }
+
+    pub(crate) fn original_coordinates(
+        self,
+    ) -> (GitCoverageBirthFieldsV1, GitCoverageFenceFieldsV1, [u8; 32], u64) {
+        (self.birth, self.fence, self.prefix, self.commit_sequence)
+    }
+}
+
+impl CachePolicyGateStateV1 {
+    fn is_exclusive(self) -> bool {
+        match self {
+            Self::Ordinary(_) => false,
+            #[cfg(target_os = "linux")]
+            Self::Exclusive(_) => true,
+        }
+    }
+
+    fn require_new_mutation(self) -> Result<(), JournalError> {
+        match self {
+            Self::Ordinary(state)
+                if !state.hold.is_some_and(CachePolicyHoldV1::is_held)
+                    && state.v8_pending.is_none() => Ok(()),
+            _ => Err(JournalError::ProtectedBoundary),
+        }
+    }
 }
 
 /// Identifies one exact, nonauthorizing protected Cache policy hold.
@@ -441,6 +503,17 @@ struct CachePolicyHoldReadbackV1 {
     q04_pending: Option<Q04PendingRecordV1>,
 }
 
+// The single fixed-state decoder distinguishes purpose DATA before any
+// writer-only native loan. Ordinary Q04 and V8 adapters cannot ignore a fence.
+enum CachePolicyDecodedStateV1 {
+    Ordinary(CachePolicyHoldReadbackV1),
+    #[cfg(target_os = "linux")]
+    Exclusive {
+        birth: GitCoverageBirthFieldsV1,
+        fence: GitCoverageFenceFieldsV1,
+    },
+}
+
 // Writer capture and Root's read-only terminal observation reconstruct the
 // same canonical pending rows and native records. The latter supplies only
 // independently compared DATA and can never call a mutable gate.
@@ -511,13 +584,44 @@ fn current_full_state(journal: &mut Journal) -> Result<CachePolicyHoldReadbackV1
 }
 
 fn decode_full_state<'records>(
-    mut records: impl Iterator<Item = (&'records [u8], &'records [u8])>,
+    records: impl Iterator<Item = (&'records [u8], &'records [u8])>,
 ) -> Result<CachePolicyHoldReadbackV1, JournalError> {
+    match decode_gate_state(records)? {
+        CachePolicyDecodedStateV1::Ordinary(state) => Ok(state),
+        #[cfg(target_os = "linux")]
+        CachePolicyDecodedStateV1::Exclusive { .. } => Err(JournalError::ProtectedBoundary),
+    }
+}
+
+fn decode_gate_state<'records>(
+    mut records: impl Iterator<Item = (&'records [u8], &'records [u8])>,
+) -> Result<CachePolicyDecodedStateV1, JournalError> {
     if records.next() != Some((GENESIS_KEY, GENESIS)) {
         return Err(JournalError::ProtectedBoundary);
     }
     let hold = match records.next() {
         Some((HOLD_KEY, value)) => Some(CachePolicyHoldV1::decode(value)?),
+        #[cfg(target_os = "linux")]
+        Some((GIT_BIRTH_KEY, value)) => {
+            let birth = GitCoverageBirthV1::decode(value)
+                .map_err(|_| JournalError::ProtectedBoundary)?;
+            let fence_value = match records.next() {
+                Some((GIT_FENCE_KEY, value)) => value,
+                _ => return Err(JournalError::ProtectedBoundary),
+            };
+            let fence = GitCoverageFenceV1::decode(fence_value)
+                .map_err(|_| JournalError::ProtectedBoundary)?;
+            fence.compare_birth(&birth).map_err(|_| JournalError::ProtectedBoundary)?;
+            if records.next().is_some()
+                || birth.fields().owner != GitCoverageOwnerKindV1::CacheAuthority
+            {
+                return Err(JournalError::ProtectedBoundary);
+            }
+            return Ok(CachePolicyDecodedStateV1::Exclusive {
+                birth: birth.fields(),
+                fence: fence.fields(),
+            });
+        }
         Some(_) => return Err(JournalError::ProtectedBoundary),
         None => None,
     };
@@ -553,11 +657,11 @@ fn decode_full_state<'records>(
             return Err(JournalError::ProtectedBoundary);
         }
     }
-    Ok(CachePolicyHoldReadbackV1 {
+    Ok(CachePolicyDecodedStateV1::Ordinary(CachePolicyHoldReadbackV1 {
         legacy: CachePolicyHoldStateV1 { hold, v8_pending },
         #[cfg(target_os = "linux")]
         q04_pending,
-    })
+    }))
 }
 
 fn current_state(journal: &mut Journal) -> Result<CachePolicyHoldStateV1, JournalError> {
@@ -569,6 +673,111 @@ fn current_state(journal: &mut Journal) -> Result<CachePolicyHoldStateV1, Journa
         return Err(JournalError::ProtectedBoundary);
     }
     Ok(state.legacy)
+}
+
+fn current_gate_state(journal: &mut Journal) -> Result<CachePolicyGateStateV1, JournalError> {
+    let decoded = {
+        let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
+        decode_gate_state(authority.records()?)?
+    };
+    match decoded {
+        CachePolicyDecodedStateV1::Ordinary(state) => {
+            #[cfg(target_os = "linux")]
+            if state.q04_pending.is_some() {
+                return Err(JournalError::ProtectedBoundary);
+            }
+            Ok(CachePolicyGateStateV1::Ordinary(state.legacy))
+        }
+        #[cfg(target_os = "linux")]
+        CachePolicyDecodedStateV1::Exclusive { birth, fence } => {
+            // Original Genesis and paired birth must be replayed by the SAME
+            // writer. Final-map absence is never a fresh-enrollment proof.
+            let mut native = journal.cache_coverage_native_prefix_v1()
+                .map_err(|error| JournalError::GitCoverageNativeHistory(Box::new(error)))?;
+            let (transaction, commit_sequence) = native.last_commit()
+                .ok_or(JournalError::ProtectedBoundary)?;
+            if native.counts() != (2, 3)
+                || transaction != fence.transaction
+                || commit_sequence != birth.commit_sequence
+            {
+                return Err(JournalError::ProtectedBoundary);
+            }
+            let prefix = native.prefix_digest();
+            native.recheck()?;
+            Ok(CachePolicyGateStateV1::Exclusive(CacheGitCoverageObservationV1 {
+                birth, fence, prefix, commit_sequence,
+            }))
+        }
+    }
+}
+
+
+// Called only by the existing COMMIT observer's closed Cache recipe. No DEL,
+// prior hold, compacted map, changed UUID/order, or third transaction is birth.
+#[cfg(target_os = "linux")]
+pub(super) fn require_coverage_native_transaction_v1(
+    index: usize,
+    observed: &JournalTransaction,
+    commit_sequence: u64,
+    predecessor_prefix: [u8; 32],
+) -> Result<(), JournalError> {
+    if index == 0 {
+        let expected = transaction(GENESIS_KEY, GENESIS)?;
+        if observed != &expected || commit_sequence != 3 {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        return Ok(());
+    }
+    if index != 1 || observed.records().len() != 2 {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    let [birth_record, fence_record] = observed.records() else {
+        return Err(JournalError::ProtectedBoundary);
+    };
+    if birth_record.namespace() != RecordNamespace::DesiredState
+        || fence_record.namespace() != RecordNamespace::DesiredState
+        || birth_record.key() != GIT_BIRTH_KEY
+        || fence_record.key() != GIT_FENCE_KEY
+    {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    let birth = GitCoverageBirthV1::decode(
+        birth_record.value().ok_or(JournalError::ProtectedBoundary)?,
+    ).map_err(|_| JournalError::ProtectedBoundary)?;
+    let fence = GitCoverageFenceV1::decode(
+        fence_record.value().ok_or(JournalError::ProtectedBoundary)?,
+    ).map_err(|_| JournalError::ProtectedBoundary)?;
+    fence.compare_birth(&birth).map_err(|_| JournalError::ProtectedBoundary)?;
+    if birth.fields().owner != GitCoverageOwnerKindV1::CacheAuthority
+        || birth.fields().transaction != *observed.id()
+        || fence.fields().transaction != *observed.id()
+        || birth.fields().commit_sequence != commit_sequence
+        || birth.fields().predecessor_prefix != predecessor_prefix
+        || fence.fields().predecessor_prefix != predecessor_prefix
+    {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    Ok(())
+}
+
+// The durable node-cohort denial cannot be released through a generic hold,
+// V8, Q04, delete, overwrite or another generic append after readback. This
+// examines only the same fixed gate's existing materialization; it neither
+// decodes a second schema nor supplies an append exception.
+#[cfg(target_os = "linux")]
+pub(super) fn require_no_exclusive_mutation_v1(
+    journal: &Journal,
+    state: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+) -> Result<(), JournalError> {
+    if journal.protected.as_ref().map(|location| location.name.as_str()) == Some(NAME)
+        && state.keys().any(|(namespace, key)| {
+            *namespace == RecordNamespace::DesiredState
+                && (key.as_slice() == GIT_BIRTH_KEY || key.as_slice() == GIT_FENCE_KEY)
+        })
+    {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    Ok(())
 }
 
 fn current(journal: &mut Journal) -> Result<Option<CachePolicyHoldV1>, JournalError> {
@@ -887,6 +1096,70 @@ impl ReadOnlyProtectedJournal {
 }
 
 impl Journal {
+    // Selected initializer only: the same existing fixed hold writer supplies
+    // the observation. Ordinary hold/release APIs still reject exclusive state.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn cache_git_coverage_observation_for_writer_v1(
+        &mut self,
+    ) -> Result<Option<CacheGitCoverageObservationV1>, JournalError> {
+        if self.protected.as_ref().map(|location| location.name.as_str()) != Some(NAME) {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        self.require_protected_names_current()?;
+        match current_gate_state(self)? {
+            CachePolicyGateStateV1::Ordinary(state) => {
+                if state.hold.is_some() || state.v8_pending.is_some() {
+                    return Err(JournalError::ProtectedBoundary);
+                }
+                Ok(None)
+            }
+            CachePolicyGateStateV1::Exclusive(observed) => Ok(Some(observed)),
+        }
+    }
+
+    // The actual selected owner independently validates signed inputs and all
+    // other Cache originals before calling this private DATA preparation seam.
+    // Its returned complete transaction must be parked before preflight/commit.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn prepare_cache_git_coverage_append_v1(
+        &mut self,
+        birth: GitCoverageBirthFieldsV1,
+        fence: GitCoverageFenceFieldsV1,
+    ) -> Result<JournalTransaction, JournalError> {
+        if self.cache_git_coverage_observation_for_writer_v1()?.is_some() {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        let mut native = self.cache_coverage_native_prefix_v1()
+            .map_err(|error| JournalError::GitCoverageNativeHistory(Box::new(error)))?;
+        if native.counts() != (1, 1)
+            || birth.owner != GitCoverageOwnerKindV1::CacheAuthority
+            || birth.predecessor_prefix != native.prefix_digest()
+            || fence.predecessor_prefix != native.prefix_digest()
+            || birth.commit_sequence != self.snapshot_sequence().checked_add(3)
+                .ok_or(JournalError::SequenceExhausted)?
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        native.recheck()?;
+        drop(native);
+
+        let birth_bytes = birth.encode().map_err(|_| JournalError::ProtectedBoundary)?;
+        let fence_bytes = fence.encode().map_err(|_| JournalError::ProtectedBoundary)?;
+        let transaction = JournalTransaction::new(
+            birth.transaction,
+            vec![
+                JournalRecord::put(RecordNamespace::DesiredState,
+                    GIT_BIRTH_KEY.to_vec(), birth_bytes.to_vec()),
+                JournalRecord::put(RecordNamespace::DesiredState,
+                    GIT_FENCE_KEY.to_vec(), fence_bytes.to_vec()),
+            ],
+        )?;
+        require_coverage_native_transaction_v1(
+            1, &transaction, birth.commit_sequence, birth.predecessor_prefix,
+        )?;
+        Ok(transaction)
+    }
+
     // Prepare observes the actual existing writer without granting a hold or
     // accepting a pending terminal row. Full native replay is checked by the
     // borrowing Journal engine before and after this materialized comparison.

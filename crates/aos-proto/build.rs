@@ -74,7 +74,9 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
     // earlier fields remain pinned in the combined compatibility baseline.
     // Additive fixed-domain Nix: methods 50..52 and their two V2 comparison
     // messages. This does not register a public RPC or enable either service.
-    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0x1360_a91d_4630_05a5;
+    // Additive denial-only Git coverage: methods53..56 and one shared bounded
+    // request/response DATA carrier; all earlier declarations remain exact.
+    const EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT: u64 = 0x04eb_1973_b13a_850a;
     let actual = complete_schema_fingerprint(source);
     if actual != EXPECTED_SANDBOX_LOCAL_V1_FINGERPRINT {
         return Err(std::io::Error::other(format!(
@@ -188,7 +190,21 @@ fn verify_sandbox_local_compatibility() -> Result<(), Box<dyn std::error::Error>
             "BROKER_METHOD_HOST_SETTLE_NO_APPLY_V2 = 42;",
             "BROKER_METHOD_HOST_QUERY_NO_APPLY_SETTLEMENT_V2 = 43;",
             "BROKER_METHOD_HOST_PREPARE_FUSE_WORKER_SESSION_V1 = 49;",
+            "BROKER_METHOD_MOUNT_PREPARE_GIT_PROJECT_COVERAGE_V1 = 53;",
+            "BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1 = 54;",
+            "BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1 = 55;",
+            "BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1 = 56;",
         ],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message GitProjectCoverageRequestV1 {",
+        &["RequestHeader header = 1;", "bytes coverage = 2;"],
+    )?;
+    verify_scoped_declarations(
+        &source_declarations,
+        "message GitProjectCoverageResponseV1 {",
+        &["bytes request_id = 1;", "bytes coverage = 2;"],
     )?;
     verify_scoped_declarations(
         &source_declarations,

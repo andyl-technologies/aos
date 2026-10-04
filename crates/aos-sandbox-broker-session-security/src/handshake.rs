@@ -1249,6 +1249,17 @@ impl OriginalBrokerColdDeadlineV1 {
             .map_err(|_| crate::DormantBrokerSessionHandshakeErrorV1::Transport)
     }
 
+    // Samples the same fixed ten-second handshake bound once and intersects
+    // it with the actual original Root flight. Neither cutoff is renewed.
+    pub(crate) fn git_coverage(original_root_cut: u64)
+        -> Result<Self, crate::DormantBrokerSessionHandshakeErrorV1>
+    {
+        let original = Self::controller()?;
+        let bounded = Self(original.0.min(original_root_cut));
+        bounded.check()?;
+        Ok(bounded)
+    }
+
     // The installed Storage accept loop already sampled its original 30s D.
     // Preserve that exact DATA rather than sampling again after acceptance.
     pub(super) const fn storage_accept(deadline: u64) -> Self {
@@ -3708,6 +3719,24 @@ impl DormantAuthenticatedBrokerSessionV1 {
         currentness: &crate::ProtectedBrokerOutcomeCurrentnessOwnerV1,
     ) -> Result<(), BrokerSessionSecurityError> {
         self.owner.compare_original_storage_output_outcome_v1(currentness, self.socket.peer())
+    }
+
+    pub(super) fn compare_git_coverage_outcome_v1(
+        &mut self,
+        currentness: &crate::ProtectedBrokerOutcomeCurrentnessOwnerV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.owner
+            .compare_git_coverage_outcome_v1(currentness, self.socket.peer())
+    }
+
+    pub(super) fn capture_git_coverage_checkpoint_v1(
+        &mut self,
+        currentness: &crate::ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        maximum_bytes: usize,
+    ) -> Result<Vec<u8>, BrokerSessionSecurityError> {
+        self.owner.capture_git_coverage_checkpoint_v1(
+            currentness, self.socket.peer(), maximum_bytes,
+        )
     }
 
     pub(super) fn revalidate_broker_replay(

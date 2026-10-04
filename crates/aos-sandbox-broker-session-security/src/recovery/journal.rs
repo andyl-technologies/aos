@@ -2823,6 +2823,50 @@ impl ProtectedBrokerSessionOwnerV1 {
             .revalidate_broker_outcome(owner, connection_peer)
     }
 
+    // Comparison borrows the original terminal owner so an error cannot drop
+    // its signed packets or currentness before the selected caller parks it.
+    pub(crate) fn compare_git_coverage_outcome_v1(
+        &mut self,
+        owner: &ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        connection_peer: &ConnectionPeerIdentity,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        if !matches!(
+            owner.request.method(),
+            BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_GIT_PROJECT_COVERAGE_V1
+                | BrokerMethod::BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1
+                | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1
+                | BrokerMethod::BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1
+        ) {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        self.journal.validate_broker_outcome(owner, connection_peer)
+    }
+
+    // Only the original V3 checkpoint can supply the signed hello bytes. Its
+    // historical DATA is independently checked against the still-resident
+    // outcome/currentness; the caller parks encoding before later postchecks.
+    pub(crate) fn capture_git_coverage_checkpoint_v1(
+        &mut self,
+        owner: &ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        connection_peer: &ConnectionPeerIdentity,
+        maximum_bytes: usize,
+    ) -> Result<Vec<u8>, BrokerSessionSecurityError> {
+        if maximum_bytes == 0 || maximum_bytes > 16_384 {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        self.compare_git_coverage_outcome_v1(owner, connection_peer)?;
+        let stored = self.journal.read_optional(owner.context.protocol())?
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let checkpoint = stored.checkpoint.as_ref()
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        if checkpoint.context() != &owner.context
+            || checkpoint.verify()? != owner.transcript
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        checkpoint.encode_bounded(maximum_bytes)
+    }
+
     pub(crate) fn revalidate_broker_replay(
         &mut self,
         replay: ProtectedBrokerOutcomeReplayV1,

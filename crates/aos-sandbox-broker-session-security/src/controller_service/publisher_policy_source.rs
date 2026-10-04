@@ -151,8 +151,17 @@ enum BootstrapCauseV1 {
     Current(#[source] GitUploadBootstrapErrorV1),
     #[error("original paired clock observation failed")]
     Clock(#[source] OwnershipClockObservationError),
+    #[error("original exclusive-cohort account crossing is unavailable")]
+    Coverage(#[source] aos_sandbox::cache_residency::CacheResidentUnavailableV1),
     #[error("original bootstrap phase, clock or interval is invalid")]
     Rejected,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Copy)]
+enum CoverageAccountCrossingV1 {
+    Capture,
+    Commit,
 }
 
 impl PublisherPolicyBootstrapAttemptV1 {
@@ -340,6 +349,108 @@ impl PublisherPolicyBootstrapAttemptV1 {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    pub(super) fn capture_coverage_account_once(
+        &mut self,
+        controller: &mut ProductionController,
+        inputs: &mut aos_sandbox::public_api_session::GitCoverageCredentialCustodyV1,
+        attempt: &mut aos_sandbox::policy_compiler::GitCoverageAccountAttemptV1<'_>,
+    ) -> Result<(), ()> {
+        self.cross_coverage_account(controller, inputs, attempt, CoverageAccountCrossingV1::Capture)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn commit_coverage_account_once(
+        &mut self,
+        controller: &mut ProductionController,
+        inputs: &mut aos_sandbox::public_api_session::GitCoverageCredentialCustodyV1,
+        attempt: &mut aos_sandbox::policy_compiler::GitCoverageAccountAttemptV1<'_>,
+    ) -> Result<(), ()> {
+        self.cross_coverage_account(controller, inputs, attempt, CoverageAccountCrossingV1::Commit)
+    }
+
+    // These two closed phases borrow only the SAME already verified fields.
+    // They supply no amounts, executor getter, raw clock or generic callback.
+    #[cfg(target_os = "linux")]
+    fn cross_coverage_account(
+        &mut self,
+        controller: &mut ProductionController,
+        inputs: &mut aos_sandbox::public_api_session::GitCoverageCredentialCustodyV1,
+        attempt: &mut aos_sandbox::policy_compiler::GitCoverageAccountAttemptV1<'_>,
+        crossing: CoverageAccountCrossingV1,
+    ) -> Result<(), ()> {
+        if self.first_failure.is_some() || self.postcheck_debt.is_some() {
+            return Err(());
+        }
+        let returned = (|| {
+            self.check_originals_and_time()?;
+            let source = self.source.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(BootstrapCauseV1::Rejected)?;
+            let capacity = self.capacity.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(BootstrapCauseV1::Rejected)?;
+            let append = self.append.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(BootstrapCauseV1::Rejected)?;
+            let returned = match crossing {
+                CoverageAccountCrossingV1::Capture => controller.capture_existing_git_coverage_account_cut_v1(
+                    inputs, append, source, capacity, &mut self.credentials, attempt,
+                ),
+                CoverageAccountCrossingV1::Commit => controller.commit_existing_git_coverage_account_v1(
+                    inputs, append, source, capacity, &mut self.credentials, attempt,
+                ),
+            };
+            returned.map_err(BootstrapCauseV1::Coverage)
+        })();
+        if let Err(cause) = returned {
+            self.first_failure.get_or_insert(cause);
+        }
+        if let Err(cause) = self.check_originals_and_time() {
+            self.postcheck_debt.get_or_insert(cause);
+        }
+        if self.first_failure.is_some() || self.postcheck_debt.is_some() {
+            return Err(());
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn current_enrolled_cache_project(
+        &mut self,
+        controller: &mut ProductionController,
+        attempt: &aos_sandbox::policy_compiler::GitCoverageAccountAttemptV1<'_>,
+    ) -> Result<aos_sandbox_core::ProjectId, ()> {
+        if self.first_failure.is_some() || self.postcheck_debt.is_some() {
+            return Err(());
+        }
+        let returned = (|| {
+            let now = self.check_originals_and_time()?;
+            let source = self.source.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(BootstrapCauseV1::Rejected)?;
+            let capacity = self.capacity.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(BootstrapCauseV1::Rejected)?;
+            let append = self.append.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(BootstrapCauseV1::Rejected)?;
+            let store = controller.publisher_policies(PublisherPolicyLimits::default())
+                .map_err(BootstrapCauseV1::Store)?;
+            attempt.compare_enrolled_current_v1(&store, append, source, capacity, &self.credentials, now)
+                .map_err(BootstrapCauseV1::Current)?;
+            Ok::<_, BootstrapCauseV1>(source.policy().policy().project())
+        })();
+        let project = match returned {
+            Ok(project) => Some(project),
+            Err(cause) => {
+                self.first_failure.get_or_insert(cause);
+                None
+            }
+        };
+        if let Err(cause) = self.check_originals_and_time() {
+            self.postcheck_debt.get_or_insert(cause);
+        }
+        if self.first_failure.is_some() || self.postcheck_debt.is_some() {
+            return Err(());
+        }
+        project.ok_or(())
+    }
+
     /// Checks route DATA against the SAME original signed bootstrap and capacity.
     /// The short store borrow ends before the evaluator mutates its Journal.
     pub(super) fn check_git_read_route(
@@ -375,6 +486,7 @@ impl PublisherPolicyBootstrapAttemptV1 {
             BootstrapCauseV1::Store(error) => Some(error),
             BootstrapCauseV1::Current(error) => Some(error),
             BootstrapCauseV1::Clock(error) => Some(error),
+            BootstrapCauseV1::Coverage(error) => Some(error),
             BootstrapCauseV1::Rejected => Some(cause),
         }
     }

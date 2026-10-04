@@ -50,6 +50,14 @@ mod controller_root_receipt_readback_v8;
 mod controller_v8_readback_envelope;
 mod controller_v8_settlement_readback;
 mod deployment_head;
+#[cfg(target_os = "linux")]
+mod git_coverage_enrollment;
+#[cfg(target_os = "linux")]
+pub use git_coverage_enrollment::{
+    GIT_COVERAGE_ROOT_BOOTSTRAP_MAGIC_V1, GitCoverageRootClientV1,
+    GitCoverageRootFlightErrorV1, GitCoverageAccountAttemptV1,
+    GitCoverageNativeCutDataV1, RootGitCoverageEnrollmentOwnerV1,
+};
 mod model;
 mod namespace;
 mod owner_pin_transaction;

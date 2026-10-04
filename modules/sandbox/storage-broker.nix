@@ -43,6 +43,16 @@
     && cfg.operatorRecoveryStorageOwnerKey != null;
   sourceOriginalWorkerStartup = cfg.sourceOriginalWorkerStartup.enable;
   startupImageDelivery = cfg.method46TpmFloor.required || sourceOriginalWorkerStartup;
+  coverageCredentialFields = {
+    gitCoverageEnrollment = "git-upload-coverage-enrollment-v1";
+    gitCoverageOwnerCatalog = "git-upload-owner-catalog-v1";
+    gitCoverageProjectPublicKey = "project-public-key";
+    gitCoverageDeploymentPublicKey = "deployment-public-key";
+  };
+  coverageSelected = cfg.credentials.gitCoverageEnrollment != null;
+  coverageLoadCredentials = lib.mapAttrsToList (
+    name: credentialFile: "${credentialFile}:/run/credentials/@system/${cfg.credentials.${name}}"
+  ) (lib.filterAttrs (name: _: cfg.credentials.${name} != null) coverageCredentialFields);
 in {
   options.aos.sandbox.storageBroker = {
     enable = lib.mkEnableOption "the fixed AOS sandbox Storage repair broker";
@@ -87,7 +97,14 @@ in {
       description = "Optional existing root-owned directory containing storage-resolver-policy.catalog.";
     };
 
-    credentials = brokerSession.mkOptions brokerSessionEndpoints;
+    credentials = brokerSession.mkOptions brokerSessionEndpoints
+      // lib.mapAttrs (_: credentialFile:
+        lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "Fixed public exclusive-cohort input loaded as ${credentialFile}. All four inputs are required together; this selects denial-only enrollment, not Storage allocation authority.";
+        })
+      coverageCredentialFields;
 
     method46TpmFloor = method46Floor.options;
 
@@ -154,7 +171,15 @@ in {
     environment.etc."aos/method46-tpm-floor/storage-mode".text = method46FloorConfiguration.modeText;
 
     assertions =
-      [
+      lib.mapAttrsToList (name: _: {
+        assertion = (cfg.credentials.${name} != null) == coverageSelected;
+        message = "Storage Git coverage credentials must be configured as one complete fixed four-input profile";
+      }) coverageCredentialFields
+      ++ [
+        {
+          assertion = !coverageSelected || cfg.executionOutputKey != null;
+          message = "The first exclusive Git cohort requires the actual independently provisioned output ledger and credential";
+        }
         {
           assertion = worker.enable;
           message = "aos.sandbox.storageBroker requires aos.sandbox.storageWorker";
@@ -465,10 +490,11 @@ in {
             if cfg.executionOutputKey == null
             then "-"
             else cfg.executionOutputKey
-          )}
+          )}${lib.optionalString coverageSelected " --git-upload-exclusive-cohort"}
         '';
         LoadCredential =
           brokerSessionConfiguration.loadCredentials
+          ++ coverageLoadCredentials
           ++ method46FloorConfiguration.loadCredentials
           ++ lib.optionals operatorRecoveryConfigured [
             "operator-recovery-controller-public-key-v1:${cfg.operatorRecoveryControllerPublicKey}"

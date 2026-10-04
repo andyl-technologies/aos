@@ -35,7 +35,7 @@ pub(crate) struct Deadline {
 }
 
 impl Deadline {
-    pub(super) fn capture(cutoff: u64) -> Result<Self, Error> {
+    pub(crate) fn capture(cutoff: u64) -> Result<Self, Error> {
         let (boot, now) = kernel_sample()?;
         require_admissible_cutoff(now, cutoff)?;
         Ok(Self { boot, cutoff })
@@ -64,9 +64,25 @@ impl Deadline {
         self.remaining().map(|_| ())
     }
 
+    // The selected coverage replay needs the actual same-boot sample, not a
+    // caller time or a fabricated value below the original absolute cutoff.
+    pub(crate) fn current_git_coverage_boottime(self) -> Result<u64, Error> {
+        let (boot, now) = kernel_sample()?;
+        self.remaining_after(boot, now)?;
+        Ok(now)
+    }
+
     pub(crate) fn new_metadata() -> Result<Self, Error> {
         let (boot, now) = kernel_sample()?;
         let cutoff = now.checked_add(10_000_000_000).ok_or(Error::Deadline)?;
+        Ok(Self { boot, cutoff })
+    }
+
+    // The closed coverage flight starts one original sixty-second window.
+    // All later work borrows this value; no phase samples a replacement cut.
+    pub(crate) fn new_git_coverage() -> Result<Self, Error> {
+        let (boot, now) = kernel_sample()?;
+        let cutoff = now.checked_add(MAXIMUM_FLIGHT_NANOSECONDS).ok_or(Error::Deadline)?;
         Ok(Self { boot, cutoff })
     }
 

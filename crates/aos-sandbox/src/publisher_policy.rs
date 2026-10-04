@@ -61,11 +61,13 @@ const MAXIMUM_STRING_BYTES: usize = 64 * 1024;
 const MAXIMUM_DEPTH: usize = 64;
 
 mod model;
+mod account_coverage;
 mod git_upload_capacity;
 pub use git_upload_capacity::{
-    GitUploadBootstrapAppendV1, GitUploadBootstrapDataRefV1,
+    GitUploadBootstrapAppendV1, GitUploadBootstrapDataRefV1, GitUploadEnrolledAccountAppendV1,
     GitUploadBootstrapErrorV1, VerifiedPublisherPolicySourceV1,
 };
+pub(crate) use git_upload_capacity::require_coverage_native_account_transaction;
 mod project_authorization_source_v2;
 mod project_authorization_store_v2;
 pub(crate) use project_authorization_source_v2::{

@@ -150,6 +150,16 @@
   gitUploadBootstrapCredentials = lib.optionals cfg.gitUploadBootstrap.enable [
     "git-upload-capacity-v1.cbor:/run/credentials/@system/git-upload-capacity-v1.cbor"
   ];
+  gitCoverageCredentialNames = {
+    gitCoverageEnrollment = "git-upload-coverage-enrollment-v1";
+    gitCoverageOwnerCatalog = "git-upload-owner-catalog-v1";
+    gitCoverageProjectPublicKey = "project-public-key";
+    gitCoverageDeploymentPublicKey = "deployment-public-key";
+  };
+  coverageSelected = cfg.credentials.gitCoverageEnrollment != null;
+  gitCoverageCredentials = lib.mapAttrsToList
+    (option: name: "${name}:/run/credentials/@system/${cfg.credentials.${option}}")
+    (lib.filterAttrs (option: _: cfg.credentials.${option} != null) gitCoverageCredentialNames);
   projectAuthorizationIssuerCredential =
     lib.optional (cfg.credentials.projectAuthorizationIssuer != null)
     "project-authorization-issuer-v2:/run/credentials/@system/${cfg.credentials.projectAuthorizationIssuer}";
@@ -335,13 +345,50 @@ in {
           default = null;
           description = "External protected credential loaded as ${name} for the public TLS endpoint.";
         })
-      publicCredentialNames;
+      publicCredentialNames
+      // lib.mapAttrs (_: name: lib.mkOption {
+        type = lib.types.nullOr lib.serviceTypes.credentialName;
+        default = null;
+        description = "Optional independently provisioned exclusive-cohort public input ${name}; the complete fixed profile is required together.";
+      }) gitCoverageCredentialNames;
   };
 
   config = lib.mkIf cfg.enable {
     environment.etc."aos/method46-tpm-floor/controller-mode".text = method46FloorConfiguration.modeText;
 
     assertions =
+      [
+        {
+          assertion = lib.all (option: (cfg.credentials.${option} != null) == coverageSelected)
+            (builtins.attrNames gitCoverageCredentialNames);
+          message = "Controller Git coverage requires the four fixed public inputs together";
+        }
+        {
+          assertion = !coverageSelected || (cfg.gitUploadBootstrap.enable
+            && normalRootProfile != null && cfg.package == pkgs.aos-sandboxd
+            && !cfg.sourceSuccessorIssuance.enable
+            && cfg.credentials.controllerSourceTreeSeed == null
+            && cfg.credentials.projectAuthorizationSource == null);
+          message = "Git coverage requires the original selected Controller/Root profile and Cache bootstrap, without a new Source genesis or issue request";
+        }
+        {
+          assertion = !coverageSelected || (
+            cfg.credentials.gitCoverageEnrollment == policyAuthority.credentials.gitCoverageEnrollment
+            && cfg.credentials.gitCoverageOwnerCatalog == policyAuthority.credentials.gitCoverageOwnerCatalog
+            && cfg.credentials.gitCoverageProjectPublicKey == policyAuthority.credentials.projectPublicKey
+            && cfg.credentials.gitCoverageDeploymentPublicKey == policyAuthority.credentials.deploymentPublicKey
+            && cfg.credentials.gitCoverageEnrollment == brokers.mountBroker.credentials.gitCoverageEnrollment
+            && cfg.credentials.gitCoverageOwnerCatalog == brokers.mountBroker.credentials.gitCoverageOwnerCatalog
+            && cfg.credentials.gitCoverageProjectPublicKey == brokers.mountBroker.credentials.gitCoverageProjectPublicKey
+            && cfg.credentials.gitCoverageDeploymentPublicKey == brokers.mountBroker.credentials.gitCoverageDeploymentPublicKey
+            && cfg.credentials.gitCoverageEnrollment == brokers.storageBroker.credentials.gitCoverageEnrollment
+            && cfg.credentials.gitCoverageOwnerCatalog == brokers.storageBroker.credentials.gitCoverageOwnerCatalog
+            && cfg.credentials.gitCoverageProjectPublicKey == brokers.storageBroker.credentials.gitCoverageProjectPublicKey
+            && cfg.credentials.gitCoverageDeploymentPublicKey == brokers.storageBroker.credentials.gitCoverageDeploymentPublicKey);
+          message = "Git coverage must independently deliver the same signed profile and existing role pins to Root, Controller, Mount and Storage";
+        }
+      ]
+      ++
       [
         {
           assertion = !cfg.gitReadInspection.enable
@@ -660,6 +707,7 @@ in {
           + lib.optionalString cfg.publisherIngress.enable " --publisher-ingress"
           + lib.optionalString cfg.createQ04PolicySubgate.enable " --create-q04-policy-subgate"
           + lib.optionalString cfg.gitUploadBootstrap.enable " --git-upload-bootstrap"
+          + lib.optionalString coverageSelected " --git-upload-coverage"
           + lib.optionalString cfg.gitReadInspection.enable " --git-read-inspection=${toString config.aos.sandbox.gitGatewayTransport.uid}:${toString config.aos.sandbox.gitGatewayTransport.gid}"
           + lib.optionalString cfg.sourceSuccessorIssuance.enable " --issue-source-successor"
           + lib.optionalString onlineNix.enable " --nix-start-admission";
@@ -697,6 +745,7 @@ in {
           ++ publisherScopeCredential
           ++ publisherPolicySourceCredentials
           ++ gitUploadBootstrapCredentials
+          ++ gitCoverageCredentials
           ++ projectAuthorizationIssuerCredential
           ++ controllerSourceTreeSeedIssuerCredential
           ++ sourceGenesisPacketCredentials

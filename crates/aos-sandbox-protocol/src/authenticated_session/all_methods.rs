@@ -317,6 +317,8 @@ pub enum AuthenticatedBrokerMethodSemanticsV1 {
     NixRealizeAuthorizedDerivation,
     /// Fresh readback of one exact original realization and retained root set.
     NixQueryAuthorizedPathInfo,
+    /// Opt-in denial-only preparation/readback through the existing owner.
+    GitProjectCoverage,
 }
 
 /// Identifies which endpoint advanced client-to-broker request state.
@@ -368,6 +370,12 @@ pub const fn authenticated_broker_method_adapter_v1(
         None => return None,
     };
     let semantics = match method {
+        BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_GIT_PROJECT_COVERAGE_V1
+        | BrokerMethod::BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1
+        | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1
+        | BrokerMethod::BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1 => {
+            AuthenticatedBrokerMethodSemanticsV1::GitProjectCoverage
+        }
         BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2 => {
             AuthenticatedBrokerMethodSemanticsV1::NixResolveProtectedRecipe
         }
@@ -647,6 +655,22 @@ impl AuthenticatedBrokerMethodRequestV1 {
     #[must_use]
     pub const fn signed_request_digest(&self) -> [u8; 32] {
         self.signed_request_digest
+    }
+
+    /// Borrows the already admitted closed coverage request as DATA.
+    ///
+    /// This avoids decoding its wire/header again during an independent
+    /// original-pair comparison. The borrow conveys no live peer, journal,
+    /// floor, allocation or coverage authority.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn git_coverage_request_v1(
+        &self,
+    ) -> Option<&crate::git_project_coverage::ValidatedGitProjectCoverageRequestV1> {
+        match &self.outcome_context {
+            RequestOutcomeContextV1::GitCoverage(request) => Some(request),
+            _ => None,
+        }
     }
 }
 
@@ -1278,6 +1302,7 @@ struct ValidatedRequestSemanticV1 {
 #[derive(Clone, Debug, PartialEq)]
 enum RequestOutcomeContextV1 {
     None,
+    GitCoverage(crate::git_project_coverage::ValidatedGitProjectCoverageRequestV1),
     Nix(crate::nix_build::ValidatedNixBuildRequestV2),
     HostObserve(crate::ValidatedObserveRuntimeRequestV1),
     MountApply(crate::ValidatedMountRequest),
@@ -1329,7 +1354,19 @@ fn validate_request_semantics(
     bindings: AuthenticatedBrokerSemanticBindingsV1,
 ) -> Result<ValidatedRequestSemanticV1, AuthenticatedBrokerMethodErrorV1> {
     let mut nix_outcome_context = RequestOutcomeContextV1::None;
+    let mut git_coverage_outcome_context = RequestOutcomeContextV1::None;
     let (kind, header, portable_commitment) = match method {
+        BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_GIT_PROJECT_COVERAGE_V1
+        | BrokerMethod::BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1
+        | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1
+        | BrokerMethod::BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1 => {
+            let request = crate::git_project_coverage::decode_git_project_coverage_request_v1(
+                body, method, peer, policy, now,
+            )?;
+            let header = *request.header();
+            git_coverage_outcome_context = RequestOutcomeContextV1::GitCoverage(request);
+            (AuthenticatedBrokerMethodSemanticsV1::GitProjectCoverage, header, None)
+        }
         BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2
         | BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2
         | BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2 => {
@@ -1802,6 +1839,10 @@ fn validate_request_semantics(
         }
     };
     let outcome_context = match method {
+        BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_GIT_PROJECT_COVERAGE_V1
+        | BrokerMethod::BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1
+        | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1
+        | BrokerMethod::BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1 => git_coverage_outcome_context,
         BrokerMethod::BROKER_METHOD_NIX_RESOLVE_PROTECTED_RECIPE_V2
         | BrokerMethod::BROKER_METHOD_NIX_REALIZE_AUTHORIZED_DERIVATION_V2
         | BrokerMethod::BROKER_METHOD_NIX_QUERY_AUTHORIZED_PATH_INFO_V2 => nix_outcome_context,
@@ -2375,6 +2416,15 @@ fn validate_success_semantics(
                 return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
             };
             crate::nix_build::decode_nix_build_response_v2(body, original, request.method())?;
+        }
+        BrokerMethod::BROKER_METHOD_MOUNT_PREPARE_GIT_PROJECT_COVERAGE_V1
+        | BrokerMethod::BROKER_METHOD_MOUNT_READ_GIT_PROJECT_COVERAGE_V1
+        | BrokerMethod::BROKER_METHOD_STORAGE_PREPARE_GIT_PROJECT_COVERAGE_V1
+        | BrokerMethod::BROKER_METHOD_STORAGE_READ_GIT_PROJECT_COVERAGE_V1 => {
+            let RequestOutcomeContextV1::GitCoverage(original) = &request.outcome_context else {
+                return Err(AuthenticatedBrokerMethodErrorV1::InconsistentCrossLink);
+            };
+            crate::git_project_coverage::compare_git_project_coverage_response_v1(body, original)?;
         }
         BrokerMethod::BROKER_METHOD_STORAGE_READ_EXECUTION_CAPTURE_CANDIDATE => {
             return Err(AuthenticatedBrokerMethodErrorV1::UnsupportedMethod);

@@ -468,6 +468,42 @@ impl GitUploadBootstrapAppendV1 {
     }
 }
 
+/// Retains the one covered successor co-commit and its original typed causes.
+///
+/// Only the closed original-owner attempt prepares this value. It cannot
+/// accept caller resource amounts, retry a failed append, or retire debt.
+#[doc(hidden)]
+pub struct GitUploadEnrolledAccountAppendV1 {
+    transaction: JournalTransaction,
+    preflight: Option<Result<(), JournalError>>,
+    commit: Option<Result<CommitResult, JournalError>>,
+    failure: Option<GitUploadBootstrapErrorV1>,
+    ended: bool,
+    complete: bool,
+}
+
+impl GitUploadEnrolledAccountAppendV1 {
+    /// Borrows the original crossing cause while keeping every result resident.
+    #[must_use]
+    pub fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if let Some(Err(cause)) = &self.preflight {
+            return Some(cause);
+        }
+        if let Some(Err(cause)) = &self.commit {
+            return Some(cause);
+        }
+        self.failure.as_ref().map(|cause| cause as &(dyn std::error::Error + 'static))
+    }
+
+    pub(crate) fn committed_coordinates(&self) -> Option<([u8; 16], u64)> {
+        if !self.complete || self.failure().is_some() {
+            return None;
+        }
+        self.commit.as_ref().and_then(|result| result.as_ref().ok())
+            .map(|result| (*self.transaction.id(), result.commit_sequence))
+    }
+}
+
 /// Borrows exact protected bootstrap records and the original signed input.
 ///
 /// The all-zero new family is explicitly non-admitting DATA. It says nothing
@@ -504,6 +540,164 @@ impl GitUploadBootstrapDataRefV1<'_> {
 }
 
 impl PublisherPolicyStore<'_> {
+    // The containing owner has already compared its original local/remote
+    // cuts. This preparation accepts those fixed rows, never resource amounts.
+    pub(crate) fn prepare_git_upload_enrolled_account(
+        &self,
+        bootstrap: &GitUploadBootstrapAppendV1,
+        source: &VerifiedPublisherPolicySourceV1,
+        capacity: &GitUploadCapacityV1,
+        credentials: &PublisherPolicyBootstrapCredentialCustodyV1,
+        enrollment: &aos_sandbox_core::format::git_upload_enrollment::GitCoverageEnrollmentV1<'_>,
+        owners: &[[u8; 140]],
+        now: i64,
+    ) -> Result<GitUploadEnrolledAccountAppendV1, GitUploadBootstrapErrorV1> {
+        let original = self.current_git_upload_bootstrap(
+            bootstrap, source, capacity, credentials, now,
+        )?;
+        let (_, period) = enrollment.ceiling_period();
+        if enrollment.project() != source.policy.project()
+            || period != capacity.cpu_period_micros()
+            || enrollment.ceiling_period().0 != capacity.ceilings()
+        {
+            return Err(GitUploadBootstrapErrorV1::Conflict);
+        }
+        let [origin, predecessor, _] = original.records();
+        let origin_digest = commitment(ORIGIN_DOMAIN, origin);
+        let account = encode_account(
+            source.policy.project(), 2, commitment(ACCOUNT_DOMAIN, predecessor),
+            origin_digest, ResourceVector::ZERO, ResourceVector::ZERO,
+        );
+        let account_digest = commitment(ACCOUNT_DOMAIN, &account);
+        let companion = super::account_coverage::encode_empty_first_profile(
+            &super::account_coverage::EmptyAccountCoverageFieldsV1 {
+                project: source.policy.project(),
+                generation: 2,
+                origin: origin_digest,
+                account: account_digest,
+                predecessor: ObjectDigest::from_bytes([0; 32]),
+                enrollment: ObjectDigest::from_bytes(enrollment.digest()),
+                ceiling_authority: capacity_authority_digest(capacity)?,
+                cpu_period_micros: period,
+            },
+            owners,
+        )?;
+        let decoded = super::account_coverage::AccountCoverageV1::decode(&companion)?;
+        let transaction = JournalTransaction::new(
+            decoded.transaction()?,
+            vec![
+                JournalRecord::put(RecordNamespace::PublisherPolicy, decoded.key()?, companion),
+                JournalRecord::put(RecordNamespace::PublisherPolicy, account_key(source.policy.project(), 2), account),
+                JournalRecord::put(RecordNamespace::PublisherPolicy, account_head_key(source.policy.project()),
+                    encode_account_head(source.policy.project(), 2, account_digest)),
+            ],
+        ).map_err(PublisherPolicyError::from)?;
+        require_coverage_native_account_transaction(&transaction)?;
+        Ok(GitUploadEnrolledAccountAppendV1 {
+            transaction,
+            preflight: None,
+            commit: None,
+            failure: None,
+            ended: false,
+            complete: false,
+        })
+    }
+
+    // The private clock guard remains with the initializer for this entire
+    // call. Preflight is not a reservation; compare the exact original head
+    // again immediately before the SAME-writer CAS and park its whole result.
+    pub(crate) fn commit_git_upload_enrolled_account(
+        &mut self,
+        append: &mut GitUploadEnrolledAccountAppendV1,
+        bootstrap: &GitUploadBootstrapAppendV1,
+        source: &VerifiedPublisherPolicySourceV1,
+        capacity: &GitUploadCapacityV1,
+        credentials: &PublisherPolicyBootstrapCredentialCustodyV1,
+        now: i64,
+    ) -> Result<(), ()> {
+        if append.ended || append.preflight.is_some() || append.failure().is_some() {
+            append.failure.get_or_insert(GitUploadBootstrapErrorV1::Conflict);
+            append.ended = true;
+            return Err(());
+        }
+        append.ended = true;
+        let returned = (|| {
+            self.current_git_upload_bootstrap(bootstrap, source, capacity, credentials, now)?;
+            require_coverage_native_account_transaction(&append.transaction)?;
+            let records = append.transaction.records();
+            if records[..2].iter().any(|record| self.journal.get(
+                RecordNamespace::PublisherPolicy, record.key(),
+            ).is_some()) {
+                return Err(GitUploadBootstrapErrorV1::Conflict);
+            }
+            let (next_records, next_bytes) = self.bounded_replacement_totals(records)?;
+            append.preflight = Some(self.journal.preflight_transactions(
+                std::slice::from_ref(&append.transaction),
+            ));
+            if !matches!(append.preflight.as_ref(), Some(Ok(()))) {
+                return Err(GitUploadBootstrapErrorV1::Conflict);
+            }
+            self.current_git_upload_bootstrap(bootstrap, source, capacity, credentials, now)?;
+            self.journal.validate_held_protected_names().map_err(PublisherPolicyError::from)?;
+            append.commit = Some(self.journal.commit(&append.transaction));
+            if !matches!(append.commit.as_ref(), Some(Ok(_))) {
+                return Err(GitUploadBootstrapErrorV1::Conflict);
+            }
+            self.records = next_records;
+            self.materialized_bytes = next_bytes;
+            require_exact_records(self.journal, records)?;
+            require_original_policy(self.journal, source)?;
+            validate_namespace(self.journal, self.limits)?;
+            Ok(())
+        })();
+        if let Err(cause) = returned {
+            append.failure.get_or_insert(cause);
+            return Err(());
+        }
+        append.complete = true;
+        Ok(())
+    }
+
+    /// Compares the genuine covered successor, not the old gen1 head wrapper.
+    ///
+    /// This lends DATA under the existing original credential and policy
+    /// checks. It grants no allocation, remote release or account permission.
+    ///
+    /// # Errors
+    /// Refuses an incomplete/failed append, changed original inputs, expired
+    /// signed interval, or any different account/companion/current head.
+    #[doc(hidden)]
+    pub fn current_git_upload_enrolled_account(
+        &self,
+        append: &GitUploadEnrolledAccountAppendV1,
+        bootstrap: &GitUploadBootstrapAppendV1,
+        source: &VerifiedPublisherPolicySourceV1,
+        capacity: &GitUploadCapacityV1,
+        credentials: &PublisherPolicyBootstrapCredentialCustodyV1,
+        now: i64,
+    ) -> Result<(), GitUploadBootstrapErrorV1> {
+        self.journal.ensure_protected_authority().map_err(PublisherPolicyError::from)?;
+        require_original_append(bootstrap, source)?;
+        if !bootstrap.complete || bootstrap.failure().is_some()
+            || !append.complete || append.failure().is_some()
+            || now < source.policy.not_before() || now >= source.policy.expires_at()
+        {
+            return Err(GitUploadBootstrapErrorV1::Conflict);
+        }
+        let [packet, policy, key, body] = credentials.ready()
+            .ok_or(GitUploadBootstrapErrorV1::Conflict)?;
+        if packet != source.packet.as_slice() || policy != source.policy.canonical_policy()
+            || key != source.key.as_slice() || source.verify_git_capacity(body)? != *capacity
+        {
+            return Err(GitUploadBootstrapErrorV1::Conflict);
+        }
+        require_original_policy(self.journal, source)?;
+        require_exact_records(self.journal, &bootstrap.transaction.records()[..2])?;
+        require_exact_records(self.journal, append.transaction.records())?;
+        validate_namespace(self.journal, self.limits)?;
+        Ok(())
+    }
+
     /// Prepares a closed triple from one original full-policy source.
     ///
     /// Preparation is DATA. The caller parks the result before preflight or
@@ -875,20 +1069,90 @@ struct AccountRevision {
     digest: ObjectDigest,
 }
 
-/// Accumulates only the three closed families inside the sole namespace replay.
+// Called only after the existing header/width/key checks. Both namespace
+// replay and the native co-commit relation use these same account amounts.
+fn decode_account_contents(bytes: &[u8]) -> Result<AccountRevision, PublisherPolicyError> {
+    let mut vectors = [[0; ResourceDimension::COUNT]; 2];
+    let mut offset = 100;
+    for vector in &mut vectors {
+        for amount in vector {
+            *amount = u64::from_be_bytes(array(bytes, offset)?);
+            offset += 8;
+        }
+    }
+    Ok(AccountRevision {
+        predecessor: ObjectDigest::from_bytes(array(bytes, 36)?),
+        origin: ObjectDigest::from_bytes(array(bytes, 68)?),
+        committed: ResourceVector::new(vectors[0]),
+        reserved: ResourceVector::new(vectors[1]),
+        digest: commitment(ACCOUNT_DOMAIN, bytes),
+    })
+}
+
+// The sole COMMIT observer calls this on the actual original transaction,
+// never on a final-map projection. It proves only the closed three-PUT relation;
+// the same namespace replay separately authenticates origin and predecessor.
+pub(crate) fn require_coverage_native_account_transaction(
+    transaction: &JournalTransaction,
+) -> Result<(), PublisherPolicyError> {
+    let records = transaction.records();
+    if records.len() != 3
+        || records.iter().any(|record| record.namespace() != RecordNamespace::PublisherPolicy)
+    {
+        return Err(PublisherPolicyError::CorruptState);
+    }
+    let coverage = super::account_coverage::AccountCoverageV1::decode(
+        records[0].value().ok_or(PublisherPolicyError::CorruptState)?,
+    )?;
+    coverage.require_empty_first_profile()?;
+    let account = records[1].value().ok_or(PublisherPolicyError::CorruptState)?;
+    let head = records[2].value().ok_or(PublisherPolicyError::CorruptState)?;
+    let (project, generation) = check_record_header(account, ACCOUNT_MAGIC, ACCOUNT_BYTES)?;
+    let (head_project, head_generation) = check_record_header(head, HEAD_MAGIC, HEAD_BYTES)?;
+    if account.len() != ACCOUNT_BYTES
+        || head.len() != HEAD_BYTES
+        || generation != 2
+        || coverage.project()? != project
+        || coverage.generation()? != generation
+        || records[0].key() != coverage.key()?
+        || records[1].key() != account_key(project, generation)
+        || records[2].key() != account_head_key(project)
+        || (head_project, head_generation) != (project, generation)
+        || transaction.id() != &coverage.transaction()?
+    {
+        return Err(PublisherPolicyError::CorruptState);
+    }
+    let revision = decode_account_contents(account)?;
+    let (committed, reserved) = coverage.fold()?;
+    if coverage.account()? != revision.digest
+        || coverage.origin()? != revision.origin
+        || revision.committed != committed
+        || revision.reserved != reserved
+        || ObjectDigest::from_bytes(array(head, 36)?) != revision.digest
+    {
+        return Err(PublisherPolicyError::CorruptState);
+    }
+    Ok(())
+}
+
+/// Accumulates the closed Git families inside the sole namespace replay.
+///
+/// Companions lend their original bytes; there is no second account reducer
+/// or owning projection of the complete coverage catalog.
 #[derive(Default)]
-pub(super) struct GitUploadBootstrapReplayV1 {
+pub(super) struct GitUploadBootstrapReplayV1<'journal> {
     origins: BTreeMap<ProjectId, HistoricalOrigin>,
     accounts: BTreeMap<ProjectId, BTreeMap<u64, AccountRevision>>,
     heads: BTreeMap<ProjectId, (u64, ObjectDigest)>,
+    coverage: BTreeMap<ProjectId, BTreeMap<u64, super::account_coverage::AccountCoverageV1<'journal>>>,
 }
 
-impl GitUploadBootstrapReplayV1 {
+impl<'journal> GitUploadBootstrapReplayV1<'journal> {
     pub(super) fn consume(
         &mut self,
         journal: &Journal,
         record_key: &[u8],
-        bytes: &[u8],
+        bytes: &'journal [u8],
     ) -> Result<bool, PublisherPolicyError> {
         if record_key.starts_with(ORIGIN_PREFIX) {
             let (project, generation) = check_record_header(bytes, ORIGIN_MAGIC, ORIGIN_FIXED_BYTES)?;
@@ -930,21 +1194,7 @@ impl GitUploadBootstrapReplayV1 {
             if bytes.len() != ACCOUNT_BYTES || record_key != account_key(project, generation) {
                 return Err(PublisherPolicyError::CorruptState);
             }
-            let mut vectors = [[0; ResourceDimension::COUNT]; 2];
-            let mut offset = 100;
-            for vector in &mut vectors {
-                for amount in vector {
-                    *amount = u64::from_be_bytes(array(bytes, offset)?);
-                    offset += 8;
-                }
-            }
-            let revision = AccountRevision {
-                predecessor: ObjectDigest::from_bytes(array(bytes, 36)?),
-                origin: ObjectDigest::from_bytes(array(bytes, 68)?),
-                committed: ResourceVector::new(vectors[0]),
-                reserved: ResourceVector::new(vectors[1]),
-                digest: commitment(ACCOUNT_DOMAIN, bytes),
-            };
+            let revision = decode_account_contents(bytes)?;
             if self.accounts.entry(project).or_default().insert(generation, revision).is_some() {
                 return Err(PublisherPolicyError::CorruptState);
             }
@@ -952,6 +1202,15 @@ impl GitUploadBootstrapReplayV1 {
             let (project, generation) = check_record_header(bytes, HEAD_MAGIC, HEAD_BYTES)?;
             if bytes.len() != HEAD_BYTES || record_key != account_head_key(project)
                 || self.heads.insert(project, (generation, ObjectDigest::from_bytes(array(bytes, 36)?))).is_some()
+            {
+                return Err(PublisherPolicyError::CorruptState);
+            }
+        } else if record_key.starts_with(super::account_coverage::PREFIX) {
+            let coverage = super::account_coverage::AccountCoverageV1::decode(bytes)?;
+            coverage.require_empty_first_profile()?;
+            if record_key != coverage.key()?
+                || self.coverage.entry(coverage.project()?).or_default()
+                    .insert(coverage.generation()?, coverage).is_some()
             {
                 return Err(PublisherPolicyError::CorruptState);
             }
@@ -963,6 +1222,9 @@ impl GitUploadBootstrapReplayV1 {
 
     pub(super) fn finish(self) -> Result<(), PublisherPolicyError> {
         if self.origins.len() != self.accounts.len() || self.origins.len() != self.heads.len() {
+            return Err(PublisherPolicyError::CorruptState);
+        }
+        if self.coverage.keys().any(|project| !self.origins.contains_key(project)) {
             return Err(PublisherPolicyError::CorruptState);
         }
         for (project, origin) in self.origins {
@@ -987,9 +1249,62 @@ impl GitUploadBootstrapReplayV1 {
             if generation == 0 || self.heads.get(&project) != Some(&(generation, previous)) {
                 return Err(PublisherPolicyError::CorruptState);
             }
+            if let Some(coverage) = self.coverage.get(&project) {
+                require_coverage_chain(&origin, revisions, coverage)?;
+            }
         }
         Ok(())
     }
+}
+
+// The existing namespace pass owns account continuity and all ResourceAccount
+// arithmetic. This adds the full companion relation only when that new family
+// is present; ordinary/gen1 histories keep their original checks and results.
+fn require_coverage_chain(
+    origin: &HistoricalOrigin,
+    revisions: &BTreeMap<u64, AccountRevision>,
+    coverage: &BTreeMap<u64, super::account_coverage::AccountCoverageV1<'_>>,
+) -> Result<(), PublisherPolicyError> {
+    if coverage.len().checked_add(1) != Some(revisions.len()) {
+        return Err(PublisherPolicyError::CorruptState);
+    }
+    let original = coverage.get(&2).ok_or(PublisherPolicyError::CorruptState)?;
+    let enrollment = original.enrollment()?;
+    let original_owners = original.owner_bytes();
+    let mut predecessor = ObjectDigest::from_bytes([0; 32]);
+
+    // The original verifier already compared the unique signed descriptor to
+    // these canonical capacity bytes. Reuse the sole encoder/descriptor engine
+    // only for the new companion family; ordinary replay's stored origin and
+    // allocation layout remain unchanged.
+    let ceiling_authority = capacity_authority_digest(&origin.capacity)?;
+
+    for (generation, revision) in revisions.range(2..) {
+        let companion = coverage.get(generation).ok_or(PublisherPolicyError::CorruptState)?;
+        companion.require_empty_first_profile()?;
+        let (committed, reserved) = companion.fold()?;
+        if companion.origin()? != origin.digest
+            || companion.account()? != revision.digest
+            || companion.predecessor()? != predecessor
+            || companion.enrollment()? != enrollment
+            || companion.owner_bytes() != original_owners
+            || companion.ceiling_authority()? != ceiling_authority
+            || companion.cpu_period_micros()? != origin.capacity.cpu_period_micros()
+            || committed != revision.committed
+            || reserved != revision.reserved
+        {
+            return Err(PublisherPolicyError::CorruptState);
+        }
+        predecessor = companion.digest();
+    }
+    Ok(())
+}
+
+fn capacity_authority_digest(capacity: &GitUploadCapacityV1) -> Result<ObjectDigest, PublisherPolicyError> {
+    let canonical_capacity = aos_sandbox_core::encode_git_upload_capacity_v1(capacity);
+    let media_type = aos_sandbox_core::MediaType::new(PortableMediaType::GitUploadCapacity.as_str())
+        .map_err(|_| PublisherPolicyError::CorruptState)?;
+    Ok(aos_sandbox_core::descriptor_for_bytes(media_type, &canonical_capacity).digest())
 }
 
 #[cfg(test)]

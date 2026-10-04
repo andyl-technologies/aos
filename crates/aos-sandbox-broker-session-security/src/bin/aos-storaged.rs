@@ -38,6 +38,46 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 const CONTROLLER_CGROUP: &str = "aos.slice/aos-control.slice/aos-sandboxd.service";
 const HOST_CGROUP: &str = "system.slice/aos-sandbox-hostd.service";
 const SOURCE_PROVIDER_CGROUP: &str = "aos.slice/aos-control.slice/aos-source-providerd.service";
+const GIT_COVERAGE_ARGUMENT: &str = "--git-upload-exclusive-cohort";
+
+// Declared after the actual Storage/output owners, so abandonment aborts
+// before their local destruction. Whole new-purpose return values stay in
+// these resident slots until their independent same-owner bookends finish.
+struct SelectedStorageCoverageCyclesV1 {
+    step: Option<Result<(), StorageRuntimeError>>,
+    active_session: Option<DormantAuthenticatedBrokerSessionV1>,
+    accepted: Option<
+        Result<DormantAuthenticatedBrokerSessionV1, ProductionBrokerSessionActivationErrorV1>,
+    >,
+    response: Option<
+        Result<DormantAuthenticatedBrokerSessionV1,
+            aos_sandbox_broker_session_security::ProductionBrokerServiceErrorV1>,
+    >,
+}
+
+impl SelectedStorageCoverageCyclesV1 {
+    fn new() -> Self {
+        Self {
+            step: None,
+            active_session: None,
+            accepted: None,
+            response: None,
+        }
+    }
+}
+
+impl Drop for SelectedStorageCoverageCyclesV1 {
+    fn drop(&mut self) {
+        std::process::abort();
+    }
+}
+
+fn exit_with_git_coverage_failure(error: &dyn std::fmt::Display) -> ! {
+    use std::io::Write as _;
+
+    let _ = writeln!(std::io::stderr(), "aos-storaged: selected cohort failed: {error}");
+    std::process::exit(1);
+}
 
 // The legacy diagnostic remains transparent. New startup failures keep their
 // concrete cause and owning custody instead of becoming Activation strings.
@@ -203,7 +243,7 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
         let source = parse_provision_source(&command_line)?;
         return provision_execution_output_ledger(state_root, &source).map_err(Into::into);
     }
-    let (command, arguments) = parse_startup_command(command_line)?;
+    let (command, arguments, git_coverage_selected) = parse_selected_startup_command(command_line)?;
 
     // Claim the complete systemd table before any inherited slot can be
     // reused. The broker session owns only its fixed control listener.
@@ -386,7 +426,23 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
         // Auxiliary cold audit and ordinary publisher admission follow exact
         // settlement. Neither may create journal names while Repair debt is held.
         let mut ordinary_services_initialized = false;
-        let mut active_session: Option<DormantAuthenticatedBrokerSessionV1> = None;
+        let mut ordinary_active_session: Option<DormantAuthenticatedBrokerSessionV1> = None;
+        let mut coverage_cycles = git_coverage_selected.then(SelectedStorageCoverageCyclesV1::new);
+        if let Some(cycles) = &mut coverage_cycles {
+            cycles.step = Some(storage.install_git_coverage_v1());
+            if let Some(Err(cause)) = &cycles.step {
+                exit_with_git_coverage_failure(cause);
+            }
+            if output_custody.is_none() {
+                exit_with_git_coverage_failure(&"original authenticated output custody is absent");
+            }
+        }
+        let (active_session, mut coverage_accepted, mut coverage_response) = match &mut coverage_cycles {
+            Some(cycles) => (
+                &mut cycles.active_session, Some(&mut cycles.accepted), Some(&mut cycles.response),
+            ),
+            None => (&mut ordinary_active_session, None, None),
+        };
         // The named Session operation returns its opaque concrete cycle. It
         // needs no public constructor, raw owner export, or empty-custody factory.
         let mut original_output_cycle = None;
@@ -443,35 +499,76 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
                 }
                 drop(recovery_ready);
                 if request_ready {
+                    let selected_deadline = if coverage_response.is_some() && active_session.is_some() {
+                        Some(match production_deadline_after(REQUEST_TIMEOUT) {
+                            Ok(deadline) => deadline,
+                            Err(cause) => exit_with_git_coverage_failure(&cause),
+                        })
+                    } else {
+                        None
+                    };
                     if let Some(session) = active_session.take() {
-                        let deadline = production_deadline_after(REQUEST_TIMEOUT)
-                            .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
-                        match session.serve_operator_repair_unresolved_rejection(deadline) {
-                            Ok(session) => active_session = Some(session),
-                            Err(error) => eprintln!("aos-storaged: held request rejected: {error}"),
+                        let deadline = match selected_deadline {
+                            Some(deadline) => deadline,
+                            None => production_deadline_after(REQUEST_TIMEOUT)
+                                .map_err(|error| StorageServiceError::Activation(error.to_string()))?,
+                        };
+                        if let Some(response) = &mut coverage_response {
+                            **response = Some(session.serve_operator_repair_unresolved_rejection(deadline));
+                            if let Some(Err(cause)) = response.as_ref() {
+                                exit_with_git_coverage_failure(cause);
+                            }
+                            *active_session = Some(match response.take() {
+                                Some(Ok(session)) => session,
+                                _ => exit_with_git_coverage_failure(&"returned settlement Session is absent"),
+                            });
+                        } else {
+                            match session.serve_operator_repair_unresolved_rejection(deadline) {
+                                Ok(session) => *active_session = Some(session),
+                                Err(error) => eprintln!("aos-storaged: held request rejected: {error}"),
+                            }
                         }
                     }
                 } else if request_disconnected {
-                    active_session = None;
+                    if coverage_response.is_some() {
+                        exit_with_git_coverage_failure(&"original settlement Session disconnected");
+                    }
+                    *active_session = None;
                 }
                 if handshake_ready {
+                    if coverage_accepted.is_some() && active_session.is_some() {
+                        exit_with_git_coverage_failure(&"replacement settlement Session refused");
+                    }
                     let deadline = production_deadline_after(ACCEPT_TIMEOUT)
                         .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
                     let acceptance = StorageColdAcceptUnwindV1(&mut activation);
-                    match acceptance.0.accept_authenticated(deadline) {
-                        Ok(session) if output_custody.is_some() => {
-                            original_output_cycle = Some(session.begin_original_storage_output_cycle());
+                    if let Some(accepted) = &mut coverage_accepted {
+                        // This is the old negative-settlement handshake, not a
+                        // coverage Ready route while genuine debt is unresolved.
+                        **accepted = Some(acceptance.0.accept_authenticated(deadline));
+                        if let Some(Err(cause)) = accepted.as_ref() {
+                            exit_with_git_coverage_failure(cause);
                         }
-                        Ok(session) => active_session = Some(session),
-                        Err(error) if acceptance.0.has_failed_storage_cold() => {
-                            // Original cold owners and typed cause remain in the
-                            // activation stack. Exit before returning through lower
-                            // Storage/operator disposal or accepting a replacement.
-                            eprintln!("aos-storaged: resident Storage cold admission failed: {error}");
-                            std::process::exit(1);
+                        *active_session = Some(match accepted.take() {
+                            Some(Ok(session)) => session,
+                            _ => exit_with_git_coverage_failure(&"returned settlement handshake is absent"),
+                        });
+                    } else {
+                        match acceptance.0.accept_authenticated(deadline) {
+                            Ok(session) if output_custody.is_some() => {
+                                original_output_cycle = Some(session.begin_original_storage_output_cycle());
+                            }
+                            Ok(session) => *active_session = Some(session),
+                            Err(error) if acceptance.0.has_failed_storage_cold() => {
+                                // Original cold owners and typed cause remain in the
+                                // activation stack. Exit before returning through lower
+                                // Storage/operator disposal or accepting a replacement.
+                                eprintln!("aos-storaged: resident Storage cold admission failed: {error}");
+                                std::process::exit(1);
+                            }
+                            Err(ProductionBrokerSessionActivationErrorV1::Deadline) => {}
+                            Err(error) => return Err(production_error(error).into()),
                         }
-                        Err(ProductionBrokerSessionActivationErrorV1::Deadline) => {}
-                        Err(error) => return Err(production_error(error).into()),
                     }
                 }
                 if operator_ready {
@@ -482,6 +579,14 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
                 credentials.recheck()?;
             }
             if !ordinary_services_initialized {
+                if git_coverage_selected {
+                    let output = output_custody.as_ref()
+                        .ok_or(StorageRuntimeError::Recovery)?;
+                    let audited = storage.audit_git_coverage_startup_v1(output);
+                    if let Err(cause) = &audited {
+                        exit_with_git_coverage_failure(cause);
+                    }
+                }
                 if live_export_listener.is_some() {
                     storage.cold_audit(state_root)?;
                 }
@@ -629,56 +734,117 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
                 .into());
             }
             if broker_ready {
-                if original_output_cycle.is_some() {
-                    let request_deadline = production_deadline_after(REQUEST_TIMEOUT);
-                    if let (Some(cycle), Some(output)) =
-                        (original_output_cycle.as_mut(), output_custody.as_mut())
-                    {
-                        cycle.advance(storage.composition_mut(), output, request_deadline);
-                        if let Some(cause) = cycle.failure() {
-                            eprintln!("aos-storaged: resident original output request failed: {cause}");
-                            if let Some(debt) = cycle.postcheck_debt() {
-                                eprintln!("aos-storaged: original output postcheck debt: {debt}");
-                            }
-                            std::process::exit(1);
-                        }
-                        if let Some(debt) = cycle.postcheck_debt() {
-                            eprintln!("aos-storaged: original output postcheck debt: {debt}");
-                            std::process::exit(1);
-                        }
+                if let Some(response) = &mut coverage_response {
+                    let selected_deadline = if active_session.is_some() {
+                        Some(match production_deadline_after(REQUEST_TIMEOUT) {
+                            Ok(deadline) => deadline,
+                            Err(cause) => exit_with_git_coverage_failure(&cause),
+                        })
                     } else {
-                        std::process::abort();
-                    }
-                } else if let Some(session) = active_session.take() {
-                    let request_deadline = production_deadline_after(REQUEST_TIMEOUT)
-                        .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
-                    match session.serve_production_storage_request(storage.composition_mut(), request_deadline) {
-                        Ok(retained) => active_session = Some(retained),
-                        Err(error) => eprintln!("aos-storaged: authenticated request failed: {error}"),
+                        None
+                    };
+                    if let Some(session) = active_session.take() {
+                        let request_deadline = match selected_deadline {
+                            Some(deadline) => deadline,
+                            None => std::process::abort(),
+                        };
+                        let output = match output_custody.as_ref() {
+                            Some(output) => output,
+                            None => exit_with_git_coverage_failure(&"original output custody disappeared"),
+                        };
+                        **response = Some(session.serve_production_storage_request_with_git_coverage_v1(
+                            storage.composition_mut(), output, request_deadline,
+                        ));
+                        if let Some(Err(cause)) = response.as_ref() {
+                            exit_with_git_coverage_failure(cause);
+                        }
+                        let compared = storage.recheck_git_coverage_response_v1(output, request_deadline);
+                        if let Err(cause) = &compared {
+                            exit_with_git_coverage_failure(cause);
+                        }
+                        *active_session = Some(match response.take() {
+                            Some(Ok(session)) => session,
+                            _ => exit_with_git_coverage_failure(&"returned Storage Session is absent"),
+                        });
+                    } else {
+                        let accept_deadline = production_deadline_after(ACCEPT_TIMEOUT)
+                            .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
+                        let acceptance = StorageColdAcceptUnwindV1(&mut activation);
+                        let Some(accepted) = &mut coverage_accepted else {
+                            std::process::abort();
+                        };
+                        let output = output_custody.as_ref()
+                            .ok_or(StorageRuntimeError::Recovery)?;
+                        **accepted = Some(acceptance.0.accept_authenticated_storage_git_coverage_v1(
+                            accept_deadline, storage.composition_mut(), output,
+                        ));
+                        if let Some(Err(cause)) = accepted.as_ref() {
+                            exit_with_git_coverage_failure(cause);
+                        }
+                        let compared = storage.recheck_git_coverage_response_v1(output, accept_deadline);
+                        if let Err(cause) = &compared {
+                            exit_with_git_coverage_failure(cause);
+                        }
+                        *active_session = Some(match accepted.take() {
+                            Some(Ok(session)) => session,
+                            _ => exit_with_git_coverage_failure(&"returned Storage Session is absent"),
+                        });
                     }
                 } else {
-                    let accept_deadline = production_deadline_after(ACCEPT_TIMEOUT)
-                        .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
-                    let acceptance = StorageColdAcceptUnwindV1(&mut activation);
-                    match acceptance.0.accept_authenticated(accept_deadline) {
-                        Ok(session) if output_custody.is_some() => {
-                            original_output_cycle = Some(session.begin_original_storage_output_cycle());
+                    if original_output_cycle.is_some() {
+                        let request_deadline = production_deadline_after(REQUEST_TIMEOUT);
+                        if let (Some(cycle), Some(output)) =
+                            (original_output_cycle.as_mut(), output_custody.as_mut())
+                        {
+                            cycle.advance(storage.composition_mut(), output, request_deadline);
+                            if let Some(cause) = cycle.failure() {
+                                eprintln!("aos-storaged: resident original output request failed: {cause}");
+                                if let Some(debt) = cycle.postcheck_debt() {
+                                    eprintln!("aos-storaged: original output postcheck debt: {debt}");
+                                }
+                                std::process::exit(1);
+                            }
+                            if let Some(debt) = cycle.postcheck_debt() {
+                                eprintln!("aos-storaged: original output postcheck debt: {debt}");
+                                std::process::exit(1);
+                            }
+                        } else {
+                            std::process::abort();
                         }
-                        Ok(session) => active_session = Some(session),
-                        Err(error) if acceptance.0.has_failed_storage_cold() => {
-                            // Original cold owners and typed cause remain in the
-                            // activation stack. Exit before returning through lower
-                            // Storage/operator disposal or accepting a replacement.
-                            eprintln!("aos-storaged: resident Storage cold admission failed: {error}");
-                            std::process::exit(1);
+                    } else if let Some(session) = active_session.take() {
+                        let request_deadline = production_deadline_after(REQUEST_TIMEOUT)
+                            .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
+                        match session.serve_production_storage_request(storage.composition_mut(), request_deadline) {
+                            Ok(retained) => *active_session = Some(retained),
+                            Err(error) => eprintln!("aos-storaged: authenticated request failed: {error}"),
                         }
-                        Err(ProductionBrokerSessionActivationErrorV1::Deadline) => {}
-                        Err(error) => return Err(production_error(error).into()),
+                    } else {
+                        let accept_deadline = production_deadline_after(ACCEPT_TIMEOUT)
+                            .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
+                        let acceptance = StorageColdAcceptUnwindV1(&mut activation);
+                        match acceptance.0.accept_authenticated(accept_deadline) {
+                            Ok(session) if output_custody.is_some() => {
+                                original_output_cycle = Some(session.begin_original_storage_output_cycle());
+                            }
+                            Ok(session) => *active_session = Some(session),
+                            Err(error) if acceptance.0.has_failed_storage_cold() => {
+                                // Original cold owners and typed cause remain in the
+                                // activation stack. Exit before returning through lower
+                                // Storage/operator disposal or accepting a replacement.
+                                eprintln!("aos-storaged: resident Storage cold admission failed: {error}");
+                                std::process::exit(1);
+                            }
+                            Err(ProductionBrokerSessionActivationErrorV1::Deadline) => {}
+                            Err(error) => return Err(production_error(error).into()),
+                        }
                     }
                 }
             } else if broker_disconnected {
+                if coverage_response.is_some() {
+                    exit_with_git_coverage_failure(&"original coverage Session disconnected");
+                }
                 // A retired child is local to that session; a retired listener is fatal.
-                active_session = None;
+                *active_session = None;
             }
             if export_ready {
                 let host_cgroup = open_cgroup_root()?.resolve(Path::new(HOST_CGROUP));
@@ -853,6 +1019,21 @@ fn parse_startup_command(
     parse_arguments(arguments).map(|arguments| (command, arguments))
 }
 
+fn parse_selected_startup_command(
+    mut arguments: Vec<std::ffi::OsString>,
+) -> Result<(StorageStartupCommandV4, Arguments, bool), StorageServiceError> {
+    let selected = arguments.last()
+        .is_some_and(|argument| argument == GIT_COVERAGE_ARGUMENT);
+    if selected {
+        arguments.pop();
+    }
+    let (command, arguments) = parse_startup_command(arguments)?;
+    if selected && (command != StorageStartupCommandV4::Serve || arguments.output_key_source.is_none()) {
+        return Err(usage_error());
+    }
+    Ok((command, arguments, selected))
+}
+
 struct Arguments {
     #[allow(dead_code, reason = "retained for stable daemon CLI compatibility")]
     controller_identity: (u32, u32),
@@ -978,7 +1159,8 @@ mod tests {
     use std::ffi::OsString;
 
     use super::{
-        StorageStartupCommandV4, parse_arguments, parse_provision_source, parse_startup_command,
+        GIT_COVERAGE_ARGUMENT, StorageStartupCommandV4, parse_arguments, parse_provision_source,
+        parse_selected_startup_command, parse_startup_command,
     };
 
     fn service_arguments(zfs_key: &str, output_key: &str) -> Vec<OsString> {
@@ -1015,6 +1197,29 @@ mod tests {
         assert_eq!(arguments.identity_pool_start, 65536);
         assert_eq!(arguments.controller_identity, (1000, 1000));
         assert!(arguments.output_key_source.is_none());
+    }
+
+    #[test]
+    fn exclusive_cohort_requires_serve_and_real_output_configuration() {
+        let ordinary = service_arguments("-", "-");
+        let (command, arguments, selected) = parse_selected_startup_command(ordinary).unwrap();
+        assert_eq!(command, StorageStartupCommandV4::Serve);
+        assert!(!selected);
+        assert!(arguments.output_key_source.is_none());
+
+        let mut selected_arguments = service_arguments("-", "/fixed/output-key");
+        selected_arguments.push(GIT_COVERAGE_ARGUMENT.into());
+        let (command, arguments, selected) = parse_selected_startup_command(selected_arguments.clone()).unwrap();
+        assert_eq!(command, StorageStartupCommandV4::Serve);
+        assert!(selected);
+        assert_eq!(arguments.output_key_source, Some("/fixed/output-key".into()));
+
+        let mut missing_output = service_arguments("-", "-");
+        missing_output.push(GIT_COVERAGE_ARGUMENT.into());
+        assert!(parse_selected_startup_command(missing_output).is_err());
+
+        selected_arguments.insert(1, "--provision-operator-recovery".into());
+        assert!(parse_selected_startup_command(selected_arguments).is_err());
     }
 
     #[test]

@@ -347,6 +347,49 @@ enum NativeIssuanceCustodyV1 {
 }
 
 impl StorageNativeIssuanceLedgerV1 {
+    /// Compares this same existing native writer with the unused cohort member.
+    ///
+    /// Retired interests are not empty coverage. The ordinary row/funding
+    /// engine and sole native COMMIT observer must both establish that no
+    /// interest ever entered this original journal. The caller parks the whole
+    /// result before independent runtime, physical and clock bookends.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn compare_unused_git_coverage_v1(
+        &mut self,
+        catalog: &aos_sandbox_core::format::git_upload_enrollment::GitCoverageCatalogV1<'_>,
+    ) -> Result<crate::runtime::git_coverage::StorageNativeCutV1,
+        crate::runtime::git_coverage::StorageGitCoverageCauseV1>
+    {
+        use aos_sandbox_core::format::git_upload_enrollment::GitCoverageJournalProfileV1;
+        use crate::runtime::git_coverage::{StorageGitCoverageCauseV1, cut_from_loan};
+
+        self.validate_boundary()?;
+        if !self.rows()?.is_empty() {
+            return Err(StorageGitCoverageCauseV1::Refused(
+                "original native issuance retains interests or retirement history",
+            ));
+        }
+        if self.uses_original_held_route() {
+            self.held_offer_funding()?;
+        } else {
+            self.preflight_retirements(&[], None)?;
+        }
+
+        let member = catalog.fixed_member(GitCoverageJournalProfileV1::StorageNative, [0; 32])?;
+        if member.infrastructure_count() != 0 {
+            return Err(StorageGitCoverageCauseV1::Refused(
+                "native tenant interests cannot be classified as infrastructure",
+            ));
+        }
+        let original = self.journal.storage_native_git_coverage_prefix_v1(catalog)?;
+        if original.counts() != (0, 0) || original.last_commit().is_some() {
+            return Err(StorageGitCoverageCauseV1::Refused(
+                "original native history is not genuinely unused",
+            ));
+        }
+        cut_from_loan(original)
+    }
+
     /// Observes exact original metadata without reviving a retired acquisition.
     ///
     /// Historical holder and signed request bytes are immutable. An occupied

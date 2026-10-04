@@ -367,6 +367,44 @@ pub struct ExecutionOutputLedgerV1 {
 }
 
 impl ExecutionOutputLedgerV1 {
+    // The credential custody rechecks its actual source and PID1 originals;
+    // this closed ledger comparison independently rejects every output row,
+    // including zero-byte claims and deleted/tombstoned historical captures.
+    pub(crate) fn compare_unused_git_coverage_v1(
+        &self,
+        catalog: &aos_sandbox_core::format::git_upload_enrollment::GitCoverageCatalogV1<'_>,
+    ) -> Result<crate::runtime::git_coverage::StorageNativeCutV1,
+        crate::runtime::git_coverage::StorageGitCoverageCauseV1>
+    {
+        use crate::runtime::git_coverage::{StorageGitCoverageCauseV1, cut_from_loan};
+
+        self.journal.ensure_healthy()?;
+        let expected = configuration_bytes(self.capacity_bytes, &self.key)?;
+        if self.retained_bytes != 0 {
+            return Err(StorageGitCoverageCauseV1::Refused(
+                "original output ledger retains charged bytes",
+            ));
+        }
+        let mut records = self.journal.all_records();
+        if records.next() != Some((NAMESPACE, CONFIG_KEY, expected.as_slice()))
+            || records.next().is_some()
+        {
+            return Err(StorageGitCoverageCauseV1::Refused(
+                "original output obligations are not the sole authenticated configuration",
+            ));
+        }
+
+        let original = self.journal.storage_output_git_coverage_prefix_v1(catalog)?;
+        if original.counts() != (1, 1)
+            || original.last_commit() != Some((*b"AOSOUTPUTCONFIG1", 3))
+        {
+            return Err(StorageGitCoverageCauseV1::Refused(
+                "original output history contains another tenant obligation",
+            ));
+        }
+        cut_from_loan(original)
+    }
+
     /// Opens and replays the root-owned protected ledger.
     ///
     /// The directory must already exist with protected journal ownership and

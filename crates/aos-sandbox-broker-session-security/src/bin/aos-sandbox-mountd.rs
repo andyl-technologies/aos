@@ -12,13 +12,15 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
 
-use aos_sandbox::journal::{Journal, JournalError, JournalLimits, RecordNamespace};
+use aos_sandbox::journal::{Journal, JournalError, JournalLimits, RecordNamespace, RecoveryReport};
+use aos_sandbox::public_api_session::GitCoverageCredentialCustodyV1;
 use aos_sandbox::mount_manager_startup::{
     MountManagerSourceInventoryError, MountManagerStartupJournalBorrowV1,
     MountManagerStartupProtectedOwnerV1,
     SelectedMountStartupV2,
 };
 use aos_sandbox_broker_session_security::{
+    DormantAuthenticatedBrokerSessionV1,
     ProductionBrokerDeadlineErrorV1, ProductionBrokerServiceErrorV1,
     ProductionBrokerSessionActivationErrorV1, ProductionBrokerSessionActivationV1,
     ProductionMountBrokerOwnersV1, ProductionRootMountSourceProviderErrorV1,
@@ -60,6 +62,53 @@ const SYSTEMD_EXECUTABLE_CONTEXT: &str = "system_u:object_r:init_exec_t";
 const ACCEPT_TIMEOUT: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 const PROVIDER_STARTUP_TIMEOUT: Duration = Duration::from_secs(45);
+const GIT_COVERAGE_ARGUMENT: &str = "--git-upload-exclusive-cohort";
+
+type InstalledMountBrokerV1 = MountBroker<
+    DescriptorMountWorker<PreparedMountCatalog, PosixSpawnNamespaceHelper, Arc<SystemdFdStore>>,
+>;
+
+// The selected owner aborts before its fields drop. Returned new-purpose
+// originals and whole errors are parked here, not in later stack locals.
+// Existing lower constructors' unreturned prefixes remain a separate boundary.
+struct SelectedMountGitCoverageCustodyV1 {
+    inputs: Option<GitCoverageCredentialCustodyV1>,
+    opened: Option<Result<(Journal, RecoveryReport), JournalError>>,
+    recovery: Option<RecoveryReport>,
+    broker: Option<Result<InstalledMountBrokerV1, MountError>>,
+    accepted: Option<
+        Result<DormantAuthenticatedBrokerSessionV1, ProductionBrokerSessionActivationErrorV1>,
+    >,
+    response: Option<
+        Result<DormantAuthenticatedBrokerSessionV1, ProductionBrokerServiceErrorV1>,
+    >,
+}
+
+impl SelectedMountGitCoverageCustodyV1 {
+    fn new() -> Self {
+        Self {
+            inputs: Some(GitCoverageCredentialCustodyV1::mount()),
+            opened: None,
+            recovery: None,
+            broker: None,
+            accepted: None,
+            response: None,
+        }
+    }
+}
+
+impl Drop for SelectedMountGitCoverageCustodyV1 {
+    fn drop(&mut self) {
+        std::process::abort();
+    }
+}
+
+fn exit_with_git_coverage_failure(error: &dyn std::fmt::Display) -> ! {
+    use std::io::Write as _;
+
+    let _ = writeln!(std::io::stderr(), "aos-sandbox-mountd: selected cohort failed: {error}");
+    std::process::exit(1);
+}
 
 #[derive(Debug, thiserror::Error)]
 enum MountDaemonErrorV1 {
@@ -180,28 +229,63 @@ fn run() -> Result<(), MountDaemonErrorV1> {
 
     let selected_mount_source = matches!(arguments.as_slice(), [_, _, source, selected]
         if source == "--source-provider" && selected == "--selected-mount-source");
-    let (helper_executable, source_provider_enabled) = if selected_mount_source {
+    let (helper_executable, source_provider_enabled, git_coverage_selected) = if selected_mount_source {
         let [_, helper, _, _] = arguments.as_slice() else {
             return Err(MountDaemonErrorV1::Arguments);
         };
         if helper.starts_with('-') { return Err(MountDaemonErrorV1::Arguments); }
-        (helper.clone(), true)
+        (helper.clone(), true, false)
     } else {
-        parse_arguments(arguments)?
+        let (helper, source, selected) = parse_selected_arguments(arguments)?;
+        (helper, source, selected)
     };
-    let (mut journal, _) = Journal::open_protected_at(
-        Path::new(STATE_ROOT),
-        "mount.journal",
-        JournalLimits::default(),
-    )?;
-    let source_recovery_required = requires_source_recovery(source_provider_enabled, &journal);
+    let mut coverage = git_coverage_selected.then(SelectedMountGitCoverageCustodyV1::new);
+    if let Some(inputs) = coverage.as_mut().and_then(|owner| owner.inputs.as_mut()) {
+        if let Err(cause) = inputs.capture() {
+            exit_with_git_coverage_failure(cause);
+        }
+    }
+
+    let mut ordinary_journal = None;
+    if let Some(owner) = &mut coverage {
+        owner.opened = Some(Journal::open_protected_at(
+            Path::new(STATE_ROOT), "mount.journal", JournalLimits::default(),
+        ));
+        if let Some(Err(cause)) = &owner.opened {
+            exit_with_git_coverage_failure(cause);
+        }
+    } else {
+        let (journal, _) = Journal::open_protected_at(
+            Path::new(STATE_ROOT), "mount.journal", JournalLimits::default(),
+        )?;
+        ordinary_journal = Some(journal);
+    }
+
+    let journal = match (&mut coverage, &mut ordinary_journal) {
+        (Some(owner), _) => {
+            let journal = match owner.opened.as_mut() {
+                Some(Ok((journal, _))) => journal,
+                _ => exit_with_git_coverage_failure(&"original Mount writer is absent"),
+            };
+            let inputs = owner.inputs.as_ref()
+                .ok_or(MountError::Fence("original Mount inputs are absent"))?;
+            let prearmed = journal.retain_mount_git_coverage_denial_v1(inputs);
+            if let Err(cause) = &prearmed {
+                exit_with_git_coverage_failure(cause);
+            }
+            journal
+        }
+        (None, Some(journal)) => journal,
+        _ => return Err(MountError::Fence("Mount writer is absent").into()),
+    };
+    let source_recovery_required = requires_source_recovery(source_provider_enabled, journal);
     if source_recovery_required {
         // Verify the fixed policy and complete replay before broker recovery
         // can make any durable repair or initiate a provider connection.
         if source_provider_enabled {
-            MountManagerStartupJournalBorrowV1::borrow_fixed_root_local_recovery_v4(&mut journal)?;
+            MountManagerStartupJournalBorrowV1::borrow_fixed_root_local_recovery_v4(journal)?;
         } else {
-            MountManagerStartupJournalBorrowV1::borrow_fixed(&mut journal)?;
+            MountManagerStartupJournalBorrowV1::borrow_fixed(journal)?;
         }
     }
     let kernel_boot_id = KernelBootId::current()
@@ -215,9 +299,9 @@ fn run() -> Result<(), MountDaemonErrorV1> {
             mount_id: mount.mount_id(),
         })
         .collect::<Vec<_>>();
-    preflight_recovery_state(&journal, kernel_boot_id, &retained_mounts)?;
+    preflight_recovery_state(journal, kernel_boot_id, &retained_mounts)?;
     let reopened_sources =
-        recover_source_custody(&mut journal, retained.source_pins, &keeper, kernel_boot_id)?;
+        recover_source_custody(journal, retained.source_pins, &keeper, kernel_boot_id)?;
     let catalog = PreparedMountCatalog::with_reopened_sources(
         FileMountCatalog::open_root_owned(CATALOG_ROOT)?,
         reopened_sources,
@@ -228,10 +312,53 @@ fn run() -> Result<(), MountDaemonErrorV1> {
         env::var_os("CREDENTIALS_DIRECTORY").ok_or(MountDaemonErrorV1::CredentialDirectory)?;
     let authority = MountAuthorityV1::from_protected_directory(credential_directory)
         .map_err(|error| MountError::State(error.to_string()))?;
-    let mut broker =
-        MountBroker::new_with_destination_slots(journal, worker, authority, CATALOG_ROOT, 0)?;
+    let journal = if let Some(owner) = &mut coverage {
+        match owner.opened.take() {
+            Some(Ok((journal, recovery))) => {
+                owner.recovery = Some(recovery);
+                journal
+            }
+            _ => exit_with_git_coverage_failure(&"original Mount writer cannot transfer"),
+        }
+    } else {
+        ordinary_journal.take().ok_or(MountError::Fence("Mount writer cannot transfer"))?
+    };
+    let mut ordinary_broker = None;
+    if let Some(owner) = &mut coverage {
+        owner.broker = Some(MountBroker::new_with_destination_slots(
+            journal, worker, authority, CATALOG_ROOT, 0,
+        ));
+        let broker = match owner.broker.as_mut() {
+            Some(Ok(broker)) => broker,
+            Some(Err(cause)) => exit_with_git_coverage_failure(cause),
+            None => exit_with_git_coverage_failure(&"returned Mount broker is absent"),
+        };
+        let installed = broker.install_git_coverage_from_mount_inputs_v1(&mut owner.inputs);
+        if let Err(cause) = &installed {
+            exit_with_git_coverage_failure(cause);
+        }
+        let audited = broker.audit_git_coverage_startup_v1();
+        if let Err(cause) = &audited {
+            exit_with_git_coverage_failure(cause);
+        }
+    } else {
+        ordinary_broker = Some(MountBroker::new_with_destination_slots(
+            journal, worker, authority, CATALOG_ROOT, 0,
+        )?);
+    }
+    let (broker, coverage_accepted, coverage_response) = match (&mut coverage, &mut ordinary_broker) {
+        (Some(owner), _) => {
+            let broker = match owner.broker.as_mut() {
+                Some(Ok(broker)) => broker,
+                _ => exit_with_git_coverage_failure(&"original Mount broker is absent"),
+            };
+            (broker, Some(&mut owner.accepted), Some(&mut owner.response))
+        }
+        (None, Some(broker)) => (broker, None, None),
+        _ => return Err(MountError::Fence("Mount broker is absent").into()),
+    };
     if selected_mount_source {
-        run_selected_original_mount(&mut activation, &mut broker, None)?;
+        run_selected_original_mount(&mut activation, broker, None)?;
         return Ok(());
     }
     // A disabled connector cannot recover a cold request. Enabled startup
@@ -259,13 +386,52 @@ fn run() -> Result<(), MountDaemonErrorV1> {
         let deadline = production_deadline_after(PROVIDER_STARTUP_TIMEOUT)?;
         let mut owner = connect_authenticated_fixed_source_provider(deadline)?;
         broker.establish_cold_provider_successor_v4(&mut owner)?;
-        observe_original_pending_acquires(&mut owner, &mut broker, deadline)?;
-        recover_reserved_remote_inventories(&mut owner, &mut broker, deadline)?;
+        observe_original_pending_acquires(&mut owner, broker, deadline)?;
+        recover_reserved_remote_inventories(&mut owner, broker, deadline)?;
         Some(owner)
     } else {
         None
     };
-    let mut mount = DormantMountBrokerCompositionV1::new(&mut broker);
+    let mut mount = DormantMountBrokerCompositionV1::new(broker);
+
+    if let (Some(accepted), Some(response)) = (coverage_accepted, coverage_response) {
+        loop {
+            ensure_provider_current(&mut source_provider_owner)?;
+            let accept_deadline = production_deadline_after(ACCEPT_TIMEOUT)?;
+            *accepted = Some(activation.accept_authenticated_mount_git_coverage_v1(
+                accept_deadline, &mut mount,
+            ));
+            if let Some(Err(cause)) = accepted.as_ref() {
+                exit_with_git_coverage_failure(cause);
+            }
+            let compared = aos_sandbox_mount::DormantMountBrokerCallsiteV1::recheck_git_coverage_response_v1(
+                &mut mount, accept_deadline,
+            );
+            if let Err(cause) = &compared {
+                exit_with_git_coverage_failure(cause);
+            }
+            *response = Some(Ok(match accepted.take() {
+                Some(Ok(session)) => session,
+                _ => exit_with_git_coverage_failure(&"returned Mount Session is absent"),
+            }));
+
+            loop {
+                ensure_provider_current(&mut source_provider_owner)?;
+                let request_deadline = production_deadline_after(REQUEST_TIMEOUT)?;
+                let session = match response.take() {
+                    Some(Ok(session)) => session,
+                    _ => exit_with_git_coverage_failure(&"original Mount Session is absent"),
+                };
+                *response = Some(session.serve_production_mount_request(
+                    ProductionMountBrokerOwnersV1 { mount: &mut mount, catalog_scope: None },
+                    request_deadline,
+                ));
+                if let Some(Err(cause)) = response.as_ref() {
+                    exit_with_git_coverage_failure(cause);
+                }
+            }
+        }
+    }
 
     loop {
         ensure_provider_current(&mut source_provider_owner)?;
@@ -664,6 +830,21 @@ fn parse_arguments(
     Ok((helper, source_provider_enabled))
 }
 
+fn parse_selected_arguments(
+    mut arguments: Vec<String>,
+) -> Result<(String, bool, bool), MountDaemonErrorV1> {
+    let selected = arguments.last()
+        .is_some_and(|argument| argument == GIT_COVERAGE_ARGUMENT);
+    if selected {
+        arguments.pop();
+    }
+    let (helper, source_provider) = parse_arguments(arguments)?;
+    if selected && source_provider {
+        return Err(MountDaemonErrorV1::Arguments);
+    }
+    Ok((helper, source_provider, selected))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -713,6 +894,30 @@ mod tests {
             vec!["mountd", "--source-provider"],
         ] {
             assert!(parse_arguments(invalid.into_iter().map(str::to_owned)).is_err());
+        }
+    }
+
+    #[test]
+    fn exclusive_cohort_argument_is_closed_and_preserves_ordinary_parsing() {
+        let ordinary = ["mountd", "/fixed/helper"].map(str::to_owned).to_vec();
+        assert_eq!(
+            parse_selected_arguments(ordinary).unwrap(),
+            ("/fixed/helper".to_owned(), false, false),
+        );
+
+        let selected = ["mountd", "/fixed/helper", GIT_COVERAGE_ARGUMENT]
+            .map(str::to_owned).to_vec();
+        assert_eq!(
+            parse_selected_arguments(selected).unwrap(),
+            ("/fixed/helper".to_owned(), false, true),
+        );
+
+        for arguments in [
+            vec!["mountd", "/fixed/helper", "--source-provider", GIT_COVERAGE_ARGUMENT],
+            vec!["mountd", "/fixed/helper", GIT_COVERAGE_ARGUMENT, GIT_COVERAGE_ARGUMENT],
+            vec!["mountd", GIT_COVERAGE_ARGUMENT, "/fixed/helper"],
+        ] {
+            assert!(parse_selected_arguments(arguments.into_iter().map(str::to_owned).collect()).is_err());
         }
     }
 

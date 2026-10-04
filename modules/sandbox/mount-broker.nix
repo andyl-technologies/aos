@@ -71,6 +71,16 @@
     nodeId = "node-id";
     journalMacKey = "journal-mac-key";
   };
+  coverageCredentialFields = {
+    gitCoverageEnrollment = "git-upload-coverage-enrollment-v1";
+    gitCoverageOwnerCatalog = "git-upload-owner-catalog-v1";
+    gitCoverageProjectPublicKey = "project-public-key";
+    gitCoverageDeploymentPublicKey = "deployment-public-key";
+  };
+  coverageSelected = cfg.credentials.gitCoverageEnrollment != null;
+  coverageLoadCredentials = lib.mapAttrsToList (
+    name: credentialFile: "${credentialFile}:/run/credentials/@system/${cfg.credentials.${name}}"
+  ) (lib.filterAttrs (name: _: cfg.credentials.${name} != null) coverageCredentialFields);
   configuredCredentials =
     lib.filterAttrs (name: _: cfg.credentials.${name} != null) credentialFields;
   # Sources are names in the platform credential namespace, not paths or
@@ -119,6 +129,13 @@ in {
           description = "External system credential loaded as ${credentialFile}; its bytes never enter the Nix store.";
         })
       credentialFields
+      // lib.mapAttrs (_: credentialFile:
+        lib.mkOption {
+          type = lib.types.nullOr lib.serviceTypes.credentialName;
+          default = null;
+          description = "Fixed public exclusive-cohort input loaded as ${credentialFile}. All four inputs are required together; this selects denial-only enrollment, not Mount allocation authority.";
+        })
+      coverageCredentialFields
       // brokerSession.mkOptions brokerSessionEndpoints;
   };
 
@@ -129,7 +146,15 @@ in {
         message = "aos.sandbox.mountBroker.credentials.${name} is required for ${credentialFile}";
       })
       credentialFields
+      ++ lib.mapAttrsToList (name: _: {
+        assertion = (cfg.credentials.${name} != null) == coverageSelected;
+        message = "Mount Git coverage credentials must be configured as one complete fixed four-input profile";
+      }) coverageCredentialFields
       ++ [
+        {
+          assertion = !coverageSelected || !cfg.sourceProviderSession.enable;
+          message = "The first exclusive Git cohort requires an unused Source domain, not an active SourceProvider connector";
+        }
         {
           assertion = !cfg.sourceProviderSession.enable || sourceProvider.enable;
           message = "aos.sandbox.mountBroker.sourceProviderSession.enable requires aos.sandbox.sourceProvider.enable";
@@ -211,8 +236,8 @@ in {
           ];
         # The service does not provision RootMount custody; the daemon checks
         # its fixed files, peer and signed hello before retaining the session.
-        ExecStart = "${daemonPath} ${cfg.package}/bin/aos-sandbox-mount-helper${lib.optionalString cfg.sourceProviderSession.enable " --source-provider --selected-mount-source"}";
-        LoadCredential = loadCredentials ++ brokerSessionConfiguration.loadCredentials
+        ExecStart = "${daemonPath} ${cfg.package}/bin/aos-sandbox-mount-helper${lib.optionalString cfg.sourceProviderSession.enable " --source-provider --selected-mount-source"}${lib.optionalString coverageSelected " --git-upload-exclusive-cohort"}";
+        LoadCredential = loadCredentials ++ brokerSessionConfiguration.loadCredentials ++ coverageLoadCredentials
           ++ lib.optionals cfg.sourceProviderSession.enable [
             "current-catalog-publication:/run/credentials/@system/${sourceProvider.credentials.catalogPublication}"
             "current-catalog-manifest:/run/credentials/@system/${sourceProvider.credentials.catalogManifest}"

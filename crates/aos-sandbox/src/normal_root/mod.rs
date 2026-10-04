@@ -382,6 +382,31 @@ pub struct ProductionNormalRootStartupV1 {
 }
 
 impl ProductionNormalRootStartupV1 {
+    /// Compares the original profile bytes with coverage catalog DATA.
+    ///
+    /// The whole bounded read result remains in the caller's one-shot slot.
+    /// The caller retains its comparison result and independently rechecks the
+    /// original startup, peer and writers; this comparison grants no authority.
+    pub(crate) fn compare_git_coverage_profile_v1(
+        &self,
+        expected: [u8; 32],
+        original_readback: &mut Option<
+            Result<Vec<u8>, crate::immutable_image::ImmutableImageErrorV1>,
+        >,
+    ) -> Result<(), NormalRootStartupErrorV1> {
+        if expected == [0; 32] || original_readback.is_some() {
+            return Err(NormalRootStartupErrorV1::Profile);
+        }
+
+        self.recheck()?;
+        *original_readback = Some(self.profile_file.read_bounded());
+
+        match original_readback.as_ref() {
+            Some(Ok(bytes)) if <[u8; 32]>::from(Sha256::digest(bytes)) == expected => Ok(()),
+            _ => Err(NormalRootStartupErrorV1::Profile),
+        }
+    }
+
     /// Assembles one fixed administrative Git-evidence attempt before I/O.
     ///
     /// The actual startup borrow is retained, not converted into authority.
