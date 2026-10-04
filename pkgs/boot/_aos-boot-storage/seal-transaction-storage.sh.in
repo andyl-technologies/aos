@@ -7,6 +7,11 @@ export PATH
 target=$1
 shift
 
+# Match the journal mount service: direct-kernel boot has no EFI filesystem.
+if [ ! -e /sys/firmware/efi ]; then
+  exit 0
+fi
+
 if ! mountpoint -q "$target"; then
   echo "aos-seal-boot-transaction-storage: journal filesystem is not mounted" >&2
   exit 1

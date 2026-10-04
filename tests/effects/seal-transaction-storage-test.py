@@ -15,7 +15,11 @@ HARNESS = r'''
 set -euo pipefail
 options=$TEST_OPTIONS
 function [ {
-  if [[ "$#" == 3 && "$1" == -b ]]; then
+  if [[ "$#" == 4 && "$1" == '!' && "$2" == -e && "$3" == /sys/firmware/efi ]]; then
+    [[ "$TEST_FIRMWARE" != true ]]
+  elif [[ "$#" == 3 && "$1" == -e && "$2" == /sys/firmware/efi ]]; then
+    [[ "$TEST_FIRMWARE" == true ]]
+  elif [[ "$#" == 3 && "$1" == -b ]]; then
     [[ "$2" == /dev/test-esp || "$2" == /dev/esp-alias || "$2" == /dev/foreign-esp ]]
   else
     builtin [ "$@"
@@ -58,6 +62,7 @@ class TransactionStorageSealTests(unittest.TestCase):
     def run_script(self, **overrides):
         settings = {
             "TARGET": "/run/aos-boot-transaction-storage",
+            "FIRMWARE": "true",
             "MOUNTED": "true",
             "FILESYSTEM": "vfat",
             "SOURCE": "/dev/test-esp",
@@ -102,6 +107,20 @@ class TransactionStorageSealTests(unittest.TestCase):
         result = self.run_script(MOUNTED="false")
 
         self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+
+    def test_non_efi_boot_without_journal_mount_requires_no_sealing(self):
+        result = self.run_script(FIRMWARE="false", MOUNTED="false")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_non_efi_boot_does_not_touch_a_foreign_existing_mount(self):
+        result = self.run_script(
+            FIRMWARE="false", FILESYSTEM="ext4", SOURCE="/dev/foreign-esp",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "")
 
     def test_foreign_filesystem_or_device_is_not_changed(self):
