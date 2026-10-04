@@ -69,6 +69,9 @@
       fsType = config.aos.filesystems.rootFsType;
       erofsCompressionLevel = config.aos.image.erofsCompressionLevel;
       extraClosures = config.aos.image.hostConfigClosures;
+      # The toplevel already retains these roots; export their commands into
+      # the immutable /usr tree used by boot guards and the system profile.
+      symlinkFarmPkgs = config.environment.systemPackages;
       kernelModulePackages = config.aos.kernel.modulePackages;
       firmwarePackages = lib.optionals config.aos.kernel.includeFirmware config.aos.kernel.firmwarePackages;
       postPopulate = ''
