@@ -42,6 +42,8 @@ use async_trait::async_trait;
 use serde::Serialize;
 use url::Url;
 
+mod upload;
+
 use super::readback;
 use super::{
     ChannelAdvance, ChannelExpectation, PublicationRequest, PublishedSurface, SignedReceipt,
@@ -136,38 +138,47 @@ impl StaticSurface {
         selected: &[&RegistryPublicationObjectInput],
         printer: &Printer,
     ) -> Result<()> {
-        let mut ordered = selected.to_vec();
-        ordered.sort_by_key(|object| (upload_rank(object), object.path.clone()));
-        let total = ordered.len();
-        for (index, object) in ordered.into_iter().enumerate() {
-            let immutable = object.kind != "mutable_pointer";
-            if immutable && self.holds_identical(object).await? {
-                continue;
-            }
-            let snapshot = named_snapshot(pinned, object)?;
-            self.backend
-                .put_static_file(
-                    &object.path,
-                    snapshot.path(),
-                    Some(&object.media_type),
-                    Some(if immutable {
-                        IMMUTABLE_CACHE_CONTROL
-                    } else {
-                        MUTABLE_CACHE_CONTROL
-                    }),
-                    None,
-                    Some(&object.sha256),
-                )
-                .await
-                .with_context(|| format!("uploading static surface object {}", object.path))?;
-            if (index + 1) % 1000 == 0 {
-                printer.info(&format!(
-                    "Uploaded {}/{total} static surface objects",
-                    index + 1
-                ));
-            }
+        upload::ordered(
+            selected,
+            |object| self.upload_one(pinned, object),
+            |completed| {
+                if completed % 1000 == 0 {
+                    printer.info(&format!(
+                        "Uploaded {completed}/{} static surface objects",
+                        selected.len()
+                    ));
+                }
+            },
+        )
+        .await
+    }
+
+    /// Keeps each snapshot alive through the existing backend's completed PUT.
+    async fn upload_one(
+        &self,
+        pinned: &PinnedPublication,
+        object: &RegistryPublicationObjectInput,
+    ) -> Result<()> {
+        let immutable = object.kind != "mutable_pointer";
+        if immutable && self.holds_identical(object).await? {
+            return Ok(());
         }
-        Ok(())
+        let snapshot = named_snapshot(pinned, object)?;
+        self.backend
+            .put_static_file(
+                &object.path,
+                snapshot.path(),
+                Some(&object.media_type),
+                Some(if immutable {
+                    IMMUTABLE_CACHE_CONTROL
+                } else {
+                    MUTABLE_CACHE_CONTROL
+                }),
+                None,
+                Some(&object.sha256),
+            )
+            .await
+            .with_context(|| format!("uploading static surface object {}", object.path))
     }
 
     async fn holds_identical(&self, object: &RegistryPublicationObjectInput) -> Result<bool> {
