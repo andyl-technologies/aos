@@ -29,7 +29,7 @@ class NativeEvidenceTests(unittest.TestCase):
         dispatch = {"effect": "owned", "revision": "resolved-revision", "action": "apply", "journalSequence": 2}
         self.before = {
             "schema": "aos.activation.inspection", "liveStateVerified": False, "incompleteTailBytes": 0,
-            "transaction": "candidate", "pending": dispatch, "completed": None, "desired": self.graph,
+            "transaction": "candidate", "pending": dispatch, "restoration": None, "completed": None, "desired": self.graph,
             "retainedOutputs": {}, "retiredEffects": [],
             "records": [{"sequence": 1, "event": "begin", "transaction": "candidate", "dispatch": None}, {"sequence": 2, "event": "started", "transaction": "candidate", "dispatch": dispatch}],
         }
@@ -84,6 +84,18 @@ class NativeEvidenceTests(unittest.TestCase):
         }})
         with self.assertRaisesRegex(ValueError, "dispatched"):
             self.builder().retain_transition(self.cell, observation)
+
+    def test_retained_transition_rejects_live_restoration_before_or_after(self):
+        for endpoint in ("before", "after"):
+            with self.subTest(endpoint=endpoint):
+                observation = self.retained_transition("retain-persistent-orphan")
+                getattr(observation, endpoint)["restoration"] = {
+                    "effect": "owned", "revision": "resolved-revision",
+                    "action": "apply", "journalSequence": 7,
+                }
+
+                with self.assertRaisesRegex(ValueError, "complete committed journal states"):
+                    self.builder().retain_transition(self.cell, observation)
 
     def test_orphan_transition_cannot_change_the_live_owner_or_inode(self):
         observation = self.retained_transition("retain-persistent-orphan")

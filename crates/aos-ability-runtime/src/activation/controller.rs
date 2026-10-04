@@ -14,11 +14,15 @@ use super::{
     Action, ActivationAdapter, ActivationResults, Boundary, BoundaryEvent, Invocation, Observation,
 };
 
+#[path = "restoration.rs"]
+mod restoration;
+
 /// Owns the exclusive activation journal and its recovered resource state.
 pub struct Activation {
     journal: FileJournal<Event>,
     state: State,
     pending_sequence: Option<u64>,
+    restoration_sequences: Vec<u64>,
 }
 
 impl Activation {
@@ -31,11 +35,16 @@ impl Activation {
         let opened = FileJournal::<Event>::open(path, limits)?;
         let mut state = State::default();
         let mut pending_sequence = None;
+        let mut restoration_sequences = Vec::new();
         for record in opened.recovery.records() {
             state.apply(record.body())?;
             match record.body() {
                 Event::Started { .. } => pending_sequence = Some(record.sequence()),
                 Event::Finished { .. } => pending_sequence = None,
+                Event::RestorationStarted { .. } => restoration_sequences.push(record.sequence()),
+                Event::RestorationFinished { .. } => {
+                    restoration_sequences.pop();
+                }
                 _ => {}
             }
         }
@@ -43,6 +52,7 @@ impl Activation {
             journal: opened.journal,
             state,
             pending_sequence,
+            restoration_sequences,
         })
     }
 
@@ -190,6 +200,7 @@ impl Activation {
             .map(|state| &state.invocation.effect)
             .chain(&self.state.releases)
             .chain(self.state.pending.as_ref().map(|pending| &pending.effect))
+            .chain(self.state.restoration.iter().map(|pending| &pending.effect))
     }
 
     fn preflight(
@@ -213,6 +224,10 @@ impl Activation {
         match event {
             Event::Started { .. } => self.pending_sequence = Some(sequence),
             Event::Finished { .. } => self.pending_sequence = None,
+            Event::RestorationStarted { .. } => self.restoration_sequences.push(sequence),
+            Event::RestorationFinished { .. } => {
+                self.restoration_sequences.pop();
+            }
             _ => {}
         }
         Ok(sequence)
@@ -304,6 +319,7 @@ impl Activation {
         cancellation: &CancellationToken,
     ) -> Result<ActivationResults> {
         self.drain_releases(adapter)?;
+        self.restore_completed_prefix(graph, adapter, cancellation)?;
         if let Some(pending) = self.state.pending.clone() {
             self.recover(&pending, adapter, cancellation)?;
         }

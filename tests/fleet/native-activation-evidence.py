@@ -399,7 +399,11 @@ class NativeEvidence:
             raise ValueError("retained transition differs from the selected operation")
         for view in (observation.before, observation.after):
             checked_inspection(view)
-            if view["pending"] is not None or view["completed"] is None:
+            if (
+                view["pending"] is not None
+                or view["restoration"] is not None
+                or view["completed"] is None
+            ):
                 raise ValueError("retained transition requires complete committed journal states")
         prefix = observation.before["records"]
         if observation.after["records"][:len(prefix)] != prefix:

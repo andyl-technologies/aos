@@ -680,6 +680,21 @@ before retry. Effect completion and generation commit are separately durable;
 a retained transaction receipt prevents replaying completed one-shot work after
 a crash between them.
 
+When an interrupted transaction resumes, the controller observes its completed
+non-transaction process effects in graph order before continuing the pending
+operation. A completion recorded before reboot does not establish that a kernel
+resource or a file under `/run` still exists. Current resources require no
+dispatch; absent or safely retryable resources are restored through separately
+journaled intents. Each restoration must return the original typed result, so
+the pending operation's resolved inputs remain unchanged. An indeterminate
+observation or a different result stops recovery.
+
+A further interruption can leave a restoration pending too. Recovery restores
+its earlier prerequisites before resuming it, using a bounded stack of original
+intents. Journal inspection reports the active `restoration` separately from the
+original `pending` operation. Completed transaction-scoped effects are not
+repeated during this process.
+
 Rollback applies an older retained desired document as a new transaction. It
 is not automatic reversal of arbitrary external actions. Pruning old generations
 releases their artifact roots; persistent effects retain separate handler roots.
