@@ -512,6 +512,25 @@ pub(super) fn create_guest_choice_campaign_with_timeout(
     qemu_build: &str,
     virtual_timeout_picoseconds: Option<u64>,
 ) -> Result<(), Box<dyn Error>> {
+    let manifest = json_path(compiled, "manifest")?;
+    create_guest_choice_campaign_with_policy_choices(
+        fixture,
+        compiled,
+        qemu_build,
+        virtual_timeout_picoseconds,
+        &manifest,
+        "",
+    )
+}
+
+fn create_guest_choice_campaign_with_policy_choices(
+    fixture: &FlightFixture,
+    compiled: &Value,
+    qemu_build: &str,
+    virtual_timeout_picoseconds: Option<u64>,
+    manifest: &Path,
+    policy_choices: &str,
+) -> Result<(), Box<dyn Error>> {
     let root = fixture._temporary.path();
     let lineage_input = root.join("guest-choice-lineage.toml");
     let lineage = root.join("guest-choice-lineage.bin");
@@ -557,12 +576,13 @@ novelty_reserve = 0
 retain_all_findings = true
 survivor_limit = 8
 exact_findings = true
-exact_user_pins = true{}
+exact_user_pins = true{}{}
 "#,
             json_string(compiled, "scenario")?,
             virtual_timeout_picoseconds
                 .map(|ticks| format!("\n[attempt_timeout]\nvirtual_time_picoseconds = {ticks}"))
                 .unwrap_or_default(),
+            policy_choices,
         ),
     )?;
     run_json(
@@ -573,8 +593,7 @@ exact_user_pins = true{}
         "compile guest-choice policy",
     )?;
 
-    let manifest = json_path(compiled, "manifest")?;
-    let mut service = fixture.start_service(Some(&manifest))?;
+    let mut service = fixture.start_service(Some(manifest))?;
     run_json(
         connected_campaign(fixture)
             .args(["create", CAMPAIGN, "--lineage"])

@@ -20,7 +20,7 @@ const LIFECYCLE_ALL_BRANCH_RETRY_BACKOFF: Duration = Duration::from_millis(250);
 fn public_packaged_campaign_lifecycle_uses_only_cli() -> Result<(), Box<dyn Error>> {
     let fixture = FlightFixture::new()?;
     let (compiled, _scenario) = compile_guest_choice_campaign(&fixture)?;
-    create_guest_choice_campaign(&fixture, &compiled, "qemu-11.1.1-crucible")?;
+    create_lifecycle_campaign(&fixture, &compiled)?;
     let steering_policy = prepare_steering_policy(&fixture, &compiled)?;
     let authority = write_component_authority(&fixture)?;
     let mut service = start_packaged_service(&fixture, &authority)?;
@@ -305,6 +305,46 @@ fn recent_rpc_failure_rows(stderr: &fs::File) -> Result<Vec<String>, Box<dyn Err
         "CRUCIBLE-CAMPAIGN-RPC-FAILURE-V1 ",
         32,
         511,
+    )
+}
+
+fn create_lifecycle_campaign(
+    fixture: &FlightFixture,
+    compiled: &Value,
+) -> Result<(), Box<dyn Error>> {
+    let generator = crucible_campaign::CandidateGeneratorSpec::new(
+        crucible_campaign::STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+        crucible_campaign::CandidateGeneratorAlgorithm::All,
+    )?;
+    let root = fixture._temporary.path();
+    let specification = root.join("lifecycle-all-generator.bin");
+    fs::write(&specification, generator.canonical_bytes())?;
+    fs::set_permissions(&specification, fs::Permissions::from_mode(0o600))?;
+
+    // All is a policy-bound request. Import its canonical body before create,
+    // and select it without publishing a branch ahead of the manual choices.
+    let original_manifest = json_path(compiled, "manifest")?;
+    let manifest = root.join("lifecycle-import.toml");
+    fs::write(
+        &manifest,
+        format!(
+            "{}\n[[generator]]\nspecification = {:?}\n",
+            fs::read_to_string(original_manifest)?,
+            specification,
+        ),
+    )?;
+    fs::set_permissions(&manifest, fs::Permissions::from_mode(0o600))?;
+    let choices = format!(
+        "\n[[choices]]\nselector = \"network.recovery-policy\"\ngenerator = {:?}\nrequired = true\n",
+        generator.id()?.to_string(),
+    );
+    create_guest_choice_campaign_with_policy_choices(
+        fixture,
+        compiled,
+        "qemu-11.1.1-crucible",
+        None,
+        &manifest,
+        &choices,
     )
 }
 
