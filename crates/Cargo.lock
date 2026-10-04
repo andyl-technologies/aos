@@ -6319,6 +6319,7 @@ name = "terrane-core"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "bumpalo",
  "ed25519-dalek",
  "sha1 0.10.6",
  "sha2 0.10.9",

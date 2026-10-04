@@ -841,6 +841,36 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   The normative `index-tree-maintenance` and `derivation-memo` gates remain
   pending. Discovery alone cannot qualify I/P/G updates, complete route deltas,
   same-commit maintenance, current lookup or the full T-DRV-2 bound.
+  Reviewed isolated source-discovery candidate `deeb44f07844` now passes
+  all 625 core tests with zero skips (Nextest run
+  `6c24d43e-bf4b-4c10-821f-d25cca554e86`), build, strict all-target
+  Clippy/rustdoc, both mandatory formatters and its actual index-evaluation
+  and no-std checks. The evaluation check executes all six exact evaluation
+  and source-discovery selectors once each. Independent complete models
+  preserve distinct local graft hops, actual tagged content references and
+  missing-value states. Measured connected regions retain their first cut;
+  recovered and tail intervals contain every exclusively owned physical
+  event, including repeated reads and closing work. Preparation and newly
+  enabled enumeration remain separately reported. Combined candidate
+  `bddcd674cd72` has the identical entire Git tree. Its default full
+  current-trunk aggregate exits 1 at `commit-order` with an `Expired`
+  result; the keep-going inventory remains running. No task checkbox or
+  T1 freeze advances.
+  The next shared prerequisite reserves the ordinary repeatable maintenance
+  module and adds five exact evaluation-check groups for complete I/P/G
+  models and logical deltas, successive updates with stable storage and
+  bounded maps, batched all-level boundary work, genuine refusals, and
+  separate initialization/rebuild/validation/export costs. Missing groups
+  fail explicitly. This strengthened check is not qualified by the earlier
+  six-group source-discovery result. The already-vendored no-std arena
+  dependency is qualified through the actual no-std gate, core build,
+  strict all-target Clippy/rustdoc and both mandatory formatters. Local
+  staging reuses the complete existing package archives with the exact
+  changed lockfile; every locked external package and source stays unchanged.
+  Its recomputed vendor hash is updated at all seven workspace hash sites.
+  The actual registry check still proves 292 stable unique gates. These
+  shared declarations qualify no maintenance algorithm; complete I/P/G
+  and native behavior remain required.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route

@@ -3,6 +3,9 @@
 pub mod carrier;
 pub mod evaluation;
 
+/// Maintains ordinary immutable index data through explicit measured operations.
+pub mod maintenance;
+
 #[cfg(test)]
 mod carrier_tests;
 

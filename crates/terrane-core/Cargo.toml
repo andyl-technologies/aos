@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 blake3 = { version = "1", default-features = false, features = ["pure"] }
+bumpalo = { version = "=3.20.3", default-features = false }
 ed25519-dalek = { version = "2", default-features = false, features = ["alloc"] }
 sha1 = { version = "0.10", default-features = false }
 sha2 = { version = "0.10", default-features = false }
