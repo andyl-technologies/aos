@@ -10,6 +10,7 @@ import sys
 import tempfile
 
 LIMIT = 32 * 1024 * 1024
+SWITCH_ROOT_ENTRYPOINTS = ("initrd-switch-root.target", "initrd-switch-root.service")
 
 
 def require(condition, message):
@@ -43,28 +44,68 @@ def confined(root, relative, store, depth=0):
     return path
 
 
-def unit_values(contents, directive):
-    """Read a resettable list directive from its Unit section."""
+def unit_values(contents, directive, section_name="Unit", split=True):
+    """Read a resettable directive from its selected section."""
     section = None
     values = []
     for line in contents.splitlines():
         if line.startswith("["):
             section = line
-        elif section == "[Unit]" and line.startswith(directive + "="):
-            tokens = line.partition("=")[2].split()
+        elif section == "[" + section_name + "]" and line.startswith(directive + "="):
+            value = line.partition("=")[2]
+            tokens = value.split() if split else ([value] if value else [])
             values = values + tokens if tokens else []
     return values
 
 
 def check_units(tree, contract):
     completion = contract["handoff"]["completion_target"]
-    switch_root = confined(
-        tree,
-        "etc/systemd/system/initrd-switch-root.target.d/50-aos-handoff.conf",
-        "nix/store",
+    for entrypoint in SWITCH_ROOT_ENTRYPOINTS:
+        switch_root = confined(
+            tree, "etc/systemd/system/" + entrypoint + ".d/50-aos-handoff.conf", "nix/store"
+        ).read_text()
+        require(
+            "initrd-cleanup.service" in unit_values(switch_root, "Requires"),
+            entrypoint + " does not require guarded cleanup",
+        )
+        require(
+            "initrd-cleanup.service" in unit_values(switch_root, "After"),
+            entrypoint + " is not ordered after guarded cleanup",
+        )
+        require(
+            completion not in unit_values(switch_root, "Requires"),
+            entrypoint + " retains completion prerequisites during isolation",
+        )
+    cleanup_alias = tree / "lib/systemd/system/initrd-cleanup.service"
+    require(cleanup_alias.is_symlink(), "cleanup is not the selected upstream unit")
+    cleanup_target = Path(os.readlink(cleanup_alias))
+    require(str(cleanup_target).startswith("/nix/store/"), "cleanup alias escapes the selected store")
+    require(
+        cleanup_target.parts[-4:] == ("lib", "systemd", "system", "initrd-cleanup.service"),
+        "unexpected upstream cleanup path",
+    )
+    manager_root = cleanup_target.parents[3]
+    require(
+        str(manager_root) in {entry["store_path"] for entry in contract["dependency_roots"]},
+        "cleanup manager is not retained",
+    )
+    upstream_cleanup = confined(tree, "lib/systemd/system/initrd-cleanup.service", "nix/store").read_text()
+    require(unit_values(upstream_cleanup, "DefaultDependencies") == ["no"], "cleanup gained implicit dependencies")
+    require(unit_values(upstream_cleanup, "Type", "Service") == ["oneshot"], "cleanup is not a oneshot")
+    require(not unit_values(upstream_cleanup, "RemainAfterExit", "Service"), "cleanup retains an active lifecycle")
+    require(
+        unit_values(upstream_cleanup, "ExecStart", "Service", split=False)
+        == ["systemctl --no-block isolate initrd-switch-root.target"],
+        "cleanup does not enqueue isolation without waiting",
+    )
+    guard = confined(
+        tree, "etc/systemd/system/initrd-cleanup.service.d/50-aos-handoff.conf", "nix/store"
     ).read_text()
-    require(completion in unit_values(switch_root, "Requires"), "switch-root does not require handoff completion")
-    require(completion in unit_values(switch_root, "After"), "switch-root is not ordered after handoff completion")
+    command = str(manager_root / "bin/systemctl") + " --quiet is-active " + completion
+    require(
+        unit_values(guard, "ExecStartPre", "Service", split=False) == [command],
+        "cleanup lacks the exact fail-closed completion precheck",
+    )
     for name in contract["handoff"]["required_units"]:
         requirement = tree / "etc/systemd/system" / (completion + ".requires") / name
         require(requirement.is_symlink(), "missing handoff requirement")
@@ -82,33 +123,73 @@ def check_rejected_unit_mutations(tree, contract):
         units = fixture / "etc/systemd/system"
         requirements = units / (completion + ".requires")
         requirements.mkdir(parents=True)
-        switch_root = units / "initrd-switch-root.target.d/50-aos-handoff.conf"
-        switch_root.parent.mkdir()
-        archived_switch_root = confined(
-            tree,
-            "etc/systemd/system/initrd-switch-root.target.d/50-aos-handoff.conf",
-            "nix/store",
+        archived_entrypoints = {}
+        for entrypoint in SWITCH_ROOT_ENTRYPOINTS:
+            relative = "etc/systemd/system/" + entrypoint + ".d/50-aos-handoff.conf"
+            switch_root = fixture / relative
+            switch_root.parent.mkdir()
+            archived_entrypoints[switch_root] = confined(tree, relative, "nix/store").read_bytes()
+            switch_root.write_bytes(archived_entrypoints[switch_root])
+        cleanup = units / "initrd-cleanup.service.d/50-aos-handoff.conf"
+        cleanup.parent.mkdir()
+        archived_cleanup = confined(
+            tree, "etc/systemd/system/initrd-cleanup.service.d/50-aos-handoff.conf", "nix/store"
         ).read_bytes()
-        switch_root.write_bytes(archived_switch_root)
+        cleanup.write_bytes(archived_cleanup)
+        upstream_cleanup = fixture / "lib/systemd/system/initrd-cleanup.service"
+        upstream_cleanup.parent.mkdir(parents=True)
+        cleanup_target = os.readlink(tree / "lib/systemd/system/initrd-cleanup.service")
+        upstream_cleanup.symlink_to(cleanup_target)
+        retained_cleanup = fixture / cleanup_target.removeprefix("/")
+        retained_cleanup.parent.mkdir(parents=True)
+        retained_cleanup.write_bytes(
+            confined(tree, "lib/systemd/system/initrd-cleanup.service", "nix/store").read_bytes()
+        )
         for name in required_units:
             archived = confined(tree, "etc/systemd/system/" + name, "nix/store")
             (units / name).write_bytes(archived.read_bytes())
             (requirements / name).symlink_to("../" + name)
         check_units(fixture, contract)
 
+        for switch_root, archived_contents in archived_entrypoints.items():
+            switch_root.unlink()
+            try:
+                check_units(fixture, contract)
+            except FileNotFoundError:
+                pass
+            else:
+                raise ValueError("handoff graph accepted a missing switch-root entrypoint guard")
+            switch_root.write_bytes(archived_contents)
+
+            for contents in [
+                "[Unit]\nAfter=initrd-cleanup.service\n",
+                "[Unit]\nRequires=initrd-cleanup.service\n",
+                "[Unit]\nRequires=initrd-cleanup.service\nRequires=\nAfter=initrd-cleanup.service\n",
+                "[Unit]\nRequires=initrd-cleanup.service-unrelated\nAfter=initrd-cleanup.service\n",
+                "[Unit]\nRequires=initrd-cleanup.service " + completion + "\nAfter=initrd-cleanup.service\n",
+            ]:
+                switch_root.write_text(contents)
+                try:
+                    check_units(fixture, contract)
+                except ValueError:
+                    continue
+                raise ValueError("handoff graph accepted incomplete switch-root prerequisites")
+            switch_root.write_bytes(archived_contents)
+
         for contents in [
-            "[Unit]\nAfter=" + completion + "\n",
-            "[Unit]\nRequires=" + completion + "\n",
-            "[Unit]\nRequires=" + completion + "\nRequires=\nAfter=" + completion + "\n",
-            "[Unit]\nRequires=" + completion + "-unrelated\nAfter=" + completion + "\n",
+            "[Service]\n",
+            archived_cleanup.decode().replace("[Service]", "[Unit]"),
+            archived_cleanup.decode().replace("ExecStartPre=", "ExecStartPre=-"),
+            archived_cleanup.decode().replace(completion, completion + "-unrelated"),
+            archived_cleanup.decode() + "ExecStartPre=\n",
         ]:
-            switch_root.write_text(contents)
+            cleanup.write_text(contents)
             try:
                 check_units(fixture, contract)
             except ValueError:
                 continue
-            raise ValueError("handoff graph accepted incomplete switch-root prerequisites")
-        switch_root.write_bytes(archived_switch_root)
+            raise ValueError("handoff graph accepted a missing or permissive completion precheck")
+        cleanup.write_bytes(archived_cleanup)
 
         unit = units / required_units[0]
         mutations = [
