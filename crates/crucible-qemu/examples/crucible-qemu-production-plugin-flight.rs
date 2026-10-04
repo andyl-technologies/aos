@@ -1158,6 +1158,21 @@ fn node_state_failure(
     .into()
 }
 
+/// Retains the original wake inputs separately from post-shutdown observations.
+fn idle_wake_failure_context(
+    halted_at: Icount,
+    deadline: Icount,
+    armed: QemuLogicalTimeCalibration,
+    prior_timer_generation: Option<u64>,
+    source: impl std::fmt::Display,
+) -> String {
+    format!(
+        "halted_at_ps={}; requested_deadline_ps={}; armed_logical_ps={}; \
+         armed_raw_instructions={}; prior_timer_generation={prior_timer_generation:?}; {source}",
+        halted_at.retired, deadline.retired, armed.logical_icount, armed.raw_icount,
+    )
+}
+
 fn probe_idle_wake(node: &mut QemuNode) -> Result<IdleEvidence, Box<dyn Error>> {
     let readiness = match SimulationBackend::step_to(
         node,
@@ -1272,7 +1287,16 @@ fn probe_idle_wake(node: &mut QemuNode) -> Result<IdleEvidence, Box<dyn Error>> 
         },
     ) {
         Ok(observation) => observation,
-        Err(source) => return Err(node_state_failure(node, "virtual-timer wake", source)),
+        Err(source) => {
+            let context = idle_wake_failure_context(
+                at,
+                deadline,
+                armed_calibration,
+                prior_timer_witness.map(|witness| witness.generation),
+                source,
+            );
+            return Err(node_state_failure(node, "virtual-timer wake", context));
+        }
     };
     if wake.reached.ticks != deadline.retired {
         return Err(format!("idle wake missed exact deadline: {wake:?}").into());

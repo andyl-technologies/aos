@@ -183,6 +183,11 @@
 
     result=/tmp/production-plugin-result
     runtime_trace=/tmp/production-reference-runtime-determinism.summary
+    # Observe the original pending wait before crash cleanup changes the slot.
+    # This host-only reporter keeps its existing 256-row/512-KiB runtime bound;
+    # it does not install the separate plugin time-ownership observer.
+    export CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS=256
+    export CRUCIBLE_TIME_OWNERSHIP_WITNESS=0
     ${productionFlightCommand} "$runtime_trace" > "$result"
     test -f "$runtime_trace"
     test ! -L "$runtime_trace"

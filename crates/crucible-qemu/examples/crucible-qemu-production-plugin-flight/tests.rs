@@ -5,6 +5,50 @@ use crucible::{ContentHash, MarkerId};
 use crucible_device::block::BlockTransportRequestIds;
 
 #[test]
+fn idle_wake_failure_retains_original_inputs_and_failure_status() {
+    let source = "Crashed: advance completion timeout: 300s; reaped=true; leaked=false";
+    let context = idle_wake_failure_context(
+        Icount { retired: 101 },
+        Icount { retired: 151 },
+        QemuLogicalTimeCalibration {
+            logical_icount: 101,
+            raw_icount: 2,
+        },
+        Some(1281),
+        source,
+    );
+
+    assert_eq!(
+        context,
+        format!(
+            "halted_at_ps=101; requested_deadline_ps=151; armed_logical_ps=101; \
+             armed_raw_instructions=2; prior_timer_generation=Some(1281); {source}"
+        )
+    );
+}
+
+#[test]
+fn idle_wake_failure_retains_absent_prior_witness_and_full_width_coordinates() {
+    let context = idle_wake_failure_context(
+        Icount { retired: u64::MAX },
+        Icount { retired: u64::MAX },
+        QemuLogicalTimeCalibration {
+            logical_icount: u64::MAX,
+            raw_icount: u64::MAX,
+        },
+        None,
+        "original failure",
+    );
+
+    assert_eq!(
+        context,
+        "halted_at_ps=18446744073709551615; requested_deadline_ps=18446744073709551615; \
+         armed_logical_ps=18446744073709551615; armed_raw_instructions=18446744073709551615; \
+         prior_timer_generation=None; original failure"
+    );
+}
+
+#[test]
 fn preemption_after_adjacent_sample_uses_the_next_retirement() {
     let calibration = QemuLogicalTimeCalibration {
         logical_icount: 2_000_001,
