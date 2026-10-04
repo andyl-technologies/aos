@@ -126,6 +126,75 @@ impl ActivationAdapter for Host {
 }
 
 #[test]
+fn completed_receipt_revalidates_orphaned_handlers_without_dispatch_or_journal_writes() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("effects.journal");
+    let original = graph(Some("retained"), "persistent");
+    let empty = graph(None, "persistent");
+    let cancellation = CancellationToken::default();
+    let mut host = Host::default();
+    let mut activation = Activation::open(&path, JournalLimits::default()).unwrap();
+    activation
+        .activate_once(
+            "original",
+            &original,
+            &BTreeSet::new(),
+            &mut host,
+            &cancellation,
+        )
+        .unwrap();
+    activation
+        .activate_once(
+            "completed",
+            &empty,
+            &BTreeSet::new(),
+            &mut host,
+            &cancellation,
+        )
+        .unwrap();
+    drop(activation);
+
+    let before = std::fs::read(&path).unwrap();
+    let mutations = host.mutations.clone();
+    host.retention_calls.clear();
+    host.reject_retention = true;
+    let mut activation = Activation::open(&path, JournalLimits::default()).unwrap();
+    assert!(
+        activation
+            .activate_once(
+                "completed",
+                &empty,
+                &BTreeSet::new(),
+                &mut host,
+                &cancellation
+            )
+            .is_err()
+    );
+
+    host.reject_retention = false;
+    activation.restore_retention(&mut host).unwrap();
+    let outputs = activation
+        .activate_once(
+            "completed",
+            &empty,
+            &BTreeSet::new(),
+            &mut host,
+            &cancellation,
+        )
+        .unwrap();
+
+    assert!(outputs.is_empty());
+    assert!(
+        host.retention_calls.iter().all(|identity| {
+            identity == &original.graph().nodes.values().next().unwrap().identity
+        })
+    );
+    assert_eq!(host.retention_calls.len(), 3);
+    assert_eq!(host.mutations, mutations);
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
+
+#[test]
 fn default_batch_retains_all_inventory_including_compositions() {
     let desired = graph(Some("current"), "persistent");
     let effect = desired.graph().nodes.values().next().unwrap();

@@ -247,6 +247,62 @@ impl<S: DeploymentStore> Transactions<S> {
         self.activation.retained()
     }
 
+    /// Recreates retention roots from exclusively locked, replayed journal state.
+    ///
+    /// A boot stage can preserve its journals on a filesystem without symlinks
+    /// while keeping Nix GC roots on a private transient filesystem. Restoration
+    /// admits the original artifacts and preserves their original ownership keys;
+    /// it neither prepares a generation nor invokes a handler.
+    ///
+    /// # Errors
+    /// Returns an error when any recorded generation input or handler cannot be
+    /// authenticated or retained.
+    pub(crate) fn restore_retention(&mut self) -> Result<()> {
+        for generation in self.state.generations.values() {
+            if self.state.pruning == Some(generation.sequence) {
+                continue;
+            }
+            let identity = format!("package-{}-{}", generation.sequence, generation.content);
+            self.adapter
+                .artifacts_mut()
+                .retain_generation(&identity, &generation.deployment)?;
+        }
+        if let Some(pending) = &self.state.pending {
+            let identity = format!("package-{}-{}", pending.sequence, pending.deployment.id()?);
+            self.adapter
+                .artifacts_mut()
+                .retain_generation(&identity, &pending.deployment)?;
+        }
+        self.activation.restore_retention(&mut self.adapter)
+    }
+
+    /// Recovers recorded work before reconciling unchanged or applying changed content.
+    ///
+    /// Completing the requested pending transaction is the whole recovery attempt;
+    /// it must not immediately start a second transaction-scoped invocation. A
+    /// fresh invocation against unchanged content repairs live state without
+    /// publishing a package generation for every boot.
+    ///
+    /// # Errors
+    /// Returns an error for failed recovery, reconciliation, or application.
+    pub(crate) fn converge(
+        &mut self,
+        deployment: &Deployment,
+        cancellation: &CancellationToken,
+    ) -> Result<Generation> {
+        let recovering = self.pending().is_some();
+        self.resume(cancellation)?;
+        if let Some(current) = self.current()
+            && current.content == deployment.id()?
+        {
+            if recovering {
+                return Ok(current.clone());
+            }
+            return self.reconcile_current(cancellation);
+        }
+        self.apply(deployment, cancellation)
+    }
+
     /// Replaces artifact admission without releasing either journal lock.
     pub(crate) fn replace_store(&mut self, store: S) {
         *self.adapter.artifacts_mut() = store;
