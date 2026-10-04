@@ -96,9 +96,9 @@ in {
       assert before["desired"] is not None, before
       selected_before = runtime.succeed(f"{COREUTILS}/stat -c '%d:%i:%u:%g:%a' {selected_path}; {COREUTILS}/sha256sum {selected_path}")
       assert runtime.succeed(f"{COREUTILS}/cat {selected_path}") == "power-loss-native\n"
-      # Remove only the future selector. The already held invocation remains
-      # unacknowledged until QEMU loses power; no graceful manager exit occurs.
-      runtime.succeed(f"{COREUTILS}/rm -f {FLIGHT.TARGET}")
+      # Persist removal of the future selector before the crash. The held
+      # invocation stays unacknowledged until QEMU loses power.
+      runtime.succeed(f"{COREUTILS}/rm -f {FLIGHT.TARGET} && {COREUTILS}/sync {FLIGHT.STATE_ROOT}")
       runtime.power_cycle(timeout=600)
       runtime.wait_until_succeeds(f"{SYSTEMCTL} is-active --quiet multi-user.target", timeout=1200)
       after = FLIGHT.inspect()
