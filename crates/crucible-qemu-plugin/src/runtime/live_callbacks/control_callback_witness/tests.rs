@@ -613,11 +613,45 @@ fn aggregate_retention_distinguishes_pending_settlement_without_streaming() {
     let rows = String::from_utf8(final_rows(&state, request))
         .unwrap_or_else(|error| panic!("ASCII final observations: {error}"));
     assert_eq!(rows.lines().count(), 3);
+    assert!(rows.len() <= 3 * 512);
+    assert!(rows.lines().all(|row| row.len() < 512));
     assert!(rows.contains("reason=pending"));
     assert!(rows.contains(&format!(
         "callback=2 raw=8 token={request} frontier=6 reason=pump-active"
     )));
     assert_eq!(slot.control_boundary_token(), request);
+    assert_eq!(state.quiescence.snapshot().in_flight, 0);
+}
+
+#[test]
+fn aggregate_pending_repoll_acknowledges_the_original_request_without_streaming() {
+    let slot = NodeSlot::new(KIND_VM);
+    let mut state = state(&slot, false);
+    state.control_callback_witness = std::sync::Arc::new(ControlCallbackWitness::from_settings(
+        None,
+        Some(std::ffi::OsStr::new("256")),
+    ));
+    let request = slot
+        .request_control_boundary(0, None)
+        .unwrap_or_else(|error| panic!("original request: {error}"));
+    state
+        .fault_command_pump_active
+        .store(true, Ordering::Release);
+
+    assert!(run(&state, 7).is_empty());
+    assert_eq!(slot.control_boundary_token(), request);
+    let pending = String::from_utf8(final_rows(&state, request))
+        .unwrap_or_else(|error| panic!("ASCII observations: {error}"));
+    assert_eq!(pending.lines().count(), 3);
+    assert!(pending.len() <= 3 * 512);
+    assert!(pending.contains("frontier=0 reason=pump-active"));
+
+    state
+        .fault_command_pump_active
+        .store(false, Ordering::Release);
+    assert!(run(&state, 7).is_empty());
+    assert_eq!(slot.control_boundary_token(), request + 1);
+    assert!(final_rows(&state, request + 1).is_empty());
     assert_eq!(state.quiescence.snapshot().in_flight, 0);
 }
 

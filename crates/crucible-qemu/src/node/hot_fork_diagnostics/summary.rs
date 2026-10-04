@@ -37,7 +37,6 @@ pub(super) fn control_diagnostics_summary(bytes: &[u8], child_process_id: u32) -
             && !line.starts_with(b"CRUCIBLE-CONTROL-CALLBACK-V1 ")
             && !line.starts_with(b"CRUCIBLE-CONTROL-LAST-V1 ")
             && !line.starts_with(b"CRUCIBLE-CONTROL-SETTLEMENT-LAST-V1 ")
-            && !line.starts_with(b"CRUCIBLE-RR-CONTROL-DEFER-V1 ")
             && !line.starts_with(b"crucible_sim_rr_control_")
         {
             continue;
@@ -54,7 +53,6 @@ pub(super) fn control_diagnostics_summary(bytes: &[u8], child_process_id: u32) -
                     || valid_callback_row(row, child_process_id)
                     || valid_last_callback_row(row, child_process_id)
                     || valid_settlement_row(row, child_process_id)
-                    || valid_defer_row(row)
                     || crate::spawn::valid_rr_control_boundary_row(row)
                     || (crate::spawn::valid_control_delivery_row(row)
                         && row
@@ -186,40 +184,6 @@ fn valid_callback_row(row: &str, child_process_id: u32) -> bool {
         if !value(&mut fields, key)
             .is_some_and(|value| value == "unavailable" || unsigned::<u32>(value))
         {
-            return false;
-        }
-    }
-    fields.next().is_none()
-}
-
-fn valid_defer_row(row: &str) -> bool {
-    let mut fields = row.split_ascii_whitespace();
-    if fields.next() != Some("CRUCIBLE-RR-CONTROL-DEFER-V1") {
-        return false;
-    }
-    if !value(&mut fields, "reason=").is_some_and(|reason| {
-        matches!(
-            reason,
-            "pump-through-frontier-pending"
-                | "publication-backpressure"
-                | "command-frontier-unsettled"
-        )
-    }) {
-        return false;
-    }
-    for (key, wide) in [
-        ("raw_icount=", true),
-        ("token_before=", false),
-        ("token_after=", false),
-        ("fault_command_frontier=", true),
-    ] {
-        if !value(&mut fields, key).is_some_and(|value| {
-            if wide {
-                unsigned::<u64>(value)
-            } else {
-                unsigned::<u32>(value)
-            }
-        }) {
             return false;
         }
     }
@@ -369,24 +333,17 @@ mod tests {
     }
 
     #[test]
-    fn shares_native_advisory_schemas_and_accepts_actual_defer_reasons() {
+    fn shares_native_advisory_schemas_and_ignores_obsolete_defer_prefix() {
         let boundary = "crucible_sim_rr_control_boundary phase=ack request=2 ack=2 complete=1 token=0x2 state=5";
         let native = "crucible_sim_rr_control_delivery phase=registered-return request=2 ack=2 complete=2 rr_token=0x0 token=0x0 deferred=0 state=5 runstate=4 owner=0 pid=153";
-        for reason in [
-            "pump-through-frontier-pending",
-            "publication-backpressure",
-            "command-frontier-unsettled",
-        ] {
-            let deferred = format!(
-                "CRUCIBLE-RR-CONTROL-DEFER-V1 reason={reason} raw_icount=18446744073709551615 token_before=4498 token_after=4498 fault_command_frontier=18446744073709551615"
-            );
-            let summary = control_diagnostics_summary(
-                format!("{boundary}\n{native}\n{deferred}\n").as_bytes(),
-                153,
-            );
-            assert!(summary.contains("accepted_rows=3 rejected_rows=0"));
-            assert!(summary.ends_with(&deferred));
-        }
+        let summary =
+            control_diagnostics_summary(format!("{boundary}\n{native}\n").as_bytes(), 153);
+        assert!(summary.contains("accepted_rows=2 rejected_rows=0"));
+        assert!(summary.ends_with(native));
+        let obsolete = "CRUCIBLE-RR-CONTROL-DEFER-V1 reason=publication-backpressure raw_icount=7 token_before=2 token_after=2 fault_command_frontier=6\n";
+        let summary = control_diagnostics_summary(obsolete.as_bytes(), 153);
+        assert!(summary.contains("accepted_rows=0"));
+        assert_eq!(summary.lines().count(), 1);
         let invalid = control_diagnostics_summary(format!("{native} extra=1\n").as_bytes(), 153);
         assert!(invalid.contains("accepted_rows=0 rejected_rows=1"));
         for pid in ["132", "-1"] {

@@ -841,7 +841,6 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     preemption_enqueue_active: AtomicBool,
     fault_command_pump_active: AtomicBool,
     control_boundary_dispatch_generation: AtomicU32,
-    control_boundary_defer_diagnostic_generation: AtomicU64,
     pub(super) control_callback_witness: Arc<ControlCallbackWitness>,
     stop_caller_witness: checkpoint_stop_witness::StopCallerWitness,
     control_stage_identity: Option<control_callback_stage::ControlStageIdentity>,
@@ -1255,7 +1254,6 @@ impl LiveVcpuTimeCallbackState {
             preemption_enqueue_active: AtomicBool::new(false),
             fault_command_pump_active: AtomicBool::new(false),
             control_boundary_dispatch_generation: AtomicU32::new(u32::MAX),
-            control_boundary_defer_diagnostic_generation: AtomicU64::new(u64::MAX),
             control_callback_witness,
             stop_caller_witness,
             control_stage_identity: None,
@@ -2566,12 +2564,6 @@ impl LiveVcpuTimeCallbackState {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
-            self.emit_control_boundary_defer_diagnostic(
-                raw_icount,
-                control_request,
-                fault_command_frontier,
-                "pump-active",
-            );
             self.control_callback_witness.retain_settlement(
                 settlement,
                 control_callback_witness::SettlementReason::PumpActive,
@@ -2596,12 +2588,6 @@ impl LiveVcpuTimeCallbackState {
             })
             .map_err(|source| LiveVcpuTimeCallbackError::FaultCommands { source })?
         {
-            self.emit_control_boundary_defer_diagnostic(
-                raw_icount,
-                control_request,
-                fault_command_frontier,
-                "pump-through-frontier-pending",
-            );
             self.control_callback_witness.retain_settlement(
                 settlement,
                 control_callback_witness::SettlementReason::FrontierPending,
@@ -2625,12 +2611,6 @@ impl LiveVcpuTimeCallbackState {
             .drain_publications(refreshed_offset)
             .map_err(|source| LiveVcpuTimeCallbackError::FaultCommands { source })?
         {
-            self.emit_control_boundary_defer_diagnostic(
-                raw_icount,
-                control_request,
-                fault_command_frontier,
-                "publication-backpressure",
-            );
             self.control_callback_witness.retain_settlement(
                 settlement,
                 control_callback_witness::SettlementReason::PublicationBackpressure,
@@ -2639,12 +2619,6 @@ impl LiveVcpuTimeCallbackState {
         }
         let settled = bridge.command_frontier_is_settled(fault_command_frontier);
         if !settled {
-            self.emit_control_boundary_defer_diagnostic(
-                raw_icount,
-                control_request,
-                fault_command_frontier,
-                "command-frontier-unsettled",
-            );
             self.control_callback_witness.retain_settlement(
                 settlement,
                 control_callback_witness::SettlementReason::FrontierUnsettled,
@@ -2657,31 +2631,6 @@ impl LiveVcpuTimeCallbackState {
             );
         }
         Ok(settled)
-    }
-
-    fn emit_control_boundary_defer_diagnostic(
-        &self,
-        raw_icount: u64,
-        control_request: u32,
-        fault_command_frontier: u64,
-        reason: &'static str,
-    ) {
-        if self
-            .control_boundary_defer_diagnostic_generation
-            .swap(u64::from(control_request), Ordering::AcqRel)
-            == u64::from(control_request)
-        {
-            return;
-        }
-        let token_after = self.slot.get().snapshot().control_boundary_ack;
-        // crucible-lint: allow direct-diagnostic -- this bounded callback record
-        // is the only channel that can identify an unacknowledged retry reason.
-        let _write_result = std::io::Write::write_fmt(
-            &mut std::io::stderr().lock(),
-            format_args!(
-                "CRUCIBLE-RR-CONTROL-DEFER-V1 reason={reason} raw_icount={raw_icount} token_before={control_request} token_after={token_after} fault_command_frontier={fault_command_frontier}\n"
-            ),
-        );
     }
 
     fn initialize_fault_commands(&self) -> Result<(), LiveVcpuTimeCallbackError> {

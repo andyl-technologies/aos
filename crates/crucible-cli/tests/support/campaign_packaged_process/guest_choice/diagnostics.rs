@@ -75,6 +75,20 @@ pub(super) fn configure_flight_diagnostics(
     // The daemon rejects values outside 1..=256 by disabling tier notices.
     // Runtime progress shares this opt-in and also admits the same bound.
     invocation.env("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS", "256");
+    if matches!(diagnostics, FlightDiagnostics::Materialization) {
+        // Fixed failure observations use the aggregate opt-in independently.
+        // A caller's routine trace selections must not turn this profile into
+        // a per-quantum stderr or native-file producer.
+        for setting in [
+            "CRUCIBLE_CONTROL_CALLBACK_WITNESS",
+            "CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN",
+            "CRUCIBLE_RR_CLAMP_TAIL",
+            "CRUCIBLE_PHASE7_IDLE_TRACE",
+            "CRUCIBLE_TIME_OWNERSHIP_WITNESS",
+        ] {
+            invocation.env_remove(setting);
+        }
+    }
     if let FlightDiagnostics::ControlCallback { stage_min_token } = diagnostics {
         invocation.env("CRUCIBLE_CONTROL_CALLBACK_WITNESS", "1");
         invocation.env("CRUCIBLE_RR_CLAMP_TAIL", "1");
@@ -113,28 +127,60 @@ fn diagnostic_flights_request_admitted_materialization_events() {
             Some(&Some(std::ffi::OsStr::new("256")))
         );
         assert_eq!(
-            environment.contains_key(std::ffi::OsStr::new("CRUCIBLE_CONTROL_CALLBACK_WITNESS")),
-            witness
+            environment.get(std::ffi::OsStr::new("CRUCIBLE_CONTROL_CALLBACK_WITNESS")),
+            Some(&witness.then_some(std::ffi::OsStr::new("1")))
         );
         assert_eq!(
-            environment.contains_key(std::ffi::OsStr::new("CRUCIBLE_RR_CLAMP_TAIL")),
-            witness
+            environment.get(std::ffi::OsStr::new("CRUCIBLE_RR_CLAMP_TAIL")),
+            Some(&witness.then_some(std::ffi::OsStr::new("1")))
         );
         assert_eq!(
             environment.get(std::ffi::OsStr::new(
                 "CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN"
             )),
-            minimum
-                .as_deref()
-                .map(|minimum| Some(std::ffi::OsStr::new(minimum)))
-                .as_ref()
+            Some(&minimum.as_deref().map(std::ffi::OsStr::new))
         );
-        assert_eq!(environment.len(), if witness { 4 } else { 1 });
+        assert_eq!(environment.len(), if witness { 4 } else { 6 });
     }
 
     let mut disabled = Command::new("unused-fixture-program");
     configure_flight_diagnostics(&mut disabled, FlightDiagnostics::Disabled);
     assert_eq!(disabled.get_envs().count(), 0);
+}
+
+#[test]
+fn aggregate_service_profile_clears_explicit_streams_and_preserves_other_environment() {
+    let mut invocation = Command::new("unused-fixture-program");
+    for setting in [
+        "CRUCIBLE_CONTROL_CALLBACK_WITNESS",
+        "CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN",
+        "CRUCIBLE_RR_CLAMP_TAIL",
+        "CRUCIBLE_PHASE7_IDLE_TRACE",
+        "CRUCIBLE_TIME_OWNERSHIP_WITNESS",
+    ] {
+        invocation.env(setting, "1");
+    }
+    invocation.env("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS", "512");
+    invocation.env("OTHER_SERVICE_OWNER", "original-value");
+
+    configure_flight_diagnostics(&mut invocation, FlightDiagnostics::Materialization);
+
+    let environment = invocation.get_envs().collect::<BTreeMap<_, _>>();
+    assert_eq!(
+        environment.get(std::ffi::OsStr::new("OTHER_SERVICE_OWNER")),
+        Some(&Some(std::ffi::OsStr::new("original-value")))
+    );
+    assert_eq!(
+        environment.get(std::ffi::OsStr::new(
+            "CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS"
+        )),
+        Some(&Some(std::ffi::OsStr::new("256")))
+    );
+    assert_eq!(
+        environment.values().filter(|value| value.is_none()).count(),
+        5
+    );
+    assert_eq!(environment.len(), 7);
 }
 
 #[test]
