@@ -22,7 +22,7 @@
   };
   cargoDeps = fetchCargoDeps {
     inherit src;
-    hash = "sha256-vSilXoEH89iPH90PHSIYtkiz6D82NKx6Mw5F91SdwgM=";
+    hash = "sha256-NTTC7bI1oQCrYfcEnEzngaTFgygXBgu6A9rkaQfrRJk=";
   };
   pythonPath = "${setuptools}/${sitePackages}:${python3-cffi}/${sitePackages}:${python3-pycparser}/${sitePackages}";
 in
