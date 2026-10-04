@@ -21,7 +21,7 @@
 //! service(guest_icount):
 //!   ring pair = region.node_directed_ring_pair_mut(vm, vm->BLK, BLK->vm)
 //!   process_shmem_inbox(request ring)  -> COMPUTE responses into in-flight queue
-//!   advance_to_shmem(guest_icount, response ring) -> DELIVER due responses
+//!   advance_to_mapped_ring(guest_icount, response ring) -> DELIVER due responses
 //!   report { processed, delivered, next_completion_icount }
 //! ```
 //!
@@ -1404,12 +1404,7 @@ impl QemuLiveBlockIoServicer {
             .map_err(|source| QemuLiveBlockIoServicerError::RegionAccess { source })?;
         let mut device = device.lock()?;
         let delivery = device
-            .advance_to_shmem(
-                guest_icount,
-                pair.second.header,
-                pair.second.entries,
-                pair.node_slot,
-            )
+            .advance_to_mapped_ring(guest_icount, pair.second, pair.node_slot)
             .map_err(|source| QemuLiveBlockIoServicerError::Device { source })?;
         *frames_delivered += delivery.delivered;
         let next_completion_icount = device.next_exact_local_event();

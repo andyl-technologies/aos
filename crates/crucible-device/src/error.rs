@@ -275,6 +275,15 @@ pub enum DeviceError {
         source: FrameEntryError,
     },
 
+    /// A mapped reply ring belongs to another physical device family.
+    #[error("shared-memory response producer {actual} differs from reserved producer {expected}")]
+    ShmemResponseSource {
+        /// Reserved producer required by the device adapter.
+        expected: u32,
+        /// Producer from the supplied mapped descriptor.
+        actual: u32,
+    },
+
     /// A shared-memory SPSC ring operation failed.
     ///
     /// Non-full failures indicate corrupt indices or an invalid backing slice.

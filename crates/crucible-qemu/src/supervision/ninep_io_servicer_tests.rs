@@ -208,3 +208,121 @@ fn step(
         next_completion_icount: next,
     }
 }
+
+#[test]
+fn world_bound_ninep_reply_uses_reserved_transport_source_without_changing_queue_key() {
+    use crucible::{
+        ContentAddressedBlobRef, Icount, NodeId, NodeTemplate, ReadyPoint, VmArchitecture,
+        WhiteBoxPolicy, World, WorldIoCoreConfig, WorldIoNode, WorldNinePLatency, WorldNode,
+        WorldNodeDef,
+    };
+
+    let (file, unbound) = transaction_fixture();
+    drop(unbound);
+    let tree = deterministic_fs_tree().unwrap_or_else(|error| panic!("actual tree: {error}"));
+    let owner = NodeId { name: "vm".into() };
+    let device_id = NodeId {
+        name: "files".into(),
+    };
+    let world = World::from_node_defs_and_links(
+        vec![
+            WorldNodeDef::Vm(WorldNode {
+                id: owner.clone(),
+                arch: VmArchitecture::X86_64,
+                memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+                cmdline: String::new(),
+                ready_point: ReadyPoint::FixedIcount {
+                    icount: Icount { retired: 0 },
+                },
+                white_box: WhiteBoxPolicy::Disabled,
+                smp_vcpus: 1,
+                kernel: None,
+                root_image: None,
+                initrd: None,
+            }),
+            WorldNodeDef::Io(WorldIoNode::ninep(
+                device_id.clone(),
+                owner,
+                WorldIoCoreConfig::new(),
+                ContentAddressedBlobRef::from_hash(ContentHash {
+                    bytes: tree.content_hash(),
+                }),
+                WorldNinePLatency::new(0, 0, 0),
+            )),
+        ],
+        Vec::new(),
+    )
+    .unwrap_or_else(|error| panic!("actual configured World: {error}"));
+    let binding = super::super::QemuWorldIoBinding::from_world(&world, &device_id)
+        .unwrap_or_else(|error| panic!("authenticated declared queue: {error}"));
+    let bytes = file
+        .metadata()
+        .unwrap_or_else(|error| panic!("region metadata: {error}"))
+        .len();
+    let mut servicer = QemuLive9pIoServicer::from_shmem_fd_with_tree_and_binding(
+        file.as_fd(),
+        bytes,
+        0,
+        tree,
+        NinepLatency::new(0, 0, 0),
+        binding.clone(),
+    )
+    .unwrap_or_else(|error| panic!("bound 9p servicer: {error}"));
+    let version = b"9P2000.L";
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&(7_u32 + 4 + 2 + version.len() as u32).to_le_bytes());
+    payload.push(crucible_device::ninep::codec::TVERSION);
+    payload.extend_from_slice(&u16::MAX.to_le_bytes());
+    payload.extend_from_slice(&4096_u32.to_le_bytes());
+    payload.extend_from_slice(&(version.len() as u16).to_le_bytes());
+    payload.extend_from_slice(version);
+    let request = FrameEntry::new(9, 0, 7, &payload)
+        .unwrap_or_else(|error| panic!("actual 9p request: {error}"));
+    {
+        let pair = servicer
+            .ring_pair()
+            .unwrap_or_else(|error| panic!("original 9p pair: {error}"));
+        pair.first
+            .header
+            .enqueue(pair.first.entries, &request)
+            .unwrap_or_else(|error| panic!("publish 9p request: {error}"));
+    }
+
+    let intake = servicer
+        .service(0)
+        .unwrap_or_else(|error| panic!("actual 9p intake: {error}"));
+    assert_eq!(intake.processed, 1);
+    assert_eq!(intake.delivered, 0);
+    let before = servicer.device.core().snapshot();
+    assert_eq!(before.src_node, binding.source_node());
+    assert_eq!(before.inflight[0].key.src_node, binding.source_node());
+    assert_eq!(servicer.world_binding, Some(binding));
+    assert_ne!(before.src_node, SLOT_9P_IO as u32);
+
+    let delivered = servicer
+        .service(9)
+        .unwrap_or_else(|error| panic!("actual 9p publication: {error}"));
+    assert_eq!(delivered.delivered, 1);
+    let pair = servicer
+        .ring_pair()
+        .unwrap_or_else(|error| panic!("original response pair: {error}"));
+    let response = pair
+        .second
+        .header
+        .dequeue(pair.second.entries)
+        .unwrap_or_else(|error| panic!("original response ring: {error}"))
+        .unwrap_or_else(|| panic!("missing 9p response"));
+    assert_eq!(response.src_node, pair.second.descriptor.src_slot);
+    assert_eq!(
+        response.delivery_icount,
+        before.inflight[0].key.delivery_icount
+    );
+    assert_eq!(response.seq, before.inflight[0].key.seq);
+    assert_eq!(
+        response
+            .payload()
+            .unwrap_or_else(|error| panic!("reply payload: {error}")),
+        before.inflight[0].response.payload
+    );
+    assert_eq!(servicer.device.core().snapshot().src_node, before.src_node);
+}

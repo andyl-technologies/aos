@@ -7,7 +7,7 @@
 //!
 //! ```text
 //!   pin request -> resolve signal phases -> COMPUTE response into in-flight queue
-//!   advance_to_shmem(guest_icount, response ring) -> DELIVER due responses
+//!   advance_to_mapped_ring(guest_icount, response ring) -> DELIVER due responses
 //!   store_device_completion_deadline_tick(next_exact_local_event)
 //! ```
 //! A response is not published until its exact visibility and deliver phases
@@ -819,12 +819,7 @@ impl QemuLive9pIoServicer {
                 })
             })?;
         let delivery = device
-            .advance_to_shmem_with_commit_status(
-                guest_icount,
-                pair.second.header,
-                pair.second.entries,
-                pair.node_slot,
-            )
+            .advance_to_mapped_ring_with_commit_status(guest_icount, pair.second, pair.node_slot)
             .map_err(|failure| QemuLive9pIoCommitFailure {
                 shared_transition_started: failure.published > 0,
                 source: QemuLive9pIoServicerError::Device {
@@ -954,11 +949,6 @@ impl QemuLive9pIoServicer {
             entries: request_entries,
             ..
         } = first;
-        let MappedDirectedRingMut {
-            header: response_header,
-            entries: response_entries,
-            ..
-        } = second;
 
         let inbox = device
             .process_shmem_inbox(request_header, request_entries, node_slot)
@@ -981,7 +971,7 @@ impl QemuLive9pIoServicer {
         // until intake computes a canonical completion.
         let delivered = if device.core().next_exact_local_event().is_some() {
             device
-                .advance_to_shmem(guest_icount, response_header, response_entries, node_slot)
+                .advance_to_mapped_ring(guest_icount, second, node_slot)
                 .map_err(|source| QemuLive9pIoServicerError::Device { source })?
                 .delivered
         } else {

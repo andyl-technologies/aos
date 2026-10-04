@@ -327,6 +327,7 @@ impl BlockDevice {
         outbox: &RingHeader,
         outbox_entries: &mut [FrameEntry],
         consumer_slot: &NodeSlot,
+        transport_source: Option<u32>,
     ) -> Result<ShmemDeliveryResult, DeviceError> {
         let mut delivered = 0;
         let mut consumer_wake = None;
@@ -351,8 +352,13 @@ impl BlockDevice {
             } else {
                 None
             };
-            let published =
-                core.deliver_one_shmem(publish_at, outbox, outbox_entries, consumer_slot);
+            let published = core.deliver_one_shmem(
+                publish_at,
+                outbox,
+                outbox_entries,
+                consumer_slot,
+                transport_source,
+            );
             let Some(_published) = (match published {
                 Ok(published) => published,
                 Err(error) => {
@@ -370,7 +376,13 @@ impl BlockDevice {
             }
         }
         if core.current_icount() < limit {
-            let published = core.deliver_one_shmem(limit, outbox, outbox_entries, consumer_slot)?;
+            let published = core.deliver_one_shmem(
+                limit,
+                outbox,
+                outbox_entries,
+                consumer_slot,
+                transport_source,
+            )?;
             if let Some(_response) = published {
                 delivered += 1;
             }
@@ -450,6 +462,48 @@ impl BlockDevice {
         outbox_entries: &mut [FrameEntry],
         consumer_slot: &NodeSlot,
     ) -> Result<ShmemDeliveryResult, DeviceError> {
+        self.advance_to_shmem_with_source(limit, outbox, outbox_entries, consumer_slot, None)
+    }
+
+    /// Publishes block replies through the original reserved mapped block ring.
+    ///
+    /// The physical frame source is independent of the original World queue key.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a foreign producer before advancing state, then preserves the
+    /// original clock, ring and wake failure behavior.
+    pub fn advance_to_mapped_ring(
+        &mut self,
+        limit: u64,
+        ring: crucible_shmem::MappedDirectedRingMut<'_>,
+        consumer_slot: &NodeSlot,
+    ) -> Result<ShmemDeliveryResult, DeviceError> {
+        let expected = crucible_shmem::SLOT_BLK_IO as u32;
+        if ring.descriptor.src_slot != expected {
+            return Err(DeviceError::ShmemResponseSource {
+                expected,
+                actual: ring.descriptor.src_slot,
+            });
+        }
+
+        self.advance_to_shmem_with_source(
+            limit,
+            ring.header,
+            ring.entries,
+            consumer_slot,
+            Some(ring.descriptor.src_slot),
+        )
+    }
+
+    pub(crate) fn advance_to_shmem_with_source(
+        &mut self,
+        limit: u64,
+        outbox: &RingHeader,
+        outbox_entries: &mut [FrameEntry],
+        consumer_slot: &NodeSlot,
+        transport_source: Option<u32>,
+    ) -> Result<ShmemDeliveryResult, DeviceError> {
         let now_ticks = limit;
         self.reject_advance_past_unresolved_execution(now_ticks)?;
         let mut next_faults = self.storage_faults.clone();
@@ -492,6 +546,7 @@ impl BlockDevice {
             outbox,
             outbox_entries,
             consumer_slot,
+            transport_source,
         )
     }
 

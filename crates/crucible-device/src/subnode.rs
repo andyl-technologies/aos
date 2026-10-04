@@ -52,6 +52,8 @@ use crate::request::{ComputedResponse, LatencyModel, Request, Response};
 
 mod frame;
 mod io_core_private;
+#[cfg(test)]
+mod mapped_transport_tests;
 mod queue_revision;
 mod selected_delivery;
 mod snapshot;
@@ -317,6 +319,7 @@ impl IoCore {
         outbox: &RingHeader,
         outbox_entries: &mut [FrameEntry],
         _consumer_slot: &NodeSlot,
+        transport_source: Option<u32>,
     ) -> Result<Option<PendingResponse>, DeviceError> {
         let revision = self.next_queue_revision()?;
         self.clock.advance_to(limit)?;
@@ -324,7 +327,7 @@ impl IoCore {
         let Some(pending) = due.next() else {
             return Ok(None);
         };
-        let frame = match frame_from_pending_response(&pending) {
+        let frame = match frame_from_pending_response(&pending, transport_source) {
             Ok(frame) => frame,
             Err(error) => {
                 self.requeue_pending(pending, due);
@@ -643,6 +646,40 @@ impl IoCore {
         outbox_entries: &mut [FrameEntry],
         consumer_slot: &NodeSlot,
     ) -> Result<ShmemDeliveryResult, ShmemDeliveryFailure> {
+        self.advance_to_shmem_with_source(limit, outbox, outbox_entries, consumer_slot, None)
+    }
+
+    /// Publishes replies using the producer slot of an authenticated mapped ring.
+    ///
+    /// Canonical queue keys remain World-derived; only the physical frame source
+    /// uses the mapped descriptor. The caller retains mapping and SPSC authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original delivery failure with its exact publication count.
+    pub fn advance_to_mapped_ring_with_commit_status(
+        &mut self,
+        limit: u64,
+        ring: crucible_shmem::MappedDirectedRingMut<'_>,
+        consumer_slot: &NodeSlot,
+    ) -> Result<ShmemDeliveryResult, ShmemDeliveryFailure> {
+        self.advance_to_shmem_with_source(
+            limit,
+            ring.header,
+            ring.entries,
+            consumer_slot,
+            Some(ring.descriptor.src_slot),
+        )
+    }
+
+    pub(crate) fn advance_to_shmem_with_source(
+        &mut self,
+        limit: u64,
+        outbox: &RingHeader,
+        outbox_entries: &mut [FrameEntry],
+        consumer_slot: &NodeSlot,
+        transport_source: Option<u32>,
+    ) -> Result<ShmemDeliveryResult, ShmemDeliveryFailure> {
         let revision = self
             .next_queue_revision()
             .map_err(|source| ShmemDeliveryFailure {
@@ -659,7 +696,7 @@ impl IoCore {
         let mut delivered = 0;
         let mut remaining = due.into_iter();
         while let Some(pending) = remaining.next() {
-            let frame = match frame_from_pending_response(&pending) {
+            let frame = match frame_from_pending_response(&pending, transport_source) {
                 Ok(frame) => frame,
                 Err(error) => {
                     self.requeue_pending(pending, remaining);
