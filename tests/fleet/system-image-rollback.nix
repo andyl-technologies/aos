@@ -178,6 +178,16 @@
   candidateImageInfo = candidate.config.system.build.imageArtifacts.raw.info;
   candidateUki = candidate.config.system.build.initialBootExecutable;
 
+  rolloutFixtureRoots = lib.unique (
+    [candidateTop candidateImage candidateImageDisk candidateImageInfo candidateUki candidatePackageRuntime]
+    ++ rolloutPolicy.extraClosures
+    ++ [bootFaultHook]
+    ++ [pkgs.aos.apr pkgs.sbsigntools pkgs.binutils pkgs.efitools pkgs.gawk pkgs.git pkgs.secure-boot-test-keys]
+  );
+  rolloutClosureInfo = lib.build.closureInfo {inherit pkgs;} {
+    rootPaths = rolloutFixtureRoots;
+  };
+
   # Image-mode machines boot the system image directly. Keep only the exact
   # byte-comparison tool needed by the slot assertions in that image; APM's
   # production libgit2 path performs the target-side registry clone.
@@ -243,11 +253,19 @@ in {
       memoryMiB = 8192;
       tpm = true;
       packages = ["aos-test-agent"];
-      extraClosures =
-        [candidateTop candidateImage candidateImageDisk candidateImageInfo candidateUki candidatePackageRuntime]
-        ++ rolloutPolicy.extraClosures
-        ++ [bootFaultHook]
-        ++ [pkgs.aos.apr pkgs.sbsigntools pkgs.binutils pkgs.efitools pkgs.gawk pkgs.git pkgs.secure-boot-test-keys];
+      extraClosures = rolloutFixtureRoots;
+      hostStoreMount = true;
+      extraModules = [
+        {
+          aos.activation.stages.host.configuration = [
+            (builtins.toFile "aos-rollback-store-transport.nix" ''
+              { lib, ... }: {
+                aos.kernel.modules = lib.mkAfter [ "9pnet_virtio" "9p" ];
+              }
+            '')
+          ];
+        }
+      ];
       # The same authenticated leaf is replayed after each image transition.
       # It keeps the fleet address stable after the candidate's base library
       # replaces the image-baked test identity.
@@ -296,6 +314,39 @@ in {
       IMAGE_ACCEPTANCE.__dict__.update(globals())
       exec(compile(${builtins.toJSON (builtins.readFile ./native-image-acceptance.py)},
           "native-image-acceptance.py", "exec"), IMAGE_ACCEPTANCE.__dict__)
+      # Image-mode extraClosures are publication inputs, not production image
+      # payloads. Copy their exact store objects into the durable writable upper
+      # so tools and candidate paths remain available across real reboots.
+      runtime.wait_until_succeeds(f"{SYSTEMCTL} is-active --quiet aos-image-boot-commit.service", timeout=600)
+      runtime.succeed(textwrap.dedent("""
+          set -eu
+          export NIX_REMOTE=""
+          export NIX_CONF_DIR=/tmp/native-image-nix-conf
+          ${pkgs.coreutils}/bin/mkdir -p "$NIX_CONF_DIR" /run/aos-host-store
+          printf 'experimental-features = nix-command\\nsandbox = false\\nbuild-users-group =\\n' > "$NIX_CONF_DIR/nix.conf"
+          ${pkgs.util-linux}/bin/mount -t 9p \
+            -o trans=virtio,version=9p2000.L,msize=1048576,ro \
+            aos-host-store /run/aos-host-store
+          closure=/run/aos-host-store/${baseNameOf rolloutClosureInfo}
+          test -r "$closure/registration"
+          while IFS= read -r store_path; do
+            if test ! -e "$store_path" && test ! -L "$store_path"; then
+              source_path="/run/aos-host-store/$(${pkgs.coreutils}/bin/basename "$store_path")"
+              ${pkgs.coreutils}/bin/cp --archive --no-target-directory --no-clobber \
+                "$source_path" "$store_path"
+            fi
+          done < "$closure/store-paths"
+          ${pkgs.nix}/bin/nix-store --load-db < "$closure/registration"
+          while IFS= read -r store_path; do
+            ${pkgs.nix}/bin/nix-store --verify-path "$store_path"
+          done < "$closure/store-paths"
+          ${pkgs.nix}/bin/nix-store --check-validity ${lib.escapeShellArgs (map builtins.toString rolloutFixtureRoots)}
+          options=$(${pkgs.util-linux}/bin/findmnt --first-only --direction backward \
+            --noheadings --raw --output OPTIONS --target /run/aos-host-store)
+          case ",$options," in *,ro,*) ;; *) exit 1 ;; esac
+          case ",$options," in *,rw,*) exit 1 ;; esac
+          ${pkgs.util-linux}/bin/umount /run/aos-host-store
+      """), timeout=1800)
       IMAGE_ACCEPTANCE.run()
     '';
 }
