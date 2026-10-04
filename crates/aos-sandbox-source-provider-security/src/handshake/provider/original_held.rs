@@ -18,6 +18,7 @@ use ed25519_dalek::Signer as _;
 mod delivery;
 mod root_accepted;
 mod relay;
+mod settlement;
 
 #[derive(Clone, Copy)]
 enum OriginalHeldBindingPurposeV5<'control> {
@@ -39,6 +40,21 @@ enum OriginalHeldBindingPurposeV5<'control> {
         &'control SignedNativeHeldControlV1, &'control [u8],
         &'control SignedNativeHeldControlV1, &'control SignedNativeHeldControlV1,
     ),
+    SettlementReceived(
+        &'control SignedNativeHeldControlV1, &'control [u8],
+        &'control SignedNativeHeldControlV1, &'control SignedNativeHeldControlV1,
+        &'control SignedNativeHeldControlV1,
+    ),
+    SettlementPreparation(
+        &'control SignedNativeHeldControlV1, &'control [u8],
+        &'control SignedNativeHeldControlV1, &'control SignedNativeHeldControlV1,
+        &'control SignedNativeHeldControlV1, &'control PreparedNativeHeldControlV1,
+    ),
+    SettlementDelivery(
+        &'control SignedNativeHeldControlV1, &'control [u8],
+        &'control SignedNativeHeldControlV1, &'control SignedNativeHeldControlV1,
+        &'control SignedNativeHeldControlV1, &'control SignedNativeHeldControlV1,
+    ),
 }
 
 impl OriginalHeldBindingPurposeV5<'_> {
@@ -48,6 +64,9 @@ impl OriginalHeldBindingPurposeV5<'_> {
             Self::Delivery(signed, _) => signed.prepared(),
             Self::RootReceived(signed, _, _) | Self::RootDisposition(signed, _, _, _)
                 | Self::RelayPreparation(signed, _, _, _) | Self::RelayDelivery(signed, _, _, _) => signed.prepared(),
+            Self::SettlementReceived(signed, _, _, _, _)
+                | Self::SettlementPreparation(signed, _, _, _, _, _)
+                | Self::SettlementDelivery(signed, _, _, _, _, _) => signed.prepared(),
         }
     }
 }
@@ -93,6 +112,7 @@ pub struct OriginalProviderHeldSignaturesV5 {
     delivery: delivery::OriginalHeldDeliveryV5,
     root_accepted: root_accepted::OriginalRootAcceptedV5,
     relay: relay::OriginalProviderRelayV5,
+    settlement: settlement::OriginalProviderSettlementV5,
 }
 
 impl OriginalProviderHeldSignaturesV5 {
@@ -110,6 +130,7 @@ impl OriginalProviderHeldSignaturesV5 {
             delivery: delivery::OriginalHeldDeliveryV5::pending(),
             root_accepted: root_accepted::OriginalRootAcceptedV5::pending(),
             relay: relay::OriginalProviderRelayV5::pending(),
+            settlement: settlement::OriginalProviderSettlementV5::pending(),
         }
     }
 
@@ -127,6 +148,7 @@ impl OriginalProviderHeldSignaturesV5 {
             .or_else(|| self.delivery.failure())
             .or_else(|| self.root_accepted.failure())
             .or_else(|| self.relay.failure())
+            .or_else(|| self.settlement.failure())
     }
 
     /// Borrows signed DATA only when this original attempt has no debt.
@@ -261,6 +283,15 @@ impl CurrentProviderIngressSessionV1 {
             OriginalHeldBindingPurposeV5::RelayDelivery(signed, _, root4, relay) => journal.original_relay_delivery_basis_v5(
                 readback, request.acquisition_id(), signed, root4, relay,
             )?,
+            OriginalHeldBindingPurposeV5::SettlementReceived(held3, _, root4, relay5, storage6) => journal.original_storage_settlement_basis_v5(
+                readback, request.acquisition_id(), held3, root4, relay5, storage6,
+            )?,
+            OriginalHeldBindingPurposeV5::SettlementPreparation(held3, _, root4, relay5, storage6, prepared7) => journal.original_settlement_signing_basis_v5(
+                readback, request.acquisition_id(), held3, root4, relay5, storage6, prepared7,
+            )?,
+            OriginalHeldBindingPurposeV5::SettlementDelivery(held3, _, root4, relay5, storage6, signed7) => journal.original_settlement_delivery_basis_v5(
+                readback, request.acquisition_id(), held3, root4, relay5, storage6, signed7,
+            )?,
         };
         let provenance = origin.initial_floor().original_provenance().claims();
         let acquisition_key = provenance.records[1].key();
@@ -354,7 +385,10 @@ impl CurrentProviderIngressSessionV1 {
             | OriginalHeldBindingPurposeV5::RootReceived(_, complete, _)
             | OriginalHeldBindingPurposeV5::RootDisposition(_, complete, _, _)
             | OriginalHeldBindingPurposeV5::RelayPreparation(_, complete, _, _)
-            | OriginalHeldBindingPurposeV5::RelayDelivery(_, complete, _, _) = purpose
+            | OriginalHeldBindingPurposeV5::RelayDelivery(_, complete, _, _)
+            | OriginalHeldBindingPurposeV5::SettlementReceived(_, complete, _, _, _)
+            | OriginalHeldBindingPurposeV5::SettlementPreparation(_, complete, _, _, _, _)
+            | OriginalHeldBindingPurposeV5::SettlementDelivery(_, complete, _, _, _, _) = purpose
         {
             delivery::require_original_complete_delivery_v5(
                 readback, provenance.records[0].key(), &acquisition, original,
@@ -364,7 +398,10 @@ impl CurrentProviderIngressSessionV1 {
         if let OriginalHeldBindingPurposeV5::RootReceived(signed, _, root4)
             | OriginalHeldBindingPurposeV5::RootDisposition(signed, _, root4, _)
             | OriginalHeldBindingPurposeV5::RelayPreparation(signed, _, root4, _)
-            | OriginalHeldBindingPurposeV5::RelayDelivery(signed, _, root4, _) = purpose
+            | OriginalHeldBindingPurposeV5::RelayDelivery(signed, _, root4, _)
+            | OriginalHeldBindingPurposeV5::SettlementReceived(signed, _, root4, _, _)
+            | OriginalHeldBindingPurposeV5::SettlementPreparation(signed, _, root4, _, _, _)
+            | OriginalHeldBindingPurposeV5::SettlementDelivery(signed, _, root4, _, _, _) = purpose
         {
             aos_sandbox_source_provider_protocol::verify_current_root_accepted_v5(
                 root.control(), root4, &self.session, inner.trust(), inner.root_authority(),
@@ -388,12 +425,18 @@ impl CurrentProviderIngressSessionV1 {
         let relay = match purpose {
             OriginalHeldBindingPurposeV5::RelayPreparation(_, _, _, relay) => Some(relay),
             OriginalHeldBindingPurposeV5::RelayDelivery(_, _, _, relay) => Some(relay.prepared()),
+            OriginalHeldBindingPurposeV5::SettlementReceived(_, _, _, relay, _)
+                | OriginalHeldBindingPurposeV5::SettlementPreparation(_, _, _, relay, _, _)
+                | OriginalHeldBindingPurposeV5::SettlementDelivery(_, _, _, relay, _, _) => Some(relay.prepared()),
             _ => None,
         };
         if let Some(relay) = relay {
             let root4 = match purpose {
                 OriginalHeldBindingPurposeV5::RelayPreparation(_, _, root4, _)
                     | OriginalHeldBindingPurposeV5::RelayDelivery(_, _, root4, _) => root4,
+                OriginalHeldBindingPurposeV5::SettlementReceived(_, _, root4, _, _)
+                    | OriginalHeldBindingPurposeV5::SettlementPreparation(_, _, root4, _, _, _)
+                    | OriginalHeldBindingPurposeV5::SettlementDelivery(_, _, root4, _, _, _) => root4,
                 _ => return Err(SourceProviderSecurityError::SessionContinuity.into()),
             };
             if relay.kind() != Kind::ProviderRelay

@@ -41,6 +41,11 @@ pub(super) struct OriginalProviderRelayV5 {
 }
 
 impl OriginalProviderRelayV5 {
+    // The whole-parent gate ends before this disjoint immutable DATA loan.
+    pub(super) fn control(&self) -> Option<&SignedNativeHeldControlV1> {
+        self.signed.as_ref()
+    }
+
     pub(super) fn pending() -> Self {
         Self {
             stage: RelayStageV5::Unstarted,

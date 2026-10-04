@@ -990,6 +990,21 @@ impl SeqpacketSocket {
         self.require_received_original(record)
     }
 
+    /// Compares a parked Source settlement record with this original socket.
+    ///
+    /// This supplies carrier continuity DATA only. The owning caller retains
+    /// the record and independently verifies its Storage subject and signer.
+    ///
+    /// # Errors
+    /// Closes the socket on its existing origin failures without moving or
+    /// disposing the parked record or subject.
+    pub fn require_source_storage_received_original_v5(
+        &mut self,
+        record: &ReceivedRecord,
+    ) -> Result<(), RecordBindingError> {
+        self.require_received_original(record)
+    }
+
     fn require_received_original(
         &mut self,
         record: &ReceivedRecord,

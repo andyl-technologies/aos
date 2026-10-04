@@ -393,6 +393,7 @@ pub struct OriginalStorageOfferTransportV5 {
     validation_failure: Option<OriginalStorageOfferErrorV5>,
     first_failure: Option<OriginalStorageOfferFailureV5>,
     relay: Option<OriginalStorageRelayV5>,
+    settlement: Option<OriginalStorageSettlementV5>,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -608,6 +609,7 @@ impl OriginalStorageOfferTransportV5 {
             validation_failure: None,
             first_failure: None,
             relay: None,
+            settlement: None,
         }
     }
 
@@ -744,6 +746,7 @@ impl OriginalStorageOfferTransportV5 {
             None => None,
         };
         first.or_else(|| self.relay.as_ref().and_then(OriginalStorageRelayV5::failure))
+            .or_else(|| self.settlement.as_ref().and_then(OriginalStorageSettlementV5::failure))
     }
 
     /// Borrows the actual control bytes only while the original attempt is open.
@@ -868,6 +871,21 @@ impl OriginalStorageOfferTransportV5 {
                 .map_err(|_| ProductionSourceProviderStorageErrorV1::Peer)?;
             if !same_process(first, second) {
                 return Err(OriginalStorageOfferErrorV5::Shape("Storage records name different tasks"));
+            }
+        }
+        if let Some(Ok(record)) = self.settlement.as_ref().and_then(|child| child.receive.as_ref()) {
+            verify_storage_record(cgroup, expected, socket.peer(), record.subject())?;
+            let third = cgroup.verify_exact_membership(record.subject().pidfd())
+                .map_err(|_| ProductionSourceProviderStorageErrorV1::Peer)?;
+            for subject in [
+                &self.control.as_ref().ok_or(OriginalStorageOfferErrorV5::Shape("Storage control absent"))?.subject,
+                &self.reply.as_ref().ok_or(OriginalStorageOfferErrorV5::Shape("Storage reply absent"))?.subject,
+            ] {
+                let original = cgroup.verify_exact_membership(subject.pidfd())
+                    .map_err(|_| ProductionSourceProviderStorageErrorV1::Peer)?;
+                if !same_process(original, third) {
+                    return Err(OriginalStorageOfferErrorV5::Shape("Storage settlement names another task"));
+                }
             }
         }
         socket.peer().require_peer_filesystem_path(socket.as_fd()?, Path::new(NATIVE_HOLD_SOCKET))?;
@@ -1197,6 +1215,211 @@ impl OriginalStorageOfferTransportV5 {
         self.is_offered() && self.relay.as_ref().is_some_and(|relay| {
             relay.stage == OriginalStorageRelayStageV5::Sent && relay.failure().is_none()
         })
+    }
+}
+
+// A third record remains in its owning Result. Origin validation borrows that
+// record, so no consuming bind can strand its pidfd across a later refusal.
+struct OriginalStorageSettlementV5 {
+    received: bool,
+    closed: bool,
+    receive: Option<Result<ReceivedRecord, RetainedSeqpacketReceiveErrorV1>>,
+    binding: Option<Result<(), RecordBindingError>>,
+    samples: [Option<Result<aos_sandbox_core::RawPairedClockSample, crate::SourceProviderSecurityError>>; 2],
+    checks: [Option<Result<(), OriginalStorageOfferErrorV5>>; 2],
+    first: Option<OriginalStorageSettlementFailureV5>,
+    cause: Option<OriginalStorageOfferErrorV5>,
+}
+
+#[derive(Clone, Copy)]
+enum OriginalStorageSettlementFailureV5 {
+    Receive,
+    Binding,
+    Sample(usize),
+    Check(usize),
+    Validation,
+}
+
+impl OriginalStorageSettlementV5 {
+    fn pending() -> Self {
+        Self {
+            received: false,
+            closed: false,
+            receive: None,
+            binding: None,
+            samples: std::array::from_fn(|_| None),
+            checks: std::array::from_fn(|_| None),
+            first: None,
+            cause: None,
+        }
+    }
+
+    fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self.first {
+            Some(OriginalStorageSettlementFailureV5::Receive) => self.receive.as_ref()?
+                .as_ref().err().map(|cause| cause as _),
+            Some(OriginalStorageSettlementFailureV5::Binding) => self.binding.as_ref()?
+                .as_ref().err().map(|cause| cause as _),
+            Some(OriginalStorageSettlementFailureV5::Sample(index)) => self.samples[index].as_ref()?
+                .as_ref().err().map(|cause| cause as _),
+            Some(OriginalStorageSettlementFailureV5::Check(index)) => self.checks[index].as_ref()?
+                .as_ref().err().map(|cause| cause as _),
+            Some(OriginalStorageSettlementFailureV5::Validation) => self.cause.as_ref().map(|cause| cause as _),
+            None => None,
+        }
+    }
+
+    fn retryable(&self) -> bool {
+        self.receive.as_ref().and_then(|result| result.as_ref().err()).is_some_and(|cause| {
+            cause.is_nonconsuming_would_block() || cause.is_nonconsuming_interrupted()
+        })
+    }
+
+    fn retain(&mut self, cause: OriginalStorageOfferErrorV5) {
+        if self.first.is_none() {
+            self.cause = Some(cause);
+            self.first = Some(OriginalStorageSettlementFailureV5::Validation);
+        }
+        self.closed = true;
+    }
+
+    fn sample(&mut self, index: usize, clock: &OriginalStorageOfferClockV5) -> Result<(), OriginalStorageOfferErrorV5> {
+        self.samples[index] = Some(crate::handshake::original_kernel_clock());
+        let Some(Ok(later)) = &self.samples[index] else {
+            if self.first.is_none() { self.first = Some(OriginalStorageSettlementFailureV5::Sample(index)); }
+            return Err(OriginalStorageOfferErrorV5::Shape("settlement clock unavailable"));
+        };
+        clock.require_current(*later)
+    }
+
+    fn check(&mut self, index: usize, result: Result<(), OriginalStorageOfferErrorV5>) {
+        self.checks[index] = Some(result);
+        if self.first.is_none() && self.checks[index].as_ref().is_some_and(Result::is_err) {
+            self.first = Some(OriginalStorageSettlementFailureV5::Check(index));
+        }
+    }
+}
+
+impl OriginalStorageOfferTransportV5 {
+    /// Arms reception on the same locally dispatched relay connection.
+    ///
+    /// No endpoint, writer identity, deadline or permission is constructed.
+    #[doc(hidden)]
+    pub fn begin_original_settlement_v5(&mut self) -> bool {
+        if self.settlement.is_some() {
+            if let Some(child) = self.settlement.as_mut() {
+                child.retain(OriginalStorageOfferErrorV5::Shape("settlement already armed"));
+            }
+            self.stage = OriginalStorageOfferStageV5::Closed;
+            return false;
+        }
+        let eligible = self.original_relay_sent_v5();
+        self.settlement = Some(OriginalStorageSettlementV5::pending());
+        if !eligible {
+            if let Some(child) = self.settlement.as_mut() {
+                child.retain(OriginalStorageOfferErrorV5::Shape("settlement requires original relay dispatch"));
+            }
+            self.stage = OriginalStorageOfferStageV5::Closed;
+        }
+        eligible
+    }
+
+    /// Parks one zero-FD receive and all independent lower bookends.
+    ///
+    /// Only initial nonconsuming backpressure remains pending. The upper owner
+    /// must accept its own bookends before clearing that pending Result.
+    #[doc(hidden)]
+    pub fn advance_original_settlement_receive_v5(&mut self) -> bool {
+        if !self.is_offered() || self.settlement.as_ref().is_none_or(|child| child.closed) {
+            return false;
+        }
+        if self.settlement.as_ref().is_some_and(|child| child.received) { return true; }
+        let _crossing = OriginalStorageOfferCrossingV5;
+        let action = (|| {
+            self.revalidate_inner()?;
+            if self.settlement.as_ref().is_some_and(|child| child.receive.is_some()) {
+                return Err(OriginalStorageOfferErrorV5::Shape("pending settlement not bookended"));
+            }
+            if !self.ready(rustix::event::PollFlags::IN)? { return Ok(false); }
+            let clock = self.clock.as_ref().ok_or(OriginalStorageOfferErrorV5::Shape("original clock absent"))?;
+            self.settlement.as_mut().ok_or(OriginalStorageOfferErrorV5::Shape("settlement absent"))?.sample(0, clock)?;
+            let result = self.socket_mut()?.receive_retaining(
+                aos_sandbox_source_provider_protocol::native_held_completion::MAXIMUM_NATIVE_HELD_CONTROL_BYTES_V1,
+            );
+            let child = self.settlement.as_mut().ok_or(OriginalStorageOfferErrorV5::Shape("settlement absent"))?;
+            child.receive = Some(result);
+            if child.receive.as_ref().is_some_and(Result::is_err) {
+                if !child.retryable() { child.first = Some(OriginalStorageSettlementFailureV5::Receive); }
+                return Ok(false);
+            }
+            let record = child.receive.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(OriginalStorageOfferErrorV5::Shape("settlement record absent"))?;
+            let socket = self.connection.as_mut().and_then(|result| result.as_mut().ok())
+                .ok_or(OriginalStorageOfferErrorV5::Shape("original Storage socket absent"))?;
+            child.binding = Some(socket.require_source_storage_received_original_v5(record));
+            if child.binding.as_ref().is_some_and(Result::is_err) {
+                child.first = Some(OriginalStorageSettlementFailureV5::Binding);
+                return Ok(false);
+            }
+            Ok(true)
+        })();
+        let received = match action {
+            Ok(received) => received,
+            Err(cause) => {
+                if let Some(child) = self.settlement.as_mut() { child.retain(cause); }
+                false
+            }
+        };
+        let peer = self.revalidate_inner();
+        if let Some(child) = self.settlement.as_mut() { child.check(0, peer); }
+        let clock = (|| {
+            let clock = self.clock.as_ref().ok_or(OriginalStorageOfferErrorV5::Shape("original clock absent"))?;
+            self.settlement.as_mut().ok_or(OriginalStorageOfferErrorV5::Shape("settlement absent"))?.sample(1, clock)
+        })();
+        if let Some(child) = self.settlement.as_mut() {
+            child.check(1, clock);
+            if child.failure().is_some() {
+                child.closed = true;
+                self.stage = OriginalStorageOfferStageV5::Closed;
+                return false;
+            }
+            child.received = received;
+        }
+        received
+    }
+
+    /// Clears only a nonconsuming attempt after successful genuine upper checks.
+    ///
+    /// # Errors
+    ///
+    /// Refuses closure, a consumed record, or failed lower bookends.
+    #[doc(hidden)]
+    pub fn finish_original_settlement_pending_v5(&mut self) -> Result<(), OriginalStorageOfferErrorV5> {
+        // The containing Source owner has just completed its full independent
+        // bookends and final original sample. This disposition performs no
+        // syscall or observation between that final check and clearing only
+        // a nonconsuming, descriptor-free lower Err.
+        if !self.is_offered() {
+            return Err(OriginalStorageOfferErrorV5::Shape("settlement pending closed"));
+        }
+        let child = self.settlement.as_mut().ok_or(OriginalStorageOfferErrorV5::Shape("settlement absent"))?;
+        if child.closed || child.failure().is_some() || child.received {
+            return Err(OriginalStorageOfferErrorV5::Shape("settlement pending disposition"));
+        }
+        if child.receive.is_some() && !child.retryable() {
+            return Err(OriginalStorageOfferErrorV5::Shape("settlement retry forbidden"));
+        }
+        child.receive = None;
+        Ok(())
+    }
+
+    /// Borrows the actual third record after its origin and subject bookends.
+    #[must_use]
+    #[doc(hidden)]
+    pub fn original_settlement_packet_v5(&self) -> Option<&[u8]> {
+        let child = self.settlement.as_ref()?;
+        if self.is_closed() || child.closed || !child.received { return None; }
+        child.receive.as_ref()?.as_ref().ok().map(ReceivedRecord::payload)
     }
 }
 

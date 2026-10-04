@@ -151,6 +151,14 @@ pub enum FixedProviderOriginalCompletionProgressV5 {
     /// Relay5 was locally sent once to the same original Storage connection.
     /// This reports no remote ACK, interest retirement or physical drain.
     RelaySent,
+    /// Storage6 was authenticated and read back in the same phase8 journal cut.
+    StorageSettlementRecorded,
+    /// Unsigned Kind7 was read back before any settlement signing attempt.
+    ProviderSettledPrepared,
+    /// Signed Kind7 was read back at phase9 without acknowledging Root receipt.
+    ProviderSettledStored,
+    /// Kind7 was locally sent once; terminal recording and retirement remain pending.
+    ProviderSettledSent,
     /// All returned originals and the first cause remain permanently held.
     Closed,
 }

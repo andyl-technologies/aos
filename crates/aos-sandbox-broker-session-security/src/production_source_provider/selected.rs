@@ -607,7 +607,7 @@ impl ProductionSelectedSourceProviderOriginalV1 {
             return None;
         }
         let progress = match self.owner.as_mut() {
-            Some(owner) => owner.advance_original_native_relay_v5(
+            Some(owner) => owner.advance_original_native_settlement_v5(
                 &self.catalog.publication.bytes, &self.catalog.rows.bytes,
             ),
             None => {
@@ -678,7 +678,7 @@ impl ProductionSelectedSourceProviderOriginalV1 {
     /// Lends actual retained failure custody without any observation or retry.
     pub fn failure(&self) -> Option<ProductionSelectedSourceProviderFailureRefV1<'_>> {
         if let Some(cause) = self.owner.as_ref()
-            .and_then(FixedProviderOwnerV1::original_relay_failure_v5)
+            .and_then(FixedProviderOwnerV1::original_settlement_failure_v5)
         {
             return Some(ProductionSelectedSourceProviderFailureRefV1::Completion(cause));
         }
@@ -723,7 +723,7 @@ impl ProductionSelectedSourceProviderOriginalV1 {
         }
         // Splitting these resident fields avoids a self-borrowing stored view.
         if let Some(cause) = self.owner.as_ref()
-            .and_then(FixedProviderOwnerV1::original_relay_failure_v5)
+            .and_then(FixedProviderOwnerV1::original_settlement_failure_v5)
         {
             return ProductionSelectedSourceProviderFailureRefV1::Completion(cause);
         }

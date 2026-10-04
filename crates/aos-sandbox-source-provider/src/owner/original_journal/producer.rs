@@ -108,6 +108,9 @@ pub(in crate::owner) enum OriginalProducerAppendV5 {
     HeldStored,
     RootDispositionPrepared,
     RelayStored,
+    StorageSettlementRecorded,
+    ProviderSettledPrepared,
+    ProviderSettledStored,
 }
 
 impl OriginalProducerAppendV5 {
@@ -123,11 +126,15 @@ impl OriginalProducerAppendV5 {
             Self::HeldStored => 7,
             Self::RootDispositionPrepared => 8,
             Self::RelayStored => 9,
+            Self::StorageSettlementRecorded => 10,
+            Self::ProviderSettledPrepared => 11,
+            Self::ProviderSettledStored => 12,
         }
     }
 
     pub(super) const fn is_original_held(self) -> bool {
-        matches!(self, Self::HeldPrepared | Self::HeldStored | Self::RootDispositionPrepared | Self::RelayStored)
+        matches!(self, Self::HeldPrepared | Self::HeldStored | Self::RootDispositionPrepared | Self::RelayStored
+            | Self::StorageSettlementRecorded | Self::ProviderSettledPrepared | Self::ProviderSettledStored)
     }
 }
 
@@ -149,7 +156,7 @@ pub(super) struct OriginalSourceProducerV5 {
     pub(super) signed: Option<SignedStorageNativeAcquireRequestV2>,
     provenance: Option<OriginalSourceProvenanceV5>,
     pub(super) staged: Option<StagedZfsHoldChallengeV1>,
-    appends: [Option<PreparedSourceOriginalV5>; 10],
+    appends: [Option<PreparedSourceOriginalV5>; 13],
     checkpoint: OriginalProducerCheckpointV5,
     pub(super) physical_plan: Option<crate::backend::AcquirePlanV1>,
     pub(super) selected_execution: Option<SourceSelectedNativeExecutionInputDataV1>,
@@ -324,6 +331,59 @@ impl OriginalSourceProducerV5 {
     ) -> Result<&OriginalSourceProtectedReadbackV5, ProviderLedgerError> {
         self.appends[step.index()].as_ref().and_then(|append| append.readback.as_ref())
             .ok_or(ProviderLedgerError::Unavailable)
+    }
+
+    // The actual committed slot wins even when a later failed observation hides
+    // signed DATA. No negative path regresses to stale unsigned phase7/8.
+    pub(super) fn settlement_readback_step_v5(&self) -> OriginalProducerAppendV5 {
+        for step in [OriginalProducerAppendV5::ProviderSettledStored,
+            OriginalProducerAppendV5::ProviderSettledPrepared,
+            OriginalProducerAppendV5::StorageSettlementRecorded] {
+            if self.appends[step.index()].as_ref().is_some_and(|append| append.readback.is_some()) {
+                return step;
+            }
+        }
+        OriginalProducerAppendV5::RelayStored
+    }
+
+    pub(super) fn settlement_parts_v5(&mut self, step: OriginalProducerAppendV5) -> Result<(
+        &OriginalSourceProtectedReadbackV5,
+        &mut super::completion::OriginalSourceCompletionV5,
+        &aos_sandbox_source_provider_security::ProtectedOriginalSelectedInputV1,
+        &mut super::storage_offer::OriginalStorageOfferV5,
+    ), ProviderLedgerError> {
+        if !matches!(step, OriginalProducerAppendV5::RelayStored
+            | OriginalProducerAppendV5::StorageSettlementRecorded
+            | OriginalProducerAppendV5::ProviderSettledPrepared
+            | OriginalProducerAppendV5::ProviderSettledStored) {
+            return Err(ProviderLedgerError::Unavailable);
+        }
+        let readback = self.appends[step.index()].as_ref().and_then(|append| append.readback.as_ref())
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        let completion = self.original_completion.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
+        let selected = self.selected_archive.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        let offer = self.storage_offer.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
+        Ok((readback, completion, selected, offer))
+    }
+
+    pub(super) fn settlement_preparation_parts_v5(&mut self, step: OriginalProducerAppendV5) -> Result<(
+        &mut super::completion::OriginalSourceCompletionV5,
+        &mut Option<PreparedSourceOriginalV5>,
+        &aos_sandbox_source_provider_security::ProtectedOriginalSelectedInputV1,
+    ), ProviderLedgerError> {
+        if !matches!(step, OriginalProducerAppendV5::StorageSettlementRecorded
+            | OriginalProducerAppendV5::ProviderSettledPrepared | OriginalProducerAppendV5::ProviderSettledStored) {
+            return Err(ProviderLedgerError::Unavailable);
+        }
+        let completion = self.original_completion.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
+        let destination = &mut self.appends[step.index()];
+        if destination.is_some() {
+            return Err(ProviderLedgerError::InvalidTransition("original settlement slot occupied"));
+        }
+        let selected = self.selected_archive.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        Ok((completion, destination, selected))
     }
 
     pub(super) fn park(
@@ -551,7 +611,10 @@ impl FixedProviderOwnerV1 {
         &mut self,
         step: OriginalProducerAppendV5,
     ) -> Result<(), OriginalProducerErrorV5> {
-        if step == OriginalProducerAppendV5::RelayStored {
+        if matches!(step, OriginalProducerAppendV5::StorageSettlementRecorded
+            | OriginalProducerAppendV5::ProviderSettledPrepared | OriginalProducerAppendV5::ProviderSettledStored) {
+            self.require_original_settlement_current_v5()
+        } else if step == OriginalProducerAppendV5::RelayStored {
             self.require_original_relay_current_v5()
         } else if step == OriginalProducerAppendV5::RootDispositionPrepared {
             self.require_original_root_disposition_current_v5()
@@ -962,7 +1025,9 @@ impl FixedProviderOwnerV1 {
             OriginalProducerAppendV5::Applying | OriginalProducerAppendV5::StoragePrepared
             | OriginalProducerAppendV5::ChallengeSpent | OriginalProducerAppendV5::CompletionCommitted
             | OriginalProducerAppendV5::HeldPrepared | OriginalProducerAppendV5::HeldStored
-            | OriginalProducerAppendV5::RootDispositionPrepared | OriginalProducerAppendV5::RelayStored => {
+            | OriginalProducerAppendV5::RootDispositionPrepared | OriginalProducerAppendV5::RelayStored
+            | OriginalProducerAppendV5::StorageSettlementRecorded | OriginalProducerAppendV5::ProviderSettledPrepared
+            | OriginalProducerAppendV5::ProviderSettledStored => {
                 return Err(ProviderLedgerError::InvalidTransition("Applying is not a carrier").into());
             }
         };
@@ -997,7 +1062,9 @@ impl FixedProviderOwnerV1 {
             OriginalProducerAppendV5::Applying | OriginalProducerAppendV5::StoragePrepared
             | OriginalProducerAppendV5::ChallengeSpent | OriginalProducerAppendV5::CompletionCommitted
             | OriginalProducerAppendV5::HeldPrepared | OriginalProducerAppendV5::HeldStored
-            | OriginalProducerAppendV5::RootDispositionPrepared | OriginalProducerAppendV5::RelayStored => {
+            | OriginalProducerAppendV5::RootDispositionPrepared | OriginalProducerAppendV5::RelayStored
+            | OriginalProducerAppendV5::StorageSettlementRecorded | OriginalProducerAppendV5::ProviderSettledPrepared
+            | OriginalProducerAppendV5::ProviderSettledStored => {
                 return Err(ProviderLedgerError::InvalidTransition("Applying is not a carrier").into());
             }
         }
@@ -1008,7 +1075,9 @@ impl FixedProviderOwnerV1 {
             OriginalProducerAppendV5::Applying | OriginalProducerAppendV5::StoragePrepared
             | OriginalProducerAppendV5::ChallengeSpent | OriginalProducerAppendV5::CompletionCommitted
             | OriginalProducerAppendV5::HeldPrepared | OriginalProducerAppendV5::HeldStored
-            | OriginalProducerAppendV5::RootDispositionPrepared | OriginalProducerAppendV5::RelayStored => {
+            | OriginalProducerAppendV5::RootDispositionPrepared | OriginalProducerAppendV5::RelayStored
+            | OriginalProducerAppendV5::StorageSettlementRecorded | OriginalProducerAppendV5::ProviderSettledPrepared
+            | OriginalProducerAppendV5::ProviderSettledStored => {
                 return Err(ProviderLedgerError::InvalidTransition("Applying is not a carrier").into());
             }
         };

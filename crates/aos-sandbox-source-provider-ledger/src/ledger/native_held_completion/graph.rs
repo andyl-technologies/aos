@@ -69,13 +69,76 @@ pub fn derive_provider_held_preparation_data_v5<'rows>(
     challenge_sequence: u64,
     selected: &aos_sandbox_source_provider_protocol::native_held_completion::SourceSelectedNativeExecutionInputDataV1,
 ) -> Result<(ProviderNativeHeldWitnessV1, ObjectDigest), LedgerFormatErrorV1> {
+    let (witness, artifact, _) = derive_provider_preparation_data_v5(
+        records, acquisition, original_spent, root_local_cookie, storage_local_cookie,
+        completion_sequence, challenge_sequence, selected, ProviderPreparationPurposeV5::Held,
+    )?;
+    Ok((witness, artifact))
+}
+
+/// Derives fresh phase-eight witness and settlement DATA from actual before rows.
+///
+/// This does not reuse a phase-four witness or grant signing/currentness. The
+/// same protected owner must independently hold the original Spent and writer.
+///
+/// # Errors
+///
+/// Rejects a non-Active phase8, recovery/prepared suffix, absent Storage6,
+/// changed selected inputs or incomplete companion and settlement assertions.
+pub fn derive_provider_settled_preparation_data_v5<'rows>(
+    records: impl IntoIterator<Item = (&'rows [u8], &'rows [u8])>,
+    acquisition: ObjectDigest,
+    original_spent: &[u8],
+    root_local_cookie: std::num::NonZeroU64,
+    storage_local_cookie: std::num::NonZeroU64,
+    completion_sequence: u64,
+    challenge_sequence: u64,
+    selected: &aos_sandbox_source_provider_protocol::native_held_completion::SourceSelectedNativeExecutionInputDataV1,
+) -> Result<(
+    ProviderNativeHeldWitnessV1,
+    aos_sandbox_source_provider_protocol::native_held_completion::assertion::NativeHeldSettlementV1,
+), LedgerFormatErrorV1> {
+    let (witness, _, settlement) = derive_provider_preparation_data_v5(
+        records, acquisition, original_spent, root_local_cookie, storage_local_cookie,
+        completion_sequence, challenge_sequence, selected, ProviderPreparationPurposeV5::Settled,
+    )?;
+    Ok((witness, settlement.ok_or(corrupt("settled actual assertions missing"))?))
+}
+
+#[derive(Clone, Copy)]
+enum ProviderPreparationPurposeV5 {
+    Held,
+    Settled,
+}
+
+// Both purposes share the sole collection/companion/seven-row witness recipe.
+// The Held branch preserves its original validation and allocation chronology.
+fn derive_provider_preparation_data_v5<'rows>(
+    records: impl IntoIterator<Item = (&'rows [u8], &'rows [u8])>,
+    acquisition: ObjectDigest,
+    original_spent: &[u8],
+    root_local_cookie: std::num::NonZeroU64,
+    storage_local_cookie: std::num::NonZeroU64,
+    completion_sequence: u64,
+    challenge_sequence: u64,
+    selected: &aos_sandbox_source_provider_protocol::native_held_completion::SourceSelectedNativeExecutionInputDataV1,
+    purpose: ProviderPreparationPurposeV5,
+) -> Result<(
+    ProviderNativeHeldWitnessV1,
+    ObjectDigest,
+    Option<aos_sandbox_source_provider_protocol::native_held_completion::assertion::NativeHeldSettlementV1>,
+), LedgerFormatErrorV1> {
     let records = collect(records)?;
     let native_key = native_completion::native_completion_key_v2(acquisition);
     let record = Record::from_canonical_bytes(
         &native_key,
         records.get(&native_key).ok_or(corrupt("held phase4 native missing"))?,
     )?;
-    if record.suffix().phase() != 4
+    let expected_phase = match purpose {
+        ProviderPreparationPurposeV5::Held => 4,
+        ProviderPreparationPurposeV5::Settled => 8,
+    };
+    if record.suffix().phase() != expected_phase
         || record.original().state != native_completion::NativeAcquireCompletionStateV2::Active
         || selected.fields().scope != evidence::full_scope(&record)?
         || selected.fields().provider_id != record.original().provider_id
@@ -84,6 +147,13 @@ pub fn derive_provider_held_preparation_data_v5<'rows>(
         || challenge_sequence == 0
     {
         return Err(corrupt("held actual phase4 selected binding"));
+    }
+    if matches!(purpose, ProviderPreparationPurposeV5::Settled)
+        && (record.suffix().prepared().is_some()
+            || record.suffix().control(aos_sandbox_source_provider_protocol::native_held_completion::NativeHeldControlKindV1::StorageSettled).is_none()
+            || record.suffix().control(aos_sandbox_source_provider_protocol::native_held_completion::NativeHeldControlKindV1::RootRecoveryQuery).is_some())
+    {
+        return Err(corrupt("settled actual phase8 hot binding"));
     }
     validate_challenge(&record, Some(original_spent), true)?;
     let rows = Companions::read(&records, &record)?;
@@ -132,7 +202,10 @@ pub fn derive_provider_held_preparation_data_v5<'rows>(
         backend_manifest: selected.fields().backend_enrollment,
         verifier_manifest: selected.fields().dedicated_enrollment,
         records,
-    }, artifact))
+    }, artifact, match purpose {
+        ProviderPreparationPurposeV5::Held => None,
+        ProviderPreparationPurposeV5::Settled => evidence::settlement(&record)?,
+    }))
 }
 
 pub(super) fn collect<'a>(

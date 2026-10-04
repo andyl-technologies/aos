@@ -18,6 +18,7 @@ use sha2::Digest as _;
 
 mod root_accepted;
 mod relay;
+mod settlement;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum HeldStageV5 {
@@ -46,6 +47,7 @@ pub(super) struct OriginalSourceHeldV5 {
     postcheck_debt: Option<OriginalProducerErrorV5>,
     root_disposition: Option<root_accepted::OriginalSourceRootDispositionV5>,
     relay: Option<relay::OriginalSourceRelayV5>,
+    settlement: Option<settlement::OriginalSourceSettlementV5>,
 }
 
 impl OriginalSourceHeldV5 {
@@ -65,6 +67,7 @@ impl OriginalSourceHeldV5 {
             postcheck_debt: None,
             root_disposition: None,
             relay: None,
+            settlement: None,
         }
     }
 
@@ -604,6 +607,9 @@ impl FixedProviderOwnerV1 {
                 .and_then(root_accepted::OriginalSourceRootDispositionV5::phase7_record),
             Append::RelayStored => child.relay.as_ref()
                 .and_then(relay::OriginalSourceRelayV5::phase7_record),
+            Append::StorageSettlementRecorded | Append::ProviderSettledPrepared | Append::ProviderSettledStored => {
+                child.settlement.as_ref().and_then(|settlement| settlement.record(step))
+            }
             _ => None,
         }.ok_or(ProviderLedgerError::Unavailable)?;
         let key = native_completion_key_v2(expected.original().acquisition_id);

@@ -79,6 +79,7 @@ pub struct OriginalSourceProtectedReadbackV5 {
     original_completion_signing: std::cell::Cell<u8>,
     original_held_signing_attempted: std::cell::Cell<bool>,
     original_relay_signing_attempted: std::cell::Cell<bool>,
+    original_settlement_signing_attempted: std::cell::Cell<bool>,
 }
 
 enum OriginalHeldBasisPurposeV5<'control> {
@@ -95,6 +96,26 @@ enum OriginalHeldBasisPurposeV5<'control> {
         &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::PreparedNativeHeldControlV1,
     ),
     RelayDelivery(
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+    ),
+    SettlementReceived(
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+    ),
+    SettlementPreparation(
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::PreparedNativeHeldControlV1,
+    ),
+    SettlementDelivery(
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
         &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
         &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
         &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
@@ -333,6 +354,9 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
             &purpose,
             OriginalHeldBasisPurposeV5::RelayPreparation(..)
                 | OriginalHeldBasisPurposeV5::RelayDelivery(..)
+                | OriginalHeldBasisPurposeV5::SettlementReceived(..)
+                | OriginalHeldBasisPurposeV5::SettlementPreparation(..)
+                | OriginalHeldBasisPurposeV5::SettlementDelivery(..)
         );
         let step = match purpose {
             OriginalHeldBasisPurposeV5::Preparation(exact) => {
@@ -389,6 +413,47 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
                     return Err(invalid("original relay signed phase7 changed"));
                 }
                 SourceNativeHeldStepV1::RelayStored
+            }
+            OriginalHeldBasisPurposeV5::SettlementReceived(held, root4, relay, storage) => {
+                if before.suffix().phase() != 7 || after.suffix().phase() != 8
+                    || before.suffix().prepared().is_some() || after.suffix().prepared().is_some()
+                    || before.suffix().control(NativeHeldControlKindV1::StorageSettled).is_some()
+                    || after.suffix().control(NativeHeldControlKindV1::StorageSettled) != Some(storage)
+                {
+                    return Err(invalid("original Storage settlement phase8 changed"));
+                }
+                require_original_settlement_prefix_v5(&before, &after, held, root4, relay, storage)?;
+                SourceNativeHeldStepV1::StorageSettlementRecorded
+            }
+            OriginalHeldBasisPurposeV5::SettlementPreparation(held, root4, relay, storage, prepared) => {
+                if before.suffix().phase() != 8 || after.suffix().phase() != 8
+                    || before.suffix().prepared().is_some()
+                    || after.suffix().prepared() != Some(prepared)
+                    || prepared.kind() != NativeHeldControlKindV1::ProviderSettled
+                {
+                    return Err(invalid("original Provider settlement preparation changed"));
+                }
+                require_original_settlement_prefix_v5(&before, &after, held, root4, relay, storage)?;
+                if before.suffix().control(NativeHeldControlKindV1::StorageSettled) != Some(storage) {
+                    return Err(invalid("original Storage settlement before preparation changed"));
+                }
+                SourceNativeHeldStepV1::ProviderSettledPrepared
+            }
+            OriginalHeldBasisPurposeV5::SettlementDelivery(held, root4, relay, storage, signed) => {
+                if before.suffix().phase() != 8 || after.suffix().phase() != 9
+                    || before.suffix().prepared() != Some(signed.prepared())
+                    || after.suffix().prepared().is_some()
+                    || before.suffix().control(NativeHeldControlKindV1::ProviderSettled).is_some()
+                    || after.suffix().control(NativeHeldControlKindV1::ProviderSettled) != Some(signed)
+                    || signed.kind() != NativeHeldControlKindV1::ProviderSettled
+                {
+                    return Err(invalid("original Provider settlement phase9 changed"));
+                }
+                require_original_settlement_prefix_v5(&before, &after, held, root4, relay, storage)?;
+                if before.suffix().control(NativeHeldControlKindV1::StorageSettled) != Some(storage) {
+                    return Err(invalid("original Storage settlement before delivery changed"));
+                }
+                SourceNativeHeldStepV1::ProviderSettledStored
             }
         };
         let checkpoints = self.challenges.retained_rows()?;
@@ -525,6 +590,78 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
         self.original_held_basis_v5(
             readback, acquisition, OriginalHeldBasisPurposeV5::RelayDelivery(held, root4, relay),
         )
+    }
+
+    /// Borrows the exact received7-to8 settlement cut from this original writer.
+    ///
+    /// # Errors
+    /// Refuses changed physical custody, complete graph, Spent, prefix or Storage6.
+    pub fn original_storage_settlement_basis_v5(
+        &self,
+        readback: &OriginalSourceProtectedReadbackV5,
+        acquisition: ObjectDigest,
+        held: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        root4: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        relay: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        storage: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+    ) -> Result<&SourceOriginalAdmissionDataV5, JournalError> {
+        self.original_held_basis_v5(readback, acquisition,
+            OriginalHeldBasisPurposeV5::SettlementReceived(held, root4, relay, storage))
+    }
+
+    /// Borrows the same-writer8-to8 unsigned Kind7 cut without a signing permit.
+    ///
+    /// # Errors
+    /// Refuses changed preparation, origin, Spent, complete graph or actual headroom.
+    pub fn original_settlement_signing_basis_v5(
+        &self,
+        readback: &OriginalSourceProtectedReadbackV5,
+        acquisition: ObjectDigest,
+        held: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        root4: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        relay: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        storage: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        prepared: &aos_sandbox_source_provider_protocol::native_held_completion::frame::PreparedNativeHeldControlV1,
+    ) -> Result<&SourceOriginalAdmissionDataV5, JournalError> {
+        self.original_held_basis_v5(readback, acquisition,
+            OriginalHeldBasisPurposeV5::SettlementPreparation(held, root4, relay, storage, prepared))
+    }
+
+    /// Consumes this actual unsigned-readback Kind7 latch before fallible checks.
+    ///
+    /// # Errors
+    /// Refuses repeated purpose or foreign/stale current preparation; never rearms.
+    pub fn claim_original_settlement_signing_v5(
+        &self,
+        readback: &OriginalSourceProtectedReadbackV5,
+        acquisition: ObjectDigest,
+        held: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        root4: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        relay: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        storage: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        prepared: &aos_sandbox_source_provider_protocol::native_held_completion::frame::PreparedNativeHeldControlV1,
+    ) -> Result<(), JournalError> {
+        claim_original_relay_once_v5(&readback.original_settlement_signing_attempted)?;
+        self.original_settlement_signing_basis_v5(readback, acquisition, held, root4, relay, storage, prepared)?;
+        Ok(())
+    }
+
+    /// Borrows the exact unsigned8-to-signed9 cut without granting remote receipt.
+    ///
+    /// # Errors
+    /// Refuses stale physical custody, changed full graph/Spent or substituted controls.
+    pub fn original_settlement_delivery_basis_v5(
+        &self,
+        readback: &OriginalSourceProtectedReadbackV5,
+        acquisition: ObjectDigest,
+        held: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        root4: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        relay: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        storage: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        signed: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+    ) -> Result<&SourceOriginalAdmissionDataV5, JournalError> {
+        self.original_held_basis_v5(readback, acquisition,
+            OriginalHeldBasisPurposeV5::SettlementDelivery(held, root4, relay, storage, signed))
     }
 
     /// Checks the remaining envelope on the actual phase-two cut before spend.
@@ -1117,6 +1254,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
                 original_completion_signing: std::cell::Cell::new(0),
                 original_held_signing_attempted: std::cell::Cell::new(false),
                 original_relay_signing_attempted: std::cell::Cell::new(false),
+                original_settlement_signing_attempted: std::cell::Cell::new(false),
             });
 
             self.authority.journal.complete_source_original_replay_v5(self.challenges)?;
@@ -1190,6 +1328,31 @@ fn require_fixed_location(journal: &Journal) -> Result<(), JournalError> {
         })
     {
         return Err(JournalError::ProtectedBoundary);
+    }
+    Ok(())
+}
+
+// The sole proposer below still validates whole graphs and exact append-once
+// archives. This small shared comparison keeps all three new purposes tied to
+// the same actual Held3/Root4/relay5 prefix and received Storage6.
+fn require_original_settlement_prefix_v5(
+    before: &SourceNativeHeldCompletionRecordV1,
+    after: &SourceNativeHeldCompletionRecordV1,
+    held: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+    root4: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+    relay: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+    storage: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+) -> Result<(), JournalError> {
+    use aos_sandbox_source_provider_protocol::native_held_completion::NativeHeldControlKindV1 as Kind;
+    for (kind, control) in [(Kind::ProviderHeld, held), (Kind::RootAccepted, root4), (Kind::ProviderRelay, relay)] {
+        if control.kind() != kind || before.suffix().control(kind) != Some(control)
+            || after.suffix().control(kind) != Some(control)
+        {
+            return Err(invalid("original settlement prefix changed"));
+        }
+    }
+    if storage.kind() != Kind::StorageSettled || after.suffix().control(Kind::StorageSettled) != Some(storage) {
+        return Err(invalid("original received Storage settlement changed"));
     }
     Ok(())
 }
