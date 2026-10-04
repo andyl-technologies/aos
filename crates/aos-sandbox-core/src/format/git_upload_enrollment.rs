@@ -924,6 +924,34 @@ impl GitCoverageBirthFieldsV1 {
         GitCoverageBirthV1::decode(&bytes)?;
         Ok(bytes)
     }
+
+    /// Returns fence comparison DATA with the same birth coordinates.
+    ///
+    /// The caller supplies the existing generation, already computed canonical
+    /// birth digest and original Prepare nonce. This only copies fields; it
+    /// neither validates coordinates nor creates writer or allocation authority.
+    /// The returned fields retain the existing fence encoder's validation.
+    #[must_use]
+    pub fn to_fence_fields(
+        &self,
+        generation: u64,
+        birth_digest: [u8; 32],
+        prepare_nonce: [u8; 16],
+    ) -> GitCoverageFenceFieldsV1 {
+        GitCoverageFenceFieldsV1 {
+            owner: self.owner,
+            project: self.project,
+            node: self.node,
+            epoch: self.epoch,
+            generation,
+            enrollment: self.enrollment,
+            birth: birth_digest,
+            catalog: self.catalog,
+            transaction: self.transaction,
+            predecessor_prefix: self.predecessor_prefix,
+            prepare_nonce,
+        }
+    }
 }
 
 /// Borrows an exact canonical birth and its nonauthorizing coordinates.

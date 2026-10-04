@@ -20,7 +20,7 @@ use aos_sandbox_broker_session_protocol::{
 use aos_sandbox_core::format::git_upload_enrollment::{
     GitCoverageBirthV1, GitCoverageBrokerProofV1, GitCoverageBrokerRoleV1,
     GitCoverageCatalogV1, GitCoverageDataErrorV1, GitCoverageEnrollmentV1,
-    GitCoverageFenceFieldsV1, GitCoverageFenceV1, GitCoverageJournalProfileV1,
+    GitCoverageFenceV1, GitCoverageJournalProfileV1,
     GitCoverageOutcomeFieldsV1, GitCoverageOutcomeV1,
 };
 use aos_sandbox_protocol::authenticated_session::all_methods::{
@@ -592,19 +592,9 @@ impl<'profile> GitCoverageAccountAttemptV1<'profile> {
         }
         let birth_bytes = birth_fields.encode()?;
         let birth = GitCoverageBirthV1::decode(&birth_bytes)?;
-        let fence_bytes = GitCoverageFenceFieldsV1 {
-            owner: birth_fields.owner,
-            project: birth_fields.project,
-            node: birth_fields.node,
-            epoch: birth_fields.epoch,
-            generation: enrollment.generation_interval().0,
-            enrollment: birth_fields.enrollment,
-            birth: birth.digest(),
-            catalog: birth_fields.catalog,
-            transaction: birth_fields.transaction,
-            predecessor_prefix: birth_fields.predecessor_prefix,
-            prepare_nonce: nonce,
-        }.encode()?;
+        let fence_bytes = birth_fields.to_fence_fields(
+            enrollment.generation_interval().0, birth.digest(), nonce,
+        ).encode()?;
         self.controller_transaction = Some(JournalTransaction::new(
             birth_fields.transaction,
             vec![
@@ -926,19 +916,9 @@ fn fixed_coverage_fence_for_original_pair(
     let birth_fields = enrollment.fixed_owner_birth_recipe_v1(catalog, profile, prepare_nonce)?;
     let birth_bytes = birth_fields.encode()?;
     let birth = GitCoverageBirthV1::decode(&birth_bytes)?;
-    let fence = GitCoverageFenceFieldsV1 {
-        owner: birth_fields.owner,
-        project: birth_fields.project,
-        node: birth_fields.node,
-        epoch: birth_fields.epoch,
-        generation: enrollment.generation_interval().0,
-        enrollment: birth_fields.enrollment,
-        birth: birth.digest(),
-        catalog: birth_fields.catalog,
-        transaction: birth_fields.transaction,
-        predecessor_prefix: birth_fields.predecessor_prefix,
-        prepare_nonce,
-    }.encode()?;
+    let fence = birth_fields.to_fence_fields(
+        enrollment.generation_interval().0, birth.digest(), prepare_nonce,
+    ).encode()?;
     Ok((fence, birth_fields.commit_sequence))
 }
 
@@ -1347,19 +1327,9 @@ fn root_denial_transaction(
     let fields = enrollment.fixed_owner_birth_recipe_v1(catalog, profile, nonce)?;
     let birth_bytes = fields.encode()?;
     let birth = GitCoverageBirthV1::decode(&birth_bytes)?;
-    let fence_bytes = GitCoverageFenceFieldsV1 {
-        owner: fields.owner,
-        project: fields.project,
-        node: fields.node,
-        epoch: fields.epoch,
-        generation: enrollment.generation_interval().0,
-        enrollment: fields.enrollment,
-        birth: birth.digest(),
-        catalog: fields.catalog,
-        transaction: fields.transaction,
-        predecessor_prefix: fields.predecessor_prefix,
-        prepare_nonce: nonce,
-    }.encode()?;
+    let fence_bytes = fields.to_fence_fields(
+        enrollment.generation_interval().0, birth.digest(), nonce,
+    ).encode()?;
 
     Ok(JournalTransaction::new(fields.transaction, vec![
         JournalRecord::put(RecordNamespace::DesiredState, b"z-git-birth-v1".to_vec(), birth_bytes.to_vec()),

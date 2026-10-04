@@ -19,7 +19,7 @@ use aos_sandbox::public_api_session::GitCoverageCredentialCustodyV1;
 use aos_sandbox_core::RawPairedClockSample;
 use aos_sandbox_core::format::git_upload_enrollment::{
     GitCoverageBirthV1, GitCoverageBrokerRoleV1, GitCoverageCatalogV1,
-    GitCoverageDataErrorV1, GitCoverageEnrollmentV1, GitCoverageFenceFieldsV1,
+    GitCoverageDataErrorV1, GitCoverageEnrollmentV1,
     GitCoverageFlightV1, GitCoverageJournalProfileV1, GitCoverageOutcomeFieldsV1,
 };
 use aos_sandbox_protocol::git_project_coverage::ValidatedGitProjectCoverageRequestV1;
@@ -483,19 +483,9 @@ impl StorageBrokerRuntime {
                 {
                     return Err(StorageGitCoverageCauseV1::Refused("Prepare changed the genuine predecessor"));
                 }
-                let fence = GitCoverageFenceFieldsV1 {
-                    owner: birth.owner,
-                    project: birth.project,
-                    node: birth.node,
-                    epoch: birth.epoch,
-                    generation: coordinates.generation,
-                    enrollment: birth.enrollment,
-                    birth: birth_digest,
-                    catalog: birth.catalog,
-                    transaction: birth.transaction,
-                    predecessor_prefix: birth.predecessor_prefix,
-                    prepare_nonce: coordinates.nonce,
-                };
+                let fence = birth.to_fence_fields(
+                    coordinates.generation, birth_digest, coordinates.nonce,
+                );
                 owner.transaction = Some(JournalTransaction::new(birth.transaction, vec![
                     JournalRecord::put(
                         RecordNamespace::DesiredState, b"z-git-birth-v1".to_vec(), birth_bytes.to_vec(),
