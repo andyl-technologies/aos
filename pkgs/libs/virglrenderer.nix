@@ -16,6 +16,13 @@
 }: let
   version = "1.3.0";
   meson = "${buildPackages.python3}/bin/python3 -m mesonbuild.mesonmain";
+
+  # The test suite links the host check library and only runs in the native
+  # check phase. Cross builds skip that phase, so do not configure the tests.
+  buildTests =
+    if stdenv.isCross
+    then "false"
+    else "true";
 in
   mkDerivation {
     pname = "virglrenderer";
@@ -52,7 +59,7 @@ in
             ${meson} setup build $mesonFlags --prefix="$out" --libdir=lib \
               --buildtype=release --wrap-mode=nodownload \
               -Dplatforms=egl,glx -Dvenus=true -Dvulkan-dload=false \
-              -Dvideo=true -Dtests=true -Dunstable-apis=true
+              -Dvideo=true -Dtests=${buildTests} -Dunstable-apis=true
           '';
         }
         {
