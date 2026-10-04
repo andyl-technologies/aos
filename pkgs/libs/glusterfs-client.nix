@@ -156,17 +156,19 @@ in
       {
         name = "configure";
         script =
-          lib.optionalString stdenv.isCross ''
+          ''
             # Configure asks the openssl CLI for its OPENSSLDIR and compiles
-            # that directory in as the trusted-certificate path. The host
-            # openssl cannot run here, and a build-platform openssl would
-            # report its own store path. Use the linked OpenSSL's configured
-            # directory, which is what the probe returns in a native build.
+            # that directory in as the trusted-certificate path. Release
+            # builds have no openssl CLI on PATH, a cross host openssl cannot
+            # run, and a build-platform openssl would report its own store
+            # path. Use the linked OpenSSL's configured directory, which is
+            # what the probe returns when the matching CLI is available.
             sed -i \
               's#^SSL_CERT_PATH=$(openssl version -d .*$#SSL_CERT_PATH=${openssl}/etc/ssl#' \
               configure
             grep -qx 'SSL_CERT_PATH=${openssl}/etc/ssl' configure
-
+          ''
+          + lib.optionalString stdenv.isCross ''
             # AC_CHECK_FILE cannot inspect the target's filesystem. The
             # native sandbox has no /etc/os-release either, and Gluster reads
             # the file only for s390x distribution workarounds.
