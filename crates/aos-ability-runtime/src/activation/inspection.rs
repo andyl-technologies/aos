@@ -261,11 +261,7 @@ fn project_snapshot(snapshot: JournalSnapshot<Event>) -> Result<ActivationInspec
                 transaction: transaction.clone(),
                 content: content.clone(),
             }),
-        desired: state
-            .active
-            .as_ref()
-            .map(|graph| serde_json::to_value(graph.graph()))
-            .transpose()?,
+        desired: state.active.as_ref().map(|graph| graph.document().clone()),
         transaction: state.transaction,
         retained_outputs,
         retained_effects,
@@ -279,10 +275,82 @@ mod tests {
     use std::fs::{self, OpenOptions};
     use std::io::Write as _;
 
+    use aos_ability_plan::module_graph::CheckedModuleGraph;
+    use aos_contract::Sha256Digest;
+    use serde_json::json;
+
     use super::super::tests::{Host, graph};
     use super::super::{Activation, Boundary};
     use super::*;
     use crate::adapter::CancellationToken;
+
+    #[test]
+    fn inspection_preserves_checked_wire_identity_in_stable_and_observed_views() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("effects.journal");
+        let mut original = graph(Some("example"), "instance").document().clone();
+        let node = original["nodes"]
+            .as_object_mut()
+            .expect("fixture nodes")
+            .values_mut()
+            .next()
+            .expect("fixture effect");
+        let schema = json!({
+            "kind": "list",
+            "element": {"kind": "string", "pattern": null, "max_length": null}
+        });
+        node["input"]["value"] = json!(["example"]);
+        node["input_type"]["fields"]["value"] = schema.clone();
+        node["results"]["value"] = schema;
+        let mut semantic = node.clone();
+        for field in ["inputs", "dependencies", "revision"] {
+            semantic
+                .as_object_mut()
+                .expect("fixture effect")
+                .remove(field);
+        }
+        node["revision"] = Sha256Digest::of_bytes(serde_json::to_vec(&semantic)?)
+            .hex()
+            .into();
+        let desired = CheckedModuleGraph::decode(&serde_json::to_vec(&original)?)?;
+        let canonical = desired.canonical_bytes()?;
+
+        // Omitted list defaults and explicit nullable string constraints change
+        // under typed serialization, invalidating the original revision hash.
+        assert_ne!(serde_json::to_value(desired.graph())?, original);
+
+        let mut host = Host::default();
+        host.halt_boundary = Some(Boundary::DispatchReturned);
+        let mut activation = Activation::open(&path, JournalLimits::default())?;
+        assert!(
+            activation
+                .activate_once(
+                    "held-wire-identity",
+                    &desired,
+                    &BTreeSet::new(),
+                    &mut host,
+                    &CancellationToken::default(),
+                )
+                .is_err()
+        );
+        let journal = fs::read(&path)?;
+
+        let observed = observe(&path, JournalLimits::default())?;
+        let observed_document = observed.inspection.desired.as_ref().expect("active graph");
+        assert_eq!(observed_document, &original);
+        let checked = CheckedModuleGraph::decode(&serde_json::to_vec(observed_document)?)?;
+        assert_eq!(checked.canonical_bytes()?, canonical);
+        assert_eq!(fs::read(&path)?, journal);
+
+        drop(activation);
+        let stable = inspect(&path, JournalLimits::default())?;
+        let stable_document = stable.desired.as_ref().expect("active graph");
+        assert_eq!(stable_document, &original);
+        let checked = CheckedModuleGraph::decode(&serde_json::to_vec(stable_document)?)?;
+        assert_eq!(checked.canonical_bytes()?, canonical);
+        assert_eq!(fs::read(&path)?, journal);
+        Ok(())
+    }
 
     #[test]
     fn observation_reads_exact_pending_dispatch_without_releasing_the_writer() -> Result<()> {

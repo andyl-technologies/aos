@@ -157,6 +157,16 @@ impl CheckedModuleGraph {
         &self.graph
     }
 
+    /// Returns the original validated wire document.
+    ///
+    /// Serializing the typed execution data can change omitted optional fields
+    /// and schema defaults. This document preserves the exact wire identity
+    /// against which the graph's revision hashes were checked.
+    #[must_use]
+    pub const fn document(&self) -> &Value {
+        &self.document
+    }
+
     /// Serializes a checked graph for durable retention and replay.
     ///
     /// # Errors

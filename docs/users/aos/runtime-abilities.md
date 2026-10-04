@@ -779,13 +779,14 @@ descriptor's length and verifies complete frames and native state transitions
 within that prefix. Later appends do not extend the observation. An incomplete
 final frame is reported and left unchanged.
 
-This reports recorded desired state, pending invocations, and completion; it is
-not proof that the writer finished `fsync`, that live resources match, or that
-generation and effect journals agree with profile publication. It does not
-repair or execute anything. Stable package inspection and generation/effect
-authority readers remain locked. Package inspection holds a shared
-generation-journal lock while reading its checked snapshot and associated
-profile publication.
+Inspection preserves the desired graph exactly as recorded, including its
+original schemas and revisions. It reports recorded desired state, pending
+invocations, and completion; it is not proof that the writer finished `fsync`,
+that live resources match, or that generation and effect journals agree with
+profile publication. It does not repair or execute anything. Stable package
+inspection and generation/effect authority readers remain locked. Package
+inspection holds a shared generation-journal lock while reading its checked
+snapshot and associated profile publication.
 
 The current process transport uses Linux facilities; another execution platform
 needs a transport implementation as well as its own domain handlers. These
