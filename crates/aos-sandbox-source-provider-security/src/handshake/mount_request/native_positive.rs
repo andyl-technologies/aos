@@ -29,6 +29,15 @@ use crate::{
 #[path = "native_positive/readback.rs"]
 mod readback;
 
+#[path = "native_positive/terminal.rs"]
+mod terminal;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum OriginalPositivePurposeV5 {
+    Positive,
+    Terminal,
+}
+
 /// Stages no positive owner: only the actual original receiver initializes it.
 pub(super) struct OriginalPositiveProgressV5 {
     held: Option<SignedNativeHeldControlV1>,
@@ -51,6 +60,7 @@ pub(super) struct OriginalPositiveProgressV5 {
     send_result: Option<Result<(), aos_sandbox_linux::seqpacket::SeqpacketError>>,
     first_failure: Option<SourceProviderSecurityError>,
     postcheck_failure: Option<SourceProviderSecurityError>,
+    terminal: terminal::OriginalTerminalProgressV5,
 }
 
 impl OriginalPositiveProgressV5 {
@@ -76,6 +86,7 @@ impl OriginalPositiveProgressV5 {
             send_result: None,
             first_failure: None,
             postcheck_failure: None,
+            terminal: terminal::OriginalTerminalProgressV5::new(),
         }
     }
 
@@ -353,6 +364,21 @@ impl CurrentRootMountSourceProviderSessionV1 {
         authorization: &AuthorizedMountProviderOutcomeV2,
         retained: &mut OriginalNativeReceivedOutcomeV5,
     ) -> Result<(), SourceProviderSecurityError> {
+        self.require_original_positive_owner_for_v5(
+            writer, readback, authorization, retained, OriginalPositivePurposeV5::Positive,
+        )
+    }
+
+    // One recipe owns the archive, Complete physical, role and paired-clock
+    // observations. Terminal selection comes only from the locally sent Root4.
+    fn require_original_positive_owner_for_v5(
+        &mut self,
+        writer: &MountOriginalNativeJournalAuthorityV5<'_>,
+        readback: &OriginalRootProtectedReadbackV5,
+        authorization: &AuthorizedMountProviderOutcomeV2,
+        retained: &mut OriginalNativeReceivedOutcomeV5,
+        purpose: OriginalPositivePurposeV5,
+    ) -> Result<(), SourceProviderSecurityError> {
         writer.validate_readback(readback)
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
         self.require_original_held_signature_v5(authorization, retained)?;
@@ -361,8 +387,11 @@ impl CurrentRootMountSourceProviderSessionV1 {
         let phase = sidecar.suffix().phase();
         let root1 = sidecar.suffix().control(Kind::RootPrepared)
             .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-        let floor = readback.floor()
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        let floor = match purpose {
+            OriginalPositivePurposeV5::Positive => Some(readback.floor()
+                .ok_or(SourceProviderSecurityError::SessionContinuity)?),
+            OriginalPositivePurposeV5::Terminal => readback.floor(),
+        };
         let held = retained.positive.held.as_ref()
             .ok_or(SourceProviderSecurityError::SessionContinuity)?;
         let storage = retained.positive.storage.as_ref()
@@ -374,10 +403,18 @@ impl CurrentRootMountSourceProviderSessionV1 {
         held.scope().require_root_prefix(root1.scope())
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
         if authorization.mount_attempt_id != Some(readback.attempt())
-            || !(1..=5).contains(&phase)
-            || floor.request().owner_id != readback.attempt()
-            || floor.original_prepared() != root1.prepared()
-            || floor.admission_cut() != sidecar.admission_cut()
+            || match purpose {
+                OriginalPositivePurposeV5::Positive => !(1..=5).contains(&phase),
+                OriginalPositivePurposeV5::Terminal => !matches!(phase, 6 | 7),
+            }
+            || match floor {
+                Some(floor) => floor.request().owner_id != readback.attempt()
+                    || floor.original_prepared() != root1.prepared()
+                    || floor.admission_cut() != sidecar.admission_cut(),
+                None => purpose != OriginalPositivePurposeV5::Terminal || phase != 7
+                    || original_root_remaining_v5(readback.graph(), readback.attempt())
+                        .map_err(|_| SourceProviderSecurityError::SessionContinuity)? != 0,
+            }
             || storage.section(Tag::RootPrepared) != Some(root1.to_canonical_bytes().as_slice())
             || (phase >= 2 && sidecar.suffix().control(Kind::ProviderHeld) != Some(held))
             || (phase >= 2 && sidecar.original_scope() != held.scope())
@@ -409,7 +446,10 @@ impl CurrentRootMountSourceProviderSessionV1 {
             self.recheck_original_complete_physical_v5(authorization, retained)?;
         }
         if phase >= 4 {
-            require_original_accepted_cut_v5(readback, retained)?;
+            match purpose {
+                OriginalPositivePurposeV5::Positive => require_original_accepted_cut_v5(readback, retained)?,
+                OriginalPositivePurposeV5::Terminal => require_original_accepted_cut_for_v5(readback, retained, purpose)?,
+            }
         }
         self.require_native_outcome_authorization_v3(authorization)?;
         writer.validate_readback(readback)
@@ -928,6 +968,14 @@ fn require_original_accepted_cut_v5(
     readback: &OriginalRootProtectedReadbackV5,
     retained: &OriginalNativeReceivedOutcomeV5,
 ) -> Result<(), SourceProviderSecurityError> {
+    require_original_accepted_cut_for_v5(readback, retained, OriginalPositivePurposeV5::Positive)
+}
+
+fn require_original_accepted_cut_for_v5(
+    readback: &OriginalRootProtectedReadbackV5,
+    retained: &OriginalNativeReceivedOutcomeV5,
+    purpose: OriginalPositivePurposeV5,
+) -> Result<(), SourceProviderSecurityError> {
     let sidecar = readback.graph().sidecars().get(&readback.attempt())
         .ok_or(SourceProviderSecurityError::SessionContinuity)?;
     let cut = retained.positive.cut.as_ref()
@@ -936,13 +984,20 @@ fn require_original_accepted_cut_v5(
         .ok_or(SourceProviderSecurityError::SessionContinuity)?;
     let unsigned = retained.positive.unsigned.as_ref()
         .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-    let floor = readback.floor()
-        .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+    let floor = match purpose {
+        OriginalPositivePurposeV5::Positive => Some(readback.floor()
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?),
+        OriginalPositivePurposeV5::Terminal => readback.floor(),
+    };
     let remaining = original_root_remaining_v5(readback.graph(), readback.attempt())
         .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
     if sidecar.disposition_cut() != Some(cut)
         || sidecar.disposition() != Some(assertion)
-        || floor.request().future_transactions != remaining
+        || match floor {
+            Some(floor) => floor.request().future_transactions != remaining,
+            None => purpose != OriginalPositivePurposeV5::Terminal
+                || sidecar.suffix().phase() != 7 || remaining != 0,
+        }
     {
         return Err(SourceProviderSecurityError::SessionContinuity);
     }
@@ -977,6 +1032,12 @@ fn require_original_accepted_cut_v5(
                 && sidecar.suffix().prepared().is_none()
                 && sidecar.suffix().control(Kind::RootAccepted) == Some(signed)
         }),
+        6 | 7 if purpose == OriginalPositivePurposeV5::Terminal => {
+            retained.positive.signed.as_ref().is_some_and(|signed| {
+                signed.prepared() == unsigned
+                    && sidecar.suffix().control(Kind::RootAccepted) == Some(signed)
+            })
+        }
         _ => false,
     };
     if !exact || unsigned.section(Tag::Witness) != Some(expected.as_slice()) {

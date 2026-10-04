@@ -609,6 +609,15 @@ pub struct OriginalRootProtectedReadbackV5 {
 }
 
 impl<'journal> MountOriginalNativeJournalAuthorityV5<'journal> {
+    /// Returns the eight immutable ceilings opened by this SAME held Journal.
+    ///
+    /// These are configuration DATA, not currentness, residency funding or an
+    /// append/signing permit. This projection performs no observation.
+    #[must_use]
+    pub fn configured_limits(&self) -> JournalLimits {
+        self.authority.journal.configured_limits()
+    }
+
     pub(crate) fn claim(journal: &'journal mut Journal) -> Result<Self, JournalError> {
         journal.ensure_protected_authority()?;
         let writer = Self {

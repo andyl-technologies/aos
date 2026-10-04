@@ -356,8 +356,21 @@ impl FixedMountSourceAcquisitionOwnerV2<'_> {
                 .ok_or_else(|| state_error("original response flight absent"))?;
             let sent = owner.runtime.pending_provider.as_ref()
                 .ok_or_else(|| state_error("original response Sent custody absent"))?;
-            let mut writer = owner.protected.root_original_native_authority_v5()
-                .map_err(|cause| state_error(&cause.to_string()))?;
+            let terminal = flight.prearm_original_terminal_claim_v5()?;
+            let claimed = owner.protected.root_original_native_authority_v5();
+            let mut writer = match claimed {
+                Ok(writer) => {
+                    if terminal {
+                        flight.complete_original_terminal_claim_v5();
+                    }
+                    writer
+                }
+                Err(cause) if terminal => {
+                    flight.retain_original_terminal_claim_error_v5(cause);
+                    return Err(state_error("original terminal writer claim failed; actual cause retained"));
+                }
+                Err(cause) => return Err(state_error(&cause.to_string())),
+            };
             let progress = flight.advance_original_response_v5(
                 &mut owner.runtime.table,
                 &mut owner.runtime.original_native_sidecars,

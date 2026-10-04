@@ -250,8 +250,8 @@ impl ProductionOriginalMountCycleV1 {
     ///
     /// The original deadline, receipt, Root Session, signed-domain owner,
     /// broker writer/runtime and selected kernel/image owner stay resident.
-    /// Successful local Root4 is rechecked on subsequent waiting turns; it is
-    /// never resent and does not imply remote phase7, ACK13 or settlement.
+    /// Successful local Root4 selects the same Source7/Root13 continuation;
+    /// neither local send is retried or implies peer receipt or settlement.
     ///
     /// # Errors
     ///

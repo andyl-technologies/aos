@@ -17,6 +17,8 @@ use sha2::{Digest as _, Sha256};
 use super::*;
 use crate::source_acquisition::reservation::SentProviderQueryV2;
 
+mod terminal;
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum PositiveStage {
     PrepareHeld,
@@ -41,6 +43,7 @@ pub(super) struct OriginalNativePositiveFlightV5 {
     tentative: Option<SourceAcquisitionTableV2>,
     assertion_transaction: Option<[u8; 16]>,
     first_failure: Option<crate::MountError>,
+    terminal: terminal::OriginalRootTerminalFlightV5,
 }
 
 impl OriginalNativePositiveFlightV5 {
@@ -52,11 +55,16 @@ impl OriginalNativePositiveFlightV5 {
             tentative: None,
             assertion_transaction: None,
             first_failure: None,
+            terminal: terminal::OriginalRootTerminalFlightV5::new(),
         }
     }
 }
 
 impl OriginalNativeAcquireFlightV5 {
+    pub(super) fn original_terminal_selected_v5(&self) -> bool {
+        self.positive.terminal.selected()
+    }
+
     pub(super) fn send_stored_positive(
         &mut self,
         writer: &mut MountOriginalNativeJournalAuthorityV5<'_>,
@@ -80,7 +88,12 @@ impl OriginalNativeAcquireFlightV5 {
                     .map_err(|_| state_error("Root4 send or currentness failed; actual cause retained"))
             })();
             match result {
-                Ok(sent) => Ok(sent),
+                Ok(sent) => {
+                    if sent {
+                        flight.positive.terminal.select_after_root4();
+                    }
+                    Ok(sent)
+                }
                 Err(cause) => {
                     flight.positive.first_failure.get_or_insert(cause);
                     Err(state_error("Root4 continuation remains retained"))
@@ -92,6 +105,10 @@ impl OriginalNativeAcquireFlightV5 {
     pub(in crate::source_acquisition) fn original_response_failure_v5(
         &self,
     ) -> Option<crate::broker::OriginalMountResponseFailureV5<'_>> {
+        if self.positive.terminal.selected() {
+            return self.original_terminal_failure_v5()
+                .map(crate::broker::OriginalMountResponseFailureV5::Terminal);
+        }
         if let Some(received) = self.pending.received.as_ref() {
             if let Some(cause) = received.original_accepted_send_failure_v5() {
                 return Some(crate::broker::OriginalMountResponseFailureV5::Native(cause));
@@ -111,6 +128,9 @@ impl OriginalNativeAcquireFlightV5 {
     pub(in crate::source_acquisition) fn original_response_postcheck_debt_v5(
         &self,
     ) -> Option<&aos_sandbox_source_provider_security::SourceProviderSecurityError> {
+        if self.positive.terminal.selected() {
+            return self.original_terminal_security_debt_v5();
+        }
         self.pending.received.as_ref()
             .and_then(|received| received.original_positive_failures_v5().1)
     }

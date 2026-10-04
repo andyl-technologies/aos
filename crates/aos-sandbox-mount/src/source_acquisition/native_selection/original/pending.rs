@@ -56,6 +56,11 @@ impl OriginalNativeAcquireFlightV5 {
     ) -> Result<crate::broker::OriginalMountResponseProgressV5> {
         use crate::broker::OriginalMountResponseProgressV5 as Progress;
         OriginalFlightBoundaryV5::new(self, session).run(|flight, session| {
+            // The actual successful Root4 call selected this resident child.
+            // Phase6/7 must never re-enter the obsolete phase5 Root4 recipe.
+            if flight.original_terminal_selected_v5() {
+                return flight.advance_original_terminal_v5(table, native_index, writer, session, sent);
+            }
             // Once Pending was committed, its old RootClosed engine owns later
             // progress. Re-entering Pending would check obsolete phase1 rows.
             if flight.pending.stage == PendingStage::Complete {

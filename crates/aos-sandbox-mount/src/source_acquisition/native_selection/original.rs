@@ -36,6 +36,33 @@ use pending::OriginalNativePendingFlightV5;
 mod positive;
 use positive::OriginalNativePositiveFlightV5;
 
+// Closed result disposition only: both recipes call the SAME native validator
+// at the same body sites. No caller can substitute a predicate or authority.
+enum OriginalInstallDispositionV5<'slots> {
+    Legacy,
+    Retained(&'slots mut [Option<std::result::Result<(), aos_sandbox::JournalError>>; 2]),
+}
+
+impl OriginalInstallDispositionV5<'_> {
+    fn validate(
+        &mut self,
+        writer: &MountOriginalNativeJournalAuthorityV5<'_>,
+        readback: &OriginalRootProtectedReadbackV5,
+        index: usize,
+    ) -> Result<()> {
+        match self {
+            Self::Legacy => writer.validate_readback(readback)?,
+            Self::Retained(slots) => {
+                slots[index] = Some(writer.validate_readback(readback));
+                if let Some(Err(cause)) = slots[index].as_ref() {
+                    return Err(state_error(&cause.to_string()));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Stage {
     BeginQuery,
@@ -266,7 +293,34 @@ impl OriginalNativeAcquireFlightV5 {
         writer: &MountOriginalNativeJournalAuthorityV5<'_>,
         readback: &OriginalRootProtectedReadbackV5,
     ) -> Result<()> {
-        writer.validate_readback(readback)?;
+        Self::install_with_disposition_v5(
+            table, native_index, writer, readback, OriginalInstallDispositionV5::Legacy,
+        )
+    }
+
+    fn install_original_terminal_retaining_v5(
+        table: &mut SourceAcquisitionTableV2,
+        native_index: &mut BTreeMap<[u8; 32], RootNativeHeldSidecarV2>,
+        writer: &MountOriginalNativeJournalAuthorityV5<'_>,
+        readback: &OriginalRootProtectedReadbackV5,
+        validations: &mut [Option<std::result::Result<(), aos_sandbox::JournalError>>; 2],
+    ) -> Result<()> {
+        if validations.iter().any(Option::is_some) {
+            return Err(state_error("original terminal installation slots occupied"));
+        }
+        Self::install_with_disposition_v5(
+            table, native_index, writer, readback, OriginalInstallDispositionV5::Retained(validations),
+        )
+    }
+
+    fn install_with_disposition_v5(
+        table: &mut SourceAcquisitionTableV2,
+        native_index: &mut BTreeMap<[u8; 32], RootNativeHeldSidecarV2>,
+        writer: &MountOriginalNativeJournalAuthorityV5<'_>,
+        readback: &OriginalRootProtectedReadbackV5,
+        mut disposition: OriginalInstallDispositionV5<'_>,
+    ) -> Result<()> {
+        disposition.validate(writer, readback, 0)?;
         *table = SourceAcquisitionTableV2::from_state(readback.graph().legacy().clone());
         *native_index = readback.graph().sidecars().clone();
         if !table.matches_state(readback.graph().legacy())
@@ -276,7 +330,7 @@ impl OriginalNativeAcquireFlightV5 {
                 "original native private installation differs from physical readback",
             ));
         }
-        writer.validate_readback(readback)?;
+        disposition.validate(writer, readback, 1)?;
         Ok(())
     }
 

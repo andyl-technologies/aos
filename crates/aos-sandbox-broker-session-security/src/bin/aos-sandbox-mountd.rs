@@ -668,7 +668,8 @@ fn retain_selected_original_response<W: aos_sandbox_mount::worker::MountWorker>(
         match original.advance_selected_response_once(broker) {
             Ok(aos_sandbox_mount::broker::OriginalMountResponseProgressV5::Waiting)
             | Ok(aos_sandbox_mount::broker::OriginalMountResponseProgressV5::PendingClosedSent)
-            | Ok(aos_sandbox_mount::broker::OriginalMountResponseProgressV5::RootAcceptedSent) => {}
+            | Ok(aos_sandbox_mount::broker::OriginalMountResponseProgressV5::RootAcceptedSent)
+            | Ok(aos_sandbox_mount::broker::OriginalMountResponseProgressV5::RootTerminalRecordedSent) => {}
             Err(_) => {
                 original.end();
                 // Both native cause and outer debt remain resident across this

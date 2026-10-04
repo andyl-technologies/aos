@@ -76,6 +76,8 @@ pub enum OriginalMountResponseProgressV5 {
     PendingClosedSent,
     /// The same stored phase5 RootAccepted4 was locally transmitted once.
     RootAcceptedSent,
+    /// The same stored phase7 Root13 was locally transmitted once, not ACKed.
+    RootTerminalRecordedSent,
 }
 
 /// Borrows the actual response failure still owned by the broker runtime.
@@ -86,6 +88,8 @@ pub enum OriginalMountResponseFailureV5<'owner> {
     Security(&'owner aos_sandbox_source_provider_security::SourceProviderSecurityError),
     /// A native stage retained this returned Mount error (possibly legacy prose).
     Mount(&'owner MountError),
+    /// The SAME terminal owner retains this chronological typed first cause.
+    Terminal(&'owner (dyn std::error::Error + 'static)),
 }
 
 impl core::fmt::Debug for OriginalMountResponseFailureV5<'_> {

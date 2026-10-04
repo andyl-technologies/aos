@@ -456,6 +456,13 @@ impl InertSourceProviderCarrierV1 {
         self.send_original_held_retaining_v5(payload)
     }
 
+    pub(crate) fn send_original_root_terminal_retaining_v5(
+        &mut self,
+        payload: &[u8],
+    ) -> Result<(), SeqpacketError> {
+        self.send_original_held_retaining_v5(payload)
+    }
+
     pub(crate) fn send(&mut self, payload: &[u8]) -> Result<(), CarrierFailureV1> {
         if self.poisoned {
             return Err(CarrierFailureV1::Fatal(
@@ -648,6 +655,16 @@ impl InertSourceProviderCarrierV1 {
             }
             result => result,
         }
+    }
+
+    // Root's terminal receiver uses the SAME bounded optional-FD parser and
+    // infallible whole-failure move. Its upper owner rejects any returned FD.
+    pub(crate) fn receive_original_provider_settled_retaining_v5(
+        &mut self,
+        record: &mut Option<RetainedSourceProviderRecordV5>,
+        failure: &mut Option<OriginalRootAcceptedCarrierFailureV5>,
+    ) -> Result<bool, CarrierFailureV1> {
+        self.receive_original_root_accepted_retaining_v5(record, failure)
     }
 
     /// Keeps the exact zero-descriptor profile while retaining typed packets.
