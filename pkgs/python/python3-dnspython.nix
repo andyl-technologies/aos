@@ -2,6 +2,7 @@
 {
   mkDerivation,
   fetchurl,
+  buildPackages,
   python3,
 }: let
   version = "2.8.0";
@@ -34,7 +35,7 @@ in
           mkdir -p "$out/${sitePackages}"
           cp -R dns "$out/${sitePackages}/"
 
-          PYTHONPATH="$out/${sitePackages}" ${python3}/bin/python3 -c \
+          PYTHONPATH="$out/${sitePackages}" ${buildPackages.python3}/bin/python3 -c \
             'import dns; assert dns.__version__ == "${version}"'
         '';
       }

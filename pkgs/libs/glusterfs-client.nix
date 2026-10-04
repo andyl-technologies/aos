@@ -2,6 +2,7 @@
 {
   mkDerivation,
   fetchurl,
+  lib,
   stdenv,
   automake,
   gnumake,
@@ -154,28 +155,54 @@ in
       }
       {
         name = "configure";
-        script = ''
-          export PATH="$PWD/.aos-build-tools:$PATH"
-          export LDFLAGS="-L$PWD/.aos-build-tools/lib''${LDFLAGS:+ $LDFLAGS}"
-          am_cv_python_version=$(${python3}/bin/python3 -c \
-            'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-          export am_cv_python_version
+        script =
+          ''
+            # Configure asks the openssl CLI for its OPENSSLDIR and compiles
+            # that directory in as the trusted-certificate path. Release
+            # builds have no openssl CLI on PATH, a cross host openssl cannot
+            # run, and a build-platform openssl would report its own store
+            # path. Use the linked OpenSSL's configured directory, which is
+            # what the probe returns when the matching CLI is available.
+            sed -i \
+              's#^SSL_CERT_PATH=$(openssl version -d .*$#SSL_CERT_PATH=${openssl}/etc/ssl#' \
+              configure
+            grep -qx 'SSL_CERT_PATH=${openssl}/etc/ssl' configure
+          ''
+          + lib.optionalString stdenv.isCross ''
+            # AC_CHECK_FILE cannot inspect the target's filesystem. The
+            # native sandbox has no /etc/os-release either, and Gluster reads
+            # the file only for s390x distribution workarounds.
+            export ac_cv_file__etc_os_release=no
 
-          # The named client package keeps the complete libgfapi and FUSE
-          # client surface while excluding Gluster's storage-server role.
-          PYTHON=${python3}/bin/python3 \
-            $CONFIG_SHELL ./configure \
-              $configureFlags \
-              --build=${stdenv.buildPlatform.config} \
-              --host=${stdenv.hostPlatform.config} \
-              --prefix="$out" \
-              --sysconfdir="$out/etc" \
-              --localstatedir="$out/var" \
-              --with-mountutildir="$out/sbin" \
-              --with-initdir="$out/etc/init.d" \
-              --with-systemddir="$out/lib/systemd/system" \
-              --without-server
-        '';
+            # Cross builds otherwise select an "Unspecified" distribution and
+            # install SysV init scripts that do not exist. A native sandbox
+            # has no distribution marker files and selects none; match it so
+            # both builds install only the systemd units.
+            sed -i 's/^    GF_DISTRIBUTION=Unspecified$/    GF_DISTRIBUTION=/' configure
+            ! grep -q '^ *GF_DISTRIBUTION=Unspecified' configure
+          ''
+          + ''
+            export PATH="$PWD/.aos-build-tools:$PATH"
+            export LDFLAGS="-L$PWD/.aos-build-tools/lib''${LDFLAGS:+ $LDFLAGS}"
+            am_cv_python_version=$(${python3}/bin/python3 -c \
+              'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
+            export am_cv_python_version
+
+            # The named client package keeps the complete libgfapi and FUSE
+            # client surface while excluding Gluster's storage-server role.
+            PYTHON=${python3}/bin/python3 \
+              $CONFIG_SHELL ./configure \
+                $configureFlags \
+                --build=${stdenv.buildPlatform.config} \
+                --host=${stdenv.hostPlatform.config} \
+                --prefix="$out" \
+                --sysconfdir="$out/etc" \
+                --localstatedir="$out/var" \
+                --with-mountutildir="$out/sbin" \
+                --with-initdir="$out/etc/init.d" \
+                --with-systemddir="$out/lib/systemd/system" \
+                --without-server
+          '';
       }
       {
         name = "build";

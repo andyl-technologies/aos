@@ -12,6 +12,17 @@
   libx11,
 }: let
   version = "1.3.6";
+
+  # XORG_CHECK_MALLOC_ZERO runs a target program, so cross builds state the
+  # answer a native build would detect. glibc's realloc(p, 0) frees and
+  # returns NULL, while Darwin returns a minimum-sized allocation.
+  malloc0Flag =
+    lib.optionalString stdenv.isCross
+    (
+      if stdenv.hostPlatform.isDarwin
+      then " --disable-malloc0returnsnull"
+      else " --enable-malloc0returnsnull"
+    );
 in
   mkDerivation {
     pname = "libxext";
@@ -40,7 +51,7 @@ in
         {
           name = "configure";
           script = ''
-            $CONFIG_SHELL ./configure $configureFlags --prefix="$out"
+            $CONFIG_SHELL ./configure $configureFlags --prefix="$out"${malloc0Flag}
           '';
         }
         {

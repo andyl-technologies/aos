@@ -420,18 +420,52 @@ impl NixRunner {
     /// exit status and the tail of its captured stderr. Nix's check-mode
     /// nondeterminism exit status is preserved as a build failure.
     pub fn realise_derivations(&self, derivations: &[PathBuf], check: bool) -> Result<()> {
-        for derivation in derivations {
-            let text = derivation.to_string_lossy();
-            if !text.starts_with("/nix/store/") || !text.ends_with(".drv") {
-                anyhow::bail!("invalid exact derivation path: {text}");
-            }
+        if check {
+            return self
+                .check_derivations(derivations)?
+                .require_all_reproduced();
         }
 
-        if check {
-            self.check_derivations_independently(derivations)
-        } else {
-            self.realise_derivation_batches(derivations)
+        require_exact_derivation_paths(derivations)?;
+        self.realise_derivation_batches(derivations)
+    }
+
+    /// Repeat-builds every derivation with Nix `--check` and reports each
+    /// failed check instead of failing on the first.
+    ///
+    /// This is the per-derivation form of
+    /// [`realise_derivations`](Self::realise_derivations) with `check`: the
+    /// same bounded pool of independent `nix-store --realise --keep-going
+    /// --check` processes runs to completion, and the returned
+    /// [`CheckReport`] names every derivation whose repeat build differed or
+    /// failed. Callers decide whether a failed check is fatal; use
+    /// [`CheckReport::require_all_reproduced`] to fail closed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty or non-store derivation path before any
+    /// command runs. After every check has run, returns
+    /// [`AosError::NixBuild`] naming every failure when any `nix-store`
+    /// process could not be spawned or awaited: such a check never ran, so it
+    /// is evidence of a broken environment rather than of an unreproducible
+    /// derivation.
+    pub fn check_derivations(&self, derivations: &[PathBuf]) -> Result<CheckReport> {
+        require_exact_derivation_paths(derivations)?;
+
+        let report = self.check_derivations_independently(derivations);
+        if report
+            .failures
+            .iter()
+            .any(|failure| failure.exit_code.is_none())
+        {
+            return Err(AosError::NixBuild {
+                exit_code: -1,
+                stderr: report.to_string(),
+            }
+            .into());
         }
+
+        Ok(report)
     }
 
     /// Realizes derivations in command-line-bounded `nix-store` batches.
@@ -465,8 +499,8 @@ impl NixRunner {
     ///
     /// Outside quiet mode `run_nix` replays each failing process's stderr as
     /// it finishes, so defects are visible during a long pass; the returned
-    /// error repeats them together once every check has run.
-    fn check_derivations_independently(&self, derivations: &[PathBuf]) -> Result<()> {
+    /// report repeats them together once every check has run.
+    fn check_derivations_independently(&self, derivations: &[PathBuf]) -> CheckReport {
         let failures = run_with_bounded_workers(derivations, CHECK_WORKERS, |derivation| {
             let arguments = vec![
                 "--realise".to_string(),
@@ -479,17 +513,10 @@ impl NixRunner {
                 .map_err(|error| CheckFailure::from_error(derivation, &error))
         });
 
-        let Some(first) = failures.first() else {
-            return Ok(());
-        };
-        let exit_code = first.1.exit_code.unwrap_or(-1);
-        let failures: Vec<_> = failures.into_iter().map(|(_, failure)| failure).collect();
-
-        Err(AosError::NixBuild {
-            exit_code,
-            stderr: check_failure_report(&failures, derivations.len()),
+        CheckReport {
+            checked: derivations.len(),
+            failures: failures.into_iter().map(|(_, failure)| failure).collect(),
         }
-        .into())
     }
 
     /// Returns Nix JSON path information for exact realized store paths.
@@ -859,6 +886,17 @@ fn target_platform_name_is_safe(target: &str) -> bool {
             .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
 }
 
+/// Rejects anything other than an exact `/nix/store/*.drv` path.
+fn require_exact_derivation_paths(derivations: &[PathBuf]) -> Result<()> {
+    for derivation in derivations {
+        let text = derivation.to_string_lossy();
+        if !text.starts_with("/nix/store/") || !text.ends_with(".drv") {
+            anyhow::bail!("invalid exact derivation path: {text}");
+        }
+    }
+    Ok(())
+}
+
 /// Removes the output selector that `nix-instantiate` prints for a non-default output.
 fn strip_nix_output_selector(path: &str) -> &str {
     path.split_once('!')
@@ -912,14 +950,88 @@ const CHECK_WORKERS: usize = 32;
 /// Number of trailing stderr lines kept for each failed check.
 const CHECK_STDERR_TAIL_LINES: usize = 20;
 
-/// One derivation whose `nix-store --realise --check` process failed.
+/// Outcome of a Nix `--check` repeat-build pass over exact derivations.
+///
+/// Produced by [`NixRunner::check_derivations`]. Failures are listed in the
+/// order of the checked derivations, independent of worker scheduling.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct CheckFailure {
-    derivation: PathBuf,
+pub struct CheckReport {
+    checked: usize,
+    failures: Vec<CheckFailure>,
+}
+
+impl CheckReport {
+    /// Creates a report for `checked` derivations with the given failures.
+    ///
+    /// [`NixRunner::check_derivations`] produces reports from real checks;
+    /// this constructor lets callers test how they act on an outcome.
+    #[must_use]
+    pub fn new(checked: usize, failures: Vec<CheckFailure>) -> Self {
+        Self { checked, failures }
+    }
+
+    /// Returns the number of derivations that were repeat-built.
+    #[must_use]
+    pub fn checked(&self) -> usize {
+        self.checked
+    }
+
+    /// Returns every derivation whose repeat build did not succeed.
+    #[must_use]
+    pub fn failures(&self) -> &[CheckFailure] {
+        &self.failures
+    }
+
+    /// Reports whether every checked derivation reproduced byte-identically.
+    #[must_use]
+    pub fn all_reproduced(&self) -> bool {
+        self.failures.is_empty()
+    }
+
+    /// Requires every checked derivation to have reproduced.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AosError::NixBuild`] when any check failed, carrying the
+    /// first failure's exit status and a report naming every failed
+    /// derivation with its exit status and the tail of its captured stderr.
+    /// Nix's check-mode nondeterminism exit status is preserved as a build
+    /// failure.
+    pub fn require_all_reproduced(&self) -> Result<()> {
+        let Some(first) = self.failures.first() else {
+            return Ok(());
+        };
+
+        Err(AosError::NixBuild {
+            exit_code: first.exit_code.unwrap_or(-1),
+            stderr: self.to_string(),
+        }
+        .into())
+    }
+}
+
+/// Formats every failed check into one report, one derivation per entry.
+impl std::fmt::Display for CheckReport {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&check_failure_report(&self.failures, self.checked))
+    }
+}
+
+/// One derivation whose `nix-store --realise --check` process failed.
+///
+/// A failure means the repeat build did not prove a byte-identical output:
+/// Nix found a differing output, the rebuild itself failed, or (with no exit
+/// status) the process could not be run at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckFailure {
+    /// Exact derivation path that was repeat-built.
+    pub derivation: PathBuf,
     /// Exit status of `nix-store`, or `None` when it could not be run.
-    exit_code: Option<i32>,
+    pub exit_code: Option<i32>,
     /// Captured stderr tail, or the spawn error when there is no status.
-    detail: String,
+    ///
+    /// The tail is empty when stderr was streamed live at high verbosity.
+    pub detail: String,
 }
 
 impl CheckFailure {
@@ -940,6 +1052,33 @@ impl CheckFailure {
             derivation: derivation.to_path_buf(),
             exit_code,
             detail,
+        }
+    }
+
+    /// Returns a one-line reason suitable for a summary listing.
+    ///
+    /// This is the first `error:` line of the captured stderr tail, which is
+    /// where Nix names a differing output or a failed builder. Without one it
+    /// falls back to the last non-empty line, and without any captured text
+    /// to the exit status.
+    #[must_use]
+    pub fn reason(&self) -> String {
+        let lines = || {
+            self.detail
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+        };
+
+        if let Some(error) = lines().find(|line| line.starts_with("error:")) {
+            return error.to_owned();
+        }
+        if let Some(last) = lines().last() {
+            return last.to_owned();
+        }
+        match self.exit_code {
+            Some(code) => format!("nix-store exited with status {code}"),
+            None => "nix-store did not run".to_owned(),
         }
     }
 }
@@ -1031,9 +1170,9 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        CheckFailure, add_cross_system_arg, batches_by_argument_bytes, check_failure_report,
-        run_with_bounded_workers, stderr_tail, strip_nix_output_selector,
-        target_packages_expression,
+        CheckFailure, CheckReport, add_cross_system_arg, batches_by_argument_bytes,
+        check_failure_report, require_exact_derivation_paths, run_with_bounded_workers,
+        stderr_tail, strip_nix_output_selector, target_packages_expression,
     };
 
     /// Builds a store-like derivation path of exactly `length` bytes.
@@ -1190,6 +1329,78 @@ mod tests {
              /nix/store/b-y.drv (not run)\n    \
              failed to spawn nix-store"
         );
+    }
+
+    fn failure(derivation: &str, exit_code: Option<i32>, detail: &str) -> CheckFailure {
+        CheckFailure {
+            derivation: PathBuf::from(derivation),
+            exit_code,
+            detail: detail.to_string(),
+        }
+    }
+
+    #[test]
+    fn check_failure_reason_prefers_the_first_nix_error_line() {
+        let nondeterministic = failure(
+            "/nix/store/a-x.drv",
+            Some(104),
+            "checking outputs of '/nix/store/a-x.drv'...\n  \
+             error: derivation '/nix/store/a-x.drv' may not be deterministic\n\
+             error: build of '/nix/store/a-x.drv' failed",
+        );
+        let unlabelled = failure("/nix/store/b-y.drv", Some(1), "line one\nlast line\n\n");
+        let silent = failure("/nix/store/c-z.drv", Some(100), "");
+
+        assert_eq!(
+            nondeterministic.reason(),
+            "error: derivation '/nix/store/a-x.drv' may not be deterministic"
+        );
+        assert_eq!(unlabelled.reason(), "last line");
+        assert_eq!(silent.reason(), "nix-store exited with status 100");
+    }
+
+    #[test]
+    fn check_report_without_failures_is_reproduced() {
+        let report = CheckReport {
+            checked: 3,
+            failures: vec![],
+        };
+
+        assert!(report.all_reproduced());
+        assert!(report.require_all_reproduced().is_ok());
+    }
+
+    #[test]
+    fn check_report_with_failures_fails_closed_with_every_derivation() {
+        let report = CheckReport {
+            checked: 3,
+            failures: vec![
+                failure("/nix/store/a-x.drv", Some(104), "error: differs"),
+                failure("/nix/store/b-y.drv", Some(1), "error: builder failed"),
+            ],
+        };
+
+        let error = report
+            .require_all_reproduced()
+            .expect_err("failed checks must fail closed");
+
+        assert!(!report.all_reproduced());
+        let Some(crate::error::AosError::NixBuild { exit_code, stderr }) =
+            error.downcast_ref::<crate::error::AosError>()
+        else {
+            panic!("expected a Nix build error, got {error:#}");
+        };
+        assert_eq!(*exit_code, 104);
+        assert!(stderr.starts_with("2 of 3 derivations failed"));
+        assert!(stderr.contains("/nix/store/a-x.drv (exit code 104)"));
+        assert!(stderr.contains("/nix/store/b-y.drv (exit code 1)"));
+    }
+
+    #[test]
+    fn exact_derivation_paths_must_be_store_derivations() {
+        assert!(require_exact_derivation_paths(&[PathBuf::from("/nix/store/a-x.drv")]).is_ok());
+        assert!(require_exact_derivation_paths(&[PathBuf::from("/tmp/a-x.drv")]).is_err());
+        assert!(require_exact_derivation_paths(&[PathBuf::from("/nix/store/a-x")]).is_err());
     }
 
     #[test]

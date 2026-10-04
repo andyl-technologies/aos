@@ -48,9 +48,100 @@
   readline,
   rpcsvc-proto,
   zlib,
+  lib,
+  stdenv,
+  buildPackages,
   smbdOnly ? false,
 }: let
   version = "4.24.7";
+
+  src = fetchurl {
+    urls = [
+      "https://download.samba.org/pub/samba/stable/samba-${version}.tar.gz"
+    ];
+    hash = "sha256-Rbd0ekdFLv8rIVmkTMY+tDaQ0zn9EGkIjgI6AV/tBsc=";
+  };
+
+  # Waf, pidl, and the documentation rules run during the build. Select their
+  # interpreters and data from the build package set so a cross build never
+  # executes target binaries; natively these are the host packages.
+  buildPython3 = buildPackages.python3;
+  buildPerl = buildPackages.perl;
+  buildPerlParseYapp = buildPackages.perl-parse-yapp;
+
+  # Waf cannot run configure probes for a foreign host. Each supported cross
+  # host carries a reviewed answers file for those probes and the ELF machine
+  # number that the installed programs must carry.
+  crossTargets = {
+    aarch64-linux = {
+      answers = ./_samba-cross/aarch64-linux.answers;
+      elfMachine = "183";
+    };
+  };
+  crossTarget =
+    crossTargets.${stdenv.hostPlatform.system}
+    or (throw "samba: no reviewed Waf cross answers for ${stdenv.hostPlatform.system}");
+  heimdalBuildTools = buildPackages.callPackage ./_samba-cross/heimdal-build-tools.nix {
+    inherit src version;
+  };
+
+  # Waf rejects Autoconf's --build/--host pair. Cross builds use Waf's own
+  # cross mode, which answers every target run-time probe from the reviewed
+  # file and fails configure when Waf asks a question the file lacks.
+  configureModeFlags =
+    if stdenv.isCross
+    then "--cross-compile --cross-answers=cross-answers.txt"
+    else "$configureFlags";
+  crossPreparePhase = {
+    name = "cross-prepare";
+    script = ''
+      # Waf appends unanswered questions to the answers file it reads.
+      cp ${crossTarget.answers} cross-answers.txt
+      chmod u+w cross-answers.txt
+
+      # Waf's cross-answers mode replays each answer through an FHS shell.
+      sed -i "s|'/bin/sh', '-c'|'${buildPackages.bash}/bin/bash', '-c'|" \
+        buildtools/wafsamba/samba_cross.py
+      grep -Fq "'${buildPackages.bash}/bin/bash', '-c'" buildtools/wafsamba/samba_cross.py
+
+      # The embedded Heimdal generators would otherwise be compiled for the
+      # target and executed during the build. Select build-platform generators
+      # from the same source through Waf's system-generator switches.
+      cat >> third_party/heimdal_build/wscript_configure <<'EOF'
+
+      conf.env.ASN1_COMPILE = '${heimdalBuildTools}/bin/asn1_compile'
+      conf.define('USING_SYSTEM_ASN1_COMPILE', 1)
+      conf.env.COMPILE_ET = '${heimdalBuildTools}/bin/compile_et'
+      conf.define('USING_SYSTEM_COMPILE_ET', 1)
+      EOF
+    '';
+  };
+
+  # Native builds ask the installed server for its compiled-in layout. A cross
+  # build cannot execute it, so require target ELF objects and the same
+  # compiled-in layout strings instead.
+  smbdOnlyIdentityChecks =
+    if stdenv.isCross
+    then ''
+      for file in "$out/sbin/smbd" $(find "$out/lib" -type f -name '*.so*'); do
+        magic=$(od -An -t x1 -N 4 "$file" | tr -d ' ')
+        machine=$(od -An -t u2 -j 18 -N 2 "$file" | tr -d ' ')
+        if [ "$magic" != 7f454c46 ] || [ "$machine" != ${crossTarget.elfMachine} ]; then
+          echo "$file is not an ELF object for ${stdenv.hostPlatform.system}" >&2
+          exit 1
+        fi
+      done
+      grep -rqaF "$out/bin" "$out/sbin/smbd" "$out/lib"
+      grep -rqaF "$out/sbin" "$out/sbin/smbd" "$out/lib"
+      grep -rqaF "$out/share" "$out/sbin/smbd" "$out/lib"
+    ''
+    else ''
+      "$out/sbin/smbd" --version | grep -F "Version ${version}"
+      "$out/sbin/smbd" -b | grep -F "BINDIR: $out/bin"
+      "$out/sbin/smbd" -b | grep -F "SBINDIR: $out/sbin"
+      "$out/sbin/smbd" -b | grep -F "DATADIR: $out/share"
+    '';
+
   pythonSitePackages = "lib/python3.14/site-packages";
   pythonPath =
     if smbdOnly
@@ -61,21 +152,21 @@
     if smbdOnly
     then "nsupdate"
     else "${bind.dnsutils}/bin/nsupdate";
-  xmlCatalogFiles = "${docbook-xml-4_2}/share/xml/docbook/schema/dtd/4.2/catalog.xml ${docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml ${docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml";
+  xmlCatalogFiles = "${buildPackages.docbook-xml-4_2}/share/xml/docbook/schema/dtd/4.2/catalog.xml ${buildPackages.docbook-xml}/share/xml/docbook/schema/dtd/4.5/catalog.xml ${buildPackages.docbook-xsl}/share/xml/docbook/stylesheet/catalog.xml";
+
+  # Cross preparation runs between unpack and configure. Native builds keep
+  # their phase list unchanged.
+  withCrossPreparation = args:
+    if stdenv.isCross
+    then args // {phases = lib.addPhaseAfter args.phases "unpack" crossPreparePhase;}
+    else args;
 in
-  mkDerivation {
+  mkDerivation (withCrossPreparation {
     pname =
       if smbdOnly
       then "samba-smbd"
       else "samba";
-    inherit version;
-
-    src = fetchurl {
-      urls = [
-        "https://download.samba.org/pub/samba/stable/samba-${version}.tar.gz"
-      ];
-      hash = "sha256-Rbd0ekdFLv8rIVmkTMY+tDaQ0zn9EGkIjgI6AV/tBsc=";
-    };
+    inherit version src;
 
     buildDeps =
       [
@@ -172,12 +263,12 @@ in
           # Point both groups at AOS interpreters instead of FHS paths.
           find . -type f \( -name '*.py' -o -name 'waf' \) | while read file; do
             if head -n 1 "$file" | grep -Eq '^#! */usr/bin/(env +)?python'; then
-              sed -i "1s|^#!.*|#!${python3}/bin/python3|" "$file"
+              sed -i "1s|^#!.*|#!${buildPython3}/bin/python3|" "$file"
             fi
           done
           find . -type f \( -name '*.pl' -o -name 'pidl' \) | while read file; do
             if head -n 1 "$file" | grep -Eq '^#! */usr/bin/(env +)?perl'; then
-              sed -i "1s|^#!.*|#!${perl}/bin/perl|" "$file"
+              sed -i "1s|^#!.*|#!${buildPerl}/bin/perl|" "$file"
             fi
           done
 
@@ -227,12 +318,12 @@ in
       {
         name = "configure";
         script = ''
-          export PERL5LIB="${perl-parse-yapp}/lib/perl5''${PERL5LIB:+:$PERL5LIB}"
+          export PERL5LIB="${buildPerlParseYapp}/lib/perl5''${PERL5LIB:+:$PERL5LIB}"
           export PYTHONPATH="${pythonPath}''${PYTHONPATH:+:$PYTHONPATH}"
           export XML_CATALOG_FILES="${xmlCatalogFiles}"
 
           "$CONFIG_SHELL" ./configure \
-            $configureFlags \
+            ${configureModeFlags} \
             --prefix="$out" \
             --bindir="$out/bin" \
             --sbindir="$out/sbin" \
@@ -283,7 +374,7 @@ in
       {
         name = "build";
         script = ''
-          export PERL5LIB="${perl-parse-yapp}/lib/perl5''${PERL5LIB:+:$PERL5LIB}"
+          export PERL5LIB="${buildPerlParseYapp}/lib/perl5''${PERL5LIB:+:$PERL5LIB}"
           export PYTHONPATH="${pythonPath}''${PYTHONPATH:+:$PYTHONPATH}"
           export XML_CATALOG_FILES="${xmlCatalogFiles}"
           make -j"$NIX_BUILD_CORES"
@@ -292,7 +383,7 @@ in
       {
         name = "install";
         script = ''
-          export PERL5LIB="${perl-parse-yapp}/lib/perl5''${PERL5LIB:+:$PERL5LIB}"
+          export PERL5LIB="${buildPerlParseYapp}/lib/perl5''${PERL5LIB:+:$PERL5LIB}"
           export PYTHONPATH="${pythonPath}''${PYTHONPATH:+:$PYTHONPATH}"
           make install DESTDIR="$out"
 
@@ -306,26 +397,26 @@ in
 
           ${
             if smbdOnly
-            then ''
-              # QEMU needs only the file server entry point. This separately
-              # configured build has no AD/DC, Python, winbind, discovery,
-              # printing, Gluster, or administration contract to preserve.
-              rm -rf "$out/bin" "$out/include" "$out/share/man"
-              rm -rf "$out/lib/pkgconfig" "$out/${pythonSitePackages}"
-              find "$out/sbin" -mindepth 1 -maxdepth 1 ! -name smbd -delete
-              mkdir -p "$out/bin" "$out/share/samba/codepages"
+            then
+              ''
+                # QEMU needs only the file server entry point. This separately
+                # configured build has no AD/DC, Python, winbind, discovery,
+                # printing, Gluster, or administration contract to preserve.
+                rm -rf "$out/bin" "$out/include" "$out/share/man"
+                rm -rf "$out/lib/pkgconfig" "$out/${pythonSitePackages}"
+                find "$out/sbin" -mindepth 1 -maxdepth 1 ! -name smbd -delete
+                mkdir -p "$out/bin" "$out/share/samba/codepages"
 
-              test -x "$out/sbin/smbd"
-              test "$(find "$out/sbin" -mindepth 1 -maxdepth 1 | wc -l)" -eq 1
-              test -d "$out/bin"
-              test -d "$out/share/samba"
-              test -d "$out/share/samba/codepages"
-              "$out/sbin/smbd" --version | grep -F "Version ${version}"
-              "$out/sbin/smbd" -b | grep -F "BINDIR: $out/bin"
-              "$out/sbin/smbd" -b | grep -F "SBINDIR: $out/sbin"
-              "$out/sbin/smbd" -b | grep -F "DATADIR: $out/share"
-              ! find "$out" -path '*/python*' | grep .
-            ''
+                test -x "$out/sbin/smbd"
+                test "$(find "$out/sbin" -mindepth 1 -maxdepth 1 | wc -l)" -eq 1
+                test -d "$out/bin"
+                test -d "$out/share/samba"
+                test -d "$out/share/samba/codepages"
+              ''
+              + smbdOnlyIdentityChecks
+              + ''
+                ! find "$out" -path '*/python*' | grep .
+              ''
             else ''
               # Keep the complete service suite at the paths compiled into
               # Samba. The AD/DC supervisor executes both native helpers and
@@ -619,4 +710,4 @@ in
       license = "GPL-3.0-or-later";
       mainProgram = "smbd";
     };
-  }
+  })

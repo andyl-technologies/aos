@@ -8,6 +8,10 @@
   wayland,
 }: let
   version = "1.43";
+
+  # The protocol tests link against the host wayland-client and only run in
+  # the native check phase. Cross builds skip that phase, so do not build them.
+  crossTestFlag = lib.optionalString stdenv.isCross " -Dtests=false";
 in
   mkDerivation {
     pname = "wayland-protocols";
@@ -37,7 +41,7 @@ in
           name = "configure";
           script = ''
             meson setup build $mesonFlags --prefix="$out" --libdir=lib \
-              --buildtype=release -Dc_link_args=-Wl,-rpath,${wayland}/lib
+              --buildtype=release -Dc_link_args=-Wl,-rpath,${wayland}/lib${crossTestFlag}
           '';
         }
         {
