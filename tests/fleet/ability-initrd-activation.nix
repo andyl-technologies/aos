@@ -42,6 +42,7 @@
       # This test endpoint must be live before the ability graph it observes runs.
       boot.initrd.systemd.services.aos-ability-initrd-interruption-observer = {
         description = "Interrupt one returned initrd ability effect";
+        path = [pkgs.coreutils];
         requiredBy = ["aos-ability-initrd-controller.service"];
         before = ["aos-ability-initrd-controller.service"];
         unitConfig.DefaultDependencies = "no";
