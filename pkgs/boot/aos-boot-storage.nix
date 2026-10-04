@@ -52,6 +52,7 @@ in
                 paths = [
                     "@out@/bin/aos-mount-esp",
                     "@out@/bin/aos-mount-transaction-storage",
+                    "@out@/bin/aos-seal-boot-transaction-storage",
                     "@out@/bin/aos-stage-zfs-credential",
                     "@out@/bin/aos-sync-esps",
                     "@out@/bin/aos-zfs-unlock",
@@ -131,6 +132,13 @@ in
             --replace-fail '@coreutils@' '${coreutils}' \
             --replace-fail '@util_linux@' '${util-linux}'
 
+          cp ${./_aos-boot-storage/seal-transaction-storage.sh.in} \
+            "$out/bin/aos-seal-boot-transaction-storage"
+          substituteInPlace "$out/bin/aos-seal-boot-transaction-storage" \
+            --replace-fail '@bash@' '${bash}/bin/bash' \
+            --replace-fail '@coreutils@' '${coreutils}' \
+            --replace-fail '@util_linux@' '${util-linux}'
+
           cp ${./_aos-boot-storage/sync-esps.sh.in} "$out/bin/aos-sync-esps"
           substituteInPlace "$out/bin/aos-sync-esps" \
             --replace-fail '@bash@' '${bash}/bin/bash' \
@@ -150,12 +158,14 @@ in
 
           ${bash}/bin/bash -n "$out/bin/aos-mount-esp"
           ${bash}/bin/bash -n "$out/bin/aos-mount-transaction-storage"
+          ${bash}/bin/bash -n "$out/bin/aos-seal-boot-transaction-storage"
           ${bash}/bin/bash -n "$out/bin/aos-sync-esps"
           ${bash}/bin/bash -n "$out/bin/aos-stage-zfs-credential"
           ${bash}/bin/bash -n "$out/bin/aos-zfs-unlock"
           chmod 0755 \
             "$out/bin/aos-mount-esp" \
             "$out/bin/aos-mount-transaction-storage" \
+            "$out/bin/aos-seal-boot-transaction-storage" \
             "$out/bin/aos-sync-esps" \
             "$out/bin/aos-stage-zfs-credential" \
             "$out/bin/aos-zfs-unlock"

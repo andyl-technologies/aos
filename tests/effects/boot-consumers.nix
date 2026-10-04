@@ -31,9 +31,10 @@ let
           outputs = (artifact name).outputs // {module = toString retained;};
         };
       dependencies = builtins.listToAttrs (builtins.map (name: {
-        inherit name;
-        value = artifact name;
-      }) ["aos" "bash" "systemd" "nix" "coreutils" "jq" "util-linux" "sbsigntools" "tpm2-tools"]);
+          inherit name;
+          value = artifact name;
+        }) (["aos" "bash" "systemd" "nix" "coreutils" "jq" "util-linux" "sbsigntools" "tpm2-tools"]
+          ++ lib.optional (name == "aos-boot-preparations") "aos-boot-storage"));
     };
   };
   packageModules = [
@@ -100,6 +101,19 @@ let
   receiver = host.config.aos.services."boot-preparations.aos-ability-host-receiver";
   bootServices = builtins.filter (service: service.enable) (builtins.attrValues initrd.config.aos.services);
 in {
+  committed_receipt_handoff_seals_only_the_configured_esp = let
+    handoff = initrd.config.aos.services."boot-preparations.aos-initrd-store-handoff";
+    storage = initrd.config.aos.boot.storageServices;
+    seal = builtins.head handoff.lifecycle.post_start;
+  in
+    assert handoff.enable && !host.config.aos.services."boot-preparations.aos-initrd-store-handoff".enable;
+    assert builtins.head (builtins.head handoff.lifecycle.start).executable.arguments == "handoff-initrd-store";
+    assert builtins.elem "aos-ability-initrd-controller.service" handoff.dependencies.requires;
+    assert builtins.elem "initrd-fs.target" handoff.dependencies.required_by;
+    assert builtins.length handoff.lifecycle.post_start == 1;
+    assert seal.executable.path == "${(artifact "aos-boot-storage").path}/bin/aos-seal-boot-transaction-storage";
+    assert seal.executable.arguments == [storage.transactionStorageRoot] ++ storage.espDevices;
+    assert !seal.ignore_failure; true;
   retained_identity_restoration_precedes_both_host_activation_paths = let
     restoration = host.config.aos.services."boot-preparations.aos-identity-restoration";
     command = builtins.head restoration.lifecycle.start;

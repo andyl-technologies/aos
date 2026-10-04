@@ -152,6 +152,7 @@
     activationOwner ? "ability",
     readinessMechanism ? "successful-exit",
     startTimeoutMillis ? 90000,
+    postStart ? [],
   }:
     {
       inherit activationOwner;
@@ -165,7 +166,7 @@
         condition = [];
         pre_start = [];
         start = [(handoffCommand arguments)];
-        post_start = [];
+        post_start = postStart;
         stop = [];
         post_stop = [];
         restart = "never";
@@ -274,6 +275,17 @@
     description = "Retain committed provisioning receipts in the host store";
     activationOwner = "manager";
     arguments = ["handoff-initrd-store"] ++ stageInputs "initrd" cfg.initrdStateDirectory;
+    postStart = [
+      {
+        executable = {
+          path = "${dependencies.aos-boot-storage.path}/bin/aos-seal-boot-transaction-storage";
+          arguments =
+            [config.aos.boot.storageServices.transactionStorageRoot]
+            ++ config.aos.boot.storageServices.espDevices;
+        };
+        ignore_failure = false;
+      }
+    ];
     dependencies =
       emptyDependencies
       // {
