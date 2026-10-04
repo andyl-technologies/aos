@@ -83,6 +83,11 @@ pub struct OriginalSourceProtectedReadbackV5 {
 enum OriginalHeldBasisPurposeV5<'control> {
     Preparation(&'control aos_sandbox_source_provider_protocol::native_held_completion::frame::PreparedNativeHeldControlV1),
     Delivery(&'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1),
+    RootDisposition(
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        &'control aos_sandbox_source_provider_protocol::native_held_completion::frame::PreparedNativeHeldControlV1,
+    ),
 }
 
 /// Binds prospective archive metadata to one held append without proving commit.
@@ -334,6 +339,22 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
                 }
                 SourceNativeHeldStepV1::HeldStored
             }
+            OriginalHeldBasisPurposeV5::RootDisposition(held, root4, relay) => {
+                if before.suffix().phase() != 6 || after.suffix().phase() != 7
+                    || before.suffix().prepared().is_some()
+                    || after.suffix().prepared() != Some(relay)
+                    || before.suffix().control(NativeHeldControlKindV1::ProviderHeld) != Some(held)
+                    || after.suffix().control(NativeHeldControlKindV1::ProviderHeld) != Some(held)
+                    || before.suffix().control(NativeHeldControlKindV1::RootAccepted).is_some()
+                    || after.suffix().control(NativeHeldControlKindV1::RootAccepted) != Some(root4)
+                    || held.kind() != NativeHeldControlKindV1::ProviderHeld
+                    || root4.kind() != NativeHeldControlKindV1::RootAccepted
+                    || relay.kind() != NativeHeldControlKindV1::ProviderRelay
+                {
+                    return Err(invalid("original Root disposition phase7 changed"));
+                }
+                SourceNativeHeldStepV1::RootDispositionPrepared
+            }
         };
         let checkpoints = self.challenges.retained_rows()?;
         let spent = checkpoints.get(cut.challenge_checkpoint()
@@ -360,6 +381,27 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
         }
         self.validate_readback(readback)?;
         Ok(origin)
+    }
+
+    /// Borrows the same-writer phase7 cut containing Root4 and an unsigned relay.
+    ///
+    /// Success is protected comparison DATA, not a relay or settlement permit.
+    ///
+    /// # Errors
+    ///
+    /// Rejects another physical6-to7 cut, changed Held, Root4 or preparation,
+    /// stale Spent history, an invalid complete graph or foreign Applying origin.
+    pub fn original_root_disposition_basis_v5(
+        &self,
+        readback: &OriginalSourceProtectedReadbackV5,
+        acquisition: ObjectDigest,
+        held: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        root4: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        relay: &aos_sandbox_source_provider_protocol::native_held_completion::frame::PreparedNativeHeldControlV1,
+    ) -> Result<&SourceOriginalAdmissionDataV5, JournalError> {
+        self.original_held_basis_v5(
+            readback, acquisition, OriginalHeldBasisPurposeV5::RootDisposition(held, root4, relay),
+        )
     }
 
     /// Ends the once-only phase-five purpose before any fallible basis check.

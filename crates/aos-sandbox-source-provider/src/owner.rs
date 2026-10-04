@@ -142,6 +142,9 @@ pub enum FixedProviderOriginalCompletionProgressV5 {
     ProviderHeldSent,
     /// Complete and the original SourceRoot were locally sent, without an ACK.
     CompleteSent,
+    /// Root4 and an unsigned relay were read back in the same phase7 transaction.
+    /// This is not a relay send, acknowledgement, settlement or release permit.
+    RootDispositionPrepared,
     /// All returned originals and the first cause remain permanently held.
     Closed,
 }

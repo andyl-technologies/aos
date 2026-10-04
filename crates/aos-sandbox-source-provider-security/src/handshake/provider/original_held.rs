@@ -16,11 +16,20 @@ use aos_sandbox_source_provider_protocol::native_held_completion::{
 use ed25519_dalek::Signer as _;
 
 mod delivery;
+mod root_accepted;
 
 #[derive(Clone, Copy)]
 enum OriginalHeldBindingPurposeV5<'control> {
     Preparation(&'control PreparedNativeHeldControlV1),
     Delivery(&'control SignedNativeHeldControlV1, &'control [u8]),
+    RootReceived(
+        &'control SignedNativeHeldControlV1, &'control [u8],
+        &'control SignedNativeHeldControlV1,
+    ),
+    RootDisposition(
+        &'control SignedNativeHeldControlV1, &'control [u8],
+        &'control SignedNativeHeldControlV1, &'control PreparedNativeHeldControlV1,
+    ),
 }
 
 impl OriginalHeldBindingPurposeV5<'_> {
@@ -28,6 +37,7 @@ impl OriginalHeldBindingPurposeV5<'_> {
         match self {
             Self::Preparation(prepared) => prepared,
             Self::Delivery(signed, _) => signed.prepared(),
+            Self::RootReceived(signed, _, _) | Self::RootDisposition(signed, _, _, _) => signed.prepared(),
         }
     }
 }
@@ -42,6 +52,10 @@ enum OriginalHeldCauseV5 {
     Clock(#[from] aos_sandbox_core::OwnershipLeaseVerificationError),
     #[error("original held Storage custody failed")]
     Storage(#[from] crate::OriginalStorageOfferErrorV5),
+    #[error("original Root disposition verification failed")]
+    Verification(#[from] aos_sandbox_source_provider_protocol::SourceProviderVerificationError),
+    #[error("original Root disposition canonical data failed")]
+    Held(#[from] aos_sandbox_source_provider_protocol::native_held_completion::NativeHeldCompletionErrorV1),
 }
 
 impl core::fmt::Debug for OriginalHeldCauseV5 {
@@ -65,6 +79,7 @@ pub struct OriginalProviderHeldSignaturesV5 {
     cause: Option<OriginalHeldCauseV5>,
     postcheck_debt: Option<OriginalHeldCauseV5>,
     delivery: delivery::OriginalHeldDeliveryV5,
+    root_accepted: root_accepted::OriginalRootAcceptedV5,
 }
 
 impl OriginalProviderHeldSignaturesV5 {
@@ -80,6 +95,7 @@ impl OriginalProviderHeldSignaturesV5 {
             cause: None,
             postcheck_debt: None,
             delivery: delivery::OriginalHeldDeliveryV5::pending(),
+            root_accepted: root_accepted::OriginalRootAcceptedV5::pending(),
         }
     }
 
@@ -92,6 +108,7 @@ impl OriginalProviderHeldSignaturesV5 {
             }))
             .or_else(|| self.postcheck_debt.as_ref().map(|cause| cause as _))
             .or_else(|| self.delivery.failure())
+            .or_else(|| self.root_accepted.failure())
     }
 
     /// Borrows signed DATA only when this original attempt has no debt.
@@ -214,6 +231,12 @@ impl CurrentProviderIngressSessionV1 {
             OriginalHeldBindingPurposeV5::Delivery(signed, _) => journal.original_held_delivery_basis_v5(
                 readback, request.acquisition_id(), signed,
             )?,
+            OriginalHeldBindingPurposeV5::RootReceived(signed, _, _) => journal.original_held_delivery_basis_v5(
+                readback, request.acquisition_id(), signed,
+            )?,
+            OriginalHeldBindingPurposeV5::RootDisposition(signed, _, root4, relay) => journal.original_root_disposition_basis_v5(
+                readback, request.acquisition_id(), signed, root4, relay,
+            )?,
         };
         let provenance = origin.initial_floor().original_provenance().claims();
         let acquisition_key = provenance.records[1].key();
@@ -303,11 +326,36 @@ impl CurrentProviderIngressSessionV1 {
         if storage.original_socket_cookie_v5()?.get() != witness.storage_local_cookie {
             return Err(SourceProviderSecurityError::SessionContinuity.into());
         }
-        if let OriginalHeldBindingPurposeV5::Delivery(_, complete) = purpose {
+        if let OriginalHeldBindingPurposeV5::Delivery(_, complete)
+            | OriginalHeldBindingPurposeV5::RootReceived(_, complete, _)
+            | OriginalHeldBindingPurposeV5::RootDisposition(_, complete, _, _) = purpose
+        {
             delivery::require_original_complete_delivery_v5(
                 readback, provenance.records[0].key(), &acquisition, original,
                 acquire, physical, complete,
             )?;
+        }
+        if let OriginalHeldBindingPurposeV5::RootReceived(signed, _, root4)
+            | OriginalHeldBindingPurposeV5::RootDisposition(signed, _, root4, _) = purpose
+        {
+            aos_sandbox_source_provider_protocol::verify_current_root_accepted_v5(
+                root.control(), root4, &self.session, inner.trust(), inner.root_authority(),
+                current_unix_seconds()?,
+            )?;
+            let assertion = aos_sandbox_source_provider_protocol::native_held_completion::assertion::
+                RootNativeDispositionAssertionV1::from_canonical_bytes(
+                    root4.section(Tag::RootDispositionAssertion)
+                        .ok_or(SourceProviderSecurityError::SessionContinuity)?,
+                )?;
+            if root4.scope() != signed.scope()
+                || root4.prepared().predecessor() != signed.digest()
+                || root4.section(Tag::SourceArtifact) != signed.section(Tag::SourceArtifact)
+                || assertion.descriptor_commitment != original.descriptor_commitment
+                || assertion.source_artifact.as_bytes().as_slice()
+                    != signed.section(Tag::SourceArtifact).ok_or(SourceProviderSecurityError::SessionContinuity)?
+            {
+                return Err(SourceProviderSecurityError::SessionContinuity.into());
+            }
         }
         Ok(())
     }

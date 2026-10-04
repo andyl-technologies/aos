@@ -106,6 +106,7 @@ pub(in crate::owner) enum OriginalProducerAppendV5 {
     CompletionCommitted,
     HeldPrepared,
     HeldStored,
+    RootDispositionPrepared,
 }
 
 impl OriginalProducerAppendV5 {
@@ -119,11 +120,12 @@ impl OriginalProducerAppendV5 {
             Self::CompletionCommitted => 5,
             Self::HeldPrepared => 6,
             Self::HeldStored => 7,
+            Self::RootDispositionPrepared => 8,
         }
     }
 
     pub(super) const fn is_original_held(self) -> bool {
-        matches!(self, Self::HeldPrepared | Self::HeldStored)
+        matches!(self, Self::HeldPrepared | Self::HeldStored | Self::RootDispositionPrepared)
     }
 }
 
@@ -145,7 +147,7 @@ pub(super) struct OriginalSourceProducerV5 {
     pub(super) signed: Option<SignedStorageNativeAcquireRequestV2>,
     provenance: Option<OriginalSourceProvenanceV5>,
     pub(super) staged: Option<StagedZfsHoldChallengeV1>,
-    appends: [Option<PreparedSourceOriginalV5>; 8],
+    appends: [Option<PreparedSourceOriginalV5>; 9],
     checkpoint: OriginalProducerCheckpointV5,
     pub(super) physical_plan: Option<crate::backend::AcquirePlanV1>,
     pub(super) selected_execution: Option<SourceSelectedNativeExecutionInputDataV1>,
@@ -225,6 +227,45 @@ impl OriginalSourceProducerV5 {
         step: OriginalProducerAppendV5,
     ) -> Result<&mut PreparedSourceOriginalV5, ProviderLedgerError> {
         self.appends[step.index()].as_mut().ok_or(ProviderLedgerError::Unavailable)
+    }
+
+    pub(super) fn root_disposition_readback_present_v5(&self) -> bool {
+        self.appends[OriginalProducerAppendV5::RootDispositionPrepared.index()]
+            .as_ref().is_some_and(|append| append.readback.is_some())
+    }
+
+    pub(super) fn root_disposition_parts_v5(
+        &mut self,
+    ) -> Result<(
+        &OriginalSourceProtectedReadbackV5,
+        &mut super::completion::OriginalSourceCompletionV5,
+        &aos_sandbox_source_provider_security::ProtectedOriginalSelectedInputV1,
+        &mut super::storage_offer::OriginalStorageOfferV5,
+    ), ProviderLedgerError> {
+        let readback = self.appends[OriginalProducerAppendV5::RootDispositionPrepared.index()]
+            .as_ref().and_then(|append| append.readback.as_ref())
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        let completion = self.original_completion.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
+        let selected = self.selected_archive.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        let offer = self.storage_offer.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
+        Ok((readback, completion, selected, offer))
+    }
+
+    // Two disjoint fields of this SAME producer; neither borrow may escape a
+    // single preparation. The existing park engine retains the resident TX.
+    pub(super) fn root_disposition_preparation_parts_v5(
+        &mut self,
+    ) -> Result<(
+        &mut super::completion::OriginalSourceCompletionV5,
+        &mut Option<PreparedSourceOriginalV5>,
+    ), ProviderLedgerError> {
+        let completion = self.original_completion.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
+        let destination = &mut self.appends[OriginalProducerAppendV5::RootDispositionPrepared.index()];
+        if destination.is_some() {
+            return Err(ProviderLedgerError::InvalidTransition("original Root disposition slot occupied"));
+        }
+        Ok((completion, destination))
     }
 
     pub(super) fn readback(
@@ -460,7 +501,9 @@ impl FixedProviderOwnerV1 {
         &mut self,
         step: OriginalProducerAppendV5,
     ) -> Result<(), OriginalProducerErrorV5> {
-        if step.is_original_held() {
+        if step == OriginalProducerAppendV5::RootDispositionPrepared {
+            self.require_original_root_disposition_current_v5()
+        } else if step.is_original_held() {
             self.require_original_held_current_v5()
         } else if matches!(step, OriginalProducerAppendV5::ChallengeSpent | OriginalProducerAppendV5::CompletionCommitted) {
             self.require_original_completion_current_v5()
@@ -865,7 +908,9 @@ impl FixedProviderOwnerV1 {
                 SourceNativeHeldCompletionRecordV1::new(original, suffix)?
             }
             OriginalProducerAppendV5::Applying | OriginalProducerAppendV5::StoragePrepared
-            | OriginalProducerAppendV5::ChallengeSpent | OriginalProducerAppendV5::CompletionCommitted => {
+            | OriginalProducerAppendV5::ChallengeSpent | OriginalProducerAppendV5::CompletionCommitted
+            | OriginalProducerAppendV5::HeldPrepared | OriginalProducerAppendV5::HeldStored
+            | OriginalProducerAppendV5::RootDispositionPrepared => {
                 return Err(ProviderLedgerError::InvalidTransition("Applying is not a carrier").into());
             }
         };
@@ -898,7 +943,9 @@ impl FixedProviderOwnerV1 {
                 )?;
             }
             OriginalProducerAppendV5::Applying | OriginalProducerAppendV5::StoragePrepared
-            | OriginalProducerAppendV5::ChallengeSpent | OriginalProducerAppendV5::CompletionCommitted => {
+            | OriginalProducerAppendV5::ChallengeSpent | OriginalProducerAppendV5::CompletionCommitted
+            | OriginalProducerAppendV5::HeldPrepared | OriginalProducerAppendV5::HeldStored
+            | OriginalProducerAppendV5::RootDispositionPrepared => {
                 return Err(ProviderLedgerError::InvalidTransition("Applying is not a carrier").into());
             }
         }
@@ -907,7 +954,9 @@ impl FixedProviderOwnerV1 {
             OriginalProducerAppendV5::Requested => b"original-source-requested-v5",
             OriginalProducerAppendV5::ChallengeIssued => b"original-source-challenge-issued-v5",
             OriginalProducerAppendV5::Applying | OriginalProducerAppendV5::StoragePrepared
-            | OriginalProducerAppendV5::ChallengeSpent | OriginalProducerAppendV5::CompletionCommitted => {
+            | OriginalProducerAppendV5::ChallengeSpent | OriginalProducerAppendV5::CompletionCommitted
+            | OriginalProducerAppendV5::HeldPrepared | OriginalProducerAppendV5::HeldStored
+            | OriginalProducerAppendV5::RootDispositionPrepared => {
                 return Err(ProviderLedgerError::InvalidTransition("Applying is not a carrier").into());
             }
         };

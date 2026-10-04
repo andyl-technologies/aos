@@ -58,6 +58,7 @@ pub mod verification;
 mod verification_native_prepared;
 
 pub use verification_native_prepared::verify_current_root_prepared_v1;
+pub use verification_native_prepared::verify_current_root_accepted_v5;
 
 pub use catalog_currentness::{
     CatalogCurrentnessErrorV1, CatalogCurrentnessQueryV1, SignedCatalogCurrentnessV1,
