@@ -187,8 +187,12 @@ to match it. All 609 core tests pass with zero skips (Nextest run
 `13cc2767-c4b0-42e2-9c57-91e400280ff5`), along with strict Clippy/rustdoc,
 both formatters and four actual task gates. A final enum rustdoc summary changes
 no behavior and passes strict rustdoc and both formatters again. Combined
-qualification is running on isolated candidate `8db47fdf2822`; no aggregate
-outcome is claimed. That candidate predates the new adapter retention cases
+candidate `8db47fdf2822` passes both formatters and all five assigned task gates.
+Its aggregate completes all 19 mandatory golden owning suites and their 30
+reviewed sections, then exits with failure at `store-idempotent-put`:
+`physical_exclusion_overrides_live_rows_during_fresh_admission` returns
+`StoreFailure { kind: Unsupported, source: None }`. This default aggregate run
+does not inventory all failures. It predates the new adapter retention cases
 below and cannot qualify them. Native historical sourcing and complete T1
 remain open.
 
@@ -382,8 +386,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   manufacture native protected inputs or qualify original-history/admission
   checks. All incoming deltas are excluded in its fold witness, so trusted
   winner selection, graft fold and changed-domain preprocessing remain
-  unqualified. Combined qualification awaits core scope consistency; earlier
-  aggregate results precede these new cases. No task or milestone advances.
+  unqualified. Combined candidate `8db47fdf2822` passes both formatters, all five
+  assigned task gates and the complete golden inventory. Its default aggregate
+  stops at the unsupported physical-exclusion case in `store-idempotent-put`,
+  without inventorying all failures, and predates the new adapter retention
+  cases. No task or milestone advances.
   — satisfies ALG-15 to ALG-21, ALG-28 to ALG-39;
   `checks.terrane.gates.algebra-merge`, `checks.terrane.gates.algebra-fork`.
 - [ ] **T-PROP-1** Property resolution, types, boundary properties,
@@ -529,9 +536,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   verified contextless legacy parent, proving the selected modern scope avoids
   an unnecessary walk of its absent graft child. Mode/revision/name conflicts
   refuse repeated verification and both history-union orders before mutation;
-  compatible bootstrap evidence remains enrichable. Combined qualification is
-  pending, and these pure checks cannot replace protected native historical
-  qualification.
+  compatible bootstrap evidence remains enrichable. Combined candidate
+  `8db47fdf2822` passes both formatters, all five assigned task gates and the
+  complete golden inventory. Its default aggregate fails at the unsupported
+  physical-exclusion case in `store-idempotent-put`; it does not inventory all
+  failures and predates the adapter retention cases below. These pure checks
+  cannot replace protected native historical qualification.
   A read-only adapter audit identifies three verifier reconstructions that
   discard the installed read-interpretation mode/table. The next bounded
   prerequisite clones ordinary configuration through one shared private
