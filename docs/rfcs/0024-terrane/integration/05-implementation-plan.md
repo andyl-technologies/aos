@@ -124,7 +124,16 @@ empty `terrane` binary.
 
 ### T1 — Local repository
 
-**Status:** In progress. The reviewed owned-association candidate `28e8a7b6e5b9`
+**Status:** In progress. Latest combined candidate `bddcd674cd72` retains
+the reviewed source-discovery tree, qualified with 625 passing core tests
+and zero skips. Both mandatory formatters pass. Its default and keep-going
+current-trunk aggregates both exit 1; the latter reports twelve failed gate
+dependencies, listed under T-DRV-2. Its observed native feature suite records
+362 passing and 43 failing tests out of 405; later profiles remain unqualified.
+Repeatable I/P/G maintenance is in progress on the shared checked prerequisites.
+No formal task merge, task checkbox, milestone exit or freeze advances.
+
+The reviewed owned-association candidate `28e8a7b6e5b9`
 passes all 605 core tests with zero skips (Nextest run
 `256a9f8c-e8dd-4b19-b284-69a3a4c4478b`), strict all-target core Clippy and
 rustdoc. The final increment adds only the public callback panic contract;
@@ -854,8 +863,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   enabled enumeration remain separately reported. Combined candidate
   `bddcd674cd72` has the identical entire Git tree. Its default full
   current-trunk aggregate exits 1 at `commit-order` with an `Expired`
-  result; the keep-going inventory remains running. No task checkbox or
-  T1 freeze advances.
+  result. The original keep-going inventory also exits 1, with twelve failed
+  dependencies: `bucket-file-layout`, `commit-order`, `dom-dedup-scope`,
+  `dom-reference-order`, `feature-matrix`, `index-generation-manifest`,
+  `prov-commit-verify`, `prov-disclosure-boundary`, `ref-advance-ordering`,
+  `ref-epoch-fencing`, `role-selection` and `store-idempotent-put`.
+  All 609 monitored files remain unchanged throughout the combined run.
+  No task checkbox or T1 freeze advances.
   The next shared prerequisite reserves the ordinary repeatable maintenance
   module and adds five exact evaluation-check groups for complete I/P/G
   models and logical deltas, successive updates with stable storage and
