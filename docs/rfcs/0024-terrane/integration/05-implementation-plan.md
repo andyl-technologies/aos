@@ -338,6 +338,18 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   graft traversal or changed-domain preprocessing. Parent combined task checks
   and formatters pass; its aggregate exits 1 at physical-exclusion admission.
   Native historical sourcing and full native propagation remain open.
+  A read-only native merge audit finds the checked base view is available in
+  both callers but lost at the physical-evidence-only recomputation boundary.
+  The next prerequisite retains all three existing checked view/original-root
+  inputs, selects one independently supplied interpretation for each before
+  domain resolution, and carries the original side selections through both
+  evaluators and fold preprocessing. Three exact native helper cases are now
+  mandatory in `algebra-merge`: complete input selection, occurrence-specific
+  fences with ambiguous-domain refusal, and original-context fold replay.
+  Implementation remains pending. Genuine core histories qualify the ordinary
+  interpretation helper; they cannot manufacture native protected inputs or
+  qualify original-history/admission checks. Prior aggregate results precede
+  these new cases; no task or milestone advances.
   — satisfies ALG-15 to ALG-21, ALG-28 to ALG-39;
   `checks.terrane.gates.algebra-merge`, `checks.terrane.gates.algebra-fork`.
 - [ ] **T-PROP-1** Property resolution, types, boundary properties,

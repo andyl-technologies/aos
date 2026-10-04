@@ -3,6 +3,11 @@
     cargo test --frozen --offline -p terrane-core --lib ${name} -- --exact > "$TMPDIR/test.log"
     python3 -c 'import pathlib, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit("test result: ok. 1 passed; 0 failed" not in output or "test " + sys.argv[2] + " ... ok" not in output)' "$TMPDIR/test.log" "${name}"
   '';
+
+  runNativeTest = name: ''
+    cargo test --frozen --offline -p terrane --no-default-features --features tokio,surface-sdk --lib ${name} -- --exact > "$TMPDIR/test.log"
+    python3 -c 'import pathlib, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit("test result: ok. 1 passed; 0 failed" not in output or "test " + sys.argv[2] + " ... ok" not in output)' "$TMPDIR/test.log" "${name}"
+  '';
 in {
   # Cold native forks need actual selected lineage and zero TreeNode I/O.
   # Keep algebra-fork registered as pending until that qualification exists.
@@ -79,7 +84,10 @@ in {
     ${runTest "refs::codec::recipe_tests::commit_recipe_codec_rejects_invalid_registered_arguments"}
     ${runTest "algebra::trust::recorded_context_tests::trusted_recorded_context_recipe_keys_bind_complete_interpretations"}
     ${runTest "provenance::trust::recorded_evaluation_tests::fold::recorded_fold_replays_original_view_interpretations_before_recipe_rebinding"}
-    printf 'PASS: pure merge, fold bindings, conflict policies and verified recipes\n' > "$out/result"
+    ${runNativeTest "guard::merge::recorded_tests::recorded_merge_input_configuration_requires_all_original_view_root_pairs"}
+    ${runNativeTest "guard::merge::recorded_tests::recorded_merge_occurrences_preserve_per_view_fences_and_refuse_domain_ambiguity"}
+    ${runNativeTest "guard::merge::recorded_tests::recorded_merge_contexts_bind_original_interpretations_through_fold_replay"}
+    printf 'PASS: merge, fold bindings, verified recipes and retained input interpretations\n' > "$out/result"
   '';
 
   tree-acyclic = sourceGate "tree-acyclic" ''
