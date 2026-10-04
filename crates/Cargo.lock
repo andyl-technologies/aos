@@ -634,6 +634,7 @@ name = "aos-image-finalizer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-boot-identity",
  "aos-package",
  "aos-release",
  "async-trait",

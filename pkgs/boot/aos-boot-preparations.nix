@@ -8,6 +8,7 @@
   nix,
   service-management,
   aos-boot-storage,
+  aos-boot-identity,
   aos-configuration-lower,
   bash,
   coreutils,
@@ -52,6 +53,7 @@ in
       nix
       systemd
       aos-boot-storage
+      aos-boot-identity
       aos-configuration-lower
       packageRuntime
       bash
@@ -88,6 +90,7 @@ in
             destination="$out/bin/$(basename "$source" .sh)"
             sed -e 's|@bash@|${bash}|g' \
               -e 's|@package_runtime@|${packageRuntime}|g' \
+              -e 's|@boot_identity@|${aos-boot-identity}|g' \
               -e 's|@util_linux@|${util-linux}|g' \
               -e 's|@nix@|${nix}|g' \
               -e 's|@coreutils@|${coreutils}|g' \
