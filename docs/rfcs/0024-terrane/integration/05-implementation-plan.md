@@ -974,6 +974,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   The shared `checks.terrane.integration.memo-evaluation` helper names nine
   exact replay/cache/rebuild groups before worker implementation. Its requested
   check exits 1 on zero selected tests; a declaration cannot qualify execution.
+  The existing metadata validator's common Memo schema arm is separately owned.
+  Its shared `checks.terrane.integration.memo-metadata` helper registers four
+  exact structural-dispatch groups and exits 1 on zero selected tests before
+  implementation. Record validation remains distinct from recipe replay,
+  current producer checks and native index materialization.
   No formal task merge, checkbox or milestone freeze advances.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
@@ -1762,8 +1767,17 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   native monotonic time, which Tokio timer pause does not freeze. The observed
   cancellation barrier failure precedes cancellation; Unsupported results
   remain distinct implementation failures. Per-attempt timing evidence and
-  genuine unchanged-bound qualification remain required. All 12 current
-  aggregate failures remain unresolved.
+  genuine unchanged-bound qualification remain required. That candidate's
+  twelve aggregate failures remain unresolved in its retained qualification.
+  A subsequent read-only audit binds `aab21813039a`'s actual compiled image
+  to all 28 native failures and eleven aggregate dependencies. Twenty of its
+  21 `Expired` cases fail initial advances; one fails prepared publication.
+  Four `Unsupported` cases change retirement associations through an existing
+  refusing raw route; the fifth attempts writable reopen of a payload copy
+  lacking its destination's physical registration. Three required native
+  provenance witnesses are absent. These causes and early failure locations
+  remain distinct from unmeasured timing phases; no deadline, factory boundary
+  or mandatory positive case is weakened by the audit.
   Optional native binding hooks now retain the exact injected clock and actual
   duplicated exclusion without stronger generic clock or lock bounds. Native
   and supported non-Send builds qualify the shared seam; private factories,
