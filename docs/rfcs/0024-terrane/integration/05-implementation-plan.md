@@ -590,7 +590,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   source selects its own justified entry. Current authoring and every protected
   original-association, token, signature, epoch and bootstrap check stay
   mandatory. Three exact historical witness/dispatch cases are now required
-  in property resolution. Their implementation is pending; ordinary helper
+  in property resolution. Reviewed isolated candidate `042eaf27c63e` passes
+  all three focused cases, all-target build, strict rustdoc, both required
+  formatters and four actual scoped gates. Complete occurrence controls now
+  distinguish two domains at the same physical root and independently model
+  each comparison input's canonical private default. The original full native
+  run records 362 passing, 43 failing and three timed-out tests out of 408,
+  with zero skips; strict native Clippy remains red on untouched code after
+  the two owned fixture lints were corrected. The diagnostic verification gate
+  still refuses three missing native disclosure cases. Ordinary helper
   evidence cannot qualify protected native historical inputs, certified cuts
   or independent registration sourcing. Combined candidate `9a4a4f733813`
   predates these cases. No task or milestone advances.
@@ -603,8 +611,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   independent attribute producers, private cut rules and original authority
   remain mandatory. Three exact pure-core cases are now required by selector
   presets and the disclosure boundary gate, whose 19 native obligations remain
-  unchanged. Their implementation is pending. Recorded certificate issuance,
-  protected native propagation and historical registration sourcing stay
+  unchanged. The reviewed isolated candidate `f4c0e2a9c46c` passes all 612 core
+  tests with zero skips, strict all-target Clippy and rustdoc, both required
+  formatters and the actual selector, signature and no-std gates. Its complete
+  context, recipe and memo witnesses include fresh finished-history rebind;
+  active raw placement is checked before compatibility projection. The native
+  boundary still fails after the three core cases pass. Its property gate
+  predates the separate historical helpers and fails on their absent selector.
+  These scoped results do not qualify the combined trunk. Recorded certificate
+  issuance, protected native propagation and historical registration sourcing stay
   separate unqualified requirements; combined candidate `9a4a4f733813`
   predates these cases as well.
   — satisfies TREE-14,
