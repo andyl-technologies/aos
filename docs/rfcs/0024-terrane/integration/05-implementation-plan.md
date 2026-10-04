@@ -218,6 +218,27 @@ causes. Both aggregate runs predate the new ordinary historical-calculation
 and core certified-verification cases below, so they cannot qualify them.
 No task or milestone advances.
 
+The latest combined candidate `1ee291d3a655` includes the reviewed optional
+runtime fixture correction `3eb44b68daea`. Both mandatory formatters and seven
+actual gates pass: `runtime-agnostic`, `bundle-verify`, `property-resolution`,
+`prov-commit-signature`, `prov-selector-presets`, `algebra-merge` and
+`core-no-std`. Its complete golden gate passes all 19 owning suites and the
+30-section inventory. Both original aggregate commands finish and exit 1;
+the keep-going inventory identifies 12 failed gate dependencies:
+`bucket-file-layout`, `dom-dedup-scope`, `dom-reference-order`,
+`feature-matrix`, `index-generation-manifest`, `prov-commit-verify`,
+`prov-disclosure-boundary`, `ref-advance-ordering`, `ref-epoch-fencing`,
+`role-selection`, `store-idempotent-put` and `tree-history-independence`.
+The strengthened Tree gate refuses the first absent batched-edit selector.
+Three required native disclosure cases remain unqualified; backend admission
+and portable reopen still return `Unsupported`, and ref tests retain their
+expiry/deadline failures. The feature matrix's native Tokio profile records
+376 passing and 29 failing tests out of 405; later profiles are unqualified.
+The optional-Tokio compilation error is absent from this inventory. These
+outcomes do not establish the causes of the remaining runtime failures.
+The candidate stays isolated; no formal task merge, checkbox, milestone exit
+or freeze follows.
+
 Deployable as: a local tool that initializes a store under a `file://`
 root, commits a directory, forks and merges branches, and checks a commit
 out to a directory through the `sdk` surface.
@@ -634,6 +655,19 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Backend compatibility, native disclosure qualification and the other actual
   failed dependencies remain open. No task merges, checkboxes or milestone
   exits follow this failed combined run.
+  Reviewed correction `3eb44b68daea` registers the asynchronous historical
+  fixture family only when its optional Tokio feature exists, preserving
+  synchronous fixtures and all production behavior. Default and no-default
+  test-target compilation, the three exact historical cases, strict rustdoc,
+  mandatory formatting and the actual property, runtime and bundle gates pass.
+  Its feature matrix passes both core profiles and native no-default; native
+  Tokio records 382 passing and 23 failing tests out of 405, including all
+  three historical cases passing. Later profiles remain unqualified and strict
+  native Clippy remains red on untouched diagnostics. Combined candidate
+  `1ee291d3a655` now qualifies the optional-runtime correction with seven
+  targeted gates passing, but its complete aggregate still fails as recorded
+  in the milestone status. Protected historical sourcing and native disclosure
+  qualification remain open.
   — satisfies TREE-14,
   PROP-1 to PROP-30;
   `checks.terrane.gates.property-resolution`,
@@ -748,6 +782,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   explicitly. This strengthens a canonical editing prerequisite; index source
   discovery, logical deltas, I/P/G updates, same-commit maintenance and native
   qualification remain separate T-DRV-2 obligations.
+  Review of the isolated batched editor requires two stronger executable
+  proofs: a changed canonical child reference invalidating a real internal
+  content cut, and exhaustive attribution of completion/new-level/root-property
+  work as well as recovered regions. A separate source review identifies
+  quadratic frontier bookkeeping: each disjoint adopted target rescans prior
+  spans, even with no sparse edits, and covered targets restart node searches.
+  Monotone ordered frontiers with exact identity checks and measured growth
+  bounds are required before accepting this prerequisite. Existing baseline
+  test success does not qualify these missing proofs or the complexity bound;
+  the candidate remains uncommitted and T-DRV-2 remains open.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route
