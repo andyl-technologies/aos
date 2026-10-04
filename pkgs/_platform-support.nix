@@ -840,6 +840,10 @@ let
 
   architectureOverrides = {
     darling = ["x86_64"];
+    # TODO: cross-compile the complete Samba suite. Its AD/DC Python modules
+    # need a target Python configuration and more reviewed Waf answers; only
+    # the samba-smbd helper QEMU requires is cross-built today.
+    samba = ["x86_64"];
     "go-1_4" = ["x86_64"];
     "openjdk-7" = ["x86_64"];
     "openjdk-8" = ["x86_64"];
