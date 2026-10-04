@@ -7,7 +7,7 @@
 use crucible::{
     ContentHash, ExactLocalEvent, NetworkLookahead, NodeCounter, NodeId, SchedulerEventLogClass,
     SchedulerEventLogPayload, SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId,
-    SchedulerScenarioNode, SchedulingNodeKind, Shift, SimInstant, SingleScheduler, VirtualTime,
+    SchedulerScenarioNode, SchedulingNodeKind, SimInstant, SingleScheduler, VirtualTime,
     model::{FaultCoordinate, FaultObjectId, FaultObservation, FaultObservationKind},
 };
 
@@ -15,9 +15,8 @@ use crucible::{
 fn fault_observations_append_as_typed_causal_evidence() {
     let scenario = SchedulerLivenessScenario::from_canonical_material(
         "fault-observation-log",
-        Shift::new(0).expect("zero shift should be valid"),
         8,
-        SimInstant { nanos: 100 },
+        SimInstant { ticks: 100 },
         vec![SchedulerScenarioNode {
             id: SchedulerNodeId {
                 node: NodeId {
@@ -37,7 +36,7 @@ fn fault_observations_append_as_typed_causal_evidence() {
         semantic_version: 1,
         kind: FaultObservationKind::EffectApplied,
         coordinate: FaultCoordinate {
-            virtual_nanos: 37,
+            virtual_ticks: 37,
             retired_instructions: Some(91),
         },
         binding: Some(FaultObjectId::parse("network-delay").expect("test binding id should parse")),

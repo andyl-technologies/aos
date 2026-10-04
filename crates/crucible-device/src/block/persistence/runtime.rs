@@ -18,11 +18,11 @@ impl BlockPersistenceGraph {
     /// deadline that cannot be represented.
     pub fn validate_transforms(
         transforms: &[ResolvedBlockPersistenceTransform],
-        admitted_nanos: u64,
+        admitted_ticks: u64,
     ) -> Result<(), DeviceError> {
         if let Some(transform) = compose_transforms(transforms)? {
-            admitted_nanos
-                .checked_add(transform.delay_nanos)
+            admitted_ticks
+                .checked_add(crate::ns_to_tick(transform.delay_nanos)?)
                 .ok_or_else(|| invalid("persistence deadline overflow"))?;
         }
         Ok(())
@@ -99,7 +99,7 @@ impl BlockPersistenceGraph {
             hasher.update(&node.dependency_depth.to_be_bytes());
             hasher.update(&node.writeback_sequence.to_be_bytes());
             hasher.update(&node.transformed_writeback_sequence.to_be_bytes());
-            match node.persistence_deadline_nanos {
+            match node.persistence_deadline_ticks {
                 Some(deadline) => {
                     hasher.update(&[1]);
                     hasher.update(&deadline.to_be_bytes());
@@ -213,10 +213,10 @@ impl BlockPersistenceGraph {
     pub fn admit_request(
         &mut self,
         fragments: &[(u64, BlockWriteFragmentId)],
-        admitted_nanos: u64,
+        admitted_ticks: u64,
         transforms: &[ResolvedBlockPersistenceTransform],
     ) -> Result<BlockPersistenceTransformationEvidence, DeviceError> {
-        self.admit_request_with_barrier(fragments, admitted_nanos, transforms, None)
+        self.admit_request_with_barrier(fragments, admitted_ticks, transforms, None)
     }
 
     /// Atomically admits fragments and an optional preceding flush frontier.
@@ -234,7 +234,7 @@ impl BlockPersistenceGraph {
     pub fn admit_request_with_barrier(
         &mut self,
         fragments: &[(u64, BlockWriteFragmentId)],
-        admitted_nanos: u64,
+        admitted_ticks: u64,
         transforms: &[ResolvedBlockPersistenceTransform],
         barrier_frontier: Option<u64>,
     ) -> Result<BlockPersistenceTransformationEvidence, DeviceError> {
@@ -322,11 +322,11 @@ impl BlockPersistenceGraph {
                 .next_writeback_sequence
                 .checked_add(1)
                 .ok_or_else(|| invalid("persistence writeback sequence overflow"))?;
-            let persistence_deadline_nanos = transform
+            let persistence_deadline_ticks = transform
                 .as_ref()
                 .map(|transform| {
-                    admitted_nanos
-                        .checked_add(transform.delay_nanos)
+                    admitted_ticks
+                        .checked_add(crate::ns_to_tick(transform.delay_nanos)?)
                         .ok_or_else(|| invalid("persistence deadline overflow"))
                 })
                 .transpose()?;
@@ -354,7 +354,7 @@ impl BlockPersistenceGraph {
                     dependency_depth,
                     writeback_sequence,
                     transformed_writeback_sequence: writeback_sequence,
-                    persistence_deadline_nanos,
+                    persistence_deadline_ticks,
                     barrier_protected,
                     ordering_group,
                     ordering,
@@ -463,15 +463,15 @@ impl BlockPersistenceGraph {
 
     /// Returns the first ready sequence below an exclusive captured frontier.
     #[must_use]
-    pub fn next_ready_before(&self, frontier: u64, now_nanos: u64) -> Option<u64> {
+    pub fn next_ready_before(&self, frontier: u64, now_ticks: u64) -> Option<u64> {
         self.nodes
             .values()
             .filter(|node| {
                 node.sequence < frontier
                     && node.dependencies.is_empty()
                     && node
-                        .persistence_deadline_nanos
-                        .is_none_or(|deadline| deadline <= now_nanos)
+                        .persistence_deadline_ticks
+                        .is_none_or(|deadline| deadline <= now_ticks)
             })
             .min_by(|left, right| persistence_order_key(left).cmp(&persistence_order_key(right)))
             .map(|node| node.sequence)
@@ -493,21 +493,21 @@ impl BlockPersistenceGraph {
 
     /// Returns whether one live node is dependency-ready and its delay elapsed.
     #[must_use]
-    pub fn is_ready_at(&self, sequence: u64, now_nanos: u64) -> bool {
+    pub fn is_ready_at(&self, sequence: u64, now_ticks: u64) -> bool {
         self.nodes.get(&sequence).is_some_and(|node| {
             node.dependencies.is_empty()
                 && node
-                    .persistence_deadline_nanos
-                    .is_none_or(|deadline| deadline <= now_nanos)
+                    .persistence_deadline_ticks
+                    .is_none_or(|deadline| deadline <= now_ticks)
         })
     }
 
     /// Returns one node's modeled persistence deadline.
     #[must_use]
-    pub fn deadline_nanos(&self, sequence: u64) -> Option<u64> {
+    pub fn deadline_ticks(&self, sequence: u64) -> Option<u64> {
         self.nodes
             .get(&sequence)
-            .and_then(|node| node.persistence_deadline_nanos)
+            .and_then(|node| node.persistence_deadline_ticks)
     }
 
     /// Commits one ready node as durably persisted and unblocks dependents.
@@ -517,6 +517,17 @@ impl BlockPersistenceGraph {
     /// Returns [`DeviceError`] when the node is absent or still has a live
     /// dependency. Callers perform the durable byte write before committing.
     pub fn commit_persisted(&mut self, sequence: u64) -> Result<(), DeviceError> {
+        self.validate_persisted_commit(sequence)?;
+        self.remove_resolved(sequence)
+    }
+
+    // Payload publication uses this read-only preflight before touching the
+    // durable overlay. The same graph remains owned until commit, so all
+    // recoverable readiness and edge-accounting errors precede the write.
+    pub(in crate::block) fn validate_persisted_commit(
+        &self,
+        sequence: u64,
+    ) -> Result<(), DeviceError> {
         if self
             .nodes
             .get(&sequence)
@@ -524,7 +535,15 @@ impl BlockPersistenceGraph {
         {
             return Err(invalid("persistence commit selected a non-ready fragment"));
         }
-        self.remove_resolved(sequence)
+        let removed_edges = self
+            .nodes
+            .values()
+            .filter(|node| node.dependencies.contains(&sequence))
+            .count();
+        if removed_edges > self.edge_count {
+            return Err(invalid("persistence edge accounting underflow"));
+        }
+        Ok(())
     }
 
     /// Resolves one lost fragment without marking it durable.

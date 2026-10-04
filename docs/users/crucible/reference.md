@@ -14,7 +14,7 @@ Unknown TOML fields and unknown closed-vocabulary values are rejected. Generate 
 scenario through the Rust builder and `to_canonical_toml` whenever possible; its
 content-addressed IDs are computed values, not labels to invent by hand. See the
 [scenario authoring guide](scenarios.md) and the
-[Nginx/Curl tutorial](quickstart.md). For a conceptual walkthrough of causes,
+[representative-scenario quickstart](quickstart.md). For a conceptual walkthrough of causes,
 bindings, opportunities, and effects, start with
 [Signal-driven faults](signal-driven-faults.md).
 
@@ -32,7 +32,7 @@ Direct implementation references:
 | `<path>` | Host path. Relative paths are resolved from the command's working directory. |
 | `<hash>` | Content address in `blake3:<64 lowercase hexadecimal digits>` form. |
 | `<path-or-hash>` | A local file/path or an object resolvable from `--store`. |
-| `<dur>` | Positive integer followed by no suffix, `tick`, `ticks`, `ns`, `us`, `ms`, or `s`. No suffix means ticks; one tick is one nanosecond. |
+| `<dur>` | Positive integer followed by no suffix, `tick`, `ticks`, `ns`, `us`, `ms`, or `s`. No suffix means ticks; one tick is one picosecond (1,000 ticks per nanosecond). |
 | `*_nanos` | Unsigned integer duration in virtual nanoseconds. |
 | `*_ticks` | Unsigned integer virtual-time or scheduler coordinate. |
 | `*_basis_points` | Integer probability or factor measured in basis points. Probabilities accept `0..=10000`, where 10,000 is 100%. |
@@ -47,7 +47,7 @@ Global options may appear before or after the subcommand.
 
 | Option | Accepted value and default | Purpose | Guide |
 | --- | --- | --- | --- |
-| `--seed <u64\|hex>` | Unsigned decimal, `0x` hexadecimal, or canonical seed text; otherwise `CRUCIBLE_SEED`, then scenario seed | Override the root entropy. | [Seed resolution](running.md#seed-resolution) |
+| `--seed <u64\|hex>` | Unsigned decimal, `0x` hexadecimal, or canonical seed text; otherwise `CRUCIBLE_SEED`, then one generated seed | Override the root entropy. | [Seed resolution](running.md#seed-resolution) |
 | `--backend <auto\|qemu>` | `auto` (default), `qemu` | Select or discover the local backend. Production builds expose QEMU only. | [Backend discovery](running.md#backend-discovery) |
 | `--daemon <addr>` | Host/port or HTTP endpoint | Send a supported lifecycle operation to a daemon instead of running locally. | [Daemon operation](daemon.md) |
 | `--daemon-ca <path>` | Requires `--daemon` and the other client TLS paths | Authenticate an HTTPS daemon with this CA certificate. | [Daemon operation](daemon.md#connect-a-client) |
@@ -57,6 +57,7 @@ Global options may appear before or after the subcommand.
 | `--qemu <path>` | Discovered when omitted | Override the packaged patched-QEMU executable. Must be paired with `--plugin`. | [Backend discovery](running.md#backend-discovery) |
 | `--plugin <path>` | Discovered when omitted | Override the matching QEMU plugin. Must be paired with `--qemu`. | [Backend discovery](running.md#backend-discovery) |
 | `--store <path>` | Command-specific default below `--artifact-dir` | Set the content-addressed store root. | [Artifacts and store](running.md#artifacts-and-store-layout) |
+| `--campaign-deployment <PATH>` | Otherwise `CRUCIBLE_CAMPAIGN_DEPLOYMENT`, then `/etc/crucible/packaged-executor.toml` | Select the guarded local campaign-executor deployment; incompatible with a daemon route. | [Campaign setup](campaigns.md#start-the-single-host-owner) |
 | `--format <jsonl\|json\|table\|markdown>` | Terminal: `table`; non-terminal: `jsonl` | Select report rendering. `jsonl` and `json` are stable machine formats. | [Output formats](running.md#output-formats) |
 | `--trace <path>` | Standard output | Write the canonical event-log stream to a file. | [Output formats](running.md#output-formats) |
 | `--artifact-dir <path>` | `./.crucible` | Set the failure-artifact and default savepoint/report directory. | [Artifacts and store](running.md#artifacts-and-store-layout) |
@@ -105,7 +106,6 @@ Output-format values:
 | `selftest` | Run packaged determinism gates. | [Self-test](running.md#self-test) |
 | `save` | Stop at a deterministic coordinate and export a savepoint. | [Savepoints](reproduction.md#savepoints) |
 | `resume` | Continue from a savepoint or checkpoint. | [Resume](reproduction.md#resume) |
-| `fork` | Continue from a savepoint with a new seed or decision override. | [Fork](reproduction.md#fork) |
 | `replay` | Validate and reduce a recorded reproduction artifact. | [Replay](reproduction.md#replay) |
 | `search` | Explore a bounded schedule space. | [State-space search](exploration.md#state-space-search) |
 | `fuzz` | Sample a scenario family using basic-block coverage. | [Coverage-guided fuzzing](exploration.md#coverage-guided-fuzzing) |
@@ -124,7 +124,7 @@ Output-format values:
 | `--max-quanta <n>` | Optional | Stop at an exact scheduler-quantum boundary unless another terminal condition occurs first. |
 | `--interactive` | Off | Pause at genesis and read interactive commands from standard input. |
 | `--save-on <fail\|always\|never>` | Default `never` | Materialize an outcome savepoint only on failure, for every outcome, or never. |
-| `--watch` | Off | Collect live session-status updates alongside run evidence. |
+| `--watch` | Off | Collect authenticated campaign-head updates alongside local-QEMU run evidence; other backends collect session status. |
 
 `--save-on` values:
 
@@ -133,6 +133,16 @@ Output-format values:
 | `fail` | Save only a failing outcome. |
 | `always` | Save passing, failing, and timeout outcomes. |
 | `never` | Do not create an outcome savepoint. |
+
+The current unattended local QEMU route admits only `never`; the other values
+are parsed but refused before execution. Use [`save`](#save) for an exported
+savepoint handle. See [lifecycle limits and timeout semantics](running.md#terminal-conditions-and-budgets)
+and [current execution refusals](support.md#current-execution-refusals) before
+treating an accepted CLI value as an implemented backend capability.
+
+For unattended local QEMU `--until property`, the discovery stop observes an
+assertion violation; run-supplied virtual-time and quantum limits do not enter
+that stop. Lifecycle and deployment limits remain in force.
 
 ### `verify`
 
@@ -171,12 +181,11 @@ uses `selftest_gate`, `selftest_scenario`, and terminal `final_outcome` records.
 | `--marker <name>` | Required with `--at marker` | Guest-marker ID whose observation supplies the boundary. |
 | `--out <path>` | Default below `--artifact-dir` | Select the exported savepoint-handle path. |
 
-Savepoint handle schema v3 records the selected property violation or guest
-marker, its exact boundary proof, and a content-addressed canonical predicate
-payload. The reader rejects mismatched selectors, predicates, terminal
-conditions, frontiers, and undeclared property identities. The canonical trace
-exposes the same proof as `save_boundary_proof`, with percent-encoded selector
-values. Older v2 handles remain readable but lack selector provenance.
+The current savepoint handle schema v6 records the authenticated Campaign
+replay closure, exact boundary proof, and content-addressed predicate or
+observation evidence. The reader rejects mismatched selectors, predicates,
+terminal conditions, frontiers, undeclared property identities, and incomplete
+replay closures. Earlier handle schemas fail closed during decoding.
 
 A property or marker miss returns exit 3 without a handle. An explicit
 `--trace` is still honored and ends with `save_boundary_failure`, preserving the
@@ -186,35 +195,23 @@ partial control trail for diagnosis.
 
 | Argument or option | Required/default | Meaning |
 | --- | --- | --- |
-| `SAVEPOINT` | Required | Savepoint-handle path or checkpoint content hash. |
+| `SAVEPOINT` | Required | Authenticated `.crucible-savepoint` handle path. |
 | `--until <quiescence\|virtual-time\|property\|stopped>` | Default `quiescence` | Select the resumed terminal condition. |
 | `--max-virtual-time <dur>` | Required with `--until virtual-time` | Stop with timeout after this virtual-time budget. |
 | `--interactive` | Off | Drive the resumed session from standard input. |
-| `--watch` | Off | Collect live session-status updates. |
-
-### `fork`
-
-| Argument or option | Required/default | Meaning |
-| --- | --- | --- |
-| `SAVEPOINT` | Required | Savepoint-handle path or checkpoint content hash. |
-| `--override <decision=value>` | Repeatable; conflicts with global `--seed` | Pin a scheduler-recorded live World-network choice. The percent-encoded point starts with `live-world-network/`; the value uses the canonical loss/duplicate/corrupt choice vocabulary. |
-| `--until <quiescence\|virtual-time\|property\|stopped>` | Default `quiescence` | Select the child branch's terminal condition. |
-| `--max-virtual-time <dur>` | Required with `--until virtual-time` | Stop with timeout after this virtual-time budget. |
-| `--label <name>` | Optional | Label the forked branch. |
-| `--interactive` | Off | Drive the forked session from standard input. |
 | `--watch` | Off | Collect live session-status updates. |
 
 ### `replay`
 
 | Argument or option | Required/default | Meaning |
 | --- | --- | --- |
-| `ARTIFACT` | Required | v3 reproduction-artifact path; production replay requires the matching packaged QEMU/plugin identity. |
+| `ARTIFACT` | Required | v4 reproduction-artifact path; production replay requires the matching packaged QEMU/plugin identity. |
 | `--check <original-log>` | Optional | After live replay succeeds, require byte-identical canonical JSONL output. |
-| `--to <savepoint>` | Optional | Live-replay the artifact, then validate a target savepoint handle or checkpoint hash as its typed prefix. A v3 artifact can resolve its own terminal checkpoint hash without a separate store object. |
+| `--to <savepoint>` | Optional | Live-replay the artifact, then validate a target savepoint handle or checkpoint hash as its typed prefix. A v4 artifact can resolve its own terminal checkpoint hash without a separate store object. |
 | `--bisect <other-artifact>` | Optional | Live-replay both artifacts, then locate their first evidence divergence. |
 
-The v3 artifact's live recipe declares its fingerprint evidence scope. Run,
-verify, and fuzz use the full execution stream; search and fork use one terminal
+The v4 artifact's live recipe declares its fingerprint evidence scope. Run,
+verify, and fuzz use the full execution stream; search uses one terminal
 sample per VM node. Interactive control recipes are rejected until exact command
 timing can be reproduced.
 
@@ -229,7 +226,7 @@ timing can be reproduced.
 | `--on-violation <stop\|collect>` | Engine default `stop` when omitted | Stop at the first property/timeout finding or continue within the supplied budget. |
 | `--findings-out <path>` | Content-addressed path below `--artifact-dir` | Write the signed findings ledger here, including an empty ledger when no finding is retained. |
 | `--schedule-named-truths <path>` | Optional | Load schedule-named assertion truth data. |
-| `--retained-evidence <path>` | Hidden/internal | Load backend-retained assertion evidence for gate workflows. |
+| `--retained-evidence <path>` | Optional | Load authenticated backend-retained assertion evidence. |
 
 Search policy values:
 
@@ -319,7 +316,7 @@ Debugger verbs:
 | `--listen <addr>` | Required | Bind the HTTP/2 lifecycle API. TLS is selected by the server TLS options. |
 | `--max-sessions <n>` | Optional; must be greater than zero | Cap concurrent live sessions. |
 | `--production-qemu` | Off | Host inline scenarios with the packaged production QEMU lifecycle instead of the quiescent API-test loop. |
-| `--qemu-rendezvous-icount <n>` | Optional positive count; production QEMU only | Cap production-QEMU runs at this deterministic instruction-count rendezvous interval. |
+| `--qemu-rendezvous-ticks <n>` | Optional positive count; production QEMU only | Cap production-QEMU runs at this deterministic exact-tick rendezvous interval. |
 | `--read-only` | Off | Permit query/watch calls and reject mutations. |
 | `--tls-cert <path>` | Required with the other server TLS paths | Server certificate chain. |
 | `--tls-key <path>` | Required with the other server TLS paths | Server private key. |
@@ -343,7 +340,7 @@ Debugger verbs:
 
 | Value | Used by | Meaning |
 | --- | --- | --- |
-| `quiescence` | `run --until`, `resume --until`, `fork --until`, `save --at` | Stop when the scheduler has no immediately runnable work. This is the default terminal condition. |
+| `quiescence` | `run --until`, `resume --until`, `save --at` | Stop when the scheduler has no immediately runnable work. This is the default terminal condition. |
 | `virtual-time` | `--until`, `save --at` | Stop at the positive `--max-virtual-time` duration. |
 | `property` | `--until`, `save --at` | Stop on a property verdict; `save` requires `--property` and selects that assertion's violated phase. |
 | `stopped` | `--until` only | Stop only after an explicit stopped state. |
@@ -385,12 +382,14 @@ VM rows are untagged: they do not carry `kind`.
 | `memory_mib` | Default `512` | Guest memory in MiB. |
 | `cmdline` | Default empty string | Additional kernel command line. |
 | `smp_vcpus` | Required unsigned integer | Virtual CPU count. |
-| `icount_shift` | Required unsigned integer | QEMU instruction-count shift. |
 | `kernel` | Optional content address | Per-node kernel artifact. The production lifecycle may supply a configured artifact when absent. |
 | `root_image` | Optional content address | Per-node root-image artifact. |
 | `initrd` | Optional content address | Per-node initrd artifact. |
 | `ready_point` | Required nested table | Deterministic snapshot point; see below. |
 | `white_box` | Required `enabled` or `disabled` | Permit or prohibit the guest-host white-box channel. |
+
+Crucible fixes QEMU's instruction-count shift at 0. Scenario TOML has no
+`icount_shift` field; including one is a schema error.
 
 VM enum values:
 
@@ -675,7 +674,7 @@ one state transition; when it deactivates, the declaration baseline resumes.
 
 | Action `kind` | Fields | Effect |
 | --- | --- | --- |
-| `arm_timer` | `name`, `after_nanos` | Arm or replace a relative timer. |
+| `arm_timer` | `name`, `after_ticks` | Arm or replace a relative timer using exact picosecond ticks. |
 | `cancel_timer` | `name` | Cancel the timer. |
 | `start_node` | `node` | Start a declared stopped node. |
 | `stop_node` | `node` | Stop a declared node. |
@@ -835,7 +834,7 @@ Unknown variants or fields in any table are rejected.
 | Field | Required/default | Meaning |
 | --- | --- | --- |
 | `id` | Required | Stable binding identity. |
-| `signals` | Required nonempty list; `signal` alias only for one input | Canonical input signals. |
+| `signals` | Required nonempty list | Canonical input signals. |
 | `sampling` | Default `at_boundary` | String value `at_boundary`, `at_opportunity`, `at_change`, `cadence_nanos`, or `at_event`; the latter two use adjacent parameter fields. |
 | `mapping` | Required | Closed signal-to-effect transfer below. |
 | `selector` | Required | `exact`, `target_set`, `fault_domain`, or version-1 `dynamic_path`. |
@@ -1127,7 +1126,7 @@ same vocabulary is accepted for assertion predicates and event triggers.
 | `kind` | Required/optional fields | True when | Reference |
 | --- | --- | --- | --- |
 | `at` | `at_ticks` | Virtual time equals the exact coordinate. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `after` | `duration_nanos`, `of` | The duration has elapsed since event ID `of` last fired. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
+| `after` | `duration_ticks`, `of` | The exact picosecond duration has elapsed since event ID `of` last fired. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
 | `timer` | `name` | The named relative timer fires. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
 | `network_match` | `predicate`, `link?` | A delivered frame, optionally restricted to a link ID, matches the nested frame predicate. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
 | `console_match` | `node`, `regex` | The node's captured serial output matches the regex program. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
@@ -1242,7 +1241,7 @@ schedule needed to reproduce a result. Signal-fault reproduction artifacts
 also embed every reachable normalized trace/spatial/sampler object, authenticate
 each object while restoring it into an isolated in-memory store, and include
 mutation provenance when search changed a trace or mapping. A savepoint handle
-names a checkpoint for `resume`, `fork`, and debugger attachment. Preserve every
+names a checkpoint for `resume` and debugger attachment. Preserve every
 store object referenced by exported handles; reproduction artifacts carry their
 own signal closure.
 

@@ -20,7 +20,9 @@ fn baked_with_search_frontier_choices(
             std::io::Error::other("search frontier genesis checkpoint missing state")
         })?;
     let mut scheduler = state.scheduler.clone();
-    scheduler.search_frontier = crucible::SearchFrontierChoices::from_decisions(decisions);
+    scheduler.search_frontier = crucible::SearchFrontierChoices::from_decision_sequences(
+        decisions.into_iter().map(std::iter::once),
+    );
     baked.checkpoint.state = Some(
         crucible::MaterializedState::from_components_with_event_log_segments(
             state.vm_snapshots.clone(),

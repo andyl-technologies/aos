@@ -10,8 +10,18 @@ use crucible::{
     NodeTemplate, OverrideDecision, Predicate, ReadyPoint, ScenarioDef, ScheduledEvent,
     ScheduledEventKey, SchedulerNodeId, SchedulingNodeKind, SchedulingPoint, Seed, TimerId,
     TriggerActionApplication, VirtualTime, VmArchitecture, WhiteBoxPolicy, World, WorldNode, bake,
-    step, try_step,
+    try_step,
 };
+
+fn accepted_step(
+    configuration: &crucible::Configuration,
+    decision: Decision,
+) -> crucible::Configuration {
+    match try_step(configuration, decision) {
+        Ok(configuration) => configuration,
+        Err(error) => panic!("test configuration step should be accepted: {error}"),
+    }
+}
 
 #[path = "tests/actor_runtime.rs"]
 mod actor_runtime;

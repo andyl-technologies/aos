@@ -9,6 +9,7 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
+  familyTest = builtins.readFile ../../crates/crucible/tests/gate_coverage_guided_fuzzing.rs;
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
@@ -47,10 +48,6 @@
         needle = "pub struct PinnedConfiguration";
       }
       {
-        label = "concrete family parameters";
-        needle = "pub struct FamilyParams";
-      }
-      {
         label = "topology shape axis";
         needle = "pub enum TopologyShape";
       }
@@ -83,8 +80,12 @@
         needle = "pub fn genesis_configuration(&self) -> PinnedConfiguration";
       }
       {
-        label = "family topology generation leaves fault programs independent";
-        needle = "fn build_plan(&self, _world: &World, _params: FamilyParams)";
+        label = "family space canonicalizes topology shapes";
+        needle = "topology_shapes.sort();";
+      }
+      {
+        label = "family contains only declared finite axes";
+        needle = "self.seeds.contains(params.seed)";
       }
       {
         label = "random topology is deterministic from seed";
@@ -93,28 +94,38 @@
     ]
     ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
       {
-        label = "finite family regression";
-        needle = "scenario_family_pins_concrete_validated_instances";
+        label = "ScenarioFamily re-export";
+        needle = "ScenarioFamily";
       }
       {
-        label = "pinned genesis";
-        needle = "pinned.genesis_configuration()";
+        label = "PinnedScenario re-export";
+        needle = "PinnedScenario";
       }
       {
-        label = "canonical pinned form round trip";
-        needle = "ScenarioDefForm::from_compact_binary(&pinned.form().to_compact_binary())";
+        label = "PinnedConfiguration re-export";
+        needle = "PinnedConfiguration";
+      }
+    ]
+    ++ failuresFor "crates/crucible/tests/gate_coverage_guided_fuzzing.rs" familyTest [
+      {
+        label = "focused scenario family reproducibility test";
+        needle = "fn gate_coverage_guided_fuzzing_is_seeded_and_reproducible()";
       }
       {
-        label = "finite exhaustive sampling";
-        needle = "for index in 0..total";
+        label = "test instantiates concrete family parameters";
+        needle = "assert!(family.space().contains(iteration.params));";
       }
       {
-        label = "separate fault plan layer";
-        needle = "pinned.form().plan(), &Plan::empty()";
+        label = "test covers bounded finite sampling";
+        needle = "SeedSpace::explicit(vec![Seed::from_u64(0x11)])?";
       }
       {
-        label = "out-of-space sampling rejected";
-        needle = "ScenarioFamilyParameterOutOfSpace";
+        label = "test uses topology size and shape axes";
+        needle = "TopologySizeRange::new(2, 2)?";
+      }
+      {
+        label = "test reduces each concrete configuration";
+        needle = "reduce(&iteration.configuration.def, iteration.schedule()).is_ok()";
       }
     ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
@@ -177,8 +188,8 @@ in
               --target-dir "$TMPDIR/crucible-spatial-scenario-family-target" \
               --manifest-path crates/Cargo.toml \
               -p crucible \
-              --lib \
-              scenario_family_pins_concrete_validated_instances \
+              --test gate_coverage_guided_fuzzing \
+              gate_coverage_guided_fuzzing_is_seeded_and_reproducible \
               -- --test-threads=1
           '';
         }
@@ -194,7 +205,7 @@ in
             component=scenario-family
             deterministic_sampling=true
             pinned_instance_only=true
-            density_topology_seed_axes=true
+            finite_axes=seed,topology-size,topology-shape
             RESULT
           '';
         }

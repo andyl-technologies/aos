@@ -26,7 +26,7 @@
       }
       {
         label = "first causal entry completion note";
-        needle = "node/icount, source, and kind directly from the log";
+        needle = "node/logical tick, source, and kind directly from the log";
       }
     ]
     ++ failuresFor "crates/crucible/src/scheduler.rs" scheduler [
@@ -40,7 +40,7 @@
       }
       {
         label = "divergence point icount stamp";
-        needle = "pub at: EventLogIcountStamp";
+        needle = "pub at: EventLogTickStamp";
       }
       {
         label = "divergence point source";
@@ -64,7 +64,7 @@
       }
       {
         label = "localization builds from event-log time";
-        needle = "at: entry.entry.time().icount.clone()";
+        needle = "at: entry.entry.time().stamp.clone()";
       }
       {
         label = "localization builds from source";
@@ -108,7 +108,7 @@
       }
       {
         label = "first icount comes from causal entry";
-        needle = ".map(|entry| entry.at.icount)";
+        needle = ".and_then(|entry| entry.at.retired)";
       }
       {
         label = "bisection request carries causal entry";
@@ -122,11 +122,11 @@
       }
       {
         label = "test asserts node";
-        needle = "expected_location.at.node.as_ref()";
+        needle = "expected_location.at.node, None";
       }
       {
         label = "test asserts icount";
-        needle = "expected_location.at.icount";
+        needle = "expected_location.at.tick";
       }
       {
         label = "test asserts source";
@@ -155,8 +155,8 @@
         needle = "assert_eq!(divergence.first_different_prefix_len, 1)";
       }
       {
-        label = "replay path asserts event icount";
-        needle = "assert_eq!(divergence.first_different_icount, Some(icount(0)))";
+        label = "replay path does not invent a raw retirement witness";
+        needle = "assert_eq!(divergence.first_different_icount, None)";
       }
       {
         label = "replay path rejects smoothing";
@@ -213,10 +213,12 @@ in
       pname = "crucible-phase4-event-log-divergence-bisect";
       version = "0";
       src = crucibleSrc;
+      runtimeDeps = [pkgs.sqlite];
 
       buildDeps = [
         pkgs.coreutils
         pkgs.rust
+        pkgs.sqlite
         pkgs.sed
       ];
 

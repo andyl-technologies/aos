@@ -52,6 +52,12 @@ pub enum FaultAbiError {
 /// Shared-memory fault command transport failure.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum FaultTransportError {
+    /// The reversible hot-fork barrier rejects a new producer publication.
+    #[error("fault transport producer admission is held for hot fork")]
+    ProducerBarrierHeld,
+    /// The reversible hot-fork barrier rejects a new consumer operation.
+    #[error("fault transport consumer admission is held for hot fork")]
+    ConsumerBarrierHeld,
     /// The command/result ring capacity is invalid for the ABI.
     #[error("fault transport ring capacity {capacity} is invalid")]
     InvalidRingCapacity {

@@ -4,13 +4,20 @@
 // crucible-lint: allow panic-shortcut -- test assertions use panic shortcuts for fixture setup and failure localization.
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+macro_rules! accepted_step {
+    ($configuration:expr, $decision:expr $(,)?) => {
+        crucible::try_step($configuration, $decision)
+            .unwrap_or_else(|error| panic!("test configuration step should be accepted: {error}"))
+    };
+}
+
 use crucible::{
     BackendInput, Configuration, ControlOperation, ControlOperationKind, Decision, EventKey,
     ExactLocalEvent, NetworkLookahead, NodeCounter, NodeId, QuantumLoop, QuantumRequest,
     ScheduledEvent, ScheduledEventKey, ScheduledEventPayload, SchedulerError,
     SchedulerLivenessReport, SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId,
-    SchedulerScenarioNode, SchedulerTerminal, SchedulingNodeKind, Shift, SimDuration, SimInstant,
-    SingleScheduler, VirtualTime, check_scheduler_liveness, step,
+    SchedulerScenarioNode, SchedulerTerminal, SchedulingNodeKind, SimDuration, SimInstant,
+    SingleScheduler, VirtualTime, check_scheduler_liveness,
 };
 
 #[test]
@@ -21,9 +28,8 @@ fn quantum_loop_pick_run_resolve_and_step_are_one_atomic_boundary() {
     let later = backend_event(7, &consumer, &producer, 8, b"later");
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "quantum-loop-atomic-boundary",
-        shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![scenario_node(
             "consumer",
             0,
@@ -95,9 +101,8 @@ fn quantum_loop_scheduler_state_contributes_to_effective_scenario_def() {
     let node_b = scheduler_node("node-b");
     let first = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "same-authored-material",
-        shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![scenario_node(
             "node-a",
             0,
@@ -109,9 +114,8 @@ fn quantum_loop_scheduler_state_contributes_to_effective_scenario_def() {
     .expect("first scenario should build");
     let second = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "same-authored-material",
-        shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![scenario_node(
             "node-b",
             0,
@@ -132,9 +136,8 @@ fn quantum_loop_scheduler_state_contributes_to_effective_scenario_def() {
 fn quantum_loop_steps_boundary_control_when_no_node_advances() {
     let mut scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
         "control-only-boundary",
-        shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![SchedulerScenarioNode {
             id: scheduler_node("idle"),
             counter: NodeCounter { ticks: 0 },
@@ -201,9 +204,8 @@ fn pure_sequence_scenario() -> SchedulerLivenessScenario {
     let node_b = scheduler_node("node-b");
     SchedulerLivenessScenario::from_canonical_material(
         "quantum-loop-pure-sequence",
-        shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![
             scenario_node(
                 "node-a",
@@ -228,7 +230,7 @@ fn pure_sequence_scenario() -> SchedulerLivenessScenario {
 fn apply_decisions(configuration: &Configuration, decisions: &[Decision]) -> Configuration {
     let mut next = configuration.clone();
     for decision in decisions {
-        next = step(&next, decision.clone());
+        next = accepted_step!(&next, decision.clone());
     }
     next
 }
@@ -241,7 +243,7 @@ fn delivery_order(decisions: &[Decision]) -> Vec<EventKey> {
             Decision::RngDraw(_)
             | Decision::Override(_)
             | Decision::Preemption(_)
-            | Decision::AppRandom(_) => Vec::new(),
+            | Decision::Selection(_) => Vec::new(),
         })
         .collect()
 }
@@ -291,13 +293,18 @@ fn backend_event(
     payload: &[u8],
 ) -> ScheduledEvent {
     ScheduledEvent {
-        key: ScheduledEventKey::from_parts(
-            VirtualTime {
-                ticks: virtual_time,
+        key: ScheduledEventKey::new(
+            crucible::SharedTimelineKey {
+                virtual_time: crucible::SimInstant {
+                    ticks: (VirtualTime {
+                        ticks: virtual_time,
+                    })
+                    .ticks,
+                },
+                node: consumer.clone(),
+                sequence,
             },
-            consumer.clone(),
             producer.clone(),
-            sequence,
         ),
         payload: ScheduledEventPayload::BackendInput(BackendInput {
             node: consumer.node.clone(),
@@ -307,9 +314,5 @@ fn backend_event(
 }
 
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {
-    NetworkLookahead::Finite(SimDuration { nanos })
-}
-
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
+    NetworkLookahead::Finite(SimDuration { ticks: nanos })
 }

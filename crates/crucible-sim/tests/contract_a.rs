@@ -3,10 +3,11 @@
 #![forbid(unsafe_code)]
 
 use crucible_sim::contract_a::{
-    ContractAConfig, ContractAConfigError, ContractADriver, ContractAError,
-    ContractAExecutionError, ContractARun, ContractAVm, HashingContractAVm,
-    MAX_CONTRACT_A_ICOUNT_SHIFT, MAX_CONTRACT_A_RETIRED_INSTRUCTIONS, MAX_CONTRACT_A_VCPU_COUNT,
-    RecordedInput, RetireRequest, TimeTrajectorySample, VcpuRegisterFileRequest,
+    CONTRACT_A_TICKS_PER_INSTRUCTION, CONTRACT_A_TICKS_PER_NS, ContractAConfig,
+    ContractAConfigError, ContractADriver, ContractAError, ContractAExecutionError, ContractARun,
+    ContractAVm, HashingContractAVm, MAX_CONTRACT_A_RETIRED_INSTRUCTIONS,
+    MAX_CONTRACT_A_VCPU_COUNT, RecordedInput, RetireRequest, TimeTrajectorySample,
+    VcpuRegisterFileRequest,
 };
 use crucible_sim::{StableDigest, StableHasher};
 
@@ -224,56 +225,42 @@ fn contract_a_driver_feeds_recorded_inputs_into_vm_boundary() {
 }
 
 #[test]
-fn contract_a_time_trajectory_is_pure_icount_shift_function() {
-    let config =
-        match ContractAConfig::new_with_icount_shift(image_digest(), "console=ttyS0", 7, 1, 4, 3) {
-            Ok(config) => config,
-            Err(error) => panic!("test Contract A config should be valid: {error}"),
-        };
+fn contract_a_time_trajectory_preserves_exact_ticks_and_guest_nanoseconds() {
+    let config = match ContractAConfig::new(image_digest(), "console=ttyS0", 7, 1, 4) {
+        Ok(config) => config,
+        Err(error) => panic!("test Contract A config should be valid: {error}"),
+    };
     let inputs = vec![
         RecordedInput::new(0, b"boot".to_vec()),
         RecordedInput::new(2, b"net".to_vec()),
     ];
 
-    let run = run_hashing(&config, &inputs, 5);
+    let run = run_hashing(&config, &inputs, 21);
 
+    let expected = (1..=21)
+        .map(|aggregate_icount| TimeTrajectorySample {
+            aggregate_icount,
+            virtual_time_ticks: aggregate_icount * CONTRACT_A_TICKS_PER_INSTRUCTION,
+            virtual_time_ns: aggregate_icount / 20,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(run.time_trajectory, expected);
+    assert_eq!(run.time_fingerprint.ticks_per_ns, CONTRACT_A_TICKS_PER_NS);
     assert_eq!(
-        run.time_trajectory,
-        vec![
-            TimeTrajectorySample {
-                aggregate_icount: 1,
-                virtual_time_ns: 8,
-            },
-            TimeTrajectorySample {
-                aggregate_icount: 2,
-                virtual_time_ns: 16,
-            },
-            TimeTrajectorySample {
-                aggregate_icount: 3,
-                virtual_time_ns: 24,
-            },
-            TimeTrajectorySample {
-                aggregate_icount: 4,
-                virtual_time_ns: 32,
-            },
-            TimeTrajectorySample {
-                aggregate_icount: 5,
-                virtual_time_ns: 40,
-            },
-        ]
+        run.time_fingerprint.ticks_per_instruction,
+        CONTRACT_A_TICKS_PER_INSTRUCTION
     );
-    assert_eq!(run.time_fingerprint.icount_shift, 3);
-    assert_eq!(run.time_fingerprint.final_icount, 5);
-    assert_eq!(run.time_fingerprint.final_virtual_time_ns, 40);
+    assert_eq!(run.time_fingerprint.final_icount, 21);
+    assert_eq!(run.time_fingerprint.final_virtual_time_ticks, 1_050);
+    assert_eq!(run.time_fingerprint.final_virtual_time_ns, 1);
 }
 
 #[test]
 fn contract_a_time_fingerprint_matches_across_adversarial_host_conditions() {
-    let config =
-        match ContractAConfig::new_with_icount_shift(image_digest(), "console=ttyS0", 7, 2, 3, 2) {
-            Ok(config) => config,
-            Err(error) => panic!("test Contract A config should be valid: {error}"),
-        };
+    let config = match ContractAConfig::new(image_digest(), "console=ttyS0", 7, 2, 3) {
+        Ok(config) => config,
+        Err(error) => panic!("test Contract A config should be valid: {error}"),
+    };
     let inputs = vec![
         RecordedInput::new(0, b"boot".to_vec()),
         RecordedInput::new(4, b"network".to_vec()),
@@ -298,11 +285,10 @@ fn contract_a_time_fingerprint_matches_across_adversarial_host_conditions() {
 
 #[test]
 fn contract_a_time_fingerprint_ignores_payload_when_icount_horizon_is_fixed() {
-    let config =
-        match ContractAConfig::new_with_icount_shift(image_digest(), "console=ttyS0", 7, 1, 4, 1) {
-            Ok(config) => config,
-            Err(error) => panic!("test Contract A config should be valid: {error}"),
-        };
+    let config = match ContractAConfig::new(image_digest(), "console=ttyS0", 7, 1, 4) {
+        Ok(config) => config,
+        Err(error) => panic!("test Contract A config should be valid: {error}"),
+    };
     let input_a = vec![RecordedInput::new(2, b"payload-a".to_vec())];
     let input_b = vec![RecordedInput::new(2, b"payload-b".to_vec())];
 
@@ -427,14 +413,7 @@ fn contract_a_driver_models_fixed_rr_vcpu_cursor_without_live_peers() {
 
 #[test]
 fn contract_a_multi_vcpu_uses_single_aggregate_time_axis() {
-    let config = match ContractAConfig::new_with_icount_shift(
-        image_digest(),
-        "console=ttyS0",
-        11,
-        3,
-        2,
-        1,
-    ) {
+    let config = match ContractAConfig::new(image_digest(), "console=ttyS0", 11, 3, 2) {
         Ok(config) => config,
         Err(error) => panic!("test Contract A config should be valid: {error}"),
     };
@@ -447,41 +426,17 @@ fn contract_a_multi_vcpu_uses_single_aggregate_time_axis() {
         .collect::<Vec<_>>();
 
     assert_eq!(cursors, vec![0, 0, 1, 1, 2, 2, 0]);
-    assert_eq!(
-        run.time_trajectory,
-        vec![
-            TimeTrajectorySample {
-                aggregate_icount: 1,
-                virtual_time_ns: 2,
-            },
-            TimeTrajectorySample {
-                aggregate_icount: 2,
-                virtual_time_ns: 4,
-            },
-            TimeTrajectorySample {
-                aggregate_icount: 3,
-                virtual_time_ns: 6,
-            },
-            TimeTrajectorySample {
-                aggregate_icount: 4,
-                virtual_time_ns: 8,
-            },
-            TimeTrajectorySample {
-                aggregate_icount: 5,
-                virtual_time_ns: 10,
-            },
-            TimeTrajectorySample {
-                aggregate_icount: 6,
-                virtual_time_ns: 12,
-            },
-            TimeTrajectorySample {
-                aggregate_icount: 7,
-                virtual_time_ns: 14,
-            },
-        ]
-    );
+    let expected = (1..=7)
+        .map(|aggregate_icount| TimeTrajectorySample {
+            aggregate_icount,
+            virtual_time_ticks: aggregate_icount * CONTRACT_A_TICKS_PER_INSTRUCTION,
+            virtual_time_ns: 0,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(run.time_trajectory, expected);
     assert_eq!(run.time_fingerprint.final_icount, 7);
-    assert_eq!(run.time_fingerprint.final_virtual_time_ns, 14);
+    assert_eq!(run.time_fingerprint.final_virtual_time_ticks, 350);
+    assert_eq!(run.time_fingerprint.final_virtual_time_ns, 0);
 }
 
 #[test]
@@ -601,26 +556,12 @@ fn contract_a_multi_vcpu_fingerprint_changes_when_register_file_changes() {
 }
 
 #[test]
-fn contract_a_rr_switch_quantum_is_content_addressed_node_icount_units() {
-    let quantum_two = match ContractAConfig::new_with_icount_shift(
-        image_digest(),
-        "console=ttyS0",
-        11,
-        3,
-        2,
-        2,
-    ) {
+fn contract_a_rr_switch_quantum_is_content_addressed_retired_instructions() {
+    let quantum_two = match ContractAConfig::new(image_digest(), "console=ttyS0", 11, 3, 2) {
         Ok(config) => config,
         Err(error) => panic!("test Contract A config should be valid: {error}"),
     };
-    let quantum_three = match ContractAConfig::new_with_icount_shift(
-        image_digest(),
-        "console=ttyS0",
-        11,
-        3,
-        3,
-        2,
-    ) {
+    let quantum_three = match ContractAConfig::new(image_digest(), "console=ttyS0", 11, 3, 3) {
         Ok(config) => config,
         Err(error) => panic!("test Contract A config should be valid: {error}"),
     };
@@ -713,21 +654,6 @@ fn contract_a_config_and_driver_reject_zero_or_unbounded_parameters() {
         ContractAConfig::new(image_digest(), "", 0, 1, 0),
         Err(ContractAConfigError::ZeroRrSwitchQuantum)
     );
-    assert_eq!(
-        ContractAConfig::new_with_icount_shift(
-            image_digest(),
-            "",
-            0,
-            1,
-            1,
-            MAX_CONTRACT_A_ICOUNT_SHIFT + 1,
-        ),
-        Err(ContractAConfigError::IcountShiftTooLarge {
-            shift: MAX_CONTRACT_A_ICOUNT_SHIFT + 1,
-            max: MAX_CONTRACT_A_ICOUNT_SHIFT,
-        })
-    );
-
     let mut vm = HashingContractAVm::default();
     assert_eq!(
         ContractADriver::run(
@@ -740,34 +666,5 @@ fn contract_a_config_and_driver_reject_zero_or_unbounded_parameters() {
             count: MAX_CONTRACT_A_RETIRED_INSTRUCTIONS + 1,
             max: MAX_CONTRACT_A_RETIRED_INSTRUCTIONS,
         })
-    );
-}
-
-#[test]
-fn contract_a_driver_rejects_unrepresentable_virtual_time() {
-    let config = match ContractAConfig::new_with_icount_shift(
-        image_digest(),
-        "console=ttyS0",
-        7,
-        1,
-        1,
-        MAX_CONTRACT_A_ICOUNT_SHIFT,
-    ) {
-        Ok(config) => config,
-        Err(error) => panic!("test Contract A config should be valid: {error}"),
-    };
-    let mut vm = HashingContractAVm::default();
-
-    let error = match ContractADriver::run(&mut vm, &config, &[], 2) {
-        Ok(_) => panic!("overflowing virtual time should fail"),
-        Err(error) => error,
-    };
-
-    assert_eq!(
-        error,
-        ContractAError::VirtualTimeOverflow {
-            aggregate_icount: 2,
-            icount_shift: MAX_CONTRACT_A_ICOUNT_SHIFT,
-        }
     );
 }

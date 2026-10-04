@@ -27,7 +27,7 @@
 //! source_nar_hash = "sha256:…"
 //! ```
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -104,7 +104,7 @@ pub struct VersionEntry {
     /// Per-platform artifacts, keyed by platform triple
     /// (e.g. `x86_64-linux` or `aarch64-darwin`).
     #[serde(default)]
-    pub platforms: HashMap<String, PlatformEntry>,
+    pub platforms: BTreeMap<String, PlatformEntry>,
 }
 
 /// A `[versions.platforms.<platform>]` artifact entry.
@@ -793,7 +793,7 @@ impl ImageUkiIdentity {
                     !self.sbat.is_empty(),
                     "signed UKI must carry SBAT generations"
                 );
-                let mut components = HashSet::new();
+                let mut components = BTreeSet::new();
                 anyhow::ensure!(
                     self.sbat.iter().all(|entry| {
                         !entry.component.is_empty()
@@ -2329,7 +2329,7 @@ pub fn parse_package_file(content: &str) -> Result<PackageToml> {
     validate_package_name(&toml.package.name)?;
     for version in &toml.versions {
         for (platform, entry) in &version.platforms {
-            let mut output_paths = HashSet::from([entry.store_path.as_str()]);
+            let mut output_paths = BTreeSet::from([entry.store_path.as_str()]);
             for (output, store_path) in &entry.named_outputs {
                 if output == "out"
                     || output.is_empty()
@@ -2367,7 +2367,7 @@ pub fn parse_package_file(content: &str) -> Result<PackageToml> {
                 }
             }
 
-            let mut formats = HashSet::new();
+            let mut formats = BTreeSet::new();
             for image in &entry.images {
                 if !formats.insert(image.format.as_str()) {
                     bail!(

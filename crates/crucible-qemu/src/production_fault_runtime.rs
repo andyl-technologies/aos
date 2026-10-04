@@ -22,7 +22,7 @@ use crucible::model::{
 };
 use crucible::{BackendError, BackendNetworkOutput, NodeId, SchedulerNetworkCheckpoint};
 use crucible_shmem::{
-    DequeuedFaultEvent, FaultClockEvidenceV1, FaultEventOutcomeV1, FaultExceptionEvidenceV1,
+    DequeuedFaultEvent, FaultClockEvidenceV2, FaultEventOutcomeV1, FaultExceptionEvidenceV1,
     FaultInstructionEvidenceV1, FaultRegisterMutationEvidenceV1, FaultTerminalEvidenceV1,
     MemoryMutationEvidenceV1,
 };
@@ -56,11 +56,14 @@ pub struct ProductionFaultRuntimeCheckpoint {
     /// Committed host network and storage adapter state.
     host: HostFaultActionState,
     /// Execution fingerprints of the exact QEMU snapshots paired with this state.
-    qemu_fingerprints: QemuNodeMap<ContentHash>,
+    /// Restore only reads this map, so sibling checkpoints can share its backing.
+    qemu_fingerprints: Arc<QemuNodeMap<ContentHash>>,
     /// Per-node fault-command continuation paired with the QEMU snapshots.
-    qemu_fault_sequences: QemuNodeMap<u64>,
+    /// Child restore reads this map before installing its own mutable sequence state.
+    qemu_fault_sequences: Arc<QemuNodeMap<u64>>,
     /// Per-node fault-event continuation paired with the QEMU snapshots.
-    qemu_fault_event_sequences: QemuNodeMap<u64>,
+    /// Child restore reads this map before installing its own mutable sequence state.
+    qemu_fault_event_sequences: Arc<QemuNodeMap<u64>>,
     /// Issued QEMU actions needed to authenticate asynchronous occurrence events.
     qemu_issued_actions: QemuActionMap<ResolvedBindingAction>,
     /// Authenticated APPLY results that bind occurrences to exact commands.
@@ -136,6 +139,46 @@ impl ProductionNetworkStateCheckpoint {
 }
 
 impl ProductionFaultRuntimeCheckpoint {
+    /// Duplicates mutable state for a sibling while sharing immutable QEMU maps.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProductionFaultRuntimeError::CheckpointCloneAllocation`] when
+    /// bounded ledger storage cannot be reserved for the duplicate.
+    pub fn try_clone(&self) -> Result<Self, ProductionFaultRuntimeError> {
+        let allocation_error = || ProductionFaultRuntimeError::CheckpointCloneAllocation;
+
+        Ok(Self {
+            runtime: self.runtime.clone(),
+            host: self.host.clone(),
+            qemu_fingerprints: Arc::clone(&self.qemu_fingerprints),
+            qemu_fault_sequences: Arc::clone(&self.qemu_fault_sequences),
+            qemu_fault_event_sequences: Arc::clone(&self.qemu_fault_event_sequences),
+            qemu_issued_actions: self.qemu_issued_actions.try_clone_with(
+                |identity| Ok(*identity),
+                |action| try_clone_action(action, allocation_error),
+                allocation_error,
+            )?,
+            qemu_action_commits: self.qemu_action_commits.try_clone_with(
+                |identity| Ok(*identity),
+                |commit| Ok(*commit),
+                allocation_error,
+            )?,
+            qemu_active_rule_ids: self
+                .qemu_active_rule_ids
+                .try_clone_with(|identity| Ok(*identity), allocation_error)?,
+            network_state: self.network_state.clone(),
+            emitted_events: self.emitted_events.clone(),
+            pending_qemu_observations: self.pending_qemu_observations.clone(),
+            pending_qemu_events: self.pending_qemu_events.try_clone_with(
+                |node| Ok(node.clone()),
+                |events| try_clone_fault_events(events, allocation_error),
+                allocation_error,
+            )?,
+            identity: self.identity,
+        })
+    }
+
     /// Returns the aggregate content identity of this continuation.
     #[must_use]
     pub const fn id(&self) -> ContentHash {
@@ -154,16 +197,82 @@ impl ProductionFaultRuntimeCheckpoint {
         self.qemu_fingerprints.get(node).copied()
     }
 
-    /// Returns the next fault-command sequence captured for one QEMU node.
-    #[must_use]
-    pub fn qemu_fault_sequence(&self, node: &NodeId) -> Option<u64> {
-        self.qemu_fault_sequences.get(node).copied()
-    }
+    /// Adds one synthetic live-node continuation for cross-crate tests.
+    ///
+    /// This constructor is unavailable in production builds. It accepts only
+    /// an otherwise node-empty checkpoint, installs the same
+    /// node key in all three exact QEMU continuation maps, and rebuilds the
+    /// aggregate identity under `plan`. Production code must obtain these values from a live
+    /// [`QemuNodeSet`] through [`ProductionFaultRuntime::checkpoint`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProductionFaultRuntimeError`] when the checkpoint already
+    /// carries a node, the plan's node ceiling rejects the fixture, bounded
+    /// storage cannot be reserved, or the rebuilt identity exceeds its
+    /// authored limits.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_unvalidated_test_node(
+        mut self,
+        plan: &FaultSignalPlan,
+        node: NodeId,
+        fingerprint: ContentHash,
+    ) -> Result<Self, ProductionFaultRuntimeError> {
+        if self.qemu_fingerprints.len() != 0
+            || self.qemu_fault_sequences.len() != 0
+            || self.qemu_fault_event_sequences.len() != 0
+        {
+            return Err(BackendError::Rejected {
+                message: String::from(
+                    "synthetic production checkpoint must begin with empty QEMU maps",
+                ),
+            }
+            .into());
+        }
+        let limits = plan.resource_limits();
+        limits.reserve("nodes", 0, 1)?;
+        let allocation_error = || {
+            ProductionFaultRuntimeError::from(FaultResourceLimitError::Exceeded {
+                field: "nodes",
+                current: 0,
+                requested: 1,
+                configured: limits.nodes,
+                hard: FaultResourceLimits::compiled_maximum().nodes,
+            })
+        };
+        let mut qemu_fingerprints = QemuNodeMap::new();
+        qemu_fingerprints
+            .try_insert(node.clone(), fingerprint)
+            .map_err(|_| allocation_error())?;
+        let mut qemu_fault_sequences = QemuNodeMap::new();
+        qemu_fault_sequences
+            .try_insert(node.clone(), 1)
+            .map_err(|_| allocation_error())?;
+        let mut qemu_fault_event_sequences = QemuNodeMap::new();
+        qemu_fault_event_sequences
+            .try_insert(node, 1)
+            .map_err(|_| allocation_error())?;
 
-    /// Returns the next required QEMU fault-event sequence for one node.
-    #[must_use]
-    pub fn qemu_fault_event_sequence(&self, node: &NodeId) -> Option<u64> {
-        self.qemu_fault_event_sequences.get(node).copied()
+        self.qemu_fingerprints = Arc::new(qemu_fingerprints);
+        self.qemu_fault_sequences = Arc::new(qemu_fault_sequences);
+        self.qemu_fault_event_sequences = Arc::new(qemu_fault_event_sequences);
+        self.identity = production_checkpoint_identity(
+            plan.id(),
+            limits,
+            self.runtime.as_ref(),
+            &self.host,
+            &self.qemu_fingerprints,
+            &self.qemu_fault_sequences,
+            &self.qemu_fault_event_sequences,
+            &self.qemu_issued_actions,
+            &self.qemu_action_commits,
+            &self.qemu_active_rule_ids,
+            self.network_state.as_ref(),
+            &self.emitted_events,
+            &self.pending_qemu_observations,
+            &self.pending_qemu_events,
+        )?;
+        Ok(self)
     }
 }
 
@@ -217,6 +326,9 @@ pub enum ProductionFaultRuntimeError {
         /// Independently owned continuation that failed canonical encoding.
         component: &'static str,
     },
+    /// A process-neutral checkpoint duplicate could not reserve ledger storage.
+    #[error("cannot reserve bounded production fault-checkpoint clone storage")]
+    CheckpointCloneAllocation,
 }
 
 /// One fully authenticated node lifecycle decision awaiting host application.
@@ -230,11 +342,11 @@ pub struct QemuNodeLifecycleDecision {
     pub requested_transition: NodeLifecycleTransition,
     /// Effective terminal transition after retry or fail-closed resolution.
     pub effective_transition: NodeLifecycleTransition,
-    /// Closed terminal cause tag from `CRUCLIF1` version 4.
+    /// Closed terminal cause tag from `CRUCLIF2` version 5.
     pub cause: u32,
     /// Exit status required from this child, or `None` for a live transition.
     pub expected_exit_code: Option<i32>,
-    /// QEMU-observed instruction coordinate for the terminal decision.
+    /// QEMU-observed logical tick for the terminal decision.
     pub observed_icount: u64,
     /// Measured pre-exit state digest when QEMU could produce one.
     pub pre_exit_hash: Option<ContentHash>,
@@ -349,7 +461,6 @@ mod checkpoint;
 mod checkpoint_identity;
 #[path = "production_fault_runtime/construction.rs"]
 mod construction;
-pub(crate) use construction::validate_qemu_fingerprints;
 #[path = "production_fault_runtime/evaluation.rs"]
 mod evaluation;
 #[cfg(test)]

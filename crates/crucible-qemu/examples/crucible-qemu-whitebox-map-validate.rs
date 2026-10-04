@@ -2,6 +2,7 @@
 
 use std::{env, fs, process::ExitCode};
 
+use crucible_protocol::WHITEBOX_DOORBELL_X86_64_RESERVED_PORT;
 use crucible_qemu::validate_x86_whitebox_hmp_mtree;
 
 fn main() -> ExitCode {
@@ -29,7 +30,7 @@ fn run() -> Result<(), String> {
         fs::read_to_string(&path).map_err(|error| format!("read `{}`: {error}", path.display()))?;
     let validation = validate_x86_whitebox_hmp_mtree(&output).map_err(|error| error.to_string())?;
     println!("PASS");
-    println!("port=0x{:04x}", validation.port());
+    println!("port=0x{WHITEBOX_DOORBELL_X86_64_RESERVED_PORT:04x}");
     println!("region={}", validation.observed_region());
     Ok(())
 }

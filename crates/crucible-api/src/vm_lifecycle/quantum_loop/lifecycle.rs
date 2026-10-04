@@ -128,8 +128,6 @@ impl ProductionVmLifecycleLoop {
                 current_generation,
                 next_generation,
                 scheduler_checkpoint,
-                nodes.len(),
-                limits,
             )?;
             let current_process = self.inner.backend().process_identity(&intent.node)?;
             let journal_node = try_lifecycle_string(&intent.node.name, nodes.len(), limits)?;
@@ -312,6 +310,7 @@ impl ProductionVmLifecycleLoop {
             let identity = match (&item.replacement, item.process_owner.as_mut()) {
                 (Some(replacement), Some(owner)) => {
                     let (process_id, start_time_ticks) = replacement
+                        .node()
                         .process_identity_components(&owner.manifest_identity.executable)
                         .map_err(|error| SchedulerError::BoundaryViolation {
                             message: format!(

@@ -53,10 +53,6 @@
         needle = "pub type Condition = Predicate";
       }
       {
-        label = "trigger re-exports event id";
-        needle = "pub use crate::model::EventId";
-      }
-      {
         label = "event shape";
         needle = "pub struct Event";
       }

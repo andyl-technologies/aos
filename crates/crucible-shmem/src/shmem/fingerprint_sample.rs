@@ -7,23 +7,23 @@
 //! digests for the current icount and publishes them into its node's slot under
 //! a generation seqlock; the host reads the slot after the quantum boundary.
 //!
-//! The slot is the wire authority for the Rust-plugin single-VM fingerprint
-//! stream (`crucible.qemu.rust-plugin-fingerprint.v1`). It mirrors the material
-//! the canonical `SingleVmFingerprintStream` compares, so the host consumer maps
-//! one slot snapshot to one fingerprint sample without a schema translation.
+//! The slot is the wire authority for the Rust plugin's production fingerprint
+//! boundary stream. The host maps each slot snapshot directly to one
+//! [`FingerprintSample`] without a schema translation.
 //!
 //! Fingerprint-sample slot wire layout:
 //!
 //! ```text
 //! offset  size  field
 //! 0       4     sample_gen (even = stable, odd = writing)
-//! 4       4     reserved (zero)
+//! 4       4     capture_request (even = acknowledged, odd = requested)
 //! 8       W*8   payload words (little-endian u64)
 //! ```
 //!
 //! The payload words pack, in order: `sample_icount`, `vcpu_count`,
 //! `rr_current_vcpu`, `rr_position_in_quantum`, `rr_switch_quantum`,
-//! `component_failures`, `ram_bytes`, `device_state_bytes`, the 32-byte
+//! `component_failures`, `ram_bytes`, `device_state_bytes`,
+//! `device_state_sections`, the 32-byte
 //! `ram_digest`, `device_state_digest`, and `device_state_schema_digest` (four
 //! words each), then one 6-word block per tracked vCPU carrying the 32-byte
 //! register digest, `register_file_bytes`, and `retired_instruction_count`.
@@ -36,16 +36,15 @@ pub const FINGERPRINT_DIGEST_BYTES: usize = 32;
 pub const FINGERPRINT_DIGEST_WORDS: usize = FINGERPRINT_DIGEST_BYTES / 8;
 /// Maximum number of vCPUs one fingerprint sample slot can carry.
 ///
-/// The single-VM fingerprint scenario pins two vCPUs and the N-vCPU (M3)
-/// expansion runs `-smp 4`; eight leaves deterministic headroom without
-/// inflating the slot. This is the slot's shared tracked-vCPU bound: M3's
-/// per-vCPU fingerprint wiring lands on top of this same slot, so the constant
-/// mirrors the C trace plugin's tracked-vCPU limit rather than a per-gate value.
+/// The production fingerprint flight runs `-smp 4`; eight leaves deterministic
+/// headroom without inflating the slot. This is the slot's shared tracked-vCPU
+/// bound, so the constant mirrors the plugin's tracked-vCPU limit rather than a
+/// per-gate value.
 pub const FINGERPRINT_SAMPLE_MAX_VCPUS: usize = 8;
 /// Number of payload words describing one tracked vCPU.
 const FINGERPRINT_SAMPLE_VCPU_WORDS: usize = FINGERPRINT_DIGEST_WORDS + 2;
 /// Number of fixed payload words that precede the per-vCPU blocks.
-const FINGERPRINT_SAMPLE_HEADER_WORDS: usize = 6 + FINGERPRINT_DIGEST_WORDS * 3 + 2;
+const FINGERPRINT_SAMPLE_HEADER_WORDS: usize = 6 + FINGERPRINT_DIGEST_WORDS * 3 + 3;
 /// Total number of little-endian payload words in one slot.
 pub const FINGERPRINT_SAMPLE_WORDS: usize =
     FINGERPRINT_SAMPLE_HEADER_WORDS + FINGERPRINT_SAMPLE_MAX_VCPUS * FINGERPRINT_SAMPLE_VCPU_WORDS;
@@ -59,7 +58,8 @@ const WORD_RR_QUANTUM: usize = 4;
 const WORD_COMPONENT_FAILURES: usize = 5;
 const WORD_RAM_BYTES: usize = 6;
 const WORD_DEVICE_STATE_BYTES: usize = 7;
-const WORD_RAM_DIGEST: usize = 8;
+const WORD_DEVICE_STATE_SECTIONS: usize = 8;
+const WORD_RAM_DIGEST: usize = 9;
 const WORD_DEVICE_STATE_DIGEST: usize = WORD_RAM_DIGEST + FINGERPRINT_DIGEST_WORDS;
 const WORD_DEVICE_STATE_SCHEMA_DIGEST: usize = WORD_DEVICE_STATE_DIGEST + FINGERPRINT_DIGEST_WORDS;
 const WORD_VCPU_BASE: usize = WORD_DEVICE_STATE_SCHEMA_DIGEST + FINGERPRINT_DIGEST_WORDS;
@@ -79,25 +79,26 @@ pub struct FingerprintSampleVcpu {
     /// Single-threaded RR icount keeps one global instruction counter (the node
     /// clock), so QEMU exposes no per-vCPU retirement; the introspection export
     /// sets this to zero deliberately (see the `out_retired_instruction_count = 0`
-    /// stamp in `0029-crucible-vcpu-introspect.patch`). A reader must not treat a
+    /// stamp in `crucible-qemu-11.1.1.patch`). A reader must not treat a
     /// zero here as a broken counter: per-vCPU progress lives in the round-robin
-    /// cursor (`current_vcpu`, `position_in_quantum`), and the node clock is the
-    /// aggregate icount stamped on the sample.
+    /// cursor (`current_vcpu`, `position_in_quantum`), and the node clock's
+    /// logical picosecond coordinate is stamped on the sample.
     pub retired_instruction_count: u64,
 }
 
 /// A tear-free snapshot of one node's fingerprint sample.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FingerprintSample {
-    /// Aggregate icount at which every component below was sampled.
+    /// Aggregate logical picoseconds at which every component below was sampled.
+    /// The field name is retained by the versioned shared-memory protocol.
     pub sample_icount: u64,
     /// Number of tracked vCPUs; entries beyond this are unpopulated.
     pub vcpu_count: u32,
     /// Round-robin cursor's current vCPU index.
     pub rr_current_vcpu: u32,
-    /// Round-robin cursor position within the switch quantum.
+    /// Round-robin cursor position in retired instructions within the switch quantum.
     pub rr_position_in_quantum: u64,
-    /// Pinned round-robin switch quantum in node-icount units.
+    /// Pinned round-robin switch quantum in retired instructions.
     pub rr_switch_quantum: u64,
     /// Bitset of components whose plugin-side capture failed (0 on success).
     pub component_failures: u32,
@@ -107,9 +108,11 @@ pub struct FingerprintSample {
     pub ram_digest: [u8; FINGERPRINT_DIGEST_BYTES],
     /// Byte count covered by [`Self::device_state_digest`].
     pub device_state_bytes: u64,
-    /// Content digest of the serialized current non-RAM device VMState.
+    /// Number of admitted read-only device/volatile sections covered by the schema.
+    pub device_state_sections: u64,
+    /// Content digest of the canonical read-only device/volatile projection.
     pub device_state_digest: [u8; FINGERPRINT_DIGEST_BYTES],
-    /// Content digest of the registered non-RAM VMState section schema.
+    /// Content digest of the admitted read-only projection schema.
     pub device_state_schema_digest: [u8; FINGERPRINT_DIGEST_BYTES],
     /// Per-vCPU material; only the first [`Self::vcpu_count`] entries are valid.
     pub vcpus: [FingerprintSampleVcpu; FINGERPRINT_SAMPLE_MAX_VCPUS],
@@ -127,6 +130,7 @@ impl Default for FingerprintSample {
             ram_bytes: 0,
             ram_digest: [0; FINGERPRINT_DIGEST_BYTES],
             device_state_bytes: 0,
+            device_state_sections: 0,
             device_state_digest: [0; FINGERPRINT_DIGEST_BYTES],
             device_state_schema_digest: [0; FINGERPRINT_DIGEST_BYTES],
             vcpus: [FingerprintSampleVcpu {
@@ -182,16 +186,16 @@ impl FingerprintSample {
 #[repr(C, align(128))]
 pub struct FingerprintSampleSlot {
     sample_gen: AtomicU32,
-    _reserved: u32,
+    capture_request: AtomicU32,
     words: [AtomicU64; FINGERPRINT_SAMPLE_WORDS],
 }
 
 /// Byte offset of [`FingerprintSampleSlot`]'s generation seqlock.
 pub const FINGERPRINT_SAMPLE_SLOT_GEN_OFFSET: usize =
     core::mem::offset_of!(FingerprintSampleSlot, sample_gen);
-/// Byte offset of [`FingerprintSampleSlot`]'s reserved word.
-pub const FINGERPRINT_SAMPLE_SLOT_RESERVED_OFFSET: usize =
-    core::mem::offset_of!(FingerprintSampleSlot, _reserved);
+/// Byte offset of [`FingerprintSampleSlot`]'s v1 capture request/acknowledgement word.
+pub const FINGERPRINT_SAMPLE_SLOT_CAPTURE_REQUEST_OFFSET: usize =
+    core::mem::offset_of!(FingerprintSampleSlot, capture_request);
 /// Byte offset of [`FingerprintSampleSlot`]'s payload words.
 pub const FINGERPRINT_SAMPLE_SLOT_WORDS_OFFSET: usize =
     core::mem::offset_of!(FingerprintSampleSlot, words);
@@ -201,7 +205,7 @@ pub const FINGERPRINT_SAMPLE_SLOT_SIZE: usize = core::mem::size_of::<Fingerprint
 pub const FINGERPRINT_SAMPLE_SLOT_ALIGN: usize = core::mem::align_of::<FingerprintSampleSlot>();
 
 const _: () = assert!(FINGERPRINT_SAMPLE_SLOT_GEN_OFFSET == 0);
-const _: () = assert!(FINGERPRINT_SAMPLE_SLOT_RESERVED_OFFSET == 4);
+const _: () = assert!(FINGERPRINT_SAMPLE_SLOT_CAPTURE_REQUEST_OFFSET == 4);
 const _: () = assert!(FINGERPRINT_SAMPLE_SLOT_WORDS_OFFSET == 8);
 const _: () = assert!(FINGERPRINT_SAMPLE_SLOT_ALIGN == 128);
 
@@ -217,7 +221,7 @@ impl FingerprintSampleSlot {
     pub const fn new() -> Self {
         Self {
             sample_gen: AtomicU32::new(0),
-            _reserved: 0,
+            capture_request: AtomicU32::new(0),
             words: [const { AtomicU64::new(0) }; FINGERPRINT_SAMPLE_WORDS],
         }
     }
@@ -226,6 +230,59 @@ impl FingerprintSampleSlot {
     #[must_use]
     pub fn published_generation(&self) -> u32 {
         self.sample_gen.load(Ordering::Acquire)
+    }
+
+    /// Requests one exact sample publication and returns its odd generation.
+    ///
+    /// Repeated requests coalesce while the current request remains pending.
+    #[must_use]
+    pub fn request_capture_v1(&self) -> u32 {
+        loop {
+            let observed = self.capture_request.load(Ordering::Acquire);
+            if observed & 1 == 1 {
+                return observed;
+            }
+            let request = observed.wrapping_add(1);
+            if self
+                .capture_request
+                .compare_exchange(observed, request, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return request;
+            }
+        }
+    }
+
+    /// Returns whether an exact sample publication is currently requested.
+    #[must_use]
+    pub fn pending_capture_request_v1(&self) -> Option<u32> {
+        let request = self.capture_request.load(Ordering::Acquire);
+        (request & 1 == 1).then_some(request)
+    }
+
+    /// Acknowledges the current exact sample request after publication.
+    ///
+    /// Returns `true` only when `request` is odd and the compare-and-exchange
+    /// advances that exact current request to its wrapping even
+    /// acknowledgement. Returns `false` for an even or superseded request.
+    #[must_use]
+    pub fn acknowledge_capture_v1(&self, request: u32) -> bool {
+        request & 1 == 1
+            && self
+                .capture_request
+                .compare_exchange(
+                    request,
+                    request.wrapping_add(1),
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+    }
+
+    /// Returns the request/acknowledgement generation.
+    #[must_use]
+    pub fn capture_request_generation(&self) -> u32 {
+        self.capture_request.load(Ordering::Acquire)
     }
 
     /// Publishes `sample` into the slot under the generation seqlock.
@@ -280,15 +337,15 @@ impl FingerprintSampleSlot {
 }
 
 fn digest_to_words(digest: &[u8; FINGERPRINT_DIGEST_BYTES], out: &mut [u64]) {
-    for (word, bytes) in out.iter_mut().zip(digest.as_chunks::<8>().0) {
-        *word = u64::from_le_bytes(*bytes);
+    for (word, chunk) in out.iter_mut().zip(digest.as_chunks::<8>().0) {
+        *word = u64::from_le_bytes(*chunk);
     }
 }
 
 fn words_to_digest(words: &[u64]) -> [u8; FINGERPRINT_DIGEST_BYTES] {
     let mut digest = [0_u8; FINGERPRINT_DIGEST_BYTES];
     for (chunk, word) in digest.as_chunks_mut::<8>().0.iter_mut().zip(words) {
-        chunk.copy_from_slice(&word.to_le_bytes());
+        *chunk = word.to_le_bytes();
     }
     digest
 }
@@ -302,6 +359,7 @@ fn pack_sample(sample: &FingerprintSample, words: &mut [u64; FINGERPRINT_SAMPLE_
     words[WORD_COMPONENT_FAILURES] = u64::from(sample.component_failures);
     words[WORD_RAM_BYTES] = sample.ram_bytes;
     words[WORD_DEVICE_STATE_BYTES] = sample.device_state_bytes;
+    words[WORD_DEVICE_STATE_SECTIONS] = sample.device_state_sections;
     digest_to_words(
         &sample.ram_digest,
         &mut words[WORD_RAM_DIGEST..WORD_RAM_DIGEST + FINGERPRINT_DIGEST_WORDS],
@@ -336,6 +394,7 @@ fn unpack_sample(words: &[u64; FINGERPRINT_SAMPLE_WORDS]) -> FingerprintSample {
         component_failures: words[WORD_COMPONENT_FAILURES] as u32,
         ram_bytes: words[WORD_RAM_BYTES],
         device_state_bytes: words[WORD_DEVICE_STATE_BYTES],
+        device_state_sections: words[WORD_DEVICE_STATE_SECTIONS],
         ram_digest: words_to_digest(
             &words[WORD_RAM_DIGEST..WORD_RAM_DIGEST + FINGERPRINT_DIGEST_WORDS],
         ),
@@ -380,6 +439,7 @@ mod tests {
             ram_bytes: 64 * 1024 * 1024,
             ram_digest: digest(0x10),
             device_state_bytes: 4096,
+            device_state_sections: 17,
             device_state_digest: digest(0x20),
             device_state_schema_digest: digest(0x30),
             vcpus: [FingerprintSampleVcpu::default(); FINGERPRINT_SAMPLE_MAX_VCPUS],
@@ -401,7 +461,32 @@ mod tests {
     fn unpublished_slot_snapshots_to_none() {
         let slot = FingerprintSampleSlot::new();
         assert_eq!(slot.published_generation(), 0);
+        assert_eq!(slot.capture_request_generation(), 0);
         assert_eq!(slot.snapshot(), None);
+    }
+
+    #[test]
+    fn capture_request_is_odd_until_acknowledged() {
+        let slot = FingerprintSampleSlot::new();
+
+        assert_eq!(slot.request_capture_v1(), 1);
+        assert_eq!(slot.request_capture_v1(), 1);
+        assert_eq!(slot.pending_capture_request_v1(), Some(1));
+        assert!(!slot.acknowledge_capture_v1(3));
+        assert!(slot.acknowledge_capture_v1(1));
+        assert_eq!(slot.pending_capture_request_v1(), None);
+        assert_eq!(slot.request_capture_v1(), 3);
+    }
+
+    #[test]
+    fn capture_request_wraps_without_acknowledging_a_different_token() {
+        let slot = FingerprintSampleSlot::new();
+        slot.capture_request.store(u32::MAX, Ordering::Release);
+
+        assert!(!slot.acknowledge_capture_v1(u32::MAX - 2));
+        assert!(slot.acknowledge_capture_v1(u32::MAX));
+        assert_eq!(slot.capture_request_generation(), 0);
+        assert_eq!(slot.request_capture_v1(), 1);
     }
 
     #[test]

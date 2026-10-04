@@ -3,66 +3,38 @@
 use super::*;
 
 use crate::{PluginRoundRobinCursor, PluginVcpuRegisterDigest};
-
-extern "C" fn ram_digest(out: *mut u8, count: *mut u64) -> c_int {
-    fill(out, count, 0xA0, 64 * 1024 * 1024);
-    0
-}
-
-extern "C" fn device_digest(out: *mut u8, count: *mut u64) -> c_int {
-    fill(out, count, 0xB0, 4096);
-    0
-}
-
-extern "C" fn schema_digest(out: *mut u8, count: *mut u64) -> c_int {
-    fill(out, count, 0xC0, 12);
-    0
-}
-
-extern "C" fn failing_digest(out: *mut u8, count: *mut u64) -> c_int {
-    fill(out, count, 0, 0);
-    1
-}
-
-extern "C" fn captured_digest(data: *const u8, length: u64, out: *mut u8) -> c_int {
-    if data.is_null() || out.is_null() || length != 1 {
-        return 1;
-    }
-    // SAFETY: this test supplies one readable seed byte and a writable
-    // 32-byte digest buffer.
-    let seed = unsafe { *data };
-    // SAFETY: `out` names the live fixed-width digest buffer created by
-    // `CapturedFingerprintMaterial::digest`.
-    unsafe {
-        for index in 0..FINGERPRINT_DIGEST_BYTES {
-            *out.add(index) = seed.wrapping_add(index as u8);
-        }
-    }
-    0
-}
-
-extern "C" fn free_captured(data: *mut c_void) {
-    // SAFETY: `captured_material` allocates this pointer with `libc::malloc`
-    // and transfers exactly one owning reference into the material.
-    unsafe { libc::free(data) };
-}
-
-fn fill(out: *mut u8, count: *mut u64, seed: u8, value: u64) {
-    // SAFETY: tests pass live 32-byte digest buffers and a live u64.
-    unsafe {
-        for index in 0..FINGERPRINT_DIGEST_BYTES {
-            *out.add(index) = seed.wrapping_add(index as u8);
-        }
-        *count = value;
-    }
-}
+use std::ffi::CString;
+use std::io::Write as _;
+use std::os::fd::IntoRawFd as _;
+use std::os::unix::fs::MetadataExt as _;
 
 fn digest_bytes(seed: u8) -> [u8; FINGERPRINT_DIGEST_BYTES] {
-    let mut out = [0_u8; FINGERPRINT_DIGEST_BYTES];
-    for (index, byte) in out.iter_mut().enumerate() {
-        *byte = seed.wrapping_add(index as u8);
-    }
-    out
+    Sha256::digest([seed]).into()
+}
+
+fn sealed_material(seed: u8) -> File {
+    let name = CString::new("crucible-fingerprint-test")
+        .unwrap_or_else(|error| panic!("memfd name: {error}"));
+    // SAFETY: `name` is NUL-terminated and flags request a close-on-exec,
+    // sealable anonymous file.
+    let fd = unsafe {
+        libc::syscall(
+            libc::SYS_memfd_create,
+            name.as_ptr(),
+            libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+        ) as c_int
+    };
+    assert!(fd >= 0, "create test memfd");
+    // SAFETY: the successful syscall transfers one owned descriptor.
+    let mut file = unsafe { File::from_raw_fd(fd) };
+    file.write_all(&[seed])
+        .unwrap_or_else(|error| panic!("write test memfd: {error}"));
+    // SAFETY: `file` owns `fd`, and `lseek` does not retain it.
+    assert_eq!(unsafe { libc::lseek(fd, 0, libc::SEEK_SET) }, 0);
+    let seals = libc::F_SEAL_SEAL | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE;
+    // SAFETY: `file` owns `fd`, and `fcntl` does not retain it.
+    assert_eq!(unsafe { libc::fcntl(fd, libc::F_ADD_SEALS, seals) }, 0);
+    file
 }
 
 fn inputs() -> PluginNvcpuFingerprintInputs {
@@ -87,22 +59,15 @@ fn inputs() -> PluginNvcpuFingerprintInputs {
 }
 
 fn captured_material(seed: u8, observed_bytes: u64) -> CapturedFingerprintMaterial {
-    // SAFETY: allocating one byte is sufficient for the test digest export.
-    let data = unsafe { libc::malloc(1) }.cast::<u8>();
-    let data = NonNull::new(data).unwrap_or_else(|| panic!("test allocation failed"));
-    // SAFETY: `data` points at the live one-byte allocation above.
-    unsafe { data.as_ptr().write(seed) };
     CapturedFingerprintMaterial {
-        data,
+        file: sealed_material(seed),
         material_length: 1,
         observed_bytes,
-        free: free_captured,
     }
 }
 
-fn captured_sample(oracle: FingerprintSample) -> CapturedFingerprintSample {
-    let schema = PluginFingerprintDigester::read(schema_digest);
-    let mut sample = sample_metadata(100_000, &inputs(), schema)
+fn captured_sample() -> CapturedFingerprintSample {
+    let mut sample = sample_metadata(100_000, &inputs(), digest_bytes(0xC0))
         .unwrap_or_else(|error| panic!("sample metadata should assemble: {error}"));
     sample.ram_bytes = 64 * 1024 * 1024;
     sample.device_state_bytes = 4096;
@@ -110,18 +75,133 @@ fn captured_sample(oracle: FingerprintSample) -> CapturedFingerprintSample {
         sample,
         ram: captured_material(0xA0, 64 * 1024 * 1024),
         device: captured_material(0xB0, 4096),
-        sha256_bytes: captured_digest,
-        synchronous_oracle: Some(oracle),
+    }
+}
+
+fn assert_returned_descriptor_closed(fd: RawFd, device: u64, inode: u64) {
+    let mut current = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: `current` provides writable storage for one `stat`; a successful
+    // call initializes it completely without retaining the pointer.
+    if unsafe { libc::fstat(fd, current.as_mut_ptr()) } == 0 {
+        // Another parallel test may already have reused the numeric descriptor.
+        // It must not still name the transferred file that this call consumed.
+        // SAFETY: the successful `fstat` initialized the complete output object.
+        let current = unsafe { current.assume_init() };
+        assert_ne!((current.st_dev, current.st_ino), (device, inode));
+    } else {
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EBADF),
+            "consumed descriptor must be closed",
+        );
     }
 }
 
 #[test]
-fn assembles_every_component_into_the_slot_sample() {
-    let digester = PluginFingerprintDigester::new(ram_digest, device_digest, schema_digest);
-    let sample = match assemble_fingerprint_sample(100_000, &inputs(), &digester) {
-        Ok(sample) => sample,
-        Err(error) => panic!("sample should assemble: {error}"),
+fn aggregate_capture_rejects_an_aliased_descriptor_before_ownership_transfer() {
+    let material = sealed_material(0xA0);
+    let metadata = material
+        .metadata()
+        .unwrap_or_else(|error| panic!("test material metadata: {error}"));
+    let fd = material.into_raw_fd();
+    let Err(error) = capture_files(fd, 1, 1, fd, 1, 1) else {
+        panic!("aliased descriptors must be rejected");
     };
+
+    assert!(matches!(
+        error,
+        FingerprintSamplerError::InvalidCaptureDescriptor {
+            component: "descriptor set"
+        }
+    ));
+    assert_returned_descriptor_closed(fd, metadata.dev(), metadata.ino());
+}
+
+#[test]
+fn aggregate_capture_rejects_distinct_descriptors_for_the_same_memfd() {
+    let material = sealed_material(0xA0);
+    let metadata = material
+        .metadata()
+        .unwrap_or_else(|error| panic!("test material metadata: {error}"));
+    let ram_fd = material.into_raw_fd();
+    // SAFETY: `ram_fd` is live and `dup` returns a distinct owned descriptor.
+    let device_fd = unsafe { libc::dup(ram_fd) };
+    assert!(device_fd >= 0);
+
+    let Err(error) = capture_files(ram_fd, 1, 1, device_fd, 1, 1) else {
+        panic!("descriptors for one memfd must be rejected");
+    };
+    assert!(matches!(
+        error,
+        FingerprintSamplerError::InvalidCaptureDescriptor {
+            component: "descriptor set"
+        }
+    ));
+    assert_returned_descriptor_closed(ram_fd, metadata.dev(), metadata.ino());
+    assert_returned_descriptor_closed(device_fd, metadata.dev(), metadata.ino());
+}
+
+#[test]
+fn aggregate_capture_rejects_zero_component_evidence() {
+    let mut captured = QemuFingerprintMaterialFds {
+        ram_bytes: 1,
+        device_bytes: 1,
+        device_schema_digest: digest_bytes(0xC0),
+        device_schema_sections: 1,
+        ..QemuFingerprintMaterialFds::default()
+    };
+
+    captured.ram_bytes = 0;
+    assert_eq!(
+        validate_capture_evidence(&captured),
+        Err(FingerprintSamplerError::InvalidCaptureEvidence)
+    );
+    captured.ram_bytes = 1;
+    captured.device_bytes = 0;
+    assert_eq!(
+        validate_capture_evidence(&captured),
+        Err(FingerprintSamplerError::InvalidCaptureEvidence)
+    );
+    captured.device_bytes = 1;
+    captured.device_schema_digest = [0; FINGERPRINT_DIGEST_BYTES];
+    assert_eq!(
+        validate_capture_evidence(&captured),
+        Err(FingerprintSamplerError::InvalidCaptureEvidence)
+    );
+    captured.device_schema_digest = digest_bytes(0xC0);
+    captured.device_schema_sections = 0;
+    assert_eq!(
+        validate_capture_evidence(&captured),
+        Err(FingerprintSamplerError::InvalidCaptureEvidence)
+    );
+}
+
+#[test]
+fn aggregate_capture_rejects_a_descriptor_without_close_on_exec() {
+    let file = sealed_material(0xA0);
+    let metadata = file
+        .metadata()
+        .unwrap_or_else(|error| panic!("test material metadata: {error}"));
+    let fd = file.as_raw_fd();
+    // SAFETY: `file` owns `fd`, and `fcntl` does not retain it.
+    assert_eq!(unsafe { libc::fcntl(fd, libc::F_SETFD, 0) }, 0);
+    let fd = file.into_raw_fd();
+
+    let Err(error) = capture_file(fd, 1, 1, "guest RAM") else {
+        panic!("a descriptor without close-on-exec must be rejected");
+    };
+    assert!(matches!(
+        error,
+        FingerprintSamplerError::InvalidCaptureDescriptor {
+            component: "guest RAM"
+        }
+    ));
+    assert_returned_descriptor_closed(fd, metadata.dev(), metadata.ino());
+}
+
+#[test]
+fn detached_capture_digests_every_component_into_the_slot_sample() {
+    let sample = captured_sample().digest();
 
     assert_eq!(sample.sample_icount, 100_000);
     assert_eq!(sample.vcpu_count, 2);
@@ -144,38 +224,7 @@ fn assembles_every_component_into_the_slot_sample() {
 
 #[test]
 fn resolve_fails_closed_without_the_patched_qemu() {
-    // The fingerprint digest exports exist only inside patched QEMU, so a
-    // standalone test process cannot resolve them and must get no digester.
-    assert!(PluginFingerprintDigester::resolve().is_none());
-    // The full sampling capability likewise fails closed.
+    // The aggregate capture exports exist only inside patched QEMU, so the
+    // complete sampling capability fails closed in a standalone test process.
     assert!(PluginFingerprintSampling::resolve().is_none());
-}
-
-#[test]
-fn records_component_failures_without_aborting() {
-    let digester = PluginFingerprintDigester::new(ram_digest, failing_digest, schema_digest);
-    let sample = match assemble_fingerprint_sample(50_000, &inputs(), &digester) {
-        Ok(sample) => sample,
-        Err(error) => panic!("failed component should still assemble: {error}"),
-    };
-    assert_eq!(sample.component_failures, FINGERPRINT_FAILURE_DEVICE_STATE);
-    assert_eq!(sample.device_state_bytes, 0);
-}
-
-#[test]
-fn synchronous_oracle_accepts_identity_and_marks_mismatch() {
-    let digester = PluginFingerprintDigester::new(ram_digest, device_digest, schema_digest);
-    let oracle = assemble_fingerprint_sample(100_000, &inputs(), &digester)
-        .unwrap_or_else(|error| panic!("oracle should assemble: {error}"));
-    let matching = captured_sample(oracle).digest();
-    assert_eq!(matching.component_failures, 0);
-
-    let mut mismatching_oracle = assemble_fingerprint_sample(100_000, &inputs(), &digester)
-        .unwrap_or_else(|error| panic!("oracle should assemble: {error}"));
-    mismatching_oracle.ram_digest[0] ^= 1;
-    let mismatch = captured_sample(mismatching_oracle).digest();
-    assert_eq!(
-        mismatch.component_failures,
-        FINGERPRINT_FAILURE_ORACLE_MISMATCH
-    );
 }

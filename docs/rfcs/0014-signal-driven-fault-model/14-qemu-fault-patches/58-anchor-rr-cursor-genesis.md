@@ -1,8 +1,8 @@
-# 0107 - Anchor the RR cursor at guest genesis
+# Capability task 0107 — Anchor the RR cursor at guest genesis
 
 ## Purpose
 
-Patch `0107` makes the serialized round-robin cursor authoritative before the
+Capability task 0107 makes the serialized round-robin cursor authoritative before the
 first execution budget. Previously, the cursor was initialized lazily when the
 RR loop selected or accounted its first vCPU. Host-driven startup work could
 therefore move aggregate icount before position zero was established, causing
@@ -36,13 +36,13 @@ same-CPU selection is classified as partial only while the serialized position
 is nonzero; a completed single-vCPU wrap reaches the ordinary control-service
 boundary instead of starving host completion work.
 
-This patch changes scheduler state rather than merely projecting an observation.
-Patch `0091` continues to define the exact raw-zero observation returned before
+This capability changes scheduler state rather than merely projecting an observation.
+Capability task 0091 continues to define the exact raw-zero observation returned before
 the RR thread owns the cursor.
 
 ## Files and license scope
 
-The patch modifies MIT-licensed `accel/tcg/icount-common.c`,
+The atomic patch modifies MIT-licensed `accel/tcg/icount-common.c`,
 `accel/tcg/tcg-accel-ops-rr.c`, `include/system/cpu-timers.h`, and
 `plugins/api.c`. It creates no QEMU file and does not cross the Apache/GPL
 process boundary.
@@ -56,7 +56,7 @@ process boundary.
 3. Structural microtests require initialization before the first RR budget,
    the raw-zero assertion, serialized-owner authority across inner and outer
    partial-turn transitions, and fail-loud accounting mismatch detection.
-4. N-vCPU fingerprint, patch regeneration, ABI, licensing, inertness, and
+4. N-vCPU fingerprint, atomic-patch regeneration, ABI, licensing, inertness, and
    corresponding-source gates pass.
 
 - **[QFP-RR-5]** A fresh bounded sim RR schedule MUST establish its serialized

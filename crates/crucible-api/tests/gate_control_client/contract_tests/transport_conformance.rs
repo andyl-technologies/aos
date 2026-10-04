@@ -89,7 +89,7 @@ async fn api_nondeterminism_gate_proves_transport_observers_wall_clock_and_read_
 }
 
 #[test]
-fn control_client_rejects_rpc_major_version_mismatch_on_both_transports() {
+fn control_client_rejects_rpc_version_mismatch_on_both_transports() {
     let (in_process, _actor) = in_process_client_fixture();
     let rpc = RpcControlClient::new(RpcEndpoint::http2("http://127.0.0.1:65535"))
         .unwrap_or_else(|error| panic!("HTTP/2 RPC client should build: {error}"));
@@ -108,10 +108,10 @@ fn control_client_rejects_rpc_major_version_mismatch_on_both_transports() {
         .unwrap_or_else(|error| panic!("current-thread runtime should build: {error}"));
     let in_process_error = runtime
         .block_on(in_process.hello(incompatible.clone()))
-        .expect_err("in-process client should reject major mismatch");
+        .expect_err("in-process client should reject version mismatch");
     let rpc_error = runtime
         .block_on(rpc.hello(incompatible))
-        .expect_err("RPC client should reject major mismatch");
+        .expect_err("RPC client should reject version mismatch");
 
     assert_eq!(in_process_error, rpc_error);
 }

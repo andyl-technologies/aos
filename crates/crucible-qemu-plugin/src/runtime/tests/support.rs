@@ -3,9 +3,11 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::fs::MetadataExt as _;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicI32, AtomicU64, AtomicUsize, Ordering};
 use std::thread;
 
 use crucible_protocol::{
@@ -17,13 +19,19 @@ use crucible_shmem::{
     ABI_VERSION, DEFAULT_QUEUE_CAPACITY, RegionAllocation, RegionConfig, authorize_advance_ceiling,
 };
 
-use crate::{PluginArgs, PluginStatePartition};
+use crate::PluginArgs;
 
 use super::super::LiveInstallCapabilities;
 
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 static TIME_CONTROL_REQUESTS: AtomicU64 = AtomicU64::new(0);
 static WAKE_REGISTRATIONS: AtomicU64 = AtomicU64::new(0);
+static REGISTERED_WAKE_FD: AtomicI32 = AtomicI32::new(-1);
+static RESOURCE_MANIFEST: Mutex<Option<crate::QemuPluginResourceManifest>> = Mutex::new(None);
+static HOT_FORK_BARRIER_CALLBACK: AtomicUsize = AtomicUsize::new(0);
+static HOT_FORK_BARRIER_USERDATA: AtomicUsize = AtomicUsize::new(0);
+static HOT_FORK_CHILD_CALLBACK: AtomicUsize = AtomicUsize::new(0);
+static HOT_FORK_CHILD_USERDATA: AtomicUsize = AtomicUsize::new(0);
 static TIME_CONTROL_TOKEN: u8 = 1;
 
 pub(super) struct LiveInstallFixture {
@@ -41,16 +49,15 @@ impl LiveInstallFixture {
     pub(super) fn new() -> Self {
         let (host, plugin) = UnixStream::pair()
             .unwrap_or_else(|error| panic!("control socket pair should open: {error}"));
-        let allocation =
-            RegionAllocation::new_model(RegionConfig::new(1, DEFAULT_QUEUE_CAPACITY, 0))
-                .unwrap_or_else(|error| panic!("test region should allocate: {error}"));
+        let allocation = RegionAllocation::new_model(RegionConfig::new(1, DEFAULT_QUEUE_CAPACITY))
+            .unwrap_or_else(|error| panic!("test region should allocate: {error}"));
         let node_count = allocation.layout().node_count;
         let slot = allocation
             .node_slot(0)
             .unwrap_or_else(|| panic!("test VM slot should exist"));
         let ceiling = authorize_advance_ceiling(0, 1, None)
             .unwrap_or_else(|error| panic!("boot ceiling should authorize: {error}"));
-        slot.publish_scheduler_ceiling(ceiling)
+        slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
             .unwrap_or_else(|error| panic!("boot ceiling should publish: {error}"));
         let bytes = allocation
             .setup_region_bytes()
@@ -94,12 +101,35 @@ impl LiveInstallFixture {
         .unwrap_or_else(|error| panic!("test coverage plugin args should parse: {error}"))
     }
 
+    pub(super) fn fingerprint_args(&self) -> PluginArgs {
+        PluginArgs::parse(&format!(
+            "simfd={},slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,fingerprint=on",
+            self.plugin.as_raw_fd()
+        ))
+        .unwrap_or_else(|error| panic!("test fingerprint plugin args should parse: {error}"))
+    }
+
     pub(super) fn whitebox_args(&self) -> PluginArgs {
         PluginArgs::parse(&format!(
             "simfd={},slot=0,fault_node_hash=1111111111111111111111111111111111111111111111111111111111111111,process_generation=1,network_tx_next_seq=0,storage_completed_history_epochs=1048576,storage_completed_history_gaps=1048576,whitebox=on,whitebox_setup=x86-port-00e7-unclaimed-v1",
             self.plugin.as_raw_fd()
         ))
         .unwrap_or_else(|error| panic!("test white-box plugin args should parse: {error}"))
+    }
+
+    pub(super) fn resource_manifest_basis(&self) -> (u64, u64, u64, u32, i32, i32) {
+        let metadata = self
+            .region_file
+            .metadata()
+            .unwrap_or_else(|error| panic!("test region metadata should read: {error}"));
+        (
+            metadata.dev(),
+            metadata.ino(),
+            self.region_len,
+            self.node_count,
+            self.plugin.as_raw_fd(),
+            self.wake_file.as_raw_fd(),
+        )
     }
 
     pub(super) fn spawn_host(&self, expected_status: u8) -> thread::JoinHandle<()> {
@@ -115,6 +145,7 @@ impl LiveInstallFixture {
             .wake_file
             .try_clone()
             .unwrap_or_else(|error| panic!("wake file should clone: {error}"));
+        let branch_plan = crate::setup::test_plugin_setup_plan_fd();
         let region_len = self.region_len;
         let node_count = self.node_count;
         thread::spawn(move || {
@@ -134,6 +165,7 @@ impl LiveInstallFixture {
                 SetupDescriptorFds {
                     shmem_fd: region.as_raw_fd(),
                     wake_fd: wake.as_raw_fd(),
+                    plugin_setup_plan_fd: branch_plan.as_raw_fd(),
                 },
             )
             .unwrap_or_else(|error| panic!("host setup should send: {error}"));
@@ -199,38 +231,32 @@ impl Drop for LiveInstallFixture {
     }
 }
 
-pub(super) fn test_state() -> PluginStatePartition {
-    let model = crate::QemuPluginExecutionModel::validate(
-        1,
-        crate::QemuTcgThreading::SingleThreadedRoundRobin,
-    )
-    .unwrap_or_else(|error| panic!("test execution model should validate: {error}"));
-    crate::install_required_runtime_api_scaffold(
-        model,
-        Some(test_deadline),
-        Some(test_direct_advance),
-        Some(test_inject_preemption),
-        Some(test_read_vcpu_regs),
-        Some(test_rr_cursor),
-        Some(test_icount_raw),
-        Some(test_force_vcpu_exit),
-        Some(test_register_wake_fd),
-        Some(test_register_tcg_exec_cb),
-    )
-    .unwrap_or_else(|error| panic!("test runtime capabilities should validate: {error}"))
+pub(super) fn test_execution_model() -> crate::QemuPluginExecutionModel {
+    crate::QemuPluginExecutionModel::validate(1, crate::QemuTcgThreading::SingleThreadedRoundRobin)
+        .unwrap_or_else(|error| panic!("test execution model should validate: {error}"))
 }
 
 pub(super) const fn test_capabilities() -> LiveInstallCapabilities {
     LiveInstallCapabilities {
         icount_raw: test_icount_raw,
         force_vcpu_exit: test_force_vcpu_exit,
+        idle_wake_wait: crate::QemuIdleWakeWait::test_stub(test_wait_idle_wake),
         request_vmstop: test_request_vmstop,
         inject_preemption: Some(test_inject_preemption),
         request_time_control: Some(test_request_time_control),
-        clock_deadline_ns: Some(test_deadline),
-        advance_time_ns: Some(test_direct_advance),
+        clock_deadline_ps: Some(test_deadline),
+        advance_time_ticks: Some(test_direct_advance),
         register_time_advance_cb: Some(test_register_time_advance_cb),
+        arm_virtual_timer_witness: Some(
+            crate::runtime::live_callbacks::test_support::arm_timer_witness,
+        ),
+        query_virtual_timer_witness: Some(
+            crate::runtime::live_callbacks::test_support::query_timer_witness,
+        ),
         register_wake_fd: test_register_wake_fd,
+        register_resource_manifest: test_register_resource_manifest,
+        register_hot_fork_barrier: test_register_hot_fork_barrier,
+        register_hot_fork_child_runtime: test_register_hot_fork_child_runtime,
         request_shutdown: test_request_shutdown,
         basic_block_coverage: None,
         register_vcpu_init: Some(test_register_vcpu_init),
@@ -251,6 +277,12 @@ pub(super) const fn test_capabilities() -> LiveInstallCapabilities {
 pub(super) fn reset_capability_call_counts() {
     TIME_CONTROL_REQUESTS.store(0, Ordering::SeqCst);
     WAKE_REGISTRATIONS.store(0, Ordering::SeqCst);
+    REGISTERED_WAKE_FD.store(-1, Ordering::SeqCst);
+    *RESOURCE_MANIFEST
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    HOT_FORK_BARRIER_CALLBACK.store(0, Ordering::SeqCst);
+    HOT_FORK_BARRIER_USERDATA.store(0, Ordering::SeqCst);
 }
 
 pub(super) fn time_control_request_count() -> u64 {
@@ -259,6 +291,16 @@ pub(super) fn time_control_request_count() -> u64 {
 
 pub(super) fn wake_registration_count() -> u64 {
     WAKE_REGISTRATIONS.load(Ordering::SeqCst)
+}
+
+pub(super) fn registered_wake_fd() -> i32 {
+    REGISTERED_WAKE_FD.load(Ordering::SeqCst)
+}
+
+pub(super) fn registered_resource_manifest() -> Option<crate::QemuPluginResourceManifest> {
+    *RESOURCE_MANIFEST
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 pub(super) fn join_host(host: thread::JoinHandle<()>) {
@@ -340,39 +382,107 @@ pub(super) extern "C" fn test_inject_preemption(
     0
 }
 
-extern "C" fn test_read_vcpu_regs(
-    _vcpu: u32,
-    _bytes: *mut u8,
-    _capacity: usize,
-    _len: *mut usize,
-    _retired: *mut u64,
-) -> i32 {
-    0
-}
-
-extern "C" fn test_rr_cursor(_cursor: *mut crate::QemuRoundRobinCursor) -> i32 {
-    0
-}
-
 pub(super) extern "C" fn test_icount_raw() -> u64 {
     0
 }
 
 pub(super) extern "C" fn test_force_vcpu_exit() {}
 
+pub(super) extern "C" fn test_wait_idle_wake(
+    _vcpu_index: u32,
+    _wake_signal: *mut u32,
+    _expected: u32,
+) -> std::os::raw::c_int {
+    1
+}
+
 pub(super) extern "C" fn test_request_vmstop() -> std::os::raw::c_int {
     0
 }
 
-extern "C" fn test_register_wake_fd(_fd: i32) -> i32 {
+extern "C" fn test_register_wake_fd(fd: i32) -> i32 {
+    REGISTERED_WAKE_FD.store(fd, Ordering::SeqCst);
     WAKE_REGISTRATIONS.fetch_add(1, Ordering::SeqCst);
     0
 }
 
-extern "C" fn test_register_tcg_exec_cb(
-    _callback: Option<crate::QemuTcgExecCbFn>,
-    _userdata: *mut std::ffi::c_void,
-) {
+extern "C" fn test_register_resource_manifest(
+    manifest: *const crate::QemuPluginResourceManifest,
+) -> i32 {
+    if manifest.is_null() {
+        return -1;
+    }
+    // SAFETY: the synchronous registration call retains the manifest value
+    // for this callback invocation, and this test copies it before returning.
+    let manifest = unsafe { *manifest };
+    *RESOURCE_MANIFEST
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(manifest);
+    0
+}
+
+extern "C" fn test_register_hot_fork_barrier(
+    _plugin_id: crate::QemuPluginId,
+    callback: Option<crate::QemuPluginHotForkBarrierCbFn>,
+    userdata: *mut std::ffi::c_void,
+) -> i32 {
+    let Some(callback) = callback else {
+        return -1;
+    };
+    HOT_FORK_BARRIER_CALLBACK.store(callback as usize, Ordering::SeqCst);
+    HOT_FORK_BARRIER_USERDATA.store(userdata as usize, Ordering::SeqCst);
+    0
+}
+
+extern "C" fn test_register_hot_fork_child_runtime(
+    _plugin_id: crate::QemuPluginId,
+    callback: Option<crate::QemuPluginHotForkChildRuntimeCbFn>,
+    userdata: *mut std::ffi::c_void,
+) -> i32 {
+    let Some(callback) = callback else {
+        return -1;
+    };
+    HOT_FORK_CHILD_CALLBACK.store(callback as usize, Ordering::SeqCst);
+    HOT_FORK_CHILD_USERDATA.store(userdata as usize, Ordering::SeqCst);
+    0
+}
+
+pub(super) fn invoke_hot_fork_barrier(
+    action: u32,
+) -> Result<crate::QemuPluginHotForkBarrierStatus, i32> {
+    let callback = HOT_FORK_BARRIER_CALLBACK.load(Ordering::SeqCst);
+    if callback == 0 {
+        return Err(-1);
+    }
+    let callback = {
+        // SAFETY: the registration stub stored this exact callback function
+        // type.
+        unsafe { std::mem::transmute::<usize, crate::QemuPluginHotForkBarrierCbFn>(callback) }
+    };
+    let userdata = HOT_FORK_BARRIER_USERDATA.load(Ordering::SeqCst) as *mut std::ffi::c_void;
+    let mut status = crate::QemuPluginHotForkBarrierStatus::default();
+    let result = callback(action, std::ptr::from_mut(&mut status), userdata);
+    if result == 0 { Ok(status) } else { Err(result) }
+}
+
+pub(super) fn invoke_hot_fork_child_runtime(
+    action: u32,
+    plan: Option<&crate::QemuPluginHotForkChildPlan>,
+) -> Result<crate::QemuPluginHotForkChildStatus, i32> {
+    let callback = HOT_FORK_CHILD_CALLBACK.load(Ordering::SeqCst);
+    if callback == 0 {
+        return Err(-1);
+    }
+    let callback = {
+        // SAFETY: the registration stub stored this exact callback function
+        // type.
+        unsafe { std::mem::transmute::<usize, crate::QemuPluginHotForkChildRuntimeCbFn>(callback) }
+    };
+    let userdata = HOT_FORK_CHILD_USERDATA.load(Ordering::SeqCst) as *mut std::ffi::c_void;
+    let plan = plan.map_or(std::ptr::null(), std::ptr::from_ref);
+    let mut status = crate::QemuPluginHotForkChildStatus::default();
+    let result = callback(action, plan, std::ptr::from_mut(&mut status), userdata);
+    if result == 0 { Ok(status) } else { Err(result) }
 }
 
 extern "C" fn test_register_vcpu_init(
@@ -398,6 +508,7 @@ extern "C" fn test_register_control_boundary(
 extern "C" fn test_register_sim_shmem_dispatch(
     _publish_callback: Option<crate::QemuSimShmemPublishIcountCbFn>,
     _ceiling_callback: Option<crate::QemuSimShmemMaxAdvanceIcountCbFn>,
+    _logical_ceiling_callback: Option<crate::QemuSimShmemLogicalCeilingCbFn>,
     _userdata: *mut std::ffi::c_void,
 ) {
 }

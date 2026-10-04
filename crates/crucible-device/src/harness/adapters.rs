@@ -79,7 +79,7 @@ impl HarnessDevice for BlockHarness {
 
     fn drain_records(&mut self) -> Result<Vec<DeliveryRecord>, DeviceError> {
         let mut records = Vec::new();
-        while let Some(pending) = self.device.core_mut().pop_response() {
+        while let Some(pending) = self.device.core_mut().pop_response()? {
             records.push(DeliveryRecord::new(
                 pending.key,
                 pending.response.request_id,
@@ -147,7 +147,7 @@ impl HarnessDevice for NinepHarness {
 
     fn drain_records(&mut self) -> Result<Vec<DeliveryRecord>, DeviceError> {
         let mut records = Vec::new();
-        while let Some(pending) = self.device.core_mut().pop_response() {
+        while let Some(pending) = self.device.core_mut().pop_response()? {
             records.push(DeliveryRecord::new(
                 pending.key,
                 pending.response.request_id,

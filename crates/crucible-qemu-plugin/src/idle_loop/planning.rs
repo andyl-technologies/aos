@@ -19,12 +19,11 @@ use super::*;
 #[allow(clippy::too_many_arguments)]
 pub fn compute_idle_wake_plan(
     current_icount: u64,
-    icount_shift: u8,
     exact_deadline: ExactDeadlineReport,
     next_inbound_delivery_icount: Option<u64>,
     ceiling: SchedulerCeiling,
     device_io_holding_ticks: bool,
-    device_completion_deadline_icount: Option<u64>,
+    device_completion_deadline_tick: Option<u64>,
 ) -> Result<IdleWakePlan, IdleHotLoopError> {
     if ceiling.icount() < current_icount {
         return Err(IdleHotLoopError::CeilingBehindCurrent {
@@ -33,18 +32,18 @@ pub fn compute_idle_wake_plan(
         });
     }
 
-    let timer_deadline_icount = timer_deadline_icount(exact_deadline, icount_shift)?
-        .map(|deadline| deadline.max(current_icount));
+    let timer_deadline_icount =
+        timer_deadline_icount(exact_deadline)?.map(|deadline| deadline.max(current_icount));
     let inbound_delivery_icount = next_inbound_delivery_icount;
-    let device_completion_deadline_icount = if device_io_holding_ticks {
-        device_completion_deadline_icount
+    let device_completion_deadline_tick = if device_io_holding_ticks {
+        device_completion_deadline_tick
             .filter(|&deadline| deadline != 0)
             .map(|deadline| deadline.max(current_icount))
     } else {
         None
     };
     let effective_timer_deadline_icount =
-        if device_io_holding_ticks && device_completion_deadline_icount.is_none() {
+        if device_io_holding_ticks && device_completion_deadline_tick.is_none() {
             None
         } else {
             timer_deadline_icount
@@ -53,7 +52,7 @@ pub fn compute_idle_wake_plan(
     let mut earliest: Option<(u64, IdleWakeCause)> = None;
     merge_earlier_wake(
         &mut earliest,
-        device_completion_deadline_icount,
+        device_completion_deadline_tick,
         IdleWakeCause::DeviceIoCompletion,
     );
     merge_earlier_wake(
@@ -81,7 +80,7 @@ pub fn compute_idle_wake_plan(
         ceiling_icount: ceiling.icount(),
         timer_deadline_icount,
         inbound_delivery_icount,
-        device_completion_deadline_icount,
+        device_completion_deadline_tick,
         device_io_holding_ticks,
         cause,
     })
@@ -144,33 +143,14 @@ pub(super) fn reject_passed_inbound_delivery(
 ///
 /// # Errors
 ///
-/// Returns [`IdleHotLoopError::InvalidIcountShift`] if `icount_shift >= 64`, or
-/// [`IdleHotLoopError::TimerDeadlineOverflow`] when conversion would overflow.
-pub fn timer_deadline_icount(
-    report: ExactDeadlineReport,
-    icount_shift: u8,
-) -> Result<Option<u64>, IdleHotLoopError> {
-    let ExactDeadlineReport::Armed { deadline_ns } = report else {
+/// Returns [`IdleHotLoopError::TimerDeadlineOverflow`] when conversion would
+/// exceed the signed tick range accepted by QEMU.
+pub fn timer_deadline_icount(report: ExactDeadlineReport) -> Result<Option<u64>, IdleHotLoopError> {
+    let ExactDeadlineReport::Armed { deadline_ps } = report else {
         return Ok(None);
     };
-    if icount_shift >= 64 {
-        return Err(IdleHotLoopError::InvalidIcountShift { icount_shift });
+    if deadline_ps > i64::MAX as u64 {
+        return Err(IdleHotLoopError::TimerDeadlineOverflow { deadline_ps });
     }
-
-    let base = deadline_ns >> icount_shift;
-    let remainder_mask = if icount_shift == 0 {
-        0
-    } else {
-        (1_u64 << icount_shift) - 1
-    };
-    if deadline_ns & remainder_mask == 0 {
-        Ok(Some(base))
-    } else {
-        base.checked_add(1)
-            .map(Some)
-            .ok_or(IdleHotLoopError::TimerDeadlineOverflow {
-                deadline_ns,
-                icount_shift,
-            })
-    }
+    Ok(Some(deadline_ps))
 }
