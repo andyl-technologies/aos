@@ -3,6 +3,9 @@
 use super::*;
 use crucible_cas::content_store::{ContentId, ObjectKind};
 
+#[path = "lifecycle/drain_pause.rs"]
+mod drain_pause;
+
 // A fresh packaged realization must boot to its authenticated selectable.
 // The previous 90-second host wait reached only 203 ms of virtual time;
 // source discovery on the same clock reaches its marker near 555 ms.
@@ -98,17 +101,9 @@ fn public_packaged_campaign_lifecycle_uses_only_cli() -> Result<(), Box<dyn Erro
     let running_snapshot = json_string(&running, "snapshot")?;
     let running_report = campaign_report(&fixture, &running_snapshot)?;
     assert!(json_u64(&running_report, "explored_attempts")? >= 3);
-    run_json(
-        connected_campaign(&fixture).args([
-            "pause",
-            CAMPAIGN,
-            "--expected",
-            &running_snapshot,
-            "--command",
-            &"a3".repeat(32),
-            "--active",
-            "drain",
-        ]),
+    drain_pause::pause_running_campaign(
+        &fixture,
+        &"a3".repeat(32),
         "pause public campaign after finite branches",
     )?;
     let paused = campaign_status(&fixture)?;
@@ -142,18 +137,9 @@ fn public_packaged_campaign_lifecycle_uses_only_cli() -> Result<(), Box<dyn Erro
         &safe_configuration,
         LIFECYCLE_SELECTABLE_WAIT,
     )?;
-    let resumed = campaign_status(&fixture)?;
-    run_json(
-        connected_campaign(&fixture).args([
-            "pause",
-            CAMPAIGN,
-            "--expected",
-            &json_string(&resumed, "snapshot")?,
-            "--command",
-            &"a5".repeat(32),
-            "--active",
-            "drain",
-        ]),
+    drain_pause::pause_running_campaign(
+        &fixture,
+        &"a5".repeat(32),
         "pause resumed campaign before bounded expansion",
     )?;
     assert_eq!(campaign_status(&fixture)?["state"], "paused");
@@ -183,18 +169,9 @@ fn public_packaged_campaign_lifecycle_uses_only_cli() -> Result<(), Box<dyn Erro
         pressure_explanation["observation"]["stop"],
         "terminal-success"
     );
-    let pressure_running = campaign_status(&fixture)?;
-    run_json(
-        connected_campaign(&fixture).args([
-            "pause",
-            CAMPAIGN,
-            "--expected",
-            &json_string(&pressure_running, "snapshot")?,
-            "--command",
-            &"aa".repeat(32),
-            "--active",
-            "drain",
-        ]),
+    drain_pause::pause_running_campaign(
+        &fixture,
+        &"aa".repeat(32),
         "pause after one budgeted campaign attempt",
     )?;
 
