@@ -19,15 +19,20 @@
   twoNodeHttpServer ? "nginx",
 }: let
   singleGuestMaterialization = singleGuest == "materialization";
-  envoyDirect = assert builtins.elem twoNodeHttpServer ["nginx" "envoy-direct"];
-  assert twoNodeHttpServer != "envoy-direct" || twoNodeHttp;
+  envoyDirect = assert builtins.elem twoNodeHttpServer ["nginx" "envoy-direct" "envoy-proxy"];
+  assert twoNodeHttpServer == "nginx" || twoNodeHttp;
     twoNodeHttpServer == "envoy-direct";
+  envoyProxy = twoNodeHttpServer == "envoy-proxy";
   httpEvidencePrefix =
-    if envoyDirect
+    if envoyProxy
+    then "three_node_envoy_proxy"
+    else if envoyDirect
     then "two_node_envoy_direct"
     else "two_node_http";
   httpFlightName =
-    if envoyDirect
+    if envoyProxy
+    then "three-node-envoy-proxy"
+    else if envoyDirect
     then "two-node-envoy-direct"
     else "two-node-http";
   envoyProduct = envoyNetwork || envoyKnownFinding;
@@ -141,11 +146,16 @@
     maximum_vcpus = ${
       if envoyProduct
       then "10"
+      else if envoyProxy
+      then "3"
       else "2"
     }
     maximum_resident_bytes = ${toString (
       if envoyProduct
       then 7516192768
+      # The proxy adds a third 256 MiB guest and its TCG/plugin mappings.
+      else if envoyProxy
+      then 2147483648
       # Two 256 MiB guests also retain separate TCG code buffers and plugin
       # mappings. Their combined resident use exhausted the 1 GiB attempt cap.
       else if twoNodeHttp
@@ -410,7 +420,9 @@
         else if twoNodeHttp
         then ''
           http_selector=packaged::two_node_http::${
-            if envoyDirect
+            if envoyProxy
+            then "public_three_node_envoy_proxy_response_is_authenticated"
+            else if envoyDirect
             then "public_two_node_envoy_direct_response_is_authenticated"
             else "public_two_node_http_request_and_response_are_authenticated"
           }

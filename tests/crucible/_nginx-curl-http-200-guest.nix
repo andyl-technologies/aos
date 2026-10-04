@@ -4,18 +4,31 @@
   strictHttpResponse ? false,
   httpServer ? "nginx",
 }: let
-  envoyDirect = assert builtins.elem httpServer ["nginx" "envoy-direct"];
-  assert httpServer != "envoy-direct" || (strictHttpResponse && !hotForkEquivalence);
+  envoyDirect = assert builtins.elem httpServer ["nginx" "envoy-direct" "envoy-proxy"];
+  assert httpServer == "nginx" || (strictHttpResponse && !hotForkEquivalence);
     httpServer == "envoy-direct";
+  envoyProxy = httpServer == "envoy-proxy";
+  envoyEnabled = envoyDirect || envoyProxy;
+  nginxAddress =
+    if envoyProxy
+    then "10.0.0.4"
+    else "10.0.0.2";
+  envoyConfigName =
+    if envoyProxy
+    then "envoy-proxy"
+    else "envoy-direct";
   serverName =
     if envoyDirect
     then "Envoy"
     else "nginx";
   responseBody = "Crucible reached ${serverName}\n";
-  envoyConfig = builtins.toJSON {
-    static_resources.listeners = [
+  envoyListeners = {
+    listeners = [
       {
-        name = "direct_response";
+        name =
+          if envoyProxy
+          then "proxy"
+          else "direct_response";
         address.socket_address = {
           address = "10.0.0.2";
           port_value = 8080;
@@ -27,21 +40,31 @@
                 name = "envoy.filters.network.http_connection_manager";
                 typed_config = {
                   "@type" = "type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager";
-                  stat_prefix = "direct_response";
+                  stat_prefix =
+                    if envoyProxy
+                    then "proxy"
+                    else "direct_response";
                   route_config = {
-                    name = "direct_response";
+                    name =
+                      if envoyProxy
+                      then "proxy"
+                      else "direct_response";
                     virtual_hosts = [
                       {
                         name = "service";
                         domains = ["*"];
                         routes = [
-                          {
-                            match.prefix = "/";
-                            direct_response = {
-                              status = 200;
-                              body.inline_string = responseBody;
-                            };
-                          }
+                          ({match.prefix = "/";}
+                            // (
+                              if envoyProxy
+                              then {route.cluster = "nginx";}
+                              else {
+                                direct_response = {
+                                  status = 200;
+                                  body.inline_string = responseBody;
+                                };
+                              }
+                            ))
                         ];
                       }
                     ];
@@ -60,19 +83,49 @@
       }
     ];
   };
-  closureDeps = [
-    pkgs.bash
-    pkgs.coreutils
-    pkgs.crucible-guest
-    pkgs.curl
-    pkgs.iproute2
-    (
-      if envoyDirect
-      then pkgs.envoy
-      else pkgs.nginx
-    )
-    pkgs.util-linux
-  ];
+  envoyConfig = builtins.toJSON {
+    static_resources =
+      envoyListeners
+      // pkgs.lib.optionalAttrs envoyProxy {
+        clusters = [
+          {
+            name = "nginx";
+            type = "STATIC";
+            connect_timeout = "1s";
+            load_assignment = {
+              cluster_name = "nginx";
+              endpoints = [
+                {
+                  lb_endpoints = [
+                    {
+                      endpoint.address.socket_address = {
+                        address = nginxAddress;
+                        port_value = 8080;
+                      };
+                    }
+                  ];
+                }
+              ];
+            };
+          }
+        ];
+      };
+  };
+  closureDeps =
+    [
+      pkgs.bash
+      pkgs.coreutils
+      pkgs.crucible-guest
+      pkgs.curl
+      pkgs.iproute2
+      (
+        if envoyEnabled
+        then pkgs.envoy
+        else pkgs.nginx
+      )
+      pkgs.util-linux
+    ]
+    ++ pkgs.lib.optional envoyProxy pkgs.nginx;
   closureGraph =
     pkgs.lib.concatLists
     (pkgs.lib.imap (index: dependency: [
@@ -152,7 +205,7 @@ in
           http {
             access_log off;
             server {
-              listen 10.0.0.2:8080;
+              listen ${nginxAddress}:8080;
               location / {
                 default_type text/plain;
                 return 200 "Crucible reached nginx\n";
@@ -161,8 +214,8 @@ in
           }
           NGINX_CONFIG
 
-          ${pkgs.lib.optionalString envoyDirect ''
-            cat > rootfs/etc/envoy-direct.json <<'ENVOY_CONFIG'
+          ${pkgs.lib.optionalString envoyEnabled ''
+            cat > rootfs/etc/${envoyConfigName}.json <<'ENVOY_CONFIG'
             ${envoyConfig}
             ENVOY_CONFIG
           ''}
@@ -192,7 +245,17 @@ in
           cmdline=" $(cat /proc/cmdline) "
           case "$cmdline" in
           *" crucible.workload=httpd "*)
-              ip address add 10.0.0.2/24 dev eth0
+              ${pkgs.lib.optionalString envoyProxy ''
+            case "$cmdline" in
+              *" crucible.http.role=proxy "*) server_address=10.0.0.2 ;;
+              *" crucible.http.role=upstream "*) server_address=10.0.0.4 ;;
+              *) echo CRUCIBLE_HTTP_ROLE_UNKNOWN; exit 1 ;;
+            esac
+          ''}ip address add ${
+            if envoyProxy
+            then "$server_address"
+            else "10.0.0.2"
+          }/24 dev eth0
               ${pkgs.lib.optionalString strictHttpResponse ''
             crucible-guest event boot.network-configured
             crucible-guest event boot.service-starting
@@ -200,7 +263,20 @@ in
             crucible-guest setup-complete
           ''}
               ${
-            if envoyDirect
+            if envoyProxy
+            then ''
+              case "$cmdline" in
+                *" crucible.http.role=proxy "*)
+                  envoy --mode validate --config-path /etc/envoy-proxy.json
+                  exec envoy --disable-hot-restart --concurrency 1 \
+                    --config-path /etc/envoy-proxy.json --log-level info
+                  ;;
+                *" crucible.http.role=upstream "*)
+                  exec nginx -c /etc/nginx/nginx.conf -g 'daemon off; master_process off;'
+                  ;;
+              esac
+            ''
+            else if envoyDirect
             then ''
               envoy --mode validate --config-path /etc/envoy-direct.json
               exec envoy --disable-hot-restart --concurrency 1 \
@@ -258,7 +334,7 @@ in
                     crucible-guest sometimes \
                       curl-receives-http-200 \
                       'Curl receives an HTTP 200 response from ${
-            if envoyDirect
+            if envoyEnabled
             then "Envoy"
             else "Nginx"
           }' \

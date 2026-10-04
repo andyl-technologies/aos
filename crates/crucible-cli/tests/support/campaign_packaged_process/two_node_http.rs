@@ -1,4 +1,4 @@
-//! Bounded two-guest HTTP exchange through the public packaged campaign runtime.
+//! Bounded HTTP exchanges through the public packaged campaign runtime.
 //!
 //! Completion requires routed request and response bytes plus an authenticated
 //! client marker emitted only after checking the exact response body. This cold
@@ -27,20 +27,29 @@ const HTTP_MARKER_INSTANCE: &str = "instance-1";
 enum HttpServer {
     Nginx,
     EnvoyDirect,
+    EnvoyProxy,
 }
 
 impl HttpServer {
     fn node(self) -> &'static str {
         match self {
             Self::Nginx => "nginx",
-            Self::EnvoyDirect => "envoy",
+            Self::EnvoyDirect | Self::EnvoyProxy => "envoy",
         }
     }
 
     fn response(self) -> &'static [u8] {
         match self {
-            Self::Nginx => b"Crucible reached nginx\n",
+            Self::Nginx | Self::EnvoyProxy => b"Crucible reached nginx\n",
             Self::EnvoyDirect => b"Crucible reached Envoy\n",
+        }
+    }
+
+    fn guest_nodes(self) -> &'static [&'static str] {
+        match self {
+            Self::Nginx => &["curl", "nginx"],
+            Self::EnvoyDirect => &["curl", "envoy"],
+            Self::EnvoyProxy => &["curl", "envoy", "nginx"],
         }
     }
 
@@ -48,6 +57,7 @@ impl HttpServer {
         match self {
             Self::Nginx => "two_node_http",
             Self::EnvoyDirect => "two_node_envoy_direct",
+            Self::EnvoyProxy => "three_node_envoy_proxy",
         }
     }
 }
@@ -98,6 +108,12 @@ fn public_two_node_envoy_direct_response_is_authenticated() -> Result<(), Box<dy
     run_http_exchange(HttpServer::EnvoyDirect)
 }
 
+#[test]
+#[ignore = "requires packaged QEMU and isolated cgroup-v2/project-quota roots"]
+fn public_three_node_envoy_proxy_response_is_authenticated() -> Result<(), Box<dyn Error>> {
+    run_http_exchange(HttpServer::EnvoyProxy)
+}
+
 fn run_http_exchange(server: HttpServer) -> Result<(), Box<dyn Error>> {
     let prefix = server.evidence_prefix();
     let fixture = FlightFixture::new()?;
@@ -130,6 +146,13 @@ fn run_http_exchange(server: HttpServer) -> Result<(), Box<dyn Error>> {
         }
         envoy_network::require_semantic_marker(&explanation, HTTP_MARKER, "curl")?;
         processes.require_guest_workloads(&["httpget", "httpd"])?;
+        if server == HttpServer::EnvoyProxy {
+            processes.require_guest_argument_sets(&[
+                &["crucible.workload=httpget"],
+                &["crucible.workload=httpd", "crucible.http.role=proxy"],
+                &["crucible.workload=httpd", "crucible.http.role=upstream"],
+            ])?;
+        }
         println!("{prefix}_attempt={explanation}");
         Ok::<(), Box<dyn Error>>(())
     })();
@@ -191,14 +214,14 @@ fn compile_http_scenario(
     let source = fixture
         ._temporary
         .path()
-        .join("two-node-http.scenario.toml");
+        .join(format!("{}.scenario.toml", server.evidence_prefix()));
     fs::write(&source, scenario.to_canonical_toml()?)?;
     run_json(
         command(&["--format", "jsonl", "campaign", "scenario", "compile"])
             .arg(source)
             .arg("--output")
             .arg(&fixture.fixture),
-        "compile two-node HTTP scenario",
+        "compile World-routed HTTP scenario",
     )
 }
 
@@ -225,7 +248,14 @@ fn http_scenario(
         },
         // Httpd is the model's generic HTTP-daemon workload; the immutable
         // root image selects nginx or Envoy rather than extending that model.
-        cmdline: client.cmdline.replace("httpget", "httpd"),
+        cmdline: if server == HttpServer::EnvoyProxy {
+            format!(
+                "{} crucible.http.role=proxy",
+                client.cmdline.replace("httpget", "httpd")
+            )
+        } else {
+            client.cmdline.replace("httpget", "httpd")
+        },
         ..client.clone()
     };
     let link_id = LinkId::for_endpoints(&client.id, &server_node.id);
@@ -237,21 +267,49 @@ fn http_scenario(
         LinkLossProbability::ZERO,
         None,
     )?;
-    let world = World::from_nodes_and_links(vec![client, server_node], vec![link])?;
+    let mut nodes = vec![client, server_node];
+    let mut links = vec![link];
+    let mut evidence_links = vec![link_id];
+    if server == HttpServer::EnvoyProxy {
+        let upstream = WorldNode {
+            id: NodeId {
+                name: "nginx".into(),
+            },
+            cmdline: nodes[1]
+                .cmdline
+                .replace("crucible.http.role=proxy", "crucible.http.role=upstream"),
+            ..nodes[1].clone()
+        };
+        evidence_links.push(LinkId::for_endpoints(&nodes[1].id, &upstream.id));
+        links.push(LinkDef::with_transport(
+            nodes[1].id.clone(),
+            upstream.id.clone(),
+            SimDuration { ticks: 250_000_000 },
+            SimDuration { ticks: 0 },
+            LinkLossProbability::ZERO,
+            None,
+        )?);
+        nodes.push(upstream);
+    }
+    let world = World::from_nodes_and_links(nodes, links)?;
+    let mut exchange_evidence = Vec::new();
+    for link in evidence_links {
+        exchange_evidence.push(Predicate::once(Predicate::network_match(
+            Some(link.clone()),
+            FramePredicate::contains(b"GET / HTTP/1.1".to_vec()),
+        )));
+        exchange_evidence.push(Predicate::once(Predicate::network_match(
+            Some(link),
+            FramePredicate::contains(server.response().to_vec()),
+        )));
+    }
+    exchange_evidence.push(Predicate::once(Predicate::guest_marker(
+        MarkerId::from_name(HTTP_MARKER),
+    )));
     let graph = EventGraph::builder()
         .event("complete-http-exchange")
         .entrypoint()
-        .when(Predicate::all_of(vec![
-            Predicate::once(Predicate::network_match(
-                Some(link_id.clone()),
-                FramePredicate::contains(b"GET / HTTP/1.1".to_vec()),
-            )),
-            Predicate::once(Predicate::network_match(
-                Some(link_id),
-                FramePredicate::contains(server.response().to_vec()),
-            )),
-            Predicate::once(Predicate::guest_marker(MarkerId::from_name(HTTP_MARKER))),
-        ]))
+        .when(Predicate::all_of(exchange_evidence))
         .action(Action::Pass)
         .build_for_world(&world)?;
     let plan = Plan::from_event_graph_for_world(&world, graph)?;
@@ -291,7 +349,7 @@ impl HttpHostWatchdog {
                 .filter_map(|line| setup_receipt_node(line, server)),
         );
         if self.application_started.is_none()
-            && self.setup_nodes.len() == 2
+            && self.setup_nodes.len() == server.guest_nodes().len()
             && now.duration_since(self.began) < HTTP_STARTUP_WATCHDOG
         {
             self.application_started = Some(now);
@@ -324,8 +382,8 @@ fn setup_receipt_node(line: &str, server: HttpServer) -> Option<&'static str> {
     }
     let node = match fields.next()? {
         "node=\"curl\"" => "curl",
-        "node=\"nginx\"" if server == HttpServer::Nginx => "nginx",
-        "node=\"envoy\"" if server == HttpServer::EnvoyDirect => "envoy",
+        "node=\"nginx\"" if server != HttpServer::EnvoyDirect => "nginx",
+        "node=\"envoy\"" if server != HttpServer::Nginx => "envoy",
         _ => return None,
     };
     fields.next()?.strip_prefix("guest_stage=")?;
@@ -402,9 +460,9 @@ fn wait_for_http_completion(
             }
             match state {
                 AttemptRuntimeState::Completed { .. } => {
-                    if watchdog.setup_nodes.len() != 2 {
+                    if watchdog.setup_nodes.len() != server.guest_nodes().len() {
                         return Err(format!(
-                            "HTTP completed without both authenticated guest setup receipts; nodes={:?}; stderr={stderr}",
+                            "HTTP completed without all authenticated guest setup receipts; nodes={:?}; stderr={stderr}",
                             watchdog.setup_nodes
                         ).into());
                     }
@@ -791,3 +849,6 @@ fn http_measurement_publication_accepts_only_the_declared_client_marker()
     }
     Ok(())
 }
+
+#[path = "two_node_http/proxy_tests.rs"]
+mod proxy_tests;
