@@ -479,6 +479,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   current-semantic original-scope calculations and a held-read adapter that
   drops explicit configuration. These remain separate propagation gaps; the
   task remains open.
+  A core audit finds completed scope annotations do not retain interpretation,
+  and evaluator construction checks completion without matching that input.
+  The next pure prerequisite parameterizes the existing authenticated scope
+  calculation, retains a mode-distinct owned interpretation, rejects conflicting
+  revalidation/history unions and matches evaluator construction to that scope.
+  The existing single enclosing prior/candidate comparison contract remains
+  unchanged; prior views are independently verified under their own selections.
+  Three exact signed-history cases are now mandatory across property resolution,
+  commit signatures and selector presets. Implementation remains pending, and
+  these pure checks cannot replace protected native historical qualification.
   — satisfies TREE-14,
   PROP-1 to PROP-30;
   `checks.terrane.gates.property-resolution`,

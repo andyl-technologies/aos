@@ -1,7 +1,7 @@
 {sourceGate, ...}: let
   runCase = path: ''
     cargo test --frozen --offline -p terrane-core --lib ${path} -- --exact > "$TMPDIR/test.log"
-    python3 -c 'import pathlib, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit("test result: ok. 1 passed; 0 failed" not in output)' "$TMPDIR/test.log"
+    python3 -c 'import pathlib, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit("test result: ok. 1 passed; 0 failed" not in output or "test " + sys.argv[2] + " ... ok" not in output)' "$TMPDIR/test.log" "${path}"
   '';
   runTest = name: runCase "provenance::tests::${name}";
 in {
@@ -24,6 +24,8 @@ in {
     ${runTest "root_context::bootstrap_fork::prov_commit_bootstrap_explicit_same_ref_continuity_requires_parent_original_evidence"}
     ${runTest "root_context::bootstrap_fork::prov_commit_bootstrap_copied_fork_comparison_uses_only_view_root_policy_witness"}
     ${runTest "root_context::bootstrap_fork::prov_commit_bootstrap_legacy_parent_requires_independent_original_candidate_baseline"}
+    ${runTest "root_context::recorded::recorded_scope_verification_preserves_fixed_interpretations_and_original_authority"}
+    ${runTest "root_context::recorded::recorded_scope_reverification_and_history_union_refuse_interpretation_conflicts"}
     ${runTest "snapshot::prov_snapshot_signature_binds_exact_preimage_and_terminal_key"}
     ${runTest "snapshot::prov_snapshot_verification_rejects_wrong_target_scope_and_signature"}
     ${runTest "snapshot::prov_snapshot_tag_scope_accepts_admin_implication_and_rejects_commit_only"}
@@ -76,6 +78,7 @@ in {
     ${runCase "provenance::trust::recorded_evaluation_tests::recorded_evaluator_binds_verified_view_and_complete_configuration"}
     ${runCase "provenance::trust::recorded_evaluation_tests::recorded_evaluator_keeps_one_interpretation_across_graft_prefixes"}
     ${runCase "provenance::trust::recorded_evaluation_tests::recorded_evaluator_refuses_missing_or_inconsistent_association"}
+    ${runTest "root_context::recorded::recorded_scope_evaluators_require_matching_retained_interpretations"}
     printf 'PASS: closed trust presets and verified entry preservation\n' > "$out/result"
   '';
 }
