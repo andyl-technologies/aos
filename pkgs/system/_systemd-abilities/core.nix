@@ -16,6 +16,6 @@
     description = "Retained executable implementing authenticated boot image transitions.";
   };
 
-  config.aos.boot.imageEvidenceExecutable = "${package}/bin/aos-systemd-image-evidence";
-  config.aos.boot.imageRolloutPlatformExecutable = "${package}/bin/aos-systemd-boot-platform";
+  config.aos.boot.imageEvidenceExecutable = "${package.handlers}/bin/aos-systemd-image-evidence";
+  config.aos.boot.imageRolloutPlatformExecutable = "${package.handlers}/bin/aos-systemd-boot-platform";
 }

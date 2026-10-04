@@ -32,7 +32,7 @@ let
           aos.imageRollout =
             policy
             // {
-              platformExecutable = "${payload "systemd"}/bin/aos-systemd-boot-platform";
+              platformExecutable = "${payload "systemd-handlers"}/bin/aos-systemd-boot-platform";
             };
         }
       ];
@@ -52,6 +52,7 @@ in
   assert selected.config.aos.abilities.imageSelection.operations.ensure.effects.selected.lifetime == "persistent";
   assert builtins.length nodes == 2;
   assert retirement.input.rollout == rollout;
+  assert retirement.input.platformExecutable == "${payload "systemd-handlers"}/bin/aos-systemd-boot-platform";
   assert retirement.input.retirement;
   assert retirement.lifetime == "persistent";
   assert builtins.hasAttr effect retired.config.aos.activation.graph.nodes;
