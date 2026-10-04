@@ -2,6 +2,7 @@
 {
   mkDerivation,
   fetchurl,
+  buildPackages,
   python3,
 }: let
   version = "0.11.0.0";
@@ -45,7 +46,7 @@ in
           EOF
           printf 'pygdbmi\n' > "$site/pygdbmi-${version}.dist-info/top_level.txt"
 
-          PYTHONPATH="$site" ${python3}/bin/python3 - <<'PYTHON'
+          PYTHONPATH="$site" ${buildPackages.python3}/bin/python3 - <<'PYTHON'
           import importlib.metadata
           import pygdbmi.gdbcontroller
 
