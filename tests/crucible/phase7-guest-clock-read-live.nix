@@ -20,6 +20,7 @@ assert (import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix).commit
         pkgs.python3
         "${./phase7-time-ownership-receipts.py}"
         "${./phase7-guest-clock-read-receipts.py}"
+        "${../../crates/crucible-qemu/src/launch.rs}"
       ];
     testScript = ''
       set -eu
@@ -58,7 +59,8 @@ assert (import ../../pkgs/emulation/qemu-patches/_atomic-patch.nix).commit
         fi
       done
       if ${pkgs.python3}/bin/python3 ${./phase7-guest-clock-read-receipts.py} \
-        "$evidence" "$capture" ${./phase7-time-ownership-receipts.py}; then
+        "$evidence" "$capture" ${./phase7-time-ownership-receipts.py} \
+        ${../../crates/crucible-qemu/src/launch.rs}; then
         :
       else
         report_failure "$?" original-evidence
