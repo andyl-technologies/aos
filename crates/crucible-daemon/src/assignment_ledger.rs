@@ -6,7 +6,9 @@
 //! memory. Every file is bounded, checksummed, strictly decoded, and published
 //! through an fsynced staging file followed by an atomic link or rename.
 //! Startup accepts only a bounded inventory of exact v15 attempt records; stale
-//! staging names and every noncurrent record shape fail closed.
+//! staging records and every noncurrent record shape fail closed. Mutable
+//! publication stages outside the attempt inventory, so concurrent readers see
+//! only committed records without mistaking the live writer for corruption.
 //! Retention administration is a separate mutable capability whose fence binds
 //! one combined operational-root scan to a persistent generation.
 //!
@@ -16,6 +18,7 @@
 //! <ledger>/
 //!   writer.lock
 //!   retention-state-v1
+//!   staging/.staging-<process-id>-<ordinal>
 //!   assignments/<two-hex>/<assignment-id-hex>
 //!   attempts/<two-hex>/<attempt-key-hash>
 //! ```
@@ -49,6 +52,7 @@ const RETENTION_STATE_MAGIC: &[u8] = b"crucible.executor.assignment-retention-st
 const RETENTION_STATE_CHECKSUM_DOMAIN: &str = "crucible.executor.assignment-retention-state.v1";
 const RETENTION_GENERATION_DOMAIN: &str = "crucible.executor.assignment-retention-generation.v1";
 const RETENTION_STATE_FILE: &str = "retention-state-v1";
+const STAGING_DIRECTORY: &str = "staging";
 const MAX_LEDGER_RECORD_BYTES: u64 = 16 * 1024;
 const MAX_RETENTION_STATE_BYTES: u64 = 256;
 const MAX_TYPED_ID_BYTES: usize = 256;
@@ -1395,6 +1399,7 @@ impl DirectoryAssignmentLedger {
             .map_err(|source| anchored_ledger_error(source, "open-writer-lock"))?;
         let writer_lock = OwnedAdvisoryLock::try_exclusive_bound(lock_file)
             .map_err(|source| anchored_ledger_error(source, "lock-writer"))?;
+        validate_staging_inventory(&authority)?;
         validate_runtime_attempt_inventory(&authority)?;
         authority
             .sync()
@@ -1596,6 +1601,26 @@ fn visit_directory_attempt_states_with_authority(
         .verify_path_binding()
         .map_err(|source| anchored_ledger_error(source, "verify-ledger-root"))?;
     Ok(true)
+}
+
+fn validate_staging_inventory(
+    authority: &crate::anchored_fs::AnchoredDirectory,
+) -> Result<(), AssignmentLedgerError> {
+    let path = authority.path().join(STAGING_DIRECTORY);
+    let Some(staging) = authority
+        .open_directory_optional(&path, "open-staging-directory")
+        .map_err(|source| anchored_ledger_error(source, "open-staging-directory"))?
+    else {
+        return Ok(());
+    };
+    if !staging
+        .entry_names(1, "read-staging-directory")
+        .map_err(|source| anchored_ledger_error(source, "read-staging-directory"))?
+        .is_empty()
+    {
+        return Err(corrupt("ledger-stale-staging-entry"));
+    }
+    Ok(())
 }
 
 fn validate_runtime_attempt_inventory(
@@ -1859,16 +1884,37 @@ fn replace_mutable(
     bytes: &[u8],
 ) -> Result<(), AssignmentLedgerError> {
     let directory = record_directory(authority, path)?;
+    let staging = prepare_mutable_staging(authority, path, bytes)?;
+    authority
+        .rename_file(&staging, path, false, "publish-attempt-state")
+        .map_err(|source| anchored_ledger_error(source, "publish-attempt-state"))?;
+    authority
+        .sync_parent(staging.path(), "sync-staging-directory")
+        .map_err(|source| anchored_ledger_error(source, "sync-staging-directory"))?;
+    directory
+        .sync()
+        .map_err(|source| anchored_ledger_error(source, "sync-record-directory"))
+}
+
+fn prepare_mutable_staging(
+    authority: &crate::anchored_fs::AnchoredDirectory,
+    path: &Path,
+    bytes: &[u8],
+) -> Result<crate::anchored_fs::AnchoredFile, AssignmentLedgerError> {
+    record_directory(authority, path)?;
+    // The writer lease owns this separate staging inventory. Public attempt
+    // readers remain strict about every entry in the committed shards.
+    let directory = authority
+        .ensure_directory(
+            &authority.path().join(STAGING_DIRECTORY),
+            "create-staging-directory",
+        )
+        .map_err(|source| anchored_ledger_error(source, "create-staging-directory"))?;
     let staging = create_staging(&directory)?;
     staging
         .write_all_sync(bytes)
         .map_err(|source| anchored_ledger_error(source, "write-attempt-staging"))?;
-    directory
-        .rename_file(&staging, path, false, "publish-attempt-state")
-        .map_err(|source| anchored_ledger_error(source, "publish-attempt-state"))?;
-    directory
-        .sync()
-        .map_err(|source| anchored_ledger_error(source, "sync-record-directory"))
+    Ok(staging)
 }
 
 fn remove_mutable(
