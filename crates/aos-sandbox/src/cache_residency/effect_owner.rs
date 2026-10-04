@@ -648,13 +648,17 @@ impl CacheOwnerHeldSnapshotV1<'_> {
         challenge: CacheOwnerReadbackChallengeV1,
         signer_generation: u64,
         signing_key: &ed25519_dalek::SigningKey,
-    ) -> Result<[u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2], CacheOwnerReadbackErrorV1> {
+        original: &crate::policy_compiler::create_q04::OriginalQ04RootCacheLoanV1<'_, '_, '_>,
+    ) -> Result<
+        [u8; CLOSED_CACHE_OWNER_READBACK_BYTES_V2],
+        crate::policy_compiler::create_q04::CreateQ04ErrorV1,
+    > {
         self.revalidate()?;
         let fields = self.readback_fields()?;
         let manifest = self.manifest_identity
             .map(|identity| (identity.device, identity.inode));
 
-        sign_closed_cache_owner_readback_v2(
+        super::owner_readback::sign_original_q04_cache_owner_readback_v2(
             fields,
             manifest,
             readback.hold(),
@@ -662,6 +666,7 @@ impl CacheOwnerHeldSnapshotV1<'_> {
             challenge,
             signer_generation,
             signing_key,
+            original,
         )
     }
 

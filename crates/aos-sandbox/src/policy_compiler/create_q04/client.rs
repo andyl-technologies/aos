@@ -26,8 +26,6 @@ use super::super::source_genesis_root::{
     ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1, RootCreateQ04TransferKindV1,
     RootSourceGenesisFrameKindV1, decode_root_create_q04_transfer_v1,
     encode_root_source_genesis_frame_v1,
-    sign_controller_source_genesis_completion_readback_v1,
-    sign_controller_source_genesis_readback_v1,
 };
 use super::super::{
     CLOSED_CONTROLLER_HOLD_READBACK_BYTES_V1, CONTROLLER_PROJECT_ADMISSION_READBACK_BYTES_V1,
@@ -194,6 +192,13 @@ impl OriginalQ04RootCacheLoanV1<'_, '_, '_> {
 
     pub(crate) fn recheck(&self) -> Result<(), CreateQ04ErrorV1> {
         self.invocation.require_cache_terminal_original(self.identity)
+    }
+
+    pub(crate) fn require_signing_boundary(&self) -> Result<(), CreateQ04ErrorV1> {
+        self.recheck()?;
+        let flight = self.invocation.flight.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
+        flight.require_q04_signing_boundary()?;
+        Ok(())
     }
 
     pub(crate) fn cache_signing_challenge(
@@ -414,9 +419,17 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         )?;
         let flight = self.flight.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
         let nonce = flight.q04_nonce()?;
-        self.prepare = Some(sign_controller_source_genesis_readback_v1(
-            &controller, &acknowledged, nonce, signer_generation, signer,
-        )?);
+        flight.capture_q04_prepare_readback(
+            &controller, &acknowledged, signer_generation, signer,
+            &mut self.refresh_sign_result, &mut self.first, &mut self.postcheck_debt,
+        ).map_err(|()| CreateQ04ErrorV1::ChangedCut)?;
+        match self.refresh_sign_result.take() {
+            Some(Ok(packet)) => self.prepare = Some(packet),
+            returned => {
+                self.refresh_sign_result = returned;
+                return Err(CreateQ04ErrorV1::ChangedCut);
+            }
+        }
         let prepare = self.prepare.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
         self.sent = encode_root_source_genesis_frame_v1(RootSourceGenesisFrameKindV1::Prepare, nonce, prepare)?;
         flight.q04_send_original(&self.sent)?;
@@ -427,9 +440,17 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         // Prepared is never accepted by this existing-only route. The same
         // sole original-floor constructor checks the actual acceptance/receipt.
         let floor = flight.q04_floor_from_frame(&controller, &self.floor_frame)?;
-        self.complete = Some(sign_controller_source_genesis_completion_readback_v1(
-            &controller, &acknowledged, nonce, signer_generation, signer,
-        )?);
+        flight.capture_q04_complete_readback(
+            &controller, &acknowledged, signer_generation, signer,
+            &mut self.refresh_sign_result, &mut self.first, &mut self.postcheck_debt,
+        ).map_err(|()| CreateQ04ErrorV1::ChangedCut)?;
+        match self.refresh_sign_result.take() {
+            Some(Ok(packet)) => self.complete = Some(packet),
+            returned => {
+                self.refresh_sign_result = returned;
+                return Err(CreateQ04ErrorV1::ChangedCut);
+            }
+        }
         let complete = self.complete.as_ref().ok_or(CreateQ04ErrorV1::ChangedCut)?;
         self.sent = encode_root_source_genesis_frame_v1(RootSourceGenesisFrameKindV1::Complete, nonce, complete)?;
         flight.q04_send_original(&self.sent)?;
@@ -522,15 +543,10 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         let inventory = retained_tree_inventory_data_v1(source).map_err(SourceGenesisErrorV1::from)?;
         let acknowledged = observe_retained_source_genesis_v1(&inventory, controller.uid(), project)?;
         controller.recheck_completed_source_ack(&acknowledged)?;
-        self.refresh_sign_result = Some(sign_controller_source_genesis_completion_readback_v1(
-            &controller, &acknowledged, nonce, signer_generation, signer,
-        ));
-        if matches!(self.refresh_sign_result, Some(Err(_))) {
-            match self.refresh_sign_result.take() {
-                Some(Err(error)) => { self.first = Some(error.into()); }
-                returned => { self.refresh_sign_result = returned; }
-            }
-        }
+        let signed = flight.capture_q04_complete_readback(
+            &controller, &acknowledged, signer_generation, signer,
+            &mut self.refresh_sign_result, &mut self.first, &mut self.postcheck_debt,
+        );
         // These short loans end before mutably auditing the same Controller
         // and Source writers. The original external owners never move/drop.
         drop(acknowledged);
@@ -550,7 +566,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         })();
         if super::finish_controller_q04_signing_v1(
             checked, &mut self.first, &mut self.postcheck_debt,
-        ).is_err() {
+        ).is_err() || signed.is_err() {
             return Err(CreateQ04ErrorV1::ChangedCut);
         }
         // Capacity was reserved before invocation. Moving the successful
@@ -811,8 +827,11 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
             Ok(challenge) => challenge,
             Err(error) => return self.retain_result(Err(error)),
         };
+        let Some(flight) = self.flight.as_ref() else {
+            return self.retain_result(Err(CreateQ04ErrorV1::ChangedCut));
+        };
         let signed = super::super::sign_q04_current_controller_project_v1(
-            journal, ledger, challenge, signer_generation, signer,
+            journal, ledger, challenge, signer_generation, signer, flight,
             &mut self.controller_current, &mut self.first, &mut self.postcheck_debt,
         );
         self.signing_postflight(signed)
@@ -849,8 +868,11 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
         let Some(current) = self.controller_current.as_ref() else {
             return self.retain_result(Err(CreateQ04ErrorV1::ChangedCut));
         };
+        let Some(flight) = self.flight.as_ref() else {
+            return self.retain_result(Err(CreateQ04ErrorV1::ChangedCut));
+        };
         let signed = super::super::sign_q04_prehold_input_v1(
-            journal, ledger, metadata, proposed, current, signer_generation, signer,
+            journal, ledger, metadata, proposed, current, signer_generation, signer, flight,
             &mut self.prehold, &mut self.first, &mut self.postcheck_debt,
         );
         self.signing_postflight(signed)
@@ -1038,8 +1060,11 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
             Ok(challenge) => challenge,
             Err(error) => return self.retain_result(Err(error)),
         };
+        let Some(flight) = self.flight.as_ref() else {
+            return self.retain_result(Err(CreateQ04ErrorV1::ChangedCut));
+        };
         let signed = super::super::sign_q04_held_controller_v1(
-            journal, transitions, challenge, signer_generation, signer,
+            journal, transitions, challenge, signer_generation, signer, flight,
             &mut self.controller_hold, &mut self.first, &mut self.postcheck_debt,
         );
         self.signing_postflight(signed)
@@ -1128,7 +1153,7 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
             rows[0], rows[1], rows[2], inputs[3], inputs[4], inputs[5], inputs[6], inputs[8], proposed,
             controller.as_slice(), held.as_slice(), source, cache_packet, identity.bytes(),
         ], identity)?;
-        super::sign_q04_claim_v1(&mut self.claim, signer, identity)?;
+        super::sign_original_q04_claim_v1(&mut self.claim, signer, identity, flight)?;
         flight.q04_original_clock()?;
         let claim = super::Q04ClaimV1::decode(&self.claim, identity)?;
         let storage = super::Q04ClaimStorageRecipeV1::new(&claim, identity)?;
@@ -1451,7 +1476,9 @@ impl<'profile> OriginalCreateQ04InvocationV1<'profile> {
             Ok(()) if self.first.is_none() && self.postcheck_debt.is_none() => Ok(()),
             Ok(()) => Err(()),
             Err(first) => {
-                if self.first.is_none() {
+                // A retained postcheck cause is already the real failure; do
+                // not replace it with a synthetic forwarding ChangedCut.
+                if self.first.is_none() && self.postcheck_debt.is_none() {
                     self.first = Some(first);
                 }
                 Err(())

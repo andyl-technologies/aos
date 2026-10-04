@@ -24,9 +24,9 @@ mod controller_project_dispatch_readback;
 mod controller_project_terminal_readback;
 
 #[cfg(target_os = "linux")]
-pub(crate) use controller_hold_readback::sign_q04_held_controller_v1;
+pub(in crate::policy_compiler) use controller_hold_readback::sign_q04_held_controller_v1;
 #[cfg(target_os = "linux")]
-pub(crate) use controller_project_admission_readback::{
+pub(in crate::policy_compiler) use controller_project_admission_readback::{
     sign_q04_current_controller_project_v1, sign_q04_prehold_input_v1,
 };
 
