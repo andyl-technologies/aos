@@ -10,6 +10,9 @@ use crucible::{EngineError, LocalDagStore};
 
 use super::*;
 
+#[path = "profile_tests/factory_preflight.rs"]
+mod factory_preflight;
+
 const FIXTURE: &str =
     include_str!("../../../../../../../tests/crucible/fixtures/e2e-determinism.scenario.toml");
 

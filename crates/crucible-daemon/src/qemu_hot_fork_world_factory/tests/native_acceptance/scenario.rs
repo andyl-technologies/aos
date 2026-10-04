@@ -203,7 +203,13 @@ pub(super) fn build_single_node_equivalence(
         io.owner = owner.clone();
         WorldNodeDef::Io(io)
     }));
-    let world = World::from_node_defs_and_links(nodes, Vec::new())?;
+    // Keep the retained I/O contracts without disconnected multi-node network topology.
+    let world = World::from_node_defs_and_links(nodes, Vec::new())?.with_fault_topology(
+        crucible::model::WorldFaultTopology {
+            storage_devices: world.fault_topology().storage_devices.clone(),
+            ..Default::default()
+        },
+    )?;
     let plan = Plan::empty();
     let properties = Properties::from_assertions_for_world(
         &world,
@@ -251,7 +257,13 @@ pub(super) fn build_single_node_equivalence_with_memory(
         io.owner = owner.clone();
         WorldNodeDef::Io(io)
     }));
-    let world = World::from_node_defs_and_links(nodes, Vec::new())?;
+    // Keep the retained I/O contracts without disconnected multi-node network topology.
+    let world = World::from_node_defs_and_links(nodes, Vec::new())?.with_fault_topology(
+        crucible::model::WorldFaultTopology {
+            storage_devices: world.fault_topology().storage_devices.clone(),
+            ..Default::default()
+        },
+    )?;
     let plan = Plan::empty();
     let properties = Properties::from_assertions_for_world(
         &world,
