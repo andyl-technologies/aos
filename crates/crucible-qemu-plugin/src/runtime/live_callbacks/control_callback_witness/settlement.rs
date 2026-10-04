@@ -10,10 +10,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 #[derive(Clone, Copy)]
 pub(in crate::runtime::live_callbacks) struct SettlementContext {
-    callback: u64,
-    raw: u64,
-    token: u32,
-    frontier: u64,
+    pub(super) callback: u64,
+    pub(super) raw: u64,
+    pub(super) token: u32,
+    pub(super) frontier: u64,
+    pub(super) capture: Option<u32>,
 }
 
 #[derive(Clone, Copy)]
@@ -28,7 +29,7 @@ pub(in crate::runtime::live_callbacks) enum SettlementReason {
 }
 
 impl SettlementReason {
-    fn label(self) -> &'static str {
+    pub(super) fn label(self) -> &'static str {
         match self {
             Self::Entered => "entered",
             Self::PumpActive => "pump-active",
@@ -67,7 +68,7 @@ impl LastSettlement {
         }
     }
 
-    fn snapshot(&self) -> Option<(SettlementContext, SettlementReason)> {
+    pub(super) fn snapshot(&self) -> Option<(SettlementContext, SettlementReason)> {
         if self.lost.load(Ordering::Relaxed) {
             return None;
         }
@@ -128,12 +129,14 @@ impl super::ControlCallbackWitness {
         raw: u64,
         token: u32,
         frontier: u64,
+        capture: Option<u32>,
     ) -> Option<SettlementContext> {
         self.enabled.then_some(SettlementContext {
             callback: callback?,
             raw,
             token,
             frontier,
+            capture,
         })
     }
 
@@ -157,7 +160,8 @@ mod tests {
     #[test]
     fn maximum_settlement_is_bounded_and_contention_or_fork_is_unavailable() {
         let witness = super::super::ControlCallbackWitness::new(true);
-        let context = witness.settlement_context(Some(u64::MAX), u64::MAX, u32::MAX, u64::MAX);
+        let context =
+            witness.settlement_context(Some(u64::MAX), u64::MAX, u32::MAX, u64::MAX, None);
         witness.retain_settlement(context, SettlementReason::PublicationBackpressure);
         let identity =
             crucible_shmem::SetupRegionBackingIdentity::from_parts(u64::MAX, u64::MAX, u64::MAX)

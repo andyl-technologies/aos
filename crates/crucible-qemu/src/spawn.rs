@@ -1119,11 +1119,12 @@ pub(crate) fn guarded_qemu_process_command(
     // Aggregate diagnostics retain fixed failure observations without enabling
     // the legacy callback stream or native trace selections.
     const AGGREGATE_DIAGNOSTICS: &str = "CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS";
-    if let Ok(budget) = std::env::var(AGGREGATE_DIAGNOSTICS)
-        && budget
+    let aggregate = std::env::var(AGGREGATE_DIAGNOSTICS).ok().filter(|budget| {
+        budget
             .parse::<u16>()
             .is_ok_and(|budget| (1..=256).contains(&budget))
-    {
+    });
+    if let Some(budget) = &aggregate {
         command.env(AGGREGATE_DIAGNOSTICS, budget);
     }
 
@@ -1133,9 +1134,10 @@ pub(crate) fn guarded_qemu_process_command(
     if std::env::var("CRUCIBLE_TIME_OWNERSHIP_WITNESS").as_deref() == Ok("1") {
         command.env("CRUCIBLE_TIME_OWNERSHIP_WITNESS", "1");
     }
-    // The stage minimum is diagnostic-only and cannot escape the existing
-    // witness opt-in. Invalid or noncanonical values leave stage notices off.
-    if envs.contains(&("CRUCIBLE_CONTROL_CALLBACK_WITNESS", "1")) {
+    // Aggregate mode uses this minimum for capped pending-return notices only;
+    // forwarding it does not enable the legacy callback or stage streams.
+    // Invalid or noncanonical values leave both filtered observations off.
+    if aggregate.is_some() || envs.contains(&("CRUCIBLE_CONTROL_CALLBACK_WITNESS", "1")) {
         const STAGE_MINIMUM: &str = "CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN";
         if let Ok(minimum) = std::env::var(STAGE_MINIMUM)
             && minimum

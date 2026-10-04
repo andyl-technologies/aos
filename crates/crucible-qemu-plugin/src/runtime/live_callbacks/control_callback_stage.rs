@@ -36,6 +36,12 @@ pub(super) struct ControlStageIdentity {
     generation: u64,
 }
 
+impl ControlStageIdentity {
+    pub(super) fn parts(self) -> (crucible_shmem::SetupRegionBackingIdentity, u32, u64) {
+        (self.backing, self.slot, self.generation)
+    }
+}
+
 /// Holds only the cached diagnostic setting and per-token phase deduplication.
 pub(super) struct ControlCallbackStages {
     minimum_token: Option<u32>,
@@ -269,6 +275,7 @@ impl LiveVcpuTimeCallbackState {
                 generation,
             });
             self.control_callback_witness.stages.reset();
+            self.control_callback_witness.reset_pending();
         }
     }
 
@@ -337,6 +344,7 @@ impl LiveVcpuTimeCallbackState {
             raw_icount,
             control_request,
             fault_command_frontier,
+            fingerprint_capture_request,
         );
         self.control_callback_witness.retain_settlement(
             settlement,

@@ -73,7 +73,12 @@ fn run_guest_choice_campaign(hot_fork_flight: bool) -> Result<(), Box<dyn Error>
         .then(|| materialization_flight_deployment(&fixture))
         .transpose()?;
     let mut service = if hot_fork_flight {
-        start_materialization_flight_service(&fixture, &authority, hot_fork_deployment.as_deref())?
+        start_materialization_flight_service(
+            &fixture,
+            &authority,
+            hot_fork_deployment.as_deref(),
+            None,
+        )?
     } else {
         start_packaged_service(&fixture, &authority)?
     };
@@ -221,7 +226,7 @@ fn run_guest_choice_campaign(hot_fork_flight: bool) -> Result<(), Box<dyn Error>
     // Without a retained fork source, the selected public branch runs through
     // the production fresh-QEMU replay runner.
     let mut selected_service = if hot_fork_flight {
-        start_materialization_flight_service(&fixture, &authority, None)?
+        start_materialization_flight_service(&fixture, &authority, None, None)?
     } else {
         start_packaged_service(&fixture, &authority)?
     };
@@ -282,7 +287,7 @@ fn run_guest_choice_campaign(hot_fork_flight: bool) -> Result<(), Box<dyn Error>
     selected_service.stop()?;
 
     let mut restarted = if hot_fork_flight {
-        start_materialization_flight_service(&fixture, &authority, None)?
+        start_materialization_flight_service(&fixture, &authority, None, None)?
     } else {
         start_packaged_service(&fixture, &authority)?
     };
@@ -716,6 +721,7 @@ pub(super) fn start_materialization_flight_service(
     fixture: &FlightFixture,
     authority: &Path,
     hot_fork_deployment: Option<&Path>,
+    pending_min_token: Option<u32>,
 ) -> Result<CampaignServiceChild, Box<dyn Error>> {
     let default_deployment = required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?;
     let deployment = hot_fork_deployment.unwrap_or(&default_deployment);
@@ -727,7 +733,7 @@ pub(super) fn start_materialization_flight_service(
         deployment,
         &qemu,
         &plugin,
-        FlightDiagnostics::Materialization,
+        FlightDiagnostics::Materialization { pending_min_token },
     )
 }
 
@@ -753,7 +759,7 @@ pub(super) fn start_callback_witness_flight_service(
 
 enum FlightDiagnostics {
     Disabled,
-    Materialization,
+    Materialization { pending_min_token: Option<u32> },
     ControlCallback { stage_min_token: u32 },
 }
 

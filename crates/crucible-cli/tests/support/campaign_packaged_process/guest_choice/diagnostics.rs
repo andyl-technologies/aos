@@ -28,6 +28,7 @@ pub(super) fn report_recent_callback_context(service: &CampaignServiceChild) {
         ("CRUCIBLE-NETWORK-OUTPUT-CONTEXT-V1 ", 512),
         ("CRUCIBLE-CONTROL-LAST-V1 ", 512),
         ("CRUCIBLE-CONTROL-SETTLEMENT-LAST-V1 ", 512),
+        ("CRUCIBLE-CONTROL-PENDING-V1 ", 511),
         ("CRUCIBLE-CHECKPOINT-STOP-V1 ", 511),
         ("CRUCIBLE-CONTROL-STAGE-V1 ", 255),
     ] {
@@ -75,7 +76,7 @@ pub(super) fn configure_flight_diagnostics(
     // The daemon rejects values outside 1..=256 by disabling tier notices.
     // Runtime progress shares this opt-in and also admits the same bound.
     invocation.env("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS", "256");
-    if matches!(diagnostics, FlightDiagnostics::Materialization) {
+    if matches!(diagnostics, FlightDiagnostics::Materialization { .. }) {
         // Fixed failure observations use the aggregate opt-in independently.
         // A caller's routine trace selections must not turn this profile into
         // a per-quantum stderr or native-file producer.
@@ -88,6 +89,18 @@ pub(super) fn configure_flight_diagnostics(
         ] {
             invocation.env_remove(setting);
         }
+    }
+    if let FlightDiagnostics::Materialization {
+        pending_min_token: Some(minimum),
+    } = diagnostics
+    {
+        // This explicit in-guest profile reaches late pending requests without
+        // enabling callback stages or native per-quantum traces.
+        invocation.env("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS", "16");
+        invocation.env(
+            "CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN",
+            minimum.to_string(),
+        );
     }
     if let FlightDiagnostics::ControlCallback { stage_min_token } = diagnostics {
         invocation.env("CRUCIBLE_CONTROL_CALLBACK_WITNESS", "1");
@@ -102,7 +115,12 @@ pub(super) fn configure_flight_diagnostics(
 #[test]
 fn diagnostic_flights_request_admitted_materialization_events() {
     for diagnostics in [
-        FlightDiagnostics::Materialization,
+        FlightDiagnostics::Materialization {
+            pending_min_token: None,
+        },
+        FlightDiagnostics::Materialization {
+            pending_min_token: Some(50_000),
+        },
         FlightDiagnostics::ControlCallback {
             stage_min_token: 4400,
         },
@@ -114,9 +132,17 @@ fn diagnostic_flights_request_admitted_materialization_events() {
             FlightDiagnostics::ControlCallback { stage_min_token } => {
                 Some(stage_min_token.to_string())
             }
-            _ => None,
+            FlightDiagnostics::Materialization { pending_min_token } => {
+                pending_min_token.map(|token| token.to_string())
+            }
+            FlightDiagnostics::Disabled => None,
         };
-        let witness = minimum.is_some();
+        let witness = matches!(diagnostics, FlightDiagnostics::ControlCallback { .. });
+        let budget = if !witness && minimum.is_some() {
+            "16"
+        } else {
+            "256"
+        };
         let mut invocation = Command::new("unused-fixture-program");
         configure_flight_diagnostics(&mut invocation, diagnostics);
         let environment = invocation.get_envs().collect::<BTreeMap<_, _>>();
@@ -124,7 +150,7 @@ fn diagnostic_flights_request_admitted_materialization_events() {
             environment.get(std::ffi::OsStr::new(
                 "CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS"
             )),
-            Some(&Some(std::ffi::OsStr::new("256")))
+            Some(&Some(std::ffi::OsStr::new(budget)))
         );
         assert_eq!(
             environment.get(std::ffi::OsStr::new("CRUCIBLE_CONTROL_CALLBACK_WITNESS")),
@@ -163,7 +189,12 @@ fn aggregate_service_profile_clears_explicit_streams_and_preserves_other_environ
     invocation.env("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS", "512");
     invocation.env("OTHER_SERVICE_OWNER", "original-value");
 
-    configure_flight_diagnostics(&mut invocation, FlightDiagnostics::Materialization);
+    configure_flight_diagnostics(
+        &mut invocation,
+        FlightDiagnostics::Materialization {
+            pending_min_token: None,
+        },
+    );
 
     let environment = invocation.get_envs().collect::<BTreeMap<_, _>>();
     assert_eq!(
@@ -210,6 +241,8 @@ fn materialization_capture_preserves_one_shot_record_outside_the_recent_tail()
     writeln!(service.stderr, "{callback_context}")?;
     let settlement_context = "CRUCIBLE-CONTROL-SETTLEMENT-LAST-V1 phase=after-drain teardown=host-quit pid=42 device=1 inode=2 length=4096 slot=0 generation=2 final_token=2 callback=7 raw=8 token=2 frontier=6 reason=pump-active";
     writeln!(service.stderr, "{settlement_context}")?;
+    let pending_context = "CRUCIBLE-CONTROL-PENDING-V1 phase=return pid=42 callback=7 raw=8 token=54008 device=1 inode=2 length=4096 slot=0 generation=2 frontier=6 capture=0 reason=pump-active";
+    writeln!(service.stderr, "{pending_context}")?;
     let native_context = "CRUCIBLE-NATIVE-STOP-CONTEXT-V1 phase=rearm-shutdown pid=42 gen=3 request=12830 ack=12829 complete=12829 state=2 runstate=4 flush=0 shutdown=1 advance=0 fd=7 scope=unavailable pc=unavailable coord=unavailable";
     writeln!(service.stderr, "{native_context}")?;
 
@@ -250,6 +283,10 @@ fn materialization_capture_preserves_one_shot_record_outside_the_recent_tail()
     assert_eq!(
         recent_callback_context_rows(&service, "CRUCIBLE-CONTROL-SETTLEMENT-LAST-V1 ", 512)?,
         [settlement_context]
+    );
+    assert_eq!(
+        recent_callback_context_rows(&service, "CRUCIBLE-CONTROL-PENDING-V1 ", 511)?,
+        [pending_context]
     );
     let events = capture_materialization_events(&service)?;
     assert_eq!(events, [attestation]);

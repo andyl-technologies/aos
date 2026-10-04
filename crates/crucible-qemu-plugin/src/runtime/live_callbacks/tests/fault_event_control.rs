@@ -14,7 +14,7 @@ const COMMAND_ARENA_OFFSET: u64 = 4_096;
 const RESULT_ARENA_OFFSET: u64 = 8_192;
 const EVENT_ARENA_OFFSET: u64 = 12_288;
 
-struct ControlFaultTransports {
+pub(in crate::runtime::live_callbacks) struct ControlFaultTransports {
     command_ring: Box<RingHeader>,
     command_slots: Vec<FaultCommandSlotV1>,
     command_arena_header: Box<FaultPayloadArenaHeader>,
@@ -29,7 +29,7 @@ struct ControlFaultTransports {
     event_arena: Vec<u8>,
 }
 
-fn control_fault_bridge(
+pub(in crate::runtime::live_callbacks) fn control_fault_bridge(
     target_node_hash: [u8; 32],
 ) -> (
     crate::fault_command::FaultCommandBridge,
@@ -101,7 +101,7 @@ fn boundary_probe(target_node_hash: [u8; 32], sequence: u64) -> FaultCommandHead
     }
 }
 
-fn fingerprint_state(
+pub(in crate::runtime::live_callbacks) fn fingerprint_state(
     slot: &NodeSlot,
     fingerprint_slot: &FingerprintSampleSlot,
     bridge: crate::fault_command::FaultCommandBridge,

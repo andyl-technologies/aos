@@ -15,7 +15,7 @@ use crucible_shmem::{
 };
 
 mod block_wait;
-mod fault_event_control;
+pub(super) mod fault_event_control;
 mod network_custody;
 mod network_output;
 mod preemption;
@@ -54,7 +54,7 @@ static TEST_NESTED_PRODUCER_STATE: AtomicPtr<LiveVcpuTimeCallbackState> =
     AtomicPtr::new(std::ptr::null_mut());
 static TEST_NESTED_PRODUCER_DEFERRED: AtomicBool = AtomicBool::new(false);
 
-fn wait_for_fingerprint_sample(
+pub(super) fn wait_for_fingerprint_sample(
     slot: &FingerprintSampleSlot,
     capture_request: u32,
 ) -> crucible_shmem::FingerprintSample {

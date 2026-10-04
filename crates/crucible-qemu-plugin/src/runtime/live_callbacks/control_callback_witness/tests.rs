@@ -733,3 +733,107 @@ fn aggregate_opt_in_is_bounded_and_preserves_original_error_outcome() {
     assert_eq!(slot.control_boundary_token(), request);
     assert_eq!(state.quiescence.snapshot().in_flight, 0);
 }
+
+#[test]
+fn actual_pending_return_is_retained_before_teardown_without_success_or_rejection_rows() {
+    use std::fs::OpenOptions;
+    use std::os::unix::fs::FileExt;
+    static NEXT_FILE: AtomicU64 = AtomicU64::new(0);
+    let path = std::env::temp_dir().join(format!(
+        "crucible-pending-{}-{}",
+        std::process::id(),
+        NEXT_FILE.fetch_add(1, Ordering::Relaxed)
+    ));
+    let file = OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap_or_else(|error| panic!("capture: {error}"));
+    std::fs::remove_file(&path).unwrap_or_else(|error| panic!("unlink own capture: {error}"));
+    let slot = NodeSlot::new(KIND_VM);
+    let fingerprint_slot = crucible_shmem::FingerprintSampleSlot::new();
+    slot.publish_scheduler_advance(
+        authorize_advance_ceiling(0, 1_000, None)
+            .unwrap_or_else(|error| panic!("ceiling: {error}")),
+        AdvanceStopCondition::Ceiling,
+    )
+    .unwrap_or_else(|error| panic!("ceiling publication: {error}"));
+    use super::super::tests::fault_event_control::{control_fault_bridge, fingerprint_state};
+    let (bridge, _transports) = control_fault_bridge([0x31; 32]);
+    let mut state = fingerprint_state(&slot, &fingerprint_slot, bridge);
+    let mut witness = ControlCallbackWitness::from_settings(None, Some(std::ffi::OsStr::new("16")));
+    witness.pending = pending::PendingNotices::new(Some(0));
+    witness.pending.destination =
+        Some(Mutex::new(file.try_clone().unwrap_or_else(|error| {
+            panic!("test capture source: {error}")
+        })));
+    state.control_callback_witness = std::sync::Arc::new(witness);
+    let capture = fingerprint_slot.request_capture_v1();
+    let request = slot
+        .request_control_boundary(0, Some(capture))
+        .unwrap_or_else(|error| panic!("control request: {error}"));
+    state
+        .fault_command_pump_active
+        .store(true, Ordering::Release);
+
+    assert!(run(&state, 7).is_empty());
+    assert_eq!(slot.control_boundary_token(), request);
+    let length = file
+        .metadata()
+        .unwrap_or_else(|error| panic!("capture stat: {error}"))
+        .len();
+    let mut bytes = vec![0; length as usize];
+    file.read_exact_at(&mut bytes, 0)
+        .unwrap_or_else(|error| panic!("capture read: {error}"));
+    let row = String::from_utf8(bytes).unwrap_or_else(|error| panic!("ASCII: {error}"));
+    assert_eq!(row.lines().count(), 1);
+    assert!(row.contains(&format!(" raw=7 token={request} ")));
+    assert!(row.ends_with(&format!(
+        "frontier=0 capture={capture} reason=pump-active\n"
+    )));
+    assert_eq!(state.quiescence.snapshot().in_flight, 0);
+
+    // Repeated pending work is deduplicated; later success emits no row.
+    assert!(run(&state, 7).is_empty());
+    state
+        .fault_command_pump_active
+        .store(false, Ordering::Release);
+    assert!(run(&state, 7).is_empty());
+    assert_eq!(slot.control_boundary_token(), request + 1);
+    assert_eq!(
+        file.metadata()
+            .unwrap_or_else(|error| panic!("capture stat: {error}"))
+            .len(),
+        length
+    );
+    let _sample = super::super::tests::wait_for_fingerprint_sample(&fingerprint_slot, capture);
+    let next = slot
+        .request_control_boundary(0, None)
+        .unwrap_or_else(|error| panic!("next request: {error}"));
+    let witness = std::sync::Arc::get_mut(&mut state.control_callback_witness)
+        .unwrap_or_else(|| panic!("sole diagnostic test owner"));
+    witness.pending.owner_pid = std::process::id().wrapping_add(1);
+    state
+        .fault_command_pump_active
+        .store(true, Ordering::Release);
+    assert!(run(&state, 7).is_empty());
+    assert_eq!(slot.control_boundary_token(), next);
+    assert_eq!(
+        file.metadata()
+            .unwrap_or_else(|error| panic!("capture stat: {error}"))
+            .len(),
+        length
+    );
+    state.quiescence.close();
+    assert!(run(&state, 7).is_empty());
+    assert_eq!(slot.control_boundary_token(), next);
+    assert_eq!(
+        file.metadata()
+            .unwrap_or_else(|error| panic!("capture stat: {error}"))
+            .len(),
+        length
+    );
+    drop(state);
+    drop(file);
+}

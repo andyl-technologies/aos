@@ -1713,6 +1713,12 @@ fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
             env::var("CRUCIBLE_TIME_OWNERSHIP_WITNESS").ok(),
             (expected == "1").then(|| String::from("1")),
         );
+        let pending = env::var("CRUCIBLE_QEMU_TEST_PENDING_EXPECTED")?;
+        assert_eq!(
+            env::var("CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN").ok(),
+            (pending == "50000").then(|| pending.clone())
+        );
+        assert!(env::var_os("CRUCIBLE_CONTROL_CALLBACK_WITNESS").is_none());
         child_probe_fixed_fds()?;
         return Ok(());
     }
@@ -1741,6 +1747,10 @@ fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
                 (ENV_CLEAR_CHILD_PROBE, "1"),
                 (EXPLICIT_ENV_SENTINEL, "explicit-child-value"),
                 (TIME_OWNERSHIP_EXPECTED, &env::var(TIME_OWNERSHIP_EXPECTED)?),
+                (
+                    "CRUCIBLE_QEMU_TEST_PENDING_EXPECTED",
+                    &env::var("CRUCIBLE_QEMU_TEST_PENDING_EXPECTED")?,
+                ),
                 (SOURCE_FDS_ENV, &source_fds),
             ],
             "spawn child clean-environment probe",
@@ -1752,7 +1762,13 @@ fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
     }
 
     let current_exe = env::current_exe()?;
-    for setting in [None, Some("0"), Some("1"), Some("2"), Some("01")] {
+    for (setting, budget, minimum, pending) in [
+        (None, None, None, "absent"),
+        (Some("0"), Some("16"), Some("50000"), "50000"),
+        (Some("1"), Some("16"), Some("050000"), "absent"),
+        (Some("2"), Some("0"), Some("50000"), "absent"),
+        (Some("01"), Some("257"), Some("50000"), "absent"),
+    ] {
         let mut command = Command::new(&current_exe);
         command
             .args([
@@ -1762,7 +1778,17 @@ fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
             .env(ENV_CLEAR_PARENT_PROBE, "1")
             .env(INHERITED_ENV_SENTINEL, "parent-only-value")
             .env(TIME_OWNERSHIP_EXPECTED, setting.unwrap_or("absent"))
-            .env_remove("CRUCIBLE_TIME_OWNERSHIP_WITNESS");
+            .env("CRUCIBLE_QEMU_TEST_PENDING_EXPECTED", pending)
+            .env_remove("CRUCIBLE_TIME_OWNERSHIP_WITNESS")
+            .env_remove("CRUCIBLE_CONTROL_CALLBACK_WITNESS")
+            .env_remove("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS")
+            .env_remove("CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN");
+        if let Some(budget) = budget {
+            command.env("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS", budget);
+        }
+        if let Some(minimum) = minimum {
+            command.env("CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN", minimum);
+        }
         if let Some(setting) = setting {
             command.env("CRUCIBLE_TIME_OWNERSHIP_WITNESS", setting);
         }

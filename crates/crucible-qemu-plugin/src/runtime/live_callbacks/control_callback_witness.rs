@@ -19,7 +19,10 @@
 //! The existing materialization diagnostic budget also enables retained-only
 //! observations, without enabling callback, stage, or stop-caller streams. This
 //! mode reports only outstanding requests or original run-control faults after
-//! draining; successful shutdown is silent.
+//! draining; successful shutdown is silent. An admitted minimum-token setting
+//! also permits up to 16 pending-return rows before quarantine, independently of
+//! aggregate budgets. These best-effort rows do not enable routine streams;
+//! missing, filtered, capped or dropped rows cannot prove absent delivery.
 //!
 //! Fixed observations also retain the last callback and last admitted
 //! outcome independently of row deduplication. Original ordered teardown emits
@@ -38,6 +41,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use super::super::callback_quiescence::LiveCallbackQuiescenceSnapshot;
 use super::{LiveVcpuTimeCallbackError, LiveVcpuTimeCallbackState, PluginShmemOrdering};
 
+mod pending;
 mod settlement;
 pub(super) use settlement::{SettlementContext, SettlementReason};
 
@@ -54,6 +58,7 @@ pub(in crate::runtime) struct ControlCallbackWitness {
     last_callback: LastObservation,
     last_admitted: LastObservation,
     settlement: settlement::LastSettlement,
+    pending: pending::PendingNotices,
 }
 
 impl ControlCallbackWitness {
@@ -68,15 +73,19 @@ impl ControlCallbackWitness {
     }
 
     pub(super) fn from_env() -> Self {
+        let aggregate = std::env::var_os("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS");
+        let minimum = std::env::var_os("CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN");
         let mut witness = Self::from_settings(
             std::env::var_os("CRUCIBLE_CONTROL_CALLBACK_WITNESS").as_deref(),
-            std::env::var_os("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS").as_deref(),
+            aggregate.as_deref(),
         );
         if witness.streaming {
             witness.stages = super::control_callback_stage::ControlCallbackStages::from_setting(
-                std::env::var_os("CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN").as_deref(),
+                minimum.as_deref(),
             );
         }
+        witness.pending =
+            pending::PendingNotices::from_settings(aggregate.as_deref(), minimum.as_deref());
         witness
     }
 
@@ -113,6 +122,7 @@ impl ControlCallbackWitness {
             last_callback: LastObservation::default(),
             last_admitted: LastObservation::default(),
             settlement: settlement::LastSettlement::default(),
+            pending: pending::PendingNotices::disabled(),
         }
     }
 
@@ -130,6 +140,7 @@ impl ControlCallbackWitness {
             self.last_callback.clear();
             self.last_admitted.clear();
             self.settlement.clear();
+            self.reset_pending();
         }
         self.record(Event::Entry, raw_icount, None)
     }
@@ -534,6 +545,14 @@ impl LiveVcpuTimeCallbackState {
             );
             if let Some(record) = witness.record(event, raw_icount, Some(token_after)) {
                 emit(record);
+            }
+            if matches!(event, Event::Pending) {
+                witness.report_pending(
+                    callback,
+                    raw_icount,
+                    token_before,
+                    self.control_stage_identity,
+                );
             }
         }
         if let Err(error) = result {

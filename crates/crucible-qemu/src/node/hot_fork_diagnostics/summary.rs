@@ -37,6 +37,7 @@ pub(super) fn control_diagnostics_summary(bytes: &[u8], child_process_id: u32) -
             && !line.starts_with(b"CRUCIBLE-CONTROL-CALLBACK-V1 ")
             && !line.starts_with(b"CRUCIBLE-CONTROL-LAST-V1 ")
             && !line.starts_with(b"CRUCIBLE-CONTROL-SETTLEMENT-LAST-V1 ")
+            && !line.starts_with(b"CRUCIBLE-CONTROL-PENDING-V1 ")
             && !line.starts_with(b"crucible_sim_rr_control_")
         {
             continue;
@@ -53,6 +54,7 @@ pub(super) fn control_diagnostics_summary(bytes: &[u8], child_process_id: u32) -
                     || valid_callback_row(row, child_process_id)
                     || valid_last_callback_row(row, child_process_id)
                     || valid_settlement_row(row, child_process_id)
+                    || valid_pending_row(row, child_process_id)
                     || crate::spawn::valid_rr_control_boundary_row(row)
                     || (crate::spawn::valid_control_delivery_row(row)
                         && row
@@ -84,6 +86,55 @@ pub(super) fn control_diagnostics_summary(bytes: &[u8], child_process_id: u32) -
 
 fn value<'a>(fields: &mut std::str::SplitAsciiWhitespace<'a>, key: &str) -> Option<&'a str> {
     fields.next()?.strip_prefix(key)
+}
+
+fn valid_pending_row(row: &str, child_process_id: u32) -> bool {
+    let mut fields = row.split_ascii_whitespace();
+    if row.len() >= MAXIMUM_ROW_BYTES
+        || fields.next() != Some("CRUCIBLE-CONTROL-PENDING-V1")
+        || value(&mut fields, "phase=") != Some("return")
+        || value(&mut fields, "pid=").and_then(|pid| pid.parse::<u32>().ok())
+            != Some(child_process_id)
+        || !value(&mut fields, "callback=").is_some_and(unsigned::<u64>)
+        || !value(&mut fields, "raw=").is_some_and(unsigned::<u64>)
+        || !value(&mut fields, "token=").is_some_and(|token| {
+            unsigned::<u32>(token) && token.parse::<u32>().is_ok_and(|token| token & 1 == 0)
+        })
+    {
+        return false;
+    }
+    let identity =
+        ["device=", "inode=", "length=", "slot=", "generation="].map(|key| value(&mut fields, key));
+    if identity != [Some("unavailable"); 5]
+        && !(identity[0].is_some_and(unsigned::<u64>)
+            && identity[1].is_some_and(unsigned::<u64>)
+            && identity[2].is_some_and(unsigned::<u64>)
+            && identity[3].is_some_and(unsigned::<u32>)
+            && identity[4].is_some_and(unsigned::<u64>))
+    {
+        return false;
+    }
+    let frontier = value(&mut fields, "frontier=");
+    let capture = value(&mut fields, "capture=");
+    let reason = value(&mut fields, "reason=");
+    let observed = frontier.is_some_and(unsigned::<u64>)
+        && capture.is_some_and(unsigned::<u32>)
+        && matches!(
+            reason,
+            Some(
+                "entered"
+                    | "pump-active"
+                    | "frontier-pending"
+                    | "publication-backpressure"
+                    | "frontier-unsettled"
+                    | "settled"
+                    | "error"
+            )
+        );
+    let unavailable = frontier == Some("unavailable")
+        && capture == Some("unavailable")
+        && reason == Some("unavailable");
+    (observed || unavailable) && fields.next().is_none()
 }
 
 fn valid_settlement_row(row: &str, child_process_id: u32) -> bool {
@@ -352,6 +403,29 @@ mod tests {
             assert!(summary.contains("accepted_rows=0 rejected_rows=1"));
             assert_eq!(summary.lines().count(), 1);
         }
+    }
+
+    #[test]
+    fn pending_summary_retains_original_child_and_rejects_mixed_binding_or_odd_token() {
+        let row = "CRUCIBLE-CONTROL-PENDING-V1 phase=return pid=153 callback=7 raw=8 token=54008 device=1 inode=2 length=4096 slot=0 generation=2 frontier=6 capture=0 reason=pump-active\n";
+        let mut bytes = row.to_owned();
+        for invalid in [
+            row.replace("pid=153", "pid=132"),
+            row.replace("token=54008", "token=54009"),
+            row.replace("device=1", "device=unavailable"),
+            row.replace("capture=0", "capture=unavailable"),
+            row.replace("pump-active", "invented"),
+            row.trim_end().to_owned() + " extra=1\n",
+        ] {
+            bytes.push_str(&invalid);
+        }
+        let summary = control_diagnostics_summary(bytes.as_bytes(), 153);
+        assert!(summary.contains("accepted_rows=1 rejected_rows=6 tail_rows=1"));
+        assert!(summary.ends_with(row.trim_end()));
+        let unavailable = "CRUCIBLE-CONTROL-PENDING-V1 phase=return pid=153 callback=7 raw=8 token=54008 device=unavailable inode=unavailable length=unavailable slot=unavailable generation=unavailable frontier=unavailable capture=unavailable reason=unavailable\n";
+        let summary = control_diagnostics_summary(unavailable.as_bytes(), 153);
+        assert!(summary.contains("accepted_rows=1 rejected_rows=0 tail_rows=1"));
+        assert!(summary.ends_with(unavailable.trim_end()));
     }
 
     #[test]

@@ -82,6 +82,7 @@ fn run_single_guest(materialization: bool) -> Result<(), Box<dyn Error>> {
             &fixture,
             &authority,
             hot_fork.as_deref(),
+            Some(50_000),
         )?
     } else {
         guest_choice::start_callback_witness_flight_service(
@@ -140,7 +141,12 @@ fn run_single_guest(materialization: bool) -> Result<(), Box<dyn Error>> {
         stage("retire-fork-source");
         service.stop()?;
         processes.verify_cleanup()?;
-        service = guest_choice::start_materialization_flight_service(&fixture, &authority, None)?;
+        service = guest_choice::start_materialization_flight_service(
+            &fixture,
+            &authority,
+            None,
+            Some(50_000),
+        )?;
         assert_eq!(
             choice_at(&fixture, &selected_recovery, "campaign.retry-quanta")?,
             quanta_choice
@@ -399,7 +405,12 @@ fn capture_and_restore(
     service.stop()?;
     processes.verify_cleanup()?;
     let authority = guest_choice::write_component_authority(fixture)?;
-    *service = guest_choice::start_materialization_flight_service(fixture, &authority, None)?;
+    *service = guest_choice::start_materialization_flight_service(
+        fixture,
+        &authority,
+        None,
+        Some(50_000),
+    )?;
 
     stage("restore-selected-guest-state");
     let known = guest_choice::attempt_states(fixture)?.into_keys().collect();
