@@ -3134,6 +3134,17 @@ in rec {
     };
   };
   phase9 = {
+    # Select either existing mode adapter without pulling the full 54-run matrix:
+    # aos-dev build check crucible.phase9.campaignModeGates.divergence-bisect.disabled --no-out-link
+    # aos-dev build check crucible.phase9.campaignModeGates.divergence-bisect.enabled --no-out-link
+    # These retain each adapter's authentication. Cross-mode semantic comparison
+    # remains the responsibility of gates.campaignGateMatrix.
+    campaignModeGates =
+      lib.mapAttrs' (
+        gate: adapters:
+          lib.nameValuePair (lib.removePrefix "gate:" gate) adapters
+      )
+      campaignModeGateAdapters;
     campaignModeLibtest = import ./phase9-campaign-mode-libtest.nix {inherit pkgs;};
     gates = rec {
       campaignGateMatrixContract = import ./phase9-campaign-gate-matrix-contract.nix {

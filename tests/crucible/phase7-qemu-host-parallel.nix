@@ -10,7 +10,7 @@
   campaignRustRuntime = import ./_campaign-rust-runtime.nix {inherit pkgs lib;};
   source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
-  scheduler = builtins.readFile ../../crates/crucible/src/scheduler/event_log/backend_loop.rs;
+  scheduler = builtins.readFile ../../crates/crucible/src/scheduler/event_log/backend_loop/host_concurrent.rs;
   lifecycle = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/quantum_loop.rs;
   lifecycleConfig = builtins.readFile ../../crates/crucible-api/src/vm_lifecycle/config.rs;
   nodeSet = builtins.readFile ../../crates/crucible-qemu/src/node_set.rs;
@@ -19,10 +19,16 @@
   inherit (import ./_lib.nix {inherit lib;}) failuresFor hasInfix;
 
   failures =
-    failuresFor "crates/crucible/src/scheduler/event_log/backend_loop.rs" scheduler [
+    failuresFor "crates/crucible/src/scheduler/event_log/backend_loop/host_concurrent.rs" scheduler [
       {
-        label = "speculative scheduler preparation";
-        needle = ".prepare_concurrent_quantum(request)?";
+        label = "dispatch-contract-bound speculative scheduler preparation";
+        needle = builtins.concatStringsSep "\n" [
+          ".prepare_host_concurrent_quantum_for_contract("
+          "                request.clone(),"
+          "                maximum_runs,"
+          "                dispatch_contract,"
+          "            )?"
+        ];
       }
       {
         label = "backend completion precedes scheduler commit";
