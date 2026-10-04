@@ -1732,11 +1732,26 @@ in
                           "--output-dir", str(source_root / f"{name}-proof"),
                       ], cwd=entry["directory"], env=environment,
                          stdout=result, check=True)
+              with (source_root / "control-continuation.result").open("w") as result:
+                  subprocess.run([
+                      sys.executable,
+                      "${../../tests/crucible/phase6-native-control-continuation.py}",
+                      "--qemu-source", str(source_root),
+                      "--output-dir", str(source_root / "control-continuation-proof"),
+                      "--case", "all",
+                  ], cwd=entry["directory"], env=environment,
+                     stdout=result, check=True)
               PYTHON
               cat net-output-stop.result lifecycle-projection.result \
                 control-deferred.result control-observer.result control-delivery.result \
                 stopped-control-rearm.result template-control-drain.result net-stop-chain.result \
-                aio-fork-custody.result stop-context.result
+                aio-fork-custody.result stop-context.result control-continuation.result
+              for case in reader-before-park reader-after-park reader-after-handoff; do
+                grep -Fxq "NATIVE_CONTROL_DELIVERY_PASS case=$case" control-continuation.result
+              done
+              test "$(grep -c '^NATIVE_CONTROL_DELIVERY_PASS ' control-continuation.result)" -eq 3
+              grep -Fxq 'CONDITIONAL_SETTLEMENT_REFUSAL_PASS: modeled bridge only; no native retry contract' \
+                control-continuation.result
               grep -Fxq 'PASS production TX/stop/clock/RR: batches, race, completion settlement, paused ack, explicit retry' \
                 net-output-stop.result
               grep -Fxq 'PASS lifecycle production encode/rebind: full save retained, canonical custody independence, guest frontier sensitivity, invalid rebind refusal' \
@@ -4281,7 +4296,8 @@ in
                 "$out/share/aos/crucible/procfd-flags.compile-command.json"
               for name in net-output-stop lifecycle-projection control-deferred \
                 control-observer control-delivery stopped-control-rearm \
-                template-control-drain net-stop-chain aio-fork-custody stop-context; do
+                template-control-drain net-stop-chain aio-fork-custody stop-context \
+                control-continuation; do
                 install -m 644 "$name.result" \
                   "$out/share/aos/crucible/$name.result"
                 install -m 644 "$name-proof/compile-command.json" \
