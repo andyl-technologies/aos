@@ -301,7 +301,6 @@ fn journal_inspection_accepts_large_native_frames_and_rejects_corruption() {
         )
         .unwrap_err();
     assert!(failure.to_string().contains("fixture stops"));
-    drop(activation);
 
     let before = std::fs::read(&path).unwrap();
     assert!(before.len() > aos_ability_runtime::journal::JournalLimits::default().max_body_bytes);
@@ -309,6 +308,20 @@ fn journal_inspection_accepts_large_native_frames_and_rejects_corruption() {
         aos_ability_runtime::activation::inspect(
             &path,
             aos_ability_runtime::journal::JournalLimits::default(),
+        )
+        .is_err()
+    );
+    assert!(
+        aos_ability_runtime::activation::inspect(
+            &path,
+            aos_package::deployment::transaction::journal_limits(),
+        )
+        .is_err()
+    );
+    assert!(
+        Activation::open(
+            &path,
+            aos_package::deployment::transaction::journal_limits(),
         )
         .is_err()
     );
@@ -334,7 +347,9 @@ fn journal_inspection_accepts_large_native_frames_and_rejects_corruption() {
         json!(identity)
     );
     assert_eq!(inspection["liveStateVerified"], false);
+    assert_eq!(inspection["readConsistency"], "observed-prefix");
     assert_eq!(std::fs::read(&path).unwrap(), before);
+    drop(activation);
 
     // A complete frame remains subject to its checksum even with the writer's larger budget.
     let mut corrupt = before;

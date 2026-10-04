@@ -26,8 +26,8 @@ use serde_json::Value;
 
 pub use controller::Activation;
 pub use inspection::{
-    ActivationInspection, CompletedTransaction, DispatchIdentity, InspectionRecord, RetainedEffect,
-    inspect,
+    ActivationInspection, ActivationObservation, CompletedTransaction, DispatchIdentity,
+    InspectionRecord, RetainedEffect, inspect, observe,
 };
 pub use observer::{Boundary, BoundaryEvent, BoundaryObserver};
 #[cfg(target_os = "linux")]
