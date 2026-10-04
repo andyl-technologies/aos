@@ -330,6 +330,18 @@ impl<S: DeploymentStore> Transactions<S> {
         self.adapter
             .artifacts_mut()
             .retain_generation(&identity, &pending.deployment)?;
+        self.activate_pending(cancellation).map(Some)
+    }
+
+    // Fresh preparation already admitted and durably retained every input.
+    // Recovery enters through resume, which repeats that verification first.
+    fn activate_pending(&mut self, cancellation: &CancellationToken) -> Result<Generation> {
+        let pending = self
+            .state
+            .pending
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("prepared generation is absent"))?;
+        let identity = format!("package-{}-{}", pending.sequence, pending.deployment.id()?);
         self.journal.ensure_capacity(1)?;
         let outputs = self.activation.activate_once(
             &identity,
@@ -344,7 +356,9 @@ impl<S: DeploymentStore> Transactions<S> {
         };
         self.journal.append(&event)?;
         self.state.replay(&event)?;
-        Ok(self.current().cloned())
+        self.current()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("prepared generation did not commit"))
     }
 
     /// Observes and repairs the committed deployment without publishing a generation.
@@ -471,8 +485,7 @@ impl<S: DeploymentStore> Transactions<S> {
         };
         self.journal.append(&event)?;
         self.state.replay(&event)?;
-        self.resume(cancellation)?
-            .ok_or_else(|| anyhow::anyhow!("prepared generation did not commit"))
+        self.activate_pending(cancellation)
     }
 
     /// Forgets an old generation and durably releases its artifact roots.

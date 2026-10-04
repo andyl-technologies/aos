@@ -39,8 +39,7 @@ fn effect_key(effect: &Effect) -> String {
 
 #[derive(Default)]
 struct Calls {
-    retains: usize,
-    fail_at: Option<usize>,
+    fail_preflight: bool,
 }
 
 #[derive(Clone)]
@@ -73,16 +72,21 @@ impl HandlerArtifacts for Store {
         fs::remove_file(link_path(&self.directory, &effect_key(effect)))?;
         Ok(())
     }
+
+    fn retain_batch(&mut self, effects: &[&Effect]) -> Result<()> {
+        ensure!(
+            !std::mem::take(&mut self.calls.lock().unwrap().fail_preflight),
+            "fixture interrupted before activation"
+        );
+        for effect in effects {
+            self.retain(effect)?;
+        }
+        Ok(())
+    }
 }
 
 impl DeploymentStore for Store {
     fn retain_generation(&mut self, identity: &str, deployment: &Deployment) -> Result<()> {
-        let mut calls = self.calls.lock().unwrap();
-        calls.retains += 1;
-        ensure!(
-            calls.fail_at != Some(calls.retains),
-            "fixture admission interrupted"
-        );
         for root in generation_roots(deployment) {
             self.pin(&format!("generation:{identity}:{root}"), root)?;
         }
@@ -229,7 +233,7 @@ fn retained_inventory_omits_released_generation_but_preserves_orphan_handler_and
     let (directory, store, _) = fixture();
     {
         let mut calls = store.calls.lock().unwrap();
-        calls.fail_at = Some(calls.retains + 2);
+        calls.fail_preflight = true;
     }
     let pending = deployment("pending-source", false);
     let mut transactions =
