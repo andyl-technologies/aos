@@ -10,7 +10,8 @@ testing.mkVMTest {
   name = "crucible-production-time-ownership-live";
   memory = 8192;
   timeout = 1200;
-  rootfsDeps = rootfsDeps ++ [pkgs.python3];
+  # The headless VM copies explicit closure roots, not test-script references.
+  rootfsDeps = rootfsDeps ++ [pkgs.python3 "${./phase7-time-ownership-receipts.py}"];
   testScript = ''
     set -eu
     ${attemptHostSetupScript}
