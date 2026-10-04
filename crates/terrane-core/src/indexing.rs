@@ -3,6 +3,9 @@
 pub mod carrier;
 pub mod evaluation;
 
+/// Queries immutable index rows and local occurrence routes with measured work.
+pub mod lookup;
+
 /// Maintains ordinary immutable index data through explicit measured operations.
 pub mod maintenance;
 

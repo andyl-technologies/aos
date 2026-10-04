@@ -885,6 +885,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   The actual registry check still proves 292 stable unique gates. These
   shared declarations qualify no maintenance algorithm; complete I/P/G
   and native behavior remain required.
+  Shared immutable lookup prerequisites now reserve a separate module and
+  `integration.index-query` check with three exact candidate-range,
+  local-hop occurrence/gap, and divergent-preparation/work-accounting groups.
+  The actual check rejects its missing tests after a zero-test run, rather
+  than reporting success. The declarations pass core build, strict all-target
+  Clippy/rustdoc, both mandatory formatters and the actual no-std gate.
+  They add no dependency or format and qualify no lookup implementation.
+  Indexed discovery, occurrence traversal and current checks retain DRV-24's
+  separate work obligations; the complete normative gates remain pending.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route
