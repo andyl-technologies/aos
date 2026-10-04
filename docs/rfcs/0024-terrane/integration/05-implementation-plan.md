@@ -218,7 +218,7 @@ causes. Both aggregate runs predate the new ordinary historical-calculation
 and core certified-verification cases below, so they cannot qualify them.
 No task or milestone advances.
 
-The latest combined candidate `1ee291d3a655` includes the reviewed optional
+The preceding combined candidate `1ee291d3a655` includes the reviewed optional
 runtime fixture correction `3eb44b68daea`. Both mandatory formatters and seven
 actual gates pass: `runtime-agnostic`, `bundle-verify`, `property-resolution`,
 `prov-commit-signature`, `prov-selector-presets`, `algebra-merge` and
@@ -238,6 +238,30 @@ The optional-Tokio compilation error is absent from this inventory. These
 outcomes do not establish the causes of the remaining runtime failures.
 The candidate stays isolated; no formal task merge, checkbox, milestone exit
 or freeze follows.
+
+The latest combined candidate `8fd890b79f34` includes the reviewed batched
+Tree editor `2d4bb984124f`. All 622 core tests pass with zero skips (Nextest
+run `5d07bd77-5ffe-4945-ac72-5acbf3841c00`), together with the core build,
+strict all-target core Clippy/rustdoc and both mandatory formatters. Nine
+actual gates pass: `tree-history-independence`, `tree-boundaries`,
+`runtime-agnostic`, `bundle-verify`, `property-resolution`,
+`prov-commit-signature`, `prov-selector-presets`, `algebra-merge` and
+`core-no-std`. The complete golden gate passes all 19 mandatory owning suites
+and the 30-section inventory. Both original aggregate commands finish and
+exit 1; the default aggregate stops at the three missing or unqualified native
+disclosure cases in `prov-commit-verify`. The keep-going inventory identifies
+11 failed gate dependencies: `bucket-file-layout`, `dom-dedup-scope`,
+`dom-reference-order`, `feature-matrix`, `index-generation-manifest`,
+`prov-commit-verify`, `prov-disclosure-boundary`, `ref-advance-ordering`,
+`ref-epoch-fencing`, `role-selection` and `store-idempotent-put`.
+The strengthened Tree history gate now passes all six batched-edit cases.
+Backend admission and portable reopen still return `Unsupported`; the ref
+cases retain expiry/deadline failures. The feature matrix's native Tokio
+profile records 376 passing and 29 failing tests out of 405, with no ignored
+or filtered tests; later profiles remain unqualified. These results do not
+establish the causes of the runtime failures. Source discovery and complete
+index maintenance remain subsequent prerequisites. No formal task merge,
+checkbox, milestone exit or freeze follows; the candidates stay isolated.
 
 Deployable as: a local tool that initializes a store under a `file://`
 root, commits a directory, forks and merges branches, and checks a commit
@@ -803,8 +827,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Clippy/rustdoc, both mandatory formatters and its three actual gates. The
   history gate executes all six exact selectors. The final delta adds only
   scoped-helper rustdoc and passes strict docs, both formatters and all three
-  gates again. Combined candidate `8fd890b79f34` is undergoing full trunk
-  qualification; no formal task merge or complete index-maintenance claim follows.
+  gates again. Combined candidate `8fd890b79f34` passes all 622 core tests,
+  strict core Clippy/rustdoc, both mandatory formatters and nine actual gates,
+  including all six strengthened Tree selectors. Its full current-trunk
+  aggregate exits 1 with 11 failed gate dependencies, listed in T1's status.
+  No formal task merge or complete index-maintenance claim follows.
   The following pure prerequisite compares old/new immutable source frontiers,
   skips equal subtrees and expands changed, added and removed graft populations
   with distinct local-hop occurrences. It must report independently checked
