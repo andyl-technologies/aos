@@ -289,3 +289,162 @@ fn committed_guest_source_is_discovered_before_global_peer_frontier() -> TestRes
     );
     Ok(())
 }
+
+#[test]
+fn public_driver_stops_at_committed_guest_source_before_another_quantum() -> TestResult {
+    let input = held_source_input()?;
+    let directory = tempfile::tempdir()?;
+    let root = directory.path().join("root.img");
+    std::fs::write(&root, b"scripted immutable root")?;
+    let config = ProductionVmLifecycleConfig::new(
+        "scripted-qemu",
+        "scripted-plugin",
+        "scripted-kernel",
+        root,
+        directory.path().join("runs"),
+    )
+    .with_run_ceiling_ticks(100_000)
+    .with_quantum_budget(5_000)
+    .with_maximum_host_workers(2);
+    let mut owner = build_production_vm_lifecycle_loop_with_launcher(
+        &input.scenario().scenario_def(),
+        input.scenario(),
+        &config,
+        HeldSourceLauncher {
+            world: input.scenario().world().clone(),
+        },
+    )?;
+
+    let result = {
+        let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+        QemuFreshModeledDriver::new().drive(
+            &mut lifecycle,
+            &input,
+            &context(),
+            QemuFreshStartMaterialization::genesis(),
+        )
+    };
+    QuantumLoop::shutdown(&mut owner)?;
+    let outcome = result.map_err(|error| format!("public driver failed: {error:?}"))?;
+    let QemuFreshDriveOutcome::Observation(observation) = outcome else {
+        return Err("public driver did not retain a modeled observation".into());
+    };
+    assert!(matches!(
+        observation.stop,
+        ModeledStop::Reached(StopCondition::NextChoice)
+    ));
+    assert_eq!(observation.discoveries.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn packaged_decorators_preserve_committed_source_for_complete_driver() -> TestResult {
+    let input = held_source_input()?;
+    let directory = tempfile::tempdir()?;
+    let root = directory.path().join("root.img");
+    std::fs::write(&root, b"scripted immutable root")?;
+    let config = ProductionVmLifecycleConfig::new(
+        "scripted-qemu",
+        "scripted-plugin",
+        "scripted-kernel",
+        root,
+        directory.path().join("runs"),
+    )
+    .with_run_ceiling_ticks(100_000)
+    .with_quantum_budget(5_000)
+    .with_maximum_host_workers(2);
+    let owner = build_production_vm_lifecycle_loop_with_launcher(
+        &input.scenario().scenario_def(),
+        input.scenario(),
+        &config,
+        HeldSourceLauncher {
+            world: input.scenario().world().clone(),
+        },
+    )?;
+
+    let context = context();
+    let mut owner = crate::packaged_qemu_executor::tests::committed_source::wrap_packaged_owner(
+        owner,
+        input.scenario(),
+        &context,
+    )?;
+    let result = {
+        let mut lifecycle = QemuFreshAttemptLifecycle::new(&mut owner);
+        QemuFreshModeledDriver::new().drive(
+            &mut lifecycle,
+            &input,
+            &context,
+            QemuFreshStartMaterialization::genesis(),
+        )
+    };
+    let checks = (|| -> TestResult {
+        let outcome = result.map_err(|error| format!("public driver failed: {error:?}"))?;
+        let QemuFreshDriveOutcome::Observation(observation) = outcome else {
+            return Err("public driver did not retain a modeled observation".into());
+        };
+        assert!(matches!(
+            observation.stop,
+            ModeledStop::Reached(StopCondition::NextChoice)
+        ));
+        assert_eq!(observation.discoveries.len(), 1);
+        assert_eq!(observation.terminal_at, VirtualTime { ticks: 0 });
+        let pending = owner.drain_pending_selectable_requests()?;
+        assert_eq!(pending.len(), 1);
+        assert!(owner.pending_selectable_request_is_committed_source(&pending[0])?);
+        assert_eq!(
+            owner.pending_selectable_request_time(&pending[0])?,
+            VirtualTime { ticks: 100 }
+        );
+        let discovery = resolve_guest_selectable(
+            input.lineage().scenario(),
+            input.scenario(),
+            pending[0].node(),
+            pending[0].pending(),
+        )?;
+        assert_eq!(
+            observation.discoveries.values().collect::<Vec<_>>(),
+            vec![&discovery]
+        );
+        let wrong_node = crucible_qemu::QemuNodeSelectablePendingRequest::from_test_parts(
+            node("router-b"),
+            pending[0].pending().clone(),
+        );
+        assert!(!owner.pending_selectable_request_is_committed_source(&wrong_node)?);
+        for (sequence, trap_ps, address) in [(10, 50, 0x1000), (9, 50, 0x2000), (9, 5_000, 0x1000)]
+        {
+            let replaced = crucible_qemu::QemuNodeSelectablePendingRequest::from_test_parts(
+                pending[0].node().clone(),
+                SelectablePlanPendingRequest::new(
+                    SelectionRequest::new(
+                        sequence,
+                        "product.recovery",
+                        "routing-epoch-7",
+                        None,
+                        256,
+                    )?,
+                    1,
+                    trap_ps,
+                    0,
+                    address,
+                ),
+            );
+            assert!(!owner.pending_selectable_request_is_committed_source(&replaced)?);
+        }
+        assert_eq!(owner.drain_pending_selectable_requests()?, pending);
+        let blocked = owner
+            .drive_quantum(QuantumRequest {
+                configuration: observation.configuration,
+                control: Vec::new(),
+            })
+            .err()
+            .ok_or("held source allowed a second RUN")?;
+        assert!(
+            blocked
+                .to_string()
+                .contains("held physical RUNs must settle before queued network release")
+        );
+        Ok(())
+    })();
+    QemuFreshAttemptLifecycleOwner::shutdown(&mut owner)?;
+    checks
+}

@@ -239,6 +239,14 @@ where
         self.lifecycle.pending_selectable_request_time(pending)
     }
 
+    fn pending_selectable_request_is_committed_source(
+        &self,
+        pending: &QemuNodeSelectablePendingRequest,
+    ) -> Result<bool, SchedulerError> {
+        self.lifecycle
+            .pending_selectable_request_is_committed_source(pending)
+    }
+
     fn apply_selectable_reply(
         &mut self,
         parent: &Configuration,

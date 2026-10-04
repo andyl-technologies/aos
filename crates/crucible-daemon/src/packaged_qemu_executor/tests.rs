@@ -39,6 +39,8 @@ use crucible_qemu::{
     QemuPreparedRunDirectory,
 };
 
+pub(crate) mod committed_source;
+
 use super::*;
 use crate::{
     AssignmentLedger, AttemptExecutionContext, AttemptExecutionKey, AttemptExecutionOrigin,
@@ -1153,6 +1155,19 @@ impl QemuFreshAttemptLifecycleOwner for ControlledLifecycle {
         panic!("controlled lifecycle does not handle selections")
     }
 
+    fn pending_selectable_request_is_committed_source(
+        &self,
+        pending: &QemuNodeSelectablePendingRequest,
+    ) -> Result<bool, SchedulerError> {
+        match pending.node().name.as_str() {
+            "committed-node" => Ok(true),
+            "refused-node" => Err(SchedulerError::BoundaryViolation {
+                message: String::from("controlled committed-source refusal"),
+            }),
+            _ => Ok(false),
+        }
+    }
+
     fn apply_selectable_reply(
         &mut self,
         _parent: &crucible::Configuration,
@@ -1315,6 +1330,47 @@ fn packaged_status_lifecycle_delegates_execution_evidence_and_errors() {
             .expect("controlled marker releases"),
         vec![(marker_node, marker.marker, selected)]
     );
+
+    // This provider tests transparent bool/error forwarding only. The public
+    // production-owner regression authenticates the actual opaque held stop.
+    for (name, expected) in [("committed-node", true), ("ordinary-node", false)] {
+        let pending = QemuNodeSelectablePendingRequest::from_test_parts(
+            NodeId {
+                name: name.to_owned(),
+            },
+            crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest::new(
+                crucible_protocol::SelectionRequest::new(9, "test.choice", "test", None, 256)
+                    .expect("delegation request"),
+                1,
+                50,
+                0,
+                0x1000,
+            ),
+        );
+        assert_eq!(
+            lifecycle
+                .pending_selectable_request_is_committed_source(&pending)
+                .expect("delegated source query"),
+            expected
+        );
+    }
+    let refused = QemuNodeSelectablePendingRequest::from_test_parts(
+        NodeId {
+            name: String::from("refused-node"),
+        },
+        crucible_protocol::selectable_catalog_plan::SelectablePlanPendingRequest::new(
+            crucible_protocol::SelectionRequest::new(9, "test.choice", "test", None, 256)
+                .expect("delegation request"),
+            1,
+            50,
+            0,
+            0x1000,
+        ),
+    );
+    let refusal = lifecycle
+        .pending_selectable_request_is_committed_source(&refused)
+        .expect_err("original source-query refusal must propagate");
+    assert_eq!(refusal.to_string(), "controlled committed-source refusal");
 
     let requested_node = NodeId {
         name: String::from("requested-node"),
