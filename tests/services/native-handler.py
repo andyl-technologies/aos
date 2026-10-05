@@ -864,19 +864,201 @@ class NativeHandlerTests(unittest.TestCase):
             value = service()
             first = handler_module.Handler(invocation("serviceManagement", "realize", value), "unused", units, state)
             commands = []
-            def manager(*args, **kwargs):
-                commands.append(args)
-                return subprocess.CompletedProcess(args, 0, "active\n", "")
+            manager = active_bus_manager(commands)
             first.manager = manager
             first.service("apply")
             self.assertIn(("start", "example.service"), commands)
+            value["lifecycle"]["description"] = "Updated example service"
+            commands.clear()
             second = handler_module.Handler(invocation("serviceManagement", "realize", value, "changed", {}), "unused", units, state)
             second.manager = manager
             second.service("apply")
-            self.assertIn(("reload-or-restart", "example.service"), commands)
+            self.assertEqual(commands.count(("reload-or-restart", "example.service")), 1)
             self.assertEqual(second.service("observe")["status"], "current")
             second.service("remove")
             self.assertFalse((units / "example.service").exists())
+
+    def test_dependency_only_revision_keeps_identical_service_running(self):
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            state = Path(root) / "state"
+            value = dict(service(), configurationGeneration="/var/lib/aos/configuration-lowers/first/etc.erofs")
+            calls = []
+            first = handler_module.Handler(
+                invocation("serviceManagement", "realize", value), "unused", units, state,
+            )
+            first.manager = active_bus_manager(calls)
+            first.service("apply")
+            original_unit = (units / "example.service").read_bytes()
+            original_links = dict(first.receipt["links"])
+
+            changed = dict(value, configurationGeneration="/var/lib/aos/configuration-lowers/second/etc.erofs")
+            second = handler_module.Handler(
+                invocation("serviceManagement", "realize", changed, "dependency-changed", {}),
+                "unused", units, state,
+            )
+            calls.clear()
+            second.manager = active_bus_manager(calls)
+            second.service("apply")
+
+            self.assertEqual((units / "example.service").read_bytes(), original_unit)
+            self.assertEqual(second.receipt["links"], original_links)
+            self.assertFalse(any(call[0] in {"start", "restart", "reload", "reload-or-restart"} for call in calls))
+            self.assertFalse(second.receipt["pending"])
+            self.assertEqual(second.receipt["revision"], "dependency-changed")
+            self.assertEqual(second.service("observe")["status"], "current")
+
+    def test_restart_token_requests_one_lifecycle_dispatch_without_unit_changes(self):
+        for change, operation in [("restart", "restart"), ("reload", "reload-or-restart")]:
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as root:
+                units = Path(root) / "units"
+                state = Path(root) / "state"
+                value = service()
+                value["lifecycle"].update(configuration_change_action=change, restart_token="first")
+                calls = []
+                first = handler_module.Handler(
+                    invocation("serviceManagement", "realize", value), "unused", units, state,
+                )
+                first.manager = active_bus_manager(calls)
+                first.service("apply")
+                original_unit = (units / "example.service").read_bytes()
+
+                value["lifecycle"]["restart_token"] = "second"
+                changed = handler_module.Handler(
+                    invocation("serviceManagement", "realize", value, "token-changed", {}),
+                    "unused", units, state,
+                )
+                calls.clear()
+                changed.manager = active_bus_manager(calls)
+                changed.service("apply")
+
+                self.assertEqual((units / "example.service").read_bytes(), original_unit)
+                self.assertEqual([call for call in calls if call[0] in {"start", "restart", "reload", "reload-or-restart"}], [(operation, "example.service")])
+                self.assertEqual(changed.service("observe")["status"], "current")
+
+    def test_interrupted_unit_write_retains_the_required_configuration_dispatch(self):
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            state = Path(root) / "state"
+            value = service()
+            calls = []
+            first = handler_module.Handler(
+                invocation("serviceManagement", "realize", value), "unused", units, state,
+            )
+            first.manager = active_bus_manager(calls)
+            first.service("apply")
+
+            value["lifecycle"]["description"] = "Changed service before interrupted publication"
+            changed_invocation = invocation("serviceManagement", "realize", value, "changed", {})
+            changed = handler_module.Handler(changed_invocation, "unused", units, state)
+            changed.manager = active_bus_manager(calls)
+            original_write = handler_module.durable_write
+            def interrupted_write(path, contents, *args, **kwargs):
+                original_write(path, contents, *args, **kwargs)
+                if Path(path) == units / "example.service":
+                    raise RuntimeError("unit publication reply unavailable")
+
+            calls.clear()
+            with patch.object(handler_module, "durable_write", side_effect=interrupted_write):
+                with self.assertRaisesRegex(RuntimeError, "publication reply unavailable"):
+                    changed.service("apply")
+            self.assertTrue(changed.receipt["pending"])
+            self.assertFalse(any(call[0] in {"start", "restart", "reload", "reload-or-restart"} for call in calls))
+
+            recovered = handler_module.Handler(changed_invocation, "unused", units, state)
+            recovered.manager = active_bus_manager(calls)
+            self.assertEqual(recovered.service("observe")["status"], "retry-safe")
+            recovered.service("apply")
+
+            self.assertEqual(calls.count(("reload-or-restart", "example.service")), 1)
+            self.assertFalse(recovered.receipt["pending"])
+            self.assertEqual(recovered.service("observe")["status"], "current")
+
+    def test_interrupted_configuration_only_update_retains_one_required_reload(self):
+        for mutation in ["restart_token", "dependencyValues"]:
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as root:
+                units = Path(root) / "units"
+                state = Path(root) / "state"
+                value = service()
+                value["lifecycle"]["restart_token"] = "first"
+                value["dependencyValues"] = [{"digest": "first"}]
+                calls = []
+                first = handler_module.Handler(
+                    invocation("serviceManagement", "realize", value), "unused", units, state,
+                )
+                first.manager = active_bus_manager(calls)
+                first.service("apply")
+                original_unit = (units / "example.service").read_bytes()
+                original_configuration = dict(first.receipt["configuration"])
+
+                if mutation == "restart_token":
+                    value["lifecycle"]["restart_token"] = "second"
+                else:
+                    value["dependencyValues"] = [{"digest": "second"}]
+                changed_invocation = invocation("serviceManagement", "realize", value, "changed", {})
+                changed = handler_module.Handler(changed_invocation, "unused", units, state)
+                changed.manager = active_bus_manager(calls)
+                original_write = handler_module.durable_write
+
+                def interrupted_write(path, contents, *args, **kwargs):
+                    original_write(path, contents, *args, **kwargs)
+                    if Path(path) == units / "example.service":
+                        raise RuntimeError("configuration publication reply unavailable")
+
+                calls.clear()
+                with patch.object(handler_module, "durable_write", side_effect=interrupted_write):
+                    with self.assertRaisesRegex(RuntimeError, "publication reply unavailable"):
+                        changed.service("apply")
+
+                self.assertEqual((units / "example.service").read_bytes(), original_unit)
+                self.assertTrue(changed.receipt["pending"])
+                self.assertEqual(changed.receipt["previous_configuration"], original_configuration)
+                self.assertNotEqual(changed.receipt["configuration"], original_configuration)
+                self.assertFalse(any(call[0] in {"start", "restart", "reload", "reload-or-restart"} for call in calls))
+
+                recovered = handler_module.Handler(changed_invocation, "unused", units, state)
+                recovered.manager = active_bus_manager(calls)
+                self.assertEqual(recovered.receipt["previous_configuration"], original_configuration)
+                self.assertEqual(recovered.service("observe")["status"], "retry-safe")
+                recovered.service("apply")
+
+                self.assertEqual([call for call in calls if call[0] in {"start", "restart", "reload", "reload-or-restart"}], [("reload-or-restart", "example.service")])
+                self.assertFalse(recovered.receipt["pending"])
+                self.assertEqual(recovered.service("observe")["status"], "current")
+
+    def test_inactive_ordinary_service_restores_with_start_without_configuration_restart(self):
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            state = Path(root) / "state"
+            value = service()
+            calls = []
+            first = handler_module.Handler(
+                invocation("serviceManagement", "realize", value), "unused", units, state,
+            )
+            first.manager = active_bus_manager(calls)
+            first.service("apply")
+
+            restored = handler_module.Handler(
+                invocation("serviceManagement", "realize", value, "first", {}),
+                "unused", units, state,
+            )
+            def inactive_manager(*args, **kwargs):
+                calls.append(args)
+                output = "inactive\n" if "--value" in args else (
+                    "ActiveState=inactive\nResult=success\n"
+                    "ExecMainStartTimestampMonotonic=100\nExecMainExitTimestampMonotonic=150\n"
+                )
+                return subprocess.CompletedProcess(args, 0, output, "")
+
+            calls.clear()
+            restored.manager = inactive_manager
+            self.assertEqual(restored.service("observe")["status"], "retry-safe")
+            calls.clear()
+            restored.service("apply")
+
+            self.assertEqual([call for call in calls if call[0] in {"start", "restart", "reload", "reload-or-restart"}], [("start", "example.service")])
+            restored.manager = active_bus_manager(calls)
+            self.assertEqual(restored.service("observe")["status"], "current")
 
     def test_image_owned_service_is_never_started(self):
         with tempfile.TemporaryDirectory() as root:
@@ -918,6 +1100,21 @@ class NativeHandlerTests(unittest.TestCase):
             self.assertEqual(first.service("observe")["status"], "current")
             self.assertEqual(calls, before)
 
+            dependency_changed = dict(value, configurationGeneration="/var/lib/aos/configuration-lowers/next/etc.erofs")
+            unchanged = handler_module.Handler(
+                invocation("serviceManagement", "realize", dependency_changed, "dependency-changed", {}),
+                "unused", units, state,
+            )
+            unchanged.manager = manager
+            before_dispatches = [call for call in calls if call[0] in {"start", "restart", "reload", "reload-or-restart"}]
+            unchanged.service("apply")
+            self.assertEqual(
+                [call for call in calls if call[0] in {"start", "restart", "reload", "reload-or-restart"}],
+                before_dispatches,
+            )
+            self.assertEqual(unchanged.service("observe")["status"], "current")
+            self.assertFalse(unchanged.receipt["pending"])
+
             value["lifecycle"]["description"] = "Updated advisory report"
             changed = handler_module.Handler(
                 invocation("serviceManagement", "realize", value, "changed", {}),
@@ -931,6 +1128,70 @@ class NativeHandlerTests(unittest.TestCase):
 
             (units / "example.service").write_text("foreign unit")
             self.assertEqual(changed.service("observe")["status"], "indeterminate")
+
+    def test_reenabled_failed_enqueue_dispatches_once_for_each_startup_control(self):
+        for startup_control in ["enabled", "auto_start"]:
+            with self.subTest(startup_control=startup_control), tempfile.TemporaryDirectory() as root:
+                units = Path(root) / "units"
+                state = Path(root) / "state"
+                value = service()
+                value["lifecycle"].update(
+                    execution_model="oneshot", start_mode="enqueue",
+                    configuration_change_action="restart", remain_after_exit=True,
+                )
+                calls = []
+
+                def failed_manager(*args, **kwargs):
+                    calls.append(args)
+                    output = "failed\n" if "--value" in args else (
+                        "ActiveState=failed\nResult=exit-code\n"
+                        "ExecMainStartTimestampMonotonic=100\nExecMainExitTimestampMonotonic=150\n"
+                    )
+                    return subprocess.CompletedProcess(args, 0, output, "")
+
+                initial = handler_module.Handler(
+                    invocation("serviceManagement", "realize", value), "unused", units, state,
+                )
+                initial.manager = failed_manager
+                initial.service("apply")
+                self.assertEqual(initial.service("observe")["status"], "current")
+                original_unit = (units / "example.service").read_bytes()
+
+                disabled_value = dict(value, **{startup_control: False})
+                disabled = handler_module.Handler(
+                    invocation("serviceManagement", "realize", disabled_value, "disabled", {}),
+                    "unused", units, state,
+                )
+                disabled.manager = failed_manager
+                calls.clear()
+                disabled.service("apply")
+                self.assertFalse(any(call[0] in {"start", "restart", "reload", "reload-or-restart"} for call in calls))
+                self.assertEqual((units / "example.service").read_bytes(), original_unit)
+
+                enabled = handler_module.Handler(
+                    invocation("serviceManagement", "realize", value, "reenabled", {}),
+                    "unused", units, state,
+                )
+                enabled.manager = failed_manager
+                calls.clear()
+                enabled.service("apply")
+                self.assertEqual(
+                    [call for call in calls if call[0] in {"start", "restart", "reload", "reload-or-restart"}],
+                    [("restart", "--no-block", "example.service")],
+                )
+                self.assertEqual((units / "example.service").read_bytes(), original_unit)
+                self.assertEqual(enabled.service("observe")["status"], "current")
+
+                unchanged_value = dict(value, configurationGeneration="/var/lib/aos/configuration-lowers/next/etc.erofs")
+                unchanged = handler_module.Handler(
+                    invocation("serviceManagement", "realize", unchanged_value, "dependency-changed", {}),
+                    "unused", units, state,
+                )
+                unchanged.manager = failed_manager
+                calls.clear()
+                unchanged.service("apply")
+                self.assertFalse(any(call[0] in {"start", "restart", "reload", "reload-or-restart"} for call in calls))
+                self.assertEqual(unchanged.service("observe")["status"], "current")
 
     def test_interrupted_enqueue_requires_actual_new_execution_evidence(self):
         for start_mode in ("wait", "enqueue"):
