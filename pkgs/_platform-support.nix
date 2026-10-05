@@ -883,6 +883,7 @@ let
     "libs/_libfontenc.nix" = "cross-build-helper";
     "libs/_libjxl-sources.nix" = "target-independent-source";
     "libs/_librsvg-sources.nix" = "target-independent-source";
+    "libs/_mesa-rust-sources.nix" = "target-independent-source";
     "libs/_libxcb.nix" = "cross-build-helper";
     "libs/_sharp-libheif.nix" = "cross-build-helper";
     "libs/_sharp-ultrahdr.nix" = "cross-build-helper";
