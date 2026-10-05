@@ -148,6 +148,7 @@ assert builtins.elem caseProfile ["full" "single-guest"]; let
     export CRUCIBLE_ATOMIC_WORLD_CHECKPOINTS=/tmp/checkpoints
     export CRUCIBLE_ATOMIC_WORLD_UID=65534
     export CRUCIBLE_ATOMIC_WORLD_GID=65534
+    export CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS=256
 
     run_case() {
       name="$1"
