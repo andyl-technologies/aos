@@ -506,7 +506,11 @@ fn coordination_digest(
     value: &LifecycleCoordinationTransactionV1,
 ) -> LifecycleCoordinationRecordDigestV1 {
     let mut hasher = Sha256::new()
-        .chain_update(b"aos.sandbox.lifecycle.coordination-record.v1\0")
+        .chain_update(if value.admitted_source().is_some() {
+            b"aos.sandbox.lifecycle.coordination-record.v2\0" as &[u8]
+        } else {
+            b"aos.sandbox.lifecycle.coordination-record.v1\0" as &[u8]
+        })
         .chain_update(value.transaction().get().as_bytes())
         .chain_update(value.sandbox().as_bytes());
     hasher = hash_live_fence(hasher, value.live_fence())
@@ -547,6 +551,9 @@ fn coordination_digest(
         );
     }
     hasher = hasher.chain_update([value.phase() as u8]);
+    if let Some(source) = value.admitted_source() {
+        hasher = hasher.chain_update(source.commitment().as_bytes());
+    }
     LifecycleCoordinationRecordDigestV1(ObjectDigest::from_bytes(hasher.finalize().into()))
 }
 
@@ -603,7 +610,7 @@ fn boot_digest(value: &LifecycleBootInventoryV1) -> LifecycleBootRecordDigestV1 
     LifecycleBootRecordDigestV1(ObjectDigest::from_bytes(hasher.finalize().into()))
 }
 
-fn hash_live_fence(mut hasher: Sha256, fence: LiveRuntimeFenceV1) -> Sha256 {
+pub(super) fn hash_live_fence(mut hasher: Sha256, fence: LiveRuntimeFenceV1) -> Sha256 {
     let desired = fence.desired();
     hasher.update([desired.resource().code()]);
     hasher.update(desired.resource().as_bytes());

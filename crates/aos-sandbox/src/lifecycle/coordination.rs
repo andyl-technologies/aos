@@ -302,6 +302,176 @@ pub struct LifecycleCoordinationTransactionV1 {
     dataset_transaction: Option<LifecycleDatasetTransactionDigestV1>,
     thaw_compensation: LifecycleThawCompensationDigestV1,
     phase: LifecycleCoordinationPhaseV1,
+    admitted_source: Option<LifecycleSnapshotAdmittedSourceV2>,
+}
+
+/// Retains historical admitted Snapshot DATA, never a live provider permit.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct LifecycleSnapshotAdmittedSourceV2 {
+    original: super::LifecycleOperationV1,
+    record: LifecycleRecordDigestV1,
+    projection_root: ObjectDigest,
+    commitment: ObjectDigest,
+}
+
+impl LifecycleSnapshotAdmittedSourceV2 {
+    /// Checks the closed D3 shape and its fixed-width size before any copy.
+    pub(super) fn preflight_original(
+        original: &super::LifecycleOperationV1,
+    ) -> Result<usize, LifecycleModelError> {
+        let length = super::format::snapshot_admitted_record_encoded_length_v2(original)?;
+        length
+            .checked_add(100)
+            .filter(|total| {
+                *total <= super::auxiliary_payload::MAXIMUM_LIFECYCLE_AUXILIARY_PAYLOAD_BYTES
+            })
+            .ok_or(LifecycleModelError::InvalidModel)?;
+        Ok(length)
+    }
+
+    pub(super) fn capture(
+        original: super::LifecycleOperationV1,
+        record: LifecycleRecordDigestV1,
+        projection_root: ObjectDigest,
+        transaction: LifecycleTransactionIdV1,
+    ) -> Result<Self, LifecycleModelError> {
+        let length = Self::preflight_original(&original)?;
+        let super::LifecycleIntentV1::Snapshot {
+            snapshot, fence, ..
+        } = original.intent()
+        else {
+            return Err(LifecycleModelError::InvalidModel);
+        };
+        if record.digest().as_bytes() == &[0; 32] || projection_root.as_bytes() == &[0; 32] {
+            return Err(LifecycleModelError::InvalidModel);
+        }
+        let encoded = super::encode_operation_record_v1(&original)?;
+        if encoded.len() != length || super::format::record_digest(&encoded)? != record {
+            return Err(LifecycleModelError::InvalidModel);
+        }
+        let commitment = snapshot_admitted_source_commitment(
+            record,
+            projection_root,
+            transaction,
+            *snapshot,
+            *fence,
+        );
+        if commitment.as_bytes() == &[0; 32] {
+            return Err(LifecycleModelError::InvalidModel);
+        }
+        Ok(Self {
+            original,
+            record,
+            projection_root,
+            commitment,
+        })
+    }
+
+    pub(super) fn original(&self) -> &super::LifecycleOperationV1 {
+        &self.original
+    }
+
+    pub(super) fn encoded_length(&self) -> Result<usize, LifecycleModelError> {
+        Self::preflight_original(&self.original)
+    }
+
+    pub(super) const fn record(&self) -> LifecycleRecordDigestV1 {
+        self.record
+    }
+
+    pub(super) const fn projection_root(&self) -> ObjectDigest {
+        self.projection_root
+    }
+
+    pub(super) const fn commitment(&self) -> ObjectDigest {
+        self.commitment
+    }
+
+    /// Compares immutable admission separately from the mutable progress digest.
+    pub(super) fn require_current(
+        &self,
+        transaction: &LifecycleCoordinationTransactionV1,
+        current: &super::LifecycleOperationV1,
+    ) -> Result<(), LifecycleModelError> {
+        let super::LifecycleIntentV1::Snapshot {
+            sandbox,
+            snapshot,
+            fence,
+            ..
+        } = self.original.intent()
+        else {
+            return Err(LifecycleModelError::InvalidTransition);
+        };
+        let root = LifecycleResourceV1::Sandbox(*sandbox);
+        let non_root = self
+            .original
+            .expectations()
+            .iter()
+            .map(|expectation| expectation.resource())
+            .filter(|resource| *resource != root);
+        let non_root_count = non_root.clone().count();
+        let graph_matches = transaction.dependencies().len() == non_root_count + 1
+            && transaction.dependencies().binary_search(&root).is_ok()
+            && non_root
+                .clone()
+                .all(|resource| transaction.dependencies().binary_search(&resource).is_ok())
+            && transaction.dependency_edges().len() == non_root_count
+            && transaction
+                .dependency_edges()
+                .iter()
+                .zip(non_root.clone())
+                .all(|(edge, resource)| edge.dependent() == resource && edge.dependency() == root)
+            && transaction
+                .postorder()
+                .iter()
+                .copied()
+                .eq(non_root.chain(std::iter::once(root)));
+        if current.operation_id() != self.original.operation_id()
+            || current.project() != self.original.project()
+            || current.caller() != self.original.caller()
+            || current.idempotency() != self.original.idempotency()
+            || current.normalized_request() != self.original.normalized_request()
+            || current.intent() != self.original.intent()
+            || current.accepted_at() != self.original.accepted_at()
+            || current.expectations() != self.original.expectations()
+            || current.record_revision() < self.original.record_revision()
+            || (current.record_revision() == self.original.record_revision()
+                && current != &self.original)
+            || transaction.sandbox() != *sandbox
+            || transaction.live_fence() != *fence
+            || !graph_matches
+            || snapshot_admitted_source_commitment(
+                self.record,
+                self.projection_root,
+                transaction.transaction(),
+                *snapshot,
+                *fence,
+            ) != self.commitment
+        {
+            return Err(LifecycleModelError::InvalidTransition);
+        }
+        Ok(())
+    }
+}
+
+fn snapshot_admitted_source_commitment(
+    record: LifecycleRecordDigestV1,
+    projection_root: ObjectDigest,
+    transaction: LifecycleTransactionIdV1,
+    snapshot: aos_sandbox_core::SnapshotId,
+    fence: LiveRuntimeFenceV1,
+) -> ObjectDigest {
+    let hasher = Sha256::new()
+        .chain_update(b"aos.sandbox.lifecycle.snapshot-admitted-source.v2\0")
+        .chain_update(record.digest().as_bytes())
+        .chain_update(projection_root.as_bytes())
+        .chain_update(transaction.get().as_bytes())
+        .chain_update(snapshot.as_bytes());
+    ObjectDigest::from_bytes(
+        super::evidence::hash_live_fence(hasher, fence)
+            .finalize()
+            .into(),
+    )
 }
 
 impl LifecycleCoordinationTransactionV1 {
@@ -404,6 +574,7 @@ impl LifecycleCoordinationTransactionV1 {
             dataset_transaction,
             thaw_compensation,
             phase,
+            admitted_source: None,
         })
     }
 
@@ -491,6 +662,19 @@ impl LifecycleCoordinationTransactionV1 {
         self.phase
     }
 
+    pub(super) fn admitted_source(&self) -> Option<&LifecycleSnapshotAdmittedSourceV2> {
+        self.admitted_source.as_ref()
+    }
+
+    pub(super) fn with_admitted_source(
+        mut self,
+        source: LifecycleSnapshotAdmittedSourceV2,
+    ) -> Result<Self, LifecycleModelError> {
+        source.require_current(&self, source.original())?;
+        self.admitted_source = Some(source);
+        Ok(self)
+    }
+
     /// Constructs a monotone evidence refinement without authorizing an effect.
     ///
     /// # Errors
@@ -549,6 +733,10 @@ impl LifecycleCoordinationTransactionV1 {
             self.thaw_compensation,
             phase,
         )
+        .map(|mut successor| {
+            successor.admitted_source = self.admitted_source.clone();
+            successor
+        })
         .map_err(|_| LifecycleModelError::InvalidTransition)
     }
 
@@ -585,6 +773,10 @@ impl LifecycleCoordinationTransactionV1 {
             self.thaw_compensation,
             self.phase,
         )
+        .map(|mut successor| {
+            successor.admitted_source = self.admitted_source.clone();
+            successor
+        })
         .map_err(|_| LifecycleModelError::InvalidTransition)
     }
 
@@ -620,6 +812,10 @@ impl LifecycleCoordinationTransactionV1 {
             self.thaw_compensation,
             self.phase,
         )
+        .map(|mut successor| {
+            successor.admitted_source = self.admitted_source.clone();
+            successor
+        })
         .map_err(|_| LifecycleModelError::InvalidTransition)
     }
 }
