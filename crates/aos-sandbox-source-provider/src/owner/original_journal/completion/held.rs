@@ -156,6 +156,28 @@ impl Drop for OriginalHeldClosureV5<'_> {
 }
 
 impl FixedProviderOwnerV1 {
+    // Checks fixed input DATA only; current-owner, readback and clock boundaries
+    // remain at each caller.
+    fn require_original_publication_inputs_v5(
+        &self,
+        publication: &[u8],
+        rows: &[u8],
+    ) -> Result<(), OriginalProducerErrorV5> {
+        if self.original_ingress.borrowed_catalog_v1()? != rows {
+            return Err(ProviderLedgerError::Equivocation.into());
+        }
+
+        let expected = self.original_ingress.borrowed_selection_v5()?
+            .original_publication_projection().1;
+        if publication.len() != super::super::super::CANONICAL_CATALOG_PUBLICATION_BYTES
+            || ObjectDigest::from_bytes(sha2::Sha256::digest(publication).into()) != expected
+        {
+            return Err(ProviderLedgerError::ConfigurationMismatch.into());
+        }
+
+        Ok(())
+    }
+
     /// Advances the hot original flight through local Held and Complete sends.
     ///
     /// The same resident signing reservoir owns both whole native results.
@@ -209,15 +231,7 @@ impl FixedProviderOwnerV1 {
         rows: &[u8],
     ) -> Progress {
         let before = (|| {
-            if self.original_ingress.borrowed_catalog_v1()? != rows {
-                return Err(ProviderLedgerError::Equivocation.into());
-            }
-            let expected = self.original_ingress.borrowed_selection_v5()?.original_publication_projection().1;
-            if publication.len() != super::super::super::CANONICAL_CATALOG_PUBLICATION_BYTES
-                || ObjectDigest::from_bytes(sha2::Sha256::digest(publication).into()) != expected
-            {
-                return Err(ProviderLedgerError::ConfigurationMismatch.into());
-            }
+            self.require_original_publication_inputs_v5(publication, rows)?;
             self.require_original_held_current_v5()?;
             self.require_original_held_readback_v5(Append::HeldStored)
         })();
@@ -423,15 +437,7 @@ impl FixedProviderOwnerV1 {
         rows: &[u8],
     ) -> Progress {
         let before = (|| {
-            if self.original_ingress.borrowed_catalog_v1()? != rows {
-                return Err(ProviderLedgerError::Equivocation.into());
-            }
-            let expected = self.original_ingress.borrowed_selection_v5()?.original_publication_projection().1;
-            if publication.len() != super::super::super::CANONICAL_CATALOG_PUBLICATION_BYTES
-                || ObjectDigest::from_bytes(sha2::Sha256::digest(publication).into()) != expected
-            {
-                return Err(ProviderLedgerError::ConfigurationMismatch.into());
-            }
+            self.require_original_publication_inputs_v5(publication, rows)?;
             self.require_original_held_current_v5()?;
             if self.original_held_v5()?.stage == HeldStageV5::Stored {
                 self.require_original_held_readback_v5(Append::HeldStored)?;
