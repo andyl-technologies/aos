@@ -36,6 +36,7 @@ fn evidence() -> BootProbe {
             transcript: String::from("original authenticated transcript"),
         },
         elapsed_us: 1,
+        diagnostics: TranscriptDiagnostics::new().finish(),
     }
 }
 
@@ -235,7 +236,12 @@ fn comparison_refusal_stays_within_existing_result_budget() {
             transcript: baseline.canonical.transcript.clone(),
         },
         elapsed_us: u128::MAX,
+        diagnostics: baseline.diagnostics.clone(),
     };
+
+    baseline.diagnostics.console_event_count = u64::MAX;
+    baseline.diagnostics.console_byte_count = u64::MAX;
+    candidate.diagnostics = baseline.diagnostics.clone();
 
     let detail = compare(&baseline, &candidate)
         .expect_err("bounded mismatched count")
@@ -280,4 +286,107 @@ fn console_digest_binds_original_owner_coordinate_and_bytes() {
         crucible::MarkerId::from_name("unexpected"),
     );
     assert!(hash_console_events(&mut blake3::Hasher::new(), &[marker], 100).is_err());
+}
+
+fn partition_evidence(raw: [u64; 2], batches: [Vec<ObservableEvent>; 2]) -> BootProbe {
+    let mut result = evidence();
+    let mut combined = blake3::Hasher::new();
+    let mut diagnostics = TranscriptDiagnostics::new();
+    for (index, events) in batches.iter().enumerate() {
+        let at = 100 * (index as u64 + 1);
+        {
+            let mut control = ControlTranscript::new(&mut combined, &mut diagnostics);
+            control.update(&at.to_le_bytes());
+            control.update(&raw[index].to_le_bytes());
+        }
+        hash_console_events(&mut combined, events, at).expect("validated console events");
+        diagnostics.record_validated_console(events);
+    }
+    result.canonical.transcript = combined.finalize().to_hex().to_string();
+    result.diagnostics = diagnostics.finish();
+    result
+}
+
+fn console(at: u64, bytes: &[u8]) -> ObservableEvent {
+    ObservableEvent::console_output(
+        VirtualTime { ticks: at },
+        NodeId {
+            name: FLIGHT_NODE_ID.to_owned(),
+        },
+        bytes,
+    )
+}
+
+#[test]
+fn diagnostic_components_distinguish_partition_bytes_and_control_without_accepting_them() {
+    let together = partition_evidence([2, 4], [vec![console(100, b"kernel boot")], vec![]]);
+    let split = partition_evidence(
+        [2, 4],
+        [vec![console(100, b"kernel")], vec![console(200, b" boot")]],
+    );
+
+    assert_eq!(together.diagnostics.control, split.diagnostics.control);
+    assert_eq!(
+        together.diagnostics.console_bytes,
+        split.diagnostics.console_bytes
+    );
+    assert_eq!(
+        together.diagnostics.console_byte_count,
+        split.diagnostics.console_byte_count
+    );
+    assert_ne!(
+        together.diagnostics.framed_console,
+        split.diagnostics.framed_console
+    );
+    assert_eq!(together.diagnostics.console_event_count, 1);
+    assert_eq!(split.diagnostics.console_event_count, 2);
+    assert!(compare(&together, &split).is_err());
+
+    let changed_bytes = partition_evidence([2, 4], [vec![console(100, b"kernel Xoot")], vec![]]);
+    assert_eq!(
+        together.diagnostics.control,
+        changed_bytes.diagnostics.control
+    );
+    assert_ne!(
+        together.diagnostics.console_bytes,
+        changed_bytes.diagnostics.console_bytes
+    );
+    assert!(compare(&together, &changed_bytes).is_err());
+
+    let changed_control = partition_evidence([2, 5], [vec![console(100, b"kernel boot")], vec![]]);
+    assert_ne!(
+        together.diagnostics.control,
+        changed_control.diagnostics.control
+    );
+    assert_eq!(
+        together.diagnostics.console_bytes,
+        changed_control.diagnostics.console_bytes
+    );
+    assert!(compare(&together, &changed_control).is_err());
+
+    let detail = compare(&together, &split)
+        .expect_err("original combined refusal")
+        .to_string();
+    assert!(detail.contains("difference=transcript_blake3"));
+    assert!(detail.contains("baseline_diagnostics=[control_blake3="));
+    assert!(detail.contains("candidate_diagnostics=[control_blake3="));
+    assert!(!detail.contains("kernel"));
+}
+
+#[test]
+fn diagnostics_cannot_change_original_success_and_forward_exact_control_bytes() {
+    let baseline = evidence();
+    let mut candidate = evidence();
+    candidate.diagnostics.control = blake3::hash(b"different diagnostic");
+    assert!(compare(&baseline, &candidate).is_ok());
+
+    let mut original = blake3::Hasher::new();
+    let mut forwarded = blake3::Hasher::new();
+    let mut diagnostics = TranscriptDiagnostics::new();
+    for bytes in [&b"original"[..], &100_u64.to_le_bytes()[..], &[][..]] {
+        original.update(bytes);
+        ControlTranscript::new(&mut forwarded, &mut diagnostics).update(bytes);
+    }
+    assert_eq!(original.finalize(), forwarded.finalize());
+    assert_eq!(original.finalize(), diagnostics.finish().control);
 }

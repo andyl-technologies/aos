@@ -8,6 +8,11 @@ use super::*;
 use crucible::{BackendError, BackendPhysicalStop, StepObservation};
 use crucible_qemu::QemuNodeError;
 
+#[path = "linux_ack_diagnostics.rs"]
+mod diagnostics;
+
+use diagnostics::{ControlTranscript, TranscriptDiagnostics, TranscriptDigests};
+
 const GRANTS: u64 = 20_000;
 const STEP_PS: u64 = 10_000_000;
 const INITIAL_PS: u64 = 8_000_000;
@@ -60,6 +65,7 @@ fn mode(value: Option<&std::ffi::OsStr>) -> Result<bool, ProbeError> {
 pub(super) struct BootProbe {
     canonical: CanonicalProbe,
     elapsed_us: u128,
+    diagnostics: TranscriptDigests,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -160,6 +166,7 @@ pub(super) fn probe(node: &mut QemuNode) -> Result<BootProbe, ProbeError> {
     let mut projected_grants = 0;
     let mut transcript = blake3::Hasher::new();
     transcript.update(b"crucible-linux-boot-ack-pair-v1\0");
+    let mut diagnostics = TranscriptDiagnostics::new();
     let started = diagnostic_clock();
 
     for index in 1..=GRANTS {
@@ -183,37 +190,41 @@ pub(super) fn probe(node: &mut QemuNode) -> Result<BootProbe, ProbeError> {
                     "unmodeled request or network output during segment",
                 ));
             }
-            // Length framing binds every original event at its exact grant,
-            // without retaining a growing transcript or logging every quantum.
-            for scalar in [
-                index,
-                target,
-                observation.reached.ticks,
-                calibration.logical_icount,
-                calibration.raw_icount,
-                u64::from(projected),
-            ] {
-                transcript.update(&scalar.to_le_bytes());
+            {
+                let mut transcript = ControlTranscript::new(&mut transcript, &mut diagnostics);
+                // Length framing binds every original event at its exact grant,
+                // without retaining a growing transcript or logging every quantum.
+                for scalar in [
+                    index,
+                    target,
+                    observation.reached.ticks,
+                    calibration.logical_icount,
+                    calibration.raw_icount,
+                    u64::from(projected),
+                ] {
+                    transcript.update(&scalar.to_le_bytes());
+                }
+                transcript.update(&[match observation.outcome {
+                    AdvanceOutcome::ReachedHorizon => 0,
+                    AdvanceOutcome::Paused { .. } => 1,
+                }]);
+                transcript.update(&[match observation.physical_stop {
+                    BackendPhysicalStop::Horizon => 0,
+                    BackendPhysicalStop::UnclassifiedPause => 1,
+                    BackendPhysicalStop::Idle => 2,
+                    _ => return Err(ProbeError::InvalidEvidence("unmodeled physical output")),
+                }]);
+                transcript.update(&idle.current_icount.retired.to_le_bytes());
+                transcript.update(&[u8::from(idle.next_deadline.is_some())]);
+                transcript.update(
+                    &idle
+                        .next_deadline
+                        .map_or(0, |deadline| deadline.retired)
+                        .to_le_bytes(),
+                );
             }
-            transcript.update(&[match observation.outcome {
-                AdvanceOutcome::ReachedHorizon => 0,
-                AdvanceOutcome::Paused { .. } => 1,
-            }]);
-            transcript.update(&[match observation.physical_stop {
-                BackendPhysicalStop::Horizon => 0,
-                BackendPhysicalStop::UnclassifiedPause => 1,
-                BackendPhysicalStop::Idle => 2,
-                _ => return Err(ProbeError::InvalidEvidence("unmodeled physical output")),
-            }]);
-            transcript.update(&idle.current_icount.retired.to_le_bytes());
-            transcript.update(&[u8::from(idle.next_deadline.is_some())]);
-            transcript.update(
-                &idle
-                    .next_deadline
-                    .map_or(0, |deadline| deadline.retired)
-                    .to_le_bytes(),
-            );
             hash_console_events(&mut transcript, &events, observation.reached.ticks)?;
+            diagnostics.record_validated_console(&events);
             previous = calibration;
             if projected || observation.reached.ticks == target {
                 projected_grants += u64::from(projected);
@@ -241,6 +252,7 @@ pub(super) fn probe(node: &mut QemuNode) -> Result<BootProbe, ProbeError> {
             transcript: transcript.finalize().to_hex().to_string(),
         },
         elapsed_us,
+        diagnostics: diagnostics.finish(),
     })
 }
 
@@ -361,9 +373,11 @@ fn compare(baseline: &BootProbe, candidate: &BootProbe) -> Result<(), ProbeError
             .unwrap_or_else(|| String::from("transcript_blake3"))
         };
         return Err(ProbeError::CanonicalMismatch(format!(
-            "fresh Linux runs changed canonical segment evidence; difference={difference}; baseline=[{}]; candidate=[{}]",
+            "fresh Linux runs changed canonical segment evidence; difference={difference}; baseline=[{}]; candidate=[{}]; baseline_diagnostics=[{}]; candidate_diagnostics=[{}]",
             describe_canonical(original),
             describe_canonical(changed),
+            baseline.diagnostics,
+            candidate.diagnostics,
         )));
     }
     Ok(())
