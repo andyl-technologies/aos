@@ -228,6 +228,17 @@ fn repeat_build_detail(report: &BuildReportV1, tier: RegistryTier) -> Result<Str
     report.require_reproducibility_policy(tier)?;
 
     let total = report.outputs.len();
+    let not_checked = report.not_checked().count();
+    if not_checked == total && total > 0 {
+        return Ok(format!(
+            "The {tier} registry tier does not run Nix --check repeat builds; \
+             all {total} planned outputs are recorded as not checked."
+        ));
+    }
+    if not_checked > 0 {
+        bail!("build report mixes skipped and executed repeat builds");
+    }
+
     let unreproduced = report.not_reproduced().collect::<Vec<_>>();
     if unreproduced.is_empty() {
         return Ok(format!(
@@ -359,6 +370,28 @@ mod tests {
     #[test]
     fn production_tier_cannot_claim_unresolved_advisories() {
         assert!(advisory_detail(RegistryTier::Production, 1).is_err());
+    }
+
+    #[test]
+    fn testing_tier_claim_states_that_no_repeat_build_ran() -> Result<()> {
+        let skipped = report(vec![
+            output(
+                "package/a/x86_64-linux",
+                "/nix/store/a.drv",
+                ReproducibilityResult::NotChecked,
+            ),
+            output(
+                "package/b/x86_64-linux",
+                "/nix/store/b.drv",
+                ReproducibilityResult::NotChecked,
+            ),
+        ]);
+
+        let detail = repeat_build_detail(&skipped, RegistryTier::Testing)?;
+        assert!(detail.contains("does not run Nix --check repeat builds"));
+        assert!(detail.contains("all 2 planned outputs are recorded as not checked"));
+        assert!(repeat_build_detail(&skipped, RegistryTier::Production).is_err());
+        Ok(())
     }
 
     #[test]

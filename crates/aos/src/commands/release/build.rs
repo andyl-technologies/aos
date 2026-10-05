@@ -1,9 +1,10 @@
 //! Exact planned Nix realization, reproducibility checks, and build evidence.
 //!
-//! Every planned derivation is realized and then repeat-built with Nix
-//! `--check`. The plan's registry tier decides what a failed check means:
-//! production fails the step closed, while the testing tier records each
-//! affected output as [`ReproducibilityResult::NotReproduced`] and continues.
+//! Every planned derivation is realized. A production-tier plan then
+//! repeat-builds each derivation with Nix `--check` and fails the step closed
+//! on any difference. A testing-tier plan skips the repeat build, whose result
+//! could not change its outcome, and records every output as
+//! [`ReproducibilityResult::NotChecked`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File};
@@ -70,10 +71,23 @@ pub(super) fn run(args: &ReleaseBuildArgs, nix: &NixRunner, printer: &Printer) -
         derivations.len()
     ));
     nix.realise_derivations(&derivations, false)?;
-    printer.info("Repeat-building planned derivations with Nix --check...");
-    let checks = nix.check_derivations(&derivations)?;
-    let unreproduced = admit_check_failures(tier, &checks)?;
-    warn_unreproduced(printer, tier, &unreproduced);
+    let repeat_build = if tier.requires_repeat_build_check() {
+        printer.info("Repeat-building planned derivations with Nix --check...");
+        let checks = nix.check_derivations(&derivations)?;
+        let unreproduced = admit_check_failures(tier, &checks)?;
+        warn_unreproduced(printer, tier, &unreproduced);
+        RepeatBuild::Checked(unreproduced)
+    } else {
+        printer.info(&format!(
+            "Skipping the Nix --check repeat build: the {tier} registry tier records \
+             outputs as not checked"
+        ));
+        RepeatBuild::Skipped
+    };
+    let unreproduced = match &repeat_build {
+        RepeatBuild::Checked(unreproduced) => unreproduced.clone(),
+        RepeatBuild::Skipped => BTreeMap::new(),
+    };
 
     let source_paths = planned
         .values()
@@ -119,7 +133,7 @@ pub(super) fn run(args: &ReleaseBuildArgs, nix: &NixRunner, printer: &Printer) -
             nar_size: info.nar_size,
             closure_size: info.closure_size,
             references: info.references,
-            reproducibility: reproducibility_of(expected.derivation, &unreproduced),
+            reproducibility: repeat_build.result_of(expected.derivation),
         });
     }
     let sources = source_paths
@@ -178,13 +192,17 @@ pub(super) fn run(args: &ReleaseBuildArgs, nix: &NixRunner, printer: &Printer) -
         return Ok(());
     }
     let not_reproduced = report.not_reproduced().count();
+    let action = match repeat_build {
+        RepeatBuild::Checked(_) => "Built and repeat-checked",
+        RepeatBuild::Skipped => "Built (repeat build skipped)",
+    };
     let summary = if not_reproduced == 0 {
         String::new()
     } else {
         format!(" ({not_reproduced} recorded as not reproduced)")
     };
     printer.success(&format!(
-        "Built and repeat-checked {} planned outputs{summary}; evidence written to {}",
+        "{action} {} planned outputs{summary}; evidence written to {}",
         report.outputs.len(),
         args.output.display()
     ));
@@ -279,15 +297,25 @@ fn admit_check_failures(
     Ok(unreproduced)
 }
 
-/// Returns the recorded repeat-build result for an output's derivation.
-fn reproducibility_of(
-    derivation: &str,
-    unreproduced: &BTreeMap<String, String>,
-) -> ReproducibilityResult {
-    if unreproduced.contains_key(derivation) {
-        ReproducibilityResult::NotReproduced
-    } else {
-        ReproducibilityResult::Reproduced
+/// The repeat-build pass as the registry tier ran it.
+enum RepeatBuild {
+    /// Every derivation was repeat-built; the map names those that did not
+    /// reproduce, with their reasons.
+    Checked(BTreeMap<String, String>),
+    /// The tier does not run repeat builds.
+    Skipped,
+}
+
+impl RepeatBuild {
+    /// Returns the recorded repeat-build result for an output's derivation.
+    fn result_of(&self, derivation: &str) -> ReproducibilityResult {
+        match self {
+            Self::Skipped => ReproducibilityResult::NotChecked,
+            Self::Checked(unreproduced) if unreproduced.contains_key(derivation) => {
+                ReproducibilityResult::NotReproduced
+            }
+            Self::Checked(_) => ReproducibilityResult::Reproduced,
+        }
     }
 }
 
@@ -679,16 +707,17 @@ mod tests {
         );
 
         // Every output of a failed derivation is unreproduced; others are not.
+        let repeat_build = RepeatBuild::Checked(unreproduced);
         assert_eq!(
-            reproducibility_of("/nix/store/a-nondeterministic.drv", &unreproduced),
+            repeat_build.result_of("/nix/store/a-nondeterministic.drv"),
             ReproducibilityResult::NotReproduced
         );
         assert_eq!(
-            reproducibility_of("/nix/store/b-overloaded.drv", &unreproduced),
+            repeat_build.result_of("/nix/store/b-overloaded.drv"),
             ReproducibilityResult::NotReproduced
         );
         assert_eq!(
-            reproducibility_of("/nix/store/c-reproduced.drv", &unreproduced),
+            repeat_build.result_of("/nix/store/c-reproduced.drv"),
             ReproducibilityResult::Reproduced
         );
         Ok(())
@@ -717,11 +746,25 @@ mod tests {
             let unreproduced = admit_check_failures(tier, &clean)?;
             assert!(unreproduced.is_empty());
             assert_eq!(
-                reproducibility_of("/nix/store/a-x.drv", &unreproduced),
+                RepeatBuild::Checked(unreproduced).result_of("/nix/store/a-x.drv"),
                 ReproducibilityResult::Reproduced
             );
         }
         Ok(())
+    }
+
+    #[test]
+    fn skipped_repeat_builds_record_every_output_as_not_checked() {
+        assert_eq!(
+            RepeatBuild::Skipped.result_of("/nix/store/a-x.drv"),
+            ReproducibilityResult::NotChecked
+        );
+    }
+
+    #[test]
+    fn only_production_requires_repeat_builds() {
+        assert!(RegistryTier::Production.requires_repeat_build_check());
+        assert!(!RegistryTier::Testing.requires_repeat_build_check());
     }
 
     #[test]
