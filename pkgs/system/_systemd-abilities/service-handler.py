@@ -699,6 +699,30 @@ class Handler(ConfigurationHandler):
         unit_name = realization["resource"]
         result = {"resource": unit_name, "path": str(self.unit_directory / unit_name)}
         desired = {name: digest(text.encode()) for name, text in realization["units"].items()}
+
+        # Pending publication already contains the desired bytes. Compare with
+        # its retained predecessor so recovery still dispatches a real change.
+        previous = self.receipt or {}
+        prior_pending = previous.get("pending", False)
+        previous_units = previous.get("previous_units" if prior_pending else "units", {})
+        previous_links = previous.get("previous_links" if prior_pending else "links", {})
+        configuration = {
+            "restart_token": self.value["lifecycle"].get("restart_token"),
+            "dependencies": self.value.get("dependencyValues", []),
+            "enabled": self.value["enabled"],
+            "auto_start": self.value["auto_start"],
+            "activation_owner": self.value.get("activation_owner", "ability"),
+        }
+        previous_configuration = previous.get(
+            "previous_configuration" if prior_pending else "configuration",
+            dict(configuration, restart_token=None, dependencies=[]),
+        )
+        configuration_changed = (
+            desired != previous_units
+            or realization["links"] != previous_links
+            or configuration != previous_configuration
+        )
+
         prior_units = dict((self.receipt or {}).get("previous_units", {}), **(self.receipt or {}).get("units", {}))
         prior_links = dict((self.receipt or {}).get("previous_links", {}), **(self.receipt or {}).get("links", {}))
         owner = self.value.get("activation_owner", "ability")
@@ -807,6 +831,7 @@ class Handler(ConfigurationHandler):
                 os.close(descriptor)
         self.claim_paths([str(self.unit_directory / name) for name in set(desired) | set(realization["links"])])
         receipt = {"kind": "service", "units": desired, "links": realization["links"], "resource": unit_name, "starts": realization["starts"], "owner": owner, "pending": True, "previous_units": prior_units, "previous_links": prior_links, "image_units": custody, "concurrency": (self.value.get("concurrency") or {}).get("group")}
+        receipt.update(configuration=configuration, previous_configuration=previous_configuration)
         old_resource = (self.receipt or {}).get("resource")
         self.save(receipt)
         for name, text in realization["units"].items():
@@ -827,18 +852,29 @@ class Handler(ConfigurationHandler):
                 self.manager("start", *realization["starts"])
             change = self.value["lifecycle"]["configuration_change_action"]
             update = self.invocation.get("previous") is not None
-            operation = "reload-or-restart" if update and change == "reload" else "restart" if update and change == "restart" else "start"
             evidence = self.execution_evidence(unit_name)
-            receipt.update(dispatching=True, prior_start=(evidence or {}).get("ExecMainStartTimestampMonotonic", "0"))
-            self.save(receipt)
-            if start_mode == "enqueue":
-                self.manager(operation, "--no-block", unit_name)
-            else:
-                self.manager(operation, unit_name)
+            needs_start = (
+                start_mode == "wait"
+                and self.value["lifecycle"]["execution_model"] != "oneshot"
+                and (evidence or {}).get("ActiveState") not in {"active", "reloading"}
+            )
+            # Dependency outputs order reconciliation. Their new revisions do
+            # not restart an unchanged service. Explicit activation inputs and
+            # tokens cover configuration outside the rendered unit bytes.
+            if not update or configuration_changed or needs_start:
+                operation = "start"
+                if update and configuration_changed:
+                    operation = {"reload": "reload-or-restart", "restart": "restart", "none": "start"}[change]
+                receipt.update(dispatching=True, prior_start=(evidence or {}).get("ExecMainStartTimestampMonotonic", "0"))
+                self.save(receipt)
+                if start_mode == "enqueue":
+                    self.manager(operation, "--no-block", unit_name)
+                else:
+                    self.manager(operation, unit_name)
         for name in prior_units.keys() - desired.keys():
             if self.unit_digest(name, custody) == prior_units[name]:
                 durable_unlink(self.unit_directory / name)
-        self.save(dict(receipt, pending=False, dispatching=False, previous_units={}, previous_links={}, image_units={}))
+        self.save(dict(receipt, pending=False, dispatching=False, previous_units={}, previous_links={}, previous_configuration={}, image_units={}))
         return result
 
     def links_match(self, links):

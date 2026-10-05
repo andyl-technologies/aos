@@ -264,6 +264,29 @@ the manager without failing the configuration transaction. Its outputs identify
 the installed service; they do not assert health. Recovery still requires
 execution evidence for an interrupted dispatch and does not blindly run it again.
 
+The production service handler applies `lifecycle.configuration_change_action`
+when rendered units, installation links, explicit activation inputs, or
+`lifecycle.restart_token` change. A new configuration generation used only for
+ordering does not restart an otherwise unchanged service. An inactive ordinary
+service is still started when restoring runtime state.
+
+A package that reads configuration through a stable path includes the file's
+resource identity in its activation inputs. Content changes then trigger the
+declared reload or restart even though the path stays the same:
+
+```nix
+{ config, ... }: {
+  aos.services.nginx.activationInputs = [
+    config.aos.abilities.configuration.operations.file.effects.nginx.outputs.resource
+  ];
+}
+```
+
+The file effect remains the single configuration source. `restart_token` can
+similarly carry a derived revision for configuration outside the effect graph.
+Interrupted publication retains the previous lifecycle inputs until the required
+dispatch completes.
+
 `input.after` in the composed-handler example is service-manager policy. An effect's own `after`
 field is an explicit activation dependency expressed using output references;
 these are different kinds of ordering.
