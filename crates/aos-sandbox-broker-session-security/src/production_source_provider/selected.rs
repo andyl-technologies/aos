@@ -609,7 +609,7 @@ impl ProductionSelectedSourceProviderOriginalV1 {
             return None;
         }
         let progress = match self.owner.as_mut() {
-            Some(owner) => owner.advance_original_native_release_v1(
+            Some(owner) => owner.advance_original_native_release_status_v1(
                 &self.catalog.publication.bytes, &self.catalog.rows.bytes,
             ),
             None => {

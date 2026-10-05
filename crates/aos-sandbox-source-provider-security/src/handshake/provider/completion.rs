@@ -22,6 +22,75 @@ pub(super) fn completion_status_subject(
     .map_err(|_| SourceProviderSecurityError::SessionContinuity)
 }
 
+pub(super) fn status_matches_authorization(
+    authorization: &super::ProviderOutcomeAuthorizationV1,
+    status: &SourceProviderResponseStatusV1,
+) -> bool {
+    status.method() == authorization.method
+        && status.status() == SourceProviderStatus::Pending
+        && status.request_id() == authorization.request_id
+        && status.signed_request_digest() == authorization.signed_request_digest
+        && status.session_binding() == authorization.session_binding
+        && status.provider_process_instance() == authorization.provider_process_instance
+        && status.response_sequence() == authorization.response_sequence
+        && status.descriptor_commitment() == empty_descriptor_set_commitment_v1()
+}
+
+impl CurrentProviderIngressSessionV1 {
+    /// Derives only the fixed original status transaction through the shared recipe.
+    ///
+    /// The finalized completion remains resident with its caller. The result is
+    /// transaction DATA; the same original writer must prepare and commit it.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed current rows, response, reservation or transaction bounds.
+    #[doc(hidden)]
+    pub fn prepare_original_release_status_transaction_v1(
+        &mut self,
+        writer: &aos_sandbox::SourceOriginalNativeJournalAuthorityV5<'_, '_>,
+        readback: &aos_sandbox::OriginalSourceProtectedReadbackV5,
+        authorization: &super::ProviderOutcomeAuthorizationV1,
+        finalized: &aos_sandbox_source_provider_ledger::FinalizedCompletionV1,
+    ) -> Result<aos_sandbox::JournalTransaction, super::OriginalNativeSigningErrorV5> {
+        self.revalidate()?;
+        writer.validate_original_release_status_snapshot_v1(readback, &authorization.journal_snapshot)?;
+        let acquisition = authorization.acquisition_id.ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        let (_, capacity) = writer.original_release_status_basis_v1(readback, acquisition)?;
+        let response = finalized.response().ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        if finalized.method() != SourceProviderMethod::Release
+            || finalized.session_binding() != authorization.session_binding
+            || finalized.response_sequence() != authorization.response_sequence
+            || !completion_response_matches(authorization, response)
+            || finalized.mutations().len() != 3
+        {
+            return Err(SourceProviderSecurityError::SessionContinuity.into());
+        }
+        let (transaction, _) = protected_completion_transaction_v1(
+            finalized.purpose(), finalized.mutations().to_vec(),
+        )?;
+        let (old_floor, next_floor) =
+            writer.derive_original_floor_transfer_v5(&transaction, acquisition)?;
+        let old_floor = old_floor.to_journal_record()?;
+
+        // This own continuation spends Source5 once and settles the separate
+        // status reservation. Canonical union order places every changed-old
+        // DELETE before the exact successor PUT, retaining all cleanup debt.
+        let mut deleted_floors = [
+            aos_sandbox::JournalRecord::delete(
+                old_floor.namespace(), old_floor.key().to_vec(),
+            ),
+            capacity.settlement_record(),
+        ];
+        deleted_floors.sort_by(|left, right| left.key().cmp(right.key()));
+
+        let mut records = transaction.records().to_vec();
+        records.extend(deleted_floors);
+        records.push(next_floor.to_journal_record()?);
+        Ok(aos_sandbox::JournalTransaction::new(*transaction.id(), records)?)
+    }
+}
+
 pub(super) fn encode_typed_response(
     method: SourceProviderMethod,
     signed_status: SignedSourceProviderStatusV1,
@@ -120,6 +189,74 @@ fn prepare_finalized_builder(
     )
 }
 
+fn protected_completion_transaction_v1(
+    purpose: &[u8],
+    mutations: Vec<(Vec<u8>, Option<Vec<u8>>)>,
+) -> Result<(aos_sandbox::JournalTransaction, [u8; 32]), super::OriginalNativeSigningErrorV5> {
+    use sha2::{Digest as _, Sha256};
+
+    if purpose.is_empty()
+        || purpose.len() > 128
+        || mutations.is_empty()
+        || mutations.len() > aos_sandbox_source_provider_ledger::limits::MAXIMUM_TRANSACTION_RECORDS
+    {
+        return Err(SourceProviderSecurityError::SessionContinuity.into());
+    }
+    let mut aggregate_bytes = 4_usize
+        .checked_add(purpose.len())
+        .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+    for (key, value) in &mutations {
+        let value_bytes = value.as_ref().map_or(0, Vec::len);
+        aggregate_bytes = aggregate_bytes
+            .checked_add(4)
+            .and_then(|total| total.checked_add(key.len()))
+            .and_then(|total| total.checked_add(1 + 4))
+            .and_then(|total| total.checked_add(value_bytes))
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+    }
+    if aggregate_bytes > aos_sandbox_source_provider_ledger::limits::MAXIMUM_TRANSACTION_BYTES {
+        return Err(SourceProviderSecurityError::SessionContinuity.into());
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(b"aos.sandbox.source-provider.protected-transaction-id.v1\0");
+    hasher.update((purpose.len() as u32).to_be_bytes());
+    hasher.update(purpose);
+    for (key, value) in &mutations {
+        hasher.update((key.len() as u32).to_be_bytes());
+        hasher.update(key);
+        match value {
+            Some(value) => {
+                hasher.update([1]);
+                hasher.update((value.len() as u32).to_be_bytes());
+                hasher.update(value);
+            }
+            None => hasher.update([0]),
+        }
+    }
+    let transaction_digest: [u8; 32] = hasher.finalize().into();
+    let mut transaction_id = [0_u8; 16];
+    transaction_id.copy_from_slice(&transaction_digest[..16]);
+    if transaction_id == [0; 16] {
+        return Err(SourceProviderSecurityError::SessionContinuity.into());
+    }
+    let records = mutations
+        .into_iter()
+        .map(|(key, value)| match value {
+            Some(value) => aos_sandbox::JournalRecord::put(
+                aos_sandbox::RecordNamespace::SourceProviderAuthority,
+                key,
+                value,
+            ),
+            None => aos_sandbox::JournalRecord::delete(
+                aos_sandbox::RecordNamespace::SourceProviderAuthority,
+                key,
+            ),
+        })
+        .collect();
+    let transaction = aos_sandbox::JournalTransaction::new(transaction_id, records)?;
+    Ok((transaction, transaction_digest))
+}
+
 pub(super) fn prepare_finalized_builder_with_native_status_capacity(
     session: &mut CurrentProviderIngressSessionV1,
     journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
@@ -127,8 +264,6 @@ pub(super) fn prepare_finalized_builder_with_native_status_capacity(
     finalized: aos_sandbox_source_provider_ledger::FinalizedCompletionV1,
     native_release_status_capacity: Option<aos_sandbox::GlobalCapacityReservationV1>,
 ) -> Result<ProviderCompletionBuilderV1, SourceProviderSecurityError> {
-    use sha2::{Digest as _, Sha256};
-
     let response = finalized.response().map(ToOwned::to_owned);
     let method = if response.is_some() {
         finalized.method()
@@ -147,66 +282,9 @@ pub(super) fn prepare_finalized_builder_with_native_status_capacity(
     };
     let purpose = finalized.purpose().to_vec();
     let (mutations, _) = finalized.into_parts();
-    if purpose.is_empty()
-        || purpose.len() > 128
-        || mutations.is_empty()
-        || mutations.len() > aos_sandbox_source_provider_ledger::limits::MAXIMUM_TRANSACTION_RECORDS
-    {
-        return Err(SourceProviderSecurityError::SessionContinuity);
-    }
-    let mut aggregate_bytes = 4_usize
-        .checked_add(purpose.len())
-        .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-    for (key, value) in &mutations {
-        let value_bytes = value.as_ref().map_or(0, Vec::len);
-        aggregate_bytes = aggregate_bytes
-            .checked_add(4)
-            .and_then(|total| total.checked_add(key.len()))
-            .and_then(|total| total.checked_add(1 + 4))
-            .and_then(|total| total.checked_add(value_bytes))
-            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
-    }
-    if aggregate_bytes > aos_sandbox_source_provider_ledger::limits::MAXIMUM_TRANSACTION_BYTES {
-        return Err(SourceProviderSecurityError::SessionContinuity);
-    }
-    let mut hasher = Sha256::new();
-    hasher.update(b"aos.sandbox.source-provider.protected-transaction-id.v1\0");
-    hasher.update((purpose.len() as u32).to_be_bytes());
-    hasher.update(&purpose);
-    for (key, value) in &mutations {
-        hasher.update((key.len() as u32).to_be_bytes());
-        hasher.update(key);
-        match value {
-            Some(value) => {
-                hasher.update([1]);
-                hasher.update((value.len() as u32).to_be_bytes());
-                hasher.update(value);
-            }
-            None => hasher.update([0]),
-        }
-    }
-    let transaction_digest: [u8; 32] = hasher.finalize().into();
-    let mut transaction_id = [0_u8; 16];
-    transaction_id.copy_from_slice(&transaction_digest[..16]);
-    if transaction_id == [0; 16] {
-        return Err(SourceProviderSecurityError::SessionContinuity);
-    }
-    let records = mutations
-        .into_iter()
-        .map(|(key, value)| match value {
-            Some(value) => aos_sandbox::JournalRecord::put(
-                aos_sandbox::RecordNamespace::SourceProviderAuthority,
-                key,
-                value,
-            ),
-            None => aos_sandbox::JournalRecord::delete(
-                aos_sandbox::RecordNamespace::SourceProviderAuthority,
-                key,
-            ),
-        })
-        .collect();
-    let mut transaction = aos_sandbox::JournalTransaction::new(transaction_id, records)
+    let (mut transaction, transaction_digest) = protected_completion_transaction_v1(&purpose, mutations)
         .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+    let transaction_id = *transaction.id();
     validate_prospective_completion(journal, &transaction)?;
     if let Some(reservation) = &native_release_status_capacity {
         // Only the three finalized status owner rows plus this exact deletion.

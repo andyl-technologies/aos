@@ -411,6 +411,85 @@ impl SignedSourceProviderNativeExportFenceV1 {
     }
 }
 
+/// Retains the fixed native-fence signing message as nonauthorizing DATA.
+///
+/// Preparation validates the canonical role and fingerprint but cannot establish
+/// current custody, once-sign eligibility, persistence or an export fence.
+pub struct PreparedNativeExportFenceDataV1 {
+    subject: SourceProviderNativeExportFenceV1,
+    signer: SourceProviderSigningKeyV1,
+    message: Vec<u8>,
+}
+
+/// Borrows one exact prepared native-fence message and matching signing key.
+///
+/// This crypto-only loan provides neither currentness nor once-only authority.
+pub struct NativeExportFenceSigningLoanV1<'data, 'key> {
+    message: &'data [u8],
+    key: &'key SigningKey,
+}
+
+impl PreparedNativeExportFenceDataV1 {
+    /// Prepares the unchanged fence domain before the final original-clock cut.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a foreign authority, usage or public-key fingerprint.
+    pub fn prepare(
+        subject: SourceProviderNativeExportFenceV1,
+        signer: SourceProviderSigningKeyV1,
+        public_key: &[u8; 32],
+    ) -> Result<Self, SourceProviderSignatureError> {
+        require_signer(&subject, &signer)?;
+        crate::crypto::require_key_fingerprint(&signer, public_key)?;
+        let message = crate::crypto::signing_message(
+            DOMAIN, 3, &subject.to_canonical_bytes(), &signer,
+        );
+        Ok(Self { subject, signer, message })
+    }
+
+    /// Borrows the exact canonical claim retained during preparation.
+    #[must_use]
+    pub const fn subject(&self) -> &SourceProviderNativeExportFenceV1 {
+        &self.subject
+    }
+
+    /// Borrows the same fixed message after matching the actual key fingerprint.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a different signing key. Every validation precedes the caller's
+    /// final clock; the returned loan performs no later allocation or encoding.
+    pub fn signing_loan<'data, 'key>(
+        &'data self,
+        key: &'key SigningKey,
+    ) -> Result<NativeExportFenceSigningLoanV1<'data, 'key>, SourceProviderSignatureError> {
+        crate::crypto::require_key_fingerprint(&self.signer, key.verifying_key().as_bytes())?;
+        Ok(NativeExportFenceSigningLoanV1 { message: &self.message, key })
+    }
+
+    /// Moves a previously parked detached signature into the fixed envelope.
+    #[must_use]
+    pub fn attach_signature(self, signature: SourceProviderSignature) -> SignedSourceProviderNativeExportFenceV1 {
+        SignedSourceProviderNativeExportFenceV1 {
+            subject: self.subject,
+            signer: self.signer,
+            signature,
+        }
+    }
+}
+
+impl NativeExportFenceSigningLoanV1<'_, '_> {
+    /// Computes only the existing detached crypto expression.
+    ///
+    /// The caller parks the return immediately and owns all effect/deadline
+    /// fences; this entry promises no execution-time or allocator bound.
+    #[must_use]
+    pub fn sign(self) -> SourceProviderSignature {
+        crate::crypto::detached_signature(self.message, self.key)
+    }
+}
+
 /// Carries only Pending plus the exact native no-future-export result and zero FDs.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReleaseSourceResponseV2 {

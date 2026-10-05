@@ -1163,6 +1163,82 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
         self.authority.journal.limits
     }
 
+    /// Derives the exact current held Release status reservation as comparison DATA.
+    ///
+    /// The returned snapshot and reservation grant no signing, append or send
+    /// authority; every consumer must continue borrowing this original writer.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed readback, nonterminal carrier, non-Reserved Release or
+    /// absent/ambiguous capacity whose complete binding differs from the graph.
+    pub fn original_release_status_basis_v1(
+        &self,
+        readback: &OriginalSourceProtectedReadbackV5,
+        acquisition: ObjectDigest,
+    ) -> Result<(ProtectedJournalSnapshot, super::super::GlobalCapacityReservationV1), JournalError> {
+        self.validate_readback(readback)?;
+        let journal = &self.authority.journal;
+        let key = aos_sandbox_source_provider_ledger::ledger::native_completion::native_completion_key_v2(acquisition);
+        let bytes = readback.rows.get(&(RecordNamespace::SourceProviderAuthority, key.clone()))
+            .ok_or(invalid("original status carrier missing"))?;
+        let held = SourceNativeHeldCompletionRecordV1::from_canonical_bytes(&key, bytes)
+            .map_err(|_| invalid("original status carrier codec"))?;
+        if held.suffix().phase() != 10 {
+            return Err(invalid("original status requires complete terminal history"));
+        }
+        let binding = aos_sandbox_source_provider_ledger::ledger::native_held_completion::native_held_release_status_binding_v1(
+            super::owner_views(&readback.rows), acquisition,
+        ).map_err(|_| invalid("original status full held binding"))?;
+        let mut reserved = false;
+        for (key, value) in super::owner_views(&readback.rows) {
+            let decoded = aos_sandbox_source_provider_ledger::ledger::format::decode_record(key, value)
+                .map_err(|_| invalid("original status attempt codec"))?;
+            if let aos_sandbox_source_provider_ledger::ledger::model::DecodedRecordV1::Attempt(attempt) = decoded
+                && attempt.attempt_digest == binding.artifact_digest
+            {
+                reserved = attempt.state == aos_sandbox_source_provider_ledger::ProviderAttemptStateV1::Reserved;
+            }
+        }
+        if !reserved {
+            return Err(invalid("original status attempt is not Reserved"));
+        }
+        let expected = super::source_native_release_status_capacity_request_v1(binding);
+        let capacity = journal.recover_unique_global_capacity_reservation_v1(
+            &super::super::GlobalCapacityReservationRecoveryBindingV1 {
+                purpose: expected.purpose,
+                operation_id: expected.operation_id,
+                artifact_digest: expected.artifact_digest,
+                checkpoint_digest: expected.checkpoint_digest,
+                chain_head_digest: expected.chain_head_digest,
+                terminal_records: expected.terminal_records,
+                terminal_bytes: expected.terminal_bytes,
+                poison_records: expected.poison_records,
+                poison_bytes: expected.poison_bytes,
+                future_transactions: expected.future_transactions,
+            },
+        )?;
+        if capacity.request() != expected {
+            return Err(invalid("original status exact capacity changed"));
+        }
+        self.validate_readback(readback)?;
+        Ok((readback.snapshot.clone(), capacity))
+    }
+
+    /// Compares the same original status snapshot without exporting an authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects any changed original file, readback or snapshot sequence/identity.
+    pub fn validate_original_release_status_snapshot_v1(
+        &self,
+        readback: &OriginalSourceProtectedReadbackV5,
+        snapshot: &ProtectedJournalSnapshot,
+    ) -> Result<(), JournalError> {
+        self.validate_readback(readback)?;
+        self.authority.validate_snapshot(snapshot)
+    }
+
     /// Binds archive metadata to the actual held prefix and ordered candidate.
     ///
     /// # Errors

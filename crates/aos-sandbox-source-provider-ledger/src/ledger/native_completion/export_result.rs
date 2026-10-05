@@ -53,6 +53,41 @@ pub fn native_export_fence_subject_v1(
     )
 }
 
+/// Derives the fence from the complete retained held carrier, not its legacy member.
+///
+/// The caller must independently authenticate the current owner and capacity.
+///
+/// # Errors
+///
+/// Rejects a missing, nonterminal or conflicting held carrier and every ordinary
+/// graph mismatch checked by the shared fence subject recipe.
+pub fn native_held_export_fence_subject_v1(
+    records: &[(Vec<u8>, Vec<u8>)],
+    acquisition: ObjectDigest,
+    attempt_digest: ObjectDigest,
+    sequence: u64,
+    admission_transaction_id: [u8; 16],
+    reservation_id: [u8; 32],
+) -> Result<SourceProviderNativeExportFenceV1, LedgerFormatErrorV1> {
+    crate::ledger::native_held_completion::native_held_release_status_binding_v1(
+        records.iter().map(|(key, value)| (key.as_slice(), value.as_slice())),
+        acquisition,
+    )?;
+    let key = super::native_completion_key_v2(acquisition);
+    let bytes = records.iter().find(|(candidate, _)| candidate == &key)
+        .map(|(_, value)| value.as_slice())
+        .ok_or(LedgerFormatErrorV1::Corrupt("held fence carrier missing"))?;
+    let held = crate::ledger::native_held_completion::SourceNativeHeldCompletionRecordV1::from_canonical_bytes(
+        &key, bytes,
+    )?;
+    let decoded = records.iter().map(|(key, value)| decode_record(key, value))
+        .collect::<Result<Vec<_>, _>>()?;
+    subject_from_decoded(
+        &decoded, attempt_digest, sequence, admission_transaction_id,
+        reservation_id, Some(&held),
+    )
+}
+
 fn subject_from_decoded(
     decoded: &[DecodedRecordV1],
     attempt_digest: ObjectDigest,
@@ -287,6 +322,26 @@ pub fn validate_native_export_fence_result_v1(
         .map(|(key, value)| decode_record(key, value))
         .collect::<Result<Vec<_>, _>>()?;
     validate_native_export_fence_result_decoded(&decoded, attempt_digest, response)
+}
+
+/// Compares an immutable result with the full canonical held carrier.
+///
+/// This shared current-result recipe establishes structural DATA only.
+///
+/// # Errors
+///
+/// Rejects a changed held carrier, response or any retained owner join.
+pub fn validate_native_held_export_fence_result_v1(
+    records: &[(Vec<u8>, Vec<u8>)],
+    attempt_digest: ObjectDigest,
+    response: &[u8],
+) -> Result<(), LedgerFormatErrorV1> {
+    let canonical = crate::collect_bounded_records(
+        records.iter().map(|(key, value)| (key.as_slice(), value.as_slice())),
+    )?;
+    let decoded = records.iter().map(|(key, value)| decode_record(key, value))
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_native_export_fence_result_current(&decoded, &canonical, attempt_digest, response)
 }
 
 pub(crate) fn validate_native_export_fence_result_decoded(

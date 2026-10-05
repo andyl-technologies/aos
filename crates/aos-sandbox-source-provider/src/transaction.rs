@@ -57,6 +57,18 @@ enum MutationSourceV1<'borrow, 'journal, 'challenge> {
     },
 }
 
+pub(crate) fn original_release_status_records_v1(
+    writer: &aos_sandbox::SourceOriginalNativeJournalAuthorityV5<'_, '_>,
+    readback: &aos_sandbox::OriginalSourceProtectedReadbackV5,
+    configuration: &crate::ProtectedProviderConfigurationV1,
+    archived: &aos_sandbox_source_provider_security::ProtectedOriginalDeploymentV5,
+) -> Result<Vec<(Vec<u8>, Vec<u8>)>, ProviderLedgerError> {
+    let source = MutationSourceV1::Original { writer, readback, configuration, archived };
+    let current = source.current_records()?;
+    source.recover_prospective(&current, None)?;
+    Ok(current.into_iter().collect())
+}
+
 impl MutationSourceV1<'_, '_, '_> {
     fn configuration(&self) -> &crate::ProtectedProviderConfigurationV1 {
         match self {

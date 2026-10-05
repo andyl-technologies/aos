@@ -165,6 +165,12 @@ pub enum FixedProviderOriginalCompletionProgressV5 {
     /// An independent Release and its status reservation were read back.
     /// Original physical custody and cleanup debt remain held; this is not Drain.
     ReleaseAdmitted,
+    /// The immutable Pending response and its exact status suffix were read back.
+    /// Source5/native custody remains held; no physical retirement is inferred.
+    ReleaseStatusStored,
+    /// The stored Pending response was locally sent once without descriptors.
+    /// This supplies neither Root acceptance nor an all-owner Drain observation.
+    ReleaseStatusSent,
     /// All returned originals and the first cause remain permanently held.
     Closed,
 }

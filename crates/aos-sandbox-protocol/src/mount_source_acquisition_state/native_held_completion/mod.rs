@@ -69,7 +69,10 @@ pub use ordinary_inventory_v6::{
     OriginalInventoryTransitionKindV6, OriginalInventoryTransitionV6,
     validate_original_inventory_transition_v6,
 };
-pub use ordinary_release::{OriginalReleaseTransitionV1, validate_original_release_transition_v1};
+pub use ordinary_release::{
+    OriginalReleaseTransitionV1, validate_original_release_transition_v1,
+    validate_original_release_status_transition_v1,
+};
 pub use original_v5::{
     original_root_remaining_v5, validate_original_root_preparation_v5,
     validate_original_root_transition_v5,

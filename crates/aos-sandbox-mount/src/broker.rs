@@ -87,6 +87,10 @@ pub enum OriginalMountReleaseProgressV1 {
     Pending,
     /// The separately reserved Release was locally sent once on the same queue.
     ReleaseSent,
+    /// The exact Pending is consumed; only negative-custody debt remains funded.
+    ReleaseStatusStored,
+    /// The same committed Pending fence is accepted, not physically released.
+    ReleaseFenceAccepted,
 }
 
 /// Borrows the actual response failure still owned by the broker runtime.

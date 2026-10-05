@@ -7,6 +7,23 @@ use crate::source_root_snapshot::SourceRootObservationProfileV1;
 use aos_sandbox_linux::inventory::ReadOnlyDirectorySnapshot;
 
 impl CurrentRootMountSourceProviderSessionV1 {
+    // The whole returned packet remains in its original before this check.
+    pub(in crate::handshake::mount_request) fn check_original_release_packet_execution_v1(
+        &mut self,
+        retained: &native_pending::OriginalNativeReceivedOutcomeV5,
+    ) -> Result<(), SourceProviderSecurityError> {
+        let record = retained.original_release_status_record_v1()
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        record.execution.revalidate(self.carrier.socket().peer())?;
+        if !record.descriptors.is_empty()
+            || record.payload.len() != aos_sandbox_source_provider_protocol::MAXIMUM_NATIVE_RELEASE_RESPONSE_BYTES_V2
+            || !record.execution.has_same_execution(&self.provider_execution)
+        {
+            return Err(SourceProviderSecurityError::SessionContinuity);
+        }
+        Ok(())
+    }
+
     // Shares only the existing snapshot projection, not another physical read.
     pub(crate) fn original_physical_observation_v5(
         snapshot: &ReadOnlyDirectorySnapshot,

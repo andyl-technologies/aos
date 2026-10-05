@@ -5,6 +5,42 @@
 
 use super::*;
 
+enum FenceReadbackViewV1<'borrow, 'journal> {
+    Legacy {
+        journal: &'borrow aos_sandbox::ProtectedJournalAuthority<'journal>,
+        snapshot: &'borrow aos_sandbox::ProtectedJournalSnapshot,
+        graph: &'borrow aos_sandbox_protocol::mount_source_acquisition_state::SourceAcquisitionTableV2,
+    },
+    Original {
+        writer: &'borrow aos_sandbox::MountOriginalNativeJournalAuthorityV5<'journal>,
+        current: &'borrow aos_sandbox::OriginalRootProtectedReadbackV5,
+    },
+}
+
+impl FenceReadbackViewV1<'_, '_> {
+    fn graph(&self) -> &aos_sandbox_protocol::mount_source_acquisition_state::SourceAcquisitionTableV2 {
+        match self {
+            Self::Legacy { graph, .. } => graph,
+            Self::Original { current, .. } => current.graph().legacy(),
+        }
+    }
+
+    fn matches(&self, key: &[u8], bytes: &[u8]) -> bool {
+        match self {
+            Self::Legacy { journal, .. } => journal.get(key).ok().flatten() == Some(bytes),
+            Self::Original { current, .. } =>
+                current.graph().canonical_records().get(key).map(Vec::as_slice) == Some(bytes),
+        }
+    }
+
+    fn validate(&self) -> Result<(), aos_sandbox::JournalError> {
+        match self {
+            Self::Legacy { journal, snapshot, .. } => journal.validate_mount_source_acquisition_snapshot(snapshot),
+            Self::Original { writer, current } => writer.validate_readback(current),
+        }
+    }
+}
+
 impl CurrentRootMountSourceProviderSessionV1 {
     /// Seals a native fence only after its exact Root disposition is durable.
     ///
@@ -23,11 +59,6 @@ impl CurrentRootMountSourceProviderSessionV1 {
         attempt_id: [u8; 32],
         outcome: &mut VerifiedMountProviderOutcomeV2,
     ) -> Result<(), SourceProviderSecurityError> {
-        use aos_sandbox_protocol::mount_source_acquisition_state::{
-            ProviderAttemptStateV2, ProviderQueryOwnerV2, ProviderStatusV2,
-            SourceAcquisitionPhaseV2, StoredRecordV2, encode_mount_source_state_record_v2,
-            native_export_fence::validate_native_export_fence_v1,
-        };
         use aos_sandbox_source_provider_protocol::ReleaseSourceResponseProfileV2;
 
         if outcome.method != SourceProviderMethod::Release {
@@ -45,6 +76,41 @@ impl CurrentRootMountSourceProviderSessionV1 {
             .snapshot()
             .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
         let graph = validated_mount_state(journal).map_err(|error| self.poison(error))?;
+        self.seal_native_fence_with_readback_v1(
+            FenceReadbackViewV1::Legacy { journal, snapshot: &snapshot, graph: &graph },
+            attempt_id, outcome,
+        )
+    }
+
+    pub(super) fn seal_original_native_export_fence_v1(
+        &mut self,
+        writer: &aos_sandbox::MountOriginalNativeJournalAuthorityV5<'_>,
+        current: &aos_sandbox::OriginalRootProtectedReadbackV5,
+        attempt: [u8; 32],
+        outcome: &mut VerifiedMountProviderOutcomeV2,
+    ) -> Result<(), SourceProviderSecurityError> {
+        writer.validate_readback(current)
+            .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+        self.revalidate()?;
+        self.seal_native_fence_with_readback_v1(
+            FenceReadbackViewV1::Original { writer, current }, attempt, outcome,
+        )
+    }
+
+    fn seal_native_fence_with_readback_v1(
+        &mut self,
+        readback: FenceReadbackViewV1<'_, '_>,
+        attempt_id: [u8; 32],
+        outcome: &mut VerifiedMountProviderOutcomeV2,
+    ) -> Result<(), SourceProviderSecurityError> {
+        use aos_sandbox_protocol::mount_source_acquisition_state::{
+            ProviderAttemptStateV2, ProviderQueryOwnerV2, ProviderStatusV2,
+            SourceAcquisitionPhaseV2, StoredRecordV2, encode_mount_source_state_record_v2,
+            native_export_fence::validate_native_export_fence_v1,
+        };
+        use aos_sandbox_source_provider_protocol::ReleaseSourceResponseProfileV2;
+
+        let graph = readback.graph();
         let current_time = super::current_unix_seconds()?;
         let current_projection =
             capture_session_projection(self, current_time).map_err(|error| self.poison(error))?;
@@ -122,12 +188,12 @@ impl CurrentRootMountSourceProviderSessionV1 {
         ] {
             let (key, bytes) = encode_mount_source_state_record_v2(&record)
                 .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-            if journal.get(&key).ok().flatten() != Some(bytes.as_slice()) {
+            if !readback.matches(&key, bytes.as_slice()) {
                 return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
             }
         }
-        journal
-            .validate_mount_source_acquisition_snapshot(&snapshot)
+        readback
+            .validate()
             .map_err(|_| self.poison(SourceProviderSecurityError::SessionContinuity))?;
         self.revalidate()?;
         outcome.native_export_fence_acceptance = Some(RootAcceptedNativeExportFenceV1 {

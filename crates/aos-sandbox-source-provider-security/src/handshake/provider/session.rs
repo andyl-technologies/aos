@@ -731,6 +731,65 @@ impl CurrentProviderIngressSessionV1 {
         )
     }
 
+    /// Lends one exact committed original Pending response to the same carrier.
+    ///
+    /// The once fence is armed before all fallible checks. Every native error,
+    /// including Interrupted or WouldBlock, ends this purpose permanently.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a spent latch, stale original writer, substituted response or
+    /// changed protected session. The caller retains every input and result.
+    #[doc(hidden)]
+    pub fn borrow_original_release_status_send_v1<'owner>(
+        &'owner mut self,
+        writer: &aos_sandbox::SourceOriginalNativeJournalAuthorityV5<'_, '_>,
+        readback: &aos_sandbox::OriginalSourceProtectedReadbackV5,
+        authorization: &super::ProviderOutcomeAuthorizationV1,
+        response: &'owner [u8],
+        attempted: &mut bool,
+        result: &'owner mut Option<Result<(), aos_sandbox_linux::seqpacket::SeqpacketError>>,
+    ) -> Result<super::OriginalPendingReleaseSendLoanV1<'owner>, super::OriginalNativeSigningErrorV5> {
+        if *attempted || result.is_some() {
+            return Err(SourceProviderSecurityError::SessionContinuity.into());
+        }
+        *attempted = true;
+        self.revalidate()?;
+        writer.validate_readback(readback)?;
+        if !super::completion_response_matches(authorization, response) {
+            return Err(SourceProviderSecurityError::SessionContinuity.into());
+        }
+        let records = aos_sandbox_source_provider_ledger::collect_bounded_records(
+            readback.rows().iter().filter(|((namespace, _), _)| {
+                *namespace == aos_sandbox::RecordNamespace::SourceProviderAuthority
+            }).map(|((_, key), value)| (key.as_slice(), value.as_slice())),
+        ).map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+        let retained = records.iter().any(|(key, value)| {
+            matches!(aos_sandbox_source_provider_ledger::ledger::format::decode_record(key, value),
+                Ok(aos_sandbox_source_provider_ledger::ledger::model::DecodedRecordV1::Attempt(row))
+                if row.attempt_digest == authorization.attempt_digest
+                    && row.state == aos_sandbox_source_provider_ledger::ProviderAttemptStateV1::Completed
+                    && row.status == Some(SourceProviderStatus::Pending)
+                    && row.completed_response == response)
+        });
+        let current: Vec<_> = records.into_iter().collect();
+        if !retained {
+            return Err(SourceProviderSecurityError::SessionContinuity.into());
+        }
+        aos_sandbox_source_provider_ledger::ledger::native_completion::export_result::validate_native_held_export_fence_result_v1(
+            &current, authorization.attempt_digest, response,
+        ).map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+        writer.validate_readback(readback)?;
+        self.carrier.require_selected_open()?;
+        let now = current_unix_seconds()?;
+        if !authorization_authority_is_current(authorization, now)
+            || now >= authorization.request_deadline_seconds
+        {
+            return Err(SourceProviderSecurityError::SessionContinuity.into());
+        }
+        Ok(super::OriginalPendingReleaseSendLoanV1 { carrier: &mut self.carrier, payload: response, result })
+    }
+
     /// Consumes and sends one exact response proven durably committed.
     ///
     /// The carrier accepts exactly one `SourceRoot` descriptor for a complete

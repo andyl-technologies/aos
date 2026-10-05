@@ -600,6 +600,24 @@ impl SourceAcquisitionTableV2 {
         Ok((prepared.transaction, prepared.tentative))
     }
 
+    // The original purpose lends checked DATA without moving its received owner.
+    pub(super) fn prepare_original_release_status_disposition_v1(
+        &self,
+        attempt: [u8; 32],
+        received: &aos_sandbox_source_provider_security::OriginalNativeReceivedOutcomeV5,
+    ) -> Result<(JournalTransaction, Self)> {
+        let checked = received.checked_original_release_status_v1()
+            .ok_or_else(|| state_error("original Release Pending checked DATA absent"))?;
+        let (head, session, next_attempt, reference) = self.prepare_verified_attempt_v2(attempt, checked)?;
+        if next_attempt.method != ProviderMethodV2::Release
+            || checked.status() != SourceProviderStatus::Pending
+        {
+            return Err(state_error("original Release Pending disposition shape"));
+        }
+        let prepared = self.prepare_acquisition_disposition(head, session, next_attempt, reference, None)?;
+        Ok((prepared.transaction, prepared.tentative))
+    }
+
     /// Shares the actual Reserved-owner and verifier-to-Attempt preparation.
     fn prepare_verified_attempt_v2(
         &self,

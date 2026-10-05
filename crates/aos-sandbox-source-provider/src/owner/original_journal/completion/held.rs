@@ -94,6 +94,29 @@ impl OriginalSourceHeldV5 {
 }
 
 impl OriginalSourceProducerV5 {
+    pub(in crate::owner::original_journal) fn original_release_status_append_parts_v1(
+        &mut self,
+    ) -> Result<(
+        &mut super::super::PreparedSourceOriginalV5,
+        Option<super::super::OriginalReleaseClockLoanV1<'_>>,
+    ), ProviderLedgerError> {
+        let child = self.original_completion.as_mut()
+            .and_then(|completion| completion.held.as_mut())
+            .and_then(|held| held.release.as_mut())
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        let clock = super::super::OriginalReleaseClockLoanV1 {
+            clock: child.clock.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(ProviderLedgerError::Unavailable)?,
+            current: child.current.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(ProviderLedgerError::Unavailable)?,
+            signed: child.signed.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(ProviderLedgerError::Unavailable)?,
+        };
+        let append = child.status.as_mut().and_then(|status| status.append.as_mut())
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        Ok((append, Some(clock)))
+    }
+
     pub(in crate::owner::original_journal) fn original_release_append_parts_v1(
         &mut self,
     ) -> Result<(
