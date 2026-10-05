@@ -2,7 +2,7 @@
 //!
 //! Activation writes an AOS package event log at
 //! `/run/log/aos-packages.cel` and, on the live system root, extends PCR 15
-//! through AOS-built `systemd-pcrextend`. The measured package tuple is:
+//! through AOS-built TPM tools. The measured package tuple is:
 //!
 //! ```text
 //! H(name || version || root-digest || manifest-digest)
@@ -29,7 +29,7 @@ use crate::types::PackageMeta;
 use crate::types::{ApmMeta, InstalledMeta};
 
 const AOS_PACKAGE_CEL_REL: &str = "run/log/aos-packages.cel";
-const PCR_EXTEND_ENV: &str = "AOS_SYSTEMD_PCREXTEND";
+const TPM2_PCREXTEND_ENV: &str = "AOS_TPM2_PCREXTEND";
 const TPM2_CREATEEK_ENV: &str = "AOS_TPM2_CREATEEK";
 const TPM2_CREATEAK_ENV: &str = "AOS_TPM2_CREATEAK";
 const TPM2_READPUBLIC_ENV: &str = "AOS_TPM2_READPUBLIC";
@@ -64,7 +64,7 @@ const GENERATION_EVENT_TYPE: &str = "aos-generation-attestation";
 /// # Errors
 ///
 /// Returns an error if the event log cannot be updated or PCR 15 extension
-/// fails through the AOS-built systemd helper.
+/// fails through the AOS-built TPM helper.
 pub(crate) fn measure_generation_attestation(
     root: &Path,
     generation_id: &str,
@@ -105,7 +105,7 @@ pub(crate) fn measure_generation_attestation(
                 "generation attestation {generation_id:?} CEL recovery disagrees with live PCR 15"
             );
         }
-        let pcrextend = trusted_systemd_pcrextend_path()?;
+        let pcrextend = trusted_tpm2_tool_path(TPM2_PCREXTEND_ENV, "tpm2_pcrextend")?;
         extend_pcr15(&pcrextend, std::slice::from_ref(&event))?;
         return Ok(true);
     }
@@ -138,7 +138,7 @@ pub(crate) fn measure_generation_attestation(
     if !has_tpm {
         return Ok(false);
     }
-    let pcrextend = trusted_systemd_pcrextend_path()?;
+    let pcrextend = trusted_tpm2_tool_path(TPM2_PCREXTEND_ENV, "tpm2_pcrextend")?;
     // Once extension has been attempted, its outcome is ambiguous: the TPM may
     // have committed the new PCR value even when the helper subsequently
     // reports failure. Keep the fsynced CEL event and the caller's durable
@@ -2217,23 +2217,21 @@ fn event_digest_hex(event: &str) -> String {
 }
 
 fn extend_pcr15(pcrextend: &Path, events: &[MeasurementEvent]) -> Result<()> {
+    let tcti = tpm2_tcti()?;
     for event in events {
         if !event.extends_pcr {
             continue;
         }
-        let status = Command::new(pcrextend)
-            .arg("--graceful")
-            .arg(format!("--bank={PCR_BANK}"))
-            .arg(format!("--pcr={PCR_INDEX}"))
-            .arg(&event.word)
-            .status()
-            .with_context(|| format!("running {}", pcrextend.display()))?;
-        if !status.success() {
-            bail!(
-                "{} failed to extend PCR {PCR_INDEX}: {status}",
-                pcrextend.display()
-            );
+        let digest = digest_for_word(&event.word);
+        if event.digest != format!("sha256:{digest}") {
+            bail!("PCR {PCR_INDEX} event digest differs from its exact recorded bytes");
         }
+        // Hash the same bytes retained in the AOS CEL, then submit the digest.
+        // Passing the full record as one argument exceeds exec's per-argument
+        // limit for realistic generation graphs. This retains the same TPM
+        // transition and keeps the complete event in AOS's authoritative log.
+        let argument = OsString::from(format!("{PCR_INDEX}:{PCR_BANK}={digest}"));
+        run_tpm2_tool(pcrextend, &[argument], tcti.as_deref())?;
     }
     Ok(())
 }
@@ -2362,35 +2360,6 @@ fn event_log_line(sequence_number: usize, event: &MeasurementEvent) -> Result<St
     serde_json::to_string(&record).context("serializing package measurement event")
 }
 
-fn trusted_systemd_pcrextend_path() -> Result<PathBuf> {
-    if let Ok(path) = std::env::var(PCR_EXTEND_ENV).or_else(|error| match error {
-        std::env::VarError::NotPresent => option_env!("AOS_SYSTEMD_PCREXTEND")
-            .map(str::to_owned)
-            .ok_or(std::env::VarError::NotPresent),
-        error => Err(error),
-    }) {
-        if path.is_empty() {
-            bail!("{PCR_EXTEND_ENV} must not be empty");
-        }
-        if !path.starts_with('/') || !path.ends_with("/lib/systemd/systemd-pcrextend") {
-            bail!("{PCR_EXTEND_ENV} must point to an absolute systemd-pcrextend binary");
-        }
-        return Ok(PathBuf::from(path));
-    }
-
-    #[cfg(test)]
-    {
-        return Ok(PathBuf::from(
-            "/nix/store/hash-systemd-0/lib/systemd/systemd-pcrextend",
-        ));
-    }
-
-    #[cfg(not(test))]
-    {
-        bail!("{PCR_EXTEND_ENV} is not configured for package-set measurement");
-    }
-}
-
 fn trusted_tpm2_tool_path(env_name: &str, bin_name: &str) -> Result<PathBuf> {
     let path = std::env::var(env_name)
         .ok()
@@ -2408,6 +2377,7 @@ fn compiled_tpm2_tool_path(env_name: &str) -> Option<&'static str> {
         TPM2_READPUBLIC_ENV => option_env!("AOS_TPM2_READPUBLIC"),
         TPM2_QUOTE_ENV => option_env!("AOS_TPM2_QUOTE"),
         TPM2_PCRREAD_ENV => option_env!("AOS_TPM2_PCRREAD"),
+        TPM2_PCREXTEND_ENV => option_env!("AOS_TPM2_PCREXTEND"),
         TPM2_CHECKQUOTE_ENV => option_env!("AOS_TPM2_CHECKQUOTE"),
         TPM2_FLUSHCONTEXT_ENV => option_env!("AOS_TPM2_FLUSHCONTEXT"),
         _ => None,
@@ -2653,6 +2623,159 @@ mod tests {
         PackageMeta,
     };
     use tempfile::TempDir;
+
+    fn pcr_extension_witness(directory: &Path, exit_status: u8) -> (PathBuf, PathBuf) {
+        let bash = std::env::split_paths(&std::env::var_os("PATH").expect("tool PATH"))
+            .filter(|directory| directory.starts_with("/nix/store"))
+            .map(|directory| directory.join("bash"))
+            .find(|path| path.is_file())
+            .expect("source-built AOS Bash must be in PATH");
+        let bash = fs::canonicalize(bash).expect("resolve source-built Bash");
+        assert!(bash.starts_with("/nix/store"));
+
+        let executable = directory.join("pcrextend-witness");
+        let capture = directory.join("arguments");
+        let quoted_capture = capture.display().to_string().replace('\'', "'\\''");
+        fs::write(
+            &executable,
+            format!(
+                "#!{}\nprintf '%s\\n' \"$#\" \"$@\" > '{}'\nexit {}\n",
+                bash.display(),
+                quoted_capture,
+                exit_status
+            ),
+        )
+        .expect("write process witness");
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700))
+            .expect("make process witness executable");
+        (executable, capture)
+    }
+
+    fn large_generation_event() -> MeasurementEvent {
+        let content = format!("sha256:{}", "c".repeat(64));
+        let activation_id = format!("sha256:{}", "a".repeat(64));
+        let record = serde_json::json!({
+            "schema": crate::attestation::native::GENERATION_SCHEMA,
+            "sequence": 1,
+            "profile_generation": 1,
+            "content": content,
+            "activation_id": activation_id,
+            "quote": "",
+            "inputs": {"retained-evidence": "x".repeat(2 * 1024 * 1024)}
+        });
+        let word = String::from_utf8(
+            aos_contract::canonical::canonical_json(&record).expect("canonical generation"),
+        )
+        .expect("canonical JSON is UTF-8");
+        MeasurementEvent {
+            event_type: GENERATION_EVENT_TYPE,
+            digest: format!("sha256:{}", digest_for_word(&word)),
+            word,
+            extends_pcr: true,
+            pcr_value: None,
+            package: None,
+            package_count: None,
+            generation_id: Some(format!("1:{content}")),
+            activation_id: Some(activation_id),
+        }
+    }
+
+    #[test]
+    fn pcr_extension_transports_large_records_as_exact_bounded_digest_arguments() {
+        // This is a real process/argv witness, not a simulated TPM proof.
+        let tmp = tempfile::tempdir().expect("fixture");
+        let (executable, capture) = pcr_extension_witness(tmp.path(), 0);
+        let event = large_generation_event();
+        assert!(event.word.len() > 2 * 1024 * 1024);
+        append_event_log(tmp.path(), std::slice::from_ref(&event)).expect("durable CEL");
+        let cel_path = tmp.path().join(AOS_PACKAGE_CEL_REL);
+        let before = fs::read(&cel_path).expect("original CEL bytes");
+
+        extend_pcr15(&executable, std::slice::from_ref(&event)).expect("bounded process transport");
+
+        let argument = format!(
+            "15:sha256={}",
+            hex::encode(Sha256::digest(event.word.as_bytes()))
+        );
+        assert_eq!(
+            fs::read_to_string(capture).unwrap(),
+            format!("1\n{argument}\n")
+        );
+        assert!(argument.len() < 128);
+        assert_eq!(fs::read(&cel_path).unwrap(), before);
+        let record: OwnedEventLogRecord = serde_json::from_slice(&before).expect("CEL event");
+        assert_eq!(record.event, event.word);
+        assert_eq!(record.digest, event.digest);
+
+        let recovery =
+            generation_measurement_recovery(tmp.path(), &event).expect("recover exact event");
+        let mut expected = Sha256::new();
+        expected.update([0u8; 32]);
+        expected.update(Sha256::digest(event.word.as_bytes()));
+        assert_eq!(recovery.before, format!("sha256:{}", "0".repeat(64)));
+        assert_eq!(
+            recovery.after,
+            format!("sha256:{}", hex::encode(expected.finalize()))
+        );
+        assert_eq!(recovery.replayed, recovery.after);
+        assert!(recovery.found && !recovery.has_later_extends);
+        let log = String::from_utf8(before).unwrap();
+        verify_package_event_log_against_measurement_catalog(&log, &recovery.after, None, &[])
+            .expect("unchanged full-record CEL verifies");
+    }
+
+    #[test]
+    fn pcr_extension_rejects_digest_mismatch_before_starting_the_process() {
+        let tmp = tempfile::tempdir().expect("fixture");
+        let (executable, capture) = pcr_extension_witness(tmp.path(), 0);
+        let mut event = large_generation_event();
+        event.digest = format!("sha256:{}", "0".repeat(64));
+
+        let error = extend_pcr15(&executable, &[event]).expect_err("mismatched event");
+
+        assert!(
+            error
+                .to_string()
+                .contains("differs from its exact recorded bytes")
+        );
+        assert!(
+            !capture.exists(),
+            "the helper must not run for a mismatched digest"
+        );
+    }
+
+    #[test]
+    fn pcr_extension_failure_preserves_durable_cel_and_recovery_prefix() {
+        let tmp = tempfile::tempdir().expect("fixture");
+        let (executable, capture) = pcr_extension_witness(tmp.path(), 23);
+        let event = large_generation_event();
+        append_event_log(tmp.path(), std::slice::from_ref(&event))
+            .expect("durable CEL before extension");
+        let cel_path = tmp.path().join(AOS_PACKAGE_CEL_REL);
+        let before = fs::read(&cel_path).unwrap();
+        let prefix = generation_measurement_recovery(tmp.path(), &event).unwrap();
+
+        extend_pcr15(&executable, std::slice::from_ref(&event))
+            .expect_err("failed process witness");
+
+        assert!(capture.exists(), "the real helper process ran and failed");
+        assert_eq!(fs::read(&cel_path).unwrap(), before);
+        let recovery = generation_measurement_recovery(tmp.path(), &event).unwrap();
+        assert_eq!(recovery.before, prefix.before);
+        assert_eq!(recovery.after, prefix.after);
+        assert!(recovery.found && !recovery.has_later_extends);
+        // A TPM-less retry reads the original event rather than appending it.
+        assert!(
+            !measure_generation_attestation(
+                tmp.path(),
+                event.generation_id.as_deref().unwrap(),
+                event.activation_id.as_deref().unwrap(),
+                event.word.as_bytes(),
+            )
+            .unwrap()
+        );
+        assert_eq!(fs::read(&cel_path).unwrap(), before);
+    }
 
     fn installed_fixture(manifest: &[u8]) -> InstalledMeta {
         let document_digest = package_manifest_digest_bytes(manifest);
