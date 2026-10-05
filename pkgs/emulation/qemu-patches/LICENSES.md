@@ -162,16 +162,20 @@ complete corresponding-source artifact retains the fixture and its builder.
 The private joined block-wait unit overlays these test-only files in its
 temporary QEMU build tree. Each checked-in fixture declares GPL-2.0-only:
 
-| Checked-in fixture | Temporary build overlay | License |
-| --- | --- | --- |
-| `tests/crucible/native/block-wait-completion.c` | `tests/unit/block-wait-completion.c` | GPL-2.0-only |
-| `tests/crucible/native/block-wait-completion.h` | `tests/unit/block-wait-completion.h` | GPL-2.0-only |
-| `tests/crucible/native/block-wait-icount-provider.c` | `stubs/icount.c` | GPL-2.0-only |
-| `tests/crucible/native/block-wait-completion-bodies.py` | Generates `tests/unit/block-wait-completion-bodies.inc` from selected QEMU bodies | GPL-2.0-only |
+- `tests/crucible/native/block-wait-completion.c` is GPL-2.0-only and is copied
+  to `tests/unit/block-wait-completion.c`.
+- `tests/crucible/native/block-wait-completion.h` is GPL-2.0-only and is copied
+  to `tests/unit/block-wait-completion.h`.
+- `tests/crucible/native/block-wait-icount-provider.c` is GPL-2.0-only and is
+  copied to `stubs/icount.c`.
+- `tests/crucible/native/block-wait-completion-bodies.py` is GPL-2.0-only and
+  generates `tests/unit/block-wait-completion-bodies.inc` from selected QEMU
+  bodies.
 
 The generated definitions preserve their selected QEMU source licenses.
 `tests/crucible/native/block-wait-completion.nix` builds a private, non-distributable
 loadable unit for the GPL-side Rust plugin tests, not a standalone emulator or
 Apache host library. The unit uses explicit CPU, clock, and context providers;
-it does not qualify a physical guest or the complete TCG loop. This unit is not a publication root. Any distributed binary must retain the matching
-complete corresponding-source artifact, including these fixtures and builder.
+it does not qualify a physical guest or the complete TCG loop. This unit is not
+a publication root. Any distributed binary must retain the matching complete
+corresponding-source artifact, including these fixtures and builder.
