@@ -251,6 +251,16 @@ fn comparison_refusal_stays_within_existing_result_budget() {
 
     candidate.canonical.control_returns = baseline.canonical.control_returns;
     assert!(compare(&baseline, &candidate).is_ok());
+
+    candidate.canonical.transcript.replace_range(..1, "y");
+    let detail = compare(&baseline, &candidate)
+        .expect_err("bounded mismatched transcript")
+        .to_string();
+    assert!(detail.len() <= 16 * 1024, "{} bytes", detail.len());
+    assert!(detail.contains("difference=transcript_blake3"));
+    assert!(detail.contains("raw_blake3="));
+    assert!(detail.contains("classification_blake3="));
+    assert!(detail.contains("idle_blake3="));
 }
 
 #[test]
@@ -389,4 +399,119 @@ fn diagnostics_cannot_change_original_success_and_forward_exact_control_bytes() 
     }
     assert_eq!(original.finalize(), forwarded.finalize());
     assert_eq!(original.finalize(), diagnostics.finish().control);
+}
+
+fn control_evidence(raw: u64, classification: [u8; 2], idle: (u64, Option<u64>)) -> BootProbe {
+    let mut result = evidence();
+    let mut combined = blake3::Hasher::new();
+    let mut diagnostics = TranscriptDiagnostics::new();
+    {
+        let mut control = ControlTranscript::new(&mut combined, &mut diagnostics);
+        for scalar in [1_u64, 200, 200, 200] {
+            control.update(&scalar.to_le_bytes());
+        }
+        control.update_raw(&raw.to_le_bytes());
+        control.update(&0_u64.to_le_bytes());
+        for tag in classification {
+            control.update_classification(&[tag]);
+        }
+        control.update_idle(&idle.0.to_le_bytes());
+        control.update_idle(&[u8::from(idle.1.is_some())]);
+        control.update_idle(&idle.1.unwrap_or(0).to_le_bytes());
+    }
+    result.canonical.transcript = combined.finalize().to_hex().to_string();
+    result.diagnostics = diagnostics.finish();
+    result
+}
+
+#[test]
+fn control_subdigests_forward_the_original_serialized_bytes_in_order() {
+    let observed = control_evidence(4, [0, 2], (200, Some(250)));
+    let mut original = blake3::Hasher::new();
+    for scalar in [1_u64, 200, 200, 200, 4, 0] {
+        original.update(&scalar.to_le_bytes());
+    }
+    original.update(&[0]);
+    original.update(&[2]);
+    original.update(&200_u64.to_le_bytes());
+    original.update(&[1]);
+    original.update(&250_u64.to_le_bytes());
+
+    assert_eq!(
+        observed.canonical.transcript,
+        original.finalize().to_hex().to_string()
+    );
+    assert_eq!(observed.diagnostics.control, original.finalize());
+    assert_eq!(observed.diagnostics.raw, blake3::hash(&4_u64.to_le_bytes()));
+    assert_eq!(observed.diagnostics.classification, blake3::hash(&[0, 2]));
+
+    let mut original_idle = blake3::Hasher::new();
+    original_idle.update(&200_u64.to_le_bytes());
+    original_idle.update(&[1]);
+    original_idle.update(&250_u64.to_le_bytes());
+    assert_eq!(observed.diagnostics.idle, original_idle.finalize());
+}
+
+#[test]
+fn control_field_mutations_are_localized_without_changing_original_refusal() {
+    let baseline = control_evidence(4, [0, 2], (200, Some(250)));
+    let mutations = [
+        (
+            control_evidence(5, [0, 2], (200, Some(250))),
+            [true, false, false],
+        ),
+        (
+            control_evidence(4, [1, 2], (200, Some(250))),
+            [false, true, false],
+        ),
+        (
+            control_evidence(4, [0, 1], (200, Some(250))),
+            [false, true, false],
+        ),
+        (
+            control_evidence(4, [0, 2], (201, Some(250))),
+            [false, false, true],
+        ),
+        (
+            control_evidence(4, [0, 2], (200, None)),
+            [false, false, true],
+        ),
+        (
+            control_evidence(4, [0, 2], (200, Some(240))),
+            [false, false, true],
+        ),
+    ];
+
+    for (candidate, expected) in mutations {
+        assert_eq!(
+            [
+                baseline.diagnostics.raw != candidate.diagnostics.raw,
+                baseline.diagnostics.classification != candidate.diagnostics.classification,
+                baseline.diagnostics.idle != candidate.diagnostics.idle,
+            ],
+            expected,
+        );
+        assert_ne!(baseline.diagnostics.control, candidate.diagnostics.control);
+        assert_eq!(
+            baseline.diagnostics.framed_console,
+            candidate.diagnostics.framed_console
+        );
+        assert_eq!(
+            baseline.diagnostics.console_bytes,
+            candidate.diagnostics.console_bytes
+        );
+        let detail = compare(&baseline, &candidate)
+            .expect_err("original transcript changed")
+            .to_string();
+        assert!(detail.contains("difference=transcript_blake3"));
+        assert!(detail.contains("raw_blake3="));
+        assert!(detail.contains("classification_blake3="));
+        assert!(detail.contains("idle_blake3="));
+    }
+
+    let mut diagnostic_only = control_evidence(4, [0, 2], (200, Some(250)));
+    diagnostic_only.diagnostics.raw = blake3::hash(b"advisory raw difference");
+    diagnostic_only.diagnostics.classification = blake3::hash(b"advisory stop difference");
+    diagnostic_only.diagnostics.idle = blake3::hash(b"advisory idle difference");
+    assert!(compare(&baseline, &diagnostic_only).is_ok());
 }

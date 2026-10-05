@@ -1,6 +1,7 @@
 //! Exercises the real mapped ACK handshake with the isolated poll cap.
 
 use super::*;
+use crucible::Icount;
 use std::io::{Read, Write};
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
@@ -93,4 +94,71 @@ fn ack_poll_cap_does_not_accept_an_absent_ack_or_extend_expired_guard() {
     assert_eq!(refused.control_boundary_ack & 1, 0);
     assert_eq!(refused.current_icount, 40);
     assert_eq!(refused.max_advance_icount, 40);
+}
+
+#[test]
+fn mapped_settled_clamp_keeps_coordinates_across_idle_publication_phases() {
+    let (plugin, runtime, _notifications) = mapped_runtime();
+    let slot = fixture(plugin.node_slot(0));
+    fixture(slot.publish_idle(40, 200));
+    let generation = fixture(slot.request_control_boundary(0, None));
+    fixture(slot.publish_control_boundary(40, 0));
+    slot.acknowledge_control_boundary();
+    let snapshot = || fixture(runtime.region.node_slot(0)).snapshot();
+
+    let idle_snapshot = snapshot();
+    assert_eq!(
+        idle_snapshot.control_boundary_ack,
+        generation.wrapping_add(1)
+    );
+    assert!(completed_quantum_clamp_is_settled(
+        true,
+        true,
+        40,
+        200,
+        false,
+        &idle_snapshot
+    ));
+    let idle = crate::quantum::idle_state_from_snapshot(idle_snapshot);
+    assert_eq!(idle.next_deadline, Some(Icount { retired: 200 }));
+
+    slot.mark_running();
+    let running_snapshot = snapshot();
+    assert!(completed_quantum_clamp_is_settled(
+        true,
+        true,
+        40,
+        200,
+        false,
+        &running_snapshot
+    ));
+    let running = crate::quantum::idle_state_from_snapshot(running_snapshot);
+    assert_eq!(running.next_deadline, None);
+
+    fixture(slot.publish_idle(40, 180));
+    let tightened_snapshot = snapshot();
+    assert!(completed_quantum_clamp_is_settled(
+        true,
+        true,
+        40,
+        200,
+        false,
+        &tightened_snapshot
+    ));
+    assert_eq!(
+        crate::quantum::idle_state_from_snapshot(tightened_snapshot).next_deadline,
+        Some(Icount { retired: 180 })
+    );
+
+    for observed in [idle_snapshot, running_snapshot, tightened_snapshot] {
+        assert_eq!(observed.current_icount, 40);
+        assert_eq!(observed.logical_time_raw_icount, 0);
+        assert_eq!(observed.max_advance_icount, 40);
+        assert_eq!(observed.control_boundary_ack, generation.wrapping_add(1));
+        assert_eq!(observed.device_io_active, 0);
+    }
+    assert_eq!(
+        running_snapshot.idle_wake_icount,
+        idle_snapshot.idle_wake_icount
+    );
 }

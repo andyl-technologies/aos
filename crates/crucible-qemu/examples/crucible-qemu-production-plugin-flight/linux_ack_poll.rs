@@ -199,24 +199,24 @@ pub(super) fn probe(node: &mut QemuNode) -> Result<BootProbe, ProbeError> {
                     target,
                     observation.reached.ticks,
                     calibration.logical_icount,
-                    calibration.raw_icount,
-                    u64::from(projected),
                 ] {
                     transcript.update(&scalar.to_le_bytes());
                 }
-                transcript.update(&[match observation.outcome {
+                transcript.update_raw(&calibration.raw_icount.to_le_bytes());
+                transcript.update(&u64::from(projected).to_le_bytes());
+                transcript.update_classification(&[match observation.outcome {
                     AdvanceOutcome::ReachedHorizon => 0,
                     AdvanceOutcome::Paused { .. } => 1,
                 }]);
-                transcript.update(&[match observation.physical_stop {
+                transcript.update_classification(&[match observation.physical_stop {
                     BackendPhysicalStop::Horizon => 0,
                     BackendPhysicalStop::UnclassifiedPause => 1,
                     BackendPhysicalStop::Idle => 2,
                     _ => return Err(ProbeError::InvalidEvidence("unmodeled physical output")),
                 }]);
-                transcript.update(&idle.current_icount.retired.to_le_bytes());
-                transcript.update(&[u8::from(idle.next_deadline.is_some())]);
-                transcript.update(
+                transcript.update_idle(&idle.current_icount.retired.to_le_bytes());
+                transcript.update_idle(&[u8::from(idle.next_deadline.is_some())]);
+                transcript.update_idle(
                     &idle
                         .next_deadline
                         .map_or(0, |deadline| deadline.retired)
@@ -386,13 +386,14 @@ fn compare(baseline: &BootProbe, candidate: &BootProbe) -> Result<(), ProbeError
 fn describe_canonical(evidence: &CanonicalProbe) -> String {
     // Boundary samples contain only fixed-size scalar/digest arrays. A genuine
     // transcript is a 64-character hash, never the original console payload.
+    // Compact debug separators retain every original field and array value
+    // while leaving room for fixed diagnostic digests in the result budget.
+    let initial = format!("{:?}", evidence.initial).replace(", ", ",");
+    let final_boundary = format!("{:?}", evidence.final_boundary).replace(", ", ",");
     let transcript = evidence.transcript.chars().take(64).collect::<String>();
     format!(
-        "control_returns={},projected_grants={},initial={:?},final_boundary={:?},transcript_blake3={transcript}",
-        evidence.control_returns,
-        evidence.projected_grants,
-        evidence.initial,
-        evidence.final_boundary,
+        "control_returns={},projected_grants={},initial={initial},final_boundary={final_boundary},transcript_blake3={transcript}",
+        evidence.control_returns, evidence.projected_grants,
     )
 }
 
