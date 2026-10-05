@@ -15,10 +15,8 @@ fn pipe() -> (File, File) {
     let mut descriptors = [-1; 2];
     // SAFETY: storage has two writable descriptor slots; successful creation
     // transfers each owned descriptor exactly once into a File below.
-    assert_eq!(
-        unsafe { libc::pipe2(descriptors.as_mut_ptr(), libc::O_CLOEXEC) },
-        0
-    );
+    let status = unsafe { libc::pipe2(descriptors.as_mut_ptr(), libc::O_CLOEXEC) };
+    assert_eq!(status, 0);
     use std::os::fd::FromRawFd;
     // SAFETY: pipe2 returned the two distinct descriptors owned above.
     unsafe {

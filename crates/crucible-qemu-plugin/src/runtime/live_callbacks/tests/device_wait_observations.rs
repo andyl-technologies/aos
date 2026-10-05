@@ -134,10 +134,8 @@ fn genuine_callback_ignores_full_fifo_and_busy_capture_without_changing_completi
     let mut descriptors = [-1; 2];
     // SAFETY: storage owns two output slots; success transfers each descriptor
     // exactly once into a File whose lifetime covers the complete callback test.
-    assert_eq!(
-        unsafe { libc::pipe2(descriptors.as_mut_ptr(), libc::O_CLOEXEC) },
-        0
-    );
+    let status = unsafe { libc::pipe2(descriptors.as_mut_ptr(), libc::O_CLOEXEC) };
+    assert_eq!(status, 0);
     // SAFETY: successful pipe2 created both distinct owned descriptors above.
     let (reader, original) = unsafe {
         (
