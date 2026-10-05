@@ -58,7 +58,9 @@ long_mode:
     lea idt(%rip), %rax
     movq %rax, idt_descriptor + 2
     lidt idt_descriptor
-.if TEST_MODE == 19
+.if TEST_MODE == 23
+    movb $0x7e, scenario_result
+.elseif TEST_MODE == 19
     movb $0x7e, fetch_result
 0:
     cmpb $0x7f, fetch_result
@@ -175,6 +177,19 @@ retrying_load:
     wrmsr
     mov $nested_vmcb, %rax
     .byte 0x0f, 0x01, 0xd8
+.elseif TEST_MODE == 23
+    /* The descriptor remains pending until the modeled service deadline. */
+    movl $0x0a000000, scenario_result + 0x20(%rip)
+    movl $0x04000000, scenario_result + 0x24(%rip)
+    movabs $0x0020100000000000, %rax
+    movq %rax, scenario_result + 0x28(%rip)
+    xor %eax, %eax
+    mov $0x514, %dx
+    outl %eax, %dx
+    mov $scenario_result + 0x20, %eax
+    bswap %eax
+    mov $0x518, %dx
+    outl %eax, %dx
 .else
     .error "unknown TEST_MODE"
 .endif

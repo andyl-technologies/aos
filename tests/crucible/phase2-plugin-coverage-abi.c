@@ -30,8 +30,8 @@ static uint64_t observed_entry_icount;
 static void
 coverage_probe_translate(struct qemu_plugin_tb *tb, void *userdata)
 {
-  (void)tb;
   (void)userdata;
+  (void)tb;
 }
 
 static void

@@ -128,9 +128,12 @@ pub(super) fn signature_returns_result(signature: &str) -> bool {
         .next()
         .unwrap_or(&signature[return_start..])
         .trim();
-    return_type
-        .split(|character: char| character == '_' || !character.is_ascii_alphanumeric())
-        .any(|identifier| identifier == "Result")
+    let outer_type = return_type
+        .split(['<', ' ', '{'])
+        .next()
+        .unwrap_or(return_type)
+        .trim();
+    outer_type.rsplit("::").next() == Some("Result")
 }
 
 pub(super) fn function_name(signature: &str) -> String {

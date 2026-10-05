@@ -380,7 +380,7 @@ in {
         # machines the PCR measurement is skipped entirely (see
         # `measure_activated_packages` in crates/aos-package), so there is
         # nothing to quote — skip cleanly instead of failing. This keeps the
-        # `apm upgrade --system` reconcile from failing on TPM-less hosts that
+        # `apm image upgrade` reconcile from failing on TPM-less hosts that
         # bundle an exposed package (the same "degrade gracefully" intent as the
         # measurement gate). `tpm2_tcti` probes these same device nodes.
         if [ ! -e /dev/tpmrm0 ] && [ ! -e /dev/tpm0 ]; then
@@ -427,7 +427,7 @@ in {
         if [ -e /run/aos/manifest.json ]; then
           exit 0
         fi
-        AOS_EXPOSE_START_NO_WAIT=1 ${pkgs.aos.apm}/bin/apm install --system --from /etc/aos/packages.d/desired.toml --yes
+        AOS_EXPOSE_START_NO_WAIT=1 ${pkgs.aos.apm}/bin/apm apply --system --from /etc/aos/packages.d/desired.toml --yes
       '';
     };
 

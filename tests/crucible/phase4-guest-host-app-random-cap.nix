@@ -58,10 +58,6 @@
         needle = "from_canonical_material_with_seed_and_app_random_draw_cap";
       }
       {
-        label = "cap-aware world helper";
-        needle = "scenario_def_with_seed_and_app_random_draw_cap";
-      }
-      {
         label = "cap-aware scenario form constructor";
         needle = "from_components_with_app_random_draw_cap";
       }
@@ -108,10 +104,6 @@
         needle = "count_app_random_draws(configuration.schedule.decisions())";
       }
       {
-        label = "cap reservation helper";
-        needle = "fn reserve_app_random_draw";
-      }
-      {
         label = "typed cap error";
         needle = "AppRandomDrawCapExceeded";
       }
@@ -120,16 +112,8 @@
         needle = "app-random draw {attempted} exceeds scenario cap {cap}";
       }
       {
-        label = "request cap test";
-        needle = "decision_recorder_enforces_app_random_draw_cap";
-      }
-      {
-        label = "resume cap test";
-        needle = "decision_recorder_counts_existing_app_random_decisions_against_cap";
-      }
-      {
-        label = "override cap test";
-        needle = "decision_recorder_app_random_override_obeys_draw_cap";
+        label = "typed request and resume cap test";
+        needle = "typed_app_random_selection_counts_against_cap_after_resume";
       }
       {
         label = "cap scenario hash test";
@@ -138,10 +122,6 @@
       {
         label = "cap scenario form serialization test";
         needle = "app_random_draw_cap_round_trips_through_scenario_form_serialization";
-      }
-      {
-        label = "checked step and reduce cap test";
-        needle = "app_random_draw_cap_fails_loud_in_checked_step_and_reduce";
       }
     ]
     ++ failuresFor "crates/crucible/tests/guest_host_channel_determinism.rs" channelDeterminismTest [

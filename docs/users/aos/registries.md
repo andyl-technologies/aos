@@ -168,13 +168,12 @@ resolution within the selected registry:
 
 ```sh
 apm search acme-agent --system --registry acme
-apm install acme-agent --registry acme --dry-run
+apm install --system acme-agent --registry acme --dry-run
 ```
 
-For machine-wide ordinary packages, use the desired-state workflow in [Manage
-packages with APM](packages.md). The direct
-`apm install PACKAGE --system --registry ...` form is reserved for a package
-marked as the system sysroot.
+Use `apm install --system PACKAGE --registry NAME` for machine-wide packages,
+or omit `--system` for personal packages. See [Manage packages with APM](packages.md).
+OS-image installation uses `apm image install PACKAGE --registry NAME`.
 
 ## Understand registry verification
 

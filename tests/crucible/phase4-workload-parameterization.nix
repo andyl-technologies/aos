@@ -89,10 +89,6 @@
         needle = "pub fn workload_config_trees(&self) -> Vec<WorldWorkloadConfigTree>";
       }
       {
-        label = "node-template scalar helper";
-        needle = "pub fn guest_workload_scalar_parameter";
-      }
-      {
         label = "node-template config helper";
         needle = "pub fn guest_workload_config_tree";
       }

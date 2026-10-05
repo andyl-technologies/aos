@@ -1,0 +1,857 @@
+//! Frontier ceiling and restart scale regressions.
+
+use super::*;
+
+#[test]
+fn spent_requests_leave_active_scan_without_losing_cold_history() -> Result<(), Box<dyn Error>> {
+    const REQUESTS: usize = 17;
+    let campaign = "active-scan-retirement";
+    let fixture = GateFixture::new(
+        campaign,
+        CampaignMode::Strict,
+        tree_search_explorer()?,
+        &BTreeMap::new(),
+    )?;
+    fixture.create_funded_running(campaign, &BTreeMap::new(), REQUESTS as u64)?;
+    for number in 0..REQUESTS {
+        let label = format!("{campaign}-{number}");
+        let (domain, alternatives) = discrete_domain(&label, 1)?;
+        let value = ChoiceValue::Discrete(alternatives[0]);
+        let request = request_for_source(
+            &fixture,
+            &domain,
+            value.clone(),
+            CandidateSource::finite(BTreeSet::from([value]))?,
+            BranchRequestCause::Operator(command_id(&label, "request")),
+            &label,
+            BranchBudget::new(1, 1)?,
+        )?;
+        let head = fixture.repository.head(campaign)?;
+        discover_and_submit(&fixture, campaign, head.snapshot_id(), &request)?;
+    }
+
+    let mut planner = planner_driver(&fixture)?;
+    assert!(matches!(
+        planner.step(campaign)?,
+        CampaignPlannerStepOutcome::Advanced {
+            disposition: PlannerDisposition::ContinueScan { .. },
+            ..
+        }
+    ));
+    for number in 0..REQUESTS {
+        let CampaignPlannerStepOutcome::Advanced {
+            disposition:
+                PlannerDisposition::Issue {
+                    issued_proposals, ..
+                },
+            ..
+        } = planner.step(campaign)?
+        else {
+            return Err(format!("request {number} did not issue").into());
+        };
+        assert_eq!(issued_proposals.len(), 1);
+    }
+
+    let cold = CampaignRepository::with_component_authorities(
+        fixture.blobs.clone(),
+        fixture.refs.clone(),
+        fixture.planner_authority.clone(),
+        fixture.debugger_authority.clone(),
+    )?;
+    let head = cold.head(campaign)?;
+    let grant = cold.apply_control(
+        campaign,
+        &ControlRequest {
+            command: command_id(campaign, "later-budget-grant"),
+            expected_snapshot: head.snapshot_id(),
+            action: CampaignControlAction::GrantBudget(BudgetGrant::new(1, 1)?),
+        },
+    )?;
+    assert_eq!(cold.head(campaign)?.snapshot_id(), grant.new_snapshot);
+    assert!(!matches!(
+        planner.step(campaign)?,
+        CampaignPlannerStepOutcome::Advanced {
+            disposition: PlannerDisposition::Issue { .. },
+            ..
+        }
+    ));
+    Ok(())
+}
+
+#[test]
+fn proposal_head_tracks_pending_and_out_of_order_admission() -> Result<(), Box<dyn Error>> {
+    let fixture = GateFixture::new(
+        "proposal-head-pending",
+        CampaignMode::Strict,
+        tree_search_explorer()?,
+        &BTreeMap::new(),
+    )?;
+    let campaign = "proposal-head-pending";
+    let head = fixture.create_funded_running(campaign, &BTreeMap::new(), 3)?;
+    let (domain, alternatives) = discrete_domain(campaign, 3)?;
+    let request = request_for_source(
+        &fixture,
+        &domain,
+        ChoiceValue::Discrete(alternatives[0]),
+        CandidateSource::finite(
+            alternatives
+                .iter()
+                .copied()
+                .map(ChoiceValue::Discrete)
+                .collect(),
+        )?,
+        BranchRequestCause::Operator(command_id(campaign, "request")),
+        campaign,
+        BranchBudget::new(3, 3)?,
+    )?;
+    let requested = discover_and_submit(&fixture, campaign, head.snapshot_id(), &request)?;
+
+    let first = proposal(
+        &fixture,
+        &fixture.repository,
+        campaign,
+        &request,
+        ChoiceValue::Discrete(alternatives[0]),
+        1,
+    )?;
+    let first_issued =
+        fixture
+            .repository
+            .issue_proposal(campaign, requested.new_snapshot, &first)?;
+    let second = proposal(
+        &fixture,
+        &fixture.repository,
+        campaign,
+        &request,
+        ChoiceValue::Discrete(alternatives[1]),
+        2,
+    )?;
+    let second_issued =
+        fixture
+            .repository
+            .issue_proposal(campaign, first_issued.new_snapshot, &second)?;
+    let request_id = request.id()?;
+
+    let state = fixture.repository.project_finite_expansion(
+        second_issued.new_snapshot,
+        request.branch_point(),
+        None,
+        16,
+    )?;
+    assert_eq!(
+        fixture
+            .repository
+            .load_expansion_state(state)?
+            .continuations()
+            .get(&request_id),
+        Some(&ContinuationState::Open)
+    );
+
+    let (selection, path, attempt) = branch_attempt(&fixture.repository, &request, &second)?;
+    let admitted = fixture.repository.admit_proposal(
+        campaign,
+        second_issued.new_snapshot,
+        second_issued.proposal,
+        &selection,
+        &path,
+        &attempt,
+    )?;
+    let reopened = CampaignRepository::with_component_authorities(
+        fixture.blobs.clone(),
+        fixture.refs.clone(),
+        fixture.planner_authority.clone(),
+        fixture.debugger_authority.clone(),
+    )?;
+    let state = reopened.project_finite_expansion(
+        admitted.new_snapshot,
+        request.branch_point(),
+        None,
+        16,
+    )?;
+    assert_eq!(
+        reopened
+            .load_expansion_state(state)?
+            .continuations()
+            .get(&request_id),
+        Some(&ContinuationState::Open),
+        "the first pending proposal must remain pending after the second admits"
+    );
+
+    let (selection, path, attempt) = branch_attempt(&reopened, &request, &first)?;
+    let fully_admitted = reopened.admit_proposal(
+        campaign,
+        admitted.new_snapshot,
+        first_issued.proposal,
+        &selection,
+        &path,
+        &attempt,
+    )?;
+    let ready = reopened.project_finite_expansion(
+        fully_admitted.new_snapshot,
+        request.branch_point(),
+        None,
+        16,
+    )?;
+    assert_eq!(
+        reopened
+            .load_expansion_state(ready)?
+            .continuations()
+            .get(&request_id),
+        Some(&ContinuationState::Ready)
+    );
+    let cold = CampaignRepository::with_component_authorities(
+        fixture.blobs.clone(),
+        fixture.refs.clone(),
+        fixture.planner_authority.clone(),
+        fixture.debugger_authority.clone(),
+    )?;
+    let cold_ready = cold.project_finite_expansion(
+        fully_admitted.new_snapshot,
+        request.branch_point(),
+        None,
+        16,
+    )?;
+    assert_eq!(
+        cold.load_expansion_state(cold_ready)?
+            .continuations()
+            .get(&request_id),
+        Some(&ContinuationState::Ready)
+    );
+
+    // A fresh repository must authenticate the full history even though the
+    // latest-head projection can use the indexed ordinal and admission count.
+    fixture
+        .blobs
+        .acquire_inventory_fence()?
+        .delete_candidate(first.id()?.content_id())?;
+    let damaged = CampaignRepository::with_component_authorities(
+        fixture.blobs.clone(),
+        fixture.refs.clone(),
+        fixture.planner_authority.clone(),
+        fixture.debugger_authority.clone(),
+    )?;
+    assert!(damaged.head(campaign).is_err());
+    Ok(())
+}
+
+#[test]
+fn admitted_attempt_planner_queue_profile() -> Result<(), Box<dyn Error>> {
+    const ATTEMPTS: usize = 32;
+    const SCAN_LIMIT: usize = 7;
+
+    let fixture = GateFixture::new(
+        "admitted-attempt-profile",
+        CampaignMode::Strict,
+        tree_search_explorer()?,
+        &BTreeMap::new(),
+    )?;
+    let campaign = "admitted-attempt-profile";
+    let head = fixture.create_funded_running(campaign, &BTreeMap::new(), ATTEMPTS as u64)?;
+    let (domain, alternatives) = discrete_domain(campaign, ATTEMPTS)?;
+    let request = request_for_source(
+        &fixture,
+        &domain,
+        ChoiceValue::Discrete(alternatives[0]),
+        CandidateSource::finite(
+            alternatives
+                .iter()
+                .copied()
+                .map(ChoiceValue::Discrete)
+                .collect(),
+        )?,
+        BranchRequestCause::Operator(command_id(campaign, "request")),
+        campaign,
+        BranchBudget::new(ATTEMPTS as u64, ATTEMPTS as u64)?,
+    )?;
+    discover_and_submit(&fixture, campaign, head.snapshot_id(), &request)?;
+    let baseline_objects = fixture.blobs.object_count()?;
+    let baseline_bytes = fixture.blobs.logical_bytes()?;
+
+    let mut planner = planner_driver(&fixture)?;
+    #[cfg(feature = "test-support")]
+    let mut checkpoint_samples = Vec::with_capacity(ATTEMPTS);
+    #[cfg(feature = "test-support")]
+    let mut prior_checkpoint = planner.validation_checkpoint_metrics(campaign)?;
+    #[cfg(feature = "test-support")]
+    let mut prior_stored_objects = baseline_objects;
+    for _ in 0..ATTEMPTS {
+        let CampaignPlannerStepOutcome::Advanced {
+            result: _result,
+            disposition:
+                PlannerDisposition::Issue {
+                    issued_proposals, ..
+                },
+            ..
+        } = planner.step(campaign)?
+        else {
+            return Err("profile planner did not issue the next attempt".into());
+        };
+        assert_eq!(issued_proposals.len(), 1);
+
+        #[cfg(feature = "test-support")]
+        {
+            let metrics = planner.validation_checkpoint_metrics(campaign)?;
+            let stored_objects = fixture.blobs.object_count()?;
+            let checkpoint_growth = metrics.closure_objects - prior_checkpoint.closure_objects;
+            let stored_growth = stored_objects - prior_stored_objects;
+            assert_eq!(metrics.ancestry_depth, prior_checkpoint.ancestry_depth + 1);
+            assert!(
+                stored_growth <= checkpoint_growth,
+                "all newly stored objects must fit within the checkpoint's closure growth bound"
+            );
+            prior_checkpoint = metrics;
+            prior_stored_objects = stored_objects;
+            checkpoint_samples.push((metrics.ancestry_depth, metrics.closure_objects));
+            if matches!(checkpoint_samples.len(), 16 | 32) {
+                let reopened = CampaignRepository::with_component_authorities(
+                    fixture.blobs.clone(),
+                    fixture.refs.clone(),
+                    fixture.planner_authority.clone(),
+                    fixture.debugger_authority.clone(),
+                )?;
+                assert_eq!(reopened.head(campaign)?.snapshot_id(), _result.new_snapshot);
+                let cold = reopened
+                    .validation_checkpoint_metrics(campaign)?
+                    .closure_objects;
+                assert!(metrics.closure_objects >= cold);
+                assert!(metrics.closure_objects <= cold + cold / 4);
+            }
+        }
+    }
+    let snapshot = fixture.repository.head(campaign)?.snapshot_id();
+
+    let mut cursor = None;
+    let mut scanned_entries = 0;
+    let mut pages = 0;
+    let mut attempts = BTreeSet::new();
+    let mut queue = AttemptQueue::new(DaemonEpoch::from_bytes([0x93; 16])?, 1)?;
+    loop {
+        let page = fixture
+            .repository
+            .project_claimable_attempts(campaign, cursor, SCAN_LIMIT)?;
+        assert_eq!(page.snapshot(), snapshot);
+        assert!(page.scanned_entries() <= SCAN_LIMIT);
+        assert!(page.attempts().len() <= SCAN_LIMIT);
+        scanned_entries += page.scanned_entries();
+        pages += 1;
+        for attempt in page.attempts() {
+            assert!(
+                attempts.insert(*attempt),
+                "duplicate attempt in queue projection"
+            );
+        }
+        if !page.attempts().is_empty() {
+            let reservation = queue
+                .reserve_from_page(&page, WorkerSlotId::new(0))?
+                .ok_or("claimable page did not yield a reservation")?;
+            assert_eq!(reservation.attempt(), page.attempts()[0]);
+            queue.release(reservation)?;
+        }
+        cursor = page.next();
+        if cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(attempts.len(), ATTEMPTS);
+    assert!(pages > 1, "queue projection must cross a page boundary");
+    assert_eq!(queue.reservation_count(), 0);
+
+    let reopened = CampaignRepository::with_component_authorities(
+        fixture.blobs.clone(),
+        fixture.refs.clone(),
+        fixture.planner_authority.clone(),
+        fixture.debugger_authority.clone(),
+    )?;
+    let mut cold_cursor = None;
+    let mut cold_attempts = BTreeSet::new();
+    let mut cold_pages = 0;
+    loop {
+        let page = reopened.project_claimable_attempts(campaign, cold_cursor, SCAN_LIMIT)?;
+        assert_eq!(page.snapshot(), snapshot);
+        assert!(page.scanned_entries() <= SCAN_LIMIT);
+        cold_attempts.extend(page.attempts().iter().copied());
+        cold_pages += 1;
+        cold_cursor = page.next();
+        if cold_cursor.is_none() {
+            break;
+        }
+    }
+    assert_eq!(cold_attempts, attempts);
+    assert_eq!(cold_pages, pages);
+
+    #[cfg(feature = "test-support")]
+    for (index, (depth, objects)) in checkpoint_samples.into_iter().enumerate() {
+        println!(
+            "campaign_planner_queue_checkpoint ordinal={} ancestry={depth} objects={objects}",
+            index + 1
+        );
+    }
+    println!("campaign_planner_queue_snapshot id={snapshot}");
+    println!(
+        "campaign_planner_queue_profile attempts={ATTEMPTS} pages={pages} scanned_entries={scanned_entries} cold_pages={cold_pages} retained_objects={} retained_bytes={}",
+        fixture.blobs.object_count()? - baseline_objects,
+        fixture.blobs.logical_bytes()? - baseline_bytes,
+    );
+
+    Ok(())
+}
+
+#[test]
+fn exhaustive_all_above_the_policy_ceiling_rejects_without_writes() -> Result<(), Box<dyn Error>> {
+    let all = CandidateGeneratorSpec::new(
+        STATIC_ALL_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::All,
+    )?;
+    let all_id = all.id()?;
+    let generators = BTreeMap::from([(all_id, all)]);
+    let fixture = GateFixture::new(
+        "exhaustive-ceiling",
+        CampaignMode::Strict,
+        ExplorerPolicy::Exhaustive {
+            maximum_cardinality: 9,
+        },
+        &generators,
+    )?;
+    let campaign = "exhaustive-ceiling";
+    let head = fixture.create_funded_running(campaign, &generators, 16)?;
+    let (domain, alternatives) = discrete_domain("exhaustive-ceiling", 10)?;
+    let request = request_for_source(
+        &fixture,
+        &domain,
+        ChoiceValue::Discrete(alternatives[0]),
+        CandidateSource::generated(all_id),
+        BranchRequestCause::ExhaustivePolicy(fixture.policy.id()?),
+        "exhaustive-ceiling",
+        BranchBudget::new(10, 10)?,
+    )?;
+    let discovered = fixture.repository.discover_operator_choice_opportunity(
+        campaign,
+        head.snapshot_id(),
+        request.parent(),
+        request.opportunity(),
+    )?;
+    let objects_before = fixture.blobs.object_count()?;
+    let service = RepositoryCampaignService::new(&fixture.repository, AllowGatePrincipal);
+    let submission = SubmitCampaignBranchRequest::new(
+        CampaignPrincipal::new("lazy-frontier-gate")?,
+        CampaignName::new(campaign)?,
+        discovered.new_snapshot,
+        request,
+    )?;
+    assert!(matches!(
+        service.submit_branch_request(&submission),
+        Err(RepositoryCampaignServiceError::Repository(
+            CampaignRepositoryError::Integrity {
+                reason: "exhaustive-branch-request-domain-exceeds-policy"
+            }
+        ))
+    ));
+    assert_eq!(fixture.blobs.object_count()?, objects_before);
+    assert_eq!(
+        fixture.repository.head(campaign)?.snapshot_id(),
+        discovered.new_snapshot
+    );
+
+    Ok(())
+}
+
+struct CompletionRun {
+    final_snapshot: CampaignSnapshotId,
+    planning_view: CampaignViewId,
+    planner_step: PlannerStepId,
+    accepted_second_first: bool,
+}
+
+fn run_shuffled_completion(
+    mode: CampaignMode,
+    reverse_delivery: bool,
+) -> Result<CompletionRun, Box<dyn Error>> {
+    let fixture = GateFixture::new(
+        "shuffled-completion",
+        mode,
+        tree_search_explorer()?,
+        &BTreeMap::new(),
+    )?;
+    let campaign = "shuffled-completion";
+    let head = fixture.create_funded_running(campaign, &BTreeMap::new(), 16)?;
+    let domain = ChoiceDomain::Boolean(BooleanDomain::new(1)?);
+    let request = request_for_source(
+        &fixture,
+        &domain,
+        ChoiceValue::Boolean(false),
+        CandidateSource::finite(BTreeSet::from([
+            ChoiceValue::Boolean(false),
+            ChoiceValue::Boolean(true),
+        ]))?,
+        BranchRequestCause::Operator(command_id(campaign, "request")),
+        "shuffled-completion",
+        BranchBudget::new(2, 2)?,
+    )?;
+    let requested = discover_and_submit(&fixture, campaign, head.snapshot_id(), &request)?;
+
+    let first_proposal = proposal(
+        &fixture,
+        &fixture.repository,
+        campaign,
+        &request,
+        ChoiceValue::Boolean(false),
+        1,
+    )?;
+    let first_issued =
+        fixture
+            .repository
+            .issue_proposal(campaign, requested.new_snapshot, &first_proposal)?;
+    let (first_selection, first_path, first_attempt) =
+        branch_attempt(&fixture.repository, &request, &first_proposal)?;
+    let first_admitted = fixture.repository.admit_proposal(
+        campaign,
+        first_issued.new_snapshot,
+        first_issued.proposal,
+        &first_selection,
+        &first_path,
+        &first_attempt,
+    )?;
+    let first_admission_replay = fixture.repository.admit_proposal(
+        campaign,
+        first_issued.new_snapshot,
+        first_issued.proposal,
+        &first_selection,
+        &first_path,
+        &first_attempt,
+    )?;
+    assert!(first_admission_replay.replayed);
+    assert_eq!(first_admission_replay.admission, first_admitted.admission);
+    assert_eq!(first_admission_replay.attempt, first_admitted.attempt);
+
+    let second_proposal = proposal(
+        &fixture,
+        &fixture.repository,
+        campaign,
+        &request,
+        ChoiceValue::Boolean(true),
+        2,
+    )?;
+    let second_issued = fixture.repository.issue_proposal(
+        campaign,
+        first_admitted.new_snapshot,
+        &second_proposal,
+    )?;
+    let (second_selection, second_path, second_attempt) =
+        branch_attempt(&fixture.repository, &request, &second_proposal)?;
+    let second_admitted = fixture.repository.admit_proposal(
+        campaign,
+        second_issued.new_snapshot,
+        second_issued.proposal,
+        &second_selection,
+        &second_path,
+        &second_attempt,
+    )?;
+
+    let first_observation = observation(
+        &fixture,
+        &first_admitted,
+        &first_path,
+        request.opportunity(),
+        "shuffled-first",
+    )?;
+    let second_observation = observation(
+        &fixture,
+        &second_admitted,
+        &second_path,
+        request.opportunity(),
+        "shuffled-second",
+    )?;
+
+    let (first_result, accepted_second_first) = if reverse_delivery {
+        match fixture.repository.publish_observation(
+            campaign,
+            second_admitted.new_snapshot,
+            &second_observation,
+        ) {
+            Ok(second_first) if mode == CampaignMode::Streaming => {
+                let first = fixture.repository.publish_observation(
+                    campaign,
+                    second_first.new_snapshot,
+                    &first_observation,
+                )?;
+                (first, true)
+            }
+            Err(CampaignRepositoryError::Integrity {
+                reason: "strict-completion-order-gap",
+            }) if mode == CampaignMode::Strict => {
+                assert_eq!(
+                    fixture.repository.head(campaign)?.snapshot_id(),
+                    second_admitted.new_snapshot
+                );
+                let first = fixture.repository.publish_observation(
+                    campaign,
+                    second_admitted.new_snapshot,
+                    &first_observation,
+                )?;
+                fixture.repository.publish_observation(
+                    campaign,
+                    first.new_snapshot,
+                    &second_observation,
+                )?;
+                (first, false)
+            }
+            result => {
+                return Err(format!("unexpected reverse completion result: {result:?}").into());
+            }
+        }
+    } else {
+        let first = fixture.repository.publish_observation(
+            campaign,
+            second_admitted.new_snapshot,
+            &first_observation,
+        )?;
+        fixture.repository.publish_observation(
+            campaign,
+            first.new_snapshot,
+            &second_observation,
+        )?;
+        (first, false)
+    };
+
+    let first_replay = fixture.repository.publish_observation(
+        campaign,
+        first_result.prior_snapshot,
+        &first_observation,
+    )?;
+    assert!(first_replay.replayed);
+    assert_eq!(first_replay.new_snapshot, first_result.new_snapshot);
+    assert_eq!(first_replay.observation, first_result.observation);
+
+    let settled = fixture.repository.head(campaign)?;
+    let final_snapshot = settled.snapshot_id();
+    let planning_view = settled.snapshot().planning_view().id()?;
+    let mut driver = planner_driver(&fixture)?;
+    let CampaignPlannerStepOutcome::Advanced {
+        result,
+        disposition: PlannerDisposition::NoWork,
+    } = driver.step(campaign)?
+    else {
+        return Err("completed frontier did not settle with a no-work planner step".into());
+    };
+
+    Ok(CompletionRun {
+        final_snapshot,
+        planning_view,
+        planner_step: result.step,
+        accepted_second_first,
+    })
+}
+
+#[test]
+fn shuffled_completion_preserves_strict_steps_and_streaming_acceptance()
+-> Result<(), Box<dyn Error>> {
+    let strict_ordered = run_shuffled_completion(CampaignMode::Strict, false)?;
+    let strict_reversed = run_shuffled_completion(CampaignMode::Strict, true)?;
+    assert!(!strict_reversed.accepted_second_first);
+    assert_eq!(
+        strict_reversed.final_snapshot,
+        strict_ordered.final_snapshot
+    );
+    assert_eq!(strict_reversed.planning_view, strict_ordered.planning_view);
+    assert_eq!(strict_reversed.planner_step, strict_ordered.planner_step);
+
+    let streaming_reversed = run_shuffled_completion(CampaignMode::Streaming, true)?;
+    assert!(streaming_reversed.accepted_second_first);
+
+    Ok(())
+}
+
+#[test]
+fn progressive_source_waits_widens_exhausts_and_recovers_after_restart()
+-> Result<(), Box<dyn Error>> {
+    let generator = CandidateGeneratorSpec::new(
+        PROGRESSIVE_INTEGER_GENERATOR_IMPLEMENTATION_VERSION,
+        CandidateGeneratorAlgorithm::ProgressiveInteger {
+            initial_strata: 3,
+            feedback_interval: 1,
+        },
+    )?;
+    let generator_id = generator.id()?;
+    let generators = BTreeMap::from([(generator_id, generator)]);
+    let fixture = GateFixture::new(
+        "progressive-frontier",
+        CampaignMode::Strict,
+        tree_search_explorer()?,
+        &generators,
+    )?;
+    let campaign = "progressive-frontier";
+    let head = fixture.create_funded_running(campaign, &generators, 64)?;
+    let domain = integer_domain(8)?;
+    let request = generated_integer_request(&fixture, &domain, generator_id, "progressive", 9)?;
+    let requested = discover_and_submit(&fixture, campaign, head.snapshot_id(), &request)?;
+    assert_eq!(
+        requested.summary.validated_cardinality(),
+        BranchAcceptanceCount::Exact(9)
+    );
+
+    let values = [0, 4, 8, 2, 6, 1, 3, 5, 7];
+    let mut current = requested.new_snapshot;
+    let mut observations = Vec::new();
+    for (index, value) in values.iter().take(3).enumerate() {
+        let (admitted, path) = issue_and_admit(
+            &fixture,
+            &fixture.repository,
+            campaign,
+            &request,
+            current,
+            ChoiceValue::Integer(IntegerValue::Unsigned(*value)),
+            index as u64 + 1,
+        )?;
+        current = admitted.new_snapshot;
+        observations.push(observation(
+            &fixture,
+            &admitted,
+            &path,
+            request.opportunity(),
+            &format!("progressive-{index}"),
+        )?);
+    }
+
+    let request_id = request.id()?;
+    let expansion =
+        fixture
+            .repository
+            .project_finite_expansion(current, request.branch_point(), None, 16)?;
+    assert_eq!(
+        fixture
+            .repository
+            .load_expansion_state(expansion)?
+            .continuations()
+            .get(&request_id),
+        Some(&ContinuationState::WaitingForFeedback(FeedbackWait::new(
+            0, 1
+        )?))
+    );
+    let waiting_restart = CampaignRepository::with_component_authorities(
+        fixture.blobs.clone(),
+        fixture.refs.clone(),
+        fixture.planner_authority.clone(),
+        fixture.debugger_authority.clone(),
+    )?;
+    let rebuilt_wait =
+        waiting_restart.project_finite_expansion(current, request.branch_point(), None, 16)?;
+    assert_eq!(
+        waiting_restart
+            .load_expansion_state(rebuilt_wait)?
+            .continuations()
+            .get(&request_id),
+        Some(&ContinuationState::WaitingForFeedback(FeedbackWait::new(
+            0, 1
+        )?))
+    );
+
+    let mut credited = 0_usize;
+    for (index, value) in values.iter().enumerate().skip(3) {
+        let required_visits = index - 2;
+        while credited < required_visits {
+            let observed = fixture.repository.publish_observation(
+                campaign,
+                current,
+                &observations[credited],
+            )?;
+            current = observed.new_snapshot;
+            credited += 1;
+        }
+
+        let ready = fixture.repository.project_finite_expansion(
+            current,
+            request.branch_point(),
+            None,
+            16,
+        )?;
+        assert_eq!(
+            fixture
+                .repository
+                .load_expansion_state(ready)?
+                .continuations()
+                .get(&request_id),
+            Some(&ContinuationState::Ready)
+        );
+
+        let restarted_ready = (index == 3)
+            .then(|| {
+                CampaignRepository::with_component_authorities(
+                    fixture.blobs.clone(),
+                    fixture.refs.clone(),
+                    fixture.planner_authority.clone(),
+                    fixture.debugger_authority.clone(),
+                )
+            })
+            .transpose()?;
+        let generation_owner = restarted_ready.as_ref().unwrap_or(&fixture.repository);
+        if index == 3 {
+            let cold_ready = generation_owner.project_finite_expansion(
+                current,
+                request.branch_point(),
+                None,
+                16,
+            )?;
+            assert_eq!(
+                generation_owner
+                    .load_expansion_state(cold_ready)?
+                    .continuations()
+                    .get(&request_id),
+                Some(&ContinuationState::Ready)
+            );
+        }
+
+        let (admitted, path) = issue_and_admit(
+            &fixture,
+            generation_owner,
+            campaign,
+            &request,
+            current,
+            ChoiceValue::Integer(IntegerValue::Unsigned(*value)),
+            index as u64 + 1,
+        )?;
+        current = admitted.new_snapshot;
+        observations.push(observation(
+            &fixture,
+            &admitted,
+            &path,
+            request.opportunity(),
+            &format!("progressive-{index}"),
+        )?);
+
+        let state = fixture.repository.project_finite_expansion(
+            current,
+            request.branch_point(),
+            None,
+            16,
+        )?;
+        let state = fixture.repository.load_expansion_state(state)?;
+        if index + 1 == values.len() {
+            assert_eq!(
+                state.continuations().get(&request_id),
+                Some(&ContinuationState::Exhausted)
+            );
+        } else {
+            assert!(matches!(
+                state.continuations().get(&request_id),
+                Some(ContinuationState::WaitingForFeedback(_))
+            ));
+        }
+    }
+
+    let restarted = CampaignRepository::with_component_authorities(
+        fixture.blobs.clone(),
+        fixture.refs.clone(),
+        fixture.planner_authority.clone(),
+        fixture.debugger_authority.clone(),
+    )?;
+    let rebuilt = restarted.project_finite_expansion(current, request.branch_point(), None, 16)?;
+    assert_eq!(
+        restarted
+            .load_expansion_state(rebuilt)?
+            .continuations()
+            .get(&request_id),
+        Some(&ContinuationState::Exhausted)
+    );
+
+    Ok(())
+}

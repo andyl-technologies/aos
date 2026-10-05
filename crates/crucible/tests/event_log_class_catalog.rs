@@ -7,10 +7,10 @@
 use std::collections::BTreeMap;
 
 use crucible::{
-    AssertionId, AssertionPhase, AssertionQuantifierKind, Decision, EventClass,
-    EventDiagnosticPayload, EventLevel, GuestAssertionDetail, GuestAssertionKind,
-    GuestAssertionMarker, Icount, NodeId, ObservableEvent, RngDecision, RngStreamId,
-    SchedulerEventLogPayload, VirtualTime,
+    AssertionId, AssertionPhase, AssertionQuantifierKind, Decision, EventDiagnosticPayload,
+    EventLevel, GuestAssertionDetail, GuestAssertionKind, GuestAssertionMarker, Icount, NodeId,
+    ObservableEvent, RngDecision, RngStreamId, SchedulerEventLogClass, SchedulerEventLogPayload,
+    VirtualTime,
 };
 
 fn time(ticks: u64) -> VirtualTime {
@@ -56,10 +56,10 @@ fn event_class_is_derived_from_payload_kind_catalog() {
     );
 
     assert_eq!(causal.event_payload().kind(), "rng_draw");
-    assert_eq!(causal.class(), EventClass::Causal);
+    assert_eq!(causal.class(), SchedulerEventLogClass::Causal);
     assert!(causal.class_matches_catalog());
     assert_eq!(observational.event_payload().kind(), "diagnostic");
-    assert_eq!(observational.class(), EventClass::Observational);
+    assert_eq!(observational.class(), SchedulerEventLogClass::Observational);
     assert!(observational.class_matches_catalog());
 }
 
@@ -84,7 +84,7 @@ fn assertion_and_guest_marker_kinds_follow_rfc_catalog_classes() {
         assertion_entry.event_payload().string("new_state"),
         Some("Satisfied")
     );
-    assert_eq!(assertion_entry.class(), EventClass::Causal);
+    assert_eq!(assertion_entry.class(), SchedulerEventLogClass::Causal);
     assert!(assertion_entry.class_matches_catalog());
 
     let assertion_evaluated = ObservableEvent::assertion_evaluated(
@@ -113,7 +113,7 @@ fn assertion_and_guest_marker_kinds_follow_rfc_catalog_classes() {
         evaluated_entry.event_payload().bool("condition"),
         Some(true)
     );
-    assert_eq!(evaluated_entry.class(), EventClass::Causal);
+    assert_eq!(evaluated_entry.class(), SchedulerEventLogClass::Causal);
     assert!(evaluated_entry.class_matches_catalog());
 
     let assertion_marker = GuestAssertionMarker::new(
@@ -150,6 +150,9 @@ fn assertion_and_guest_marker_kinds_follow_rfc_catalog_classes() {
         guest_marker_entry.event_payload().string("detail.0.key"),
         Some("case")
     );
-    assert_eq!(guest_marker_entry.class(), EventClass::Observational);
+    assert_eq!(
+        guest_marker_entry.class(),
+        SchedulerEventLogClass::Observational
+    );
     assert!(guest_marker_entry.class_matches_catalog());
 }

@@ -12,7 +12,6 @@ use aos_oci_types::{
 use aos_release::artifact::{ArtifactKind, ArtifactRelation, ArtifactRelationship, Compression};
 use aos_release::digest::Sha256Digest;
 use aos_release::plan::ReleasePlan;
-use aos_release::platform::Platform;
 
 use super::{ArtifactAttributes, PayloadBuilder};
 
@@ -77,7 +76,10 @@ pub(super) fn assemble(
                 .platform
                 .as_ref()
                 .context("container platform manifest lacks a platform")?;
-            Ok((descriptor.digest.to_string(), release_platform(platform)?))
+            Ok((
+                descriptor.digest.to_string(),
+                super::super::container_binding::release_platform(platform)?,
+            ))
         })
         .collect::<Result<BTreeMap<_, _>>>()?;
     let index_digest = release.oci.index.digest.to_string();
@@ -283,18 +285,6 @@ fn require_exact_blob_set(layout: &Path, graph: &BTreeMap<String, GraphNode>) ->
         bail!("finalized OCI layout contains missing or unreferenced blobs");
     }
     Ok(())
-}
-
-fn release_platform(platform: &aos_oci_types::Platform) -> Result<Platform> {
-    match (platform.os.as_str(), platform.architecture.as_str()) {
-        ("linux", "amd64") => Ok(Platform::X86_64Linux),
-        ("linux", "arm64") => Ok(Platform::Aarch64Linux),
-        _ => bail!(
-            "container platform {}/{} is outside the release matrix",
-            platform.os,
-            platform.architecture
-        ),
-    }
 }
 
 fn descriptor_compression(media_type: MediaType) -> Compression {

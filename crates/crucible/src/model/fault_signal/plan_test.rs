@@ -383,9 +383,6 @@ fn test_segment_id() -> FaultObjectId {
 }
 
 fn test_world() -> World {
-    test_world_with_shift(0)
-}
-fn test_world_with_shift(icount_shift: u8) -> World {
     let nodes = ["left", "right"]
         .into_iter()
         .map(|name| WorldNode {
@@ -400,7 +397,6 @@ fn test_world_with_shift(icount_shift: u8) -> World {
             },
             white_box: WhiteBoxPolicy::Disabled,
             smp_vcpus: 1,
-            icount_shift,
             kernel: None,
             root_image: None,
             initrd: None,
@@ -583,7 +579,7 @@ fn periodic_pulse_program() -> SignalProgram {
                 .unwrap_or_else(|error| panic!("invalid pulse shape: {error}")),
             inputs: Vec::new(),
             kind: SignalNodeKind::Source(SignalSourceSpecification::PeriodicPulse {
-                epoch: SignalCoordinate::VirtualTime { nanos: 10 },
+                epoch: SignalCoordinate::VirtualTime { ticks: 10 },
                 period: 100,
                 width: 25,
                 phase: 5,
@@ -625,7 +621,7 @@ fn trace_program() -> SignalProgram {
                 missing: MissingSampleBehavior::Error,
                 time_mapping: Some(TraceTimeMapping {
                     source_epoch: 1_720_000_000_000_000_000,
-                    virtual_epoch_nanos: 0,
+                    virtual_epoch_ticks: 0,
                     scale: ExactRatio::new(1, 1)
                         .unwrap_or_else(|error| panic!("trace scale: {error}")),
                     rounding: SignalRounding::Floor,
@@ -812,7 +808,7 @@ fn world_resolves_fault_domains_and_dynamic_paths_without_authored_caches() {
 }
 
 #[test]
-fn world_fault_topology_round_trips_through_only_v4_codecs() {
+fn world_fault_topology_round_trips_through_only_v5_codecs() {
     let world = test_world();
     let toml = world
         .to_canonical_toml()
@@ -824,19 +820,19 @@ fn world_fault_topology_round_trips_through_only_v4_codecs() {
     assert!(toml.contains("[[fault_domain]]"));
 
     let binary = world.to_compact_binary();
-    assert!(binary.starts_with(b"crucible.world.v4\0"));
+    assert!(binary.starts_with(b"crucible.world.v6\0"));
     assert_eq!(
         World::from_compact_binary(&binary)
             .unwrap_or_else(|error| panic!("decode world binary: {error}")),
         world
     );
     let mut old_magic = binary.clone();
-    old_magic[..b"crucible.world.v3\0".len()].copy_from_slice(b"crucible.world.v3\0");
+    old_magic[..b"crucible.world.v4\0".len()].copy_from_slice(b"crucible.world.v4\0");
     assert!(World::from_compact_binary(&old_magic).is_err());
 }
 
 #[test]
-fn singleton_signal_alias_canonicalizes_and_closed_tables_reject_unknowns() {
+fn singular_signal_and_unknown_fields_are_rejected() {
     let program = program(true);
     let binding = binding(&program);
     let plan = Plan::empty().with_fault_signals(
@@ -847,15 +843,7 @@ fn singleton_signal_alias_canonicalizes_and_closed_tables_reject_unknowns() {
         .to_canonical_toml()
         .unwrap_or_else(|error| panic!("encode binding plan: {error}"));
     let alias = canonical.replace("signals = [\"true-output\"]", "signal = \"true-output\"");
-    let decoded = Plan::from_canonical_toml_for_world(&test_world(), &alias)
-        .unwrap_or_else(|error| panic!("decode singleton alias: {error}"));
-    assert_eq!(decoded, plan);
-    assert!(
-        decoded
-            .to_canonical_toml()
-            .unwrap_or_else(|error| panic!("canonicalize singleton alias: {error}"))
-            .contains("signals = [\"true-output\"]")
-    );
+    assert!(Plan::from_canonical_toml_for_world(&test_world(), &alias).is_err());
 
     let unknown_mapping = canonical.replace(
         "invert = false\nkind = \"active_when_true\"",
@@ -1014,9 +1002,9 @@ fn plan_binary_round_trips_a_complete_binding_contract() {
         .unwrap_or_else(|error| panic!("decode fault signal plan: {error}"));
 
     assert_eq!(decoded, plan);
-    assert!(encoded.starts_with(b"crucible.plan.v5\0"));
+    assert!(encoded.starts_with(b"crucible.plan.v6\0"));
     let mut old_magic = encoded.clone();
-    old_magic[..b"crucible.plan.v4\0".len()].copy_from_slice(b"crucible.plan.v4\0");
+    old_magic[..b"crucible.plan.v5\0".len()].copy_from_slice(b"crucible.plan.v5\0");
     assert!(Plan::from_compact_binary_for_world(&test_world(), &old_magic,).is_err());
 }
 
@@ -1171,7 +1159,7 @@ fn toml_round_trips_full_range_u64_values_without_narrowing() {
     let binding = binding_with_sampling(
         &program,
         BindingSampling::CadenceNanos(
-            PositiveU64::new("cadence_nanos", u64::MAX)
+            PositiveU64::new("cadence_nanos", u64::MAX / SIM_TICKS_PER_NS)
                 .unwrap_or_else(|error| panic!("max cadence: {error}")),
         ),
     );
@@ -1190,26 +1178,27 @@ fn toml_round_trips_full_range_u64_values_without_narrowing() {
 }
 
 #[test]
-fn world_validation_rejects_unrepresentable_binding_wakeups() {
+fn world_validation_rejects_binding_wakeup_tick_overflow() {
     let program = program(true);
     let binding = binding_with_sampling(
         &program,
         BindingSampling::CadenceNanos(
-            PositiveU64::new("cadence_nanos", 6).unwrap_or_else(|error| panic!("cadence: {error}")),
+            PositiveU64::new("cadence_nanos", u64::MAX / SIM_TICKS_PER_NS + 1)
+                .unwrap_or_else(|error| panic!("cadence: {error}")),
         ),
     );
     let plan = FaultSignalPlan::new(vec![program], vec![binding], FaultResourceLimits::default())
         .unwrap_or_else(|error| panic!("fault plan: {error}"));
 
-    let error = match plan.validate_for_world(&test_world_with_shift(2)) {
-        Ok(()) => panic!("6ns cannot be represented when one instruction is 4ns"),
+    let error = match plan.validate_for_world(&test_world()) {
+        Ok(()) => panic!("cadence exceeds the fixed logical-tick range"),
         Err(error) => error,
     };
-    assert!(error.to_string().contains("is not representable"));
-    plan.validate_for_world(&test_world())
-        .unwrap_or_else(|error| {
-            panic!("shift zero should admit every integer nanosecond: {error}")
-        });
+    assert!(
+        error
+            .to_string()
+            .contains("exceeds the fixed logical-tick range")
+    );
 }
 
 #[test]

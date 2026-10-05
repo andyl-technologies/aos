@@ -547,7 +547,7 @@ fn probe_campaign_manifest(
         probe_campaign_root(campaign, "coverage-map", coverage)?,
         probe_campaign_root(campaign, "findings", findings)?,
         ContentHash::from_bytes(b"genesis-pin"),
-        CampaignProvenance::new("crucible-probe", "qemu-probe+series", "shmem:1,gh:1,rpc:1"),
+        CampaignProvenance::new("crucible-probe", "qemu-probe+atomic", "shmem:1,gh:1,rpc:1"),
     ))
 }
 
@@ -605,7 +605,7 @@ fn prove_campaign_seed_coverage_findings(root: &Path) -> Result<(), Box<dyn Erro
         coverage_left,
         findings_left,
         ContentHash::from_bytes(b"genesis-pin"),
-        CampaignProvenance::new("crucible-probe", "qemu-probe+series", "shmem:1,gh:1,rpc:1"),
+        CampaignProvenance::new("crucible-probe", "qemu-probe+atomic", "shmem:1,gh:1,rpc:1"),
     );
 
     let seeds = campaign.seed_next_run(&manifest, &manifest.provenance)?;
@@ -701,7 +701,7 @@ fn prove_campaign_storage_bounding(root: &Path) -> Result<(), Box<dyn Error>> {
     )])?;
     let genesis_pin = campaign.manifest_store().put(b"storage-genesis-pin")?;
     let provenance =
-        CampaignProvenance::new("crucible-probe", "qemu-probe+series", "shmem:1,gh:1,rpc:1");
+        CampaignProvenance::new("crucible-probe", "qemu-probe+atomic", "shmem:1,gh:1,rpc:1");
     let manifest = CampaignManifest::new(
         corpus_root,
         coverage_map_root,
@@ -846,12 +846,12 @@ fn prove_campaign_continuity_gate(root: &Path) -> Result<(), Box<dyn Error>> {
     let campaign = SharedCampaignStore::new(root);
     let prior_provenance = CampaignProvenance::new(
         "crucible-probe",
-        "qemu-probe+series-a",
+        "qemu-probe+atomic-a",
         "shmem:1,gh:1,rpc:1",
     );
     let next_provenance = CampaignProvenance::new(
         "crucible-probe",
-        "qemu-probe+series-b",
+        "qemu-probe+atomic-b",
         "shmem:1,gh:1,rpc:1",
     );
     let artifact_a = CampaignReplayArtifact::new(

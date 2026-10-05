@@ -44,7 +44,7 @@ normative policy is
   applicable QEMU/GPL-compatible scope. Apache-only crates MUST NOT link QEMU,
   include QEMU headers, or expose QEMU callback entry points.
 - Preserve QEMU's per-file licenses. The emulator is GPL-2.0-only as a combined
-  work, while unmarked QEMU 10.0 source files default to GPL-2.0-or-later.
+  work, while unmarked QEMU 11.1.1 source files default to GPL-2.0-or-later.
   Changes that create or remove QEMU files MUST update
   `pkgs/emulation/qemu-patches/LICENSES.md`.
 - Do not publish `qemu-crucible` as a standalone store-path root. Publish the

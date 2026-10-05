@@ -36,7 +36,7 @@ active = true
 
 [[plan.fault_binding]]
 id = "maintenance-link-outage"
-signal = "maintenance-window"
+signals = ["maintenance-window"]
 mapping = { kind = "active_when_true" }
 selector = { kind = "network_segment", segment = "client--server", direction = "both" }
 effect = { kind = "network.availability", semantic_version = 1, state = "down" }
@@ -91,7 +91,7 @@ points = [
 
 [[plan.fault_binding]]
 id = "vibration-caused-disk-read-error"
-signal = "vibration-error-probability"
+signals = ["vibration-error-probability"]
 mapping = { kind = "hazard" }
 selector = { kind = "block_device", device = "database-disk" }
 opportunity = { operation = "read", phase = "resolve" }
@@ -110,14 +110,14 @@ The same vibration source can fan out:
 ```toml
 [[plan.fault_binding]]
 id = "vibration-caused-connector-flap"
-signal = "recorded-rack-vibration"
+signals = ["recorded-rack-vibration"]
 mapping = { kind = "threshold", comparison = "greater_equal", threshold = 30000, clear_threshold = 20000, minimum_active_nanos = 100000000 }
 selector = { kind = "fault_domain", domain = "rack-a-connectors" }
 effect = { kind = "network.availability", semantic_version = 1, state = "down" }
 
 [[plan.fault_binding]]
 id = "vibration-caused-imu-noise"
-signal = "recorded-rack-vibration"
+signals = ["recorded-rack-vibration"]
 mapping = { kind = "piecewise_parameter", parameter = "amplitude", table = "blake3:<vibration-to-imu-noise-table>" }
 selector = { kind = "sensor_channel", sensor = "rack-imu", channel = "acceleration" }
 effect = { kind = "sensor.noise", semantic_version = 1, distribution = "keyed_uniform" }
@@ -153,21 +153,21 @@ minimum_residence_nanos = 50000000
 
 [[plan.fault_binding]]
 id = "brownout-switch-reset"
-signal = "pdu-a-brownout"
+signals = ["pdu-a-brownout"]
 mapping = { kind = "impulse_on_rising_edge" }
 selector = { kind = "network_forwarder", id = "top-of-rack-a" }
 effect = { kind = "network.forwarder_lifecycle", semantic_version = 1, transition = "reset", downtime_nanos = 2000000000, queue_policy = "drop", table_policy = "lose_dynamic" }
 
 [[plan.fault_binding]]
 id = "brownout-storage-cache-loss"
-signal = "pdu-a-brownout"
+signals = ["pdu-a-brownout"]
 mapping = { kind = "impulse_on_rising_edge" }
 selector = { kind = "fault_domain", domain = "rack-a-storage" }
 effect = { kind = "storage.volatile_cache_loss", semantic_version = 1, selector = { kind = "all" }, loss = "power_loss" }
 
 [[plan.fault_binding]]
 id = "brownout-sensor-dropout"
-signal = "pdu-a-brownout"
+signals = ["pdu-a-brownout"]
 mapping = { kind = "active_when_true" }
 selector = { kind = "fault_domain", domain = "rack-a-environmental-sensors" }
 effect = { kind = "sensor.dropout", semantic_version = 1, stage = "sample", missing_status = "unavailable" }
@@ -207,7 +207,7 @@ events = [
 
 [[plan.fault_binding]]
 id = "conduit-17-all-fibers"
-signal = "conduit-17-construction-cut"
+signals = ["conduit-17-construction-cut"]
 mapping = { kind = "state_transition" }
 selector = { kind = "fault_domain", domain = "conduit-17" }
 effect = { kind = "network.availability", semantic_version = 1, state_from = "payload.state" }
@@ -316,14 +316,14 @@ missing = "error"
 
 [[plan.fault_binding]]
 id = "sat-7-contact-availability"
-signal = "sat-7-contact"
+signals = ["sat-7-contact"]
 mapping = { kind = "active_when_true", invert = true }
 selector = { kind = "network_segment", segment = "ground-a--sat-7" }
 effect = { kind = "network.availability", semantic_version = 1, state = "down" }
 
 [[plan.fault_binding]]
 id = "sat-7-rain-fade"
-signal = "ground-a-rain-rate"
+signals = ["ground-a-rain-rate"]
 mapping = { kind = "piecewise_parameter", table = "blake3:<rain-to-satellite-profile-table>" }
 selector = { kind = "network_segment", segment = "ground-a--sat-7" }
 effect = { kind = "network.profile_delta", semantic_version = 1, parameter_from_mapping = "attenuation_millidecibels" }
@@ -369,7 +369,7 @@ rounding = "floor"
 
 [[plan.fault_binding]]
 id = "freezer-sensor-drift"
-signal = "sensor-bias"
+signals = ["sensor-bias"]
 mapping = { kind = "map_parameter", parameter = "bias" }
 selector = { kind = "sensor_channel", sensor = "freezer-temperature", channel = "temperature" }
 opportunity = { operation = "sample", phase = "produce" }

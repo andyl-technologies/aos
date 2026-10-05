@@ -385,9 +385,11 @@ fn assert_empty_plan(plan: &Plan) {
     assert!(plan.event_graph().events().is_empty());
 }
 
-fn only_node(nodes: &[crucible::WorldNode]) -> &crucible::WorldNode {
+fn only_node<'a>(nodes: crucible::WorldVmNodes<'a>) -> &'a crucible::WorldNode {
     assert_eq!(nodes.len(), 1);
-    &nodes[0]
+    nodes
+        .first()
+        .unwrap_or_else(|| panic!("one VM node expected"))
 }
 
 fn assert_unsupported_pattern<T: std::fmt::Debug>(result: Result<T, EngineError>, expected: &str) {

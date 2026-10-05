@@ -16,6 +16,7 @@
   phasePlanRust = builtins.readFile ../../crates/crucible-harness/src/phase_plan.rs;
   harnessLint = builtins.readFile ./phase1-harness-lint.nix;
   layer0Determinism = builtins.readFile ./phase1-layer0-determinism.nix;
+  productionFingerprint = builtins.readFile ./phase1-production-fingerprint-sample.nix;
   contentAddress = builtins.readFile ./phase1-content-address.nix;
   replayOracle = builtins.readFile ./phase1-replay-oracle.nix;
   layer1Injection = builtins.readFile ./phase1-layer1-injection.nix;
@@ -34,12 +35,6 @@
       path = "checks.crucible.phase1.gates.harnessLint";
       sourceLabel = "tests/crucible/phase1-harness-lint.nix";
       source = harnessLint;
-    }
-    {
-      gate = "gate:layer0-determinism";
-      path = "checks.crucible.phase1.gates.layer0Determinism";
-      sourceLabel = "tests/crucible/phase1-layer0-determinism.nix";
-      source = layer0Determinism;
     }
     {
       gate = "gate:content-address";
@@ -80,6 +75,13 @@
     }
   ];
 
+  runtimeClassGates = [
+    {
+      gate = "gate:layer0-determinism";
+      path = "checks.crucible.phase1.gates.layer0Determinism";
+    }
+  ];
+
   expectedOrderingEdges = [
     {
       label = "L0 waits for harness lint";
@@ -117,14 +119,14 @@
       needle = "dependencies = [patchMicrotests.rawGate];";
     }
     {
-      label = "phase7 e2e waits for perf and package inputs";
-      edge = "gate:perf-bench+package-inputs+release-manifest+reproduction-provenance->gate:e2e-determinism";
-      needle = "dependencies = [phase1.gates.licenseBoundary.rawGate perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];";
+      label = "phase7 e2e waits for executable fleet evidence, perf, and package inputs";
+      edge = "gate:e2e-determinism-fleet+gate:perf-bench+package-inputs+release-manifest+reproduction-provenance->gate:e2e-determinism";
+      needle = "dependencies = [phase1.gates.licenseBoundary.rawGate phase4.gates.e2eDeterminism.rawGate perfBench.rawGate phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];";
     }
     {
-      label = "phase7 e2e wrapper waits for package inputs";
-      edge = "gate:perf-bench-wrapper+package-inputs+release-manifest+reproduction-provenance->gate:e2e-determinism-wrapper";
-      needle = "dependencies = [phase1.gates.licenseBoundary perfBench phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];";
+      label = "phase7 e2e wrapper waits for executable fleet evidence and package inputs";
+      edge = "gate:e2e-determinism-fleet-wrapper+gate:perf-bench-wrapper+package-inputs+release-manifest+reproduction-provenance->gate:e2e-determinism-wrapper";
+      needle = "dependencies = [phase1.gates.licenseBoundary phase4.gates.e2eDeterminism perfBench phase7.crucibleLinuxKernel phase7.crucibleFixtures phase7.crucibleGateCiWiring phase7.crucibleReleaseManifest phase7.reproductionProvenanceTriple];";
     }
     {
       label = "fleet equivalence waits for real-QEMU slice, e2e, fleet store, shared DagStore, frontier leases, four-layer dedup, determinism guardrail, and seam proof";
@@ -150,6 +152,7 @@
 
   allClassifiedGates =
     evalClassGates
+    ++ runtimeClassGates
     ++ packageClassGates
     ++ [
       {
@@ -213,6 +216,54 @@
     ])
   evalClassGates;
 
+  runtimeClassFailures =
+    failuresFor "tests/crucible/default.nix" defaultChecks [
+      {
+        label = "production layer0 canonical attr path";
+        needle = ''attrPath = "checks.crucible.phase1.gates.layer0Determinism";'';
+      }
+      {
+        label = "production layer0 canonical import";
+        needle = "gate = import ./phase1-layer0-determinism.nix";
+      }
+    ]
+    ++ failuresFor "tests/crucible/phase1-layer0-determinism.nix" layer0Determinism [
+      {
+        label = "layer0 canonical production fingerprint authority";
+        needle = "productionFingerprint = import ./phase1-production-fingerprint-sample.nix";
+      }
+      {
+        label = "layer0 selected composition propagation";
+        needle = "inherit pkgs lib campaignComposition";
+      }
+      {
+        label = "layer0 real-QEMU execution family";
+        needle = ''executionFamily = "qemu-runtime";'';
+      }
+      {
+        label = "layer0 production backend evidence";
+        needle = ''"backend=guarded-production-qemu"'';
+      }
+      {
+        label = "layer0 real-QEMU requirement";
+        needle = ''"real_qemu_required=true"'';
+      }
+    ]
+    ++ failuresFor "tests/crucible/phase1-production-fingerprint-sample.nix" productionFingerprint [
+      {
+        label = "fingerprint authority production Rust plugin flight";
+        needle = "productionFlight = import ./phase7-production-rust-plugin-flight.nix";
+      }
+      {
+        label = "fingerprint authority composition propagation";
+        needle = "inherit campaignComposition";
+      }
+      {
+        label = "fingerprint authority exact production source";
+        needle = "real_qemu_source=checks.crucible.phase7.productionRustPluginFlight";
+      }
+    ];
+
   packageClassFailures =
     failuresFor "tests/crucible/default.nix" defaultChecks [
       {
@@ -265,7 +316,12 @@
       }
       {
         label = "qemu-inert consumes patch microtests result";
-        needle = ''PATCH_MICROTESTS_RESULT = "''${patchMicrotests}/result";'';
+        needle = ''
+          PATCH_MICROTESTS_RESULT =
+                if campaignComposition == null
+                then "''${selectedPatchMicrotests}/result"
+                else "''${selectedPatchMicrotests}/raw-result";
+        '';
       }
       {
         label = "qemu-inert records patched package path";
@@ -276,8 +332,8 @@
         needle = ''compare_files boot-tcg-raw "$TMPDIR/authoritative-serial-reference-tcg.log" "$TMPDIR/authoritative-serial-patched-tcg.log"'';
       }
       {
-        label = "qemu-inert compares raw plain-icount guest serial";
-        needle = ''compare_files boot-plain-icount-raw "$TMPDIR/authoritative-serial-reference-icount.log" "$TMPDIR/authoritative-serial-patched-icount.log"'';
+        label = "qemu-inert compares raw shift-zero guest serial";
+        needle = ''compare_files boot-tcg-raw "$TMPDIR/authoritative-serial-reference-tcg.log" "$TMPDIR/authoritative-serial-patched-tcg.log"'';
       }
       {
         label = "qemu-inert disables guest printk timestamps before capture";
@@ -403,16 +459,8 @@
         needle = "crucible = crucibleChecks;";
       }
       {
-        label = "Crucible e2e fleet wrapper defined";
-        needle = "crucible-e2e-determinism = let";
-      }
-      {
-        label = "fleet wrapper consumes Crucible e2e gate";
-        needle = "e2eGate = crucibleChecks.phase7.gates.e2eDeterminism.rawGate;";
-      }
-      {
-        label = "fleet wrapper verifies e2e fleet metadata";
-        needle = "grep -q '^fleet_check_surface=checks.fleet.crucible-e2e-determinism$'";
+        label = "Crucible e2e fleet surface uses canonical Phase 4 gate";
+        needle = "crucible-e2e-determinism = crucibleChecks.phase4.gates.e2eDeterminism.rawGate;";
       }
       {
         label = "fleet checks exposed with Crucible e2e surface";
@@ -429,6 +477,10 @@
       {
         label = "distributed fleet wrapper consumes explorer package";
         needle = "explorer = pkgs.crucible;";
+      }
+      {
+        label = "distributed fleet wrapper consumes native e2e slice";
+        needle = ''e2eNativeSlice = crucibleFleetChecks."crucible-e2e-determinism";'';
       }
       {
         label = "distributed fleet wrapper consumes source gate";
@@ -563,6 +615,10 @@
         needle = "gate = import ./phase7-e2e-determinism.nix";
       }
       {
+        label = "phase7 e2e canonical wrapper is executable";
+        needle = "e2eDeterminism = greenBeforeAdvance";
+      }
+      {
         label = "phase7 fleet equivalence gate import";
         needle = "gate = import ./phase7-crucible-fleet-equivalence.nix";
       }
@@ -573,16 +629,24 @@
     ]
     ++ failuresFor "tests/crucible/phase7-e2e-determinism.nix" phase7E2e [
       {
-        label = "phase7 acceptance gate records production fleet evidence";
-        needle = "real_host_reproduction=checks.fleet.crucible-e2e-determinism";
+        label = "phase7 component declares the local native contract";
+        needle = "component=gate:e2e-determinism/local-native-contract";
       }
       {
-        label = "phase7 acceptance gate records fleet check class";
-        needle = "ci_check_class=fleet-check-surface";
+        label = "phase7 component validates native QEMU execution";
+        needle = "native_qemu_execution=validated";
       }
       {
-        label = "phase7 acceptance gate records fleet check surface";
-        needle = "fleet_check_surface=checks.fleet.crucible-e2e-determinism";
+        label = "phase7 component consumes the executable fleet gate";
+        needle = "canonical_gate_status=satisfied-by-executable-fleet-gate";
+      }
+      {
+        label = "phase7 component pins the native evidence schema";
+        needle = "evidence_schema=crucible.e2e.native-gate-evidence.v1";
+      }
+      {
+        label = "phase7 component names the fleet evidence source";
+        needle = "executable_gate=checks.fleet.crucible-e2e-determinism";
       }
       {
         label = "phase7 acceptance gate records CI wiring guard";
@@ -591,12 +655,12 @@
     ]
     ++ failuresFor "tests/crucible/phase7-crucible-fleet-equivalence.nix" phase7FleetEquivalence [
       {
-        label = "phase7 fleet equivalence gate records SimDouble fleet coverage";
-        needle = "simdouble_fleet=host-profile-matrix";
+        label = "phase7 fleet equivalence gate records work-stealing fleet coverage";
+        needle = "work_stealing_fleet=host-profile-matrix";
       }
       {
         label = "phase7 fleet equivalence gate records adversarial host conditions";
-        needle = "adversarial_host_conditions=canonical-host-adversary-matrix-simdouble-fleet";
+        needle = "adversarial_host_conditions=canonical-host-adversary-matrix-work-stealing-fleet";
       }
       {
         label = "phase7 fleet equivalence gate records real-QEMU slice source";
@@ -691,7 +755,6 @@
       }
     ]) [
     ./phase7-perf-bench.nix
-    ./phase7-e2e-determinism.nix
     ./phase7-crucible-fleet-equivalence.nix
   ];
 
@@ -700,6 +763,7 @@
     ++ gateCatalogFailures
     ++ phasePlanFailures
     ++ evalClassFailures
+    ++ runtimeClassFailures
     ++ packageClassFailures
     ++ orderingFailures
     ++ aosSurfaceFailures
@@ -727,11 +791,12 @@ in
             tasks=${builtins.concatStringsSep "," taskIds}
             open_tasks=${builtins.concatStringsSep "," openTaskIds}
             status=complete
-            evidence_scope=gate-ci-wiring-with-complete-per-patch-attribution
+            evidence_scope=gate-ci-wiring-with-complete-atomic-patch-attribution
             eval_class_gates=${builtins.concatStringsSep "," (map (gate: gate.gate) evalClassGates)}
             package_class_gates=${builtins.concatStringsSep "," (map (gate: gate.gate) packageClassGates)}
             e2e_gate=gate:e2e-determinism
-            e2e_gate_class=fleet-check-surface
+            e2e_gate_status=implemented-native-qemu
+            e2e_native_slice_class=fleet-check-surface
             ordering_source=checked-gate-targets-and-explicit-default.nix-dependencies
             ordering_edges=${builtins.concatStringsSep "," (map (edge: edge.edge) expectedOrderingEdges)}
             ci_ordering=green-before-advance

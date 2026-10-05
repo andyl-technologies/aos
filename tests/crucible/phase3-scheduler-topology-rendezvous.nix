@@ -60,8 +60,8 @@
         needle = "let topology_cap = self.pending_topology_activation_cap()?;";
       }
       {
-        label = "fixed, activation, and branch caps share the minimum set";
-        needle = "Ok([fixed_cap, topology_cap, self.branch_frontier_cap]";
+        label = "fixed, activation, branch, and attempt-stop caps share the minimum set";
+        needle = "self.attempt_stop_frontier_cap,";
       }
       {
         label = "not ready changes are deferred";
@@ -107,7 +107,7 @@
       }
       {
         label = "runtime immediate queue exercised";
-        needle = "scheduler.queue_topology_change";
+        needle = ".schedule_topology_change(SchedulerTopologyChange::heal(";
       }
       {
         label = "activation assertion";

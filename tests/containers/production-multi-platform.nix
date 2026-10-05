@@ -1,8 +1,8 @@
 ##! tests/containers/production-multi-platform.nix -- Production OCI qualification
 ##!
-##! Proves that the real AOS platform artifacts compose into one exact
-##! two-platform index and that a fully independent equivalent-input pipeline
-##! reproduces every unsigned publication byte.
+##! Proves that the real AOS platform artifacts compose into one index holding
+##! exactly the released platforms and that a fully independent
+##! equivalent-input pipeline reproduces every unsigned publication byte.
 {
   lib,
   pkgs,
@@ -14,165 +14,193 @@
   publicationInputs,
   publicationInputsRepeat,
   schedulerSystem,
-  armExecution,
-  amdExecution,
+  # Released platforms sorted by Nix system: `{system, architecture, execution}`.
+  platforms,
   platformChecks,
-}:
-pkgs.mkDerivation {
-  pname = "aos-container-${name}-multi-platform-qualification";
-  version = "1";
-  src = null;
-  buildDeps =
-    [
-      pkgs.coreutils
-      pkgs.diffutils
-      pkgs.findutils
-      pkgs.jq
-      pkgs.tar
-      primaryIndex
-      repeatIndex
-      evidence
-      evidenceRepeat
-      publicationInputs
-      publicationInputsRepeat
-    ]
-    ++ platformChecks;
-  outputChecks.out = {};
-  unsafeDiscardReferences.out = true;
-  phases = [
-    {
-      name = "qualify";
-      script = ''
-        set -eu
-        export LC_ALL=C
+}: let
+  # The fragments below are spliced into the script after indentation
+  # stripping. With both platforms released they reproduce the original
+  # two-platform script byte for byte, so the derivation keeps its identity.
+  quoted = value: "\"${value}\"";
+  jsonList = values: "[" + lib.concatMapStringsSep ", " quoted values + "]";
+  systems = map (platform: platform.system) platforms;
+  architectures = builtins.sort builtins.lessThan (map (platform: platform.architecture) platforms);
+  variable = platform:
+    if platform.architecture == "arm64"
+    then "armExecution"
+    else "amdExecution";
 
-        fail() {
-          echo "FAIL: $1" >&2
-          exit 1
-        }
+  manifestPlatforms =
+    lib.concatStringsSep "\n  "
+    (builtins.genList (index: "and .manifests[${toString index}].platform == {architecture: ${quoted (builtins.elemAt architectures index)}, os: \"linux\"}")
+      (builtins.length architectures));
+  executionArguments =
+    lib.concatMapStringsSep " \\\n  "
+    (platform: "--arg ${variable platform} ${lib.escapeShellArg platform.execution}")
+    platforms;
+  evidencePlatforms =
+    lib.concatMapStringsSep ",\n        "
+    (architecture: "{os: \"linux\", architecture: ${quoted architecture}}")
+    architectures;
+  targetExecution =
+    lib.concatMapStringsSep ",\n          "
+    (platform: "${quoted platform.system}: \$${variable platform}")
+    platforms;
+  binfmtCandidates =
+    lib.concatMapStringsSep ",\n            "
+    (platform: "{system: ${quoted platform.system}, mode: \$${variable platform}}")
+    platforms;
+in
+  pkgs.mkDerivation {
+    pname = "aos-container-${name}-multi-platform-qualification";
+    version = "1";
+    src = null;
+    buildDeps =
+      [
+        pkgs.coreutils
+        pkgs.diffutils
+        pkgs.findutils
+        pkgs.jq
+        pkgs.tar
+        primaryIndex
+        repeatIndex
+        evidence
+        evidenceRepeat
+        publicationInputs
+        publicationInputsRepeat
+      ]
+      ++ platformChecks;
+    outputChecks.out = {};
+    unsafeDiscardReferences.out = true;
+    phases = [
+      {
+        name = "qualify";
+        script = ''
+          set -eu
+          export LC_ALL=C
 
-        diff -r ${primaryIndex} ${repeatIndex} \
-          || fail "equivalent multi-platform OCI indexes differ"
-        cmp ${primaryIndex}/image.oci.tar ${repeatIndex}/image.oci.tar \
-          || fail "equivalent multi-platform OCI archives differ"
-        diff -r ${evidence} ${evidenceRepeat} \
-          || fail "equivalent multi-platform evidence differs"
-        cmp ${evidence}/evidence.oci.tar ${evidenceRepeat}/evidence.oci.tar \
-          || fail "equivalent multi-platform evidence archives differ"
-        diff -r ${publicationInputs} ${publicationInputsRepeat} \
-          || fail "equivalent external-signing input bundles differ"
+          fail() {
+            echo "FAIL: $1" >&2
+            exit 1
+          }
 
-        jq -e '
-          .schemaVersion == 2
-          and .mediaType == "application/vnd.oci.image.index.v1+json"
-          and (.manifests | length) == 2
-          and .manifests[0].platform == {architecture: "amd64", os: "linux"}
-          and .manifests[1].platform == {architecture: "arm64", os: "linux"}
-          and ([.manifests[].digest] | length) == ([.manifests[].digest] | unique | length)
-        ' ${primaryIndex}/image-index.json >/dev/null \
-          || fail "production index is not the exact canonical amd64+arm64 set"
+          diff -r ${primaryIndex} ${repeatIndex} \
+            || fail "equivalent multi-platform OCI indexes differ"
+          cmp ${primaryIndex}/image.oci.tar ${repeatIndex}/image.oci.tar \
+            || fail "equivalent multi-platform OCI archives differ"
+          diff -r ${evidence} ${evidenceRepeat} \
+            || fail "equivalent multi-platform evidence differs"
+          cmp ${evidence}/evidence.oci.tar ${evidenceRepeat}/evidence.oci.tar \
+            || fail "equivalent multi-platform evidence archives differ"
+          diff -r ${publicationInputs} ${publicationInputsRepeat} \
+            || fail "equivalent external-signing input bundles differ"
 
-        jq -e \
-          --slurpfile descriptor ${primaryIndex}/index-descriptor.json \
-          --slurpfile index ${primaryIndex}/image-index.json '
-            .manifests == [$descriptor[0]]
-            and $descriptor[0].annotations == $index[0].annotations
-            and $descriptor[0].annotations."org.opencontainers.image.ref.name" == "aos:latest"
-          ' ${primaryIndex}/layout/index.json >/dev/null \
-          || fail "production root descriptor annotations diverge from the signed index"
+          jq -e '
+            .schemaVersion == 2
+            and .mediaType == "application/vnd.oci.image.index.v1+json"
+            and (.manifests | length) == ${toString (builtins.length architectures)}
+            ${manifestPlatforms}
+            and ([.manifests[].digest] | length) == ([.manifests[].digest] | unique | length)
+          ' ${primaryIndex}/image-index.json >/dev/null \
+            || fail "production index is not the exact canonical ${lib.concatStringsSep "+" architectures} set"
 
-        jq -e \
-          --slurpfile descriptor ${primaryIndex}/index-descriptor.json \
-          --slurpfile index ${primaryIndex}/image-index.json '
-            .schema == "aos.container.signature-input/v1"
-            and .oci.index == $descriptor[0]
-            and .oci.platformManifests == $index[0].manifests
-            and (.oci.platformManifests | length) == 2
-            and .qualification.readyForVerifiedPublication == true
-          ' ${evidence}/signature-input.json >/dev/null \
-          || fail "signature input does not bind the coordinated production index"
+          jq -e \
+            --slurpfile descriptor ${primaryIndex}/index-descriptor.json \
+            --slurpfile index ${primaryIndex}/image-index.json '
+              .manifests == [$descriptor[0]]
+              and $descriptor[0].annotations == $index[0].annotations
+              and $descriptor[0].annotations."org.opencontainers.image.ref.name" == "aos:latest"
+            ' ${primaryIndex}/layout/index.json >/dev/null \
+            || fail "production root descriptor annotations diverge from the signed index"
 
-        jq -e \
-          --slurpfile input ${evidence}/signature-input.json '
-            .schema == "aos.container.signing-request/v1"
-            and .qualified == true
-            and .unsignedRelease.oci == $input[0].oci
-            and .requiredOutput.finalSidecarPath == "containers/v1/index.json"
-            and .constraints.privateMaterialPermittedInNixBuild == false
-            and .constraints.exactInputBytesRequired == true
-          ' ${evidence}/signing-request.json >/dev/null \
-          || fail "external signing request is not bound to the exact unsigned input"
+          jq -e \
+            --slurpfile descriptor ${primaryIndex}/index-descriptor.json \
+            --slurpfile index ${primaryIndex}/image-index.json '
+              .schema == "aos.container.signature-input/v1"
+              and .oci.index == $descriptor[0]
+              and .oci.platformManifests == $index[0].manifests
+              and (.oci.platformManifests | length) == ${toString (builtins.length architectures)}
+              and .qualification.readyForVerifiedPublication == true
+            ' ${evidence}/signature-input.json >/dev/null \
+            || fail "signature input does not bind the coordinated production index"
 
-        test ! -e ${publicationInputs}/container-release.json \
-          || fail "pure Nix output fabricated a signed container release"
-        test -f ${publicationInputs}/EXTERNAL-SIGNING-REQUIRED
-        cmp ${publicationInputs}/signature-input.json ${evidence}/signature-input.json
-        cmp ${publicationInputs}/signing-request.json ${evidence}/signing-request.json
-        diff -r ${publicationInputs}/oci-layout ${primaryIndex}/layout
-        diff -r ${publicationInputs}/evidence-layout ${evidence}/layout
+          jq -e \
+            --slurpfile input ${evidence}/signature-input.json '
+              .schema == "aos.container.signing-request/v1"
+              and .qualified == true
+              and .unsignedRelease.oci == $input[0].oci
+              and .requiredOutput.finalSidecarPath == "containers/v1/index.json"
+              and .constraints.privateMaterialPermittedInNixBuild == false
+              and .constraints.exactInputBytesRequired == true
+            ' ${evidence}/signing-request.json >/dev/null \
+            || fail "external signing request is not bound to the exact unsigned input"
 
-        mkdir extracted-layout
-        tar -xf ${publicationInputs}/image.oci.tar -C extracted-layout
-        diff -r extracted-layout ${publicationInputs}/oci-layout \
-          || fail "production OCI archive does not reproduce its layout"
+          test ! -e ${publicationInputs}/container-release.json \
+            || fail "pure Nix output fabricated a signed container release"
+          test -f ${publicationInputs}/EXTERNAL-SIGNING-REQUIRED
+          cmp ${publicationInputs}/signature-input.json ${evidence}/signature-input.json
+          cmp ${publicationInputs}/signing-request.json ${evidence}/signing-request.json
+          diff -r ${publicationInputs}/oci-layout ${primaryIndex}/layout
+          diff -r ${publicationInputs}/evidence-layout ${evidence}/layout
 
-        index_digest=$(jq -r .digest ${primaryIndex}/index-descriptor.json)
-        index_hex=''${index_digest#sha256:}
-        test -f ${primaryIndex}/layout/blobs/sha256/$index_hex \
-          || fail "coordinated index descriptor blob is absent"
-        test "$(sha256sum ${primaryIndex}/layout/blobs/sha256/$index_hex | cut -d ' ' -f 1)" = "$index_hex" \
-          || fail "coordinated index descriptor blob is corrupt"
+          mkdir extracted-layout
+          tar -xf ${publicationInputs}/image.oci.tar -C extracted-layout
+          diff -r extracted-layout ${publicationInputs}/oci-layout \
+            || fail "production OCI archive does not reproduce its layout"
 
-        mkdir -p "$out"
-        jq -S -n \
-          --arg schema 'aos.container.multi-platform-qualification/v1' \
-          --arg indexDigest "$index_digest" \
-          --arg indexArchiveSha256 "$(sha256sum ${primaryIndex}/image.oci.tar | cut -d ' ' -f 1)" \
-          --arg evidenceArchiveSha256 "$(sha256sum ${evidence}/evidence.oci.tar | cut -d ' ' -f 1)" \
-          --arg signatureInputSha256 "$(sha256sum ${evidence}/signature-input.json | cut -d ' ' -f 1)" \
-          --arg schedulerSystem ${lib.escapeShellArg schedulerSystem} \
-          --arg armExecution ${lib.escapeShellArg armExecution} \
-          --arg amdExecution ${lib.escapeShellArg amdExecution} '
-            {
-              schema: $schema,
-              systems: ["aarch64-linux", "x86_64-linux"],
-              platforms: [
-                {os: "linux", architecture: "amd64"},
-                {os: "linux", architecture: "arm64"}
-              ],
-              builderRequirement: {
-                schedulerSystem: $schedulerSystem,
-                targetSystems: ["aarch64-linux", "x86_64-linux"],
-                targetExecution: {
-                  "aarch64-linux": $armExecution,
-                  "x86_64-linux": $amdExecution
+          index_digest=$(jq -r .digest ${primaryIndex}/index-descriptor.json)
+          index_hex=''${index_digest#sha256:}
+          test -f ${primaryIndex}/layout/blobs/sha256/$index_hex \
+            || fail "coordinated index descriptor blob is absent"
+          test "$(sha256sum ${primaryIndex}/layout/blobs/sha256/$index_hex | cut -d ' ' -f 1)" = "$index_hex" \
+            || fail "coordinated index descriptor blob is corrupt"
+
+          mkdir -p "$out"
+          jq -S -n \
+            --arg schema 'aos.container.multi-platform-qualification/v1' \
+            --arg indexDigest "$index_digest" \
+            --arg indexArchiveSha256 "$(sha256sum ${primaryIndex}/image.oci.tar | cut -d ' ' -f 1)" \
+            --arg evidenceArchiveSha256 "$(sha256sum ${evidence}/evidence.oci.tar | cut -d ' ' -f 1)" \
+            --arg signatureInputSha256 "$(sha256sum ${evidence}/signature-input.json | cut -d ' ' -f 1)" \
+            --arg schedulerSystem ${lib.escapeShellArg schedulerSystem} \
+            ${executionArguments} '
+              {
+                schema: $schema,
+                systems: ${jsonList systems},
+                platforms: [
+                  ${evidencePlatforms}
+                ],
+                builderRequirement: {
+                  schedulerSystem: $schedulerSystem,
+                  targetSystems: ${jsonList systems},
+                  targetExecution: {
+                    ${targetExecution}
+                  },
+                  requiresConfiguredBinfmt: (
+                    [
+                      ${binfmtCandidates}
+                    ]
+                    | map(select(.mode == "qemu-binfmt") | .system)
+                  ),
+                  nativeTargetBuilderRequired: false
                 },
-                requiresConfiguredBinfmt: (
-                  [
-                    {system: "aarch64-linux", mode: $armExecution},
-                    {system: "x86_64-linux", mode: $amdExecution}
-                  ]
-                  | map(select(.mode == "qemu-binfmt") | .system)
-                ),
-                nativeTargetBuilderRequired: false
-              },
-              comparisons: {
-                platformArtifacts: true,
-                index: true,
-                evidence: true,
-                publicationInputs: true
-              },
-              indexDigest: $indexDigest,
-              sha256: {
-                indexArchive: $indexArchiveSha256,
-                evidenceArchive: $evidenceArchiveSha256,
-                signatureInput: $signatureInputSha256
+                comparisons: {
+                  platformArtifacts: true,
+                  index: true,
+                  evidence: true,
+                  publicationInputs: true
+                },
+                indexDigest: $indexDigest,
+                sha256: {
+                  indexArchive: $indexArchiveSha256,
+                  evidenceArchive: $evidenceArchiveSha256,
+                  signatureInput: $signatureInputSha256
+                }
               }
-            }
-          ' > "$out/evidence.json"
-        printf '%s\n' PASS > "$out/result"
-      '';
-    }
-  ];
-  meta.description = "Production amd64 and arm64 OCI artifact qualification";
-}
+            ' > "$out/evidence.json"
+          printf '%s\n' PASS > "$out/result"
+        '';
+      }
+    ];
+    meta.description = "Production ${lib.concatStringsSep " and " architectures} OCI artifact qualification";
+  }

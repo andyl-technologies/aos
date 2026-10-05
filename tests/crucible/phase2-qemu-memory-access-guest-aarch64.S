@@ -216,7 +216,8 @@ retrying_load:
     /* Let the next TB callback observe the stored result before WFE parks. */
     b 2f
 2:
-    wfe
+    // Keep crossing translation-block boundaries after publishing the result.
+    yield
     b 2b
 
 .align 11
@@ -242,7 +243,7 @@ exception_handler:
     /* Observe the exception result at a TB boundary before parking. */
     b 4f
 4:
-    wfe
+    yield
     b 4b
 .endif
 

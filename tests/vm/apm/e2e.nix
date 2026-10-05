@@ -693,16 +693,16 @@ in {
 
       mount -o remount,rw / || true
       delete_store_path "$SYSTEM_V1_STORE" "system-v1"
-      if run_logged /tmp/e2e-system-install.out "$APM" install server --system \
+      if run_logged /tmp/e2e-system-install.out "$APM" image install server \
         --registry e2e-system-reg --yes; then
-        fail "apm install --system must reject a host without image-generation authority"
+        fail "apm image install must reject a host without image-generation authority"
       else
-        pass "apm install --system rejects a host without image-generation authority"
+        pass "apm image install rejects a host without image-generation authority"
       fi
       assert_file_contains /tmp/e2e-system-install.out "Downloading" \
-        "apm install --system downloads v1 sysroot"
+        "apm image install downloads v1 sysroot"
       assert_file_contains /tmp/e2e-system-install.out "image generation state is absent" \
-        "apm install --system explains the missing image-generation authority"
+        "apm image install explains the missing image-generation authority"
       assert_store_valid "$SYSTEM_V1_STORE" "system-v1"
       "$SYSTEM_V1_STORE/bin/e2e-system-version" > /tmp/e2e-system-run-v1.out
       assert_file_contains /tmp/e2e-system-run-v1.out "e2e system 2026.03" \
@@ -727,14 +727,14 @@ in {
       }
 
       delete_store_path "$SYSTEM_V2_STORE" "system-v2"
-      if run_logged /tmp/e2e-system-install-v2.out "$APM" install server --system \
+      if run_logged /tmp/e2e-system-install-v2.out "$APM" image install server \
         --registry e2e-system-reg --yes; then
-        fail "apm install --system must reject v2 without image-generation authority"
+        fail "apm image install must reject v2 without image-generation authority"
       else
-        pass "apm install --system rejects v2 without image-generation authority"
+        pass "apm image install rejects v2 without image-generation authority"
       fi
       assert_file_contains /tmp/e2e-system-install-v2.out "Downloading" \
-        "apm install --system downloads v2 sysroot before activation"
+        "apm image install downloads v2 sysroot before activation"
       assert_file_contains /tmp/e2e-system-install-v2.out "image generation state is absent" \
         "v2 activation reports the same image-generation authority boundary"
       assert_store_valid "$SYSTEM_V2_STORE" "system-v2"
@@ -742,15 +742,15 @@ in {
       assert_file_contains /tmp/e2e-system-run-v2.out "e2e system 2026.04" \
         "downloaded system v2 closure runs directly"
 
-      if run_logged /tmp/e2e-system-upgrade.out "$APM" upgrade --system; then
-        fail "apm upgrade --system must reject a host with no image generation"
+      if run_logged /tmp/e2e-system-upgrade.out "$APM" image upgrade; then
+        fail "apm image upgrade must reject a host with no image generation"
       else
-        pass "apm upgrade --system rejects a host with no image generation"
+        pass "apm image upgrade rejects a host with no image generation"
       fi
-      if run_logged /tmp/e2e-system-rollback.out "$APM" rollback --system; then
-        fail "apm rollback --system must reject a host with no image generation"
+      if run_logged /tmp/e2e-system-rollback.out "$APM" config rollback; then
+        fail "apm config rollback must reject a host with no image generation"
       else
-        pass "apm rollback --system rejects a host with no image generation"
+        pass "apm config rollback rejects a host with no image generation"
       fi
       if [ -e /var/lib/profiles/system/current ] || \
         [ -e /var/lib/profiles/system/state.json ] || \

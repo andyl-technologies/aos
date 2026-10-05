@@ -32,7 +32,7 @@
     ++ failuresFor "crates/crucible/src/model.rs" model [
       {
         label = "world canonical node ordering";
-        needle = "fn canonical_world_nodes(nodes: &[WorldNode]) -> Vec<WorldNode>";
+        needle = "fn canonical_world_node_defs(nodes: &[WorldNodeDef]) -> Vec<WorldNodeDef>";
       }
       {
         label = "world canonical link ordering";

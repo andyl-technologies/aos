@@ -1,7 +1,9 @@
+#include <errno.h>
 #include <inttypes.h>
 #include <limits.h>
 #include <qemu-plugin.h>
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,20 +49,37 @@ enum {
    * budget covers the measured 33,022-instruction stock-Linux direct-I/O
    * outlier while remaining far below one scheduler polling interval.
    */
-  INLINE_COMPLETION_MAX_INSTRUCTIONS = 40000
+  INLINE_COMPLETION_MAX_INSTRUCTIONS = 40000,
+  OBSERVATION_ENABLE_MARKER = 0xc0100001U
 };
 
 static FILE *out_file;
+static qemu_plugin_id_t plugin_id;
+static uint64_t activation_vaddr;
+static atomic_bool measured_callbacks_active = false;
+static atomic_uint_fast64_t dormant_tb_translations = 0;
+static atomic_uint_fast64_t dormant_insn_data_calls = 0;
+static atomic_uint_fast64_t activation_marker_callbacks = 0;
+static atomic_uint_fast64_t reset_completion_callbacks = 0;
+static bool block_warmup_retranslated;
+static bool ninep_warmup_retranslated;
 static uint64_t retired_instructions;
 static uint64_t hlt_events;
 static uint64_t io_events;
+static bool warmup_active;
+static enum medium warmup_medium;
+static uint64_t warmup_retired_baseline;
+static uint64_t warmup_io_baseline;
 static bool operation_active;
 static enum medium active_medium;
 static uint64_t operation_instructions;
 static uint64_t operation_hlt_events;
 static uint64_t operation_io_events;
-static uint64_t marker_errors;
+static atomic_uint_fast64_t marker_errors = 0;
 static struct medium_stats stats[MEDIUM_COUNT];
+
+static void on_measured_tb_translate(struct qemu_plugin_tb *tb, void *userdata);
+static void on_plugin_exit(void *userdata);
 
 static const char *
 medium_name(enum medium medium)
@@ -131,10 +150,56 @@ marker_to_operation(uint32_t marker, enum medium *medium, bool *begin)
 }
 
 static void
+observe_warmup_marker(uint32_t marker)
+{
+  const bool begin = marker == 0xc0100211U || marker == 0xc0100911U;
+  const enum medium medium = marker == 0xc0100211U || marker == 0xc0100212U
+                                 ? MEDIUM_BLOCK
+                                 : MEDIUM_9P;
+
+  if (begin) {
+    if (!atomic_load_explicit(
+            &measured_callbacks_active, memory_order_acquire) ||
+        warmup_active || operation_active) {
+      atomic_fetch_add_explicit(&marker_errors, 1, memory_order_relaxed);
+      return;
+    }
+    warmup_active = true;
+    warmup_medium = medium;
+    warmup_retired_baseline = retired_instructions;
+    warmup_io_baseline = io_events;
+    return;
+  }
+  if (!warmup_active || warmup_medium != medium ||
+      retired_instructions <= warmup_retired_baseline ||
+      io_events <= warmup_io_baseline) {
+    atomic_fetch_add_explicit(&marker_errors, 1, memory_order_relaxed);
+    return;
+  }
+
+  if (medium == MEDIUM_BLOCK) {
+    block_warmup_retranslated = true;
+  } else {
+    ninep_warmup_retranslated = true;
+  }
+
+  warmup_active = false;
+}
+
+static void
 begin_operation(enum medium medium)
 {
-  if (operation_active) {
-    marker_errors++;
+  if (!atomic_load_explicit(&measured_callbacks_active, memory_order_acquire) ||
+      warmup_active || operation_active) {
+    atomic_fetch_add_explicit(&marker_errors, 1, memory_order_relaxed);
+    return;
+  }
+
+  const bool warmup_retranslated = medium == MEDIUM_BLOCK
+                                       ? block_warmup_retranslated
+                                       : ninep_warmup_retranslated;
+  if (stats[medium].operations == 0 && !warmup_retranslated) {
+    atomic_fetch_add_explicit(&marker_errors, 1, memory_order_relaxed);
     return;
   }
 
@@ -150,7 +215,7 @@ static void
 end_operation(enum medium medium)
 {
   if (!operation_active || active_medium != medium) {
-    marker_errors++;
+    atomic_fetch_add_explicit(&marker_errors, 1, memory_order_relaxed);
     return;
   }
 
@@ -220,8 +285,11 @@ on_insn(unsigned int vcpu_index, void *userdata)
       } else {
         end_operation(marker_medium);
       }
+    } else if (marker == 0xc0100211U || marker == 0xc0100212U ||
+               marker == 0xc0100911U || marker == 0xc0100912U) {
+      observe_warmup_marker(marker);
     } else {
-      marker_errors++;
+      atomic_fetch_add_explicit(&marker_errors, 1, memory_order_relaxed);
     }
     return;
   }
@@ -229,7 +297,6 @@ on_insn(unsigned int vcpu_index, void *userdata)
   if (operation_active) {
     operation_instructions++;
   }
-
   if (is_hlt(insn)) {
     hlt_events++;
     if (operation_active) {
@@ -258,7 +325,7 @@ on_mem(
 }
 
 static void
-on_tb_translate(struct qemu_plugin_tb *tb, void *userdata)
+on_measured_tb_translate(struct qemu_plugin_tb *tb, void *userdata)
 {
   (void)userdata;
   const size_t count = qemu_plugin_tb_n_insns(tb);
@@ -282,6 +349,74 @@ on_tb_translate(struct qemu_plugin_tb *tb, void *userdata)
     qemu_plugin_register_vcpu_mem_cb(
         qinsn, on_mem, QEMU_PLUGIN_CB_NO_REGS, QEMU_PLUGIN_MEM_RW, NULL);
   }
+}
+
+static void
+on_reset_complete(void *userdata)
+{
+  (void)userdata;
+
+  const uint64_t previous = atomic_fetch_add_explicit(
+      &reset_completion_callbacks, 1, memory_order_relaxed);
+  if (previous != 0 ||
+      atomic_load_explicit(&activation_marker_callbacks, memory_order_acquire) != 1 ||
+      atomic_load_explicit(&measured_callbacks_active, memory_order_relaxed)) {
+    atomic_fetch_add_explicit(&marker_errors, 1, memory_order_relaxed);
+    return;
+  }
+
+  qemu_plugin_register_vcpu_tb_trans_cb(
+      plugin_id, on_measured_tb_translate, NULL);
+  qemu_plugin_register_atexit_cb(plugin_id, on_plugin_exit, NULL);
+  atomic_store_explicit(&measured_callbacks_active, true, memory_order_release);
+}
+
+static void
+on_activation_marker(unsigned int vcpu_index, void *userdata)
+{
+  (void)vcpu_index;
+  (void)userdata;
+
+  const uint64_t previous = atomic_fetch_add_explicit(
+      &activation_marker_callbacks, 1, memory_order_acq_rel);
+  if (previous != 0) {
+    atomic_fetch_add_explicit(&marker_errors, 1, memory_order_relaxed);
+    return;
+  }
+
+  qemu_plugin_reset(plugin_id, on_reset_complete, NULL);
+}
+
+static void
+on_dormant_tb_translate(struct qemu_plugin_tb *tb, void *userdata)
+{
+  (void)userdata;
+
+  atomic_fetch_add_explicit(&dormant_tb_translations, 1, memory_order_relaxed);
+  if (atomic_load_explicit(&activation_marker_callbacks, memory_order_acquire) != 0) {
+    return;
+  }
+  if (qemu_plugin_tb_vaddr(tb) != activation_vaddr) {
+    return;
+  }
+
+  struct qemu_plugin_insn *qinsn = qemu_plugin_tb_get_insn(tb, 0);
+  struct traced_insn insn = {0};
+  uint32_t marker = 0;
+
+  insn.size = qemu_plugin_insn_size(qinsn);
+  if (insn.size > sizeof(insn.bytes)) {
+    insn.size = sizeof(insn.bytes);
+  }
+  atomic_fetch_add_explicit(&dormant_insn_data_calls, 1, memory_order_relaxed);
+  insn.size = qemu_plugin_insn_data(qinsn, insn.bytes, insn.size);
+  if (!decode_marker(&insn, &marker) || marker != OBSERVATION_ENABLE_MARKER) {
+    atomic_fetch_add_explicit(&marker_errors, 1, memory_order_relaxed);
+    return;
+  }
+
+  qemu_plugin_register_vcpu_insn_exec_cb(
+      qinsn, on_activation_marker, QEMU_PLUGIN_CB_NO_REGS, NULL);
 }
 
 static void
@@ -375,10 +510,50 @@ on_plugin_exit(void *userdata)
     return;
   }
 
+  const bool measured_active =
+      atomic_load_explicit(&measured_callbacks_active, memory_order_acquire);
+  const uint64_t marker_callback_count =
+      atomic_load_explicit(&activation_marker_callbacks, memory_order_relaxed);
+  const uint64_t reset_callback_count =
+      atomic_load_explicit(&reset_completion_callbacks, memory_order_relaxed);
+
+  if (!measured_active || marker_callback_count != 1 ||
+      reset_callback_count != 1 || warmup_active) {
+    atomic_fetch_add_explicit(&marker_errors, 1, memory_order_relaxed);
+  }
+
+  fprintf(out_file, "activation_vaddr=0x%" PRIx64 "\n", activation_vaddr);
+  fprintf(
+      out_file,
+      "dormant_tb_translations=%" PRIuFAST64 "\n",
+      atomic_load_explicit(&dormant_tb_translations, memory_order_relaxed));
+  fprintf(
+      out_file,
+      "dormant_insn_data_calls=%" PRIuFAST64 "\n",
+      atomic_load_explicit(&dormant_insn_data_calls, memory_order_relaxed));
+  fprintf(
+      out_file,
+      "activation_marker_callbacks=%" PRIu64 "\n",
+      marker_callback_count);
+  fprintf(
+      out_file,
+      "reset_completion_callbacks=%" PRIu64 "\n",
+      reset_callback_count);
+  fprintf(
+      out_file,
+      "block_warmup_retranslated=%s\n",
+      block_warmup_retranslated ? "true" : "false");
+  fprintf(
+      out_file,
+      "ninep_warmup_retranslated=%s\n",
+      ninep_warmup_retranslated ? "true" : "false");
   fprintf(out_file, "retired_instructions=%" PRIu64 "\n", retired_instructions);
   fprintf(out_file, "hlt_events=%" PRIu64 "\n", hlt_events);
   fprintf(out_file, "io_events=%" PRIu64 "\n", io_events);
-  fprintf(out_file, "marker_errors=%" PRIu64 "\n", marker_errors);
+  fprintf(
+      out_file,
+      "marker_errors=%" PRIuFAST64 "\n",
+      atomic_load_explicit(&marker_errors, memory_order_relaxed));
   fprintf(out_file, "open_operation=%s\n", operation_active ? "true" : "false");
   write_medium_stats(MEDIUM_BLOCK);
   write_medium_stats(MEDIUM_9P);
@@ -386,20 +561,52 @@ on_plugin_exit(void *userdata)
   out_file = NULL;
 }
 
+static bool
+parse_activation_vaddr(const char *value)
+{
+  char *end = NULL;
+
+  errno = 0;
+  const unsigned long long parsed = strtoull(value, &end, 0);
+  if (errno == ERANGE || value[0] == '\0' || end == value || *end != '\0' ||
+      parsed == 0) {
+    return false;
+  }
+
+  activation_vaddr = (uint64_t)parsed;
+  return true;
+}
+
 QEMU_PLUGIN_EXPORT int
 qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info, int argc, char **argv)
 {
   (void)info;
   const char *out_path = NULL;
+  bool have_activation_vaddr = false;
 
   for (int i = 0; i < argc; i++) {
     if (strncmp(argv[i], "out=", 4) == 0) {
       out_path = argv[i] + 4;
+    } else if (strncmp(argv[i], "activate-vaddr=", 15) == 0) {
+      have_activation_vaddr = parse_activation_vaddr(argv[i] + 15);
+      if (!have_activation_vaddr) {
+        qemu_plugin_outs(
+            "phase0-s2-io-idle-plugin: invalid activate-vaddr=<address>\n");
+        return -1;
+      }
+    } else {
+      qemu_plugin_outs("phase0-s2-io-idle-plugin: unknown option\n");
+      return -1;
     }
   }
 
   if (out_path == NULL || out_path[0] == '\0') {
     qemu_plugin_outs("phase0-s2-io-idle-plugin: missing out=<path>\n");
+    return -1;
+  }
+  if (!have_activation_vaddr) {
+    qemu_plugin_outs(
+        "phase0-s2-io-idle-plugin: missing activate-vaddr=<address>\n");
     return -1;
   }
 
@@ -409,7 +616,8 @@ qemu_plugin_install(qemu_plugin_id_t id, const qemu_info_t *info, int argc, char
     return -1;
   }
 
-  qemu_plugin_register_vcpu_tb_trans_cb(id, on_tb_translate, NULL);
+  plugin_id = id;
+  qemu_plugin_register_vcpu_tb_trans_cb(id, on_dormant_tb_translate, NULL);
   qemu_plugin_register_atexit_cb(id, on_plugin_exit, NULL);
   return 0;
 }

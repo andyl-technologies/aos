@@ -9,7 +9,11 @@
 
 mod qemu_symbols;
 
-use std::{fmt, os::raw::c_int};
+use std::{
+    fmt,
+    os::raw::c_int,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use thiserror::Error;
 
@@ -17,6 +21,8 @@ use crucible_shmem::{
     FrameDeliveryAttemptError, FrameDeliveryKey, FrameDeliveryState, FrameDeliveryStateError,
     FrameEntry, FrameEntryError, MAX_FRAME_DELIVERY_ATTEMPTS,
 };
+
+use crate::inbound::InboundFrameError;
 
 /// Hard ceiling on concrete QEMU RX attempts for one canonical frame.
 pub const NETWORK_RX_DELIVERY_ATTEMPT_LIMIT: u32 = MAX_FRAME_DELIVERY_ATTEMPTS;
@@ -30,16 +36,25 @@ pub use qemu_symbols::{
 
 /// Registration-time-fixed network RX injection state.
 #[derive(Debug, Default)]
-pub struct PluginNetworkRx;
+pub struct PluginNetworkRx {
+    uncertain_commit: AtomicBool,
+}
 
 impl PluginNetworkRx {
     /// Builds a network RX injection state object.
     #[must_use]
     pub const fn new() -> Self {
-        Self
+        Self {
+            uncertain_commit: AtomicBool::new(false),
+        }
     }
 
-    /// Delivers the longest guest-accepted prefix of the due frame batch.
+    /// Reports whether a guest acceptance lacks a canonical ring commit.
+    pub(crate) fn commit_uncertain(&self) -> bool {
+        self.uncertain_commit.load(Ordering::Acquire)
+    }
+
+    /// Exercises delivery gating without a canonical ring for unit tests.
     ///
     /// `passed_delivery_floor_icount` is the icount at which this idle pass began,
     /// and `current_icount` must be the plugin clock after the idle jump. Frames
@@ -51,7 +66,8 @@ impl PluginNetworkRx {
     /// Returns [`NetworkRxError`] when a frame is not yet due, advertises an
     /// invalid payload length, or when the canonical delivery backend reports a
     /// permanent failure. Guest backpressure is a successful retained outcome.
-    pub fn inject_due_frames_from_idle_context<Q>(
+    #[cfg(test)]
+    fn inject_due_frames_for_test<Q>(
         &self,
         rx_queue: &mut Q,
         passed_delivery_floor_icount: u64,
@@ -61,6 +77,34 @@ impl PluginNetworkRx {
     where
         Q: CanonicalNetworkRx + ?Sized,
     {
+        self.inject_due_frames_with_commit(
+            rx_queue,
+            passed_delivery_floor_icount,
+            current_icount,
+            frames,
+            |_| Ok(()),
+        )
+    }
+
+    /// Commits each guest-accepted frame before attempting its successor.
+    ///
+    /// A failed commit leaves guest ownership ambiguous, so this RX instance
+    /// refuses every later attempt instead of replaying a possibly accepted head.
+    pub(crate) fn inject_due_frames_with_commit<Q, F>(
+        &self,
+        rx_queue: &mut Q,
+        passed_delivery_floor_icount: u64,
+        current_icount: u64,
+        frames: &[FrameEntry],
+        mut commit: F,
+    ) -> Result<NetworkRxInjection, NetworkRxError>
+    where
+        Q: CanonicalNetworkRx + ?Sized,
+        F: FnMut(&FrameEntry) -> Result<(), InboundFrameError>,
+    {
+        if self.uncertain_commit.load(Ordering::Acquire) {
+            return Err(NetworkRxError::CommitUncertain);
+        }
         if passed_delivery_floor_icount > current_icount {
             return Err(NetworkRxError::InvalidDeliveryWindow {
                 passed_delivery_floor_icount,
@@ -128,7 +172,16 @@ impl PluginNetworkRx {
                     frame: frame_key,
                     source,
                 })? {
-                NetworkRxDeliveryOutcome::Delivered => delivered_frame_keys.push(frame_key),
+                NetworkRxDeliveryOutcome::Delivered => {
+                    if let Err(source) = commit(frame) {
+                        self.uncertain_commit.store(true, Ordering::Release);
+                        return Err(NetworkRxError::Commit {
+                            frame: frame_key,
+                            source,
+                        });
+                    }
+                    delivered_frame_keys.push(frame_key);
+                }
                 NetworkRxDeliveryOutcome::Retained => {
                     retained_frame_key = Some(frame_key);
                     break;
@@ -144,17 +197,33 @@ impl PluginNetworkRx {
     }
 }
 
-/// Handles one idle-context network RX injection pass.
+/// Handles RX delivery while committing each accepted frame immediately.
 ///
-/// This is the safe body for the QEMU-facing RX injection path. With
-/// [`QemuCanonicalNetworkRx`] as the backend, it calls the concrete
-/// `qemu_plugin_net_inject` patch export without a QEMU-private queue.
-///
-/// # Errors
-///
-/// Returns [`NetworkRxError`] when the delivery gate, frame payload validation,
-/// delivery step fails permanently.
-pub fn handle_network_rx_idle_callback<Q>(
+/// The caller's callback must commit the exact canonical ring head.
+pub(crate) fn handle_network_rx_idle_callback_with_commit<Q, F>(
+    network_rx: &PluginNetworkRx,
+    rx_queue: &mut Q,
+    passed_delivery_floor_icount: u64,
+    current_icount: u64,
+    frames: &[FrameEntry],
+    commit: F,
+) -> Result<NetworkRxInjection, NetworkRxError>
+where
+    Q: CanonicalNetworkRx + ?Sized,
+    F: FnMut(&FrameEntry) -> Result<(), InboundFrameError>,
+{
+    network_rx.inject_due_frames_with_commit(
+        rx_queue,
+        passed_delivery_floor_icount,
+        current_icount,
+        frames,
+        commit,
+    )
+}
+
+/// Exercises callback delivery gating without a canonical ring in unit tests.
+#[cfg(test)]
+fn handle_network_rx_idle_callback_for_test<Q>(
     network_rx: &PluginNetworkRx,
     rx_queue: &mut Q,
     passed_delivery_floor_icount: u64,
@@ -164,7 +233,7 @@ pub fn handle_network_rx_idle_callback<Q>(
 where
     Q: CanonicalNetworkRx + ?Sized,
 {
-    network_rx.inject_due_frames_from_idle_context(
+    network_rx.inject_due_frames_for_test(
         rx_queue,
         passed_delivery_floor_icount,
         current_icount,
@@ -330,6 +399,17 @@ impl NetworkRxInjection {
 /// An error produced by network RX injection.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum NetworkRxError {
+    /// A prior guest acceptance could not be committed to the canonical ring.
+    #[error("network RX canonical commit is uncertain; further delivery is refused")]
+    CommitUncertain,
+    /// A guest-accepted frame could not be committed to the canonical ring.
+    #[error("network RX frame {frame:?} canonical commit failed: {source}")]
+    Commit {
+        /// The frame accepted by the guest.
+        frame: FrameDeliveryKey,
+        /// The failed canonical ring commit.
+        source: InboundFrameError,
+    },
     /// The required QEMU network RX patch export was unavailable.
     #[error("required network RX capability {symbol} is unavailable")]
     CapabilityUnavailable {
@@ -522,12 +602,41 @@ mod tests {
     }
 
     #[test]
+    fn failed_canonical_commit_refuses_later_guest_delivery() {
+        let frame = FrameEntry::new(20, 1, 0, b"accepted")
+            .unwrap_or_else(|error| panic!("test frame should construct: {error}"));
+        let network_rx = PluginNetworkRx::new();
+        let mut queue = RecordingRxQueue::ready();
+
+        assert!(matches!(
+            network_rx.inject_due_frames_with_commit(
+                &mut queue,
+                20,
+                20,
+                std::slice::from_ref(&frame),
+                |_| Err(InboundFrameError::CommittedBatchMismatch {
+                    expected: vec![frame.delivery_key()],
+                    actual: Vec::new(),
+                }),
+            ),
+            Err(NetworkRxError::Commit { .. })
+        ));
+        assert_eq!(queue.queued_payloads, vec![b"accepted".to_vec()]);
+        assert!(network_rx.commit_uncertain());
+
+        let later_attempt =
+            network_rx.inject_due_frames_for_test(&mut queue, 20, 20, std::slice::from_ref(&frame));
+        assert_eq!(later_attempt, Err(NetworkRxError::CommitUncertain));
+        assert_eq!(queue.queued_payloads, vec![b"accepted".to_vec()]);
+    }
+
+    #[test]
     fn host_observable_schedule_cross_checks_sim_double_against_plugin_projection() {
-        let requested_horizon = 20;
+        let requested_horizon = 150;
         let mut double = sim_double_for_schedule_cross_check();
         complete_sim_double_setup(&mut double);
-        enqueue_double_inbound(&mut double, 7, 12, b"router-first");
-        enqueue_double_inbound(&mut double, 8, 15, b"router-second");
+        enqueue_double_inbound(&mut double, 7, 50, b"router-first");
+        enqueue_double_inbound(&mut double, 8, 100, b"router-second");
 
         let horizon = ExecutionHorizon {
             icount: Icount {
@@ -537,13 +646,13 @@ mod tests {
         assert_eq!(
             double.advance_scripted_quantum(horizon, &ALLOW_ALL_SENDS),
             Ok(AdvanceOutcome::Paused {
-                at: Icount { retired: 12 },
+                at: Icount { retired: 50 },
             })
         );
         assert_eq!(
             double.advance_scripted_quantum(horizon, &ALLOW_ALL_SENDS),
             Ok(AdvanceOutcome::Paused {
-                at: Icount { retired: 15 },
+                at: Icount { retired: 100 },
             })
         );
         assert_eq!(
@@ -560,7 +669,7 @@ mod tests {
     #[test]
     fn host_observable_schedule_projection_waits_for_qemu_advance_completion() {
         let slot = NodeSlot::new(KIND_VM);
-        let mut clock = owned_clock(0, 0);
+        let mut clock = owned_clock(0);
         let ring = RingHeader::new();
         let mut entries = vec![FrameEntry::default(); 1];
         enqueue_plugin_projection_inbound_frame(
@@ -591,7 +700,7 @@ mod tests {
                 &mut queue,
             ),
             Err(crate::IdleHotLoopError::TimeAdvanceCompletionPending {
-                target_virtual_ns: 12,
+                target_tick: 12,
                 ..
             })
         ));
@@ -610,11 +719,16 @@ mod tests {
             frame(20, 9, 5, b"third"),
         ];
 
-        let injection =
-            match handle_network_rx_idle_callback(&network_rx, &mut queue, 20, 20, &frames) {
-                Ok(injection) => injection,
-                Err(error) => panic!("due RX frames should inject: {error}"),
-            };
+        let injection = match handle_network_rx_idle_callback_for_test(
+            &network_rx,
+            &mut queue,
+            20,
+            20,
+            &frames,
+        ) {
+            Ok(injection) => injection,
+            Err(error) => panic!("due RX frames should inject: {error}"),
+        };
 
         assert_eq!(injection.current_icount(), 20);
         assert_eq!(
@@ -642,11 +756,16 @@ mod tests {
             frame(15, 9, 5, b"middle"),
         ];
 
-        let injection =
-            match handle_network_rx_idle_callback(&network_rx, &mut queue, 10, 20, &frames) {
-                Ok(injection) => injection,
-                Err(error) => panic!("jump-window RX frames should inject: {error}"),
-            };
+        let injection = match handle_network_rx_idle_callback_for_test(
+            &network_rx,
+            &mut queue,
+            10,
+            20,
+            &frames,
+        ) {
+            Ok(injection) => injection,
+            Err(error) => panic!("jump-window RX frames should inject: {error}"),
+        };
 
         assert_eq!(injection.current_icount(), 20);
         assert_eq!(
@@ -670,11 +789,10 @@ mod tests {
         let mut queue = RecordingRxQueue::not_ready();
         let frames = [frame(20, 1, 0, b"queued")];
 
-        let injection =
-            match network_rx.inject_due_frames_from_idle_context(&mut queue, 20, 20, &frames) {
-                Ok(injection) => injection,
-                Err(error) => panic!("backpressure should retain the canonical frame: {error}"),
-            };
+        let injection = match network_rx.inject_due_frames_for_test(&mut queue, 20, 20, &frames) {
+            Ok(injection) => injection,
+            Err(error) => panic!("backpressure should retain the canonical frame: {error}"),
+        };
 
         assert_eq!(injection.delivered_frame_keys(), &[]);
         assert_eq!(
@@ -696,7 +814,7 @@ mod tests {
         let future = frame(21, 1, 0, b"future");
 
         assert_eq!(
-            network_rx.inject_due_frames_from_idle_context(
+            network_rx.inject_due_frames_for_test(
                 &mut queue,
                 20,
                 20,
@@ -717,12 +835,7 @@ mod tests {
         let late = frame(19, 1, 0, b"late");
 
         assert_eq!(
-            network_rx.inject_due_frames_from_idle_context(
-                &mut queue,
-                20,
-                20,
-                std::slice::from_ref(&late),
-            ),
+            network_rx.inject_due_frames_for_test(&mut queue, 20, 20, std::slice::from_ref(&late)),
             Err(NetworkRxError::DeliveryAlreadyPassed {
                 passed_delivery_floor_icount: 20,
                 current_icount: 20,
@@ -740,7 +853,7 @@ mod tests {
         invalid.len = (MAX_FRAME_DATA + 1) as u16;
 
         assert_eq!(
-            network_rx.inject_due_frames_from_idle_context(
+            network_rx.inject_due_frames_for_test(
                 &mut queue,
                 20,
                 20,
@@ -765,12 +878,7 @@ mod tests {
         let frame = frame(20, 1, 0, b"fail");
 
         assert_eq!(
-            network_rx.inject_due_frames_from_idle_context(
-                &mut queue,
-                20,
-                20,
-                std::slice::from_ref(&frame),
-            ),
+            network_rx.inject_due_frames_for_test(&mut queue, 20, 20, std::slice::from_ref(&frame)),
             Err(NetworkRxError::Delivery {
                 frame: frame.delivery_key(),
                 source: NetworkRxDeliveryError::delivery("test delivery failure"),
@@ -798,11 +906,10 @@ mod tests {
         };
         let frames = [frame(20, 1, 0, b"qemu")];
 
-        let injection =
-            match network_rx.inject_due_frames_from_idle_context(&mut queue, 20, 20, &frames) {
-                Ok(injection) => injection,
-                Err(error) => panic!("QEMU patch queue should inject: {error}"),
-            };
+        let injection = match network_rx.inject_due_frames_for_test(&mut queue, 20, 20, &frames) {
+            Ok(injection) => injection,
+            Err(error) => panic!("QEMU patch queue should inject: {error}"),
+        };
 
         assert_eq!(
             injection.delivered_frame_keys(),
@@ -820,12 +927,7 @@ mod tests {
         };
 
         let injection = network_rx
-            .inject_due_frames_from_idle_context(
-                &mut queue,
-                20,
-                20,
-                &[frame(20, 1, 0, b"retained")],
-            )
+            .inject_due_frames_for_test(&mut queue, 20, 20, &[frame(20, 1, 0, b"retained")])
             .unwrap_or_else(|error| panic!("backpressured frame should remain queued: {error}"));
 
         assert!(injection.delivered_frame_keys().is_empty());
@@ -856,10 +958,10 @@ mod tests {
 
     fn sim_double_for_schedule_cross_check() -> SimDouble {
         let script = SimInstructionScript::new(vec![SimInstructionStep {
-            instruction_budget: 20,
+            instruction_budget: 150,
             outbound_frames: vec![SimOutboundFrame {
                 dst_slot: SLOT_NET_ROUTER as u32,
-                delivery_icount: 20,
+                delivery_icount: 150,
                 payload: b"guest-to-router".to_vec(),
             }],
         }]);
@@ -914,19 +1016,19 @@ mod tests {
     ) -> Vec<SimDoubleHostScheduleEvent> {
         let mut schedule = Vec::new();
         let slot = NodeSlot::new(KIND_VM);
-        let mut clock = owned_clock(0, 0);
+        let mut clock = owned_clock(0);
         let network_rx = PluginNetworkRx::new();
         let inbound_ring = RingHeader::new();
         let mut inbound_entries = vec![FrameEntry::default(); 4];
         enqueue_plugin_projection_inbound_frame(
             &inbound_ring,
             &mut inbound_entries,
-            frame(12, SLOT_NET_ROUTER as u32, 7, b"router-first"),
+            frame(50, SLOT_NET_ROUTER as u32, 7, b"router-first"),
         );
         enqueue_plugin_projection_inbound_frame(
             &inbound_ring,
             &mut inbound_entries,
-            frame(15, SLOT_NET_ROUTER as u32, 8, b"router-second"),
+            frame(100, SLOT_NET_ROUTER as u32, 8, b"router-second"),
         );
 
         append_plugin_projection_idle_rx_delivery(
@@ -937,9 +1039,9 @@ mod tests {
             &inbound_ring,
             &inbound_entries,
             requested_horizon,
-            12,
+            50,
             AdvanceOutcome::Paused {
-                at: Icount { retired: 12 },
+                at: Icount { retired: 50 },
             },
         );
 
@@ -951,9 +1053,9 @@ mod tests {
             &inbound_ring,
             &inbound_entries,
             requested_horizon,
-            15,
+            100,
             AdvanceOutcome::Paused {
-                at: Icount { retired: 15 },
+                at: Icount { retired: 100 },
             },
         );
 
@@ -961,10 +1063,10 @@ mod tests {
             &mut schedule,
             &mut clock,
             requested_horizon,
-            20,
+            150,
             AdvanceOutcome::ReachedHorizon,
         );
-        push_plugin_projection_tx_emission(&mut schedule, 20, b"guest-to-router");
+        push_plugin_projection_tx_emission(&mut schedule, 150, b"guest-to-router");
         schedule
     }
 
@@ -1017,7 +1119,7 @@ mod tests {
                 Ok(_result) => panic!("plugin projection must wait for QEMU completion"),
                 Err(error) => panic!("plugin projection should queue time advance: {error}"),
             };
-        let completion_target = i64::try_from(pending.target_virtual_ns())
+        let completion_target = i64::try_from(pending.target_tick())
             .unwrap_or_else(|error| panic!("completion target should fit: {error}"));
         let result =
             PluginIdleHotLoop::complete_after_time_advance_from_inbound_rings_with_rx_injection(
@@ -1068,9 +1170,12 @@ mod tests {
         let delta_icount = reached_icount
             .checked_sub(from_icount)
             .unwrap_or_else(|| panic!("reached icount should not move backward"));
-        let advance = match clock
-            .advance_guest_instructions(delta_icount, crate::SchedulerCeiling::new(reached_icount))
-        {
+        assert_eq!(delta_icount % crucible_shmem::TICKS_PER_INSTRUCTION, 0);
+        let retired_instructions = delta_icount / crucible_shmem::TICKS_PER_INSTRUCTION;
+        let advance = match clock.advance_guest_instructions(
+            retired_instructions,
+            crate::SchedulerCeiling::new(reached_icount),
+        ) {
             Ok(advance) => advance,
             Err(error) => panic!("plugin projection clock should advance: {error}"),
         };
@@ -1141,8 +1246,8 @@ mod tests {
         }
     }
 
-    fn owned_clock(initial_icount: u64, icount_shift: u8) -> crate::PluginVirtualClock {
-        match crate::PluginVirtualClock::new(initial_icount, icount_shift, ownership()) {
+    fn owned_clock(initial_icount: u64) -> crate::PluginVirtualClock {
+        match crate::PluginVirtualClock::new(initial_icount, ownership()) {
             Ok(clock) => clock,
             Err(error) => panic!("plugin projection clock should construct: {error}"),
         }
@@ -1191,7 +1296,7 @@ mod tests {
                     .unwrap_or_else(|| panic!("setup ack should precede boot barrier"));
                 let slot = NodeSlot::new(KIND_VM);
                 publish_boot_barrier_ceiling(&slot);
-                sequence.wait_boot_barrier(ack, &slot, 0).map(|_release| ())
+                sequence.wait_boot_barrier(ack, &slot).map(|_release| ())
             } else {
                 sequence.record_step(step)
             };
@@ -1219,7 +1324,7 @@ mod tests {
     }
 
     fn publish_ceiling(slot: &NodeSlot, ceiling: AdvanceCeiling) {
-        slot.publish_scheduler_ceiling(ceiling)
+        slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
             .unwrap_or_else(|error| {
                 panic!("plugin projection scheduler ceiling should publish: {error}")
             });
@@ -1233,9 +1338,7 @@ mod tests {
         1
     }
 
-    extern "C" fn host_schedule_test_direct_advance(
-        _target_virtual_ns: i64,
-    ) -> std::os::raw::c_int {
+    extern "C" fn host_schedule_test_direct_advance(_target_tick: i64) -> std::os::raw::c_int {
         0
     }
 

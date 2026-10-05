@@ -101,14 +101,14 @@ pub struct BlockFlashEraseBlockState {
     /// Successful erase transitions applied to this block.
     pub erase_count: u64,
     /// Virtual time of the last successful erase.
-    pub last_erase_nanos: u64,
+    pub last_erase_ticks: u64,
 }
 
 /// Sparse state for one touched program page.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BlockFlashPageState {
     /// Virtual time of the most recent successful program.
-    pub programmed_nanos: u64,
+    pub programmed_ticks: u64,
     /// Reads since the most recent disturb threshold transition.
     pub reads_since_disturb: u64,
 }

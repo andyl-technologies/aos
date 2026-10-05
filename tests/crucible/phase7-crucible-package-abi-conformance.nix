@@ -42,6 +42,19 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
+  # Shell continuation indentation does not alter the exact Cargo arguments.
+  normalizeCargoFormatting = source:
+    builtins.concatStringsSep " " (
+      builtins.filter builtins.isString (
+        builtins.split "[[:space:]]+" (
+          builtins.replaceStrings ["\\\n"] [" "] source
+        )
+      )
+    );
+
+  normalizeCargoRequirement = requirement:
+    requirement // {needle = normalizeCargoFormatting requirement.needle;};
+
   failures =
     failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
       {
@@ -68,14 +81,14 @@
       }
       {
         label = "scoped phase2 ABI wrapper dependencies";
-        needle = "dependencies = [\n          phase1.gates.licenseBoundary\n          phase1.gates.harnessLint\n          phase1.gates.layer0Determinism\n          phase1.gates.contentAddress\n          phase1.gates.replayOracle\n          phase1.gates.singleVmFingerprint\n          phase1.gates.divergenceBisect\n        ];";
+        needle = "dependencies = [\n          phase1.gates.licenseBoundary\n          phase1.gates.harnessLint\n          phase1.gates.layer0Determinism\n          phase1.gates.contentAddress\n          phase1.gates.campaignModel\n          phase1.gates.replayOracle\n          phase1.gates.singleVmFingerprint\n          phase1.gates.divergenceBisect\n        ];";
       }
       {
         label = "phase7 package ABI conformance check imported";
         needle = "cruciblePackageAbiConformance = import ./phase7-crucible-package-abi-conformance.nix";
       }
     ]
-    ++ failuresFor "tests/crucible/phase2-abi-conformance.nix" abiConformanceCheck [
+    ++ failuresFor "tests/crucible/phase2-abi-conformance.nix" (normalizeCargoFormatting abiConformanceCheck) (map normalizeCargoRequirement [
       {
         label = "AOS mkDerivation check";
         needle = "pkgs.mkDerivation";
@@ -134,9 +147,9 @@
       }
       {
         label = "RPC mismatch result marker";
-        needle = "rpc_major_mismatch_rejection=true";
+        needle = "rpc_exact_version_rejection=true";
       }
-    ]
+    ])
     ++ failuresFor "crates/crucible-shmem/tests/gate_abi_conformance.rs" shmemGateTest [
       {
         label = "shmem generated header and golden vector aggregate";
@@ -209,8 +222,8 @@
         needle = "GOLDEN_VECTOR_RPC_REGENERATION_RULE";
       }
       {
-        label = "RPC major mismatch error";
-        needle = "RpcAbiError::MajorVersionMismatch";
+        label = "RPC exact version mismatch error";
+        needle = "RpcAbiError::ExactVersionMismatch";
       }
       {
         label = "RPC golden corpus";
@@ -219,8 +232,8 @@
     ]
     ++ failuresFor "crates/crucible-api/tests/gate_abi_conformance.rs" apiGateTest [
       {
-        label = "RPC explicit version and mismatch check";
-        needle = "rpc_protocol_version_is_explicit_and_rejects_major_mismatch";
+        label = "RPC exact version and mismatch check";
+        needle = "rpc_protocol_version_is_exact_and_rejects_all_drift";
       }
       {
         label = "RPC golden vector coverage";
@@ -277,7 +290,7 @@ in
             printf '%s\n' 'protocol_vectors=hello,hello-ack,setup-payload,setup-ack,quit,doorbell-frame,doorbell-marker'
             printf '%s\n' 'rpc_vectors=hello-request,hello-response,attached,send-request,send-response,event-effect-applied'
             printf '%s\n' 'version_bump_rule=shmem+protocol+rpc-golden-corpora'
-            printf '%s\n' 'rpc_major_mismatch_rejection=true'
+            printf '%s\n' 'rpc_exact_version_rejection=true'
             printf '%s\n' 'engine_test_double_aggregate=true'
           } > "$out/result"
         ''

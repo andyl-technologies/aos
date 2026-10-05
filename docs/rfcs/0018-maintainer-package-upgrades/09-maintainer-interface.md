@@ -114,7 +114,7 @@ At narrow widths, records replace columns:
 ```text
 bazel-7 current=7.6.2 candidate=7.6.3 discovery=UPDATE-AVAILABLE
 bazel-8 current=8.4.2 candidate=8.4.3 run=MATERIALIZING elapsed=2m14s
-qemu current=10.0.0 candidate=10.1.0 discovery=QUARANTINED reason=policy-major
+qemu current=11.1.1 candidate=12.0.0 discovery=QUARANTINED reason=policy-major
 ```
 
 ### Screen-reader mode
@@ -419,7 +419,7 @@ Plan 01K4D9H1ER9R2AJZ2WQ6K2YQVA · bazel-8
   Requires     origin-integrity
   Writes       3 declared fields · 1 generated input
   Impact       1 member · 34 reverse dependencies · 4 targets
-  Risk         HIGH · patch stack and wide reverse closure
+  Risk         HIGH · atomic patch and wide reverse closure
   Gates        27 planned · KVM available
   Budget       2 repair attempts · 45 min · 8 GiB
 
