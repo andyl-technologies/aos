@@ -9,6 +9,9 @@ mod drain_pause;
 #[path = "lifecycle/report.rs"]
 mod report;
 
+#[path = "lifecycle/request_observation.rs"]
+mod request_observation;
+
 // A fresh packaged realization must boot to its authenticated selectable.
 // The previous 90-second host wait reached only 203 ms of virtual time;
 // source discovery on the same clock reaches its marker near 555 ms.
@@ -549,10 +552,18 @@ fn wait_for_public_request_observation(
             }
             let explanation =
                 parse_json_output(explanation_output, "explain public request attempt")?;
-            if !explanation["observation"].is_null()
-                && explanation["runtime"]["phase"] == "completed"
-            {
-                return Ok(Some(explanation));
+            match request_observation::classify(request, &attempt, value, &explanation)? {
+                request_observation::Observation::Completed => return Ok(Some(explanation)),
+                request_observation::Observation::Pending => {}
+                request_observation::Observation::TerminalFailure { execution } => {
+                    return Err(request_observation::failure_message(
+                        request,
+                        &attempt,
+                        execution,
+                        &service.stderr_tail(),
+                    )
+                    .into());
+                }
             }
         }
         Ok(None)
