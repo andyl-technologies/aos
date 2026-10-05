@@ -239,10 +239,22 @@ in
             crucible-guest event boot.init-mounted
           ''}
 
-          ip link set lo up
-          ip link set eth0 up
-
           cmdline=" $(cat /proc/cmdline) "
+          networked_role=1
+          case "$cmdline" in
+            *" crucible.workload=bench "*)
+              case "$cmdline" in
+                # The single-VM fixture retains block/9p without any World network links.
+                *" role=hot-fork-single "*) networked_role=0 ;;
+              esac
+              ;;
+          esac
+
+          ip link set lo up
+          if [ "$networked_role" = 1 ]; then
+            ip link set eth0 up
+          fi
+
           case "$cmdline" in
           *" crucible.workload=httpd "*)
               ${pkgs.lib.optionalString envoyProxy ''
