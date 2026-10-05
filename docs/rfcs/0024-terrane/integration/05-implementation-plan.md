@@ -1188,6 +1188,22 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   These results qualify shared declarations only. Full verification, property
   mutation, arena allocation and graph copying must remain separate from
   DRV-29's incremental accounting. No task checkbox or milestone advances.
+  A separate source audit confirms that native initialization and loss rebuild
+  cannot acquire ordinary namespace inputs through the bound-index loader:
+  it discards its fetched namespace when the owner binding or auxiliary index
+  is absent. Public snapshot/file projections do not expose a reusable ordinary
+  namespace graph. The next native prerequisite factors the existing reader's
+  namespace phase and canonical reconstruction into source-only acquisition;
+  it must preserve the strict bound-index loader and must not expose private
+  authority witnesses or follow auxiliary bindings. Shared
+  `checks.terrane.integration.index-source` declares four exact nonzero groups
+  for unbound input acquisition, repeated graft/internal physical contexts,
+  typed source failures/revisions and actual initialization/loss-rebuild
+  consumption. Its requested declaration check fails on zero selected tests.
+  Registry completeness and both mandatory formatters pass; both declared
+  images match the actual owning check input. Source acquisition supplies
+  mandatory immutable inputs, not current producer checks, publication or
+  complete native rebuild qualification. T-DRV-2 and T1 remain open.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route
