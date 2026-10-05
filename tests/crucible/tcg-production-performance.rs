@@ -32,13 +32,23 @@ use crucible_protocol::{
     SetupDescriptorFds,
 };
 use crucible_shmem::{
-    ABI_VERSION, AdvanceStopCondition, RegionAllocation, RegionConfig, STATUS_IDLE,
-    TICKS_PER_INSTRUCTION, authorize_advance_ceiling, mmap_setup_region,
+    ABI_VERSION, AdvanceStopCondition, NodeSlotSnapshot, RegionAllocation, RegionConfig,
+    STATUS_IDLE, TICKS_PER_INSTRUCTION, authorize_advance_ceiling, mmap_setup_region,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
+
+/// Compares semantic readiness coordinates while allowing publication bookkeeping.
+fn same_readiness_state(observed: &NodeSlotSnapshot, stopped: &NodeSlotSnapshot) -> bool {
+    observed.current_icount == stopped.current_icount
+        && observed.current_ns == stopped.current_ns
+        && observed.logical_time_raw_icount == stopped.logical_time_raw_icount
+        && observed.idle_wake_icount == stopped.idle_wake_icount
+        && observed.status == stopped.status
+        && observed.virtual_timer_witness == stopped.virtual_timer_witness
+}
 
 fn memfd(bytes: &[u8], immutable: bool) -> Result<File> {
     // SAFETY: the name is NUL-terminated and the resulting descriptor is uniquely owned.
@@ -598,10 +608,7 @@ fn run_linux(args: &[String]) -> Result<()> {
     let status = loop {
         let status = qmp.command("query-status", json!({}))?;
         let observed = slot.snapshot();
-        if observed.current_icount != stopped.current_icount
-            || observed.logical_time_raw_icount != stopped.logical_time_raw_icount
-            || observed.idle_wake_icount != stopped.idle_wake_icount
-        {
+        if !same_readiness_state(&observed, &stopped) {
             return Err("readiness moved before native VMStop acknowledgement".into());
         }
         if status["status"] == "paused" {
@@ -633,8 +640,10 @@ fn run_linux(args: &[String]) -> Result<()> {
         json!({"val":0,"size":ram_bytes,"filename":ram_path}),
     )?;
     let ram = fs::read(&ram_path)?;
+    let capture_status = qmp.command("query-status", json!({}))?;
     if ram.len() as u64 != ram_bytes
-        || slot.snapshot().logical_time_raw_icount != stopped.logical_time_raw_icount
+        || !same_readiness_state(&slot.snapshot(), &stopped)
+        || capture_status["status"] != "paused"
     {
         return Err("stopped RAM capture changed its witness".into());
     }
