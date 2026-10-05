@@ -8,6 +8,10 @@
 //! no-replace basename, but this module does not authenticate content, select a
 //! cache domain, authorize a canonical catalog name, commit catalog state, or
 //! authorize cleanup of retained failures.
+//!
+//! The exact-mode byte entry borrows a caller-owned canonical arena instead of
+//! adopting a source descriptor. Both inputs use the same bounded copy and
+//! sealing recipe; neither input establishes content or publication authority.
 
 mod naming;
 mod observation;
@@ -520,6 +524,41 @@ impl FsVerityPublicationRoot {
         )
     }
 
+    /// Copies borrowed bytes and seals a fresh inode created with exact mode 0600.
+    ///
+    /// The complete slice must fit `maximum_bytes` before inode creation. The
+    /// caller retains its arena throughout this call; no source descriptor is
+    /// created, adopted, or cloned. The same fixed 64-KiB copy buffer, caller
+    /// verification, synchronization, read-only reopen, fs-verity checks, and
+    /// retained-failure evidence apply as for [`Self::materialize_and_seal_exact_mode`].
+    ///
+    /// Bytes and a kernel seal convey no content, Cache, Root, publication, or
+    /// cleanup authority. The caller must independently authorize the operation
+    /// and keep its original admission and deadline current through callbacks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MaterializationError`] when the slice exceeds the hard byte
+    /// ceiling, root admission or a callback fails, or the shared filesystem,
+    /// exact-mode, identity, synchronization, or fs-verity recipe fails. A size
+    /// refusal occurs before inode creation; later failures retain the same
+    /// private-artifact evidence as the descriptor entry.
+    pub fn materialize_and_seal_bytes_exact_mode<'root, C: MaterializationCallbacks>(
+        &'root self,
+        source: &[u8],
+        private_name: PublicationName,
+        maximum_bytes: u64,
+        callbacks: &mut C,
+    ) -> Result<SealedPrivateFile<'root>, MaterializationError<C::Error>> {
+        self.materialize_source_with_mode_policy(
+            MaterializationSource::BorrowedCanonicalBytes(source),
+            private_name,
+            maximum_bytes,
+            callbacks,
+            PrivateModePolicy::RequireExact,
+        )
+    }
+
     fn materialize_and_seal_with_mode_policy<'root, C: MaterializationCallbacks>(
         &'root self,
         source: OwnedFd,
@@ -529,7 +568,27 @@ impl FsVerityPublicationRoot {
         mode_policy: PrivateModePolicy,
     ) -> Result<SealedPrivateFile<'root>, MaterializationError<C::Error>> {
         let source = File::from(source);
-        if let Err(cause) = inspect_source(source.as_fd(), maximum_bytes) {
+        self.materialize_source_with_mode_policy(
+            MaterializationSource::OwnedFile(source),
+            private_name,
+            maximum_bytes,
+            callbacks,
+            mode_policy,
+        )
+    }
+
+    fn materialize_source_with_mode_policy<'root, C: MaterializationCallbacks>(
+        &'root self,
+        source: MaterializationSource<'_>,
+        private_name: PublicationName,
+        maximum_bytes: u64,
+        callbacks: &mut C,
+        mode_policy: PrivateModePolicy,
+    ) -> Result<SealedPrivateFile<'root>, MaterializationError<C::Error>> {
+        // Keep the owned source a local until the original move into finish.
+        // Early failures close it before the private-name parameter is dropped.
+        let source = source;
+        if let Err(cause) = source.inspect(maximum_bytes) {
             return Err(MaterializationError {
                 cause,
                 retained: None,
@@ -628,7 +687,7 @@ impl FsVerityPublicationRoot {
     #[allow(clippy::too_many_arguments)]
     fn finish_materialization<'root, C: MaterializationCallbacks>(
         &'root self,
-        source: File,
+        source: MaterializationSource<'_>,
         mut writer: File,
         private_name: PublicationName,
         maximum_bytes: u64,
@@ -636,7 +695,20 @@ impl FsVerityPublicationRoot {
         retained: &mut RetainedPrivateArtifact,
         created: PrivateIdentity,
     ) -> Result<SealedPrivateFile<'root>, MaterializationFailure<C::Error>> {
-        copy_and_verify(&source, &mut writer, maximum_bytes, callbacks, retained)?;
+        match &source {
+            MaterializationSource::OwnedFile(source) => {
+                copy_and_verify(source, &mut writer, maximum_bytes, callbacks, retained)?;
+            }
+            MaterializationSource::BorrowedCanonicalBytes(source) => {
+                copy_and_verify_source(
+                    CopySource::CanonicalBytes(source),
+                    &mut writer,
+                    maximum_bytes,
+                    callbacks,
+                    retained,
+                )?;
+            }
+        }
         callbacks
             .checkpoint()
             .map_err(MaterializationFailure::Callback)?;
@@ -795,8 +867,72 @@ fn strict_resolution() -> u64 {
     RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS | RESOLVE_NO_XDEV
 }
 
+/// Keeps owned-descriptor destruction separate from a short source borrow.
+enum MaterializationSource<'bytes> {
+    OwnedFile(File),
+    BorrowedCanonicalBytes(&'bytes [u8]),
+}
+
+impl MaterializationSource<'_> {
+    fn inspect<E: StdError + 'static>(
+        &self,
+        maximum_bytes: u64,
+    ) -> Result<(), MaterializationFailure<E>> {
+        match self {
+            Self::OwnedFile(source) => inspect_source(source.as_fd(), maximum_bytes),
+            Self::BorrowedCanonicalBytes(source) => {
+                let bytes = u64::try_from(source.len())
+                    .map_err(|_| MaterializationFailure::ByteLimitExceeded)?;
+                if bytes > maximum_bytes {
+                    return Err(MaterializationFailure::ByteLimitExceeded);
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Lends one closed read source to the sole bounded copy loop.
+enum CopySource<'source> {
+    File(&'source File),
+    CanonicalBytes(&'source [u8]),
+}
+
+impl CopySource<'_> {
+    fn read_at(&self, buffer: &mut [u8], offset: u64) -> std::io::Result<usize> {
+        match self {
+            Self::File(source) => source.read_at(buffer, offset),
+            Self::CanonicalBytes(source) => {
+                let bytes = usize::try_from(offset)
+                    .ok()
+                    .and_then(|offset| source.get(offset..))
+                    .unwrap_or_default();
+                let length = buffer.len().min(bytes.len());
+                buffer[..length].copy_from_slice(&bytes[..length]);
+                Ok(length)
+            }
+        }
+    }
+}
+
 fn copy_and_verify<C: MaterializationCallbacks>(
     source: &File,
+    writer: &mut File,
+    maximum_bytes: u64,
+    callbacks: &mut C,
+    retained: &mut RetainedPrivateArtifact,
+) -> Result<(), MaterializationFailure<C::Error>> {
+    copy_and_verify_source(
+        CopySource::File(source),
+        writer,
+        maximum_bytes,
+        callbacks,
+        retained,
+    )
+}
+
+fn copy_and_verify_source<C: MaterializationCallbacks>(
+    source: CopySource<'_>,
     writer: &mut File,
     maximum_bytes: u64,
     callbacks: &mut C,
@@ -1269,5 +1405,56 @@ mod tests {
     fn io_errors_keep_their_stable_operation_label() {
         let error = io_error("test operation", io::Error::other("failure"));
         assert!(error.to_string().contains("test operation"));
+    }
+
+    #[test]
+    fn borrowed_bytes_admit_only_the_complete_slice_within_the_ceiling() {
+        let source = MaterializationSource::BorrowedCanonicalBytes(b"12345");
+
+        assert!(source.inspect::<Stopped>(5).is_ok());
+        assert!(matches!(
+            source.inspect::<Stopped>(4),
+            Err(MaterializationFailure::ByteLimitExceeded)
+        ));
+    }
+
+    #[test]
+    fn empty_borrowed_bytes_admit_a_zero_ceiling_and_report_eof() {
+        let source = MaterializationSource::BorrowedCanonicalBytes(b"");
+        let reader = CopySource::CanonicalBytes(b"");
+        let mut buffer = [9_u8; 1];
+
+        assert!(source.inspect::<Stopped>(0).is_ok());
+        assert_eq!(reader.read_at(&mut buffer, 0).unwrap(), 0);
+        assert_eq!(buffer, [9]);
+    }
+
+    #[test]
+    fn borrowed_bytes_use_explicit_offsets_without_consuming_the_slice() {
+        let bytes = b"canonical bytes";
+        let reader = CopySource::CanonicalBytes(bytes);
+        let mut buffer = [0_u8; 3];
+
+        assert_eq!(reader.read_at(&mut buffer, 10).unwrap(), 3);
+        assert_eq!(&buffer, b"byt");
+        assert_eq!(reader.read_at(&mut buffer, 0).unwrap(), 3);
+        assert_eq!(&buffer, b"can");
+        assert_eq!(bytes, b"canonical bytes");
+    }
+
+    #[test]
+    fn borrowed_bytes_bound_each_chunk_and_report_exact_end_of_file() {
+        let bytes = [7_u8; COPY_BUFFER_BYTES + 3];
+        let reader = CopySource::CanonicalBytes(&bytes);
+        let mut buffer = [0_u8; COPY_BUFFER_BYTES];
+
+        assert_eq!(reader.read_at(&mut buffer, 0).unwrap(), COPY_BUFFER_BYTES);
+        assert!(buffer.iter().all(|byte| *byte == 7));
+        assert_eq!(
+            reader.read_at(&mut buffer, COPY_BUFFER_BYTES as u64).unwrap(),
+            3,
+        );
+        assert_eq!(reader.read_at(&mut buffer, bytes.len() as u64).unwrap(), 0);
+        assert_eq!(reader.read_at(&mut buffer, u64::MAX).unwrap(), 0);
     }
 }
