@@ -616,17 +616,27 @@ impl NixRunner {
         self.instantiate_inner(attr, Some(target))
     }
 
-    /// Instantiates every derivation returned by a target-specific list.
+    /// Instantiates every derivation returned by a derivation list.
     ///
     /// This registers the derivations in the local Nix store without realizing
-    /// their outputs. An empty list is valid and returns no paths.
+    /// their outputs. An empty list is valid and returns no paths. `target`
+    /// is passed as the top-level `crossSystem` string argument; `None`
+    /// evaluates the repository's ordinary native package set, which differs
+    /// from passing the native platform as a cross target.
     ///
     /// # Errors
     ///
-    /// Returns [`AosError::NixBuild`] if instantiation fails, or another error
-    /// if `nix-instantiate` cannot be spawned.
-    pub fn instantiate_all_for_target(&self, attr: &str, target: &str) -> Result<Vec<PathBuf>> {
-        if !target_platform_name_is_safe(target) {
+    /// Returns an error if `target` is not a safe Nix system name,
+    /// [`AosError::NixBuild`] if instantiation fails, or another error if
+    /// `nix-instantiate` cannot be spawned.
+    pub fn instantiate_all_for_target(
+        &self,
+        attr: &str,
+        target: Option<&str>,
+    ) -> Result<Vec<PathBuf>> {
+        if let Some(target) = target
+            && !target_platform_name_is_safe(target)
+        {
             anyhow::bail!("invalid target platform '{target}'");
         }
 
@@ -635,7 +645,7 @@ impl NixRunner {
             "-A".to_string(),
             attr.to_string(),
         ];
-        add_cross_system_arg(&mut args, Some(target));
+        add_cross_system_arg(&mut args, target);
 
         let output = self.run_nix("nix-instantiate", &args)?;
         Ok(String::from_utf8_lossy(&output.stdout)
