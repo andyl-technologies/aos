@@ -470,6 +470,7 @@ in rec {
       import ./phase2-qemu-fingerprint-projection-manifest.nix {inherit pkgs lib;};
     qemuLivePluginInstall = import ./phase2-qemu-live-plugin-install.nix {inherit pkgs lib;};
     qemuLiveWhiteboxDoorbell = import ./phase2-qemu-live-whitebox-doorbell.nix {inherit pkgs lib;};
+    qemuWhiteboxOutResume = import ./phase2-qemu-whitebox-out-resume.nix {inherit pkgs lib;};
     qemuRomClampStress = import ./phase2-qemu-rom-clamp-stress.nix {inherit pkgs lib;};
     qemuRomClampAckPollExperiment = import ./phase2-qemu-rom-clamp-stress.nix {
       inherit pkgs lib;
