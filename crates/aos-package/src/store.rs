@@ -1049,7 +1049,7 @@ mod tests {
             kernel_path: None,
             module_library: crate::types::ModuleLibraryIdentity {
                 store_path: format!("/nix/store/{library:032}-library"),
-                nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+                nar_hash: format!("sha256:{}", "0".repeat(64)),
                 nar_size: 1,
             },
             evaluation_descriptor: format!("/nix/store/{number:032}-evaluation/evaluation.json"),

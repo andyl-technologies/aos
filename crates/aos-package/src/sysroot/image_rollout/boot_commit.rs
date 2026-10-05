@@ -368,6 +368,51 @@ mod tests {
         assert!(validate_boot_rollout(&images).is_err());
     }
 
+    #[test]
+    fn boot_state_accepts_the_native_admission_digest_unchanged() {
+        let mut images = state(2, ImageRolloutStatus::CandidateBooted);
+        let admitted_digest = aos_contract::Sha256Digest::of_bytes(b"admitted library NAR");
+        for generation in &mut images.generations {
+            generation.module_library.nar_hash = admitted_digest.to_string();
+            generation.module_library.nar_size = 4096;
+        }
+
+        let seeded_bytes = serde_json::to_vec(&images).unwrap();
+        let seeded: ImageGenerationState = serde_json::from_slice(&seeded_bytes).unwrap();
+
+        seeded.validate().unwrap();
+        assert_eq!(
+            seeded.running_generation().unwrap().module_library.nar_hash,
+            admitted_digest.to_string()
+        );
+    }
+
+    #[test]
+    fn boot_state_rejects_noncanonical_or_empty_library_identity() {
+        let admitted_digest = aos_contract::Sha256Digest::of_bytes(b"admitted library NAR");
+        for invalid in [
+            "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".to_string(),
+            format!("sha256:{}", "0".repeat(52)),
+            format!("sha256:{}", admitted_digest.hex().to_uppercase()),
+            format!("sha256:{}", "g".repeat(64)),
+            format!("{} ", admitted_digest),
+        ] {
+            let mut images = state(2, ImageRolloutStatus::CandidateBooted);
+            images.generations[1].module_library.nar_hash = invalid;
+
+            let error = images.validate().unwrap_err();
+
+            assert!(error.to_string().contains("canonical SHA-256 NAR identity"));
+        }
+
+        let mut images = state(2, ImageRolloutStatus::CandidateBooted);
+        images.generations[1].module_library.nar_size = 0;
+
+        let error = images.validate().unwrap_err();
+
+        assert!(error.to_string().contains("NAR size is empty"));
+    }
+
     fn state(running: u32, status: ImageRolloutStatus) -> ImageGenerationState {
         let generation = |number| ImageGeneration {
             number,
@@ -385,7 +430,7 @@ mod tests {
             native_executor_ref: format!("/nix/store/{number:032}-executor"),
             module_library: crate::types::ModuleLibraryIdentity {
                 store_path: "/nix/store/11111111111111111111111111111111-module-library".into(),
-                nar_hash: "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=".into(),
+                nar_hash: format!("sha256:{}", "0".repeat(64)),
                 nar_size: 1,
             },
             evaluation_descriptor:
