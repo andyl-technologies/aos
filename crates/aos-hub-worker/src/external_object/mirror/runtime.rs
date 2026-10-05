@@ -43,7 +43,9 @@ pub(super) fn latest(object: &super::super::config::Config) -> Result<i64> {
 }
 
 fn application(env: &Env) -> Result<StorageWorkKey> {
-    Ok(StorageWorkKey::new(env.secret("HUB_STORAGE_WORK_KEY")?.to_string())?)
+    Ok(StorageWorkKey::new(
+        env.secret("HUB_STORAGE_WORK_KEY")?.to_string(),
+    )?)
 }
 
 fn validate(

@@ -25,7 +25,8 @@ pub const MIRROR_GUARD_LOOKUP_PATH: &str = "/_internal/storage/mirror-final-guar
 pub const MIRROR_CANDIDATE_GUARD_LOOKUP_PATH: &str = "/__hub/mirror-candidate-guard";
 
 /// Reads only an independently reviewed emulator External mirror final receipt.
-pub const MIRROR_EXTERNAL_FUNCTIONAL_GUARD_LOOKUP_PATH: &str = "/__hub/external-mirror-functional-guard";
+pub const MIRROR_EXTERNAL_FUNCTIONAL_GUARD_LOOKUP_PATH: &str =
+    "/__hub/external-mirror-functional-guard";
 /// Authenticates a mirror guard control with its independent role key.
 pub const MIRROR_GUARD_SIGNATURE_HEADER: &str = "x-aos-mirror-guard-signature";
 /// Bounds both canonical lookup and reply envelopes.
@@ -330,12 +331,18 @@ fn validate_execution(original: &MirrorOriginal, execution: MirrorGuardExecution
         ),
         MirrorGuardExecution::ControlledCandidate => ensure!(
             original.external_destination.is_none()
-                && reserved && segments.len() == 3 && hex(segments[1], 32) && segments[2] == "final",
+                && reserved
+                && segments.len() == 3
+                && hex(segments[1], 32)
+                && segments[2] == "final",
             "controlled mirror guard escaped its reserved namespace"
         ),
         MirrorGuardExecution::ControlledExternalFunctional => ensure!(
-            original.external_destination.is_some() && reserved && segments.len() == 4
-                && hex(segments[1], 32) && segments[2] == "final"
+            original.external_destination.is_some()
+                && reserved
+                && segments.len() == 4
+                && hex(segments[1], 32)
+                && segments[2] == "final"
                 && matches!(segments[3], "full" | "pull-through"),
             "controlled External mirror guard escaped its finite destination"
         ),
@@ -356,7 +363,8 @@ fn validate_issuer(issuer: &MirrorGuardIssuer, execution: MirrorGuardExecution) 
             !issuer.script_version.starts_with("emulated-"),
             "emulated guard cannot issue hosted proof"
         ),
-        MirrorGuardExecution::ControlledCandidate | MirrorGuardExecution::ControlledExternalFunctional => ensure!(
+        MirrorGuardExecution::ControlledCandidate
+        | MirrorGuardExecution::ControlledExternalFunctional => ensure!(
             issuer.script_version == format!("emulated-{}", issuer.source_digest),
             "controlled guard script differs from compiled source"
         ),

@@ -103,24 +103,20 @@ fn unknown_mirror_effect_never_redispatches_or_clears_with_expiry() {
     let bytes = serde_json::to_vec(&session).unwrap();
     let restored: MirrorExternalSession = serde_json::from_slice(&bytes).unwrap();
     restored.validate().unwrap();
-    assert!(
-        restored
-            .begin(MirrorExternalEffect::Create, "88".repeat(32))
-            .is_err()
-    );
+    assert!(restored
+        .begin(MirrorExternalEffect::Create, "88".repeat(32))
+        .is_err());
     let mut substituted = restored.pending.clone().unwrap();
     substituted.dispatch_nonce = "99".repeat(32);
-    assert!(
-        restored
-            .acknowledge(&MirrorExternalReceipt {
-                original_digest: digest(&restored.original).unwrap(),
-                pending: substituted,
-                positive: MirrorExternalPositive::Created {
-                    upload_id: "actual-upload".into()
-                }
-            })
-            .is_err()
-    );
+    assert!(restored
+        .acknowledge(&MirrorExternalReceipt {
+            original_digest: digest(&restored.original).unwrap(),
+            pending: substituted,
+            positive: MirrorExternalPositive::Created {
+                upload_id: "actual-upload".into()
+            }
+        })
+        .is_err());
     assert_eq!(serde_json::to_vec(&restored).unwrap(), bytes);
 }
 
@@ -128,25 +124,21 @@ fn unknown_mirror_effect_never_redispatches_or_clears_with_expiry() {
 fn positive_mirror_close_retains_actual_versionless_identity_and_cleanup_cost() {
     let session = closed();
     assert!(session.pending.is_none());
-    assert!(
-        session
-            .closed
-            .as_ref()
-            .unwrap()
-            .object
-            .provider_version
-            .is_none()
-    );
+    assert!(session
+        .closed
+        .as_ref()
+        .unwrap()
+        .object
+        .provider_version
+        .is_none());
     assert_eq!(
         session.progress.stage_retention,
         Some(MirrorStageRetention::RetainedForQualifiedCleanup)
     );
     assert_eq!(session.progress.stage_object.as_ref().unwrap().size, 8);
-    assert!(
-        session
-            .begin(MirrorExternalEffect::Create, "aa".repeat(32))
-            .is_err()
-    );
+    assert!(session
+        .begin(MirrorExternalEffect::Create, "aa".repeat(32))
+        .is_err());
 
     let mut wrong = MirrorVerifiedObject {
         object: session.closed.as_ref().unwrap().object.clone(),
@@ -249,9 +241,7 @@ fn no_delete_mirror_ack_replays_exact_commit_without_new_stage_or_provider_inten
         acknowledged.progress.stage_retention,
         Some(MirrorStageRetention::RetainedForQualifiedCleanup)
     );
-    assert!(
-        acknowledged
-            .begin(MirrorExternalEffect::Create, "dd".repeat(32))
-            .is_err()
-    );
+    assert!(acknowledged
+        .begin(MirrorExternalEffect::Create, "dd".repeat(32))
+        .is_err());
 }

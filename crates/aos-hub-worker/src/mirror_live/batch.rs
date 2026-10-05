@@ -28,7 +28,9 @@ pub(crate) async fn inspect(
     };
     live_metadata_batch::validate_targets(targets, plan)?;
     let config = crate::direct_upload::config::QualifiedConfig::load(env).await?;
-    let profile = config.mirror_profile(env, &targets[0].protected_profile_digest).await?;
+    let profile = config
+        .mirror_profile(env, &targets[0].protected_profile_digest)
+        .await?;
     ensure!(
         targets[0].protected_profile_digest == profile.digest()?,
         "live batch profile changed"
@@ -38,8 +40,12 @@ pub(crate) async fn inspect(
             .await?;
     let deployment = env.var("HUB_DEPLOYMENT_ID")?.to_string();
     for target in targets {
-        accepted.require_scope(target.binding_id, target.binding_resource_version,
-            &target.placement_prefix, Some(&target.upstream_base))?;
+        accepted.require_scope(
+            target.binding_id,
+            target.binding_resource_version,
+            &target.placement_prefix,
+            Some(&target.upstream_base),
+        )?;
     }
     let current = || -> Result<()> {
         let latest = config.latest_now()?;

@@ -34,9 +34,7 @@ use aos_hub_core::surface_write::{
     FrozenSurfaceAccess, MultipartAbortOutcome, PartTag, SurfaceDeleteOutcome,
     SurfaceDeletePrecondition, SurfaceWrite, SurfaceWriteProvider,
 };
-use aos_hub_core::topology_probe::{
-    StorageCredentialProbeEvidence, StorageCredentialProbeProvider,
-};
+use aos_hub_core::topology_probe::{StorageCredentialProbeEvidence, StorageCredentialProbeProvider};
 use aos_registry_surface::{object, object_bundle};
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -3674,11 +3672,9 @@ mod tests {
         let operation = || StorageWorkOperation::Head {
             path: "object".into(),
         };
-        assert!(
-            client
-                .plan_for_placement(&placement, &binding, operation(), 101)
-                .is_err()
-        );
+        assert!(client
+            .plan_for_placement(&placement, &binding, operation(), 101)
+            .is_err());
 
         client
             .published_bindings
@@ -3699,25 +3695,21 @@ mod tests {
                 generation: 2,
             }]
         );
-        assert!(
-            client
-                .plan_for_placement(
-                    &placement,
-                    &binding,
-                    StorageWorkOperation::ListPage {
-                        prefix: "".into(),
-                        cursor: None,
-                        limit: 1,
-                    },
-                    101,
-                )
-                .is_err()
-        );
-        assert!(
-            client
-                .plan_for_placement(&placement, &binding, operation(), 201)
-                .is_err()
-        );
+        assert!(client
+            .plan_for_placement(
+                &placement,
+                &binding,
+                StorageWorkOperation::ListPage {
+                    prefix: "".into(),
+                    cursor: None,
+                    limit: 1,
+                },
+                101,
+            )
+            .is_err());
+        assert!(client
+            .plan_for_placement(&placement, &binding, operation(), 201)
+            .is_err());
     }
 
     #[test]
@@ -3771,25 +3763,19 @@ mod tests {
             .unwrap()
             .insert(binding.id, snapshot);
 
-        assert!(
-            client
-                .validate_published_binding_snapshot(&binding, &[credential.clone()], &revision)
-                .is_ok()
-        );
+        assert!(client
+            .validate_published_binding_snapshot(&binding, &[credential.clone()], &revision)
+            .is_ok());
         let mut rotated = credential.clone();
         rotated.generation += 1;
-        assert!(
-            client
-                .validate_published_binding_snapshot(&binding, &[rotated], &revision)
-                .is_err()
-        );
+        assert!(client
+            .validate_published_binding_snapshot(&binding, &[rotated], &revision)
+            .is_err());
         let mut moved = binding.clone();
         moved.object_prefix = Some("other-tenant".into());
-        assert!(
-            client
-                .validate_published_binding_snapshot(&moved, &[credential], &revision)
-                .is_err()
-        );
+        assert!(client
+            .validate_published_binding_snapshot(&moved, &[credential], &revision)
+            .is_err());
     }
 
     #[test]

@@ -135,9 +135,11 @@ impl Head {
         cohort: &aos_hub_core::storage_authority::lease::LeaseCohort,
         clock: LeaseClock,
     ) -> Result<Self> {
-        ensure!(config.cohort(&digest(cohort)?)? == cohort
-            && *scope == config.scope(cohort, scope.full_key.clone())?,
-            "configured scope mismatch");
+        ensure!(
+            config.cohort(&digest(cohort)?)? == cohort
+                && *scope == config.scope(cohort, scope.full_key.clone())?,
+            "configured scope mismatch"
+        );
         let floor = EpochLeaseFloor::initialize_fresh_guard(
             cohort.authority.clone(),
             config.executor_identity.clone(),
@@ -204,7 +206,7 @@ impl Head {
                     && self.stage.is_none()
                     && self.observation.is_none()
                     && self.oci.is_none()
-                && self.mirror.is_none(),
+                    && self.mirror.is_none(),
                 "copy owner overlaps another physical workflow"
             );
         }
@@ -223,9 +225,14 @@ impl Head {
 
         if let Some(mirror) = &self.mirror {
             mirror.validate()?;
-            ensure!(self.pending.is_none() && self.observation.is_none()
-                && self.stage.is_none() && self.copy.is_none() && self.oci.is_none(),
-                "external mirror ownership conflicts with another physical owner");
+            ensure!(
+                self.pending.is_none()
+                    && self.observation.is_none()
+                    && self.stage.is_none()
+                    && self.copy.is_none()
+                    && self.oci.is_none(),
+                "external mirror ownership conflicts with another physical owner"
+            );
         }
 
         // The foundational floor's validator is private; new dispatch still
@@ -266,7 +273,7 @@ impl Head {
                     && self.stage.is_none()
                     && self.copy.is_none()
                     && self.oci.is_none()
-                && self.mirror.is_none()
+                    && self.mirror.is_none()
                     && self.visible_receipt.is_some(),
                 "corrupt observation slot"
             );
@@ -317,8 +324,10 @@ impl Head {
                     .as_ref()
                     .is_none_or(|visible| !matches!(
                         visible.kind,
-                        VisibleKind::OciStage | VisibleKind::OciDestination
-                            | VisibleKind::MirrorStage | VisibleKind::MirrorDestination
+                        VisibleKind::OciStage
+                            | VisibleKind::OciDestination
+                            | VisibleKind::MirrorStage
+                            | VisibleKind::MirrorDestination
                     )),
             "ordinary metadata PUT cannot replace a retained OCI incarnation"
         );

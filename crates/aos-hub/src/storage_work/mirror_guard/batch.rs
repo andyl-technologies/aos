@@ -39,15 +39,23 @@ impl RemoteStorageWorkClient {
         #[cfg(test)]
         let functional = self.controlled_external_mirror.as_ref();
         #[cfg(test)]
-        let controlled = candidate.map(|candidate| {
-            (
-                candidate.issuer.source_digest.clone(),
-                candidate.issuer.script_version.clone(),
-                candidate.uncertainty,
-            )
-        }).or_else(|| functional.map(|selected| (
-            selected.issuer.source_digest.clone(), selected.issuer.script_version.clone(), selected.uncertainty,
-        )));
+        let controlled = candidate
+            .map(|candidate| {
+                (
+                    candidate.issuer.source_digest.clone(),
+                    candidate.issuer.script_version.clone(),
+                    candidate.uncertainty,
+                )
+            })
+            .or_else(|| {
+                functional.map(|selected| {
+                    (
+                        selected.issuer.source_digest.clone(),
+                        selected.issuer.script_version.clone(),
+                        selected.uncertainty,
+                    )
+                })
+            });
         #[cfg(not(test))]
         let controlled: Option<(String, String, u64)> = None;
         let mut selected = None;
@@ -55,7 +63,9 @@ impl RemoteStorageWorkClient {
             original.validate()?;
             progress.commit_digest(original)?;
             #[cfg(test)]
-            if let Some(selected) = functional { selected.require_held(original)?; }
+            if let Some(selected) = functional {
+                selected.require_held(original)?;
+            }
             let issuer = match &controlled {
                 Some(issuer) => issuer.clone(),
                 None => self
@@ -86,7 +96,10 @@ impl RemoteStorageWorkClient {
                 MIRROR_CANDIDATE_GUARD_BATCH_LOOKUP_PATH,
             )
         } else if functional.is_some() {
-            (MirrorGuardExecution::ControlledExternalFunctional, MIRROR_EXTERNAL_FUNCTIONAL_GUARD_BATCH_LOOKUP_PATH)
+            (
+                MirrorGuardExecution::ControlledExternalFunctional,
+                MIRROR_EXTERNAL_FUNCTIONAL_GUARD_BATCH_LOOKUP_PATH,
+            )
         } else {
             (MirrorGuardExecution::Hosted, MIRROR_GUARD_BATCH_LOOKUP_PATH)
         };

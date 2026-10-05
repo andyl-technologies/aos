@@ -20,7 +20,8 @@ pub const MIRROR_GUARD_BATCH_LOOKUP_PATH: &str = "/_internal/storage/mirror-fina
 pub const MIRROR_CANDIDATE_GUARD_BATCH_LOOKUP_PATH: &str = "/__hub/mirror-candidate-guard-batch";
 
 /// Reads an ordered finite External functional probe without Hosted authority.
-pub const MIRROR_EXTERNAL_FUNCTIONAL_GUARD_BATCH_LOOKUP_PATH: &str = "/__hub/external-mirror-functional-guard-batch";
+pub const MIRROR_EXTERNAL_FUNCTIONAL_GUARD_BATCH_LOOKUP_PATH: &str =
+    "/__hub/external-mirror-functional-guard-batch";
 /// Bounds the ordered number of independently checked publications.
 pub const MIRROR_GUARD_BATCH_MAX_ITEMS: usize = 64;
 

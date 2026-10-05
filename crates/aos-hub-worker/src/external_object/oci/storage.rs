@@ -56,22 +56,43 @@ pub(super) struct Journal {
 
 impl Journal {
     /// Loads only the actual still-visible positive original on this full key.
-    pub(super) async fn visible(storage: &Storage, object: &ObjectConfig,
+    pub(super) async fn visible(
+        storage: &Storage,
+        object: &ObjectConfig,
         lookup: &aos_hub_core::storage_authority::external_object::oci::source::OciSourceLookup,
     ) -> Result<Session> {
-        let head = load_head(storage).await?.context("OCI source has no retained positive head")?;
+        let head = load_head(storage)
+            .await?
+            .context("OCI source has no retained positive head")?;
         head.validate(object, &lookup.scope)?;
-        let visible = head.visible_receipt.as_ref().context("OCI source has no visible receipt")?;
-        ensure!(matches!(visible.kind, VisibleKind::OciStage | VisibleKind::OciDestination),
-            "OCI source belongs to another producer");
-        let session: Session = decode(storage.get::<String>(
-            &session_key(&visible.context_digest)).await?, MAX_SESSION)?
-            .context("OCI source lost its original")?;
+        let visible = head
+            .visible_receipt
+            .as_ref()
+            .context("OCI source has no visible receipt")?;
+        ensure!(
+            matches!(
+                visible.kind,
+                VisibleKind::OciStage | VisibleKind::OciDestination
+            ),
+            "OCI source belongs to another producer"
+        );
+        let session: Session = decode(
+            storage
+                .get::<String>(&session_key(&visible.context_digest))
+                .await?,
+            MAX_SESSION,
+        )?
+        .context("OCI source lost its original")?;
         session.validate()?;
-        let closed = session.closed.as_ref().context("OCI source is not positively complete")?;
+        let closed = session
+            .closed
+            .as_ref()
+            .context("OCI source is not positively complete")?;
         closed_for_lookup(storage, object, &session.original, closed).await?;
-        ensure!(session.original.fingerprint()? == visible.context_digest,
-            "OCI source changed its original receipt");
+        ensure!(
+            session.original.fingerprint()? == visible.context_digest,
+            "OCI source changed its original receipt"
+        );
         Ok(session)
     }
 
@@ -79,17 +100,30 @@ impl Journal {
         storage: &Storage,
         proposed: &aos_hub_core::storage_authority::external_object::oci::ExternalOciOriginal,
     ) -> Result<Option<Session>> {
-        let selected: Option<String> = decode(storage.get::<String>(
-            &selection_key(&proposed.selection_digest()?)).await?, MAX_RECORD)?;
-        let Some(digest) = selected else { return Ok(None); };
-        ensure!(super::super::protocol::digest_string(&digest),
-            "external OCI locator is malformed");
-        let retained: Session = decode(storage.get::<String>(&session_key(&digest)).await?, MAX_SESSION)?
-            .context("external OCI locator lost its original")?;
+        let selected: Option<String> = decode(
+            storage
+                .get::<String>(&selection_key(&proposed.selection_digest()?))
+                .await?,
+            MAX_RECORD,
+        )?;
+        let Some(digest) = selected else {
+            return Ok(None);
+        };
+        ensure!(
+            super::super::protocol::digest_string(&digest),
+            "external OCI locator is malformed"
+        );
+        let retained: Session = decode(
+            storage.get::<String>(&session_key(&digest)).await?,
+            MAX_SESSION,
+        )?
+        .context("external OCI locator lost its original")?;
         retained.validate()?;
-        ensure!(retained.original.fingerprint()? == digest
-            && retained.original.selection_digest()? == proposed.selection_digest()?,
-            "external OCI locator changed its exact business selection");
+        ensure!(
+            retained.original.fingerprint()? == digest
+                && retained.original.selection_digest()? == proposed.selection_digest()?,
+            "external OCI locator changed its exact business selection"
+        );
         Ok(Some(retained))
     }
 
@@ -133,13 +167,16 @@ impl Journal {
             head.pending.is_none()
                 && head.stage.is_none()
                 && head.observation.is_none()
-                && head.copy.is_none() && head.mirror.is_none(),
+                && head.copy.is_none()
+                && head.mirror.is_none(),
             "another physical operation owns this OCI key"
         );
         let prior = Self::lookup(&storage, &work.original).await?;
         if let Some(selected) = Self::recover(&storage, &work.original).await? {
-            ensure!(selected.original == work.original,
-                "external OCI requires recovering its first retained original");
+            ensure!(
+                selected.original == work.original,
+                "external OCI requires recovering its first retained original"
+            );
         }
         let session = match &prior {
             Some(session) => {
@@ -168,8 +205,10 @@ impl Journal {
         }
         next_head.validate(object, &work.original.scope)?;
         let mut locator = BTreeMap::new();
-        locator.insert(selection_key(&work.original.selection_digest()?),
-            serde_json::to_string(&work.original.fingerprint()?)?);
+        locator.insert(
+            selection_key(&work.original.selection_digest()?),
+            serde_json::to_string(&work.original.fingerprint()?)?,
+        );
         commit(
             &storage,
             prior_head,
@@ -301,10 +340,15 @@ impl Journal {
             });
             head.oci = None;
         } else if next.phase == Phase::Aborted {
-            let incarnation = head.incarnation.get().checked_add(1)
+            let incarnation = head
+                .incarnation
+                .get()
+                .checked_add(1)
                 .context("external OCI guard incarnation exhausted")?;
-            ensure!(incarnation <= super::super::stage::state::MAX_INCARNATION,
-                "external OCI guard incarnation exhausted");
+            ensure!(
+                incarnation <= super::super::stage::state::MAX_INCARNATION,
+                "external OCI guard incarnation exhausted"
+            );
             head.incarnation = WireInteger::new(incarnation);
             head.visible_receipt = None;
             head.oci = None;
@@ -407,14 +451,18 @@ pub(super) async fn closed_for_lookup(
     original: &aos_hub_core::storage_authority::external_object::oci::ExternalOciOriginal,
     expected: &super::state::Closed,
 ) -> Result<Head> {
-    let head = load_head(storage).await?.context("OCI readback lost physical head")?;
+    let head = load_head(storage)
+        .await?
+        .context("OCI readback lost physical head")?;
     head.validate(object, &original.scope)?;
-    let session = Journal::lookup(storage, original).await?
+    let session = Journal::lookup(storage, original)
+        .await?
         .context("OCI readback lost positive original")?;
     ensure!(
         head.pending.is_none()
             && head.stage.is_none()
-            && head.oci.is_none() && head.mirror.is_none()
+            && head.oci.is_none()
+            && head.mirror.is_none()
             && head.observation.is_none()
             && head.copy.is_none()
             && session.phase == Phase::Closed
@@ -422,18 +470,25 @@ pub(super) async fn closed_for_lookup(
             && session.closed.as_ref() == Some(expected),
         "OCI readback is unresolved or replaced"
     );
-    let visible = head.visible_receipt.as_ref().context("OCI readback lost visible receipt")?;
+    let visible = head
+        .visible_receipt
+        .as_ref()
+        .context("OCI readback lost visible receipt")?;
     let stamp = match &expected.incarnation {
         aos_hub_core::storage_authority::external_object::oci::OciProviderIncarnation::Versioned { guard_stamp, .. }
         | aos_hub_core::storage_authority::external_object::oci::OciProviderIncarnation::Guarded { guard_stamp } => guard_stamp,
     };
-    ensure!(matches!(visible.kind, VisibleKind::OciStage | VisibleKind::OciDestination)
-        && visible.context_digest == original.fingerprint()?
-        && visible.receipt_digest == expected.receipt_digest
-        && visible.stage_configuration.as_ref() == Some(&session.configuration)
-        && visible.incarnation == head.incarnation
-        && stamp.incarnation.as_str() == head.incarnation.get().to_string(),
-        "OCI readback positive incarnation changed");
+    ensure!(
+        matches!(
+            visible.kind,
+            VisibleKind::OciStage | VisibleKind::OciDestination
+        ) && visible.context_digest == original.fingerprint()?
+            && visible.receipt_digest == expected.receipt_digest
+            && visible.stage_configuration.as_ref() == Some(&session.configuration)
+            && visible.incarnation == head.incarnation
+            && stamp.incarnation.as_str() == head.incarnation.get().to_string(),
+        "OCI readback positive incarnation changed"
+    );
     Ok(head)
 }
 
@@ -444,13 +499,24 @@ pub(super) async fn retain_read_floor(
     head: Head,
     floor: aos_hub_core::storage_authority::lease::EpochLeaseFloor,
 ) -> Result<Head> {
-    let session = Journal::lookup(storage, original).await?
+    let session = Journal::lookup(storage, original)
+        .await?
         .context("OCI readback lost positive original")?;
-    ensure!(session.phase == Phase::Closed && session.pending.is_none(),
-        "OCI readback original is unsettled");
+    ensure!(
+        session.phase == Phase::Closed && session.pending.is_none(),
+        "OCI readback original is unsettled"
+    );
     let mut next = head.clone();
     next.floor = floor;
-    commit(storage, Some(head), Some(session.clone()), next.clone(), session, BTreeMap::new()).await?;
+    commit(
+        storage,
+        Some(head),
+        Some(session.clone()),
+        next.clone(),
+        session,
+        BTreeMap::new(),
+    )
+    .await?;
     Ok(next)
 }
 
@@ -541,12 +607,15 @@ pub(super) fn session_key(original: &str) -> String {
 fn selection_key(selection: &str) -> String {
     format!("external-oci/selection/v1/{selection}")
 }
+
 fn source_key(original: &str, index: u32) -> String {
     format!("external-oci/source/v1/{original}/{index}")
 }
+
 fn receipt_key(original: &str, effect: &str) -> String {
     format!("external-oci/receipt/v1/{original}/{effect}")
 }
+
 fn part_key(original: &str, number: u32) -> String {
     format!("external-oci/part/v1/{original}/{number}")
 }

@@ -338,11 +338,15 @@ async fn preflight(
         return Ok(retained);
     }
     db.validate_mirror_import_authority(&item.original).await?;
-    let binding = db.binding(item.original.binding_id).await?
+    let binding = db
+        .binding(item.original.binding_id)
+        .await?
         .context("mirror phase binding disappeared")?;
-    ensure!(work.mirror_destination_profile_digest(db, &binding).await?
-        == item.original.protected_profile_digest,
-        "mirror phase accepted profile changed");
+    ensure!(
+        work.mirror_destination_profile_digest(db, &binding).await?
+            == item.original.protected_profile_digest,
+        "mirror phase accepted profile changed"
+    );
     if matches!(
         item.step,
         MirrorStep::BeginPromotion | MirrorStep::CopyParts { .. } | MirrorStep::CompletePromotion
@@ -373,8 +377,13 @@ async fn exchange(
             .0
             .original;
         let items = group.iter().map(|(item, _, _)| item.clone()).collect();
-        let plan = super::control::plan(db, work, first,
-            StorageWorkOperation::MirrorTransferBatch { items }).await?;
+        let plan = super::control::plan(
+            db,
+            work,
+            first,
+            StorageWorkOperation::MirrorTransferBatch { items },
+        )
+        .await?;
         let result = work.execute(&plan).await?;
         let StorageWorkOutcome::MirrorBatch { items } = result.outcome else {
             anyhow::bail!("mirror phase transport returned another result");

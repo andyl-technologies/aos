@@ -151,8 +151,13 @@ async fn relay_one(
     let internal = Request::new_with_init(&format!("https://physical-guard{path}"), &init)?;
     lookup.validate(&lookup.deployment_id, latest_now(env)?)?;
     let (binding, address) = if item.original.external_destination.is_some() {
-        ("EXTERNAL_OBJECT_GUARD", crate::external_object::mirror_guard_address(env, &item.original)?)
-    } else { ("HYBRID_OBJECT_GUARD", address) };
+        (
+            "EXTERNAL_OBJECT_GUARD",
+            crate::external_object::mirror_guard_address(env, &item.original)?,
+        )
+    } else {
+        ("HYBRID_OBJECT_GUARD", address)
+    };
     let result = env
         .durable_object(binding)?
         .id_from_name(&address)?

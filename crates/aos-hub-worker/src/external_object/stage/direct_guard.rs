@@ -45,7 +45,8 @@ pub(crate) async fn check_direct_available(
         ensure!(
             head.pending.is_none()
                 && head.observation.is_none()
-                && head.copy.is_none() && head.mirror.is_none()
+                && head.copy.is_none()
+                && head.mirror.is_none()
                 && head
                     .stage
                     .as_ref()

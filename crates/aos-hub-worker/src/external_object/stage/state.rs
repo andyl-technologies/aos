@@ -545,7 +545,8 @@ pub(super) fn begin(
         head.pending.is_none()
             && head.observation.is_none()
             && head.copy.is_none()
-            && head.oci.is_none() && head.mirror.is_none()
+            && head.oci.is_none()
+            && head.mirror.is_none()
             && head.receipts.get() < MAX_RECEIPTS
             && digest_string(&nonce),
         "prior object effect or journal capacity blocks stage"

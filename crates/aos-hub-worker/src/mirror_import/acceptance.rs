@@ -26,38 +26,70 @@ pub(crate) struct AcceptedMirror {
 enum Review {
     Hosted(MirrorAcceptanceArtifact),
     #[cfg(feature = "do-e2e")]
-    Controlled(aos_hub_core::mirror_acceptance::external_controlled::ControlledExternalMirrorArtifact),
+    Controlled(
+        aos_hub_core::mirror_acceptance::external_controlled::ControlledExternalMirrorArtifact,
+    ),
 }
 
 impl AcceptedMirror {
-    pub(crate) fn external_window(&self, domain_digest: &str, original: &MirrorOriginal) -> Result<
-        aos_hub_core::mirror_work::external::journal::MirrorExternalAcceptance> {
-        let selected = original.external_destination.as_ref()
+    pub(crate) fn external_window(
+        &self,
+        domain_digest: &str,
+        original: &MirrorOriginal,
+    ) -> Result<aos_hub_core::mirror_work::external::journal::MirrorExternalAcceptance> {
+        let selected = original
+            .external_destination
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("External mirror acceptance has a Managed original"))?;
         let (artifact_digest, issued, until) = match &self.artifact {
             Review::Hosted(artifact) => {
                 ensure!(artifact.purpose == aos_hub_core::mirror_acceptance::MirrorAcceptancePurpose::ExternalMirrorV1
                     && artifact.external_domain_sha256.as_deref() == Some(domain_digest),
                     "mirror acceptance differs from its independently installed External domain");
-                (aos_hub_core::mirror_work::digest(artifact)?, artifact.issued_at, artifact.valid_until)
-            },
+                (
+                    aos_hub_core::mirror_work::digest(artifact)?,
+                    artifact.issued_at,
+                    artifact.valid_until,
+                )
+            }
             #[cfg(feature = "do-e2e")]
             Review::Controlled(artifact) => {
-                artifact.require_original(original, profile_latest_now(&aos_hub_core::direct_upload::DirectProtectedProfile::External {
-                    profile: artifact.protected_profile.profile.clone(),
-                    runtime_qualification: artifact.protected_profile.runtime_qualification.clone(),
-                })?)?;
-                ensure!(artifact.external_domain_sha256 == domain_digest,
-                    "controlled mirror differs from installed transport domain");
-                (aos_hub_core::mirror_work::digest(artifact)?, artifact.issued_at, artifact.valid_until)
-            },
+                artifact.require_original(
+                    original,
+                    profile_latest_now(
+                        &aos_hub_core::direct_upload::DirectProtectedProfile::External {
+                            profile: artifact.protected_profile.profile.clone(),
+                            runtime_qualification: artifact
+                                .protected_profile
+                                .runtime_qualification
+                                .clone(),
+                        },
+                    )?,
+                )?;
+                ensure!(
+                    artifact.external_domain_sha256 == domain_digest,
+                    "controlled mirror differs from installed transport domain"
+                );
+                (
+                    aos_hub_core::mirror_work::digest(artifact)?,
+                    artifact.issued_at,
+                    artifact.valid_until,
+                )
+            }
         };
         let issued_at = issued.max(selected.issued_at);
         let expires_at = until.min(selected.expires_at);
-        ensure!(issued_at < expires_at, "mirror and prerequisite windows do not intersect");
-        Ok(aos_hub_core::mirror_work::external::journal::MirrorExternalAcceptance {
-            artifact_digest, issued_at, expires_at,
-        })
+        ensure!(
+            issued_at < expires_at,
+            "mirror and prerequisite windows do not intersect"
+        );
+        Ok(
+            aos_hub_core::mirror_work::external::journal::MirrorExternalAcceptance {
+                artifact_digest,
+                issued_at,
+                expires_at,
+            },
+        )
     }
 
     pub(crate) fn check(&self, latest_now: u64) -> Result<()> {
@@ -66,7 +98,9 @@ impl AcceptedMirror {
             #[cfg(feature = "do-e2e")]
             Review::Controlled(artifact) => artifact.validate_unsigned(latest_now)?,
         }
-        if let Some(pack) = &self.pack { pack.validate_dispatch_time(latest_now)?; }
+        if let Some(pack) = &self.pack {
+            pack.validate_dispatch_time(latest_now)?;
+        }
         Ok(())
     }
 
@@ -78,8 +112,13 @@ impl AcceptedMirror {
         }
     }
 
-    pub(crate) fn require_scope(&self, binding_id: i64, binding_rv: i64,
-        prefix: &str, upstream: Option<&str>) -> Result<()> {
+    pub(crate) fn require_scope(
+        &self,
+        binding_id: i64,
+        binding_rv: i64,
+        prefix: &str,
+        upstream: Option<&str>,
+    ) -> Result<()> {
         #[cfg(feature = "do-e2e")]
         if let Review::Controlled(artifact) = &self.artifact {
             let selected = &artifact.protected_profile.profile.selector.association;
@@ -94,18 +133,28 @@ impl AcceptedMirror {
         Ok(())
     }
 
-    pub(crate) fn require_plan_scope(&self, plan: &aos_hub_core::storage_work::StorageWorkPlan) -> Result<()> {
+    pub(crate) fn require_plan_scope(
+        &self,
+        plan: &aos_hub_core::storage_work::StorageWorkPlan,
+    ) -> Result<()> {
         #[cfg(feature = "do-e2e")]
         if matches!(self.artifact, Review::Controlled(_)) {
             use aos_hub_core::storage_work::StorageWorkOperation as Op;
             let upstream = match &plan.operation {
                 Op::InspectMirrorPack { inspection } => Some(inspection.upstream_base.as_str()),
-                Op::InspectMirrorMembership { query } => Some(query.inspection.upstream_base.as_str()),
+                Op::InspectMirrorMembership { query } => {
+                    Some(query.inspection.upstream_base.as_str())
+                }
                 Op::InspectMirrorTreeInventory { query } => Some(query.source.upstream_base()),
                 Op::InspectStoredGitPack { .. } | Op::FilterStoredGitPackTree { .. } => None,
                 _ => anyhow::bail!("controlled Mirror inspection operation not admitted"),
             };
-            self.require_scope(plan.binding_id, plan.binding_resource_version, &plan.placement_prefix, upstream)?;
+            self.require_scope(
+                plan.binding_id,
+                plan.binding_resource_version,
+                &plan.placement_prefix,
+                upstream,
+            )?;
         }
         #[cfg(not(feature = "do-e2e"))]
         let _ = plan;
@@ -122,7 +171,10 @@ pub(crate) struct AcceptedLive {
 
 impl AcceptedLive {
     pub(crate) fn validate_dispatch_time(&self, now: u64) -> Result<()> {
-        ensure!(self.issued_at <= now && now < self.valid_until, "live review expired");
+        ensure!(
+            self.issued_at <= now && now < self.valid_until,
+            "live review expired"
+        );
         Ok(())
     }
 }
@@ -167,19 +219,26 @@ pub(crate) async fn require_pack_inspection(
     let mut accepted = require_profile(env, profile, direct_evidence).await?;
     #[cfg(feature = "do-e2e")]
     if matches!(accepted.artifact, Review::Controlled(_)) {
-        ensure!(maximum_encoded_bytes <= accepted.maximum_bytes(), "controlled pack exceeds its explicit probe ceiling");
+        ensure!(
+            maximum_encoded_bytes <= accepted.maximum_bytes(),
+            "controlled pack exceeds its explicit probe ceiling"
+        );
         return Ok(accepted);
     }
-    let Review::Hosted(artifact) = &accepted.artifact else { anyhow::bail!("production pack review absent"); };
+    let Review::Hosted(artifact) = &accepted.artifact else {
+        anyhow::bail!("production pack review absent");
+    };
     let address = match profile {
         DirectProtectedProfile::Managed { .. } => mirror_pack_acceptance_key(
             &artifact.deployment_id,
             &artifact.source_digest,
             &artifact.script_version,
         )?,
-        DirectProtectedProfile::External { .. } =>
+        DirectProtectedProfile::External { .. } => {
             aos_hub_core::mirror_acceptance::pack::external_mirror_pack_acceptance_key(
-                &aos_hub_core::mirror_work::digest(artifact)?)?,
+                &aos_hub_core::mirror_work::digest(artifact)?,
+            )?
+        }
     };
     let raw = env
         .kv("HUB_MIRROR_ACCEPTANCE")?
@@ -222,9 +281,17 @@ async fn require_profile(
         .ok_or_else(|| anyhow::anyhow!("hermetic mirror source identity absent"))?;
     let script = crate::direct_upload::config::runtime_script_version(env)?;
     let key = match profile {
-        DirectProtectedProfile::Managed { .. } => mirror_acceptance_key(&deployment, source, &script)?,
-        DirectProtectedProfile::External { .. } => aos_hub_core::mirror_acceptance::external_mirror_acceptance_key(
-            &deployment, source, &script, profile)?,
+        DirectProtectedProfile::Managed { .. } => {
+            mirror_acceptance_key(&deployment, source, &script)?
+        }
+        DirectProtectedProfile::External { .. } => {
+            aos_hub_core::mirror_acceptance::external_mirror_acceptance_key(
+                &deployment,
+                source,
+                &script,
+                profile,
+            )?
+        }
     };
     let raw = env
         .kv("HUB_MIRROR_ACCEPTANCE")?
@@ -260,10 +327,7 @@ pub(crate) async fn require_live(
     env: &Env,
     profile: &DirectProtectedProfile,
     direct_evidence: &str,
-) -> Result<(
-    AcceptedMirror,
-    AcceptedLive,
-)> {
+) -> Result<(AcceptedMirror, AcceptedLive)> {
     use aos_hub_core::mirror_acceptance::live::{
         mirror_live_acceptance_key, MirrorLiveAcceptanceArtifact, LIVE_ACCEPTANCE_MAX_BYTES,
     };
@@ -271,13 +335,17 @@ pub(crate) async fn require_live(
     let accepted = require_profile(env, profile, direct_evidence).await?;
     #[cfg(feature = "do-e2e")]
     if let Review::Controlled(artifact) = &accepted.artifact {
-        let live = AcceptedLive { maximum_bytes: artifact.maximum_object_bytes,
-            issued_at: artifact.issued_at, valid_until: artifact.valid_until };
+        let live = AcceptedLive {
+            maximum_bytes: artifact.maximum_object_bytes,
+            issued_at: artifact.issued_at,
+            valid_until: artifact.valid_until,
+        };
         return Ok((accepted, live));
     }
-    let Review::Hosted(artifact) = &accepted.artifact else { anyhow::bail!("production live review absent"); };
-    let address =
-        mirror_live_acceptance_key(&aos_hub_core::mirror_work::digest(artifact)?)?;
+    let Review::Hosted(artifact) = &accepted.artifact else {
+        anyhow::bail!("production live review absent");
+    };
+    let address = mirror_live_acceptance_key(&aos_hub_core::mirror_work::digest(artifact)?)?;
     let raw = env
         .kv("HUB_MIRROR_ACCEPTANCE")?
         .get(&address)
@@ -295,15 +363,20 @@ pub(crate) async fn require_live(
         &env.var("HUB_MIRROR_QUALIFICATION_PUBLIC_KEY")?.to_string(),
         profile_latest_now(profile)?,
     )?;
-    let bounds = AcceptedLive { maximum_bytes: live.maximum_bytes,
-        issued_at: live.issued_at, valid_until: live.valid_until };
+    let bounds = AcceptedLive {
+        maximum_bytes: live.maximum_bytes,
+        issued_at: live.issued_at,
+        valid_until: live.valid_until,
+    };
     Ok((accepted, bounds))
 }
 
 fn profile_latest_now(profile: &DirectProtectedProfile) -> Result<u64> {
     let uncertainty = match profile {
         DirectProtectedProfile::Managed { profile, .. } => profile.clock_uncertainty_seconds.get(),
-        DirectProtectedProfile::External { profile, .. } => u64::try_from(profile.clock_uncertainty.get())?,
+        DirectProtectedProfile::External { profile, .. } => {
+            u64::try_from(profile.clock_uncertainty.get())?
+        }
     };
     u64::try_from(aos_hub_core::clock::now_unix_secs())?
         .checked_add(uncertainty)

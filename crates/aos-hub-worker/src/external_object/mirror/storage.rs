@@ -52,9 +52,12 @@ pub(super) struct Journal {
 
 impl Journal {
     /// Resumes metadata-only acknowledgement beneath the caller's held gate.
-    pub(super) fn resume(storage: Storage, head: Head,
-        session: MirrorExternalSession) -> Self {
-        Self { storage, head, session }
+    pub(super) fn resume(storage: Storage, head: Head, session: MirrorExternalSession) -> Self {
+        Self {
+            storage,
+            head,
+            session,
+        }
     }
 
     pub(super) async fn lookup(
@@ -180,11 +183,23 @@ impl Journal {
 
     /// Retains the first actual upstream incarnation before writing its bytes.
     pub(super) async fn retain_upstream_etag(&mut self, etag: Option<String>) -> Result<()> {
-        ensure!(!self.session.destination && self.session.pending.is_none()
-            && self.session.closed.is_none(), "mirror upstream observation changed physical phase");
-        if let Some(tag) = &etag { aos_hub_core::surface_write::strong_if_match_etag(tag)?; }
-        ensure!(self.session.progress.upstream_etag.as_ref().is_none_or(|prior| etag.as_ref() == Some(prior)),
-            "mirror upstream incarnation changed its first observation");
+        ensure!(
+            !self.session.destination
+                && self.session.pending.is_none()
+                && self.session.closed.is_none(),
+            "mirror upstream observation changed physical phase"
+        );
+        if let Some(tag) = &etag {
+            aos_hub_core::surface_write::strong_if_match_etag(tag)?;
+        }
+        ensure!(
+            self.session
+                .progress
+                .upstream_etag
+                .as_ref()
+                .is_none_or(|prior| etag.as_ref() == Some(prior)),
+            "mirror upstream incarnation changed its first observation"
+        );
         let mut next = self.session.clone();
         next.progress.upstream_etag = etag;
         self.retain(self.head.clone(), next, BTreeMap::new()).await
@@ -524,9 +539,11 @@ async fn commit(
 fn session_key(original: &str) -> String {
     format!("external-mirror/session/v1/{original}")
 }
+
 fn receipt_key(original: &str, effect: &str) -> String {
     format!("external-mirror/receipt/v1/{original}/{effect}")
 }
+
 fn completion_key(original: &str, destination: bool) -> String {
     format!("external-mirror/completion/v1/{original}/{destination}")
 }

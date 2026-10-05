@@ -363,10 +363,13 @@ impl Database {
             "mirror original no longer has current Native authority"
         );
         if original.external_destination.is_some() {
-            self.validate_external_mirror_binding(original, &binding).await?;
+            self.validate_external_mirror_binding(original, &binding)
+                .await?;
         } else {
-            ensure!(binding.kind == "deployment_r2" && binding.is_instance_default,
-                "managed mirror original changed binding kind");
+            ensure!(
+                binding.kind == "deployment_r2" && binding.is_instance_default,
+                "managed mirror original changed binding kind"
+            );
         }
         Ok(())
     }
@@ -392,8 +395,12 @@ impl Database {
             "mirror original exceeds its bound"
         );
         let original_digest = digest(original)?;
-        let (binding_kind, instance_default) = original.external_destination.as_ref()
-            .map_or(("deployment_r2", 1_i64), |external| (external.binding_kind.as_str(), 0_i64));
+        let (binding_kind, instance_default) = original
+            .external_destination
+            .as_ref()
+            .map_or(("deployment_r2", 1_i64), |external| {
+                (external.binding_kind.as_str(), 0_i64)
+            });
         let mut statements = Self::mirror_external_authority_locks(original)?;
         statements.push(CheckedStatement::unchecked(
             "INSERT INTO mirror_import_objects
@@ -473,9 +480,18 @@ impl Database {
                 "mirror observation replaced the original upstream incarnation"
             );
             ensure!(
-                prior.stage_closure.as_ref().is_none_or(|value| progress.stage_closure.as_ref() == Some(value))
-                    && prior.destination_closure.as_ref().is_none_or(|value| progress.destination_closure.as_ref() == Some(value))
-                    && prior.stage_retention.as_ref().is_none_or(|value| progress.stage_retention.as_ref() == Some(value))
+                prior
+                    .stage_closure
+                    .as_ref()
+                    .is_none_or(|value| progress.stage_closure.as_ref() == Some(value))
+                    && prior
+                        .destination_closure
+                        .as_ref()
+                        .is_none_or(|value| progress.destination_closure.as_ref() == Some(value))
+                    && prior
+                        .stage_retention
+                        .as_ref()
+                        .is_none_or(|value| progress.stage_retention.as_ref() == Some(value))
                     && progress.stage_parts.starts_with(&prior.stage_parts)
                     && progress
                         .destination_parts
@@ -540,8 +556,12 @@ impl Database {
             "mirror final publication requires independent guard proof and atomic catalogue accounting"
         );
         self.validate_mirror_import_authority(original).await?;
-        let (binding_kind, instance_default) = original.external_destination.as_ref()
-            .map_or(("deployment_r2", 1_i64), |external| (external.binding_kind.as_str(), 0_i64));
+        let (binding_kind, instance_default) = original
+            .external_destination
+            .as_ref()
+            .map_or(("deployment_r2", 1_i64), |external| {
+                (external.binding_kind.as_str(), 0_i64)
+            });
         let mut statements = Self::mirror_external_authority_locks(original)?;
         statements.push(CheckedStatement::exact(
             "UPDATE mirror_import_objects SET progress_json = ?2, state = ?3,

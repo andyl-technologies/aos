@@ -22,9 +22,7 @@ use crate::{
 };
 
 use super::{MirrorExternalClosure, MirrorStageRetention};
-use crate::mirror_work::{
-    MirrorOriginal, MirrorPart, MirrorProgress, MirrorVerifiedObject, digest,
-};
+use crate::mirror_work::{MirrorOriginal, MirrorPart, MirrorProgress, MirrorVerifiedObject, digest};
 
 /// Retains one exact signed mirror artifact and its original exclusive cutoff.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

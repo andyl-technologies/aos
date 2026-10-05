@@ -32,7 +32,8 @@ impl Selection {
             .binding(placement.binding_id)
             .await?
             .context("selected mirror binding disappeared")?;
-        let external_destination = if binding.kind == "deployment_r2" && binding.is_instance_default {
+        let external_destination = if binding.kind == "deployment_r2" && binding.is_instance_default
+        {
             None
         } else {
             Some(work.mirror_external_destination(db, &binding).await?)
@@ -100,7 +101,8 @@ impl Selection {
                 "mirror External prerequisite changed; restart verification"
             ),
             None => ensure!(
-                binding.kind == "deployment_r2" && binding.is_instance_default
+                binding.kind == "deployment_r2"
+                    && binding.is_instance_default
                     && work.mirror_managed_profile_digest()? == self.profile_digest,
                 "mirror managed prerequisite changed; restart verification"
             ),

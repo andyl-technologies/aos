@@ -262,7 +262,12 @@ impl MirrorOriginal {
         let relative = crate::keymap::r2_key(&self.placement_prefix, &self.path);
         match &self.external_destination {
             Some(destination) => crate::keymap::r2_key(
-                &destination.protected_profile.profile.selector.association.binding_prefix,
+                &destination
+                    .protected_profile
+                    .profile
+                    .selector
+                    .association
+                    .binding_prefix,
                 &relative,
             ),
             None => relative,
@@ -440,18 +445,33 @@ impl MirrorProgress {
             }
         }
         if let Some(object) = &self.stage_object {
-            validate_object(object, &original.stage_key(), original.verification.size(), original.external_destination.is_some())?;
+            validate_object(
+                object,
+                &original.stage_key(),
+                original.verification.size(),
+                original.external_destination.is_some(),
+            )?;
             ensure!(
                 self.stage_parts.iter().map(|part| part.size).sum::<u64>()
                     == original.verification.size(),
                 "mirror stage has an incomplete original manifest"
             );
         }
-        validate_closure(original, self.stage_object.as_ref(), self.stage_closure.as_ref(), false)?;
-        ensure!(self.stage_retention == if original.external_destination.is_some()
-            && self.stage_object.is_some() {
-                Some(MirrorStageRetention::RetainedForQualifiedCleanup)
-            } else { None }, "mirror private residual state differs from its positive stage");
+        validate_closure(
+            original,
+            self.stage_object.as_ref(),
+            self.stage_closure.as_ref(),
+            false,
+        )?;
+        ensure!(
+            self.stage_retention
+                == if original.external_destination.is_some() && self.stage_object.is_some() {
+                    Some(MirrorStageRetention::RetainedForQualifiedCleanup)
+                } else {
+                    None
+                },
+            "mirror private residual state differs from its positive stage"
+        );
         if let Some(verified) = &self.verified {
             validate_verified(verified, original, &original.stage_key())?;
             ensure!(
@@ -460,11 +480,7 @@ impl MirrorProgress {
             );
         }
         if let Some(destination) = &self.destination {
-            validate_verified(
-                destination,
-                original,
-                &original.destination_key(),
-            )?;
+            validate_verified(destination, original, &original.destination_key())?;
             let verified = self
                 .verified
                 .as_ref()
@@ -484,8 +500,12 @@ impl MirrorProgress {
                 "mirror destination changed its original source ranges"
             );
         }
-        validate_closure(original, self.destination.as_ref().map(|value| &value.object),
-            self.destination_closure.as_ref(), true)?;
+        validate_closure(
+            original,
+            self.destination.as_ref().map(|value| &value.object),
+            self.destination_closure.as_ref(),
+            true,
+        )?;
         // A receipt wraps this progress in the existing 128 KiB Durable
         // Object value ceiling. Keep space for its exact physical key and
         // effect identity; the public control ceiling remains 256 KiB.
@@ -510,7 +530,12 @@ impl MirrorProgress {
     }
 }
 
-fn validate_object(object: &StorageObjectIdentity, key: &str, size: u64, external: bool) -> Result<()> {
+fn validate_object(
+    object: &StorageObjectIdentity,
+    key: &str,
+    size: u64,
+    external: bool,
+) -> Result<()> {
     ensure!(
         object.key == key
             && object.size == size
@@ -533,7 +558,10 @@ fn validate_closure(
     match (original.external_destination.as_ref(), object, closure) {
         (Some(_), Some(object), Some(closure)) => {
             closure.validate_for(original, destination)?;
-            ensure!(closure.object == *object, "mirror closure changed its provider receipt");
+            ensure!(
+                closure.object == *object,
+                "mirror closure changed its provider receipt"
+            );
         }
         (_, None, None) | (None, Some(_), None) => {}
         _ => anyhow::bail!("mirror External completion closure missing or substituted"),
@@ -546,7 +574,12 @@ fn validate_verified(
     original: &MirrorOriginal,
     key: &str,
 ) -> Result<()> {
-    validate_object(&verified.object, key, original.verification.size(), original.external_destination.is_some())?;
+    validate_object(
+        &verified.object,
+        key,
+        original.verification.size(),
+        original.external_destination.is_some(),
+    )?;
     ensure!(
         hex_digest(&verified.sha256),
         "mirror observed digest is invalid"

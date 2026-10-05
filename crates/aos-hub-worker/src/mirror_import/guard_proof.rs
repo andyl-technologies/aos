@@ -19,19 +19,30 @@ pub(crate) const FUNCTIONAL_PHYSICAL_PATH: &str = "/external-mirror-functional-f
 
 // Path selection is independent of the signed execution field. A caller cannot
 // send an emulator proof to the production endpoint or enable the fixture there.
-pub(crate) fn selected_execution(request: &Request, env: &Env, candidate: bool) -> Result<MirrorGuardExecution> {
+pub(crate) fn selected_execution(
+    request: &Request,
+    env: &Env,
+    candidate: bool,
+) -> Result<MirrorGuardExecution> {
     let path = request.url()?.path().to_owned();
-    let functional = matches!(path.as_str(), MIRROR_EXTERNAL_FUNCTIONAL_GUARD_LOOKUP_PATH
+    let functional =
+        matches!(path.as_str(), MIRROR_EXTERNAL_FUNCTIONAL_GUARD_LOOKUP_PATH
         | FUNCTIONAL_PHYSICAL_PATH
         | aos_hub_core::mirror_guard::batch::MIRROR_EXTERNAL_FUNCTIONAL_GUARD_BATCH_LOOKUP_PATH
         | batch::FUNCTIONAL_PHYSICAL_PATH);
     if functional {
-        ensure!(!candidate && cfg!(feature = "do-e2e")
-            && env.var("HUB_EXTERNAL_MIRROR_FUNCTIONAL_PROBE")?.to_string() == "1",
-            "External functional guard unavailable in this execution");
+        ensure!(
+            !candidate
+                && cfg!(feature = "do-e2e")
+                && env.var("HUB_EXTERNAL_MIRROR_FUNCTIONAL_PROBE")?.to_string() == "1",
+            "External functional guard unavailable in this execution"
+        );
         Ok(MirrorGuardExecution::ControlledExternalFunctional)
     } else if candidate {
-        ensure!(cfg!(feature = "do-e2e"), "Managed candidate guard unavailable in production");
+        ensure!(
+            cfg!(feature = "do-e2e"),
+            "Managed candidate guard unavailable in production"
+        );
         Ok(MirrorGuardExecution::ControlledCandidate)
     } else {
         Ok(MirrorGuardExecution::Hosted)
@@ -51,8 +62,10 @@ pub(crate) fn key(env: &Env) -> Result<StorageWorkKey> {
         );
     }
     if let Ok(physical) = env.secret("HUB_EXTERNAL_OBJECT_GUARD_KEY") {
-        ensure!(secret != physical.to_string(),
-            "mirror readback role must differ from the physical mutation role");
+        ensure!(
+            secret != physical.to_string(),
+            "mirror readback role must differ from the physical mutation role"
+        );
     }
     Ok(StorageWorkKey::new(secret)?)
 }
@@ -149,8 +162,13 @@ async fn relay(request: &mut Request, env: &Env, candidate: bool) -> Result<Resp
         .with_body(Some(js_sys::Uint8Array::from(body.as_slice()).into()));
     let internal = Request::new_with_init(&format!("https://physical-guard{path}"), &init)?;
     let (binding, address) = if lookup.original.external_destination.is_some() {
-        ("EXTERNAL_OBJECT_GUARD", crate::external_object::mirror_guard_address(env, &lookup.original)?)
-    } else { ("HYBRID_OBJECT_GUARD", address) };
+        (
+            "EXTERNAL_OBJECT_GUARD",
+            crate::external_object::mirror_guard_address(env, &lookup.original)?,
+        )
+    } else {
+        ("HYBRID_OBJECT_GUARD", address)
+    };
     let mut response = env
         .durable_object(binding)?
         .id_from_name(&address)?

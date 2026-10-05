@@ -357,42 +357,65 @@ fn install_direct_profiles(
     }
 }
 
-fn install_mirror_functional(work: RemoteStorageWorkClient, input: &Input) -> Result<RemoteStorageWorkClient> {
+fn install_mirror_functional(
+    work: RemoteStorageWorkClient,
+    input: &Input,
+) -> Result<RemoteStorageWorkClient> {
     use aos_hub_core::mirror_acceptance::external_controlled::{
         ControlledExternalMirrorArtifact, CONTROLLED_EXTERNAL_MIRROR_MAX_BYTES,
     };
 
-    let Some(files) = &input.files.mirror_functional else { return Ok(work); };
-    let direct = input.files.direct.as_ref().context("functional Mirror requires real Direct files")?;
-    let raw = private_bytes(&files.artifact_file, CONTROLLED_EXTERNAL_MIRROR_MAX_BYTES as u64)?;
+    let Some(files) = &input.files.mirror_functional else {
+        return Ok(work);
+    };
+    let direct = input
+        .files
+        .direct
+        .as_ref()
+        .context("functional Mirror requires real Direct files")?;
+    let raw = private_bytes(
+        &files.artifact_file,
+        CONTROLLED_EXTERNAL_MIRROR_MAX_BYTES as u64,
+    )?;
     let artifact: ControlledExternalMirrorArtifact = serde_json::from_slice(&raw)?;
     let reviewer = private_text(&files.reviewer_public_key_file, 4096)?;
-    let prerequisite_reviewers: BTreeMap<String, String> = serde_json::from_slice(
-        &private_bytes(&direct.review_keys_file, MAX_INPUT_BYTES)?)?;
+    let prerequisite_reviewers: BTreeMap<String, String> =
+        serde_json::from_slice(&private_bytes(&direct.review_keys_file, MAX_INPUT_BYTES)?)?;
     for key in prerequisite_reviewers.values() {
         aos_hub_core::mirror_acceptance::external_controlled::require_distinct_external_mirror_reviewer(
             reviewer.as_str(), key)?;
     }
-    ensure!(artifact.installation.native_executable_sha256 == input.expected_executable_sha256
-        && artifact.upstream_base == format!("https://aos.andyl.org:4778/fleet-mirror/{}", input.run_id)
-        && artifact.placement_prefix == format!(".aos-mirror-qualification/{}/final", input.run_id),
-        "functional Mirror selected another helper or reserved fixture source");
+    ensure!(
+        artifact.installation.native_executable_sha256 == input.expected_executable_sha256
+            && artifact.upstream_base
+                == format!("https://aos.andyl.org:4778/fleet-mirror/{}", input.run_id)
+            && artifact.placement_prefix
+                == format!(".aos-mirror-qualification/{}/final", input.run_id),
+        "functional Mirror selected another helper or reserved fixture source"
+    );
     let guard = private_bytes(&files.guard_key_file, 8192)?;
     let physical = private_bytes(&input.files.guard_key_file, 8192)?;
     let readback_role = StorageWorkKey::new(guard.as_slice())?;
     let physical_role = StorageWorkKey::new(physical.as_slice())?;
     let separation = b"aos.hub.external-mirror-readback-role-separation.v1";
-    ensure!(readback_role.sign_body(separation)? != physical_role.sign_body(separation)?,
-        "functional Mirror guard cannot borrow physical producer authority");
-    ensure!(raw.as_slice() == private_bytes(&files.artifact_file, CONTROLLED_EXTERNAL_MIRROR_MAX_BYTES as u64)?.as_slice(),
-        "functional Mirror artifact changed during selection");
+    ensure!(
+        readback_role.sign_body(separation)? != physical_role.sign_body(separation)?,
+        "functional Mirror guard cannot borrow physical producer authority"
+    );
+    ensure!(
+        raw.as_slice()
+            == private_bytes(
+                &files.artifact_file,
+                CONTROLLED_EXTERNAL_MIRROR_MAX_BYTES as u64
+            )?
+            .as_slice(),
+        "functional Mirror artifact changed during selection"
+    );
     work.with_controlled_external_mirror(artifact, reviewer.as_str(), guard.as_slice())
 }
 
 fn direct_selection(input: &Input, work_key: &[u8]) -> Result<Option<DirectSelection>> {
-    use crate::direct_upload::authority::{
-        NativeDirectUploadAcceptances, NativeDirectUploadRuntime,
-    };
+    use crate::direct_upload::authority::{NativeDirectUploadAcceptances, NativeDirectUploadRuntime};
 
     let Some(files) = &input.files.direct else {
         return Ok(None);
@@ -1132,7 +1155,9 @@ fn optional_mirror_functional_role_is_closed_and_needs_the_real_prerequisite() {
     assert!(serde_json::from_value::<MirrorFunctionalFiles>(widened).is_err());
 
     let mut input = test_input();
-    let work = RemoteStorageWorkClient::new("https://localhost:4673", "deployment-1".into(), &[11; 32]).unwrap();
+    let work =
+        RemoteStorageWorkClient::new("https://localhost:4673", "deployment-1".into(), &[11; 32])
+            .unwrap();
     let work = install_mirror_functional(work, &input).unwrap();
     assert!(work.controlled_external_mirror.is_none());
     input.files.mirror_functional = Some(serde_json::from_value(files).unwrap());

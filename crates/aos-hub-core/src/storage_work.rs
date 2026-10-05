@@ -1590,12 +1590,10 @@ mod tests {
             }
         ));
         let serialized = serde_json::to_value(&operation).unwrap();
-        assert!(
-            serialized
-                .as_object()
-                .unwrap()
-                .contains_key("expected_provider_version")
-        );
+        assert!(serialized
+            .as_object()
+            .unwrap()
+            .contains_key("expected_provider_version"));
         assert!(serialized["expected_provider_version"].is_null());
 
         // Old executors reject unknown fields per RPC even if a prior pairing
@@ -1700,11 +1698,9 @@ mod tests {
             retained.validate("deployment-1", 200),
             Err(StorageWorkError::InvalidTime)
         );
-        assert!(
-            retained
-                .validate_observation_shape("another-deployment")
-                .is_err()
-        );
+        assert!(retained
+            .validate_observation_shape("another-deployment")
+            .is_err());
 
         retained.expires_at = retained.issued_at + 31;
         assert!(retained.validate_observation_shape("deployment-1").is_err());
@@ -1755,12 +1751,10 @@ mod tests {
             *delete_binding_write_revision = None;
         }
         assert_eq!(scoped.operation.credential_purposes(), &["delete", "read"]);
-        assert!(
-            serde_json::to_value(&scoped.operation)
-                .unwrap()
-                .get("delete_binding_write_revision")
-                .is_none()
-        );
+        assert!(serde_json::to_value(&scoped.operation)
+            .unwrap()
+            .get("delete_binding_write_revision")
+            .is_none());
     }
 
     #[test]

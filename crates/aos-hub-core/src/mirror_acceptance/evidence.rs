@@ -9,9 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{MirrorAcceptanceArtifact, MirrorAcceptanceExecution, MirrorAcceptancePurpose};
 use crate::direct_upload::{valid_direct_digest, DirectProtectedProfile};
-use crate::mirror_work::{
-    MirrorOriginal, MirrorProgress, MirrorVerification, MIRROR_MAX_OBJECT_BYTES,
-};
+use crate::mirror_work::{MirrorOriginal, MirrorProgress, MirrorVerification, MIRROR_MAX_OBJECT_BYTES};
 
 /// Identifies a required observed mirror failure or recovery experiment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -288,8 +286,16 @@ impl MirrorAcceptanceEvidence {
                 && workload.maximum_step_cpu_millis <= workload.installed_cpu_limit_millis,
             "mirror workload does not cover admitted size, capacity or Native byte boundary"
         );
-        if let Some(DirectProtectedProfile::Managed { runtime_qualification, .. }
-            | DirectProtectedProfile::External { runtime_qualification, .. }) = &artifact.protected_profile
+        if let Some(
+            DirectProtectedProfile::Managed {
+                runtime_qualification,
+                ..
+            }
+            | DirectProtectedProfile::External {
+                runtime_qualification,
+                ..
+            },
+        ) = &artifact.protected_profile
         {
             ensure!(
                 u64::from(workload.peak_provider_requests)
@@ -315,19 +321,42 @@ impl MirrorAcceptanceEvidence {
         // accepting that retention as Managed cleanup would hide a requirement.
         let external = artifact.purpose == MirrorAcceptancePurpose::ExternalMirrorV1;
         ensure!(
-            !cases.contains(&if external { MirrorSafetyCase::UnknownCleanup }
-                else { MirrorSafetyCase::RetainedStageWithoutDelete }),
+            !cases.contains(&if external {
+                MirrorSafetyCase::UnknownCleanup
+            } else {
+                MirrorSafetyCase::RetainedStageWithoutDelete
+            }),
             "mirror safety experiment belongs to another cleanup contract"
         );
         if artifact.execution == MirrorAcceptanceExecution::Hosted {
             use MirrorSafetyCase::*;
-            let required: std::collections::BTreeSet<_> = [UnknownCreate, UnknownPart,
-                UnknownClose, UnknownPromotion,
-                if external { RetainedStageWithoutDelete } else { UnknownCleanup },
-                PositivePrefixReplay, LostNativeAcknowledgement, ArchivedAcknowledgement,
-                Restart, ChangedBinding, ChangedSource, NativeRevocation, ExpiredPlan,
-                PrivateNamespace, MetadataDuringBulk].into_iter().collect();
-            ensure!(cases == required, "hosted mirror safety experiments are incomplete");
+            let required: std::collections::BTreeSet<_> = [
+                UnknownCreate,
+                UnknownPart,
+                UnknownClose,
+                UnknownPromotion,
+                if external {
+                    RetainedStageWithoutDelete
+                } else {
+                    UnknownCleanup
+                },
+                PositivePrefixReplay,
+                LostNativeAcknowledgement,
+                ArchivedAcknowledgement,
+                Restart,
+                ChangedBinding,
+                ChangedSource,
+                NativeRevocation,
+                ExpiredPlan,
+                PrivateNamespace,
+                MetadataDuringBulk,
+            ]
+            .into_iter()
+            .collect();
+            ensure!(
+                cases == required,
+                "hosted mirror safety experiments are incomplete"
+            );
         }
         ensure!(
             self.safety.len() <= 15,

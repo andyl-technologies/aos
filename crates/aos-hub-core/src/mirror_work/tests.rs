@@ -110,16 +110,12 @@ fn external_mirror_controls_pin_current_material_and_original_cutoff() {
 #[test]
 fn external_mirror_original_commits_each_independent_publication_pin() {
     let original = external_original();
-    assert!(
-        original
-            .destination_key()
-            .starts_with("managed/binding/registry/")
-    );
-    assert!(
-        original
-            .stage_key()
-            .starts_with("managed/binding/.aos-direct-upload/mirror/")
-    );
+    assert!(original
+        .destination_key()
+        .starts_with("managed/binding/registry/"));
+    assert!(original
+        .stage_key()
+        .starts_with("managed/binding/.aos-direct-upload/mirror/"));
 
     for mutation in 0..4 {
         let mut changed = original.clone();

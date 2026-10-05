@@ -389,10 +389,16 @@ async fn archived_progress(
     original: &MirrorOriginal,
     verified: &aos_hub_core::mirror_work::MirrorVerifiedObject,
 ) -> Result<MirrorProgress> {
-    let plan = control::plan(db, work, original, StorageWorkOperation::MirrorTransfer {
-        original: original.clone(),
-        step: MirrorStep::Status { destination: true },
-    }).await?;
+    let plan = control::plan(
+        db,
+        work,
+        original,
+        StorageWorkOperation::MirrorTransfer {
+            original: original.clone(),
+            step: MirrorStep::Status { destination: true },
+        },
+    )
+    .await?;
     let StorageWorkOutcome::MirrorProgress { progress } = work.execute(&plan).await?.outcome else {
         anyhow::bail!("mirror archived status returned another result");
     };
@@ -472,9 +478,11 @@ async fn run_publication_step(
         .binding(original.binding_id)
         .await?
         .context("mirror binding disappeared")?;
-    ensure!(work.mirror_destination_profile_digest(db, &binding).await?
-        == original.protected_profile_digest,
-        "mirror accepted profile changed original");
+    ensure!(
+        work.mirror_destination_profile_digest(db, &binding).await?
+            == original.protected_profile_digest,
+        "mirror accepted profile changed original"
+    );
     if matches!(
         step,
         MirrorStep::BeginPromotion | MirrorStep::CopyParts { .. } | MirrorStep::CompletePromotion
@@ -494,9 +502,16 @@ async fn run_publication_step(
         .await?;
     }
     let status = matches!(step, MirrorStep::Status { .. });
-    let plan = control::plan(db, work, original, StorageWorkOperation::MirrorTransfer {
-        original: original.clone(), step,
-    }).await?;
+    let plan = control::plan(
+        db,
+        work,
+        original,
+        StorageWorkOperation::MirrorTransfer {
+            original: original.clone(),
+            step,
+        },
+    )
+    .await?;
     let result = work.execute(&plan).await?;
     let StorageWorkOutcome::MirrorProgress { progress } = result.outcome else {
         anyhow::bail!("Worker returned another mirror result");
@@ -535,10 +550,18 @@ async fn acknowledge(
                 == Some(progress.commit_digest(original)?.as_str()),
         "mirror ACK lacks exact retained SQL commit"
     );
-    let plan = control::plan(db, work, original, StorageWorkOperation::MirrorTransfer {
-        original: original.clone(),
-        step: MirrorStep::Acknowledge { commit_digest: progress.commit_digest(original)? },
-    }).await?;
+    let plan = control::plan(
+        db,
+        work,
+        original,
+        StorageWorkOperation::MirrorTransfer {
+            original: original.clone(),
+            step: MirrorStep::Acknowledge {
+                commit_digest: progress.commit_digest(original)?,
+            },
+        },
+    )
+    .await?;
     let StorageWorkOutcome::MirrorProgress {
         progress: acknowledged,
     } = work.execute(&plan).await?.outcome

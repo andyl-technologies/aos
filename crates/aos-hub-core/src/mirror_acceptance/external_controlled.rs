@@ -17,8 +17,10 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    direct_upload::{DirectProtectedExternalProfile, DirectProtectedProfile,
-        direct_worker_emulated_script_id, valid_direct_digest, valid_direct_identity},
+    direct_upload::{
+        DirectProtectedExternalProfile, DirectProtectedProfile, direct_worker_emulated_script_id,
+        valid_direct_digest, valid_direct_identity,
+    },
     mirror_work::{MirrorOriginal, digest, MIRROR_MAX_OBJECT_BYTES},
 };
 
@@ -121,41 +123,83 @@ impl ControlledExternalMirrorArtifact {
         let origin = url::Url::parse(&self.public_origin)?;
         let source = url::Url::parse(&self.upstream_base)?;
         let segments: Vec<_> = self.placement_prefix.split('/').collect();
-        let reserved = segments.len() == 3 && segments[0] == ".aos-mirror-qualification"
-            && segments[1].len() == 32 && segments[1].bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        let reserved = segments.len() == 3
+            && segments[0] == ".aos-mirror-qualification"
+            && segments[1].len() == 32
+            && segments[1]
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
             && segments[2] == "final";
-        ensure!(self.version == 1 && valid_direct_identity(&self.reviewer_key_id)
-            && valid_direct_identity(&self.deployment_id) && valid_direct_digest(&self.source_digest)
-            && self.script_version == direct_worker_emulated_script_id(&self.source_digest)?
-            && valid_direct_digest(&self.direct_evidence_sha256)
-            && valid_direct_digest(&self.external_domain_sha256)
-            && origin.scheme() == "https" && origin.host_str().is_some() && origin.path() == "/"
-            && origin.username().is_empty() && origin.password().is_none()
-            && origin.query().is_none() && origin.fragment().is_none()
-            && source.scheme() == "https" && source.host_str().is_some()
-            && source.username().is_empty() && source.password().is_none()
-            && source.query().is_none() && source.fragment().is_none()
-            && reserved && self.issued_at <= now && now < self.valid_until
-            && self.valid_until.checked_sub(self.issued_at).is_some_and(|ttl| ttl <= 900)
-            && (1..=MIRROR_MAX_OBJECT_BYTES).contains(&self.maximum_object_bytes)
-            && self.maximum_object_bytes <= self.protected_profile.runtime_qualification.maximum_object_bytes.get(),
-            "controlled External mirror identity, reserved scope or cutoff differs");
+        ensure!(
+            self.version == 1
+                && valid_direct_identity(&self.reviewer_key_id)
+                && valid_direct_identity(&self.deployment_id)
+                && valid_direct_digest(&self.source_digest)
+                && self.script_version == direct_worker_emulated_script_id(&self.source_digest)?
+                && valid_direct_digest(&self.direct_evidence_sha256)
+                && valid_direct_digest(&self.external_domain_sha256)
+                && origin.scheme() == "https"
+                && origin.host_str().is_some()
+                && origin.path() == "/"
+                && origin.username().is_empty()
+                && origin.password().is_none()
+                && origin.query().is_none()
+                && origin.fragment().is_none()
+                && source.scheme() == "https"
+                && source.host_str().is_some()
+                && source.username().is_empty()
+                && source.password().is_none()
+                && source.query().is_none()
+                && source.fragment().is_none()
+                && reserved
+                && self.issued_at <= now
+                && now < self.valid_until
+                && self
+                    .valid_until
+                    .checked_sub(self.issued_at)
+                    .is_some_and(|ttl| ttl <= 900)
+                && (1..=MIRROR_MAX_OBJECT_BYTES).contains(&self.maximum_object_bytes)
+                && self.maximum_object_bytes
+                    <= self
+                        .protected_profile
+                        .runtime_qualification
+                        .maximum_object_bytes
+                        .get(),
+            "controlled External mirror identity, reserved scope or cutoff differs"
+        );
         crate::url_guard::is_safe_remote_url(&self.upstream_base)?;
         let facts = &self.installation;
-        for hash in [&facts.artifact_manifest_sha256, &facts.wasm_sha256, &facts.script_sha256,
-            &facts.native_executable_sha256, &facts.configuration_sha256,
-            &facts.namespace_observation_sha256, &facts.clock_observation_sha256,
-            &facts.provider_contract_observation_sha256, &facts.prerequisite_artifact_sha256] {
-            ensure!(valid_direct_digest(hash), "controlled Mirror installation observation absent");
+        for hash in [
+            &facts.artifact_manifest_sha256,
+            &facts.wasm_sha256,
+            &facts.script_sha256,
+            &facts.native_executable_sha256,
+            &facts.configuration_sha256,
+            &facts.namespace_observation_sha256,
+            &facts.clock_observation_sha256,
+            &facts.provider_contract_observation_sha256,
+            &facts.prerequisite_artifact_sha256,
+        ] {
+            ensure!(
+                valid_direct_digest(hash),
+                "controlled Mirror installation observation absent"
+            );
         }
         let profile = &self.protected_profile.profile;
-        let full_prefix = crate::keymap::r2_key(&profile.selector.association.binding_prefix, &self.placement_prefix);
+        let full_prefix = crate::keymap::r2_key(
+            &profile.selector.association.binding_prefix,
+            &self.placement_prefix,
+        );
         for cohort in [&profile.read_cohort, &profile.write_cohort] {
-            ensure!(within(&cohort.admitted_prefix, &full_prefix),
-                "controlled Mirror namespace escapes actual admitted cohort");
+            ensure!(
+                within(&cohort.admitted_prefix, &full_prefix),
+                "controlled Mirror namespace escapes actual admitted cohort"
+            );
         }
-        ensure!(serde_json::to_vec(self)?.len() <= CONTROLLED_EXTERNAL_MIRROR_MAX_BYTES,
-            "controlled External Mirror artifact exceeds bound");
+        ensure!(
+            serde_json::to_vec(self)?.len() <= CONTROLLED_EXTERNAL_MIRROR_MAX_BYTES,
+            "controlled External Mirror artifact exceeds bound"
+        );
         Ok(())
     }
 
@@ -164,9 +208,13 @@ impl ControlledExternalMirrorArtifact {
     /// # Errors
     /// Refuses an oversized document or serialization failure.
     pub fn signing_bytes(&self) -> Result<Vec<u8>> {
-        let mut unsigned = self.clone(); unsigned.signature.clear();
+        let mut unsigned = self.clone();
+        unsigned.signature.clear();
         let bytes = serde_json::to_vec(&unsigned)?;
-        ensure!(bytes.len() <= CONTROLLED_EXTERNAL_MIRROR_MAX_BYTES, "controlled Mirror signed bytes exceed bound");
+        ensure!(
+            bytes.len() <= CONTROLLED_EXTERNAL_MIRROR_MAX_BYTES,
+            "controlled Mirror signed bytes exceed bound"
+        );
         Ok([DOMAIN, &bytes].concat())
     }
 
@@ -174,19 +222,35 @@ impl ControlledExternalMirrorArtifact {
     ///
     /// # Errors
     /// Refuses foreign signatures, expired facts or changed current prerequisites.
-    pub fn require_current(&self, deployment: &str, origin: &str, source: &str, script: &str,
-        profile: &DirectProtectedProfile, direct_evidence: &str, trusted_public_hex: &str, now: u64) -> Result<()> {
+    pub fn require_current(
+        &self,
+        deployment: &str,
+        origin: &str,
+        source: &str,
+        script: &str,
+        profile: &DirectProtectedProfile,
+        direct_evidence: &str,
+        trusted_public_hex: &str,
+        now: u64,
+    ) -> Result<()> {
         self.validate_unsigned(now)?;
-        ensure!(self.deployment_id == deployment && self.public_origin == origin
-            && self.source_digest == source && self.script_version == script
-            && self.protected_profile.digest()? == profile.digest()?
-            && matches!(profile, DirectProtectedProfile::External { .. })
-            && self.direct_evidence_sha256 == direct_evidence && valid_direct_digest(trusted_public_hex),
-            "controlled External Mirror differs from the actual current runtime");
-        let public: [u8; 32] = hex::decode(trusted_public_hex)?.try_into()
+        ensure!(
+            self.deployment_id == deployment
+                && self.public_origin == origin
+                && self.source_digest == source
+                && self.script_version == script
+                && self.protected_profile.digest()? == profile.digest()?
+                && matches!(profile, DirectProtectedProfile::External { .. })
+                && self.direct_evidence_sha256 == direct_evidence
+                && valid_direct_digest(trusted_public_hex),
+            "controlled External Mirror differs from the actual current runtime"
+        );
+        let public: [u8; 32] = hex::decode(trusted_public_hex)?
+            .try_into()
             .map_err(|_| anyhow::anyhow!("controlled Mirror reviewer key invalid"))?;
         let signature = Signature::from_slice(&hex::decode(&self.signature)?)?;
-        VerifyingKey::from_bytes(&public)?.verify_strict(&self.signing_bytes()?, &signature)
+        VerifyingKey::from_bytes(&public)?
+            .verify_strict(&self.signing_bytes()?, &signature)
             .map_err(|_| anyhow::anyhow!("controlled Mirror signature invalid"))
     }
 
@@ -195,35 +259,57 @@ impl ControlledExternalMirrorArtifact {
     /// # Errors
     /// Refuses another source, size, destination or prerequisite.
     pub fn require_original(&self, original: &MirrorOriginal, now: u64) -> Result<()> {
-        self.validate_unsigned(now)?; original.validate()?;
-        let selected = original.external_destination.as_ref().context("controlled External Mirror received Managed original")?;
-        ensure!(selected.protected_profile == self.protected_profile
-            && selected.acceptance_digest == self.direct_evidence_sha256
-            && original.protected_profile_digest == self.protected_profile.digest()?
-            && original.upstream_base == self.upstream_base
-            && ["full", "pull-through"].iter().any(|mode|
-                original.placement_prefix == format!("{}/{mode}", self.placement_prefix))
-            && original.verification.size() <= self.maximum_object_bytes,
-            "controlled Mirror original escaped its signed finite probe");
+        self.validate_unsigned(now)?;
+        original.validate()?;
+        let selected = original
+            .external_destination
+            .as_ref()
+            .context("controlled External Mirror received Managed original")?;
+        ensure!(
+            selected.protected_profile == self.protected_profile
+                && selected.acceptance_digest == self.direct_evidence_sha256
+                && original.protected_profile_digest == self.protected_profile.digest()?
+                && original.upstream_base == self.upstream_base
+                && ["full", "pull-through"]
+                    .iter()
+                    .any(|mode| original.placement_prefix
+                        == format!("{}/{mode}", self.placement_prefix))
+                && original.verification.size() <= self.maximum_object_bytes,
+            "controlled Mirror original escaped its signed finite probe"
+        );
         Ok(())
     }
 }
 
 fn within(prefix: &str, key: &str) -> bool {
-    prefix.is_empty() || key == prefix
-        || key.strip_prefix(prefix).is_some_and(|suffix| suffix.starts_with('/'))
+    prefix.is_empty()
+        || key == prefix
+        || key
+            .strip_prefix(prefix)
+            .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
 /// Addresses a distinct emulator-only functional document for one real profile.
 ///
 /// # Errors
 /// Refuses malformed source, deployment, profile or namespace identities.
-pub fn controlled_external_mirror_key(deployment: &str, source: &str, script: &str,
-    profile: &DirectProtectedProfile) -> Result<String> {
-    ensure!(valid_direct_identity(deployment) && valid_direct_digest(source)
-        && script == direct_worker_emulated_script_id(source)?
-        && matches!(profile, DirectProtectedProfile::External { .. }), "controlled Mirror registry identity invalid");
-    Ok(format!("controlled-external-mirror-v1:{}", digest(&(deployment, source, script, profile.digest()?))?))
+pub fn controlled_external_mirror_key(
+    deployment: &str,
+    source: &str,
+    script: &str,
+    profile: &DirectProtectedProfile,
+) -> Result<String> {
+    ensure!(
+        valid_direct_identity(deployment)
+            && valid_direct_digest(source)
+            && script == direct_worker_emulated_script_id(source)?
+            && matches!(profile, DirectProtectedProfile::External { .. }),
+        "controlled Mirror registry identity invalid"
+    );
+    Ok(format!(
+        "controlled-external-mirror-v1:{}",
+        digest(&(deployment, source, script, profile.digest()?))?
+    ))
 }
 
 /// Checks that the functional verifier is independent of another reviewer key.
@@ -232,12 +318,20 @@ pub fn controlled_external_mirror_key(deployment: &str, source: &str, script: &s
 ///
 /// # Errors
 /// Refuses malformed key bytes or reuse of the independently selected reviewer.
-pub fn require_distinct_external_mirror_reviewer(functional_hex: &str, other_hex: &str) -> Result<()> {
-    let functional: [u8; 32] = hex::decode(functional_hex)?.try_into()
+pub fn require_distinct_external_mirror_reviewer(
+    functional_hex: &str,
+    other_hex: &str,
+) -> Result<()> {
+    let functional: [u8; 32] = hex::decode(functional_hex)?
+        .try_into()
         .map_err(|_| anyhow::anyhow!("functional Mirror reviewer key invalid"))?;
-    let other: [u8; 32] = hex::decode(other_hex)?.try_into()
+    let other: [u8; 32] = hex::decode(other_hex)?
+        .try_into()
         .map_err(|_| anyhow::anyhow!("prerequisite reviewer key invalid"))?;
-    ensure!(functional != other, "functional Mirror reviewer must be independent");
+    ensure!(
+        functional != other,
+        "functional Mirror reviewer must be independent"
+    );
     Ok(())
 }
 

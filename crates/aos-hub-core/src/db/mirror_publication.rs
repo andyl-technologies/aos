@@ -634,8 +634,12 @@ fn journal_statement(
     commit: Option<&str>,
     now: i64,
 ) -> Result<CheckedStatement> {
-    let (binding_kind, instance_default) = original.external_destination.as_ref()
-        .map_or(("deployment_r2", 1_i64), |external| (external.binding_kind.as_str(), 0_i64));
+    let (binding_kind, instance_default) = original
+        .external_destination
+        .as_ref()
+        .map_or(("deployment_r2", 1_i64), |external| {
+            (external.binding_kind.as_str(), 0_i64)
+        });
     let mutation = if commit.is_some() {
         "state = 'committed', commit_digest = ?2, updated_at = ?3, publication_commit_version = 7"
     } else {

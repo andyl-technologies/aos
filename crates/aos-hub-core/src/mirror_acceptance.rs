@@ -211,25 +211,45 @@ impl MirrorAcceptanceArtifact {
                 && (1..=MIRROR_MAX_OBJECT_BYTES).contains(&self.maximum_object_bytes),
             "mirror acceptance identity, geometry or validity differs"
         );
-        ensure!(match self.purpose {
-            MirrorAcceptancePurpose::ManagedR2MirrorV1 => self.external_domain_sha256.is_none(),
-            MirrorAcceptancePurpose::ExternalMirrorV1 => self.external_domain_sha256.as_deref()
-                .is_some_and(valid_direct_digest),
-        }, "mirror purpose differs from its installed transport commitment");
+        ensure!(
+            match self.purpose {
+                MirrorAcceptancePurpose::ManagedR2MirrorV1 => self.external_domain_sha256.is_none(),
+                MirrorAcceptancePurpose::ExternalMirrorV1 => self
+                    .external_domain_sha256
+                    .as_deref()
+                    .is_some_and(valid_direct_digest),
+            },
+            "mirror purpose differs from its installed transport commitment"
+        );
         match self.execution {
             MirrorAcceptanceExecution::Hosted => {
-                let profile = self.protected_profile.as_ref().ok_or_else(||
-                    anyhow::anyhow!("hosted mirror prerequisite profile absent"))?;
+                let profile = self
+                    .protected_profile
+                    .as_ref()
+                    .ok_or_else(|| anyhow::anyhow!("hosted mirror prerequisite profile absent"))?;
                 profile.validate()?;
                 let runtime_qualification = match (self.purpose, profile) {
-                    (MirrorAcceptancePurpose::ManagedR2MirrorV1,
-                        DirectProtectedProfile::Managed { profile: raw, runtime_qualification, .. }) => {
-                        ensure!(raw.deployment_id == self.deployment_id,
-                            "managed mirror prerequisite deployment differs");
+                    (
+                        MirrorAcceptancePurpose::ManagedR2MirrorV1,
+                        DirectProtectedProfile::Managed {
+                            profile: raw,
+                            runtime_qualification,
+                            ..
+                        },
+                    ) => {
+                        ensure!(
+                            raw.deployment_id == self.deployment_id,
+                            "managed mirror prerequisite deployment differs"
+                        );
                         runtime_qualification
                     }
-                    (MirrorAcceptancePurpose::ExternalMirrorV1,
-                        DirectProtectedProfile::External { runtime_qualification, .. }) => runtime_qualification,
+                    (
+                        MirrorAcceptancePurpose::ExternalMirrorV1,
+                        DirectProtectedProfile::External {
+                            runtime_qualification,
+                            ..
+                        },
+                    ) => runtime_qualification,
                     _ => anyhow::bail!("mirror purpose differs from its prerequisite profile"),
                 };
                 ensure!(
@@ -286,7 +306,9 @@ impl MirrorAcceptanceArtifact {
         );
         let domain = match self.purpose {
             MirrorAcceptancePurpose::ManagedR2MirrorV1 => DOMAIN,
-            MirrorAcceptancePurpose::ExternalMirrorV1 => b"aos.hub.accepted-external-mirror-producer.v1\0",
+            MirrorAcceptancePurpose::ExternalMirrorV1 => {
+                b"aos.hub.accepted-external-mirror-producer.v1\0"
+            }
         };
         Ok([domain, bytes.as_slice()].concat())
     }
@@ -381,12 +403,22 @@ pub fn external_mirror_acceptance_key(
     profile: &DirectProtectedProfile,
 ) -> Result<String> {
     mirror_acceptance_key(deployment, source, script)?;
-    ensure!(matches!(profile, DirectProtectedProfile::External { .. }),
-        "External mirror address requires an External profile");
+    ensure!(
+        matches!(profile, DirectProtectedProfile::External { .. }),
+        "External mirror address requires an External profile"
+    );
     let mut hash = Sha256::new();
     hash.update(b"aos.hub.external-mirror-acceptance-address.v1\0");
-    hash.update(encode_direct_control(&(deployment, source, script, profile.digest()?))?);
-    Ok(format!("external-mirror-v1:{}", hex::encode(hash.finalize())))
+    hash.update(encode_direct_control(&(
+        deployment,
+        source,
+        script,
+        profile.digest()?,
+    ))?);
+    Ok(format!(
+        "external-mirror-v1:{}",
+        hex::encode(hash.finalize())
+    ))
 }
 
 /// Commits actual raw candidate material without claiming accepted runtime.

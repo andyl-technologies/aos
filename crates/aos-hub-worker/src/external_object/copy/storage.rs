@@ -223,7 +223,8 @@ impl ExternalObjectGuard {
                     && head.observation.is_none()
                     && head.stage.is_none()
                     && head.copy.is_none()
-                    && head.oci.is_none() && head.mirror.is_none(),
+                    && head.oci.is_none()
+                    && head.mirror.is_none(),
                 "source key has another active physical workflow"
             );
             ensure!(
@@ -307,7 +308,8 @@ impl ExternalObjectGuard {
                     head.pending.is_none()
                         && head.observation.is_none()
                         && head.stage.is_none()
-                        && head.oci.is_none() && head.mirror.is_none()
+                        && head.oci.is_none()
+                        && head.mirror.is_none()
                         && head.receipts.get() < MAX_RECEIPTS,
                     "another physical workflow or receipt bound blocks copy"
                 );

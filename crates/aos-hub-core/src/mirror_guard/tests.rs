@@ -237,23 +237,39 @@ fn external_functional_guard_rejects_hosted_managed_and_unreserved_execution() {
     let mut original = crate::mirror_work::external_test_original();
     original.placement_prefix = format!(".aos-mirror-qualification/{}/final/full", "ab".repeat(16));
     original.job_id = original.identity().unwrap();
-    validate_execution(&original, MirrorGuardExecution::ControlledExternalFunctional).unwrap();
+    validate_execution(
+        &original,
+        MirrorGuardExecution::ControlledExternalFunctional,
+    )
+    .unwrap();
     assert!(validate_execution(&original, MirrorGuardExecution::Hosted).is_err());
     assert!(validate_execution(&original, MirrorGuardExecution::ControlledCandidate).is_err());
 
     let mut pull = original.clone();
-    pull.placement_prefix = format!(".aos-mirror-qualification/{}/final/pull-through", "ab".repeat(16));
+    pull.placement_prefix = format!(
+        ".aos-mirror-qualification/{}/final/pull-through",
+        "ab".repeat(16)
+    );
     pull.job_id = pull.identity().unwrap();
     validate_execution(&pull, MirrorGuardExecution::ControlledExternalFunctional).unwrap();
 
     let mut unreserved = original.clone();
     unreserved.placement_prefix.push_str("/extra");
     unreserved.job_id = unreserved.identity().unwrap();
-    assert!(validate_execution(&unreserved, MirrorGuardExecution::ControlledExternalFunctional).is_err());
-    assert!(validate_execution(&request().original, MirrorGuardExecution::ControlledExternalFunctional).is_err());
+    assert!(validate_execution(
+        &unreserved,
+        MirrorGuardExecution::ControlledExternalFunctional
+    )
+    .is_err());
+    assert!(validate_execution(
+        &request().original,
+        MirrorGuardExecution::ControlledExternalFunctional
+    )
+    .is_err());
 
     let issuer = MirrorGuardIssuer {
-        source_digest: "44".repeat(32), script_version: format!("emulated-{}", "44".repeat(32)),
+        source_digest: "44".repeat(32),
+        script_version: format!("emulated-{}", "44".repeat(32)),
     };
     validate_issuer(&issuer, MirrorGuardExecution::ControlledExternalFunctional).unwrap();
     assert!(validate_issuer(&issuer, MirrorGuardExecution::Hosted).is_err());

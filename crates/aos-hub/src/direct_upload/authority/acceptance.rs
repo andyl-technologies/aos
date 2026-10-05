@@ -231,11 +231,23 @@ impl NativeDirectUploadAcceptances {
                 && item.issued_at <= now
                 && now < item.expires_at
                 && matches!(item.profile, DirectProtectedProfile::External { .. })
-                && item.profile.digest().is_ok_and(|digest| digest == profile_digest)
+                && item
+                    .profile
+                    .digest()
+                    .is_ok_and(|digest| digest == profile_digest)
         });
-        let selected = accepted.next().context("External prerequisite profile absent or expired")?;
-        ensure!(accepted.next().is_none(), "External prerequisite profile is ambiguous");
-        Ok((selected.issued_at, selected.expires_at, self.evidence_digest.clone()))
+        let selected = accepted
+            .next()
+            .context("External prerequisite profile absent or expired")?;
+        ensure!(
+            accepted.next().is_none(),
+            "External prerequisite profile is ambiguous"
+        );
+        Ok((
+            selected.issued_at,
+            selected.expires_at,
+            self.evidence_digest.clone(),
+        ))
     }
 
     /// Selects one independently verified Managed profile for metadata recovery.

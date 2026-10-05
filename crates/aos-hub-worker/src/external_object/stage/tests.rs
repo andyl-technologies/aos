@@ -1074,9 +1074,7 @@ async fn fresh_stage_admission_refuses_an_existing_oci_owner_before_dispatch() {
     let intent = fixture.intent("stage-owner-boundary", Operation::CreateStage);
     let unowned = fixture.fresh(false);
 
-    let (admitted, turn) = fixture
-        .begin(&unowned, intent.clone(), None, None)
-        .unwrap();
+    let (admitted, turn) = fixture.begin(&unowned, intent.clone(), None, None).unwrap();
     assert!(matches!(turn.intent.operation, Operation::CreateStage));
     assert!(admitted.stage.is_some());
 
@@ -1086,7 +1084,9 @@ async fn fresh_stage_admission_refuses_an_existing_oci_owner_before_dispatch() {
         configuration: "e".repeat(64),
     });
     owned.oci.as_ref().unwrap().validate().unwrap();
-    owned.validate(&fixture.object, &intent.scope().unwrap()).unwrap();
+    owned
+        .validate(&fixture.object, &intent.scope().unwrap())
+        .unwrap();
 
     let error = fixture.begin(&owned, intent, None, None).err().unwrap();
     assert!(error.to_string().contains("prior object effect"));

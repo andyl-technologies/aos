@@ -147,9 +147,16 @@ impl MirrorLiveAcceptanceArtifact {
         self.validate_dispatch_time(now)?;
         ensure!(
             self.version == 1
-                && matches!((self.purpose, mirror.purpose),
-                    (MirrorLivePurpose::ManagedMirrorLiveDeliveryV1, super::MirrorAcceptancePurpose::ManagedR2MirrorV1)
-                    | (MirrorLivePurpose::ExternalMirrorLiveDeliveryV1, super::MirrorAcceptancePurpose::ExternalMirrorV1))
+                && matches!(
+                    (self.purpose, mirror.purpose),
+                    (
+                        MirrorLivePurpose::ManagedMirrorLiveDeliveryV1,
+                        super::MirrorAcceptancePurpose::ManagedR2MirrorV1
+                    ) | (
+                        MirrorLivePurpose::ExternalMirrorLiveDeliveryV1,
+                        super::MirrorAcceptancePurpose::ExternalMirrorV1
+                    )
+                )
                 && self.execution == mirror.execution
                 && self.mirror_artifact_sha256 == digest(mirror)?
                 && self.maximum_bytes > 0
@@ -232,7 +239,9 @@ impl MirrorLiveAcceptanceArtifact {
         );
         let domain = match self.purpose {
             MirrorLivePurpose::ManagedMirrorLiveDeliveryV1 => DOMAIN,
-            MirrorLivePurpose::ExternalMirrorLiveDeliveryV1 => b"aos.hub.accepted-external-mirror-live-delivery.v1\0",
+            MirrorLivePurpose::ExternalMirrorLiveDeliveryV1 => {
+                b"aos.hub.accepted-external-mirror-live-delivery.v1\0"
+            }
         };
         Ok([domain, bytes.as_slice()].concat())
     }

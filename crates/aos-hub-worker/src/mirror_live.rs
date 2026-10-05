@@ -39,7 +39,9 @@ pub(crate) async fn deliver(
     let config = QualifiedConfig::load(env).await?;
     let target =
         key.verify_live_delivery(compact, request, i64::try_from(config.latest_now()?)?)?;
-    let profile = config.mirror_profile(env, &target.protected_profile_digest).await?;
+    let profile = config
+        .mirror_profile(env, &target.protected_profile_digest)
+        .await?;
     ensure!(
         target.protected_profile_digest == profile.digest()?,
         "live profile changed"
@@ -47,8 +49,12 @@ pub(crate) async fn deliver(
     let (accepted, live) =
         crate::mirror_import::acceptance::require_live(env, &profile, &config.acceptance_evidence)
             .await?;
-    accepted.require_scope(target.binding_id, target.binding_resource_version,
-        &target.placement_prefix, Some(&target.upstream_base))?;
+    accepted.require_scope(
+        target.binding_id,
+        target.binding_resource_version,
+        &target.placement_prefix,
+        Some(&target.upstream_base),
+    )?;
     let before_dispatch = || -> Result<()> {
         let now = config.latest_now()?;
         accepted.check(now)?;
@@ -260,7 +266,9 @@ pub(crate) async fn inspect_metadata(
         "bulk query refused"
     );
     let config = QualifiedConfig::load(env).await?;
-    let profile = config.mirror_profile(env, &target.protected_profile_digest).await?;
+    let profile = config
+        .mirror_profile(env, &target.protected_profile_digest)
+        .await?;
     ensure!(
         target.protected_profile_digest == profile.digest()?,
         "live profile changed"
@@ -269,8 +277,12 @@ pub(crate) async fn inspect_metadata(
         crate::mirror_import::acceptance::require_live(env, &profile, &config.acceptance_evidence)
             .await?;
     let deployment = env.var("HUB_DEPLOYMENT_ID")?.to_string();
-    accepted.require_scope(target.binding_id, target.binding_resource_version,
-        &target.placement_prefix, Some(&target.upstream_base))?;
+    accepted.require_scope(
+        target.binding_id,
+        target.binding_resource_version,
+        &target.placement_prefix,
+        Some(&target.upstream_base),
+    )?;
     let before_dispatch = || -> Result<()> {
         let latest = config.latest_now()?;
         accepted.check(latest)?;

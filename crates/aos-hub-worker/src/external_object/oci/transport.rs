@@ -7,7 +7,10 @@
 
 use std::{cell::RefCell, future::Future, rc::Rc, time::Duration};
 use anyhow::{Context as _, Result};
-use futures_util::{future::{select, Either}, FutureExt as _};
+use futures_util::{
+    future::{select, Either},
+    FutureExt as _,
+};
 use worker::{Fetch, Request, Response, State};
 use crate::oci_projection::lifetime::Owner;
 
@@ -17,10 +20,16 @@ pub(in crate::external_object) async fn fetch_owned<R: 'static>(
     owner: Rc<Owner<R>>,
     fresh: Rc<dyn Fn() -> Result<()>>,
 ) -> Result<(Response, Option<Rc<crate::direct_digest::Reader>>)> {
-    response_owned(state, async move {
-        crate::direct_upload::provider_capacity::record_dispatch();
-        Fetch::Request(request).send().await
-    }, owner, fresh).await
+    response_owned(
+        state,
+        async move {
+            crate::direct_upload::provider_capacity::record_dispatch();
+            Fetch::Request(request).send().await
+        },
+        owner,
+        fresh,
+    )
+    .await
 }
 
 /// Retains physical resources across an owned response promise and its reader.
@@ -48,7 +57,9 @@ pub(in crate::external_object) async fn response_owned<R: 'static>(
                     }
                 }
             }
-            return Rc::new(RefCell::new(Some(Err(anyhow::anyhow!("external OCI invocation closed")))));
+            return Rc::new(RefCell::new(Some(Err(anyhow::anyhow!(
+                "external OCI invocation closed"
+            )))));
         }
         let result = response.map_err(anyhow::Error::from).and_then(|response| {
             let reader = match response.body() {
@@ -60,20 +71,33 @@ pub(in crate::external_object) async fn response_owned<R: 'static>(
                     let reader = crate::direct_digest::Reader::new(stream.clone().into())?;
                     raw.disarm();
                     Some(held.attach(reader)?)
-                },
+                }
                 _ => None,
             };
             Ok((response, reader))
         });
         Rc::new(RefCell::new(Some(result)))
-    }.shared();
+    }
+    .shared();
     let retained = pending.clone();
-    state.wait_until(async move { let _ = retained.await; });
-    bounded(async {
-        let output = pending.await;
-        let result = output.borrow_mut().take().context("OCI SDK response already handed off")?;
-        result
-    }, &|| { owner.check_open()?; fresh() }).await
+    state.wait_until(async move {
+        let _ = retained.await;
+    });
+    bounded(
+        async {
+            let output = pending.await;
+            let result = output
+                .borrow_mut()
+                .take()
+                .context("OCI SDK response already handed off")?;
+            result
+        },
+        &|| {
+            owner.check_open()?;
+            fresh()
+        },
+    )
+    .await
 }
 
 pub(in crate::external_object) async fn bounded<T>(
@@ -89,7 +113,10 @@ pub(in crate::external_object) async fn bounded<T>(
     };
     futures_util::pin_mut!(work, timer);
     match select(work, timer).await {
-        Either::Left((result, _)) => { fresh()?; result }
+        Either::Left((result, _)) => {
+            fresh()?;
+            result
+        }
         Either::Right((result, _)) => result,
     }
 }

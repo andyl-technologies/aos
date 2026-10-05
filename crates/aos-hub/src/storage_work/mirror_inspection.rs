@@ -7,9 +7,7 @@
 
 use anyhow::{ensure, Context as _, Result};
 use aos_hub_core::db::{Database, RegistryRecord};
-use aos_hub_core::mirror_inspection::{
-    MirrorPackInspection, MirrorPackProjection, MirrorPackSelection,
-};
+use aos_hub_core::mirror_inspection::{MirrorPackInspection, MirrorPackProjection, MirrorPackSelection};
 use aos_hub_core::storage_work::{StorageWorkOperation, StorageWorkOutcome};
 
 use super::{HybridSurfaceFetch, RemoteStorageWorkClient};
@@ -99,7 +97,10 @@ impl RemoteStorageWorkClient {
                 && current_placement.prefix == placement.prefix
                 && current_binding.resource_version == binding.resource_version
                 && current_binding.kind == binding.kind
-                && self.mirror_destination_profile_digest(db, &current_binding).await? == profile,
+                && self
+                    .mirror_destination_profile_digest(db, &current_binding)
+                    .await?
+                    == profile,
             "inventory SQL authority changed during execution"
         );
         match result.outcome {
@@ -175,7 +176,10 @@ impl RemoteStorageWorkClient {
                 && current_placement.prefix == placement.prefix
                 && current_binding.resource_version == binding.resource_version
                 && current_binding.kind == binding.kind
-                && self.mirror_destination_profile_digest(db, &current_binding).await? == profile_digest,
+                && self
+                    .mirror_destination_profile_digest(db, &current_binding)
+                    .await?
+                    == profile_digest,
             "pack inspection SQL authority changed during execution"
         );
         let StorageWorkOutcome::GitPackProjection { projection } = result.outcome else {

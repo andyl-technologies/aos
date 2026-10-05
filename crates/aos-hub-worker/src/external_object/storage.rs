@@ -55,15 +55,27 @@ impl DurableObject for ExternalObjectGuard {
         let path = request.url()?.path().to_owned();
         if path == crate::mirror_import::guard_proof::PHYSICAL_PATH
             || path == crate::mirror_import::guard_proof::CANDIDATE_PHYSICAL_PATH
-            || path == crate::mirror_import::guard_proof::FUNCTIONAL_PHYSICAL_PATH {
-            return self.mirror_guard_fetch(&mut request, false,
-                path == crate::mirror_import::guard_proof::CANDIDATE_PHYSICAL_PATH).await;
+            || path == crate::mirror_import::guard_proof::FUNCTIONAL_PHYSICAL_PATH
+        {
+            return self
+                .mirror_guard_fetch(
+                    &mut request,
+                    false,
+                    path == crate::mirror_import::guard_proof::CANDIDATE_PHYSICAL_PATH,
+                )
+                .await;
         }
         if path == crate::mirror_import::guard_proof::batch::PHYSICAL_PATH
             || path == crate::mirror_import::guard_proof::batch::CANDIDATE_PHYSICAL_PATH
-            || path == crate::mirror_import::guard_proof::batch::FUNCTIONAL_PHYSICAL_PATH {
-            return self.mirror_guard_fetch(&mut request, true,
-                path == crate::mirror_import::guard_proof::batch::CANDIDATE_PHYSICAL_PATH).await;
+            || path == crate::mirror_import::guard_proof::batch::FUNCTIONAL_PHYSICAL_PATH
+        {
+            return self
+                .mirror_guard_fetch(
+                    &mut request,
+                    true,
+                    path == crate::mirror_import::guard_proof::batch::CANDIDATE_PHYSICAL_PATH,
+                )
+                .await;
         }
         if path == "/mirror-turn" {
             return self.mirror_fetch(&mut request).await;
