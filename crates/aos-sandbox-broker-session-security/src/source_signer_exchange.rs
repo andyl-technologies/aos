@@ -13,6 +13,8 @@
 //! AOSSSP08 | unchanged AOSSGO01 observation[928]
 //! AOSSSR09 | fresh-nonce16 | original-intent32 | project16 | Intent1248
 //! AOSSSP09 | first-successor observation2784
+//! AOSSSR10 | fresh-nonce16 | original-intent32 | project16 | Intent1248
+//! AOSSSP10 | explicit mixed-project Source observation2784
 //! ```
 
 use std::error::Error;
@@ -47,6 +49,8 @@ use aos_sandbox::policy_compiler::{
     verify_source_tree_genesis_readback_v1,
     RootFirstSourceSuccessorIntentV2, SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2,
     sign_fixed_source_first_successor_readback_v2, verify_source_first_successor_readback_v2,
+    SOURCE_PROJECT_CONTINUATION_READBACK_BYTES_V3,
+    sign_fixed_source_project_continuation_readback_v3, verify_source_project_continuation_readback_v3,
 };
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 use rustix::net::sockopt::{socket_acceptconn, socket_peercred};
@@ -73,6 +77,8 @@ const REQUEST_GENESIS_MAGIC: &[u8; 8] = b"AOSSSR08";
 const REPLY_GENESIS_MAGIC: &[u8; 8] = b"AOSSSP08";
 const REQUEST_FIRST_SUCCESSOR_MAGIC: &[u8; 8] = b"AOSSSR09";
 const REPLY_FIRST_SUCCESSOR_MAGIC: &[u8; 8] = b"AOSSSP09";
+const REQUEST_PROJECT_CONTINUATION_MAGIC: &[u8; 8] = b"AOSSSR10";
+const REPLY_PROJECT_CONTINUATION_MAGIC: &[u8; 8] = b"AOSSSP10";
 const REQUEST_FIRST_SUCCESSOR_BYTES: usize = REQUEST_BYTES + 1248;
 const REPLY_FIRST_SUCCESSOR_BYTES: usize = 8 + SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2;
 const REPLY_GENESIS_BYTES: usize = 8 + SOURCE_TREE_GENESIS_READBACK_BYTES_V1;
@@ -86,6 +92,28 @@ const REPLY_RESERVATION_BYTES: usize = 8 + SOURCE_PROJECT_RESERVATION_READBACK_B
 const FLIGHT_TIMEOUT: Duration = Duration::from_secs(5);
 const REPLY_TIMEOUT: Duration = Duration::from_secs(60);
 
+#[derive(Clone, Copy)]
+enum SourceSuccessorRequestRecipe {
+    SingleProjectV2,
+    MixedProjectsV3,
+}
+
+impl SourceSuccessorRequestRecipe {
+    const fn request_magic(self) -> &'static [u8; 8] {
+        match self {
+            Self::SingleProjectV2 => REQUEST_FIRST_SUCCESSOR_MAGIC,
+            Self::MixedProjectsV3 => REQUEST_PROJECT_CONTINUATION_MAGIC,
+        }
+    }
+
+    const fn reply_magic(self) -> &'static [u8; 8] {
+        match self {
+            Self::SingleProjectV2 => REPLY_FIRST_SUCCESSOR_MAGIC,
+            Self::MixedProjectsV3 => REPLY_PROJECT_CONTINUATION_MAGIC,
+        }
+    }
+}
+
 /// Requests fixed successor DATA from the existing independently pinned signer.
 ///
 /// The actual Root observation loan parks this returned Result before later
@@ -98,23 +126,66 @@ pub fn request_root_source_first_successor_readback_v2(
     fresh_nonce: [u8; 16], context: &RootFirstSourceSuccessorIntentV2,
     signer: &PinnedSourceHoldReadbackSignerV1, signer_uid: u32, socket_gid: u32,
 ) -> io::Result<[u8; SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2]> {
+    request_root_source_successor_readback(
+        fresh_nonce, context, signer, signer_uid, socket_gid,
+        SourceSuccessorRequestRecipe::SingleProjectV2,
+    )
+}
+
+/// Requests explicit mixed-family Source DATA over the existing signer socket.
+///
+/// # Errors
+/// Rejects wrong endpoint custody, framing/EOF, selected context or v3-purpose
+/// signature. The returned bytes cannot enter the strict-v2 Root verifier.
+pub fn request_root_source_project_continuation_readback_v3(
+    fresh_nonce: [u8; 16], context: &RootFirstSourceSuccessorIntentV2,
+    signer: &PinnedSourceHoldReadbackSignerV1, signer_uid: u32, socket_gid: u32,
+) -> io::Result<[u8; SOURCE_PROJECT_CONTINUATION_READBACK_BYTES_V3]> {
+    request_root_source_successor_readback(
+        fresh_nonce, context, signer, signer_uid, socket_gid,
+        SourceSuccessorRequestRecipe::MixedProjectsV3,
+    )
+}
+
+fn request_root_source_successor_readback(
+    fresh_nonce: [u8; 16], context: &RootFirstSourceSuccessorIntentV2,
+    signer: &PinnedSourceHoldReadbackSignerV1, signer_uid: u32, socket_gid: u32,
+    recipe: SourceSuccessorRequestRecipe,
+) -> io::Result<[u8; SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2]> {
     if signer_uid == 0 || socket_gid == 0 || fresh_nonce == [0; 16] {
         return Err(invalid_data("invalid first-successor signer identity"));
     }
-    let request = encode_first_successor_request(fresh_nonce, context);
+    let request = match recipe {
+        SourceSuccessorRequestRecipe::SingleProjectV2 => encode_first_successor_request(fresh_nonce, context),
+        SourceSuccessorRequestRecipe::MixedProjectsV3 => encode_source_successor_request(fresh_nonce, context, recipe),
+    };
     let mut stream = connect_source_signer(signer_uid, socket_gid)?;
     stream.write_all(&request)?;
     stream.shutdown(std::net::Shutdown::Write)?;
     let packet = read_framed_reply::<REPLY_FIRST_SUCCESSOR_BYTES, SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2>(
-        &mut stream, REPLY_FIRST_SUCCESSOR_MAGIC,
+        &mut stream, recipe.reply_magic(),
     )?;
-    verify_source_first_successor_readback_v2(&packet, signer, fresh_nonce, context).map_err(io::Error::other)?;
+    match recipe {
+        SourceSuccessorRequestRecipe::SingleProjectV2 => {
+            verify_source_first_successor_readback_v2(&packet, signer, fresh_nonce, context).map_err(io::Error::other)?;
+        }
+        SourceSuccessorRequestRecipe::MixedProjectsV3 => {
+            verify_source_project_continuation_readback_v3(&packet, signer, fresh_nonce, context).map_err(io::Error::other)?;
+        }
+    }
     Ok(packet)
 }
 
 fn encode_first_successor_request(fresh_nonce: [u8; 16], context: &RootFirstSourceSuccessorIntentV2) -> [u8; REQUEST_FIRST_SUCCESSOR_BYTES] {
+    encode_source_successor_request(fresh_nonce, context, SourceSuccessorRequestRecipe::SingleProjectV2)
+}
+
+fn encode_source_successor_request(
+    fresh_nonce: [u8; 16], context: &RootFirstSourceSuccessorIntentV2,
+    recipe: SourceSuccessorRequestRecipe,
+) -> [u8; REQUEST_FIRST_SUCCESSOR_BYTES] {
     let mut request = [0; REQUEST_FIRST_SUCCESSOR_BYTES];
-    request[..8].copy_from_slice(REQUEST_FIRST_SUCCESSOR_MAGIC);
+    request[..8].copy_from_slice(recipe.request_magic());
     request[8..24].copy_from_slice(&fresh_nonce);
     request[24..56].copy_from_slice(context.digest().as_bytes());
     request[56..72].copy_from_slice(context.project().as_bytes());
@@ -125,9 +196,15 @@ fn encode_first_successor_request(fresh_nonce: [u8; 16], context: &RootFirstSour
 fn decode_first_successor_request(request: &[u8; REQUEST_FIRST_SUCCESSOR_BYTES])
     -> io::Result<([u8; 16], RootFirstSourceSuccessorIntentV2)>
 {
+    decode_source_successor_request(request, SourceSuccessorRequestRecipe::SingleProjectV2)
+}
+
+fn decode_source_successor_request(
+    request: &[u8; REQUEST_FIRST_SUCCESSOR_BYTES], recipe: SourceSuccessorRequestRecipe,
+) -> io::Result<([u8; 16], RootFirstSourceSuccessorIntentV2)> {
     let nonce: [u8; 16] = request[8..24].try_into().map_err(|_| invalid_data("invalid successor nonce"))?;
     let context = RootFirstSourceSuccessorIntentV2::decode(&request[72..]).map_err(io::Error::other)?;
-    if nonce == [0; 16] || encode_first_successor_request(nonce, &context) != *request {
+    if nonce == [0; 16] || encode_source_successor_request(nonce, &context, recipe) != *request {
         return Err(invalid_data("noncanonical first-successor signer request"));
     }
     Ok((nonce, context))
@@ -673,18 +750,33 @@ fn serve_request(
     stream.set_write_timeout(Some(FLIGHT_TIMEOUT))?;
     let mut request = [0; REQUEST_BYTES];
     stream.read_exact(&mut request)?;
-    if request[..8] == *REQUEST_FIRST_SUCCESSOR_MAGIC {
+    if request[..8] == *REQUEST_FIRST_SUCCESSOR_MAGIC
+        || request[..8] == *REQUEST_PROJECT_CONTINUATION_MAGIC
+    {
+        let recipe = if request[..8] == *REQUEST_FIRST_SUCCESSOR_MAGIC {
+            SourceSuccessorRequestRecipe::SingleProjectV2
+        } else {
+            SourceSuccessorRequestRecipe::MixedProjectsV3
+        };
         let mut expanded = [0; REQUEST_FIRST_SUCCESSOR_BYTES];
         expanded[..REQUEST_BYTES].copy_from_slice(&request);
         stream.read_exact(&mut expanded[REQUEST_BYTES..])?;
         require_request_eof(stream)?;
-        let (nonce, context) = decode_first_successor_request(&expanded)?;
+        let (nonce, context) = match recipe {
+            SourceSuccessorRequestRecipe::SingleProjectV2 => decode_first_successor_request(&expanded)?,
+            SourceSuccessorRequestRecipe::MixedProjectsV3 => decode_source_successor_request(&expanded, recipe)?,
+        };
         if context.source_uid() != controller_uid { return Err(invalid_data("foreign successor Source UID").into()); }
         let signing_key_result = credentials.signing_key();
         let Ok(signing_key) = &signing_key_result else { std::process::exit(1); };
-        let returned = sign_fixed_source_first_successor_readback_v2(
-            controller_uid, nonce, &context, credentials.generation(), signing_key,
-        );
+        let returned = match recipe {
+            SourceSuccessorRequestRecipe::SingleProjectV2 => sign_fixed_source_first_successor_readback_v2(
+                controller_uid, nonce, &context, credentials.generation(), signing_key,
+            ),
+            SourceSuccessorRequestRecipe::MixedProjectsV3 => sign_fixed_source_project_continuation_readback_v3(
+                controller_uid, nonce, &context, credentials.generation(), signing_key,
+            ),
+        };
         // Each independent post is attempted after the real signature Result
         // is named. A later failure cannot replace its first returned cause.
         // The existing credential owner retains startup seed bytes; it does
@@ -698,7 +790,7 @@ fn serve_request(
             || later_peer.uid != peer.uid || later_peer.gid != peer.gid || later_peer.pid != peer.pid
         { std::process::exit(1); }
 
-        let sent = write_framed_reply::<REPLY_FIRST_SUCCESSOR_BYTES>(stream, REPLY_FIRST_SUCCESSOR_MAGIC, packet);
+        let sent = write_framed_reply::<REPLY_FIRST_SUCCESSOR_BYTES>(stream, recipe.reply_magic(), packet);
         let credential_after_send = credentials.signing_key();
         let peer_after_send = socket_peercred(&*stream);
         if sent.is_err() || credential_after_send.is_err() || peer_after_send.is_err() {

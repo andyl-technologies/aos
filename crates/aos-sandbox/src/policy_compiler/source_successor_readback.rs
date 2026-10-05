@@ -32,6 +32,39 @@ pub const SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2: usize = 2784;
 const BODY_BYTES: usize = SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2 - 64;
 const SIGNATURE_DOMAIN: &[u8] = b"aos.sandbox.source-first-successor.source-observation.signature.v2\0";
 
+/// Bounds the explicit mixed-project Source comparison packet.
+pub const SOURCE_PROJECT_CONTINUATION_READBACK_BYTES_V3: usize = 2784;
+const MIXED_SIGNATURE_DOMAIN: &[u8] = b"aos.sandbox.source-first-successor.source-observation.signature.v3\0";
+
+#[derive(Clone, Copy)]
+enum SourceReadbackRecipe {
+    SingleProjectV2,
+    MixedProjectsV3,
+}
+
+impl SourceReadbackRecipe {
+    const fn magic(self) -> &'static [u8; 8] {
+        match self {
+            Self::SingleProjectV2 => b"AOSSSO02",
+            Self::MixedProjectsV3 => b"AOSSSO03",
+        }
+    }
+
+    const fn version(self) -> u16 {
+        match self {
+            Self::SingleProjectV2 => 2,
+            Self::MixedProjectsV3 => 3,
+        }
+    }
+
+    const fn signature_domain(self) -> &'static [u8] {
+        match self {
+            Self::SingleProjectV2 => SIGNATURE_DOMAIN,
+            Self::MixedProjectsV3 => MIXED_SIGNATURE_DOMAIN,
+        }
+    }
+}
+
 /// Selects the actual durable Source phase, not a live cross-owner loan.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -133,6 +166,61 @@ impl VerifiedSourceFirstSuccessorReadbackV2 {
     }
 }
 
+/// Retains explicit mixed-family Source DATA without a strict-v2 conversion.
+///
+/// The private storage shares only the fixed codec. This type cannot be passed
+/// to a strict-v2 Root mutation or Controller authority verifier.
+pub struct VerifiedSourceProjectContinuationReadbackV3 {
+    data: VerifiedSourceFirstSuccessorReadbackV2,
+}
+
+impl VerifiedSourceProjectContinuationReadbackV3 {
+    /// Returns the actual selected project phase as comparison DATA.
+    pub const fn phase(&self) -> SourceFirstSuccessorReadbackPhaseV2 { self.data.phase() }
+
+    /// Returns the exact signed approval commitment DATA.
+    pub fn approval(&self) -> ObjectDigest { self.data.approval() }
+
+    /// Returns the immutable original Root intent commitment DATA.
+    pub fn root_intent(&self) -> ObjectDigest { self.data.root_intent() }
+
+    /// Borrows the actual selected genesis receipt DATA.
+    pub const fn genesis_receipt(&self) -> &SourceTreeGenesisReceiptV1 { self.data.genesis_receipt() }
+
+    /// Borrows the actual selected genesis ACK bytes DATA.
+    pub fn genesis_ack(&self) -> &[u8] { self.data.genesis_ack() }
+
+    /// Returns the actual selected genesis ACK commitment DATA.
+    pub const fn genesis_ack_digest(&self) -> ObjectDigest { self.data.genesis_ack_digest() }
+
+    /// Borrows the selected successor receipt DATA, if present.
+    pub const fn receipt(&self) -> Option<&SourceFirstSuccessorReceiptV2> { self.data.receipt() }
+
+    /// Borrows the selected settled ACK DATA, if present.
+    pub const fn ack(&self) -> Option<&SourceFirstSuccessorAckV2> { self.data.ack() }
+
+    /// Returns the independently observed current physical names DATA.
+    pub const fn names(&self) -> ProtectedJournalNamesV1 { self.data.names() }
+
+    /// Returns the original native watermark DATA.
+    pub fn sequence(&self) -> u64 { self.data.sequence() }
+
+    /// Returns the independently pinned Source-purpose signer generation.
+    pub fn signer_generation(&self) -> u64 { self.data.signer_generation() }
+
+    /// Returns the selected current Tree envelope commitment DATA.
+    pub fn current_tree_head(&self) -> ObjectDigest { self.data.current_tree_head() }
+
+    /// Returns the selected current lineage envelope commitment DATA.
+    pub fn current_lineage_head(&self) -> ObjectDigest { self.data.current_lineage_head() }
+
+    /// Returns the selected canonical current Tree body commitment DATA.
+    pub fn current_tree_commit(&self) -> ObjectDigest { self.data.current_tree_commit() }
+
+    /// Returns the selected current generation DATA.
+    pub fn current_generation(&self) -> u64 { self.data.current_generation() }
+}
+
 /// Authenticates a fixed Source observation against a separately pinned key.
 ///
 /// # Errors
@@ -153,6 +241,26 @@ pub fn verify_source_first_successor_readback_v2(
     Ok(verified)
 }
 
+/// Authenticates only an explicitly framed mixed-project Source observation.
+///
+/// # Errors
+/// Rejects a strict-v2 packet, changed challenge/context, malformed selected
+/// joins, unpinned signer generation or invalid v3-purpose signature.
+pub fn verify_source_project_continuation_readback_v3(
+    packet: &[u8], signer: &PinnedSourceHoldReadbackSignerV1,
+    fresh_nonce: [u8; 16], context: &RootFirstSourceSuccessorIntentV2,
+) -> Result<VerifiedSourceProjectContinuationReadbackV3, SourceGenesisErrorV1> {
+    let data = decode_with_recipe(packet, fresh_nonce, context, SourceReadbackRecipe::MixedProjectsV3)?;
+    if data.signer_generation() != signer.generation() {
+        return Err(SourceGenesisErrorV1::Conflict);
+    }
+    signer.verifying_key().verify_strict(
+        &signature_message_with_recipe(&packet[..BODY_BYTES], SourceReadbackRecipe::MixedProjectsV3),
+        &Signature::from_bytes(&array_at(packet, BODY_BYTES)),
+    ).map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
+    Ok(VerifiedSourceProjectContinuationReadbackV3 { data })
+}
+
 /// Signs only actual replay from the existing fixed read-only Source view.
 #[cfg(target_os = "linux")]
 pub(super) fn sign_source_first_successor_from_view_v2(
@@ -160,27 +268,59 @@ pub(super) fn sign_source_first_successor_from_view_v2(
     context: &RootFirstSourceSuccessorIntentV2, signer_generation: u64,
     signing_key: &SigningKey,
 ) -> Result<[u8; SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2], SourceSignerReadbackErrorV1> {
+    sign_source_successor_from_view(
+        readback, fresh_nonce, context, signer_generation, signing_key,
+        SourceReadbackRecipe::SingleProjectV2,
+    )
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn sign_source_project_continuation_from_view_v3(
+    readback: &mut ReadOnlyProtectedJournal, fresh_nonce: [u8; 16],
+    context: &RootFirstSourceSuccessorIntentV2, signer_generation: u64,
+    signing_key: &SigningKey,
+) -> Result<[u8; SOURCE_PROJECT_CONTINUATION_READBACK_BYTES_V3], SourceSignerReadbackErrorV1> {
+    sign_source_successor_from_view(
+        readback, fresh_nonce, context, signer_generation, signing_key,
+        SourceReadbackRecipe::MixedProjectsV3,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn sign_source_successor_from_view(
+    readback: &mut ReadOnlyProtectedJournal, fresh_nonce: [u8; 16],
+    context: &RootFirstSourceSuccessorIntentV2, signer_generation: u64,
+    signing_key: &SigningKey, recipe: SourceReadbackRecipe,
+) -> Result<[u8; SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2], SourceSignerReadbackErrorV1> {
     if fresh_nonce == [0; 16] || signer_generation == 0 {
         return Err(SourceGenesisErrorV1::NonCanonical.into());
     }
     let names = readback.physical_names_v1();
     let journal = readback.journal_mut();
     let sequence = journal.snapshot_sequence();
-    let successor = journal.source_first_successor_rows_v2()?;
+    let successor = match recipe {
+        SourceReadbackRecipe::SingleProjectV2 => journal.source_first_successor_rows_v2()?,
+        SourceReadbackRecipe::MixedProjectsV3 => journal.source_project_continuation_rows_v3(Some(context.project()))?,
+    };
     let genesis = journal.source_tree_genesis_rows_v1()?;
     let (tree_head, lineage_head, tree_commit, generation) =
         source_first_successor_tree_readback_v2(journal, context.project())
             .map_err(SourceGenesisErrorV1::from)?;
     let original = genesis.receipts.get(&context.project()).ok_or(SourceGenesisErrorV1::Conflict)?;
     let original_ack = genesis.acks.get(&context.project()).ok_or(SourceGenesisErrorV1::Conflict)?;
-    if genesis.pending.is_some() || successor.receipts.keys().any(|project| *project != context.project()) {
+    if genesis.pending.is_some()
+        || (matches!(recipe, SourceReadbackRecipe::SingleProjectV2)
+            && successor.receipts.keys().any(|project| *project != context.project()))
+    {
         return Err(SourceGenesisErrorV1::Conflict.into());
     }
     let receipt = successor.receipts.get(&context.project());
     let ack = successor.acks.get(&context.project());
     let phase = match (receipt, ack) {
         (None, None) => {
-            super::super::hierarchy::source_genesis::validate_actual_rows(journal)?;
+            if matches!(recipe, SourceReadbackRecipe::SingleProjectV2) {
+                super::super::hierarchy::source_genesis::validate_actual_rows(journal)?;
+            }
             SourceFirstSuccessorReadbackPhaseV2::Before
         }
         (Some(_), None) => SourceFirstSuccessorReadbackPhaseV2::Prepared,
@@ -192,8 +332,8 @@ pub(super) fn sign_source_first_successor_from_view_v2(
     }
 
     let mut packet = [0; SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2];
-    packet[..8].copy_from_slice(b"AOSSSO02");
-    packet[8..10].copy_from_slice(&2_u16.to_be_bytes());
+    packet[..8].copy_from_slice(recipe.magic());
+    packet[8..10].copy_from_slice(&recipe.version().to_be_bytes());
     packet[10] = phase as u8;
     packet[16..32].copy_from_slice(&fresh_nonce);
     packet[32..64].copy_from_slice(context.digest().as_bytes());
@@ -215,8 +355,8 @@ pub(super) fn sign_source_first_successor_from_view_v2(
     packet[2712..2720].copy_from_slice(&generation.to_be_bytes());
     // Pure DATA shape/bindings precede real signing. Only the public verifier
     // authenticates the complete signature against the independent pinned key.
-    decode(&packet, fresh_nonce, context)?;
-    let signature = signing_key.sign(&signature_message(&packet[..BODY_BYTES])).to_bytes();
+    decode_with_recipe(&packet, fresh_nonce, context, recipe)?;
+    let signature = signing_key.sign(&signature_message_with_recipe(&packet[..BODY_BYTES], recipe)).to_bytes();
     packet[BODY_BYTES..].copy_from_slice(&signature);
     if journal.snapshot_sequence() != sequence {
         return Err(SourceGenesisErrorV1::Stale.into());
@@ -227,8 +367,15 @@ pub(super) fn sign_source_first_successor_from_view_v2(
 fn decode(packet: &[u8], fresh_nonce: [u8; 16], context: &RootFirstSourceSuccessorIntentV2)
     -> Result<VerifiedSourceFirstSuccessorReadbackV2, SourceGenesisErrorV1>
 {
+    decode_with_recipe(packet, fresh_nonce, context, SourceReadbackRecipe::SingleProjectV2)
+}
+
+fn decode_with_recipe(
+    packet: &[u8], fresh_nonce: [u8; 16], context: &RootFirstSourceSuccessorIntentV2,
+    recipe: SourceReadbackRecipe,
+) -> Result<VerifiedSourceFirstSuccessorReadbackV2, SourceGenesisErrorV1> {
     if packet.len() != SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2
-        || &packet[..8] != b"AOSSSO02" || packet[8..10] != 2_u16.to_be_bytes()
+        || &packet[..8] != recipe.magic() || packet[8..10] != recipe.version().to_be_bytes()
         || packet[11..16] != [0; 5] || fresh_nonce == [0; 16]
         || packet[16..32] != fresh_nonce || packet[32..64] != *context.digest().as_bytes()
         || packet[64..960] != *context.approval_packet().as_bytes()
@@ -305,8 +452,13 @@ fn decode(packet: &[u8], fresh_nonce: [u8; 16], context: &RootFirstSourceSuccess
 }
 
 fn signature_message(body: &[u8]) -> Vec<u8> {
-    let mut message = Vec::with_capacity(SIGNATURE_DOMAIN.len() + body.len());
-    message.extend_from_slice(SIGNATURE_DOMAIN);
+    signature_message_with_recipe(body, SourceReadbackRecipe::SingleProjectV2)
+}
+
+fn signature_message_with_recipe(body: &[u8], recipe: SourceReadbackRecipe) -> Vec<u8> {
+    let domain = recipe.signature_domain();
+    let mut message = Vec::with_capacity(domain.len() + body.len());
+    message.extend_from_slice(domain);
     message.extend_from_slice(body);
     message
 }

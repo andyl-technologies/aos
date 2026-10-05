@@ -66,6 +66,47 @@ pub fn sign_fixed_source_first_successor_readback_v2(
     })
 }
 
+/// Signs explicit mixed-project DATA through the same fixed Source reader.
+///
+/// # Errors
+/// Rejects foreign privileged UID, invalid challenge, unsafe reader custody,
+/// incomplete full-family replay or a changed actual selected project cut.
+/// This does not authenticate fresh Controller admission or Root authority.
+#[cfg(target_os = "linux")]
+pub fn sign_fixed_source_project_continuation_readback_v3(
+    expected_controller_uid: u32, fresh_nonce: [u8; 16],
+    context: &super::RootFirstSourceSuccessorIntentV2,
+    signer_generation: u64, signing_key: &SigningKey,
+) -> Result<[u8; super::source_successor_readback::SOURCE_PROJECT_CONTINUATION_READBACK_BYTES_V3], SourceSignerReadbackErrorV1> {
+    if expected_controller_uid == 0 || expected_controller_uid != context.source_uid()
+        || signer_generation == 0 || fresh_nonce == [0; 16]
+    {
+        return Err(SourceHoldReadbackErrorV1::NonCanonical.into());
+    }
+    with_source_signer_journal_view(expected_controller_uid, |readback| {
+        let sequence = readback.journal_mut().snapshot_sequence();
+        let returned = super::source_successor_readback::sign_source_project_continuation_from_view_v3(
+            readback, fresh_nonce, context, signer_generation, signing_key,
+        );
+        let name_post = readback.check_named_currentness().map_err(SourceSignerReadbackErrorV1::from);
+        let watermark_post = if readback.journal_mut().snapshot_sequence() == sequence {
+            Ok(())
+        } else {
+            Err(SourceSignerReadbackErrorV1::Stale)
+        };
+        // Retain the actual signature/native cause across the independent
+        // watermark post even on error. The existing outer view helper's
+        // pre-return negative-prefix release boundary is not changed here.
+        match returned {
+            Err(error) => Err(error),
+            Ok(packet) => {
+                name_post?;
+                watermark_post.map(|()| packet)
+            }
+        }
+    })
+}
+
 /// Observes initial materialization only through the existing fixed reader view.
 ///
 /// Empty is joined absence of every Source journal row, never a

@@ -55,9 +55,25 @@ pub(crate) enum FirstSourceSuccessorNativePhaseV2 {
     ControllerAnchored = 5,
     SourceAck = 6,
     ControllerComplete = 7,
+    MixedSourceAppend,
+    MixedSourceAck,
+    MixedRootPrepared,
+    MixedRootAnchor,
 }
 
 impl FirstSourceSuccessorNativePhaseV2 {
+    // These four variants are private comparison selectors, never durable
+    // phase bytes. Retain the selected mode until the complete family join.
+    pub(crate) const fn canonical(self) -> Self {
+        match self {
+            Self::MixedSourceAppend => Self::SourceAppend,
+            Self::MixedSourceAck => Self::SourceAck,
+            Self::MixedRootPrepared => Self::RootPrepared,
+            Self::MixedRootAnchor => Self::RootAnchor,
+            ordinary => ordinary,
+        }
+    }
+
     pub(super) const fn has_capacity_records(self) -> bool {
         !matches!(self, Self::ControllerAnchored)
     }
@@ -66,7 +82,7 @@ impl FirstSourceSuccessorNativePhaseV2 {
         self,
     ) -> super::source_tree_genesis::SourceGenesisTransitionV1 {
         use super::source_tree_genesis::SourceGenesisTransitionV1;
-        match self {
+        match self.canonical() {
             Self::SourceAppend => SourceGenesisTransitionV1::FirstSuccessorAppend,
             Self::SourceAck => SourceGenesisTransitionV1::FirstSuccessorAck,
             _ => SourceGenesisTransitionV1::None,
@@ -77,7 +93,7 @@ impl FirstSourceSuccessorNativePhaseV2 {
         self,
     ) -> Option<super::controller_source_successor_issuance::Transition> {
         use super::controller_source_successor_issuance::Transition;
-        match self {
+        match self.canonical() {
             Self::ControllerBegin => Some(Transition::Begin),
             Self::ControllerAnchored => Some(Transition::Anchored),
             Self::ControllerComplete => Some(Transition::Complete),
@@ -109,7 +125,7 @@ pub(crate) fn transaction_id(
     let mut digest = Sha256::new();
     digest.update(b"aos.sandbox.source-first-successor.transaction.v2\0");
     digest.update(approval.as_bytes());
-    digest.update([phase as u8]);
+    digest.update([phase.canonical() as u8]);
     let digest: [u8; 32] = digest.finalize().into();
     let mut identity = [0; 16];
     identity.copy_from_slice(&digest[..16]);
@@ -118,6 +134,43 @@ pub(crate) fn transaction_id(
 
 /// Rejoins the complete immutable Source predecessor and successor family.
 pub(crate) fn current_rows(state: &State) -> Result<SourceFirstSuccessorRowsV2, JournalError> {
+    current_rows_with_recipe(state, SourceSuccessorFamilyRecipeV3::SingleProjectV2)
+}
+
+/// Selects a structural family comparison, never native admission authority.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SourceSuccessorFamilyRecipeV3 {
+    SingleProjectV2,
+    MixedProjectsV3 { selected: Option<ProjectId> },
+}
+
+pub(crate) fn current_project_rows_v3(
+    state: &State,
+    selected: Option<ProjectId>,
+) -> Result<SourceFirstSuccessorRowsV2, JournalError> {
+    current_rows_with_recipe(state, SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected })
+}
+
+// Cold replay selects only comparison DATA from the actual canonical pending
+// member. It cannot provide a live selected writer or renew its admission.
+fn replay_rows(state: &State) -> Result<SourceFirstSuccessorRowsV2, JournalError> {
+    if !state.keys().any(|(_, key)| key.starts_with(RECEIPT_PREFIX)) {
+        // An ordinary genesis-only replay retains its original incomplete
+        // genesis handling. Explicit mixed Before observation below still
+        // checks every completed member, even without a successor receipt.
+        return current_rows(state);
+    }
+    let selected = state.get(&(RecordNamespace::DesiredState, PENDING_KEY.to_vec()))
+        .map(|bytes| SourceFirstSuccessorPendingV2::decode(bytes)
+            .map(|pending| pending.project()).map_err(|_| JournalError::ProtectedBoundary))
+        .transpose()?;
+    current_project_rows_v3(state, selected)
+}
+
+fn current_rows_with_recipe(
+    state: &State,
+    recipe: SourceSuccessorFamilyRecipeV3,
+) -> Result<SourceFirstSuccessorRowsV2, JournalError> {
     let mut rows = SourceFirstSuccessorRowsV2 {
         receipts: BTreeMap::new(),
         acks: BTreeMap::new(),
@@ -153,7 +206,7 @@ pub(crate) fn current_rows(state: &State) -> Result<SourceFirstSuccessorRowsV2, 
     }
     // Issuance is globally singleton. Another project cannot hide a second
     // successor behind its otherwise valid, independent genesis provenance.
-    if rows.receipts.len() > 1 {
+    if recipe == SourceSuccessorFamilyRecipeV3::SingleProjectV2 && rows.receipts.len() > 1 {
         return Err(JournalError::ProtectedBoundary);
     }
     let genesis = super::source_tree_genesis::current_rows(state)?;
@@ -169,7 +222,9 @@ pub(crate) fn current_rows(state: &State) -> Result<SourceFirstSuccessorRowsV2, 
         {
             return Err(JournalError::ProtectedBoundary);
         }
-        crate::hierarchy::validate_source_first_successor_members_v2(state, receipt, None)?;
+        if recipe == SourceSuccessorFamilyRecipeV3::SingleProjectV2 {
+            crate::hierarchy::validate_source_first_successor_members_v2(state, receipt, None)?;
+        }
         match rows.acks.get(project) {
             Some(ack) => {
                 let floor = RootFirstSourceSuccessorFloorV2::new(RootFirstSourceSuccessorFloorFieldsV2 {
@@ -187,12 +242,21 @@ pub(crate) fn current_rows(state: &State) -> Result<SourceFirstSuccessorRowsV2, 
                     || ack.receipt() != receipt.digest()
                     || ack.root_floor() != floor.digest()
                     || ack.controller_anchored() != anchored.digest()
-                    || rows.pending.is_some()
+                    || match recipe {
+                        SourceSuccessorFamilyRecipeV3::SingleProjectV2 => rows.pending.is_some(),
+                        SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { .. } => rows.pending
+                            .as_ref().is_some_and(|pending| pending.project() == *project),
+                    }
                 {
                     return Err(JournalError::ProtectedBoundary);
                 }
             }
             None => {
+                if let SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected } = recipe
+                    && selected != Some(*project)
+                {
+                    return Err(JournalError::ProtectedBoundary);
+                }
                 let pending = rows.pending.as_ref()
                     .ok_or(JournalError::ProtectedBoundary)?;
                 if !pending_matches_receipt(pending, receipt) {
@@ -216,6 +280,16 @@ pub(crate) fn current_rows(state: &State) -> Result<SourceFirstSuccessorRowsV2, 
         GlobalCapacityReservationPurposeV1::SourceFirstSourceSuccessorAck,
         usize::from(rows.pending.is_some()),
     )?;
+    if let SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected } = recipe {
+        if rows.pending.as_ref().is_some_and(|pending| {
+            selected != Some(pending.project()) || !rows.receipts.contains_key(&pending.project())
+        }) {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        crate::hierarchy::validate_source_project_continuation_members_v3(
+            state, &rows.receipts, None,
+        )?;
+    }
     Ok(rows)
 }
 
@@ -327,18 +401,76 @@ pub(super) fn require_transition(
     Ok(root_settling.or(source_settling).or(controller_settling))
 }
 
+fn require_replayed_transition(
+    state: &State, transaction: &JournalTransaction,
+    phase: Option<FirstSourceSuccessorNativePhaseV2>,
+) -> Result<Option<[u8; 32]>, JournalError> {
+    #[cfg(target_os = "linux")]
+    let root_settling = crate::policy_compiler::RootSourceGenesisAuthorityV1::validate_project_successor_transition_v3(
+        state, transaction, phase,
+    )?;
+    #[cfg(not(target_os = "linux"))]
+    let root_settling = validate_root_transition(state, transaction, phase)?;
+    let source_settling = if matches!(phase, Some(FirstSourceSuccessorNativePhaseV2::MixedSourceAppend
+        | FirstSourceSuccessorNativePhaseV2::MixedSourceAck))
+    {
+        require_source_transition(state, transaction, phase)?
+    } else if !state.keys().any(|(_, key)| key.starts_with(RECEIPT_PREFIX)) {
+        require_source_transition(state, transaction, phase.map(FirstSourceSuccessorNativePhaseV2::canonical))?
+    } else {
+        let selected = state.get(&(RecordNamespace::DesiredState, PENDING_KEY.to_vec()))
+            .map(|bytes| SourceFirstSuccessorPendingV2::decode(bytes)
+                .map(|pending| pending.project()).map_err(|_| JournalError::ProtectedBoundary))
+            .transpose()?;
+        require_source_transition_with_recipe(state, transaction, phase,
+            SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected })?
+    };
+    if root_settling.is_some() && source_settling.is_some() { return Err(JournalError::ProtectedBoundary); }
+    let controller_settling = super::controller_source_successor_issuance::consumer_settling(
+        state, transaction, phase.map(FirstSourceSuccessorNativePhaseV2::canonical),
+    )?;
+    Ok(root_settling.or(source_settling).or(controller_settling))
+}
+
 fn require_source_transition(
     state: &State,
     transaction: &JournalTransaction,
     phase: Option<FirstSourceSuccessorNativePhaseV2>,
 ) -> Result<Option<[u8; 32]>, JournalError> {
-    let rows = current_rows(state)?;
-    match phase {
+    let recipe = match phase {
+        Some(FirstSourceSuccessorNativePhaseV2::MixedSourceAppend) => {
+            let record = transaction.records().get(2).ok_or(JournalError::ProtectedBoundary)?;
+            let receipt = SourceFirstSuccessorReceiptV2::decode(required_value(record)?)
+                .map_err(|_| JournalError::ProtectedBoundary)?;
+            SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected: Some(receipt.project()) }
+        }
+        Some(FirstSourceSuccessorNativePhaseV2::MixedSourceAck) => {
+            let pending = SourceFirstSuccessorPendingV2::decode(
+                state.get(&(RecordNamespace::DesiredState, PENDING_KEY.to_vec()))
+                    .ok_or(JournalError::ProtectedBoundary)?,
+            ).map_err(|_| JournalError::ProtectedBoundary)?;
+            SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected: Some(pending.project()) }
+        }
+        _ => SourceSuccessorFamilyRecipeV3::SingleProjectV2,
+    };
+    require_source_transition_with_recipe(state, transaction, phase, recipe)
+}
+
+fn require_source_transition_with_recipe(
+    state: &State,
+    transaction: &JournalTransaction,
+    phase: Option<FirstSourceSuccessorNativePhaseV2>,
+    recipe: SourceSuccessorFamilyRecipeV3,
+) -> Result<Option<[u8; 32]>, JournalError> {
+    let rows = current_rows_with_recipe(state, recipe)?;
+    match phase.map(FirstSourceSuccessorNativePhaseV2::canonical) {
         Some(FirstSourceSuccessorNativePhaseV2::SourceAppend) => {
             let [tree, lineage, receipt_record, pending_record, capacity] = transaction.records() else {
                 return Err(JournalError::ProtectedBoundary);
             };
-            if rows.pending.is_some() || !rows.receipts.is_empty() {
+            if rows.pending.is_some()
+                || (recipe == SourceSuccessorFamilyRecipeV3::SingleProjectV2 && !rows.receipts.is_empty())
+            {
                 return Err(JournalError::ProtectedBoundary);
             }
             let receipt = SourceFirstSuccessorReceiptV2::decode(required_value(receipt_record)?)
@@ -346,6 +478,11 @@ fn require_source_transition(
             let pending = SourceFirstSuccessorPendingV2::decode(required_value(pending_record)?)
                 .map_err(|_| JournalError::ProtectedBoundary)?;
             let project = receipt.project();
+            if matches!(recipe, SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { .. })
+                && rows.receipts.contains_key(&project)
+            {
+                return Err(JournalError::ProtectedBoundary);
+            }
             let expected_id = transaction_id(receipt.approval(), FirstSourceSuccessorNativePhaseV2::SourceAppend);
             let expected_capacity = first_source_successor_capacity_record_v2(
                 &source_capacity_request(&receipt)?, *transaction.id(),
@@ -364,9 +501,19 @@ fn require_source_transition(
                 return Err(JournalError::ProtectedBoundary);
             }
             let pair = [tree.clone(), lineage.clone()];
-            crate::hierarchy::validate_source_first_successor_members_v2(state, &receipt, Some(&pair))?;
+            match recipe {
+                SourceSuccessorFamilyRecipeV3::SingleProjectV2 => {
+                    crate::hierarchy::validate_source_first_successor_members_v2(state, &receipt, Some(&pair))?;
+                }
+                SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected } => {
+                    if selected != Some(project) { return Err(JournalError::ProtectedBoundary); }
+                    crate::hierarchy::validate_source_project_continuation_members_v3(
+                        state, &rows.receipts, Some((&receipt, &pair)),
+                    )?;
+                }
+            }
             let after = super::root_original_inventory::materialize(state, transaction);
-            current_rows(&after)?;
+            current_rows_with_recipe(&after, recipe)?;
             Ok(None)
         }
         Some(FirstSourceSuccessorNativePhaseV2::SourceAck) => {
@@ -396,7 +543,7 @@ fn require_source_transition(
             {
                 return Err(JournalError::ProtectedBoundary);
             }
-            current_rows(&super::root_original_inventory::materialize(state, transaction))?;
+            current_rows_with_recipe(&super::root_original_inventory::materialize(state, transaction), recipe)?;
             Ok(Some(first_source_successor_capacity_identity_v2(&request, admission)?))
         }
         _ => {
@@ -415,6 +562,20 @@ pub(super) fn require_genesis_predecessor(
     state: &State,
     transaction: &JournalTransaction,
 ) -> Result<(), JournalError> {
+    // Source genesis forwards the canonical durable phase only. Derive this
+    // DATA comparison target from the actual receipt/ACK key, not the first
+    // retained receipt or a fabricated Journal. Singleton forwarding keeps
+    // its original validation and allocation order below.
+    let target = transaction.records().iter().find_map(|record| {
+        record.key().strip_prefix(RECEIPT_PREFIX)
+            .or_else(|| record.key().strip_prefix(ACK_PREFIX))
+    });
+    if let Some(target) = target
+        && state.keys().any(|(_, key)| key.strip_prefix(RECEIPT_PREFIX)
+            .is_some_and(|project| project != target))
+    {
+        return require_project_genesis_predecessor_v3(state, transaction);
+    }
     let record = transaction.records().iter()
         .find(|record| record.key().starts_with(RECEIPT_PREFIX));
     let rows = current_rows(state)?;
@@ -429,6 +590,42 @@ pub(super) fn require_genesis_predecessor(
         .ok_or(JournalError::ProtectedBoundary)?;
     if genesis.pending.is_some()
         || !genesis.acks.contains_key(&project)
+        || original.tree_head() != receipt.old_tree_head()
+        || original.lineage_head() != receipt.old_lineage_head()
+    {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    Ok(())
+}
+
+fn require_project_genesis_predecessor_v3(
+    state: &State,
+    transaction: &JournalTransaction,
+) -> Result<(), JournalError> {
+    let rows = replay_rows(state)?;
+    let receipt = match transaction.records().iter()
+        .find(|record| record.key().starts_with(RECEIPT_PREFIX))
+    {
+        Some(record) => SourceFirstSuccessorReceiptV2::decode(required_value(record)?)
+            .map_err(|_| JournalError::ProtectedBoundary)?,
+        None => {
+            let pending = rows.pending.as_ref().ok_or(JournalError::ProtectedBoundary)?;
+            let receipt = rows.receipts.get(&pending.project())
+                .ok_or(JournalError::ProtectedBoundary)?;
+            if !transaction.records().iter().any(|record| {
+                record.namespace() == RecordNamespace::DesiredState
+                    && record.key() == ack_key(pending.project())
+            }) {
+                return Err(JournalError::ProtectedBoundary);
+            }
+            receipt.clone()
+        }
+    };
+    let genesis = super::source_tree_genesis::current_rows(state)?;
+    let original = genesis.receipts.get(&receipt.project())
+        .ok_or(JournalError::ProtectedBoundary)?;
+    if genesis.pending.is_some()
+        || !genesis.acks.contains_key(&receipt.project())
         || original.tree_head() != receipt.old_tree_head()
         || original.lineage_head() != receipt.old_lineage_head()
     {
@@ -487,7 +684,7 @@ pub(super) fn require_phase_owner(
     journal: &Journal,
     phase: FirstSourceSuccessorNativePhaseV2,
 ) -> Result<(), JournalError> {
-    let purpose = match phase {
+    let purpose = match phase.canonical() {
         FirstSourceSuccessorNativePhaseV2::RootPrepared
         | FirstSourceSuccessorNativePhaseV2::RootAnchor => {
             GlobalCapacityReservationPurposeV1::RootFirstSourceSuccessorAnchor
@@ -517,6 +714,16 @@ pub(super) fn require_live_custody(
         FirstSourceSuccessorNativePhaseV2::SourceAck => {
             current_rows(state)?.receipts.into_values().next()
         }
+        FirstSourceSuccessorNativePhaseV2::MixedSourceAppend => {
+            let record = transaction.records().get(2).ok_or(JournalError::ProtectedBoundary)?;
+            Some(SourceFirstSuccessorReceiptV2::decode(required_value(record)?)
+                .map_err(|_| JournalError::ProtectedBoundary)?)
+        }
+        FirstSourceSuccessorNativePhaseV2::MixedSourceAck => {
+            let rows = replay_rows(state)?;
+            let project = rows.pending.as_ref().ok_or(JournalError::ProtectedBoundary)?.project();
+            Some(rows.receipts.get(&project).ok_or(JournalError::ProtectedBoundary)?.clone())
+        }
         _ => None,
     };
     if let Some(receipt) = receipt
@@ -543,7 +750,7 @@ pub(super) fn require_sequence_headroom(state: &State, next: u64) -> Result<(), 
 }
 
 pub(super) fn require_no_compaction(state: &State) -> Result<(), JournalError> {
-    if current_rows(state)?.pending.is_some()
+    if replay_rows(state)?.pending.is_some()
         || state.keys().any(|(_, key)| key.starts_with(b"\0aos-root-first-source-successor-v2\0intent\0"))
     {
         return Err(JournalError::ProtectedBoundary);
@@ -592,7 +799,15 @@ pub(super) fn validate_replayed_transaction(
     limits: super::JournalLimits,
 ) -> Result<bool, JournalError> {
     let phase = recognize_replayed_phase(transaction)?;
-    require_transition(state, transaction, phase)?;
+    // A cold phase is complete structural DATA, not a live selected admission.
+    let comparison_phase = phase.map(|phase| match phase {
+        FirstSourceSuccessorNativePhaseV2::SourceAppend => FirstSourceSuccessorNativePhaseV2::MixedSourceAppend,
+        FirstSourceSuccessorNativePhaseV2::SourceAck => FirstSourceSuccessorNativePhaseV2::MixedSourceAck,
+        FirstSourceSuccessorNativePhaseV2::RootPrepared => FirstSourceSuccessorNativePhaseV2::MixedRootPrepared,
+        FirstSourceSuccessorNativePhaseV2::RootAnchor => FirstSourceSuccessorNativePhaseV2::MixedRootAnchor,
+        ordinary => ordinary,
+    });
+    require_replayed_transition(state, transaction, comparison_phase)?;
     if phase.is_some() {
         for record in transaction.records() {
             if record.namespace() != RecordNamespace::GlobalCapacityReservation
@@ -621,7 +836,7 @@ pub(super) fn validate_replayed_transaction(
 }
 
 pub(super) fn validate_replayed_state(state: &State, compacted: bool) -> Result<(), JournalError> {
-    current_rows(state)?;
+    replay_rows(state)?;
     validate_root_state(state)?;
     super::controller_source_successor_issuance::validate_rows(state)?;
     if compacted {
@@ -635,7 +850,7 @@ pub(super) fn validate_replayed_state(state: &State, compacted: bool) -> Result<
 fn validate_root_state(state: &State) -> Result<(), JournalError> {
     #[cfg(target_os = "linux")]
     {
-        crate::policy_compiler::validate_root_first_source_successor_state_v2(state)
+        crate::policy_compiler::RootSourceGenesisAuthorityV1::validate_project_successor_replay_v3(state)
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -764,10 +979,36 @@ impl Journal {
         prepared: &JournalTransaction,
         intent: &RootFirstSourceSuccessorIntentV2,
     ) -> Result<(), JournalError> {
+        self.preflight_root_successor_shape_with_phase(
+            prepared, intent, FirstSourceSuccessorNativePhaseV2::RootPrepared,
+        )
+    }
+
+    /// Compares a selected mixed Root prefix and its exact conservative suffix.
+    ///
+    /// # Errors
+    /// Rejects a foreign actual owner, unjoined archives/active intent, any
+    /// native bound or changed exact sizing identity. Success is preview DATA.
+    pub(crate) fn preflight_root_project_successor_shape_v3(
+        &self,
+        prepared: &JournalTransaction,
+        intent: &RootFirstSourceSuccessorIntentV2,
+    ) -> Result<(), JournalError> {
+        self.preflight_root_successor_shape_with_phase(
+            prepared, intent, FirstSourceSuccessorNativePhaseV2::MixedRootPrepared,
+        )
+    }
+
+    fn preflight_root_successor_shape_with_phase(
+        &self,
+        prepared: &JournalTransaction,
+        intent: &RootFirstSourceSuccessorIntentV2,
+        phase: FirstSourceSuccessorNativePhaseV2,
+    ) -> Result<(), JournalError> {
         require_capacity_owner(self, GlobalCapacityReservationPurposeV1::RootFirstSourceSuccessorAnchor)?;
         self.preflight_first_source_successor_v2(
             std::slice::from_ref(prepared),
-            &[FirstSourceSuccessorNativePhaseV2::RootPrepared],
+            &[phase],
         )?;
         let [intent_record, reservation] = prepared.records() else {
             return Err(JournalError::ProtectedBoundary);
@@ -846,6 +1087,15 @@ impl Journal {
     ) -> Result<SourceFirstSuccessorRowsV2, JournalError> {
         self.ensure_healthy()?;
         current_rows(&self.state)
+    }
+
+    /// Returns the complete mixed family as selected comparison DATA.
+    pub(crate) fn source_project_continuation_rows_v3(
+        &self,
+        selected: Option<ProjectId>,
+    ) -> Result<SourceFirstSuccessorRowsV2, JournalError> {
+        self.ensure_healthy()?;
+        current_project_rows_v3(&self.state, selected)
     }
 
     /// Appends one exact native phase under its fixed genuine writer.

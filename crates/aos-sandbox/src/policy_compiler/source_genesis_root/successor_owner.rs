@@ -78,6 +78,139 @@ struct Rows {
     archive: Option<RootFirstSourceSuccessorArchiveV2>,
 }
 
+// All members are historical comparison DATA. A selected active intent is
+// not admitted by archive counts or by this structural fold.
+struct ProjectRowsV3 {
+    intent: Option<RootFirstSourceSuccessorIntentV2>,
+    archives: BTreeMap<ProjectId, RootFirstSourceSuccessorArchiveV2>,
+}
+
+fn project_rows_v3(state: &State, selected: Option<ProjectId>) -> Result<ProjectRowsV3, JournalError> {
+    let mut retained = ProjectRowsV3 { intent: None, archives: BTreeMap::new() };
+    for ((namespace, member_key), value) in state {
+        if !member_key.starts_with(PREFIX) { continue; }
+        if *namespace != RecordNamespace::DesiredState { return Err(JournalError::ProtectedBoundary); }
+        if member_key.starts_with(INTENT_PREFIX) {
+            let intent = RootFirstSourceSuccessorIntentV2::decode(value)
+                .map_err(|_| JournalError::ProtectedBoundary)?;
+            if member_key != &intent_key(&intent) || selected != Some(intent.project())
+                || retained.intent.replace(intent).is_some()
+            { return Err(JournalError::ProtectedBoundary); }
+        } else if member_key.starts_with(SUCCESSOR_FLOOR_PREFIX) {
+            let archive = RootFirstSourceSuccessorArchiveV2::decode(value)
+                .map_err(|_| JournalError::ProtectedBoundary)?;
+            if member_key != &floor_key(&archive.floor)
+                || retained.archives.insert(archive.original.project(), archive).is_some()
+            { return Err(JournalError::ProtectedBoundary); }
+        } else { return Err(JournalError::ProtectedBoundary); }
+    }
+    if retained.intent.as_ref().is_some_and(|intent| retained.archives.contains_key(&intent.project())) {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    for archive in retained.archives.values() {
+        require_predecessor(state, &archive.original)?;
+    }
+    if let Some(intent) = &retained.intent {
+        require_predecessor(state, intent)?;
+        first_source_successor_capacity_delete_v2(
+            state, &root_capacity_request(intent)?, transaction_id(intent.approval(), Phase::RootPrepared),
+        )?;
+    }
+    require_exact_capacity_family(state, Purpose::RootFirstSourceSuccessorAnchor,
+        usize::from(retained.intent.is_some()))?;
+    Ok(retained)
+}
+
+impl super::store::RootSourceGenesisAuthorityV1 {
+    // An associated DATA fold avoids a new parent-module export or any new
+    // authority constructor. Native cold/compaction callers borrow real maps.
+    pub(crate) fn validate_project_successor_replay_v3(state: &State) -> Result<(), JournalError> {
+        let mut selected = None;
+        for ((namespace, member_key), value) in state {
+            if member_key.starts_with(INTENT_PREFIX) {
+                if *namespace != RecordNamespace::DesiredState || selected.is_some() {
+                    return Err(JournalError::ProtectedBoundary);
+                }
+                selected = Some(RootFirstSourceSuccessorIntentV2::decode(value)
+                    .map_err(|_| JournalError::ProtectedBoundary)?.project());
+            }
+        }
+        project_rows_v3(state, selected)?;
+        Ok(())
+    }
+
+    pub(crate) fn validate_project_successor_transition_v3(
+        state: &State, transaction: &JournalTransaction, phase: Option<Phase>,
+    ) -> Result<Option<[u8; 32]>, JournalError> {
+        let canonical = phase.map(Phase::canonical);
+        let selected = if canonical == Some(Phase::RootPrepared) {
+            let put = transaction.records().first().ok_or(JournalError::ProtectedBoundary)?;
+            Some(RootFirstSourceSuccessorIntentV2::decode(
+                put.value().ok_or(JournalError::ProtectedBoundary)?,
+            ).map_err(|_| JournalError::ProtectedBoundary)?.project())
+        } else {
+            let mut selected = None;
+            for ((namespace, member_key), value) in state {
+                if member_key.starts_with(INTENT_PREFIX) {
+                    if *namespace != RecordNamespace::DesiredState || selected.is_some() {
+                        return Err(JournalError::ProtectedBoundary);
+                    }
+                    selected = Some(RootFirstSourceSuccessorIntentV2::decode(value)
+                        .map_err(|_| JournalError::ProtectedBoundary)?.project());
+                }
+            }
+            selected
+        };
+        let before = project_rows_v3(state, selected)?;
+        let touches = transaction.records().iter().any(|record| record.key().starts_with(PREFIX))
+            || touches_capacity_purpose(state, transaction, Purpose::RootFirstSourceSuccessorAnchor)?;
+        if !touches {
+            if matches!(canonical, Some(Phase::RootPrepared | Phase::RootAnchor)) || before.intent.is_some() {
+                return Err(JournalError::ProtectedBoundary);
+            }
+            return Ok(None);
+        }
+        let settled = match canonical {
+            Some(Phase::RootPrepared) => {
+                let [put, reservation] = transaction.records() else { return Err(JournalError::ProtectedBoundary); };
+                let intent = RootFirstSourceSuccessorIntentV2::decode(put.value().ok_or(JournalError::ProtectedBoundary)?)
+                    .map_err(|_| JournalError::ProtectedBoundary)?;
+                require_predecessor(state, &intent)?;
+                let request = root_capacity_request(&intent)?;
+                let admission = transaction_id(intent.approval(), Phase::RootPrepared);
+                if before.intent.is_some() || before.archives.contains_key(&intent.project())
+                    || put.namespace() != RecordNamespace::DesiredState || put.key() != intent_key(&intent)
+                    || transaction.id() != &admission
+                    || reservation != &first_source_successor_capacity_record_v2(&request, admission)?
+                { return Err(JournalError::ProtectedBoundary); }
+                None
+            }
+            Some(Phase::RootAnchor) => {
+                let intent = before.intent.as_ref().ok_or(JournalError::ProtectedBoundary)?;
+                let [put, deletion, settlement] = transaction.records() else { return Err(JournalError::ProtectedBoundary); };
+                let archive = RootFirstSourceSuccessorArchiveV2::decode(put.value().ok_or(JournalError::ProtectedBoundary)?)
+                    .map_err(|_| JournalError::ProtectedBoundary)?;
+                let request = root_capacity_request(intent)?;
+                let admission = transaction_id(intent.approval(), Phase::RootPrepared);
+                if &archive.original != intent || put.namespace() != RecordNamespace::DesiredState
+                    || put.key() != floor_key(&archive.floor) || before.archives.contains_key(&intent.project())
+                    || transaction.id() != &transaction_id(intent.approval(), Phase::RootAnchor)
+                    || deletion != &JournalRecord::delete(RecordNamespace::DesiredState, intent_key(intent))
+                    || settlement != &first_source_successor_capacity_delete_v2(state, &request, admission)?
+                { return Err(JournalError::ProtectedBoundary); }
+                Some(first_source_successor_capacity_identity_v2(&request, admission)?)
+            }
+            _ => return Err(JournalError::ProtectedBoundary),
+        };
+        let after = crate::journal::root_original_inventory::materialize(state, transaction);
+        let prospective = project_rows_v3(&after, selected)?;
+        if before.archives.iter().any(|(project, archive)| prospective.archives.get(project) != Some(archive)) {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        Ok(settled)
+    }
+}
+
 fn key(prefix: &[u8], project: ProjectId) -> Vec<u8> {
     [prefix, project.as_bytes()].concat()
 }
@@ -148,7 +281,25 @@ pub(crate) fn require_root_first_source_successor_capacity_owner_v2(
 pub(super) fn validate_root_first_successor_journal_v2(
     journal: &Journal,
 ) -> Result<(), SourceGenesisErrorV1> {
-    validate_root_first_source_successor_state_v2(&journal_state(journal))?;
+    let state = journal_state(journal);
+    // This store hook compares retained DATA only. Keep singleton validation
+    // and its allocations/errors in the old order; a foreign actual project
+    // key selects the complete structural fold, never a live floor permit.
+    let mut first_project = None;
+    let has_foreign_project = state.keys().any(|(_, key)| {
+        let project = key.strip_prefix(INTENT_PREFIX)
+            .or_else(|| key.strip_prefix(SUCCESSOR_FLOOR_PREFIX));
+        match (first_project, project) {
+            (None, Some(project)) => { first_project = Some(project); false }
+            (Some(first), Some(project)) => first != project,
+            _ => false,
+        }
+    });
+    if has_foreign_project {
+        super::store::RootSourceGenesisAuthorityV1::validate_project_successor_replay_v3(&state)?;
+    } else {
+        validate_root_first_source_successor_state_v2(&state)?;
+    }
     Ok(())
 }
 
@@ -238,6 +389,11 @@ pub(crate) fn validate_root_first_source_successor_transition_v2(
     transaction: &JournalTransaction,
     phase: Option<Phase>,
 ) -> Result<Option<[u8; 32]>, JournalError> {
+    if matches!(phase, Some(Phase::MixedRootPrepared | Phase::MixedRootAnchor)) {
+        return super::store::RootSourceGenesisAuthorityV1::validate_project_successor_transition_v3(
+            state, transaction, phase,
+        );
+    }
     validate_root_first_source_successor_state_v2(state)?;
     let touches = transaction.records().iter().any(|record| record.key().starts_with(PREFIX))
         || touches_capacity_purpose(state, transaction, Purpose::RootFirstSourceSuccessorAnchor)?;
@@ -304,6 +460,9 @@ pub struct RootFirstSuccessorMutationResultsV2 {
     native: Option<Result<CommitResult, JournalError>>,
     post: Option<Result<(), SourceGenesisErrorV1>>,
     clock_post: Option<Result<aos_sandbox_core::RawPairedClockSample, SourceGenesisErrorV1>>,
+    data: Option<Result<Option<RootFirstSourceSuccessorIntentV2>, SourceGenesisErrorV1>>,
+    data_name_post: Option<Result<(), SourceGenesisErrorV1>>,
+    data_watermark_post: Option<Result<(), SourceGenesisErrorV1>>,
 }
 
 impl RootFirstSuccessorMutationResultsV2 {
@@ -312,6 +471,7 @@ impl RootFirstSuccessorMutationResultsV2 {
 
     /// Borrows the first action cause without moving its owning Result.
     pub fn error(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if let Some(Err(error)) = &self.data { return Some(error); }
         if let Some(Err(error)) = &self.preparation { return Some(error); }
         if let Some(Err(error)) = &self.preflight { return Some(error); }
         if let Some(Err(error)) = &self.crossing { return Some(error); }
@@ -319,6 +479,8 @@ impl RootFirstSuccessorMutationResultsV2 {
         if let Some(Err(error)) = &self.native { return Some(error); }
         if let Some(Err(error)) = &self.post { return Some(error); }
         if let Some(Err(error)) = &self.clock_post { return Some(error); }
+        if let Some(Err(error)) = &self.data_name_post { return Some(error); }
+        if let Some(Err(error)) = &self.data_watermark_post { return Some(error); }
         None
     }
 
@@ -330,6 +492,11 @@ impl RootFirstSuccessorMutationResultsV2 {
     /// Borrows the independent original server-clock Result after any action.
     pub fn clock_post_result(&self) -> Option<&Result<aos_sandbox_core::RawPairedClockSample, SourceGenesisErrorV1>> {
         self.clock_post.as_ref()
+    }
+
+    /// Borrows independent DATA owner/name/watermark posts without disposal.
+    pub fn project_data_post_results(&self) -> [Option<&Result<(), SourceGenesisErrorV1>>; 3] {
+        [self.post.as_ref(), self.data_name_post.as_ref(), self.data_watermark_post.as_ref()]
     }
 }
 
@@ -345,6 +512,68 @@ fn original_server_crossing_clock(
 }
 
 impl super::store::RootSourceGenesisAuthorityV1 {
+    /// Compares every retained archive before selecting immutable intent DATA.
+    ///
+    /// Absence remains absence: this never constructs a new admission context,
+    /// Root floor loan, writer permission or renewed original nonce/deadline.
+    ///
+    /// # Errors
+    /// Returns a marker while the supplied single-use reservoir retains the
+    /// actual comparison cause and every independent owner/name/watermark post.
+    pub fn retained_project_successor_context_v3(
+        &self, project: ProjectId, results: &mut RootFirstSuccessorMutationResultsV2,
+    ) -> Result<Option<RootFirstSourceSuccessorIntentV2>, ()> {
+        self.compare_retained_project_successor_v3(project, None, results)
+    }
+
+    /// Compares one exact historical archive against the complete actual map.
+    ///
+    /// # Errors
+    /// Returns a retaining marker for missing/changed archive, original intent,
+    /// predecessor, role or capacity joins, or independent post-observation debt.
+    pub fn compare_project_successor_archive_v3(
+        &self, context: &RootFirstSourceSuccessorIntentV2,
+        floor: &RootFirstSourceSuccessorFloorV2,
+        results: &mut RootFirstSuccessorMutationResultsV2,
+    ) -> Result<(), ()> {
+        self.compare_retained_project_successor_v3(context.project(), Some((context, floor)), results)
+            .map(|_| ())
+    }
+
+    fn compare_retained_project_successor_v3(
+        &self, project: ProjectId,
+        expected: Option<(&RootFirstSourceSuccessorIntentV2, &RootFirstSourceSuccessorFloorV2)>,
+        results: &mut RootFirstSuccessorMutationResultsV2,
+    ) -> Result<Option<RootFirstSourceSuccessorIntentV2>, ()> {
+        if results.attempted { return Err(()); }
+        results.attempted = true;
+        let sequence = self.journal.snapshot_sequence();
+        results.data = Some((|| {
+            self.recheck()?;
+            let retained = project_rows_v3(&journal_state(&self.journal), Some(project))?;
+            if let Some((context, floor)) = expected {
+                let archive = retained.archives.get(&project).ok_or(SourceGenesisErrorV1::Conflict)?;
+                if &archive.original != context || &archive.floor != floor {
+                    return Err(SourceGenesisErrorV1::Conflict);
+                }
+            }
+            Ok(retained.intent.or_else(|| retained.archives.get(&project)
+                .map(|archive| archive.original.clone())))
+        })());
+        // A failed actual comparison never prevents these independent posts.
+        // The same supplied reservoir remains owned by the original caller.
+        results.post = Some(self.recheck());
+        results.data_name_post = Some(self.journal.validate_held_protected_names()
+            .map_err(SourceGenesisErrorV1::from));
+        results.data_watermark_post = Some(if self.journal.snapshot_sequence() == sequence {
+            Ok(())
+        } else {
+            Err(SourceGenesisErrorV1::Stale)
+        });
+        if results.error().is_some() { return Err(()); }
+        results.data.as_ref().and_then(|result| result.as_ref().ok()).cloned().ok_or(())
+    }
+
     /// Selects only an existing immutable intent/archive for historical recovery.
     ///
     /// # Errors
