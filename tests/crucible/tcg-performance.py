@@ -25,7 +25,11 @@ class Qmp:
     def __init__(self, path):
         self.socket = socket.socket(socket.AF_UNIX)
         self.socket.settimeout(30)
-        self.socket.connect(str(path))
+        try:
+            self.socket.connect(str(path))
+        except OSError:
+            self.socket.close()
+            raise
         self.stream = self.socket.makefile("rwb", buffering=0)
         self.read()
         self.command("qmp_capabilities")
@@ -72,6 +76,19 @@ def wait_for(process, predicate, description, timeout):
     raise TimeoutError(f"timed out waiting for {description}")
 
 
+def connect_qmp(process, socket_path, timeout):
+    """Wait for the listener, which can become ready after its path exists."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            return Qmp(socket_path)
+        except (FileNotFoundError, ConnectionRefusedError):
+            if process.poll() is not None:
+                raise RuntimeError("QEMU exited before its QMP listener was ready")
+            time.sleep(0.002)
+    raise TimeoutError("timed out waiting for QMP listener readiness")
+
+
 def command(binary, fixtures, socket_path, stop, incoming, bios):
     result = [
         str(binary), "-nodefaults", "-no-user-config", "-display", "none",
@@ -101,8 +118,7 @@ def run_boundary(binary, fixtures, stop, directory, label, timeout,
     )
     qmp = None
     try:
-        wait_for(process, socket_path.exists, "QMP socket", timeout)
-        qmp = Qmp(socket_path)
+        qmp = connect_qmp(process, socket_path, timeout)
         if restore is not None:
             qmp.command("migrate-incoming", {"uri": f"file:{restore}"})
             wait_for(
@@ -257,7 +273,8 @@ def main():
     reference_state(args.stop, args.loop_instructions)
     for trial in range(args.repetitions):
         # Interleave variants so machine load drifts do not favor one build.
-        for label, binary in variants:
+        trial_variants = variants if trial % 2 == 0 else list(reversed(variants))
+        for label, binary in trial_variants:
             with tempfile.TemporaryDirectory(prefix="crucible-tcg-") as temporary:
                 directory = Path(temporary)
                 cold = run_boundary(
