@@ -216,7 +216,7 @@
     }
     // lib.optionalAttrs (conditions != null) {inherit conditions;}
     // lib.optionalAttrs (failurePolicy != null) {failure_policy = failurePolicy;};
-  mountEsp = "mount-esp.service";
+  mountEsp = "aos-mount-esp.service";
   activation = "aos-activate.service";
   convergence =
     lib.optional (config.aos.packageRuntime.packageProfile.enable or false)

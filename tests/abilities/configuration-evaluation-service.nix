@@ -29,7 +29,7 @@
         {
           options.aos.boot = {
             stage = lib.mkOption {
-              type = lib.types.str;
+              type = lib.types.enum ["host" "initrd"];
               default = stage;
             };
             imageEvidenceExecutable = lib.mkOption {
@@ -56,13 +56,36 @@
   command = (builtins.head commit.lifecycle.start).executable;
   registry = enabled.aos.services."configuration-evaluation.registry-synchronization";
   registryDirectory = builtins.head registry.directories.managed;
+  composed = (evaluate true true "host").extendModules {
+    modules = [
+      ../../pkgs/boot/_aos-boot-storage/module.nix
+      {
+        options.aos.filesystems.espDevice = lib.mkOption {
+          type = lib.types.str;
+        };
+      }
+    ];
+  };
+  projected = import ../../pkgs/system/_systemd-abilities/bootstrap-services.nix {
+    inherit lib pkgs;
+    config = composed.config;
+  };
+  projectedMount = projected."boot-storage.aos-mount-esp";
+  projectedCommit = projected."configuration-evaluation.image-boot-commit";
+  mountUnit = "${projectedMount.manager_identity.name}.service";
 in {
   nativeServicesEnabled = registry.enable && commit.enable;
   disabledServicesAbsent = !disabled.aos.services."configuration-evaluation.registry-synchronization".enable && !disabled.aos.services."configuration-evaluation.image-boot-commit".enable;
   initrdOmitsHostFinalization = !initrd.aos.services."configuration-evaluation.image-boot-commit".enable;
   authenticatedMeasurementRequired = command.arguments == ["commit" "--require-attestation-quote" "--image-evidence-executable" "${package.outPath}/bin/aos-image-evidence" "--pcr-public-key" key];
   unmeasuredCommitRetained = (builtins.head unmeasured.aos.services."configuration-evaluation.image-boot-commit".lifecycle.start).executable.arguments == ["commit"];
-  finalizationWaitsForActivation = commit.dependencies.requires == ["mount-esp.service" "aos-activate.service"] && commit.dependencies.before == ["multi-user.target"];
+  finalizationWaitsForActivation = commit.dependencies.requires == ["aos-mount-esp.service" "aos-activate.service"] && commit.dependencies.before == ["multi-user.target"];
+  finalizationRequiresProjectedEspMount =
+    projectedMount.enabled
+    && projectedMount.activation_owner == "image"
+    && mountUnit == "aos-mount-esp.service"
+    && builtins.elem mountUnit projectedCommit.dependencies.requires
+    && builtins.elem mountUnit projectedCommit.dependencies.after;
   firmwareFinalizationConditionRetained = builtins.map (condition: condition.path) commit.conditions.all == ["/sys/firmware/efi"];
   registryUsesAdmittedExecutable =
     (builtins.head registry.lifecycle.start).executable
