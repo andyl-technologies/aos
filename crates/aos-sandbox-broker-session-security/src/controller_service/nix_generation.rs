@@ -58,7 +58,6 @@ pub(crate) struct NixGenerationAttemptV1 {
     first: Option<GenerationFailureV1>,
     postcheck_debt: Option<GenerationFailureV1>,
     clock_debt: Option<NixStartContinuationErrorV2>,
-    completed: bool,
 }
 
 impl NixGenerationAttemptV1 {
@@ -74,7 +73,6 @@ impl NixGenerationAttemptV1 {
             first: None,
             postcheck_debt: None,
             clock_debt: None,
-            completed: false,
         }
     }
 
@@ -284,7 +282,6 @@ pub(super) fn prepare(
     if attempt.first.is_some() {
         attempt.terminate_parked_action(&mut cut, &worker);
     }
-    attempt.completed = true;
     drop(cut);
     drop(current);
     Err(EffectFailure::Retryable(
