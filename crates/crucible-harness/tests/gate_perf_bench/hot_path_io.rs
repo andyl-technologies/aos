@@ -187,11 +187,48 @@ const HOT_PATH_OWNERS: &[HotPathOwner] = &[
         &[],
     ),
     owner(
+        "crucible-qemu-plugin/src/runtime/live_callbacks/device_wait.rs",
+        &["fn on_block_wait("],
+        &[],
+    ),
+    owner(
+        "crucible-qemu-plugin/src/runtime/live_callbacks/device_wait_witness.rs",
+        &["pub(super) struct DeviceWaitWitness", "fn emit("],
+        &[],
+    ),
+    owner(
+        "crucible-qemu-plugin/src/runtime/live_callbacks/device_wait_witness/capture.rs",
+        &["fn destination("],
+        &[],
+    ),
+    owner(
+        "crucible-qemu-plugin/src/runtime/live_callbacks/preemption.rs",
+        &["fn max_advance_icount("],
+        &[],
+    ),
+    owner(
+        "crucible-qemu-plugin/src/runtime/live_callbacks/network_inbound.rs",
+        &["fn inject_due_network_inbound("],
+        &[],
+    ),
+    owner(
+        "crucible-qemu-plugin/src/runtime/live_callbacks/network_output_stop.rs",
+        &[
+            "pub(super) struct RetainedNetworkOutputStop",
+            "fn preserve_network_output_stop(",
+        ],
+        &[],
+    ),
+    owner(
+        "crucible-qemu-plugin/src/runtime/live_callbacks/network_output_stop/context.rs",
+        &["fn report_failure("],
+        &[],
+    ),
+    owner(
         "crucible-qemu-plugin/src/runtime/live_callbacks.rs",
         &[
             "pub(crate) struct LiveVcpuTimeCallbackState",
             "fn wait_for_scheduler_release_or_inbound(",
-            "fn on_block_wait(",
         ],
         &[],
     ),
@@ -381,7 +418,7 @@ fn advance_and_delivery_owners_have_no_socket_or_control_io() -> Result<(), Box<
     );
     assert_eq!(
         inventoried_paths.len(),
-        28,
+        35,
         "the scoped concrete Rust hot-path owner inventory must remain explicit"
     );
 
