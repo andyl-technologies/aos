@@ -7,6 +7,7 @@
 use std::collections::BTreeSet;
 use std::os::unix::net::UnixStream;
 
+use super::super::finding_exact_vm;
 use super::*;
 use crucible_api::ControlClient as _;
 use crucible_campaign::{
@@ -26,6 +27,9 @@ use crucible_daemon::{
 
 const UNSAFE_SHORT_CIRCUIT: [u8; 32] = [0xff; 32];
 const FAILURE_PROPERTY: &str = "forbidden-destination-delivery";
+
+#[path = "envoy_known_finding/handoff.rs"]
+mod handoff;
 
 #[test]
 #[ignore = "requires packaged QEMU and a dedicated five-guest cgroup and project quota"]
@@ -187,7 +191,7 @@ fn public_five_node_envoy_network_retains_known_failure() -> Result<(), Box<dyn 
     }
     let (snapshot, finding, finding_proof) =
         wait_for_finding(&fixture, &mut service, &failed_observation)?;
-    verify_packaged_replay(&fixture, &snapshot, &finding)?;
+    let portable_finding = export_packaged_finding(&fixture, &snapshot, &finding)?;
     let paused_snapshot = super::super::midpoint_debug::pause_campaign_for_debug(&fixture)?;
     let paused_proof = authenticated_finding(&fixture, &paused_snapshot, &finding)?;
     assert_eq!(paused_proof.finding(), finding_proof.finding());
@@ -208,6 +212,14 @@ fn public_five_node_envoy_network_retains_known_failure() -> Result<(), Box<dyn 
         &paused_proof,
         &debug_session,
     )?;
+
+    // Retention, debug recovery, and every owned service stop complete first.
+    // Only the independent bundle and immutable runtime closure survive replay.
+    if service.kill_on_drop || service.child.try_wait()?.is_none() {
+        return Err("Envoy source service remains owned during finding handoff".into());
+    }
+    fs::remove_dir_all(fixture._temporary.path())?;
+    verify_packaged_replay(&portable_finding, fixture._temporary.path())?;
 
     println!("envoy_product_branch_steering_authenticated=true");
     println!("envoy_known_finding_authenticated=true");
@@ -714,11 +726,11 @@ fn format_debug_session(session: crucible_api::SessionRef) -> String {
     )
 }
 
-fn verify_packaged_replay(
+fn export_packaged_finding(
     fixture: &FlightFixture,
     snapshot: &str,
     finding: &str,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<handoff::FindingBundle, Box<dyn Error>> {
     let bundle = fixture._temporary.path().join("envoy-known-finding-bundle");
     let exported = run_json(
         command(&[
@@ -741,30 +753,15 @@ fn verify_packaged_replay(
         "export measured Envoy failure",
     )?;
     assert_eq!(exported["native_signature_verified"], true);
-    let binary = std::env::var_os("CRUCIBLE_EXACT_BUNDLE_BINARY")
-        .ok_or("packaged finding verifier is unavailable")?;
-    let deployment = required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?;
+    handoff::FindingBundle::copy_from(&bundle)
+}
+
+fn verify_packaged_replay(
+    portable_finding: &handoff::FindingBundle,
+    source_owner: &Path,
+) -> Result<(), Box<dyn Error>> {
     let verified = run_json(
-        Command::new(binary)
-            .current_dir(fixture._temporary.path())
-            .env_remove("CRUCIBLE_QEMU")
-            .env_remove("CRUCIBLE_PLUGIN")
-            .env_remove("CRUCIBLE_EXACT_BUNDLE_BINARY")
-            .env_remove("CRUCIBLE_PROCESS_FLIGHT_BINARY")
-            .env_remove("CRUCIBLE_FLIGHT_DEPLOYMENT")
-            .env_remove("CRUCIBLE_FLIGHT_QEMU")
-            .env_remove("CRUCIBLE_FLIGHT_PLUGIN")
-            .env_remove("CRUCIBLE_DEBUG_GATEWAY")
-            .env_remove("CRUCIBLE_KERNEL")
-            .env_remove("CRUCIBLE_INITRD")
-            .env_remove("CRUCIBLE_ROOT_IMAGE")
-            .env_remove("CRUCIBLE_RUN_STATE_ROOT")
-            .env_remove("CRUCIBLE_NATIVE_GUEST_ARCHITECTURE")
-            .args(["--format", "jsonl", "--campaign-deployment"])
-            .arg(deployment)
-            .args(["campaign", "finding-bundle", "verify"])
-            .arg(&bundle)
-            .arg("--exact"),
+        &mut portable_finding.verify_command(source_owner)?,
         "fresh packaged Envoy finding replay",
     )?;
     assert_eq!(verified["native_signature_verified"], true);
@@ -773,6 +770,8 @@ fn verify_packaged_replay(
     if json_u64(&verified["exact_replay"], "completed_quanta")? == 0 {
         return Err("fresh Envoy finding replay executed no guest quantum".into());
     }
+    portable_finding.require_unchanged()?;
     println!("envoy_known_finding_fresh_packaged_replay=true");
+    println!("envoy_known_finding_source_owner_absent=true");
     Ok(())
 }
