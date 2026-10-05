@@ -1536,6 +1536,13 @@ impl LiveVcpuTimeCallbackState {
             IdleSchedulerWaitDisposition::ReturnToQemu
             | IdleSchedulerWaitDisposition::RescanInQemu => Ok(()),
             IdleSchedulerWaitDisposition::AdvanceTo(target_icount) => {
+                if plan.cause() == IdleWakeCause::TimerDeadline && target_icount <= current_icount {
+                    // RR dispatches already-due timers after this callback, then
+                    // revisits halted vCPUs. Release the edge for that rescan;
+                    // no forward advance or timer witness is needed here.
+                    self.all_halted_idle_handled.store(false, Ordering::Release);
+                    return Ok(());
+                }
                 if !self.arm_and_enqueue_idle_advance_or_defer(
                     raw_icount,
                     target_icount,
