@@ -14,7 +14,11 @@
           systemName = "campaign-service-contract";
         };
       in
-        builtins.deepSeq evaluated.config.system.build.toplevel true
+        builtins.deepSeq evaluated.config.system.build.toplevel {
+          policyMode = evaluated.config.environment.etc."crucible/campaign-policy.toml".mode or null;
+          policyUid = evaluated.config.environment.etc."crucible/campaign-policy.toml".uid or null;
+          policyGid = evaluated.config.environment.etc."crucible/campaign-policy.toml".gid or null;
+        }
     );
   valid = evaluate {
     enable = true;
@@ -37,10 +41,15 @@
     (evaluate {stateDirectory = "/var/lib/crucible-campaign/../escape";})
     (evaluate {stateDirectory = "/tmp/crucible-campaign";})
   ];
-  validContract = valid.success && builtins.all (result: !result.success) invalid;
+  validContract =
+    valid.success
+    && valid.value.policyMode == "0444"
+    && valid.value.policyUid == 0
+    && valid.value.policyGid == 0
+    && builtins.all (result: !result.success) invalid;
 in
   if !validContract
-  then throw "Crucible campaign service path contract accepted an unsafe configuration"
+  then throw "Crucible campaign service contract accepted an unsafe path or policy file deployment"
   else
     pkgs.mkDerivation {
       pname = "crucible-phase9-campaign-service-module-contract";
@@ -58,6 +67,7 @@ in
             runtime_values_control_free=true
             socket_path_service_owned=true
             state_directory_service_owned=true
+            policy_file_regular_root_owned=true
             RESULT
           '';
         }
