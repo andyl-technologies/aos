@@ -1142,7 +1142,7 @@ in {
               "openssl": "${pkgs.openssl}/bin/openssl", "helperStorePath": "${fixture.helperV1}",
               "deploymentId": "fleet-hybrid-v1", "workerUrl": "https://aos.andyl.org",
               "nativeOriginUrl": "https://aos.staging.andyl.org", "garage": GARAGE,
-              "s3Ca": "/etc/ssl/certs/ca-certificates.crt",
+              "s3Ca": "${s3PublicTrust}/value",
               "s3PublicTrust": "${s3PublicTrust}/value",
               "issuerCertificate": "${serverCertificate}/value", "issuerPrivateKey": "${serverPrivateKey}/value",
               "issuerCertificateHost": "localhost", "fleetCaPem": ${builtins.toJSON caCertificate},
