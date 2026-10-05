@@ -1190,7 +1190,7 @@ impl QemuNode {
         self
     }
 
-    /// Copies at most 1024 staged console bytes for untimed diagnosis.
+    /// Copies at most 4096 staged console bytes for untimed diagnosis.
     ///
     /// The tail covers bytes retained since the last successful observation
     /// drain. It is advisory, incomplete, and has no scheduler timestamp or

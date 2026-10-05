@@ -112,7 +112,7 @@ pub(super) fn report_failure(node: &mut QemuNode) {
 }
 
 fn escaped_console_tail(bytes: &[u8]) -> String {
-    bytes[bytes.len().saturating_sub(1024)..]
+    bytes[bytes.len().saturating_sub(4096)..]
         .iter()
         .flat_map(|byte| std::ascii::escape_default(*byte))
         .map(char::from)
@@ -310,17 +310,35 @@ mod tests {
     }
 
     #[test]
-    fn advisory_console_tail_escapes_binary_bytes_without_exceeding_four_kib() {
+    fn advisory_console_tail_preserves_heading_before_a_long_stack() {
+        let heading = b"Linux OUT probe: original SDK error\r\nKernel panic - not syncing: original kernel error\r\n";
+        let stack = b"[    0.461032] entry_SYSCALL_64_after_hwframe+0x77/0x7f\r\n".repeat(40);
+        let mut bytes = vec![b'x'; 4096];
+        bytes.extend_from_slice(heading);
+        bytes.extend_from_slice(&stack);
+
+        let escaped = escaped_console_tail(&bytes);
+
+        assert!(stack.len() > 1024);
+        assert!(escaped.contains("Linux OUT probe: original SDK error"));
+        assert!(escaped.contains("Kernel panic - not syncing: original kernel error"));
+        assert!(escaped.contains("entry_SYSCALL_64_after_hwframe"));
+        assert!(!escaped.contains('\n'));
+        assert!(escaped.len() <= 16384);
+    }
+
+    #[test]
+    fn advisory_console_tail_escapes_binary_bytes_without_exceeding_sixteen_kib() {
         assert_eq!(
             escaped_console_tail(b"a\n\r\t\"\\\xff"),
             "a\\n\\r\\t\\\"\\\\\\xff"
         );
         let mut bytes = b"omitted prefix".to_vec();
-        bytes.extend([0xff; 1024]);
+        bytes.extend([0xff; 4096]);
 
         let escaped = escaped_console_tail(&bytes);
-        assert_eq!(escaped, "\\xff".repeat(1024));
-        assert_eq!(escaped.len(), 4096);
+        assert_eq!(escaped, "\\xff".repeat(4096));
+        assert_eq!(escaped.len(), 16384);
         assert!(!escaped.contains('\n'));
         assert!(escaped_console_tail(&[]).is_empty());
     }

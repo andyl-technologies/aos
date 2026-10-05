@@ -98,7 +98,7 @@ impl QemuConsoleObservationSpool {
     /// Copies an untimed tail without waiting for or draining the staging buffer.
     pub(crate) fn try_diagnostic_tail(&self) -> Option<Vec<u8>> {
         let bytes = self.bytes.try_lock().ok()?;
-        let start = bytes.len().saturating_sub(1024);
+        let start = bytes.len().saturating_sub(4096);
         Some(bytes[start..].to_vec())
     }
 
@@ -158,7 +158,7 @@ mod tests {
         ));
         assert_eq!(
             spool.try_diagnostic_tail(),
-            Some(retained[retained.len() - 1024..].to_vec())
+            Some(retained[retained.len() - 4096..].to_vec())
         );
         assert_eq!(spool.take()?, retained);
         Ok(())
@@ -198,12 +198,45 @@ mod tests {
         assert!(observed_backpressure);
         assert_eq!(
             spool.try_diagnostic_tail(),
-            Some(payload[payload.len() - 1024..].to_vec())
+            Some(payload[payload.len() - 4096..].to_vec())
         );
         assert_eq!(
             spool.try_diagnostic_tail(),
-            Some(payload[payload.len() - 1024..].to_vec())
+            Some(payload[payload.len() - 4096..].to_vec())
         );
+        assert_eq!(spool.take()?, payload);
+        assert_eq!(spool.try_diagnostic_tail(), Some(Vec::new()));
+        Ok(())
+    }
+
+    #[test]
+    fn diagnostic_tail_retains_panic_context_after_a_long_stack()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut writer, output) = UnixStream::pair()?;
+        let spool = QemuConsoleObservationSpool::new();
+        let mut reader = QemuConsoleObservationReader::new(output, spool.clone())?;
+        let heading = b"Linux OUT probe: selection reply sequence 1 does not match request sequence 2\r\nKernel panic - not syncing: Attempted to kill init!\r\n";
+        let stack = b"[    0.461032] entry_SYSCALL_64_after_hwframe+0x77/0x7f\r\n".repeat(40);
+        let mut payload = vec![b'x'; 4096];
+        payload.extend_from_slice(heading);
+        payload.extend_from_slice(&stack);
+        payload.extend_from_slice(b"[    0.461054] Kernel Offset: 0x36000000\r\n");
+
+        writer.write_all(&payload)?;
+        reader.drain_available()?;
+        let tail = spool
+            .try_diagnostic_tail()
+            .ok_or("diagnostic spool unavailable")?;
+
+        assert!(stack.len() > 1024);
+        assert_eq!(tail.len(), 4096);
+        assert!(tail.windows(heading.len()).any(|bytes| bytes == heading));
+        assert!(
+            !tail[tail.len() - 1024..]
+                .windows(heading.len())
+                .any(|bytes| bytes == heading)
+        );
+        assert_eq!(spool.try_diagnostic_tail(), Some(tail));
         assert_eq!(spool.take()?, payload);
         assert_eq!(spool.try_diagnostic_tail(), Some(Vec::new()));
         Ok(())

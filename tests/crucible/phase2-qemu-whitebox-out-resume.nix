@@ -103,6 +103,12 @@ assert builtins.elem profile ["rom" "linux"]; let
     then ["normal"]
     else ["no-child" "exec-child"];
   modes = positiveModes ++ ["late-register"];
+  # Linux panic context can occupy 16 KiB after escaping binary console bytes.
+  stderrTailBytes =
+    if profile == "linux"
+    then 32768
+    else 16384;
+  stderrBase64Characters = 4 * builtins.div (stderrTailBytes + 2) 3;
   name =
     if profile == "rom"
     then "crucible-whitebox-out-resume"
@@ -164,7 +170,7 @@ assert builtins.elem profile ["rom" "linux"]; let
         else
           status=$?
           cat "/tmp/$mode.result" >&2
-          tail -c 16384 "/tmp/$mode.log" >&2
+          tail -c ${toString stderrTailBytes} "/tmp/$mode.log" >&2
           exit "$status"
         fi
         grep -Fxq PASS "/tmp/$mode.result"
@@ -187,7 +193,7 @@ assert builtins.elem profile ["rom" "linux"]; let
       for mode in ${lib.concatStringsSep " " modes}; do
         echo "CRUCIBLE_OUT_RESUME_STDERR_''${mode}_BEGIN"
         echo "original_bytes=$(wc -c < "/tmp/$mode.log")"
-        tail -c 16384 "/tmp/$mode.log" > "/tmp/$mode.stderr-tail"
+        tail -c ${toString stderrTailBytes} "/tmp/$mode.log" > "/tmp/$mode.stderr-tail"
         ${pkgs.coreutils}/bin/base64 -w 0 "/tmp/$mode.stderr-tail"
         printf '\n'
         echo "CRUCIBLE_OUT_RESUME_STDERR_''${mode}_END"
@@ -240,7 +246,7 @@ in
               }
               state == 1 {
                 if (payload_lines == 0 && $0 !~ /^original_bytes=(0|[1-9][0-9]*)$/) exit 1
-                if (payload_lines == 1 && (length($0) > 21848 || $0 !~ /^[A-Za-z0-9+\/=]*$/)) exit 1
+                if (payload_lines == 1 && (length($0) > ${toString stderrBase64Characters} || $0 !~ /^[A-Za-z0-9+\/=]*$/)) exit 1
                 if (payload_lines >= 2) exit 1
                 print
                 payload_lines += 1
@@ -251,15 +257,15 @@ in
             sed -n '2p' "$TMPDIR/$mode.stderr-frame" \
               | ${pkgs.coreutils}/bin/base64 -d > "$out/$mode.stderr.log"
             retained_bytes=$(wc -c < "$out/$mode.stderr.log")
-            test "$retained_bytes" -le 16384
-            if test "$original_bytes" -gt 16384; then
-              test "$retained_bytes" -eq 16384
+            test "$retained_bytes" -le ${toString stderrTailBytes}
+            if test "$original_bytes" -gt ${toString stderrTailBytes}; then
+              test "$retained_bytes" -eq ${toString stderrTailBytes}
               truncated=true
             else
               test "$retained_bytes" -eq "$original_bytes"
               truncated=false
             fi
-            printf 'capture=tail\nmaximum_bytes=16384\noriginal_bytes=%s\nretained_bytes=%s\ntruncated=%s\n' \
+            printf 'capture=tail\nmaximum_bytes=${toString stderrTailBytes}\noriginal_bytes=%s\nretained_bytes=%s\ntruncated=%s\n' \
               "$original_bytes" "$retained_bytes" "$truncated" > "$out/$mode.stderr.scope"
           done
           test "$(grep -Fxc PASS "$out/result")" -eq ${toString (builtins.length modes)}
