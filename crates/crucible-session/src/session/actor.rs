@@ -86,6 +86,34 @@ pub enum SessionError {
         /// Final boundary snapshot produced by replay.
         actual: Box<EngineSnapshot>,
     },
+    /// Replay was requested from a different initial configuration.
+    #[error(
+        "control replay initial configuration mismatch: expected={expected:?} actual={actual:?}"
+    )]
+    ControlReplayInitialConfigurationMismatch {
+        /// Initial configuration recorded in the replay artifact.
+        expected: ContentHash,
+        /// Initial configuration owned by the replay engine.
+        actual: ContentHash,
+    },
+    /// A replay control record is internally inconsistent.
+    #[error("control replay record {sequence} is invalid: {reason}")]
+    ControlReplayRecordInvalid {
+        /// Session-local sequence of the invalid record.
+        sequence: u64,
+        /// Stable validation failure detail.
+        reason: String,
+    },
+    /// Terminal replay sampling failed and the recorded Stop also failed cleanup.
+    #[error(
+        "terminal replay fingerprint sampling failed: {sampling}; recorded Stop cleanup failed: {shutdown}"
+    )]
+    ControlReplayTerminalSamplingCleanup {
+        /// Original authenticated sampling failure.
+        sampling: Box<SessionError>,
+        /// Failure while executing the original recorded Stop.
+        shutdown: Box<SessionError>,
+    },
     /// Breakpoint condition evaluation could not build a checked log prefix.
     #[error("breakpoint condition prefix is invalid: {reason}")]
     BreakpointConditionPrefix {
@@ -432,6 +460,69 @@ impl<L> SessionActor<L> {
         self
     }
 
+    /// Replays a complete boundary-control artifact before the actor is spawned.
+    ///
+    /// Replay publishes emitted events and exact control records through this
+    /// actor's observable logs. The replayed terminal actor stays alive for
+    /// session-state queries until an explicit shutdown request. Backend
+    /// fingerprints must be sampled before the recorded Stop retires nodes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError`] when the artifact does not match the engine's
+    /// initial state, contains an invalid boundary record, or replay diverges
+    /// from its recorded final snapshot.
+    pub fn with_control_replay_artifact(
+        mut self,
+        artifact: &SessionControlReplayArtifact,
+    ) -> Result<Self, SessionError>
+    where
+        L: QuantumLoop,
+    {
+        self.engine.replay_control_replay_artifact(artifact)?;
+
+        let entries = self.engine.drain_event_log_entries();
+        self.append_event_log_entries(&entries)?;
+        self.sync_reproduction_log();
+        self.terminal_command_keepalive = true;
+        self.publish_live_snapshot();
+
+        Ok(self)
+    }
+
+    /// Replays an operator-stopped artifact with fingerprints sampled before retirement.
+    ///
+    /// Sampling occurs at the original paused terminal boundary immediately
+    /// before its final recorded Stop. The returned samples remain valid after
+    /// that Stop retires the backend; no extra scheduler quantum is driven.
+    /// Replay retains the complete control log and final snapshot checks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError`] for invalid replay records, an unpaused terminal
+    /// boundary, sampling refusal, shutdown failure, or final snapshot divergence.
+    /// The recorded Stop still executes when sampling fails; simultaneous
+    /// sampling and shutdown failures preserve both causes.
+    pub fn with_control_replay_artifact_and_terminal_fingerprints(
+        mut self,
+        artifact: &SessionControlReplayArtifact,
+        nodes: &[NodeId],
+    ) -> Result<(Self, Vec<FingerprintSample>), SessionError>
+    where
+        L: QuantumLoop,
+    {
+        let (_, fingerprints) = self
+            .engine
+            .replay_control_replay_artifact_with_terminal_fingerprints(artifact, nodes)?;
+        let entries = self.engine.drain_event_log_entries();
+        self.append_event_log_entries(&entries)?;
+        self.sync_reproduction_log();
+        self.terminal_command_keepalive = true;
+        self.publish_live_snapshot();
+
+        Ok((self, fingerprints))
+    }
+
     /// Returns the actor-owned engine.
     #[must_use]
     pub fn engine(&self) -> &Engine<L> {
@@ -678,7 +769,7 @@ pub(super) fn acknowledged_stop_command(command: &SessionCommand) -> bool {
     )
 }
 
-pub(super) fn complete_acknowledgement(
+pub(super) async fn complete_acknowledgement(
     acknowledgement: Option<CommandReply<()>>,
     result: &Result<(), SessionError>,
 ) {
@@ -689,6 +780,7 @@ pub(super) fn complete_acknowledgement(
         Ok(()) => reply.complete(Ok(())),
         Err(error) => reply.complete(Err(error.clone())),
     }
+    reply.wait_for_observation().await;
 }
 
 impl<L> SessionActor<L>
@@ -947,26 +1039,40 @@ where
         command: SessionCommand,
     ) -> Result<(), SessionError> {
         let shutdown_requested = acknowledged_stop_command(&command);
+        let terminal_before_command = matches!(self.engine.state(), EngineState::Stopped { .. });
         let (command, acknowledgement) = split_acknowledged_command(command);
+        if shutdown_requested && terminal_before_command {
+            self.terminal_shutdown_requested = true;
+            complete_acknowledgement(acknowledgement, &Ok(())).await;
+            return Ok(());
+        }
         if matches!(command, SessionCommand::Fork { .. }) && self.fork_loop_factory.is_some() {
             let result = self.apply_spawned_fork_command(command).await;
-            self.record_terminal_shutdown_request(shutdown_requested, &result);
-            complete_acknowledgement(acknowledgement, &result);
+            self.record_terminal_shutdown_request(
+                shutdown_requested,
+                terminal_before_command,
+                &result,
+            );
+            complete_acknowledgement(acknowledgement, &result).await;
             return result;
         }
 
         let result = self.apply_command_without_spawning_forks(command).await;
-        self.record_terminal_shutdown_request(shutdown_requested, &result);
-        complete_acknowledgement(acknowledgement, &result);
+        self.record_terminal_shutdown_request(shutdown_requested, terminal_before_command, &result);
+        // A yield alone cannot guarantee that the command client receives its
+        // reply before the actor enters another synchronous backend RUN.
+        complete_acknowledgement(acknowledgement, &result).await;
         result
     }
 
     fn record_terminal_shutdown_request(
         &mut self,
         shutdown_requested: bool,
+        terminal_before_command: bool,
         result: &Result<(), SessionError>,
     ) {
         if shutdown_requested
+            && terminal_before_command
             && result.is_ok()
             && matches!(self.engine.state(), EngineState::Stopped { .. })
         {
@@ -1057,7 +1163,7 @@ where
                 floor: self.debug_history_floor,
             };
             command.complete_error(error.clone());
-            complete_acknowledgement(acknowledgement, &Err(error.clone()));
+            complete_acknowledgement(acknowledgement, &Err(error.clone())).await;
             return Err(error);
         }
         if let Err(error) = self
@@ -1065,7 +1171,7 @@ where
             .apply_command_with_event_log(command.clone(), &condition_event_log)
         {
             command.complete_error(error.clone());
-            complete_acknowledgement(acknowledgement, &Err(error.clone()));
+            complete_acknowledgement(acknowledgement, &Err(error.clone())).await;
             return Err(error);
         }
         let preserve_debug_history = matches!(
@@ -1097,7 +1203,7 @@ where
                 .saturating_add(self.engine.quanta() - quanta_before);
         }
         self.commands_applied = self.commands_applied.saturating_add(1);
-        complete_acknowledgement(acknowledgement, &Ok(()));
+        complete_acknowledgement(acknowledgement, &Ok(())).await;
         tokio::task::yield_now().await;
         Ok(())
     }

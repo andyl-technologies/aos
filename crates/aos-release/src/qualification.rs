@@ -6,10 +6,17 @@
 //! ```text
 //! qualification-contract
 //!   promises + exclusions + typed targets + claims + requirements + package_rules
+//!   deferred_platforms (omitted when empty)
 //!   profiles[build | smoke | functional | soak]
 //!   destinations[(surface, tier, channel kind) -> profile]
 //!   fitness[storage-restore | alert-delivery | authority-recovery | hub-restore | key-rotation]
 //! ```
+//!
+//! A deferred Linux platform ships nothing in a release: its image and
+//! container targets stay in the contract with their reviewed environments
+//! but are optional and claim-free, and [`QualificationContract::validate_plan`]
+//! rejects any artifact on it. Un-deferring a platform is a reviewed contract
+//! change that restores its required targets and claims.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -34,6 +41,8 @@ mod floors;
 pub mod limits;
 pub mod profiles;
 
+#[cfg(test)]
+mod deferral_tests;
 #[cfg(test)]
 mod plan_tests;
 
@@ -229,6 +238,14 @@ pub struct QualificationContract {
     pub exclusions: Vec<String>,
     /// Required reference environments.
     pub targets: Vec<QualificationTarget>,
+    /// Linux platforms whose release is deferred, unique and sorted by name.
+    ///
+    /// Targets on a deferred platform are optional and carry no claims, and
+    /// every plan cell on it must be blocked or inapplicable. The field is
+    /// omitted when empty, so a contract without deferrals keeps the encoding
+    /// and digest it had before deferral existed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deferred_platforms: Vec<Platform>,
     /// Classification of every package eligible on at least one platform.
     pub package_rules: Vec<PackageRule>,
     /// Shared gate catalog.
@@ -277,6 +294,7 @@ impl QualificationContract {
             "requirement",
         )?;
         self.validate_package_rules()?;
+        self.validate_deferred_platforms()?;
         self.validate_targets()?;
         for gate in &self.requirements {
             nonempty_strings(&gate.checks, "acceptance conditions")?;
@@ -336,16 +354,68 @@ impl QualificationContract {
                 _ => bail!("target boot implementation differs from its artifact kind"),
             }
         }
-        for platform in [Platform::X86_64Linux, Platform::Aarch64Linux] {
+        for platform in Platform::LINUX {
+            let deferred = self.is_deferred(platform);
             for kind in [TargetKind::Image, TargetKind::Container] {
-                if !self.targets.iter().any(|target| {
+                let required = self.targets.iter().any(|target| {
                     target.platform == platform && target.kind == kind && target.required
-                }) {
-                    bail!("server contract requires image and OCI targets on both Linux platforms");
+                });
+                if deferred && required {
+                    bail!("deferred platform {platform} cannot carry a required {kind:?} target");
+                }
+                if !deferred && !required {
+                    bail!(
+                        "server contract requires image and OCI targets on every Linux platform that is not deferred"
+                    );
                 }
             }
         }
+
+        // A claim would turn a deferred target back into a release gate whose
+        // evidence no case can ever produce.
+        for claim in &self.claims {
+            let deferred_target = self
+                .targets
+                .iter()
+                .any(|target| target.id == claim.target && self.is_deferred(target.platform));
+            if deferred_target {
+                bail!("claim {} targets a deferred platform", claim.id);
+            }
+        }
         Ok(())
+    }
+
+    /// Requires a sorted, unique deferral list that keeps a Linux release.
+    fn validate_deferred_platforms(&self) -> Result<()> {
+        // Nix sorts the exported list by name, which differs from the
+        // declaration order `Platform` derives `Ord` from.
+        if self
+            .deferred_platforms
+            .windows(2)
+            .any(|pair| pair[0].as_str() >= pair[1].as_str())
+        {
+            bail!("deferred platforms must be unique and sorted by name");
+        }
+        if self
+            .deferred_platforms
+            .iter()
+            .any(|platform| !platform.supports_images())
+        {
+            bail!("only Linux platforms can be deferred");
+        }
+        if Platform::LINUX
+            .into_iter()
+            .all(|platform| self.is_deferred(platform))
+        {
+            bail!("a release contract must keep at least one Linux platform");
+        }
+        Ok(())
+    }
+
+    /// Returns whether this contract defers every release artifact on `platform`.
+    #[must_use]
+    pub fn is_deferred(&self, platform: Platform) -> bool {
+        self.deferred_platforms.contains(&platform)
     }
 
     /// Computes the policy identity under its schema domain.
@@ -541,9 +611,14 @@ impl QualificationContract {
 
     /// Requires the plan's gate and package populations to match this contract.
     ///
+    /// Every image cell on a released platform must be an artifact. A deferred
+    /// platform ships nothing, so its image and package cells must be blocked
+    /// or inapplicable.
+    ///
     /// # Errors
     /// Returns an error for policy drift, missing packages, omitted images,
-    /// invalid destinations, or blocked cells where a selected profile requires
+    /// invalid destinations, an artifact on a deferred platform, or blocked
+    /// cells or deferred platforms where a selected profile requires
     /// completeness.
     pub fn validate_plan(&self, plan: &ReleasePlan) -> Result<()> {
         self.validate()?;
@@ -607,16 +682,31 @@ impl QualificationContract {
             bail!("server qualification requires the Linux image matrix");
         }
         for image in &plan.images {
-            if image
-                .platforms
-                .iter()
-                .any(|cell| !matches!(cell.decision, crate::platform::MatrixCell::Artifact { .. }))
-            {
-                bail!("required server image target is blocked or inapplicable");
+            for cell in &image.platforms {
+                let artifact =
+                    matches!(cell.decision, crate::platform::MatrixCell::Artifact { .. });
+                if self.is_deferred(cell.platform) {
+                    if artifact {
+                        bail!(
+                            "deferred platform {} cannot ship system image {}",
+                            cell.platform,
+                            image.system_variant
+                        );
+                    }
+                } else if !artifact {
+                    bail!("required server image target is blocked or inapplicable");
+                }
             }
         }
+        self.validate_deferred_packages(plan)?;
         self.validate_package_execution_images(plan)?;
-        if self.requires_complete_matrix(plan)?
+        let complete = self.requires_complete_matrix(plan)?;
+        if complete && !self.deferred_platforms.is_empty() {
+            bail!(
+                "qualification profile requires a complete matrix, but the contract defers a platform"
+            );
+        }
+        if complete
             && plan.packages.iter().any(|package| {
                 package
                     .platforms
@@ -640,6 +730,27 @@ impl QualificationContract {
             }
         }
         Ok(false)
+    }
+
+    /// Rejects package artifacts on deferred platforms.
+    ///
+    /// The inventory blocks these cells; an artifact here means the plan was
+    /// derived from a different deferral list than the contract it binds.
+    fn validate_deferred_packages(&self, plan: &ReleasePlan) -> Result<()> {
+        for package in &plan.packages {
+            for cell in &package.platforms {
+                if self.is_deferred(cell.platform)
+                    && matches!(cell.decision, crate::platform::MatrixCell::Artifact { .. })
+                {
+                    bail!(
+                        "deferred platform {} cannot ship package {}",
+                        cell.platform,
+                        package.name
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Rejects missing package execution images before builds or signatures.

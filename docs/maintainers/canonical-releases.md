@@ -753,13 +753,29 @@ every package decision from the versioned Nix inventory for this closed matrix:
 
 | Artifact | `x86_64-linux` | `aarch64-linux` | `x86_64-darwin` | `aarch64-darwin` |
 | --- | --- | --- | --- | --- |
-| Packages | required cell | required cell | required cell | required cell |
-| Images | required cell | required cell | not applicable | not applicable |
+| Packages | required cell | required cell (deferred) | required cell | required cell |
+| Images | required cell | required cell (deferred) | not applicable | not applicable |
 
 Each package cell is either a frozen set of exact derivation, named-output, and
 store-path identities or an explicit inapplicable or blocked decision. A plan
 with a destination whose profile requires a complete matrix (`soak`) rejects
 blocked cells. Darwin receives packages only.
+
+The contract's `deferred_platforms` (from
+[`qualification/deferred-platforms.nix`](../../qualification/deferred-platforms.nix))
+names Linux platforms that ship nothing in this release. The inventory blocks
+each of their eligible package cells with `platform-release-deferred`, and the
+request must give their image cells a blocked or not-applicable decision; an
+artifact there fails planning, and so does any `soak` destination while the list
+is non-empty. In each image's `platforms` list, the deferred cell binds the
+digest of the retained deferral note:
+
+```json
+{"platform": "aarch64-linux",
+ "decision": {"state": "blocked",
+              "required_work": "Release aarch64-linux images in a later edge release.",
+              "failure_evidence": "sha256:<digest of the retained deferral note>"}}
+```
 
 The contributor-authorization summary is a separate public file. Its exact
 bytes must hash to the digest in the request. Do not place private employee or
@@ -876,6 +892,15 @@ packages instead bind the protected repository source). It writes
 `evidence/sbom.spdx.json`, and `release-journal.jsonl` without replacing an
 existing path. A repeated build on one maintainer machine is nondeterminism
 evidence, not an independent SLSA builder.
+
+The registry tier decides what a failed `--check` rebuild means. A
+production-tier plan (`andyl/main`) fails the step and names every derivation
+whose rebuild differed or failed. A testing-tier plan (`andyl/experimental`
+and its epochs) records each output of such a derivation as `not-reproduced`
+in the build report, warns with one reason per derivation, and continues.
+Report validation and `step assemble` reject `not-reproduced` outputs for
+production and accept them for testing, where the `build-integrity`
+`repeat-build` observation states how many outputs were not reproduced.
 
 Inspect a copied journal without initializing Nix using
 [`step status`](#inspect-a-captured-journal).

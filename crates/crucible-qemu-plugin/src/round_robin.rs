@@ -445,12 +445,11 @@ impl VcpuHaltTracker {
 pub fn compute_all_halted_idle_wake_plan(
     tracker: &VcpuHaltTracker,
     current_icount: u64,
-    icount_shift: u8,
     per_vcpu_deadlines: &[PerVcpuDeadlineReport],
     next_inbound_delivery_icount: Option<u64>,
     ceiling: SchedulerCeiling,
     device_io_holding_ticks: bool,
-    device_completion_deadline_icount: Option<u64>,
+    device_completion_deadline_tick: Option<u64>,
 ) -> Result<Option<IdleWakePlan>, RoundRobinError> {
     if !tracker.all_halted() {
         return Ok(None);
@@ -461,12 +460,11 @@ pub fn compute_all_halted_idle_wake_plan(
             .map_err(RoundRobinError::DeadlineAggregation)?;
     compute_idle_wake_plan(
         current_icount,
-        icount_shift,
         exact_deadline,
         next_inbound_delivery_icount,
         ceiling,
         device_io_holding_ticks,
-        device_completion_deadline_icount,
+        device_completion_deadline_tick,
     )
     .map(Some)
     .map_err(RoundRobinError::IdleWake)
@@ -711,16 +709,15 @@ mod tests {
             .mark_halted(1)
             .unwrap_or_else(|error| panic!("vCPU 1 should halt: {error}"));
         let reports = [
-            PerVcpuDeadlineReport::new(0, ExactDeadlineReport::Armed { deadline_ns: 120 }),
+            PerVcpuDeadlineReport::new(0, ExactDeadlineReport::Armed { deadline_ps: 120 }),
             PerVcpuDeadlineReport::new(1, ExactDeadlineReport::NoArmedTimer),
-            PerVcpuDeadlineReport::new(2, ExactDeadlineReport::Armed { deadline_ns: 80 }),
+            PerVcpuDeadlineReport::new(2, ExactDeadlineReport::Armed { deadline_ps: 80 }),
         ];
 
         assert_eq!(
             compute_all_halted_idle_wake_plan(
                 &tracker,
                 10,
-                0,
                 &reports,
                 None,
                 SchedulerCeiling::new(200),
@@ -736,7 +733,6 @@ mod tests {
         let plan = match compute_all_halted_idle_wake_plan(
             &tracker,
             10,
-            0,
             &reports,
             None,
             SchedulerCeiling::new(200),
@@ -768,7 +764,6 @@ mod tests {
             compute_all_halted_idle_wake_plan(
                 &tracker,
                 10,
-                0,
                 &[PerVcpuDeadlineReport::new(
                     0,
                     ExactDeadlineReport::NoArmedTimer,

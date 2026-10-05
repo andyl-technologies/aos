@@ -3,7 +3,8 @@
 //! Without `--to` the command prints the registry tier's destination table
 //! (surface, channel, profile, `after`). With `--to <destination>` it prints
 //! that destination's profile and the gate identities it derives without a
-//! change scope, that is, with every population affecting.
+//! change scope, that is, with every population affecting. Both forms report
+//! the platforms whose release the contract defers.
 
 use std::io::Write as _;
 
@@ -49,6 +50,7 @@ pub(super) fn run(args: &ReleaseContractArgs, nix: &NixRunner, printer: &Printer
             "schema_version": "aos.release.contract-result/v1",
             "registry": args.registry,
             "public_evidence_policy_digest": digest,
+            "deferred_platforms": contract.deferred_platforms,
             "destinations": destinations,
         })) {
             return Ok(());
@@ -57,6 +59,7 @@ pub(super) fn run(args: &ReleaseContractArgs, nix: &NixRunner, printer: &Printer
             "{} ({}) policy {}",
             contract.id, args.registry, digest
         ));
+        print_deferred_platforms(&contract);
         for destination in destinations {
             println!(
                 "{}: profile {}{}",
@@ -102,6 +105,7 @@ pub(super) fn run(args: &ReleaseContractArgs, nix: &NixRunner, printer: &Printer
         "registry": args.registry,
         "destination": name,
         "public_evidence_policy_digest": digest,
+        "deferred_platforms": contract.deferred_platforms,
         "profile": profile,
         "profile_digest": profile.digest()?,
         "gates": gates,
@@ -113,6 +117,7 @@ pub(super) fn run(args: &ReleaseContractArgs, nix: &NixRunner, printer: &Printer
         args.registry, profile.name, digest
     ));
     println!("{}", profile.description);
+    print_deferred_platforms(&contract);
     println!(
         "claims {:?}, soak {}s, reviews {}, complete matrix {}, transaction review {}",
         profile.claims,
@@ -160,4 +165,20 @@ pub(super) fn export(nix: &NixRunner) -> Result<QualificationContract> {
             .context("decoding Nix qualification contract")?;
     contract.validate()?;
     Ok(contract)
+}
+
+/// Prints the deferred platforms, which ship nothing in any release.
+fn print_deferred_platforms(contract: &QualificationContract) {
+    if contract.deferred_platforms.is_empty() {
+        return;
+    }
+    let platforms: Vec<&str> = contract
+        .deferred_platforms
+        .iter()
+        .map(|platform| platform.as_str())
+        .collect();
+    println!(
+        "deferred platforms (no artifacts, targets or claims): {}",
+        platforms.join(", ")
+    );
 }

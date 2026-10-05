@@ -692,14 +692,14 @@ in {
     testScript = ''
       ${setupRealSystemInstallWorkflow}
 
-      echo "==> Test: apm install server --system downloads then fails closed"
+      echo "==> Test: apm image install server downloads then fails closed"
 
-      if $APM install server --system --registry system-reg --yes \
+      if $APM image install server --registry system-reg --yes \
         > /tmp/system-install.out 2>&1; then
         cat /tmp/system-install.out
-        fail "apm install --system must reject missing image-generation authority"
+        fail "apm image install must reject missing image-generation authority"
       else
-        pass "apm install --system rejects missing image-generation authority"
+        pass "apm image install rejects missing image-generation authority"
       fi
       cat /tmp/system-install.out
       assert_file_contains /tmp/system-install.out "Downloading" \
@@ -735,7 +735,7 @@ in {
     testScript = ''
       ${setupRealSystemInstallWorkflow}
 
-      echo "==> Test: apm install --system resolves mirrors from system scope"
+      echo "==> Test: apm image install resolves mirrors from system scope"
 
       BAD_HOME=/tmp/system-scope-user-home
       mkdir -p "$BAD_HOME/.local/share/apm/registries/system-reg"
@@ -746,7 +746,7 @@ in {
       endpoint = "http://127.0.0.1:9/user-cache"
       REGEOF
 
-      if HOME="$BAD_HOME" $APM install server --system --registry system-reg --yes \
+      if HOME="$BAD_HOME" $APM image install server --registry system-reg --yes \
         > /tmp/system-mirror-scope-install.out 2>&1; then
         cat /tmp/system-mirror-scope-install.out
         fail "scoped system install must reject missing image-generation authority"
@@ -799,9 +799,9 @@ in {
       ln -sfn ${toplevelV1} /var/lib/profiles/system/gen-1/toplevel
       ln -sfn gen-1 /var/lib/profiles/system/current
 
-      echo "==> Test: apm upgrade --system rejects unauthenticated legacy state"
+      echo "==> Test: apm image upgrade rejects unauthenticated legacy state"
 
-      if ${apm}/bin/apm upgrade --system > /tmp/system-upgrade.out 2>&1; then
+      if ${apm}/bin/apm image upgrade > /tmp/system-upgrade.out 2>&1; then
         cat /tmp/system-upgrade.out
         echo "FAIL: legacy system upgrade should require image-generation authority"
         exit 1
@@ -838,9 +838,9 @@ in {
       ln -sfn ${toplevelV2} /var/lib/profiles/system/gen-2/toplevel
       ln -sfn gen-2 /var/lib/profiles/system/current
 
-      echo "==> Test: apm rollback --system rejects unauthenticated legacy state"
+      echo "==> Test: apm config rollback rejects unauthenticated legacy state"
 
-      if ${apm}/bin/apm rollback --system > /tmp/system-rollback.out 2>&1; then
+      if ${apm}/bin/apm config rollback > /tmp/system-rollback.out 2>&1; then
         cat /tmp/system-rollback.out
         echo "FAIL: legacy system rollback should require image-generation authority"
         exit 1
@@ -882,7 +882,7 @@ in {
 
       echo "==> Test: targeted rollback rejects unauthenticated legacy state"
 
-      if ${apm}/bin/apm rollback --system --generation 1 \
+      if ${apm}/bin/apm config rollback --generation 1 \
         > /tmp/system-rollback-generation.out 2>&1; then
         cat /tmp/system-rollback-generation.out
         echo "FAIL: targeted legacy rollback should require image-generation authority"
@@ -1020,7 +1020,7 @@ in {
       fi
 
       echo "==> Verify unauthenticated rollback cannot switch /etc authority"
-      if ${apm}/bin/apm rollback --system > /tmp/system-etc-rollback.out 2>&1; then
+      if ${apm}/bin/apm config rollback > /tmp/system-etc-rollback.out 2>&1; then
         cat /tmp/system-etc-rollback.out
         echo "FAIL: unauthenticated rollback unexpectedly succeeded"
         exit 1

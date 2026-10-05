@@ -30,7 +30,6 @@
   lifecycleCheck = builtins.readFile ./phase5-session-lifecycle.nix;
   commandCheck = builtins.readFile ./phase5-session-command-set.nix;
   controlResponsiveCheck = builtins.readFile ./phase5-control-responsive.nix;
-  schedulerLivenessCheck = builtins.readFile ./phase3-scheduler-liveness.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
   openTaskList = builtins.concatStringsSep "," openTaskIds;
@@ -364,24 +363,6 @@
         needle = "real_qemu_required=false";
       }
     ]
-    ++ failuresFor "tests/crucible/phase3-scheduler-liveness.nix" schedulerLivenessCheck [
-      {
-        label = "scheduler liveness target";
-        needle = "--test gate_scheduler_liveness";
-      }
-      {
-        label = "scheduler liveness test-double feature";
-        needle = "--features test-double";
-      }
-      {
-        label = "scheduler liveness test-double backend marker";
-        needle = "backend=crucible-sim-double-initialized-test-double";
-      }
-      {
-        label = "scheduler liveness real-QEMU false marker";
-        needle = "real_qemu_required=false";
-      }
-    ]
     ++ failuresFor "tests/crucible/default.nix" defaultChecks [
       {
         label = "phase5 exposes SimDouble suite";
@@ -415,6 +396,8 @@ in
     pkgs.mkDerivation {
       pname = "crucible-phase5-session-sim-double-suite";
       version = "0";
+      LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      runtimeDeps = [pkgs.sqlite];
       src = crucibleSrc;
 
       buildDeps =
@@ -422,6 +405,9 @@ in
           pkgs.coreutils
           pkgs.rust
           pkgs.sed
+
+          pkgs.pkg-config
+          pkgs.sqlite
         ]
         ++ dependencies;
 

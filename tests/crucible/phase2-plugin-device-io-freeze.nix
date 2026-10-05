@@ -3,7 +3,7 @@
   lib,
   attrPath ? "checks.crucible.phase2.qemuPluginDeviceIoFreeze",
   taskIds ? [],
-  openTaskIds ? [],
+  openTaskIds ? ["T-PLUG-9"],
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
@@ -75,10 +75,6 @@
 
   failures =
     failuresFor "docs/rfcs/0010-crucible/12-qemu-plugin.md" pluginSpec [
-      {
-        label = "T-PLUG-9 live completion evidence";
-        needle = "Completed by `checks.crucible.phase2.qemuLiveBlockIo` and";
-      }
       {
         label = "device-I/O freeze wording";
         needle = "Implement virtual-time freeze across in-flight device I/O";
@@ -360,7 +356,7 @@ in
             check=${attrPath}
             tasks=${taskList}
             open_tasks=${openTaskList}
-            status=complete
+            status=partial
             device_io_active=published-before-submit
             pending_counter=one-to-one-submit-completion
             failure_path=releases-pending-request

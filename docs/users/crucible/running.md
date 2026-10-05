@@ -16,6 +16,7 @@ before it makes examples easier to scan.
 | `--qemu <path>` | Select a patched QEMU binary explicitly. |
 | `--plugin <path>` | Select the matching Crucible QEMU plugin explicitly. |
 | `--store <path>` | Select the local content-addressed DAG store. |
+| `--campaign-deployment <path>` | Select the guarded local campaign-executor deployment. |
 | `--format <jsonl|json|table|markdown>` | Override terminal-aware trace or report rendering. |
 | `--trace <path>` | Also write the canonical event log to a file. |
 | `--artifact-dir <path>` | Select the failure/savepoint artifact directory. Default: `./.crucible`. |
@@ -60,7 +61,7 @@ Pin seeds in CI and in any command transcript intended for reproduction:
 
 ## Terminal conditions and budgets
 
-`run`, `resume`, and `fork` accept these terminal conditions:
+`run` and `resume` accept these terminal conditions:
 
 - `quiescence` — stop when the scheduler becomes quiescent; this is the default.
 - `virtual-time` — stop at the required `--max-virtual-time` budget.
@@ -73,35 +74,51 @@ Virtual-time budgets accept a positive integer followed by one of:
 ticks  tick  ns  us  ms  s
 ```
 
-No suffix means ticks. Fractional durations are not accepted.
+No suffix means ticks. One tick is one picosecond; 1,000 ticks are one
+nanosecond. Fractional durations are not accepted.
 
 `run` also accepts `--max-quanta <n>` as an independent scheduler-work bound;
-`resume` and `fork` do not currently expose that flag:
+`resume` does not currently expose that flag:
 
 ```sh
 ./result/bin/crucible \
   run scenario.toml \
   --until virtual-time \
-  --max-virtual-time 30s \
+  --max-virtual-time 1s \
   --max-quanta 10000
 ```
+
+In the current unattended local QEMU `--until property` route, the discovery
+stop is an assertion violation transition. Run-supplied virtual-time and quantum
+limits are not translated into that discovery stop; lifecycle and deployment
+limits still apply. Use `--until virtual-time` for a prefix bounded by the
+explicit run budgets above.
 
 Budget exhaustion is a timeout, not a property failure. A bounded run stops at
 exactly the requested scheduler-quantum boundary unless it reaches another
 terminal condition first; observer polling does not add extra quanta.
 
-Ordinary local QEMU lifecycle operations admit up to 40 billion retired
-instructions per node and allow 300 wall-clock seconds for each node step.
-`--max-quanta` is the run-level scheduler and control-plane bound; it does not
-raise the per-node instruction ceiling. Live search uses separate, tighter
-exploration bounds.
+The CLI initializes its production QEMU lifecycle with a five-second
+shared-timeline ceiling, a 10,000-quantum budget, and a 300-second wall-clock
+deadline for each node step. These are distinct bounds: `--max-quanta` controls
+scheduler work, and neither it nor `--max-virtual-time` raises the lifecycle's
+virtual-time ceiling. Campaign-backed runs also require the deployment's
+execution-quantum allowance to cover at least 10,000 quanta, or the requested
+`--max-quanta` when larger. Live search and fuzzing use separate exploration
+bounds.
+
+A wall-clock deadline measures host completion, not guest time. Expiry is an
+operational failure and cannot establish a property verdict. Campaign policies
+separately support modeled attempt timeouts and an optional host watchdog; see
+[campaign timeout semantics](campaigns.md#build-and-validate-inputs). A larger
+virtual-time budget does not guarantee a longer wall-clock wait.
 
 `run --save-on <fail|always|never>` controls terminal checkpoint
-materialization. The default is `never`. `fail` materializes only a non-passing
-outcome; `always` materializes every outcome. The resulting checkpoint reference
-is reported only after its replayable closure and lookup index are stored in the
-DAG store. The `run-store` output row records their content hashes and store
-path. Use the dedicated `save` command when you need an exported
+materialization on session routes that implement it. The default is `never`;
+`fail` requests a non-passing outcome and `always` requests every outcome.
+The current unattended local QEMU route accepts only `never` and rejects the
+other policies before execution. Failure-artifact capture is separate from
+savepoint creation. Use the dedicated `save` command when you need an exported
 `.crucible-savepoint` handle at a chosen boundary.
 
 ## Output formats
@@ -166,8 +183,8 @@ savepoint-<label>-<digest>.crucible-savepoint
 ```
 
 Keep a savepoint handle with the DAG store that produced it. A self-contained
-failure artifact embeds its critical reproduction material, but a store-backed
-component or direct checkpoint hash still requires the corresponding store.
+failure artifact embeds its critical reproduction material. Bare checkpoint
+hashes are not accepted as portable resume or fork inputs.
 
 ## Exit codes
 

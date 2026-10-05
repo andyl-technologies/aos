@@ -4,22 +4,20 @@ Some Crucible gates deliberately exercise fake runners, `SimDouble`, or a
 performance cost model. Those component tests remain useful regression tests;
 their success is not evidence that the corresponding scenario ran in QEMU.
 
-## Fingerprint dependency correction
+## Fingerprint authority
 
-`checks.crucible.phase2.gates.singleVmFingerprint` previously required the live
-production-plugin fingerprint check only through its outer ordering wrapper.
-Consumers using `.rawGate`, including phase-7 fleet equivalence, could bypass
-that authority and still obtain a passing dependency. The raw gate now also
-requires both `phase2.qemuSingleVmFingerprint` (the diagnostic C-trace importer)
-and `phase2.qemuLivePluginFingerprint` (the production Rust-plugin authority).
-The wiring checks require these dependencies on both paths.
+`checks.crucible.phase2.gates.singleVmFingerprint` directly instantiates
+`phase1-production-fingerprint-sample.nix`. Its raw derivation imports the
+production Rust-plugin flight and the QEMU fingerprint projection manifest, so
+consumers of `.rawGate` cannot bypass either authority. The gate orders after
+`qemuInert.rawGate`; its outer wrapper retains the canonical Phase 2 ordering
+and projection-manifest dependency.
 
-The live plugin authority executes two QEMU runs, perturbs host scheduling,
-compares fingerprint samples, and exercises a changed-frame negative control
-with live divergence bisection. The generic fingerprint-runner tests still use
-fake streams to cover comparator and error-handling behavior. The diagnostic
-importer separately records its partial scope; it does not replace the live
-plugin authority.
+The production flight executes two QEMU runs, perturbs host scheduling,
+compares fingerprint samples, and exercises an instruction-adjacent mismatch
+window. Generic fingerprint-runner tests still use fake streams to cover
+comparator and error-handling behavior, but they do not certify the production
+gate.
 
 ## Phase-7 component reports
 
@@ -29,8 +27,13 @@ The following raw checks now report `status=component-only`, an explicit
 | Raw gate | Evidence exercised by its test target | Separate production evidence |
 | --- | --- | --- |
 | `phase7.gates.perfBench` | Deterministic performance cost model | `checks.fleet.crucible-perf` and focused live performance checks |
-| `phase7.gates.e2eDeterminism` | Shared mock artifact under host profiles | `checks.fleet.crucible-e2e-determinism` |
 | `phase7.gates.fleetEquivalence` | SimDouble search/fleet finding and artifact equivalence | Live fingerprint dependency plus separate distributed exploration checks |
+
+The Phase 7 e2e derivation now emits a native-evidence contract instead of a
+component-only completion result. Its `canonical_gate_status` remains
+`release-blocked` until authenticated transcripts from two distinct physical
+hosts are supplied, and becomes `satisfied` only after it verifies that
+evidence.
 
 These component checks still pass when their own assertions pass. Naming a
 production check in a result file does not execute that check, and importing a

@@ -85,6 +85,12 @@ pub(super) static EVENT_KIND_CATALOG: &[EventKindCatalogEntry] = &[
         attributes: FAULT_OBSERVATION_ATTRIBUTES,
     },
     EventKindCatalogEntry {
+        kind: "campaign_selection",
+        class: SchedulerEventLogClass::Causal,
+        sources: &["engine"],
+        attributes: &["canonical_selection"],
+    },
+    EventKindCatalogEntry {
         kind: "console_output",
         class: SchedulerEventLogClass::Observational,
         sources: &["node"],
@@ -173,6 +179,12 @@ pub(super) static EVENT_KIND_CATALOG: &[EventKindCatalogEntry] = &[
         attributes: &["event", "summary"],
     },
     EventKindCatalogEntry {
+        kind: "execution_budget_exhausted",
+        class: SchedulerEventLogClass::Causal,
+        sources: &["engine"],
+        attributes: &["budget_kind"],
+    },
+    EventKindCatalogEntry {
         kind: "fault_opportunity",
         class: SchedulerEventLogClass::Causal,
         sources: &["engine"],
@@ -200,6 +212,45 @@ pub(super) static EVENT_KIND_CATALOG: &[EventKindCatalogEntry] = &[
             "marker_kind",
             "message",
             "must_hit",
+            "node",
+            "retired_icount",
+        ],
+    },
+    EventKindCatalogEntry {
+        kind: "guest_measurement_begin",
+        class: SchedulerEventLogClass::Observational,
+        sources: &["guest"],
+        attributes: &["instance", "measurement", "node", "retired_icount"],
+    },
+    EventKindCatalogEntry {
+        kind: "guest_measurement_end",
+        class: SchedulerEventLogClass::Observational,
+        sources: &["guest"],
+        attributes: &["instance", "measurement", "node", "retired_icount"],
+    },
+    EventKindCatalogEntry {
+        kind: "guest_metric_sample",
+        class: SchedulerEventLogClass::Observational,
+        sources: &["guest"],
+        attributes: &[
+            "instance",
+            "measurement",
+            "metric",
+            "node",
+            "retired_icount",
+            "value.*",
+        ],
+    },
+    EventKindCatalogEntry {
+        kind: "guest_semantic_marker",
+        class: SchedulerEventLogClass::Observational,
+        sources: &["guest"],
+        attributes: &[
+            "detail.*.key",
+            "detail.*.value.*",
+            "details_len",
+            "instance",
+            "marker",
             "node",
             "retired_icount",
         ],
@@ -406,6 +457,15 @@ pub(super) static EVENT_KIND_CATALOG_DEPENDENCIES: &[EventKindCatalogDependency]
         ],
     },
     EventKindCatalogDependency {
+        consumer: "0016-08-observability-measurement-debugging",
+        kinds: &[
+            "guest_measurement_begin",
+            "guest_measurement_end",
+            "guest_metric_sample",
+            "guest_semantic_marker",
+        ],
+    },
+    EventKindCatalogDependency {
         consumer: "18-assertions-properties",
         kinds: &[
             "assertion_evaluated",
@@ -436,6 +496,7 @@ pub(super) static EVENT_KIND_CATALOG_DEPENDENCIES: &[EventKindCatalogDependency]
             "backend_input",
             "binding_activation",
             "binding_deactivation",
+            "campaign_selection",
             "control",
             "delivery_order",
             "effect_applied",
@@ -445,6 +506,7 @@ pub(super) static EVENT_KIND_CATALOG_DEPENDENCIES: &[EventKindCatalogDependency]
             "effect_rejected",
             "evaluation_boundary",
             "event_activated",
+            "execution_budget_exhausted",
             "fault_opportunity",
             "fork",
             "io_completion",

@@ -48,7 +48,28 @@
   in
     direct ++ target;
 
-  allowedEntrypoints = ["crucible-api" "crucible-session"];
+  allowedEntrypoints = ["crucible-api" "crucible-session" "crucible-daemon"];
+  # RFC-0020 04a: the daemon owns the sole-writer actor and the local
+  # executor, so it hosts the engine directly like the session actor.
+  engineHosts = ["crucible-session" "crucible-daemon"];
+  # Crates below the engine: data models, stores, protocols, and QEMU
+  # process control. Depending on one of them reaches no engine.
+  substrateCrates = [
+    "crucible-assert"
+    "crucible-campaign"
+    "crucible-cas"
+    "crucible-debug-gateway"
+    "crucible-device"
+    "crucible-guest"
+    "crucible-harness"
+    "crucible-linux-resource"
+    "crucible-protocol"
+    "crucible-qemu"
+    "crucible-qemu-plugin"
+    "crucible-s3-store"
+    "crucible-shmem"
+    "crucible-sim"
+  ];
 
   findingsFor = workspaceDeps: manifests: packages:
     lib.concatMap (
@@ -57,11 +78,14 @@
       in
         lib.concatMap (
           dependency:
-            if dependency.package == "crucible"
+            if dependency.package == "crucible" && !(builtins.elem package engineHosts)
             then [
               "${package} has direct dependency `${dependency.name}` on the engine crate in ${dependency.scope}"
             ]
-            else if lib.hasPrefix "crucible-" dependency.package && !(builtins.elem dependency.package allowedEntrypoints)
+            else if
+              lib.hasPrefix "crucible-" dependency.package
+              && !(builtins.elem dependency.package allowedEntrypoints)
+              && !(builtins.elem dependency.package substrateCrates)
             then [
               "${package} may reach the engine only through crucible-api/crucible-session, found `${dependency.package}`"
             ]
@@ -98,12 +122,12 @@
 
   targetRegressionFailures = let
     findings = findingsFor workspaceDependencies {
-      crucible-daemon = {
+      crucible-cli = {
         target."cfg(unix)".dependencies.engine = {
           package = "crucible";
         };
       };
-    } ["crucible-daemon"];
+    } ["crucible-cli"];
   in
     if findings != []
     then []

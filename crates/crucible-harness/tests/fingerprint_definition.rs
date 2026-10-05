@@ -3,17 +3,17 @@
 #![forbid(unsafe_code)]
 
 use crucible_harness::fingerprint::{
-    CANONICAL_FINGERPRINT_PERIOD_ICOUNT, FINGERPRINT_DIGEST_BYTES, FingerprintDefinition,
-    FingerprintEventBoundary, FingerprintMismatchKind, FingerprintObservationError,
-    FingerprintObservationRequest, FingerprintObserver, FingerprintSampleError,
-    FingerprintSampleMaterial, FingerprintSampleTrigger, FingerprintStream,
+    FINGERPRINT_DIGEST_BYTES, FingerprintDefinition, FingerprintMismatchKind,
+    FingerprintObservationError, FingerprintObservationRequest, FingerprintObserver,
+    FingerprintSampleError, FingerprintSampleMaterial, FingerprintStream,
     HostFingerprintObservation, RrSchedulerState, VcpuRegisterDigest, VcpuRetiredCount,
     compare_fingerprint_streams, compute_fingerprint_sample, initial_rolling_fingerprint,
     observe_fingerprint_sample,
 };
 
 const CANONICAL_DEFINITION_DIGEST_HEX: &str =
-    "f0c200ed884dfda042d11325f3bec7913a3a2bc47c7dfc00feefcd137991edec";
+    "8a1510a06faa6a12dd3a784bf0b9a8434ccf5228ed1d591b315d245cc5169f11";
+const SAMPLE_TARGET_ICOUNT: u64 = 4_096;
 
 #[test]
 fn fingerprint_definition_digest_is_stable_and_content_addressed() {
@@ -22,20 +22,6 @@ fn fingerprint_definition_digest_is_stable_and_content_addressed() {
 
     assert_eq!(first.digest(), second.digest());
     assert_eq!(hex(&first.digest()), CANONICAL_DEFINITION_DIGEST_HEX);
-    assert_eq!(
-        first.cadence().period_icount(),
-        CANONICAL_FINGERPRINT_PERIOD_ICOUNT
-    );
-    assert!(
-        first
-            .cadence()
-            .samples_periodic_icount(CANONICAL_FINGERPRINT_PERIOD_ICOUNT)
-    );
-    assert!(
-        !first
-            .cadence()
-            .samples_periodic_icount(CANONICAL_FINGERPRINT_PERIOD_ICOUNT - 1)
-    );
     assert!(first.include_device_state());
     assert!(first.include_rr_scheduler_state());
 }
@@ -44,7 +30,7 @@ fn fingerprint_definition_digest_is_stable_and_content_addressed() {
 fn fingerprint_observer_boundary_supplies_black_box_state() {
     let definition = FingerprintDefinition::canonical();
     let previous = initial_rolling_fingerprint(&definition);
-    let request = periodic_request(0, CANONICAL_FINGERPRINT_PERIOD_ICOUNT);
+    let request = authenticated_request(0, SAMPLE_TARGET_ICOUNT);
     let mut observer = RecordingObserver::default();
 
     let sample =
@@ -63,9 +49,9 @@ fn fingerprint_observer_boundary_supplies_black_box_state() {
 fn fingerprint_observer_boundary_rejects_mismatched_icount() {
     let definition = FingerprintDefinition::canonical();
     let previous = initial_rolling_fingerprint(&definition);
-    let request = periodic_request(0, CANONICAL_FINGERPRINT_PERIOD_ICOUNT);
+    let request = authenticated_request(0, SAMPLE_TARGET_ICOUNT);
     let mut observer = RecordingObserver {
-        observed_icount: Some(CANONICAL_FINGERPRINT_PERIOD_ICOUNT + 1),
+        observed_icount: Some(SAMPLE_TARGET_ICOUNT + 1),
         ..RecordingObserver::default()
     };
 
@@ -77,8 +63,8 @@ fn fingerprint_observer_boundary_rejects_mismatched_icount() {
     assert_eq!(
         error,
         FingerprintSampleError::ObservedIcountMismatch {
-            requested: CANONICAL_FINGERPRINT_PERIOD_ICOUNT,
-            observed: CANONICAL_FINGERPRINT_PERIOD_ICOUNT + 1,
+            requested: SAMPLE_TARGET_ICOUNT,
+            observed: SAMPLE_TARGET_ICOUNT + 1,
         }
     );
 }
@@ -88,42 +74,42 @@ fn fingerprint_sample_hashes_icount_register_memory_device_and_rr_state() {
     let definition = FingerprintDefinition::canonical();
     let initial = initial_rolling_fingerprint(&definition);
     let base = sample_for(
-        periodic_request(0, CANONICAL_FINGERPRINT_PERIOD_ICOUNT),
+        authenticated_request(0, SAMPLE_TARGET_ICOUNT),
         digest(1),
         17,
         digest(3),
         digest(4),
     );
     let changed_icount = sample_for(
-        periodic_request(0, CANONICAL_FINGERPRINT_PERIOD_ICOUNT * 2),
+        authenticated_request(0, SAMPLE_TARGET_ICOUNT * 2),
         digest(1),
         17,
         digest(3),
         digest(4),
     );
     let changed_register = sample_for(
-        periodic_request(0, CANONICAL_FINGERPRINT_PERIOD_ICOUNT),
+        authenticated_request(0, SAMPLE_TARGET_ICOUNT),
         digest(9),
         17,
         digest(3),
         digest(4),
     );
     let changed_rr = sample_for(
-        periodic_request(0, CANONICAL_FINGERPRINT_PERIOD_ICOUNT),
+        authenticated_request(0, SAMPLE_TARGET_ICOUNT),
         digest(1),
         18,
         digest(3),
         digest(4),
     );
     let changed_memory = sample_for(
-        periodic_request(0, CANONICAL_FINGERPRINT_PERIOD_ICOUNT),
+        authenticated_request(0, SAMPLE_TARGET_ICOUNT),
         digest(1),
         17,
         digest(9),
         digest(4),
     );
     let changed_device = sample_for(
-        periodic_request(0, CANONICAL_FINGERPRINT_PERIOD_ICOUNT),
+        authenticated_request(0, SAMPLE_TARGET_ICOUNT),
         digest(1),
         17,
         digest(3),
@@ -142,39 +128,23 @@ fn fingerprint_sample_hashes_icount_register_memory_device_and_rr_state() {
 }
 
 #[test]
-fn fingerprint_sample_enforces_periodic_or_event_boundary_cadence() {
+fn fingerprint_sample_accepts_authenticated_on_demand_coordinate() {
     let definition = FingerprintDefinition::canonical();
     let initial = initial_rolling_fingerprint(&definition);
-    let off_cadence = sample_for(periodic_request(0, 7), digest(1), 17, digest(3), digest(4));
-    let event = sample_for(
-        FingerprintObservationRequest {
-            seq: 0,
-            node: "node-a".to_string(),
-            icount: 7,
-            trigger: FingerprintSampleTrigger::Event(FingerprintEventBoundary::FrameDelivery),
-        },
+    let requested = sample_for(
+        authenticated_request(0, 7),
         digest(1),
         17,
         digest(3),
         digest(4),
     );
 
-    assert_eq!(
-        compute_fingerprint_sample(&definition, &initial, &off_cadence),
-        Err(FingerprintSampleError::OffCadence {
-            icount: 7,
-            trigger: FingerprintSampleTrigger::Periodic,
-        })
-    );
-    assert!(
-        compute_fingerprint_sample(&definition, &initial, &event).is_ok(),
-        "event boundary samples are accepted off the periodic cadence"
-    );
+    assert!(compute_fingerprint_sample(&definition, &initial, &requested).is_ok());
 }
 
 #[test]
 fn fingerprint_sample_material_sorts_vcpu_state_by_id() {
-    let request = periodic_request(0, CANONICAL_FINGERPRINT_PERIOD_ICOUNT);
+    let request = authenticated_request(0, SAMPLE_TARGET_ICOUNT);
     let left = material(
         request.clone(),
         vec![register(1, 2, 7), register(0, 1, 11)],
@@ -209,7 +179,6 @@ fn fingerprint_sample_material_rejects_ambiguous_vcpu_sets() {
                 seq: 0,
                 node: String::new(),
                 icount: 1,
-                trigger: FingerprintSampleTrigger::Periodic,
             },
             vec![register(0, 1, 1)],
             rr_state(vec![VcpuRetiredCount::new(0, 1)]),
@@ -224,7 +193,7 @@ fn fingerprint_sample_material_rejects_ambiguous_vcpu_sets() {
 fn fingerprint_sample_material_rejects_mismatched_vcpu_sets() {
     assert_eq!(
         FingerprintSampleMaterial::new(
-            periodic_request(0, CANONICAL_FINGERPRINT_PERIOD_ICOUNT),
+            authenticated_request(0, SAMPLE_TARGET_ICOUNT),
             vec![register(0, 1, 1)],
             rr_state(vec![VcpuRetiredCount::new(1, 1)]),
             digest(3),
@@ -243,7 +212,7 @@ fn fingerprint_sample_material_requires_current_vcpu_in_sample() {
 
     assert_eq!(
         FingerprintSampleMaterial::new(
-            periodic_request(0, CANONICAL_FINGERPRINT_PERIOD_ICOUNT),
+            authenticated_request(0, SAMPLE_TARGET_ICOUNT),
             vec![register(0, 1, 1)],
             rr_scheduler,
             digest(3),
@@ -264,7 +233,7 @@ fn fingerprint_sample_material_rejects_non_canonical_digest_lengths() {
     );
     assert_eq!(
         FingerprintSampleMaterial::new(
-            periodic_request(0, CANONICAL_FINGERPRINT_PERIOD_ICOUNT),
+            authenticated_request(0, SAMPLE_TARGET_ICOUNT),
             vec![register(0, 1, 1)],
             rr_state(vec![VcpuRetiredCount::new(0, 1)]),
             vec![1],
@@ -319,12 +288,11 @@ impl FingerprintObserver for RecordingObserver {
     }
 }
 
-fn periodic_request(seq: u64, icount: u64) -> FingerprintObservationRequest {
+fn authenticated_request(seq: u64, icount: u64) -> FingerprintObservationRequest {
     FingerprintObservationRequest {
         seq,
         node: "node-a".to_string(),
         icount,
-        trigger: FingerprintSampleTrigger::Periodic,
     }
 }
 

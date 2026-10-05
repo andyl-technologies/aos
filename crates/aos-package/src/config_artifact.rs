@@ -1,6 +1,6 @@
 //! Desired-package config artifact materialization.
 //!
-//! `apm install --system --from desired.toml` accepts package-scoped config
+//! `apm apply --system --from desired.toml` accepts package-scoped config
 //! values keyed by package and artifact name. This module validates those
 //! values against the signed RFC-0001 `expose.config` metadata persisted in the
 //! package profile, writes the materialized files under `/etc/aos/packages`,

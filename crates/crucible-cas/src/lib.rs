@@ -10,7 +10,7 @@
 //!
 //! Spec index: RFC-0010 files 35.
 //!
-//! Future RFC-0007 integration marker: RFC-0007 is the future home for a shared
+//! Future RFC-0007 integration: RFC-0007 is the future home for a shared
 //! content-addressed store plus dependency-gated invalidation substrate. The
 //! narrow interface is exactly [`DagStore::put`], [`DagStore::get`],
 //! [`DagStore::has`], and [`InvalidationQuery::evaluate`]. [`SharedDagStore`] is
@@ -33,7 +33,11 @@
 //! [`CampaignFreshLineageRoots`], [`CampaignManifest`],
 //! [`CampaignProvenance`], [`CampaignContinuitySeedDecision`], and the
 //! invalidation types [`DependencySnapshot`], [`InvalidationQuery`], and
-//! [`InvalidationDecision`].
+//! [`InvalidationDecision`]. [`content_store`] owns RFC-0020's streaming,
+//! domain-separated immutable-blob and mutable-ref contracts plus its closed
+//! composition-graph validator. [`content_envelope`] owns the generic canonical
+//! child-bearing object format used by storage, transfer, and closure walkers
+//! without depending on campaign semantics.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -54,32 +58,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use rustix::fs::{FlockOperation, flock};
 use thiserror::Error;
 
-/// Marks the future RFC-0007 merge seam for the standalone CAS substrate.
-///
-/// The value names the stable boundary a future shared substrate must adapt
-/// behind; it is a documentation and conformance marker, not a dependency.
-pub const FUTURE_RATCHET_INTEGRATION_SEAM: &str = "crucible-cas::dag-store";
-
-/// Lists the gates a future shared substrate must pass without behavior change.
-pub const FUTURE_RATCHET_MERGE_BAR: &str =
-    "gate:content-address,gate:replay-oracle,gate:e2e-determinism";
-
-/// States the ABI and determinism stability rule for a future shared substrate.
-pub const FUTURE_RATCHET_STABILITY_RULE: &str =
-    "no Crucible ABI or determinism contract may change";
-
-/// Names the fleet-store and invalidation members of the same future seam.
-pub const FUTURE_RATCHET_SHARED_SEAM: &str = "SharedDagStore+InvalidationQuery::evaluate";
-
-/// Lists the exact public surface a future ratchet adapter must preserve.
-pub const FUTURE_RATCHET_SEAM_INTERFACE: &str =
-    "DagStore::put,DagStore::get,DagStore::has,SharedDagStore,InvalidationQuery::evaluate";
-
 /// Schema for campaign provenance keys.
 pub const CAMPAIGN_PROVENANCE_SCHEMA: &str = "crucible.campaign.provenance.v1";
 
 /// Schema for campaign lineage ids.
-pub const CAMPAIGN_LINEAGE_SCHEMA: &str = "crucible.campaign.lineage.v1";
+pub(crate) const CAMPAIGN_LINEAGE_SCHEMA: &str = "crucible.campaign.lineage.v1";
 
 /// Schema for a fresh-lineage baseline event.
 pub const CAMPAIGN_FRESH_LINEAGE_BASELINE_EVENT_SCHEMA: &str =
@@ -576,7 +559,7 @@ impl SharedFrontier {
     ///
     /// The path is keyed only by the frontier node content address.
     #[must_use]
-    pub fn frontier_path(&self, node: &ContentHash) -> PathBuf {
+    fn frontier_path(&self, node: &ContentHash) -> PathBuf {
         content_path(&self.root.join("frontier"), node)
     }
 
@@ -1179,7 +1162,7 @@ impl SharedDedupIndex {
     ///
     /// The path is keyed only by the reduction fingerprint content address.
     #[must_use]
-    pub fn reduction_path(&self, fingerprint: &ContentHash) -> PathBuf {
+    fn reduction_path(&self, fingerprint: &ContentHash) -> PathBuf {
         content_path(&self.root.join("reduction-fingerprints"), fingerprint)
     }
 
@@ -1301,20 +1284,6 @@ pub enum ExpansionDedupDecision {
     SkipExisting,
 }
 
-impl ExpansionDedupDecision {
-    /// Returns whether the node should be expanded.
-    #[must_use]
-    pub fn should_expand(self) -> bool {
-        matches!(self, Self::Expand)
-    }
-
-    /// Returns whether the node was skipped because it already exists.
-    #[must_use]
-    pub fn skipped_existing(self) -> bool {
-        matches!(self, Self::SkipExisting)
-    }
-}
-
 /// Result of shared coverage-map compare-and-merge admission.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CoverageAdmission {
@@ -1381,3 +1350,6 @@ use campaign_codec::*;
 pub use campaign_model::*;
 pub use campaign_store::*;
 pub use invalidation::*;
+
+pub mod content_envelope;
+pub mod content_store;

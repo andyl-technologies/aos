@@ -3,11 +3,10 @@
 use super::*;
 
 #[test]
-fn virtual_time_action_uses_current_qemu_coordinate_without_changing_identity() {
-    assert_eq!(qemu_execution_coordinate(None, 73), Ok(73));
-    assert_eq!(qemu_execution_coordinate(Some(73), 73), Ok(73));
+fn node_action_requires_the_exact_logical_tick() {
+    assert_eq!(qemu_execution_coordinate(73, 73), Ok(73));
     assert_eq!(
-        qemu_execution_coordinate(Some(72), 73),
+        qemu_execution_coordinate(72, 73),
         Err(FaultRuntimeError::AdapterActionMismatch)
     );
 }
@@ -45,23 +44,6 @@ fn typed_node_application_evidence_excludes_replay_authorization() {
         typed_node_application_evidence_hash(&baseline, 73),
         typed_node_application_evidence_hash(&baseline, 74)
     );
-
-    let mut legacy_material = [0_u8; 152];
-    legacy_material[0..2].copy_from_slice(&(baseline.command_kind as u16).to_le_bytes());
-    legacy_material[2..4].copy_from_slice(&(baseline.operation as u16).to_le_bytes());
-    legacy_material[4..6].copy_from_slice(&(baseline.target_kind as u16).to_le_bytes());
-    legacy_material[6..8].copy_from_slice(&baseline.model_phase.to_le_bytes());
-    legacy_material[8..16].copy_from_slice(&baseline.generation.to_le_bytes());
-    legacy_material[16..24].copy_from_slice(&baseline.prior_generation.to_le_bytes());
-    legacy_material[24..56].copy_from_slice(&baseline.target_hash);
-    legacy_material[56..88].copy_from_slice(&baseline.schema_hash);
-    legacy_material[88..120].copy_from_slice(&baseline.before_sha256);
-    legacy_material[120..152].copy_from_slice(&baseline.after_sha256);
-    let legacy = ContentHash::from_canonical_hex_bytes(
-        "crucible.qemu-node-application-evidence.v1",
-        &legacy_material,
-    );
-    assert_ne!(typed_node_application_evidence_hash(&baseline, 73), legacy);
 }
 
 #[test]
@@ -105,7 +87,7 @@ fn memory_application_evidence_excludes_replay_authorization() {
 
 #[test]
 fn staged_qemu_results_and_evidence_use_reserved_storage() {
-    fn result(action: ContentHash) -> PreparedActionResult {
+    fn result(action: ContentHash, tick: u64) -> PreparedActionResult {
         PreparedActionResult {
             action,
             precondition: None,
@@ -113,7 +95,7 @@ fn staged_qemu_results_and_evidence_use_reserved_storage() {
                 semantic_version: FAULT_RUNTIME_STATE_VERSION,
                 kind: FaultObservationKind::EffectCommitted,
                 coordinate: crucible::model::FaultCoordinate {
-                    virtual_nanos: 17,
+                    virtual_ticks: tick,
                     retired_instructions: None,
                 },
                 binding: None,
@@ -130,9 +112,23 @@ fn staged_qemu_results_and_evidence_use_reserved_storage() {
     let second_precondition = ContentHash::from_bytes(b"second-before");
     let first_evidence = ContentHash::from_bytes(b"first-evidence");
     let second_evidence = ContentHash::from_bytes(b"second-evidence");
+    let mut mismatched = vec![result(first, 23)];
+    assert!(matches!(
+        finalize_staged_result(
+            &mut mismatched,
+            first,
+            first_precondition,
+            24,
+            first_evidence
+        ),
+        Err(FaultActionCommitError::Fatal(
+            FaultRuntimeError::AdapterActionMismatch
+        ))
+    ));
+
     let mut results = Vec::with_capacity(2);
-    results.push(result(first));
-    results.push(result(second));
+    results.push(result(first, 23));
+    results.push(result(second, 29));
     let results_capacity = results.capacity();
 
     finalize_staged_result(
@@ -149,17 +145,12 @@ fn staged_qemu_results_and_evidence_use_reserved_storage() {
     assert_eq!(results.capacity(), results_capacity);
     assert_eq!(results[0].action, first);
     assert_eq!(results[0].precondition, Some(first_precondition));
-    assert_eq!(
-        results[0].observation.coordinate.retired_instructions,
-        Some(23)
-    );
+    assert_eq!(results[0].observation.coordinate.virtual_ticks, 23);
     assert_eq!(results[0].observation.evidence, first_evidence);
+    assert_eq!(results[0].observation.coordinate.retired_instructions, None);
     assert_eq!(results[1].action, second);
     assert_eq!(results[1].precondition, Some(second_precondition));
-    assert_eq!(
-        results[1].observation.coordinate.retired_instructions,
-        Some(29)
-    );
+    assert_eq!(results[1].observation.coordinate.virtual_ticks, 29);
     assert_eq!(results[1].observation.evidence, second_evidence);
 
     let committed_evidence = CommittedQemuActionEvidence {
@@ -244,7 +235,7 @@ fn dynamic_prepare_limit_preserves_authored_coordinates() {
 #[test]
 fn streaming_result_evidence_hash_preserves_the_canonical_identity() {
     let payload = b"typed-result-evidence";
-    let header = crucible_shmem::FaultResultHeaderV1 {
+    let header = crucible_shmem::FaultResultHeaderV2 {
         abi_major: FAULT_COMMAND_ABI_MAJOR,
         abi_minor: FAULT_COMMAND_ABI_MINOR,
         command_kind: FaultCommandKind::NodeLifecycle as u16,
@@ -253,6 +244,7 @@ fn streaming_result_evidence_hash_preserves_the_canonical_identity() {
         command_sequence: 7,
         observed_icount: 11,
         applied_icount: 11,
+        emitted_tick: 91,
         capability_version: 1,
         phase: FaultBoundaryPhase::NodeBoundary,
         before_hash: [1; 32],
@@ -274,7 +266,7 @@ fn streaming_result_evidence_hash_preserves_the_canonical_identity() {
 #[test]
 fn authenticated_typed_prepare_rejection_is_not_a_fatal_commit_error() {
     let payload = b"unsupported-clock-source-transition".to_vec();
-    let header = crucible_shmem::FaultResultHeaderV1 {
+    let header = crucible_shmem::FaultResultHeaderV2 {
         abi_major: FAULT_COMMAND_ABI_MAJOR,
         abi_minor: FAULT_COMMAND_ABI_MINOR,
         command_kind: FaultCommandKind::ClockSourceState as u16,
@@ -283,6 +275,7 @@ fn authenticated_typed_prepare_rejection_is_not_a_fatal_commit_error() {
         command_sequence: 7,
         observed_icount: 11,
         applied_icount: 0,
+        emitted_tick: 91,
         capability_version: 1,
         phase: FaultBoundaryPhase::NodeBoundary,
         before_hash: [1; 32],
@@ -294,7 +287,10 @@ fn authenticated_typed_prepare_rejection_is_not_a_fatal_commit_error() {
             .unwrap_or_else(|error| panic!("test payload length: {error}")),
     };
     let expected = result_evidence_hash(&header, &payload);
-    let result = DequeuedFaultResult::Valid { header, payload };
+    let result = DequeuedFaultResult::Valid {
+        header: Box::new(header),
+        payload,
+    };
 
     assert_eq!(
         typed_preparation_rejection_evidence(&result),

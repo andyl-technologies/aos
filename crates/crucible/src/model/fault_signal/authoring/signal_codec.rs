@@ -598,8 +598,8 @@ pub(super) fn authored_time_mapping(
         toml::Value::Integer(mapping.source_epoch),
     );
     value.insert(
-        String::from("virtual_epoch_nanos"),
-        authored_u64(mapping.virtual_epoch_nanos),
+        String::from("virtual_epoch_ticks"),
+        authored_u64(mapping.virtual_epoch_ticks),
     );
     value.insert(
         String::from("numerator"),
@@ -619,7 +619,7 @@ pub(super) fn parse_time_mapping(
     let mut value = table(value, "trace time mapping")?;
     let mapping = TraceTimeMapping {
         source_epoch: take_typed(&mut value, "source_epoch")?,
-        virtual_epoch_nanos: take_typed(&mut value, "virtual_epoch_nanos")?,
+        virtual_epoch_ticks: take_typed(&mut value, "virtual_epoch_ticks")?,
         scale: ExactRatio::new(
             take_typed(&mut value, "numerator")?,
             take_typed(&mut value, "denominator")?,

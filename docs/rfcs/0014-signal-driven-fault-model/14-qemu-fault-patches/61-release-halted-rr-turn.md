@@ -1,92 +1,56 @@
-# Patch 0110: release halted partial RR turns
+# Capability task 0110 — Bound RR spin and release halted turns
 
-Patch `0110-crucible-release-halted-rr-turn.patch` closes a scheduler-progress
-regression introduced by preserving a serialized RR cursor across partial
-turns.
+The atomic QEMU patch keeps a serialized RR owner across partial turns while
+allowing an all-halted guest to reach its idle deadline. For precise `sim`, x86
+`PAUSE` is a counted processor hint: it does not itself end a translation block
+or transfer the RR owner.
 
 ## Problem
 
-A guest can execute `HLT` before consuming the configured RR switch quantum.
-The serialized cursor correctly retains the unused part of that vCPU's turn.
-When no other vCPU is runnable, however, the RR selector returns the same
-halted cursor owner. Treating that return as ordinary partial-turn execution
-re-enters `tcg_cpu_exec()` indefinitely at one icount and prevents the existing
-all-vCPU-idle callback from running.
-
-The same cursor retention can starve a runnable peer at a guest-authored
-`PAUSE`. SeaBIOS exposes this during SMP bring-up: the boot CPU releases its
-AP-startup lock and executes `PAUSE`, but retaining that boot CPU's partial turn
-lets it reacquire the lock before an application processor can run. QEMU reports
-`PAUSE` as `EXCP_INTERRUPT`, so it must be distinguished from a host kick before
-committing the deterministic early handoff.
+A vCPU can execute `HLT` before consuming its RR quantum. If it is the last
+runnable vCPU, re-entering its retained partial turn at the same instruction
+count prevents the all-vCPU-idle callback and its timer advance. Separately,
+turning every guest `PAUSE` into a host-side TB exit makes a spin loop return
+to the RR scheduler every few instructions even when every peer is halted.
 
 ## Contract
 
-The selector still gets the first opportunity to hand the partial turn to a
-different runnable vCPU. If it returns the same owner and that vCPU is halted
-without pending work, the RR execution loop exits to its normal idle path. The
-cursor remains serialized at its nonzero position; leaving the execution loop
-does not consume or reset it.
+The selector first gives another runnable vCPU its turn. If the selected owner
+is halted with no pending work and no peer can run, the RR execution loop
+returns to its normal idle path without consuming or resetting the serialized
+partial cursor. The all-halted callback can then advance to the earliest armed
+virtual deadline.
 
-The x86 `PAUSE` helper marks its own TCG exit in transient private `CPUState`.
-The RR loop consumes and clears that marker immediately after `tcg_cpu_exec()`
-returns, before any control callback or checkpoint boundary. Generic
-`EXCP_INTERRUPT` exits therefore cannot masquerade as a guest yield, and the
-marker is never VMState.
+In `sim`, x86 `PAUSE` remains one decoded and retired guest instruction. Its
+ordinary SVM intercept, single-step, plugin instruction markers, and icount
+accounting still apply. It does not establish a special zero-instruction
+handoff. The existing RR quantum bounds how long a runnable peer waits; exact
+virtual timer, campaign dispatch, fault, and preemption budgets can stop the
+owner sooner. Ordinary QEMU accelerators retain the upstream PAUSE helper and
+its normal TB exit.
 
-In multi-vCPU precise sim mode, a marked `PAUSE` return is a guest-authored
-scheduler yield. Immediately after ordinary instruction accounting, and before
-any plugin callback, scheduled fault dispatch, vmstop, preemption, or other
-host-work exit, QEMU advances a still-partial serialized owner to the next vCPU
-and resets the cursor to zero. Host work arriving at the same boundary is
-serviced only after that canonical guest transition is durable. A yield
-coincident with full-quantum completion is already represented by ordinary
-accounting and is not applied twice. Single-vCPU execution retains its prior
-cursor because no peer can be starved.
+A guest-authored cross-vCPU APIC IPI is queued with its source sequence and
+routing generation, then requests the source vCPU to leave translated
+execution at the next TB boundary. The RR loop drains the queue before
+selecting another vCPU. Requesting an exit does not abort the APIC MMIO/MSR
+instruction after it has staged the IPI. IPI delivery and peer eligibility
+must not depend on host signal timing.
 
-The helper publishes an atomic handoff fence before leaving translated
-execution. A main-loop control callback that reaches the BQL first relinquishes
-its scheduling token and defers; the serialized RR writer commits the
-owner/cursor transition under the BQL, clears the fence, and schedules a fresh
-two-pass control boundary. A fingerprint or checkpoint request therefore cannot
-acknowledge the preceding partial owner while the RR writer is waiting for the
-BQL. PAUSE instructions with no colliding control callback do not schedule
-additional control work.
+An exhausted quantum still advances the serialized owner and publishes the
+usual RR handoff callback. HLT, reset, plugin stop, and exact control
+boundaries retain their independent checks; no PAUSE-specific transient marker
+or control fence remains.
 
-The corresponding exact completed-turn handoff is also a safe register-capture
-boundary after the serialized owner advances. Single-threaded RR excludes
-concurrent vCPU execution, the committed cursor must be zero at the next owner,
-and `current_cpu` must still name the vCPU whose turn just finished. All other
-owner-mismatch contexts remain rejected.
+## Evidence required
 
-Runnable partial turns continue immediately with a newly clamped budget.
-Ordinary accelerators never enter this sim-only RR branch.
-
-## Evidence
-
-The one-vCPU and four-vCPU diskless quantum guests finish boot with `HLT` at a
-nonzero RR cursor position. The live gates require the real patched QEMU and
-plugin to publish an all-halted boundary, advance to the exact PIT deadline,
-and reproduce the result under bounded scheduler preemption. The patch
-micro-test also requires the halted-owner escape to precede partial-turn
-continuation, requires `PAUSE` to set a dedicated marker that is consumed and
-cleared immediately on return, and requires the guest-yield transition to
-precede every callback or host-work exit while excluding unmarked interrupts,
-single-vCPU, and already-completed-turn double handoffs. The four-vCPU guest
-emits the exact output-only sequence `AAABPPPR`. Each AP publishes `A` and
-contends on the BSP's lock. The BSP emits `B`, releases the lock, executes
-`PAUSE`, and immediately tries to reacquire it. Reacquisition emits `F` and
-parks forever. A passing `P` therefore proves an AP acquired the lock at the
-helper-marked zero-instruction handoff, before the BSP's next guest instruction;
-eventual rotation at the ordinary 4096-instruction quantum cannot satisfy the
-gate: after issuing the `AAAB` console prefix, the guest writes a test marker
-immediately before the critical PAUSE. A non-distributable test QEMU arms only
-that CPU/site and aborts only if the marked PAUSE takes the still-partial
-early-yield branch; earlier startup/contention PAUSEs cannot satisfy the marker.
-It retains the ordinary HLT and full-quantum paths. If the critical PAUSE merely
-exhausted the ordinary quantum, the marker is cleared without abort and the
-negative run fails the gate. The negative also consumes the gate's bounded
-pre-abort UART capture and requires exact `AAAB`, rather than trusting authored
-result text. The remaining APs acquire and release in turn before the BSP emits
-`R`.
-INIT/SIPI delivery or an unrelated interrupt cannot false-green this evidence.
+The four-vCPU S11 contention guest executes `PAUSE` in its lock-spin loop and
+must reproduce the same aggregate fingerprint, per-vCPU trace, and RR cursor
+on repeated runs of one build. The live `qemuPauseIpiLive` gate starts an AP
+through directed INIT/SIPI, records each SIPI MMIO write and AP entry at raw
+icount, bounds the first IPI-to-AP interval, and proves that both vCPUs execute
+`PAUSE` before the BSP reaches HLT and the RR loop observes all-vCPU idle. Its
+complete event and serial streams must match across two launches of the same
+build. The existing S2 LAPIC companion covers exact virtual timer advancement
+and interrupt delivery. Exact-checkpoint, control-boundary, and replay gates
+must agree within that build. A one-instruction handoff between PAUSE and the
+next guest instruction is not a release requirement.

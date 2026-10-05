@@ -165,8 +165,12 @@
         needle = "Some(crucible_qemu_plugin_live_whitebox_tb_exec_cb)";
       }
       {
+        label = "observed raw retirement is independently checked";
+        needle = "location.validate_observed_icount(entry, observed_raw_icount)?";
+      }
+      {
         label = "instruction coordinate uses cached TB entry";
-        needle = "location.current_icount(self.tb_entries[vcpu_index])";
+        needle = "location.current_icount(entry)?";
       }
       {
         label = "x86 immediate-port instruction filter";
@@ -226,11 +230,11 @@
       }
       {
         label = "observational class assertion";
-        needle = "EventClass::Observational";
+        needle = "SchedulerEventLogClass::Observational";
       }
       {
         label = "exact icount assertion";
-        needle = "EventLogIcountStamp";
+        needle = "EventLogTickStamp";
       }
       {
         label = "causal projection empty for markers";
@@ -293,7 +297,8 @@ in
       pname = "crucible-phase4-guest-host-marker-observability";
       version = "0";
       src = crucibleSrc;
-      buildDeps = [pkgs.coreutils pkgs.grep pkgs.rust pkgs.sed liveWhitebox];
+      runtimeDeps = [pkgs.sqlite];
+      buildDeps = [pkgs.coreutils pkgs.grep pkgs.rust pkgs.sqlite pkgs.sed liveWhitebox];
       phases = [
         {
           name = "unpack";

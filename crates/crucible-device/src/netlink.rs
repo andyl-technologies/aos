@@ -51,8 +51,8 @@ pub mod link;
 pub mod response;
 
 pub use fault::{
-    LinkCorruptionStrategy, LinkFaults, Probability, corrupt_payload, jitter_shift_ns,
-    reorder_shift_ns,
+    LinkCorruptionStrategy, LinkFaults, Probability, corrupt_payload, jitter_shift_ticks,
+    reorder_shift_ticks,
 };
 pub use ipv4::{Ipv4FragmentationError, Ipv4FragmentationOutcome, fragment_ethernet_ipv4};
 pub use link::{

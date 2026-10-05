@@ -5,18 +5,17 @@
 #![allow(clippy::expect_used)]
 
 use crucible::{
-    ExactLocalEvent, Icount, IrqVector, NetworkLookahead, NodeCounter, NodeId, PreemptionDecision,
+    ExactLocalEvent, IrqVector, NetworkLookahead, NodeCounter, NodeId, PreemptionDecision,
     PreemptionKind, SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerNodeId,
-    SchedulerScenarioNode, SchedulingNodeKind, Shift, SimDuration, SimInstant, VcpuId,
+    SchedulerScenarioNode, SchedulingNodeKind, SimDuration, SimInstant, VcpuId,
 };
 
 #[test]
 fn preemption_requests_participate_in_configuration_identity() {
     let base = SchedulerLivenessScenario::from_canonical_material(
         "preemption-resolve-identity",
-        shift(0),
         8,
-        SimInstant { nanos: 20 },
+        SimInstant { ticks: 20 },
         vec![scenario_node(
             "runner",
             0,
@@ -62,7 +61,7 @@ fn interrupt_preemption(node: &str, at: u64, irq: u32) -> PreemptionDecision {
         node: NodeId {
             name: node.to_owned(),
         },
-        at: Icount { retired: at },
+        at: crucible::SimInstant { ticks: at },
         kind: PreemptionKind::InterruptAt {
             target_vcpu: VcpuId { index: 0 },
             irq: IrqVector { vector: irq },
@@ -70,10 +69,6 @@ fn interrupt_preemption(node: &str, at: u64, irq: u32) -> PreemptionDecision {
     }
 }
 
-fn shift(bits: u8) -> Shift {
-    Shift::new(bits).expect("test shift should be valid")
-}
-
 fn finite_lookahead(nanos: u64) -> NetworkLookahead {
-    NetworkLookahead::Finite(SimDuration { nanos })
+    NetworkLookahead::Finite(SimDuration { ticks: nanos })
 }

@@ -195,18 +195,19 @@ impl NinepDevice {
         )
     }
 
-    /// Advances the visible frontier from exact time and event evidence.
+    /// Advances the visible frontier from exact tick and event evidence.
+    /// Event map values use the same tick coordinate as `now_tick`.
     ///
     /// # Errors
     ///
     /// Returns [`DeviceError`] if checkpointed visibility state is inconsistent.
     pub fn advance_visibility(
         &mut self,
-        now_nanos: u64,
+        now_tick: u64,
         observed_events: &BTreeMap<[u8; 32], u64>,
     ) -> Result<(u64, u64), DeviceError> {
         self.visibility
-            .advance_visibility(self.session_epoch, now_nanos, observed_events)
+            .advance_visibility(self.session_epoch, now_tick, observed_events)
     }
 
     /// Returns the committed-versus-visible continuation.
@@ -245,9 +246,7 @@ impl NinepDevice {
         let uniform = Request::new(request_icount, tag, frame.to_vec());
         self.core
             .enqueue_request(uniform)
-            .map_err(|rejected| DeviceError::RingFull {
-                capacity: rejected.capacity,
-            })?;
+            .map_err(|rejected| rejected.source)?;
         // Borrow split: process_inbox needs `&mut self.core` and `&mut server`
         // simultaneously, so serve through a detached server view.
         Self::process_pending(
@@ -390,14 +389,37 @@ impl NinepDevice {
             .advance_to_shmem_with_commit_status(limit, outbox, outbox_entries, consumer_slot)
     }
 
+    /// Publishes one exact computed reply without waking the consumer.
+    ///
+    /// # Errors
+    ///
+    /// Returns a truthful zero-publication failure for stale, reordered,
+    /// payload-mismatched selections or corrupt response rings. Ring-full
+    /// backpressure retains the exact response.
+    pub fn deliver_selected_to_shmem(
+        &mut self,
+        at: u64,
+        selected: crate::FrameDeliveryKey,
+        expected_payload: &[u8],
+        outbox: &RingHeader,
+        outbox_entries: &mut [FrameEntry],
+    ) -> Result<crate::SelectedDeliveryOutcome, crate::ShmemDeliveryFailure> {
+        self.core
+            .deliver_selected_to_shmem(at, selected, expected_payload, outbox, outbox_entries)
+    }
+
     /// Pops the next delivered response, returning its raw 9p reply frame.
     ///
     /// Returns `None` when no response has been made visible yet. The payload is
     /// a complete, well-formed 9p reply frame ([IO-18]).
-    pub fn next_response(&mut self) -> Option<Vec<u8>> {
-        self.core
-            .pop_response()
-            .map(|pending| pending.response.payload)
+    /// # Errors
+    ///
+    /// Returns [`DeviceError::IoQueueRevisionExhausted`] before consuming a reply.
+    pub fn next_response(&mut self) -> Result<Option<Vec<u8>>, DeviceError> {
+        Ok(self
+            .core
+            .pop_response()?
+            .map(|pending| pending.response.payload))
     }
 
     /// COMPUTEs every pending inbox request through the 9p server view.
