@@ -277,7 +277,16 @@ in {
           aos.networking.interfaces.eth0.address = "192.168.50.11/24";
           aos.apm.desiredPackages = [ "aos-test-agent" ];
 
-          environment.etc."hosts".text = "127.0.0.1 localhost\n192.168.50.11 target\n";
+          aos.abilities.configuration.operations.file.effects.rollback-hosts = {
+            lifetime = "instance";
+            input = {
+              path = "/etc/hosts";
+              content = "127.0.0.1 localhost\n192.168.50.11 target\n";
+              owner = "root";
+              group = "root";
+              mode = "0444";
+            };
+          };
         }
       '';
     };

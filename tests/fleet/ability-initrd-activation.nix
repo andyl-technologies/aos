@@ -141,6 +141,11 @@ in {
       def read_json(path):
           return json.loads(target.succeed(f"{COREUTILS}/cat {shlex.quote(path)}"))
 
+      def read_identity(path, projection):
+          return json.loads(target.succeed(
+              f"{JQ} -c {shlex.quote(projection)} {shlex.quote(path)}"
+          ))
+
       def inspect(state):
           view = json.loads(target.succeed(
               f"{AOS} ability journal {shlex.quote(state + '/effects.journal')} --format json"
@@ -187,19 +192,17 @@ in {
               f"{PREPARATION} verify-deployment --input {bundle} "
               f"--state-directory {shlex.quote(state)} --nix-store {NIX_STORE}"
           )
-          transaction = read_json(f"{bundle}/transaction.json")
+          transaction = read_identity(f"{bundle}/transaction.json", "{schema, scope}")
           assert transaction["schema"] == "aos.package.transaction", transaction
           scope = transaction["scope"]
           assert scope == EXPECTED_SCOPES[stage], (stage, scope, EXPECTED_SCOPES[stage])
-          evaluation = json.loads(target.succeed(
-              f"{JQ} -c '{{schema, scope}}' {shlex.quote(bundle + '/evaluation.json')}"
-          ))
+          evaluation = read_identity(f"{bundle}/evaluation.json", "{schema, scope}")
           assert evaluation["schema"] == "aos.package.evaluation-input", evaluation
           assert evaluation["scope"] == scope, (evaluation["scope"], scope)
           admission_digest = target.succeed(f"{COREUTILS}/sha256sum {bundle}/admission.json").split()[0]
           expected_digest = target.succeed(f"{COREUTILS}/cat {bundle}/admission-sha256").strip()
           assert expected_digest == "sha256:" + admission_digest
-          assert read_json(f"{bundle}/admission.json")["schema"] == "aos.package.admission"
+          assert read_identity(f"{bundle}/admission.json", "{schema}")["schema"] == "aos.package.admission"
           view = inspect(state)
           assert view["retainedOutputs"], view
           if stage == "initrd":
