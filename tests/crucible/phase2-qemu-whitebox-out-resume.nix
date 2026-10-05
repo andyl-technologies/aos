@@ -176,6 +176,7 @@ assert builtins.elem profile ["rom" "linux"]; let
         fi
         grep -Fxq PASS "/tmp/$mode.result"
         grep -Fxq 'owned_cleanup=complete' "/tmp/$mode.result"
+        ${lib.optionalString (profile == "linux") ''echo "CRUCIBLE_OUT_RESUME_COMPLETED_MODE=$mode" || true''}
       done
       ${lib.concatMapStringsSep "\n" (mode: ''
           grep -Fxq 'registration_sequence=1' /tmp/${mode}.result
