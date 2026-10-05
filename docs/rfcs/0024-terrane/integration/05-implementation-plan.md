@@ -125,16 +125,18 @@ empty `terrane` binary.
 ### T1 — Local repository
 
 **Status:** In progress. Latest completed full qualification records candidate
-`7b36c2a5fc11`, which combines reviewed source discovery, immutable lookup,
+`9ec056b4f8b3`, which combines reviewed source discovery, immutable lookup,
 repeatable I/P/G maintenance, separate verifier/preparation work, common Memo
-replay and structural Memo/Node metadata validation. Its seven owning
-Memo/Node/index/no-std checks and both mandatory formatters pass. Application
+replay, structural Memo/Node metadata validation and native immutable index
+loading. Its owning loader check and both mandatory formatters pass; the
+preceding seven Memo/Node/index/no-std checks retain their recorded source
+qualification. Application
 compilation retains 109 test executables across 29 packages, including 72
 integration targets, without executing tests. The reviewed core components
 pass 650 tests with zero skips. Its default and keep-going
 current-trunk aggregates both exit 1; the latter reports ten failed gate
 dependencies, listed under T-DRV-2. Its observed native feature suite records
-387 passing and 26 failing tests out of 413; later profiles remain unqualified.
+391 passing and 26 failing tests out of 417; later profiles remain unqualified.
 An unchanged single-thread Nextest diagnostic of the first native profile
 on the earlier `1ce3dbe9f62a` candidate executes all 409 tests: 404 pass and
 five fail with `Unsupported`, with zero skips. No unexpected `Expired`,
@@ -1096,6 +1098,32 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   coverage decisions, Memo runtime integration, same-commit maintenance,
   corrected-owner rebuild/publication and positive native safe-index
   materialization remain incomplete. No task or milestone status advances.
+  Completed combined qualification of `9ec056b4f8b3` passes both mandatory
+  formatters, the owning loader check and application compilation (109/29/72,
+  without execution). All 5,761 tracked file images remain unchanged and the
+  six command log hashes are independently verified. Default and keep-going
+  current-trunk aggregates both exit 1. The same ten gate dependencies listed
+  above fail; the first native profile records 391 passing and 26 failing tests
+  out of 417, with none ignored or filtered: seventeen `Expired`, five
+  `Unsupported`, three `Elapsed` and one `Denied`. Later profiles and required
+  disclosure witnesses remain unqualified. No timing cause is inferred, no
+  mandatory check is changed, and no formal task merge or freeze advances.
+  The next native common-Memo prerequisite consumes explicitly selected,
+  untrusted immutable Memo addresses and optional claimed output-Node addresses
+  through read-only `ContentStore` operations. Only actual fetched bytes may
+  populate the existing common advisory table. The same evaluator must replay
+  the original recipe and mandatory inputs once, compare the complete claimed
+  closure, retain typed storage subjects/causes separately from advisory status,
+  and preserve divergent refusal or explicit same-evaluator rebuild. Disabled
+  caching performs no advisory reads. Neither invented recipe identities nor
+  opaque notes decoded as commit pointers may supply an association. Durable
+  selection, publication and root-associated collection remain separate.
+  Shared `checks.terrane.integration.memo-replay` declares four exact groups;
+  zero selected cases must fail rather than qualify this prerequisite.
+  Its requested declaration check exits 1 after reporting zero selected cases.
+  Registry completeness, both mandatory formatters and application compilation
+  pass; the latter retains 107 executables across 29 packages and 70 integration
+  targets without execution. These results qualify shared declarations only.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route

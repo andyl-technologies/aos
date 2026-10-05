@@ -12,6 +12,8 @@
 pub mod bucket;
 pub mod codec;
 pub mod config;
+#[cfg(feature = "std")]
+pub mod derivation;
 pub mod derived;
 pub mod domain;
 pub mod gc;
