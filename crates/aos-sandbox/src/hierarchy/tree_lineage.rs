@@ -414,8 +414,63 @@ pub(crate) fn validate_source_first_successor_members_v2(
     receipt: &crate::policy_compiler::SourceFirstSuccessorReceiptV2,
     appended_pair: Option<&[JournalRecord]>,
 ) -> Result<(), JournalError> {
+    validate_source_successor_members(
+        state, SourceSuccessorMemberRecipe::SingleProjectV2(receipt), appended_pair,
+    )
+}
+
+/// Validates every initial and successor member without granting mutation.
+pub(crate) fn validate_source_project_continuation_members_v3(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    receipts: &BTreeMap<ProjectId, crate::policy_compiler::SourceFirstSuccessorReceiptV2>,
+    proposed: Option<(&crate::policy_compiler::SourceFirstSuccessorReceiptV2, &[JournalRecord])>,
+) -> Result<(), JournalError> {
+    validate_source_successor_members(
+        state,
+        SourceSuccessorMemberRecipe::MixedProjectsV3 {
+            receipts,
+            proposed: proposed.map(|(receipt, _)| receipt),
+        },
+        proposed.map(|(_, pair)| pair),
+    )
+}
+
+// Recipes select a complete DATA comparison, never a writer or currentness
+// permit. Prospective members borrow the real before-map and actual pair.
+enum SourceSuccessorMemberRecipe<'receipt> {
+    SingleProjectV2(&'receipt crate::policy_compiler::SourceFirstSuccessorReceiptV2),
+    MixedProjectsV3 {
+        receipts: &'receipt BTreeMap<ProjectId, crate::policy_compiler::SourceFirstSuccessorReceiptV2>,
+        proposed: Option<&'receipt crate::policy_compiler::SourceFirstSuccessorReceiptV2>,
+    },
+}
+
+impl SourceSuccessorMemberRecipe<'_> {
+    fn proposed_receipt(&self) -> Option<&crate::policy_compiler::SourceFirstSuccessorReceiptV2> {
+        match self {
+            Self::SingleProjectV2(receipt) => Some(receipt),
+            Self::MixedProjectsV3 { proposed, .. } => *proposed,
+        }
+    }
+
+    fn project_receipt(&self, project: ProjectId) -> Option<&crate::policy_compiler::SourceFirstSuccessorReceiptV2> {
+        match self {
+            Self::SingleProjectV2(receipt) => (receipt.project() == project).then_some(*receipt),
+            Self::MixedProjectsV3 { receipts, proposed } => proposed
+                .filter(|receipt| receipt.project() == project)
+                .or_else(|| receipts.get(&project)),
+        }
+    }
+}
+
+fn validate_source_successor_members(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    recipe: SourceSuccessorMemberRecipe<'_>,
+    appended_pair: Option<&[JournalRecord]>,
+) -> Result<(), JournalError> {
     let invalid = || JournalError::ProtectedBoundary;
     let heads = if let Some(pair) = appended_pair {
+        let receipt = recipe.proposed_receipt().ok_or_else(invalid)?;
         let heads = replay_closed_tree_lineage_state_v2(state).map_err(|_| invalid())?;
         let old = heads.get(&receipt.project()).ok_or_else(invalid)?;
         if old.tree.tree_generation().get() != 1
@@ -474,7 +529,7 @@ pub(crate) fn validate_source_first_successor_members_v2(
         {
             return Err(invalid());
         }
-        if *project != receipt.project() {
+        let Some(receipt) = recipe.project_receipt(*project) else {
             if head.tree.tree_generation().get() != 1
                 || head.tree_head != tree_head || head.lineage_head != lineage_head
                 || head.tree.records().next().is_some() || head.tree.tombstones().next().is_some()
@@ -504,8 +559,19 @@ pub(crate) fn validate_source_first_successor_members_v2(
             return Err(invalid());
         }
     }
-    if !heads.contains_key(&receipt.project()) {
-        return Err(invalid());
+    match recipe {
+        SourceSuccessorMemberRecipe::SingleProjectV2(receipt) => {
+            if !heads.contains_key(&receipt.project()) {
+                return Err(invalid());
+            }
+        }
+        SourceSuccessorMemberRecipe::MixedProjectsV3 { receipts, proposed } => {
+            if receipts.keys().any(|project| !heads.contains_key(project))
+                || proposed.is_some_and(|receipt| !heads.contains_key(&receipt.project()))
+            {
+                return Err(invalid());
+            }
+        }
     }
 
     Ok(())

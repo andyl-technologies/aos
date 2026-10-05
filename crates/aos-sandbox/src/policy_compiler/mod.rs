@@ -110,9 +110,14 @@ mod source_successor_readback;
 pub use source_successor_readback::{
     SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2, SourceFirstSuccessorReadbackPhaseV2,
     VerifiedSourceFirstSuccessorReadbackV2, verify_source_first_successor_readback_v2,
+    SOURCE_PROJECT_CONTINUATION_READBACK_BYTES_V3, VerifiedSourceProjectContinuationReadbackV3,
+    verify_source_project_continuation_readback_v3,
 };
 #[cfg(target_os = "linux")]
-pub use source_signer_readback::sign_fixed_source_first_successor_readback_v2;
+pub use source_signer_readback::{
+    sign_fixed_source_first_successor_readback_v2,
+    sign_fixed_source_project_continuation_readback_v3,
+};
 #[cfg(target_os = "linux")]
 pub use source_genesis_root::{
     HeldControllerFirstSourceSuccessorV2, HeldRootFirstSourceSuccessorIntentV2,

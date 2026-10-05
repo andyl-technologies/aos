@@ -10,7 +10,7 @@ use aos_sandbox_core::{DesiredGeneration, ObjectDigest, ProjectId, Revision};
 
 use crate::journal::source_tree_successor::{
     FirstSourceSuccessorNativePhaseV2, PENDING_KEY, SourceFirstSuccessorRowsV2, ack_key, receipt_key,
-    source_capacity_request, transaction_id,
+    SourceSuccessorFamilyRecipeV3, source_capacity_request, transaction_id,
 };
 use crate::journal::{
     CommitResult, Journal, JournalError, JournalRecord,
@@ -66,6 +66,7 @@ pub struct HeldSourceFirstSuccessorObservationV2<'source> {
     lineage_head: ObjectDigest,
     tree_commit: ObjectDigest,
     generation: u64,
+    recipe: SourceSuccessorFamilyRecipeV3,
 }
 
 impl HeldSourceFirstSuccessorObservationV2<'_> {
@@ -148,7 +149,12 @@ impl HeldSourceFirstSuccessorObservationV2<'_> {
         if self.journal.protected_writer_physical_names_v1()? != self.names
             || self.journal.snapshot_sequence() != self.sequence
             || self.journal.source_tree_genesis_rows_v1()? != self.genesis
-            || self.journal.source_first_successor_rows_v2()? != self.successor
+            || match self.recipe {
+                SourceSuccessorFamilyRecipeV3::SingleProjectV2 => self.journal.source_first_successor_rows_v2()?,
+                SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected } => {
+                    self.journal.source_project_continuation_rows_v3(selected)?
+                }
+            } != self.successor
         {
             return Err(SourceGenesisErrorV1::Stale);
         }
@@ -183,14 +189,132 @@ pub fn observe_source_first_successor_v2<'source>(
     expected_source_uid: u32,
     project: ProjectId,
 ) -> Result<HeldSourceFirstSuccessorObservationV2<'source>, SourceGenesisErrorV1> {
+    observe_source_successor_with_recipe(
+        inventory, expected_source_uid, project, SourceSuccessorFamilyRecipeV3::SingleProjectV2,
+    )
+}
+
+// A v3 observation retains its original loan and every named result, including
+// failures. It is never returned as the strict v2 typed observation.
+/// Retains a complete mixed-family DATA observation and independent bookends.
+#[must_use = "the original DATA loan and its failed results must remain resident"]
+pub struct SourceProjectContinuationObservationV3<'source> {
+    journal: &'source Journal,
+    action: Result<HeldSourceFirstSuccessorObservationV2<'source>, SourceGenesisErrorV1>,
+    posts: [Result<(), SourceGenesisErrorV1>; 3],
+}
+
+impl SourceProjectContinuationObservationV3<'_> {
+    /// Borrows the earliest actual action or independent bookend failure.
+    pub fn error(&self) -> Option<&SourceGenesisErrorV1> {
+        self.action.as_ref().err().or_else(|| self.posts.iter().find_map(|post| post.as_ref().err()))
+    }
+
+    /// Borrows all independently retained post-observation results.
+    pub fn post_results(&self) -> &[Result<(), SourceGenesisErrorV1>; 3] {
+        &self.posts
+    }
+
+    /// Rechecks the same original writer without replacing retained failures.
+    ///
+    /// # Errors
+    /// Refuses any prior action/bookend failure or a changed current source cut.
+    pub fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
+        if self.error().is_some() {
+            return Err(SourceGenesisErrorV1::Stale);
+        }
+        self.action.as_ref().map_err(|_| SourceGenesisErrorV1::Stale)?.recheck()
+    }
+
+    /// Returns selected phase DATA only after all independent bookends succeed.
+    pub fn state(&self) -> Option<SourceFirstSuccessorStateV2> {
+        self.error().is_none().then(|| self.action.as_ref().ok().map(|observed| observed.state())).flatten()
+    }
+
+    /// Returns the selected project without exporting a strict observation loan.
+    pub fn project(&self) -> Option<ProjectId> {
+        self.error().is_none().then(|| self.action.as_ref().ok().map(|observed| observed.project())).flatten()
+    }
+
+    /// Borrows the immutable selected genesis receipt as DATA.
+    pub fn genesis_receipt(&self) -> Option<&SourceTreeGenesisReceiptV1> {
+        if self.error().is_some() { return None; }
+        self.action.as_ref().ok()?.genesis_receipt()
+    }
+
+    /// Borrows the selected successor receipt as DATA.
+    pub fn receipt(&self) -> Option<&SourceFirstSuccessorReceiptV2> {
+        if self.error().is_some() { return None; }
+        self.action.as_ref().ok()?.receipt()
+    }
+
+    /// Borrows the selected settled ACK as DATA.
+    pub fn ack(&self) -> Option<&SourceFirstSuccessorAckV2> {
+        if self.error().is_some() { return None; }
+        self.action.as_ref().ok()?.ack()
+    }
+
+    pub(crate) fn require_retained_inventory_v3(
+        &self, inventory: &RetainedTreeInventoryDataV1<'_>,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        self.recheck()?;
+        inventory.recheck()?;
+        if !std::ptr::eq(self.journal, inventory.journal()) {
+            return Err(SourceGenesisErrorV1::Stale);
+        }
+        self.action.as_ref().map_err(|_| SourceGenesisErrorV1::Stale)?
+            .require_retained_inventory_v2(inventory)
+    }
+}
+
+/// Observes every genuine initial/successor family before selecting one project.
+///
+/// The returned owner retains both a failed action and all independent posts.
+/// It grants no current Root floor, writer admission or mutation permission.
+pub fn observe_source_project_continuation_v3<'source>(
+    inventory: &'source RetainedTreeInventoryDataV1<'_>,
+    expected_source_uid: u32,
+    project: ProjectId,
+) -> SourceProjectContinuationObservationV3<'source> {
+    let journal = inventory.journal();
+    let sequence = journal.snapshot_sequence();
+    let action = observe_source_successor_with_recipe(
+        inventory, expected_source_uid, project,
+        SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected: Some(project) },
+    );
+    // None of these independent observations is short-circuited by action Err.
+    let location = require_location(journal, expected_source_uid);
+    let watermark = if journal.snapshot_sequence() == sequence {
+        Ok(())
+    } else {
+        Err(SourceGenesisErrorV1::Stale)
+    };
+    let retained = inventory.recheck().map_err(SourceGenesisErrorV1::from);
+    SourceProjectContinuationObservationV3 {
+        journal, action, posts: [location, watermark, retained],
+    }
+}
+
+fn observe_source_successor_with_recipe<'source>(
+    inventory: &'source RetainedTreeInventoryDataV1<'_>,
+    expected_source_uid: u32,
+    project: ProjectId,
+    recipe: SourceSuccessorFamilyRecipeV3,
+) -> Result<HeldSourceFirstSuccessorObservationV2<'source>, SourceGenesisErrorV1> {
     inventory.recheck()?;
     let journal = inventory.journal();
     require_location(journal, expected_source_uid)?;
     let genesis = journal.source_tree_genesis_rows_v1()?;
-    let successor = journal.source_first_successor_rows_v2()?;
+    let successor = match recipe {
+        SourceSuccessorFamilyRecipeV3::SingleProjectV2 => journal.source_first_successor_rows_v2()?,
+        SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected } => {
+            journal.source_project_continuation_rows_v3(selected)?
+        }
+    };
     let original = genesis.receipts.get(&project).ok_or(SourceGenesisErrorV1::Conflict)?;
     if genesis.pending.is_some() || !genesis.acks.contains_key(&project)
-        || successor.receipts.keys().any(|selected| *selected != project)
+        || (recipe == SourceSuccessorFamilyRecipeV3::SingleProjectV2
+            && successor.receipts.keys().any(|selected| *selected != project))
     {
         return Err(SourceGenesisErrorV1::Conflict);
     }
@@ -210,9 +334,11 @@ pub fn observe_source_first_successor_v2<'source>(
     } else {
         // Keep generation-one receipt/member checks in the existing engine;
         // structural inventory replay alone does not authenticate that join.
-        super::source_genesis::observe_retained_source_genesis_v1(
-            inventory, expected_source_uid, project,
-        )?.recheck()?;
+        if recipe == SourceSuccessorFamilyRecipeV3::SingleProjectV2 {
+            super::source_genesis::observe_retained_source_genesis_v1(
+                inventory, expected_source_uid, project,
+            )?.recheck()?;
+        }
         if head.tree.tree_generation().get() != 1
             || head.tree_head != original.tree_head() || head.lineage_head != original.lineage_head()
             || head.tree.records().next().is_some() || head.tree.tombstones().next().is_some()
@@ -228,7 +354,7 @@ pub fn observe_source_first_successor_v2<'source>(
         tree_head: head.tree_head, lineage_head: head.lineage_head,
         tree_commit: tree_commitment_v1(&head.tree)
             .map_err(|_| SourceGenesisErrorV1::NonCanonical)?,
-        generation: head.tree.tree_generation().get(),
+        generation: head.tree.tree_generation().get(), recipe,
     };
     observation.require_retained_inventory_v2(inventory)?;
     Ok(observation)
@@ -356,18 +482,54 @@ pub fn append_source_first_successor_v2(
     root: &HeldRootFirstSourceSuccessorIntentV2<'_>,
     results: &mut SourceFirstSuccessorMutationResultsV2,
 ) -> Result<SourceFirstSuccessorReceiptV2, ()> {
+    append_source_successor_with_recipe(
+        source, controller, root, results, SourceSuccessorFamilyRecipeV3::SingleProjectV2,
+    )
+}
+
+/// Appends a selected successor only under the existing genuine owner loans.
+///
+/// This selects complete mixed-family comparison, not a new admission
+/// constructor. A DATA observation cannot supply either required owner loan.
+/// Fresh project issuance and its installed consumer remain separate work.
+///
+/// # Errors
+/// Returns a retaining marker for reused reservoirs, unjoined foreign members,
+/// changed original admission, native ambiguity or independent post debt.
+pub(crate) fn append_source_project_continuation_v3(
+    source: &mut ProtectedSourceDomainJournalOwnerV1,
+    controller: &HeldControllerFirstSourceSuccessorV2<'_>,
+    root: &HeldRootFirstSourceSuccessorIntentV2<'_>,
+    results: &mut SourceFirstSuccessorMutationResultsV2,
+) -> Result<SourceFirstSuccessorReceiptV2, ()> {
+    append_source_successor_with_recipe(source, controller, root, results,
+        SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected: Some(root.record().project()) })
+}
+
+fn append_source_successor_with_recipe(
+    source: &mut ProtectedSourceDomainJournalOwnerV1,
+    controller: &HeldControllerFirstSourceSuccessorV2<'_>,
+    root: &HeldRootFirstSourceSuccessorIntentV2<'_>,
+    results: &mut SourceFirstSuccessorMutationResultsV2,
+    recipe: SourceSuccessorFamilyRecipeV3,
+) -> Result<SourceFirstSuccessorReceiptV2, ()> {
     if results.attempted {
         return Err(());
     }
     results.attempted = true;
     let journal = source.journal();
-    results.preparation = Some(prepare_append(journal, controller, root, results));
+    results.preparation = Some(match recipe {
+        SourceSuccessorFamilyRecipeV3::SingleProjectV2 => prepare_append(journal, controller, root, results),
+        SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { .. } => {
+            prepare_append_with_recipe(journal, controller, root, results, recipe)
+        }
+    });
     if matches!(results.preparation, Some(Ok(()))) && !results.transactions.is_empty() {
         results.preflight = Some(journal.preflight_first_source_successor_v2(
             &results.transactions,
             &[
-                FirstSourceSuccessorNativePhaseV2::SourceAppend,
-                FirstSourceSuccessorNativePhaseV2::SourceAck,
+                selected_native_phase(recipe, FirstSourceSuccessorNativePhaseV2::SourceAppend),
+                selected_native_phase(recipe, FirstSourceSuccessorNativePhaseV2::SourceAck),
             ],
         ));
         if matches!(results.preflight, Some(Ok(()))) {
@@ -382,14 +544,14 @@ pub fn append_source_first_successor_v2(
             }
             if matches!(results.crossing_clock, Some(Ok(_))) {
                 results.native = Some(journal.commit_first_source_successor_v2(
-                    &results.transactions[0], FirstSourceSuccessorNativePhaseV2::SourceAppend,
+                    &results.transactions[0], selected_native_phase(recipe, FirstSourceSuccessorNativePhaseV2::SourceAppend),
                 ));
             }
         }
     }
     // Each check runs even after an earlier action or native failure. No result
     // is moved out to manufacture a new success or release/retry permission.
-    results.readback = Some(journal.source_first_successor_rows_v2());
+    results.readback = Some(selected_source_rows(journal, recipe));
     results.source_post = Some(require_location(journal, root.source_uid()));
     results.controller_post = Some(controller.recheck());
     results.root_post = Some(root.recheck());
@@ -418,6 +580,17 @@ fn prepare_append(
     root: &HeldRootFirstSourceSuccessorIntentV2<'_>,
     results: &mut SourceFirstSuccessorMutationResultsV2,
 ) -> Result<(), SourceGenesisErrorV1> {
+    prepare_append_with_recipe(journal, controller, root, results,
+        SourceSuccessorFamilyRecipeV3::SingleProjectV2)
+}
+
+fn prepare_append_with_recipe(
+    journal: &mut Journal,
+    controller: &HeldControllerFirstSourceSuccessorV2<'_>,
+    root: &HeldRootFirstSourceSuccessorIntentV2<'_>,
+    results: &mut SourceFirstSuccessorMutationResultsV2,
+    recipe: SourceSuccessorFamilyRecipeV3,
+) -> Result<(), SourceGenesisErrorV1> {
     controller.recheck()?;
     root.recheck()?;
     let context = root.record();
@@ -428,7 +601,7 @@ fn prepare_append(
         return Err(SourceGenesisErrorV1::Conflict);
     }
     require_location(journal, root.source_uid())?;
-    results.initial_rows = Some(journal.source_first_successor_rows_v2()?);
+    results.initial_rows = Some(selected_source_rows(journal, recipe)?);
     let rows = results.initial_rows.as_ref().ok_or(SourceGenesisErrorV1::NonCanonical)?;
     if let Some(receipt) = rows.receipts.get(&context.project()) {
         require_first_successor_context_v2(receipt, context)?;
@@ -442,12 +615,22 @@ fn prepare_append(
         results.pending = rows.pending.clone();
         return Ok(());
     }
-    if !rows.receipts.is_empty() || rows.pending.is_some() {
+    if (recipe == SourceSuccessorFamilyRecipeV3::SingleProjectV2 && !rows.receipts.is_empty())
+        || rows.pending.is_some()
+    {
         return Err(SourceGenesisErrorV1::Conflict);
     }
     controller.recheck_current_admission()?;
     root.recheck_current_admission()?;
-    results.genesis = Some(super::source_genesis::validate_actual_rows(journal)?);
+    results.genesis = Some(match recipe {
+        SourceSuccessorFamilyRecipeV3::SingleProjectV2 => super::source_genesis::validate_actual_rows(journal)?,
+        SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected } => {
+            if selected != Some(context.project()) { return Err(SourceGenesisErrorV1::Conflict); }
+            // selected_source_rows already joined every actual lineage member,
+            // original genesis receipt/ACK and settled foreign successor.
+            journal.source_tree_genesis_rows_v1()?
+        }
+    });
     let genesis = results.genesis.as_ref().ok_or(SourceGenesisErrorV1::NonCanonical)?;
     let original = genesis.receipts.get(&context.project()).ok_or(SourceGenesisErrorV1::Conflict)?;
     let ack = genesis.acks.get(&context.project()).ok_or(SourceGenesisErrorV1::Conflict)?;
@@ -530,15 +713,44 @@ pub fn acknowledge_source_first_successor_v2(
     root: &RootFirstSourceSuccessorFloorProofV2<'_>,
     results: &mut SourceFirstSuccessorMutationResultsV2,
 ) -> Result<SourceFirstSuccessorAckV2, ()> {
+    acknowledge_source_successor_with_recipe(source, controller, root, results,
+        SourceSuccessorFamilyRecipeV3::SingleProjectV2)
+}
+
+/// Settles the selected actual pending suffix under genuine original owners.
+///
+/// # Errors
+/// Returns a retaining marker for changed actual pending project/transaction,
+/// unjoined foreign members, ambiguity or independent owner/clock debt.
+pub(crate) fn acknowledge_source_project_continuation_v3(
+    source: &mut ProtectedSourceDomainJournalOwnerV1,
+    controller: &HeldControllerFirstSourceSuccessorV2<'_>,
+    root: &RootFirstSourceSuccessorFloorProofV2<'_>,
+    results: &mut SourceFirstSuccessorMutationResultsV2,
+) -> Result<SourceFirstSuccessorAckV2, ()> {
+    acknowledge_source_successor_with_recipe(source, controller, root, results,
+        SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected: Some(root.floor().receipt().project()) })
+}
+
+fn acknowledge_source_successor_with_recipe(
+    source: &mut ProtectedSourceDomainJournalOwnerV1,
+    controller: &HeldControllerFirstSourceSuccessorV2<'_>,
+    root: &RootFirstSourceSuccessorFloorProofV2<'_>,
+    results: &mut SourceFirstSuccessorMutationResultsV2,
+    recipe: SourceSuccessorFamilyRecipeV3,
+) -> Result<SourceFirstSuccessorAckV2, ()> {
     if results.attempted {
         return Err(());
     }
     results.attempted = true;
     let journal = source.journal();
-    results.preparation = Some(prepare_ack(journal, controller, root, results));
+    results.preparation = Some(match recipe {
+        SourceSuccessorFamilyRecipeV3::SingleProjectV2 => prepare_ack(journal, controller, root, results),
+        SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { .. } => prepare_ack_with_recipe(journal, controller, root, results, recipe),
+    });
     if matches!(results.preparation, Some(Ok(()))) && !results.transactions.is_empty() {
         results.preflight = Some(journal.preflight_first_source_successor_v2(
-            &results.transactions, &[FirstSourceSuccessorNativePhaseV2::SourceAck],
+            &results.transactions, &[selected_native_phase(recipe, FirstSourceSuccessorNativePhaseV2::SourceAck)],
         ));
         if matches!(results.preflight, Some(Ok(()))) {
             results.crossing = Some((|| {
@@ -554,12 +766,12 @@ pub fn acknowledge_source_first_successor_v2(
             }
             if matches!(results.crossing_clock, Some(Ok(_))) {
                 results.native = Some(journal.commit_first_source_successor_v2(
-                    &results.transactions[0], FirstSourceSuccessorNativePhaseV2::SourceAck,
+                    &results.transactions[0], selected_native_phase(recipe, FirstSourceSuccessorNativePhaseV2::SourceAck),
                 ));
             }
         }
     }
-    results.readback = Some(journal.source_first_successor_rows_v2());
+    results.readback = Some(selected_source_rows(journal, recipe));
     results.source_post = Some(require_location(journal, root.source_uid()));
     results.controller_post = Some(controller.recheck());
     results.root_post = Some(root.recheck());
@@ -585,6 +797,17 @@ fn prepare_ack(
     root: &RootFirstSourceSuccessorFloorProofV2<'_>,
     results: &mut SourceFirstSuccessorMutationResultsV2,
 ) -> Result<(), SourceGenesisErrorV1> {
+    prepare_ack_with_recipe(journal, controller, root, results,
+        SourceSuccessorFamilyRecipeV3::SingleProjectV2)
+}
+
+fn prepare_ack_with_recipe(
+    journal: &mut Journal,
+    controller: &HeldControllerFirstSourceSuccessorV2<'_>,
+    root: &RootFirstSourceSuccessorFloorProofV2<'_>,
+    results: &mut SourceFirstSuccessorMutationResultsV2,
+    recipe: SourceSuccessorFamilyRecipeV3,
+) -> Result<(), SourceGenesisErrorV1> {
     controller.recheck()?;
     root.recheck()?;
     require_location(journal, root.source_uid())?;
@@ -603,7 +826,7 @@ fn prepare_ack(
         instance: receipt.instance(), project: receipt.project(), receipt: receipt.digest(),
         root_floor: floor.digest(), controller_anchored: anchored.digest(),
     })?);
-    results.initial_rows = Some(journal.source_first_successor_rows_v2()?);
+    results.initial_rows = Some(selected_source_rows(journal, recipe)?);
     let rows = results.initial_rows.as_ref().ok_or(SourceGenesisErrorV1::NonCanonical)?;
     if rows.receipts.get(&receipt.project()) != Some(receipt) {
         return Err(SourceGenesisErrorV1::Conflict);
@@ -628,6 +851,29 @@ fn prepare_ack(
         results.ack.as_ref().ok_or(SourceGenesisErrorV1::NonCanonical)?, receipt.approval(), deletion,
     )?);
     Ok(())
+}
+
+fn selected_source_rows(
+    journal: &Journal, recipe: SourceSuccessorFamilyRecipeV3,
+) -> Result<SourceFirstSuccessorRowsV2, JournalError> {
+    match recipe {
+        SourceSuccessorFamilyRecipeV3::SingleProjectV2 => journal.source_first_successor_rows_v2(),
+        SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { selected } => journal.source_project_continuation_rows_v3(selected),
+    }
+}
+
+fn selected_native_phase(
+    recipe: SourceSuccessorFamilyRecipeV3, phase: FirstSourceSuccessorNativePhaseV2,
+) -> FirstSourceSuccessorNativePhaseV2 {
+    match (recipe, phase) {
+        (SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { .. }, FirstSourceSuccessorNativePhaseV2::SourceAppend) => {
+            FirstSourceSuccessorNativePhaseV2::MixedSourceAppend
+        }
+        (SourceSuccessorFamilyRecipeV3::MixedProjectsV3 { .. }, FirstSourceSuccessorNativePhaseV2::SourceAck) => {
+            FirstSourceSuccessorNativePhaseV2::MixedSourceAck
+        }
+        _ => phase,
+    }
 }
 
 fn expected_ack(
