@@ -8,6 +8,9 @@
 #[path = "../../aos-oci/tests/support/mod.rs"]
 mod oci_support;
 
+#[path = "container_native_publication/publication_timing.rs"]
+mod publication_timing;
+
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -67,6 +70,7 @@ struct ObserverState {
     db: Arc<Database>,
     registry_id: i64,
     observations: Arc<Mutex<Vec<ControlObservation>>>,
+    publication_timing: Option<Arc<publication_timing::Observer>>,
 }
 
 struct RunningHub {
@@ -81,6 +85,7 @@ struct RunningHub {
     origin: String,
     bearer: String,
     observations: Arc<Mutex<Vec<ControlObservation>>>,
+    publication_timing: Option<Arc<publication_timing::Observer>>,
     server: tokio::task::JoinHandle<()>,
 }
 
@@ -880,6 +885,10 @@ fn publish_signed_registry_surface(
     if let Some(head) = public_head {
         fs::write(surface.join("HEAD"), head)?;
     }
+    let timing_scope = hub
+        .publication_timing
+        .as_ref()
+        .and_then(|observer| observer.begin_scope());
     publication_phase("aos-hub-publication-child", "begin");
     let output = Command::new(env!("CARGO_BIN_EXE_aos"))
         .env("HOME", home)
@@ -890,6 +899,9 @@ fn publish_signed_registry_surface(
         .output()
         .context("running typed Hub registry publication")?;
     publication_phase("aos-hub-publication-child", "returned");
+    if let (Some(observer), Some(scope)) = (&hub.publication_timing, timing_scope) {
+        observer.finish_scope(scope);
+    }
     if !output.status.success() {
         bail!(
             "aos hub registry publish upload failed:\nstdout:\n{}\nstderr:\n{}",
@@ -1014,6 +1026,7 @@ async fn spawn_hub(workspace: &Path, trust_key: &str) -> Result<RunningHub> {
         release_evidence: None,
     });
     let observations = Arc::new(Mutex::new(Vec::new()));
+    let publication_timing = publication_timing::Observer::from_environment();
     let git_surface = surface.clone();
     let git_auth = Arc::clone(&state.auth);
     let git_scope = scope.clone();
@@ -1063,6 +1076,7 @@ async fn spawn_hub(workspace: &Path, trust_key: &str) -> Result<RunningHub> {
                 db: Arc::clone(&db),
                 registry_id: registry.id,
                 observations: Arc::clone(&observations),
+                publication_timing: publication_timing.clone(),
             },
             observe_control,
         ));
@@ -1086,6 +1100,7 @@ async fn spawn_hub(workspace: &Path, trust_key: &str) -> Result<RunningHub> {
         origin,
         bearer,
         observations,
+        publication_timing,
         server,
     })
 }
@@ -1405,7 +1420,14 @@ async fn observe_control(
     next: Next,
 ) -> Response {
     let path = request.uri().path().to_string();
+    let publication_request = state
+        .publication_timing
+        .as_ref()
+        .and_then(|observer| observer.begin_request(request.method(), request.uri().path()));
     let response = next.run(request).await;
+    if let (Some(observer), Some(request)) = (&state.publication_timing, publication_request) {
+        observer.finish_request(request, response.status());
+    }
     let Some(method) = path
         .strip_prefix("/aos.hub.v1.ContainerService/")
         .map(ToString::to_string)
