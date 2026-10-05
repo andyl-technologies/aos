@@ -213,5 +213,9 @@ in {
                   and record["dispatch"]["effect"] == held["event"]["effect"]
                   and record["dispatch"]["journalSequence"] == held["event"]["journal_sequence"]]
               assert len(dispatches) == 1, dispatches
-    '';
+    ''
+    + import ./_bootcommit-retry-check.nix {
+      inherit lib pkgs;
+      configuration = activatedSystem.config;
+    };
 }
