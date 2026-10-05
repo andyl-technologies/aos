@@ -125,6 +125,29 @@ empty `terrane` binary.
 ### T1 — Local repository
 
 **Status:** In progress. Latest completed full qualification records candidate
+`21981e66f440`, which combines the reviewed immutable owner completion and
+native namespace acquisition with the preceding immutable index/Memo work.
+Both mandatory formatters, five immutable index/Memo/no-std checks and
+application compilation pass. Application records cover 109 test executables
+across 29 packages, including 72 integration targets, without executing tests.
+All 5,775 tracked file images remain unchanged throughout the ten-command run;
+all command log hashes are verified, and seven actual Nix check/compile inputs
+match the reviewed source. Both default and keep-going current-trunk aggregates
+exit 1.
+The default fails `index-generation-manifest` when physical-exclusion admission
+returns `Unsupported`; the complete inventory reports twelve failed gate
+dependencies, listed under T-DRV-2. Its first native feature profile records
+378 passing and 47 failing tests out of 425, with none ignored or filtered;
+later profiles and the three mandatory native disclosure cases remain
+unqualified. The `commit-order` failure returns `Expired`; the original
+outcomes do not establish timing causes or a regression. The reviewed core
+completion independently passes all 655 tests with zero skips and strict
+Clippy/rustdoc. The native source candidate passes all 146 default tests with
+zero skips and strict rustdoc; strict native Clippy remains red on 36 library
+and 16 test diagnostics outside its owned files. No formal task merge,
+task checkbox, milestone exit or freeze advances.
+
+The preceding completed full qualification records candidate
 `15540ef204ec`, which combines reviewed source discovery, immutable lookup,
 repeatable I/P/G maintenance, separate verifier/preparation work, common Memo
 replay, structural Memo/Node metadata validation and native immutable index
@@ -1228,6 +1251,40 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   images match the actual owning check input. Source acquisition supplies
   mandatory immutable inputs, not current producer checks, publication or
   complete native rebuild qualification. T-DRV-2 and T1 remain open.
+  Reviewed unpublished native source candidate `8dfcb67c8f1c` factors the
+  shared reader's namespace phase into read-only acquisition independent of
+  index availability, retaining canonical reconstruction, selected revisions,
+  geometry and original typed errors. Strict bound-index loading still refuses
+  missing or divergent auxiliary evidence. Four exact owning groups exercise
+  unbound sources, repeated graft/internal contexts, failures/revisions and
+  genuinely fetched initialization and explicit loss/divergence rebuilding.
+  The latter feeds actual materialized I/P/G into reviewed owner completion
+  and checks completed owner, recipe and optional common Memo bytes against
+  independent encodings, including zero candidates with retained gaps. It
+  establishes no current producer, trust, authority or publication proof.
+  Its unchanged eight-file source passes native build, all 146 default tests
+  with zero skips, strict rustdoc, four assigned Nix checks, application
+  compilation and both mandatory formatters. Strict native all-target Clippy
+  exits 101 with 36 library and 16 test diagnostics outside those files;
+  no diagnostic is suppressed. Original failed attempts remain preserved.
+  Parent combined candidate `21981e66f440` passes both mandatory formatters,
+  `index-completion`, `index-source`, `index-loading`, `memo-replay`,
+  `core-no-std` and application compilation. All 5,775 tracked images remain
+  unchanged through its ten original commands; six successful check/compile
+  inputs and the failed feature-matrix input match all twelve reviewed files.
+  Both aggregate commands finish and exit 1. The keep-going inventory reports
+  twelve failed dependencies: `bucket-file-layout`, `commit-order`,
+  `dom-dedup-scope`, `dom-reference-order`, `feature-matrix`,
+  `index-generation-manifest`, `prov-commit-verify`,
+  `prov-disclosure-boundary`, `ref-advance-ordering`, `ref-epoch-fencing`,
+  `role-selection` and `store-idempotent-put`. The first native profile passes
+  378 and fails 47 out of 425, with none ignored or filtered; later profiles
+  remain unqualified. Physical-exclusion admission returns `Unsupported`;
+  the `commit-order` attribute case returns `Expired`. These observations do
+  not establish causes. Thirteen T1 tasks and the pending `derivation-memo`,
+  `index-tree-maintenance` and `algebra-fork` gates remain open; pending gates
+  are outside this aggregate inventory. Implementations remain unpublished;
+  no formal task merge, checkbox, milestone exit or freeze advances.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route
