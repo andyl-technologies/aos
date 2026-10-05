@@ -443,7 +443,6 @@ in rec {
     qemuDeviceCompletionAdvance = import ./phase2-qemu-device-completion-advance.nix {inherit pkgs lib;};
     qemu9pSyncKick = import ./phase2-qemu-9p-sync-kick.nix {inherit pkgs lib;};
     qemuWhiteboxGuestWrite = import ./phase2-qemu-whitebox-guest-write.nix {inherit pkgs lib;};
-    qemuMemoryAccess = import ./phase2-qemu-memory-access.nix {inherit pkgs lib;};
     qemuFwCfgServiceDeadline = import ./phase2-qemu-memory-access.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase2.qemuFwCfgServiceDeadline";
