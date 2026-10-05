@@ -2,13 +2,36 @@
 {
   lib,
   pkgs,
-  configuration,
+  transaction,
 }: let
-  services = configuration.aos.services;
-  activation = services."control-plane.aos-activate";
-  commit = services."configuration-evaluation.image-boot-commit";
-  convergence = services."package-profile-convergence.package-profile-convergence" or null;
-  unitName = service: "${service.manager_identity.name}.service";
+  candidates = name:
+    builtins.filter
+    (node: lib.drop (builtins.length node.identity - 3) node.identity == ["serviceManagement" "realize" name])
+    (builtins.attrValues transaction.graph.nodes);
+  required = name: let
+    selected = candidates name;
+  in
+    if builtins.length selected != 1
+    then throw "Bootcommit retry probe requires exactly one selected ${name} service effect"
+    else (builtins.head selected).input;
+  activation = required "control-plane.aos-activate";
+  commit = required "configuration-evaluation.image-boot-commit";
+  convergenceCandidates = candidates "package-profile-convergence.package-profile-convergence";
+  convergence =
+    if convergenceCandidates == []
+    then null
+    else required "package-profile-convergence.package-profile-convergence";
+  unitName = service: let
+    # The native handler uses the declared service name when no distinct
+    # manager identity is authored; selected inputs preserve that null value.
+    name =
+      if service.manager_identity == null
+      then service.service
+      else service.manager_identity.name;
+  in
+    if name == ""
+    then throw "Bootcommit retry probe requires a declared manager service name"
+    else "${name}.service";
   hasConvergence = convergence != null && builtins.elem (unitName convergence) commit.dependencies.requires;
   roles =
     {

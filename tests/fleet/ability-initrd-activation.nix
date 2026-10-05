@@ -216,6 +216,6 @@ in {
     ''
     + import ./_bootcommit-retry-check.nix {
       inherit lib pkgs;
-      configuration = activatedSystem.config;
+      transaction = activatedSystem.config.system.build.hostDeploymentBundle.nativeTransaction;
     };
 }
