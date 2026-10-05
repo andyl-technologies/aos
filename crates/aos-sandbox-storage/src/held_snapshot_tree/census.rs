@@ -130,13 +130,18 @@ impl CensusWalkState {
     }
 
     pub(super) fn prepare_node(&mut self, relative: &Path) -> Result<usize, CensusDataError> {
-        if self.complete || self.first_failed_node.is_some() || self.records.len() == super::MAXIMUM_NODES {
+        if self.complete
+            || self.first_failed_node.is_some()
+            || self.records.len() == super::MAXIMUM_NODES
+        {
             return Err(CensusDataError::Closed);
         }
+
         let mut path = PathBuf::new();
         path.try_reserve_exact(relative.as_os_str().len())?;
         path.push(relative);
         let path_capacity = path.capacity();
+
         let mut components = Vec::new();
         let mut portable_path_capacity = 0_usize;
         for component in relative.components() {
@@ -147,24 +152,43 @@ impl CensusWalkState {
             let mut bytes = Vec::new();
             bytes.try_reserve_exact(component.len())?;
             bytes.extend_from_slice(component.as_bytes());
-            portable_path_capacity = portable_path_capacity.checked_add(bytes.capacity())
+            portable_path_capacity = portable_path_capacity
+                .checked_add(bytes.capacity())
                 .ok_or(CensusDataError::Capacity)?;
             components.push(PathName::new(bytes)?);
         }
-        portable_path_capacity = portable_path_capacity.checked_add(
-            components.capacity().checked_mul(std::mem::size_of::<PathName>())
-                .ok_or(CensusDataError::Capacity)?,
-        ).ok_or(CensusDataError::Capacity)?;
+        portable_path_capacity = portable_path_capacity
+            .checked_add(
+                components.capacity().checked_mul(std::mem::size_of::<PathName>())
+                    .ok_or(CensusDataError::Capacity)?,
+            )
+            .ok_or(CensusDataError::Capacity)?;
         let portable_path = RelativePath::new(components).map_err(|_| CensusDataError::Metadata)?;
+
         self.records.try_reserve_exact(1)?;
         let index = self.records.len();
         self.records.push(CensusNodeCapture {
-            path, path_capacity, portable_path, portable_path_capacity,
-            resolved: None, readable: None, file: None, symlink: None,
-            inode: [None, None, None], terminal_inode: None, mount: None,
-            metadata: CensusMetadataCapture::default(), metadata_summary: None, model: None,
-            directory_names: None, content: CensusContentCapture::default(),
-            target: Vec::new(), target_read: None, kind: None, outcome: None, postcheck: None,
+            path,
+            path_capacity,
+            portable_path,
+            portable_path_capacity,
+            resolved: None,
+            readable: None,
+            file: None,
+            symlink: None,
+            inode: [None, None, None],
+            terminal_inode: None,
+            mount: None,
+            metadata: CensusMetadataCapture::default(),
+            metadata_summary: None,
+            model: None,
+            directory_names: None,
+            content: CensusContentCapture::default(),
+            target: Vec::new(),
+            target_read: None,
+            kind: None,
+            outcome: None,
+            postcheck: None,
         });
         self.check_capacity()?;
         Ok(index)
@@ -274,13 +298,21 @@ impl CensusWalkState {
 
     pub(super) fn begin_directory(&mut self, root: &BeneathRoot, index: usize) -> Result<Vec<PathName>, CensusDataError> {
         let node = self.records.get_mut(index).ok_or(CensusDataError::Closed)?;
+
         // Prepare the complete borrowed getdents scratch before this open.
         node.directory_names = Some(CensusDirectoryNames::prepare()?);
-        let original = if index == 0 { root.as_fd() } else { original_linux(&node.resolved)?.as_fd() };
+        let original = if index == 0 {
+            root.as_fd()
+        } else {
+            original_linux(&node.resolved)?.as_fd()
+        };
         node.readable = Some(rustix::fs::openat(
-            original, ".", OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            original,
+            ".",
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             Mode::empty(),
         ));
+
         let readable = original_native(&node.readable)?;
         if index == 0 {
             node.inode[0] = Some(rustix::fs::fstat(readable.as_fd()));
@@ -293,12 +325,15 @@ impl CensusWalkState {
         {
             return Err(CensusDataError::Changed);
         }
-        node.metadata.capture(MetadataSubject::Original(readable.as_fd()), &before)
+        node.metadata
+            .capture(MetadataSubject::Original(readable.as_fd()), &before)
             .map_err(|_| CensusDataError::NativeObservation)?;
         node.metadata_summary = Some(node.metadata.summary().map_err(|_| CensusDataError::Closed)?);
         node.model = Some(node.metadata.transfer_metadata().map_err(|_| CensusDataError::Closed)?);
+
         let names = node.directory_names.as_mut().ok_or(CensusDataError::Closed)?;
         names.capture(readable.as_fd(), &before).map_err(|_| CensusDataError::NativeObservation)?;
+
         let mut walk_names = Vec::new();
         walk_names.try_reserve_exact(names.names().map_err(|_| CensusDataError::Closed)?.len())?;
         let mut name_capacity = walk_names.capacity().checked_mul(std::mem::size_of::<PathName>())
@@ -313,8 +348,12 @@ impl CensusWalkState {
         // The opened readable original now carries the complete directory
         // identity; retiring this successful O_PATH alias saves one FD/depth.
         node.resolved = None;
-        node.kind = Some(CensusNodeKind::Directory { entries: Vec::new(), descriptor: None });
-        self.walk_name_capacity = self.walk_name_capacity.checked_add(name_capacity)
+        node.kind = Some(CensusNodeKind::Directory {
+            entries: Vec::new(),
+            descriptor: None
+        });
+        self.walk_name_capacity = self.walk_name_capacity
+            .checked_add(name_capacity)
             .ok_or(CensusDataError::Capacity)?;
         self.check_capacity()?;
         Ok(walk_names)
@@ -367,20 +406,37 @@ impl CensusWalkState {
     }
 
     pub(super) fn capture_symlink(&mut self, parent: usize, index: usize, name: &PathName) -> Result<(), CensusDataError> {
-        if parent >= index { return Err(CensusDataError::Closed); }
+        if parent >= index {
+            return Err(CensusDataError::Closed);
+        }
+
         let (parents, children) = self.records.split_at_mut(index);
         let parent = &parents[parent];
         let node = &mut children[0];
         let before = *original_native(&node.inode[0])?;
-        if before.st_nlink != 1 { return Err(CensusDataError::Metadata); }
-        node.metadata.capture(MetadataSubject::Child { parent: original_native(&parent.readable)?.as_fd(), name }, &before)
+        if before.st_nlink != 1 {
+            return Err(CensusDataError::Metadata);
+        }
+
+        node.metadata
+            .capture(
+                MetadataSubject::Child {
+                    parent: original_native(&parent.readable)?.as_fd(),
+                    name
+                },
+                &before
+            )
             .map_err(|_| CensusDataError::NativeObservation)?;
         node.metadata_summary = Some(node.metadata.summary().map_err(|_| CensusDataError::Closed)?);
         node.model = Some(node.metadata.transfer_metadata().map_err(|_| CensusDataError::Closed)?);
+
         node.target.try_reserve_exact(4097)?;
         node.target.resize(4097, 0);
         let original = original_native(&node.symlink)?;
-        node.target_read = Some(rustix::fs::readlinkat_raw(original.as_fd(), "", &mut node.target[..]));
+        node.target_read = Some(rustix::fs::readlinkat_raw(
+            original.as_fd(), "", &mut node.target[..]
+        ));
+
         // Even failed link reads receive their independent same-inode post.
         node.inode[2] = Some(rustix::fs::fstat(original.as_fd()));
         let length = *original_native(&node.target_read)?;
@@ -388,7 +444,10 @@ impl CensusWalkState {
             return Err(CensusDataError::Changed);
         }
         node.target.truncate(length);
-        if node.target.contains(&0) { return Err(CensusDataError::Metadata); }
+        if node.target.contains(&0) {
+            return Err(CensusDataError::Metadata);
+        }
+
         node.kind = Some(CensusNodeKind::Symlink);
         self.check_capacity()
     }
@@ -1198,9 +1257,13 @@ struct CensusProcParentRoute {
 
 impl CensusProcParentRoute {
     fn prepare(&mut self, subject: &MetadataSubject<'_>) -> Result<Option<CString>, CensusDataError> {
-        let MetadataSubject::Child { parent, name } = subject else { return Ok(None); };
+        let MetadataSubject::Child { parent, name } = subject else {
+            return Ok(None);
+        };
+
         self.directory = Some(rustix::fs::open(
-            "/proc/self/fd", OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            "/proc/self/fd",
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
             Mode::empty(),
         ));
         let directory = original_native(&self.directory)?;
@@ -1211,12 +1274,15 @@ impl CensusProcParentRoute {
 
         self.parent_inode[0] = Some(rustix::fs::fstat(parent.as_fd()));
         let expected = *original_native(&self.parent_inode[0])?;
+
         // Following this one procfs magic link is intentional. The exact
         // returned inode must equal the existing held parent before l*xattr.
         let component = parent.as_raw_fd().to_string();
         self.alias = Some(rustix::fs::openat(
-            directory.as_fd(), component.as_str(),
-            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC, Mode::empty(),
+            directory.as_fd(),
+            component.as_str(),
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
         ));
         let alias = original_native(&self.alias)?;
         self.alias_inode[0] = Some(rustix::fs::fstat(alias.as_fd()));
@@ -1230,18 +1296,25 @@ impl CensusProcParentRoute {
             .into_bytes();
         path.try_reserve_exact(name.as_bytes().len())?;
         path.extend_from_slice(name.as_bytes());
-        if path.len() > 4096 { return Err(CensusDataError::Capacity); }
+        if path.len() > 4096 {
+            return Err(CensusDataError::Capacity);
+        }
+
         CString::new(path).map(Some).map_err(|_| CensusDataError::Metadata)
     }
 
     fn postcheck(&mut self, subject: &MetadataSubject<'_>, action_succeeded: bool) {
-        let MetadataSubject::Child { parent, .. } = subject else { return; };
+        let MetadataSubject::Child { parent, .. } = subject else {
+            return;
+        };
+
         // Posts run independently even when opening or reading metadata failed.
         self.parent_inode[1] = Some(rustix::fs::fstat(parent.as_fd()));
         if let Some(Ok(alias)) = &self.alias {
             self.alias_inode[1] = Some(rustix::fs::fstat(alias.as_fd()));
         }
         self.debt = Some(self.require_postcheck());
+
         if action_succeeded && matches!(self.debt, Some(Ok(()))) {
             self.alias = None;
             self.directory = None;
