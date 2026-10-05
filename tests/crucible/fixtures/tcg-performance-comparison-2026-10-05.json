@@ -2308,13 +2308,569 @@
       "samples": 28
     },
     "final_abi_conformance": {
-      "status": "PENDING"
+      "status": "PASS",
+      "check": "checks.crucible.phase2.abiConformance",
+      "artifact_basename": "470w1fzaafdrjs13r6fnflrw9zqvmqv0-crucible-phase2-abi-conformance-0"
     },
     "final_license_boundary": {
-      "status": "PENDING"
+      "status": "PASS",
+      "gate": "gate:license-boundary",
+      "boundary_tests_passed": 18,
+      "tasks": [
+        "BOUND-1",
+        "BOUND-2",
+        "BOUND-3",
+        "BOUND-4",
+        "BOUND-5",
+        "BOUND-6",
+        "BOUND-7",
+        "BOUND-8",
+        "BOUND-9",
+        "BOUND-10",
+        "BOUND-11",
+        "BOUND-12"
+      ],
+      "output": "fpdmzmffifnyqgmrcmhm52wjmyl3wv7n-crucible-phase1-license-boundary-0",
+      "result": "PASS\ncheck=checks.crucible.phase1.gates.licenseBoundary\ngate=gate:license-boundary\ntasks=BOUND-1,BOUND-2,BOUND-3,BOUND-4,BOUND-5,BOUND-6,BOUND-7,BOUND-8,BOUND-9,BOUND-10,BOUND-11,BOUND-12\nrust_test=crucible-harness::gate_license_boundary\ncontroller_package=crucible-controller\ncontroller_license=Apache-2.0\nqemu_corresponding_source_package=qemu-crucible-source\nqemu_corresponding_source_build_id=ae82f1ef3ab33c03282c10370fcf0f241378082d4f21dd28b15f7c13667754a8\ncorresponding_source_reconstruction=atomic-patch-applied,archived-plugin-offline-checked\n",
+      "result_sha256": "95915973052c4747f97ec58f3c3c2d856838e2b26e83b1a9b4086e107c11f92f",
+      "log": "crucible-tcg-speed-license-controlled.log",
+      "log_sha256": "8589ae4821215e8bf440ef68fa2796103282d9510d31dcf6e86ba5d7dd10600f",
+      "matching_complete_corresponding_source": true,
+      "qemu_corresponding_source_build_id": "ae82f1ef3ab33c03282c10370fcf0f241378082d4f21dd28b15f7c13667754a8"
     },
-    "remaining_guest_fault_and_full_determinism_checks": {
-      "status": "PENDING"
+    "exact_snapshot_restore": {
+      "status": "PASS",
+      "check": "checks.crucible.phase2.qemuExactSnapshotRestore"
+    },
+    "exact_restore_reachability": {
+      "status": "PASS",
+      "check": "checks.crucible.phase2.qemuExactRestoreReachability"
+    },
+    "fwcfg_service_deadline": {
+      "status": "PASS",
+      "check": "checks.crucible.phase2.qemuFwCfgServiceDeadline"
+    },
+    "instruction_faults": {
+      "status": "PASS",
+      "cases": 72,
+      "terminal_replay_events": 4095
+    },
+    "canonical_s11": {
+      "status": "PASS",
+      "check": "checks.crucible.phase0.s11MultiVcpuFingerprint",
+      "origin_master_head_to_head": true,
+      "vcpus": 4,
+      "raw_horizon": 8000000000,
+      "samples_per_run": 81,
+      "rr_handoffs_per_run": 4901861
+    },
+    "engineering_hygiene": {
+      "status": "PASS",
+      "tests": 4,
+      "review_metadata_commit": "c56771fb17",
+      "thresholds_and_responsibilities_unchanged": true
+    },
+    "eval_instantiation": {
+      "status": "PASS",
+      "check": "checks.eval-standalone",
+      "rendered_system_build": "Not run: it builds unrelated complete systems"
+    },
+    "native_atomic_world": {
+      "status": "FAIL_PREEXISTING",
+      "formal_check": "checks.crucible.phase7.qemuHotForkAtomicWorldVm",
+      "matching_original_pair_reproduced": true,
+      "failure_before_any_fork": true,
+      "error": "block transport event source 0 does not match reserved block source 30",
+      "final_case": "qemuHotForkAtomicWorldVm.cores4",
+      "baseline_case": "qemuHotForkAtomicWorldVm.original-pair",
+      "scope": "Only the first source-world case runs; failure prevents the remaining cases and any world-fork equivalence or adoption assertion from executing."
+    },
+    "native_equivalence": {
+      "status": "FAIL_PREEXISTING",
+      "formal_check": "checks.crucible.phase7.qemuHotForkEquivalenceVm",
+      "matching_original_pair_reproduced": true,
+      "failure_before_any_fork": true,
+      "error": "block transport event source 0 does not match reserved block source 30",
+      "final_case": "qemuHotForkEquivalenceVm.cores4",
+      "baseline_case": "qemuHotForkEquivalenceVm.original-pair",
+      "scope": "Only the first source-world case runs; failure prevents the remaining cases and any world-fork equivalence or adoption assertion from executing."
+    },
+    "packaged_crucible_nextest": {
+      "status": "PASS",
+      "tests_passed": 5560,
+      "tests_failed": 0,
+      "tests_skipped": 75,
+      "slow_tests": 3,
+      "wall_seconds": 399.528,
+      "test_workers": 4,
+      "nix_build_cores": 4,
+      "qualification_source_revision": "c56771fb17",
+      "controller_derivation": "2338bjp6m7y9b2wmapf8v9rjjiqp92fk-crucible-controller-0.1.0.drv",
+      "controller_output": "x0098i8nqy85gd5i3i77xb7kg2jsm0lq-crucible-controller-0.1.0",
+      "log": "qemuHotForkAtomicWorldVm.cores4.stderr.log",
+      "summary_line": 1399,
+      "prior_run_note": "A higher-concurrency run passed 5558 tests but failed two unchanged scripted child-process shutdown tests. The four-worker run passed both without modifying source, assertions, or timeouts.",
+      "previously_failed_tests": [
+        "qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::two_factories_keep_independent_live_children_from_one_managed_source",
+        "qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::proven_first_child_rejection_restores_the_exact_source_world_for_retry"
+      ],
+      "log_sha256": "f436cafd93d20114a54650038b94a3a7ce719f41816b351f461028d267bb59f6"
+    },
+    "manual_full_memory_access": {
+      "status": "PREEXISTING_FAILURE",
+      "case": "x86_64-base-7",
+      "reproduced_on_original_initial_final": true,
+      "existing_focused_gate": "PASS",
+      "runtime_and_timeouts_unchanged": true
+    },
+    "native_child_private_vmstate": {
+      "status": "PASS",
+      "formal_phase6_derivation": false,
+      "existing_fixture": "tests/crucible/phase6-qemu-hot-fork-child-vm.nix",
+      "shipped_final_qemu_and_plugin": true,
+      "assertions_and_timeout_unchanged": true,
+      "children_forked": 3,
+      "restored_generations": 2,
+      "source_suffix_icount": 9000001,
+      "source_vmstate_unchanged": true,
+      "source_threads_leaked": 0,
+      "source_descriptors_leaked": 0,
+      "scope": "Temporary harness uses shipped stripped binaries and the audited behavior-equivalent cached x86_64 probe; full metadata records both deviations. Whole-world adoption/equivalence is not asserted."
     }
-  }
+  },
+  "s11_head_to_head": {
+    "status": "PASS",
+    "baseline_revision": "6df2fe66e61e932ed9f44350084da4939b620800",
+    "baseline_qemu_sha256": "517d2751e0fa2cc0c8dbeeb36c3bcb21ae6eb96e799a1e57353a9008bad74991",
+    "final_qemu_sha256": "3d71c293c5c509e125e5f197d6e4f8c8cbc6ee80e384f5a0bd47bd309b1ec93b",
+    "trace_observer_source_sha256": "d53fb536fe1de98d25746739b22059f456c90f596d9f244acc8b993b0c282dc4",
+    "trace_observer_binary_sha256": "31c8dda358480d8fbce58eaa9b43a8bdd622266d1001dafd3c03964a21b0391d",
+    "trace_observer_source_and_binary_equal": true,
+    "coordinates": {
+      "vcpus": "4",
+      "horizon_icount": "8000000000",
+      "require_guest_pass": "1",
+      "sustained_workload_active": "true",
+      "workload_affinity_active": "true",
+      "rr_switch_quantum": "4096",
+      "cadence": "100000000",
+      "host_adversary": "bounded-scheduler-preemption",
+      "exact_horizon_authoritative": "true"
+    },
+    "guest_inputs_equal": [
+      "kernel_digest",
+      "initramfs_digest",
+      "reset_digest",
+      "mp_table_digest",
+      "setup_digest",
+      "kernel_image_digest",
+      "cmdline_digest",
+      "seed_digest"
+    ],
+    "excluded_build_attestation_fields": [
+      "qemu_build_digest",
+      "trace_plugin_build_digest",
+      "launch_definition_digest",
+      "process_argv_digest"
+    ],
+    "traces": {
+      "trace-authoritative-a.jsonl": {
+        "records": 4901941,
+        "normalized_samples": 80
+      },
+      "trace-a.jsonl": {
+        "records": 4901942,
+        "normalized_samples": 81
+      },
+      "rr-switch-trace-a.tsv": {
+        "records": 4901861,
+        "normalized_samples": 0
+      },
+      "per-vcpu-delta-trace-a.tsv": {
+        "records": 4901861,
+        "normalized_samples": 0
+      },
+      "trace-authoritative-b.jsonl": {
+        "records": 4901941,
+        "normalized_samples": 80
+      },
+      "trace-b.jsonl": {
+        "records": 4901942,
+        "normalized_samples": 81
+      },
+      "rr-switch-trace-b.tsv": {
+        "records": 4901861,
+        "normalized_samples": 0
+      },
+      "per-vcpu-delta-trace-b.tsv": {
+        "records": 4901861,
+        "normalized_samples": 0
+      }
+    },
+    "horizon": {
+      "horizon_stream_hash": "b8c60788c3d52f06",
+      "horizon_register_hash": "1a515d5eb308de68838adf1ea59d2542a7f12f931da8a4026cd58b4dec7c79a7",
+      "horizon_ram_hash": "74fc0524cd41ad1b40a0666d28b75c08e19f6b82e9b012f821048c647567b78d",
+      "horizon_rr_cursor": "[2,303,4096]",
+      "final_aggregate_hash": "df45b61270ab011e",
+      "final_per_vcpu_retired": "[2598639481,1786780193,1791382423,1819998313]",
+      "rr_switch_events": "4901861",
+      "samples": "81"
+    },
+    "final_qemu_integration_revision": "47fed0800537a32bf5a0c786ac91c993981166eb",
+    "all_six_results": {
+      "crucible.phase1.simAccel": "PASS",
+      "crucible.phase2.qemuExactPreemptionLive": "PASS",
+      "crucible.phase2.qemuExactSnapshotRestore": "PASS",
+      "crucible.phase2.qemuPauseIpiLive": "PASS",
+      "crucible.phase2.tcgPerformanceDeterminism": "PASS",
+      "crucible.phase0.s11MultiVcpuFingerprint": "PASS"
+    },
+    "additional_results": {
+      "crucible.phase2.qemuExactRestoreReachability": "PASS",
+      "nix_format_2050_files": "PASS"
+    },
+    "inventory_correction_revision": "2fd99374f5",
+    "gate_wall_seconds": {
+      "baseline": 1272.857,
+      "final": 1214,
+      "reduction_percent": 4.624007252974993,
+      "qualification": "Includes live VMs, full JSON validation and Nix output hashing; final trace-plugin build is included. Qualification builds overlapped. Evidence copying is excluded. Corroborative gate timing, not isolated VM throughput."
+    }
+  },
+  "s11_reproduction": {
+    "language": "python3",
+    "runtime": "AOS-built Python 3; stream comparison only, no new VMs or Nix builds",
+    "source_sha256": "c66bf04742cea1240acd5b7bf8b21c6fbb157961ecb67c138cb2766d8102eb1d",
+    "source": "\"\"\"Compares canonical S11 state across two separately attested QEMU builds.\"\"\"\n\nimport argparse\nimport hashlib\nimport itertools\nimport json\nfrom pathlib import Path\n\n\nATTESTATION_FIELDS = (\n    \"qemu_build_digest\",\n    \"trace_plugin_build_digest\",\n    \"launch_definition_digest\",\n    \"process_argv_digest\",\n)\n\n\n\ndef read_result(path):\n    lines = path.read_text().splitlines()\n    if lines[0] != \"PASS\":\n        raise AssertionError(f\"canonical gate did not pass: {path}\")\n\n    return dict(line.split(\"=\", 1) for line in lines[1:] if \"=\" in line)\n\n\ndef compare_trace(left, right, omit_attestation):\n    records = 0\n    samples = 0\n\n    with left.open() as baseline, right.open() as candidate:\n        for records, (original, final) in enumerate(\n            itertools.zip_longest(baseline, candidate), start=1\n        ):\n            if original is None or final is None:\n                raise AssertionError(f\"{left.name}: record count differs at {records}\")\n\n            if original == final:\n                continue\n\n            if not omit_attestation:\n                raise AssertionError(f\"{left.name}: record {records} differs\")\n\n            original_record = json.loads(original)\n            final_record = json.loads(final)\n            for field in ATTESTATION_FIELDS:\n                original_record.pop(field, None)\n                final_record.pop(field, None)\n\n            if original_record != final_record:\n                fields = sorted(\n                    field\n                    for field in original_record.keys() | final_record.keys()\n                    if original_record.get(field) != final_record.get(field)\n                )\n                coordinate = original_record.get(\"observed_icount\", original_record.get(\"retired\"))\n                raise AssertionError(\n                    f\"{left.name}: record {records}, icount={coordinate}, differs in {fields}\"\n                )\n\n            samples += 1\n\n    return {\"records\": records, \"normalized_samples\": samples}\n\n\ndef main():\n    parser = argparse.ArgumentParser(description=__doc__)\n    parser.add_argument(\"--baseline-result\", type=Path, required=True)\n    parser.add_argument(\"--final-result\", type=Path, required=True)\n    parser.add_argument(\"--baseline-qemu\", type=Path, required=True)\n    parser.add_argument(\"--final-qemu\", type=Path, required=True)\n    parser.add_argument(\"--baseline-observer-source\", type=Path, required=True)\n    parser.add_argument(\"--final-observer-source\", type=Path, required=True)\n    parser.add_argument(\"--baseline-revision\", required=True)\n    parser.add_argument(\"--final-integration-revision\", required=True)\n    parser.add_argument(\"--output\", type=Path, required=True)\n    args = parser.parse_args()\n\n    baseline = args.baseline_result\n    final = args.final_result\n    output = args.output\n    baseline_result = read_result(baseline / \"result\")\n    final_result = read_result(final / \"result\")\n\n    for label, result in ((\"baseline\", baseline_result), (\"final\", final_result)):\n        binary = args.baseline_qemu if label == \"baseline\" else args.final_qemu\n        with binary.open(\"rb\") as executable:\n            digest = hashlib.file_digest(executable, \"sha256\").hexdigest()\n        if result[\"qemu_build_digest\"] != digest:\n            raise AssertionError(f\"{label} gate did not exercise the required QEMU artifact\")\n\n    source_paths = (args.baseline_observer_source, args.final_observer_source)\n    source_digests = [hashlib.sha256(path.read_bytes()).hexdigest() for path in source_paths]\n    if source_digests[0] != source_digests[1]:\n        raise AssertionError(\"baseline and final trace-observer source differs\")\n    if baseline_result[\"trace_plugin_build_digest\"] != final_result[\"trace_plugin_build_digest\"]:\n        raise AssertionError(\"baseline and final realized trace-observer binary differs\")\n\n    required = {\n        \"vcpus\": \"4\",\n        \"horizon_icount\": \"8000000000\",\n        \"require_guest_pass\": \"1\",\n        \"sustained_workload_active\": \"true\",\n        \"workload_affinity_active\": \"true\",\n        \"rr_switch_quantum\": \"4096\",\n        \"cadence\": \"100000000\",\n        \"host_adversary\": \"bounded-scheduler-preemption\",\n        \"exact_horizon_authoritative\": \"true\",\n    }\n\n    for name, expected in required.items():\n        if baseline_result[name] != expected or final_result[name] != expected:\n            raise AssertionError(f\"canonical coordinate differs: {name}\")\n\n    artifact_inputs = (\n        \"kernel_digest\", \"initramfs_digest\", \"reset_digest\", \"mp_table_digest\",\n        \"setup_digest\", \"kernel_image_digest\", \"cmdline_digest\", \"seed_digest\",\n    )\n    for name in artifact_inputs:\n        if baseline_result[name] != final_result[name]:\n            raise AssertionError(f\"guest input differs: {name}\")\n\n    evidence = {\n        \"status\": \"PASS\",\n        \"baseline_revision\": args.baseline_revision,\n        \"final_qemu_integration_revision\": args.final_integration_revision,\n        \"baseline_qemu_sha256\": baseline_result[\"qemu_build_digest\"],\n        \"final_qemu_sha256\": final_result[\"qemu_build_digest\"],\n        \"trace_observer_source_sha256\": source_digests[0],\n        \"trace_observer_binary_sha256\": final_result[\"trace_plugin_build_digest\"],\n        \"trace_observer_source_and_binary_equal\": True,\n        \"coordinates\": required,\n        \"guest_inputs_equal\": list(artifact_inputs),\n        \"excluded_build_attestation_fields\": list(ATTESTATION_FIELDS),\n        \"traces\": {},\n    }\n\n    for label in (\"a\", \"b\"):\n        filenames = (\n            (f\"trace-authoritative-{label}.jsonl\", True),\n            (f\"trace-{label}.jsonl\", True),\n            (f\"rr-switch-trace-{label}.tsv\", False),\n            (f\"per-vcpu-delta-trace-{label}.tsv\", False),\n        )\n\n        for filename, omit_attestation in filenames:\n            evidence[\"traces\"][filename] = compare_trace(\n                baseline / filename, final / filename, omit_attestation\n            )\n\n    evidence[\"horizon\"] = {\n        name: final_result[name]\n        for name in (\n            \"horizon_stream_hash\", \"horizon_register_hash\", \"horizon_ram_hash\",\n            \"horizon_rr_cursor\", \"final_aggregate_hash\", \"final_per_vcpu_retired\",\n            \"rr_switch_events\", \"samples\",\n        )\n    }\n\n    output.write_text(json.dumps(evidence, indent=2) + \"\\n\")\n    print(json.dumps(evidence, indent=2))\n\n\nif __name__ == \"__main__\":\n    main()\n",
+    "invocation": "python3 compare-s11-portable.py --baseline-result \"$baseline_result\" --final-result \"$final_result\" --baseline-qemu \"$baseline_qemu\" --final-qemu \"$final_qemu\" --baseline-observer-source \"$baseline_observer_source\" --final-observer-source \"$final_observer_source\" --baseline-revision \"$baseline_revision\" --final-integration-revision \"$final_integration_revision\" --output s11-head-to-head.json",
+    "verified_status": "PASS",
+    "verified_proof_equal_to_retained_result": true
+  },
+  "memory_fetch_preexisting_failure": {
+    "case": "x86_64-base-7",
+    "operation": "instruction fetch immediate byte transformation",
+    "address": "0x109001",
+    "guest_result_address": "0x103400",
+    "expected_result": "a5",
+    "actual_result": "7f",
+    "timeout_seconds": 120,
+    "same_test_sources_for_all_variants": true,
+    "conclusion": "Preexisting failure reproduced on the baseline and both optimized packages.",
+    "comparisons": {
+      "baseline": {
+        "qemu_package": "h2iphd2bjnm1zpv0wrnija8z6fw6xgk2-qemu-crucible-11.1.1",
+        "qemu_binary_sha256": "517d2751e0fa2cc0c8dbeeb36c3bcb21ae6eb96e799a1e57353a9008bad74991",
+        "log": "qemu-tcg-memory-fetch-baseline.log",
+        "log_sha256": "77c8903873eb4fe498f4f9f5d4f4771611ca1d8ca84a91641f14cad93a691792",
+        "state": "state tb=12424447 icount=12425015submitted=1 prepared=1 installed=1 event=0 coverage=00000000 retry=0/0/0 readable=1 result=7f expected=a5",
+        "result": "FAIL: guest-visible result was not observed"
+      },
+      "initial": {
+        "qemu_package": "7qsihh5yagfzv22l5j5lkypz44mvkapb-qemu-crucible-11.1.1",
+        "qemu_binary_sha256": "76d37ea9c377c64124afca8b46b00719d72d0fe7e814b1387412e265f76c74fb",
+        "log": "qemu-tcg-memory-fetch-initial.log",
+        "log_sha256": "8fda656701fcd08705277866b7dfd5f167c33de85ea13db387d1a0f1436f2a85",
+        "state": "state tb=12379618 icount=12380186submitted=1 prepared=1 installed=1 event=0 coverage=00000000 retry=0/0/0 readable=1 result=7f expected=a5",
+        "result": "FAIL: guest-visible result was not observed"
+      },
+      "final": {
+        "qemu_package": "0isfs0l96zvkdb7y2g842jal5x1y1zyn-qemu-crucible-11.1.1",
+        "qemu_binary_sha256": "3d71c293c5c509e125e5f197d6e4f8c8cbc6ee80e384f5a0bd47bd309b1ec93b",
+        "log": "qemu-tcg-memory-fetch-final.log",
+        "log_sha256": "4b332595104cee68d568f2c912c4a6308892af79996bcd351d129891f2084f1d",
+        "state": "state tb=12802195 icount=12802763submitted=1 prepared=1 installed=1 event=0 coverage=00000000 retry=0/0/0 readable=1 result=7f expected=a5",
+        "result": "FAIL: guest-visible result was not observed"
+      }
+    },
+    "source_sha256": {
+      "phase2-qemu-memory-access.nix": "1a0d1bfb1e728a920886921324219469a6f09a7cabe81a1b0124f271f1286bff",
+      "phase2-qemu-memory-access-guest.S": "69edb3525e067a5d57855478ade50e5e95deaa1db5e30fbce1d4e35abda965f2",
+      "phase2-qemu-memory-access-guest.ld": "4950a4118d7d2811888f4dbbc5be3275b64b1f03f7d9323d73cc79a5b06d6f08",
+      "crucible-memory-access.c": "071b543843aea486fae7da7c13ade95ab4d8be77d9fd58920c0827b68382b3fa"
+    },
+    "full_suite_log": "qemu-tcg-memory-final.log",
+    "full_suite_log_sha256": "7d027f459cbdd0dffc129401408152be683544ec15c67e3d7e716538b579cade",
+    "comparison_expression": "qemu-tcg-memory-compare.nix",
+    "comparison_expression_sha256": "812be9b1f465eb012eec763b4901262a686488e99db97719370ebfc50a336ccc"
+  },
+  "origin_master_advance": {
+    "measured_baseline_revision": "6df2fe66e61e932ed9f44350084da4939b620800",
+    "current_origin_master_revision": "9ff2c8e7e86091f65313bca40acbb1f83d08de5d",
+    "changed_paths_since_measured_baseline": [
+      "modules/profiles/experimental-release.nix",
+      "systems/aos-experimental.nix"
+    ],
+    "crucible_plugin_qemu_and_test_sources_identical": true,
+    "note": "The remote-tracking branch advanced during qualification with only experimental image budget and release-version changes. Measured emulator inputs are unchanged."
+  },
+  "final_branch_provenance": {
+    "branch": "dplecki/crucible-tcg-speed",
+    "branch_base_revision": "9ff2c8e7e86091f65313bca40acbb1f83d08de5d",
+    "qualification_revision_before_rebase": "c56771fb171d60f07bc25fe7d2044b4dc4b9aa47",
+    "equivalent_revision_after_rebase": "200eeaeb3abc744f0641cbd20fd468f3c25c7504",
+    "changed_paths_after_qualification": [
+      "modules/profiles/experimental-release.nix",
+      "systems/aos-experimental.nix"
+    ],
+    "all_runtime_protocol_patch_test_and_benchmark_sources_unchanged": true,
+    "commit_rebase_mapping": [
+      {
+        "measured_commit": "d026f865847549c5f17b5e39368deaec45bfd5b7",
+        "rebased_commit": "784059c37bd6db7410772eb6c5a5b54e2cf86969",
+        "subject": "Avoid reference-count operations in plugin callback admission"
+      },
+      {
+        "measured_commit": "f4f164de580b511de11bd175bea46d4150b33309",
+        "rebased_commit": "8fbdc8c607335af5e9aaa82cc8dde7d93b998639",
+        "subject": "Skip preemption enqueue ownership for empty mailboxes"
+      },
+      {
+        "measured_commit": "fd219eae1f05fc3d6424be44cde7c41bdbc2c931",
+        "rebased_commit": "82857c29a7d62aee32836b1bff4a3f0cca870193",
+        "subject": "Revalidate preemption commands after enqueue admission"
+      },
+      {
+        "measured_commit": "7677d6398331230fb4fbae2916fd434a01b7cc21",
+        "rebased_commit": "827802d50dde244b51a00785b5a4855c04c7d204",
+        "subject": "Add deterministic cold and restored TCG performance witnesses"
+      },
+      {
+        "measured_commit": "aa8be2893487bdd0f0441bd506557b39edfd0710",
+        "rebased_commit": "9897b993fbb6ca25665aa935042ebe9133a1ab62",
+        "subject": "Skip inactive fault work during TCG execution"
+      },
+      {
+        "measured_commit": "e71fd653fceb4934d2f9c22d628e99ad4b4d6ff8",
+        "rebased_commit": "d75bc1f6e3320301d20782405fd9758383aaa741",
+        "subject": "Make TCG benchmark startup and trial ordering robust"
+      },
+      {
+        "measured_commit": "d78e94e8b5ffd5e7f5572314a9c8da69feef8673",
+        "rebased_commit": "ee0cb46bf29db90885ba4cefd52b6187695128fb",
+        "subject": "Cache tracked Linux mutex owner IDs across TCG execution"
+      },
+      {
+        "measured_commit": "bdc50dd25f638cbec6ebdb41f4484e0b882da6df",
+        "rebased_commit": "0e4952e70d4d95e8318a9b272d0925a3852fe60d",
+        "subject": "Measure matched production plugins at deterministic TCG grants"
+      },
+      {
+        "measured_commit": "60538da3d3a2f8457e696c72cf756d355cd16690",
+        "rebased_commit": "ce32d899d25f38ba697697a49e7bea5db6b724fc",
+        "subject": "Expose full memory and production TCG performance checks"
+      },
+      {
+        "measured_commit": "2fd99374f53af168e8bc019958cd59e6b4d05688",
+        "rebased_commit": "fe8994dbc27a527963808fd2edaa1d02c3ff108e",
+        "subject": "Account for held-stop launcher in exact restore reachability check"
+      },
+      {
+        "measured_commit": "8a8d92e7931f700c877d45436764df0c93487812",
+        "rebased_commit": "65574defd70ec2642f08e2d1cb1a50beae1fcfed",
+        "subject": "Retain staged and cumulative TCG performance measurements"
+      },
+      {
+        "measured_commit": "565c810dee8f645a369e797265d3697060f7b0a0",
+        "rebased_commit": "def80d6a989ebd9b2e0ea4354b530438c955af9e",
+        "subject": "Restore focused memory-access gate inventory"
+      },
+      {
+        "measured_commit": "c56771fb171d60f07bc25fe7d2044b4dc4b9aa47",
+        "rebased_commit": "200eeaeb3abc744f0641cbd20fd468f3c25c7504",
+        "subject": "Record reviewed callback guard lifetimes in source hygiene"
+      }
+    ],
+    "evidence_update_only": "The final evidence commit changes only this JSON report after qualification. It does not change runtime code, protocol, patch artifacts, test assertions, or benchmark sources."
+  },
+  "native_child_validation": {
+    "status": "pass",
+    "formal_phase6_derivation": false,
+    "fixture": "tests/crucible/phase6-qemu-hot-fork-child-vm.nix",
+    "harness": "native-hot-fork-child-final.nix",
+    "assertions_unchanged": true,
+    "timeout_seconds": 600,
+    "kill_grace_seconds": 5,
+    "source_edits": false,
+    "probe_store_path": "kxx3rjqhkyi4pxg52263a0yd5vy9i1j7-crucible-qemu-live-hot-fork-child-0",
+    "probe_source": "aggpvr9mb96jbax7jdmr3875nml4j203-crucible-workspace-src",
+    "source_identity_comparison": {
+      "checked_local_dependency_source_files": 1407,
+      "workspace_cargo_toml_identical": true,
+      "cargo_lock_identical": true,
+      "probe_example_identical": true,
+      "only_difference": "crucible-qemu/src/spawn/run_directory.rs: current code widens st_nlink via Into<u64>; cached code uses the u64 field directly. On this Linux x86_64 machine both yield the same comparisons and diagnostic field."
+    },
+    "debugger_symbols": "Uses shipped stripped final QEMU/plugin instead of fixture symbol-retention overrides; affects failure stack-symbol diagnostics only.",
+    "binaries": {
+      "qemu": {
+        "path": "0isfs0l96zvkdb7y2g842jal5x1y1zyn-qemu-crucible-11.1.1/bin/qemu-system-x86_64",
+        "sha256": "3d71c293c5c509e125e5f197d6e4f8c8cbc6ee80e384f5a0bd47bd309b1ec93b"
+      },
+      "plugin": {
+        "path": "9br8kqfgn0cn6m0bzd20j8bfnb80kabc-crucible-qemu-plugin-0.1.0/lib/libcrucible_qemu_plugin.so",
+        "sha256": "5bbb08de8503014b03064579c000e6edc888c09ee19481998bebf4ced335d7e6"
+      },
+      "probe": {
+        "path": "kxx3rjqhkyi4pxg52263a0yd5vy9i1j7-crucible-qemu-live-hot-fork-child-0/bin/crucible-qemu-live-hot-fork-child",
+        "sha256": "bc4ad8829cd247a210d2a7dbe84845a44a5276032fb237c3b8b80a093d55e42f"
+      }
+    },
+    "stdout_log": "qemuHotForkChildVm.final-production.stdout.log",
+    "stderr_log": "qemuHotForkChildVm.final-production.stderr.log",
+    "process_exit_code": 0,
+    "derivation": "v3q1iyzxkdx460nsii8lzw904ydd8msr-aos-vm-test-crucible-qemu-hot-fork-child-0.drv",
+    "output": "nw3dfqq5dlil6zxz97xdb35qvwxc1qis-aos-vm-test-crucible-qemu-hot-fork-child-0",
+    "retained_output": "qemuHotForkChildVm.final-production.output",
+    "result": "PASS",
+    "fixture_sha256": "b8322bfdee64feb9cb870a32d91d8a5de978ad16015b8bcd557492f20b19e615",
+    "markers": {
+      "gate": "gate:qemu-hot-fork-child-private-vmstate",
+      "template_generation": "1",
+      "child_files_generation": "3",
+      "child_forked": "true",
+      "child_in_target_cgroup": "true",
+      "child_holds_private_vmstate_inode": "true",
+      "child_released_source_vmstate_inode": "true",
+      "source_vmstate_bytes": "1245184",
+      "private_vmstate_bytes": "1245184",
+      "child_saved_vmstate_bytes": "2031898",
+      "source_vmstate_unchanged": "true",
+      "children_forked": "3",
+      "retained_transactions": "2",
+      "restored_vmstate_saves": "2",
+      "source_suffix_icount": "9000001",
+      "source_threads": "6",
+      "source_descriptors": "25",
+      "source_threads_leaked": "0",
+      "source_descriptors_leaked": "0",
+      "max_fork_ms": "26",
+      "max_ready_ms": "39",
+      "whole_world_child_handoff": "false"
+    },
+    "serial_log_sha256": "bd4447fb7b87ec9449d4fabfb74762cd244598b1c942c71ed18227429eef50af",
+    "stdout_sha256": "667b1af788413c0009c2bd962db7eb1f537fb0852a7d2aef68eaabfb589dba42",
+    "stderr_sha256": "c7091d2f590e45865b2f2613742a44f3276829766172f46973edad2002bbfbe8",
+    "retained_input_identity": {
+      "artifact": "native-child-final-metadata.json",
+      "sha256": "d75214aa7aaa0b55b93dc99aae88ce74d0744194ef3b597b93763ef6ea847471"
+    },
+    "harness_sha256": "dad23a28011d3fbcc674e90ca8bbc353544b02c49a25845927aeaec6d3df1b53"
+  },
+  "native_world_control_comparison": {
+    "final_qemu": {
+      "path": "0isfs0l96zvkdb7y2g842jal5x1y1zyn-qemu-crucible-11.1.1/bin/qemu-system-x86_64",
+      "sha256": "3d71c293c5c509e125e5f197d6e4f8c8cbc6ee80e384f5a0bd47bd309b1ec93b"
+    },
+    "final_plugin": {
+      "path": "9br8kqfgn0cn6m0bzd20j8bfnb80kabc-crucible-qemu-plugin-0.1.0/lib/libcrucible_qemu_plugin.so",
+      "sha256": "5bbb08de8503014b03064579c000e6edc888c09ee19481998bebf4ced335d7e6"
+    },
+    "baseline_qemu": "h2iphd2bjnm1zpv0wrnija8z6fw6xgk2-qemu-crucible-11.1.1/bin/qemu-system-x86_64",
+    "baseline_plugin": {
+      "path": "production-performance/baseline/plugin.so",
+      "sha256": "8e1131759fdd982a4abc9ea6ff94b01ca75a4bcd798aac4fe3f9c005a1db3c77"
+    },
+    "baseline_source_commit": "6df2fe66e6",
+    "controller_output": "x0098i8nqy85gd5i3i77xb7kg2jsm0lq-crucible-controller-0.1.0",
+    "assertions_unchanged": true,
+    "timeouts_unchanged": true,
+    "source_edits": false,
+    "builders_disabled": true,
+    "cores": 4,
+    "error": "block transport event source 0 does not match reserved block source 30",
+    "failure_before_fork": true,
+    "controls": {
+      "qemuHotForkAtomicWorldVm.cores4": {
+        "status": "fail",
+        "process_exit_code": 1,
+        "stderr_log": "qemuHotForkAtomicWorldVm.cores4.stderr.log",
+        "stderr_sha256": "f436cafd93d20114a54650038b94a3a7ce719f41816b351f461028d267bb59f6",
+        "stdout_log": "qemuHotForkAtomicWorldVm.cores4.stdout.log",
+        "test_summary": "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 828 filtered out; finished in 118.67s",
+        "boundary": "drive production source world: Backend(Rejected { message: \"QEMU node crashed during bounded await: Crashed(QemuCrashedNodeStatus { node_id: \\\"lifecycle-curl\\\", cause: UnexpectedChildExit(QemuProcessExit { code: None, signal: Some(6), success: false, display: \\\"signal: 6 (SIGABRT)\\\" }), handling: ReportAndLocalize }); shutdown=QemuShutdownReport { attempts: [], failures: [], reaped: true, leaked: false }\" })",
+        "derivation": "bb1inc1ybvlxs579nhq77p02rrq95z3p-aos-vm-test-crucible-qemu-hot-fork-atomic-world-0.drv",
+        "failed_output": "v866dnzh177hkmk2s7flh4vphpr34xjj-aos-vm-test-crucible-qemu-hot-fork-atomic-world-0"
+      },
+      "qemuHotForkAtomicWorldVm.original-pair": {
+        "status": "fail",
+        "process_exit_code": 1,
+        "stderr_log": "qemuHotForkAtomicWorldVm.original-pair.stderr.log",
+        "stderr_sha256": "3c6d81cf5cc3a2cf3b39f63073da002f68576240ae11e57be4b577dcd1edb2e8",
+        "stdout_log": "qemuHotForkAtomicWorldVm.original-pair.stdout.log",
+        "test_summary": "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 828 filtered out; finished in 165.87s",
+        "boundary": "drive production source world: Backend(Rejected { message: \"QEMU node crashed during bounded await: Crashed(QemuCrashedNodeStatus { node_id: \\\"lifecycle-curl\\\", cause: UnexpectedChildExit(QemuProcessExit { code: None, signal: Some(6), success: false, display: \\\"signal: 6 (SIGABRT)\\\" }), handling: ReportAndLocalize }); shutdown=QemuShutdownReport { attempts: [], failures: [], reaped: true, leaked: false }\" })",
+        "derivation": "9zqylags8nn4vm3m3ryhxd3674b6hfd9-aos-vm-test-crucible-qemu-hot-fork-atomic-world-0.drv",
+        "failed_output": "17f0hygc77bh4bdaambbzabk1lblw8qq-aos-vm-test-crucible-qemu-hot-fork-atomic-world-0"
+      },
+      "qemuHotForkEquivalenceVm.cores4": {
+        "status": "fail",
+        "process_exit_code": 1,
+        "stderr_log": "qemuHotForkEquivalenceVm.cores4.stderr.log",
+        "stderr_sha256": "aba2ef92abdc220530ff612b1afcb9af73c1c3b5942a92710e3a36d7982e6fb2",
+        "stdout_log": "qemuHotForkEquivalenceVm.cores4.stdout.log",
+        "test_summary": "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 828 filtered out; finished in 118.21s",
+        "boundary": "drive fresh equivalence boundary: Backend(Rejected { message: \"QEMU node crashed during bounded await: Crashed(QemuCrashedNodeStatus { node_id: \\\"lifecycle-curl\\\", cause: UnexpectedChildExit(QemuProcessExit { code: None, signal: Some(6), success: false, display: \\\"signal: 6 (SIGABRT)\\\" }), handling: ReportAndLocalize }); shutdown=QemuShutdownReport { attempts: [], failures: [], reaped: true, leaked: false }\" })",
+        "derivation": "i6j1n7l1fl1jil0nlmh096bv1nkxi6ix-aos-vm-test-crucible-qemu-hot-fork-equivalence-0.drv",
+        "failed_output": "pfs2vw26b2n0amxfxb63xqgm81d0mwpm-aos-vm-test-crucible-qemu-hot-fork-equivalence-0"
+      },
+      "qemuHotForkEquivalenceVm.original-pair": {
+        "status": "fail",
+        "process_exit_code": 1,
+        "stderr_log": "qemuHotForkEquivalenceVm.original-pair.stderr.log",
+        "stderr_sha256": "46200052de7a3692528f6d5de68b53537b1a9250fd7843ccf818543888137f7f",
+        "stdout_log": "qemuHotForkEquivalenceVm.original-pair.stdout.log",
+        "test_summary": "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 828 filtered out; finished in 165.92s",
+        "boundary": "drive fresh equivalence boundary: Backend(Rejected { message: \"QEMU node crashed during bounded await: Crashed(QemuCrashedNodeStatus { node_id: \\\"lifecycle-curl\\\", cause: UnexpectedChildExit(QemuProcessExit { code: None, signal: Some(6), success: false, display: \\\"signal: 6 (SIGABRT)\\\" }), handling: ReportAndLocalize }); shutdown=QemuShutdownReport { attempts: [], failures: [], reaped: true, leaked: false }\" })",
+        "derivation": "jj5lpgcaap2hq5i2pr7410v7dd03ihpp-aos-vm-test-crucible-qemu-hot-fork-equivalence-0.drv",
+        "failed_output": "fq9na0g0g57sh7kli9glxk6jz2y7m9ra-aos-vm-test-crucible-qemu-hot-fork-equivalence-0"
+      }
+    },
+    "baseline_qemu_only_control": "Invalid for block-regression attribution: final plugin correctly rejected mismatched original QEMU fault-system identity before execution; superseded by matching full original pair.",
+    "conclusion": "Both initial native-world cases fail identically with the final optimized pair and the matching original pair. These gates do not reach any fork. The separate existing native child fixture passed with the shipped final pair under the recorded temporary harness scope.",
+    "baseline_qemu_sha256": "517d2751e0fa2cc0c8dbeeb36c3bcb21ae6eb96e799a1e57353a9008bad74991",
+    "controlled_controller_suite": {
+      "derivation": "2338bjp6m7y9b2wmapf8v9rjjiqp92fk-crucible-controller-0.1.0.drv",
+      "output": "x0098i8nqy85gd5i3i77xb7kg2jsm0lq-crucible-controller-0.1.0",
+      "summary": "Summary [ 399.528s] 5560 tests run: 5560 passed (3 slow), 75 skipped",
+      "nextest_test_threads": 4,
+      "log": "qemuHotForkAtomicWorldVm.cores4.stderr.log",
+      "summary_line": 1399
+    },
+    "timing_scope": "Failed initial-case timings are diagnostic only; they are excluded from cumulative performance claims.",
+    "retained_input_identity": {
+      "artifact": "native-hot-fork-control-results.json",
+      "sha256": "e04cde33bdc0da291f644a13d0e054ca8f43ed0ad53ab113f77d2dfdae670804"
+    },
+    "original_pair_harness_sha256": "e1c907cb0dbc5a4db96681df9c6501c49ab17d539f3516d69663d7742057b3d2"
+  },
+  "native_world_contract_analysis": {
+    "conclusion": "The World-bound block producer writes its ordinal source_node (0 in this fixture), while plugin BlockIo validates against reserved SLOT_BLK_IO (30). Those assignment and validation paths are unchanged from the measured origin/master baseline.",
+    "relevant_sources_identical_to_baseline": true,
+    "sources": [
+      {
+        "path": "crates/crucible-device/src/subnode/io_core_private.rs",
+        "sha256": "63eac1b4d9a81df37566664c1fd35b9c725bef70be49495699f3524cb50705f4"
+      },
+      {
+        "path": "crates/crucible-device/src/subnode/frame.rs",
+        "sha256": "229a000ae615ae479824648f39871438afaebb0ccd4c63cefa1d0901929a02df"
+      },
+      {
+        "path": "crates/crucible-qemu/src/supervision/block_io_servicer.rs",
+        "sha256": "930a68d507b13f2cc5896eda1ea3e6f20e2abdd8a32a1226058db43a00cc477d"
+      },
+      {
+        "path": "crates/crucible-api/src/vm_lifecycle/construction.rs",
+        "sha256": "8b209f88760ff84c0fed2a7421ce6e4d738270480cce8e9d30570f495dd82c82"
+      },
+      {
+        "path": "crates/crucible-qemu-plugin/src/block_io.rs",
+        "sha256": "bb53d69a28f415d13c1d1345038a92d2cbae6dd739bcfc0918b387168bee8d99"
+      }
+    ],
+    "original_pair_runtime_confirmation": true,
+    "source_or_assertion_changes_for_diagnosis": false
+  },
+  "artifact_path_notation": "Local store-prefix paths are represented by store names and relative members; temporary paths are artifact labels. Raw local logs retain the complete paths."
 }
