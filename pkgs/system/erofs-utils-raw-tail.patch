@@ -1,0 +1,17 @@
+Unencoded tails always require raw padding, including compression fallback.
+
+Compression can leave idata_type marked compressed before falling back to a
+flat file. Without resetting it, erofs_write_tail_end pads the final raw page
+at its beginning, shifting file content and dropping the same number of bytes
+from the end. Establish the raw invariant where the unencoded tail is created.
+
+--- a/lib/inode.c
++++ b/lib/inode.c
+@@ -660,6 +660,7 @@ static int erofs_write_unencoded_data(struct erofs_inode *inode,
+ 	}
+ 
+ 	inode->idata_size = inode->i_size % erofs_blksiz(sbi);
++	inode->idata_type = EROFS_IDATA_TYPE_RAW;
+ 	remaining = inode->i_size - inode->idata_size;
+ 
+ 	ret = erofs_allocate_inode_bh_data(inode, remaining >> sbi->blkszbits,
