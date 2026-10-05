@@ -125,18 +125,20 @@ empty `terrane` binary.
 ### T1 — Local repository
 
 **Status:** In progress. Latest completed full qualification records candidate
-`9ec056b4f8b3`, which combines reviewed source discovery, immutable lookup,
+`15540ef204ec`, which combines reviewed source discovery, immutable lookup,
 repeatable I/P/G maintenance, separate verifier/preparation work, common Memo
 replay, structural Memo/Node metadata validation and native immutable index
-loading. Its owning loader check and both mandatory formatters pass; the
-preceding seven Memo/Node/index/no-std checks retain their recorded source
-qualification. Application
-compilation retains 109 test executables across 29 packages, including 72
-integration targets, without executing tests. The reviewed core components
-pass 650 tests with zero skips. Its default and keep-going
-current-trunk aggregates both exit 1; the latter reports ten failed gate
+loading and selected immutable Memo replay. Both owning checks and mandatory
+formatters pass; the preceding seven Memo/Node/index/no-std checks retain their
+recorded source
+qualification. The application check records compilation of 109 test
+executables across 29 packages, including 72 integration targets, without
+executing tests. The reviewed core components pass 650 tests with zero skips.
+Its default and keep-going
+current-trunk aggregates both exit 1; the latter reports eleven failed gate
 dependencies, listed under T-DRV-2. Its observed native feature suite records
-391 passing and 26 failing tests out of 417; later profiles remain unqualified.
+396 passing and 25 failing tests out of 421, with none ignored or filtered;
+later profiles remain unqualified.
 An unchanged single-thread Nextest diagnostic of the first native profile
 on the earlier `1ce3dbe9f62a` candidate executes all 409 tests: 404 pass and
 five fail with `Unsupported`, with zero skips. No unexpected `Expired`,
@@ -1044,9 +1046,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   prerequisite and shared application compilation check. All 5,755 tracked
   file images remain unchanged through qualification; all twelve command log
   hashes are independently verified. Its seven owning Memo/Node/index/no-std
-  checks and both mandatory formatters pass. Application compilation retains
-  109 test executables across 29 packages, including 72 integration targets,
-  without executing tests. Both complete current-trunk aggregates exit 1.
+  checks and both mandatory formatters pass. The application check records
+  compilation of 109 test executables across 29 packages, including 72
+  integration targets, without executing tests. Both complete current-trunk
+  aggregates exit 1.
   The keep-going run reports ten failed gate dependencies:
   `bucket-file-layout`, `dom-dedup-scope`, `dom-reference-order`,
   `feature-matrix`, `index-generation-manifest`, `prov-commit-verify`,
@@ -1088,11 +1091,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   one case each with no ignored cases; the full default-feature Nextest run
   `1df0c59c-2534-4dd4-adfa-59d8389f97ce` passes 138 tests with zero skips.
   Nine existing Node/Memo/index/no-std checks, both mandatory formatters, build
-  and strict rustdoc pass in their recorded source scopes. Application
-  compilation retains 109 executables across 29 packages and 72 integration
-  targets without execution. Strict all-target native Clippy remains red with
-  36 library and 16 test errors outside the five loader files; no suppression
-  was added. The implementation is assembled only in unpublished combined
+  and strict rustdoc pass in their recorded source scopes. The application check
+  records compilation of 109 test executables across 29 packages and 72
+  integration targets without execution. Strict all-target native Clippy remains
+  red with 36 library and 16 test errors outside the five loader files; no
+  suppression was added. The implementation is assembled only in unpublished combined
   candidate `9ec056b4f8b3`; formal task merges remain withheld while the full
   trunk floor is red. Current producer, authority and trust checks, complete
   coverage decisions, Memo runtime integration, same-commit maintenance,
@@ -1122,8 +1125,51 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   zero selected cases must fail rather than qualify this prerequisite.
   Its requested declaration check exits 1 after reporting zero selected cases.
   Registry completeness, both mandatory formatters and application compilation
-  pass; the latter retains 107 executables across 29 packages and 70 integration
-  targets without execution. These results qualify shared declarations only.
+  pass; the latter records compilation of 107 test executables across 29
+  packages and 70 integration targets without execution. These results qualify
+  shared declarations only.
+  Reviewed unpublished native Memo candidate `db6b1feb9d9f` implements the
+  selected immutable replay prerequisite. Actual fetched Memo and Node bytes
+  seed the existing common RAM association. One unchanged mandatory replay
+  preserves original recipes and inputs, complete claimed-output refusal,
+  typed divergence and explicit rebuild through the same evaluator. Both result
+  branches retain original storage subjects and source diagnostics; checked native
+  loading counters remain separate from semantic evaluation and query work.
+  Independent raw graft, whiteout overlay, plain merge and bound hierarchical
+  index fixtures cover complete inventories, valid extra/excluded Nodes,
+  mandatory error subjects and all four loading-counter overflow paths.
+  All four final source images match the actual owning and application compile
+  source. The four exact owning groups each pass one case with no ignored
+  cases. Full default native Nextest run
+  `f4a24252-da61-496b-b156-892346650ea8` passes 142 tests with zero skips;
+  build, strict rustdoc and both mandatory formatters pass. Recorded existing
+  loader and core Memo/metadata/no-std checks keep their separate source scopes;
+  all 276 core file images remain unchanged. The application check records
+  compilation of 109 test executables across 29 packages and 72 integration
+  targets, without execution; its output preserves compilation records and
+  platform metadata. Strict native Clippy remains red on 36 library and 16 test
+  diagnostics outside the four owned files. Owned diagnostics were corrected
+  without suppression, and original failed attempts remain recorded.
+  Completed qualification of unpublished combined candidate `15540ef204ec`
+  passes both owning checks, application compilation and both mandatory
+  formatters. All 5,766 tracked file images remain unchanged; all seven command
+  log hashes are independently verified. Default and keep-going current-trunk
+  aggregates both exit 1. The default run fails at physical-exclusion admission
+  in `index-generation-manifest`, returning `Unsupported`. The keep-going run
+  reports eleven failed gate dependencies: `bucket-file-layout`,
+  `dom-dedup-scope`, `dom-reference-order`, `feature-matrix`,
+  `index-generation-manifest`, `prov-commit-verify`, `prov-disclosure-boundary`,
+  `ref-advance-ordering`, `ref-epoch-fencing`, `role-selection` and
+  `store-idempotent-put`. The first native feature profile records 396 passing
+  and 25 failing tests out of 421, with none ignored or filtered: sixteen
+  `Expired`, five `Unsupported`, two `Elapsed`, one `Denied` and one
+  `WouldBlock`. Later profiles and required disclosure witnesses remain
+  unqualified. These observations do not establish timing causes; no mandatory
+  check is changed.
+  Durable association selection, current native serving, producer, trust and
+  authority checks, completed index owner maintenance/publication and DRV-19
+  root-associated collection remain incomplete. No formal task merge, checkbox
+  or freeze advances.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec, value-plus-object opaque keys and D-104's contextual primary/gap/route
