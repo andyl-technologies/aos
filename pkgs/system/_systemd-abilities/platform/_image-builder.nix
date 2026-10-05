@@ -332,6 +332,8 @@
           pkgs.dosfstools # mkfs.vfat
           pkgs.mtools # mcopy
           pkgs.coreutils
+          pkgs.findutils
+          pkgs.bash
           pkgs.jq
           pkgs.aos
           pkgs.openssl
@@ -446,7 +448,7 @@
 
             # ── 3. Create vfat ESP image ────────────────────────────────
             # FAT32 is what UEFI reads. mkfs.vfat has no -d flag, so we
-            # create an empty image, then use mtools mcopy -s to populate
+            # create an empty image, then use mtools to populate
             # it from the esp/ directory — sandbox-compatible, no loopback
             # mount needed. MTOOLS_SKIP_CHECK=1 is required because mcopy
             # otherwise refuses to write to a plain file with no
@@ -486,9 +488,7 @@
             truncate -s "$esp_bytes" esp.img
             mkfs.vfat -F 32 -n ESP esp.img
             export MTOOLS_SKIP_CHECK=1
-            for entry in esp/*; do
-              mcopy -s -i esp.img "$entry" "::"
-            done
+            ${pkgs.bash}/bin/bash ${./_populate-esp.sh} esp esp.img
 
             # ── 4. Assemble final GPT image ─────────────────────────────
             root_sectors=$(( ROOT_PARTITION_MIB * 2048 ))
