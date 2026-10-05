@@ -299,6 +299,7 @@ mod tests {
             alloc::format!("publication/lineage/{operation}"),
             "publication/STATE".into(),
             "publication/CURRENT".into(),
+            "publication/ACTIVATION".into(),
             "backend-registration.cbor".into(),
             "publication/snapshots/0".into(),
             alloc::format!("publication/snapshots/0:{operation}:extra"),

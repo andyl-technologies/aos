@@ -2153,6 +2153,46 @@ is added rather than editing history.
     native propagation remain separate obligations; no task or milestone
     completes through this registration.
 
+- **[D-108] Retain an exact pending fresh-copy activation proposal.**
+  - **Status:** Decided (2026-10-05)
+  - **Decision:** Register the fixed create-once protected key
+    `publication/ACTIVATION` for the existing canonical `PublicationCommit`
+    encoding, restricted to a proposed revision-zero genesis with a null
+    predecessor. It is nonauthoritative staging data. A genuinely authorized
+    fresh-copy factory stages and verifies its destination checkpoint, exact
+    transaction and this record before durably recording Pending with the
+    existing genesis field bound to the record's raw canonical digest.
+    Recovery reads this exact key under the retained activation fence,
+    verifies that digest and complete transaction/snapshot/payload/log closure,
+    makes the destination pointer durable, then installs the identical record
+    at the actual genesis slot. All selected caches finish before Active.
+  - **Rationale:** D-79 requires durable Pending before the destination
+    portable-pointer rewrite, and that rewrite before committing genesis.
+    Until the rewrite, the copied pointer identifies the source snapshot;
+    the existing Pending genesis digest supplies no transaction nonce or
+    exact locator. Local backend bindings contain physical identities, not
+    an operation nonce. Thus the required interrupted activation cannot find
+    its exact staged destination proposal at that boundary. A fixed locator
+    bound by the existing digest closes the recovery gap without changing
+    selection or deriving fresh administrative authority from copied bytes.
+  - **Alternatives considered:** Commit slot zero early (rejected: violates
+    the pointer-before-genesis order); select an operation through LIST,
+    mutable caches or a proposed maximum (rejected: does not identify the
+    exact retained proposal); allocate another nonce during recovery
+    (rejected: changes the Pending operation); add registration fields
+    (rejected: the existing digest and commit encoding suffice).
+  - **Compatibility:** Existing encodings, identities, media types, profiles,
+    golden bytes, requirement IDs, gate names and draft version remain
+    unchanged. The key is additive before T1's bucket-key freeze. Existing
+    empty-genesis Pending/null and Active registrations retain their meaning.
+    Missing, unavailable or conflicting staging fails closed; orphan staging
+    cannot authorize registration, ordinary reads, writes or collection.
+    ACTIVATION never replaces verification of actual selected commit slots.
+  - **Affects:** STORE-13, BKT-2 to BKT-5, BKT-14/17, REF-4 to REF-7,
+    REF-12/21 to REF-23 and CONV-3. Complete native copy, recovery, cancellation
+    and pointer/cache crash witnesses remain required under the existing
+    D-79 gates; this correction completes no task or milestone.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

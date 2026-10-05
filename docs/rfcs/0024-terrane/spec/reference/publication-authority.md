@@ -416,6 +416,24 @@ Its backend binding and any nonnull genesis digest never change; Pending
 cannot authorize a new registration, and Active does not substitute for
 verification of the actual selected immutable chain.
 
+A fresh-copy factory durably stages and verifies its complete
+destination-origin checkpoint, exact genesis transaction and fixed protected
+`publication/ACTIVATION` record before recording Pending. Under D-108,
+ACTIVATION uses the existing `PublicationCommit` encoding with revision zero
+and a null predecessor. It is create-once nonauthoritative staging data,
+never a commit slot. The Pending registration binds the raw canonical digest
+of this exact proposed genesis record in its existing genesis field.
+Recovery under the actual existing activation fence reads that fixed key,
+checks its digest against the unchanged Pending registration, follows and
+verifies its exact transaction and snapshot and complete payload/log closure,
+makes the destination portable pointer durable, then installs the identical
+record at `publication/commits/0`. It flushes every selected cache before
+Active. Missing, unavailable or conflicting staging does not establish
+absence or permission to begin another registration. Staging alone cannot
+create a registration or select authority. Before Pending exists, orphaned
+staging grants no admission. Existing empty-genesis Pending records with a
+null genesis field retain their existing interpretation and recovery rules.
+
 Ordinary payload includes an immutable `PortableSnapshot` and exact
 `publication/PORTABLE` pointer. Its complete resolved projection contains whole
 selected CAPABILITIES, every inventoried ref or absence, selected history

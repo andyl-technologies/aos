@@ -122,6 +122,7 @@ copy rules are in [`publication-authority.md`](publication-authority.md).
 | Key | Holds | Class |
 | --- | --- | --- |
 | `backend-registration.cbor` | actual `BackendRegistration` activation/recovery binding | CAS |
+| `publication/ACTIVATION` | exact proposed genesis `PublicationCommit`; nonauthoritative staging under D-108 | create-once |
 | `publication/commits/<revision>` | authoritative `PublicationCommit` slot | create-once |
 | `publication/transactions/<operation-id>` | exact `PublicationTransaction` | create-once |
 | `publication/lineage/<digest>` | privately checked `CheckedLineage` | create-once |
