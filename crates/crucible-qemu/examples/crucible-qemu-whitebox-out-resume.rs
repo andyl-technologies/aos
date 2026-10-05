@@ -220,12 +220,59 @@ fn run_owned(
     Ok(())
 }
 
+/// Names the three existing driver operations without adding observation.
+#[derive(Clone, Copy, Debug)]
+enum ProbePhase {
+    FirstSelectableBoundary,
+    SecondSelectableBoundary,
+    LateRegisterAdvance,
+}
+
+impl std::fmt::Display for ProbePhase {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::FirstSelectableBoundary => "first selectable boundary",
+            Self::SecondSelectableBoundary => "second selectable boundary",
+            Self::LateRegisterAdvance => "late-register advance",
+        })
+    }
+}
+
+/// Adds phase attribution without flattening the original crash or source chain.
+#[derive(Debug)]
+struct ProbePhaseError {
+    phase: ProbePhase,
+    source: Box<dyn Error>,
+}
+
+impl std::fmt::Display for ProbePhaseError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "probe failed during {}", self.phase)
+    }
+}
+
+impl Error for ProbePhaseError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.source.as_ref())
+    }
+}
+
+fn with_phase<T>(
+    phase: ProbePhase,
+    result: Result<T, Box<dyn Error>>,
+) -> Result<T, Box<dyn Error>> {
+    result.map_err(|source| Box::new(ProbePhaseError { phase, source }) as Box<dyn Error>)
+}
+
 fn drive(
     node: &mut QemuNode,
     mode: Mode,
     policy: ProbePolicy,
 ) -> Result<Option<QemuShutdownReport>, Box<dyn Error>> {
-    let (first, buffer) = boundary(node, 2, "first", policy, policy.fixed_buffer)?;
+    let (first, buffer) = with_phase(
+        ProbePhase::FirstSelectableBoundary,
+        boundary(node, 2, "first", policy, policy.fixed_buffer),
+    )?;
     require_marker(&first, "first")?;
     let [setup, marker_event] = first.as_slice() else {
         return Err("first boundary must retain setup and one semantic frame".into());
@@ -253,26 +300,16 @@ fn drive(
     }
 
     if mode == Mode::LateRegister {
-        // The VM result also requires the original fatal catalog-refusal row.
-        // A generic step error alone is not the negative control's authority.
-        let error = match node.advance_to_ceiling(Icount {
-            retired: policy.ceiling_ps,
-        }) {
-            Ok(_) => return Err("late registration unexpectedly advanced".into()),
-            Err(error) => error,
-        };
-        let QemuNodeError::Crashed { status, shutdown } = error else {
-            return Err(error.into());
-        };
-        require_refusal_crash_status_with_budget(&status, policy.completion_timeout)?;
-        // The public crash type carries exit/timeout context, not the plugin's
-        // fatal error. The gate separately requires that exact original row.
-        eprintln!("late-register crash: status={status:?}; shutdown={shutdown:?}");
-        println!("late_register_step_refused=true");
-        return Ok(Some(*shutdown));
+        return with_phase(
+            ProbePhase::LateRegisterAdvance,
+            late_register_advance(node, policy),
+        );
     }
 
-    let (second, _) = boundary(node, 3, "second", policy, Some(buffer))?;
+    let (second, _) = with_phase(
+        ProbePhase::SecondSelectableBoundary,
+        boundary(node, 3, "second", policy, Some(buffer)),
+    )?;
     require_marker(&second, "second")?;
     if second.len() != 1 {
         return Err("second boundary replayed an earlier observable frame".into());
@@ -293,6 +330,29 @@ fn drive(
     println!("distinct_semantic_frames=first,second");
     println!("same_guest_buffer={buffer}");
     Ok(None)
+}
+
+fn late_register_advance(
+    node: &mut QemuNode,
+    policy: ProbePolicy,
+) -> Result<Option<QemuShutdownReport>, Box<dyn Error>> {
+    // The VM result also requires the original fatal catalog-refusal row.
+    // A generic step error alone is not the negative control's authority.
+    let error = match node.advance_to_ceiling(Icount {
+        retired: policy.ceiling_ps,
+    }) {
+        Ok(_) => return Err("late registration unexpectedly advanced".into()),
+        Err(error) => error,
+    };
+    let QemuNodeError::Crashed { status, shutdown } = error else {
+        return Err(error.into());
+    };
+    require_refusal_crash_status_with_budget(&status, policy.completion_timeout)?;
+    // The public crash type carries exit/timeout context, not the plugin's
+    // fatal error. The gate separately requires that exact original row.
+    eprintln!("late-register crash: status={status:?}; shutdown={shutdown:?}");
+    println!("late_register_step_refused=true");
+    Ok(Some(*shutdown))
 }
 
 // The driver reports the remaining budget at the original bounded wait,
@@ -443,11 +503,14 @@ fn require_marker(events: &[ObservableEvent], expected: &str) -> Result<(), Box<
 
 #[cfg(test)]
 mod tests {
-    use super::{COMPLETION_TIMEOUT, require_refusal_cleanup, require_refusal_crash_status};
+    use super::{
+        COMPLETION_TIMEOUT, ProbePhase, require_refusal_cleanup, require_refusal_crash_status,
+        with_phase,
+    };
     use crucible_qemu::{
-        QemuBoundedAwaitTimeout, QemuCrashCause, QemuCrashedNodeStatus, QemuNodeRunStatus,
-        QemuProcessExit, QemuShutdownFailure, QemuShutdownReport, QemuShutdownRung,
-        QemuShutdownTargetError,
+        QemuAsyncDriverError, QemuBoundedAwaitTimeout, QemuCrashCause, QemuCrashedNodeStatus,
+        QemuNodeError, QemuNodeRunStatus, QemuProcessExit, QemuShutdownFailure, QemuShutdownReport,
+        QemuShutdownRung, QemuShutdownTargetError,
     };
     use std::time::Duration;
 
@@ -466,6 +529,58 @@ mod tests {
             success: false,
             display: "exit status: 1".into(),
         }
+    }
+
+    #[test]
+    fn phase_attribution_preserves_original_typed_crash_and_cleanup() {
+        for (phase, label) in [
+            (
+                ProbePhase::FirstSelectableBoundary,
+                "first selectable boundary",
+            ),
+            (
+                ProbePhase::SecondSelectableBoundary,
+                "second selectable boundary",
+            ),
+            (ProbePhase::LateRegisterAdvance, "late-register advance"),
+        ] {
+            let original = QemuNodeError::Crashed {
+                status: Box::new(crashed(timeout("advance completion", COMPLETION_TIMEOUT))),
+                shutdown: Box::new(report(vec![closed_control()])),
+            };
+            let error = with_phase::<()>(phase, Err(Box::new(original.clone()))).unwrap_err();
+            assert_eq!(error.to_string(), format!("probe failed during {label}"));
+            let source = error.source().expect("original crash source");
+            assert_eq!(source.downcast_ref::<QemuNodeError>(), Some(&original));
+            assert_eq!(source.to_string(), original.to_string());
+        }
+    }
+
+    #[test]
+    fn phase_attribution_retains_the_full_original_nested_error_chain() {
+        let error = with_phase::<()>(
+            ProbePhase::FirstSelectableBoundary,
+            Err(Box::new(QemuNodeError::AsyncDriver {
+                source: QemuAsyncDriverError::LifecycleAdvanceWait,
+            })),
+        )
+        .unwrap_err();
+        let source = error.source().expect("original node error");
+        assert!(source.downcast_ref::<QemuNodeError>().is_some());
+        let nested = source.source().expect("original async error");
+        assert_eq!(
+            nested.downcast_ref::<QemuAsyncDriverError>(),
+            Some(&QemuAsyncDriverError::LifecycleAdvanceWait),
+        );
+        assert!(nested.source().is_none());
+    }
+
+    #[test]
+    fn phase_attribution_leaves_success_values_unchanged() {
+        assert_eq!(
+            with_phase(ProbePhase::SecondSelectableBoundary, Ok(23_u32)).unwrap(),
+            23,
+        );
     }
 
     #[test]
