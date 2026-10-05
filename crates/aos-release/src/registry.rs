@@ -79,6 +79,20 @@ impl RegistryTier {
             Self::Production => false,
         }
     }
+
+    /// Returns whether the tier accepts a release whose advisory disposition
+    /// still lists unresolved advisories.
+    ///
+    /// The testing tier records the reviewed advisories in its build
+    /// evidence and lets the release proceed, as it does for unreproduced
+    /// outputs. Production requires a disposition with none unresolved.
+    #[must_use]
+    pub const fn accepts_unresolved_advisories(self) -> bool {
+        match self {
+            Self::Testing => true,
+            Self::Production => false,
+        }
+    }
 }
 
 impl std::fmt::Display for RegistryTier {
