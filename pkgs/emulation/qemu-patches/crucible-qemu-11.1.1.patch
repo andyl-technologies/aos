@@ -1,4 +1,4 @@
-From 47fed0800537a32bf5a0c786ac91c993981166eb Mon Sep 17 00:00:00 2001
+From 67e139ee261582b3fb562192c945858013ed5ab2 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Sat, 3 Oct 2026 07:08:17 +0000
 Subject: [PATCH] Integrate deterministic execution and private fork I/O
@@ -42,6 +42,12 @@ Suspend the cache across fork callback ordering, retain uncached fallback,
 and refresh native child ownership before registry reconstruction. Verify
 real worker/fork IDs, earlier RCU child callbacks, parent stability,
 registration failure, syscall-free steady tracking, and causal negatives.
+
+Check snapshot continuation before consulting the accelerator quantum.
+Avoid accelerator identity lookups on cold TB paths while retaining the
+predicate result, active continuation, RR cursor and TB semantics.
+Exercise production genesis, resume, selection and VMState post-load
+bodies, exhaustive predicate cases, and the reversed-order negative.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -1934,7 +1940,7 @@ index 7f7c208ba1219d2967ee1c2ef170d5af942ff113..f15004e6d36a29d35152034155aefac8
  
  uint8_t cpu_ldb_code_mmu(CPUArchState *env, vaddr addr,
 diff --git a/accel/tcg/icount-common.c b/accel/tcg/icount-common.c
-index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..b2921d4cb89afee634cda514344bdc7d59f67327 100644
+index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..d59c9b76f287a6aa8c8de0571a2deebb617d4148 100644
 --- a/accel/tcg/icount-common.c
 +++ b/accel/tcg/icount-common.c
 @@ -24,11 +24,18 @@
@@ -2050,8 +2056,8 @@ index b1b6c005fe71fefb29f302f114d3b7a086cf4a52..b2921d4cb89afee634cda514344bdc7d
 +
 +bool icount_crucible_rr_snapshot_continuation(void)
 +{
-+    return icount_crucible_rr_switch_quantum() != 0 &&
-+        crucible_rr_snapshot_continuation;
++    return crucible_rr_snapshot_continuation &&
++        icount_crucible_rr_switch_quantum() != 0;
 +}
 +
 +void icount_crucible_rr_snapshot_resume_prepare(void)
@@ -175964,6 +175970,378 @@ index 0000000000000000000000000000000000000000..22e321204c3443ea7d63c9329ea1208d
 +    g_test_add_func("/crucible/slirp/ns-projection", test_ns_projection);
 +    return g_test_run();
 +}
+diff --git a/tests/unit/test-crucible-snapshot-fast-path.py b/tests/unit/test-crucible-snapshot-fast-path.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..baf0281247c4f0d1c8c1871f60356ebef4430c64
+--- /dev/null
++++ b/tests/unit/test-crucible-snapshot-fast-path.py
+@@ -0,0 +1,366 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise production snapshot continuation and RR restoration bodies.
++
++CPU topology, accelerator identity and raw icount are bounded providers. The
++production TimersState fields, predicate, genesis, resume, selection and VMState
++post-load bodies execute unchanged. No translated guest or migration stream is
++executed; TB shape and scheduling code are outside this change.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import runpy
++import shlex
++import subprocess
++
++
++ROOT = Path(__file__).resolve().parents[2]
++definition = runpy.run_path(str(Path(__file__).with_name(
++    "test-crucible-net-output-stop.py")))["definition"]
++
++PRELUDE = r"""
++#include <errno.h>
++#include <limits.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++#include <glib.h>
++#include "qemu/typedefs.h"
++#define qemu_build_assert(condition) _Static_assert(condition, #condition)
++#include "qemu/atomic.h"
++
++/* Lock layout is irrelevant to these single-threaded, field-only bodies. */
++typedef struct { int unused; } QemuSeqLock;
++struct QemuSpin { int unused; };
++#include "system/cpu-timers-internal.h"
++
++struct CPUState {
++    CPUState *next;
++    int cpu_index;
++    bool runnable, halted, work;
++};
++#define CPU_NEXT(cpu) ((cpu)->next)
++#define CRUCIBLE_SIM_TICKS_PER_INSTRUCTION 1000
++
++uint64_t icount_crucible_rr_switch_quantum(void);
++uint64_t icount_crucible_rr_current_vcpu(void);
++uint64_t icount_crucible_rr_cursor_position(void);
++bool icount_crucible_rr_snapshot_continuation(void);
++void icount_crucible_rr_snapshot_resume_prepare(void);
++void icount_crucible_rr_initialize_genesis(CPUState *cpu);
++CPUState *icount_crucible_rr_select_cpu(CPUState *suggested);
++bool icount_crucible_sim_mode(void);
++
++TimersState timers_state;
++static uint64_t crucible_rr_switch_quantum;
++static bool crucible_rr_snapshot_continuation;
++static ICountMode use_icount = ICOUNT_PRECISE;
++static CPUState cpus[2];
++static CPUState *first_cpu = &cpus[0];
++static const char *accel_name = "sim";
++static unsigned int accel_reads, raw_reads, error_reports, handoffs;
++
++/* Count identity lookups at the same provider called by the real predicate. */
++static const char *current_accel_name(void)
++{
++    accel_reads++;
++    return accel_name;
++}
++
++static int64_t icount_get_raw(void)
++{
++    raw_reads++;
++    return timers_state.qemu_icount;
++}
++
++static ICountMode icount_enabled(void)
++{
++    return use_icount;
++}
++
++static CPUState *qemu_get_cpu(uint64_t index)
++{
++    return index < G_N_ELEMENTS(cpus) ? &cpus[index] : NULL;
++}
++
++static bool cpu_can_run(CPUState *cpu)
++{
++    return cpu->runnable;
++}
++
++static bool cpu_has_work(CPUState *cpu)
++{
++    return cpu->work;
++}
++
++static void qemu_plugin_fire_rr_handoff_cb(uint32_t from, uint32_t to,
++                                         uint64_t quantum, uint64_t delta)
++{
++    (void)from;
++    (void)to;
++    (void)quantum;
++    (void)delta;
++    handoffs++;
++}
++
++/* Invalid model inputs report errors without terminating the fixture. */
++#define error_report(...) ((void)error_reports++)
++"""
++
++CHECKS = r"""
++static void reset(void)
++{
++    memset(&timers_state, 0, sizeof(timers_state));
++    cpus[0] = (CPUState) { .cpu_index = 0, .runnable = true,
++                          .next = &cpus[1] };
++    cpus[1] = (CPUState) { .cpu_index = 1, .runnable = true };
++    accel_name = "sim";
++    crucible_rr_switch_quantum = 17;
++    crucible_rr_snapshot_continuation = false;
++    use_icount = ICOUNT_PRECISE;
++    accel_reads = raw_reads = error_reports = handoffs = 0;
++}
++
++static void truth_table(void)
++{
++    const char *names[] = { "sim", "tcg", "kvm" };
++    uint64_t quanta[] = { 0, 1, 17, UINT64_MAX };
++    unsigned int cases = 0;
++
++    reset();
++    for (unsigned int continuation = 0; continuation < 2; continuation++) {
++        for (size_t name = 0; name < G_N_ELEMENTS(names); name++) {
++            for (size_t quantum = 0; quantum < G_N_ELEMENTS(quanta); quantum++) {
++                crucible_rr_snapshot_continuation = continuation;
++                accel_name = names[name];
++                crucible_rr_switch_quantum = quanta[quantum];
++                bool expected = continuation && !strcmp(accel_name, "sim") &&
++                                crucible_rr_switch_quantum != 0;
++
++                g_assert_cmpint(icount_crucible_rr_snapshot_continuation(),
++                                ==, expected);
++                cases++;
++            }
++        }
++    }
++    g_assert_cmpuint(cases, ==, 24);
++    puts("PASS production snapshot fast path: 24 continuation/accelerator/quantum truth-table cases");
++}
++
++static void cold_checks(void)
++{
++    const char *names[] = { "sim", "tcg", "kvm" };
++    uint64_t quanta[] = { 0, 17 };
++
++    reset();
++    for (size_t name = 0; name < G_N_ELEMENTS(names); name++) {
++        for (size_t quantum = 0; quantum < G_N_ELEMENTS(quanta); quantum++) {
++            accel_name = names[name];
++            crucible_rr_switch_quantum = quanta[quantum];
++            for (unsigned int call = 0; call < 10000; call++) {
++                g_assert_false(icount_crucible_rr_snapshot_continuation());
++            }
++        }
++    }
++    /* The old operand order has the same results but fails this assertion. */
++    g_assert_cmpuint(accel_reads, ==, 0);
++    g_assert_cmpuint(raw_reads, ==, 0);
++    puts("PASS production snapshot fast path: 60000 cold calls, zero accelerator/raw-icount reads");
++}
++
++static void assert_cursor(uint64_t owner, uint64_t position, bool pending)
++{
++    g_assert_true(timers_state.crucible_rr_cursor_valid);
++    g_assert_cmpuint(icount_crucible_rr_current_vcpu(), ==, owner);
++    g_assert_cmpuint(icount_crucible_rr_cursor_position(), ==, position);
++    g_assert_cmpint(timers_state.crucible_rr_selection_pending, ==, pending);
++}
++
++static void active_checks(void)
++{
++    reset();
++    icount_crucible_rr_initialize_genesis(NULL);
++    g_assert_false(timers_state.crucible_rr_cursor_valid);
++    icount_crucible_rr_snapshot_resume_prepare();
++    g_assert_false(crucible_rr_snapshot_continuation);
++
++    accel_name = "tcg";
++    icount_crucible_rr_initialize_genesis(&cpus[1]);
++    g_assert_false(timers_state.crucible_rr_cursor_valid);
++    accel_name = "sim";
++    crucible_rr_switch_quantum = 0;
++    icount_crucible_rr_initialize_genesis(&cpus[1]);
++    g_assert_false(timers_state.crucible_rr_cursor_valid);
++    crucible_rr_switch_quantum = 17;
++    icount_crucible_rr_initialize_genesis(&cpus[1]);
++    assert_cursor(1, 0, false);
++    g_assert_false(crucible_rr_snapshot_continuation);
++    g_assert_cmpuint(raw_reads, ==, 1);
++
++    timers_state.qemu_icount = 40;
++    timers_state.crucible_rr_cursor_position = 7;
++    /* A valid loaded cursor makes genesis a no-op, even at nonzero icount. */
++    icount_crucible_rr_initialize_genesis(&cpus[0]);
++    assert_cursor(1, 7, false);
++    g_assert_cmpuint(raw_reads, ==, 1);
++
++    accel_name = "tcg";
++    icount_crucible_rr_snapshot_resume_prepare();
++    assert_cursor(1, 7, false);
++    g_assert_false(crucible_rr_snapshot_continuation);
++    accel_name = "sim";
++    crucible_rr_switch_quantum = 0;
++    icount_crucible_rr_snapshot_resume_prepare();
++    assert_cursor(1, 7, false);
++    g_assert_false(crucible_rr_snapshot_continuation);
++    crucible_rr_switch_quantum = 17;
++    icount_crucible_rr_snapshot_resume_prepare();
++    assert_cursor(1, 7, true);
++
++    unsigned int reads = accel_reads;
++    for (unsigned int call = 0; call < 100; call++) {
++        g_assert_true(icount_crucible_rr_snapshot_continuation());
++    }
++    g_assert_cmpuint(accel_reads - reads, ==, 100);
++    g_assert_true(crucible_rr_snapshot_continuation);
++    g_assert_true(icount_crucible_rr_select_cpu(&cpus[0]) == &cpus[1]);
++    assert_cursor(1, 7, true);
++    g_assert_cmpuint(handoffs, ==, 0);
++    g_assert_cmpint(timers_state.qemu_icount, ==, 40);
++    puts("PASS production snapshot fast path: genesis/resume/select preserve owner 1, intra-turn 7, icount 40, sticky continuation");
++}
++
++static void loaded_state(void)
++{
++    reset();
++    timers_state.icount_mode_migration = ICOUNT_PRECISE;
++    timers_state.icount_sim_mode_migration = true;
++    timers_state.crucible_rr_cursor_valid = true;
++    timers_state.crucible_rr_current_vcpu = 1;
++    timers_state.crucible_rr_cursor_position = 7;
++    timers_state.qemu_icount = 40;
++}
++
++static void post_load_checks(void)
++{
++    loaded_state();
++    g_assert_cmpint(icount_state_pre_load(&timers_state), ==, 0);
++    g_assert_cmpint(icount_model_post_load(&timers_state, 2), ==, 0);
++    g_assert_cmpint(icount_state_post_load(&timers_state, 5), ==, 0);
++    assert_cursor(1, 7, true);
++    g_assert_true(icount_crucible_rr_snapshot_continuation());
++    icount_crucible_rr_initialize_genesis(&cpus[0]);
++    g_assert_true(icount_crucible_rr_select_cpu(&cpus[0]) == &cpus[1]);
++    assert_cursor(1, 7, true);
++    g_assert_cmpuint(raw_reads, ==, 0);
++    g_assert_cmpuint(handoffs, ==, 0);
++
++    /* Invalid loaded coordinates must not enable continuation or repair state. */
++    for (unsigned int invalid = 0; invalid < 8; invalid++) {
++        loaded_state();
++        g_assert_cmpint(icount_model_post_load(&timers_state, 2), ==, 0);
++        switch (invalid) {
++        case 0: timers_state.icount_model_migration_loaded = false; break;
++        case 1: timers_state.qemu_icount = -1; break;
++        case 2: timers_state.crucible_rr_cursor_valid = false; break;
++        case 3: timers_state.crucible_rr_cursor_position = 17; break;
++        case 4: timers_state.crucible_rr_current_vcpu = 2; break;
++        case 5: timers_state.qemu_icount_bias_ps_hi = 1; break;
++        case 6: timers_state.qemu_icount_bias_ps_lo = 1; break;
++        case 7: timers_state.crucible_sim_tick_bias = -1; break;
++        }
++        TimersState before = timers_state;
++        g_assert_cmpint(icount_state_post_load(&timers_state, 5), ==, -EINVAL);
++        g_assert_cmpmem(&timers_state, sizeof(timers_state), &before, sizeof(before));
++        g_assert_false(crucible_rr_snapshot_continuation);
++    }
++
++    loaded_state();
++    timers_state.qemu_icount = INT64_MAX;
++    g_assert_cmpint(icount_model_post_load(&timers_state, 2), ==, 0);
++    g_assert_cmpint(icount_state_post_load(&timers_state, 5), ==, -EINVAL);
++    g_assert_false(crucible_rr_snapshot_continuation);
++
++    loaded_state();
++    timers_state.icount_sim_mode_migration = false;
++    g_assert_cmpint(icount_model_post_load(&timers_state, 2), ==, -EINVAL);
++    g_assert_cmpuint(error_reports, ==, 1);
++    g_assert_false(crucible_rr_snapshot_continuation);
++
++    loaded_state();
++    crucible_rr_switch_quantum = 0;
++    g_assert_cmpint(icount_model_post_load(&timers_state, 2), ==, 0);
++    g_assert_cmpint(icount_state_post_load(&timers_state, 5), ==, 0);
++    assert_cursor(1, 7, false);
++    g_assert_false(crucible_rr_snapshot_continuation);
++    puts("PASS production snapshot fast path: VMState post-load preserves restored cursor, rejects invalid coordinates, avoids eager reset");
++}
++
++int main(void)
++{
++    truth_table();
++    cold_checks();
++    active_checks();
++    post_load_checks();
++    return 0;
++}
++"""
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--negative-control", choices=["order"])
++    arguments = parser.parse_args()
++    arguments.output_dir.mkdir(parents=True, exist_ok=True)
++    icount = (ROOT / "accel/tcg/icount-common.c").read_text()
++    timers = (ROOT / "system/cpu-timers.c").read_text()
++    header = (ROOT / "include/exec/icount.h").read_text()
++    modes = header[header.index("typedef enum {"):header.index("#ifdef CONFIG_TCG")]
++    bodies = "\n\n".join(definition(icount, signature) for signature in [
++        "bool icount_crucible_sim_mode(",
++        "uint64_t icount_crucible_rr_switch_quantum(",
++        "uint64_t icount_crucible_rr_current_vcpu(",
++        "uint64_t icount_crucible_rr_cursor_position(",
++        "bool icount_crucible_rr_snapshot_continuation(",
++        "void icount_crucible_rr_snapshot_resume_prepare(",
++        "void icount_crucible_rr_initialize_genesis(",
++        "static CPUState *icount_crucible_rr_next_runnable(",
++        "CPUState *icount_crucible_rr_select_cpu(",
++    ])
++    if arguments.negative_control == "order":
++        guard = ("return crucible_rr_snapshot_continuation &&\n"
++                 "        icount_crucible_rr_switch_quantum() != 0;")
++        assert bodies.count(guard) == 1
++        bodies = bodies.replace(guard,
++            "return icount_crucible_rr_switch_quantum() != 0 &&\n"
++            "        crucible_rr_snapshot_continuation;")
++    post_load = "\n\n".join(definition(timers, signature) for signature in [
++        "static int icount_state_pre_load(",
++        "static int icount_model_post_load(",
++        "static int icount_state_post_load(",
++    ])
++    # VMState callback signatures require an unused version argument. Annotate
++    # the parameter only; leave the extracted bodies and strict warnings intact.
++    post_load = post_load.replace("int version_id)",
++                                  "int version_id G_GNUC_UNUSED)")
++    generated = arguments.output_dir / "snapshot-fast-path.c"
++    prelude = PRELUDE.replace("static ICountMode use_icount",
++                              modes + "static ICountMode use_icount")
++    generated.write_text("\n\n".join([prelude, bodies, post_load, CHECKS]))
++    binary = arguments.output_dir / "snapshot-fast-path"
++    command = [os.environ.get("CC", "cc"),
++               *shlex.split(os.environ.get("CFLAGS", "")),
++               str(generated), "-o", str(binary),
++               *shlex.split(os.environ.get("LDFLAGS", ""))]
++    (arguments.output_dir / "compile-command.json").write_text(
++        json.dumps({"cwd": os.getcwd(), "argv": command}, indent=2) + "\n")
++    subprocess.run(command, check=True)
++    subprocess.run([str(binary)], cwd=arguments.output_dir, check=True)
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-sparc-wide-clock.c b/tests/unit/test-crucible-sparc-wide-clock.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..99c5e4e0e5e6c2b1687a34c93c5d3c2d35442eda

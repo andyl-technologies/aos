@@ -1,6 +1,6 @@
-# Executes the patched production fault-query and completion bodies without a
-# complete emulator build. The package also runs this proof with its configured
-# compiler flags, keeping the fast check and shipped implementation aligned.
+# Exercises production fault, mutex-owner, and snapshot-query fast paths without
+# a complete emulator build. The package runs the same proofs with its configured
+# compiler flags to keep this check aligned with the shipped implementation.
 {pkgs}: let
   patchDir = ../../pkgs/emulation/qemu-patches;
   atomicPatch = import (patchDir + "/_atomic-patch.nix");
@@ -72,6 +72,19 @@ in
             grep -q 'assertion failed' "$out/negative-mutex-$negative.log"
           done
 
+          ${pkgs.python3}/bin/python3 tests/unit/test-crucible-snapshot-fast-path.py \
+            --output-dir "$out/snapshot-proof" > "$out/snapshot-proof.result"
+          cat "$out/snapshot-proof.result"
+          grep -q '^PASS production snapshot fast path:' "$out/snapshot-proof.result"
+
+          if ${pkgs.python3}/bin/python3 tests/unit/test-crucible-snapshot-fast-path.py \
+            --output-dir "$out/negative-snapshot-order" \
+            --negative-control order > "$out/negative-snapshot-order.log" 2>&1; then
+            echo "negative snapshot control unexpectedly passed: order" >&2
+            exit 1
+          fi
+          grep -q 'assertion failed' "$out/negative-snapshot-order.log"
+
           cat > "$out/result" <<'RESULT'
           PASS
           check=checks.crucible.phase1.qemuTcgFastPaths
@@ -82,6 +95,8 @@ in
           causal_negative_controls_rejected=true
           cached_mutex_owner_matches_real_thread_and_fork_ids=true
           atfork_callback_order_and_native_child_refresh_preserved=true
+          cold_snapshot_query_avoids_accelerator_lookup=true
+          active_snapshot_restore_cursor_and_tb_shape_preserved=true
           RESULT
         '';
       }
