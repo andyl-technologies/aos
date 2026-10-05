@@ -89,9 +89,11 @@ in
   assert workerConfigurationInput.path == reconfiguredInput.path;
   assert workerConfigurationInput.base != reconfiguredInput.base;
   assert workerConfigurationInput.integrations != reconfiguredInput.integrations;
-  assert (serviceInput worker).dependencyValues == [workerConfigurationInput.base workerConfigurationInput.integrations];
-  assert (serviceInput reconfiguredWorker).dependencyValues == [reconfiguredInput.base reconfiguredInput.integrations];
-  assert (serviceInput worker).dependencyValues != (serviceInput reconfiguredWorker).dependencyValues;
+  assert (serviceInput worker).dependencyValues == [worker.config.aos.abilities.k3sConfiguration.operations.ensure.effects.base.outputs.resource];
+  assert (serviceInput reconfiguredWorker).dependencyValues == [reconfiguredWorker.config.aos.abilities.k3sConfiguration.operations.ensure.effects.base.outputs.resource];
+  assert (builtins.head (serviceInput worker).dependencyValues)._type == "aos-effect-output";
+  assert (builtins.head (serviceInput worker).dependencyValues).output == "resource";
+  assert worker.documentation.abilities.k3sConfiguration.ensure.result.resource.type.kind == "string";
   assert controlPlane.deployment.graph.order != [];
   assert controlPlane.config.k3s.role == "control-plane";
   assert roles.k3s-control-plane.command == "server --disable-agent --egress-selector-mode=cluster";

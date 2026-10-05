@@ -55,7 +55,7 @@ pub(super) fn invoke(
     }
     let content = render_configuration(&desired)?;
     let current = configuration_matches(path, &content, &invocation.revision)?;
-    let outputs = serde_json::json!({"path":desired.path});
+    let outputs = configuration_outputs(&desired.path, &content);
     let previous = invocation
         .previous
         .as_ref()
@@ -131,6 +131,14 @@ pub(super) fn invoke(
     }
     release_configuration(path, &invocation.revision)?;
     Ok(serde_json::json!({}))
+}
+
+/// Binds consumers to the rendered bytes as well as their stable destination.
+fn configuration_outputs(path: &str, content: &[u8]) -> Value {
+    serde_json::json!({
+        "path": path,
+        "resource": format!("configuration:{path}:{}", Sha256Digest::of_bytes(content)),
+    })
 }
 
 fn validate_configuration(desired: &K3sConfiguration) -> Result<(), KubernetesProviderError> {
@@ -304,6 +312,24 @@ mod tests {
         assert_eq!(
             serde_json::to_value(desired).expect("configuration encodes"),
             value
+        );
+    }
+
+    #[test]
+    fn configuration_resource_changes_with_content_without_changing_its_path() {
+        let path = "/run/aos/k3s/config.json";
+        let first = configuration_outputs(path, br#"{"flannel-backend":"vxlan"}"#);
+        let changed = configuration_outputs(path, br#"{"flannel-backend":"host-gw"}"#);
+
+        assert_eq!(first["path"], changed["path"]);
+        assert_ne!(first["resource"], changed["resource"]);
+        assert_eq!(
+            first,
+            configuration_outputs(path, br#"{"flannel-backend":"vxlan"}"#)
+        );
+        assert_ne!(
+            first["resource"],
+            configuration_outputs("/run/aos/k3s/other.json", br#"{"flannel-backend":"vxlan"}"#)["resource"]
         );
     }
 
