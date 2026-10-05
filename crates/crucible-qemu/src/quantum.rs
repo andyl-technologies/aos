@@ -32,6 +32,8 @@ use crate::{
 };
 
 mod channel;
+mod completed_boundary;
+pub use completed_boundary::QemuCompletedQuantumBoundary;
 mod support;
 
 pub use support::QemuQuantumError;
@@ -295,6 +297,7 @@ pub struct QemuPendingQuantum {
     /// Fresh plugin publication required by delivery or next-idle semantics.
     pub completion_fence: Option<QemuAdvanceCompletionFence>,
     stop_condition: QemuQuantumStopCondition,
+    advance_publication_sequence: u64,
     operation_start: usize,
     inbound_consumption: QemuInboundConsumptionBaseline,
 }
@@ -547,6 +550,7 @@ impl<'a> QemuQuantumShmemHotPath<'a> {
                 stop_condition,
             }),
             stop_condition,
+            advance_publication_sequence: initial_snapshot.advance_publication_sequence,
             operation_start,
             inbound_consumption,
         })

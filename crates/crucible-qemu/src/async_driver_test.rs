@@ -317,6 +317,7 @@ fn async_driver_rejects_qmp_or_plugin_ipc_in_quantum_hot_path() {
     let policy = QemuAsyncDriverPolicy::fast_test();
     let mut target = ScriptedTarget {
         completion: QemuAsyncQuantumCompletion {
+            completed_boundary: None,
             ceiling: Icount { retired: 0 },
             outcome: AdvanceOutcome::ReachedHorizon,
             final_state: QemuNodeIdleState {
@@ -552,6 +553,7 @@ impl ScriptedTarget {
     fn completed() -> Self {
         Self {
             completion: QemuAsyncQuantumCompletion {
+                completed_boundary: None,
                 ceiling: Icount { retired: 0 },
                 outcome: AdvanceOutcome::ReachedHorizon,
                 final_state: QemuNodeIdleState {

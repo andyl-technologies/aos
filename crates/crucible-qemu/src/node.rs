@@ -552,6 +552,7 @@ pub struct QemuNode {
     last_observed_time: VirtualTime,
     last_step_ceiling: Option<Icount>,
     last_step_final_state: Option<QemuNodeIdleState>,
+    last_step_completed_boundary: Option<crate::QemuCompletedQuantumBoundary>,
     last_step_inbound_frames_consumed: usize,
     // Console polling proves availability only at the scheduler-requested boundary.
     console_observation_boundary: VirtualTime,
@@ -809,6 +810,7 @@ impl QemuNode {
             last_observed_time: VirtualTime::default(),
             last_step_ceiling: None,
             last_step_final_state: None,
+            last_step_completed_boundary: None,
             last_step_inbound_frames_consumed: 0,
             console_observation_boundary: VirtualTime::default(),
             gdbstub: None,
@@ -1941,6 +1943,7 @@ impl QemuNode {
         }
         self.last_step_ceiling = report.ceiling;
         self.last_step_final_state = report.final_state;
+        self.last_step_completed_boundary = report.completed_boundary;
         self.last_step_inbound_frames_consumed = report.inbound_frames_consumed;
         self.observe_network_output_batch(&report.emitted_frames)?;
         self.pending_network_outputs.extend(report.emitted_frames);
@@ -1987,6 +1990,16 @@ impl QemuNode {
     #[must_use]
     pub(crate) const fn last_step_final_state(&self) -> Option<QemuNodeIdleState> {
         self.last_step_final_state
+    }
+
+    /// Returns the original accepted native boundary of the last completed step.
+    ///
+    /// This immutable observation is distinct from [`Self::idle_state`], which
+    /// reads current scheduling state. Modeled providers, restored nodes and new
+    /// hot-fork owners have no native record until their own clamp completes.
+    #[must_use]
+    pub const fn completed_quantum_boundary(&self) -> Option<crate::QemuCompletedQuantumBoundary> {
+        self.last_step_completed_boundary
     }
 
     /// Returns the effective shared-memory ceiling from the last scheduler step.
@@ -2264,6 +2277,7 @@ impl QemuNode {
         self.last_observed_time = checkpoint.last_observed_time;
         self.last_step_ceiling = None;
         self.last_step_final_state = None;
+        self.last_step_completed_boundary = None;
         self.last_step_inbound_frames_consumed = 0;
         self.console_observation_boundary = checkpoint.console_observation_boundary;
         self.pending_preemption = checkpoint.pending_preemption.clone();

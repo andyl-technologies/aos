@@ -775,7 +775,24 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
         &mut self,
         pending: &mut QemuNodePendingQuantum,
     ) -> Result<QemuAsyncQuantumCompletion, QemuNodeChannelError> {
+        let completed_boundary = pending.completed_boundary;
         let pending = pending.downcast_mut::<QemuMappedPendingQuantum>("finish_quantum")?;
+        if let Some(boundary) = completed_boundary {
+            boundary.validate(
+                self.region.backing_identity(),
+                self.config.vm_slot,
+                &pending.pending,
+                self.region
+                    .node_slot(self.config.vm_slot)
+                    .map_err(|source| {
+                        QemuNodeChannelError::new(
+                            "validate completed-quantum boundary",
+                            source.to_string(),
+                        )
+                    })?
+                    .snapshot(),
+            )?;
+        }
         self.with_hot_path("finish_quantum", |hot_path| {
             let mut report = QemuQuantumShmemHotPath::poll_quantum(hot_path, &pending.pending)
                 .map_err(QemuNodeChannelError::from)?;
@@ -784,7 +801,9 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
             report.operations = operations;
             assert_qemu_quantum_hot_path_is_shmem_only(&report.operations)
                 .map_err(QemuNodeChannelError::from)?;
-            Ok(QemuAsyncQuantumCompletion::from(report))
+            let mut completion = QemuAsyncQuantumCompletion::from(report);
+            completion.completed_boundary = completed_boundary;
+            Ok(completion)
         })
     }
 

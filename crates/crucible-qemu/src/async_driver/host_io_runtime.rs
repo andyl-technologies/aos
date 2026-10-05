@@ -141,6 +141,14 @@ pub trait QemuHostIoRuntime: Send {
         Ok(())
     }
 
+    /// Returns the original accepted clamp record for the current advance.
+    ///
+    /// Providers without a live clamp handshake retain the absent default. The
+    /// next advance must clear the previous record before awaiting completion.
+    fn completed_quantum_boundary(&self) -> Option<crate::QemuCompletedQuantumBoundary> {
+        None
+    }
+
     /// Reports whether QEMU owns no in-flight device coroutine at this boundary.
     ///
     /// Runtimes without a live external executor are always quiescent. A live

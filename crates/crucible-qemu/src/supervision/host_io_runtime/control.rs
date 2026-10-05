@@ -319,6 +319,14 @@ impl QemuLiveHostIoRuntime {
                 device_progress,
                 &observed,
             ) {
+                self.completed_boundary = crate::QemuCompletedQuantumBoundary::accepted(
+                    self.region.backing_identity(),
+                    self.vm_slot,
+                    *snapshot,
+                    request.generation,
+                    request.fault_command_frontier,
+                    observed,
+                );
                 self.performance.finish(self.vm_slot, "acknowledged");
                 return Ok(());
             }

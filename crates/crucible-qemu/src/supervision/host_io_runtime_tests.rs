@@ -3,6 +3,9 @@
 use super::control::PendingControlBoundary;
 use super::*;
 
+#[path = "host_io_runtime_tests/completed_boundary.rs"]
+pub(crate) mod completed_boundary;
+
 #[cfg(feature = "test-support")]
 #[path = "host_io_runtime_tests/ack_poll_experiment.rs"]
 mod ack_poll_experiment;

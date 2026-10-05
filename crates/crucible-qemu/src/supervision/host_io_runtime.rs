@@ -86,6 +86,8 @@ pub struct QemuLiveHostIoRuntime {
     checkpoint_idle_coordinate: Option<u64>,
     /// Outbound producer frontier covered by the preceding completed quantum.
     completed_outbound_write_index: u64,
+    /// Immutable original clamp publication for this runtime's current advance.
+    completed_boundary: Option<crate::QemuCompletedQuantumBoundary>,
     block: Option<BlockIoServicing>,
     ninep: Option<NinepIoServicing>,
     accelerator: Option<QemuLiveAcceleratorServicer>,
@@ -251,6 +253,7 @@ impl QemuLiveHostIoRuntime {
             device_wake_publish_generation: None,
             checkpoint_idle_coordinate: None,
             completed_outbound_write_index,
+            completed_boundary: None,
             block: None,
             ninep: None,
             accelerator: None,
@@ -683,6 +686,7 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         &mut self,
         fence: Option<QemuAdvanceCompletionFence>,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.completed_boundary = None;
         self.scheduler_input_publish_generation =
             fence.map(|fence| fence.initial_publish_generation);
         self.advance_stop_condition = fence
@@ -690,6 +694,10 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
             .unwrap_or(crate::QemuQuantumStopCondition::Ceiling);
         self.performance.arm();
         Ok(())
+    }
+
+    fn completed_quantum_boundary(&self) -> Option<crate::QemuCompletedQuantumBoundary> {
+        self.completed_boundary
     }
 
     fn checkpoint_device_io_is_quiescent(&mut self) -> Result<bool, QemuAsyncDriverRuntimeError> {

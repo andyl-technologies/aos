@@ -49,6 +49,15 @@ impl QemuAsyncNodeStepTarget for QemuNodeAsyncStepTarget<'_> {
         pending.completion_fence()
     }
 
+    fn retain_completed_quantum_boundary(
+        &mut self,
+        pending: &mut Self::PendingQuantum,
+        boundary: Option<crate::QemuCompletedQuantumBoundary>,
+    ) -> Result<(), QemuNodeChannelError> {
+        pending.completed_boundary = boundary;
+        Ok(())
+    }
+
     fn finish_quantum(
         &mut self,
         pending: &mut Self::PendingQuantum,

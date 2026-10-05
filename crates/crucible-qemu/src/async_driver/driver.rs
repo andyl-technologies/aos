@@ -113,6 +113,7 @@ where
                     ceiling: None,
                     outcome: QemuAsyncNodeStepOutcome::Crashed { status, shutdown },
                     final_state: None,
+                    completed_boundary: None,
                     inbound_frames_consumed: 0,
                     emitted_frames: Vec::new(),
                     yielded_before_quantum: true,
@@ -126,6 +127,9 @@ where
                 .map_err(QemuAsyncDriverError::Runtime)?;
             continue;
         }
+        target
+            .retain_completed_quantum_boundary(&mut pending, runtime.completed_quantum_boundary())
+            .map_err(QemuAsyncDriverError::Channel)?;
         match target.finish_quantum(&mut pending) {
             Ok(completion) => {
                 break Some(completion);
@@ -145,6 +149,7 @@ where
             ceiling: None,
             outcome: QemuAsyncNodeStepOutcome::Crashed { status, shutdown },
             final_state: None,
+            completed_boundary: None,
             inbound_frames_consumed: 0,
             emitted_frames: Vec::new(),
             yielded_before_quantum: true,
@@ -166,6 +171,7 @@ where
             advance: completion.outcome,
         },
         final_state: Some(completion.final_state),
+        completed_boundary: completion.completed_boundary,
         inbound_frames_consumed: completion.inbound_frames_consumed,
         emitted_frames: completion.emitted_frames,
         yielded_before_quantum: true,

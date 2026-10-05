@@ -179,8 +179,13 @@ pub(super) fn probe(node: &mut QemuNode) -> Result<BootProbe, ProbeError> {
             }
             let observation = SimulationBackend::step_to(node, VirtualTime { ticks: target })?;
             control_returns += 1;
-            let calibration = node.logical_time_calibration()?;
-            let idle = node.idle_state()?;
+            let boundary = node
+                .completed_quantum_boundary()
+                .ok_or(ProbeError::InvalidEvidence(
+                    "completed step has no original native clamp evidence",
+                ))?;
+            let calibration = boundary.calibration();
+            let idle = boundary.idle_state();
             let projected = validate_step(previous, target, &observation, calibration, idle)?;
             let requests = node.drain_pending_selectable_requests()?;
             let outputs = SimulationBackend::drain_network_outputs(node)?;

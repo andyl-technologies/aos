@@ -463,6 +463,7 @@ pub trait QemuShmemHotPathChannel: Send {
 pub struct QemuNodePendingQuantum {
     token: Box<dyn Any>,
     completion_fence: Option<QemuAdvanceCompletionFence>,
+    pub(crate) completed_boundary: Option<crate::QemuCompletedQuantumBoundary>,
 }
 
 impl QemuNodePendingQuantum {
@@ -473,6 +474,7 @@ impl QemuNodePendingQuantum {
         T: Any,
     {
         Self {
+            completed_boundary: None,
             token: Box::new(token),
             completion_fence: None,
         }
@@ -485,6 +487,7 @@ impl QemuNodePendingQuantum {
         T: Any,
     {
         Self {
+            completed_boundary: None,
             token: Box::new(token),
             completion_fence: Some(fence),
         }
