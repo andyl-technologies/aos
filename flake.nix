@@ -324,6 +324,11 @@
         };
         mkDevShell = name: packages: let
           livePackageRuntime = name == "aos-cargo-dev";
+          requestedCheckout = builtins.getEnv "AOS_DEV_ROOT";
+          checkoutRoot =
+            if requestedCheckout != ""
+            then requestedCheckout
+            else ./.;
           binPath = builtins.concatStringsSep ":" (map (p: "${p}/bin") ([devLauncher aos.pkgs.bash aos.pkgs.nix aos.pkgs.alejandra aos.pkgs.acl] ++ packages));
         in
           builtins.derivation {
@@ -356,7 +361,7 @@
                   if [ -f "$aos_dev_checkout/tools/dev/aos-dev" ]; then
                     export AOS_DEV_ROOT="$aos_dev_checkout"
                   else
-                    export AOS_DEV_ROOT="${./.}"
+                    export AOS_DEV_ROOT="${checkoutRoot}"
                   fi
                   unset aos_dev_checkout
                 fi
