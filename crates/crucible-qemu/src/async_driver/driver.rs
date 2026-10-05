@@ -70,6 +70,11 @@ where
     runtime
         .arm_advance_completion_fence(target.advance_completion_fence(&pending))
         .map_err(QemuAsyncDriverError::Runtime)?;
+    runtime
+        .set_advance_completion_poll_slice(
+            (!policy.unbounded_advance_completion).then_some(Duration::from_secs(1)),
+        )
+        .map_err(QemuAsyncDriverError::Runtime)?;
     // Renewal is a liveness poll, not an attempt deadline. A short slice
     // observes child exit and an authored watchdog cancellation promptly.
     let wait_timeout = if policy.unbounded_advance_completion {
@@ -96,10 +101,7 @@ where
             timeout: wait_timeout,
             outcome: wait_outcome,
         });
-        if wait_outcome == QemuAsyncWaitOutcome::TimedOut {
-            if !policy.unbounded_advance_completion {
-                break None;
-            }
+        if wait_outcome != QemuAsyncWaitOutcome::Completed {
             if let Some(exit_status) = target
                 .child_exit_status()
                 .map_err(QemuAsyncDriverError::Target)?
@@ -121,6 +123,14 @@ where
                     hot_path_operations: Vec::new(),
                     async_operations,
                 });
+            }
+            if wait_outcome == QemuAsyncWaitOutcome::Pending {
+                // Keep the original deadline and pending quantum. A liveness
+                // yield neither renews the budget nor authenticates a boundary.
+                continue;
+            }
+            if !policy.unbounded_advance_completion {
+                break None;
             }
             runtime
                 .renew_advance_completion_poll(wait_timeout)
@@ -212,6 +222,14 @@ where
         timeout,
         outcome,
     }];
+    if outcome == QemuAsyncWaitOutcome::Pending {
+        return Err(QemuAsyncDriverError::Runtime(
+            QemuAsyncDriverRuntimeError::new(
+                "await lifecycle event",
+                "pending poll outcome is only valid for advance completion",
+            ),
+        ));
+    }
     if outcome == QemuAsyncWaitOutcome::TimedOut {
         async_operations.push(QemuAsyncDriverOperation::ShutdownAfterCrash);
         let status = crash_detector.bounded_await_timeout(wait.operation(), timeout);

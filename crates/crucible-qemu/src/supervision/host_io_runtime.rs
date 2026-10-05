@@ -77,6 +77,8 @@ pub struct QemuLiveHostIoRuntime {
     performance: performance::PerformanceDiagnostics,
     wait_observation: wait_observation::WaitObservation,
     advance_wait_deadline: AdvanceWaitDeadline,
+    /// Host-liveness yield interval, independent of the original watchdog.
+    advance_completion_poll_slice: Option<Duration>,
     /// Pre-wake generation for scheduler input that invalidated an idle report.
     scheduler_input_publish_generation: Option<u32>,
     /// Completion semantics armed with the current scheduler wake.
@@ -249,6 +251,7 @@ impl QemuLiveHostIoRuntime {
             performance: performance::PerformanceDiagnostics::from_environment(shmem_fd),
             wait_observation: wait_observation::WaitObservation::from_environment(shmem_fd),
             advance_wait_deadline: AdvanceWaitDeadline::default(),
+            advance_completion_poll_slice: None,
             scheduler_input_publish_generation: None,
             advance_stop_condition: crate::QemuQuantumStopCondition::Ceiling,
             device_wake_publish_generation: None,
@@ -388,7 +391,17 @@ impl QemuLiveHostIoRuntime {
         if remaining.is_zero() {
             return Ok(QemuAsyncWaitOutcome::TimedOut);
         }
-        let attempts = bounded_poll_attempts(remaining, self.poll_interval);
+        let poll_budget = self
+            .advance_completion_poll_slice
+            .map_or(remaining, |slice| slice.min(remaining));
+        let mut slice_deadline = AdvanceWaitDeadline::default();
+        if self.advance_completion_poll_slice.is_some() && !slice_deadline.start(poll_budget) {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "start advance completion poll slice",
+                "poll slice deadline overflow",
+            ));
+        }
+        let attempts = bounded_poll_attempts(poll_budget, self.poll_interval);
         for attempt in 0..attempts {
             let remaining = self.advance_wait_deadline.remaining().ok_or_else(|| {
                 QemuAsyncDriverRuntimeError::new(
@@ -400,7 +413,6 @@ impl QemuLiveHostIoRuntime {
             if remaining.is_zero() {
                 return Ok(QemuAsyncWaitOutcome::TimedOut);
             }
-
             self.service_console_output()?;
             let snapshot = self
                 .region
@@ -476,6 +488,14 @@ impl QemuLiveHostIoRuntime {
                         self.checkpoint_idle_coordinate = None;
                         return Ok(QemuAsyncWaitOutcome::Completed);
                     }
+                    // An expired host poll slice must not hide a boundary
+                    // already published by the genuine mapped producer.
+                    if slice_deadline
+                        .remaining()
+                        .is_some_and(|slice| slice.is_zero())
+                    {
+                        return Ok(QemuAsyncWaitOutcome::Pending);
+                    }
                     if self.device_wake_publish_generation.is_none() && attempt % 16 == 15 {
                         if checkpoint_idle_unreleased {
                             let _request = self.signal_wake(None)?;
@@ -497,14 +517,39 @@ impl QemuLiveHostIoRuntime {
                     return Ok(QemuAsyncWaitOutcome::TimedOut);
                 }
                 self.observe_pending_wait("advance-pending", &snapshot, None, remaining);
-                self.wait_for_poll_interval(remaining);
+                let poll_remaining = slice_deadline
+                    .remaining()
+                    .map_or(remaining, |slice| slice.min(remaining));
+                self.wait_for_poll_interval(poll_remaining);
             }
+        }
+        if self.advance_completion_poll_slice.is_some()
+            && self
+                .advance_wait_deadline
+                .remaining()
+                .is_some_and(|remaining| !remaining.is_zero())
+        {
+            return Ok(QemuAsyncWaitOutcome::Pending);
         }
         Ok(QemuAsyncWaitOutcome::TimedOut)
     }
 }
 
 impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
+    fn set_advance_completion_poll_slice(
+        &mut self,
+        slice: Option<Duration>,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        if slice.is_some_and(|duration| duration.is_zero()) {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "set advance completion poll slice",
+                "poll slice must be positive",
+            ));
+        }
+        self.advance_completion_poll_slice = slice;
+        Ok(())
+    }
+
     fn renew_advance_completion_poll(
         &mut self,
         timeout: Duration,

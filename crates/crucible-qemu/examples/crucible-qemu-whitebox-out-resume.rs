@@ -337,36 +337,23 @@ fn late_register_advance(
     let QemuNodeError::Crashed { status, shutdown } = error else {
         return Err(error.into());
     };
-    require_refusal_crash_status_with_budget(&status, policy.completion_timeout)?;
-    // The public crash type carries exit/timeout context, not the plugin's
+    require_refusal_crash_status(&status)?;
+    // The public crash type carries owned-exit context, not the plugin's
     // fatal error. The gate separately requires that exact original row.
     eprintln!("late-register crash: status={status:?}; shutdown={shutdown:?}");
     println!("late_register_step_refused=true");
     Ok(Some(*shutdown))
 }
 
-// The driver reports the remaining budget at the original bounded wait,
-// rather than promising the full configured budget in its crash payload.
-#[cfg(test)]
+// A fatal catalog rejection must propagate as the owned failed child exit.
+// A watchdog expiry establishes neither prompt shutdown nor that exit status.
 fn require_refusal_crash_status(status: &QemuNodeRunStatus) -> Result<(), Box<dyn Error>> {
-    require_refusal_crash_status_with_budget(status, COMPLETION_TIMEOUT)
-}
-
-fn require_refusal_crash_status_with_budget(
-    status: &QemuNodeRunStatus,
-    completion_timeout: Duration,
-) -> Result<(), Box<dyn Error>> {
     let QemuNodeRunStatus::Crashed(crashed) = status else {
         return Err(format!("late registration did not retain a crash status: {status:?}").into());
     };
     let expected_cause = match &crashed.cause {
         QemuCrashCause::UnexpectedChildExit(exit) => {
             exit.code == Some(1) && exit.signal.is_none() && !exit.success
-        }
-        QemuCrashCause::BoundedAwaitTimeout(timeout) => {
-            timeout.operation == "advance completion"
-                && !timeout.timeout.is_zero()
-                && timeout.timeout <= completion_timeout
         }
         _ => false,
     };
@@ -616,7 +603,7 @@ mod tests {
     }
 
     #[test]
-    fn refusal_crash_retains_original_exit_or_remaining_wait_budget() {
+    fn refusal_crash_requires_the_original_failed_child_exit() {
         for remaining in [
             COMPLETION_TIMEOUT,
             Duration::from_nanos(4_995_050_723),
@@ -624,7 +611,7 @@ mod tests {
         ] {
             assert!(
                 require_refusal_crash_status(&crashed(timeout("advance completion", remaining,)))
-                    .is_ok()
+                    .is_err()
             );
         }
         assert!(
@@ -636,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn unrelated_or_outside_policy_crashes_remain_failures() {
+    fn timeouts_and_unrelated_child_exits_remain_failures() {
         for cause in [
             timeout("advance completion", Duration::ZERO),
             timeout(
@@ -665,7 +652,7 @@ mod tests {
     fn refusal_crash_authenticates_the_original_owner_and_status() {
         let wrong_owner = QemuNodeRunStatus::Crashed(QemuCrashedNodeStatus::new(
             "other-owner",
-            timeout("advance completion", COMPLETION_TIMEOUT),
+            QemuCrashCause::UnexpectedChildExit(plugin_exit()),
         ));
         for status in [
             wrong_owner,

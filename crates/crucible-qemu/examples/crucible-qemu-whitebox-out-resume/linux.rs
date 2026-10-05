@@ -165,33 +165,19 @@ mod tests {
     }
 
     #[test]
-    fn linux_refusal_retains_the_original_remaining_budget_bound() {
+    fn linux_refusal_rejects_an_expired_completion_watchdog() {
         use crucible_qemu::{QemuBoundedAwaitTimeout, QemuCrashedNodeStatus};
 
-        let status = |timeout| {
-            QemuNodeRunStatus::Crashed(QemuCrashedNodeStatus::new(
+        for timeout in [Duration::from_secs(299), LINUX_POLICY.completion_timeout] {
+            let status = QemuNodeRunStatus::Crashed(QemuCrashedNodeStatus::new(
                 "out-crash",
                 QemuCrashCause::BoundedAwaitTimeout(QemuBoundedAwaitTimeout::new(
                     "advance completion",
                     timeout,
                 )),
-            ))
-        };
-        assert!(
-            require_refusal_crash_status_with_budget(
-                &status(Duration::from_secs(299)),
-                LINUX_POLICY.completion_timeout,
-            )
-            .is_ok()
-        );
-        assert!(
-            require_refusal_crash_status_with_budget(
-                &status(Duration::from_secs(301)),
-                LINUX_POLICY.completion_timeout,
-            )
-            .is_err()
-        );
-        assert!(require_refusal_crash_status(&status(Duration::from_secs(299))).is_err());
+            ));
+            assert!(require_refusal_crash_status(&status).is_err());
+        }
     }
 
     fn setup(node: &str, tick: u64) -> ObservableEvent {

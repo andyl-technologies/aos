@@ -430,6 +430,30 @@ pub trait QemuHostIoRuntime: Send {
     /// Returns [`QemuAsyncDriverRuntimeError`] when the runtime cannot yield.
     fn yield_to_control_plane(&mut self) -> Result<(), QemuAsyncDriverRuntimeError>;
 
+    /// Limits each advance poll without replacing its original watchdog.
+    ///
+    /// A live runtime returns [`QemuAsyncWaitOutcome::Pending`] when this slice
+    /// ends before the deadline established by [`Self::await_child`]. `None`
+    /// retains the existing full-budget await. Immediate modeled runtimes need
+    /// no additional polling state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuAsyncDriverRuntimeError`] when an explicit slice is zero
+    /// or the runtime cannot configure its host-liveness polling.
+    fn set_advance_completion_poll_slice(
+        &mut self,
+        slice: Option<Duration>,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        if slice.is_some_and(|duration| duration.is_zero()) {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "set advance completion poll slice",
+                "poll slice must be positive",
+            ));
+        }
+        Ok(())
+    }
+
     /// Waits for one child event using `timeout` as a bounded budget.
     ///
     /// # Errors
@@ -446,8 +470,9 @@ pub trait QemuHostIoRuntime: Send {
     ///
     /// The runtime must retain the deadline established by
     /// [`Self::await_child`] and return [`QemuAsyncWaitOutcome::TimedOut`] when
-    /// that original `timeout` budget expires. A repeated poll must not repeat
-    /// one-shot side effects such as waking the plugin.
+    /// that original `timeout` budget expires. An advance may yield
+    /// [`QemuAsyncWaitOutcome::Pending`] before then. A repeated poll must not
+    /// repeat one-shot side effects such as waking the plugin.
     ///
     /// # Errors
     ///

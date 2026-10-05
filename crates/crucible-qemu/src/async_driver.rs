@@ -67,6 +67,10 @@ impl QemuAsyncWait {
 pub enum QemuAsyncWaitOutcome {
     /// The awaited child event completed within its budget.
     Completed,
+    /// An advance poll yielded while its original watchdog remains live.
+    ///
+    /// This is host-liveness progress, not a completed quantum boundary.
+    Pending,
     /// The timeout budget expired.
     TimedOut,
 }
