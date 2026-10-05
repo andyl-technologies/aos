@@ -501,6 +501,9 @@ impl LocalFs for FaultFs {
         let count = self.retained_effect_calls.fetch_add(1, Ordering::SeqCst) + 1;
         if let Some(started) = *self.ref_install_profile.lock().unwrap() {
             let phase = match effect.fault_probe() {
+                crate::store::EffectFaultProbe::SealPendingCreation(_) => "Pending journal sync",
+                crate::store::EffectFaultProbe::SealArtifact(_) => "artifact descriptor sync",
+                crate::store::EffectFaultProbe::CommitCreation(_) => "creation journal commitment",
                 crate::store::EffectFaultProbe::FileSync => "file sync",
                 crate::store::EffectFaultProbe::WriteNew(_) => "create-new write",
                 crate::store::EffectFaultProbe::DirectorySync(_) => "directory sync",

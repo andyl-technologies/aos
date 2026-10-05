@@ -188,6 +188,21 @@ executables across 29 packages, including 70 integration targets, without
 execution. Both actual Nix inputs match the two corrected writer files.
 This prerequisite does not qualify the isolated copy or disclosure candidates.
 
+The shared native creation executor now contains closed Pending durability,
+artifact-descriptor synchronization and final Committed acknowledgment paths.
+Only the native worker can fill their results; unit or swallowed-error success
+cannot advance the producer. Its three empty-result refusal cases pass, with
+366 other native cases outside that run. The native build, strict private
+rustdoc, eight existing atomic-write cases, all 38 capability cases and both
+mandatory formatters pass. Application compilation records 107 executables
+across 29 packages, including 70 integration targets, without execution.
+All four reviewed source images match the three actual Nix inputs. Original
+failed module/import/diagnostic integration attempts remain preserved.
+Production creator adoption, positive journal effects and strict Clippy remain
+pending; the new producer entry points are unused until that adoption. This
+shared prerequisite grants no collection, deletion or age authority and
+advances no task checkbox or milestone freeze.
+
 The preceding completed full qualification records candidate
 `15540ef204ec`, which combines reviewed source discovery, immutable lookup,
 repeatable I/P/G maintenance, separate verifier/preparation work, common Memo
@@ -2432,6 +2447,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   native integration, actual crash/timer/restore qualification and complete
   current-root/publication fencing remain pending. Physical intent alone
   cannot qualify deletion.
+  The shared native creation executor retains original Pending, artifact and
+  protected-control descriptors and exclusions through worker completion. Its
+  result channels are private and filled only after the corresponding actual
+  durability boundary. Closed-result refusal, compilation, rustdoc and existing
+  backend checks pass as recorded in T1's status; actual pack/index producer
+  adoption and positive creation-journal qualification remain pending.
   D-79 defines complete current fences, selected lease/configuration changes
   and source-lineage preservation; their native implementation and actual
   effect/recovery qualification remain incomplete. D-82 registers permanent

@@ -22,6 +22,9 @@ mod range;
 #[path = "native_effect/directory_retention.rs"]
 mod directory_retention;
 
+#[path = "native_effect/artifact_seal.rs"]
+mod artifact_seal;
+
 // The descendant can construct effects only from genuine sealed producer and
 // held-backend inputs; ordinary callers cannot initialize the private mechanics.
 #[path = "../bucket/publication/effects.rs"]
@@ -381,6 +384,11 @@ impl CreatedDirectory {
 
 /// Fixes one physical command from actual producer-owned paths.
 enum Plan {
+    // Only the native worker can populate the result channel or consume a seal
+    // into a protected creation-journal commitment.
+    SealPendingCreation(Box<artifact_seal::PendingRequest>),
+    SealArtifact(Box<artifact_seal::SealRequest>),
+    CommitCreation(Box<artifact_seal::CommitRequest>),
     // Initialization factories retain actual opened directories inside the
     // submitted command, independently of every genuinely acquired exclusion.
     RetainedDirectories {
@@ -579,6 +587,12 @@ impl std::error::Error for NativeEffectFailure {
 /// Identifies actual planned phases only for existing native fault wrappers.
 #[cfg(test)]
 pub(crate) enum EffectFaultProbe<'a> {
+    /// Identifies durability of Pending before the first artifact mutation.
+    SealPendingCreation(&'a std::path::Path),
+    /// Identifies same-descriptor verification and durability of one artifact.
+    SealArtifact(&'a std::path::Path),
+    /// Identifies the exact protected Pending-to-Committed destination.
+    CommitCreation(&'a std::path::Path),
     /// Identifies the exact create-new file whose primitive is requested.
     WriteNew(&'a std::path::Path),
     /// Identifies an actual file durability command.
@@ -599,10 +613,22 @@ pub(crate) enum EffectFaultProbe<'a> {
 pub(crate) enum EffectFault {
     /// Fails the actual file sync before durable acknowledgment.
     BeforeFileSync,
+    /// Fails after an actual targeted file descriptor has been synchronized.
+    AfterFileSync,
     /// Fails before the actual rename syscall.
     BeforeRename,
+    /// Fails after a creation commitment has physically replaced Pending.
+    AfterRename,
     /// Fails directory sync after any preceding physical mutation.
     BeforeDirectorySync,
+    /// Fails before one exact creation directory descriptor is synchronized.
+    BeforeDirectorySyncAt(PathBuf),
+    /// Fails after one exact creation directory descriptor is synchronized.
+    AfterDirectorySyncAt(PathBuf),
+    /// Fails before an exact directory sync after Committed becomes visible.
+    BeforeCommittedDirectorySyncAt(PathBuf),
+    /// Fails after an exact directory sync after Committed becomes visible.
+    AfterCommittedDirectorySyncAt(PathBuf),
     /// Models a faulty binding replacing an existing create-once destination.
     ReplaceCreateOnce,
     /// Models failure to read this exact protected preimage.
@@ -642,6 +668,8 @@ enum TestGatePhase {
     AfterOpen,
     AfterSourceSync,
     AfterRename,
+    BeforeDirectorySync,
+    AfterDirectorySync,
 }
 
 #[cfg(all(test, feature = "tokio"))]
@@ -662,6 +690,13 @@ impl NativeFsEffect {
             return EffectFaultProbe::Other;
         };
         match plan {
+            Plan::SealPendingCreation(request) => {
+                EffectFaultProbe::SealPendingCreation(request.journal_path())
+            }
+            Plan::SealArtifact(request) => EffectFaultProbe::SealArtifact(request.path()),
+            Plan::CommitCreation(request) => {
+                EffectFaultProbe::CommitCreation(request.journal_path())
+            }
             Plan::WriteNew { path, .. } => EffectFaultProbe::WriteNew(path),
             Plan::SyncFile { .. } => EffectFaultProbe::FileSync,
             Plan::SyncDirectory { path } => EffectFaultProbe::DirectorySync(path),
@@ -698,6 +733,9 @@ impl NativeFsEffect {
     /// Returns `Unsupported` after private directory creation if restrictive
     /// permissions prevent the actual descriptor from opening for mode repair.
     pub(super) fn execute_inline(self) -> Result<(), NativeEffectFailure> {
+        if artifact_seal::owns(&self.plan) {
+            return artifact_seal::execute(self);
+        }
         // Destructure first, and explicitly drop the actual guards only after
         // the syscall and directory sync. They must not be dropped after a
         // merely pre-dispatch check or retained only by an async parent.
@@ -733,10 +771,23 @@ impl NativeFsEffect {
             wait_test_gate(&mut gates, TestGatePhase::BeforeChecks)?;
             let durable_parent = |path: &std::path::Path| -> io::Result<()> {
                 #[cfg(test)]
-                if faults.contains(&EffectFault::BeforeDirectorySync) {
+                let parent = path
+                    .parent()
+                    .ok_or_else(|| io::Error::other("missing sync parent"))?;
+                #[cfg(test)]
+                if faults.contains(&EffectFault::BeforeDirectorySync)
+                    || faults.contains(&EffectFault::BeforeDirectorySyncAt(parent.to_owned()))
+                {
                     return Err(io::Error::other("injected retained directory sync failure"));
                 }
-                sync_parent(path)
+                sync_parent(path)?;
+                #[cfg(test)]
+                if faults.contains(&EffectFault::AfterDirectorySyncAt(parent.to_owned())) {
+                    return Err(io::Error::other(
+                        "injected failure after retained directory sync",
+                    ));
+                }
+                Ok(())
             };
             let fresh_fence = || -> io::Result<()> {
                 if let Some(directories) = &directories {
@@ -776,6 +827,9 @@ impl NativeFsEffect {
             fresh_projection(None)?;
 
             match plan {
+                Plan::SealPendingCreation(_) | Plan::SealArtifact(_) | Plan::CommitCreation(_) => {
+                    return Err(io::Error::other("incorrect artifact-seal dispatch").into());
+                }
                 Plan::ProbeRange {
                     path,
                     start,
@@ -849,7 +903,17 @@ impl NativeFsEffect {
                     #[cfg(not(test))]
                     let mut file = create_private_file(&path)?;
                     file.write_all(&bytes)?;
+                    #[cfg(test)]
+                    if faults.contains(&EffectFault::BeforeFileSync) {
+                        return Err(io::Error::other("injected retained file sync failure").into());
+                    }
                     file.sync_all()?;
+                    #[cfg(test)]
+                    if faults.contains(&EffectFault::AfterFileSync) {
+                        return Err(
+                            io::Error::other("injected failure after retained file sync").into(),
+                        );
+                    }
                     durable_parent(&path)?;
                 }
                 Plan::SyncFile { path } => {
@@ -861,10 +925,18 @@ impl NativeFsEffect {
                     fresh_projection(None)?;
                     check_opened_name(&file, &path, false)?;
                     file.sync_all()?;
+                    #[cfg(test)]
+                    if faults.contains(&EffectFault::AfterFileSync) {
+                        return Err(
+                            io::Error::other("injected failure after retained file sync").into(),
+                        );
+                    }
                 }
                 Plan::SyncDirectory { path } => {
                     #[cfg(test)]
-                    if faults.contains(&EffectFault::BeforeDirectorySync) {
+                    if faults.contains(&EffectFault::BeforeDirectorySync)
+                        || faults.contains(&EffectFault::BeforeDirectorySyncAt(path.clone()))
+                    {
                         return Err(
                             io::Error::other("injected retained directory sync failure").into()
                         );
@@ -873,6 +945,13 @@ impl NativeFsEffect {
                     fresh_projection(None)?;
                     check_opened_name(&directory, &path, true)?;
                     directory.sync_all()?;
+                    #[cfg(test)]
+                    if faults.contains(&EffectFault::AfterDirectorySyncAt(path)) {
+                        return Err(io::Error::other(
+                            "injected failure after retained directory sync",
+                        )
+                        .into());
+                    }
                 }
                 Plan::RenameNoReplace { from, to } => {
                     #[cfg(all(test, feature = "tokio"))]
@@ -882,7 +961,17 @@ impl NativeFsEffect {
                     wait_test_gate(&mut gates, TestGatePhase::AfterOpen)?;
                     fresh_projection(None)?;
                     check_opened_name(&source, &from, false)?;
+                    #[cfg(test)]
+                    if faults.contains(&EffectFault::BeforeFileSync) {
+                        return Err(io::Error::other("injected retained file sync failure").into());
+                    }
                     source.sync_all()?;
+                    #[cfg(test)]
+                    if faults.contains(&EffectFault::AfterFileSync) {
+                        return Err(
+                            io::Error::other("injected failure after retained file sync").into(),
+                        );
+                    }
                     #[cfg(all(test, feature = "tokio"))]
                     wait_test_gate(&mut gates, TestGatePhase::AfterSourceSync)?;
                     fresh_projection(None)?;
@@ -901,6 +990,12 @@ impl NativeFsEffect {
                     atomic_rename_no_replace(&from, &to)?;
                     #[cfg(all(test, feature = "tokio"))]
                     wait_test_gate(&mut gates, TestGatePhase::AfterRename)?;
+                    #[cfg(test)]
+                    if faults.contains(&EffectFault::AfterRename) {
+                        return Err(
+                            io::Error::other("injected failure after retained rename").into()
+                        );
+                    }
                     // The one syscall leaves no second hardlink alias. There
                     // is no post-rename authority gate which can skip cleanup.
                     durable_parent(&to)?;
@@ -916,14 +1011,34 @@ impl NativeFsEffect {
                     wait_test_gate(&mut gates, TestGatePhase::AfterOpen)?;
                     fresh_projection(None)?;
                     check_opened_name(&source, &from, false)?;
+                    #[cfg(test)]
+                    if faults.contains(&EffectFault::BeforeFileSync) {
+                        return Err(io::Error::other("injected retained file sync failure").into());
+                    }
                     source.sync_all()?;
+                    #[cfg(test)]
+                    if faults.contains(&EffectFault::AfterFileSync) {
+                        return Err(
+                            io::Error::other("injected failure after retained file sync").into(),
+                        );
+                    }
                     #[cfg(all(test, feature = "tokio"))]
                     wait_test_gate(&mut gates, TestGatePhase::AfterSourceSync)?;
                     fresh_projection(None)?;
                     check_opened_name(&source, &from, false)?;
+                    #[cfg(test)]
+                    if faults.contains(&EffectFault::BeforeRename) {
+                        return Err(io::Error::other("injected retained rename failure").into());
+                    }
                     std::fs::rename(&from, &to)?;
                     #[cfg(all(test, feature = "tokio"))]
                     wait_test_gate(&mut gates, TestGatePhase::AfterRename)?;
+                    #[cfg(test)]
+                    if faults.contains(&EffectFault::AfterRename) {
+                        return Err(
+                            io::Error::other("injected failure after retained rename").into()
+                        );
+                    }
                     durable_parent(&to)?;
                     if from.parent() != to.parent() {
                         durable_parent(&from)?;
