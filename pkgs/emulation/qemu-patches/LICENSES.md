@@ -146,3 +146,13 @@ When the atomic integration patch starts creating or deleting a file, update thi
 same change. Preserve an explicit file notice and use QEMU's upstream `LICENSE`
 to classify an unmarked file; do not infer a blanket license from the artifact
 directory.
+
+## Test-only UART origin baseline
+
+`tests/crucible/native/uart-origin-baseline.c` is GPL-2.0-only, as stated in its
+SPDX header. The focused qualification builder copies it to
+`tests/unit/test-crucible-uart-origin-baseline.c` in its temporary QEMU build
+source. It includes the selected UART bodies and links native QEMU libraries;
+it is not an Apache host component. This build-only addition does not change
+the selected atomic patch inventory or install a patched emulator. The matching
+complete corresponding-source artifact retains the fixture and its builder.
