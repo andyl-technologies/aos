@@ -335,6 +335,7 @@
     )
   ];
   initService = {
+    activationInputs = [operations.configuration.operations.file.effects.postgresql-server.outputs.resource];
     resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = commonHardening;
     service = "postgresql-init";
@@ -408,6 +409,10 @@
     })
     configuredCredentials);
   mainService = {
+    activationInputs = [
+      operations.configuration.operations.file.effects.postgresql-server.outputs.resource
+      operations.configuration.operations.file.effects.postgresql-hba.outputs.resource
+    ];
     resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = commonHardening;
     service = "postgresql";

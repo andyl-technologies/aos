@@ -115,6 +115,11 @@
     };
     search_path = runtimeSearchPath;
   };
+  configurationResources = [
+    files.krb5-client.outputs.resource
+    files.krb5-kdc.outputs.resource
+    files.krb5-acl.outputs.resource
+  ];
   commonConfiguration.views = [
     {
       name = "client";
@@ -219,6 +224,7 @@
   };
 
   initializeService = {
+    activationInputs = configurationResources;
     resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = (hardening []) // {network_families = ["local"];};
     service = "initialize";
@@ -252,6 +258,7 @@
     isolation = commonIsolation // {network = "none";};
   };
   kdcService = {
+    activationInputs = configurationResources;
     resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = hardening ["bind-privileged-network-port"];
     service = "kdc";
@@ -284,6 +291,7 @@
     isolation = commonIsolation;
   };
   administrationService = {
+    activationInputs = configurationResources;
     resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = hardening [];
     service = "administration";

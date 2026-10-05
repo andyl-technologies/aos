@@ -16,6 +16,7 @@
   environment = config.aos.abilities.configuration.operations.file.effects.desired-config-test;
 
   serviceDefinition = {
+    activationInputs = [environment.outputs.resource];
     lifecycle = {
       description = "AOS desired reconciliation config sequencing test";
       execution_model = "oneshot";

@@ -60,6 +60,7 @@
   firewall = config.aos.abilities.networkPolicy.operations.ruleset.effects.host;
   resourceGroup = config.aos.abilities.serviceManagement.operations.resourceGroup.effects.${package.name};
   service = {
+    activationInputs = [configuration.input.base configuration.input.integrations];
     activationAfter = [configuration.outputs.path modules.outputs.loaded tunables.outputs.values firewall.outputs.resource];
     policy.devicePolicy = {
       baseline_access = "standard-runtime-devices";

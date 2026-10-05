@@ -130,6 +130,7 @@
   };
   usedCredentials = credentialsFor cfg.client.tls.enable cfg.peer.tls.enable;
   serviceDefinition = {
+    activationInputs = [operations.configuration.operations.file.effects.etcd.outputs.resource];
     resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = {
       allow_privilege_escalation = false;

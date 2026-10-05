@@ -126,6 +126,7 @@
   ingress = config.aos.abilities.networkPolicy.operations.ruleset.effects.host;
   resourceGroup = config.aos.abilities.serviceManagement.operations.resourceGroup.effects.${package.name};
   service = {
+    activationInputs = [configuration.outputs.resource];
     resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = {
       allow_privilege_escalation = false;

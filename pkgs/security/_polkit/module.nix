@@ -14,7 +14,9 @@
   rulesSource = config.aos.abilities.configuration.operations.file.effects.polkit-rules;
   pamFiles = lib.filterAttrs (name: _: lib.hasPrefix "pam-" name) config.aos.abilities.configuration.operations.file.effects;
   pamResources = map (effect: effect.outputs.path) (builtins.attrValues pamFiles);
+  pamConfigurationInputs = map (effect: effect.outputs.resource) (builtins.attrValues pamFiles);
   service = {
+    activationInputs = [rulesSource.outputs.resource] ++ pamConfigurationInputs;
     policy.devicePolicy = {
       baseline_access = "declared-devices-only";
       rules = [

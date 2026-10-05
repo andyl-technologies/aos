@@ -204,6 +204,7 @@
     isolated_identity_mapping = "none";
   };
   initializeService = {
+    activationInputs = [operations.configuration.operations.file.effects.mariadb-server.outputs.resource];
     resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = commonHardening;
     service = "mariadb-init";
@@ -249,6 +250,9 @@
     isolation = commonIsolation;
   };
   mainService = {
+    activationInputs =
+      [operations.configuration.operations.file.effects.mariadb-server.outputs.resource]
+      ++ lib.optional (credentials.bootstrapCredentials != []) operations.configuration.operations.file.effects.mariadb-bootstrap.outputs.resource;
     resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = commonHardening;
     service = "mariadb";

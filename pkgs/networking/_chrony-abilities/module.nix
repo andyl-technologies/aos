@@ -83,6 +83,7 @@
     # bindaddress 0.0.0.0
   '';
   service = {
+    activationInputs = [configuration.outputs.resource];
     policy.runtimeConditions.privileges = [
       {
         privilege = "adjust-host-clock";

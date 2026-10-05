@@ -194,6 +194,7 @@
     };
   };
   daemon = {
+    activationInputs = [operations.configuration.operations.file.effects.ssh.outputs.resource];
     service = "sshd";
     lifecycle = serviceLifecycle {
       description = "OpenSSH daemon";

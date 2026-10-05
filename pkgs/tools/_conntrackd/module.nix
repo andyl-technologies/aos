@@ -82,6 +82,7 @@
   };
   resourceGroup = config.aos.abilities.serviceManagement.operations.resourceGroup.effects.${package.name};
   service = {
+    activationInputs = [operations.configuration.operations.file.effects.conntrackd.outputs.resource];
     resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = {
       allow_privilege_escalation = false;

@@ -46,6 +46,7 @@
   '';
 
   daemonService = {
+    activationInputs = [files.audit-daemon.outputs.resource];
     service = "auditd";
     lifecycle = {
       description = "Linux Audit Daemon";
@@ -100,6 +101,7 @@
     };
   };
   rulesService = {
+    activationInputs = [files.audit-rules.outputs.resource];
     service = "audit-rules";
     lifecycle = {
       description = "Load Audit Rules";

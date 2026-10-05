@@ -83,6 +83,7 @@
   ];
 
   serviceDefinition = {
+    activationInputs = [operations.configuration.operations.file.effects.dnsmasq.outputs.resource];
     policy.hardening = {
       allow_privilege_escalation = false;
       ambient_privileges = ["administer-network" "bind-privileged-network-port" "raw-network"];

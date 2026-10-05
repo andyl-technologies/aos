@@ -70,6 +70,7 @@
   };
   resourceGroup = config.aos.abilities.serviceManagement.operations.resourceGroup.effects.${package.name};
   service = {
+    activationInputs = [configuration.outputs.resource];
     policy.hardening = {
       allow_privilege_escalation = true;
       ambient_privileges = [];

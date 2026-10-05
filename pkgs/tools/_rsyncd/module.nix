@@ -127,6 +127,7 @@
       isolated_identity_mapping = "none";
     };
     service = "rsyncd";
+    activationInputs = [operations.configuration.operations.file.effects.rsyncd.outputs.resource];
     lifecycle = {
       description = "Rsync file-transfer daemon";
       execution_model = "foreground";
