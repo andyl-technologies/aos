@@ -228,12 +228,20 @@ impl SourceProjectContinuationObservationV3<'_> {
 
     /// Returns selected phase DATA only after all independent bookends succeed.
     pub fn state(&self) -> Option<SourceFirstSuccessorStateV2> {
-        self.error().is_none().then(|| self.action.as_ref().ok().map(|observed| observed.state())).flatten()
+        if self.error().is_some() {
+            return None;
+        }
+
+        self.action.as_ref().ok().map(|observed| observed.state())
     }
 
     /// Returns the selected project without exporting a strict observation loan.
     pub fn project(&self) -> Option<ProjectId> {
-        self.error().is_none().then(|| self.action.as_ref().ok().map(|observed| observed.project())).flatten()
+        if self.error().is_some() {
+            return None;
+        }
+
+        self.action.as_ref().ok().map(|observed| observed.project())
     }
 
     /// Borrows the immutable selected genesis receipt as DATA.
