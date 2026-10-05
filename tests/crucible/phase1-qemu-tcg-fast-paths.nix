@@ -57,6 +57,21 @@ in
             grep -q 'assertion failed' "$out/negative-$negative.log"
           done
 
+          ${pkgs.python3}/bin/python3 tests/unit/test-crucible-mutex-owner-cache.py \
+            --output-dir "$out/mutex-owner-proof" > "$out/mutex-owner-proof.result"
+          cat "$out/mutex-owner-proof.result"
+          grep -q '^PASS production mutex owner cache:' "$out/mutex-owner-proof.result"
+
+          for negative in cache atfork native; do
+            if ${pkgs.python3}/bin/python3 tests/unit/test-crucible-mutex-owner-cache.py \
+              --output-dir "$out/negative-mutex-$negative" \
+              --negative-control "$negative" > "$out/negative-mutex-$negative.log" 2>&1; then
+              echo "negative mutex-owner control unexpectedly passed: $negative" >&2
+              exit 1
+            fi
+            grep -q 'assertion failed' "$out/negative-mutex-$negative.log"
+          done
+
           cat > "$out/result" <<'RESULT'
           PASS
           check=checks.crucible.phase1.qemuTcgFastPaths
@@ -65,6 +80,8 @@ in
           active_fault_and_restore_behavior_preserved=true
           inactive_instruction_completion_avoids_icount_reads=true
           causal_negative_controls_rejected=true
+          cached_mutex_owner_matches_real_thread_and_fork_ids=true
+          atfork_callback_order_and_native_child_refresh_preserved=true
           RESULT
         '';
       }
