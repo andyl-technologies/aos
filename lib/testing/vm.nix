@@ -520,7 +520,12 @@
     vcpuCount ? 1,
     hostCpuPin ? false,
     hostCpuPinIndex ? null,
+    timeout ? null,
   }: let
+    headlessTimeout =
+      if timeout == null || ((builtins.isInt timeout || builtins.isFloat timeout) && timeout > 0)
+      then timeout
+      else throw "mkVMTest headless timeout must be a positive number or null";
     rootfs = fcLib.mkFirecrackerRootfs {
       pname = name;
       inherit testScript rootfsDeps extraWritableMiB;
@@ -542,6 +547,12 @@
         then [pkgs.util-linux]
         else []
       );
+
+    # Foreground mode signals and reaps only the owned Firecracker process.
+    # An omitted deadline preserves the existing unbounded headless default.
+    firecrackerTimeout =
+      lib.optionalString (headlessTimeout != null)
+      "${pkgs.coreutils}/bin/timeout --foreground -k 15 ${builtins.toJSON headlessTimeout} ";
 
     headlessFirecrackerScript = ''
       set -eu
@@ -632,19 +643,35 @@
             "$host_stepping" "$host_microcode" "$(uname -r)" "$host_allowed" "$host_cpu" \
             > "$TMPDIR/host-reference.env"
           FC_EXIT=0
-          ${pkgs.util-linux}/bin/taskset -c "$host_cpu" \
+          ${firecrackerTimeout}${pkgs.util-linux}/bin/taskset -c "$host_cpu" \
             firecracker --no-api --config-file "$CONFIG" > "$SERIAL_PIPE" 2>"$FC_LOG" || FC_EXIT=$?
         ''
         else ''
           FC_EXIT=0
-          firecracker --no-api --config-file "$CONFIG" > "$SERIAL_PIPE" 2>"$FC_LOG" || FC_EXIT=$?
+          ${firecrackerTimeout}firecracker --no-api --config-file "$CONFIG" > "$SERIAL_PIPE" 2>"$FC_LOG" || FC_EXIT=$?
         ''
       }
       wait "$SERIAL_MIRROR_PID" 2>/dev/null || true
 
       echo "Firecracker exited with code: $FC_EXIT"
 
-      if grep -q "TEST_RESULT:PASS" "$SERIAL_LOG"; then
+      # A marker emitted before a deadline or failed exit cannot qualify a VM.
+      if [ "$FC_EXIT" -ne 0 ]; then
+        echo "==> ERROR: Firecracker did not exit successfully"
+        cat "$SERIAL_LOG"
+        cat "$FC_LOG" 2>/dev/null || true
+        exit "$FC_EXIT"
+      fi
+
+      if grep -q "TEST_RESULT:FAIL" "$SERIAL_LOG"; then
+        echo ""
+        echo "==> TEST FAILED: ${name}"
+        echo "--- serial.log ---"
+        cat "$SERIAL_LOG"
+        echo "--- fc.log ---"
+        cat "$FC_LOG" 2>/dev/null || true
+        exit 1
+      elif grep -q "TEST_RESULT:PASS" "$SERIAL_LOG"; then
         echo ""
         echo "==> TEST PASSED: ${name}"
         mkdir -p $out
@@ -656,14 +683,6 @@
         else ""
       }
         echo "PASS" > $out/result
-      elif grep -q "TEST_RESULT:FAIL" "$SERIAL_LOG"; then
-        echo ""
-        echo "==> TEST FAILED: ${name}"
-        echo "--- serial.log ---"
-        cat "$SERIAL_LOG"
-        echo "--- fc.log ---"
-        cat "$FC_LOG" 2>/dev/null || true
-        exit 1
       else
         echo ""
         echo "==> ERROR: No test result marker found in serial output"
@@ -737,6 +756,7 @@
             extraWritableMiB
             hostCpuPin
             hostCpuPinIndex
+            timeout
             ;
           memory =
             if memory != null
