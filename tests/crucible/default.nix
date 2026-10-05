@@ -218,6 +218,7 @@ in rec {
     qemuTcgFastPaths = import ./phase1-qemu-tcg-fast-paths.nix {inherit pkgs;};
     qemuSettlePrepark = import ./phase1-qemu-settle-prepark.nix {inherit pkgs;};
     qemuColdFaultPredicates = import ./phase1-qemu-cold-fault-predicates.nix {inherit pkgs;};
+    qemuLazyMemoryIdentity = import ./phase1-qemu-lazy-memory-identity.nix {inherit pkgs;};
     qemuBlockShmem = import ./phase1-qemu-block-shmem.nix {inherit pkgs lib;};
     qemuNinePShmem = import ./phase1-qemu-9p-shmem.nix {inherit pkgs lib;};
     qmpCommand = import ./qmp-command.nix {inherit pkgs;};
