@@ -131,9 +131,11 @@ struct ArtifactOutputOriginal {
 pub fn run_nix_seed_tree_artifact(input: &Path, output: &Path) -> Result<(), NixSeedTreeArtifactErrorV1> {
     let mut owner = SeedTreeArtifactOriginal::default();
     owner.outcome = Some(owner.run(input, output));
+
     // A failed walk/write is parked before these independent observations.
     // Neither a later error nor an unwind reopens this one-shot DATA operation.
     owner.resource_post = Some(owner.resources.observe_terminal());
+
     if matches!(owner.outcome, Some(Ok(())))
         && matches!(owner.resource_post, Some(Ok(())))
     {
@@ -149,9 +151,13 @@ impl SeedTreeArtifactOriginal {
         self.stage = ArtifactStage::Paths;
         if !input.is_absolute() || !output.is_absolute()
             || input.as_os_str().len() > 4096 || output.as_os_str().len() > 4096
-        { return Err(CensusDataError::ArtifactPath); }
+        {
+            return Err(CensusDataError::ArtifactPath);
+        }
+
         self.input_path = Some(std::fs::canonicalize(input));
         self.output_path = Some(std::fs::canonicalize(output));
+
         let input_path = self.input_path.as_ref().ok_or(CensusDataError::Closed)?.as_ref()
             .map_err(|_| CensusDataError::ArtifactPath)?;
         let output_path = self.output_path.as_ref().ok_or(CensusDataError::Closed)?.as_ref()
@@ -161,7 +167,11 @@ impl SeedTreeArtifactOriginal {
         }
 
         self.stage = ArtifactStage::Input;
-        self.root = Some(rustix::fs::open(input, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()));
+        self.root = Some(rustix::fs::open(
+            input,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty()
+        ));
         self.observe_root(0)?;
         if !native(&self.root_flags[0])?.f_flag.contains(StatVfsMountFlags::RDONLY) {
             return Err(CensusDataError::ArtifactPath);
@@ -169,7 +179,12 @@ impl SeedTreeArtifactOriginal {
 
         self.stage = ArtifactStage::Output;
         self.output_names = Some(CensusDirectoryNames::prepare()?);
-        self.output = Some(rustix::fs::open(output, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()));
+        self.output = Some(rustix::fs::open(
+            output,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty()
+        ));
+
         let output = native(&self.output)?;
         self.output_stat[0] = Some(rustix::fs::fstat(output.as_fd()));
         let out_stat = *native(&self.output_stat[0])?;
@@ -179,6 +194,7 @@ impl SeedTreeArtifactOriginal {
         }
         self.output_names.as_mut().ok_or(CensusDataError::Closed)?
             .capture(output.as_fd(), &out_stat).map_err(|_| CensusDataError::ArtifactPath)?;
+
         if self.output_names.as_ref().ok_or(CensusDataError::Closed)?
             .names().map_err(|_| CensusDataError::ArtifactPath)?.len() != 0 {
             return Err(CensusDataError::ArtifactPath);
@@ -187,19 +203,27 @@ impl SeedTreeArtifactOriginal {
         self.stage = ArtifactStage::RootLoan;
         self.root_duplicate = Some(rustix::io::dup(native(&self.root)?.as_fd()));
         native(&self.root_duplicate)?;
-        let Some(Ok(duplicate)) = self.root_duplicate.take() else { return Err(CensusDataError::Closed); };
+        let Some(Ok(duplicate)) = self.root_duplicate.take() else {
+            return Err(CensusDataError::Closed);
+        };
+
         // This ordinary consuming validator may fail before returning its
         // duplicate. The independent original remains held; no lower
         // pre-return adoption prefix is claimed as captured here.
         self.beneath = Some(BeneathRoot::from_owned(duplicate));
         let beneath = linux(&self.beneath)?;
         self.begin = Some(self.census.begin(beneath));
-        if self.begin.as_ref().is_some_and(Result::is_err) { return Err(CensusDataError::Closed); }
+        if self.begin.as_ref().is_some_and(Result::is_err) {
+            return Err(CensusDataError::Closed);
+        }
 
         self.stage = ArtifactStage::Walk;
         self.walk = Some(capture_seed_census(beneath, &mut self.census));
         self.root_posts[0] = Some(self.recheck_root(1));
-        if self.walk.as_ref().is_some_and(Result::is_err) { return Err(CensusDataError::Closed); }
+
+        if self.walk.as_ref().is_some_and(Result::is_err) {
+            return Err(CensusDataError::Closed);
+        }
         if self.root_posts[0].as_ref().is_some_and(Result::is_err) {
             self.stage = ArtifactStage::WalkPost;
             return Err(CensusDataError::Closed);
@@ -208,7 +232,10 @@ impl SeedTreeArtifactOriginal {
         self.stage = ArtifactStage::Graph;
         let finalized = self.census.finalize();
         self.root_posts[1] = Some(self.recheck_root(2));
-        if finalized.is_err() { return Err(CensusDataError::Closed); }
+
+        if finalized.is_err() {
+            return Err(CensusDataError::Closed);
+        }
         if self.root_posts[1].as_ref().is_some_and(Result::is_err) {
             self.stage = ArtifactStage::GraphPost;
             return Err(CensusDataError::Closed);
@@ -216,19 +243,26 @@ impl SeedTreeArtifactOriginal {
 
         self.stage = ArtifactStage::Object;
         self.publication = Some(self.publish_objects());
+
         // The physical root and output-directory observations are independent
         // of a failed write/fsync/readback. Its native cause stays first.
         self.output_stat[1] = Some(rustix::fs::fstat(native(&self.output)?.as_fd()));
         self.root_posts[3] = Some(self.recheck_root(4));
+
         if self.publication.as_ref().is_some_and(Result::is_err) {
             return Err(CensusDataError::ArtifactOutput);
         }
         self.stage = ArtifactStage::Terminal;
         let after = native(&self.output_stat[1])?;
-        if out_stat.st_dev != after.st_dev || out_stat.st_ino != after.st_ino || out_stat.st_mode != after.st_mode {
+        if out_stat.st_dev != after.st_dev
+            || out_stat.st_ino != after.st_ino
+            || out_stat.st_mode != after.st_mode
+        {
             return Err(CensusDataError::ArtifactPath);
         }
-        if self.root_posts[3].as_ref().is_some_and(Result::is_err) { return Err(CensusDataError::Closed); }
+        if self.root_posts[3].as_ref().is_some_and(Result::is_err) {
+            return Err(CensusDataError::Closed);
+        }
         Ok(())
     }
 
@@ -602,6 +636,7 @@ fn capture_output_object(
     owner.directory_inode[0] = Some(rustix::fs::fstat(directory.as_fd()));
     native(&owner.directory_inode[0])?;
     owner.action = Some(capture_output_action(directory, owner, name, expected));
+
     // A returned action failure cannot suppress original file/directory posts.
     // Its complete Result is parked before these independent observations.
     if let Some(Ok(file)) = owner.file.as_ref() {
@@ -612,9 +647,12 @@ fn capture_output_object(
     }
     owner.directory_inode[1] = Some(rustix::fs::fstat(directory.as_fd()));
     owner.postcheck = Some(owner.require_postcheck());
+
     if owner.action.as_ref().is_some_and(Result::is_err)
         || owner.postcheck.as_ref().is_some_and(Result::is_err)
-    { return Err(CensusDataError::ArtifactOutput); }
+    {
+        return Err(CensusDataError::ArtifactOutput);
+    }
 
     // Retirement is allowed only after the same named/original bookends.
     owner.named = None;
@@ -628,30 +666,52 @@ fn capture_output_action(
     name: &str,
     expected: &[u8],
 ) -> Result<(), CensusDataError> {
-    owner.file = Some(rustix::fs::openat(directory.as_fd(), name,
-        OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-        Mode::RUSR | Mode::WUSR,
-    ).map(std::fs::File::from));
+    owner.file = Some(
+        rustix::fs::openat(
+            directory.as_fd(), name,
+            OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::RUSR | Mode::WUSR,
+        ).map(std::fs::File::from)
+    );
     let file = owner.file.as_mut().ok_or(CensusDataError::Closed)?.as_mut()
         .map_err(|_| CensusDataError::ArtifactOutput)?;
+
     owner.write = Some(file.write_all(expected));
-    if owner.write.as_ref().is_some_and(Result::is_err) { return Err(CensusDataError::ArtifactOutput); }
+    if owner.write.as_ref().is_some_and(Result::is_err) {
+        return Err(CensusDataError::ArtifactOutput);
+    }
+
     owner.flush = Some(file.flush());
-    if owner.flush.as_ref().is_some_and(Result::is_err) { return Err(CensusDataError::ArtifactOutput); }
+    if owner.flush.as_ref().is_some_and(Result::is_err) {
+        return Err(CensusDataError::ArtifactOutput);
+    }
+
     owner.sync = Some(file.sync_all());
-    if owner.sync.as_ref().is_some_and(Result::is_err) { return Err(CensusDataError::ArtifactOutput); }
+    if owner.sync.as_ref().is_some_and(Result::is_err) {
+        return Err(CensusDataError::ArtifactOutput);
+    }
+
     owner.inode[0] = Some(rustix::fs::fstat(file.as_fd()));
     native(&owner.inode[0])?;
     owner.directory_sync = Some(rustix::fs::fsync(directory.as_fd()));
     native(&owner.directory_sync)?;
-    owner.named = Some(rustix::fs::openat(directory.as_fd(), name, OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty()));
+
+    owner.named = Some(rustix::fs::openat(
+        directory.as_fd(), name,
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+        Mode::empty()
+    ));
     let named = native(&owner.named)?;
     owner.inode[1] = Some(rustix::fs::fstat(named.as_fd()));
     let before = native(&owner.inode[0])?;
     let after = native(&owner.inode[1])?;
-    if !same_inode_state(before, after) || rustix::fs::FileType::from_raw_mode(before.st_mode) != rustix::fs::FileType::RegularFile
+    if !same_inode_state(before, after)
+        || rustix::fs::FileType::from_raw_mode(before.st_mode) != rustix::fs::FileType::RegularFile
         || usize::try_from(before.st_size).ok() != Some(expected.len())
-    { return Err(CensusDataError::ArtifactOutput); }
+    {
+        return Err(CensusDataError::ArtifactOutput);
+    }
+
     owner.read = Some(read_exact_positioned_census_retaining_cause(named.as_fd(), &mut owner.bytes));
     if owner.read.as_ref().is_some_and(Result::is_err) || owner.bytes != expected {
         return Err(CensusDataError::ArtifactOutput);
