@@ -17,7 +17,10 @@ CRUCIBLE_SHMEM_HEADER_HASH=qemu_shmem_header_hash.
 Pass explicit matching --qemu LABEL=PATH and --plugin LABEL=PATH artifacts.
 The first label is the comparison baseline; name common prerequisite fixes
 explicitly, rather than labeling a modified control as unmodified origin/master.
-All timing samples and SHA256 identities are retained. One label permits a
+All attempts, timing samples and SHA256 identities are retained. A failed trial
+stops the campaign with its exit status and diagnostic streams preserved;
+successful runs are never silently substituted for failed attempts.
+One label permits a
 threshold-free repeated semantic qualification of the packaged fixture.
 
 The device projection manifest proves schema coverage, not device-state values.
@@ -221,7 +224,7 @@ def main():
                     "qemu_build_identity": (binary.parent.parent / "share/aos/crucible/qemu-build-identity.env").read_text()}
             for label, binary in qemu.items()
         },
-        "samples": [],
+        "attempts": [], "samples": [],
         "platform": platform_metadata({args.cpu} | ({args.host_cpu} if args.host_cpu is not None else set())),
     }
     labels = list(qemu)
@@ -233,17 +236,40 @@ def main():
             command = [str(driver), "--linux", str(qemu[label]), str(plugins[label]),
                        str(kernel), str(initrd), str(directory), str(args.cpu),
                        str(args.ram_mib), args.fingerprint]
-            sample = json.loads(subprocess.check_output(command, text=True))
-            sample.update(label=label, repeat=repeat, command=command)
-            witness = require_ready_witness(sample, args.ram_mib)
-            if expected is None:
-                expected = witness
-                results["negative_controls"] = readiness_negative_controls(sample, args.ram_mib)
-            if witness != expected:
-                differences = [key for key in WITNESS_KEYS if witness[key] != expected[key]]
-                raise AssertionError(f"Linux state witness changed: {label}, repeat {repeat}: {differences}")
+            directory.mkdir(parents=True, exist_ok=True)
+            attempt = {"label": label, "repeat": repeat, "command": command,
+                       "outcome": "started"}
+            results["attempts"].append(attempt)
+            (args.output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
+
+            completed = subprocess.run(command, text=True, capture_output=True, check=False)
+            (directory / "stdout.log").write_text(completed.stdout)
+            (directory / "stderr.log").write_text(completed.stderr)
+            attempt.update(exit_status=completed.returncode,
+                           outcome="captured" if completed.returncode == 0 else "failed")
+            (args.output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
+            if completed.returncode != 0:
+                raise RuntimeError(f"Linux boot trial failed: {label}, repeat {repeat}, "
+                                   f"exit {completed.returncode}; see {directory / 'stderr.log'}")
+
+            try:
+                sample = json.loads(completed.stdout)
+                sample.update(label=label, repeat=repeat, command=command)
+                (directory / "result.json").write_text(json.dumps(sample, indent=2) + "\n")
+                witness = require_ready_witness(sample, args.ram_mib)
+                if expected is None:
+                    expected = witness
+                    results["negative_controls"] = readiness_negative_controls(sample, args.ram_mib)
+                if witness != expected:
+                    differences = [key for key in WITNESS_KEYS if witness[key] != expected[key]]
+                    raise AssertionError(f"Linux state witness changed: {label}, repeat {repeat}: {differences}")
+            except (ValueError, KeyError, AssertionError) as error:
+                attempt.update(outcome="invalid_witness", error=str(error))
+                (args.output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
+                raise
+
             results["samples"].append(sample)
-            (directory / "result.json").write_text(json.dumps(sample, indent=2) + "\n")
+            attempt["outcome"] = "passed"
             (args.output / "results.json").write_text(json.dumps(results, indent=2) + "\n")
             print(json.dumps({"label": label, "repeat": repeat,
                               "seconds": sample["seconds"], "boot_seconds": sample["boot_seconds"],
