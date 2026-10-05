@@ -41,7 +41,7 @@ use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _}
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{Arc, Mutex, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use aos_proto::aos::sandbox::local::v1::{BrokerMethod, RuntimeAction};
@@ -209,6 +209,7 @@ const CREATE_Q04_AUTHORITY_PENDING: &str =
 
 type ProductionController = NodeController<ProductionOperationCompilerV1, ProductionEffectExecutor>;
 type SharedControllerBrokerSessions = Arc<Mutex<ControllerBrokerSessions>>;
+type SnapshotOwnershipDonationV3 = Arc<OnceLock<ControllerOwnershipConfigurationV1>>;
 
 /// Retains authenticated transports and their durable sequence owners across cycles.
 #[derive(Default)]
@@ -545,6 +546,7 @@ fn run_ordinary_controller(
         attachment_host,
         attachment_mount,
         nix_start,
+        None,
     )?;
     let replay_genesis = source_genesis_input
         .as_ref()
@@ -801,10 +803,26 @@ fn run_retained_controller(
     complete!(Cache);
 
     begin!(Ownership);
-    originals.ownership = Some(checked!(
+    originals.snapshot_ownership = Some(Arc::new(OnceLock::new()));
+    let ownership = checked!(
         ControllerOwnershipConfigurationV1::from_process_credentials_optional()
             .map_err(|_| ControllerRuntimeError::InvalidOwnershipCredential)
-    ));
+    );
+    originals.ownership = Some(match ownership {
+        None => None,
+        Some(configuration) => {
+            let donation = required!(originals.snapshot_ownership.as_ref());
+            // The shared allocation precedes admission. The actual returned
+            // owner parks without allocating/copying its secret afterward.
+            if let Err(configuration) = donation.set(configuration) {
+                originals.snapshot_ownership_refused = Some(configuration);
+                worker.terminate(ControllerResidentCauseV1::Closed(
+                    "Snapshot ownership donation was already occupied",
+                ));
+            }
+            Some(Arc::clone(donation))
+        }
+    });
     complete!(Ownership);
 
     begin!(Attach);
@@ -888,6 +906,7 @@ fn run_retained_controller(
         required!(parent.host.take()),
         required!(parent.mount.take()),
         required!(originals.nix_selector.as_ref()).clone(),
+        Some(Arc::clone(required!(originals.snapshot_ownership.as_ref()))),
     )));
     complete!(Controller);
 
@@ -1203,7 +1222,9 @@ struct ControllerWorkerOriginalsV1 {
     nix_selector: Option<Option<Arc<ControllerNixStartRecipeSelectorV2>>>,
     genesis: Option<Option<ProvisionedControllerSourceGenesisInputV1>>,
     cache_bundle: Option<Option<Vec<u8>>>,
-    ownership: Option<Option<ControllerOwnershipConfigurationV1>>,
+    ownership: Option<Option<SnapshotOwnershipDonationV3>>,
+    snapshot_ownership: Option<SnapshotOwnershipDonationV3>,
+    snapshot_ownership_refused: Option<ControllerOwnershipConfigurationV1>,
     attach: Option<Option<ControllerAttachCredentialsV1>>,
     signer: Option<Option<ControllerBrokerPlanSignerV1>>,
     pins: Option<Option<aos_sandbox::guest_root_publication::GuestRootTemplatePinsV1>>,
@@ -1327,7 +1348,7 @@ impl ControllerWorkerOriginalsV1 {
             controller: self.controller.as_mut()?,
             profile: self.profile.as_ref()?.as_deref(),
             node: self.node?,
-            ownership: self.ownership.as_ref()?.as_ref(),
+            ownership: self.ownership.as_ref()?.as_ref().and_then(|donation| donation.get()),
             attach: self.attach.as_ref()?.as_ref(),
             signer: self.signer.as_ref()?.as_ref(),
             pins: *self.pins.as_ref()?,
@@ -2699,6 +2720,13 @@ fn audit_pending_atomic_snapshot_sources(
     if pending.is_empty() && completed.is_empty() {
         return Ok(());
     }
+    if pending.iter().any(|(_, source)| matches!(source,
+        aos_sandbox::lifecycle::LifecycleAtomicSnapshotSourceRecoveryV1::OriginalPrerequisite { .. }))
+    {
+        return Err(CycleFailure::Fatal(
+            "Snapshot derived original retains signing/dispatch debt; cold replacement is forbidden".to_owned(),
+        ));
+    }
     let storage = sessions.storage.as_mut().ok_or_else(|| {
         CycleFailure::Retryable("protected Storage session is unavailable".to_owned())
     })?;
@@ -3378,6 +3406,7 @@ fn open_controller(
     attachment_host: Option<aos_sandbox::runtime_scope::HostServiceIdentity>,
     attachment_mount: Option<aos_sandbox::mount_preparation::MountServiceIdentity>,
     nix_start: Option<Arc<ControllerNixStartRecipeSelectorV2>>,
+    snapshot_ownership: Option<SnapshotOwnershipDonationV3>,
 ) -> Result<ProductionController, ControllerRuntimeError> {
     let (journal, _) = Journal::open_protected_at_for_uid(
         &configuration.state_directory,
@@ -3395,6 +3424,7 @@ fn open_controller(
         attachment_mount,
         nix_start,
         configuration.nix_storage_generation_prepare,
+        snapshot_ownership,
     )
 }
 
@@ -3407,6 +3437,7 @@ fn controller_from_journal(
     attachment_mount: Option<aos_sandbox::mount_preparation::MountServiceIdentity>,
     nix_start: Option<Arc<ControllerNixStartRecipeSelectorV2>>,
     nix_generation_enabled: bool,
+    snapshot_ownership: Option<SnapshotOwnershipDonationV3>,
 ) -> Result<ProductionController, ControllerRuntimeError> {
     validate_controller_journal(&mut journal, node_id)?;
     let scope = ControllerRequestScopeV1::new(ObjectDigest::from_bytes(REQUEST_SCOPE))?;
@@ -3420,6 +3451,7 @@ fn controller_from_journal(
         attachment_host,
         attachment_mount,
     )?;
+    executor.snapshot_ownership = snapshot_ownership.filter(|donation| donation.get().is_some());
     #[cfg(feature = "online-nix")]
     {
         executor.nix_generation_enabled = nix_generation_enabled;
@@ -3688,6 +3720,8 @@ fn parse_identity(
 }
 
 struct ProductionEffectExecutor {
+    snapshot_ownership: Option<SnapshotOwnershipDonationV3>,
+    pending_snapshot_derivative: Option<storage_snapshot::authorization::SnapshotDerivativeAttemptV3>,
     #[cfg(feature = "online-nix")]
     nix_start: Option<Arc<ControllerNixStartRecipeSelectorV2>>,
     #[cfg(feature = "online-nix")]
@@ -3811,6 +3845,8 @@ impl ProductionEffectExecutor {
         process_start: Option<([u8; 16], u64)>,
     ) -> Self {
         Self {
+            snapshot_ownership: None,
+            pending_snapshot_derivative: None,
             #[cfg(feature = "online-nix")]
             nix_start: None,
             #[cfg(feature = "online-nix")]
@@ -6532,7 +6568,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             })?
             .method();
         if method == BrokerMethod::BROKER_METHOD_STORAGE_APPLY
-            && self.pending_atomic_snapshot.is_some()
+            && (self.pending_atomic_snapshot.is_some() || self.pending_snapshot_derivative.is_some())
         {
             return Err(EffectFailure::Retryable(
                 "Storage session is reserved for an atomic snapshot".to_owned(),

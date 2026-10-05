@@ -6703,6 +6703,14 @@ impl DormantAuthenticatedBrokerSessionV1 {
         self.0.revalidate_broker_outcome(currentness)
     }
 
+    /// Rechecks the exact borrowed Inventory predecessor without consuming it.
+    pub(crate) fn compare_atomic_snapshot_predecessor_v3(
+        &mut self,
+        currentness: &ProtectedBrokerOutcomeCurrentnessOwnerV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.0.compare_atomic_snapshot_predecessor_v3(currentness)
+    }
+
     /// Rechecks the borrowed original Host48 terminal without consuming its owner.
     pub(crate) fn compare_host_storage_output_outcome_v1(
         &mut self,

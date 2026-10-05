@@ -47,6 +47,8 @@ const PIN_RECEIPT_MAGIC: &[u8; 8] = b"AOSPAR01";
 const PIN_RECEIPT_VERSION: u16 = 1;
 const REPAIR_COMPLETION_MAGIC: &[u8; 8] = b"AOSZRCE1";
 const REPAIR_COMPLETION_VERSION: u16 = 1;
+const SNAPSHOT_DERIVED_DOMAIN: [u8; 16] = *b"AOSSTGSNAPDRV001";
+const SNAPSHOT_DERIVED_MAGIC: &[u8; 8] = b"AOSSDR01";
 
 /// Storage-audience alias for protected authority configuration failures.
 pub type StorageAuthorityConfigError = BrokerAuthorityConfigError;
@@ -577,7 +579,7 @@ impl StorageAuthorityV1 {
         let assignment = fence
             .broker_assignment()
             .map_err(|_| StorageAdmissionError::RequestMismatch)?;
-        let admission = self.0.admit(
+        let admission = self.0.admit_storage_snapshot(
             artifacts,
             AdmissionRequest {
                 audience: BrokerAudience::Storage,
@@ -860,6 +862,78 @@ impl StorageAuthorityV1 {
             &admission.resolution.operation_id,
             &admission.admission,
         )
+    }
+
+    // The selected wrapper binds an operation fence to the exact authenticated
+    // shared base bytes. It never replaces or advances that base.
+    pub(crate) fn seal_atomic_snapshot(
+        &self,
+        sandbox_id: &[u8; 16],
+        request_id: &[u8; 16],
+        operation_id: &[u8; 16],
+        admission: &VerifiedBrokerAdmission,
+        base_bytes: Option<&[u8]>,
+    ) -> Result<SealedStorageAdmission, StorageAdmissionError> {
+        let Some(base_bytes) = base_bytes else {
+            return self.seal(sandbox_id, request_id, operation_id, admission);
+        };
+        let base = self.open_fence(sandbox_id, base_bytes)?;
+        if base.plan_digest() == admission.fence.plan_digest() {
+            return self.seal(sandbox_id, request_id, operation_id, admission);
+        }
+        require_snapshot_base(&base, &admission.fence)?;
+        let operation = self.0.seal_operation_fence(operation_id, &admission.fence)?;
+        let mut payload = Vec::with_capacity(56 + operation.len());
+        payload.extend_from_slice(SNAPSHOT_DERIVED_MAGIC);
+        payload.extend_from_slice(&1u16.to_be_bytes());
+        payload.extend_from_slice(&[0; 6]);
+        payload.extend_from_slice(&Sha256::digest(base_bytes));
+        payload.extend_from_slice(&(operation.len() as u64).to_be_bytes());
+        payload.extend_from_slice(&operation);
+        let domain = BrokerLocalRecordDomain::new(SNAPSHOT_DERIVED_DOMAIN)
+            .map_err(|_| StorageAdmissionError::FenceRejected)?;
+        let operation_fence = self.0.seal_local_record(
+            RecordNamespace::AuthorityPublication, operation_id, domain, &payload,
+        )?;
+        Ok(SealedStorageAdmission {
+            current_fence: base_bytes.to_vec(),
+            effect: self.0.seal_effect(request_id, &admission.effect)?,
+            operation_fence,
+        })
+    }
+
+    pub(crate) fn open_derived_snapshot_fence(
+        &self,
+        operation_id: &[u8; 16],
+        sandbox_id: &[u8; 16],
+        bytes: &[u8],
+        base_bytes: &[u8],
+    ) -> Result<BrokerAuthorizationFenceV1, StorageAdmissionError> {
+        let domain = BrokerLocalRecordDomain::new(SNAPSHOT_DERIVED_DOMAIN)
+            .map_err(|_| StorageAdmissionError::FenceRejected)?;
+        let payload = self.0.open_local_record(
+            RecordNamespace::AuthorityPublication, operation_id, domain, bytes,
+        )?;
+        if payload.len() < 56
+            || &payload[..8] != SNAPSHOT_DERIVED_MAGIC
+            || payload[8..10] != 1u16.to_be_bytes()
+            || payload[10..16] != [0; 6]
+            || payload[16..48] != Sha256::digest(base_bytes)[..]
+        {
+            return Err(StorageAdmissionError::FenceRejected);
+        }
+        let length = payload[48..56].try_into()
+            .map(u64::from_be_bytes)
+            .ok().and_then(|length| usize::try_from(length).ok())
+            .ok_or(StorageAdmissionError::FenceRejected)?;
+        if length != payload.len() - 56 {
+            return Err(StorageAdmissionError::FenceRejected);
+        }
+        let operation = self.0.open_operation_fence(operation_id, &payload[56..])?;
+        let base = self.open_fence(sandbox_id, base_bytes)?;
+        require_snapshot_base(&base, &operation)?;
+        self.check_current_fence(&base)?;
+        Ok(operation)
     }
 
     pub(crate) fn check_preparation_before_effect<F>(
@@ -1153,6 +1227,22 @@ impl StorageAuthorityV1 {
         }
         Ok(())
     }
+}
+
+fn require_snapshot_base(
+    base: &BrokerAuthorizationFenceV1,
+    operation: &BrokerAuthorizationFenceV1,
+) -> Result<(), StorageAdmissionError> {
+    if base.assignment() != operation.assignment()
+        || base.node() != operation.node()
+        || base.ownership_authority() != operation.ownership_authority()
+        || base.plan_expires_seconds() != operation.plan_expires_seconds()
+        || base.local_lease_record() != operation.local_lease_record()
+        || base.plan_digest() == operation.plan_digest()
+    {
+        return Err(StorageAdmissionError::FenceRejected);
+    }
+    Ok(())
 }
 
 fn pin_attempt_receipt_payload(

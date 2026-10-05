@@ -1667,6 +1667,14 @@ impl ProtectedBrokerSessionOwnerV1 {
         self.journal.compare_storage_output_server_terminal_v1(owner, peer)
     }
 
+    pub(crate) fn compare_atomic_snapshot_predecessor_v3(
+        &mut self,
+        owner: &ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        peer: &ConnectionPeerIdentity,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.journal.compare_atomic_snapshot_predecessor_v3(owner, peer)
+    }
+
     pub(crate) fn compare_host_storage_output_outcome_v1(
         &mut self,
         owner: &ProtectedBrokerOutcomeCurrentnessOwnerV1,
@@ -4952,6 +4960,28 @@ impl ProtectedBrokerSessionJournalV1 {
             connection_peer,
             owner,
         })
+    }
+
+    /// Compares only the original Controller Storage Inventory terminal.
+    pub(crate) fn compare_atomic_snapshot_predecessor_v3(
+        &mut self,
+        owner: &ProtectedBrokerOutcomeCurrentnessOwnerV1,
+        connection_peer: &ConnectionPeerIdentity,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        let endpoint = fixed_endpoint(ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient);
+        if self.directory != Path::new(endpoint.journal_root)
+            || self.endpoint.role() != BrokerSessionDurableEndpointV1::Client
+            || owner.transcript.protocol() != BrokerSessionProtocolV1::Storage
+            || owner.transcript.audience() != aos_proto::aos::sandbox::local::v1::Audience::AUDIENCE_NODE_CONTROLLER
+            || owner.request.method() != BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
+            || owner.request.direction() != AuthenticatedBrokerRequestDirectionV1::ClientSend
+            || owner.outcome.method() != BrokerMethod::BROKER_METHOD_STORAGE_INVENTORY_RESOURCES
+            || owner.outcome.direction() != aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerOutcomeDirectionV1::ClientReceive
+        {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+
+        self.validate_broker_outcome(owner, connection_peer)
     }
 
     /// Compares only the original Storage-client Host48 terminal under its held owner.

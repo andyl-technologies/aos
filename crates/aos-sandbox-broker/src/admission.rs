@@ -98,9 +98,41 @@ enum AdmissionPhase {
     ExactGrantRotation,
     ExistingMountFuseIntent,
     ExistingHostFuseWorker,
+    ExistingStorageSnapshot,
 }
 
 impl BrokerAuthority {
+    /// Admits an operation-owned Snapshot derivative beside its unchanged base.
+    ///
+    /// A same-plan request retains ordinary admission. A changed plan must use
+    /// the exact installed assignment and lease, with one descriptor-free grant.
+    ///
+    /// # Errors
+    ///
+    /// Rejects another purpose, a changed base assignment, expiry or local lease,
+    /// or any failure in the common signature/intersection engine.
+    pub fn admit_storage_snapshot(
+        &self,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        request: AdmissionRequest<'_>,
+        current_clock: &RawPairedClockSample,
+        prior_fence: Option<&[u8]>,
+    ) -> Result<VerifiedBrokerAdmission, BrokerAdmissionError> {
+        if self.domain != BrokerDomain::Storage
+            || request.audience != BrokerAudience::Storage
+            || request.protocol != ProtocolId::StorageBroker
+            || request.verb != BrokerVerb::StorageAtomicSnapshot
+            || request.target != BrokerGrantTarget::Assignment
+            || request.descriptor_count != 0
+        {
+            return Err(BrokerAdmissionError::RequestMismatch);
+        }
+        self.admit_with_plan_rotation(
+            artifacts, request, current_clock, prior_fence,
+            AdmissionPhase::ExistingStorageSnapshot,
+        )
+    }
+
     /// Constructs authority from already validated protected anchors.
     ///
     /// # Errors
@@ -596,6 +628,18 @@ impl BrokerAuthority {
                 .transpose()
                 .map_err(|_| BrokerAdmissionError::FenceRejected)?
         };
+        let snapshot_derivative = phase == AdmissionPhase::ExistingStorageSnapshot
+            && prior.as_ref().is_some_and(|base| base.plan_digest() != verified_plan.plan_digest());
+        if snapshot_derivative {
+            let base = prior.as_ref().ok_or(BrokerAdmissionError::FenceRejected)?;
+            self.check_current_fence(base)?;
+            require_same_fuse_assignment(Some(base), request.assignment)?;
+            if verified_plan.plan().expires_seconds() != base.plan_expires_seconds()
+                || verified_plan.plan().grants().len() != 1
+            {
+                return Err(BrokerAdmissionError::FenceRejected);
+            }
+        }
         if matches!(
             phase,
             AdmissionPhase::ExistingMountFuseIntent | AdmissionPhase::ExistingHostFuseWorker
@@ -607,18 +651,21 @@ impl BrokerAuthority {
             &verified_plan,
             request.assignment,
             self.node,
-            phase != AdmissionPhase::BasePlan,
+            phase != AdmissionPhase::BasePlan
+                && (phase != AdmissionPhase::ExistingStorageSnapshot || snapshot_derivative),
         )?;
         let pending_lease = prepare_local_lease_record(prior_local, &verified_lease, current_clock)
             .map_err(|_| BrokerAdmissionError::FenceRejected)?;
         if matches!(
             phase,
             AdmissionPhase::ExistingMountFuseIntent | AdmissionPhase::ExistingHostFuseWorker
-        ) && prior_local.is_none_or(|current| current != &pending_lease.record)
+        ) || snapshot_derivative
         {
-            // These phases borrow the installed local lease; renewal or a new
-            // BOOTTIME fence belongs to the ordinary protected owner path.
-            return Err(BrokerAdmissionError::FenceRejected);
+            if prior_local.is_none_or(|current| current != &pending_lease.record) {
+                // These phases borrow the installed local lease; renewal or a
+                // new BOOTTIME fence belongs to the ordinary owner path.
+                return Err(BrokerAdmissionError::FenceRejected);
+            }
         }
         let intersection = intersect_broker_admission(
             matched,

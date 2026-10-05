@@ -855,6 +855,25 @@ impl StorageAdmissionCoordinator {
             .map_err(Into::into)
     }
 
+    fn open_atomic_snapshot_operation_fence(
+        &self,
+        operation: &[u8; 16],
+        sandbox: &[u8; 16],
+        bytes: &[u8],
+    ) -> Result<BrokerAuthorizationFenceV1, StorageBrokerError> {
+        // The untrusted kind byte selects only an authenticated format. All
+        // ordinary fence successes and failures retain their original opener.
+        if bytes.get(10) != Some(&3) {
+            return self.authority.open_operation_fence(operation, bytes)
+                .map_err(|_| StorageBrokerError::Authority);
+        }
+        let base = self.transactions
+            .authority_record(RecordNamespace::DesiredState, sandbox)?
+            .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
+        self.authority.open_derived_snapshot_fence(operation, sandbox, bytes, base)
+            .map_err(|_| StorageBrokerError::Authority)
+    }
+
     pub(crate) fn authenticate_atomic_snapshot_records(&self) -> Result<(), StorageBrokerError> {
         for record in self.transactions.atomic_dataset_snapshot_inventory()? {
             let operation = record.program().operation();
@@ -864,10 +883,9 @@ impl StorageAdmissionCoordinator {
                 .transactions
                 .authority_record(RecordNamespace::AuthorityPublication, &operation)?
                 .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
-            let operation_fence = self
-                .authority
-                .open_operation_fence(&operation, operation_fence_bytes)
-                .map_err(|_| StorageBrokerError::Authority)?;
+            let operation_fence = self.open_atomic_snapshot_operation_fence(
+                &operation, &sandbox_id, operation_fence_bytes,
+            )?;
             let effect_bytes = self
                 .transactions
                 .authority_record(RecordNamespace::Effect, &request_id)?
@@ -948,7 +966,9 @@ impl StorageAdmissionCoordinator {
             .map_err(|_| StorageBrokerError::Authority)?;
         let sealed = self
             .authority
-            .seal(&sandbox_id, &request_id, &request.operation(), &admission)
+            .seal_atomic_snapshot(
+                &sandbox_id, &request_id, &request.operation(), &admission, prior_fence,
+            )
             .map_err(|_| StorageBrokerError::Authority)?;
         self.transactions
             .prepare_authorized_atomic_dataset_snapshot(
@@ -975,10 +995,9 @@ impl StorageAdmissionCoordinator {
             .transactions
             .authority_record(RecordNamespace::AuthorityPublication, &operation)?
             .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
-        let operation_fence = self
-            .authority
-            .open_operation_fence(&operation, operation_fence_bytes)
-            .map_err(|_| StorageBrokerError::Authority)?;
+        let operation_fence = self.open_atomic_snapshot_operation_fence(
+            &operation, request.fence().sandbox_id(), operation_fence_bytes,
+        )?;
         let effect_bytes = self
             .transactions
             .authority_record(RecordNamespace::Effect, &request_id)?
@@ -1047,10 +1066,9 @@ impl StorageAdmissionCoordinator {
             .transactions
             .authority_record(RecordNamespace::AuthorityPublication, &operation)?
             .ok_or(crate::StorageStateError::MissingAuthorityLink)?;
-        let operation_fence = self
-            .authority
-            .open_operation_fence(&operation, operation_fence_bytes)
-            .map_err(|_| StorageBrokerError::Authority)?;
+        let operation_fence = self.open_atomic_snapshot_operation_fence(
+            &operation, &sandbox_id, operation_fence_bytes,
+        )?;
         let current_fence_bytes = self
             .transactions
             .authority_record(RecordNamespace::DesiredState, &sandbox_id)?
@@ -1068,7 +1086,11 @@ impl StorageAdmissionCoordinator {
             .open_admission_intent(&request_id, effect_bytes)
             .map_err(|_| StorageBrokerError::Authority)?;
         let assignment = operation_fence.assignment();
-        if current_fence != operation_fence
+        let same_fence = current_fence == operation_fence
+            || self.authority.open_derived_snapshot_fence(
+                &operation, &sandbox_id, operation_fence_bytes, current_fence_bytes,
+            ).is_ok_and(|authenticated| authenticated == operation_fence);
+        if !same_fence
             || assignment.sandbox().as_bytes() != &sandbox_id
             || assignment.incarnation().as_bytes() != request.fence().incarnation_id()
             || assignment.epoch().get() != request.fence().assignment_epoch()

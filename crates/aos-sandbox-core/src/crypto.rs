@@ -99,11 +99,66 @@ pub fn sign_statement(
     validate_public_key_fingerprint(&statement, &public_key)?;
 
     let message = signature_signing_message(&statement);
-    let signature = signing_key.sign(&message);
+    let signature = sign_prepared_message(signing_key, &message);
     Ok(Signature::new(
         statement,
-        SignatureBytes::new(signature.to_bytes()),
+        signature,
     ))
+}
+
+/// Owns a validated statement's canonical signing message, without authority.
+///
+/// Preparation does not prove current policy or permit an effect. A protected
+/// owner must finish key validation before its final original-clock boundary.
+pub struct PreparedStatementSigningV1 {
+    statement: SignatureStatement,
+    message: Vec<u8>,
+}
+
+impl PreparedStatementSigningV1 {
+    /// Prepares the same registry-checked message used by [`sign_statement`].
+    ///
+    /// # Errors
+    ///
+    /// Rejects an invalid subject-purpose or verification-policy role.
+    pub fn new(statement: SignatureStatement) -> Result<Self, SignatureVerificationError> {
+        validate_statement_registry(&statement)?;
+        let message = signature_signing_message(&statement);
+        Ok(Self { statement, message })
+    }
+
+    /// Borrows a fingerprint-checked key and the already prepared message.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a key that differs from the immutable statement's fingerprint.
+    pub fn key_message_loan<'a>(
+        &'a self,
+        key: &'a SigningKey,
+    ) -> Result<PreparedStatementKeyLoanV1<'a>, SignatureVerificationError> {
+        validate_public_key_fingerprint(&self.statement, &key.verifying_key().to_bytes())?;
+        Ok(PreparedStatementKeyLoanV1 { key, message: &self.message })
+    }
+}
+
+/// Borrows only the checked key and canonical message for one signing boundary.
+///
+/// This loan contains no clock, callback, currentness or effect permission.
+pub struct PreparedStatementKeyLoanV1<'a> {
+    key: &'a SigningKey,
+    message: &'a [u8],
+}
+
+impl PreparedStatementKeyLoanV1<'_> {
+    /// Signs the already prepared message with no intervening preparation.
+    #[must_use]
+    pub fn sign(self) -> SignatureBytes {
+        sign_prepared_message(self.key, self.message)
+    }
+}
+
+fn sign_prepared_message(key: &SigningKey, message: &[u8]) -> SignatureBytes {
+    SignatureBytes::new(key.sign(message).to_bytes())
 }
 
 /// Verifies a detached signature against exact canonical trust-policy bytes.

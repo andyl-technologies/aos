@@ -3905,6 +3905,13 @@ impl DormantAuthenticatedBrokerSessionV1 {
             .revalidate_broker_outcome(currentness, self.socket.peer())
     }
 
+    pub(super) fn compare_atomic_snapshot_predecessor_v3(
+        &mut self,
+        currentness: &crate::ProtectedBrokerOutcomeCurrentnessOwnerV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.owner.compare_atomic_snapshot_predecessor_v3(currentness, self.socket.peer())
+    }
+
     pub(super) fn compare_host_storage_output_outcome_v1(
         &mut self,
         currentness: &crate::ProtectedBrokerOutcomeCurrentnessOwnerV1,

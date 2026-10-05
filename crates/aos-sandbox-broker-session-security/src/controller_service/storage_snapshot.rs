@@ -4,6 +4,8 @@
 //! custody retains the predecessor and exact session exchange across retries;
 //! protected source custody prevents a replacement dispatch after restart.
 
+pub(super) mod authorization;
+
 use aos_sandbox::lifecycle::{
     LifecycleAtomicDatasetSnapshotPlanV1, LifecycleAtomicSnapshotSourceAdmissionV1,
     LifecycleAtomicSnapshotSourceCompletionV1, LifecycleAtomicSnapshotSourceRecoveryV1,
@@ -144,6 +146,11 @@ impl ProductionEffectExecutor {
                         ));
                     }
                     LifecycleAtomicSnapshotSourceRecoveryV1::Absent => {}
+                    LifecycleAtomicSnapshotSourceRecoveryV1::OriginalPrerequisite { .. } => {
+                        return Err(permanent(
+                            "Snapshot derived originals retain cold debt; no replacement signature or dispatch",
+                        ));
+                    }
                     LifecycleAtomicSnapshotSourceRecoveryV1::Pending {
                         request_id,
                         request_packet,
@@ -332,6 +339,20 @@ impl ProductionEffectExecutor {
                     .storage
                     .as_mut()
                     .ok_or_else(missing_broker_session)?;
+                if method == LifecycleMethodV1::Snapshot {
+                    if let Some(donation) = self.snapshot_ownership.as_ref() {
+                        if self.pending_snapshot_derivative.is_none() {
+                            self.pending_snapshot_derivative =
+                                Some(authorization::SnapshotDerivativeAttemptV3::new(operation_id));
+                        }
+                        let attempt = self.pending_snapshot_derivative.as_mut()
+                            .ok_or_else(|| permanent("Snapshot derivative custody is absent"))?;
+                        return attempt.advance(
+                            donation, self.broker_plan_signer.as_ref(), self.node, journal,
+                            &owner, &current, &coordination, &coordination_key, &barrier, storage,
+                        );
+                    }
+                }
                 let predecessor = storage
                     .begin_atomic_snapshot_inventory()
                     .map_err(retryable)?;
