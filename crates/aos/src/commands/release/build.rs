@@ -96,9 +96,18 @@ pub(super) fn run(args: &ReleaseBuildArgs, nix: &NixRunner, printer: &Printer) -
             .with_context(|| format!("Nix omitted planned store path {}", expected.store_path))?;
         let mut info: NixPathInfo = serde_json::from_value(value.clone())
             .with_context(|| format!("decoding Nix facts for {}", expected.store_path))?;
-        if info.deriver.as_deref() != Some(expected.derivation) {
-            bail!("realized output {id} has a different deriver than the plan");
-        }
+        require_equivalent_deriver(
+            id,
+            info.deriver.as_deref(),
+            expected.derivation,
+            expected.store_path,
+            |deriver| {
+                nix.store_query(
+                    Path::new(deriver),
+                    &["--query", "--binding", expected.output],
+                )
+            },
+        )?;
         info.references.sort();
         info.references.dedup();
         outputs.push(BuildOutputEvidence {
@@ -184,6 +193,50 @@ pub(super) fn run(args: &ReleaseBuildArgs, nix: &NixRunner, printer: &Printer) -
         report.outputs.len(),
         args.output.display()
     ));
+    Ok(())
+}
+
+/// Requires a realized output's recorded deriver to be the planned one or
+/// an equivalent derivation.
+///
+/// Nix records whichever derivation first produced a store path as its
+/// deriver. Input-addressed derivations that differ only in fixed-output
+/// inputs, such as a source fetch with a different URL list but the same
+/// hash, produce the same output paths. A different recorded deriver is
+/// accepted only when it is a store derivation that Nix itself binds, for
+/// the planned output name, to exactly the planned store path. The evidence
+/// still names the planned derivation.
+///
+/// `bind_output` receives the recorded deriver and returns the store path
+/// Nix binds to the planned output name.
+///
+/// # Errors
+///
+/// Returns an error when no deriver is recorded, when the recorded deriver
+/// is not a store derivation, when its binding cannot be read, or when it
+/// binds the planned output name to a different store path.
+fn require_equivalent_deriver(
+    id: &str,
+    recorded: Option<&str>,
+    planned: &str,
+    store_path: &str,
+    bind_output: impl FnOnce(&str) -> Result<String>,
+) -> Result<()> {
+    let Some(recorded) = recorded else {
+        bail!("realized output {id} has no recorded deriver");
+    };
+    if recorded == planned {
+        return Ok(());
+    }
+    if !recorded.starts_with("/nix/store/") || !recorded.ends_with(".drv") {
+        bail!("realized output {id} names a deriver outside the Nix store: {recorded}");
+    }
+
+    let bound = bind_output(recorded)
+        .with_context(|| format!("reading the outputs of {id}'s recorded deriver {recorded}"))?;
+    if bound.trim() != store_path {
+        bail!("realized output {id} has a different deriver than the plan");
+    }
     Ok(())
 }
 
@@ -390,6 +443,74 @@ mod tests {
     use aos_core::nix::CheckFailure;
 
     use super::*;
+
+    const PLANNED_DRV: &str = "/nix/store/2cy5z4qwn0wq2qx774wzk3x252zkxx09-abseil-cpp-1.drv";
+    const EQUIVALENT_DRV: &str = "/nix/store/1sfvcsz3kqc7a4xfy114x3yycsa61rxv-abseil-cpp-1.drv";
+    const OUTPUT_PATH: &str = "/nix/store/49br0y2s9c52ln7bxph87faa3kdkiyfz-abseil-cpp-1";
+
+    #[test]
+    fn planned_deriver_is_accepted_without_a_lookup() -> Result<()> {
+        require_equivalent_deriver("id", Some(PLANNED_DRV), PLANNED_DRV, OUTPUT_PATH, |_| {
+            bail!("the planned deriver needs no lookup")
+        })
+    }
+
+    #[test]
+    fn equivalent_deriver_binding_the_planned_path_is_accepted() -> Result<()> {
+        require_equivalent_deriver(
+            "id",
+            Some(EQUIVALENT_DRV),
+            PLANNED_DRV,
+            OUTPUT_PATH,
+            |deriver| {
+                assert_eq!(deriver, EQUIVALENT_DRV);
+                Ok(format!("{OUTPUT_PATH}\n"))
+            },
+        )
+    }
+
+    #[test]
+    fn deriver_binding_another_path_is_rejected() {
+        let result = require_equivalent_deriver(
+            "id",
+            Some(EQUIVALENT_DRV),
+            PLANNED_DRV,
+            OUTPUT_PATH,
+            |_| Ok("/nix/store/hsjw5riiksy5w04rc4413asvr5c4k9h7-abseil-cpp-1".to_string()),
+        );
+
+        assert!(result.is_err_and(|error| error.to_string().contains("different deriver")));
+    }
+
+    #[test]
+    fn missing_or_foreign_derivers_are_rejected() {
+        let missing = require_equivalent_deriver("id", None, PLANNED_DRV, OUTPUT_PATH, |_| {
+            Ok(OUTPUT_PATH.to_string())
+        });
+        let foreign = require_equivalent_deriver(
+            "id",
+            Some("/tmp/abseil-cpp-1.drv"),
+            PLANNED_DRV,
+            OUTPUT_PATH,
+            |_| Ok(OUTPUT_PATH.to_string()),
+        );
+
+        assert!(missing.is_err());
+        assert!(foreign.is_err());
+    }
+
+    #[test]
+    fn unreadable_deriver_binding_fails_closed() {
+        let result = require_equivalent_deriver(
+            "id",
+            Some(EQUIVALENT_DRV),
+            PLANNED_DRV,
+            OUTPUT_PATH,
+            |_| bail!("derivation is not valid"),
+        );
+
+        assert!(result.is_err());
+    }
 
     #[test]
     fn journal_records_only_direct_planned_to_built_transition() -> Result<()> {
