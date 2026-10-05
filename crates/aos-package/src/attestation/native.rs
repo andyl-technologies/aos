@@ -113,6 +113,17 @@ fn bare_record_bytes(record: &GenerationEvidence) -> Result<Vec<u8>> {
     aos_contract::canonical::canonical_json(&serde_json::to_value(bare)?)
 }
 
+// The TPM reader returns an algorithm-qualified digest. Compare typed values
+// so its representation cannot be confused with raw quote-file hexadecimal.
+fn validate_image_pcr11(current: &str, expected: Sha256Digest) -> Result<()> {
+    let current = Sha256Digest::parse(current).context("decoding live image PCR 11")?;
+    ensure!(
+        current == expected,
+        "running image PCR 11 differs from its authenticated measurement"
+    );
+    Ok(())
+}
+
 /// Publishes native evidence for a committed generation and optionally quotes it.
 ///
 /// A durable transaction fixes the activation identity before PCR extension.
@@ -162,13 +173,10 @@ pub fn persist(
         .image
         .expected_pcr11
         .context("missing authenticated PCR 11 pin")?;
-    ensure!(
-        super::ct_eq(
-            &crate::package_attestation::current_pcr11()?,
-            &expected_pcr11.hex()
-        ),
-        "running image PCR 11 differs from its authenticated measurement"
-    );
+    validate_image_pcr11(
+        &crate::package_attestation::current_pcr11()?,
+        expected_pcr11,
+    )?;
     record.quote_status = super::QUOTE_STATUS_QUOTED.into();
     if let Some(previous) = &retained {
         ensure!(
@@ -664,6 +672,32 @@ fn trusted_receipt_root(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_image_pcr11_accepts_the_readers_algorithm_qualified_digest() {
+        let expected = Sha256Digest::of_bytes(b"authenticated image measurement");
+        validate_image_pcr11(&expected.to_string(), expected).unwrap();
+
+        let changed = Sha256Digest::of_bytes(b"different running image");
+        let error = validate_image_pcr11(&changed.to_string(), expected).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("differs from its authenticated measurement")
+        );
+    }
+
+    #[test]
+    fn live_image_pcr11_rejects_noncanonical_reader_output() {
+        let expected = Sha256Digest::of_bytes(b"authenticated image measurement");
+        for invalid in [
+            expected.hex(),
+            expected.to_string().to_uppercase(),
+            "sha256:00".into(),
+        ] {
+            assert!(validate_image_pcr11(&invalid, expected).is_err());
+        }
+    }
 
     struct CheckedQuote(super::super::QuotedPcrs);
 
