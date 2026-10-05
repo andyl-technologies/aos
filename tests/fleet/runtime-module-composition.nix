@@ -383,7 +383,7 @@ in {
             };
           };
         };
-        aos.k3s.enable = false;
+        k3s.enable = false;
         aos.tests.advisoryReport = {enable = true; label = "initial";};
       }"""
       write_file(f"{WORKTREE}/10-packages.nix", packages_source)
