@@ -1,5 +1,6 @@
 """Checks network lowering and replay without changing the host network."""
 
+import ctypes
 import importlib.util
 import json
 import os
@@ -65,6 +66,124 @@ def physical(name="eth0"):
 
 def policy(links):
     return {"authority": "operator", "mtu": 9000, "links": links, "resolver": {"enabled": True, "nameservers": ["192.0.2.53"], "search": ["example.test"], "dnssec": "yes"}}
+
+
+class SystemdNetworkParserTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Use the same selected source-built systemd output as the vendor
+        # resolver fixture. These are the parsers used by networkd/resolved,
+        # not a Python model that silently strips quotes from INI values.
+        libraries = list((RESOLVER_POLICY.parents[2] / "lib/systemd").glob("libsystemd-shared-*.so"))
+        if len(libraries) != 1:
+            raise ValueError("expected one selected systemd shared library")
+        cls.library = ctypes.CDLL(str(libraries[0]))
+        cls.free = ctypes.CDLL(None).free
+        cls.free.argtypes = [ctypes.c_void_p]
+        cls.free.restype = None
+        cls.library.extract_first_word.argtypes = [
+            ctypes.POINTER(ctypes.c_char_p), ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_char_p, ctypes.c_int,
+        ]
+        cls.library.extract_first_word.restype = ctypes.c_int
+        cls.library.in_addr_from_string_auto.argtypes = [
+            ctypes.c_char_p, ctypes.POINTER(ctypes.c_int), ctypes.c_void_p,
+        ]
+        cls.library.in_addr_from_string_auto.restype = ctypes.c_int
+        cls.library.in_addr_prefix_from_string_auto_full.argtypes = [
+            ctypes.c_char_p, ctypes.c_int, ctypes.POINTER(ctypes.c_int),
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_ubyte),
+        ]
+        cls.library.in_addr_prefix_from_string_auto_full.restype = ctypes.c_int
+        cls.library.config_parse_ifname.argtypes = [
+            ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint, ctypes.c_char_p,
+            ctypes.c_uint, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p,
+            ctypes.c_void_p, ctypes.c_void_p,
+        ]
+        cls.library.config_parse_ifname.restype = ctypes.c_int
+
+    def words(self, value, flags=0):
+        remaining = ctypes.c_char_p(value.encode())
+        words = []
+        while True:
+            word = ctypes.c_void_p()
+            result = self.library.extract_first_word(ctypes.byref(remaining), ctypes.byref(word), None, flags)
+            self.assertGreaterEqual(result, 0)
+            if result == 0:
+                return words
+            try:
+                words.append(ctypes.string_at(word).decode())
+            finally:
+                self.free(word)
+
+    def test_rendered_ipv4_and_ipv6_are_accepted_without_unquoting(self):
+        for address, gateway, dns in [
+            ("192.168.50.11/24", "192.168.50.1", "192.168.50.53"),
+            ("2001:db8::11/64", "2001:db8::1", "2001:db8::53"),
+        ]:
+            with self.subTest(address=address):
+                link = physical()
+                link["addressing"].update(addresses=[address], gateway=gateway, dns=[dns])
+                configuration = policy([link])
+                configuration["resolver"]["nameservers"] = [dns]
+                files = handler.render(configuration)
+                network = next(text for path, text in files.items() if path.endswith(".network"))
+                values = dict(line.split("=", 1) for line in network.splitlines() if "=" in line)
+                family = ctypes.c_int()
+                storage = (ctypes.c_uint32 * 4)()
+                prefix = ctypes.c_ubyte()
+                self.assertEqual(values["Address"], address)
+                self.assertEqual(values["Gateway"], gateway)
+                self.assertGreaterEqual(self.library.in_addr_prefix_from_string_auto_full(
+                    values["Address"].encode(), 1, ctypes.byref(family), storage, ctypes.byref(prefix),
+                ), 0)
+                self.assertLess(self.library.in_addr_prefix_from_string_auto_full(
+                    ('"' + address + '"').encode(), 1, ctypes.byref(family), storage, ctypes.byref(prefix),
+                ), 0)
+                self.assertGreaterEqual(self.library.in_addr_from_string_auto(
+                    values["Gateway"].encode(), ctypes.byref(family), storage,
+                ), 0)
+                resolver = files["etc/systemd/resolved.conf.d/50-aos-native.conf"]
+                resolved_dns = next(line[4:] for line in resolver.splitlines() if line.startswith("DNS="))
+                for rendered in [values["DNS"], resolved_dns]:
+                    self.assertEqual(self.words(rendered), [dns])
+                    for word in self.words(rendered):
+                        self.assertGreaterEqual(self.library.in_addr_from_string_auto(
+                            word.encode(), ctypes.byref(family), storage,
+                        ), 0)
+                self.assertLess(self.library.in_addr_from_string_auto(
+                    ('"' + gateway + '"').encode(), ctypes.byref(family), storage,
+                ), 0)
+
+    def test_netdev_and_attachment_names_have_the_exact_parser_identity(self):
+        vlan = {"name": "vlan10", "kind": "vlan", "id": 10, "parent": physical()["selector"], "addressing": {"dhcp": True, "addresses": [], "dns": []}}
+        bond = {"name": "bond0", "kind": "bond", "mode": "active-backup", "members": [{"kind": "name", "value": "eth1"}], "addressing": {"dhcp": True, "addresses": [], "dns": []}}
+        files = handler.render(policy([physical(), vlan, bond]))
+        parsed = []
+        for path, text in files.items():
+            for line in text.splitlines():
+                key, separator, value = line.partition("=")
+                if not separator or not (key in ("VLAN", "Bond") or (key == "Name" and path.endswith(".netdev"))):
+                    continue
+                output = ctypes.c_void_p()
+                self.assertEqual(self.library.config_parse_ifname(
+                    None, path.encode(), 1, b"Network", 1, key.encode(), 0,
+                    value.encode(), ctypes.byref(output), None,
+                ), 1)
+                try:
+                    parsed.append((key, ctypes.string_at(output).decode()))
+                finally:
+                    self.free(output)
+        self.assertCountEqual(parsed, [("Name", "vlan10"), ("VLAN", "vlan10"), ("Name", "bond0"), ("Bond", "bond0")])
+
+    def test_quoted_match_names_and_search_domains_remain_valid(self):
+        match = handler.selector({"kind": "ethernet", "value": "en*"})
+        name = next(line[5:] for line in match.splitlines() if line.startswith("Name="))
+        self.assertEqual(self.words(name, flags=1 << 5), ["en*"])
+        files = handler.render(policy([]))
+        resolver = files["etc/systemd/resolved.conf.d/50-aos-native.conf"]
+        domains = next(line[8:] for line in resolver.splitlines() if line.startswith("Domains="))
+        self.assertEqual(self.words(domains, flags=1 << 5), ["example.test"])
 
 
 class NativeNetworkTests(unittest.TestCase):
@@ -263,7 +382,7 @@ class NativeNetworkTests(unittest.TestCase):
         files = handler.render(policy([link, vlan]))
         text = next(content for name, content in files.items() if 'Name="eth0"' in content)
 
-        self.assertLess(text.index('VLAN="vlan10"'), text.index("[DHCPv4]"))
+        self.assertLess(text.index('VLAN=vlan10'), text.index("[DHCPv4]"))
         self.assertIn("UseDNS=no\nUseNTP=no\nUseDomains=route", text)
 
     def test_default_matching_and_dhcp_policies_reject_invalid_values(self):
@@ -280,8 +399,8 @@ class NativeNetworkTests(unittest.TestCase):
         vlan = {"name": "vlan10", "kind": "vlan", "parent": {"kind": "name", "value": "eth0"}, "id": 10, "addressing": {"dhcp": True, "addresses": [], "dns": []}}
         files = handler.render(policy([physical(), vlan]))
         parent = next(text for text in files.values() if 'Name="eth0"' in text)
-        self.assertIn('Address="192.0.2.5/24"', parent)
-        self.assertIn('VLAN="vlan10"', parent)
+        self.assertIn('Address=192.0.2.5/24', parent)
+        self.assertIn('VLAN=vlan10', parent)
         self.assertIn("MTUBytes=9000", parent)
         self.assertEqual(parent.count("[Network]"), 1)
         self.assertTrue(any("[VLAN]\nId=10" in text for text in files.values()))
@@ -289,7 +408,7 @@ class NativeNetworkTests(unittest.TestCase):
     def test_bond_members_and_mode_are_retained(self):
         bond = {"name": "bond0", "kind": "bond", "members": [{"kind": "name", "value": "eth0"}, {"kind": "name", "value": "eth1"}], "mode": "802.3ad", "addressing": {"dhcp": True, "addresses": [], "dns": []}}
         files = handler.render(policy([bond]))
-        self.assertEqual(sum('Bond="bond0"' in text for text in files.values()), 2)
+        self.assertEqual(sum('Bond=bond0' in text for text in files.values()), 2)
         self.assertTrue(any("Mode=802.3ad" in text for text in files.values()))
 
     def test_metadata_route_remains_after_network_directives(self):
@@ -311,7 +430,7 @@ class NativeNetworkTests(unittest.TestCase):
 
                 self.assertEqual(
                     files["etc/systemd/resolved.conf.d/50-aos-native.conf"],
-                    '[Resolve]\nDNS="192.0.2.53"\nDomains="example.test"\n'
+                    '[Resolve]\nDNS=192.0.2.53\nDomains="example.test"\n'
                     f"DNSSEC={dnssec}\nDNSOverTLS=opportunistic\n"
                     "MulticastDNS=no\nLLMNR=no\n",
                 )
