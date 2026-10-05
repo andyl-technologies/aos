@@ -60,7 +60,7 @@
       };
       moduleTree = lib.mkOption {
         type = lib.types.nullOr lib.types.pathInStore;
-        description = "Exact loadable-module tree, when the selected kernel supplies one.";
+        description = "Exact release-specific loadable-module directory, when the selected kernel supplies one.";
       };
       release = lib.mkOption {
         type = lib.types.nonEmptyStr;

@@ -104,6 +104,7 @@
     then builtins.hashString "sha256" (builtins.toJSON system.config.aos.abilities.configurationLower.operations.install.effects.image.contract.identity)
     else null;
   kernelPackage = kernel.package;
+  kernelRelease = kernel.configuration.release;
   kernelModuleTree =
     if kernel.configuration.moduleTree == null
     then throw "selected image platform requires a kernel module tree"
@@ -237,6 +238,7 @@ in
 
       TOPLEVEL = toString toplevel;
       KERNEL_MODULE_TREE = kernelModuleTree;
+      KERNEL_RELEASE = kernelRelease;
       REGINFO = toString regInfo;
       ACTIVE_SYSTEM_INFO = toString activeSystemInfo;
       # Check the release closure before materializing and compressing it.
@@ -364,12 +366,14 @@ in
 
               # ── 4. Kernel modules ───────────────────────────────────────────
               # kmod looks up modules at /lib/modules/$(uname -r); the
-              # /lib → usr/lib symlink makes this resolve to usr/lib/modules.
-              ln -sfn "$KERNEL_MODULE_TREE" rootfs/usr/lib/modules
+              # /lib → usr/lib symlink preserves that layout. The selected
+              # module tree already names the release directory itself.
+              mkdir -p rootfs/usr/lib/modules
+              ln -sfn "$KERNEL_MODULE_TREE" "rootfs/usr/lib/modules/$KERNEL_RELEASE"
               ${lib.optionalString (kernelModulePackages != []) ''
-                rm rootfs/usr/lib/modules
-                mkdir -p rootfs/usr/lib/modules
-                cp -a "$KERNEL_MODULE_TREE/." rootfs/usr/lib/modules/
+                rm "rootfs/usr/lib/modules/$KERNEL_RELEASE"
+                mkdir -p "rootfs/usr/lib/modules/$KERNEL_RELEASE"
+                cp -a "$KERNEL_MODULE_TREE/." "rootfs/usr/lib/modules/$KERNEL_RELEASE/"
                 chmod -R u+w rootfs/usr/lib/modules
                 ${lib.concatMapStringsSep "\n" (package: ''
                     chmod -R u+w rootfs/usr/lib/modules
