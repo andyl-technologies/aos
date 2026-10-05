@@ -36,6 +36,12 @@ pub enum ReproducibilityResult {
     /// Only registry tiers whose policy accepts unreproduced outputs (see
     /// [`RegistryTier::accepts_not_reproduced_outputs`]) may carry it.
     NotReproduced,
+    /// No repeat build ran, because the registry tier does not require one
+    /// (see [`RegistryTier::requires_repeat_build_check`]).
+    ///
+    /// Like [`Self::NotReproduced`], only tiers that accept unreproduced
+    /// outputs may carry it; it claims nothing about determinism.
+    NotChecked,
 }
 
 /// Observed identity and closure facts for one planned output.
@@ -194,6 +200,13 @@ impl BuildReportV1 {
         self.outputs
             .iter()
             .filter(|output| output.reproducibility == ReproducibilityResult::NotReproduced)
+    }
+
+    /// Returns every output whose repeat build was not run.
+    pub fn not_checked(&self) -> impl Iterator<Item = &BuildOutputEvidence> {
+        self.outputs
+            .iter()
+            .filter(|output| output.reproducibility == ReproducibilityResult::NotChecked)
     }
 
     /// Requires the recorded repeat-build results to satisfy a registry tier.
@@ -393,6 +406,25 @@ mod tests {
         let bytes = crate::canonical::to_vec(&output)?;
         let parsed: BuildOutputEvidence = crate::canonical::from_slice(&bytes, "test output")?;
         assert_eq!(parsed, output);
+        Ok(())
+    }
+
+    #[test]
+    fn not_checked_round_trips_and_only_testing_accepts_it() -> Result<()> {
+        let encoded = serde_json::to_string(&ReproducibilityResult::NotChecked)?;
+        assert_eq!(encoded, "\"not-checked\"");
+
+        let report = report(vec![evidence(
+            "package/a/x86_64-linux",
+            ReproducibilityResult::NotChecked,
+        )]);
+        assert_eq!(report.not_checked().count(), 1);
+        report.require_reproducibility_policy(RegistryTier::Testing)?;
+        assert!(
+            report
+                .require_reproducibility_policy(RegistryTier::Production)
+                .is_err()
+        );
         Ok(())
     }
 
