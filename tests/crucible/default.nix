@@ -443,6 +443,7 @@ in rec {
     qemuDeviceCompletionAdvance = import ./phase2-qemu-device-completion-advance.nix {inherit pkgs lib;};
     qemu9pSyncKick = import ./phase2-qemu-9p-sync-kick.nix {inherit pkgs lib;};
     qemuWhiteboxGuestWrite = import ./phase2-qemu-whitebox-guest-write.nix {inherit pkgs lib;};
+    qemuMemoryAccess = import ./phase2-qemu-memory-access.nix {inherit pkgs lib;};
     qemuFwCfgServiceDeadline = import ./phase2-qemu-memory-access.nix {
       inherit pkgs lib;
       attrPath = "checks.crucible.phase2.qemuFwCfgServiceDeadline";
@@ -457,6 +458,7 @@ in rec {
     qemuExactPreemptionLive = import ./phase2-qemu-exact-preemption-live.nix {inherit pkgs;};
     tcgPerformanceFixtures = import ./tcg-performance-fixtures.nix {inherit pkgs;};
     tcgPerformanceDeterminism = import ./tcg-performance.nix {inherit pkgs;};
+    tcgProductionPerformanceDriver = import ./tcg-production-performance-driver.nix {inherit pkgs lib;};
     qemuLaunchValidation = import ./phase2-qemu-launch-validation.nix {inherit pkgs lib;};
     qemuNodeFactory = import ./phase2-qemu-node-factory.nix {inherit pkgs lib;};
     qemuNodeWrapper = import ./phase2-qemu-node-wrapper.nix {inherit pkgs lib;};
