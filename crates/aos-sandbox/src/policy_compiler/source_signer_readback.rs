@@ -42,6 +42,30 @@ use super::source_project_admission_readback::{
 
 const SIGNER_SOURCE_VIEW: &str = "/run/aos/sandbox-source-signer-journal";
 
+/// Signs actual first-successor DATA through the existing fixed Source reader.
+///
+/// # Errors
+/// Rejects unsafe view/name custody, a foreign original context, noncanonical
+/// challenge, incomplete native replay or changed cut. The request context is
+/// comparison DATA, never Root authority; the signer retains its existing key.
+#[cfg(target_os = "linux")]
+pub fn sign_fixed_source_first_successor_readback_v2(
+    expected_controller_uid: u32, fresh_nonce: [u8; 16],
+    context: &super::RootFirstSourceSuccessorIntentV2,
+    signer_generation: u64, signing_key: &SigningKey,
+) -> Result<[u8; super::source_successor_readback::SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2], SourceSignerReadbackErrorV1> {
+    if expected_controller_uid == 0 || expected_controller_uid != context.source_uid()
+        || signer_generation == 0 || fresh_nonce == [0; 16]
+    {
+        return Err(SourceHoldReadbackErrorV1::NonCanonical.into());
+    }
+    with_source_signer_journal_view(expected_controller_uid, |readback| {
+        super::source_successor_readback::sign_source_first_successor_from_view_v2(
+            readback, fresh_nonce, context, signer_generation, signing_key,
+        )
+    })
+}
+
 /// Observes initial materialization only through the existing fixed reader view.
 ///
 /// Empty is joined absence of every Source journal row, never a
@@ -239,6 +263,9 @@ pub enum SourceSignerReadbackErrorV1 {
     /// The challenge or signer generation is noncanonical.
     #[error(transparent)]
     Signing(#[from] SourceHoldReadbackErrorV1),
+    /// The first-successor reader retains its original typed replay cause.
+    #[error(transparent)]
+    FirstSuccessor(#[from] crate::hierarchy::genesis_profile::SourceGenesisErrorV1),
 }
 
 /// Signs the active Source hold after read-only fixed-name and typed replay.

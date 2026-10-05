@@ -47,13 +47,84 @@ const MAXIMUM_PROJECTS: usize = 4096;
 /// This is the Root daemon's store owner, not a transferable Source authority.
 /// The normal daemon acquires it last after Controller and Source are held.
 pub struct RootSourceGenesisAuthorityV1 {
-    journal: Journal,
-    pins: RootGenesisRolePinsV1,
-    names: ProtectedJournalNamesV1,
-    nonce: [u8; 16],
-    controller_uid: u32,
-    source_uid: u32,
+    pub(super) journal: Journal,
+    pub(super) pins: RootGenesisRolePinsV1,
+    pub(super) names: ProtectedJournalNamesV1,
+    pub(super) nonce: [u8; 16],
+    pub(super) controller_uid: u32,
+    pub(super) source_uid: u32,
     pub(super) accepted: Option<VerifiedControllerSourceGenesisReadbackV1>,
+}
+
+/// Parks the actual fixed Root open Result before later pins/history checks.
+///
+/// This keeps an already returned Journal resident even when a subsequent
+/// credential, physical-name or history observation fails. The Journal's own
+/// lower pre-return protected-open prefixes remain its existing boundary.
+#[derive(Default)]
+pub struct RootFirstSourceSuccessorOpeningV2 {
+    native: Option<Result<(Journal, crate::journal::RecoveryReport), crate::journal::JournalError>>,
+    pins: Option<Result<RootGenesisRolePinsV1, SourceGenesisErrorV1>>,
+    named: Option<Result<ProtectedJournalNamesV1, crate::journal::JournalError>>,
+    nonce: Option<Result<[u8; 16], SourceGenesisErrorV1>>,
+    checks: Vec<Result<(), SourceGenesisErrorV1>>,
+}
+
+impl RootFirstSourceSuccessorOpeningV2 {
+    /// Creates an inert unused opening reservoir.
+    pub fn new() -> Self { Self::default() }
+
+    /// Opens and parks only the existing fixed protected Root journal.
+    ///
+    /// # Errors
+    /// Returns a marker while actual native/pin/history Results remain resident.
+    pub fn open_into(
+        &mut self, owner: &mut Option<RootSourceGenesisAuthorityV1>,
+        controller_uid: u32, source_uid: u32,
+    ) -> Result<(), ()> {
+        if self.native.is_some() || owner.is_some() || controller_uid == 0 || source_uid == 0 { return Err(()); }
+        self.native = Some(Journal::open_existing_protected_at(
+            Path::new(PROTECTED_POLICY_ROOT), POLICY_AUTHORITY_JOURNAL, policy_authority_journal_limits(),
+        ));
+        let journal = self.native.as_ref().and_then(|result| result.as_ref().ok()).map(|(journal, _)| journal).ok_or(())?;
+        self.checks.push(capacity::require_owner(journal).map_err(SourceGenesisErrorV1::from));
+        self.pins = Some(RootGenesisRolePinsV1::load(journal));
+        self.named = Some(journal.protected_writer_physical_names_v1());
+        self.nonce = Some(fresh_root_nonce());
+        if let Some(Ok(pins)) = &self.pins { self.checks.push(validate_history(journal, pins)); }
+        if self.error().is_some() { return Err(()); }
+        let names = *self.named.as_ref().and_then(|result| result.as_ref().ok()).ok_or(())?;
+        let nonce = *self.nonce.as_ref().and_then(|result| result.as_ref().ok()).ok_or(())?;
+        let returned = self.native.take();
+        match returned {
+            Some(Ok((journal, recovery))) => {
+                let retained_pins = self.pins.take();
+                match retained_pins {
+                    Some(Ok(pins)) => {
+                        // All fallible work precedes this final owner transfer.
+                        *owner = Some(RootSourceGenesisAuthorityV1 {
+                            journal, pins, names, nonce, controller_uid, source_uid, accepted: None,
+                        });
+                        drop(recovery);
+                        Ok(())
+                    }
+                    returned => { self.pins = returned; self.native = Some(Ok((journal, recovery))); Err(()) }
+                }
+            }
+            returned => { self.native = returned; Err(()) }
+        }
+    }
+
+    /// Borrows first native or later independent opening failure without loss.
+    pub fn error(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if let Some(Err(error)) = &self.native { return Some(error); }
+        if let Some(Err(error)) = self.checks.first() { return Some(error); }
+        if let Some(Err(error)) = &self.pins { return Some(error); }
+        if let Some(Err(error)) = &self.named { return Some(error); }
+        if let Some(Err(error)) = &self.nonce { return Some(error); }
+        for check in self.checks.iter().skip(1) { if let Err(error) = check { return Some(error); } }
+        None
+    }
 }
 
 // This is a short loan from the same actual Root writer. The added Controller
@@ -1451,6 +1522,11 @@ impl RootSourceGenesisAuthorityV1 {
         &self,
         project: ProjectId,
     ) -> Result<Option<SourceHierarchyFloorRecordV1>, SourceGenesisErrorV1> {
+        // Revision one is historical once any exact successor obligation exists.
+        // It must never certify a populated current Tree or a Q04/gen1 loan.
+        if super::successor_owner::retained_root_first_successor_v2(&self.journal, project)?.is_some() {
+            return Err(SourceGenesisErrorV1::AdmissionClosed);
+        }
         self.journal
             .get(
                 RecordNamespace::DesiredState,
@@ -1487,7 +1563,7 @@ fn require_same_source_cut(
     Ok(())
 }
 
-fn require_current_deployment(journal: &Journal) -> Result<i64, SourceGenesisErrorV1> {
+pub(super) fn require_current_deployment(journal: &Journal) -> Result<i64, SourceGenesisErrorV1> {
     let namespace = RecordNamespace::DesiredState;
     let (generation, key, _, _) = decode_policy_signer_pins_v1(
         journal
@@ -1601,5 +1677,6 @@ fn validate_history(
     if !capacities.is_empty() {
         return Err(SourceGenesisErrorV1::Stale);
     }
+    super::successor_owner::validate_root_first_successor_journal_v2(journal)?;
     Ok(())
 }

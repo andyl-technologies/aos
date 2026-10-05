@@ -909,14 +909,62 @@ fn run_retained_controller(
                 "exclusive Git cohort cannot create or reconstruct Source genesis",
             ));
         }
-        let replay_genesis = checked!(
-            genesis
-                .map(|input| controller.has_retained_provisioned_source_genesis_v1(input))
-                .transpose()
-                .map_err(ControllerRuntimeError::from)
-        )
-        .unwrap_or(false);
-        if replay_genesis {
+        // Inspect the genuine retained singleton before legacy genesis or any
+        // publisher/public startup. Selection DATA is not mutation authority.
+        let successor_project_result = controller.retained_first_source_successor_project_v2();
+        let successor_project = match &successor_project_result {
+            Ok(project) => *project,
+            Err(_) => worker.terminate(ControllerResidentCauseV1::Closed(
+                "retained first Source successor selection failed",
+            )),
+        };
+        let selected_genesis = match (successor_project, genesis) {
+            (Some(project), Some(input)) if input.project() == project => {
+                // This compares actual configured credentials with the retained
+                // Controller acceptance only; it never invokes gen1 Source replay.
+                let configured = controller.has_retained_provisioned_source_genesis_v1(input);
+                if !matches!(configured, Ok(true)) {
+                    worker.terminate(ControllerResidentCauseV1::Closed(
+                        "configured predecessor does not match retained Source genesis",
+                    ));
+                }
+                true
+            }
+            (Some(_), Some(_)) => worker.terminate(ControllerResidentCauseV1::Closed(
+                "a different configured genesis project is closed after the first Source successor",
+            )),
+            _ => false,
+        };
+        if successor_project.is_some() {
+            let Some(profile) = profile else {
+                worker.terminate(ControllerResidentCauseV1::Closed(
+                    "retained first Source successor requires the original Root profile",
+                ));
+            };
+            let returned = controller.coordinate_retained_first_source_successor_v2(profile);
+            if let Err(failed) = &returned {
+                // The whole returned failed loan and both writers stay named
+                // here across terminal worker failure; no reborrow or retry.
+                let _first_cause = failed.first_cause();
+                worker.terminate(ControllerResidentCauseV1::Closed(
+                    "original first Source successor flight failed",
+                ));
+            }
+        }
+        let replay_genesis = if selected_genesis {
+            // The populated consumer completed the SAME configured predecessor
+            // project. It must not be reinterpreted by the strict gen1 reader.
+            true
+        } else {
+            checked!(
+                genesis
+                    .map(|input| controller.has_retained_provisioned_source_genesis_v1(input))
+                    .transpose()
+                    .map_err(ControllerRuntimeError::from)
+            )
+            .unwrap_or(false)
+        };
+        if replay_genesis && !selected_genesis {
             checked!(
                 complete_configured_source_genesis(controller, genesis, profile)
                     .map_err(ControllerRuntimeError::from)
@@ -5912,6 +5960,26 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
             Ok(())
         }) {
             original.fail_controller_signer_admission(cause);
+        }
+        original.into_outcome()
+    }
+
+    fn coordinate_retained_first_source_successor_v2<'writers, 'profile>(
+        &'writers mut self, journal: &'writers mut Journal,
+        profile: &'profile aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<Option<ObjectDigest>, aos_sandbox::policy_compiler::FailedOriginalFirstSourceSuccessorV2<'writers, 'profile>> {
+        let mut original = aos_sandbox::policy_compiler::OriginalFirstSourceSuccessorInvocationV2::park(
+            journal, &mut self.source_domains, profile,
+        );
+        if original.select_retained_before_signer() == aos_sandbox::policy_compiler::FirstSourceSuccessorSelectionV2::Selected {
+            // The invocation predates the selected signer/catch boundary. Its
+            // whole returned failure retains both writers through termination.
+            if let Err(error) = with_process_controller_hold_signer_v1(|generation, signer| {
+                original.run_with_controller_signer(generation, signer);
+                Ok(())
+            }) {
+                original.fail_controller_signer_admission(error);
+            }
         }
         original.into_outcome()
     }

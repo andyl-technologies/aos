@@ -179,6 +179,7 @@ use aos_sandbox_broker_session_security::policy_signer_credential::{
     PinnedPolicySignerV1, PolicySignerRoleV1,
 };
 use aos_sandbox_broker_session_security::source_genesis_flight::{
+    RootFirstSourceSuccessorAttemptV2, RootFirstSourceSuccessorRouteV2,
     serve_root_source_genesis_flight_v1, serve_root_source_genesis_recovery_v1,
 };
 use aos_sandbox_broker_session_security::source_signer_exchange::{
@@ -216,6 +217,7 @@ enum HeadRequestMode {
     Query,
     Lease,
     SourceGenesis,
+    SourceFirstSuccessor,
     CreateQ04,
     ConsumerReadPreRoot,
     ClosedBinding,
@@ -865,6 +867,20 @@ fn serve_project_admission_recovery_request(
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     let (request, mode) = read_head_request(stream, || Ok(()))?;
+    if matches!(mode, HeadRequestMode::SourceFirstSuccessor) {
+        let mut attempt = RootFirstSourceSuccessorAttemptV2::new(
+            stream, startup, request, RootFirstSourceSuccessorRouteV2::Historical,
+            controller_uid, controller_gid, controller_uid, source_signer_uid,
+        );
+        let returned = attempt.serve_once();
+        if returned.is_err() {
+            let _first_cause = attempt.first_cause();
+            // The original accepted stream, opening/native Results and Root
+            // writer remain resident through terminal exit, never local retry.
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     if !project_recovery_mode_allowed(mode) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -935,6 +951,7 @@ fn project_recovery_mode_allowed(mode: HeadRequestMode) -> bool {
     matches!(
         mode,
         HeadRequestMode::SourceGenesis
+            | HeadRequestMode::SourceFirstSuccessor
             | HeadRequestMode::ProjectNegativeIntent
             | HeadRequestMode::ProjectHistoryFloorReplay
             | HeadRequestMode::ProjectHistoryRetirement
@@ -1199,6 +1216,11 @@ fn read_head_request(
         // Discrimination is not authority. The actual accepted owner must be
         // parked before even missing-startup or malformed-purpose refusal.
         return Ok((request, HeadRequestMode::CreateQ04));
+    }
+    if &request[..8] == aos_sandbox::policy_compiler::ROOT_FIRST_SOURCE_SUCCESSOR_QUERY_MAGIC_V2 {
+        // Complete inert discrimination only. The same accepted original is
+        // parked before nonce, startup, Root hold, or new-purpose validation.
+        return Ok((request, HeadRequestMode::SourceFirstSuccessor));
     }
     if &request[..8] == aos_sandbox::policy_compiler::GIT_COVERAGE_ROOT_BOOTSTRAP_MAGIC_V1 {
         // Inert complete recognition only. The selected owner parks this same
@@ -1519,6 +1541,18 @@ fn serve_current_head(
         require_no_fixed_closed_policy_binding_hold_v1()?;
         Ok(())
     })?;
+    if matches!(mode, HeadRequestMode::SourceFirstSuccessor) {
+        let mut attempt = RootFirstSourceSuccessorAttemptV2::new(
+            stream, startup, request, RootFirstSourceSuccessorRouteV2::Current,
+            controller_uid, controller_gid, controller_uid, source_signer_uid,
+        );
+        let returned = attempt.serve_once();
+        if returned.is_err() {
+            let _first_cause = attempt.first_cause();
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
     if matches!(mode, HeadRequestMode::GitEvidenceView) {
         let mut attempt = aos_sandbox::git::RootGitEvidenceViewAttemptV1::new(
             startup, original, request,

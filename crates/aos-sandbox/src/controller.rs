@@ -3073,6 +3073,34 @@ where
             .coordinate_provisioned_source_genesis_v1(input, profile)
     }
 
+    /// Selects only the project of the actual retained singleton obligation.
+    ///
+    /// This read-only projection supplies no currentness or mutation permit.
+    ///
+    /// # Errors
+    /// Rejects unsafe Controller custody or malformed retained issuance state.
+    #[cfg(target_os = "linux")]
+    pub fn retained_first_source_successor_project_v2(&mut self) -> Result<Option<aos_sandbox_core::ProjectId>, crate::JournalError> {
+        let journal = self.reconciler.journal_mut();
+        let uid = journal.protected_owner_uid()?;
+        crate::hierarchy::controller_genesis::require_controller(journal, uid)
+            .map_err(|_| crate::JournalError::ProtectedBoundary)?;
+        crate::journal::controller_source_successor_issuance::retained(journal)?
+            .map(|saved| saved.packet.intent().map(|intent| intent.project()).map_err(|_| crate::JournalError::ProtectedBoundary))
+            .transpose()
+    }
+
+    /// Coordinates the actual first successor under independently borrowed owners.
+    ///
+    /// # Errors
+    /// Returns a must-use failed original owner, never an ordinary dropped error.
+    #[cfg(target_os = "linux")]
+    pub fn coordinate_retained_first_source_successor_v2<'writers, 'profile>(
+        &'writers mut self, profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<Option<ObjectDigest>, crate::policy_compiler::FailedOriginalFirstSourceSuccessorV2<'writers, 'profile>> {
+        self.reconciler.coordinate_retained_first_source_successor_v2(profile)
+    }
+
     /// Selects only the genuine original-gen1 Create policy-admission subgate.
     ///
     /// The installed selected caller retains this same Controller and its

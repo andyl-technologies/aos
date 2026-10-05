@@ -46,6 +46,7 @@ pub use git_coverage_history::{
 mod git_evidence_namespace;
 pub(crate) mod mount_manager_startup;
 pub(crate) mod controller_source_successor_issuance;
+pub(crate) mod source_tree_successor;
 mod prepared_transaction;
 mod root_local_recovery;
 mod root_original_inventory;
@@ -143,6 +144,11 @@ pub use cache_policy_hold::CachePolicyHoldV1;
 pub(crate) use cache_policy_hold::NAME as CACHE_POLICY_HOLD_JOURNAL;
 pub(crate) use capacity_reservation::capacity_record_has_legacy_purpose;
 pub(crate) use capacity_reservation::capacity_reservation_identity_is_exact_v1;
+pub(crate) use capacity_reservation::{
+    first_source_successor_capacity_delete_v2, first_source_successor_capacity_identity_v2,
+    first_source_successor_capacity_record_v2,
+};
+pub(crate) use source_tree_successor::FirstSourceSuccessorNativePhaseV2;
 pub use capacity_reservation::decode_capacity_reservation_request_v1;
 pub use capacity_reservation::{
     GlobalCapacityReservationPurposeV1, GlobalCapacityReservationRecoveryBindingV1,
@@ -2798,6 +2804,9 @@ impl Journal {
         purpose: GlobalCapacityReservationPurposeV1,
     ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
         self.ensure_protected_authority()?;
+        if purpose.is_first_source_successor() {
+            return Err(JournalError::ProtectedBoundary);
+        }
         capacity_reservation::require_legacy_reservations(&self.state)?;
 
         Ok(ProtectedJournalAuthority {
@@ -3609,10 +3618,44 @@ impl Journal {
         source_genesis_transition: source_tree_genesis::SourceGenesisTransitionV1,
         root_genesis_transition: RootSourceGenesisTransitionV1,
         root_local_edge: Option<RootOwnerEdge>,
+        cache_gate: CacheMutationGateV1<'_>,
+        successor_issuance_transition: Option<controller_source_successor_issuance::Transition>,
+        #[cfg(target_os = "linux")]
+        q04_transition: Option<Q04JournalTransitionV1<'_>>,
+    ) -> Result<CommitResult, JournalError> {
+        self.commit_with_first_source_successor_transition_v2(
+            transaction, settling_reservation, allow_capacity_records,
+            allow_policy_hold_transition, allow_host_fence_acquisition,
+            allow_host_currentness_fence_acquisition, allow_host_settlement_admission_append,
+            project_admission_transition, controller_genesis_transition,
+            source_genesis_transition, root_genesis_transition, root_local_edge, cache_gate,
+            successor_issuance_transition,
+            #[cfg(target_os = "linux")]
+            q04_transition,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_with_first_source_successor_transition_v2(
+        &mut self,
+        transaction: &JournalTransaction,
+        settling_reservation: Option<[u8; 32]>,
+        allow_capacity_records: bool,
+        allow_policy_hold_transition: bool,
+        allow_host_fence_acquisition: bool,
+        allow_host_currentness_fence_acquisition: bool,
+        allow_host_settlement_admission_append: bool,
+        project_admission_transition: SourceProjectAdmissionTransition,
+        controller_genesis_transition: controller_source_genesis::ControllerSourceGenesisTransition,
+        source_genesis_transition: source_tree_genesis::SourceGenesisTransitionV1,
+        root_genesis_transition: RootSourceGenesisTransitionV1,
+        root_local_edge: Option<RootOwnerEdge>,
         mut cache_gate: CacheMutationGateV1<'_>,
         successor_issuance_transition: Option<controller_source_successor_issuance::Transition>,
         #[cfg(target_os = "linux")]
         q04_transition: Option<Q04JournalTransitionV1<'_>>,
+        first_successor: Option<FirstSourceSuccessorNativePhaseV2>,
     ) -> Result<CommitResult, JournalError> {
         #[cfg(target_os = "linux")]
         if matches!(root_local_edge, Some(RootOwnerEdge::NixOfflineClosureData)) {
@@ -3620,6 +3663,17 @@ impl Journal {
             return Err(JournalError::ProtectedBoundary);
         }
         self.ensure_healthy()?;
+        let first_successor_settling = source_tree_successor::require_transition(
+            &self.state, transaction, first_successor,
+        )?;
+        let settling_reservation = first_successor_settling.or(settling_reservation);
+        if let Some(phase) = first_successor {
+            source_tree_successor::require_live_custody(self, &self.state, transaction, phase)?;
+            capacity_reservation::validate_first_source_successor_capacity_records_v2(self, transaction)?;
+            if allow_capacity_records != phase.has_capacity_records() {
+                return Err(JournalError::ProtectedBoundary);
+            }
+        }
         if !nix_offline_provisioning_edge(root_local_edge) {
             require_no_nix_native_mutation(&self.state, transaction)?;
         }
@@ -3674,12 +3728,12 @@ impl Journal {
         controller_source_successor_issuance::require_no_mutation(
             &self.state,
             transaction,
-            successor_issuance_transition,
+            first_successor.and_then(|phase| phase.controller_transition()).or(successor_issuance_transition),
         )?;
         source_tree_genesis::require_no_mutation(
             &self.state,
             transaction,
-            source_genesis_transition,
+            first_successor.map_or(source_genesis_transition, |phase| phase.source_genesis_transition()),
         )?;
         source_project_admission_challenge::require_no_mutation(
             &self.state,
@@ -3816,6 +3870,12 @@ impl Journal {
             self.limits,
             root_local_edge,
         )?;
+        if first_successor.is_some() {
+            source_tree_successor::require_sequence_headroom(
+                &root_original_inventory::materialize(&self.state, transaction),
+                following_sequence,
+            )?;
+        }
 
         // Retain the hold-journal lock through the durable append. The freeze
         // writer takes Cache journal locks before this lock in the same order.
@@ -3852,6 +3912,10 @@ impl Journal {
                     .map_err(|first| JournalError::Q04RootOriginal(Box::new(first)))?;
             }
             _ => {}
+        }
+
+        if let Some(phase) = first_successor {
+            source_tree_successor::require_live_custody(self, &self.state, transaction, phase)?;
         }
 
         let durable_bytes = match append_and_sync(&mut self.file, &frames) {
@@ -4100,10 +4164,37 @@ impl Journal {
         >,
         genesis_transitions: Option<&[source_tree_genesis::SourceGenesisTransitionV1]>,
         root_local_edge: Option<RootOwnerEdge>,
-        mut cache_gate: CacheMutationGateV1<'_>,
+        cache_gate: CacheMutationGateV1<'_>,
         successor_issuance_transitions: Option<&[controller_source_successor_issuance::Transition]>,
     ) -> Result<(), JournalError> {
+        self.preflight_with_first_source_successor_v2(
+            transactions, settling_reservation, allow_capacity_records,
+            allow_policy_hold_transition, project_transitions, controller_genesis_transitions,
+            genesis_transitions, root_local_edge, cache_gate, successor_issuance_transitions, None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn preflight_with_first_source_successor_v2(
+        &self,
+        transactions: PreflightTransactionViewV1<'_>,
+        settling_reservation: Option<[u8; 32]>,
+        allow_capacity_records: bool,
+        allow_policy_hold_transition: bool,
+        project_transitions: Option<&[SourceProjectAdmissionTransition]>,
+        controller_genesis_transitions: Option<
+            &[controller_source_genesis::ControllerSourceGenesisTransition],
+        >,
+        genesis_transitions: Option<&[source_tree_genesis::SourceGenesisTransitionV1]>,
+        root_local_edge: Option<RootOwnerEdge>,
+        mut cache_gate: CacheMutationGateV1<'_>,
+        successor_issuance_transitions: Option<&[controller_source_successor_issuance::Transition]>,
+        first_successors: Option<&[FirstSourceSuccessorNativePhaseV2]>,
+    ) -> Result<(), JournalError> {
         self.ensure_healthy()?;
+        if first_successors.is_some_and(|phases| phases.len() != transactions.len()) {
+            return Err(JournalError::ProtectedBoundary);
+        }
         #[cfg(target_os = "linux")]
         cache_policy_hold::require_no_exclusive_mutation_v1(self, &self.state)?;
         if root_local_edge.is_some() && transactions.len() != 1
@@ -4153,6 +4244,17 @@ impl Journal {
 
         for index in 0..transactions.len() {
             let transaction = transactions.transaction(index);
+            let first_successor = first_successors.map(|phases| phases[index]);
+            let first_successor_settling = source_tree_successor::require_transition(
+                &state, transaction, first_successor,
+            )?;
+            let allow_capacity_records = first_successor
+                .map_or(allow_capacity_records, |phase| phase.has_capacity_records());
+            let settling_reservation = first_successor_settling.or(settling_reservation);
+            if let Some(phase) = first_successor {
+                source_tree_successor::require_live_custody(self, &state, transaction, phase)?;
+                capacity_reservation::validate_first_source_successor_capacity_records_v2(self, transaction)?;
+            }
             #[cfg(target_os = "linux")]
             cache_policy_hold::require_no_exclusive_mutation_v1(self, &state)?;
             if !nix_offline_provisioning_edge(root_local_edge) {
@@ -4193,14 +4295,15 @@ impl Journal {
             controller_source_successor_issuance::require_no_mutation(
                 &state,
                 transaction,
-                successor_issuance_transitions.map(|transitions| transitions[index]),
+                first_successor.and_then(|phase| phase.controller_transition())
+                    .or_else(|| successor_issuance_transitions.map(|transitions| transitions[index])),
             )?;
             source_tree_genesis::require_no_mutation(
                 &state,
                 transaction,
-                genesis_transitions
+                first_successor.map(|phase| phase.source_genesis_transition()).or_else(|| genesis_transitions
                     .map(|transitions| transitions[index])
-                    .unwrap_or(source_tree_genesis::SourceGenesisTransitionV1::None),
+                ).unwrap_or(source_tree_genesis::SourceGenesisTransitionV1::None),
             )?;
             source_project_admission_challenge::require_no_mutation(
                 &state,
@@ -4315,6 +4418,12 @@ impl Journal {
                 self.limits,
                 root_local_edge,
             )?;
+            if first_successor.is_some() {
+                source_tree_successor::require_sequence_headroom(
+                    &root_original_inventory::materialize(&state, transaction),
+                    next_sequence.checked_add(frame_count).ok_or(JournalError::SequenceExhausted)?,
+                )?;
+            }
 
             for record in transaction.records() {
                 apply_record(&mut state, &mut idempotency, record)?;
@@ -4384,6 +4493,7 @@ impl Journal {
             self.next_sequence,
         )?;
         source_tree_genesis::require_no_compaction(&self.state)?;
+        source_tree_successor::require_no_compaction(&self.state)?;
         source_project_admission_challenge::require_no_compaction(&self.state)?;
         controller_source_genesis::require_no_compaction(&self.state)?;
         controller_source_successor_issuance::require_no_compaction(&self.state)?;
@@ -5696,6 +5806,11 @@ impl ProtectedJournalAuthority<'_> {
             GlobalCapacityReservationPurposeV1::ControllerProjectAdmission => effect,
             GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor => desired_state,
             GlobalCapacityReservationPurposeV1::ControllerConsumerResource => consumer_resource,
+            GlobalCapacityReservationPurposeV1::RootFirstSourceSuccessorAnchor
+            | GlobalCapacityReservationPurposeV1::SourceFirstSourceSuccessorAck
+            | GlobalCapacityReservationPurposeV1::ControllerFirstSourceSuccessorComplete => {
+                return Err(JournalError::ProtectedBoundary);
+            }
         };
         if !closed_shape || !capacity_record {
             return Err(JournalError::ForeignAuthorityNamespace);
@@ -5710,6 +5825,9 @@ impl ProtectedJournalAuthority<'_> {
         let ProtectedAuthorityScope::CapacityReservation(purpose) = self.scope else {
             return Err(JournalError::ForeignAuthorityNamespace);
         };
+        if purpose.is_first_source_successor() {
+            return Err(JournalError::ProtectedBoundary);
+        }
         if self.namespace != purpose.owner_namespace() {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
@@ -5764,6 +5882,11 @@ impl ProtectedJournalAuthority<'_> {
     }
 
     fn validate_generic_authority_read(&self) -> Result<(), JournalError> {
+        if matches!(self.scope, ProtectedAuthorityScope::CapacityReservation(purpose)
+            if purpose.is_first_source_successor())
+        {
+            return Err(JournalError::ForeignAuthorityNamespace);
+        }
         if self.namespace == RecordNamespace::MountManagerStartupAuthority
             || self.scope == ProtectedAuthorityScope::MountManagerStartup
             || self.scope
@@ -6690,6 +6813,7 @@ fn replay_original_observed<R: Read + Seek + Borrow<File>>(
 
                 let mut query_edge = None;
                 let mut logical_replay = false;
+                let mut first_successor_replay = false;
                 let mut compaction_id = [0_u8; 16];
                 compaction_id[..8].copy_from_slice(&compaction_index.to_le_bytes());
                 compaction_id[8..].copy_from_slice(b"compact1");
@@ -6725,6 +6849,7 @@ fn replay_original_observed<R: Read + Seek + Borrow<File>>(
                     );
                 } else {
                     if materialized_compaction {
+                        source_tree_successor::validate_replayed_state(&state, true)?;
                         root_local_recovery::pending(&state)?;
                         root_original_native::pending(&state, limits)?;
                         root_original_inventory::validate_rejoined_capacity(
@@ -6735,6 +6860,9 @@ fn replay_original_observed<R: Read + Seek + Borrow<File>>(
                     }
                     compaction_prefix = false;
                     logical_replay = true;
+                    first_successor_replay = source_tree_successor::validate_replayed_transaction(
+                        &state, &replay_transaction, limits,
+                    )?;
                     let source_edge = source_original_replay.replay_transaction(
                         &state,
                         &replay_transaction,
@@ -6792,6 +6920,7 @@ fn replay_original_observed<R: Read + Seek + Borrow<File>>(
                 if logical_replay {
                     let prospective = root_original_inventory::materialize(&state, &replay_transaction);
                     if query_edge.is_some()
+                        || first_successor_replay
                         || root_original_inventory::has_query_floor(&state)?
                         || root_original_inventory::has_query_floor(&prospective)?
                     {
@@ -6812,6 +6941,9 @@ fn replay_original_observed<R: Read + Seek + Borrow<File>>(
                         root_original_inventory::require_sequence_headroom(
                             &prospective, expected_sequence,
                         )?;
+                        if first_successor_replay {
+                            source_tree_successor::require_sequence_headroom(&prospective, expected_sequence)?;
+                        }
                     }
                 }
                 for record in &replay_transaction.records {
@@ -6837,6 +6969,7 @@ fn replay_original_observed<R: Read + Seek + Borrow<File>>(
         }
     }
 
+    source_tree_successor::validate_replayed_state(&state, materialized_compaction)?;
     root_local_recovery::pending(&state)?;
     root_original_native::pending(&state, limits)?;
     root_original_inventory::validate_rejoined_capacity(

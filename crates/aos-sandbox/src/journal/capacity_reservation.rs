@@ -64,6 +64,12 @@ pub enum GlobalCapacityReservationPurposeV1 {
     RootSourceGenesisAnchor = 6,
     /// Non-authorizing Controller resource preparation and retained quarantine.
     ControllerConsumerResource = 7,
+    /// Fixed Root first-successor settlement; generic capacity scopes refuse it.
+    RootFirstSourceSuccessorAnchor = 8,
+    /// Fixed Source first-successor ACK; generic capacity scopes refuse it.
+    SourceFirstSourceSuccessorAck = 9,
+    /// Fixed Controller first-successor completion; generic scopes refuse it.
+    ControllerFirstSourceSuccessorComplete = 10,
 }
 
 impl GlobalCapacityReservationPurposeV1 {
@@ -76,6 +82,9 @@ impl GlobalCapacityReservationPurposeV1 {
             Self::ControllerProjectAdmission => RecordNamespace::Effect,
             Self::RootSourceGenesisAnchor => RecordNamespace::DesiredState,
             Self::ControllerConsumerResource => RecordNamespace::ControllerConsumerReadAttempt,
+            Self::RootFirstSourceSuccessorAnchor
+            | Self::SourceFirstSourceSuccessorAck
+            | Self::ControllerFirstSourceSuccessorComplete => RecordNamespace::DesiredState,
         }
     }
 
@@ -114,6 +123,12 @@ impl GlobalCapacityReservationPurposeV1 {
                 RecordNamespace::ControllerConsumerReadAttempt
                     | RecordNamespace::GlobalCapacityReservation
             ),
+            Self::RootFirstSourceSuccessorAnchor
+            | Self::SourceFirstSourceSuccessorAck
+            | Self::ControllerFirstSourceSuccessorComplete => matches!(
+                namespace,
+                RecordNamespace::DesiredState | RecordNamespace::GlobalCapacityReservation
+            ),
         }
     }
 
@@ -126,10 +141,22 @@ impl GlobalCapacityReservationPurposeV1 {
             5 => Ok(Self::ControllerProjectAdmission),
             6 => Ok(Self::RootSourceGenesisAnchor),
             7 => Ok(Self::ControllerConsumerResource),
+            8 => Ok(Self::RootFirstSourceSuccessorAnchor),
+            9 => Ok(Self::SourceFirstSourceSuccessorAck),
+            10 => Ok(Self::ControllerFirstSourceSuccessorComplete),
             _ => Err(JournalError::MalformedRecord(
                 "unknown global capacity reservation purpose",
             )),
         }
+    }
+
+    pub(super) const fn is_first_source_successor(self) -> bool {
+        matches!(
+            self,
+            Self::RootFirstSourceSuccessorAnchor
+                | Self::SourceFirstSourceSuccessorAck
+                | Self::ControllerFirstSourceSuccessorComplete
+        )
     }
 }
 
@@ -476,6 +503,9 @@ impl Journal {
         admission_transaction_id: [u8; 16],
     ) -> Result<PreparedGlobalCapacityReservationV1, JournalError> {
         self.ensure_healthy()?;
+        if request.purpose.is_first_source_successor() {
+            return Err(JournalError::ProtectedBoundary);
+        }
         validate_request(&request, self)?;
         if request.purpose == GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor {
             crate::policy_compiler::require_root_source_genesis_capacity_owner_v1(self)?;
@@ -511,6 +541,9 @@ impl Journal {
         prepared: PreparedGlobalCapacityReservationV1,
         transaction: &JournalTransaction,
     ) -> Result<(CommitResult, GlobalCapacityReservationV1), JournalError> {
+        if prepared.request.purpose.is_first_source_successor() {
+            return Err(JournalError::ProtectedBoundary);
+        }
         if prepared.request.purpose == GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor {
             crate::policy_compiler::validate_root_source_genesis_capacity_admission_v1(
                 self,
@@ -580,6 +613,9 @@ impl Journal {
         let (request, admission_transaction_id, decoded_id) =
             CanonicalCapacityFamily::decode(&reservation_key(expected_reservation_id), value)?
                 .require_legacy()?;
+        if request.purpose.is_first_source_successor() {
+            return Err(JournalError::ProtectedBoundary);
+        }
         // The record's deterministic ID commits the original admission ID and
         // full request. Initial append enforces their atomic transaction; after
         // compaction this materialized self-binding is the durable provenance.
@@ -604,6 +640,9 @@ impl Journal {
         binding: &GlobalCapacityReservationRecoveryBindingV1,
     ) -> Result<GlobalCapacityReservationV1, JournalError> {
         self.ensure_healthy()?;
+        if binding.purpose.is_first_source_successor() {
+            return Err(JournalError::ProtectedBoundary);
+        }
         let families = canonical_reservations(&self.state)?;
         let mut matching = None;
         for family in families {
@@ -662,6 +701,9 @@ pub(super) fn validate_settlement_shape(
     reservation: &GlobalCapacityReservationV1,
     transaction: &JournalTransaction,
 ) -> Result<(), JournalError> {
+    if reservation.request.purpose.is_first_source_successor() {
+        return Err(JournalError::ProtectedBoundary);
+    }
     if reservation.request.future_transactions != 1 {
         return Err(JournalError::AuthorityPreflightMismatch);
     }
@@ -823,6 +865,13 @@ fn validate_request(
     request: &GlobalCapacityReservationRequestV1,
     journal: &Journal,
 ) -> Result<(), JournalError> {
+    validate_request_with_limits(request, journal.limits)
+}
+
+pub(super) fn validate_request_with_limits(
+    request: &GlobalCapacityReservationRequestV1,
+    limits: super::JournalLimits,
+) -> Result<(), JournalError> {
     let records = request.terminal_records.max(request.poison_records);
     let bytes = request.terminal_bytes.max(request.poison_bytes);
     if request.owner_namespace != request.purpose.owner_namespace()
@@ -840,14 +889,13 @@ fn validate_request(
         || request.terminal_bytes == 0
         || request.poison_bytes == 0
         || usize::try_from(records).ok().is_none_or(|value| {
-            value > journal.limits.maximum_records_per_transaction
-                || value > journal.limits.maximum_materialized_records
+            value > limits.maximum_records_per_transaction
+                || value > limits.maximum_materialized_records
         })
         || bytes
-            > journal
-                .limits
+            > limits
                 .maximum_journal_bytes
-                .min(journal.limits.maximum_transaction_bytes as u64)
+                .min(limits.maximum_transaction_bytes as u64)
     {
         return Err(JournalError::LimitExceeded(
             "invalid global capacity reservation",
@@ -861,6 +909,111 @@ fn reservation_key(reservation_id: [u8; 32]) -> Vec<u8> {
     key.extend_from_slice(KEY_PREFIX);
     key.extend_from_slice(&reservation_id);
     key
+}
+
+/// Constructs fixed reservation DATA without conferring named-owner custody.
+///
+/// # Errors
+/// Rejects a generic purpose, foreign namespace or sentinel admission identity.
+pub(crate) fn first_source_successor_capacity_record_v2(
+    request: &GlobalCapacityReservationRequestV1,
+    admission: [u8; 16],
+) -> Result<JournalRecord, JournalError> {
+    if !request.purpose.is_first_source_successor()
+        || request.owner_namespace != RecordNamespace::DesiredState
+        || admission == [0; 16]
+    {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    let identity = reservation_id(request, admission);
+    Ok(JournalRecord::put(
+        RecordNamespace::GlobalCapacityReservation,
+        reservation_key(identity),
+        encode_reservation(request, admission, identity),
+    ))
+}
+
+/// Rejoins the exact native reservation before constructing its deletion DATA.
+///
+/// # Errors
+/// Rejects malformed capacity families or changed request/admission bytes.
+pub(crate) fn first_source_successor_capacity_delete_v2(
+    state: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    request: &GlobalCapacityReservationRequestV1,
+    admission: [u8; 16],
+) -> Result<JournalRecord, JournalError> {
+    canonical_reservations(state)?;
+    let expected = first_source_successor_capacity_record_v2(request, admission)?;
+    if state.get(&(expected.namespace(), expected.key().to_vec())).map(Vec::as_slice)
+        != expected.value()
+    {
+        return Err(JournalError::AuthorityPreflightMismatch);
+    }
+    Ok(JournalRecord::delete(expected.namespace(), expected.key().to_vec()))
+}
+
+/// Derives the canonical identity of one closed native reservation.
+///
+/// # Errors
+/// Rejects a generic purpose, foreign namespace or sentinel admission identity.
+pub(crate) fn first_source_successor_capacity_identity_v2(
+    request: &GlobalCapacityReservationRequestV1,
+    admission: [u8; 16],
+) -> Result<[u8; 32], JournalError> {
+    first_source_successor_capacity_record_v2(request, admission)?;
+    Ok(reservation_id(request, admission))
+}
+
+pub(super) fn validate_first_source_successor_capacity_records_v2(
+    journal: &Journal,
+    transaction: &JournalTransaction,
+) -> Result<(), JournalError> {
+    for record in transaction.records() {
+        if record.namespace() != RecordNamespace::GlobalCapacityReservation
+            || record.value().is_none()
+        {
+            continue;
+        }
+        let (request, admission, _) = decode_capacity_reservation_request_v1(record)?;
+        if !request.purpose.is_first_source_successor() || &admission != transaction.id() {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        validate_request(&request, journal)?;
+    }
+    Ok(())
+}
+
+impl Journal {
+    /// Prepares closed native reservation DATA under its actual named owner.
+    ///
+    /// # Errors
+    /// Rejects changed custody, invalid limits or a retained duplicate identity.
+    pub(crate) fn prepare_first_source_successor_capacity_v2(
+        &self,
+        request: &GlobalCapacityReservationRequestV1,
+        admission: [u8; 16],
+    ) -> Result<JournalRecord, JournalError> {
+        super::source_tree_successor::require_capacity_owner(self, request.purpose)?;
+        validate_request(request, self)?;
+        let record = first_source_successor_capacity_record_v2(request, admission)?;
+        if self.state.contains_key(&(record.namespace(), record.key().to_vec())) {
+            return Err(JournalError::DuplicateRecordKey);
+        }
+        Ok(record)
+    }
+
+    /// Rejoins a closed native deletion under its actual named owner.
+    ///
+    /// # Errors
+    /// Rejects changed custody, malformed families or altered reservation bytes.
+    pub(crate) fn first_source_successor_capacity_deletion_v2(
+        &self,
+        request: &GlobalCapacityReservationRequestV1,
+        admission: [u8; 16],
+    ) -> Result<JournalRecord, JournalError> {
+        super::source_tree_successor::require_capacity_owner(self, request.purpose)?;
+        first_source_successor_capacity_delete_v2(&self.state, request, admission)
+    }
 }
 
 pub(super) fn reservation_key_for_validation(reservation_id: [u8; 32]) -> Vec<u8> {
@@ -1007,6 +1160,7 @@ fn uses_v2(request: &GlobalCapacityReservationRequestV1) -> bool {
 
 fn valid_future_transactions(purpose: GlobalCapacityReservationPurposeV1, count: u32) -> bool {
     match purpose {
+        GlobalCapacityReservationPurposeV1::ControllerFirstSourceSuccessorComplete => count == 2,
         GlobalCapacityReservationPurposeV1::ControllerProjectAdmission => {
             (1..=MAXIMUM_FUTURE_TRANSACTIONS).contains(&count)
         }
@@ -1015,6 +1169,8 @@ fn valid_future_transactions(purpose: GlobalCapacityReservationPurposeV1, count:
         | GlobalCapacityReservationPurposeV1::RuntimeExecution
         | GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal
         | GlobalCapacityReservationPurposeV1::ControllerConsumerResource
+        | GlobalCapacityReservationPurposeV1::RootFirstSourceSuccessorAnchor
+        | GlobalCapacityReservationPurposeV1::SourceFirstSourceSuccessorAck
         | GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor => count == 1,
     }
 }
@@ -1303,7 +1459,7 @@ mod purpose_tests {
         ] {
             assert!(!request.purpose.permits(foreign));
         }
-        for code in [0, 8, 255] {
+        for code in [0, 11, 255] {
             assert!(GlobalCapacityReservationPurposeV1::from_byte(code).is_err());
         }
     }

@@ -102,11 +102,55 @@ mod root_v8_settled_grant;
 mod source_genesis_readback;
 #[cfg(target_os = "linux")]
 mod source_genesis_root;
+#[path = "source_genesis_root/successor_records.rs"]
+mod first_source_successor_records;
+#[cfg(target_os = "linux")]
+mod source_successor_readback;
+#[cfg(target_os = "linux")]
+pub use source_successor_readback::{
+    SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2, SourceFirstSuccessorReadbackPhaseV2,
+    VerifiedSourceFirstSuccessorReadbackV2, verify_source_first_successor_readback_v2,
+};
+#[cfg(target_os = "linux")]
+pub use source_signer_readback::sign_fixed_source_first_successor_readback_v2;
+#[cfg(target_os = "linux")]
+pub use source_genesis_root::{
+    HeldControllerFirstSourceSuccessorV2, HeldRootFirstSourceSuccessorIntentV2,
+    RootFirstSourceSuccessorFloorProofV2,
+    RootFirstSuccessorMutationResultsV2, CurrentRootFirstSourceSuccessorFloorV2,
+    FailedOriginalFirstSourceSuccessorV2, FirstSourceSuccessorConsumerPhaseV2,
+    FirstSourceSuccessorSelectionV2, OriginalFirstSourceSuccessorInvocationV2,
+};
+
+pub use first_source_successor_records::{
+    ControllerFirstSourceSuccessorAnchoredV2, ControllerFirstSourceSuccessorBeginV2,
+    ControllerFirstSourceSuccessorCompleteV2, RootFirstSourceSuccessorFloorV2,
+    RootFirstSourceSuccessorIntentV2, SourceFirstSuccessorAckV2,
+    SourceFirstSuccessorPendingV2, SourceFirstSuccessorReceiptV2,
+};
+pub(crate) use first_source_successor_records::{
+    ControllerFirstSourceSuccessorAnchoredFieldsV2, ControllerFirstSourceSuccessorBeginFieldsV2,
+    ControllerFirstSourceSuccessorCompleteFieldsV2, RootFirstSourceSuccessorFloorFieldsV2,
+    RootFirstSourceSuccessorIntentFieldsV2, SourceFirstSuccessorAckFieldsV2,
+    SourceFirstSuccessorPendingFieldsV2, SourceFirstSuccessorReceiptFieldsV2,
+};
+#[cfg(target_os = "linux")]
+pub(crate) use source_genesis_root::{
+    require_root_first_source_successor_capacity_owner_v2,
+    validate_root_first_source_successor_state_v2,
+    validate_root_first_source_successor_transition_v2,
+    unavailable_first_source_successor_v2,
+};
 mod source_hold_pin;
 mod source_hold_readback;
 mod source_hold_readback_v2;
 #[cfg(target_os = "linux")]
 pub use source_genesis_root::{
+    RootFirstSourceSuccessorOpeningV2,
+    ROOT_FIRST_SOURCE_SUCCESSOR_HELLO_MAGIC_V2, ROOT_FIRST_SOURCE_SUCCESSOR_QUERY_MAGIC_V2,
+    RootFirstSourceSuccessorFrameKindV2, decode_root_first_source_successor_frame_v2,
+    encode_root_first_source_successor_frame_v2,
+    observe_root_first_source_successor_clock_v2,
     CONTROLLER_SOURCE_GENESIS_READBACK_BYTES_V1, CurrentRootSourceGenesisFloorV1,
     HeldRootSourceGenesisIntentV1, ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1,
     FailedOriginalSourceSuccessorInvocationV2, OriginalSourceSuccessorInvocationV2,

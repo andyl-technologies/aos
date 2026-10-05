@@ -15,6 +15,12 @@ use rustix::net::{AddressFamily, SocketAddrUnix, SocketFlags, SocketType, connec
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
 use crate::policy_compiler::root_v8_released_proof::POLICY_AUTHORITY_FIXED_SOCKET_PATH_V2;
 
+#[derive(Clone, Copy)]
+enum OriginalWaitModeV2<'flight, 'profile> {
+    Ordinary,
+    FirstSuccessor(&'flight super::flight::OriginalRootGenesisFlightV1<'profile>),
+}
+
 pub(super) fn connect_fixed(deadline: Instant) -> Result<RetainedUnixStream, SourceGenesisErrorV1> {
     // Type=simple does not prove the fixed daemon is listening yet. Retry only
     // a refusal known to precede connection admission; no accepted endpoint or
@@ -95,6 +101,26 @@ pub(super) fn wait(
     interest: PollFlags,
     deadline: Instant,
 ) -> Result<(), SourceGenesisErrorV1> {
+    wait_with_mode(descriptor, interest, deadline, OriginalWaitModeV2::Ordinary)
+}
+
+pub(super) fn wait_first_successor(
+    descriptor: BorrowedFd<'_>,
+    interest: PollFlags,
+    deadline: Instant,
+    original: &super::flight::OriginalRootGenesisFlightV1<'_>,
+) -> Result<(), SourceGenesisErrorV1> {
+    wait_with_mode(descriptor, interest, deadline, OriginalWaitModeV2::FirstSuccessor(original))
+}
+
+// One engine owns every poll/INTR turn. Only the closed successor mode borrows
+// a genuine original loan; ordinary mode keeps its old action/drop ordering.
+fn wait_with_mode(
+    descriptor: BorrowedFd<'_>,
+    interest: PollFlags,
+    deadline: Instant,
+    mode: OriginalWaitModeV2<'_, '_>,
+) -> Result<(), SourceGenesisErrorV1> {
     loop {
         let remaining = require_remaining(deadline)?.min(Duration::from_millis(100));
         let timeout = Timespec {
@@ -102,11 +128,22 @@ pub(super) fn wait(
             tv_nsec: i64::from(remaining.subsec_nanos()),
         };
         let mut descriptors = [PollFd::new(&descriptor, interest)];
-        match poll(&mut descriptors, Some(&timeout)) {
+        if let OriginalWaitModeV2::FirstSuccessor(original) = mode {
+            original.first_successor_wait_crossing()?;
+        }
+        let polled = poll(&mut descriptors, Some(&timeout));
+        // The native action stays resident while both independent posts run,
+        // including on INTR or a fatal native error. Native error remains first.
+        let posted = match mode {
+            OriginalWaitModeV2::Ordinary => Ok(()),
+            OriginalWaitModeV2::FirstSuccessor(original) => original.first_successor_wait_bookend(),
+        };
+        match polled {
             Ok(_) => {}
-            Err(rustix::io::Errno::INTR) => continue,
+            Err(rustix::io::Errno::INTR) => { posted?; continue; }
             Err(error) => return Err(std::io::Error::from(error).into()),
         }
+        posted?;
         require_remaining(deadline)?;
         let observed = descriptors[0].revents();
         if observed.intersects(PollFlags::ERR | PollFlags::HUP | PollFlags::NVAL) {

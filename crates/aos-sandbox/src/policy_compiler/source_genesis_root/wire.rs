@@ -19,6 +19,97 @@ pub const ROOT_SOURCE_GENESIS_HELLO_MAGIC_V1: &[u8; 8] = b"AOSSGH01";
 /// Bounds the canonical per-phase header, including the original flight nonce.
 pub const ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1: usize = 32;
 
+/// Selects the existing Root endpoint's closed first-successor purpose.
+pub const ROOT_FIRST_SOURCE_SUCCESSOR_QUERY_MAGIC_V2: &[u8; 8] = b"AOSSSQ02";
+
+/// Identifies the first-successor configuration hello on the original flight.
+pub const ROOT_FIRST_SOURCE_SUCCESSOR_HELLO_MAGIC_V2: &[u8; 8] = b"AOSSSH02";
+
+/// Selects one exact first-successor frame, never a genesis or Q04 frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RootFirstSourceSuccessorFrameKindV2 {
+    /// Supplies the genuine held Controller/Source cut before preparation.
+    Prepare,
+    /// Returns the exact persisted original admission intent.
+    Prepared,
+    /// Supplies the genuine Source receipt after its native atomic append.
+    Anchor,
+    /// Returns the exact revision-two Root floor.
+    Anchored,
+    /// Supplies the actual Controller Complete and Source ACK join.
+    Complete,
+    /// Confirms the three exact completion commitments under the Root lock.
+    Completed,
+    /// Ends the same original flight after its current-ancestry consumer.
+    Finish,
+}
+
+impl RootFirstSourceSuccessorFrameKindV2 {
+    /// Returns the fixed bounded payload width selected by this phase.
+    pub const fn payload_bytes(self) -> usize {
+        match self {
+            Self::Prepare | Self::Anchor | Self::Complete => 2560,
+            Self::Prepared => 1248,
+            Self::Anchored => 688,
+            Self::Completed | Self::Finish => 96,
+        }
+    }
+
+    pub(super) const fn magic(self) -> &'static [u8; 8] {
+        match self {
+            Self::Prepare => b"AOSCFP02",
+            Self::Prepared => b"AOSCFI02",
+            Self::Anchor => b"AOSCFA02",
+            Self::Anchored => b"AOSCFR02",
+            Self::Complete => b"AOSCFC02",
+            Self::Completed => b"AOSCFD02",
+            Self::Finish => b"AOSCFE02",
+        }
+    }
+}
+
+/// Encodes a bounded first-successor frame without creating a live loan.
+///
+/// # Errors
+/// Rejects a zero nonce, changed fixed width, or a populated output slot.
+pub fn encode_root_first_source_successor_frame_v2(
+    output: &mut Vec<u8>,
+    phase: RootFirstSourceSuccessorFrameKindV2,
+    nonce: [u8; 16],
+    payload: &[u8],
+) -> Result<(), SourceGenesisErrorV1> {
+    if !output.is_empty() || nonce == [0; 16] || payload.len() != phase.payload_bytes() {
+        return Err(SourceGenesisErrorV1::NonCanonical);
+    }
+    let length = ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 + payload.len();
+    if length > 4096 {
+        return Err(SourceGenesisErrorV1::NonCanonical);
+    }
+    output.try_reserve_exact(length).map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
+    output.resize(length, 0);
+    write_frame_header(output, phase.magic(), 2, nonce);
+    output[ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1..].copy_from_slice(payload);
+    Ok(())
+}
+
+/// Borrows one exact version-two first-successor payload as comparison data.
+///
+/// # Errors
+/// Rejects a foreign purpose, phase, nonce, reserved byte or payload width.
+pub fn decode_root_first_source_successor_frame_v2(
+    frame: &[u8],
+    phase: RootFirstSourceSuccessorFrameKindV2,
+    nonce: [u8; 16],
+) -> Result<&[u8], SourceGenesisErrorV1> {
+    if frame.len() != ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1 + phase.payload_bytes()
+        || frame.len() > 4096
+        || !has_frame_header(frame, phase.magic(), 2, nonce)
+    {
+        return Err(SourceGenesisErrorV1::NonCanonical);
+    }
+    Ok(&frame[ROOT_SOURCE_GENESIS_FRAME_HEADER_BYTES_V1..])
+}
+
 /// Identifies a closed phase and its exact nonauthorizing payload width.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RootSourceGenesisFrameKindV1 {

@@ -5,12 +5,17 @@
 //! DesiredState[prefix || "epoch"] = administrative-epoch:u64be
 //! DesiredState[prefix || "pending"] = AOSCSI02[80]
 //! DesiredState[prefix || "delivered"] = packet-commitment[32]
+//! DesiredState[prefix || "consumer-begin"] = AOSCSB02[296]
+//! DesiredState[prefix || "consumer-anchored"] = AOSCSH02[144]
+//! DesiredState[prefix || "consumer-complete"] = AOSCSC02[240]
 //! ```
 //!
 //! One outstanding fixed slot fences unrelated Controller mutations. Its
 //! complete context lives in the signed packet, never in a reconstructed
 //! current-head receipt. Both appends use the sole Journal transaction engine;
 //! publication uses that SAME writer's retained directory and no-replace name.
+//! Consumer completion preserves every issuer row, including the immutable
+//! issuance intent named `pending`; only the active consumer fence is released.
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -20,6 +25,7 @@ use std::os::fd::AsFd as _;
 #[cfg(target_os = "linux")]
 use aos_sandbox_linux::protected_file::{open_nofollow_child, read_exact_positioned};
 use rustix::fs::{FileType, Mode, OFlags, RenameFlags};
+use aos_sandbox_core::ProjectId;
 
 use super::{
     CacheMutationGateV1, Journal, JournalError, JournalRecord, JournalTransaction, RecordNamespace,
@@ -27,6 +33,15 @@ use super::{
 use crate::hierarchy::genesis_profile::{digest_at, hash, take};
 use crate::hierarchy::source_successor::{
     SOURCE_SUCCESSOR_APPROVAL_BYTES_V2, SourceSuccessorApprovalDataV2,
+};
+use crate::policy_compiler::{
+    ControllerFirstSourceSuccessorAnchoredV2, ControllerFirstSourceSuccessorBeginV2,
+    ControllerFirstSourceSuccessorCompleteV2,
+    SourceFirstSuccessorAckFieldsV2, SourceFirstSuccessorAckV2,
+};
+use super::source_tree_successor::{
+    FirstSourceSuccessorNativePhaseV2, State, array,
+    digest_at as successor_digest_at, transaction_id as successor_transaction_id,
 };
 
 const PREFIX: &[u8] = b"\0aos-controller-source-successor-issuance-v2\0";
@@ -38,11 +53,17 @@ const TEMPORARY_NAME: &str = ".source-successor-input-v2.tmp";
 pub(crate) enum Transition {
     Save,
     Delivered,
+    Begin,
+    Anchored,
+    Complete,
 }
 
 pub(crate) struct RetainedIssuanceDataV2 {
     pub(crate) packet: SourceSuccessorApprovalDataV2,
     pub(crate) delivered: bool,
+    pub(crate) begin: Option<ControllerFirstSourceSuccessorBeginV2>,
+    pub(crate) anchored: Option<ControllerFirstSourceSuccessorAnchoredV2>,
+    pub(crate) complete: Option<ControllerFirstSourceSuccessorCompleteV2>,
 }
 
 /// Keeps every opened publication description resident on partial failure.
@@ -67,7 +88,7 @@ pub(crate) fn retained(journal: &Journal) -> Result<Option<RetainedIssuanceDataV
     validate_rows(&journal.state)
 }
 
-fn key(suffix: &[u8]) -> Vec<u8> {
+pub(crate) fn key(suffix: &[u8]) -> Vec<u8> {
     let mut key = PREFIX.to_vec();
     key.extend_from_slice(suffix);
     key
@@ -103,6 +124,9 @@ fn transaction(
                 namespace, key(b"delivered"), packet.digest().as_bytes().to_vec(),
             )],
         ),
+        Transition::Begin | Transition::Anchored | Transition::Complete => {
+            return Err(JournalError::ProtectedBoundary);
+        }
     };
 
     let mut identity = suffix.to_vec();
@@ -119,15 +143,18 @@ pub(super) fn require_no_mutation(
 ) -> Result<(), JournalError> {
     let before = validate_rows(state)?;
     let touches_owned = proposed.records().iter().any(|record| {
-        record.namespace() == RecordNamespace::DesiredState && record.key().starts_with(PREFIX)
+        record.key().starts_with(PREFIX)
     });
     let Some(transition) = transition else {
-        return if before.is_some() || touches_owned {
+        return if before.as_ref().is_some_and(|row| row.complete.is_none()) || touches_owned {
             Err(JournalError::ProtectedBoundary)
         } else {
             Ok(())
         };
     };
+    if matches!(transition, Transition::Begin | Transition::Anchored | Transition::Complete) {
+        return require_consumer_transition(state, proposed, transition).map(|_| ());
+    }
 
     let packet = match transition {
         Transition::Save => {
@@ -148,6 +175,9 @@ pub(super) fn require_no_mutation(
             }
             saved.packet
         }
+        Transition::Begin | Transition::Anchored | Transition::Complete => {
+            return Err(JournalError::ProtectedBoundary);
+        }
     };
 
     if proposed != &transaction(&packet, transition)? {
@@ -156,18 +186,24 @@ pub(super) fn require_no_mutation(
     Ok(())
 }
 
-fn validate_rows(
+pub(super) fn validate_rows(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
 ) -> Result<Option<RetainedIssuanceDataV2>, JournalError> {
+    if state.keys().any(|(namespace, key)| key.starts_with(PREFIX) && *namespace != RecordNamespace::DesiredState) {
+        return Err(JournalError::ProtectedBoundary);
+    }
     let row_count = state.keys()
         .filter(|(namespace, key)| {
             *namespace == RecordNamespace::DesiredState && key.starts_with(PREFIX)
         })
         .count();
     if row_count == 0 {
+        super::source_tree_successor::require_exact_capacity_family(
+            state, super::GlobalCapacityReservationPurposeV1::ControllerFirstSourceSuccessorComplete, 0,
+        )?;
         return Ok(None);
     }
-    if row_count != 3 && row_count != 4 {
+    if !(3..=7).contains(&row_count) {
         return Err(JournalError::ProtectedBoundary);
     }
 
@@ -185,15 +221,226 @@ fn validate_rows(
 
     let delivered = value(b"delivered");
     if delivered.is_some_and(|bytes| bytes.as_slice() != packet.digest().as_bytes())
-        || row_count != 3 + usize::from(delivered.is_some())
+    {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    let begin = value(b"consumer-begin").map(|bytes| ControllerFirstSourceSuccessorBeginV2::decode(bytes))
+        .transpose().map_err(|_| JournalError::ProtectedBoundary)?;
+    let anchored = value(b"consumer-anchored").map(|bytes| ControllerFirstSourceSuccessorAnchoredV2::decode(bytes))
+        .transpose().map_err(|_| JournalError::ProtectedBoundary)?;
+    let complete = value(b"consumer-complete").map(|bytes| ControllerFirstSourceSuccessorCompleteV2::decode(bytes))
+        .transpose().map_err(|_| JournalError::ProtectedBoundary)?;
+    if row_count != 3 + usize::from(delivered.is_some()) + usize::from(begin.is_some())
+        + usize::from(anchored.is_some()) + usize::from(complete.is_some())
+        || begin.is_some() && delivered.is_none()
+        || anchored.is_some() && begin.is_none()
+        || complete.is_some() && anchored.is_none()
     {
         return Err(JournalError::ProtectedBoundary);
     }
     require_administrative_epoch(state, &packet)?;
-    Ok(Some(RetainedIssuanceDataV2 {
+    let rows = RetainedIssuanceDataV2 {
         packet,
         delivered: delivered.is_some(),
-    }))
+        begin, anchored, complete,
+    };
+    validate_consumer_rows(state, &rows)?;
+    Ok(Some(rows))
+}
+
+fn validate_consumer_rows(
+    state: &State,
+    rows: &RetainedIssuanceDataV2,
+) -> Result<(), JournalError> {
+    let Some(begin) = &rows.begin else {
+        super::source_tree_successor::require_exact_capacity_family(
+            state, super::GlobalCapacityReservationPurposeV1::ControllerFirstSourceSuccessorComplete, 0,
+        )?;
+        return Ok(());
+    };
+    let body = rows.packet.body();
+    let bytes = begin.as_bytes();
+    if successor_digest_at(bytes, 16)? != rows.packet.digest()
+        || bytes[48..80] != body[144..176]
+        || bytes[80..112] != body[176..208]
+        || bytes[112..144] != body[536..568]
+        || bytes[144..176] != body[568..600]
+        || bytes[176..208] != body[680..712]
+    {
+        return Err(JournalError::ProtectedBoundary);
+    }
+
+    if let Some(anchored) = &rows.anchored {
+        if successor_digest_at(anchored.as_bytes(), 16)? != rows.packet.digest() {
+            return Err(JournalError::ProtectedBoundary);
+        }
+    }
+
+    if let Some(complete) = &rows.complete {
+        let anchored = rows.anchored.as_ref()
+            .ok_or(JournalError::ProtectedBoundary)?;
+        let ack = SourceFirstSuccessorAckV2::new(SourceFirstSuccessorAckFieldsV2 {
+            instance: array(body, 32)?,
+            project: ProjectId::from_bytes(array(body, 64)?),
+            receipt: anchored.receipt(),
+            root_floor: anchored.floor(),
+            controller_anchored: anchored.digest(),
+        }).map_err(|_| JournalError::ProtectedBoundary)?;
+        if complete.as_bytes()[16..112] != anchored.as_bytes()[16..112]
+            || successor_digest_at(complete.as_bytes(), 112)? != ack.digest()
+            || successor_digest_at(complete.as_bytes(), 144)? != begin.digest()
+            || successor_digest_at(complete.as_bytes(), 176)? != anchored.digest()
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+    } else {
+        super::first_source_successor_capacity_delete_v2(
+            state, &controller_capacity_request(&rows.packet, begin)?,
+            successor_transaction_id(rows.packet.digest(), FirstSourceSuccessorNativePhaseV2::ControllerBegin),
+        )?;
+    }
+    super::source_tree_successor::require_exact_capacity_family(
+        state, super::GlobalCapacityReservationPurposeV1::ControllerFirstSourceSuccessorComplete,
+        usize::from(rows.complete.is_none()),
+    )
+}
+
+/// Derives the exact conservative two-transaction Controller suffix budget.
+pub(crate) fn controller_capacity_request(
+    packet: &SourceSuccessorApprovalDataV2,
+    begin: &ControllerFirstSourceSuccessorBeginV2,
+) -> Result<super::GlobalCapacityReservationRequestV1, JournalError> {
+    let anchored = JournalTransaction::new([1; 16], vec![JournalRecord::put(
+        RecordNamespace::DesiredState, key(b"consumer-anchored"), vec![1; 144],
+    )])?;
+    let complete = JournalTransaction::new([2; 16], vec![
+        JournalRecord::put(RecordNamespace::DesiredState, key(b"consumer-complete"), vec![1; 240]),
+        super::source_tree_successor::sizing_capacity_delete(),
+    ])?;
+    super::source_tree_successor::capacity_request(
+        super::GlobalCapacityReservationPurposeV1::ControllerFirstSourceSuccessorComplete,
+        array(packet.body(), 32)?, ProjectId::from_bytes(array(packet.body(), 64)?),
+        array(packet.body(), 80)?, begin.digest(), packet.digest(),
+        successor_digest_at(begin.as_bytes(), 80)?, successor_digest_at(begin.as_bytes(), 48)?,
+        &[anchored, complete], 2,
+    )
+}
+
+fn require_consumer_transition(
+    state: &State,
+    transaction: &JournalTransaction,
+    transition: Transition,
+) -> Result<Option<[u8; 32]>, JournalError> {
+    let rows = validate_rows(state)?.ok_or(JournalError::ProtectedBoundary)?;
+    if !rows.delivered || rows.complete.is_some() {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    let (suffix, phase, width) = match transition {
+        Transition::Begin => (
+            b"consumer-begin".as_slice(), FirstSourceSuccessorNativePhaseV2::ControllerBegin, 296,
+        ),
+        Transition::Anchored => (
+            b"consumer-anchored".as_slice(), FirstSourceSuccessorNativePhaseV2::ControllerAnchored, 144,
+        ),
+        Transition::Complete => (
+            b"consumer-complete".as_slice(), FirstSourceSuccessorNativePhaseV2::ControllerComplete, 240,
+        ),
+        _ => return Err(JournalError::ProtectedBoundary),
+    };
+    let record = transaction.records().first()
+        .ok_or(JournalError::ProtectedBoundary)?;
+    if transaction.id() != &successor_transaction_id(rows.packet.digest(), phase)
+        || record.namespace() != RecordNamespace::DesiredState
+        || record.key() != key(suffix)
+        || record.value().is_none_or(|value| value.len() != width)
+        || state.contains_key(&(record.namespace(), record.key().to_vec()))
+    {
+        return Err(JournalError::ProtectedBoundary);
+    }
+
+    let settling = match transition {
+        Transition::Begin => {
+            let [begin_record, capacity] = transaction.records() else {
+                return Err(JournalError::ProtectedBoundary);
+            };
+            if rows.begin.is_some() {
+                return Err(JournalError::ProtectedBoundary);
+            }
+            let bytes = begin_record.value().ok_or(JournalError::ProtectedBoundary)?;
+            let begin = ControllerFirstSourceSuccessorBeginV2::decode(bytes)
+                .map_err(|_| JournalError::ProtectedBoundary)?;
+            let request = controller_capacity_request(&rows.packet, &begin)?;
+            if capacity != &super::first_source_successor_capacity_record_v2(&request, *transaction.id())?
+                || state.contains_key(&(capacity.namespace(), capacity.key().to_vec()))
+            {
+                return Err(JournalError::ProtectedBoundary);
+            }
+            None
+        }
+        Transition::Anchored => {
+            if transaction.records().len() != 1 || rows.begin.is_none() || rows.anchored.is_some() {
+                return Err(JournalError::ProtectedBoundary);
+            }
+            None
+        }
+        Transition::Complete => {
+            let [_, deletion] = transaction.records() else {
+                return Err(JournalError::ProtectedBoundary);
+            };
+            let begin = rows.begin.as_ref().ok_or(JournalError::ProtectedBoundary)?;
+            if rows.anchored.is_none() {
+                return Err(JournalError::ProtectedBoundary);
+            }
+            let request = controller_capacity_request(&rows.packet, begin)?;
+            let admission = successor_transaction_id(rows.packet.digest(), FirstSourceSuccessorNativePhaseV2::ControllerBegin);
+            if deletion != &super::first_source_successor_capacity_delete_v2(state, &request, admission)? {
+                return Err(JournalError::ProtectedBoundary);
+            }
+            Some(super::first_source_successor_capacity_identity_v2(&request, admission)?)
+        }
+        _ => return Err(JournalError::ProtectedBoundary),
+    };
+
+    validate_rows(&super::root_original_inventory::materialize(state, transaction))?;
+    Ok(settling)
+}
+
+pub(super) fn consumer_settling(
+    state: &State,
+    transaction: &JournalTransaction,
+    phase: Option<FirstSourceSuccessorNativePhaseV2>,
+) -> Result<Option<[u8; 32]>, JournalError> {
+    if let Some(transition) = phase.and_then(|phase| phase.controller_transition()) {
+        return require_consumer_transition(state, transaction, transition);
+    }
+    if super::source_tree_successor::touches_capacity_purpose(
+        state, transaction, super::GlobalCapacityReservationPurposeV1::ControllerFirstSourceSuccessorComplete,
+    )? {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    Ok(None)
+}
+
+pub(crate) fn recognize_replayed_transition(
+    transaction: &JournalTransaction,
+) -> Result<Option<Transition>, JournalError> {
+    let Some(record) = transaction.records().iter().find(|record| record.key().starts_with(PREFIX)) else {
+        return Ok(None);
+    };
+    let transition = if record.key() == key(b"packet") {
+        Transition::Save
+    } else if record.key() == key(b"delivered") {
+        Transition::Delivered
+    } else if record.key() == key(b"consumer-begin") {
+        Transition::Begin
+    } else if record.key() == key(b"consumer-anchored") {
+        Transition::Anchored
+    } else if record.key() == key(b"consumer-complete") {
+        Transition::Complete
+    } else {
+        return Err(JournalError::ProtectedBoundary);
+    };
+    Ok(Some(transition))
 }
 
 fn require_administrative_epoch(
@@ -225,13 +472,17 @@ fn require_administrative_epoch(
 pub(super) fn require_no_compaction(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
 ) -> Result<(), JournalError> {
-    if validate_rows(state)?.is_some() {
+    if validate_rows(state)?.is_some_and(|row| row.complete.is_none()) {
         return Err(JournalError::ProtectedBoundary);
     }
     Ok(())
 }
 
 impl Journal {
+    pub(crate) fn controller_first_successor_rows_v2(&self) -> Result<Option<RetainedIssuanceDataV2>, JournalError> {
+        retained(self)
+    }
+
     /// Checks the complete two-append suffix with the existing native fold.
     pub(crate) fn preflight_source_successor_issuance_v2(
         &self,

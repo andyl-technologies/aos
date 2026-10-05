@@ -11,6 +11,8 @@
 //! AOSSSP01 | AOSSRB01 packet[288]
 //! AOSSSR08 | fresh-nonce[16] | intent[32] | project[16] | AOSSGX01[664]
 //! AOSSSP08 | unchanged AOSSGO01 observation[928]
+//! AOSSSR09 | fresh-nonce16 | original-intent32 | project16 | Intent1248
+//! AOSSSP09 | first-successor observation2784
 //! ```
 
 use std::error::Error;
@@ -43,6 +45,8 @@ use aos_sandbox::policy_compiler::{
     verify_source_project_completed_terminal_readback_v1,
     verify_source_project_reservation_readback_v1, verify_source_project_retirement_readback_v1,
     verify_source_tree_genesis_readback_v1,
+    RootFirstSourceSuccessorIntentV2, SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2,
+    sign_fixed_source_first_successor_readback_v2, verify_source_first_successor_readback_v2,
 };
 use aos_sandbox_core::{ObjectDigest, ProjectId};
 use rustix::net::sockopt::{socket_acceptconn, socket_peercred};
@@ -67,6 +71,10 @@ const REQUEST_COMPLETED_MAGIC: &[u8; 8] = b"AOSSSR06";
 const REPLY_COMPLETED_MAGIC: &[u8; 8] = b"AOSSSP06";
 const REQUEST_GENESIS_MAGIC: &[u8; 8] = b"AOSSSR08";
 const REPLY_GENESIS_MAGIC: &[u8; 8] = b"AOSSSP08";
+const REQUEST_FIRST_SUCCESSOR_MAGIC: &[u8; 8] = b"AOSSSR09";
+const REPLY_FIRST_SUCCESSOR_MAGIC: &[u8; 8] = b"AOSSSP09";
+const REQUEST_FIRST_SUCCESSOR_BYTES: usize = REQUEST_BYTES + 1248;
+const REPLY_FIRST_SUCCESSOR_BYTES: usize = 8 + SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2;
 const REPLY_GENESIS_BYTES: usize = 8 + SOURCE_TREE_GENESIS_READBACK_BYTES_V1;
 const REPLY_COMPLETED_BYTES: usize = 8 + SOURCE_PROJECT_COMPLETED_TERMINAL_READBACK_BYTES_V1;
 const REQUEST_BYTES: usize = 72;
@@ -77,6 +85,53 @@ const REPLY_PROJECT_BYTES: usize = 8 + SOURCE_PROJECT_ADMISSION_READBACK_BYTES_V
 const REPLY_RESERVATION_BYTES: usize = 8 + SOURCE_PROJECT_RESERVATION_READBACK_BYTES_V1;
 const FLIGHT_TIMEOUT: Duration = Duration::from_secs(5);
 const REPLY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Requests fixed successor DATA from the existing independently pinned signer.
+///
+/// The actual Root observation loan parks this returned Result before later
+/// Root/stream/pin checks. The ordinary signer connection helper retains its
+/// existing pre-return partial-transport boundary; this is not a new writer.
+///
+/// # Errors
+/// Rejects wrong signer/socket custody, exact framing/EOF, context or signature.
+pub fn request_root_source_first_successor_readback_v2(
+    fresh_nonce: [u8; 16], context: &RootFirstSourceSuccessorIntentV2,
+    signer: &PinnedSourceHoldReadbackSignerV1, signer_uid: u32, socket_gid: u32,
+) -> io::Result<[u8; SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2]> {
+    if signer_uid == 0 || socket_gid == 0 || fresh_nonce == [0; 16] {
+        return Err(invalid_data("invalid first-successor signer identity"));
+    }
+    let request = encode_first_successor_request(fresh_nonce, context);
+    let mut stream = connect_source_signer(signer_uid, socket_gid)?;
+    stream.write_all(&request)?;
+    stream.shutdown(std::net::Shutdown::Write)?;
+    let packet = read_framed_reply::<REPLY_FIRST_SUCCESSOR_BYTES, SOURCE_FIRST_SUCCESSOR_READBACK_BYTES_V2>(
+        &mut stream, REPLY_FIRST_SUCCESSOR_MAGIC,
+    )?;
+    verify_source_first_successor_readback_v2(&packet, signer, fresh_nonce, context).map_err(io::Error::other)?;
+    Ok(packet)
+}
+
+fn encode_first_successor_request(fresh_nonce: [u8; 16], context: &RootFirstSourceSuccessorIntentV2) -> [u8; REQUEST_FIRST_SUCCESSOR_BYTES] {
+    let mut request = [0; REQUEST_FIRST_SUCCESSOR_BYTES];
+    request[..8].copy_from_slice(REQUEST_FIRST_SUCCESSOR_MAGIC);
+    request[8..24].copy_from_slice(&fresh_nonce);
+    request[24..56].copy_from_slice(context.digest().as_bytes());
+    request[56..72].copy_from_slice(context.project().as_bytes());
+    request[72..].copy_from_slice(context.as_bytes());
+    request
+}
+
+fn decode_first_successor_request(request: &[u8; REQUEST_FIRST_SUCCESSOR_BYTES])
+    -> io::Result<([u8; 16], RootFirstSourceSuccessorIntentV2)>
+{
+    let nonce: [u8; 16] = request[8..24].try_into().map_err(|_| invalid_data("invalid successor nonce"))?;
+    let context = RootFirstSourceSuccessorIntentV2::decode(&request[72..]).map_err(io::Error::other)?;
+    if nonce == [0; 16] || encode_first_successor_request(nonce, &context) != *request {
+        return Err(invalid_data("noncanonical first-successor signer request"));
+    }
+    Ok((nonce, context))
+}
 
 /// Requests an actual Source genesis observation through the existing signer.
 ///
@@ -618,6 +673,58 @@ fn serve_request(
     stream.set_write_timeout(Some(FLIGHT_TIMEOUT))?;
     let mut request = [0; REQUEST_BYTES];
     stream.read_exact(&mut request)?;
+    if request[..8] == *REQUEST_FIRST_SUCCESSOR_MAGIC {
+        let mut expanded = [0; REQUEST_FIRST_SUCCESSOR_BYTES];
+        expanded[..REQUEST_BYTES].copy_from_slice(&request);
+        stream.read_exact(&mut expanded[REQUEST_BYTES..])?;
+        require_request_eof(stream)?;
+        let (nonce, context) = decode_first_successor_request(&expanded)?;
+        if context.source_uid() != controller_uid { return Err(invalid_data("foreign successor Source UID").into()); }
+        let signing_key_result = credentials.signing_key();
+        let Ok(signing_key) = &signing_key_result else { std::process::exit(1); };
+        let returned = sign_fixed_source_first_successor_readback_v2(
+            controller_uid, nonce, &context, credentials.generation(), signing_key,
+        );
+        // Each independent post is attempted after the real signature Result
+        // is named. A later failure cannot replace its first returned cause.
+        // The existing credential owner retains startup seed bytes; it does
+        // not provide a fresh credential-file-name observation API.
+        let credential_post = credentials.signing_key();
+        let peer_post = socket_peercred(&*stream);
+        let Ok(packet) = &returned else { std::process::exit(1); };
+        let Ok(later_key) = &credential_post else { std::process::exit(1); };
+        let Ok(later_peer) = &peer_post else { std::process::exit(1); };
+        if later_key.verifying_key() != signing_key.verifying_key()
+            || later_peer.uid != peer.uid || later_peer.gid != peer.gid || later_peer.pid != peer.pid
+        { std::process::exit(1); }
+
+        let sent = write_framed_reply::<REPLY_FIRST_SUCCESSOR_BYTES>(stream, REPLY_FIRST_SUCCESSOR_MAGIC, packet);
+        let credential_after_send = credentials.signing_key();
+        let peer_after_send = socket_peercred(&*stream);
+        if sent.is_err() || credential_after_send.is_err() || peer_after_send.is_err() {
+            // These whole original Results and the startup credential owner
+            // survive termination. The lower reader/view pre-return boundary
+            // is unchanged and is not claimed repaired by this wrapper.
+            std::process::exit(1);
+        }
+        if let (Ok(key), Ok(later)) = (&credential_after_send, &peer_after_send) {
+            if key.verifying_key() != signing_key.verifying_key()
+                || later.uid != peer.uid || later.gid != peer.gid || later.pid != peer.pid
+            { std::process::exit(1); }
+        }
+        let shutdown = stream.shutdown(std::net::Shutdown::Write);
+        let credential_after_shutdown = credentials.signing_key();
+        let peer_after_shutdown = socket_peercred(&*stream);
+        if shutdown.is_err() || credential_after_shutdown.is_err() || peer_after_shutdown.is_err() {
+            std::process::exit(1);
+        }
+        if let (Ok(key), Ok(later)) = (&credential_after_shutdown, &peer_after_shutdown) {
+            if key.verifying_key() != signing_key.verifying_key()
+                || later.uid != peer.uid || later.gid != peer.gid || later.pid != peer.pid
+            { std::process::exit(1); }
+        }
+        return Ok(());
+    }
     if request[..8] == *REQUEST_GENESIS_MAGIC {
         let mut expanded = [0; REQUEST_GENESIS_BYTES];
         expanded[..REQUEST_BYTES].copy_from_slice(&request);
