@@ -194,10 +194,21 @@ pub struct DerivationOutput {
     pub name: String,
     /// Evaluated output store path.
     pub store_path: String,
-    /// Owning derivation for an independently built companion output.
+    /// Derivation that produces this output, when it is not the package
+    /// derivation.
+    ///
+    /// Configuration companions are always built independently. A runtime
+    /// output can be too: a package may bind an output attribute, such as
+    /// glibc's `bin`, to a separately built derivation. Absent, the package
+    /// derivation produces the output.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub derivation: Option<String>,
-    /// Actual Nix output name when the logical name identifies a companion.
+    /// Actual Nix output name of a configuration companion, whose logical
+    /// name differs from it.
+    ///
+    /// Runtime outputs omit it: their logical name is the published output
+    /// name, and the build step finds the Nix output that produces
+    /// [`store_path`](Self::store_path) on the owning derivation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
 }
@@ -208,7 +219,9 @@ impl DerivationInventoryV1 {
     /// # Errors
     ///
     /// Returns an error for the wrong schema, duplicate or unsorted packages,
-    /// invalid derivations, empty/duplicate outputs, or invalid output paths.
+    /// invalid derivations, empty/duplicate outputs, invalid output paths, a
+    /// configuration companion without its own derivation and Nix output
+    /// name, or a runtime output that names a Nix output.
     pub fn validate(&self) -> Result<()> {
         if self.schema_version != DERIVATION_INVENTORY_V1 {
             bail!("unsupported derivation inventory schema");
@@ -244,22 +257,25 @@ impl DerivationInventoryV1 {
             for output in &package.outputs {
                 require_identifier(&output.name, "derivation output name")?;
                 require_store_path(&output.store_path, false)?;
-                match (&output.derivation, &output.output) {
-                    (Some(derivation), Some(name)) => {
-                        require_store_path(derivation, true)?;
+                let id = format!("package/{}/{}/{}", package.name, self.platform, output.name);
+                let companion = package
+                    .configuration
+                    .as_ref()
+                    .is_some_and(|binding| binding.is_companion(&id));
+                if let Some(derivation) = &output.derivation {
+                    require_store_path(derivation, true)?;
+                }
+                match (companion, &output.derivation, &output.output) {
+                    (true, Some(_), Some(name)) => {
                         require_identifier(name, "companion Nix output name")?;
-                        let id =
-                            format!("package/{}/{}/{}", package.name, self.platform, output.name);
-                        if !package
-                            .configuration
-                            .as_ref()
-                            .is_some_and(|binding| binding.is_companion(&id))
-                        {
-                            bail!("independent output is not bound as a configuration companion");
-                        }
                     }
-                    (None, None) => {}
-                    _ => bail!("companion derivation and output name must be specified together"),
+                    (true, _, _) => {
+                        bail!("companion derivation and output name must be specified together");
+                    }
+                    (false, _, Some(_)) => {
+                        bail!("independent output is not bound as a configuration companion");
+                    }
+                    (false, _, None) => {}
                 }
                 if !output_names.insert(&output.name) || !output_paths.insert(&output.store_path) {
                     bail!("derivation package repeats an output name or store path");
@@ -611,6 +627,35 @@ mod tests {
         let mut incomplete = inventory;
         incomplete.packages[0].outputs[1].derivation = None;
         assert!(incomplete.validate().is_err());
+    }
+
+    #[test]
+    fn separately_built_runtime_outputs_keep_their_own_derivation() -> Result<()> {
+        // glibc binds its `bin` output attribute to a separate utilities
+        // derivation; the plan must name the derivation that produces it.
+        let utilities = "/nix/store/33333333333333333333333333333333-utilities.drv";
+        let mut inventory = configured_inventory();
+        inventory.packages[0].outputs.push(DerivationOutput {
+            name: "bin".into(),
+            store_path: "/nix/store/11111111111111111111111111111111-utilities".into(),
+            derivation: Some(utilities.into()),
+            output: None,
+        });
+        inventory.validate()?;
+
+        let planned = inventory.packages[0].planned_artifacts(inventory.platform);
+        let bin = planned
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.id.ends_with("/bin"))
+            .context("planned bin artifact")?;
+        assert_eq!(bin.derivation.as_deref(), Some(utilities));
+        assert_eq!(bin.output.as_deref(), Some("bin"));
+
+        let mut renamed = inventory;
+        renamed.packages[0].outputs[3].output = Some("out".into());
+        assert!(renamed.validate().is_err());
+        Ok(())
     }
 
     fn decision(platform: Platform) -> InventoryPlatformCell {
