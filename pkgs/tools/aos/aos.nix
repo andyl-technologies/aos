@@ -555,12 +555,14 @@ in
             tool_path=$3
             include_linux_environment=$4
             entry_point=$5
+            entry_directory=''${6:-bin}
 
-            mkdir -p "$destination/bin"
+            mkdir -p "$destination/$entry_directory"
             {
               cat << 'WRAPPER_HEADER'
       #!${bash}/bin/bash
       export AOS_HOST_PATH="''${AOS_HOST_PATH-$PATH}"
+      export AOS_NIX_STORE="${nix}/bin/nix-store"
       WRAPPER_HEADER
               if [ "$include_linux_environment" = 1 ]; then
                 cat << 'LINUX_ENVIRONMENT'
@@ -570,7 +572,6 @@ in
               case "$name" in
                 aos)
                   cat << 'AOS_ENVIRONMENT'
-      export AOS_NIX_STORE="${nix}/bin/nix-store"
       ${lib.optionalString (!isDarwinCross) ''
         export AOS_LANDLOCK_WRAPPER="${aos-landlock}/bin/aos-landlock"
         export AOS_UNSHARE="${util-linux}/bin/unshare"
@@ -580,20 +581,17 @@ in
                   ;;
                 apr)
                   cat << 'APR_ENVIRONMENT'
-      export AOS_NIX_STORE="${nix}/bin/nix-store"
       export AOS_MCOPY="${mtools}/bin/mcopy"
       APR_ENVIRONMENT
                   ;;
                 aos-boot-configuration|aos-provisioning-configuration-evaluator)
                   cat << 'PROVISIONING_ENVIRONMENT'
-      export AOS_NIX_STORE="${nix}/bin/nix-store"
       export AOS_NIX_INSTANTIATE="${nix}/bin/nix-instantiate"
       PROVISIONING_ENVIRONMENT
                   ;;
-                apm|aos-package-runtime)
+                apm|aos-package-runtime|aos-image-rollout-boot|aos-package-attestation-provider)
                   cat << 'APM_ENVIRONMENT'
       ${lib.optionalString (!isDarwinCross) ''export AOS_CREDENTIAL_ENCRYPT_PROVIDER="${systemd.handlers}/bin/aos-systemd-credential-encrypt"''}
-      export AOS_NIX_STORE="${nix}/bin/nix-store"
       export AOS_NIX_INSTANTIATE="${nix}/bin/nix-instantiate"
       export AOS_PACKAGE_MODULE_LIBRARY="${lib.packageModuleLibrary}"
       export AOS_MCOPY="${mtools}/bin/mcopy"
@@ -609,9 +607,9 @@ in
               esac
               printf '%s\n' \
                 "export PATH=\"$tool_path\"" \
-                "exec \"$destination/bin/$entry_point\" \"\$@\""
-            } > "$destination/bin/$name"
-            chmod +x "$destination/bin/$name"
+                "exec \"$destination/$entry_directory/$entry_point\" \"\$@\""
+            } > "$destination/$entry_directory/$name"
+            chmod +x "$destination/$entry_directory/$name"
           }
 
           install_cli() {
@@ -619,12 +617,13 @@ in
             destination=$2
             tool_path=$3
             include_linux_environment=$4
+            entry_directory=''${5:-bin}
 
-            mkdir -p "$destination/bin"
-            mv "$out/bin/$name" "$destination/bin/.$name-unwrapped"
+            mkdir -p "$destination/$entry_directory"
+            mv "$out/bin/$name" "$destination/$entry_directory/.$name-unwrapped"
             write_cli_wrapper \
               "$name" "$destination" "$tool_path" \
-              "$include_linux_environment" ".$name-unwrapped"
+              "$include_linux_environment" ".$name-unwrapped" "$entry_directory"
           }
 
           install_cli aos "$out" ${lib.escapeShellArg (runtimeBinPath aosRuntimeTools)} 0
@@ -652,35 +651,39 @@ in
             .aos-package-runtime-unwrapped
 
           ${lib.optionalString (!isDarwinCross) ''
-          mkdir -p "$packageRuntime/libexec"
-          # Native dispatch clears its environment. Pin the evaluator's store
-          # and pure-evaluation tools in its own retained executable wrapper.
-          # The boot entry keeps its own argv[0] and retained tool wrapper,
-          # while sharing the package executable already required by this output.
-          rm "$out/bin/aos-boot-configuration"
-          ln -s \
-            "$apm/bin/.aos-package-runtime-unwrapped" \
-            "$packageRuntime/bin/.aos-boot-configuration-unwrapped"
-          write_cli_wrapper \
-            aos-boot-configuration \
-            "$packageRuntime" \
-            ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} \
-            0 \
-            .aos-boot-configuration-unwrapped
-          install_cli aos-provisioning-configuration-evaluator "$packageRuntime" \
-            ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} 0
-          mv \
-            "$out/bin/aos-image-rollout-boot" \
-            "$packageRuntime/libexec/.aos-image-rollout-boot-unwrapped"
-          cat > "$packageRuntime/libexec/aos-image-rollout-boot" <<ROLLOUT_BOOT
-        #!${bash}/bin/bash
-        export AOS_TPM2_CHECKQUOTE="${tpm2-tools}/bin/tpm2_checkquote"
-        exec "$packageRuntime/libexec/.aos-image-rollout-boot-unwrapped" "\$@"
-        ROLLOUT_BOOT
-          chmod +x "$packageRuntime/libexec/aos-image-rollout-boot"
-          mv "$out/bin/aos-package-attestation-provider" "$packageRuntime/libexec/"
-          mv "$out/bin/aos-image-rollout-observer" "$packageRuntime/libexec/"
-          mv "$out/bin/aos-image-rollout-provider" "$packageRuntime/bin/"
+        # Native dispatch clears its environment. Pin the evaluator's store
+        # and pure-evaluation tools in its own retained executable wrapper.
+        # The boot entry keeps its own argv[0] and retained tool wrapper,
+        # while sharing the package executable already required by this output.
+        rm "$out/bin/aos-boot-configuration"
+        ln -s \
+          "$apm/bin/.aos-package-runtime-unwrapped" \
+          "$packageRuntime/bin/.aos-boot-configuration-unwrapped"
+        write_cli_wrapper \
+          aos-boot-configuration \
+          "$packageRuntime" \
+          ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} \
+          0 \
+          .aos-boot-configuration-unwrapped
+        install_cli aos-provisioning-configuration-evaluator "$packageRuntime" \
+          ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} 0
+
+        # Boot commit and quoting use the same admitted-store and TPM tools
+        # as the package runtime, including when the manager clears its environment.
+        install_cli \
+          aos-image-rollout-boot \
+          "$packageRuntime" \
+          ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} \
+          1 \
+          libexec
+        install_cli \
+          aos-package-attestation-provider \
+          "$packageRuntime" \
+          ${lib.escapeShellArg (runtimeBinPath apmRuntimeTools)} \
+          1 \
+          libexec
+        mv "$out/bin/aos-image-rollout-observer" "$packageRuntime/libexec/"
+        mv "$out/bin/aos-image-rollout-provider" "$packageRuntime/bin/"
       ''}
 
           grep -Fqx 'export AOS_NIX_STORE="${nix}/bin/nix-store"' "$packageRuntime/bin/aos-package-runtime"
@@ -698,6 +701,8 @@ in
         grep -Fqx 'export AOS_NIX_STORE="${nix}/bin/nix-store"' "$packageRuntime/bin/aos-boot-configuration"
         grep -Fqx 'export AOS_NIX_INSTANTIATE="${nix}/bin/nix-instantiate"' "$packageRuntime/bin/aos-boot-configuration"
         test -x "$packageRuntime/libexec/aos-image-rollout-boot"
+        grep -Fqx 'export AOS_NIX_STORE="${nix}/bin/nix-store"' "$packageRuntime/libexec/aos-image-rollout-boot"
+        grep -Fqx 'export AOS_TPM2_CHECKQUOTE="${tpm2-tools}/bin/tpm2_checkquote"' "$packageRuntime/libexec/aos-image-rollout-boot"
         test -x "$packageRuntime/libexec/aos-package-attestation-provider"
         test -x "$packageRuntime/libexec/aos-image-rollout-observer"
         test -x "$packageRuntime/bin/aos-image-rollout-provider"
