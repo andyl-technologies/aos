@@ -889,8 +889,8 @@ nix run . -- release step build \
   --started-at 2026-09-03T10:00:00Z
 ```
 
-The command realizes the exact named outputs from their frozen derivations and
-then asks Nix to rebuild with `--check`. It refuses deriver or store-path drift
+The command realizes the exact named outputs from their frozen derivations and,
+for a production-tier plan, asks Nix to rebuild them with `--check`. It refuses deriver or store-path drift
 and records the exact NAR identity of every upstream source store path (internal
 packages instead bind the protected repository source). It writes
 `release-plan.json`, `evidence/build-report.json`,
@@ -898,14 +898,15 @@ packages instead bind the protected repository source). It writes
 existing path. A repeated build on one maintainer machine is nondeterminism
 evidence, not an independent SLSA builder.
 
-The registry tier decides what a failed `--check` rebuild means. A
-production-tier plan (`andyl/main`) fails the step and names every derivation
-whose rebuild differed or failed. A testing-tier plan (`andyl/experimental`
-and its epochs) records each output of such a derivation as `not-reproduced`
-in the build report, warns with one reason per derivation, and continues.
-Report validation and `step assemble` reject `not-reproduced` outputs for
-production and accept them for testing, where the `build-integrity`
-`repeat-build` observation states how many outputs were not reproduced.
+The registry tier decides whether the `--check` rebuild runs. A
+production-tier plan (`andyl/main`) runs it for every planned derivation and
+fails the step, naming every derivation whose rebuild differed or failed. A
+testing-tier plan (`andyl/experimental` and its epochs) accepts unreproduced
+outputs, so a rebuild could not change its outcome: it skips the pass and
+records every output as `not-checked`. Report validation and `step assemble`
+accept only `reproduced` outputs for production, and accept `not-checked` and
+`not-reproduced` outputs for testing. There the `build-integrity`
+`repeat-build` observation states that no repeat build ran.
 
 Inspect a copied journal without initializing Nix using
 [`step status`](#inspect-a-captured-journal).

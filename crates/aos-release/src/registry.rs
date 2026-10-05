@@ -80,6 +80,21 @@ impl RegistryTier {
         }
     }
 
+    /// Returns whether the tier's builds must run the Nix `--check` repeat
+    /// build of every planned derivation.
+    ///
+    /// The testing tier accepts unreproduced outputs, so a repeat build there
+    /// produces evidence that cannot change the outcome; it skips the pass
+    /// and records every output as not checked. Production runs it and fails
+    /// closed on any difference.
+    #[must_use]
+    pub const fn requires_repeat_build_check(self) -> bool {
+        match self {
+            Self::Testing => false,
+            Self::Production => true,
+        }
+    }
+
     /// Returns whether the tier accepts a release whose advisory disposition
     /// still lists unresolved advisories.
     ///
