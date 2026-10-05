@@ -105,8 +105,9 @@ pub(super) async fn run(args: &ReleaseTufArgs, printer: &aos_core::output::Print
     let delegated_role = TufRole::for_release(plan.release_class);
     let delegated_keys = role_keys(&root.signed, &plan, delegated_role, &args.delegated_keys)?;
     let snapshot_keys = role_keys(&root.signed, &plan, TufRole::Snapshot, &args.snapshot_keys)?;
-    let external = ExternalSigner::new(
-        args.signer_executable.clone(),
+    let external = ExternalSigner::resolve(
+        args.signer_executable.as_deref(),
+        args.signer_config.as_deref(),
         Duration::from_secs(args.signer_timeout_seconds),
     )?;
     let mut nonces = BTreeSet::new();

@@ -367,6 +367,51 @@ fn cache_finalization_requires_external_key_and_provider_identity() {
 }
 
 #[test]
+fn signer_executable_is_optional_beside_a_signer_config() {
+    let Ok(parsed) = Cli::try_parse_from([
+        "aos",
+        "maintain",
+        "release",
+        "step",
+        "finalize-cache",
+        "--plan",
+        "release-plan.json",
+        "--build-report",
+        "build-report.json",
+        "--registry",
+        "registry",
+        "--cache-key",
+        "cache-1=cache-1.pub",
+        "--verification-identity",
+        "provider-cache-slot",
+        "--signer-config",
+        "/etc/aos-release/signer.json",
+        "--output",
+        "cache",
+    ]) else {
+        panic!("cache finalization without a signer executable should parse");
+    };
+    let Commands::Maintain(MaintainArgs {
+        command:
+            Some(MaintainCommand::Release {
+                command:
+                    ReleaseCommand::Step {
+                        command: ReleaseStepCommand::FinalizeCache(args),
+                    },
+            }),
+        ..
+    }) = parsed.command
+    else {
+        panic!("expected release finalize-cache command");
+    };
+    assert_eq!(args.signer_executable, None);
+    assert_eq!(
+        args.signer_config,
+        Some(PathBuf::from("/etc/aos-release/signer.json"))
+    );
+}
+
+#[test]
 fn qualification_run_requires_native_matrix_and_authority_inputs() {
     assert!(
         Cli::try_parse_from([
