@@ -4,13 +4,14 @@
   lib,
   ...
 }: let
+  literalText = import ./literal-text.nix;
   effects = config.aos.abilities.configuration.operations.file.effects;
   declarations = lib.filterAttrs (_: effect:
     effect.enable
     && builtins.isString effect.input.path
     && lib.hasPrefix "/etc/" effect.input.path)
   effects;
-  eligible = lib.filterAttrs (_: effect: builtins.isString effect.input.content) declarations;
+  eligible = lib.filterAttrs (_: effect: literalText effect.input != null) declarations;
   fileEffect = effect: {
     id = builtins.hashString "sha256" (builtins.toJSON effect.contract.identity);
     inherit (effect) lifetime;
@@ -21,7 +22,7 @@
       owner = effect.contract.owner;
       value = {
         kind = "text";
-        text = effect.input.content;
+        text = literalText effect.input;
         inherit (effect.input) mode;
       };
     })
