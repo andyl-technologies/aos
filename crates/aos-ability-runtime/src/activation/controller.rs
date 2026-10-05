@@ -154,6 +154,19 @@ impl Activation {
         self.run(desired, adapter, cancellation)
     }
 
+    /// Borrows the identity of the last durably completed transaction.
+    ///
+    /// This reports journal completion, not current external resource state.
+    /// A caller recovering publication can distinguish cached completion from
+    /// an activation that still needs live observation and repair.
+    #[must_use]
+    pub fn completed_transaction(&self) -> Option<&str> {
+        self.state
+            .completed
+            .as_ref()
+            .map(|(identity, _, _)| identity.as_str())
+    }
+
     /// Returns identities with a durable removal outcome and no later application.
     ///
     /// This inventory makes declarative retirement repeatable across generations

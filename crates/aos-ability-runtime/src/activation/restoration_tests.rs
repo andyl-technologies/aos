@@ -172,6 +172,7 @@ fn lost_prerequisites_are_restored_without_repeating_the_primary_or_one_shots() 
     machine.boundaries.clear();
 
     let mut activation = Activation::open(&path, JournalLimits::default()).unwrap();
+    assert_eq!(activation.completed_transaction(), None);
     activation
         .activate_once(
             "original",
@@ -181,6 +182,7 @@ fn lost_prerequisites_are_restored_without_repeating_the_primary_or_one_shots() 
             &CancellationToken::default(),
         )
         .unwrap();
+    assert_eq!(activation.completed_transaction(), Some("original"));
     drop(activation);
 
     assert_eq!(machine.calls[&ids[0]], 1);

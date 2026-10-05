@@ -38,7 +38,9 @@ mod evaluate;
 
 pub use crate::native_registry::solver::{LockedEdge, ResolutionLock};
 pub use admission::{AdmissionCatalog, AdmittedRoot};
-pub use bootstrap::{SourceAuthorization, apply_with_sources, recover_profile_publication};
+pub use bootstrap::{
+    RecoveredPublication, SourceAuthorization, apply_with_sources, recover_profile_publication,
+};
 pub use evaluate::evaluate_input;
 pub(crate) use evaluate::{
     os_requirements, retained_declarations, validate_target_os, validated_declarations,
@@ -470,6 +472,7 @@ fn apply_profile(
     image_evaluation: &EvaluationInputs,
     cancellation: &CancellationToken,
     mut sources: Option<bootstrap::BootstrapSources<'_>>,
+    recovered: Option<&RecoveredPublication>,
 ) -> Result<()> {
     use crate::profile::{Profile, deployment::ProfileDeployment};
     use crate::types::{InstalledMeta, ProfileScope};
@@ -775,7 +778,15 @@ fn apply_profile(
     {
         // Recovery already completed the original durable attempt. A fresh
         // attempt here would repeat transaction-scoped work during that retry.
-        if recovering_reconciliation {
+        let number = profile
+            .current_generation()?
+            .context("committed profile pointer is absent")?
+            .number;
+        if recovering_reconciliation
+            || recovered.is_some_and(|recovered| {
+                recovered.matches_live(number, current.sequence, &current.content)
+            })
+        {
             return Ok(());
         }
         return consumer.reconcile_current(cancellation);
@@ -951,6 +962,25 @@ impl ArtifactAdmission for Admission {
 /// Returns an error for invalid immutable documents, missing authentication,
 /// changed NAR contents or references, journal errors, or failed effects.
 pub fn apply(command: &NativeDeploymentCommand, cancellation: &CancellationToken) -> Result<()> {
+    apply_in(command, cancellation, None)
+}
+
+// The boot consumer validates retained source authority before entering this
+// shared apply path. Admission and evaluated desired content are still checked;
+// the recovery identity is compared with the current publication under its lock.
+pub(crate) fn apply_after_recovery(
+    command: &NativeDeploymentCommand,
+    cancellation: &CancellationToken,
+    recovered: &RecoveredPublication,
+) -> Result<()> {
+    apply_in(command, cancellation, Some(recovered))
+}
+
+fn apply_in(
+    command: &NativeDeploymentCommand,
+    cancellation: &CancellationToken,
+    recovered: Option<&RecoveredPublication>,
+) -> Result<()> {
     let (deployment, mut admission, receipt) = prepare(command)?;
     let mut temporary_roots =
         crate::store::temp_roots::TemporaryRoots::open(&command.nix_store, cancellation)?;
@@ -976,6 +1006,7 @@ pub fn apply(command: &NativeDeploymentCommand, cancellation: &CancellationToken
             &evaluation,
             cancellation,
             None,
+            recovered,
         );
     }
     let descriptor = command.input.join("evaluation.json");

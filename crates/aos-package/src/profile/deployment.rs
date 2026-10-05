@@ -234,6 +234,12 @@ impl<'a, S: DeploymentStore> ProfileDeployment<'a, S> {
         self.transactions.current()
     }
 
+    pub(crate) fn pending_live_package(
+        &self,
+    ) -> Result<Option<crate::deployment::transaction::LiveRecovery>> {
+        self.transactions.pending_live_package()
+    }
+
     pub(crate) fn pending_reconciliation(&self) -> bool {
         self.transactions.pending_reconciliation()
     }
