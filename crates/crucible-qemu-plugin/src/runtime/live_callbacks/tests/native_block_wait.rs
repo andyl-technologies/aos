@@ -68,6 +68,14 @@ impl NativeLibrary {
             .into_owned()
     }
 
+    /// Loads one function from the private joined-unit adapter.
+    ///
+    /// # Safety
+    ///
+    /// `T` must be the complete `extern "C"` function-pointer type declared for
+    /// `name` in `block-wait-completion.h`, including its argument and result
+    /// layouts. The library and resolved symbol must remain loaded through every
+    /// invocation and retained callback that uses the returned function pointer.
     unsafe fn function<T: Copy>(&self, name: &CStr) -> T {
         // SAFETY: the native library is retained for the entire child process.
         let symbol = unsafe { libc::dlsym(self.0.as_ptr(), name.as_ptr()) };
