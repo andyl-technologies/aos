@@ -15,27 +15,29 @@
   ];
 
   rolloutPolicy = import ./_image-rollout-production.nix {inherit pkgs;};
-  bootFaultHook = pkgs.writeShellScriptBin "aos-image-acceptance-boot-fault" ''
-    set -eu
-    if test -f /var/lib/aos-test/blocked-image-toplevel; then
-      IFS= read -r blocked < /var/lib/aos-test/blocked-image-toplevel
-      running=$(${pkgs.coreutils}/bin/readlink /run/current-system)
-      test "$running" != "$blocked"
-    fi
-  '';
-  bootFaultCommand = {
-    executable = {
-      path = "${bootFaultHook}/bin/aos-image-acceptance-boot-fault";
-      arguments = [];
-    };
-    ignore_failure = false;
-  };
+  bootFaultHook =
+    (pkgs.writeShellScriptBin "aos-image-acceptance-boot-fault" ''
+      set -eu
+      if test -f /var/lib/aos-test/blocked-image-toplevel; then
+        IFS= read -r blocked < /var/lib/aos-test/blocked-image-toplevel
+        running=$(${pkgs.coreutils}/bin/readlink /run/current-system)
+        test "$running" != "$blocked"
+      fi
+    '').overrideAttrs (_: {
+      module = ./_image-acceptance-boot-policy;
+      moduleDeps = [pkgs.service-management];
+    });
   bootFaultModule = {
     aos.packages.aos-image-acceptance-boot-fault = {
       package = bootFaultHook;
       bundle = true;
     };
-    aos.services."control-plane.aos-activate".lifecycle.pre_start = lib.mkBefore [bootFaultCommand];
+    aos.activation.stages.host.configuration = [
+      (builtins.path {
+        path = ./_image-acceptance-agent-policy.nix;
+        name = "aos-image-acceptance-agent-policy.nix";
+      })
+    ];
   };
   candidateAos =
     if !replaceExecutor
@@ -318,7 +320,7 @@ in {
       CANDIDATE_EXECUTOR = "${candidatePackageRuntime}"
       BOOT_FAULT_HOOK = "${bootFaultHook}/bin/aos-image-acceptance-boot-fault"
       CANDIDATE_BOOT_CONTRACT = "${candidate.config.system.build.bootArtifactContract}"
-      OBSERVER_HOST_MODULE = ${builtins.toJSON (rolloutPolicy.qualificationSetupBody + "aos.services.\"control-plane.aos-activate\".lifecycle.pre_start = lib.mkBefore [ (builtins.fromJSON " + builtins.toJSON (builtins.toJSON bootFaultCommand) + ") ];\n")}
+      OBSERVER_HOST_MODULE = ${builtins.toJSON rolloutPolicy.qualificationSetupBody}
       IMAGE_ACCEPTANCE = types.ModuleType("native_image_acceptance")
       IMAGE_ACCEPTANCE.__dict__.update(globals())
       exec(compile(${builtins.toJSON (builtins.readFile ./native-image-acceptance.py)},
