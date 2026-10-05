@@ -60,7 +60,7 @@
   firewall = config.aos.abilities.networkPolicy.operations.ruleset.effects.host;
   resourceGroup = config.aos.abilities.serviceManagement.operations.resourceGroup.effects.${package.name};
   service = {
-    activationInputs = [configuration.input.base configuration.input.integrations];
+    activationInputs = [configuration.outputs.resource];
     activationAfter = [configuration.outputs.path modules.outputs.loaded tunables.outputs.values firewall.outputs.resource];
     policy.devicePolicy = {
       baseline_access = "standard-runtime-devices";
@@ -375,6 +375,10 @@ in {
     {
       k3s.role = role;
       aos.services.k3s = lib.mkIf cfg.enable (service // {enable = true;});
+      aos.abilities.k3sConfiguration.operations.ensure.result.options.resource = mkOption {
+        type = lib.types.str;
+        description = "Content identity of the materialized K3s configuration consumed by its service.";
+      };
       aos.abilities.k3sConfiguration.operations.ensure.handler.program =
         package
         // {
