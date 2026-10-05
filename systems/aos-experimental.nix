@@ -10,17 +10,20 @@
   aos.image.budgets.maxDownloadMiB = 1024;
 
   # The converted disk formats exceed the compressed raw image budget.
-  # Arm exports carry the full recovery ESP and the larger root payload.
+  # Arm exports carry the full recovery ESP and the larger root payload. The
+  # finalized x86_64 formats measure 920-933 MiB (qcow2, VMDK, VHD).
   aos.image.budgets.maxConvertedDownloadMiB =
     if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
     then 1792
-    else 896;
+    else 1024;
 
   # Recovery archives include the root and both normal and recovery UKIs.
+  # The finalized Arm archive measures 1003 MiB; x86_64 carries smaller UKIs
+  # but keeps the same headroom over its last measured payload.
   aos.image.budgets.maxRecoveryBundleMiB =
     if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
     then 1792
-    else 1024;
+    else 1280;
 
   # The experimental images are canonical release artifacts: the Nix build emits
   # an unsigned assembly and `aos maintain release step finalize-image` applies Secure Boot,
