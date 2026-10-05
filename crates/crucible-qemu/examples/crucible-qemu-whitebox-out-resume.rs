@@ -108,6 +108,7 @@ struct ProbePolicy {
     completion_timeout: Duration,
     fixed_buffer: Option<u64>,
     profile: &'static str,
+    advisory_console: bool,
 }
 
 const ROM_POLICY: ProbePolicy = ProbePolicy {
@@ -115,6 +116,7 @@ const ROM_POLICY: ProbePolicy = ProbePolicy {
     completion_timeout: COMPLETION_TIMEOUT,
     fixed_buffer: Some(BUFFER),
     profile: "real-mode-rom-shared-buffer",
+    advisory_console: false,
 };
 
 fn catalog() -> Result<SelectableCatalogPlan, Box<dyn Error>> {
@@ -184,6 +186,9 @@ fn run_owned(
     )?;
 
     let result = drive(&mut node, mode, policy);
+    if result.is_err() && policy.advisory_console {
+        linux::report_failure(&mut node);
+    }
     let shutdown = node.shutdown_child();
     drop(node);
     drop(directory);
@@ -273,19 +278,7 @@ fn drive(
         ProbePhase::FirstSelectableBoundary,
         boundary(node, 2, "first", policy, policy.fixed_buffer),
     )?;
-    require_marker(&first, "first")?;
-    let [setup, marker_event] = first.as_slice() else {
-        return Err("first boundary must retain setup and one semantic frame".into());
-    };
-    if !matches!(setup.payload(), ObservableEventPayload::GuestMarker { retired_icount, node, marker }
-        if node.name == NODE && marker.name == "lifecycle.setup_complete"
-            && retired_icount.retired == setup.at().ticks
-            && setup.at().ticks < marker_event.at().ticks)
-    {
-        return Err(
-            "setup was not the original authenticated marker before the first frame".into(),
-        );
-    }
+    require_first_events(&first)?;
     let plan = node
         .selectable_catalog_plan()
         .ok_or("host catalog absent")?;
@@ -310,10 +303,7 @@ fn drive(
         ProbePhase::SecondSelectableBoundary,
         boundary(node, 3, "second", policy, Some(buffer)),
     )?;
-    require_marker(&second, "second")?;
-    if second.len() != 1 {
-        return Err("second boundary replayed an earlier observable frame".into());
-    }
+    require_second_events(&second)?;
     let plan = node
         .selectable_catalog_plan()
         .ok_or("resumed host catalog absent")?;
@@ -471,7 +461,49 @@ fn boundary(
         )?;
         node.enqueue_selectable_reply(pending, &reply)?;
     }
-    Ok((events, pending.guest_virtual_address()))
+    Ok((
+        probe_events(events, policy),
+        pending.guest_virtual_address(),
+    ))
+}
+
+// Console capture adds only observational output. All other event kinds retain
+// the original order and exact setup/semantic cardinality requirements.
+fn probe_events(mut events: Vec<ObservableEvent>, policy: ProbePolicy) -> Vec<ObservableEvent> {
+    if policy.advisory_console {
+        events.retain(|event| {
+            !matches!(
+                event.payload(),
+                ObservableEventPayload::ConsoleOutput { .. }
+            )
+        });
+    }
+    events
+}
+
+fn require_first_events(events: &[ObservableEvent]) -> Result<(), Box<dyn Error>> {
+    require_marker(events, "first")?;
+    let [setup, marker_event] = events else {
+        return Err("first boundary must retain setup and one semantic frame".into());
+    };
+    if !matches!(setup.payload(), ObservableEventPayload::GuestMarker { retired_icount, node, marker }
+        if node.name == NODE && marker.name == "lifecycle.setup_complete"
+            && retired_icount.retired == setup.at().ticks
+            && setup.at().ticks < marker_event.at().ticks)
+    {
+        return Err(
+            "setup was not the original authenticated marker before the first frame".into(),
+        );
+    }
+    Ok(())
+}
+
+fn require_second_events(events: &[ObservableEvent]) -> Result<(), Box<dyn Error>> {
+    require_marker(events, "second")?;
+    if events.len() != 1 {
+        return Err("second boundary replayed an earlier observable frame".into());
+    }
+    Ok(())
 }
 
 fn buffer_matches(expected: Option<u64>, observed: u64) -> bool {

@@ -1190,6 +1190,21 @@ impl QemuNode {
         self
     }
 
+    /// Copies at most 1024 staged console bytes for untimed diagnosis.
+    ///
+    /// The tail covers bytes retained since the last successful observation
+    /// drain. It is advisory, incomplete, and has no scheduler timestamp or
+    /// canonical evidence authority. Reading it neither drains the spool nor
+    /// reads the console socket. Returns `None` when capture is absent or the
+    /// spool is busy or poisoned; it never waits for the spool lock.
+    #[must_use]
+    pub fn console_diagnostic_tail(&self) -> Option<Vec<u8>> {
+        self.console_observation
+            .as_ref()?
+            .spool
+            .try_diagnostic_tail()
+    }
+
     /// Retains setup-time observations for the first authoritative scheduler drain.
     #[must_use]
     pub(crate) fn with_priming_observable_events(

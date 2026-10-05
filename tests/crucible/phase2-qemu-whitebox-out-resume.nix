@@ -151,7 +151,7 @@ assert builtins.elem profile ["rom" "linux"]; let
       mkdir /tmp/attempts
       ${pkgs.util-linux}/bin/mount -o loop,prjquota /tmp/attempts.img /tmp/attempts
 
-      for mode in ${lib.concatStringsSep " " modes}; do
+      ${lib.optionalString (profile == "linux") "export CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS=64\n"}for mode in ${lib.concatStringsSep " " modes}; do
         mkdir -m 700 "/tmp/attempts/$mode"
         if ${pkgs.coreutils}/bin/timeout -k 15 ${
         if profile == "rom"

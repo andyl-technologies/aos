@@ -1,6 +1,7 @@
 //! Retains a Linux CPL3 probe on the original host driver and ownership path.
 
 use super::*;
+use std::io::Write;
 
 // These are the existing production Linux-flight ceiling and completion policy.
 const LINUX_POLICY: ProbePolicy = ProbePolicy {
@@ -8,6 +9,7 @@ const LINUX_POLICY: ProbePolicy = ProbePolicy {
     completion_timeout: Duration::from_secs(300),
     fixed_buffer: None,
     profile: "linux-cpl3-parent-buffer",
+    advisory_console: true,
 };
 
 /// Keeps the three distinct immutable Linux boot artifacts together.
@@ -54,6 +56,7 @@ fn configuration(
         QemuLiveNodeStepGateConfig::new(qemu, plugin, guest.kernel, guest.firmware, root)
             .with_initrd(guest.initrd)
             .with_vm_shape(128, 1)
+            .with_console_capture()
             .with_kernel_cmdline(format!(
                 "console=ttyS0 panic=-1 quiet rdinit=/init crucible_out_probe={profile}"
             ))
@@ -61,6 +64,59 @@ fn configuration(
             .with_selectable_catalog_plan(catalog()?)
             .with_completion_timeout(LINUX_POLICY.completion_timeout),
     )
+}
+
+// These existing state reads do not drain events or pending requests. A failed
+// read is advisory only; the caller still returns the original probe error and
+// executes the original owned cleanup.
+pub(super) fn report_failure(node: &mut QemuNode) {
+    let mut output = std::io::stderr().lock();
+    let _ = writeln!(
+        output,
+        "linux probe advisory state: calibration={:?}; idle={:?}; last_completed_boundary={:?}",
+        node.logical_time_calibration(),
+        node.idle_state(),
+        node.completed_quantum_boundary()
+    );
+    if let Some(plan) = node.selectable_catalog_plan() {
+        let continuation = plan.continuation();
+        let _ = writeln!(
+            output,
+            "linux probe host-mirrored catalog: phase={:?}; last_registration={:?}; last_completed_request={:?}; total_completed={}; registered_count={}",
+            continuation.phase(),
+            continuation.last_registration_sequence(),
+            continuation.last_completed_request_sequence(),
+            continuation.total_completed_requests(),
+            continuation.registered().len()
+        );
+    } else {
+        let _ = writeln!(output, "linux probe host-mirrored catalog: unavailable");
+    }
+
+    match node.console_diagnostic_tail() {
+        Some(bytes) => {
+            let _ = writeln!(
+                output,
+                "linux probe untimed advisory console tail since last successful observation drain: retained_tail_bytes={}; escaped={}",
+                bytes.len(),
+                escaped_console_tail(&bytes)
+            );
+        }
+        None => {
+            let _ = writeln!(
+                output,
+                "linux probe untimed advisory console tail: unavailable (absent, busy or poisoned)"
+            );
+        }
+    }
+}
+
+fn escaped_console_tail(bytes: &[u8]) -> String {
+    bytes[bytes.len().saturating_sub(1024)..]
+        .iter()
+        .flat_map(|byte| std::ascii::escape_default(*byte))
+        .map(char::from)
+        .collect()
 }
 
 #[cfg(test)]
@@ -136,5 +192,136 @@ mod tests {
             .is_err()
         );
         assert!(require_refusal_crash_status(&status(Duration::from_secs(299))).is_err());
+    }
+
+    fn setup(node: &str, tick: u64) -> ObservableEvent {
+        ObservableEvent::guest_marker(
+            Icount { retired: tick },
+            crucible::NodeId { name: node.into() },
+            crucible::MarkerId::from_name("lifecycle.setup_complete"),
+        )
+    }
+
+    fn frame(node: &str, instance: &str, tick: u64) -> ObservableEvent {
+        ObservableEvent::guest_semantic_marker(
+            Icount { retired: tick },
+            crucible::NodeId { name: node.into() },
+            "out.frame",
+            instance,
+            Vec::new(),
+        )
+    }
+
+    fn console() -> ObservableEvent {
+        ObservableEvent::console_output(
+            VirtualTime { ticks: 17 },
+            crucible::NodeId { name: NODE.into() },
+            b"console".to_vec(),
+        )
+    }
+
+    fn unrelated() -> ObservableEvent {
+        ObservableEvent::node_state(
+            VirtualTime { ticks: 17 },
+            crucible::NodeId { name: NODE.into() },
+            crucible::NodeLifecycle::Started,
+        )
+    }
+
+    #[test]
+    fn console_filter_preserves_the_original_ordered_boundary_frames() -> Result<(), Box<dyn Error>>
+    {
+        let first = probe_events(
+            vec![
+                console(),
+                setup(NODE, 10),
+                console(),
+                frame(NODE, "first", 20),
+                console(),
+            ],
+            LINUX_POLICY,
+        );
+        assert_eq!(first, vec![setup(NODE, 10), frame(NODE, "first", 20)]);
+        require_first_events(&first)?;
+
+        let second = probe_events(
+            vec![console(), frame(NODE, "second", 30), console()],
+            LINUX_POLICY,
+        );
+        assert_eq!(second, vec![frame(NODE, "second", 30)]);
+        require_second_events(&second)?;
+        Ok(())
+    }
+
+    #[test]
+    fn console_filter_keeps_missing_duplicate_and_unrelated_events_as_failures() {
+        for events in [
+            vec![console(), frame(NODE, "first", 20)],
+            vec![console(), setup(NODE, 10)],
+            vec![
+                setup(NODE, 10),
+                setup(NODE, 10),
+                frame(NODE, "first", 20),
+                console(),
+            ],
+            vec![
+                setup(NODE, 10),
+                frame(NODE, "first", 20),
+                frame(NODE, "first", 20),
+                console(),
+            ],
+            vec![
+                setup(NODE, 10),
+                unrelated(),
+                frame(NODE, "first", 20),
+                console(),
+            ],
+            vec![frame(NODE, "first", 20), setup(NODE, 10), console()],
+            vec![setup("other", 10), frame(NODE, "first", 20), console()],
+            vec![setup(NODE, 10), frame("other", "first", 20), console()],
+            vec![setup(NODE, 20), frame(NODE, "first", 20), console()],
+        ] {
+            assert!(require_first_events(&probe_events(events, LINUX_POLICY)).is_err());
+        }
+
+        for events in [
+            vec![console()],
+            vec![
+                frame(NODE, "second", 30),
+                frame(NODE, "second", 30),
+                console(),
+            ],
+            vec![frame(NODE, "second", 30), unrelated(), console()],
+            vec![frame(NODE, "first", 30), console()],
+            vec![frame("other", "second", 30), console()],
+        ] {
+            assert!(require_second_events(&probe_events(events, LINUX_POLICY)).is_err());
+        }
+    }
+
+    #[test]
+    fn rom_keeps_console_output_in_its_original_cardinality_check() {
+        let first = vec![setup(NODE, 10), frame(NODE, "first", 20), console()];
+        assert_eq!(probe_events(first.clone(), ROM_POLICY), first);
+        assert!(require_first_events(&probe_events(first, ROM_POLICY)).is_err());
+        let second = vec![frame(NODE, "second", 30), console()];
+        assert_eq!(probe_events(second.clone(), ROM_POLICY), second);
+        assert!(require_second_events(&probe_events(second, ROM_POLICY)).is_err());
+    }
+
+    #[test]
+    fn advisory_console_tail_escapes_binary_bytes_without_exceeding_four_kib() {
+        assert_eq!(
+            escaped_console_tail(b"a\n\r\t\"\\\xff"),
+            "a\\n\\r\\t\\\"\\\\\\xff"
+        );
+        let mut bytes = b"omitted prefix".to_vec();
+        bytes.extend([0xff; 1024]);
+
+        let escaped = escaped_console_tail(&bytes);
+        assert_eq!(escaped, "\\xff".repeat(1024));
+        assert_eq!(escaped.len(), 4096);
+        assert!(!escaped.contains('\n'));
+        assert!(escaped_console_tail(&[]).is_empty());
     }
 }

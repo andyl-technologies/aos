@@ -95,6 +95,13 @@ impl QemuConsoleObservationSpool {
         Ok(())
     }
 
+    /// Copies an untimed tail without waiting for or draining the staging buffer.
+    pub(crate) fn try_diagnostic_tail(&self) -> Option<Vec<u8>> {
+        let bytes = self.bytes.try_lock().ok()?;
+        let start = bytes.len().saturating_sub(1024);
+        Some(bytes[start..].to_vec())
+    }
+
     /// Takes every byte staged for the completed boundary.
     pub(crate) fn take(&self) -> Result<Vec<u8>, QemuConsoleObservationSpoolError> {
         let mut bytes = self
@@ -149,6 +156,10 @@ mod tests {
             spool.append(&[0x00]),
             Err(QemuConsoleObservationSpoolError::Capacity { .. })
         ));
+        assert_eq!(
+            spool.try_diagnostic_tail(),
+            Some(retained[retained.len() - 1024..].to_vec())
+        );
         assert_eq!(spool.take()?, retained);
         Ok(())
     }
@@ -185,7 +196,47 @@ mod tests {
         reader.drain_available()?;
 
         assert!(observed_backpressure);
+        assert_eq!(
+            spool.try_diagnostic_tail(),
+            Some(payload[payload.len() - 1024..].to_vec())
+        );
+        assert_eq!(
+            spool.try_diagnostic_tail(),
+            Some(payload[payload.len() - 1024..].to_vec())
+        );
         assert_eq!(spool.take()?, payload);
+        assert_eq!(spool.try_diagnostic_tail(), Some(Vec::new()));
         Ok(())
+    }
+
+    #[test]
+    fn diagnostic_tail_does_not_wait_for_a_busy_spool() -> Result<(), Box<dyn std::error::Error>> {
+        let spool = QemuConsoleObservationSpool::new();
+        spool.append(b"retained")?;
+        let guard = spool.bytes.lock().map_err(|_| "unexpected poison")?;
+
+        assert_eq!(spool.try_diagnostic_tail(), None);
+        drop(guard);
+        assert_eq!(spool.try_diagnostic_tail(), Some(b"retained".to_vec()));
+        assert_eq!(spool.take()?, b"retained");
+        Ok(())
+    }
+
+    #[test]
+    fn diagnostic_tail_refuses_a_poisoned_spool() {
+        let spool = QemuConsoleObservationSpool::new();
+        let shared = spool.clone();
+        let poisoned = std::thread::spawn(move || -> Result<(), &'static str> {
+            let _guard = shared.bytes.lock().map_err(|_| "unexpected setup poison")?;
+            panic!("deliberately poison the diagnostic spool");
+        })
+        .join();
+
+        assert!(poisoned.is_err());
+        assert_eq!(spool.try_diagnostic_tail(), None);
+        assert!(matches!(
+            spool.take(),
+            Err(QemuConsoleObservationSpoolError::Poisoned)
+        ));
     }
 }
