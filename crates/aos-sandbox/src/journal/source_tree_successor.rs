@@ -1154,3 +1154,47 @@ impl Journal {
         )
     }
 }
+
+#[cfg(test)]
+mod phase_regression_tests {
+    use super::{FirstSourceSuccessorNativePhaseV2 as Phase, ObjectDigest, transaction_id};
+
+    #[test]
+    fn mixed_selectors_preserve_canonical_phases_and_transaction_identities() {
+        let approval = ObjectDigest::from_bytes([7; 32]);
+        let cases = [
+            (Phase::MixedSourceAppend, Phase::SourceAppend, 3),
+            (Phase::MixedSourceAck, Phase::SourceAck, 6),
+            (Phase::MixedRootPrepared, Phase::RootPrepared, 2),
+            (Phase::MixedRootAnchor, Phase::RootAnchor, 4),
+        ];
+
+        for (mixed, canonical, phase_byte) in cases {
+            assert_eq!(mixed.canonical(), canonical, "{mixed:?}");
+            assert_eq!(mixed.canonical() as u8, phase_byte, "{mixed:?}");
+            assert_eq!(
+                transaction_id(approval, mixed),
+                transaction_id(approval, canonical),
+                "{mixed:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_native_phases_keep_their_original_mapping() {
+        let cases = [
+            (Phase::ControllerBegin, 1),
+            (Phase::RootPrepared, 2),
+            (Phase::SourceAppend, 3),
+            (Phase::RootAnchor, 4),
+            (Phase::ControllerAnchored, 5),
+            (Phase::SourceAck, 6),
+            (Phase::ControllerComplete, 7),
+        ];
+
+        for (phase, phase_byte) in cases {
+            assert_eq!(phase.canonical(), phase, "{phase:?}");
+            assert_eq!(phase as u8, phase_byte, "{phase:?}");
+        }
+    }
+}

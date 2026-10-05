@@ -476,3 +476,29 @@ fn digest_at(bytes: &[u8], offset: usize) -> ObjectDigest {
 fn u64_at(bytes: &[u8], offset: usize) -> u64 {
     u64::from_be_bytes(array_at(bytes, offset))
 }
+
+#[cfg(test)]
+mod signature_domain_regression_tests {
+    use super::{
+        BODY_BYTES, SourceReadbackRecipe, signature_message, signature_message_with_recipe,
+    };
+
+    #[test]
+    fn observation_versions_keep_distinct_exact_prefixes_over_the_same_body() {
+        let body = [0xa5; BODY_BYTES];
+        let v2_domain = b"aos.sandbox.source-first-successor.source-observation.signature.v2\0";
+        let v3_domain = b"aos.sandbox.source-first-successor.source-observation.signature.v3\0";
+
+        let v2 = signature_message(&body);
+        let v3 = signature_message_with_recipe(&body, SourceReadbackRecipe::MixedProjectsV3);
+
+        assert_eq!(BODY_BYTES, 2720);
+        assert_eq!(v2.len(), v2_domain.len() + body.len());
+        assert_eq!(v3.len(), v3_domain.len() + body.len());
+        assert_eq!(&v2[..v2_domain.len()], v2_domain);
+        assert_eq!(&v3[..v3_domain.len()], v3_domain);
+        assert_eq!(&v2[v2_domain.len()..], &body);
+        assert_eq!(&v3[v3_domain.len()..], &body);
+        assert_ne!(v2, v3);
+    }
+}
