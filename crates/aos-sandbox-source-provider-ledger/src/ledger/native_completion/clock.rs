@@ -122,13 +122,8 @@ pub(super) fn conservative_deadline(
     initial: RawPairedClockSample,
     expires: i64,
 ) -> Result<u64, LedgerFormatErrorV1> {
-    expires
-        .checked_sub(initial.wall_seconds())
-        .and_then(|seconds| seconds.checked_sub(1))
-        .and_then(|seconds| u64::try_from(seconds).ok())
-        .filter(|seconds| *seconds > 0)
-        .and_then(|seconds| seconds.checked_mul(1_000_000_000))
-        .and_then(|remaining| initial.boottime_nanoseconds().checked_add(remaining))
+    initial
+        .conservative_expiry_deadline_data_v1(expires)
         .ok_or(LedgerFormatErrorV1::Corrupt(
             "native clock deadline overflow or expiry",
         ))

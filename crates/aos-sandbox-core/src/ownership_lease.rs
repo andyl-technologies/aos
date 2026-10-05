@@ -112,6 +112,25 @@ impl RawPairedClockSample {
         self.boottime_nanoseconds
     }
 
+    /// Derives a conservative BOOTTIME deadline from raw integer-clock DATA.
+    ///
+    /// Subtracts the omitted fractional wall second before adding the remaining
+    /// whole seconds to this sample's BOOTTIME. Returns `None` when that duration
+    /// is not positive or any arithmetic operation cannot be represented.
+    ///
+    /// This calculation neither samples nor authenticates a clock, renews an
+    /// original deadline, nor grants lease, currentness or effect authority.
+    #[must_use]
+    pub fn conservative_expiry_deadline_data_v1(self, expires: i64) -> Option<u64> {
+        expires
+            .checked_sub(self.wall_seconds())
+            .and_then(|seconds| seconds.checked_sub(1))
+            .and_then(|seconds| u64::try_from(seconds).ok())
+            .filter(|seconds| *seconds > 0)
+            .and_then(|seconds| seconds.checked_mul(NANOSECONDS_PER_SECOND))
+            .and_then(|remaining| self.boottime_nanoseconds().checked_add(remaining))
+    }
+
     /// Checks that a later sample preserves the existing paired-clock policy.
     ///
     /// This comparison does not authenticate caller-supplied clock claims or
