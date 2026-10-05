@@ -149,6 +149,7 @@ in {
       NIX_INSTANTIATE = "${pkgs.nix}/bin/nix-instantiate"
       OPENSSL = "${pkgs.openssl}/bin/openssl"
       PRLIMIT = "${pkgs.util-linux}/bin/prlimit"
+      PYTHON = "${pkgs.python3}/bin/python3"
 
       PROFILE = "/var/lib/profiles/system"
       REFERENCE_BUNDLE = "${runtimeSystem.config.system.build.hostDeploymentBundle}"

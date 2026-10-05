@@ -140,7 +140,6 @@ in
         if not EXECUTION_CELLS or not set(EXECUTION_CELLS).issubset(COHORT_CELLS):
             raise RuntimeError("native execution selection is outside the closed cohort")
         COHORT_CELLS = EXECUTION_CELLS
-        PYTHON = "${pkgs.python3}/bin/python3"
         NATIVE_FILESYSTEM_ORACLE_SOURCE = ${builtins.toJSON guestOracleSource}
 
         NATIVE_EVIDENCE = types.ModuleType("native_activation_evidence")
