@@ -17,6 +17,10 @@ use super::model::Deployment;
 use super::process::{FixedBudgetControl, ProcessOutput, run_bounded};
 use super::transaction::DeploymentStore;
 
+// Include argument pointers and terminators, leaving room for the executable
+// and scrubbed environment even under a small exec argument budget.
+const VALIDITY_ARGUMENT_BYTES: usize = 64 * 1024;
+
 /// Admits exact output roots using authenticated registry or retained-generation evidence.
 pub trait ArtifactAdmission {
     /// Admits a canonical output identity before it can be rooted or executed.
@@ -95,26 +99,54 @@ impl<A: ArtifactAdmission> NixStore<A> {
 
     fn pin(&mut self, key: &str, root: &str) -> Result<()> {
         self.admission.admit(root)?;
-        self.pin_admitted(key, root)
+        self.check_validity(&BTreeSet::from([root]))?;
+        self.pin_validated(key, root)
     }
 
-    // Admission is scoped to the current retention call. Each ownership key
-    // still needs its own checked, durable root even when artifacts are shared.
-    fn pin_admitted(&mut self, key: &str, root: &str) -> Result<()> {
-        let link = self
-            .directory
-            .join(Sha256Digest::of_bytes(key.as_bytes()).hex());
+    fn check_validity(&self, roots: &BTreeSet<&str>) -> Result<()> {
+        let mut batch = Vec::new();
+        let mut bytes = 0;
+        for root in roots {
+            let argument_bytes = root.len() + 1 + std::mem::size_of::<usize>();
+            ensure!(
+                argument_bytes <= VALIDITY_ARGUMENT_BYTES,
+                "store root exceeds validity argument budget"
+            );
+            if bytes + argument_bytes > VALIDITY_ARGUMENT_BYTES {
+                self.check_validity_batch(&batch)?;
+                batch.clear();
+                bytes = 0;
+            }
+            batch.push(*root);
+            bytes += argument_bytes;
+        }
+        if !batch.is_empty() {
+            self.check_validity_batch(&batch)?;
+        }
+        Ok(())
+    }
+
+    fn check_validity_batch(&self, roots: &[&str]) -> Result<()> {
         // Query the selected store's database, not the evaluator process's
-        // filesystem: a rooted store can use different physical paths.
+        // filesystem. Large valid graphs use bounded argv chunks; every chunk
+        // succeeds before any ownership link is created by the caller.
         let mut validity = Command::new(&self.executable);
-        validity.args(["--check-validity", root]);
+        validity.arg("--check-validity").args(roots);
         let checked = run_store_command(&mut validity)?;
         ensure!(
             checked.status.success(),
             "deployment artifact has not been realized: {}",
             String::from_utf8_lossy(&checked.stderr)
         );
+        Ok(())
+    }
 
+    // Admission and database validity are scoped to the current retention
+    // call. No subsequent dispatch or retention call inherits these checks.
+    fn pin_validated(&mut self, key: &str, root: &str) -> Result<()> {
+        let link = self
+            .directory
+            .join(Sha256Digest::of_bytes(key.as_bytes()).hex());
         if let Ok(existing) = std::fs::read_link(&link) {
             ensure!(
                 existing == Path::new(root),
@@ -182,13 +214,21 @@ impl<A: ArtifactAdmission> HandlerArtifacts for NixStore<A> {
     }
 
     fn retain_batch(&mut self, effects: &[&Effect]) -> Result<()> {
-        let mut admitted = BTreeSet::new();
+        let roots = effects
+            .iter()
+            .filter_map(|effect| match &effect.handler {
+                Handler::Process { artifact, .. } => Some(artifact.as_str()),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        for root in &roots {
+            self.admission.admit(root)?;
+        }
+        self.check_validity(&roots)?;
+
         for effect in effects {
             if let Handler::Process { artifact, .. } = &effect.handler {
-                if admitted.insert(artifact.as_str()) {
-                    self.admission.admit(artifact)?;
-                }
-                self.pin_admitted(&Self::effect_key(effect, artifact)?, artifact)?;
+                self.pin_validated(&Self::effect_key(effect, artifact)?, artifact)?;
             }
         }
         Ok(())
@@ -204,8 +244,13 @@ impl<A: ArtifactAdmission> HandlerArtifacts for NixStore<A> {
 
 impl<A: ArtifactAdmission> DeploymentStore for NixStore<A> {
     fn retain_generation(&mut self, generation: &str, deployment: &Deployment) -> Result<()> {
-        for root in generation_roots(deployment) {
-            self.pin(&format!("generation:{generation}:{root}"), root)?;
+        let roots = generation_roots(deployment);
+        for root in &roots {
+            self.admission.admit(root)?;
+        }
+        self.check_validity(&roots)?;
+        for root in roots {
+            self.pin_validated(&format!("generation:{generation}:{root}"), root)?;
         }
         Ok(())
     }
@@ -328,7 +373,12 @@ mod tests {
             r#"#!{shell}
 case "$1" in
     --check-validity)
-        test -f "{valid}/${{2##*/}}"
+        shift
+        printf '%s\n' "$*" >> "{calls}"
+        for root in "$@"; do
+            test -f "{valid}/${{root##*/}}" || exit 1
+            test ! -f "{invalid}/${{root##*/}}" || exit 1
+        done
         ;;
     --add-root)
         "{link}" -s -- "$5" "$2"
@@ -340,6 +390,8 @@ esac
 "#,
             shell = source_tool("bash").display(),
             valid = valid.display(),
+            calls = directory.join("validity-calls").display(),
+            invalid = directory.join("invalid").display(),
             link = source_tool("ln").display(),
         );
         std::fs::write(&executable, script).unwrap();
@@ -364,6 +416,194 @@ esac
             )
             .hex(),
         )
+    }
+
+    fn validity_calls(directory: &Path) -> Vec<Vec<String>> {
+        std::fs::read_to_string(directory.join("validity-calls"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| line.split_whitespace().map(str::to_owned).collect())
+            .collect()
+    }
+
+    #[test]
+    fn batch_validity_failure_precedes_roots_and_is_rechecked_after_return() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut store, old, new) = fixture(directory.path());
+        let first = effect("first", &old);
+        let shared = effect("shared", &old);
+        let replacement = effect("replacement", &new);
+        let invalid = directory.path().join("invalid");
+        std::fs::create_dir(&invalid).unwrap();
+        let unavailable = invalid.join(Path::new(&new).file_name().unwrap());
+        std::fs::write(&unavailable, b"").unwrap();
+
+        assert!(
+            store
+                .retain_batch(&[&first, &shared, &replacement])
+                .unwrap_err()
+                .to_string()
+                .contains("has not been realized")
+        );
+        assert_eq!(std::fs::read_dir(&store.directory).unwrap().count(), 0);
+        assert_eq!(
+            validity_calls(directory.path()),
+            [vec![old.clone(), new.clone()]]
+        );
+
+        std::fs::remove_file(&unavailable).unwrap();
+        store
+            .retain_batch(&[&first, &shared, &replacement])
+            .unwrap();
+        for (effect, root) in [(&first, &old), (&shared, &old), (&replacement, &new)] {
+            assert_eq!(
+                std::fs::read_link(root_link(&store, effect, root)).unwrap(),
+                Path::new(root)
+            );
+        }
+        std::fs::write(&unavailable, b"").unwrap();
+        assert!(
+            store
+                .retain_batch(&[&first, &shared, &replacement])
+                .is_err()
+        );
+
+        assert_eq!(std::fs::read_dir(&store.directory).unwrap().count(), 3);
+        assert_eq!(
+            validity_calls(directory.path()),
+            vec![vec![old.clone(), new.clone()]; 3]
+        );
+        assert_eq!(
+            *store.admission.calls.lock().unwrap(),
+            [old.clone(), new.clone(), old.clone(), new.clone(), old, new]
+        );
+    }
+
+    #[test]
+    fn generation_batches_validity_without_sharing_generation_ownership() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut store, old, new) = fixture(directory.path());
+        let artifact = Artifact {
+            name: "old-provider".into(),
+            version: "1".into(),
+            path: old.clone(),
+            outputs: [("out".into(), old.clone())].into(),
+            main_program: None,
+        };
+        let resolved = ResolvedPackages {
+            system: "x86_64-linux".into(),
+            artifacts: vec![artifact.clone()],
+            modules: vec![],
+        };
+        let deployment = Deployment::decode(
+            &serde_json::to_vec(&json!({
+                "schema":"aos.package.transaction", "scope":["profile","fixture"],
+                "system":"x86_64-linux", "artifacts":[artifact], "packages":[],
+                "inputs":[old,new], "retire":[],
+                "graph":{"schema":"aos.activation.graph","nodes":{},"order":[]}
+            }))
+            .unwrap(),
+            &resolved,
+        )
+        .unwrap();
+
+        store.retain_generation("first", &deployment).unwrap();
+        store.retain_generation("second", &deployment).unwrap();
+        store.release_generation("first", &deployment).unwrap();
+
+        assert_eq!(
+            validity_calls(directory.path()),
+            vec![vec![old.clone(), new.clone()]; 2]
+        );
+        assert_eq!(
+            *store.admission.calls.lock().unwrap(),
+            [old.clone(), new.clone(), old.clone(), new.clone()]
+        );
+        assert_eq!(std::fs::read_dir(&store.directory).unwrap().count(), 2);
+        for root in [&old, &new] {
+            let key = format!("generation:second:{root}");
+            let link = store
+                .directory
+                .join(Sha256Digest::of_bytes(key.as_bytes()).hex());
+            assert_eq!(std::fs::read_link(link).unwrap(), Path::new(root));
+        }
+
+        std::fs::write(&store.admission.members[&old], b"changed").unwrap();
+        assert!(store.retain_generation("third", &deployment).is_err());
+        assert_eq!(validity_calls(directory.path()).len(), 2);
+        assert_eq!(std::fs::read_dir(&store.directory).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn empty_handler_batch_does_not_query_the_store() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut store, _, _) = fixture(directory.path());
+
+        store.retain_batch(&[]).unwrap();
+
+        assert!(validity_calls(directory.path()).is_empty());
+        assert!(store.admission.calls.lock().unwrap().is_empty());
+        assert_eq!(std::fs::read_dir(&store.directory).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn large_generation_checks_all_bounded_chunks_before_creating_roots() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut store, _, _) = fixture(directory.path());
+        let roots = (0..1_200)
+            .map(|index| {
+                format!(
+                    "/nix/store/00000000000000000000000000000000-{index:04}-{}",
+                    "p".repeat(100)
+                )
+            })
+            .collect::<Vec<_>>();
+        for root in &roots {
+            let path = directory
+                .path()
+                .join("valid")
+                .join(Path::new(root).file_name().unwrap());
+            std::fs::write(&path, b"admitted").unwrap();
+            store.admission.members.insert(root.clone(), path);
+        }
+        let unavailable = directory.path().join("invalid");
+        std::fs::create_dir(&unavailable).unwrap();
+        std::fs::write(
+            unavailable.join(Path::new(roots.last().unwrap()).file_name().unwrap()),
+            b"",
+        )
+        .unwrap();
+        let resolved = ResolvedPackages {
+            system: "x86_64-linux".into(),
+            artifacts: vec![],
+            modules: vec![],
+        };
+        let deployment = Deployment::decode(
+            &serde_json::to_vec(&json!({
+                "schema":"aos.package.transaction", "scope":["profile","fixture"],
+                "system":"x86_64-linux", "artifacts":[], "packages":[],
+                "inputs":roots, "retire":[],
+                "graph":{"schema":"aos.activation.graph","nodes":{},"order":[]}
+            }))
+            .unwrap(),
+            &resolved,
+        )
+        .unwrap();
+
+        assert!(store.retain_generation("large", &deployment).is_err());
+
+        let calls = validity_calls(directory.path());
+        assert!(calls.len() > 1);
+        assert_eq!(calls.iter().flatten().cloned().collect::<Vec<_>>(), roots);
+        for batch in calls {
+            let bytes = batch
+                .iter()
+                .map(|root| root.len() + 1 + std::mem::size_of::<usize>())
+                .sum::<usize>();
+            assert!(bytes <= VALIDITY_ARGUMENT_BYTES);
+        }
+        assert_eq!(*store.admission.calls.lock().unwrap(), roots);
+        assert_eq!(std::fs::read_dir(&store.directory).unwrap().count(), 0);
     }
 
     #[test]

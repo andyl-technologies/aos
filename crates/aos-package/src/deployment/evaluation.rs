@@ -128,6 +128,16 @@ pub(crate) struct EvaluatedDeployment {
     pub(crate) observer: Value,
 }
 
+/// Shares checked private source trees across projections of one immutable input.
+///
+/// Each query keeps its own deadline and definition policy. The session borrows
+/// the evaluation, so its selected store and source identities cannot change.
+pub(crate) struct EvaluationSession<'a> {
+    evaluation: &'a Evaluation,
+    staging: &'a Path,
+    views: Option<super::source_views::SourceViews>,
+}
+
 fn optional_config_projection(path: &[String]) -> Result<String> {
     let path = nix_string(&serde_json::to_string(path)?);
     Ok(format!(
@@ -144,6 +154,15 @@ fn deployment_observer_projection() -> Result<String> {
 }
 
 impl Evaluation {
+    /// Begins an operation-local session without exporting sources until queried.
+    pub(crate) fn session<'a>(&'a self, staging: &'a Path) -> EvaluationSession<'a> {
+        EvaluationSession {
+            evaluation: self,
+            staging,
+            views: None,
+        }
+    }
+
     fn expression_for(
         &self,
         output: &str,
@@ -244,6 +263,11 @@ impl Evaluation {
         timeout_ms: u64,
         cancellation: &CancellationToken,
     ) -> Result<EvaluatedDeployment> {
+        self.session(staging)
+            .evaluate_with_observer(timeout_ms, cancellation)
+    }
+
+    fn checked_projection(&self, value: Value) -> Result<EvaluatedDeployment> {
         #[derive(serde::Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Projection {
@@ -251,12 +275,6 @@ impl Evaluation {
             observer: Value,
         }
 
-        let value = self.run_output(
-            staging,
-            timeout_ms,
-            cancellation,
-            &deployment_observer_projection()?,
-        )?;
         let projected: Projection = serde_json::from_value(value)?;
         Ok(EvaluatedDeployment {
             deployment: self.checked_deployment(projected.deployment)?,
@@ -379,13 +397,10 @@ impl Evaluation {
         staging: &Path,
         cancellation: &CancellationToken,
     ) -> Result<Vec<String>> {
-        let value = self.run_output_checked(
-            staging,
-            60_000,
-            cancellation,
-            "evaluated.config.aos.apm.desiredPackages or []",
-            false,
-        )?;
+        self.session(staging).selected_packages(cancellation)
+    }
+
+    fn checked_selection(&self, value: Value) -> Result<Vec<String>> {
         let names: Vec<String> = serde_json::from_value(value)?;
         ensure!(names.len() <= 16_384, "package selection exceeds its bound");
         for name in &names {
@@ -483,29 +498,91 @@ impl Evaluation {
         output: &str,
         check_definitions: bool,
     ) -> Result<Value> {
+        self.session(staging).run_output_checked(
+            timeout_ms,
+            cancellation,
+            output,
+            check_definitions,
+        )
+    }
+}
+
+impl EvaluationSession<'_> {
+    /// Reads declared package selection while unavailable definitions remain deferred.
+    pub(crate) fn selected_packages(
+        &mut self,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<String>> {
+        let value = self.run_output_checked(
+            60_000,
+            cancellation,
+            "evaluated.config.aos.apm.desiredPackages or []",
+            false,
+        )?;
+        self.evaluation.checked_selection(value)
+    }
+
+    /// Checks the complete graph and observer using the same prepared sources.
+    pub(crate) fn evaluate_with_observer(
+        &mut self,
+        timeout_ms: u64,
+        cancellation: &CancellationToken,
+    ) -> Result<EvaluatedDeployment> {
+        let value = self.run_output_checked(
+            timeout_ms,
+            cancellation,
+            &deployment_observer_projection()?,
+            true,
+        )?;
+        self.evaluation.checked_projection(value)
+    }
+
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "each evaluation query uses one monotonic subprocess deadline"
+    )]
+    fn run_output_checked(
+        &mut self,
+        timeout_ms: u64,
+        cancellation: &CancellationToken,
+        output: &str,
+        check_definitions: bool,
+    ) -> Result<Value> {
         ensure!(!cancellation.is_cancelled(), "package evaluation cancelled");
         let control = EvaluationBudget {
             cancellation,
             budget: FixedBudgetControl::new(timeout_ms),
             started: std::time::Instant::now(),
         };
-        let paths = std::iter::once(self.library.as_path())
-            .chain(self.configuration.iter().map(PathBuf::as_path))
-            .chain(
-                self.packages
-                    .modules
-                    .iter()
-                    .map(|module| Path::new(&module.config_root)),
-            );
-        let views =
-            super::source_views::SourceViews::prepare(&self.nix_store, paths, staging, &control)?;
-        let expression = self.expression_for(output, &views, check_definitions)?;
+        let evaluation = self.evaluation;
+        if self.views.is_none() {
+            let paths = std::iter::once(evaluation.library.as_path())
+                .chain(evaluation.configuration.iter().map(PathBuf::as_path))
+                .chain(
+                    evaluation
+                        .packages
+                        .modules
+                        .iter()
+                        .map(|module| Path::new(&module.config_root)),
+                );
+            self.views = Some(super::source_views::SourceViews::prepare(
+                &evaluation.nix_store,
+                paths,
+                self.staging,
+                &control,
+            )?);
+        }
+        let views = self
+            .views
+            .as_ref()
+            .context("evaluation sources are absent")?;
+        let expression = evaluation.expression_for(output, views, check_definitions)?;
         let store = evaluator_store()?;
         let mut command = pure_eval_command_in(
-            &self.nix_store,
+            &evaluation.nix_store,
             store.as_deref(),
             Some(views.directory()),
-            staging,
+            self.staging,
         )?;
         command.arg("-");
         let environment: Vec<_> = command
@@ -595,6 +672,129 @@ mod tests {
             serde_json::from_slice(&output.stdout).unwrap(),
             String::from_utf8(output.stderr).unwrap(),
         )
+    }
+
+    fn session_evaluation(library_source: &str) -> Evaluation {
+        let nix_store = std::env::var_os("AOS_NIX_STORE")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::split_paths(&std::env::var_os("PATH")?)
+                    .map(|directory| directory.join("nix-store"))
+                    .find(|path| path.is_file())
+            })
+            .expect("the test requires the source-built AOS Nix suite");
+        let source = tempfile::tempdir().unwrap();
+        let library = source.path().join("default.nix");
+        std::fs::write(&library, library_source).unwrap();
+        let mut import = crate::store::verification::live_store_command(Some(&nix_store)).unwrap();
+        let output = import
+            .args(["--add-fixed", "--recursive", "sha256"])
+            .arg(source.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let library = PathBuf::from(std::str::from_utf8(&output.stdout).unwrap().trim());
+
+        Evaluation {
+            package_releases: Vec::new(),
+            os_release: None,
+            os_requirements: Vec::new(),
+            nix_store,
+            library,
+            scope: vec!["session-test".into()],
+            packages: ResolvedPackages {
+                system: "x86_64-linux".into(),
+                modules: Vec::new(),
+                artifacts: Vec::new(),
+            },
+            module_requirements: Vec::new(),
+            configuration: Vec::new(),
+            retained_inputs: Vec::new(),
+            evaluation_input: None,
+        }
+    }
+
+    #[test]
+    fn session_reuses_private_sources_without_reusing_definition_policy() {
+        let evaluation = session_evaluation(
+            r#"{ system }: { evalPackageModules = args: {
+              config.aos.apm.desiredPackages = [ "example" ];
+              config.strict = args.checkDefinitions;
+            }; }"#,
+        );
+        let staging = tempfile::tempdir().unwrap();
+        let cancellation = CancellationToken::default();
+        let mut session = evaluation.session(staging.path());
+
+        assert_eq!(
+            session.selected_packages(&cancellation).unwrap(),
+            ["example"]
+        );
+        let views = session.views.as_ref().unwrap();
+        let directory = views.directory().to_owned();
+        let library = views.read_path(&evaluation.library).unwrap();
+        let digest = views.nar_hash(&evaluation.library).unwrap().to_owned();
+        let strict = session
+            .run_output_checked(60_000, &cancellation, "evaluated.config.strict", true)
+            .unwrap();
+
+        assert_eq!(strict, Value::Bool(true));
+        let views = session.views.as_ref().unwrap();
+        assert_eq!(views.directory(), directory);
+        assert_eq!(views.read_path(&evaluation.library).unwrap(), library);
+        assert_eq!(views.nar_hash(&evaluation.library).unwrap(), digest);
+        assert_eq!(std::fs::read_dir(staging.path()).unwrap().count(), 1);
+        drop(session);
+        assert!(
+            !directory.exists(),
+            "private views must end with the session"
+        );
+    }
+
+    #[test]
+    fn session_strict_query_rejects_definitions_deferred_by_selection() {
+        let evaluation = session_evaluation(
+            r#"{ system }: { evalPackageModules = args:
+              if args.checkDefinitions then throw "malformed-strict-definition"
+              else { config.aos.apm.desiredPackages = []; };
+            }"#,
+        );
+        let staging = tempfile::tempdir().unwrap();
+        let cancellation = CancellationToken::default();
+        let mut session = evaluation.session(staging.path());
+
+        assert!(session.selected_packages(&cancellation).unwrap().is_empty());
+        let error = session
+            .evaluate_with_observer(60_000, &cancellation)
+            .err()
+            .unwrap();
+
+        assert!(format!("{error:#}").contains("malformed-strict-definition"));
+    }
+
+    #[test]
+    fn session_reuse_still_honors_cancellation() {
+        let evaluation = session_evaluation(
+            r#"{ system }: { evalPackageModules = args: {
+              config.aos.apm.desiredPackages = [];
+            }; }"#,
+        );
+        let staging = tempfile::tempdir().unwrap();
+        let cancellation = CancellationToken::default();
+        let mut session = evaluation.session(staging.path());
+        assert!(session.selected_packages(&cancellation).unwrap().is_empty());
+        cancellation.cancel();
+
+        let error = session
+            .evaluate_with_observer(60_000, &cancellation)
+            .err()
+            .unwrap();
+
+        assert!(format!("{error:#}").contains("package evaluation cancelled"));
     }
 
     #[test]
