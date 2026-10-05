@@ -51,6 +51,7 @@ NO_CONTEXT_TRANSLATION_DOMAINS = (
     *view_policy.SIGNER_DOMAINS,
     *owner_policy.SELECTED_MOUNT_SOURCE_DOMAINS,
     *owner_policy.ONLINE_NIX_HELPERS,
+    *owner_policy.RUNTIME_DOMAINS[1:],
 )
 PRIVATE_ROOT_CUSTODY_ATTRIBUTE = "aos_private_root_custody_domain"
 EXPLICIT_DOMAIN_ATTRIBUTES = (
@@ -62,6 +63,7 @@ EXPLICIT_DOMAIN_ATTRIBUTES = (
         "aos_nix_offline_tpm_helper_t",
         *owner_policy.SELECTED_MOUNT_SOURCE_DOMAINS,
         *owner_policy.ONLINE_NIX_DOMAINS,
+        *owner_policy.RUNTIME_DOMAINS,
     )),
 )
 GUEST_ROOT_PUBLISHER = "aos_sandbox_guest_root_publisher_t"
@@ -125,6 +127,9 @@ PROTECTED_OBJECT_TYPES = (*PROTECTED_DIRECTORIES, *PROTECTED_RECORDS)
 GUARDED_OBJECT_TYPES = (
     *PROTECTED_OBJECT_TYPES, *fuse_worker_policy.WORKER_OBJECT_TYPES,
     HOST_CANARY_STATE_TYPE,
+    *(("aos_runtime_deployment_credential_t",
+       "aos_runtime_deployment_state_t",
+       "aos_runtime_deployment_lock_t") if owner_policy.RUNTIME_DOMAINS else ()),
 )
 
 
@@ -1517,7 +1522,7 @@ def check_policy(setools: Any, policy: Any, *, git_read_delegation: bool = False
         evidence.append(line)
 
     # Reject all alternatives, including disabled rules; generic promotion
-    # must not satisfy any of the three literal-name delivery checks.
+    # must not satisfy any of the literal-name delivery checks.
     storage_credential = owner_policy.STORAGE_CREDENTIAL
     candidates = transition_candidates(
         setools, policy, "init_t", storage_credential, "file",
@@ -1532,6 +1537,24 @@ def check_policy(setools: Any, policy: Any, *, git_read_delegation: bool = False
     if any(rule not in permitted for rule in candidates):
         raise ValueError("unexpected Storage credential delivery transition")
     evidence.append("exclusive-storage-credential-transitions")
+
+    # The selected publisher shares this same filename-aware delivery checker,
+    # never a parallel import/parser or generic secret-directory promotion.
+    if owner_policy.RUNTIME_DOMAINS:
+        publisher_credential = owner_policy.RUNTIME_CREDENTIAL
+        candidates = transition_candidates(
+            setools, policy, "init_t", publisher_credential, "file",
+        )
+        permitted = _transition_filename_rules(setools, candidates, Transition.UNNAMED)
+        permitted = [rule for rule in permitted if str(rule.default) == "init_tmpfs_t"]
+        for name in owner_policy.RUNTIME_CREDENTIAL_NAMES:
+            permitted.extend(
+                rule for rule in _transition_filename_rules(setools, candidates, name)
+                if str(rule.default) == publisher_credential
+            )
+        if any(rule not in permitted for rule in candidates):
+            raise ValueError("unexpected runtime publisher credential delivery transition")
+        evidence.append("exclusive-runtime-publisher-credential-transitions")
 
     # Explicit normal-unit contexts must not promote another shared-ELF mode.
     for domain in owner_policy.NO_DEFAULT_ENTRY:

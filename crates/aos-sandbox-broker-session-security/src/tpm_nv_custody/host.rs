@@ -20,9 +20,13 @@ use crate::recovery::{FloorErrorV1, MeasuredHelperImageV1};
 mod provisioning;
 mod journal;
 mod store;
+mod coordinator;
+pub use coordinator::{RuntimeDeploymentCanaryRunErrorV2, run_runtime_deployment_canary_once_v2};
 pub(super) mod physical;
 
 pub(super) use journal::HostSidecarCustodyV1;
+pub(in crate::tpm_nv_custody) use journal::{CanaryHostMainDataV2, CanaryHostNativeStepV2};
+pub(in crate::tpm_nv_custody) use coordinator::{CanaryAuthenticatedRequestV3, CanaryClockCauseV2};
 
 // These are the existing fixed Core roles, not configurable opener inputs.
 // The genuine held-pair comparison independently enforces those same names.
@@ -43,6 +47,10 @@ pub(super) enum HostOwnedJournalErrorV1 {
     Journal(#[from] aos_sandbox::JournalError),
     #[error("Host original canonical sidecar was rejected")]
     Canonical(#[from] FloorErrorV1),
+    #[error("Host selected original clock failed")]
+    CanaryClock(#[from] CanaryClockCauseV2),
+    #[error(transparent)]
+    CanaryNative(#[from] journal::CanaryNativeErrorV2),
     #[error("Host original retained disk comparison changed")]
     Changed,
     #[error("Host original journal owner is unusable")]

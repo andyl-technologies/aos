@@ -286,6 +286,7 @@ class EffectivePolicyTest(unittest.TestCase):
         policy.attributes[effective_policy.PRIVATE_ROOT_CUSTODY_ATTRIBUTE] = {
             "aos_sandbox_policy_authority_t", "aos_nix_offline_prepare_t",
             "aos_nix_offline_tpm_helper_t",
+            *effective_policy.owner_policy.RUNTIME_DOMAINS,
         }
         return policy
 
@@ -2382,6 +2383,80 @@ class GitReadDelegationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing selected Git allow"):
             effective_policy._check_git_read_delegation(FAKE_SETOOLS, policy)
 
+
+class RuntimeDeploymentPolicyTest(unittest.TestCase):
+    """Exercises closed Host055 expectation DATA, not installed admission."""
+
+    def selected_matrix(self):
+        owner = effective_policy.owner_policy
+        arguments = (
+            effective_policy.Access, effective_policy.Transition,
+            effective_policy.accesses,
+            (*effective_policy.DOMAINS, *owner.ENFORCING,
+             *owner.RUNTIME_KNOWN_DOMAINS, "init_t"),
+        )
+        with patch.object(owner, "RUNTIME_DOMAINS", owner.RUNTIME_KNOWN_DOMAINS):
+            return owner._runtime_deployment_matrix(*arguments)
+
+    def test_default_preserves_inherited_host57_and_ordinary_checks(self) -> None:
+        owner = effective_policy.owner_policy
+        self.assertEqual(owner.RUNTIME_DOMAINS, ())
+        self.assertFalse(set(owner.RUNTIME_KNOWN_DOMAINS).intersection(owner.ENFORCING))
+        self.assertEqual(owner.STORAGE_CREDENTIAL_NAMES, (
+            "storage-zfs-hold-key-v1",
+            "operator-recovery-controller-public-key-v1",
+            "operator-recovery-storage-owner-key-v1",
+        ))
+        self.assertEqual(owner._runtime_deployment_matrix(
+            effective_policy.Access, effective_policy.Transition,
+            effective_policy.accesses, effective_policy.DOMAINS,
+        ), ((), (), ()))
+        self.assertIn(effective_policy.Access(
+            "aos_sandbox_host_t", effective_policy.HOST_CANARY_STATE_TYPE,
+            "file", "ioctl",
+        ), effective_policy.POSITIVE_ACCESS)
+        evidence = effective_policy.check_policy(
+            FAKE_SETOOLS, EffectivePolicyTest()._storage_policy(),
+        )
+        self.assertNotIn("exclusive-runtime-publisher-credential-transitions", evidence)
+
+    def test_fixed_delivery_and_original_credential_read_are_required(self) -> None:
+        owner = effective_policy.owner_policy
+        positive, negative, transitions = self.selected_matrix()
+
+        self.assertFalse(set(positive).intersection(negative))
+        self.assertIn(effective_policy.Access(
+            owner.RUNTIME_PUBLISHER, owner.RUNTIME_CREDENTIAL, "file", "read",
+        ), positive)
+        for name in owner.RUNTIME_CREDENTIAL_NAMES:
+            self.assertIn(effective_policy.Transition(
+                "init_t", owner.RUNTIME_CREDENTIAL, "file",
+                owner.RUNTIME_CREDENTIAL, filename=name,
+            ), transitions)
+
+    def test_direct_tpm_and_helper_secret_reads_remain_negative(self) -> None:
+        owner = effective_policy.owner_policy
+        positive, negative, _ = self.selected_matrix()
+
+        for access in (
+            effective_policy.Access(owner.RUNTIME_PUBLISHER,
+                "aos_method46_tpm_device_t", "chr_file", "open"),
+            effective_policy.Access(owner.RUNTIME_HELPER,
+                owner.RUNTIME_CREDENTIAL, "file", "read"),
+        ):
+            with self.subTest(access=access):
+                self.assertIn(access, negative)
+                self.assertNotIn(access, positive)
+
+    def test_unknown_or_partial_cohort_is_refused(self) -> None:
+        owner = effective_policy.owner_policy
+        for cohort in ((owner.RUNTIME_PUBLISHER,), ("foreign_t", owner.RUNTIME_HELPER)):
+            with self.subTest(cohort=cohort), patch.object(owner, "RUNTIME_DOMAINS", cohort):
+                with self.assertRaisesRegex(ValueError, "unsupported Host runtime"):
+                    owner._runtime_deployment_matrix(
+                        effective_policy.Access, effective_policy.Transition,
+                        effective_policy.accesses, effective_policy.DOMAINS,
+                    )
 
 if __name__ == "__main__":
     unittest.main()

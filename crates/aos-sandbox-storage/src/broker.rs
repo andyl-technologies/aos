@@ -500,6 +500,22 @@ impl FreshStorageEffectAuthority {
 }
 
 impl StorageAdmissionCoordinator {
+    /// Prepares comparison DATA under the same original primary writer.
+    pub(crate) fn prepare_canary_bootstrap_marker_v2(
+        &self,
+        original: &crate::runtime::CanaryBootstrapOriginalLoanV2<'_>,
+    ) -> Result<crate::state::StorageCanaryBootstrapMarkerV2, StorageBrokerError> {
+        self.transactions.prepare_canary_bootstrap_marker_v2(original).map_err(Into::into)
+    }
+
+    /// Returns the same writer's actual native Result for immediate parking.
+    pub(crate) fn append_canary_bootstrap_marker_v2(
+        &mut self,
+        original: &crate::runtime::CanaryBootstrapOriginalLoanV2<'_>,
+    ) -> Result<aos_sandbox::journal::CommitResult, StorageBrokerError> {
+        self.transactions.append_canary_bootstrap_marker_v2(original).map_err(Into::into)
+    }
+
     /// Rejoins the fixed primary writer without asserting live snapshot custody.
     ///
     /// # Errors

@@ -39,6 +39,7 @@ pub(crate) use credentials::{
     ControllerNixGenerationOriginCredentialCustodyV1,
     ControllerQ04CredentialCustodyV1, ControllerQ04CredentialErrorV1,
     ControllerNixPublicCredentialCustodyV1, ControllerNixPublicCredentialErrorV1,
+    RuntimeDeploymentCredentialCustodyV2,
     OfflinePrepareCredentialsV3,
     PinnedOperatorRecoveryKeyV1, PinnedSystemdCredential, load_entitlement_credentials,
     InitialEntitlementCredentialCustodyV1,

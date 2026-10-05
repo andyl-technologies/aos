@@ -19,6 +19,7 @@ use crate::{immutable_image::RetainedImmutableFileV1, systemd_property_data};
 use super::{
     CONTROL_GROUP, OWNER_CONTEXT, PID1_FD_NAME, PROFILE_FD_NAME, SOCKET_UNIT, UNIT,
     RuntimeDeploymentStartupErrorV1,
+    DeploymentAdmissionModeV2,
 };
 
 const PROPERTY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -51,6 +52,339 @@ const UNIT_PROPERTIES: &[&str] = &[
     "TriggeredBy",
 ];
 
+const STORAGE_SERVICE_PROPERTIES_V2: &[&str] = &[
+    "ControlGroup", "OpenFile", "ExtraFileDescriptorNames", "FileDescriptorStoreMax",
+    "NFileDescriptorStore", "SELinuxContext", "CapabilityBoundingSet", "AmbientCapabilities",
+    "NoNewPrivileges", "User", "Group", "ExecStart", "ExecStartPre", "ExecStartPost",
+];
+const STORAGE_UNIT_PROPERTIES_V2: &[&str] = &[
+    "FragmentPath", "DropInPaths", "Transient", "InvocationID",
+];
+const STORAGE_DELIVERY_PROPERTIES_V2: &[&str] = &[
+    "ControlGroup", "OpenFile", "ExtraFileDescriptorNames", "FileDescriptorStoreMax",
+    "NFileDescriptorStore", "SELinuxContext", "CapabilityBoundingSet", "AmbientCapabilities",
+    "NoNewPrivileges", "User", "Group", "ExecStart", "ExecStartPre", "ExecStartPost",
+    "LoadCredential", "LoadCredentialEncrypted", "SetCredential", "SetCredentialEncrypted",
+    "ImportCredential", "ImportCredentialEx", "Environment",
+];
+const STORAGE_CANARY_PUBLIC_ROLES_V2: [&str; 3] = [
+    "runtime-deployment-genesis-v1",
+    "runtime-deployment-provisioner-pin-v1",
+    "runtime-deployment-canary-purpose-v2",
+];
+const STORAGE_CANARY_PUBLIC_SOURCES_V2: [&str; 3] = [
+    "/run/credentials/@system/runtime-deployment-genesis-v1",
+    "/run/credentials/@system/runtime-deployment-provisioner-pin-v1",
+    "/run/credentials/@system/runtime-deployment-canary-purpose-v2",
+];
+
+#[derive(Clone, Copy)]
+enum StoragePropertyRecipeV2 {
+    Delegate,
+    OwnDelivery,
+}
+
+/// Retains real transport/runtime errors before the selected owner projects them.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum StoragePropertiesCauseV2 {
+    #[error(transparent)]
+    Runtime(#[from] std::io::Error),
+    #[error(transparent)]
+    Systemd(#[from] aos_systemd::Error),
+    #[error("fixed Storage property readback deadline expired")]
+    Deadline,
+}
+
+/// Keeps both native errors and any real readback-thread unwind payload owned.
+pub(super) type StoragePropertiesResultV2 = std::io::Result<
+    std::thread::Result<Result<(Vec<OwnedValue>, Vec<OwnedValue>), StoragePropertiesCauseV2>>,
+>;
+
+/// Uses only the fixed Storage unit and the existing unique-PID1 readback engine.
+pub(super) fn observe_storage_properties_v2(actual_subject_pid: u32) -> StoragePropertiesResultV2 {
+    observe_storage_property_recipe_v2(actual_subject_pid, StoragePropertyRecipeV2::Delegate)
+}
+
+fn observe_storage_property_recipe_v2(
+    actual_subject_pid: u32,
+    recipe: StoragePropertyRecipeV2,
+) -> StoragePropertiesResultV2 {
+    std::thread::Builder::new().name("deployment-storage-pid1-readback".to_owned())
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+            runtime.block_on(async {
+                tokio::time::timeout(PROPERTY_TIMEOUT, async {
+                    let manager = SystemdClient::connect().await?;
+                    manager.observe_pid1_service_startup_properties(
+                        super::startup::STORAGE_UNIT_V2, actual_subject_pid,
+                        match recipe {
+                            StoragePropertyRecipeV2::Delegate => STORAGE_SERVICE_PROPERTIES_V2,
+                            StoragePropertyRecipeV2::OwnDelivery => STORAGE_DELIVERY_PROPERTIES_V2,
+                        },
+                        STORAGE_UNIT_PROPERTIES_V2,
+                    ).await.map_err(StoragePropertiesCauseV2::from)
+                }).await.map_err(|_| StoragePropertiesCauseV2::Deadline)?
+            })
+        }).map(std::thread::JoinHandle::join)
+}
+
+/// Retains the fixed Storage unit's actual supplemental delivery observations.
+///
+/// This opaque owner preserves returned thread, runtime and PID1 Results before
+/// decoding. Its unit comparisons are DATA, not a credential verifier, original
+/// startup owner, floor or currentness permission. Storage must independently
+/// retain and recheck its genuine startup and the protected credential Files.
+#[must_use = "retain the complete readback while comparing its actual originals"]
+pub struct RuntimeDeploymentStorageDeliveryReadbackV2 {
+    raw: StoragePropertiesResultV2,
+    compared: Result<StoragePolicyObservationV2, RuntimeDeploymentStartupErrorV1>,
+}
+
+impl RuntimeDeploymentStorageDeliveryReadbackV2 {
+    /// Compares the three fixed plain public mappings and the fixed unit shape.
+    ///
+    /// # Errors
+    /// Refuses missing/changed PID1 observations, malformed or excessive values,
+    /// duplicate or alternate delivery of a selected role and nonempty imports.
+    pub fn require_fixed_delivery(&self) -> Result<(), RuntimeDeploymentStartupErrorV1> {
+        match &self.compared {
+            Ok(_) => Ok(()),
+            Err(_) => Err(RuntimeDeploymentStartupErrorV1::Service),
+        }
+    }
+
+    /// Compares two resident readbacks of the same fixed original invocation.
+    ///
+    /// # Errors
+    /// Refuses failed readback or a changed fragment/invocation. This does not
+    /// establish that the actual credential bytes or process image are current.
+    pub fn compare_same_original_delivery(
+        &self,
+        original: &Self,
+    ) -> Result<(), RuntimeDeploymentStartupErrorV1> {
+        match (&self.compared, &original.compared) {
+            (Ok(actual), Ok(before)) if actual == before => Ok(()),
+            _ => Err(RuntimeDeploymentStartupErrorV1::Service),
+        }
+    }
+
+    /// Borrows a returned native cause without releasing the resident readback.
+    ///
+    /// A thread's actual unwind payload remains resident but is not fabricated
+    /// into an Error. Its closed comparison refusal is exposed instead.
+    #[must_use]
+    pub fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.raw {
+            Err(error) => Some(error),
+            Ok(Ok(Err(error))) => Some(error),
+            _ => self.compared.as_ref().err().map(|error| error as &_),
+        }
+    }
+}
+
+/// Observes only this process's fixed Storage PID1 credential delivery.
+///
+/// No connection, PID, path, role, clock or declared-current input can select
+/// this observer. It supplements rather than replaces genuine original startup
+/// checks. Lower unreturned bus/thread partials are not retained by this owner.
+#[must_use]
+pub fn observe_canary_storage_delivery_v2() -> RuntimeDeploymentStorageDeliveryReadbackV2 {
+    let pid = std::process::id();
+    let mut readback = RuntimeDeploymentStorageDeliveryReadbackV2 {
+        raw: observe_storage_property_recipe_v2(pid, StoragePropertyRecipeV2::OwnDelivery),
+        compared: Err(RuntimeDeploymentStartupErrorV1::Service),
+    };
+    if let Ok(Ok(Ok((service, unit)))) = &readback.raw {
+        readback.compared = decode_storage_delivery_v2(service, unit, pid);
+    }
+    readback
+}
+
+fn decode_storage_delivery_v2(
+    service: &[OwnedValue],
+    unit: &[OwnedValue],
+    pid: u32,
+) -> Result<StoragePolicyObservationV2, RuntimeDeploymentStartupErrorV1> {
+    if service.len() != STORAGE_DELIVERY_PROPERTIES_V2.len() {
+        return Err(RuntimeDeploymentStartupErrorV1::Service);
+    }
+    // The environment requests this closed route; it never supplies authority.
+    // Authentication also requires all three fixed PID1 credential origins and
+    // the caller's independently retained original Storage startup.
+    let Value::Array(environment) = &*service[20] else {
+        return Err(RuntimeDeploymentStartupErrorV1::Service);
+    };
+    if environment.element_signature().to_string() != "s" || environment.len() > 64 {
+        return Err(RuntimeDeploymentStartupErrorV1::Service);
+    }
+    let mut selected = 0usize;
+    for value in environment.inner() {
+        let Value::Str(value) = value else {
+            return Err(RuntimeDeploymentStartupErrorV1::Service);
+        };
+        if value.as_str().len() > 4096 { return Err(RuntimeDeploymentStartupErrorV1::Service); }
+        if value.as_str().starts_with("AOS_RUNTIME_CANARY_DELIVERY_V2=") {
+            if value.as_str() != "AOS_RUNTIME_CANARY_DELIVERY_V2=1" {
+                return Err(RuntimeDeploymentStartupErrorV1::Service);
+            }
+            selected += 1;
+        }
+    }
+    if selected != 1 { return Err(RuntimeDeploymentStartupErrorV1::Service); }
+    let command = systemd_property_data::single_exec_start(&service[11])
+        .ok_or(RuntimeDeploymentStartupErrorV1::Service)?;
+    if command.path.len() > 4096 || command.argv.len() != 12 {
+        return Err(RuntimeDeploymentStartupErrorV1::Service);
+    }
+    let mut total = 0_usize;
+    for argument in command.argv {
+        let Value::Str(argument) = argument else {
+            return Err(RuntimeDeploymentStartupErrorV1::Service);
+        };
+        total = total.checked_add(argument.as_str().len())
+            .ok_or(RuntimeDeploymentStartupErrorV1::Service)?;
+        if argument.as_str().len() > 4096 || total > 64 * 1024 {
+            return Err(RuntimeDeploymentStartupErrorV1::Service);
+        }
+    }
+
+    // The old fixed Storage policy decoder remains the sole baseline recipe.
+    // These observed arguments authenticate no image: actual startup owns that
+    // independent profile/current-execution check on both sides of this loan.
+    let arguments: Vec<String> = command.argv.iter().filter_map(|argument| match argument {
+        Value::Str(argument) => Some(argument.as_str().to_owned()),
+        _ => None,
+    }).collect();
+    let observed = decode_storage_properties_v2(
+        &service[..STORAGE_SERVICE_PROPERTIES_V2.len()], unit, pid, command.path, &arguments,
+    )?;
+    require_storage_public_delivery_v2(&service[STORAGE_SERVICE_PROPERTIES_V2.len()..20])?;
+    Ok(observed)
+}
+
+fn require_storage_public_delivery_v2(
+    values: &[OwnedValue],
+) -> Result<(), RuntimeDeploymentStartupErrorV1> {
+    let [load, encrypted, literal, encrypted_literal, imports, imports_ex] = values else {
+        return Err(RuntimeDeploymentStartupErrorV1::Service);
+    };
+    for (value, signature) in [
+        (load, "a(ss)"), (encrypted, "a(ss)"), (literal, "a(say)"),
+        (encrypted_literal, "a(say)"), (imports, "as"), (imports_ex, "a(ss)"),
+    ] {
+        if value.value_signature().to_string() != signature {
+            return Err(RuntimeDeploymentStartupErrorV1::Service);
+        }
+    }
+
+    let mut found = [false; 3];
+    for (plain, value) in [
+        (true, load), (false, encrypted), (false, literal), (false, encrypted_literal),
+    ] {
+        let Value::Array(rows) = &**value else {
+            return Err(RuntimeDeploymentStartupErrorV1::Service);
+        };
+        if rows.len() > 64 {
+            return Err(RuntimeDeploymentStartupErrorV1::Service);
+        }
+        for row in rows.inner() {
+            let Value::Structure(row) = row else {
+                return Err(RuntimeDeploymentStartupErrorV1::Service);
+            };
+            let [Value::Str(name), content] = row.fields() else {
+                return Err(RuntimeDeploymentStartupErrorV1::Service);
+            };
+            if name.as_str().len() > 255 {
+                return Err(RuntimeDeploymentStartupErrorV1::Service);
+            }
+            match content {
+                Value::Str(value) if value.as_str().len() <= 4096 => {}
+                Value::Array(value) if value.len() <= 4096 => {}
+                _ => return Err(RuntimeDeploymentStartupErrorV1::Service),
+            }
+            if let Some(index) = STORAGE_CANARY_PUBLIC_ROLES_V2.iter()
+                .position(|role| *role == name.as_str())
+            {
+                if found[index] || !plain
+                    || !matches!(content, Value::Str(source)
+                        if source.as_str() == STORAGE_CANARY_PUBLIC_SOURCES_V2[index])
+                {
+                    return Err(RuntimeDeploymentStartupErrorV1::Service);
+                }
+                found[index] = true;
+            }
+        }
+    }
+    for value in [imports, imports_ex] {
+        if !matches!(&**value, Value::Array(rows) if rows.is_empty()) {
+            return Err(RuntimeDeploymentStartupErrorV1::Service);
+        }
+    }
+    if found != [true; 3] {
+        return Err(RuntimeDeploymentStartupErrorV1::Service);
+    }
+    Ok(())
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(super) struct StoragePolicyObservationV2 {
+    pub(super) fragment: PathBuf,
+    pub(super) invocation: [u8; 16],
+}
+
+/// Compares returned DATA after the caller parks the entire readback Result.
+pub(super) fn decode_storage_properties_v2(
+    service: &[OwnedValue], unit: &[OwnedValue], pid: u32,
+    executable: &str, arguments: &[String],
+) -> Result<StoragePolicyObservationV2, RuntimeDeploymentStartupErrorV1> {
+    let [cgroup, open_files, extras, maximum, stored, context, bounding, ambient,
+        nnp, user, group, start, pre, post] = service
+    else { return Err(RuntimeDeploymentStartupErrorV1::Service); };
+    let [fragment, drop_ins, transient, invocation] = unit
+    else { return Err(RuntimeDeploymentStartupErrorV1::Service); };
+    let Value::Array(open_files) = &**open_files
+    else { return Err(RuntimeDeploymentStartupErrorV1::Service); };
+    let [Value::Structure(open_file)] = open_files.inner()
+    else { return Err(RuntimeDeploymentStartupErrorV1::Service); };
+    let [Value::Str(path), Value::Str(name), Value::U64(1)] = open_file.fields()
+    else { return Err(RuntimeDeploymentStartupErrorV1::Service); };
+    let command = systemd_property_data::single_exec_start(start)
+        .ok_or(RuntimeDeploymentStartupErrorV1::Service)?;
+    if <&str>::try_from(cgroup).ok() != Some(super::startup::STORAGE_CGROUP_V2)
+        || path.as_str() != "/proc/1/exe" || name.as_str() != "aos-method46-pid1-image"
+        || !exact_strings(extras, &[]) || u32::try_from(maximum).ok() != Some(0)
+        || u32::try_from(stored).ok() != Some(0)
+        || systemd_property_data::explicit_context(context) != Some(super::startup::STORAGE_CONTEXT_V2)
+        || u64::try_from(bounding).ok() != Some(0) || u64::try_from(ambient).ok() != Some(0)
+        || bool::try_from(nnp).ok() != Some(true)
+        || <&str>::try_from(user).ok() != Some("root") || <&str>::try_from(group).ok() != Some("root")
+        || command.pid != pid || command.path != executable
+        || command.argv.len() != arguments.len()
+        || command.argv.iter().zip(arguments).any(|(actual, expected)| {
+            !matches!(actual, Value::Str(actual) if actual.as_str() == expected)
+        })
+        || !empty_commands(pre) || !empty_commands(post)
+        || !exact_strings(drop_ins, &[]) || bool::try_from(transient).ok() != Some(false)
+    {
+        return Err(RuntimeDeploymentStartupErrorV1::Service);
+    }
+    let Value::Array(invocation) = &**invocation
+    else { return Err(RuntimeDeploymentStartupErrorV1::Service); };
+    // Width alone must not normalize a wrong-schema array into InvocationID.
+    if invocation.element_signature() != Value::from(0u8).value_signature() {
+        return Err(RuntimeDeploymentStartupErrorV1::Service);
+    }
+    let invocation = systemd_property_data::nonzero_invocation_bytes(invocation.inner())
+        .ok_or(RuntimeDeploymentStartupErrorV1::Service)?;
+    let fragment = <&str>::try_from(fragment).map_err(|_| RuntimeDeploymentStartupErrorV1::Service)?;
+    if fragment.len() > 4096 || !fragment.starts_with("/nix/store/")
+        || !fragment.ends_with("/aos-storaged.service")
+    {
+        return Err(RuntimeDeploymentStartupErrorV1::Service);
+    }
+    Ok(StoragePolicyObservationV2 { fragment: fragment.into(), invocation })
+}
+
 #[derive(Debug, Eq, PartialEq)]
 struct PolicyObservationV1 {
     fragment: PathBuf,
@@ -61,6 +395,7 @@ pub(super) struct RetainedDeploymentServicePolicyV1 {
     fragment: RetainedImmutableFileV1,
     cgroup: RetainedCgroupAnchor,
     observation: PolicyObservationV1,
+    mode: DeploymentAdmissionModeV2,
 }
 
 impl RetainedDeploymentServicePolicyV1 {
@@ -70,7 +405,17 @@ impl RetainedDeploymentServicePolicyV1 {
         unit_digest: [u8; 32],
         process: &PidFd,
     ) -> Result<Self, RuntimeDeploymentStartupErrorV1> {
-        let observation = observe(profile_path, executable)?;
+        Self::retain_mode(profile_path, executable, unit_digest, process, DeploymentAdmissionModeV2::Legacy)
+    }
+
+    pub(super) fn retain_mode(
+        profile_path: &Path,
+        executable: &str,
+        unit_digest: [u8; 32],
+        process: &PidFd,
+        mode: DeploymentAdmissionModeV2,
+    ) -> Result<Self, RuntimeDeploymentStartupErrorV1> {
+        let observation = observe_mode(profile_path, executable, mode)?;
         let fragment = RetainedImmutableFileV1::observe_fragment(observation.fragment.clone())
             .map_err(|_| RuntimeDeploymentStartupErrorV1::Service)?;
         require_unit(&fragment, profile_path, unit_digest)?;
@@ -99,6 +444,7 @@ impl RetainedDeploymentServicePolicyV1 {
             fragment,
             cgroup,
             observation,
+            mode,
         })
     }
 
@@ -112,7 +458,7 @@ impl RetainedDeploymentServicePolicyV1 {
         self.fragment
             .revalidate()
             .map_err(|_| RuntimeDeploymentStartupErrorV1::Service)?;
-        if observe(profile_path, executable)? != self.observation {
+        if observe_mode(profile_path, executable, self.mode)? != self.observation {
             return Err(RuntimeDeploymentStartupErrorV1::Service);
         }
         self.cgroup
@@ -160,6 +506,14 @@ fn observe(
     profile_path: &Path,
     executable: &str,
 ) -> Result<PolicyObservationV1, RuntimeDeploymentStartupErrorV1> {
+    observe_mode(profile_path, executable, DeploymentAdmissionModeV2::Legacy)
+}
+
+fn observe_mode(
+    profile_path: &Path,
+    executable: &str,
+    mode: DeploymentAdmissionModeV2,
+) -> Result<PolicyObservationV1, RuntimeDeploymentStartupErrorV1> {
     let profile_path = profile_path
         .to_str()
         .ok_or(RuntimeDeploymentStartupErrorV1::Profile)?
@@ -191,7 +545,7 @@ fn observe(
                         )
                         .await
                         .map_err(|_| RuntimeDeploymentStartupErrorV1::Service)?;
-                    decode(&service, &unit, &profile_path, &executable)
+                    decode_mode(&service, &unit, &profile_path, &executable, mode)
                 })
                 .await
                 .map_err(|_| RuntimeDeploymentStartupErrorV1::Service)?
@@ -216,6 +570,16 @@ fn decode(
     unit: &[OwnedValue],
     profile_path: &str,
     executable: &str,
+) -> Result<PolicyObservationV1, RuntimeDeploymentStartupErrorV1> {
+    decode_mode(service, unit, profile_path, executable, DeploymentAdmissionModeV2::Legacy)
+}
+
+fn decode_mode(
+    service: &[OwnedValue],
+    unit: &[OwnedValue],
+    profile_path: &str,
+    executable: &str,
+    mode: DeploymentAdmissionModeV2,
 ) -> Result<PolicyObservationV1, RuntimeDeploymentStartupErrorV1> {
     let [
         exit_type,
@@ -264,7 +628,10 @@ fn decode(
         || !string_is(user, "root")
         || !string_is(group, "root")
         || u32::try_from(umask).ok() != Some(0o077)
-        || !exact_exec(start, executable)
+        || !match mode {
+            DeploymentAdmissionModeV2::Legacy => exact_exec(start, executable),
+            DeploymentAdmissionModeV2::Canary => exact_canary_exec(start, executable),
+        }
         || !empty_commands(pre)
         || !empty_commands(post)
         || bool::try_from(transient).ok() != Some(false)
@@ -311,30 +678,22 @@ fn exact_open_files(open_files: &OwnedValue, extras: &OwnedValue, profile_path: 
 }
 
 fn exact_exec(value: &OwnedValue, executable: &str) -> bool {
-    let Value::Array(commands) = &**value else {
+    let Some(command) = systemd_property_data::single_exec_start(value) else {
         return false;
     };
-    let [Value::Structure(command)] = commands.inner() else {
+
+    command.path == executable
+        && command.pid == std::process::id()
+        && matches!(command.argv, [Value::Str(path)] if path.as_str() == executable)
+}
+
+fn exact_canary_exec(value: &OwnedValue, executable: &str) -> bool {
+    let Some(command) = systemd_property_data::single_exec_start(value) else {
         return false;
     };
-    let [
-        Value::Str(path),
-        Value::Array(argv),
-        Value::Bool(false),
-        Value::U64(_),
-        Value::U64(_),
-        Value::U64(_),
-        Value::U64(_),
-        Value::U32(pid),
-        Value::I32(_),
-        Value::I32(_),
-    ] = command.fields()
-    else {
-        return false;
-    };
-    path.as_str() == executable
-        && *pid == std::process::id()
-        && matches!(argv.inner(), [Value::Str(path)] if path.as_str() == executable)
+    command.path == executable && command.pid == std::process::id()
+        && matches!(command.argv, [Value::Str(path), Value::Str(mode)]
+            if path.as_str() == executable && mode.as_str() == "--canary-association-v2")
 }
 
 fn empty_commands(value: &OwnedValue) -> bool {

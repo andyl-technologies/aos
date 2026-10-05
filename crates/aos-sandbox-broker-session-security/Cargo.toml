@@ -8,6 +8,10 @@ license.workspace = true
 name = "aos-sandbox-nix-floor-provision"
 path = "src/bin/aos-sandbox-nix-floor-provision.rs"
 
+[[bin]]
+name = "aos-sandbox-runtime-publisher"
+path = "src/bin/aos-sandbox-runtime-publisher.rs"
+
 [features]
 default = []
 kernel-tests = ["aos-sandbox-linux/kernel-tests"]

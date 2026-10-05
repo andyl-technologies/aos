@@ -10,7 +10,7 @@
 
 use std::fs::File;
 use std::io::{Read as _, Seek as _, SeekFrom};
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Component, Path, PathBuf};
 
@@ -951,6 +951,7 @@ fn open_read_credential(
 enum CredentialReadProfile {
     Ordinary(u64),
     PublisherPolicy,
+    RuntimeDeployment(u64),
 }
 
 impl CredentialReadProfile {
@@ -958,6 +959,7 @@ impl CredentialReadProfile {
         match self {
             Self::Ordinary(maximum) => maximum,
             Self::PublisherPolicy => 4 * 1024 * 1024,
+            Self::RuntimeDeployment(maximum) => maximum,
         }
     }
 }
@@ -976,6 +978,10 @@ fn open_read_credential_with_profile(
             4 * 1024 * 1024
         }
         CredentialReadProfile::PublisherPolicy => 0,
+        CredentialReadProfile::RuntimeDeployment(maximum)
+            if RUNTIME_DEPLOYMENT_CREDENTIAL_NAMES.iter().zip(RUNTIME_DEPLOYMENT_CREDENTIAL_BYTES)
+                .any(|(role, width)| name == *role && maximum == width) => maximum,
+        CredentialReadProfile::RuntimeDeployment(_) => 0,
     };
     if maximum_bytes == 0 || maximum_bytes > allowed {
         return Err(ControllerNixPublicCredentialErrorV1::rejected(
@@ -1006,6 +1012,9 @@ fn open_read_credential_with_profile(
     };
     slot.file = Some(File::from(descriptor));
     let file = slot.file.as_mut().ok_or_else(credential_state_rejected)?;
+    if matches!(profile, CredentialReadProfile::RuntimeDeployment(_)) {
+        require_runtime_deployment_credential(file, false)?;
+    }
     read_opened_credential(file, &mut slot.bytes, uid, maximum_bytes)
         .map(CredentialReadOutcome::Present)
 }
@@ -1524,6 +1533,9 @@ fn observe_credential_readback(
     let public = original.public.as_ref().ok_or_else(credential_state_rejected)?;
     let file = original.read.file.as_mut().ok_or_else(credential_state_rejected)?;
     recheck_credential_file(file, public.file_identity)?;
+    if matches!(profile, CredentialReadProfile::RuntimeDeployment(_)) {
+        require_runtime_deployment_credential(file, false)?;
+    }
     file.seek(SeekFrom::Start(0)).map_err(|error| {
         ControllerNixPublicCredentialErrorV1::io(
             CredentialFailureClass::Stale,
@@ -2506,6 +2518,325 @@ fn recheck_credential_ancestors(
         require_credential_ancestor(&stat, uid, &mut service_owned)?;
         if index + 1 == ancestors.count {
             require_credential_directory(&stat, uid)?;
+        }
+    }
+    Ok(())
+}
+
+const RUNTIME_DEPLOYMENT_CREDENTIAL_DIRECTORY: &str =
+    "/run/credentials/aos-sandbox-runtime-publisher.service";
+const RUNTIME_DEPLOYMENT_CREDENTIAL_NAMES: [&str; 5] = [
+    "runtime-deployment-genesis-v1",
+    "runtime-deployment-provisioner-pin-v1",
+    "runtime-deployment-signing-seed-v1",
+    "runtime-deployment-tpm-index-auth-v1",
+    "runtime-deployment-canary-purpose-v2",
+];
+const RUNTIME_DEPLOYMENT_CREDENTIAL_BYTES: [u64; 5] = [468, 32, 32, 32, 496];
+
+/// Retains the five fixed selected publisher credentials and their readback.
+///
+/// This is only local protected custody. The genuine startup and separately
+/// signed purpose must authenticate the mode and roles before these DATA loans
+/// can be used. Capture, read errors and unwinds never release returned files.
+pub(crate) struct RuntimeDeploymentCredentialCustodyV2 {
+    originals: [OriginalControllerCredential; 5],
+    ancestors: CredentialAncestors,
+    readback: CredentialReadback<5>,
+    phase: ControllerCredentialPhase,
+    failure: std::sync::Arc<Option<ControllerNixPublicCredentialErrorV1>>,
+}
+
+impl RuntimeDeploymentCredentialCustodyV2 {
+    /// Prepares resident slots without opening files or selecting authority.
+    pub(crate) fn new() -> Self {
+        Self {
+            originals: std::array::from_fn(|_| OriginalControllerCredential {
+                public: None,
+                read: CredentialReadSlot::new(),
+            }),
+            ancestors: CredentialAncestors::new(),
+            readback: CredentialReadback::new(),
+            phase: ControllerCredentialPhase::Fresh,
+            failure: std::sync::Arc::new(None),
+        }
+    }
+
+    /// Captures the exact fixed root-only delivery once, before secret access.
+    ///
+    /// # Errors
+    /// Refuses repetition, foreign effective UID, unsafe mount/SID/ACL/metadata,
+    /// nonexact roles and failed reads. The first typed cause remains resident.
+    pub(crate) fn capture(&mut self) -> Result<(), &ControllerNixPublicCredentialErrorV1> {
+        if self.failure.is_some() {
+            return Err(self.failure.as_ref().as_ref().unwrap_or_else(|| std::process::abort()));
+        }
+        self.require_vacant_failure();
+        if self.phase != ControllerCredentialPhase::Fresh {
+            return self.finish(Err(credential_state_rejected()));
+        }
+        self.phase = ControllerCredentialPhase::Closed;
+        let result = self.capture_originals();
+        self.finish(result)
+    }
+
+    /// Compares the same originals and fixed names without renewing admission.
+    ///
+    /// # Errors
+    /// Permanently refuses interrupted/failed custody or any original change.
+    pub(crate) fn recheck(&mut self) -> Result<(), &ControllerNixPublicCredentialErrorV1> {
+        if self.failure.is_some() {
+            return Err(self.failure.as_ref().as_ref().unwrap_or_else(|| std::process::abort()));
+        }
+        self.require_vacant_failure();
+        if self.phase != ControllerCredentialPhase::Ready {
+            return self.finish(Err(credential_state_rejected()));
+        }
+        self.phase = ControllerCredentialPhase::Closed;
+        self.readback = CredentialReadback::new();
+        let result = self.observe_originals();
+        self.finish(result)
+    }
+
+    /// Borrows the five exact role bytes only during completed local custody.
+    pub(crate) fn ready(&self) -> Option<[&[u8]; 5]> {
+        if self.phase != ControllerCredentialPhase::Ready {
+            return None;
+        }
+        Some([
+            self.originals[0].public.as_ref()?.bytes(),
+            self.originals[1].public.as_ref()?.bytes(),
+            self.originals[2].public.as_ref()?.bytes(),
+            self.originals[3].public.as_ref()?.bytes(),
+            self.originals[4].public.as_ref()?.bytes(),
+        ])
+    }
+
+    /// Borrows the first cause without extracting descriptors or secret bytes.
+    pub(crate) fn failure(&self) -> Option<&ControllerNixPublicCredentialErrorV1> {
+        self.failure.as_ref().as_ref()
+    }
+
+    /// Shares only a completed, immutable typed diagnostic, never an empty slot.
+    pub(crate) fn diagnostic(&self)
+        -> std::sync::Arc<Option<ControllerNixPublicCredentialErrorV1>>
+    {
+        if self.failure.is_none() {
+            std::process::abort();
+        }
+        std::sync::Arc::clone(&self.failure)
+    }
+
+    fn require_vacant_failure(&mut self) {
+        if self.failure.is_some() || std::sync::Arc::get_mut(&mut self.failure).is_none() {
+            std::process::abort();
+        }
+    }
+
+    /// Compares an additional original signing leaf against the retained delivery.
+    ///
+    /// This is a unit DATA comparison, not a secret loan or signer. The extra
+    /// File has its own OFD; only its protected identity and fixed named inode
+    /// are compared to the genuine three-level ancestry and five-role capture.
+    pub(crate) fn compare_signing_original(
+        &mut self,
+        directory: &File,
+        signing_file: &File,
+    ) -> Result<(), &ControllerNixPublicCredentialErrorV1> {
+        if self.failure.is_some() {
+            return Err(self.failure.as_ref().as_ref().unwrap_or_else(|| std::process::abort()));
+        }
+        self.require_vacant_failure();
+        if self.phase != ControllerCredentialPhase::Ready {
+            return self.finish(Err(credential_state_rejected()));
+        }
+        self.phase = ControllerCredentialPhase::Closed;
+        self.readback = CredentialReadback::new();
+        let result = self.observe_originals().and_then(|()| {
+            let retained = self.originals[2].public.as_ref()
+                .ok_or_else(credential_state_rejected)?;
+            require_runtime_deployment_credential(directory, true)?;
+            require_runtime_deployment_credential(signing_file, false)?;
+            recheck_credential_file(signing_file, retained.file_identity)?;
+            let flags = rustix::fs::fcntl_getfl(signing_file).map_err(|error| {
+                ControllerNixPublicCredentialErrorV1::io(
+                    CredentialFailureClass::Stale, CredentialOperation::FileProvenance, error,
+                )
+            })?;
+            let stat = rustix::fs::fstat(directory).map_err(|error| {
+                ControllerNixPublicCredentialErrorV1::io(
+                    CredentialFailureClass::Stale, CredentialOperation::DirectoryMetadata, error,
+                )
+            })?;
+            if flags & rustix::fs::OFlags::ACCMODE != rustix::fs::OFlags::RDONLY
+                || flags.contains(rustix::fs::OFlags::PATH)
+                || (stat.st_dev, stat.st_ino) != retained.directory_identity
+            {
+                return Err(credential_state_rejected());
+            }
+            let named = rustix::fs::statat(
+                directory, RUNTIME_DEPLOYMENT_CREDENTIAL_NAMES[2],
+                rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+            ).map_err(|error| {
+                ControllerNixPublicCredentialErrorV1::io(
+                    CredentialFailureClass::Stale, CredentialOperation::FileMetadata, error,
+                )
+            })?;
+            let actual = signing_file.metadata().map_err(|error| {
+                ControllerNixPublicCredentialErrorV1::io(
+                    CredentialFailureClass::Stale, CredentialOperation::FileMetadata, error,
+                )
+            })?;
+            if named.st_dev != actual.dev() || named.st_ino != actual.ino()
+                || named.st_size != 32 || named.st_uid != 0 || named.st_gid != 0
+                || named.st_mode & 0o7777 != 0o400
+                || rustix::fs::FileType::from_raw_mode(named.st_mode)
+                    != rustix::fs::FileType::RegularFile
+            {
+                return Err(credential_state_rejected());
+            }
+            Ok(())
+        });
+        self.finish(result)
+    }
+
+    /// Permanently closes loans while leaving actual originals resident.
+    pub(crate) fn fence(&mut self) {
+        self.phase = ControllerCredentialPhase::Closed;
+    }
+
+    fn finish(&mut self, result: CredentialResult<()>)
+        -> Result<(), &ControllerNixPublicCredentialErrorV1>
+    {
+        match result {
+            Ok(()) => {
+                self.phase = ControllerCredentialPhase::Ready;
+                Ok(())
+            }
+            Err(error) => {
+                self.phase = ControllerCredentialPhase::Closed;
+                if self.failure.is_none() {
+                    let slot = std::sync::Arc::get_mut(&mut self.failure)
+                        .unwrap_or_else(|| std::process::abort());
+                    *slot = Some(error);
+                }
+                Err(self.failure.as_ref().as_ref().unwrap_or_else(|| std::process::abort()))
+            }
+        }
+    }
+
+    fn capture_originals(&mut self) -> CredentialResult<()> {
+        if rustix::process::geteuid().as_raw() != 0 {
+            return Err(credential_state_rejected());
+        }
+        open_directory_with_custody(
+            Path::new(RUNTIME_DEPLOYMENT_CREDENTIAL_DIRECTORY),
+            0,
+            &mut DirectoryCustody::Resident(&mut self.ancestors),
+        )?;
+        let directory = self.ancestors.directory()?;
+        require_runtime_deployment_credential(directory, true)?;
+        let directory_identity = self.ancestors.slots[3].identity
+            .ok_or_else(credential_state_rejected)?;
+
+        for (index, name) in RUNTIME_DEPLOYMENT_CREDENTIAL_NAMES.iter().enumerate() {
+            let original = &mut self.originals[index];
+            let file_identity = require_present_credential(open_read_credential_with_profile(
+                directory, name, 0,
+                CredentialReadProfile::RuntimeDeployment(RUNTIME_DEPLOYMENT_CREDENTIAL_BYTES[index]),
+                &mut original.read,
+            )?)?;
+            if original.read.bytes.as_ref().map(|bytes| bytes.len() as u64)
+                != Some(RUNTIME_DEPLOYMENT_CREDENTIAL_BYTES[index])
+            {
+                return Err(credential_state_rejected());
+            }
+
+            // Construct metadata while bytes and the returned original File
+            // remain parked. Only infallible moves follow the checked take.
+            let path = PathBuf::from(RUNTIME_DEPLOYMENT_CREDENTIAL_DIRECTORY);
+            let bytes = original.read.bytes.take().ok_or_else(credential_state_rejected)?;
+            original.public = Some(PinnedSystemdCredential {
+                name: *name, path, uid: 0, directory_identity, file_identity, bytes,
+                exact_bytes: Some(RUNTIME_DEPLOYMENT_CREDENTIAL_BYTES[index]),
+            });
+        }
+        self.observe_originals()
+    }
+
+    fn observe_originals(&mut self) -> CredentialResult<()> {
+        if rustix::process::geteuid().as_raw() != 0 {
+            return Err(credential_state_rejected());
+        }
+        recheck_credential_ancestors(&self.ancestors, 0)?;
+        require_runtime_deployment_credential(self.ancestors.directory()?, true)?;
+        open_directory_with_custody(
+            Path::new(RUNTIME_DEPLOYMENT_CREDENTIAL_DIRECTORY), 0,
+            &mut DirectoryCustody::Resident(&mut self.readback.ancestors),
+        )?;
+        for (original, named) in self.ancestors.slots.iter().zip(&self.readback.ancestors.slots) {
+            if original.identity != named.identity {
+                return Err(credential_state_rejected());
+            }
+        }
+        let directory = self.readback.ancestors.directory()?;
+        require_runtime_deployment_credential(directory, true)?;
+        for (index, name) in RUNTIME_DEPLOYMENT_CREDENTIAL_NAMES.iter().enumerate() {
+            observe_credential_readback(
+                &mut self.originals[index], &mut self.readback.original_bytes[index],
+                &mut self.readback.named[index], directory, name, 0,
+                CredentialReadProfile::RuntimeDeployment(RUNTIME_DEPLOYMENT_CREDENTIAL_BYTES[index]),
+            )?;
+        }
+        for (original, named) in self.originals.iter().zip(&self.readback.named) {
+            let public = original.public.as_ref().ok_or_else(credential_state_rejected)?;
+            for file in [original.read.file.as_ref(), named.file.as_ref()] {
+                let file = file.ok_or_else(credential_state_rejected)?;
+                recheck_credential_file(file, public.file_identity)?;
+                require_runtime_deployment_credential(file, false)?;
+            }
+        }
+        recheck_credential_ancestors(&self.ancestors, 0)?;
+        recheck_credential_ancestors(&self.readback.ancestors, 0)?;
+        require_runtime_deployment_credential(self.ancestors.directory()?, true)?;
+        require_runtime_deployment_credential(self.readback.ancestors.directory()?, true)?;
+        if rustix::process::geteuid().as_raw() != 0 {
+            return Err(credential_state_rejected());
+        }
+        Ok(())
+    }
+}
+
+fn require_runtime_deployment_credential(file: &impl AsFd, directory: bool)
+    -> CredentialResult<()>
+{
+    let operation = CredentialOperation::FileProvenance;
+    let native = |error| ControllerNixPublicCredentialErrorV1::io(
+        CredentialFailureClass::Configuration, operation, error,
+    );
+    let stat = rustix::fs::fstat(file).map_err(native)?;
+    let kind = rustix::fs::FileType::from_raw_mode(stat.st_mode);
+    if stat.st_uid != 0 || stat.st_gid != 0
+        || stat.st_mode & 0o7777 != if directory { 0o500 } else { 0o400 }
+        || kind != if directory { rustix::fs::FileType::Directory } else { rustix::fs::FileType::RegularFile }
+        || (!directory && stat.st_nlink != 1)
+        || !rustix::fs::fstatvfs(file).map_err(native)?.f_flag
+            .contains(rustix::fs::StatVfsMountFlags::RDONLY)
+    {
+        return Err(credential_state_rejected());
+    }
+    let mut context = [0; 256];
+    let length = rustix::fs::fgetxattr(file, "security.selinux", &mut context[..]).map_err(native)?;
+    let actual = context[..length].strip_suffix(&[0]).unwrap_or(&context[..length]);
+    if actual != b"system_u:object_r:aos_runtime_deployment_credential_t" {
+        return Err(credential_state_rejected());
+    }
+    let mut acl = [0; 4096];
+    for name in ["system.posix_acl_access", "system.posix_acl_default"] {
+        match rustix::fs::fgetxattr(file, name, &mut acl[..]) {
+            Err(rustix::io::Errno::NODATA) => {}
+            Err(error) => return Err(native(error)),
+            Ok(_) => return Err(credential_state_rejected()),
         }
     }
     Ok(())

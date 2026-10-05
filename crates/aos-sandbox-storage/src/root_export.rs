@@ -52,6 +52,14 @@ pub fn serve_root_export_once(
     }
     verifier.validate_current()?;
     listener.validate_current()?;
+    if std::env::var_os("AOS_RUNTIME_CANARY_DELIVERY_V2").is_some() {
+        // Presence requests the closed selected admission; the scalar is not
+        // authority. The runtime authenticates its genuine startup, fixed
+        // PID1 Environment and three protected public deliveries BEFORE any
+        // 418-byte/one-FD accept or receive. A failure never enters Legacy.
+        runtime.serve_canary_export_selected_v2(listener, verifier, template);
+        return Ok(RootExportOutcome::Rejected);
+    }
     let mut connection = match listener.accept_descriptor_subject() {
         Ok(connection) => connection,
         Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {

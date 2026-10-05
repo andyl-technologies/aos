@@ -26,6 +26,18 @@ OFFLINE_PREPARE_CREDENTIAL = "aos_nix_offline_prepare_credential_t"
 OFFLINE_PREPARE_STATE = "aos_nix_offline_prepare_state_t"
 OFFLINE_HELPER = "aos_nix_offline_tpm_helper_t"
 OFFLINE_HELPER_EXECUTABLE = "aos_nix_offline_tpm_helper_exec_t"
+RUNTIME_PUBLISHER = "aos_runtime_deployment_publisher_t"
+RUNTIME_HELPER = "aos_runtime_deployment_helper_t"
+RUNTIME_KNOWN_DOMAINS = (RUNTIME_PUBLISHER, RUNTIME_HELPER)
+# Only the fixed Host055 build selection renders this complete cohort.
+# The empty default retains every inherited Host57 and ordinary owner check.
+RUNTIME_DOMAINS = ()
+RUNTIME_CREDENTIAL = "aos_runtime_deployment_credential_t"
+RUNTIME_CREDENTIAL_NAMES = (
+    "runtime-deployment-genesis-v1", "runtime-deployment-provisioner-pin-v1",
+    "runtime-deployment-canary-purpose-v2", "runtime-deployment-signing-seed-v1",
+    "runtime-deployment-tpm-index-auth-v1",
+)
 
 # Only the closed selected production recipe renders these two task names.
 # The empty default neither changes an existing cohort nor skips its checks.
@@ -53,8 +65,8 @@ ONLINE_NIX_KNOWN_DOMAINS = (
 ONLINE_NIX_DOMAINS = ()
 ONLINE_NIX_HELPERS = ONLINE_NIX_DOMAINS[1:3]
 ONLINE_NIX_IMAGE_IOCTL_CELLS = (("aos_sandbox_nix_t", "aos_nix_online_store_t"),)
-ENFORCING = (*OWNER_DOMAINS, *HELPER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE, OFFLINE_HELPER, *SELECTED_MOUNT_SOURCE_DOMAINS, *ONLINE_NIX_DOMAINS)
-NO_DEFAULT_ENTRY = (*OWNER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE, *SELECTED_MOUNT_SOURCE_DOMAINS, *ONLINE_NIX_DOMAINS[:1])
+ENFORCING = (*OWNER_DOMAINS, *HELPER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE, OFFLINE_HELPER, *SELECTED_MOUNT_SOURCE_DOMAINS, *ONLINE_NIX_DOMAINS, *RUNTIME_DOMAINS)
+NO_DEFAULT_ENTRY = (*OWNER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE, *SELECTED_MOUNT_SOURCE_DOMAINS, *ONLINE_NIX_DOMAINS[:1], *RUNTIME_DOMAINS[:1])
 ROOT_CUSTODY_CUTS = (
     ("fd", "use"),
     ("unix_stream_socket", "read"),
@@ -72,6 +84,7 @@ STORAGE_CREDENTIAL_NAMES = (
     "storage-zfs-hold-key-v1",
     "operator-recovery-controller-public-key-v1",
     "operator-recovery-storage-owner-key-v1",
+    *(RUNTIME_CREDENTIAL_NAMES[:3] if RUNTIME_DOMAINS else ()),
 )
 
 CREDENTIAL_PID1_FILE_DELIVERY = (
@@ -625,11 +638,138 @@ def matrix(Access, Transition, accesses, ordinary_domains):
     negative.extend(online_negative)
     transitions.extend(online_transitions)
 
+    runtime_positive, runtime_negative, runtime_transitions = _runtime_deployment_matrix(
+        Access, Transition, accesses, all_roles,
+    )
+    positive.extend(runtime_positive)
+    negative.extend(runtime_negative)
+    transitions.extend(runtime_transitions)
+
     view_positive, view_negative, view_transitions = view_policy.matrix(Access, Transition, accesses, all_roles)
     positive.extend(view_positive)
     negative.extend(view_negative)
     transitions.extend(view_transitions)
     return tuple(sorted(set(positive))), tuple(sorted(set(negative))), tuple(transitions)
+
+
+def _runtime_deployment_matrix(Access, Transition, accesses, all_roles):
+    """Describes the fixed disabled publisher, not runtime admission authority."""
+
+    if not RUNTIME_DOMAINS:
+        return (), (), ()
+    if RUNTIME_DOMAINS != RUNTIME_KNOWN_DOMAINS:
+        raise ValueError("unsupported Host runtime expectation cohort")
+
+    publisher, helper = RUNTIME_DOMAINS
+    executable = "aos_runtime_deployment_publisher_exec_t"
+    helper_image = "aos_runtime_deployment_helper_exec_t"
+    state = "aos_runtime_deployment_state_t"
+    lock = "aos_runtime_deployment_lock_t"
+    runtime = "aos_runtime_deployment_runtime_t"
+    profile = "aos_runtime_deployment_profile_t"
+    storage = "aos_sandbox_storage_t"
+    positive = []
+    negative = []
+    transitions = []
+    file_read = ("getattr", "open", "read")
+    file_mutate = ("append", "create", "link", "lock", "rename", "setattr", "unlink", "write")
+    dir_mutate = ("add_name", "create", "remove_name", "rename", "rmdir", "setattr", "write")
+
+    positive.extend(accesses("init_t", executable, "file", ("execute", "getattr", "map", "open", "read")))
+    positive.extend(accesses(publisher, executable, "file", ("entrypoint", "execute", "getattr", "map", "open", "read")))
+    positive.extend((
+        Access("init_t", publisher, "process", "transition"),
+        Access("init_t", publisher, "process2", "nnp_transition"),
+        Access(publisher, "init_t", "fd", "use"),
+        Access(publisher, "proc_t", "filesystem", "getattr"),
+        Access(publisher, "security_t", "filesystem", "getattr"),
+        Access(publisher, "tmpfs_t", "filesystem", "getattr"),
+        Access(storage, "tmpfs_t", "filesystem", "getattr"),
+        Access(RUNTIME_CREDENTIAL, "tmpfs_t", "filesystem", "associate"),
+        Access(state, "fs_t", "filesystem", "associate"),
+        Access(lock, "fs_t", "filesystem", "associate"),
+        Access(runtime, "tmpfs_t", "filesystem", "associate"),
+        Access(publisher, "systemd_unit_t", "service", "status"),
+        Access(publisher, "init_t", "system", "status"),
+        Access(publisher, "system_dbusd_t", "unix_stream_socket", "connectto"),
+    ))
+    for target in (publisher, "init_t", storage):
+        positive.extend(accesses(publisher, target, "dir", (*file_read, "search")))
+        positive.extend(accesses(publisher, target, "file", file_read))
+        positive.extend(accesses(publisher, target, "lnk_file", ("getattr", "read")))
+    for target in ("aos_sandbox_storage_exec_t", "init_exec_t", profile,
+                   "security_t", "cgroup_t", "sysctl_kernel_t", "systemd_unit_t"):
+        positive.extend(accesses(publisher, target, "file", file_read))
+    positive.extend(accesses("init_t", profile, "file", file_read))
+    positive.extend(accesses(publisher, RUNTIME_CREDENTIAL, "file", file_read))
+    positive.extend(accesses(publisher, RUNTIME_CREDENTIAL, "dir", (*file_read, "search")))
+    positive.extend(accesses("init_t", RUNTIME_CREDENTIAL, "file", CREDENTIAL_PID1_FILE_DELIVERY))
+    positive.extend(accesses("init_t", RUNTIME_CREDENTIAL, "dir", CREDENTIAL_PID1_DIR_DELIVERY))
+    transitions.append(Transition("init_t", RUNTIME_CREDENTIAL, "file", "init_tmpfs_t", filename=Transition.UNNAMED))
+    for name in RUNTIME_CREDENTIAL_NAMES:
+        transitions.append(Transition("init_t", RUNTIME_CREDENTIAL, "file", RUNTIME_CREDENTIAL, filename=name))
+
+    positive.extend(accesses(publisher, state, "dir", (*file_read, "search")))
+    positive.extend(accesses(publisher, state, "file", (*file_read, "append", "write")))
+    positive.extend(accesses(publisher, lock, "file", (*file_read, "lock", "write")))
+    positive.extend(accesses(storage, runtime, "dir", ("getattr", "open", "search")))
+    positive.extend(accesses(storage, runtime, "sock_file", (*file_read, "write")))
+    positive.extend((
+        Access(storage, publisher, "unix_stream_socket", "connectto"),
+        Access(publisher, storage, "fd", "use"),
+        Access(storage, "aos_sandbox_host_t", "fd", "use"),
+    ))
+    for receiver in (storage, publisher):
+        positive.extend(accesses(receiver, "aos_sandbox_host_t", "memfd_file", file_read))
+
+    positive.extend(accesses(publisher, helper_image, "file", ("execute", "getattr", "map", "open", "read")))
+    positive.extend(accesses(helper, helper_image, "file", ("entrypoint", "execute", "getattr", "map", "open", "read")))
+    positive.extend(accesses(publisher, helper, "process", ("getattr", "sigkill", "signal", "transition")))
+    positive.extend(accesses(publisher, helper, "dir", (*file_read, "search")))
+    positive.extend(accesses(publisher, helper, "file", file_read))
+    positive.extend(accesses(publisher, helper, "lnk_file", ("getattr", "read")))
+    positive.extend((
+        Access(publisher, helper, "process2", "nnp_transition"),
+        Access(helper, publisher, "process", "sigchld"),
+        Access(helper, publisher, "fd", "use"),
+        Access(publisher, helper, "fd", "use"),
+    ))
+    positive.extend(accesses(helper, publisher, "unix_stream_socket", ("getattr", "getopt", "read", "setopt", "shutdown", "write")))
+    positive.extend(accesses(helper, lock, "file", ("getattr", "read", "write")))
+    positive.extend(accesses(helper, "aos_method46_tpm_device_t", "chr_file", (*file_read, "write")))
+    transitions.append(Transition(publisher, helper_image, "process", helper))
+
+    # Keep mutation/entry/authority cuts explicit; absence of a positive DATA
+    # query must never stand for a denial. These are exact effective cells.
+    for domain in RUNTIME_DOMAINS:
+        negative.append(Access(domain, "*", "file", "execute_no_trans"))
+        negative.append(Access(domain, "*", "process", "ptrace"))
+        negative.extend(accesses(domain, "*", "capability", ("sys_admin", "sys_ptrace")))
+        negative.extend(accesses(domain, "*", "cap_userns", ("sys_admin", "sys_ptrace")))
+        negative.extend(accesses(domain, "*", "service", ("start", "stop", "reload", "enable", "disable")))
+        negative.extend(accesses(domain, "*", "system", ("start", "stop", "reload", "reboot", "halt")))
+        negative.extend(accesses(domain, RUNTIME_CREDENTIAL, "file", (*file_mutate, "execute", "map", "relabelfrom", "relabelto")))
+        negative.extend(accesses(domain, RUNTIME_CREDENTIAL, "dir", (*dir_mutate, "mounton", "relabelfrom", "relabelto")))
+        negative.extend(accesses(domain, "cgroup_t", "file", file_mutate))
+        negative.extend(accesses(domain, "sysctl_kernel_t", "file", file_mutate))
+    negative.append(Access(publisher, "aos_method46_tpm_device_t", "chr_file", "open"))
+    negative.append(Access("init_t", helper, "process", "transition"))
+    negative.extend(accesses(helper, lock, "file", ("open", "lock", "create", "append", "rename", "unlink", "setattr")))
+    negative.extend(accesses(publisher, state, "file", ("create", "link", "lock", "rename", "setattr", "unlink")))
+    negative.extend(accesses(publisher, state, "dir", dir_mutate))
+    negative.extend(accesses(publisher, lock, "file", ("create", "link", "rename", "setattr", "unlink")))
+    for foreign in all_roles:
+        if foreign != publisher:
+            negative.extend(accesses(foreign, state, "file", (*file_read, *file_mutate)))
+            negative.extend(accesses(foreign, state, "dir", dir_mutate))
+        if foreign not in (publisher, helper):
+            negative.extend(accesses(foreign, lock, "file", (*file_read, *file_mutate)))
+        if foreign not in (publisher, "init_t"):
+            negative.extend(accesses(foreign, RUNTIME_CREDENTIAL, "file", (*file_read, *file_mutate)))
+            negative.extend(accesses(foreign, RUNTIME_CREDENTIAL, "dir", dir_mutate))
+        if foreign != publisher:
+            negative.append(Access(foreign, helper, "process", "transition"))
+    return positive, negative, transitions
 
 
 def _online_nix_matrix(Access, Transition, accesses, all_roles):

@@ -16,6 +16,9 @@
 use ed25519_dalek::{Signature, VerifyingKey};
 use sha2::{Digest as _, Sha256};
 
+/// Version-separated canary association and delegate-held request comparison DATA.
+pub mod canary;
+
 /// Fixed publisher endpoint; this is not a public broker method.
 pub const DEPLOYMENT_SOCKET_V1: &str = "/run/aos/sandbox/runtime-deployment.sock";
 /// Separately provisioned deployment-only SHA-256 extend index.

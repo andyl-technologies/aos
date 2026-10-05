@@ -22,6 +22,7 @@ pub mod fuse_worker_preparation;
 pub mod git_project_coverage;
 pub mod host_argument_source;
 pub mod host_attach_gate;
+pub mod host_canary_job;
 pub mod host_catalog;
 pub mod host_catalog_snapshot;
 pub mod host_consumer_cgroup;

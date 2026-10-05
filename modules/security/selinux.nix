@@ -48,6 +48,7 @@
     inherit viewPreparers homeContextAliases;
     gitReadDelegation = config.aos.sandbox.controllerService.gitReadInspection.enable;
     sourceProviderMount = selectedSourceMount;
+    runtimeDeploymentPublisher = config.aos.sandbox.runtimeDeploymentPublisher.enable;
   } // lib.optionalAttrs selectedOnlineNix {
     onlineNix = true;
     aos-sandboxd = config.aos.sandbox.nixBroker._package;

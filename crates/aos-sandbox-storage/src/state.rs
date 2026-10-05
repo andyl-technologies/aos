@@ -104,6 +104,29 @@ const CANARY_BOOTSTRAP_RECORD_DOMAIN: &[u8] =
 const CANARY_BOOTSTRAP_TRANSACTION_DOMAIN: &[u8] =
     b"aos.sandbox.storage.canary-export-bootstrap-transaction.v1\0";
 
+/// Keeps one actual prepared marker and its same-writer predecessor DATA.
+///
+/// Only the resident canary child's closed loans can prepare or append this
+/// value. Its bytes are comparison DATA, not a key, writer or currentness permit.
+pub(crate) struct StorageCanaryBootstrapMarkerV2 {
+    bytes: [u8; 208],
+    transaction: JournalTransaction,
+    catalog_digest: [u8; 32],
+    catalog_generation: u64,
+    primary_next: u64,
+    primary_head: [u8; 32],
+}
+
+impl StorageCanaryBootstrapMarkerV2 {
+    pub(crate) fn bytes(&self) -> &[u8; 208] { &self.bytes }
+
+    pub(crate) fn transaction(&self) -> &JournalTransaction { &self.transaction }
+
+    pub(crate) fn primary_coordinates(&self) -> ([u8; 32], u64, u64, [u8; 32]) {
+        (self.catalog_digest, self.catalog_generation, self.primary_next, self.primary_head)
+    }
+}
+
 /// Reports durable storage state validation or transition failure.
 #[derive(Debug, thiserror::Error)]
 pub enum StorageStateError {
@@ -113,6 +136,21 @@ pub enum StorageStateError {
     /// Complete original-history capture retained its first native cause.
     #[error(transparent)]
     CanaryHistory(#[from] aos_sandbox::journal::StorageCanaryExportHistoryErrorV1),
+    /// The selected same-boot observation failed before a native crossing.
+    #[error("canary original boot observation failed")]
+    CanaryKernel(#[source] aos_sandbox_linux::Error),
+    /// The selected original boottime observation failed before a crossing.
+    #[error("canary original boottime observation failed")]
+    CanaryClock(#[source] crate::ZfsWorkerError),
+    /// Both original samples refused; neither owning native cause is discarded.
+    #[error("canary original paired clock observation failed")]
+    CanaryPairedClock {
+        /// Chronologically first boot observation failure.
+        #[source]
+        boot: aos_sandbox_linux::Error,
+        /// Separate subsequent boottime observation debt.
+        boottime: crate::ZfsWorkerError,
+    },
     /// The authenticated storage record is malformed, corrupt, or from another key.
     #[error("storage transaction record authentication or structure failed")]
     CorruptRecord,
@@ -3262,6 +3300,117 @@ impl StorageTransactionStore {
             return Err(StorageStateError::CorruptRecord);
         }
         Ok(Some(bytes))
+    }
+
+    /// Prepares the fixed marker using the genuine child's complete original cut.
+    ///
+    /// The same healthy writer authenticates its catalog and full history before
+    /// the bounded recipe is allocated and all eight native limits are checked.
+    pub(crate) fn prepare_canary_bootstrap_marker_v2(
+        &self,
+        original: &crate::runtime::CanaryBootstrapOriginalLoanV2<'_>,
+    ) -> Result<StorageCanaryBootstrapMarkerV2, StorageStateError> {
+        original.require_prepared_cut()?;
+        self.ensure_authority_readable()?;
+        if self.has_held_repair_guard() {
+            return Err(StorageStateError::InvalidTransition);
+        }
+        let (next, head) = self.native_metadata_readback_cut(
+            Path::new("/var/lib/aos/sandbox-storage"),
+        )?;
+        let physical = self.verified_resolver_journal()?;
+        let binding = physical.physical().binding();
+        let mut history = self.borrow_canary_bootstrap_primary_original()?;
+        original.compare_primary_history(&mut history)?;
+        drop(history);
+
+        let key: [u8; 32] = Sha256::digest(CANARY_BOOTSTRAP_KEY_DOMAIN).into();
+        if self.journal.get(RecordNamespace::AuthorityPublication, &key).is_some() {
+            return Err(StorageStateError::InvalidTransition);
+        }
+        let fields = original.marker_fields()?;
+        let mut bytes = [0; 208];
+        bytes[..8].copy_from_slice(b"AOSCEB01");
+        bytes[8..10].copy_from_slice(&1u16.to_be_bytes());
+        bytes[12..16].copy_from_slice(&208u32.to_be_bytes());
+        for (index, field) in fields.iter().enumerate() {
+            bytes[16 + index * 32..48 + index * 32].copy_from_slice(field);
+        }
+        original.require_effect_clock()?;
+        let mut mac = HmacSha256::new_from_slice(&self.key.secret)
+            .map_err(|_| StorageStateError::InvalidValue)?;
+        mac.update(CANARY_BOOTSTRAP_RECORD_DOMAIN);
+        mac.update(&key);
+        mac.update(&bytes[..176]);
+        bytes[176..].copy_from_slice(&mac.finalize().into_bytes());
+        let mut transaction = Sha256::new();
+        transaction.update(CANARY_BOOTSTRAP_TRANSACTION_DOMAIN);
+        transaction.update(bytes);
+        let digest = transaction.finalize();
+        let mut id = [0; 16];
+        id.copy_from_slice(&digest[..16]);
+        let transaction = JournalTransaction::new(id, vec![JournalRecord::put(
+            RecordNamespace::AuthorityPublication, key.to_vec(), bytes.to_vec(),
+        )])?;
+        self.journal.preflight_transactions(std::slice::from_ref(&transaction))?;
+        if self.native_metadata_readback_cut(Path::new("/var/lib/aos/sandbox-storage"))?
+            != (next, head)
+            || next != original.primary_next()?
+        {
+            return Err(StorageStateError::InvalidTransition);
+        }
+        Ok(StorageCanaryBootstrapMarkerV2 {
+            bytes, transaction, catalog_digest: *binding.digest().as_bytes(),
+            catalog_generation: binding.generation(), primary_next: next,
+            primary_head: *head.as_bytes(),
+        })
+    }
+
+    /// Appends only the same saved recipe after the child's authentic return.
+    ///
+    /// Native errors may follow durable COMMIT and poison this same store. The
+    /// caller parks the whole returned Result before any independent bookend.
+    pub(crate) fn append_canary_bootstrap_marker_v2(
+        &mut self,
+        original: &crate::runtime::CanaryBootstrapOriginalLoanV2<'_>,
+    ) -> Result<aos_sandbox::journal::CommitResult, StorageStateError> {
+        self.ensure_authority_readable()?;
+        if self.has_held_repair_guard() {
+            return Err(StorageStateError::InvalidTransition);
+        }
+        let marker = original.authenticated_saved_marker()?;
+        let cut = self.native_metadata_readback_cut(Path::new("/var/lib/aos/sandbox-storage"))?;
+        let physical = self.verified_resolver_journal()?;
+        if cut != (marker.primary_next, ObjectDigest::from_bytes(marker.primary_head))
+            || physical.physical().binding().digest().as_bytes() != &marker.catalog_digest
+            || physical.physical().binding().generation() != marker.catalog_generation
+        {
+            return Err(StorageStateError::InvalidTransition);
+        }
+        let mut history = self.borrow_canary_bootstrap_primary_original()?;
+        original.compare_primary_history(&mut history)?;
+        drop(history);
+        self.journal.preflight_transactions(std::slice::from_ref(&marker.transaction))?;
+        original.require_effect_clock()?;
+        // This is the same native commit engine and existing test injection.
+        // Ordinary callers continue to discard their successful CommitResult
+        // at their original interval; this closed caller retains it instead.
+        let result = self.journal.commit(&marker.transaction);
+        #[cfg(test)]
+        let result = result.and_then(|commit| {
+            if std::mem::take(&mut self.fail_after_next_journal_commit) {
+                Err(aos_sandbox::JournalError::Io(std::io::Error::other(
+                    "injected failure after durable journal commit",
+                )))
+            } else { Ok(commit) }
+        });
+        match result {
+            Ok(commit) => Ok(commit),
+            Err(error) => {
+                self.commit_failed = true;
+                Err(error.into())
+            }
+        }
     }
 
     /// Reloads the durable physical head and operation records for resolution.

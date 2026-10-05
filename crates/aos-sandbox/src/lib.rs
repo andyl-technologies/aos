@@ -180,6 +180,13 @@ pub use runtime_deployment::{
 };
 
 #[cfg(target_os = "linux")]
+#[doc(hidden)]
+pub use runtime_deployment::{
+    RuntimeDeploymentStorageDeliveryReadbackV2,
+    observe_canary_storage_delivery_v2,
+};
+
+#[cfg(target_os = "linux")]
 pub use attachment_mount::{
     AttachmentMountError, AttachmentMountPreparationInputV1,
     CompletedCurrentAttachmentMountAttemptV1, DurableCurrentAttachmentMountAttemptV1,
