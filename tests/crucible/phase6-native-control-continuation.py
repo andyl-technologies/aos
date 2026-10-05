@@ -4,7 +4,7 @@
 The selected QEMU fixture supplies bounded CPU/device topology. This extension
 executes its genuine registered reader, control generation/scheduling bodies,
 running RR ceiling wait and claim, nested all-halted idle control wait,
-poll-ready handoff, and QemuEvent algorithm.
+initial one-shot SDK futex wait, poll-ready handoff, and QemuEvent algorithm.
 Pthreads, eventfd, poll and futex are real. A bounded AIO slice provider replaces
 GLib dispatch; CPU execution and Rust bridge settlement are explicit providers.
 No guest, linked QEMU translation unit, or physical failure attribution is proved.
@@ -78,6 +78,20 @@ static unsigned host_writes, reader_bytes, reader_drains, reader_calls;
 static unsigned rr_parks, idle_parks, callback_return_notifications;
 static bool rr_finished, source_delivered, pump_ready, pump_cleared;
 static bool refuse_first, force_handoff, idle_case, fixture_finished;
+static bool sdk_case, sdk_arm_gap, sdk_unlock_seen;
+static uint32_t sdk_wake_signal;
+static long sdk_thread_id;
+static unsigned sdk_pin_calls, sdk_unpin_calls;
+static enum qemu_plugin_crucible_idle_wait_status sdk_status;
+static pthread_mutex_t qemu_plugin_crucible_idle_wait_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint32_t *qemu_plugin_crucible_active_idle_wake_signal;
+static _Thread_local CPUState *qemu_plugin_crucible_idle_callback_cpu;
+static _Thread_local unsigned qemu_plugin_crucible_idle_callback_depth;
+static _Thread_local bool qemu_plugin_crucible_idle_wait_issued;
+static _Thread_local QemuPluginCrucibleIdleCallbackDisposition
+    qemu_plugin_crucible_idle_callback_disposition;
+static qemu_plugin_vcpu_idle_resume_cb_t qemu_plugin_vcpu_idle_resume_idle_cb;
+static void *qemu_plugin_vcpu_idle_resume_userdata;
 static uint32_t shared_request = 54008, shared_ack = 54008;
 static const uint64_t idle_deadline = 31;
 
@@ -96,6 +110,32 @@ static int qemu_poll_ns(GPollFD *descriptors, unsigned count, int64_t timeout)
 static void rr_crucible_sim_handoff_main_loop(void);
 static void rr_crucible_sim_notify_dispatch_ceiling(void);
 static void qemu_plugin_wake_fd_read(void *opaque);
+void qemu_plugin_crucible_kick_idle_wait(CPUState *target);
+QemuPluginCrucibleIdleCallbackDisposition qemu_plugin_fire_vcpu_idle_cb(CPUState *target);
+enum qemu_plugin_crucible_idle_wait_status
+qemu_plugin_crucible_wait_idle_wake(unsigned int index, uint32_t *signal,
+                                    uint32_t expected);
+
+/* Bounded CPU/object providers; only the selected SDK owns its wait lifecycle. */
+#define OBJECT(target) (target)
+static void object_ref(CPUState *target)
+{ g_assert_true(target == &cpu); sdk_pin_calls++; }
+static void object_unref(CPUState *target)
+{ g_assert_true(target == &cpu); sdk_unpin_calls++; }
+static bool cpu_work_list_empty(CPUState *target) { return true; }
+static bool cpu_thread_is_idle(CPUState *target) { return target->halted; }
+static bool cpu_has_work(CPUState *target) { return false; }
+static void qemu_mutex_lock(pthread_mutex_t *mutex)
+{ g_assert_cmpint(pthread_mutex_lock(mutex), ==, 0); }
+static void qemu_mutex_unlock(pthread_mutex_t *mutex)
+{ g_assert_cmpint(pthread_mutex_unlock(mutex), ==, 0); }
+static pthread_mutex_t *fixture_lock_guard(pthread_mutex_t *mutex)
+{ qemu_mutex_lock(mutex); return mutex; }
+static void fixture_unlock_guard(pthread_mutex_t **mutex)
+{ qemu_mutex_unlock(*mutex); }
+#define QEMU_LOCK_GUARD(mutex) \
+    __attribute__((cleanup(fixture_unlock_guard))) pthread_mutex_t *fixture_guard = \
+        fixture_lock_guard(mutex)
 
 static void fixture_notify_aio(void)
 {
@@ -148,11 +188,30 @@ static void bql_unlock(void)
 {
     locked = false;
     g_assert_cmpint(pthread_mutex_unlock(&fixture_bql), ==, 0);
+    if (sdk_arm_gap && current_cpu == &cpu &&
+        qemu_plugin_crucible_idle_callback_depth == 1) {
+        /* Hold the actor after original unlock, before its original raw wait. */
+        pthread_mutex_lock(&fixture_state);
+        sdk_unlock_seen = true;
+        pthread_cond_broadcast(&fixture_changed);
+        while (!source_delivered) {
+            pthread_cond_wait(&fixture_changed, &fixture_state);
+        }
+        pthread_mutex_unlock(&fixture_state);
+    }
 }
 static void qemu_cond_broadcast(void *condition)
 { g_assert_cmpint(pthread_cond_broadcast(&fixture_halt), ==, 0); }
 static void qemu_cpu_kick(CPUState *target)
-{ kicks++; qemu_cond_broadcast(target->halt_cond); }
+{
+    kicks++;
+    if (sdk_case) {
+        /* Durable CPU work and native idle kick model the original kick edge. */
+        qatomic_set(&target->exit_request, true);
+        qemu_plugin_crucible_kick_idle_wait(target);
+    }
+    qemu_cond_broadcast(target->halt_cond);
+}
 static void qemu_cond_wait_bql(void *condition)
 {
     g_assert_true(locked);
@@ -294,11 +353,32 @@ static void *main_loop(void *opaque)
     return NULL;
 }
 
+static void observe_sdk_idle(unsigned int index, uint64_t raw, void *opaque)
+{
+    g_assert_cmpuint(index, ==, 0);
+    g_assert_cmpuint(raw, ==, 17);
+    g_assert_true(locked);
+    g_assert_cmpuint(qemu_plugin_crucible_idle_callback_depth, ==, 1);
+    sdk_status = qemu_plugin_crucible_wait_idle_wake(index, &sdk_wake_signal, 0);
+}
+
 static void *rr_owner(void *opaque)
 {
     locked = false;
     current_cpu = &cpu;
-    if (idle_case) {
+    if (sdk_case) {
+        bql_lock();
+        qatomic_store_release(&sdk_thread_id, syscall(SYS_gettid));
+        QemuPluginCrucibleIdleCallbackDisposition disposition =
+            qemu_plugin_fire_vcpu_idle_cb(&cpu);
+        g_assert_cmpint(disposition, ==, QEMU_PLUGIN_CRUCIBLE_IDLE_CALLBACK_RESCAN);
+        g_assert_true(sdk_status == QEMU_PLUGIN_CRUCIBLE_IDLE_WAIT_WOKEN ||
+                      sdk_status == QEMU_PLUGIN_CRUCIBLE_IDLE_WAIT_VALUE_CHANGED);
+        g_assert_cmpuint(sdk_pin_calls, ==, 1);
+        g_assert_cmpuint(sdk_unpin_calls, ==, 1);
+        g_assert_null(qemu_plugin_crucible_active_idle_wake_signal);
+        g_assert_cmpuint(qemu_plugin_crucible_idle_callback_depth, ==, 0);
+    } else if (idle_case) {
         QemuPluginCrucibleIdleWaitProduction wait = {
             .cpu = &cpu, .vcpu_index = 0, .cpu_list_generation = 7,
         };
@@ -335,15 +415,46 @@ static void *rr_owner(void *opaque)
     return NULL;
 }
 
+static void await_sdk_futex_park(void)
+{
+    /* Observe only this owned actor's actual kernel syscall, not native authority. */
+    for (unsigned attempt = 0; attempt < 100000; attempt++) {
+        long tid = qatomic_load_acquire(&sdk_thread_id);
+        char path[80], line[256];
+        long number;
+        unsigned long address, operation, expected;
+        if (tid == 0) {
+            sched_yield();
+            continue;
+        }
+        g_assert_cmpint(snprintf(path, sizeof(path), "/proc/self/task/%ld/syscall", tid), >, 0);
+        FILE *file = fopen(path, "r");
+        g_assert_nonnull(file);
+        char *read_result = fgets(line, sizeof(line), file);
+        g_assert_cmpint(fclose(file), ==, 0);
+        if (read_result && sscanf(line, "%ld %lx %lx %lx", &number, &address,
+                                 &operation, &expected) == 4 &&
+            number == SYS_futex && address == (uintptr_t)&sdk_wake_signal &&
+            operation == FUTEX_WAIT && expected == 0) {
+            return;
+        }
+        sched_yield();
+    }
+    g_error("owned SDK actor did not enter its original FUTEX_WAIT");
+}
+
 int main(int argc, char **argv)
 {
     bool before_park = argc == 2 &&
         (strcmp(argv[1], "reader-before-park") == 0 ||
-         strcmp(argv[1], "idle-reader-before-park") == 0);
+         strcmp(argv[1], "idle-reader-before-park") == 0 ||
+         strcmp(argv[1], "sdk-reader-before-arm") == 0);
     pthread_t main_thread, rr_thread;
 
     g_assert_cmpint(argc, ==, 2);
-    idle_case = strncmp(argv[1], "idle-reader-", 12) == 0;
+    sdk_case = strncmp(argv[1], "sdk-reader-", 11) == 0;
+    sdk_arm_gap = strcmp(argv[1], "sdk-reader-arm-gap") == 0;
+    idle_case = sdk_case || strncmp(argv[1], "idle-reader-", 12) == 0;
     refuse_first = strcmp(argv[1], "pending-settlement") == 0;
     force_handoff = refuse_first || strcmp(argv[1], "reader-after-handoff") == 0;
     pump_ready = !refuse_first;
@@ -353,6 +464,7 @@ int main(int argc, char **argv)
     cpu.created = cpu.in_list = true;
     cpu.halted = idle_case;
     qemu_plugin_control_boundary_cb = observe_control;
+    qemu_plugin_vcpu_idle_resume_idle_cb = observe_sdk_idle;
     original_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     aio_fd = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
     g_assert_cmpint(original_fd, >=, 0);
@@ -368,11 +480,16 @@ int main(int argc, char **argv)
 
     if (!before_park) {
         g_assert_cmpint(pthread_create(&rr_thread, NULL, rr_owner, NULL), ==, 0);
-        pthread_mutex_lock(&fixture_state);
-        while ((idle_case ? idle_parks : rr_parks) == 0) {
-            pthread_cond_wait(&fixture_changed, &fixture_state);
+        if (sdk_case && !sdk_arm_gap) {
+            await_sdk_futex_park();
+        } else {
+            pthread_mutex_lock(&fixture_state);
+            while (sdk_arm_gap ? !sdk_unlock_seen :
+                   (idle_case ? idle_parks : rr_parks) == 0) {
+                pthread_cond_wait(&fixture_changed, &fixture_state);
+            }
+            pthread_mutex_unlock(&fixture_state);
         }
-        pthread_mutex_unlock(&fixture_state);
         if (!idle_case) {
             /* Wait for the real event CAS, not just the earlier trace hook. */
             while (qatomic_load_acquire(&rr_dispatch_ceiling_event.value) !=
@@ -382,6 +499,13 @@ int main(int argc, char **argv)
         }
     }
     host_writes++;
+    if (sdk_case) {
+        /* Model request_control_boundary's original release increment/wake.
+         * The completed-clamp caller also wakes on its preceding same-ceiling
+         * publication; this controller needs only the control-request wake. */
+        qatomic_fetch_add(&sdk_wake_signal, 1);
+        g_assert_cmpint(qemu_futex(&sdk_wake_signal, FUTEX_WAKE, 1, NULL, NULL, 0), >=, 0);
+    }
     g_assert_cmpint(eventfd_write(original_fd, 1), ==, 0);
     if (before_park) {
         pthread_mutex_lock(&fixture_state);
@@ -424,18 +548,23 @@ int main(int argc, char **argv)
     g_assert_cmpuint(reader_drains, ==, 1);
     g_assert_cmpuint(control_calls, ==, 1);
     g_assert_cmpuint(callback_return_notifications, ==, 1);
+    if (sdk_arm_gap) {
+        /* The original reader's native kick observed the armed futex word. */
+        g_assert_cmpuint(sdk_wake_signal, ==, 2);
+    }
     printf("case=%s host_writes=%u reader_calls=%u reader_bytes=%u "
            "drains=%u callbacks=%u native_complete=%" PRIu64 " "
            "modeled_request=%u modeled_ack=%u pump_ready=%d "
            "handoff=%" PRIu64 "/%" PRIu64 "/%" PRIu64
            " idle_parks=%u raw=%" PRIu64 " ceiling=%" PRIu64
-           " modeled_idle_deadline=%" PRIu64 "\n",
+           " modeled_idle_deadline=%" PRIu64 " sdk_status=%d pins=%u/%u\n",
            argv[1], host_writes, reader_calls, reader_bytes, reader_drains,
            control_calls, qemu_plugin_rr_control_complete_generation,
            shared_request, shared_ack, pump_ready,
            rr_main_loop_dispatch_requested, rr_main_loop_dispatch_completed,
            rr_main_loop_dispatch_acknowledged, idle_parks, raw_icount,
-           crucible_sim_shmem_max_advance_icount(), idle_deadline);
+           crucible_sim_shmem_max_advance_icount(), idle_deadline,
+           sdk_status, sdk_pin_calls, sdk_unpin_calls);
     fflush(stdout);
     g_assert_cmpuint(shared_ack, ==, shared_request + 1);
     qemu_event_destroy(&rr_dispatch_ceiling_event);
@@ -459,7 +588,9 @@ def main():
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--case", required=True, choices=["all",
         "reader-before-park", "reader-after-park", "reader-after-handoff",
-        "idle-reader-before-park", "idle-reader-after-park", "pending-settlement"])
+        "idle-reader-before-park", "idle-reader-after-park",
+        "sdk-reader-before-arm", "sdk-reader-arm-gap", "sdk-reader-after-futex",
+        "pending-settlement"])
     arguments = parser.parse_args()
     root = arguments.qemu_source.resolve()
     support = runpy.run_path(str(root / "tests/unit/test-crucible-control-deferred.py"))
@@ -467,7 +598,12 @@ def main():
     network = support["SUPPORT"]
     prelude = network["PRELUDE"]
     prelude = prelude.replace("bool running, stop, stopped, unplug, exit_request;",
-        "bool running, stop, stopped, unplug, exit_request;\n    bool created, in_list, halted;")
+        "bool running, stop, stopped, unplug, exit_request;\n    bool created, in_list, halted;\n    unsigned interrupt_request;")
+    # Match the selected native per-thread callback scope during unlocked waits.
+    for name in ("qemu_plugin_crucible_exact_boundary_depth",
+                 "qemu_plugin_crucible_control_boundary_depth"):
+        prelude = prelude.replace(f"static unsigned {name};",
+                                  f"static _Thread_local unsigned {name};")
     prelude = prelude.replace("static CPUState cpu, *first_cpu = &cpu, *current_cpu;",
         "static CPUState cpu, *first_cpu = &cpu;\nstatic _Thread_local CPUState *current_cpu;")
     prelude = prelude.replace("static bool locked = true, self = true, has_control = true, mttcg;",
@@ -512,7 +648,18 @@ def main():
         "plugins/api-system.c": [
             "int qemu_plugin_register_wake_fd(int fd)",
             "static bool qemu_plugin_crucible_idle_cpu_is_current_member(",
-            "static bool qemu_plugin_crucible_idle_wait_for_control_boundary("]}
+            "static bool qemu_plugin_crucible_idle_wait_for_control_boundary(",
+            "void qemu_plugin_crucible_kick_idle_wait(CPUState *cpu)",
+            "static void qemu_plugin_crucible_idle_pin_cpu(void *opaque)",
+            "static void qemu_plugin_crucible_idle_unpin_cpu(void *opaque)",
+            "static bool qemu_plugin_crucible_idle_arm_wait(void *opaque,",
+            "static void qemu_plugin_crucible_idle_unlock_bql(void *opaque)",
+            "static void qemu_plugin_crucible_idle_lock_bql(void *opaque)",
+            "static int qemu_plugin_crucible_idle_raw_wait(",
+            "static void qemu_plugin_crucible_idle_disarm_wait(void *opaque)",
+            "static bool qemu_plugin_crucible_idle_validate_cpu(void *opaque)"],
+        "plugins/crucible-idle-wait.c": [
+            "enum qemu_plugin_crucible_idle_wait_status\nqemu_plugin_crucible_idle_wait_once("]}
     extracted = []
     source = (root / "plugins/api-system.c").read_text()
     start = source.index("typedef struct QemuPluginCrucibleIdleWaitProduction {")
@@ -528,13 +675,35 @@ def main():
             bodies += "\n\n" + body
     bodies = bodies.replace("void rr_crucible_sim_notify_dispatch_ceiling(void)",
                              "static void rr_crucible_sim_notify_dispatch_ceiling(void)")
+    # Preserve the exact original table and public SDK callback wrappers.
+    api_source = (root / "plugins/api-system.c").read_text()
+    table_start = api_source.index("static const QemuPluginCrucibleIdleWaitOps\n")
+    table_end = api_source.index("};", table_start) + 2
+    bodies += "\n\n" + api_source[table_start:table_end]
+    for signature in [
+        "enum qemu_plugin_crucible_idle_wait_status\nqemu_plugin_crucible_wait_idle_wake(",
+        "QemuPluginCrucibleIdleCallbackDisposition\nqemu_plugin_fire_vcpu_idle_cb("]:
+        body = definition(api_source, signature)
+        extracted.append({"path": "plugins/api-system.c", "signature": signature,
+                          "sha256": hashlib.sha256(body.encode()).hexdigest()})
+        bodies += "\n\n" + body
+    headers = (root / "include/plugins/qemu-plugin.h").read_text()
+    types = definition(headers, "enum qemu_plugin_crucible_idle_wait_status {") + ";\n"
+    headers = (root / "include/qemu/plugin.h").read_text()
+    start = headers.index("typedef enum QemuPluginCrucibleIdleCallbackDisposition {")
+    end = headers.index("} QemuPluginCrucibleIdleCallbackDisposition;", start)
+    types += headers[start:end + len("} QemuPluginCrucibleIdleCallbackDisposition;")] + "\n"
+    headers = (root / "include/qemu/crucible-idle-wait.h").read_text()
+    start = headers.index("typedef struct QemuPluginCrucibleIdleWaitOps {")
+    end = headers.index("} QemuPluginCrucibleIdleWaitOps;", start)
+    types += headers[start:end + len("} QemuPluginCrucibleIdleWaitOps;")] + "\n"
     arguments.output_dir.mkdir(parents=True, exist_ok=True)
     generated = arguments.output_dir / "control-continuation.c"
     # Native event.c obtains platform macros through osdep.h before futex.h.
     # The bounded prelude bypasses osdep.h, so load its original config input.
     platform = '#include "config-host.h"\n#ifndef CONFIG_LINUX\n'
     platform += '#error "The control continuation fixture requires configured Linux"\n#endif\n'
-    generated.write_text(platform + prelude + EXTRA + extra + bodies + CHECKS)
+    generated.write_text(platform + prelude + types + EXTRA + extra + bodies + CHECKS)
     extraction = {
         "original_control_deferred_bodies_sha256": original_bodies_hash,
         "additional_bodies": extracted,
@@ -545,9 +714,12 @@ def main():
             "Controlled after-handoff schedule delays main-loop lock acquisition until the actual RR ready-source claim; it changes no native predicate",
             "Real kernel eventfd/poll; registration captures the actual selected reader",
             "Idle cases use the actual nested idle control wait and membership helper; one halted CPU, list generation and unchanged raw ceiling are explicit providers",
-            "Initial SDK futex wait, actual Rust idle callback, virtual timer and full CPU execution are not exercised by the idle composition",
+            "SDK cases execute original idle callback scope, one-shot public wait, arm/disarm, real initial futex wait and kick, then original nested idle wait",
+            "Owned /proc/self/task/tid/syscall is only a controlled fixture handshake proving the third SDK actor entered FUTEX_WAIT",
+            "Controller release increment and non-private futex wake model NodeSlot.request_control_boundary before its only doorbell; production completed-clamp also has an earlier same-ceiling wake",
+            "CPU durable-work/object pin providers and published futex word model external topology/protocol; full Rust idle callback and guest/timer execution remain outside the native fixture",
             "Actual QemuEvent bodies and selected Linux futex header",
-            "No active generic wake epoch, CPU work, lifecycle stop or guest execution",
+            "No active generic wake epoch, queued CPU work, lifecycle stop or guest execution; SDK cases model the durable exit-request wake in their CPU kick provider",
             "Scalar modeled shared request/ack and bridge readiness; no Rust bridge or shared-memory proof",
         ],
     }
@@ -564,7 +736,8 @@ def main():
         return
 
     for case in ("reader-before-park", "reader-after-park", "reader-after-handoff",
-                 "idle-reader-before-park", "idle-reader-after-park"):
+                 "idle-reader-before-park", "idle-reader-after-park",
+                 "sdk-reader-before-arm", "sdk-reader-arm-gap", "sdk-reader-after-futex"):
         result = subprocess.run([str(binary), case], cwd=arguments.output_dir,
                                 capture_output=True, text=True, check=True, timeout=10)
         (arguments.output_dir / f"{case}.stdout").write_text(result.stdout)

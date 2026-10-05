@@ -2,7 +2,7 @@
 
 use super::*;
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ffi::CString;
 use std::fs::File;
 use std::io::Write as _;
@@ -39,6 +39,7 @@ thread_local! {
     pub(super) static TEST_SIM_TICK: Cell<i64> = const { Cell::new(0) };
     static TEST_IDLE_WAKE_WAIT_CALLS: Cell<u64> = const { Cell::new(0) };
     static TEST_IDLE_WAKE_WAIT_STATUS: Cell<std::os::raw::c_int> = const { Cell::new(1) };
+    static TEST_IDLE_WAKE_WORK: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
     static TEST_FINGERPRINT_CAPTURE_COUNT: Cell<u64> = const { Cell::new(0) };
     pub(crate) static TEST_FINGERPRINT_CAPTURE_SEED: Cell<u64> = const { Cell::new(0x10) };
 }
@@ -279,6 +280,10 @@ extern "C" fn test_wait_idle_wake(
     _expected: u32,
 ) -> std::os::raw::c_int {
     TEST_IDLE_WAKE_WAIT_CALLS.set(TEST_IDLE_WAKE_WAIT_CALLS.get() + 1);
+    let work = TEST_IDLE_WAKE_WORK.with_borrow_mut(Option::take);
+    if let Some(work) = work {
+        work();
+    }
     TEST_IDLE_WAKE_WAIT_STATUS.get()
 }
 

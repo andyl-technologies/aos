@@ -562,3 +562,86 @@ fn control_boundary_retries_occurrence_event_after_host_drain_before_ack() {
         "the retried event must be published exactly once"
     );
 }
+
+#[test]
+fn registered_idle_wait_allows_the_original_control_callback_to_settle() {
+    // Native futex/BQL behavior is covered separately by the C composition.
+    // This wait provider performs the original host publication and registered
+    // Rust callback while the real idle invocation remains admitted.
+    let slot = std::rc::Rc::new(NodeSlot::new(KIND_VM));
+    let (bridge, mut transports) = control_fault_bridge([0x45; 32]);
+    let ceiling = authorize_advance_ceiling(0, 350, None)
+        .unwrap_or_else(|error| panic!("unchanged ceiling should authorize: {error}"));
+    slot.publish_scheduler_advance(ceiling, crucible_shmem::AdvanceStopCondition::Ceiling)
+        .unwrap_or_else(|error| panic!("unchanged ceiling should publish: {error}"));
+    let state = std::rc::Rc::new(
+        test_live_state_with_fault_commands(278, 1, 0, &slot, Box::new(bridge))
+            .unwrap_or_else(|error| panic!("real bridge state should bind: {error}")),
+    );
+    let command = boundary_probe([0x45; 32], 1);
+    enqueue_fault_command(
+        &transports.command_ring,
+        &mut transports.command_slots,
+        &transports.command_arena_header,
+        &mut transports.command_arena,
+        COMMAND_ARENA_OFFSET,
+        command.clone(),
+        &[],
+    )
+    .unwrap_or_else(|error| panic!("due command should enqueue: {error}"));
+    crate::fault_command::test_support::stage_dispatch_results(&[command], 0x55);
+    let frontier = transports.command_ring.write_index();
+    let request = std::rc::Rc::new(Cell::new(0));
+    let waiting_state = std::rc::Rc::clone(&state);
+    let waiting_slot = std::rc::Rc::clone(&slot);
+    let original_request = std::rc::Rc::clone(&request);
+    TEST_CLOCK_DEADLINE_PS.set(500);
+    TEST_ICOUNT_RAW.set(7);
+    TEST_IDLE_WAKE_WAIT_CALLS.set(0);
+    TEST_IDLE_WAKE_WAIT_STATUS.set(1);
+    LAST_QUEUED_ADVANCE_TICK.set(-1);
+    TEST_IDLE_WAKE_WORK.with_borrow_mut(|work| {
+        *work = Some(Box::new(move || {
+            assert_eq!(waiting_state.quiescence.snapshot().in_flight, 1);
+            let token = waiting_slot
+                .request_control_boundary(frontier, None)
+                .unwrap_or_else(|error| panic!("original control request should publish: {error}"));
+            original_request.set(token);
+            let userdata = std::ptr::from_ref(waiting_state.as_ref()).cast_mut().cast();
+            crucible_qemu_plugin_live_control_boundary_cb(0, 7, userdata);
+            assert_eq!(waiting_slot.control_boundary_token(), token.wrapping_add(1));
+            assert_eq!(waiting_state.quiescence.snapshot().in_flight, 1);
+        }));
+    });
+
+    let userdata = std::ptr::from_ref(state.as_ref()).cast_mut().cast();
+    crucible_qemu_plugin_live_vcpu_init_cb(0, userdata);
+    crucible_qemu_plugin_live_vcpu_idle_cb(0, 7, userdata);
+
+    assert_eq!(TEST_IDLE_WAKE_WAIT_CALLS.get(), 1);
+    assert_eq!(slot.control_boundary_token(), request.get().wrapping_add(1));
+    assert_eq!(slot.snapshot().current_icount, 350);
+    assert_eq!(slot.snapshot().logical_time_raw_icount, 7);
+    assert_eq!(slot.snapshot().idle_wake_icount, 500);
+    assert_eq!(slot.snapshot().status, STATUS_IDLE);
+    assert_eq!(LAST_QUEUED_ADVANCE_TICK.get(), -1);
+    assert!(!state.idle_advance_is_pending());
+    assert!(!state.all_halted_idle_handled.load(Ordering::Acquire));
+    assert_eq!(state.quiescence.snapshot().in_flight, 0);
+    assert_eq!(crate::fault_command::test_support::node_dispatch_count(), 1);
+    let result = dequeue_fault_result(
+        &transports.result_ring,
+        &transports.result_slots,
+        &transports.result_arena_header,
+        &transports.result_arena,
+        RESULT_ARENA_OFFSET,
+    )
+    .unwrap_or_else(|error| panic!("real dispatch result should dequeue: {error}"));
+    assert!(
+        matches!(result, Some(DequeuedFaultResult::Valid { header, .. })
+        if header.command_sequence == 1)
+    );
+    assert!(TEST_IDLE_WAKE_WORK.with_borrow(Option::is_none));
+    TEST_CLOCK_DEADLINE_PS.set(-1);
+    TEST_ICOUNT_RAW.set(0);
+}
