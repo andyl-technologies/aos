@@ -316,10 +316,22 @@ fn instantiate_planned_roots(
     plan: &ReleasePlan,
     planned_derivations: &[PathBuf],
 ) -> Result<()> {
+    // Instantiate exactly as `step plan` evaluated: the native platform
+    // without `crossSystem`, because passing it selects a cross stdenv whose
+    // derivations differ from the planned native ones.
+    let build_platform: String =
+        serde_json::from_value(nix.eval_json("stdenv.buildPlatform.system")?)
+            .context("decoding the native Nix build platform")?;
+    let cross_target =
+        |platform: Platform| (platform.as_str() != build_platform).then_some(platform.as_str());
+
     let mut instantiated = BTreeSet::new();
     for platform in Platform::ALL {
         instantiated.extend(
-            nix.instantiate_all_for_target("releasePackageDerivationRoots", platform.as_str())?,
+            nix.instantiate_all_for_target(
+                "releasePackageDerivationRoots",
+                cross_target(platform),
+            )?,
         );
     }
 
@@ -332,7 +344,11 @@ fn instantiate_planned_roots(
             if !matches!(cell.decision, MatrixCell::Artifact { .. }) {
                 continue;
             }
-            instantiated.insert(nix.instantiate_for_target(&attribute, cell.platform.as_str())?);
+            let derivation = match cross_target(cell.platform) {
+                Some(target) => nix.instantiate_for_target(&attribute, target)?,
+                None => nix.instantiate(&attribute)?,
+            };
+            instantiated.insert(derivation);
         }
     }
 
