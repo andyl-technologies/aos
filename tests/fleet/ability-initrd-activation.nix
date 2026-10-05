@@ -127,6 +127,7 @@ in {
 
       AOS = "${pkgs.aos}/bin/aos"
       COREUTILS = "${pkgs.coreutils}/bin"
+      JQ = "${pkgs.jq}/bin/jq"
       PREPARATION = ${builtins.toJSON activatedSystem.config.aos.boot.preparationExecutable}
       NIX_STORE = "${pkgs.nix}/bin/nix-store"
       INITRD_STATE = ${builtins.toJSON activatedSystem.config.aos.boot.substrateServices.initrdStateDirectory}
@@ -190,7 +191,9 @@ in {
           assert transaction["schema"] == "aos.package.transaction", transaction
           scope = transaction["scope"]
           assert scope == EXPECTED_SCOPES[stage], (stage, scope, EXPECTED_SCOPES[stage])
-          evaluation = read_json(f"{bundle}/evaluation.json")
+          evaluation = json.loads(target.succeed(
+              f"{JQ} -c '{{schema, scope}}' {shlex.quote(bundle + '/evaluation.json')}"
+          ))
           assert evaluation["schema"] == "aos.package.evaluation-input", evaluation
           assert evaluation["scope"] == scope, (evaluation["scope"], scope)
           admission_digest = target.succeed(f"{COREUTILS}/sha256sum {bundle}/admission.json").split()[0]
