@@ -320,6 +320,11 @@ apm attest verify --system \
   --rederived-manifest verifier/rederived-manifest.json
 ```
 
+Generation measurement retains the complete canonical record in the AOS CEL
+and submits its SHA-256 digest to the TPM helper. Large records therefore do
+not become command-line arguments. Use the AOS CEL for these events; they are
+not also appended to systemd's supplemental userspace measurement log.
+
 The policy is strict JSON. Version 2 requires an operator-authorized PCR-12
 boot-input value; version 1 is rejected because it cannot express that check.
 PCR and root values come from verifier-controlled policy and catalog data, not

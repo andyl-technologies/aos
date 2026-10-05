@@ -500,6 +500,7 @@ in
       export AOS_TPM2_READPUBLIC="${tpm2-tools}/bin/tpm2_readpublic"
       export AOS_TPM2_QUOTE="${tpm2-tools}/bin/tpm2_quote"
       export AOS_TPM2_PCRREAD="${tpm2-tools}/bin/tpm2_pcrread"
+      export AOS_TPM2_PCREXTEND="${tpm2-tools}/bin/tpm2_pcrextend"
       export AOS_TPM2_CHECKQUOTE="${tpm2-tools}/bin/tpm2_checkquote"
       export AOS_TPM2_FLUSHCONTEXT="${tpm2-tools}/bin/tpm2_flushcontext"
       ${lib.optionalString (!isDarwinCross) linuxToolEnvironment}
@@ -600,6 +601,7 @@ in
       export AOS_TPM2_READPUBLIC="${tpm2-tools}/bin/tpm2_readpublic"
       export AOS_TPM2_QUOTE="${tpm2-tools}/bin/tpm2_quote"
       export AOS_TPM2_PCRREAD="${tpm2-tools}/bin/tpm2_pcrread"
+      export AOS_TPM2_PCREXTEND="${tpm2-tools}/bin/tpm2_pcrextend"
       export AOS_TPM2_CHECKQUOTE="${tpm2-tools}/bin/tpm2_checkquote"
       export AOS_TPM2_FLUSHCONTEXT="${tpm2-tools}/bin/tpm2_flushcontext"
       APM_ENVIRONMENT
@@ -703,6 +705,7 @@ in
         test -x "$packageRuntime/libexec/aos-image-rollout-boot"
         grep -Fqx 'export AOS_NIX_STORE="${nix}/bin/nix-store"' "$packageRuntime/libexec/aos-image-rollout-boot"
         grep -Fqx 'export AOS_TPM2_CHECKQUOTE="${tpm2-tools}/bin/tpm2_checkquote"' "$packageRuntime/libexec/aos-image-rollout-boot"
+        grep -Fqx 'export AOS_TPM2_PCREXTEND="${tpm2-tools}/bin/tpm2_pcrextend"' "$packageRuntime/libexec/aos-image-rollout-boot"
         test -x "$packageRuntime/libexec/aos-package-attestation-provider"
         test -x "$packageRuntime/libexec/aos-image-rollout-observer"
         test -x "$packageRuntime/bin/aos-image-rollout-provider"
