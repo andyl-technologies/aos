@@ -77,7 +77,9 @@ pub use channels::run_channel;
 pub use config::{local_registry_name, resolve_mirrors, resolve_mirrors_for_registry};
 pub use distribution::{run_cache, run_origin, run_web};
 pub(crate) use git::{refresh_registry_object_store, semver_tag_versions, validate_canonical_release_registry_index};
-pub use lifecycle::{LocalRegistry, authoring_clone_precious, create, local_registries};
+pub use lifecycle::{
+    InitialRoster, LocalRegistry, authoring_clone_precious, create, local_registries,
+};
 #[cfg(test)]
 pub(crate) use metadata::record_named_output;
 pub(crate) use provenance::require_active_registry_key;
