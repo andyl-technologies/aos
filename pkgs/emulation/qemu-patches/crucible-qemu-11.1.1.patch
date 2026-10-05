@@ -1,4 +1,4 @@
-From 435646d8fa5b6b25ce2c46de2e1e737dc4d229f8 Mon Sep 17 00:00:00 2001
+From 47fed0800537a32bf5a0c786ac91c993981166eb Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Sat, 3 Oct 2026 07:08:17 +0000
 Subject: [PATCH] Integrate deterministic execution and private fork I/O
@@ -36,6 +36,12 @@ pending count, retaining lifecycle and custom deadlines. Observe instruction
 completion icount only after finding an active execution context. Exercise
 production queue transitions, restored counts, cross-thread publication,
 active completion/exception semantics, and causal negative controls.
+
+Cache tracked Linux mutex owner thread IDs after their first observation.
+Suspend the cache across fork callback ordering, retain uncached fallback,
+and refresh native child ownership before registry reconstruction. Verify
+real worker/fork IDs, earlier RCU child callbacks, parent stability,
+registration failure, syscall-free steady tracking, and causal negatives.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -167785,6 +167791,475 @@ index 0000000000000000000000000000000000000000..826f34e7c26bdac48f2dab1190635991
 +                    test_timer_ns_projection);
 +    return g_test_run();
 +}
+diff --git a/tests/unit/test-crucible-mutex-owner-cache.py b/tests/unit/test-crucible-mutex-owner-cache.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..92f7e7b7c4fdbe109ae0754186357da24e3a8441
+--- /dev/null
++++ b/tests/unit/test-crucible-mutex-owner-cache.py
+@@ -0,0 +1,463 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise production mutex ownership with real Linux fork and pthread IDs.
++
++Tracking, cache and native child-registry reconstruction bodies execute here.
++The RCU child callback body is real; its initializer and restart-thread topology
++are bounded providers. This is not a linked QEMU checkpoint/guest test.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import runpy
++import shlex
++import subprocess
++
++
++ROOT = Path(__file__).resolve().parents[2]
++definition = runpy.run_path(str(Path(__file__).with_name(
++    "test-crucible-net-output-stop.py")))["definition"]
++
++PRELUDE = r"""
++#include <assert.h>
++#include <errno.h>
++#include <inttypes.h>
++#include <limits.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/syscall.h>
++#include <sys/wait.h>
++#include <unistd.h>
++#include <glib.h>
++#include "qemu/typedefs.h"
++#define qemu_build_assert(condition) _Static_assert(condition, #condition)
++#include "qemu/atomic.h"
++typedef struct QemuCond QemuCond;
++#include "qemu/thread-posix.h"
++
++#define QEMU_HOT_FORK_THREAD_NAME_MAX 256
++#define QEMU_HOT_FORK_MUTEX_INVENTORY_MAX 65536
++#define QEMU_HOT_FORK_RESTART_THREAD_MAX 4
++#define QEMU_HOT_FORK_CARRIED_MUTEX_MAX 8
++
++void qemu_mutex_init(QemuMutex *mutex);
++void qemu_mutex_destroy(QemuMutex *mutex);
++void qemu_mutex_lock_impl(QemuMutex *, const char *, const int);
++int qemu_mutex_trylock_impl(QemuMutex *, const char *, const int);
++void qemu_mutex_unlock_impl(QemuMutex *, const char *, const int);
++void qemu_rec_mutex_init(QemuRecMutex *mutex);
++int qemu_get_thread_id(void);
++
++static __thread unsigned int tid_reads;
++static __thread int failed_tid;
++static bool fail_registration;
++
++int qemu_get_thread_id(void)
++{
++    tid_reads++;
++    if (failed_tid) {
++        int result = failed_tid;
++        failed_tid = 0;
++        return result;
++    }
++    return syscall(SYS_gettid);
++}
++
++static int cache_atfork(void (*prepare)(void), void (*parent)(void),
++                        void (*child)(void))
++{
++    if (fail_registration) {
++        return ENOMEM;
++    }
++    return pthread_atfork(prepare, parent, child);
++}
++#define pthread_atfork cache_atfork
++
++static void qemu_mutex_post_init(QemuMutex *mutex)
++{
++    mutex->initialized = true;
++}
++
++static void qemu_mutex_pre_lock(QemuMutex *mutex, const char *file, int line)
++{
++    (void)mutex;
++    (void)file;
++    (void)line;
++}
++
++static void qemu_mutex_post_lock(QemuMutex *mutex, const char *file, int line)
++{
++    (void)mutex;
++    (void)file;
++    (void)line;
++}
++
++static void qemu_mutex_pre_unlock(QemuMutex *mutex, const char *file, int line)
++{
++    (void)mutex;
++    (void)file;
++    (void)line;
++}
++"""
++
++CHECKS = r"""
++static QemuMutex mutex;
++static QemuRecMutex recursive;
++static int atfork_depth = 1;
++static struct { unsigned int value; } registry;
++static unsigned int early_child_calls, late_child_calls;
++static int64_t early_child_owner, late_child_owner, worker_owner;
++
++static CrucibleHotForkMutexEntry *entry(QemuMutex *target)
++{
++    return &crucible_hot_fork_mutexes[target->crucible_hot_fork_slot];
++}
++
++static void assert_owner(QemuMutex *target)
++{
++    g_assert_cmpint(entry(target)->owner_thread_id, ==, syscall(SYS_gettid));
++    g_assert_true(entry(target)->ownership_valid);
++    g_assert_cmpuint(entry(target)->recursion_depth, >, 0);
++}
++
++static void lock(QemuMutex *target)
++{
++    qemu_mutex_lock_impl(target, __FILE__, __LINE__);
++    assert_owner(target);
++}
++
++static void unlock(QemuMutex *target)
++{
++    qemu_mutex_unlock_impl(target, __FILE__, __LINE__);
++    g_assert_true(entry(target)->ownership_valid);
++    g_assert_cmpuint(entry(target)->recursion_depth, ==, 0);
++}
++
++static void early_prepare(void)
++{
++    if (atfork_depth < 1) {
++        return;
++    }
++    g_assert_true(crucible_mutex_owner_cache_suspended);
++    lock(&mutex);
++    unlock(&mutex);
++    /* An older prepare callback must not repopulate an inherited parent ID. */
++    g_assert_cmpint(crucible_mutex_owner_cached_thread_id, ==, 0);
++}
++
++static void rcu_init_complete(void)
++{
++    g_assert_true(crucible_mutex_owner_cache_suspended);
++    lock(&mutex);
++    early_child_owner = entry(&mutex)->owner_thread_id;
++    unlock(&mutex);
++    g_assert_cmpint(crucible_mutex_owner_cached_thread_id, ==, 0);
++    early_child_calls++;
++}
++
++static void late_child(void)
++{
++    if (atfork_depth < 1) {
++        return;
++    }
++    g_assert_false(crucible_mutex_owner_cache_suspended);
++    lock(&mutex);
++    late_child_owner = entry(&mutex)->owner_thread_id;
++    unlock(&mutex);
++    late_child_calls++;
++}
++
++static void wait_child(pid_t child)
++{
++    int status;
++    g_assert_cmpint(waitpid(child, &status, 0), ==, child);
++    g_assert_true(WIFEXITED(status));
++    g_assert_cmpint(WEXITSTATUS(status), ==, 0);
++}
++
++static void *worker(void *unused)
++{
++    (void)unused;
++    lock(&mutex);
++    worker_owner = entry(&mutex)->owner_thread_id;
++    unlock(&mutex);
++    for (unsigned int i = 0; i < 100; i++) {
++        lock(&mutex);
++        unlock(&mutex);
++    }
++    g_assert_cmpuint(tid_reads, ==, 1);
++    return NULL;
++}
++
++static void steady_and_worker(void)
++{
++    pthread_t thread;
++    int64_t parent = syscall(SYS_gettid);
++    unsigned int before;
++
++    lock(&mutex);
++    unlock(&mutex);
++    before = tid_reads;
++    for (unsigned int i = 0; i < 1000; i++) {
++        lock(&mutex);
++        unlock(&mutex);
++    }
++    g_assert_cmpuint(tid_reads, ==, before);
++    g_assert_cmpint(pthread_create(&thread, NULL, worker, NULL), ==, 0);
++    g_assert_cmpint(pthread_join(thread, NULL), ==, 0);
++    g_assert_cmpint(worker_owner, !=, parent);
++    g_assert_cmpint(crucible_mutex_owner_cached_thread_id, ==, parent);
++
++    qemu_rec_mutex_init(&recursive);
++    lock(&recursive.m);
++    lock(&recursive.m);
++    g_assert_cmpuint(entry(&recursive.m)->recursion_depth, ==, 2);
++    qemu_mutex_unlock_impl(&recursive.m, __FILE__, __LINE__);
++    assert_owner(&recursive.m);
++    unlock(&recursive.m);
++    g_assert_cmpint(qemu_mutex_trylock_impl(&mutex, __FILE__, __LINE__), ==, 0);
++    assert_owner(&mutex);
++    unlock(&mutex);
++
++    lock(&mutex);
++    crucible_hot_fork_mutex_condition_wait_begin(&mutex);
++    g_assert_cmpint(entry(&mutex)->condition_waiter_thread_id, ==, parent);
++    g_assert_cmpuint(entry(&mutex)->condition_waiters, ==, 1);
++    g_assert_cmpint(pthread_mutex_unlock(&mutex.lock), ==, 0);
++    g_assert_cmpint(pthread_mutex_lock(&mutex.lock), ==, 0);
++    crucible_hot_fork_mutex_condition_wait_end(&mutex);
++    assert_owner(&mutex);
++    unlock(&mutex);
++    g_assert_cmpuint(tid_reads, ==, before);
++
++    crucible_mutex_owner_cache_resume();
++    failed_tid = -1;
++    g_assert_cmpint(crucible_mutex_owner_thread_id(), ==, -1);
++    g_assert_cmpint(crucible_mutex_owner_cached_thread_id, ==, 0);
++    g_assert_cmpint(crucible_mutex_owner_thread_id(), ==, parent);
++}
++
++static void ordinary_forks(void)
++{
++    int64_t parent = syscall(SYS_gettid);
++    for (unsigned int i = 0; i < 4; i++) {
++        unsigned int before;
++        pid_t child = fork();
++        g_assert_cmpint(child, >=, 0);
++        if (!child) {
++            g_assert_cmpuint(early_child_calls, ==, 1);
++            g_assert_cmpuint(late_child_calls, ==, 1);
++            g_assert_cmpint(early_child_owner, ==, syscall(SYS_gettid));
++            g_assert_cmpint(late_child_owner, ==, syscall(SYS_gettid));
++            g_assert_cmpint(early_child_owner, !=, parent);
++            before = tid_reads;
++            lock(&mutex);
++            unlock(&mutex);
++            g_assert_cmpuint(tid_reads, ==, before);
++            _exit(0);
++        }
++        wait_child(child);
++        g_assert_cmpuint(early_child_calls, ==, 0);
++        g_assert_cmpuint(late_child_calls, ==, 0);
++        lock(&mutex);
++        unlock(&mutex);
++        g_assert_cmpint(crucible_mutex_owner_cached_thread_id, ==, parent);
++    }
++}
++
++static void native_reconstruction(void)
++{
++    QemuHotForkThreadRecord coordinator = {
++        .thread_id = syscall(SYS_gettid), .tracked = true,
++        .disposition = QEMU_THREAD_HOT_FORK_COORDINATOR,
++    };
++    QemuHotForkThreadRecord rcu = {
++        .thread_id = coordinator.thread_id + 1000000, .tracked = true,
++        .disposition = QEMU_THREAD_HOT_FORK_RCU_RESTART,
++    };
++    QemuHotForkThreadRecord monitor = {
++        .thread_id = coordinator.thread_id + 1000001, .tracked = true,
++        .disposition = QEMU_THREAD_HOT_FORK_MONITOR_RESTART,
++    };
++    QemuThreadHotForkRegistryTransaction transaction = {
++        .thread_generation = 1, .parent_process_id = getpid(),
++        .parent_thread_id = coordinator.thread_id,
++        .coordinator_record = &coordinator,
++        .restart_thread_ids = { rcu.thread_id, monitor.thread_id },
++        .restart_thread_count = 2,
++        .carried_mutexes = {{ mutex.crucible_hot_fork_registration_id,
++                             mutex.crucible_hot_fork_slot }},
++        .carried_count = 1, .active = true,
++    };
++    pid_t child;
++
++    qemu_hot_fork_thread_generation = 1;
++    qemu_hot_fork_thread_count = 3;
++    qemu_hot_fork_coordinator_thread_id = coordinator.thread_id;
++    qemu_hot_fork_current_thread = &coordinator;
++    qemu_hot_fork_threads = g_list_append(qemu_hot_fork_threads, &coordinator);
++    qemu_hot_fork_threads = g_list_append(qemu_hot_fork_threads, &rcu);
++    qemu_hot_fork_threads = g_list_append(qemu_hot_fork_threads, &monitor);
++    atfork_depth = 0;
++    lock(&mutex);
++    crucible_hot_fork_mutex_registry_lock();
++    g_assert_cmpint(pthread_mutex_lock(&qemu_hot_fork_thread_lock), ==, 0);
++    child = fork();
++    g_assert_cmpint(child, >=, 0);
++    if (!child) {
++        /* Model an inherited cache when a caller bypasses atfork reset. */
++        crucible_mutex_owner_cached_thread_id = transaction.parent_thread_id;
++        g_assert_cmpint(qemu_thread_hot_fork_reconstruct_child_registry(
++                            &transaction), ==, 0);
++        g_assert_true(transaction.child_reconstructed);
++        g_assert_cmpint(crucible_mutex_owner_cached_thread_id, ==,
++                        syscall(SYS_gettid));
++        assert_owner(&mutex);
++        unlock(&mutex);
++        lock(&mutex);
++        unlock(&mutex);
++        g_assert_cmpint(coordinator.thread_id, ==, syscall(SYS_gettid));
++        _exit(0);
++    }
++    g_assert_cmpint(qemu_thread_hot_fork_release_parent_registry_transaction(
++                        &transaction), ==, 0);
++    unlock(&mutex);
++    wait_child(child);
++    g_assert_cmpint(coordinator.thread_id, ==, syscall(SYS_gettid));
++    g_list_free(qemu_hot_fork_threads);
++    qemu_hot_fork_threads = NULL;
++}
++
++static void registration_failure(void)
++{
++    unsigned int before;
++    fail_registration = true;
++    qemu_mutex_init(&mutex);
++    g_assert_false(crucible_mutex_owner_cache_enabled);
++    before = tid_reads;
++    for (unsigned int i = 0; i < 10; i++) {
++        lock(&mutex);
++        unlock(&mutex);
++    }
++    g_assert_cmpuint(tid_reads, ==, before + 20);
++    g_assert_cmpint(crucible_mutex_owner_cached_thread_id, ==, 0);
++    qemu_mutex_destroy(&mutex);
++    puts("PASS production mutex owner cache: registration failure uses uncached IDs");
++}
++"""
++
++MAIN = r"""
++int main(int argc, char **argv)
++{
++    if (argc == 2 && strcmp(argv[1], "registration-failure") == 0) {
++        registration_failure();
++        return 0;
++    }
++    /* RCU registers its child callback before its first tracked mutex exists. */
++    g_assert_cmpint(pthread_atfork(early_prepare, NULL, rcu_init_child), ==, 0);
++    qemu_mutex_init(&mutex);
++    g_assert_true(crucible_mutex_owner_cache_enabled);
++    g_assert_cmpint(pthread_atfork(NULL, NULL, late_child), ==, 0);
++    steady_and_worker();
++    ordinary_forks();
++    native_reconstruction();
++    qemu_mutex_destroy(&recursive.m);
++    qemu_mutex_destroy(&mutex);
++    puts("PASS production mutex owner cache: no steady syscalls, real worker/fork ownership, atfork ordering, native refresh");
++    return 0;
++}
++"""
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--negative-control", choices=["cache", "atfork", "native"])
++    arguments = parser.parse_args()
++    arguments.output_dir.mkdir(parents=True, exist_ok=True)
++    source = (ROOT / "util/qemu-thread-posix.c").read_text()
++    header = (ROOT / "include/qemu/thread.h").read_text()
++    thread_types = header[header.index("typedef enum QemuThreadHotForkDisposition {"):
++                          header.index("void qemu_thread_hot_fork_inventory(")]
++    thread_types += "\nint qemu_thread_hot_fork_reconstruct_child_registry(QemuThreadHotForkRegistryTransaction *);\n"
++    thread_types += "int qemu_thread_hot_fork_release_parent_registry_transaction(QemuThreadHotForkRegistryTransaction *);\n"
++    mutex_globals = source[source.index("static pthread_mutex_t crucible_hot_fork_mutex_registry_guard"):
++                           source.index("/*\n * This is not defined on Linux")]
++    mutex_globals += "\nstatic __thread bool crucible_hot_fork_mutex_registry_held;\n"
++    thread_globals = source[source.index("typedef struct QemuHotForkThreadRecord {"):
++                            source.index("static QemuHotForkThreadRecord *qemu_hot_fork_thread_register(")]
++    thread_globals += "\nstatic char qemu_hot_fork_registry_blocker[256];\n"
++    carriers = source[source.index("typedef struct CrucibleHotForkMutexCarrier {"):
++                      source.index("static bool crucible_hot_fork_carrier_is_restart_thread(")]
++    signatures = [
++        "static void error_exit(",
++        "static void crucible_hot_fork_mutex_registry_lock(",
++        "static void crucible_hot_fork_mutex_registry_unlock(",
++        "static void crucible_hot_fork_mutex_latch_inconsistent(",
++        "static void crucible_hot_fork_mutex_changed(",
++        "static void crucible_hot_fork_mutex_slots_init(",
++        "static size_t crucible_hot_fork_mutex_address_hash(",
++        "static bool crucible_hot_fork_mutex_address_find(",
++        "static bool crucible_hot_fork_mutex_address_insert(",
++        "static bool crucible_hot_fork_mutex_address_remove(",
++        "static void crucible_hot_fork_mutex_address_rebuild(",
++        "static bool crucible_hot_fork_mutex_entry_quiescent(",
++        "static CrucibleHotForkMutexEntry *crucible_hot_fork_mutex_entry(",
++        "static void crucible_hot_fork_mutex_register(",
++        "static void crucible_hot_fork_mutex_wait_begin(",
++        "static void crucible_hot_fork_mutex_wait_cancel(",
++        "static void crucible_hot_fork_mutex_acquired(",
++        "static void crucible_hot_fork_mutex_unlock_begin(",
++        "static void crucible_hot_fork_mutex_unlock_end(",
++        "static void crucible_hot_fork_mutex_condition_wait_begin(",
++        "static void crucible_hot_fork_mutex_condition_wait_end(",
++        "void qemu_mutex_init(", "void qemu_mutex_destroy(",
++        "void qemu_mutex_lock_impl(", "int qemu_mutex_trylock_impl(",
++        "void qemu_mutex_unlock_impl(", "void qemu_rec_mutex_init(",
++        "static bool crucible_hot_fork_carrier_is_restart_thread(",
++        "static CrucibleHotForkMutexDisposition crucible_hot_fork_mutex_disposition(",
++        "static bool qemu_hot_fork_registered_mutexes_carried(",
++        "static CrucibleHotForkMutexEntry *crucible_hot_fork_registered_mutex(",
++        "static bool crucible_hot_fork_registration_equal(",
++        "static bool qemu_hot_fork_copied_thread_list_matches(",
++        "static void crucible_hot_fork_mutex_adopt_in_child(",
++        "int qemu_thread_hot_fork_release_parent_registry_transaction(",
++        "int qemu_thread_hot_fork_reconstruct_child_registry(",
++    ]
++    bodies = "\n\n".join(definition(source, signature) for signature in signatures)
++    if arguments.negative_control == "cache":
++        cached = definition(mutex_globals, "static int64_t crucible_mutex_owner_thread_id(")
++        mutex_globals = mutex_globals.replace(cached,
++            "static int64_t crucible_mutex_owner_thread_id(void) { return qemu_get_thread_id(); }")
++    elif arguments.negative_control == "atfork":
++        guard = "thread_id > 0 && !crucible_mutex_owner_cache_suspended &&"
++        assert mutex_globals.count(guard) == 1
++        mutex_globals = mutex_globals.replace(guard, "thread_id > 0 &&")
++    elif arguments.negative_control == "native":
++        refresh = "    crucible_mutex_owner_cache_refresh(child_thread_id);\n"
++        assert bodies.count(refresh) == 1
++        bodies = bodies.replace(refresh, "")
++    rcu_child = definition((ROOT / "util/rcu.c").read_text(),
++                           "static void rcu_init_child(void)")
++    generated = arguments.output_dir / "mutex-owner-cache.c"
++    generated.write_text(PRELUDE + thread_types + mutex_globals + thread_globals +
++                         carriers + bodies + CHECKS + rcu_child + MAIN)
++    binary = arguments.output_dir / "mutex-owner-cache"
++    command = [os.environ.get("CC", "cc"),
++               *shlex.split(os.environ.get("CFLAGS", "")),
++               str(generated), "-o", str(binary),
++               *shlex.split(os.environ.get("LDFLAGS", "")), "-pthread"]
++    (arguments.output_dir / "compile-command.json").write_text(
++        json.dumps({"cwd": os.getcwd(), "argv": command}, indent=2) + "\n")
++    subprocess.run(command, check=True)
++    subprocess.run([str(binary)], cwd=arguments.output_dir, check=True)
++    subprocess.run([str(binary), "registration-failure"],
++                   cwd=arguments.output_dir, check=True)
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-net-output-stop.py b/tests/unit/test-crucible-net-output-stop.py
 new file mode 100644
 index 0000000000000000000000000000000000000000..bddd4d55d60bed1dca29cdd58c4ebebf6f82a2bb
@@ -183942,10 +184417,10 @@ index d17135f585aef5fd0adf7a6e0f889eeebfade754..a8a35db75afbf1a9aca85b47b4c0a740
  
  void qemu_coroutine_enter(Coroutine *co)
 diff --git a/util/qemu-thread-posix.c b/util/qemu-thread-posix.c
-index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..0dba015b870f9cb28ce3195b8664fb14faab7069 100644
+index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..38925e9bf24119bd8f97f61ed3a77f0efe331855 100644
 --- a/util/qemu-thread-posix.c
 +++ b/util/qemu-thread-posix.c
-@@ -22,6 +22,58 @@
+@@ -22,6 +22,123 @@
  #include <pthread_np.h>
  #endif
  
@@ -184001,10 +184476,75 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..0dba015b870f9cb28ce3195b8664fb14
 +static bool crucible_hot_fork_mutex_inconsistent;
 +static bool crucible_hot_fork_mutex_slots_initialized;
 +
++/* Linux mutex-owner TIDs remain stable until fork changes process identity. */
++#ifdef __linux__
++static pthread_once_t crucible_mutex_owner_cache_once = PTHREAD_ONCE_INIT;
++static bool crucible_mutex_owner_cache_enabled;
++static __thread int64_t crucible_mutex_owner_cached_thread_id;
++static __thread bool crucible_mutex_owner_cache_suspended;
++
++static void crucible_mutex_owner_cache_prepare(void)
++{
++    /* Earlier child handlers must see the child's real ID before our resume. */
++    crucible_mutex_owner_cache_suspended = true;
++    crucible_mutex_owner_cached_thread_id = 0;
++}
++
++static void crucible_mutex_owner_cache_resume(void)
++{
++    crucible_mutex_owner_cached_thread_id = 0;
++    crucible_mutex_owner_cache_suspended = false;
++}
++
++static void crucible_mutex_owner_cache_register(void)
++{
++    if (pthread_atfork(crucible_mutex_owner_cache_prepare,
++                       crucible_mutex_owner_cache_resume,
++                       crucible_mutex_owner_cache_resume) == 0) {
++        qatomic_store_release(&crucible_mutex_owner_cache_enabled, true);
++    }
++}
++#endif
++
++static void crucible_mutex_owner_cache_initialize(void)
++{
++#ifdef __linux__
++    /* Register before taking registry locks; failure retains uncached IDs. */
++    pthread_once(&crucible_mutex_owner_cache_once,
++                 crucible_mutex_owner_cache_register);
++#endif
++}
++
++static void crucible_mutex_owner_cache_refresh(int64_t thread_id)
++{
++#ifdef __linux__
++    if (thread_id > 0 && !crucible_mutex_owner_cache_suspended &&
++        qatomic_load_acquire(&crucible_mutex_owner_cache_enabled)) {
++        crucible_mutex_owner_cached_thread_id = thread_id;
++    }
++#else
++    (void)thread_id;
++#endif
++}
++
++static int64_t crucible_mutex_owner_thread_id(void)
++{
++    int64_t thread_id;
++
++#ifdef __linux__
++    if (crucible_mutex_owner_cached_thread_id != 0) {
++        return crucible_mutex_owner_cached_thread_id;
++    }
++#endif
++    thread_id = qemu_get_thread_id();
++    crucible_mutex_owner_cache_refresh(thread_id);
++    return thread_id;
++}
++
  /*
   * This is not defined on Linux, but the man page indicates
   * the buffer must be at least 16 bytes, including the NUL
-@@ -59,6 +111,541 @@ static void error_exit(int err, const char *msg)
+@@ -59,6 +176,542 @@ static void error_exit(int err, const char *msg)
      abort();
  }
  
@@ -184354,7 +184894,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..0dba015b870f9cb28ce3195b8664fb14
 +        return;
 +    }
 +
-+    thread_id = qemu_get_thread_id();
++    thread_id = crucible_mutex_owner_thread_id();
 +    owner = qatomic_read(&entry->owner_thread_id);
 +    depth = qatomic_read(&entry->recursion_depth);
 +
@@ -184393,7 +184933,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..0dba015b870f9cb28ce3195b8664fb14
 +        return;
 +    }
 +
-+    thread_id = qemu_get_thread_id();
++    thread_id = crucible_mutex_owner_thread_id();
 +    owner = qatomic_read(&entry->owner_thread_id);
 +    depth = qatomic_read(&entry->recursion_depth);
 +
@@ -184440,12 +184980,13 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..0dba015b870f9cb28ce3195b8664fb14
 +
 +    if (qatomic_fetch_inc(&entry->condition_waiters) == 0) {
 +        qatomic_set(&entry->condition_waiter_thread_id,
-+                    qemu_get_thread_id());
++                    crucible_mutex_owner_thread_id());
 +    } else {
 +        /* Concurrent waiters have no single identity to carry. */
 +        qatomic_set(&entry->condition_waiter_thread_id, -1);
 +    }
-+    if (owner != qemu_get_thread_id() || depth != 1 || entry->recursive) {
++    if (owner != crucible_mutex_owner_thread_id() || depth != 1 ||
++        entry->recursive) {
 +        qatomic_set(&entry->ownership_valid, false);
 +    }
 +    qatomic_set(&entry->recursion_depth, 0);
@@ -184472,7 +185013,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..0dba015b870f9cb28ce3195b8664fb14
 +    if (owner != 0 || depth != 0) {
 +        qatomic_set(&entry->ownership_valid, false);
 +    }
-+    qatomic_set(&entry->owner_thread_id, qemu_get_thread_id());
++    qatomic_set(&entry->owner_thread_id, crucible_mutex_owner_thread_id());
 +    qatomic_set(&entry->recursion_depth, 1);
 +    if (qatomic_read(&entry->condition_waiters) == 0) {
 +        qatomic_set(&entry->ownership_valid, false);
@@ -184546,7 +185087,12 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..0dba015b870f9cb28ce3195b8664fb14
  static inline clockid_t qemu_timedwait_clockid(void)
  {
  #ifdef CONFIG_PTHREAD_CONDATTR_SETCLOCK
-@@ -87,17 +674,43 @@ void qemu_mutex_init(QemuMutex *mutex)
+@@ -83,21 +736,48 @@ void qemu_mutex_init(QemuMutex *mutex)
+ {
+     int err;
+ 
++    crucible_mutex_owner_cache_initialize();
+     err = pthread_mutex_init(&mutex->lock, NULL);
      if (err)
          error_exit(err, __func__);
      qemu_mutex_post_init(mutex);
@@ -184592,7 +185138,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..0dba015b870f9cb28ce3195b8664fb14
  }
  
  void qemu_mutex_lock_impl(QemuMutex *mutex, const char *file, const int line)
-@@ -105,11 +718,13 @@ void qemu_mutex_lock_impl(QemuMutex *mutex, const char *file, const int line)
+@@ -105,11 +785,13 @@ void qemu_mutex_lock_impl(QemuMutex *mutex, const char *file, const int line)
      int err;
  
      assert(mutex->initialized);
@@ -184606,7 +185152,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..0dba015b870f9cb28ce3195b8664fb14
  }
  
  int qemu_mutex_trylock_impl(QemuMutex *mutex, const char *file, const int line)
-@@ -117,11 +732,14 @@ int qemu_mutex_trylock_impl(QemuMutex *mutex, const char *file, const int line)
+@@ -117,11 +799,14 @@ int qemu_mutex_trylock_impl(QemuMutex *mutex, const char *file, const int line)
      int err;
  
      assert(mutex->initialized);
@@ -184621,7 +185167,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..0dba015b870f9cb28ce3195b8664fb14
      if (err != EBUSY) {
          error_exit(err, __func__);
      }
-@@ -133,10 +751,12 @@ void qemu_mutex_unlock_impl(QemuMutex *mutex, const char *file, const int line)
+@@ -133,10 +818,12 @@ void qemu_mutex_unlock_impl(QemuMutex *mutex, const char *file, const int line)
      int err;
  
      assert(mutex->initialized);
@@ -184634,7 +185180,15 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..0dba015b870f9cb28ce3195b8664fb14
  }
  
  void qemu_rec_mutex_init(QemuRecMutex *mutex)
-@@ -152,6 +772,7 @@ void qemu_rec_mutex_init(QemuRecMutex *mutex)
+@@ -144,6 +831,7 @@ void qemu_rec_mutex_init(QemuRecMutex *mutex)
+     int err;
+     pthread_mutexattr_t attr;
+ 
++    crucible_mutex_owner_cache_initialize();
+     pthread_mutexattr_init(&attr);
+     pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+     err = pthread_mutex_init(&mutex->m.lock, &attr);
+@@ -152,6 +840,7 @@ void qemu_rec_mutex_init(QemuRecMutex *mutex)
          error_exit(err, __func__);
      }
      mutex->m.initialized = true;
@@ -184642,7 +185196,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..0dba015b870f9cb28ce3195b8664fb14
  }
  
  void qemu_rec_mutex_destroy(QemuRecMutex *mutex)
-@@ -236,9 +857,11 @@ void qemu_cond_wait_impl(QemuCond *cond, QemuMutex *mutex, const char *file, con
+@@ -236,9 +925,11 @@ void qemu_cond_wait_impl(QemuCond *cond, QemuMutex *mutex, const char *file, con
      int err;
  
      assert(cond->initialized);
@@ -184654,7 +185208,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..0dba015b870f9cb28ce3195b8664fb14
      if (err)
          error_exit(err, __func__);
  }
-@@ -250,9 +873,11 @@ qemu_cond_timedwait_ts(QemuCond *cond, QemuMutex *mutex, struct timespec *ts,
+@@ -250,9 +941,11 @@ qemu_cond_timedwait_ts(QemuCond *cond, QemuMutex *mutex, struct timespec *ts,
      int err;
  
      assert(cond->initialized);
@@ -184666,7 +185220,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..0dba015b870f9cb28ce3195b8664fb14
      if (err && err != ETIMEDOUT) {
          error_exit(err, __func__);
      }
-@@ -379,19 +1004,898 @@ typedef struct {
+@@ -379,19 +1072,901 @@ typedef struct {
      void *(*start_routine)(void *);
      void *arg;
      char *name;
@@ -185388,6 +185942,9 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..0dba015b870f9cb28ce3195b8664fb14
 +    size_t index;
 +    int err;
 +
++    /* Native reconstruction uses the uncached, authenticated child ID. */
++    crucible_mutex_owner_cache_refresh(child_thread_id);
++
 +    if (!transaction || !transaction->active ||
 +        transaction->child_reconstructed ||
 +        transaction->parent_process_id <= 1 ||
@@ -185565,7 +186122,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..0dba015b870f9cb28ce3195b8664fb14
      g_free(qemu_thread_args->name);
      g_free(qemu_thread_args);
  
-@@ -410,9 +1914,11 @@ static void *qemu_thread_start(void *args)
+@@ -410,9 +1985,11 @@ static void *qemu_thread_start(void *args)
  #pragma GCC diagnostic ignored "-Wstringop-overflow"
  #endif
  
@@ -185577,7 +186134,7 @@ index 089606c93fb8a0ce7b86b8a18b7ba66668c09b39..0dba015b870f9cb28ce3195b8664fb14
  
  #pragma GCC diagnostic pop
  
-@@ -450,12 +1956,16 @@ void qemu_thread_create(QemuThread *thread, const char *name,
+@@ -450,12 +2027,16 @@ void qemu_thread_create(QemuThread *thread, const char *name,
      qemu_thread_args->name = g_strdup(name);
      qemu_thread_args->start_routine = start_routine;
      qemu_thread_args->arg = arg;
