@@ -1188,6 +1188,30 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   These results qualify shared declarations only. Full verification, property
   mutation, arena allocation and graph copying must remain separate from
   DRV-29's incremental accounting. No task checkbox or milestone advances.
+  Reviewed unpublished completion candidate `89249c84fd89` implements that
+  ordinary immutable construction step. It independently prepares the source
+  and verifies each selected exact I/P/G closure, merges owner-local bindings
+  while preserving unrelated properties and unselected bindings, and forms
+  detached recipes and optional common Memos only after verifying the completed
+  owner's actual binding. True no-op completion reuses the original root;
+  otherwise unchanged physical descendants remain shared. Retained maintenance
+  snapshots keep their original source owner, and missing inline values remain
+  gaps. Independent raw owner/index/recipe/Memo witnesses exercise actual
+  initialization, explicit divergent-binding rebuilding, property-only updates,
+  zero candidates with gaps, refusal limits and separately scoped work counts.
+  All fourteen final validation commands pass on the unchanged four-file source:
+  full core Nextest run `79a70abc-29d0-4d0a-bc86-39ad65c78355` passes 655 tests
+  across seven binaries with zero skips; build, strict Clippy/rustdoc, six
+  immutable index/Memo/no-std checks, application compilation, both mandatory
+  formatters and diff checking pass. All seven actual Nix check/compile inputs
+  match the reviewed source images. The application output records compilation
+  of 109 test executables across 29 packages and 72 integration targets, without
+  execution. The original validation driver's metadata parsing failure remains
+  recorded; inspection resumed without repeating passed checks. Parent combined
+  checkout `0ff3e24db5d1` and native source checkout `3578e7216bdd` now retain
+  this reviewed dependency. Their joint qualification remains pending; no
+  implementation is merged into the published trunk and no task checkbox,
+  milestone exit or freeze advances.
   A separate source audit confirms that native initialization and loss rebuild
   cannot acquire ordinary namespace inputs through the bound-index loader:
   it discards its fetched namespace when the owner binding or auxiliary index
