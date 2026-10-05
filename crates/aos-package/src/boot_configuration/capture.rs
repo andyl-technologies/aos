@@ -17,7 +17,7 @@ use super::reader::VerifiedAuthorization;
 use crate::config_eval::provisioning_sources::{
     add_fixed_input_to_store, materialize_authorized_host_source,
 };
-use crate::deployment::retention::ArtifactAdmission;
+use crate::deployment::retention::{AdmittedArtifact, ArtifactAdmission};
 use crate::native_deployment::{EvaluationInput, NativeDeploymentCommand};
 use crate::store::temp_roots::TemporaryRoots;
 use crate::store::verification::{
@@ -52,7 +52,7 @@ impl ExactAdmission {
 }
 
 impl ArtifactAdmission for ExactAdmission {
-    fn admit(&mut self, root: &str) -> Result<()> {
+    fn admit(&mut self, root: &str) -> Result<AdmittedArtifact> {
         let identity = self
             .roots
             .get(root)

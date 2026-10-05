@@ -189,4 +189,5 @@ fn verify_identity(identity: &ArtifactIdentity, executable: &Path) -> Result<()>
         &identity.references,
         Some(executable),
     )
+    .map(|_| ())
 }

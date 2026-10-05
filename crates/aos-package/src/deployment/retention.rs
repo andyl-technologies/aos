@@ -5,6 +5,7 @@
 //! needs its handler. Root names are content hashes of logical ownership keys.
 
 use std::collections::BTreeSet;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -21,13 +22,71 @@ use super::transaction::DeploymentStore;
 // and scrubbed environment even under a small exec argument budget.
 const VALIDITY_ARGUMENT_BYTES: usize = 64 * 1024;
 
+/// Reports authentication and any registration verified during that admission.
+///
+/// A registration proof belongs to one admission call and one selected store.
+/// Retention consumes it immediately; subsequent dispatches admit again.
+#[derive(Debug)]
+pub struct AdmittedArtifact {
+    registration: Option<StoreRegistration>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct StoreRegistration {
+    root: String,
+    executable: OsString,
+    arguments: Vec<OsString>,
+    environment: Vec<(OsString, Option<OsString>)>,
+}
+
+impl StoreRegistration {
+    // Capture the configured store route before adding query arguments. The
+    // same Nix executable can address different stores, including test stores.
+    fn new(root: &str, command: &Command) -> Self {
+        Self {
+            root: root.to_owned(),
+            executable: command.get_program().to_owned(),
+            arguments: command
+                .get_args()
+                .map(|argument| argument.to_owned())
+                .collect(),
+            environment: command
+                .get_envs()
+                .map(|(key, value)| (key.to_owned(), value.map(|value| value.to_owned())))
+                .collect(),
+        }
+    }
+}
+
+impl AdmittedArtifact {
+    /// Reports authentication without a store-registration proof.
+    ///
+    /// Retention checks database validity separately for this result.
+    #[must_use]
+    pub const fn authenticated() -> Self {
+        Self { registration: None }
+    }
+
+    pub(crate) fn registered(root: &str, command: &Command) -> Self {
+        Self {
+            registration: Some(StoreRegistration::new(root, command)),
+        }
+    }
+
+    fn registered_in(self, root: &str, executable: &Path) -> Result<bool> {
+        let mut command = Command::new(executable);
+        aos_core::nix::configure_aos_nix_store(&mut command)?;
+        Ok(self.registration == Some(StoreRegistration::new(root, &command)))
+    }
+}
+
 /// Admits exact output roots using authenticated registry or retained-generation evidence.
 pub trait ArtifactAdmission {
     /// Admits a canonical output identity before it can be rooted or executed.
     ///
     /// # Errors
     /// Returns an error when the output is not covered by the resolver's evidence.
-    fn admit(&mut self, root: &str) -> Result<()>;
+    fn admit(&mut self, root: &str) -> Result<AdmittedArtifact>;
 }
 
 /// Verifies existing effect roots without creating roots or executing handlers.
@@ -98,9 +157,22 @@ impl<A: ArtifactAdmission> NixStore<A> {
     }
 
     fn pin(&mut self, key: &str, root: &str) -> Result<()> {
-        self.admission.admit(root)?;
-        self.check_validity(&BTreeSet::from([root]))?;
+        let admitted = self.admission.admit(root)?;
+        if !admitted.registered_in(root, &self.executable)? {
+            self.check_validity(&BTreeSet::from([root]))?;
+        }
         self.pin_validated(key, root)
+    }
+
+    fn admit_roots(&mut self, roots: &BTreeSet<&str>) -> Result<()> {
+        let mut unchecked = BTreeSet::new();
+        for root in roots {
+            let admitted = self.admission.admit(root)?;
+            if !admitted.registered_in(root, &self.executable)? {
+                unchecked.insert(*root);
+            }
+        }
+        self.check_validity(&unchecked)
     }
 
     fn check_validity(&self, roots: &BTreeSet<&str>) -> Result<()> {
@@ -221,10 +293,7 @@ impl<A: ArtifactAdmission> HandlerArtifacts for NixStore<A> {
                 _ => None,
             })
             .collect::<BTreeSet<_>>();
-        for root in &roots {
-            self.admission.admit(root)?;
-        }
-        self.check_validity(&roots)?;
+        self.admit_roots(&roots)?;
 
         for effect in effects {
             if let Handler::Process { artifact, .. } = &effect.handler {
@@ -245,10 +314,7 @@ impl<A: ArtifactAdmission> HandlerArtifacts for NixStore<A> {
 impl<A: ArtifactAdmission> DeploymentStore for NixStore<A> {
     fn retain_generation(&mut self, generation: &str, deployment: &Deployment) -> Result<()> {
         let roots = generation_roots(deployment);
-        for root in &roots {
-            self.admission.admit(root)?;
-        }
-        self.check_validity(&roots)?;
+        self.admit_roots(&roots)?;
         for root in roots {
             self.pin_validated(&format!("generation:{generation}:{root}"), root)?;
         }
@@ -306,10 +372,11 @@ mod tests {
     struct CheckedFixture {
         members: BTreeMap<String, PathBuf>,
         calls: Arc<Mutex<Vec<String>>>,
+        registration: Option<(String, PathBuf)>,
     }
 
     impl ArtifactAdmission for CheckedFixture {
-        fn admit(&mut self, root: &str) -> Result<()> {
+        fn admit(&mut self, root: &str) -> Result<AdmittedArtifact> {
             self.calls.lock().unwrap().push(root.to_owned());
             let path = self
                 .members
@@ -319,7 +386,14 @@ mod tests {
                 std::fs::read(path)? == b"admitted",
                 "fixture artifact changed"
             );
-            Ok(())
+            Ok(match &self.registration {
+                Some((root, executable)) => {
+                    let mut command = Command::new(executable);
+                    aos_core::nix::configure_aos_nix_store(&mut command)?;
+                    AdmittedArtifact::registered(root, &command)
+                }
+                None => AdmittedArtifact::authenticated(),
+            })
         }
     }
 
@@ -399,6 +473,7 @@ esac
         let admission = CheckedFixture {
             members,
             calls: Arc::default(),
+            registration: None,
         };
         (
             NixStore::open(executable, directory.join("roots"), admission).unwrap(),
@@ -424,6 +499,90 @@ esac
             .lines()
             .map(|line| line.split_whitespace().map(str::to_owned).collect())
             .collect()
+    }
+
+    #[test]
+    fn registration_for_the_same_executable_requires_the_same_store_route() {
+        let root = "/nix/store/00000000000000000000000000000000-provider";
+        let executable = source_tool("bash");
+
+        for use_argument in [false, true] {
+            let mut command = Command::new(&executable);
+            aos_core::nix::configure_aos_nix_store(&mut command).unwrap();
+            if use_argument {
+                command.args(["--store", "local?root=/different-store"]);
+            } else {
+                command.env("NIX_STATE_DIR", "/different-store/state");
+            }
+            let admitted = AdmittedArtifact::registered(root, &command);
+
+            assert!(!admitted.registered_in(root, &executable).unwrap());
+        }
+    }
+
+    #[test]
+    fn registered_admission_skips_duplicate_validity_but_rechecks_next_dispatch() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut store, old, _) = fixture(directory.path());
+        store.admission.registration = Some((old.clone(), store.executable.clone()));
+        let first = effect("first", &old);
+        let shared = effect("shared", &old);
+
+        store.retain_batch(&[&first, &shared]).unwrap();
+        store.retain(&first).unwrap();
+
+        assert!(validity_calls(directory.path()).is_empty());
+        assert_eq!(
+            *store.admission.calls.lock().unwrap(),
+            [old.clone(), old.clone()]
+        );
+        assert_eq!(std::fs::read_dir(&store.directory).unwrap().count(), 2);
+
+        std::fs::write(&store.admission.members[&old], b"changed").unwrap();
+        assert!(store.retain(&first).is_err());
+        assert_eq!(store.admission.calls.lock().unwrap().len(), 3);
+        assert!(validity_calls(directory.path()).is_empty());
+        assert_eq!(std::fs::read_dir(&store.directory).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn registration_proof_for_another_root_or_store_keeps_validity_fallback() {
+        for other_store in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let (mut store, old, new) = fixture(directory.path());
+            store.admission.registration = Some(if other_store {
+                (old.clone(), directory.path().join("another-store"))
+            } else {
+                (new, store.executable.clone())
+            });
+            let invalid = directory.path().join("invalid");
+            std::fs::create_dir(&invalid).unwrap();
+            std::fs::write(invalid.join(Path::new(&old).file_name().unwrap()), b"").unwrap();
+
+            assert!(store.retain(&effect("first", &old)).is_err());
+
+            assert_eq!(validity_calls(directory.path()), [vec![old]]);
+            assert_eq!(std::fs::read_dir(&store.directory).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn mixed_registration_batch_checks_unproven_roots_before_creating_any_link() {
+        let directory = tempfile::tempdir().unwrap();
+        let (mut store, old, new) = fixture(directory.path());
+        store.admission.registration = Some((old.clone(), store.executable.clone()));
+        let invalid = directory.path().join("invalid");
+        std::fs::create_dir(&invalid).unwrap();
+        std::fs::write(invalid.join(Path::new(&new).file_name().unwrap()), b"").unwrap();
+
+        assert!(
+            store
+                .retain_batch(&[&effect("first", &old), &effect("second", &new)])
+                .is_err()
+        );
+
+        assert_eq!(validity_calls(directory.path()), [vec![new]]);
+        assert_eq!(std::fs::read_dir(&store.directory).unwrap().count(), 0);
     }
 
     #[test]
