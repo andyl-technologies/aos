@@ -151,6 +151,50 @@ impl LifecycleOperationRecordFormatV1 {
     }
 }
 
+fn operation_record_encoded_length(
+    operation: &LifecycleOperationV1,
+    semantic_fact_length: usize,
+) -> Result<usize, LifecycleModelError> {
+    FIXED_BODY_BYTES
+        .checked_add(semantic_fact_length)
+        .and_then(|total| {
+            total.checked_add(
+                operation
+                    .expectations()
+                    .len()
+                    .checked_mul(EXPECTATION_BYTES)?,
+            )
+        })
+        .and_then(|total| total.checked_add(operation.steps().len().checked_mul(STEP_BYTES)?))
+        .and_then(|total| total.checked_add(DIGEST_BYTES))
+        .filter(|total| *total <= MAXIMUM_RECORD_BYTES)
+        .ok_or(LifecycleModelError::InvalidModel)
+}
+
+/// Sizes only the original unbound Snapshot D3 record without allocating it.
+pub(super) fn snapshot_admitted_record_encoded_length_v2(
+    operation: &LifecycleOperationV1,
+) -> Result<usize, LifecycleModelError> {
+    if !matches!(operation.intent(), LifecycleIntentV1::Snapshot { .. })
+        || operation.has_delete_batch_layout()
+        || operation.phase() != LifecyclePhaseV1::Accepted
+        || operation.record_revision().get() != 1
+        || operation.predecessor_digest().is_some()
+        || operation.steps().is_empty()
+        || !operation.plan_is_unbound()
+        || operation.forward_progress() != 0
+        || operation.compensation_progress() != 0
+        || operation.method_semantic_commit().is_some()
+        || operation.failure().is_some()
+        || operation.retry().is_some()
+        || operation.terminal_result().is_some()
+        || operation.finished_at().is_some()
+    {
+        return Err(LifecycleModelError::InvalidModel);
+    }
+    operation_record_encoded_length(operation, 0)
+}
+
 fn encode_operation_record_with_format(
     operation: &LifecycleOperationV1,
     format: LifecycleOperationRecordFormatV1,
@@ -165,20 +209,7 @@ fn encode_operation_record_with_format(
         .map(|fact| encode_semantic_fact_with_layout(fact, format.semantic_layout()))
         .transpose()?
         .unwrap_or_default();
-    let length = FIXED_BODY_BYTES
-        .checked_add(semantic_fact.len())
-        .and_then(|total| {
-            total.checked_add(
-                operation
-                    .expectations()
-                    .len()
-                    .checked_mul(EXPECTATION_BYTES)?,
-            )
-        })
-        .and_then(|total| total.checked_add(operation.steps().len().checked_mul(STEP_BYTES)?))
-        .and_then(|total| total.checked_add(DIGEST_BYTES))
-        .filter(|total| *total <= MAXIMUM_RECORD_BYTES)
-        .ok_or(LifecycleModelError::InvalidModel)?;
+    let length = operation_record_encoded_length(operation, semantic_fact.len())?;
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(length)

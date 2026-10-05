@@ -278,6 +278,63 @@ pub struct LifecycleProtectedJournalOwnerV1<'journal> {
     verifier: LifecycleJournalVerifierV1,
 }
 
+#[derive(Clone, Copy)]
+enum CoordinationSourcePurpose {
+    Legacy,
+    SnapshotAdmittedSource,
+}
+
+enum CoordinationPublication<'current> {
+    Legacy(LifecycleCurrentAuxiliaryPublicationV1<CurrentLifecycleCoordinationV1<'current>>),
+    Snapshot {
+        outcome: LifecycleProgressCommitOutcomeV1,
+        current: Result<
+            Option<CurrentLifecycleCoordinationV1<'current>>,
+            LifecycleProtectedJournalErrorV1,
+        >,
+    },
+}
+
+/// Checks the exact selected suffix before copying the operation or graph.
+fn preflight_snapshot_source_pair(
+    operation: &LifecycleOperationV1,
+) -> Result<(), LifecycleProtectedJournalErrorV1> {
+    let super::LifecycleIntentV1::Snapshot { sandbox, .. } = operation.intent() else {
+        return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+    };
+    let root = LifecycleResourceV1::Sandbox(*sandbox);
+    let non_root = operation
+        .expectations()
+        .iter()
+        .filter(|expectation| expectation.resource() != root)
+        .count();
+    let dependencies = non_root
+        .checked_add(1)
+        .filter(|count| *count <= super::MAXIMUM_LIFECYCLE_EXPECTATIONS)
+        .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+    let original_length =
+        super::coordination::LifecycleSnapshotAdmittedSourceV2::preflight_original(operation)
+            .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+    original_length
+        .checked_add(4)
+        .filter(|length| {
+            *length <= super::auxiliary_payload::MAXIMUM_LIFECYCLE_AUXILIARY_PAYLOAD_BYTES
+        })
+        .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+    dependencies
+        .checked_mul(34)
+        .and_then(|length| {
+            non_root
+                .checked_mul(34)
+                .and_then(|edges| length.checked_add(edges))
+        })
+        .and_then(|length| length.checked_add(404 + 100))
+        .and_then(|length| length.checked_add(original_length))
+        .filter(|length| *length <= super::auxiliary_payload::MAXIMUM_LIFECYCLE_AUXILIARY_PAYLOAD_BYTES)
+        .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+    Ok(())
+}
+
 impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
     /// Cold-replays actual current records and claims the lifecycle adapter.
     ///
@@ -558,10 +615,11 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         }
 
         let projection = self.journal.replay()?;
-        let operation_record = LifecycleRecordDigestV1::commit(
+        let operation_record = super::format::record_digest(
             &encode_operation_record_v1(&operation)
                 .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?,
-        );
+        )
+        .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
         let operation_auxiliary_key = super::lifecycle_protected_key_v1(
             LifecycleProtectedRecordKindV1::Auxiliary,
             project,
@@ -874,6 +932,91 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         LifecycleCurrentAuxiliaryPublicationV1<CurrentLifecycleCoordinationV1<'current>>,
         LifecycleProtectedJournalErrorV1,
     > {
+        match self.publish_coordination_admission_inner(
+            operation_key,
+            retention_key,
+            coordination_key,
+            transaction_id,
+            atomic_join,
+            operation_lineage,
+            coordination_lineage,
+            coordination_transaction,
+            CoordinationSourcePurpose::Legacy,
+        )? {
+            CoordinationPublication::Legacy(publication) => Ok(publication),
+            CoordinationPublication::Snapshot { .. } => {
+                Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)
+            }
+        }
+    }
+
+    /// Publishes the original unbound Snapshot source and its coordination pair.
+    ///
+    /// The retained source is historical DATA, not provider retention or a live
+    /// permission. Its actual pre-coordination cut is captured after retention.
+    /// The owning native outcome is returned separately from current readback:
+    /// an unknown commit performs no readback or recovery and returns `Ok(None)`
+    /// only to report that no readback was attempted. An applied outcome stays
+    /// owned even when its later typed readback fails.
+    ///
+    /// # Errors
+    ///
+    /// Refuses non-original or bound operations, existing coordination, unequal
+    /// current cuts, exhausted canonical/native bounds, or commit failure before
+    /// an outcome is available. Ambiguity and post-commit readback errors remain
+    /// owned in the returned pair instead of being discarded or retried.
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_snapshot_coordination_admission_v2<'current>(
+        &'current mut self,
+        operation_key: &LifecycleProtectedJournalKeyV1,
+        retention_key: &LifecycleProtectedJournalKeyV1,
+        coordination_key: &LifecycleProtectedJournalKeyV1,
+        transaction_id: [u8; 16],
+        atomic_join: ResourceId,
+        operation_lineage: ResourceId,
+        coordination_lineage: ResourceId,
+        coordination_transaction: ResourceId,
+    ) -> Result<
+        (
+            LifecycleProgressCommitOutcomeV1,
+            Result<
+                Option<CurrentLifecycleCoordinationV1<'current>>,
+                LifecycleProtectedJournalErrorV1,
+            >,
+        ),
+        LifecycleProtectedJournalErrorV1,
+    > {
+        match self.publish_coordination_admission_inner(
+            operation_key,
+            retention_key,
+            coordination_key,
+            transaction_id,
+            atomic_join,
+            operation_lineage,
+            coordination_lineage,
+            coordination_transaction,
+            CoordinationSourcePurpose::SnapshotAdmittedSource,
+        )? {
+            CoordinationPublication::Snapshot { outcome, current } => Ok((outcome, current)),
+            CoordinationPublication::Legacy(_) => {
+                Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn publish_coordination_admission_inner<'current>(
+        &'current mut self,
+        operation_key: &LifecycleProtectedJournalKeyV1,
+        retention_key: &LifecycleProtectedJournalKeyV1,
+        coordination_key: &LifecycleProtectedJournalKeyV1,
+        transaction_id: [u8; 16],
+        atomic_join: ResourceId,
+        operation_lineage: ResourceId,
+        coordination_lineage: ResourceId,
+        coordination_transaction: ResourceId,
+        purpose: CoordinationSourcePurpose,
+    ) -> Result<CoordinationPublication<'current>, LifecycleProtectedJournalErrorV1> {
         let operation = self
             .current_operation(operation_key)?
             .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
@@ -904,6 +1047,32 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         let operation_record = operation.record();
         let projection_root = operation.projection_root();
         let retention_record = retention.retention().record();
+        let admitted_source = match purpose {
+            CoordinationSourcePurpose::Legacy => None,
+            CoordinationSourcePurpose::SnapshotAdmittedSource => {
+                require_snapshot_retention_key(retention_key, operation.operation())?;
+                let (latest_key, latest) = self
+                    .current_operation_by_id(operation.operation().operation_id())?
+                    .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+                if &latest_key != operation_key
+                    || latest.record() != operation_record
+                    || latest.projection_root() != projection_root
+                {
+                    return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+                }
+                preflight_snapshot_source_pair(operation.operation())?;
+                Some(
+                    super::coordination::LifecycleSnapshotAdmittedSourceV2::capture(
+                        operation.operation().clone(),
+                        operation_record,
+                        projection_root,
+                        LifecycleTransactionIdV1::new(coordination_transaction)
+                            .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?,
+                    )
+                    .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?,
+                )
+            }
+        };
 
         let root = LifecycleResourceV1::Sandbox(sandbox);
         let mut dependencies = operation
@@ -965,6 +1134,12 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
             thaw,
         )
         .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let coordination = match admitted_source {
+            Some(source) => coordination
+                .with_admitted_source(source)
+                .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?,
+            None => coordination,
+        };
         let prepared = self.prepare_coordination_append(
             operation_key,
             transaction_id,
@@ -973,8 +1148,7 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
             coordination_lineage,
             coordination,
         )?;
-        let settled = self.settle_auxiliary_append(prepared)?;
-        auxiliary_publication(settled, self.current_coordination(coordination_key)?)
+        self.finish_coordination_publication(prepared, coordination_key, purpose)
     }
 
     /// Publishes the exact coordination successor proved by one adjacent effect.
@@ -1173,6 +1347,87 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         LifecycleCurrentAuxiliaryPublicationV1<CurrentLifecycleCoordinationV1<'current>>,
         LifecycleProtectedJournalErrorV1,
     > {
+        match self.publish_coordination_manifest_inner(
+            operation_key,
+            coordination_key,
+            retention_key,
+            transaction_id,
+            atomic_join,
+            operation_lineage,
+            coordination_lineage,
+            snapshot,
+            CoordinationSourcePurpose::Legacy,
+        )? {
+            CoordinationPublication::Legacy(publication) => Ok(publication),
+            CoordinationPublication::Snapshot { .. } => {
+                Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)
+            }
+        }
+    }
+
+    /// Refines one source-bound Snapshot manifest from authentic retention ACKs.
+    ///
+    /// Returns the owning native outcome and a separate current-readback result
+    /// with the same no-recovery contract as source-bearing admission.
+    ///
+    /// # Errors
+    ///
+    /// Refuses source-less history, a non-latest key, changed immutable admission,
+    /// an already-refined placeholder, missing dataset proof, stale retention,
+    /// invalid acknowledgements, or commit failure before an outcome is available.
+    /// Ambiguity and post-commit readback errors remain owned in the returned pair.
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_snapshot_coordination_manifest_v2<'current>(
+        &'current mut self,
+        operation_key: &LifecycleProtectedJournalKeyV1,
+        coordination_key: &LifecycleProtectedJournalKeyV1,
+        retention_key: &LifecycleProtectedJournalKeyV1,
+        transaction_id: [u8; 16],
+        atomic_join: ResourceId,
+        operation_lineage: ResourceId,
+        coordination_lineage: ResourceId,
+        snapshot: &super::LifecycleValidatedSnapshotV1,
+    ) -> Result<
+        (
+            LifecycleProgressCommitOutcomeV1,
+            Result<
+                Option<CurrentLifecycleCoordinationV1<'current>>,
+                LifecycleProtectedJournalErrorV1,
+            >,
+        ),
+        LifecycleProtectedJournalErrorV1,
+    > {
+        match self.publish_coordination_manifest_inner(
+            operation_key,
+            coordination_key,
+            retention_key,
+            transaction_id,
+            atomic_join,
+            operation_lineage,
+            coordination_lineage,
+            snapshot,
+            CoordinationSourcePurpose::SnapshotAdmittedSource,
+        )? {
+            CoordinationPublication::Snapshot { outcome, current } => Ok((outcome, current)),
+            CoordinationPublication::Legacy(_) => {
+                Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn publish_coordination_manifest_inner<'current>(
+        &'current mut self,
+        operation_key: &LifecycleProtectedJournalKeyV1,
+        coordination_key: &LifecycleProtectedJournalKeyV1,
+        retention_key: &LifecycleProtectedJournalKeyV1,
+        transaction_id: [u8; 16],
+        atomic_join: ResourceId,
+        operation_lineage: ResourceId,
+        coordination_lineage: ResourceId,
+        snapshot: &super::LifecycleValidatedSnapshotV1,
+        purpose: CoordinationSourcePurpose,
+    ) -> Result<CoordinationPublication<'current>, LifecycleProtectedJournalErrorV1> {
         let operation = self
             .current_operation(operation_key)?
             .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
@@ -1190,11 +1445,49 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
             .current_retention_ledger(retention_key)?
             .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
         let transaction = coordination.coordination().transaction();
+        let (source_record, source_root) = match purpose {
+            CoordinationSourcePurpose::Legacy => {
+                if transaction.admitted_source().is_some() {
+                    return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+                }
+                (operation.record(), operation.projection_root())
+            }
+            CoordinationSourcePurpose::SnapshotAdmittedSource => {
+                require_snapshot_retention_key(retention_key, operation.operation())?;
+                let (latest_key, latest) = self
+                    .current_operation_by_id(operation.operation().operation_id())?
+                    .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+                let source = transaction
+                    .admitted_source()
+                    .ok_or(LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+                if &latest_key != operation_key
+                    || latest.record() != operation.record()
+                    || latest.projection_root() != operation.projection_root()
+                {
+                    return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+                }
+                source
+                    .require_current(transaction, latest.operation())
+                    .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+                let expected_thaw = LifecycleThawCompensationDigestV1::commit(
+                    &Sha256::new()
+                        .chain_update(b"aos.sandbox.lifecycle.protected-thaw-source.v1\0")
+                        .chain_update(source.record().digest().as_bytes())
+                        .chain_update(transaction.live_fence().incarnation().as_bytes())
+                        .chain_update(source.projection_root().as_bytes())
+                        .finalize(),
+                );
+                if transaction.thaw_compensation() != expected_thaw {
+                    return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
+                }
+                (source.record(), source.projection_root())
+            }
+        };
         let intent_manifest = LifecycleSnapshotManifestDigestV1::commit(
             &Sha256::new()
                 .chain_update(b"aos.sandbox.lifecycle.protected-manifest-source.v1\0")
-                .chain_update(operation.record().digest().as_bytes())
-                .chain_update(operation.projection_root().as_bytes())
+                .chain_update(source_record.digest().as_bytes())
+                .chain_update(source_root.as_bytes())
                 .chain_update(expected_snapshot.as_bytes())
                 .finalize(),
         );
@@ -1223,8 +1516,7 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
             coordination_lineage,
             successor,
         )?;
-        let settled = self.settle_auxiliary_append(prepared)?;
-        auxiliary_publication(settled, self.current_coordination(coordination_key)?)
+        self.finish_coordination_publication(prepared, coordination_key, purpose)
     }
 
     /// Publishes the absent initial empty retention ledger for the current operation.
@@ -1856,6 +2148,20 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
             return Err(LifecycleProtectedJournalErrorV1::NonCanonicalRecord);
         }
         let project = current.project();
+        let selected_snapshot = if let LifecycleAuxiliaryPayloadV1::Coordination(coordination) =
+            &payload
+        {
+            if let Some(source) = coordination.admitted_source() {
+                source
+                    .require_current(coordination, &current)
+                    .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
         let operation = current.operation_id();
         let operation_key = super::lifecycle_protected_key_v1(
             LifecycleProtectedRecordKindV1::Auxiliary,
@@ -1872,7 +2178,8 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
         let projection = self.journal.replay()?;
         let operation_body = encode_operation_record_v1(&current)
             .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
-        let operation_record = LifecycleRecordDigestV1::commit(&operation_body);
+        let operation_record = super::format::record_digest(&operation_body)
+            .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
         let operation_member = self.auxiliary_proposal(
             &projection,
             &operation_key,
@@ -1889,8 +2196,13 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
             atomic_join,
             payload,
         )?;
-        let records = bind_lifecycle_atomic_join_v1(vec![operation_member, value_member])
-            .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let proposals = vec![operation_member, value_member];
+        let records = if selected_snapshot {
+            super::durable::bind_snapshot_admitted_source_join_v2(proposals)
+        } else {
+            bind_lifecycle_atomic_join_v1(proposals)
+        }
+        .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?;
 
         let mut envelopes = Vec::with_capacity(records.len());
         for record in &records {
@@ -2704,6 +3016,38 @@ impl<'journal> LifecycleProtectedJournalOwnerV1<'journal> {
             }
             LifecycleProgressRecoveryV1::Diverged(pending) => {
                 Ok(SettledAuxiliaryPublicationV1::Diverged(pending))
+            }
+        }
+    }
+
+    fn finish_coordination_publication<'current>(
+        &'current mut self,
+        prepared: PreparedLifecycleProgressV1,
+        key: &LifecycleProtectedJournalKeyV1,
+        purpose: CoordinationSourcePurpose,
+    ) -> Result<CoordinationPublication<'current>, LifecycleProtectedJournalErrorV1> {
+        match purpose {
+            CoordinationSourcePurpose::Legacy => {
+                let settled = self.settle_auxiliary_append(prepared)?;
+                auxiliary_publication(settled, self.current_coordination(key)?)
+                    .map(CoordinationPublication::Legacy)
+            }
+            CoordinationSourcePurpose::SnapshotAdmittedSource => {
+                // Keep the complete actual outcome through any later readback.
+                // Unknown writes return immediately; recovery is not a retry grant.
+                let result = self.commit_auxiliary_append(prepared);
+                match result {
+                    Err(error) => Err(error),
+                    Ok(outcome) => {
+                        let current = match &outcome {
+                            LifecycleProgressCommitOutcomeV1::Applied(_) => {
+                                self.current_coordination(key)
+                            }
+                            LifecycleProgressCommitOutcomeV1::OutcomeUnknown { .. } => Ok(None),
+                        };
+                        Ok(CoordinationPublication::Snapshot { outcome, current })
+                    }
+                }
             }
         }
     }
@@ -3917,6 +4261,18 @@ fn auxiliary_publication<Current>(
             Ok(LifecycleCurrentAuxiliaryPublicationV1::Diverged(pending))
         }
     }
+}
+
+fn require_snapshot_retention_key(
+    key: &LifecycleProtectedJournalKeyV1,
+    operation: &LifecycleOperationV1,
+) -> Result<(), LifecycleProtectedJournalErrorV1> {
+    let lineage = ResourceId::from_bytes(
+        key.identity()[16..32]
+            .try_into()
+            .map_err(|_| LifecycleProtectedJournalErrorV1::NonCanonicalRecord)?,
+    );
+    require_auxiliary_key(key, operation, lineage)
 }
 
 fn exact_reserved_successor(

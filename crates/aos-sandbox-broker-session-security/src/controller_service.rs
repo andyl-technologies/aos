@@ -112,6 +112,7 @@ use aos_sandbox::lifecycle::{
     LifecycleOperationAdmissionV1, LifecycleOperationV1, LifecycleProgressCommitOutcomeV1,
     LifecycleProgressOutcomeUnknownV1, LifecycleProgressRecoveryV1,
     LifecycleProtectedCancellationAdmissionV1, LifecycleProtectedCancellationResolutionV1,
+    LifecycleProtectedJournalErrorV1,
     LifecycleProtectedRecordKindV1, LifecycleSnapshotBarrierV1, LifecycleSuspensionPlanV1,
     LifecycleTimeV1, lifecycle_operation_from_public_mutation_v1, lifecycle_protected_key_v1,
     lifecycle_public_mutation_admission_v1,
@@ -3718,6 +3719,7 @@ struct ProductionEffectExecutor {
     node: NodeId,
     process_start: Option<([u8; 16], u64)>,
     pending_source_commit: Option<PendingSourceCommit>,
+    pending_snapshot_coordination: Option<PendingSnapshotCoordinationV2>,
     pending_atomic_snapshot: Option<storage_snapshot::PendingAtomicSnapshotV1>,
     q04: Option<create_q04::OriginalQ04ControllerSelectionV1>,
 }
@@ -3726,6 +3728,13 @@ struct PendingSourceCommit {
     operation_id: OperationId,
     receipt: Option<EffectReceipt>,
     pending: LifecycleProgressOutcomeUnknownV1,
+}
+
+/// Retains the actual selected result; legacy retry custody is independent.
+struct PendingSnapshotCoordinationV2 {
+    operation_id: OperationId,
+    outcome: Result<LifecycleProgressCommitOutcomeV1, LifecycleProtectedJournalErrorV1>,
+    readback_debt: Option<LifecycleProtectedJournalErrorV1>,
 }
 
 enum AuxiliaryPublicationDisposition {
@@ -3829,6 +3838,7 @@ impl ProductionEffectExecutor {
             node,
             process_start,
             pending_source_commit: None,
+            pending_snapshot_coordination: None,
             pending_atomic_snapshot: None,
             q04: None,
         }
@@ -4214,6 +4224,10 @@ impl ProductionEffectExecutor {
         &mut self,
         operation_id: OperationId,
     ) -> Result<(), EffectFailure> {
+        if self.pending_snapshot_coordination.is_some() {
+            return Err(self.retained_snapshot_coordination_failure());
+        }
+
         let disposition = {
             let mut owner = aos_sandbox::lifecycle::LifecycleProtectedJournalOwnerV1::claim(
                 &mut self.source_domains,
@@ -4251,11 +4265,61 @@ impl ProductionEffectExecutor {
                 .map_err(|error| EffectFailure::Permanent(error.to_string()))?
                 .is_some()
             {
-                AuxiliaryPublicationDisposition::Current
+                Some(AuxiliaryPublicationDisposition::Current)
             } else {
+                let selected_snapshot = matches!(
+                    current.operation().intent(), LifecycleIntentV1::Snapshot { .. }
+                );
                 drop(current);
-                let publication = owner
-                    .publish_coordination_admission(
+                if selected_snapshot {
+                    let publication = owner.publish_snapshot_coordination_admission_v2(
+                        &operation_key,
+                        &retention_key,
+                        &coordination_key,
+                        lifecycle_plan_transaction_id(operation_id, b"coordination-publication"),
+                        lifecycle_plan_resource_id(operation_id, b"coordination-atomic-join"),
+                        operation_lineage,
+                        coordination_lineage,
+                        lifecycle_plan_resource_id(operation_id, b"coordination-transaction"),
+                    );
+                    match publication {
+                        Err(error) => {
+                            self.pending_snapshot_coordination =
+                                Some(PendingSnapshotCoordinationV2 {
+                                    operation_id,
+                                    outcome: Err(error),
+                                    readback_debt: None,
+                                });
+                        }
+                        Ok((outcome, readback)) => {
+                            let retained = self.pending_snapshot_coordination.insert(
+                                PendingSnapshotCoordinationV2 {
+                                    operation_id,
+                                    outcome: Ok(outcome),
+                                    readback_debt: None,
+                                },
+                            );
+                            // Park native success/ambiguity first. The current handle
+                            // remains local to this SAME Source owner loan.
+                            match readback {
+                                Ok(Some(current)) => drop(current),
+                                Ok(None) => {
+                                    if matches!(
+                                        &retained.outcome,
+                                        Ok(LifecycleProgressCommitOutcomeV1::Applied(_))
+                                    ) {
+                                        retained.readback_debt = Some(
+                                            LifecycleProtectedJournalErrorV1::NonCanonicalRecord,
+                                        );
+                                    }
+                                }
+                                Err(error) => retained.readback_debt = Some(error),
+                            }
+                        }
+                    }
+                    None
+                } else {
+                    let publication = owner.publish_coordination_admission(
                         &operation_key,
                         &retention_key,
                         &coordination_key,
@@ -4266,11 +4330,62 @@ impl ProductionEffectExecutor {
                         lifecycle_plan_resource_id(operation_id, b"coordination-transaction"),
                     )
                     .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
-                auxiliary_publication_disposition(publication)
+                    Some(auxiliary_publication_disposition(publication))
+                }
             }
         };
 
-        self.settle_auxiliary_publication(operation_id, disposition, "snapshot coordination")
+        if let Some(retained) = &self.pending_snapshot_coordination {
+            if matches!(
+                &retained.outcome,
+                Ok(LifecycleProgressCommitOutcomeV1::Applied(_))
+            ) && retained.readback_debt.is_none()
+            {
+                // Every selected readback has succeeded and the owner loan ended.
+                // Only this completed success retires its native result.
+                self.pending_snapshot_coordination = None;
+                return Ok(());
+            }
+            return Err(self.retained_snapshot_coordination_failure());
+        }
+
+        match disposition {
+            Some(disposition) => {
+                self.settle_auxiliary_publication(operation_id, disposition, "snapshot coordination")
+            }
+            None => Err(EffectFailure::Permanent(
+                "snapshot coordination result is absent".to_owned(),
+            )),
+        }
+    }
+
+    fn retained_snapshot_coordination_failure(&self) -> EffectFailure {
+        let Some(retained) = &self.pending_snapshot_coordination else {
+            return EffectFailure::Permanent(
+                "snapshot coordination custody is absent".to_owned(),
+            );
+        };
+        match &retained.outcome {
+            Err(error) => EffectFailure::Permanent(format!(
+                "protected snapshot coordination {} failed: {error}",
+                retained.operation_id,
+            )),
+            Ok(LifecycleProgressCommitOutcomeV1::OutcomeUnknown { cause, .. }) => {
+                EffectFailure::Retryable(format!(
+                    "protected snapshot coordination {} durability is unknown: {cause}",
+                    retained.operation_id,
+                ))
+            }
+            Ok(LifecycleProgressCommitOutcomeV1::Applied(_)) => match &retained.readback_debt {
+                Some(error) => EffectFailure::Permanent(format!(
+                    "protected snapshot coordination {} readback failed: {error}",
+                    retained.operation_id,
+                )),
+                None => EffectFailure::Permanent(
+                    "snapshot coordination result is already resident".to_owned(),
+                ),
+            },
+        }
     }
 
     fn settle_auxiliary_publication(

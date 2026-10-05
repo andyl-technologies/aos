@@ -39,6 +39,8 @@ const CURRENT_MAGIC: &[u8; 8] = b"AOSLIFA4";
 const CURRENT_VERSION: u16 = 2;
 const DELETE_BATCH_MAGIC: &[u8; 8] = b"AOSLIFA5";
 const DELETE_BATCH_VERSION: u16 = 3;
+const SNAPSHOT_SOURCE_MAGIC: &[u8; 8] = b"AOSLIFA6";
+const SNAPSHOT_SOURCE_VERSION: u16 = 4;
 const HEADER_BYTES: usize = 244;
 const DIGEST_BYTES: usize = 32;
 
@@ -47,6 +49,7 @@ enum LifecycleAuxiliaryEnvelopeFormatV1 {
     Legacy,
     Current,
     DeleteBatch,
+    SnapshotAdmittedSource,
 }
 
 impl LifecycleAuxiliaryEnvelopeFormatV1 {
@@ -55,6 +58,7 @@ impl LifecycleAuxiliaryEnvelopeFormatV1 {
             Self::Legacy => LEGACY_MAGIC,
             Self::Current => CURRENT_MAGIC,
             Self::DeleteBatch => DELETE_BATCH_MAGIC,
+            Self::SnapshotAdmittedSource => SNAPSHOT_SOURCE_MAGIC,
         }
     }
 
@@ -63,6 +67,7 @@ impl LifecycleAuxiliaryEnvelopeFormatV1 {
             Self::Legacy => LEGACY_VERSION,
             Self::Current => CURRENT_VERSION,
             Self::DeleteBatch => DELETE_BATCH_VERSION,
+            Self::SnapshotAdmittedSource => SNAPSHOT_SOURCE_VERSION,
         }
     }
 
@@ -71,6 +76,9 @@ impl LifecycleAuxiliaryEnvelopeFormatV1 {
             Self::Legacy => LifecycleAuxiliaryPayloadLayoutV1::LegacyWithoutHostBoot,
             Self::Current => LifecycleAuxiliaryPayloadLayoutV1::Current,
             Self::DeleteBatch => LifecycleAuxiliaryPayloadLayoutV1::DeleteBatch,
+            Self::SnapshotAdmittedSource => {
+                LifecycleAuxiliaryPayloadLayoutV1::SnapshotAdmittedSource
+            }
         }
     }
 
@@ -79,6 +87,7 @@ impl LifecycleAuxiliaryEnvelopeFormatV1 {
             Self::Legacy => b"aos.sandbox.lifecycle.auxiliary-record.v2\0",
             Self::Current => b"aos.sandbox.lifecycle.auxiliary-record.v3\0",
             Self::DeleteBatch => b"aos.sandbox.lifecycle.auxiliary-record.v4\0",
+            Self::SnapshotAdmittedSource => b"aos.sandbox.lifecycle.auxiliary-record.v5\0",
         }
     }
 }
@@ -196,6 +205,9 @@ impl LifecycleAuxiliaryRecordV1 {
             return Err(LifecycleModelError::InvalidModel);
         }
         let format = match &payload {
+            LifecycleAuxiliaryPayloadV1::Coordination(value) if value.admitted_source().is_some() => {
+                LifecycleAuxiliaryEnvelopeFormatV1::SnapshotAdmittedSource
+            }
             LifecycleAuxiliaryPayloadV1::DeleteBatch(_) => {
                 LifecycleAuxiliaryEnvelopeFormatV1::DeleteBatch
             }
@@ -209,7 +221,11 @@ impl LifecycleAuxiliaryRecordV1 {
             }
             _ => LifecycleAuxiliaryEnvelopeFormatV1::Current,
         };
-        let encoded_payload = if format == LifecycleAuxiliaryEnvelopeFormatV1::DeleteBatch {
+        let encoded_payload = if matches!(
+            format,
+            LifecycleAuxiliaryEnvelopeFormatV1::DeleteBatch
+                | LifecycleAuxiliaryEnvelopeFormatV1::SnapshotAdmittedSource
+        ) {
             encode_lifecycle_auxiliary_payload_with_layout_v1(&payload, format.payload_layout())?
         } else {
             encode_lifecycle_auxiliary_payload_v1(&payload)?
@@ -558,6 +574,11 @@ pub fn lifecycle_atomic_join_digest_v1(
             hasher.update(first.format.magic());
             hasher.update(first.format.version().to_be_bytes());
         }
+        LifecycleAuxiliaryEnvelopeFormatV1::SnapshotAdmittedSource => {
+            hasher.update(b"aos.sandbox.lifecycle.atomic-join.v4\0");
+            hasher.update(first.format.magic());
+            hasher.update(first.format.version().to_be_bytes());
+        }
     }
     hasher = hasher
         .chain_update(first.project.as_bytes())
@@ -605,6 +626,18 @@ pub fn lifecycle_atomic_join_digest_v1(
     {
         return Err(LifecycleModelError::InvalidTransition);
     }
+    if first.format == LifecycleAuxiliaryEnvelopeFormatV1::SnapshotAdmittedSource {
+        if (members, records.len()) != (0x03, 2) {
+            return Err(LifecycleModelError::InvalidTransition);
+        }
+        let LifecycleAuxiliaryPayloadV1::Operation(operation) = records[0].payload() else {
+            return Err(LifecycleModelError::InvalidTransition);
+        };
+        let LifecycleAuxiliaryPayloadV1::Coordination(coordination) = records[1].payload() else {
+            return Err(LifecycleModelError::InvalidTransition);
+        };
+        require_snapshot_source_current(coordination, operation)?;
+    }
     let member_count =
         u16::try_from(records.len()).map_err(|_| LifecycleModelError::InvalidTransition)?;
     hasher = hasher
@@ -642,6 +675,36 @@ pub fn bind_lifecycle_atomic_join_v1(
         record.join_digest = Some(digest);
     }
     Ok(records)
+}
+
+/// Selects only the source-bearing two-member Snapshot pair, never a version flag.
+pub(super) fn bind_snapshot_admitted_source_join_v2(
+    mut records: Vec<LifecycleAuxiliaryRecordV1>,
+) -> Result<Vec<LifecycleAuxiliaryRecordV1>, LifecycleModelError> {
+    if records.len() != 2 || records.iter().any(|record| record.join_digest.is_some()) {
+        return Err(LifecycleModelError::InvalidTransition);
+    }
+    let LifecycleAuxiliaryPayloadV1::Operation(operation) = records[0].payload() else {
+        return Err(LifecycleModelError::InvalidTransition);
+    };
+    let LifecycleAuxiliaryPayloadV1::Coordination(coordination) = records[1].payload() else {
+        return Err(LifecycleModelError::InvalidTransition);
+    };
+    require_snapshot_source_current(coordination, operation)?;
+    for record in &mut records {
+        record.format = LifecycleAuxiliaryEnvelopeFormatV1::SnapshotAdmittedSource;
+    }
+    bind_lifecycle_atomic_join_v1(records)
+}
+
+fn require_snapshot_source_current(
+    coordination: &super::LifecycleCoordinationTransactionV1,
+    operation: &LifecycleOperationV1,
+) -> Result<(), LifecycleModelError> {
+    coordination
+        .admitted_source()
+        .ok_or(LifecycleModelError::InvalidTransition)?
+        .require_current(coordination, operation)
 }
 
 /// Replays bounded auxiliary lineages with exact operation joins.
@@ -849,7 +912,9 @@ impl LifecycleAuxiliaryHistoryV1 {
             if encoded.len() > MAXIMUM_LIFECYCLE_AUXILIARY_BYTES {
                 return Err(LifecycleModelError::InvalidTransition);
             }
-            if encoded.get(..8) == Some(DELETE_BATCH_MAGIC.as_slice()) {
+            if encoded.get(..8) == Some(DELETE_BATCH_MAGIC.as_slice())
+                || encoded.get(..8) == Some(SNAPSHOT_SOURCE_MAGIC.as_slice())
+            {
                 let pending = join.iter().try_fold(
                     self.retained_bytes,
                     |total, record: &LifecycleAuxiliaryRecordV1| {
@@ -923,7 +988,11 @@ impl LifecycleAuxiliaryHistoryV1 {
         {
             return Err(LifecycleModelError::InvalidTransition);
         }
-        if first.format == LifecycleAuxiliaryEnvelopeFormatV1::DeleteBatch {
+        if matches!(
+            first.format,
+            LifecycleAuxiliaryEnvelopeFormatV1::DeleteBatch
+                | LifecycleAuxiliaryEnvelopeFormatV1::SnapshotAdmittedSource
+        ) {
             records.iter().try_fold(self.retained_bytes, |total, record| {
                 total.checked_add(HEADER_BYTES)
                     .and_then(|bytes| bytes.checked_add(record.encoded_payload.len()))
@@ -931,7 +1000,9 @@ impl LifecycleAuxiliaryHistoryV1 {
                     .filter(|bytes| *bytes <= MAXIMUM_LIFECYCLE_AUXILIARY_BYTES)
                     .ok_or(LifecycleModelError::InvalidTransition)
             })?;
-            self.records.len().checked_add(records.len())
+            self.records
+                .len()
+                .checked_add(records.len())
                 .filter(|count| *count <= MAXIMUM_LIFECYCLE_AUXILIARY_RECORDS)
                 .ok_or(LifecycleModelError::InvalidTransition)?;
         }
@@ -1257,6 +1328,29 @@ impl LifecycleAuxiliaryHistoryV1 {
             cancellations.iter(),
         )
         .map_err(|_| LifecycleModelError::InvalidTransition)?;
+        for record in history.records.values() {
+            if let LifecycleAuxiliaryPayloadV1::Coordination(coordination) = record.payload() {
+                if coordination.admitted_source().is_some() {
+                    let latest = history
+                        .latest
+                        .get(&(record.project, record.lineage, record.kind()))
+                        .ok_or(LifecycleModelError::InvalidTransition)?;
+                    let LifecycleAuxiliaryPayloadV1::Coordination(latest_coordination) =
+                        latest.payload()
+                    else {
+                        return Err(LifecycleModelError::InvalidTransition);
+                    };
+                    if latest_coordination.admitted_source() != coordination.admitted_source() {
+                        return Err(LifecycleModelError::InvalidTransition);
+                    }
+                    let operation = history
+                        .operations
+                        .operation(record.operation)
+                        .ok_or(LifecycleModelError::InvalidTransition)?;
+                    require_snapshot_source_current(coordination, operation)?;
+                }
+            }
+        }
         history.validate_checkpoint_delete_operation_history()?;
         for operation in history.operations.operations() {
             history.authoritative_semantic_commit(operation)?;
@@ -1363,6 +1457,17 @@ impl LifecycleAuxiliaryHistoryV1 {
     /// revision, orphan operation, reused join, or divergent cancellation key.
     fn apply(&mut self, record: LifecycleAuxiliaryRecordV1) -> Result<(), LifecycleModelError> {
         if let LifecycleAuxiliaryPayloadV1::Operation(operation) = record.payload() {
+            for previous in self
+                .latest
+                .values()
+                .filter(|previous| previous.operation == record.operation)
+            {
+                if let LifecycleAuxiliaryPayloadV1::Coordination(coordination) = previous.payload() {
+                    if coordination.admitted_source().is_some() {
+                        require_snapshot_source_current(coordination, operation)?;
+                    }
+                }
+            }
             let digest = auxiliary_operation_record_digest(&record)?;
             if operation.project() != record.project
                 || operation.operation_id() != record.operation
@@ -1393,6 +1498,15 @@ impl LifecycleAuxiliaryHistoryV1 {
         {
             return Err(LifecycleModelError::InvalidTransition);
         }
+        if let LifecycleAuxiliaryPayloadV1::Coordination(coordination) = record.payload() {
+            if coordination.admitted_source().is_some() {
+                let operation = self
+                    .operations
+                    .operation(record.operation)
+                    .ok_or(LifecycleModelError::InvalidTransition)?;
+                require_snapshot_source_current(coordination, operation)?;
+            }
+        }
         let key = (record.project, record.lineage, record.kind());
         if self.records.len() >= MAXIMUM_LIFECYCLE_AUXILIARY_RECORDS {
             return Err(LifecycleModelError::InvalidTransition);
@@ -1419,7 +1533,11 @@ impl LifecycleAuxiliaryHistoryV1 {
         // The selected join is already staged in apply_atomic_join's bounded
         // temporary history. Inserting there avoids cloning the full retained
         // history once more for each member; ordinary joins keep their path.
-        if record.format == LifecycleAuxiliaryEnvelopeFormatV1::DeleteBatch {
+        if matches!(
+            record.format,
+            LifecycleAuxiliaryEnvelopeFormatV1::DeleteBatch
+                | LifecycleAuxiliaryEnvelopeFormatV1::SnapshotAdmittedSource
+        ) {
             if let LifecycleAuxiliaryPayloadV1::Cancellation(cancellation) = record.payload() {
                 self.operations
                     .apply_cancellation_record(cancellation)
@@ -1653,6 +1771,9 @@ fn envelope_format(body: &[u8]) -> Result<LifecycleAuxiliaryEnvelopeFormatV1, Li
         }
         (value, DELETE_BATCH_VERSION) if value == DELETE_BATCH_MAGIC => {
             Ok(LifecycleAuxiliaryEnvelopeFormatV1::DeleteBatch)
+        }
+        (value, SNAPSHOT_SOURCE_VERSION) if value == SNAPSHOT_SOURCE_MAGIC => {
+            Ok(LifecycleAuxiliaryEnvelopeFormatV1::SnapshotAdmittedSource)
         }
         _ => Err(LifecycleModelError::CorruptEncoding),
     }
