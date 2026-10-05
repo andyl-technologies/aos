@@ -4,6 +4,13 @@
 //! standard input and return one canonical response on standard output. The
 //! coordinator supplies the exact public payload after the canonical request;
 //! private-key selection remains entirely behind provider policy.
+//!
+//! The executable is either an external provider named by the maintainer
+//! configuration or a `--signer-executable` flag, or, when none is named, the
+//! file-backed `aos-release-signer` bundled in the installed
+//! [tooling closure](super::tooling). A configured signer configuration path
+//! reaches the child as `AOS_RELEASE_SIGNER_CONFIG`; nothing else about the
+//! provider's key custody passes through the coordinator.
 
 use std::fs::File;
 use std::io::{Read as _, Seek as _, Write as _};
@@ -28,6 +35,15 @@ use tokio::process::Command;
 use crate::cli::{ReleaseSignerCommand, ReleaseSignerInvokeArgs};
 
 use super::capture;
+use super::config::SignerConfig;
+use super::tooling::{self, ToolingEnvironment};
+
+/// Environment variable through which the spawned signer receives its
+/// configuration path; `aos-release-signer` reads the same name.
+const SIGNER_CONFIG_ENVIRONMENT: &str = "AOS_RELEASE_SIGNER_CONFIG";
+
+/// The only operation the coordinator asks a signer executable to perform.
+const SIGNER_EXCHANGE_OPERATION: &str = "sign-exchange-v1";
 
 const MAX_SIGNER_RESPONSE_BYTES: u64 = 1024 * 1024;
 const MAX_SIGNER_DIAGNOSTIC_BYTES: u64 = 64 * 1024;
@@ -54,8 +70,9 @@ async fn invoke(args: &ReleaseSignerInvokeArgs, printer: &aos_core::output::Prin
     }
     let key_bytes = capture::control_file(key_path, "trusted signer public key")?;
     let trusted_key = TrustedEd25519Key::from_encoded(key_id, &key_bytes)?;
-    let signer = ExternalSigner::new(
-        args.executable.clone(),
+    let signer = ExternalSigner::resolve(
+        args.executable.as_deref(),
+        args.signer_config.as_deref(),
         Duration::from_secs(args.timeout_seconds),
     )?;
     let response = signer
@@ -113,26 +130,126 @@ fn write_new_file(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// The signer executable the coordinator spawns and the configuration it
+/// hands to that executable.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct SignerProgram {
+    executable: PathBuf,
+    config: Option<PathBuf>,
+}
+
+impl SignerProgram {
+    /// Selects an explicit executable, else the tooling closure's bundled
+    /// signer.
+    ///
+    /// An explicit executable keeps the external-provider contract: the
+    /// signer configuration is optional and passed through only when given.
+    /// Without one, the bundled `aos-release-signer` is used and `config` is
+    /// required, because that signer cannot run without its key map.
+    ///
+    /// # Errors
+    /// Returns an error for a relative executable or configuration path, an
+    /// executable that fails [`validate_signer_executable`], a missing
+    /// configuration for the bundled signer, or a process that does not run
+    /// from release tooling that bundles a signer.
+    pub(super) fn resolve(executable: Option<&Path>, config: Option<&Path>) -> Result<Self> {
+        Self::resolve_with(executable, config, ToolingEnvironment::require)
+    }
+
+    /// Implements [`Self::resolve`] against an explicit tooling lookup, which
+    /// runs only when the bundled signer is selected.
+    fn resolve_with(
+        executable: Option<&Path>,
+        config: Option<&Path>,
+        tooling: impl FnOnce() -> Result<ToolingEnvironment>,
+    ) -> Result<Self> {
+        if config.is_some_and(|config| !config.is_absolute()) {
+            bail!("signer configuration path must be absolute");
+        }
+
+        let executable = match executable {
+            Some(executable) => {
+                if !executable.is_absolute() {
+                    bail!("external signer executable path must be absolute");
+                }
+                validate_signer_executable(executable)?;
+                executable.to_path_buf()
+            }
+            None if config.is_none() => bail!(
+                "the bundled release signer needs its configuration file \
+                 ([signer] config, --signer-config, or --authority-config); \
+                 otherwise name an external signer executable"
+            ),
+            None => {
+                let tooling = tooling().context("locating the bundled release signer")?;
+                tooling.signer()?.to_path_buf()
+            }
+        };
+
+        Ok(Self {
+            executable,
+            config: config.map(Path::to_path_buf),
+        })
+    }
+
+    /// Builds the `sign-exchange-v1` child command.
+    ///
+    /// The configuration travels in the environment rather than as a
+    /// `--config` argument: external providers share only the fixed
+    /// operation argument with the coordinator, while an environment
+    /// variable they do not read is harmless. A configured path replaces any
+    /// value the coordinator itself inherited.
+    fn command(&self) -> Command {
+        let mut command = Command::new(&self.executable);
+        if let Some(config) = &self.config {
+            command.env(SIGNER_CONFIG_ENVIRONMENT, config);
+        }
+        command.arg(SIGNER_EXCHANGE_OPERATION);
+        command
+    }
+}
+
 /// A signer executable selected by deployment configuration.
 pub(super) struct ExternalSigner {
-    executable: PathBuf,
+    program: SignerProgram,
     timeout: Duration,
 }
 
 impl ExternalSigner {
-    /// Creates an adapter for an exact executable path and bounded call time.
-    pub(super) fn new(executable: PathBuf, timeout: Duration) -> Result<Self> {
-        if !executable.is_absolute() {
-            bail!("external signer executable path must be absolute");
-        }
+    /// Creates an adapter for a selected signer program and bounded call time.
+    ///
+    /// # Errors
+    /// Returns an error when `timeout` is zero or longer than 15 minutes.
+    pub(super) fn new(program: SignerProgram, timeout: Duration) -> Result<Self> {
         if timeout.is_zero() || timeout > Duration::from_secs(15 * 60) {
             bail!("external signer timeout must be within 1ns..=15m");
         }
-        validate_signer_executable(&executable)?;
-        Ok(Self {
-            executable,
-            timeout,
-        })
+        Ok(Self { program, timeout })
+    }
+
+    /// Creates an adapter from an optional executable and configuration, as
+    /// given to the leaf `step` commands.
+    ///
+    /// # Errors
+    /// Returns the errors of [`SignerProgram::resolve`] and [`Self::new`].
+    pub(super) fn resolve(
+        executable: Option<&Path>,
+        config: Option<&Path>,
+        timeout: Duration,
+    ) -> Result<Self> {
+        Self::new(SignerProgram::resolve(executable, config)?, timeout)
+    }
+
+    /// Creates an adapter from the maintainer configuration's `[signer]`.
+    ///
+    /// # Errors
+    /// Returns the errors of [`Self::resolve`].
+    pub(super) fn configured(config: &SignerConfig) -> Result<Self> {
+        Self::resolve(
+            config.executable.as_deref(),
+            config.config.as_deref(),
+            config.timeout(),
+        )
     }
 
     /// Requests and verifies one detached Ed25519 authorization.
@@ -255,14 +372,10 @@ impl ExternalSigner {
         Ok(response)
     }
 
-    async fn invoke(
-        &self,
-        request: &[u8],
-        payload: &[u8],
-        maximum_output_bytes: u64,
-    ) -> Result<(Vec<u8>, Vec<u8>)> {
-        let mut child = Command::new(&self.executable)
-            .arg("sign-exchange-v1")
+    /// Starts the signer with piped standard streams.
+    fn spawn(&self) -> Result<tokio::process::Child> {
+        self.program
+            .command()
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -271,9 +384,18 @@ impl ExternalSigner {
             .with_context(|| {
                 format!(
                     "starting external signer executable {}",
-                    self.executable.display()
+                    self.program.executable.display()
                 )
-            })?;
+            })
+    }
+
+    async fn invoke(
+        &self,
+        request: &[u8],
+        payload: &[u8],
+        maximum_output_bytes: u64,
+    ) -> Result<(Vec<u8>, Vec<u8>)> {
+        let mut child = self.spawn()?;
         let mut stdin = child
             .stdin
             .take()
@@ -341,19 +463,7 @@ impl ExternalSigner {
             None => None,
         };
 
-        let mut child = Command::new(&self.executable)
-            .arg("sign-exchange-v1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .with_context(|| {
-                format!(
-                    "starting external signer executable {}",
-                    self.executable.display()
-                )
-            })?;
+        let mut child = self.spawn()?;
         let stdin = child
             .stdin
             .take()
@@ -667,14 +777,33 @@ fn verify_public_identity(
     Ok(())
 }
 
-/// Rejects an executable that is absent, non-regular, or group/world writable.
+/// Rejects an executable that is absent, non-regular, aliased by another
+/// hard link, or group/world writable.
+///
+/// A program with one link has exactly one name: the path the operator
+/// configured and reviewed. A second link publishes the same inode under a
+/// name outside that review, so a program normally needs exactly one link.
+/// Nix store files are the exception: store optimisation
+/// (`auto-optimise-store` or `nix-store --optimise`) hard-links identical
+/// files through `/nix/store/.links`, so the bundled signer and executors of
+/// an optimised tooling closure have several links. Those links cannot alter
+/// the program: a store file is read-only once its path is valid, and the
+/// tooling closure's path is already the `tooling` fitness binding. A file
+/// that resolves into the store and carries no write permission bit at all
+/// is therefore accepted with any link count.
+///
+/// # Errors
+/// Returns an error when `path` cannot be inspected or fails a check above.
 pub(super) fn validate_signer_executable(path: &Path) -> Result<()> {
     use std::os::unix::fs::MetadataExt as _;
 
     let metadata = path
         .symlink_metadata()
         .with_context(|| format!("inspecting external signer {}", path.display()))?;
-    if !metadata.file_type().is_file() || metadata.nlink() != 1 {
+    if !metadata.file_type().is_file() {
+        bail!("external signer must be a single-link regular file");
+    }
+    if metadata.nlink() != 1 && !immutable_store_file(path, metadata.mode()) {
         bail!("external signer must be a single-link regular file");
     }
     if metadata.mode() & 0o022 != 0 {
@@ -683,20 +812,125 @@ pub(super) fn validate_signer_executable(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Reports whether `path` is a read-only file inside the Nix store, whose
+/// extra hard links come from store optimisation rather than aliasing.
+fn immutable_store_file(path: &Path, mode: u32) -> bool {
+    mode & 0o222 == 0 && tooling::resolves_into_store(path)
+}
+
 #[cfg(test)]
 mod tests {
     use aos_release::signing::{SignatureAlgorithm, SignerRole, SigningContext, SigningOperation};
 
     use super::*;
 
+    /// A tooling lookup that must not run.
+    fn no_tooling() -> Result<ToolingEnvironment> {
+        bail!("the tooling closure must not be consulted")
+    }
+
+    /// Writes an executable at `path` with the given mode.
+    fn write_program(path: &Path, mode: u32) -> Result<PathBuf> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(path, b"#!/bin/sh\nexit 0\n")?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+        Ok(path.to_path_buf())
+    }
+
+    /// Returns the value the child command receives for the signer
+    /// configuration variable, if the command sets one.
+    fn child_config(program: &SignerProgram) -> Option<PathBuf> {
+        program
+            .command()
+            .as_std()
+            .get_envs()
+            .find(|(name, _)| *name == SIGNER_CONFIG_ENVIRONMENT)
+            .and_then(|(_, value)| value.map(PathBuf::from))
+    }
+
     #[test]
-    fn signer_configuration_requires_an_absolute_bounded_command() {
-        assert!(ExternalSigner::new(PathBuf::from("signer"), Duration::from_secs(30)).is_err());
-        assert!(ExternalSigner::new(PathBuf::from("/provider/signer"), Duration::ZERO).is_err());
+    fn signer_configuration_requires_an_absolute_bounded_command() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let executable = write_program(&directory.path().join("signer"), 0o755)?;
+        let program = || SignerProgram::resolve_with(Some(&executable), None, no_tooling);
+
+        assert!(SignerProgram::resolve_with(Some(Path::new("signer")), None, no_tooling).is_err());
+        assert!(ExternalSigner::new(program()?, Duration::ZERO).is_err());
+        assert!(ExternalSigner::new(program()?, Duration::from_secs(901)).is_err());
+        assert!(ExternalSigner::new(program()?, Duration::from_secs(30)).is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn an_external_executable_needs_no_signer_configuration() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let executable = write_program(&directory.path().join("provider"), 0o755)?;
+
+        let program = SignerProgram::resolve_with(Some(&executable), None, no_tooling)?;
+        assert_eq!(program.executable, executable);
+        assert_eq!(child_config(&program), None);
+
+        let config = directory.path().join("signer.json");
+        let program = SignerProgram::resolve_with(Some(&executable), Some(&config), no_tooling)?;
+        assert_eq!(child_config(&program), Some(config));
+        Ok(())
+    }
+
+    #[test]
+    fn without_an_executable_the_bundled_signer_receives_the_configuration() -> Result<()> {
+        let closure = tempfile::tempdir()?;
+        let bundled = write_program(
+            &closure
+                .path()
+                .join("libexec/aos-release/signer/aos-release-signer"),
+            0o555,
+        )?;
+        let config = closure.path().join("signer.json");
+
+        let program = SignerProgram::resolve_with(None, Some(&config), || {
+            ToolingEnvironment::from_closure(closure.path())
+        })?;
+        assert_eq!(program.executable, bundled);
+        assert_eq!(child_config(&program), Some(config));
+
+        let command = program.command();
+        let arguments: Vec<_> = command.as_std().get_args().collect();
+        assert_eq!(arguments, [SIGNER_EXCHANGE_OPERATION]);
+        Ok(())
+    }
+
+    #[test]
+    fn the_bundled_signer_requires_a_configuration_and_a_closure_that_ships_it() -> Result<()> {
+        assert!(SignerProgram::resolve_with(None, None, no_tooling).is_err());
         assert!(
-            ExternalSigner::new(PathBuf::from("/provider/signer"), Duration::from_secs(901))
-                .is_err()
+            SignerProgram::resolve_with(None, Some(Path::new("signer.json")), no_tooling).is_err()
         );
+
+        let empty = tempfile::tempdir()?;
+        let config = empty.path().join("signer.json");
+        assert!(
+            SignerProgram::resolve_with(None, Some(&config), || {
+                ToolingEnvironment::from_closure(empty.path())
+            })
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn extra_links_are_accepted_only_for_read_only_store_files() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let program = write_program(&directory.path().join("provider"), 0o555)?;
+        validate_signer_executable(&program)?;
+
+        std::fs::hard_link(&program, directory.path().join("alias"))?;
+        assert!(validate_signer_executable(&program).is_err());
+        assert!(!immutable_store_file(&program, 0o555));
+        Ok(())
     }
 
     #[test]

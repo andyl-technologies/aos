@@ -176,12 +176,14 @@ the configuration's `work_root`; `new` defaults to `<work_root>/<release_id>`.
 
 ### Release tooling environment
 
-The coordinator never reads its own store path or the qualification
-executors from the maintainer configuration. Both come from the installed
-tooling closure, the flake's `release-tooling` package: its `bin/aos`
-wrapper exports `AOS_RELEASE_TOOLING` naming the closure, and the closure
-carries one executor per platform it can qualify at
-`libexec/aos-release/executors/<platform>/{run,identity}`. Enter it with
+The coordinator never reads its own store path, the qualification
+executors, or the file-backed signer from the maintainer configuration. All
+come from the installed tooling closure, the flake's `release-tooling`
+package: its `bin/aos` wrapper exports `AOS_RELEASE_TOOLING` naming the
+closure, the closure carries one executor per platform it can qualify at
+`libexec/aos-release/executors/<platform>/{run,identity}`, and it bundles the
+repository's [file-backed signer](#file-backed-signer-for-registries-without-an-hsm)
+at `libexec/aos-release/signer/aos-release-signer`. Enter it with
 `nix develop .#release`, or install it as the `aos` every coordinator
 service wrapper runs.
 
@@ -235,7 +237,8 @@ s3_region = "auto"
 s3_endpoint = "https://s3.example.org"
 
 [signer]
-executable = "/etc/aos-release/bin/signer"
+# The tooling closure's bundled aos-release-signer reads this file.
+config = "/etc/aos-release/signer.json"
 timeout_seconds = 900
 provider_revision = "provider-2026-09"
 
@@ -292,7 +295,9 @@ destination = "oncall@example.org"
 | `surfaces.<role>.s3_region`, `s3_profile`, `s3_endpoint` | S3 client settings for an `s3://` origin; credentials come from the AWS default chain |
 | `surfaces.<role>.ssh_key_credential`, `ssh_password_credential` | SFTP private key or password for an `sftp://` origin |
 | `surfaces.<role>.hub_schema` | Hub schema version the surface reports; the production value is the `hub-schema` fitness binding. Hub surfaces only |
-| `signer.executable`, `signer.timeout_seconds` | External signer adapter and per-operation bound, 1 to 900 seconds (default 900) |
+| `signer.config` | Absolute path of the signer's own configuration file, handed to the signer process as `AOS_RELEASE_SIGNER_CONFIG`. Required when `executable` is absent |
+| `signer.executable` | Optional absolute path of an external signer adapter, such as an HSM provider. When absent, the coordinator runs the `aos-release-signer` bundled in its [tooling closure](#release-tooling-environment). At least one of `executable` and `config` must be set |
+| `signer.timeout_seconds` | Per-operation bound, 1 to 900 seconds (default 900) |
 | `signer.provider_revision` | Provider policy revision frozen into every planned signer role that names none |
 | `signer.roles.<role>` | One table per signer role in the plan, keyed by the role's public spelling, such as `registry`, `release-evidence`, `qualification`, `surface-receipt`, or `tuf-timestamp`. `new` freezes every table into the plan's signer roster in role-name order |
 | `signer.roles.<role>.key_id`, `public_key`, `verification_identity` | Single-key form: key ID, independent public key, and pinned provider identity; means one key with threshold 1 |
@@ -908,8 +913,18 @@ Inspect a copied journal without initializing Nix using
 ### Exercise an external signer
 
 Signer provider selection and private-key resolution belong to deployment
-configuration outside the repository. The executable path must be absolute,
-single-linked, and not group- or world-writable. It receives a bounded binary
+configuration outside the repository. Every step that signs takes an optional
+`--signer-executable` (`--authority-executable` for `qualify-run`,
+`--executable` for `signer invoke`) and an optional `--signer-config`
+(`--authority-config` for `qualify-run`). Without an executable, the step runs
+the [bundled file-backed signer](#file-backed-signer-for-registries-without-an-hsm)
+from the release tooling closure and requires the configuration. A given
+configuration path reaches the signer process as `AOS_RELEASE_SIGNER_CONFIG`.
+
+The executable path must be absolute, single-linked, and not group- or
+world-writable. A read-only file inside the Nix store may have additional hard
+links, because store optimisation links identical store files together without
+making them writable. The executable receives a bounded binary
 exchange on standard input under the fixed `sign-exchange-v1` operation: the
 domain `aos.release.signer-exchange/v1` plus NUL, an unsigned big-endian request
 length, canonical request JSON, an unsigned big-endian payload length, and the
@@ -934,14 +949,22 @@ passes a private-key path to the provider.
 
 #### File-backed signer for registries without an HSM
 
-`aos-release-signer` (`nix build .#pkg-aos-release-signer`) implements the
-exchange above for deployments whose private keys are operator-owned files,
-which is the approved custody model for `andyl/experimental`. It reads a JSON
-configuration named by `AOS_RELEASE_SIGNER_CONFIG` or `--config` that maps
-each public key id to a private-key file, the roles it may serve, and the
-verification identity the coordinator pins. The configuration, private keys,
-and the wrapper that exports the environment variable live in restricted
-deployment storage, never in the repository or the Nix store.
+`aos-release-signer` implements the exchange above for deployments whose
+private keys are operator-owned files, which is the approved custody model for
+`andyl/experimental`. It reads a JSON configuration named by
+`AOS_RELEASE_SIGNER_CONFIG` or `--config` that maps each public key id to a
+private-key file, the roles it may serve, and the verification identity the
+coordinator pins.
+
+The `release-tooling` closure bundles the signer, so it always comes from the
+same source revision as the coordinator and accepts the same registries. Leave
+`[signer] executable` unset and set `[signer] config` to the JSON
+configuration; the coordinator spawns the bundled copy with
+`AOS_RELEASE_SIGNER_CONFIG` set to that path. The configuration and the
+private keys it names are the only signer material in restricted deployment
+storage: neither belongs in the repository or the Nix store, and no signer
+binary or wrapper script is kept beside them. Inside `nix develop .#release`
+the same binary is on `PATH` as `aos-release-signer`.
 
 The adapter refuses any request whose provider revision or registry is not in
 its configuration, whose key is not authorized for the requested role, or whose

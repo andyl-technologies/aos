@@ -211,11 +211,14 @@ reset, not a key rotation.
 
 The file-backed adapter reads all of these from one configuration; see the
 file-backed signer section of
-[`canonical-releases.md`](canonical-releases.md). Confirm the adapter resolves
-every role before planning a release:
+[`canonical-releases.md`](canonical-releases.md). The adapter itself ships in
+the `release-tooling` closure, so the maintainer configuration sets only
+`[signer] config` to that file and names no signer executable. Confirm the
+bundled adapter resolves every role before planning a release:
 
 ```sh
-aos-release-signer show
+nix develop .#release
+aos-release-signer --config /etc/aos-release/signer.json show
 ```
 
 ## Publish the first or a later edge release
