@@ -87,7 +87,8 @@ fn validate_original_release_floors(
         let data = floor.data();
         if data.kind != OrdinaryCapacityKindV4::ReleaseRequest { continue; }
         if !owners.insert(data.owner_id)
-            || data.profile != OrdinaryCapacityProfileV4::ReleaseOutcomeAndNegativeCustody
+            || !matches!(data.profile, OrdinaryCapacityProfileV4::ReleaseOutcomeAndNegativeCustody
+                | OrdinaryCapacityProfileV4::ReleaseNegativeCustody)
         {
             return Err(invalid());
         }
@@ -105,12 +106,25 @@ fn validate_original_release_floors(
         if sidecar.suffix().phase() != 7
             || original_root_remaining_v5(&checked, root).map_err(|_| invalid())? != 0
             || query.method != ProviderMethodV2::Release
-            || query.state != ProviderAttemptStateV2::Reserved
+            || !match data.profile {
+                OrdinaryCapacityProfileV4::ReleaseOutcomeAndNegativeCustody =>
+                    query.state == ProviderAttemptStateV2::Reserved,
+                OrdinaryCapacityProfileV4::ReleaseNegativeCustody => matches!(query.state,
+                    ProviderAttemptStateV2::DispositionConsumed {
+                        status: aos_sandbox_protocol::mount_source_acquisition_state::ProviderStatusV2::Pending, ..
+                    }),
+                _ => false,
+            }
             || row.phase != SourceAcquisitionPhaseV2::Releasing
             || row.release_lineage.as_ref().is_none_or(|lineage| {
                 lineage.root.id != data.owner_id || lineage.tail.id != data.owner_id
             })
-            || head.pending_attempt.as_ref().is_none_or(|pending| pending.id != data.owner_id)
+            || !match data.profile {
+                OrdinaryCapacityProfileV4::ReleaseOutcomeAndNegativeCustody =>
+                    head.pending_attempt.as_ref().is_some_and(|pending| pending.id == data.owner_id),
+                OrdinaryCapacityProfileV4::ReleaseNegativeCustody => head.pending_attempt.is_none(),
+                _ => false,
+            }
             || query.signed_request_digest != data.original_artifact_digest
             || query.request_id != data.operation_id
         {
@@ -184,8 +198,18 @@ fn validate_original_release_edge(
     root: [u8; 32],
     limits: JournalLimits,
 ) -> Result<(), JournalError> {
+    // This bounded prefix selects only the new Pending disposition. The sole
+    // family decoder below still authenticates its complete bytes. Existing
+    // profile3 inputs retain their original DELETE/error/collection order.
+    let pending = transaction.records().iter().any(|record| {
+        record.namespace() == RecordNamespace::GlobalCapacityReservation
+            && record.value().is_some_and(|bytes| {
+                bytes.get(8..14) == Some(&[0, 4, 40, 10, 12, 4])
+            })
+    });
     let floors = transaction.records().iter()
         .filter(|record| record.namespace() == RecordNamespace::GlobalCapacityReservation)
+        .filter(|record| !pending || record.value().is_some())
         .map(OrdinaryCapacityRecordV4::from_journal_record)
         .collect::<Result<Vec<_>, _>>()?;
     let [floor] = floors.as_slice() else { return Err(invalid()) };
@@ -195,9 +219,57 @@ fn validate_original_release_edge(
     let owners = JournalTransaction::new(*transaction.id(), transaction.records().iter()
         .filter(|record| record.namespace() == RecordNamespace::MountSourceAcquisition)
         .cloned().collect())?;
-    let (derived, _) = derive_original_release(state, &owners, root, floor.data().owner_id, limits)?;
+    let (derived, _) = match floor.data().profile {
+        OrdinaryCapacityProfileV4::ReleaseOutcomeAndNegativeCustody =>
+            derive_original_release(state, &owners, root, floor.data().owner_id, limits)?,
+        OrdinaryCapacityProfileV4::ReleaseNegativeCustody =>
+            derive_original_release_status(state, &owners, root, floor.data().owner_id, limits)?,
+        _ => return Err(invalid()),
+    };
     if derived != *transaction { return Err(invalid()); }
     Ok(())
+}
+
+fn derive_original_release_status(
+    state: &State,
+    owners: &JournalTransaction,
+    root: [u8; 32],
+    release: [u8; 32],
+    limits: JournalLimits,
+) -> Result<(JournalTransaction, OrdinaryCapacityRecordV4), JournalError> {
+    require_named_funding(state, limits)?;
+    super::root_local_recovery::require_fences(state, owners)?;
+    let families = canonical_reservations(state)?;
+    let old = families.iter().find_map(|family| match family {
+        CanonicalCapacityFamily::Ordinary4(floor) if is_original_release_floor(family)
+            && floor.data().owner_id == release => Some(floor),
+        _ => None,
+    }).ok_or_else(invalid)?;
+    let before = graph(state)?;
+    let after = graph(&apply(state, owners.records())?)?;
+    let proposal = aos_sandbox_protocol::mount_source_acquisition_state::native_held_completion::
+        validate_original_release_status_transition_v1(&before, &after, root, release, *owners.id())
+        .map_err(|_| invalid())?;
+    require_exact_owner_puts(owners, &proposal.puts, None)?;
+    let next = OriginalRootCapacityRecordV5::release_status_floor_v1(
+        &before, &after, old, root, release, *owners.id(), limits,
+    )?;
+    let previous = old.to_journal_record();
+    let mut records = owners.records().to_vec();
+    records.push(JournalRecord::delete(previous.namespace(), previous.key().to_vec()));
+    records.push(next.to_journal_record());
+    let transaction = JournalTransaction::new(*owners.id(), records)?;
+    validate_transaction(&transaction, limits)?;
+    let charged = super::encoded_transaction_append_bytes(&transaction)?
+        .checked_add(next.data().remaining_append_bytes).ok_or(JournalError::SequenceExhausted)?;
+    if old.data().remaining_transactions != next.data().remaining_transactions + 1
+        || u64::from(old.data().remaining_record_frames)
+            < transaction.records().len() as u64 + u64::from(next.data().remaining_record_frames)
+        || old.data().remaining_append_bytes < charged
+    {
+        return Err(JournalError::LimitExceeded("original Release Pending transferred debt"));
+    }
+    Ok((transaction, next))
 }
 
 /// Shares only the closed family policy after complete canonical traversal.
@@ -979,6 +1051,34 @@ impl<'journal> MountOriginalNativeJournalAuthorityV5<'journal> {
             *slot = Some(self.initial_candidate_v5(owners, root));
             self.current_graph()?;
             let (transaction, _) = derive_original_release(
+                &self.authority.journal.state, owners, root, release,
+                self.authority.journal.limits,
+            )?;
+            let candidate = slot.as_mut().ok_or_else(invalid)?;
+            candidate.transaction = transaction;
+            self.finish_preparation_v5(candidate)
+        })
+    }
+
+    /// Parks the exact consumed-Pending owner edge and surviving cleanup floor.
+    ///
+    /// # Errors
+    ///
+    /// Retains a failed candidate on stale physical names, non-exact canonical
+    /// owners, missing profile3 debt or any whole opened-limit/NEXT refusal.
+    #[doc(hidden)]
+    pub fn prepare_original_release_status_retaining_v1(
+        &self,
+        owners: &JournalTransaction,
+        root: [u8; 32],
+        release: [u8; 32],
+        slot: &mut Option<PreparedOriginalRootAppendV5>,
+    ) -> Result<(), JournalError> {
+        custody::PreparationBoundaryV5::new(slot).run(|slot| {
+            if slot.is_some() { return Err(invalid()); }
+            *slot = Some(self.initial_candidate_v5(owners, root));
+            self.current_graph()?;
+            let (transaction, _) = derive_original_release_status(
                 &self.authority.journal.state, owners, root, release,
                 self.authority.journal.limits,
             )?;

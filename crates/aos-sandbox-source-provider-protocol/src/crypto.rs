@@ -571,6 +571,44 @@ impl PreparedSourceProviderStatusDataV5 {
         );
         Ok(Self { subject, signer, message })
     }
+
+    /// Borrows the fixed Pending Release message for detached crypto only.
+    ///
+    /// # Errors
+    ///
+    /// Rejects any other method/status or a different actual key fingerprint.
+    /// Custody and the final original clock remain the security owner's duties.
+    pub fn pending_release_signing_loan<'data, 'key>(
+        &'data self,
+        signing_key: &'key SigningKey,
+    ) -> Result<PendingReleaseStatusSigningLoanV1<'data, 'key>, SourceProviderSignatureError> {
+        if self.subject.method() != SourceProviderMethod::Release
+            || self.subject.status() != crate::SourceProviderStatus::Pending
+        {
+            return Err(SourceProviderSignatureError::SignerMismatch);
+        }
+        require_key_fingerprint(&self.signer, signing_key.verifying_key().as_bytes())?;
+        Ok(PendingReleaseStatusSigningLoanV1 { message: &self.message, signing_key })
+    }
+}
+
+/// Borrows the prepared Pending Release status without exposing its key.
+///
+/// This pure crypto loan cannot establish once-only signing or current custody.
+pub struct PendingReleaseStatusSigningLoanV1<'data, 'key> {
+    message: &'data [u8],
+    signing_key: &'key SigningKey,
+}
+
+impl PendingReleaseStatusSigningLoanV1<'_, '_> {
+    /// Computes the same detached crypto expression without AOS encoding.
+    ///
+    /// The caller immediately parks the actual output and retains its original
+    /// deadline/once fence through all subsequent independent observations.
+    #[must_use]
+    pub fn sign(self) -> SourceProviderSignature {
+        detached_signature(self.message, self.signing_key)
+    }
 }
 
 impl SignedSourceProviderRequestV1 {
@@ -1235,7 +1273,7 @@ pub(crate) fn sign_bytes(
 
 // Both old sign_bytes and the fixed prepared Release loan use this same crypto
 // expression. Inlining preserves the old fingerprint/message/sign/drop order.
-fn detached_signature(message: &[u8], signing_key: &SigningKey) -> SourceProviderSignature {
+pub(crate) fn detached_signature(message: &[u8], signing_key: &SigningKey) -> SourceProviderSignature {
     SourceProviderSignature::from_bytes(signing_key.sign(message).to_bytes())
 }
 
@@ -1270,7 +1308,7 @@ fn require_usage(
     }
 }
 
-fn require_key_fingerprint(
+pub(crate) fn require_key_fingerprint(
     signer: &SourceProviderSigningKeyV1,
     public_key: &[u8; 32],
 ) -> Result<(), SourceProviderSignatureError> {
@@ -1282,7 +1320,7 @@ fn require_key_fingerprint(
     }
 }
 
-fn signing_message(
+pub(crate) fn signing_message(
     domain: &[u8],
     code: u8,
     subject: &[u8],

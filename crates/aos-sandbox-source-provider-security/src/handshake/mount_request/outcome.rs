@@ -13,6 +13,16 @@ use aos_sandbox_source_provider_protocol::{
 pub(in crate::handshake::mount_request) mod helpers;
 use helpers::*;
 
+enum OriginalOutcomeVerificationPurposeV5<'owner> {
+    Complete(&'owner native_pending::OriginalNativeReceivedOutcomeV5),
+    Release {
+        prepared: &'owner PreparedMountProviderRequestV2,
+        original: &'owner AuthorizedMountProviderOutcomeV2,
+        retained: &'owner native_pending::OriginalNativeReceivedOutcomeV5,
+        current: &'owner aos_sandbox::OriginalRootProtectedReadbackV5,
+    },
+}
+
 #[path = "outcome/receive.rs"]
 mod receive;
 
@@ -1400,7 +1410,22 @@ impl CurrentRootMountSourceProviderSessionV1 {
             authorization,
             record.payload.clone(),
             Some(observation),
-            Some(retained),
+            Some(OriginalOutcomeVerificationPurposeV5::Complete(retained)),
+        )
+    }
+
+    pub(super) fn check_original_release_status_bytes_v1(
+        &mut self,
+        current: &aos_sandbox::OriginalRootProtectedReadbackV5,
+        prepared: &PreparedMountProviderRequestV2,
+        original: &AuthorizedMountProviderOutcomeV2,
+        retained: &native_pending::OriginalNativeReceivedOutcomeV5,
+    ) -> Result<VerifiedMountProviderOutcomeV2, SourceProviderSecurityError> {
+        let record = retained.original_release_status_record_v1()
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        self.verify_provider_outcome_bytes_inner_v5(
+            None, &prepared.outcome, record.payload.clone(), None,
+            Some(OriginalOutcomeVerificationPurposeV5::Release { prepared, original, retained, current }),
         )
     }
 
@@ -1412,10 +1437,14 @@ impl CurrentRootMountSourceProviderSessionV1 {
         source_root_observation: Option<
             aos_sandbox_source_provider_protocol::SourceRootObservationV1,
         >,
-        original_complete: Option<&native_pending::OriginalNativeReceivedOutcomeV5>,
+        original_complete: Option<OriginalOutcomeVerificationPurposeV5<'_>>,
     ) -> Result<VerifiedMountProviderOutcomeV2, SourceProviderSecurityError> {
         self.revalidate()?;
-        self.require_native_outcome_authorization_v3(authorization)?;
+        match &original_complete {
+            Some(OriginalOutcomeVerificationPurposeV5::Release { prepared, original, retained, .. }) =>
+                self.require_original_release_request_current_v1(prepared, original, retained)?,
+            _ => self.require_native_outcome_authorization_v3(authorization)?,
+        }
         let verification_started = super::current_unix_seconds()?;
         if verification_started < 0
             || (authorization.deadline_policy == OutcomeDeadlinePolicyV2::Fresh
@@ -1428,12 +1457,33 @@ impl CurrentRootMountSourceProviderSessionV1 {
         {
             return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
         }
-        let mount_session_id = authorization
-            .mount_session_id
-            .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
-        let mount_attempt_id = authorization
-            .mount_attempt_id
-            .ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+        let (mount_session_id, mount_attempt_id) = match &original_complete {
+            Some(OriginalOutcomeVerificationPurposeV5::Release { prepared, current, .. }) => {
+                let mut matching = current.graph().legacy().provider_attempts.values().filter(|attempt| {
+                    attempt.method == aos_sandbox_protocol::mount_source_acquisition_state::ProviderMethodV2::Release
+                        && attempt.signed_request == prepared.signed_request
+                        && matches!(attempt.state,
+                            aos_sandbox_protocol::mount_source_acquisition_state::ProviderAttemptStateV2::Reserved)
+                });
+                let attempt = matching.next().ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+                if matching.next().is_some() {
+                    return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+                }
+                let head = current.graph().legacy().provider_heads.get(&(
+                    attempt.scope.holder_authority_id, attempt.scope.provider_authority_id,
+                )).ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?;
+                if head.pending_attempt.is_none_or(|pending| pending.id != attempt.attempt_id
+                    || pending.revision != attempt.revision || pending.record_digest != attempt.record_digest)
+                {
+                    return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+                }
+                (attempt.session_id, attempt.attempt_id)
+            }
+            _ => (
+                authorization.mount_session_id.ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?,
+                authorization.mount_attempt_id.ok_or_else(|| self.poison(SourceProviderSecurityError::SessionContinuity))?,
+            ),
+        };
         let canonical_response_digest =
             aos_sandbox_source_provider_protocol::provider_response_artifact_digest_v1(
                 authorization.method,
@@ -2024,12 +2074,18 @@ impl CurrentRootMountSourceProviderSessionV1 {
                     && status.status() == SourceProviderStatus::Complete,
             )
             .map_err(|error| self.poison(error))?,
-            Some(retained) => {
+            Some(OriginalOutcomeVerificationPurposeV5::Complete(retained)) => {
                 retained.require_checked_complete_basis_v5(
                     authorization,
                     &canonical_response,
                     source_root_observation,
                     status.status(),
+                )?;
+            }
+            Some(OriginalOutcomeVerificationPurposeV5::Release { prepared, original, retained, .. }) => {
+                self.require_original_release_request_current_v1(prepared, original, retained)?;
+                retained.require_checked_release_status_basis_v1(
+                    original, &canonical_response, status.status(),
                 )?;
             }
         }

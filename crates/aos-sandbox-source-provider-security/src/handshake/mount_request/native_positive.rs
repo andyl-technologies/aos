@@ -64,6 +64,12 @@ pub(super) struct OriginalPositiveProgressV5 {
     terminal: terminal::OriginalTerminalProgressV5,
     release_send_attempted: bool,
     release_send_result: Option<Result<(), aos_sandbox_linux::seqpacket::SeqpacketError>>,
+    release_status: Option<RetainedSourceProviderRecordV5>,
+    release_receive_failure: Option<crate::carrier::OriginalRootAcceptedCarrierFailureV5>,
+    release_checked: Option<VerifiedMountProviderOutcomeV2>,
+    release_status_failure: Option<SourceProviderSecurityError>,
+    release_receive_loaned: bool,
+    release_receive_result: Option<Result<bool, CarrierFailureV1>>,
 }
 
 impl OriginalPositiveProgressV5 {
@@ -92,6 +98,12 @@ impl OriginalPositiveProgressV5 {
             terminal: terminal::OriginalTerminalProgressV5::new(),
             release_send_attempted: false,
             release_send_result: None,
+            release_status: None,
+            release_receive_failure: None,
+            release_checked: None,
+            release_status_failure: None,
+            release_receive_loaned: false,
+            release_receive_result: None,
         }
     }
 
@@ -150,7 +162,80 @@ impl OriginalReleaseSendLoanV1<'_, '_> {
     }
 }
 
+/// Borrows the original queue after all Release/custody observations finish.
+///
+/// This concrete, move-only loan exposes no queue or authority. The caller
+/// samples its disjoint genuine Release clock last before consuming it.
+pub struct OriginalReleaseStatusReceiveLoanV1<'owner> {
+    carrier: &'owner mut crate::carrier::InertSourceProviderCarrierV1,
+    progress: &'owner mut OriginalPositiveProgressV5,
+}
+
+impl OriginalReleaseStatusReceiveLoanV1<'_> {
+    /// Receives once and immediately parks the whole raw result and packet.
+    pub fn receive(self) {
+        self.progress.release_receive_result = Some(
+            self.carrier.receive_original_root_accepted_retaining_v5(
+                &mut self.progress.release_status, &mut self.progress.release_receive_failure,
+            ),
+        );
+    }
+}
+
 impl OriginalNativeReceivedOutcomeV5 {
+    pub(in crate::handshake::mount_request) fn original_release_status_record_v1(
+        &self,
+    ) -> Option<&crate::carrier::ReceivedSourceProviderRecordV1> {
+        self.positive.release_status.as_ref().and_then(RetainedSourceProviderRecordV5::bound)
+    }
+
+    pub(in crate::handshake::mount_request) fn require_checked_release_status_basis_v1(
+        &self,
+        original: &AuthorizedMountProviderOutcomeV2,
+        canonical: &[u8],
+        status: SourceProviderStatus,
+    ) -> Result<(), SourceProviderSecurityError> {
+        use aos_sandbox_source_provider_protocol::ReleaseSourceResponseProfileV2;
+
+        let record = self.original_release_status_record_v1()
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        let response = ReleaseSourceResponseProfileV2::from_canonical_bytes(canonical)
+            .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+        let fence = response.native_fence().ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        let reply = self.positive.reply.as_ref().ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        let held = self.positive.held.as_ref().ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        if status != SourceProviderStatus::Pending || !record.descriptors.is_empty()
+            || record.payload != canonical || self.failed.get()
+            || original.native_outcome.as_ref().is_none_or(|actual| !Arc::ptr_eq(actual, &self.original))
+            || fence.subject().acceptance() != reply.acceptance().acceptance()
+            || fence.subject().native_request_digest() != reply.acceptance().acceptance().request_digest()
+            || fence.subject().signed_acceptance_digest() != reply.acceptance().digest()
+            || fence.subject().acquire().root_request_digest != original.signed_request_digest
+            || fence.subject().acquire().session_binding != held.scope().original_source_session
+        {
+            return Err(SourceProviderSecurityError::SessionContinuity);
+        }
+        Ok(())
+    }
+
+    /// Borrows the checked zero-FD Pending DATA while retaining its whole packet.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn checked_original_release_status_v1(&self) -> Option<&VerifiedMountProviderOutcomeV2> {
+        if self.failed.get() || self.positive.release_status_failure.is_some()
+            || self.positive.release_receive_failure.is_some()
+        { return None; }
+        self.positive.release_checked.as_ref()
+    }
+
+    /// Borrows the actual receive/verification cause; never extracts its owners.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn original_release_status_failure_v1(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.positive.release_receive_failure.as_ref().map(|cause| cause as _)
+            .or_else(|| self.positive.release_status_failure.as_ref().map(|cause| cause as _))
+    }
+
     /// Borrows the actual selected Release send result without observing I/O.
     #[doc(hidden)]
     #[must_use]
@@ -297,6 +382,135 @@ impl OriginalNativeReceivedOutcomeV5 {
 }
 
 impl CurrentRootMountSourceProviderSessionV1 {
+    /// Prearms one receive after checking the same actual Release originals.
+    ///
+    /// # Errors
+    /// Rejects any consumed/abandoned loan, failed owner or changed current cut.
+    #[doc(hidden)]
+    pub fn borrow_original_release_status_receive_v1<'owner>(
+        &'owner mut self,
+        writer: &MountOriginalNativeJournalAuthorityV5<'_>,
+        current: &OriginalRootProtectedReadbackV5,
+        original: &AuthorizedMountProviderOutcomeV2,
+        retained: &'owner mut OriginalNativeReceivedOutcomeV5,
+        release: &PreparedMountProviderRequestV2,
+    ) -> Result<OriginalReleaseStatusReceiveLoanV1<'owner>, SourceProviderSecurityError> {
+        if retained.positive.release_receive_loaned || retained.positive.release_status.is_some()
+            || retained.positive.release_receive_result.is_some()
+            || retained.positive.release_receive_failure.is_some()
+            || retained.positive.release_status_failure.is_some()
+        {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
+        retained.positive.release_receive_loaned = true;
+        self.revalidate_original_release_custody_v1(writer, current, original, retained, release)?;
+        if !matches!(retained.positive.release_send_result, Some(Ok(()))) {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
+        Ok(OriginalReleaseStatusReceiveLoanV1 { carrier: &mut self.carrier, progress: &mut retained.positive })
+    }
+
+    /// Seals the resident Pending only after exact consumed native readback.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a changed original, stale consumed owner, another signed response
+    /// or any failed custody. Acceptance denotes no future exports, not Drain.
+    #[doc(hidden)]
+    pub fn seal_original_release_status_v1(
+        &mut self,
+        writer: &MountOriginalNativeJournalAuthorityV5<'_>,
+        current: &OriginalRootProtectedReadbackV5,
+        original: &AuthorizedMountProviderOutcomeV2,
+        retained: &mut OriginalNativeReceivedOutcomeV5,
+        release: &PreparedMountProviderRequestV2,
+        release_attempt: [u8; 32],
+    ) -> Result<(), SourceProviderSecurityError> {
+        OriginalBoundaryV5::new(self, retained).run(|owner, retained| {
+            let retained = &mut **retained;
+            let result = (|| {
+                owner.revalidate_original_release_custody_v1(writer, current, original, retained, release)?;
+                if current.graph().legacy().provider_attempts.get(&release_attempt)
+                    .is_none_or(|attempt| attempt.signed_request != release.signed_request)
+                {
+                    return Err(SourceProviderSecurityError::SessionContinuity);
+                }
+                let checked = retained.positive.release_checked.as_mut()
+                    .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+                owner.seal_original_native_export_fence_v1(writer, current, release_attempt, checked)?;
+                owner.revalidate_original_release_custody_v1(writer, current, original, retained, release)
+            })();
+            owner.finish_original_positive_v5(retained, result)
+        })
+    }
+
+    /// Verifies the Pending already parked by the original receive loan.
+    ///
+    /// # Errors
+    ///
+    /// Retains the whole packet, unexpected descriptors and native/verification
+    /// cause on any consumed refusal. Only a nonconsuming empty receive may wait
+    /// under the same original clock; it never resends or renews the request.
+    #[doc(hidden)]
+    pub fn advance_original_release_status_v1(
+        &mut self,
+        writer: &MountOriginalNativeJournalAuthorityV5<'_>,
+        current: &OriginalRootProtectedReadbackV5,
+        original: &AuthorizedMountProviderOutcomeV2,
+        retained: &mut OriginalNativeReceivedOutcomeV5,
+        release: &PreparedMountProviderRequestV2,
+    ) -> Result<bool, SourceProviderSecurityError> {
+        OriginalBoundaryV5::new(self, retained).run(|owner, retained| {
+            let retained = &mut **retained;
+            let result = (|| {
+                owner.revalidate_original_release_custody_v1(writer, current, original, retained, release)?;
+                if !matches!(retained.positive.release_send_result, Some(Ok(())))
+                    || retained.positive.release_checked.is_some()
+                    || retained.positive.release_status_failure.is_some()
+                {
+                    return Err(SourceProviderSecurityError::SessionContinuity);
+                }
+                match retained.positive.release_receive_result.as_ref() {
+                    Some(Ok(true)) => {}
+                    Some(Ok(false)) | Some(Err(CarrierFailureV1::Retryable)) => {
+                        owner.revalidate_original_release_custody_v1(writer, current, original, retained, release)?;
+                        owner.carrier.finish_original_receive_backpressure_v5();
+                        // Only a proven nonconsuming wait is reusable. Every
+                        // consumed packet or abandoned loan remains irreversible.
+                        retained.positive.release_receive_result = None;
+                        retained.positive.release_receive_loaned = false;
+                        return Ok(false);
+                    }
+                    _ => return Err(SourceProviderSecurityError::SessionContinuity),
+                }
+                owner.check_original_release_packet_execution_v1(retained)?;
+                // The actual result moves into the resident reservoir before
+                // independent physical/Session observations can fail or unwind.
+                match owner.check_original_release_status_bytes_v1(current, release, original, retained) {
+                    Ok(checked) => retained.positive.release_checked = Some(checked),
+                    Err(cause) => {
+                        retained.positive.release_status_failure = Some(cause);
+                        return Err(SourceProviderSecurityError::SessionContinuity);
+                    }
+                }
+                owner.revalidate_original_release_custody_v1(writer, current, original, retained, release)?;
+                Ok(true)
+            })();
+            match result {
+                Ok(ready) => Ok(ready),
+                Err(cause) => {
+                    if retained.positive.release_receive_failure.is_none()
+                        && retained.positive.release_status_failure.is_none()
+                    {
+                        retained.positive.release_status_failure = Some(cause);
+                    }
+                    retained.retain_positive_failure(SourceProviderSecurityError::SessionContinuity);
+                    Err(owner.poison(SourceProviderSecurityError::SessionContinuity))
+                }
+            }
+        })
+    }
+
     /// Lends one prearmed native send over the same independently admitted Release.
     ///
     /// All whole-Session, canonical and physical readback checks finish before
@@ -350,7 +564,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
         })
     }
 
-    fn require_original_release_request_current_v1(
+    pub(in crate::handshake::mount_request) fn require_original_release_request_current_v1(
         &mut self,
         release: &PreparedMountProviderRequestV2,
         original: &AuthorizedMountProviderOutcomeV2,

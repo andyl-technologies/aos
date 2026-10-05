@@ -8,6 +8,80 @@ use aos_sandbox_source_provider_ledger::ledger::native_completion::release_fence
 
 use crate::SourceProviderSecurityError;
 
+impl super::CurrentProviderIngressSessionV1 {
+    /// Parks authorization for the same original held Release reservation.
+    ///
+    /// The request stays borrowed and the writer derives the actual snapshot,
+    /// reservation and response sequence. No supplied scalar is authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a nonempty destination, failed session or a substituted current
+    /// Release. The destination retains the concrete journal/security cause.
+    #[doc(hidden)]
+    pub fn authorize_original_native_release_status_v1(
+        &mut self,
+        writer: &aos_sandbox::SourceOriginalNativeJournalAuthorityV5<'_, '_>,
+        readback: &aos_sandbox::OriginalSourceProtectedReadbackV5,
+        current: &super::CurrentProviderRequestV1,
+        destination: &mut Option<Result<super::ProviderOutcomeAuthorizationV1, super::OriginalNativeSigningErrorV5>>,
+    ) -> Result<(), SourceProviderSecurityError> {
+        if destination.is_some() {
+            return Err(SourceProviderSecurityError::SessionContinuity);
+        }
+        *destination = Some((|| {
+            self.revalidate()?;
+            let aos_sandbox_source_provider_protocol::VerifiedProviderRequestV1::Release(verified) = current.verified() else {
+                return Err(SourceProviderSecurityError::SessionContinuity.into());
+            };
+            let projection = verified.ingress_projection();
+            if projection.session_binding() != self.session.binding()
+                || projection.provider_process_instance() != self.session.provider_process_instance()
+                || projection.root_mount_process_instance() != self.session.root_mount_process_instance()
+            {
+                return Err(SourceProviderSecurityError::SessionContinuity.into());
+            }
+            let (snapshot, _) = writer.original_release_status_basis_v1(
+                readback, verified.request().acquisition_id(),
+            )?;
+            let mut attempt = None;
+            let mut sequence = None;
+            for ((namespace, key), value) in readback.rows() {
+                if *namespace != aos_sandbox::RecordNamespace::SourceProviderAuthority {
+                    continue;
+                }
+                match aos_sandbox_source_provider_ledger::ledger::format::decode_record(key, value)
+                    .map_err(|_| SourceProviderSecurityError::SessionContinuity)?
+                {
+                    DecodedRecordV1::Attempt(row) if row.attempt_digest == verified.attempt().attempt_digest() => {
+                        if attempt.replace((key.as_slice(), value.as_slice())).is_some() {
+                            return Err(SourceProviderSecurityError::SessionContinuity.into());
+                        }
+                    }
+                    DecodedRecordV1::Session(row) if row.provider == *projection.provider_authority()
+                        && row.holder == *projection.root_mount_authority() => {
+                        if sequence.replace(row.next_response_sequence).is_some() {
+                            return Err(SourceProviderSecurityError::SessionContinuity.into());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let (key, value) = attempt.ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            let sequence = sequence.ok_or(SourceProviderSecurityError::SessionContinuity)?;
+            current.authorize_reserved_borrowed(
+                super::super::ReservedProviderAuthorityViewV1::Original { writer, readback },
+                snapshot, key, value, sequence,
+            ).map_err(Into::into)
+        })());
+        if matches!(destination, Some(Ok(_))) {
+            Ok(())
+        } else {
+            Err(SourceProviderSecurityError::SessionContinuity)
+        }
+    }
+}
+
 // The records come from current protected completion custody. Validate their
 // full graph before the exact suffix join; no public raw-binding/reservation
 // conversion to a sealed builder exists.

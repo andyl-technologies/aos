@@ -41,6 +41,33 @@ use crate::{ProviderAdmissionDispositionV1, ProviderLedgerError};
 const RELEASE_RESERVE_PURPOSE: &[u8] = b"reserve-release";
 const RELEASE_COMPLETE_PURPOSE: &[u8] = b"complete-release";
 
+// This is the same pure status plan used by the consuming Legacy facade.
+// The original request, complete current records and encoded response remain
+// parked with the caller throughout the finalizer's fallible work.
+pub(crate) fn finalize_original_pending_release_v1(
+    records: &[(Vec<u8>, Vec<u8>)],
+    current: &aos_sandbox_source_provider_security::CurrentProviderRequestV1,
+    response: &[u8],
+    completed_at_seconds: i64,
+) -> Result<aos_sandbox_source_provider_ledger::FinalizedCompletionV1, ProviderLedgerError> {
+    let aos_sandbox_source_provider_protocol::VerifiedProviderRequestV1::Release(verified) = current.verified() else {
+        return Err(ProviderLedgerError::Equivocation);
+    };
+    let key = records.iter().find_map(|(key, value)| {
+        match crate::format::decode_record(key, value) {
+            Ok(crate::model::DecodedRecordV1::Attempt(row))
+                if row.attempt_digest == verified.attempt().attempt_digest() => Some(key),
+            _ => None,
+        }
+    }).ok_or(ProviderLedgerError::Unavailable)?;
+    let plan = aos_sandbox_source_provider_ledger::ReleaseStatusCompletionPlanV1::new(key.clone())
+        .map_err(crate::transaction::map_pure_ledger_error)?;
+    plan.finalize(
+        records.iter().map(|(key, value)| (key.as_slice(), value.as_slice())),
+        response.to_vec(), None, completed_at_seconds,
+    ).map_err(crate::transaction::map_pure_ledger_error)
+}
+
 pub(crate) struct LivePendingReleaseV1 {
     plan: ReleasePlanV1,
     completion_session_binding: ObjectDigest,

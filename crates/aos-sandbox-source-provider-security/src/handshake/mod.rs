@@ -547,6 +547,43 @@ impl core::fmt::Debug for ProviderOutcomeAuthorizationV1 {
     }
 }
 
+// Both alternatives borrow genuine held owners. The original branch cannot
+// turn a copied graph or a caller-selected namespace into journal authority.
+enum ReservedProviderAuthorityViewV1<'borrow, 'journal, 'challenge> {
+    Legacy(&'borrow aos_sandbox::ProtectedJournalAuthority<'journal>),
+    Original {
+        writer: &'borrow aos_sandbox::SourceOriginalNativeJournalAuthorityV5<'journal, 'challenge>,
+        readback: &'borrow aos_sandbox::OriginalSourceProtectedReadbackV5,
+    },
+}
+
+impl ReservedProviderAuthorityViewV1<'_, '_, '_> {
+    fn validate_source_provider_authority_snapshot(
+        &self,
+        snapshot: &aos_sandbox::ProtectedJournalSnapshot,
+    ) -> Result<(), aos_sandbox::JournalError> {
+        match self {
+            Self::Legacy(journal) => journal.validate_source_provider_authority_snapshot(snapshot),
+            Self::Original { writer, readback } => {
+                writer.validate_original_release_status_snapshot_v1(readback, snapshot)
+            }
+        }
+    }
+
+    fn get(&self, key: &[u8]) -> Result<Option<&[u8]>, aos_sandbox::JournalError> {
+        match self {
+            Self::Legacy(journal) => journal.get(key),
+            Self::Original { writer, readback } => {
+                writer.validate_readback(readback)?;
+                Ok(readback.rows().iter().find_map(|((namespace, candidate), value)| {
+                    (*namespace == aos_sandbox::RecordNamespace::SourceProviderAuthority
+                        && candidate.as_slice() == key).then_some(value.as_slice())
+                }))
+            }
+        }
+    }
+}
+
 impl CurrentProviderRequestV1 {
     /// Borrows the authenticated protocol request for owner-side admission.
     #[must_use]
@@ -581,6 +618,25 @@ impl CurrentProviderRequestV1 {
     pub(super) fn authorize_reserved(
         self,
         journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
+        attempt_key: &[u8],
+        attempt_record: &[u8],
+        response_sequence: u64,
+    ) -> Result<ProviderOutcomeAuthorizationV1, crate::SourceProviderSecurityError> {
+        self.authorize_reserved_borrowed(
+            ReservedProviderAuthorityViewV1::Legacy(journal),
+            journal_snapshot,
+            attempt_key,
+            attempt_record,
+            response_sequence,
+        )
+    }
+
+    // The legacy consuming adapter retains `self` until this same recipe
+    // returns; its allocation, validation and request-disposal order is unchanged.
+    fn authorize_reserved_borrowed(
+        &self,
+        journal: ReservedProviderAuthorityViewV1<'_, '_, '_>,
         journal_snapshot: aos_sandbox::ProtectedJournalSnapshot,
         attempt_key: &[u8],
         attempt_record: &[u8],

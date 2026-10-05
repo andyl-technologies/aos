@@ -44,6 +44,95 @@ enum ReleaseFailureV1 {
     ClockPost,
 }
 
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+enum PendingStatusStageV1 {
+    #[default]
+    Receive,
+    Prepare,
+    Commit,
+    Accept,
+    Accepted,
+}
+
+impl PendingStatusStageV1 {
+    fn index(self) -> usize {
+        match self {
+            Self::Receive => 0,
+            Self::Prepare => 1,
+            Self::Commit => 2,
+            Self::Accept | Self::Accepted => 3,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum PendingStatusFailureV1 {
+    Readback,
+    Receiver,
+    Owners,
+    Preparation,
+    Commit,
+    ReadbackAfter,
+    Installation,
+    Install(usize),
+    Acceptance,
+    OwnerPre,
+    ClockPre,
+    Action(usize),
+    OwnerPost,
+    ClockPost,
+}
+
+#[derive(Default)]
+struct OriginalPendingStatusFlightV1 {
+    stage: PendingStatusStageV1,
+    first: Option<PendingStatusFailureV1>,
+    readback: Option<std::result::Result<OriginalRootProtectedReadbackV5, JournalError>>,
+    owners: Option<Result<(JournalTransaction, SourceAcquisitionTableV2)>>,
+    append: Option<PreparedOriginalRootAppendV5>,
+    preparation: Option<std::result::Result<(), JournalError>>,
+    commit: Option<std::result::Result<(), JournalError>>,
+    readback_after: Option<JournalError>,
+    validations: [Option<std::result::Result<(), JournalError>>; 2],
+    installation: Option<Result<()>>,
+    acceptance: Option<std::result::Result<(), SourceProviderSecurityError>>,
+    owner_pre: Option<std::result::Result<(), SourceProviderSecurityError>>,
+    clock_pre: Option<Result<()>>,
+    actions: [Option<Result<bool>>; 4],
+    owner_post: Option<std::result::Result<(), SourceProviderSecurityError>>,
+    clock_post: Option<Result<()>>,
+}
+
+impl OriginalPendingStatusFlightV1 {
+    fn failure<'owner>(
+        &'owner self,
+        received: Option<&'owner aos_sandbox_source_provider_security::OriginalNativeReceivedOutcomeV5>,
+    ) -> Option<&'owner (dyn std::error::Error + 'static)> {
+        let first = self.first.or_else(|| received?.original_release_status_failure_v1()
+            .map(|_| PendingStatusFailureV1::Receiver));
+        match first? {
+            PendingStatusFailureV1::Readback => self.readback.as_ref()?.as_ref().err().map(|cause| cause as _),
+            PendingStatusFailureV1::Receiver => received?.original_release_status_failure_v1(),
+            PendingStatusFailureV1::Owners => self.owners.as_ref()?.as_ref().err().map(|cause| cause as _),
+            PendingStatusFailureV1::Preparation => self.preparation.as_ref()?.as_ref().err().map(|cause| cause as _),
+            PendingStatusFailureV1::Commit => self.commit.as_ref()?.as_ref().err().map(|cause| cause as _),
+            PendingStatusFailureV1::ReadbackAfter => self.readback_after.as_ref().map(|cause| cause as _),
+            PendingStatusFailureV1::Installation => self.installation.as_ref()?.as_ref().err().map(|cause| cause as _),
+            PendingStatusFailureV1::Install(site) => self.validations[site].as_ref()?.as_ref().err().map(|cause| cause as _),
+            PendingStatusFailureV1::Acceptance => received?.original_positive_failures_v5().0
+                .map(|cause| cause as _)
+                .or_else(|| self.acceptance.as_ref()?.as_ref().err().map(|cause| cause as _)),
+            PendingStatusFailureV1::OwnerPre => received?.original_positive_failures_v5().0
+                .map(|cause| cause as _)
+                .or_else(|| self.owner_pre.as_ref()?.as_ref().err().map(|cause| cause as _)),
+            PendingStatusFailureV1::ClockPre => self.clock_pre.as_ref()?.as_ref().err().map(|cause| cause as _),
+            PendingStatusFailureV1::Action(site) => self.actions[site].as_ref()?.as_ref().err().map(|cause| cause as _),
+            PendingStatusFailureV1::OwnerPost => self.owner_post.as_ref()?.as_ref().err().map(|cause| cause as _),
+            PendingStatusFailureV1::ClockPost => self.clock_post.as_ref()?.as_ref().err().map(|cause| cause as _),
+        }
+    }
+}
+
 pub(super) struct OriginalRootReleaseFlightV1 {
     live: LiveValidatedReleaseMountSourceAcquisitionRequest,
     body: Vec<u8>,
@@ -70,6 +159,7 @@ pub(super) struct OriginalRootReleaseFlightV1 {
     action: Option<Result<()>>,
     owner_post: Option<std::result::Result<(), SourceProviderSecurityError>>,
     clock_post: Option<Result<()>>,
+    status: Option<OriginalPendingStatusFlightV1>,
 }
 
 impl OriginalRootReleaseFlightV1 {
@@ -104,6 +194,7 @@ impl OriginalRootReleaseFlightV1 {
             action: None,
             owner_post: None,
             clock_post: None,
+            status: None,
         }
     }
 
@@ -118,6 +209,9 @@ impl OriginalRootReleaseFlightV1 {
         &'owner self,
         received: Option<&'owner aos_sandbox_source_provider_security::OriginalNativeReceivedOutcomeV5>,
     ) -> Option<&'owner (dyn std::error::Error + 'static)> {
+        if let Some(cause) = self.status.as_ref().and_then(|status| status.failure(received)) {
+            return Some(cause);
+        }
         // The closed stage identifies which nested recipe can already own a
         // cause when formatting or an independent post observation unwinds.
         // No synthetic end disposition replaces that resident native error.
@@ -347,6 +441,14 @@ impl OriginalNativeAcquireFlightV5 {
         -> Option<&(dyn std::error::Error + 'static)>
     {
         let child = self.release.as_ref()?;
+        if let Some(status) = &child.status {
+            if let Some(cause) = status.owner_post.as_ref().and_then(|result| result.as_ref().err()) {
+                return Some(cause);
+            }
+            if let Some(cause) = status.clock_post.as_ref().and_then(|result| result.as_ref().err()) {
+                return Some(cause);
+            }
+        }
         child.owner_post.as_ref().and_then(|result| result.as_ref().err())
             .map(|cause| cause as &(dyn std::error::Error + 'static))
             .or_else(|| child.clock_post.as_ref().and_then(|result| result.as_ref().err())
@@ -386,6 +488,10 @@ impl OriginalNativeAcquireFlightV5 {
         let (root_attempt, original) = sent.security_parts();
         let child = self.release.as_mut().ok_or_else(|| state_error("original Release child absent"))?;
         let received = self.pending.received.as_mut().ok_or_else(|| state_error("original Release receiver absent"))?;
+        if child.stage == ReleaseStageV1::Sent {
+            return advance_pending_status_v1(child, table, index, writer, session, original,
+                received, root_attempt, effect);
+        }
         child.readback = Some(writer.terminal_readback(root_attempt));
         if matches!(child.readback, Some(Err(_))) {
             child.first.get_or_insert(ReleaseFailureV1::Readback);
@@ -437,4 +543,195 @@ impl OriginalNativeAcquireFlightV5 {
             Progress::Pending
         })
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn advance_pending_status_v1(
+    child: &mut OriginalRootReleaseFlightV1,
+    table: &mut SourceAcquisitionTableV2,
+    index: &mut BTreeMap<[u8; 32], RootNativeHeldSidecarV2>,
+    writer: &mut MountOriginalNativeJournalAuthorityV5<'_>,
+    session: &mut CurrentRootMountSourceProviderSessionV1,
+    original: &aos_sandbox_source_provider_security::AuthorizedMountProviderOutcomeV2,
+    received: &mut aos_sandbox_source_provider_security::OriginalNativeReceivedOutcomeV5,
+    root: [u8; 32],
+    effect: &mut OriginalMountReleaseEffectLoanV1<'_>,
+) -> Result<Progress> {
+    let prepared = child.prepared.as_ref().ok_or_else(|| state_error("original Release preparation absent"))?;
+    let release = child.owners.as_ref().and_then(|result| result.as_ref().ok()).map(|(_, id)| *id)
+        .ok_or_else(|| state_error("original Release owner identity absent"))?;
+    let status = child.status.get_or_insert_with(OriginalPendingStatusFlightV1::default);
+    if status.first.is_some() {
+        return Err(state_error("original Release Pending permanently refused"));
+    }
+    if status.readback.is_none() {
+        status.readback = Some(writer.terminal_readback(root));
+        if matches!(status.readback, Some(Err(_))) {
+            status.first = Some(PendingStatusFailureV1::Readback);
+        }
+    }
+    let site = status.stage.index();
+    let action = advance_pending_status_action_v1(
+        status, table, index, writer, session,
+        original, received, prepared, root, release, effect,
+    );
+    if action.is_err() && status.first.is_none() {
+        status.first = Some(if received.original_release_status_failure_v1().is_some() {
+            PendingStatusFailureV1::Receiver
+        } else {
+            PendingStatusFailureV1::Action(site)
+        });
+    }
+    status.actions[site] = Some(action);
+
+    let current = if matches!(status.commit, Some(Ok(()))) {
+        status.append.as_ref().and_then(|append| append.readback().ok())
+    } else {
+        status.readback.as_ref().and_then(|result| result.as_ref().ok())
+    };
+    let owner_post = session.observe_original_release_post_v1(writer, current, original, received, Some(prepared));
+    if status.owner_post.as_ref().is_none_or(|result| result.is_ok()) {
+        if owner_post.is_err() {
+            status.first.get_or_insert(PendingStatusFailureV1::OwnerPost);
+        }
+        status.owner_post = Some(owner_post);
+    }
+    let clock_post = effect.check_before_release_effect();
+    if status.clock_post.as_ref().is_none_or(|result| result.is_ok()) {
+        if clock_post.is_err() {
+            status.first.get_or_insert(PendingStatusFailureV1::ClockPost);
+        }
+        status.clock_post = Some(clock_post);
+    }
+    if status.first.is_some() {
+        return Err(state_error("original Release Pending action/debt retained"));
+    }
+    if matches!(status.actions[site], Some(Ok(false))) {
+        return Ok(Progress::Pending);
+    }
+    status.stage = match status.stage {
+        PendingStatusStageV1::Receive => PendingStatusStageV1::Prepare,
+        PendingStatusStageV1::Prepare => PendingStatusStageV1::Commit,
+        PendingStatusStageV1::Commit => PendingStatusStageV1::Accept,
+        PendingStatusStageV1::Accept | PendingStatusStageV1::Accepted => PendingStatusStageV1::Accepted,
+    };
+    Ok(match status.stage {
+        PendingStatusStageV1::Accept => Progress::ReleaseStatusStored,
+        PendingStatusStageV1::Accepted => Progress::ReleaseFenceAccepted,
+        _ => Progress::Pending,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn advance_pending_status_action_v1(
+    status: &mut OriginalPendingStatusFlightV1,
+    table: &mut SourceAcquisitionTableV2,
+    index: &mut BTreeMap<[u8; 32], RootNativeHeldSidecarV2>,
+    writer: &mut MountOriginalNativeJournalAuthorityV5<'_>,
+    session: &mut CurrentRootMountSourceProviderSessionV1,
+    original: &aos_sandbox_source_provider_security::AuthorizedMountProviderOutcomeV2,
+    received: &mut aos_sandbox_source_provider_security::OriginalNativeReceivedOutcomeV5,
+    prepared: &PreparedMountProviderRequestV2,
+    root: [u8; 32],
+    release: [u8; 32],
+    effect: &mut OriginalMountReleaseEffectLoanV1<'_>,
+) -> Result<bool> {
+    if status.first.is_some() {
+        return Err(state_error("original Pending first cause retained"));
+    }
+    let current = if matches!(status.commit, Some(Ok(()))) {
+        status.append.as_ref().and_then(|append| append.readback().ok())
+    } else {
+        status.readback.as_ref().and_then(|result| result.as_ref().ok())
+    }.ok_or_else(|| state_error("original Pending current cut unavailable"))?;
+
+    if status.stage == PendingStatusStageV1::Receive {
+        let loan = match session.borrow_original_release_status_receive_v1(writer, current, original, received, prepared) {
+            Ok(loan) => loan,
+            Err(cause) => {
+                status.owner_pre = Some(Err(cause));
+                status.first = Some(PendingStatusFailureV1::OwnerPre);
+                return Err(state_error("original Pending receive loan refused"));
+            }
+        };
+        status.clock_pre = Some(effect.check_before_release_effect());
+        if !matches!(status.clock_pre, Some(Ok(()))) {
+            status.first = Some(PendingStatusFailureV1::ClockPre);
+            return Err(state_error("original Pending prereceive clock refused"));
+        }
+        loan.receive();
+        return session.advance_original_release_status_v1(writer, current, original, received, prepared)
+            .map_err(|_| state_error("original Pending received/verification refusal"));
+    }
+    status.owner_pre = Some(session.revalidate_original_release_custody_v1(writer, current, original, received, prepared));
+    if !matches!(status.owner_pre, Some(Ok(()))) {
+        status.first = Some(PendingStatusFailureV1::OwnerPre);
+        return Err(state_error("original Pending pre-effect custody refused"));
+    }
+    match status.stage {
+        PendingStatusStageV1::Prepare => {
+            if status.owners.is_some() || status.append.is_some() || status.preparation.is_some() {
+                return Err(state_error("original Pending preparation is irreversible"));
+            }
+            status.owners = Some(table.prepare_original_release_status_disposition_v1(release, received));
+            if matches!(status.owners, Some(Err(_))) {
+                status.first = Some(PendingStatusFailureV1::Owners);
+                return Err(state_error("original Pending owners refused"));
+            }
+            let (owners, _) = status.owners.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or_else(|| state_error("original Pending owners absent"))?;
+            status.clock_pre = Some(effect.check_before_release_effect());
+            if !matches!(status.clock_pre, Some(Ok(()))) {
+                status.first = Some(PendingStatusFailureV1::ClockPre);
+                return Err(state_error("original Pending preparation clock refused"));
+            }
+            status.preparation = Some(writer.prepare_original_release_status_retaining_v1(owners, root, release, &mut status.append));
+            if matches!(status.preparation, Some(Err(_))) {
+                status.first = Some(PendingStatusFailureV1::Preparation);
+                return Err(state_error("original Pending native preparation refused"));
+            }
+        }
+        PendingStatusStageV1::Commit => {
+            let append = status.append.as_mut().ok_or_else(|| state_error("original Pending append absent"))?;
+            status.clock_pre = Some(effect.check_before_release_effect());
+            if !matches!(status.clock_pre, Some(Ok(()))) {
+                status.first = Some(PendingStatusFailureV1::ClockPre);
+                return Err(state_error("original Pending precommit clock refused"));
+            }
+            status.commit = Some(writer.commit_prepared_retaining_v5(append));
+            if matches!(status.commit, Some(Err(_))) {
+                status.first = Some(PendingStatusFailureV1::Commit);
+                return Err(state_error("original Pending native commit refused"));
+            }
+            let actual = match append.readback() {
+                Ok(actual) => actual,
+                Err(cause) => {
+                    status.readback_after = Some(cause);
+                    status.first = Some(PendingStatusFailureV1::ReadbackAfter);
+                    return Err(state_error("original Pending physical readback refused"));
+                }
+            };
+            status.installation = Some(OriginalNativeAcquireFlightV5::install_original_terminal_retaining_v5(
+                table, index, writer, actual, &mut status.validations,
+            ));
+            if matches!(status.installation, Some(Err(_))) {
+                status.first = Some(status.validations.iter().position(|result| matches!(result, Some(Err(_))))
+                    .map_or(PendingStatusFailureV1::Installation, PendingStatusFailureV1::Install));
+                return Err(state_error("original Pending installation refused"));
+            }
+        }
+        PendingStatusStageV1::Accept => {
+            if status.acceptance.is_some() {
+                return Err(state_error("original Pending acceptance occupied"));
+            }
+            status.acceptance = Some(session.seal_original_release_status_v1(writer, current, original, received, prepared, release));
+            if matches!(status.acceptance, Some(Err(_))) {
+                status.first = Some(PendingStatusFailureV1::Acceptance);
+                return Err(state_error("original Pending committed fence refused"));
+            }
+        }
+        PendingStatusStageV1::Accepted => {}
+        PendingStatusStageV1::Receive => return Err(state_error("original Pending receive disposition")),
+    }
+    Ok(true)
 }

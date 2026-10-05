@@ -101,6 +101,23 @@ pub struct CurrentProviderIngressSessionV1 {
     selected_receive: Option<selected::SelectedCurrentReceiveV1>,
 }
 
+/// Borrows the same carrier for one committed original Pending response.
+///
+/// The source owner supplies the final original clock after this loan's checks.
+/// Neither a successful local send nor this loan proves remote acceptance.
+pub struct OriginalPendingReleaseSendLoanV1<'owner> {
+    carrier: &'owner mut InertSourceProviderCarrierV1,
+    payload: &'owner [u8],
+    result: &'owner mut Option<Result<(), aos_sandbox_linux::seqpacket::SeqpacketError>>,
+}
+
+impl OriginalPendingReleaseSendLoanV1<'_> {
+    /// Parks the native result immediately without retries or further checks.
+    pub fn send(self) {
+        *self.result = Some(self.carrier.send_original_held_retaining_v5(self.payload));
+    }
+}
+
 impl CurrentProviderIngressSessionV1 {
     // Eligibility is unchanged. Only the already-armed original continuation
     // retains its carrier after the SAME validator's concrete failure.

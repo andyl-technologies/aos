@@ -138,6 +138,55 @@ impl OriginalRootCapacityRecordV5 {
         })
     }
 
+    /// Transfers only the surviving negative-custody suffix after Pending.
+    pub(in crate::journal) fn release_status_floor_v1(
+        before: &RootNativeHeldGraphV2,
+        after: &RootNativeHeldGraphV2,
+        old: &super::super::OrdinaryCapacityRecordV4,
+        root: [u8; 32],
+        release: [u8; 32],
+        transaction: [u8; 16],
+        limits: JournalLimits,
+    ) -> Result<super::super::OrdinaryCapacityRecordV4, JournalError> {
+        use super::super::{OrdinaryCapacityProfileV4, OrdinaryCapacityRecordV4};
+
+        let proposal = aos_sandbox_protocol::mount_source_acquisition_state::native_held_completion::
+            validate_original_release_status_transition_v1(before, after, root, release, transaction)
+            .map_err(|_| invalid("original Release Pending canonical owner edge"))?;
+        if old.data().profile != OrdinaryCapacityProfileV4::ReleaseOutcomeAndNegativeCustody
+            || old.data().owner_id != release
+            || limits.maximum_key_bytes < 75
+            || limits.maximum_record_bytes < 7 + 75 + LEGACY_VALUE_BYTES as usize
+            || limits.maximum_records_per_transaction < 5
+            || (limits.maximum_transaction_bytes as u64)
+                < 3 * (7 + 75 + LEGACY_VALUE_BYTES) + 2 * (7 + 75) + 300
+        {
+            return Err(JournalError::LimitExceeded("original Release Pending complete suffix"));
+        }
+        let frames = 2_u32;
+        let append_bytes = 184 + u64::from(frames) * 72
+            + (7 + 75 + LEGACY_VALUE_BYTES) + (7 + 75);
+        let mut profile = Sha256::new();
+        profile.update(b"aos.mount.original-release.profile4.v1\0");
+        profile.update(root);
+        profile.update(release);
+        profile.update(old.data().original_artifact_digest);
+        profile.update(frames.to_be_bytes());
+        profile.update(append_bytes.to_be_bytes());
+
+        let mut data = old.data().clone();
+        data.profile = OrdinaryCapacityProfileV4::ReleaseNegativeCustody;
+        data.admission_owner_mutation_digest = Self::release_owner_digest_v1(&proposal.puts)?;
+        // The original actual admission is never renewed by this transfer.
+        data.remaining_transactions = 1;
+        data.remaining_record_frames = frames;
+        data.remaining_append_bytes = append_bytes;
+        data.maximum_retained_growth_entries = 0;
+        data.maximum_retained_growth_bytes = LEGACY_VALUE_BYTES;
+        data.remaining_profile_digest = profile.finalize().into();
+        OrdinaryCapacityRecordV4::new(data)
+    }
+
     pub(in crate::journal) fn release_owner_digest_v1(
         puts: &std::collections::BTreeMap<Vec<u8>, Vec<u8>>,
     ) -> Result<[u8; 32], JournalError> {

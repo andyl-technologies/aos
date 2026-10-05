@@ -83,7 +83,7 @@ pub use codec::{
 };
 pub use crypto::{
     PreparedSourceExportLeaseDataV5, PreparedSourceProviderReceiptDataV5,
-    PreparedSourceProviderStatusDataV5,
+    PreparedSourceProviderStatusDataV5, PendingReleaseStatusSigningLoanV1,
     PreparedSourceReleaseRequestDataV1, SourceReleaseRequestSigningLoanV1,
     SignedSourceExportLeaseV1, SignedSourceProviderHelloV1, SignedSourceProviderInventoryV1,
     SignedSourceProviderReceiptV1, SignedSourceProviderRequestV1, SignedSourceProviderStatusV1,
@@ -126,6 +126,7 @@ pub use model::{
 pub use native_export_fence::{
     MAXIMUM_NATIVE_RELEASE_RESPONSE_BYTES_V2, NativeExportFenceAcquireV1, NativeExportFenceCutV1,
     NativeExportFenceReleaseV1, ReleaseSourceResponseProfileV2, ReleaseSourceResponseV2,
+    PreparedNativeExportFenceDataV1, NativeExportFenceSigningLoanV1,
     SIGNED_SOURCE_PROVIDER_NATIVE_EXPORT_FENCE_BYTES_V1,
     SOURCE_PROVIDER_NATIVE_EXPORT_FENCE_BYTES_V1, SignedSourceProviderNativeExportFenceV1,
     SourceProviderNativeExportFenceV1,

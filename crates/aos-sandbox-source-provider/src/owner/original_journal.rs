@@ -59,6 +59,7 @@ use producer::{OriginalProducerAppendV5, OriginalSourceProducerV5};
 enum OriginalJournalPurposeV1 {
     Producer(OriginalProducerAppendV5),
     Release,
+    ReleaseStatus,
 }
 
 struct OriginalReleaseClockLoanV1<'owner> {
@@ -82,6 +83,7 @@ fn original_append_parts_v1(
     match purpose {
         OriginalJournalPurposeV1::Producer(step) => Ok((producer.append_mut(step)?, None)),
         OriginalJournalPurposeV1::Release => producer.original_release_append_parts_v1(),
+        OriginalJournalPurposeV1::ReleaseStatus => producer.original_release_status_append_parts_v1(),
     }
 }
 
