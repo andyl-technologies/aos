@@ -17,6 +17,7 @@ use crucible_shmem::{
 mod block_wait;
 mod device_wait_observations;
 pub(super) mod fault_event_control;
+mod idle_plan_observations;
 mod native_block_wait;
 mod network_custody;
 mod network_output;

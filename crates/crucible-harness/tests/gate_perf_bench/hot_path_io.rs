@@ -197,6 +197,11 @@ const HOT_PATH_OWNERS: &[HotPathOwner] = &[
         &[],
     ),
     owner(
+        "crucible-qemu-plugin/src/runtime/live_callbacks/idle_plan_witness.rs",
+        &["pub(super) struct IdlePlanWitness", "fn emit("],
+        &[],
+    ),
+    owner(
         "crucible-qemu-plugin/src/runtime/live_callbacks/device_wait_witness/capture.rs",
         &["fn destination("],
         &[],
@@ -418,7 +423,7 @@ fn advance_and_delivery_owners_have_no_socket_or_control_io() -> Result<(), Box<
     );
     assert_eq!(
         inventoried_paths.len(),
-        35,
+        36,
         "the scoped concrete Rust hot-path owner inventory must remain explicit"
     );
 

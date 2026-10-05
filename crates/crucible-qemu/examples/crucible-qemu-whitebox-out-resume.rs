@@ -109,6 +109,7 @@ struct ProbePolicy {
     fixed_buffer: Option<u64>,
     profile: &'static str,
     advisory_console: bool,
+    runtime_trace: bool,
 }
 
 const ROM_POLICY: ProbePolicy = ProbePolicy {
@@ -117,6 +118,7 @@ const ROM_POLICY: ProbePolicy = ProbePolicy {
     fixed_buffer: Some(BUFFER),
     profile: "real-mode-rom-shared-buffer",
     advisory_console: false,
+    runtime_trace: false,
 };
 
 fn catalog() -> Result<SelectableCatalogPlan, Box<dyn Error>> {
@@ -191,6 +193,9 @@ fn run_owned(
     }
     let shutdown = node.shutdown_child();
     drop(node);
+    if result.is_err() && policy.advisory_console && policy.runtime_trace {
+        linux::report_runtime_trace_after_reap(&directory, shutdown.as_ref().ok());
+    }
     drop(directory);
     let finish = owner.finish();
     let refused_shutdown = match result {

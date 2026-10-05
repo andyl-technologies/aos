@@ -63,6 +63,7 @@ mod device_wait_witness;
 mod devices;
 mod error;
 mod fingerprint_worker;
+mod idle_plan_witness;
 mod logical_restore;
 mod network_inbound;
 mod network_output_stop;
@@ -846,6 +847,7 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     pub(super) control_callback_witness: Arc<ControlCallbackWitness>,
     stop_caller_witness: checkpoint_stop_witness::StopCallerWitness,
     device_wait_witness: device_wait_witness::DeviceWaitWitness,
+    idle_plan_witness: idle_plan_witness::IdlePlanWitness,
     control_stage_identity: Option<control_callback_stage::ControlStageIdentity>,
     idle_advance_completion_active: AtomicBool,
     last_icount: AtomicU64,
@@ -1261,6 +1263,7 @@ impl LiveVcpuTimeCallbackState {
             control_callback_witness,
             stop_caller_witness,
             device_wait_witness: device_wait_witness::DeviceWaitWitness::from_env(),
+            idle_plan_witness: idle_plan_witness::IdlePlanWitness::from_env(),
             control_stage_identity: None,
             idle_advance_completion_active: AtomicBool::new(false),
             last_icount: AtomicU64::new(snapshot.current_icount),
@@ -1507,7 +1510,7 @@ impl LiveVcpuTimeCallbackState {
             ExactDeadlineReport::Armed { deadline_ps } => Some(deadline_ps),
             ExactDeadlineReport::NoArmedTimer => None,
         };
-        let (ceiling_icount, _) = self.scheduler_advance()?;
+        let (ceiling_icount, stop_condition) = self.scheduler_advance()?;
         let device_io_holding_ticks = PluginShmemOrdering::device_io_active(self.slot.get());
         let device_completion_deadline_tick = if device_io_holding_ticks {
             Some(PluginShmemOrdering::device_completion_deadline_tick(
@@ -1532,17 +1535,47 @@ impl LiveVcpuTimeCallbackState {
         )
         .map_err(|source| LiveVcpuTimeCallbackError::PublishIdle { source })?;
         let request = IdleParkRequest::from_published(plan, futex_wait);
-        match self.wait_for_scheduler_release_or_inbound(vcpu_index, &request, raw_icount)? {
-            IdleSchedulerWaitDisposition::ReturnToQemu
-            | IdleSchedulerWaitDisposition::RescanInQemu => Ok(()),
+        let observation = self.idle_plan_witness.begin(
+            vcpu_index,
+            raw_icount,
+            plan,
+            exact_deadline,
+            stop_condition,
+        );
+        let disposition =
+            self.wait_for_scheduler_release_or_inbound(vcpu_index, &request, raw_icount);
+        if disposition.is_err() {
+            self.idle_plan_witness
+                .end(observation, idle_plan_witness::Outcome::WaitError);
+            return disposition.map(|_| ());
+        }
+        match disposition? {
+            IdleSchedulerWaitDisposition::ReturnToQemu => {
+                self.idle_plan_witness
+                    .end(observation, idle_plan_witness::Outcome::ReturnToQemu);
+                Ok(())
+            }
+            IdleSchedulerWaitDisposition::RescanInQemu => {
+                self.idle_plan_witness
+                    .end(observation, idle_plan_witness::Outcome::RescanInQemu);
+                Ok(())
+            }
             IdleSchedulerWaitDisposition::AdvanceTo(target_icount) => {
                 if plan.cause() == IdleWakeCause::TimerDeadline && target_icount <= current_icount {
                     // RR dispatches already-due timers after this callback, then
                     // revisits halted vCPUs. Release the edge for that rescan;
                     // no forward advance or timer witness is needed here.
                     self.all_halted_idle_handled.store(false, Ordering::Release);
+                    self.idle_plan_witness.end(
+                        observation,
+                        idle_plan_witness::Outcome::AlreadyDueReturn(target_icount),
+                    );
                     return Ok(());
                 }
+                self.idle_plan_witness.end(
+                    observation,
+                    idle_plan_witness::Outcome::AdvanceSelected(target_icount),
+                );
                 if !self.arm_and_enqueue_idle_advance_or_defer(
                     raw_icount,
                     target_icount,

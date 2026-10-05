@@ -3,6 +3,9 @@
 use super::*;
 use std::io::Write;
 
+#[path = "linux/runtime_trace.rs"]
+mod runtime_trace;
+
 // These are the existing production Linux-flight ceiling and completion policy.
 const LINUX_POLICY: ProbePolicy = ProbePolicy {
     ceiling_ps: i64::MAX.unsigned_abs(),
@@ -10,6 +13,7 @@ const LINUX_POLICY: ProbePolicy = ProbePolicy {
     fixed_buffer: None,
     profile: "linux-cpl3-parent-buffer",
     advisory_console: true,
+    runtime_trace: false,
 };
 
 /// Keeps the three distinct immutable Linux boot artifacts together.
@@ -39,8 +43,14 @@ pub(super) fn flight(
     } else {
         Mode::Normal
     };
-    let config = configuration(qemu, plugin, guest, root, profile)?;
-    run_owned(qemu, cgroup, root, mode, config, LINUX_POLICY)?;
+    let runtime_trace =
+        runtime_trace::enabled(std::env::var_os(runtime_trace::ENVIRONMENT).as_deref());
+    let config = configuration(qemu, plugin, guest, root, profile, runtime_trace)?;
+    let policy = ProbePolicy {
+        runtime_trace,
+        ..LINUX_POLICY
+    };
+    run_owned(qemu, cgroup, root, mode, config, policy)?;
     println!("linux_profile={profile}");
     Ok(())
 }
@@ -51,19 +61,30 @@ fn configuration(
     guest: BootArtifacts<'_>,
     root: &Path,
     profile: &str,
+    runtime_trace: bool,
 ) -> Result<QemuLiveNodeStepGateConfig, Box<dyn Error>> {
-    Ok(
-        QemuLiveNodeStepGateConfig::new(qemu, plugin, guest.kernel, guest.firmware, root)
-            .with_initrd(guest.initrd)
-            .with_vm_shape(128, 1)
-            .with_console_capture()
-            .with_kernel_cmdline(format!(
-                "console=ttyS0 panic=-1 quiet rdinit=/init crucible_out_probe={profile}"
-            ))
-            .with_whitebox(QemuLaunchPluginSwitch::On)
-            .with_selectable_catalog_plan(catalog()?)
-            .with_completion_timeout(LINUX_POLICY.completion_timeout),
-    )
+    let config = QemuLiveNodeStepGateConfig::new(qemu, plugin, guest.kernel, guest.firmware, root)
+        .with_initrd(guest.initrd)
+        .with_vm_shape(128, 1)
+        .with_console_capture()
+        .with_kernel_cmdline(format!(
+            "console=ttyS0 panic=-1 quiet rdinit=/init crucible_out_probe={profile}"
+        ))
+        .with_whitebox(QemuLaunchPluginSwitch::On)
+        .with_selectable_catalog_plan(catalog()?)
+        .with_completion_timeout(LINUX_POLICY.completion_timeout);
+    Ok(if runtime_trace {
+        config.with_runtime_determinism_trace()
+    } else {
+        config
+    })
+}
+
+pub(super) fn report_runtime_trace_after_reap(
+    directory: &crucible_qemu::QemuPreparedRunDirectory,
+    shutdown: Option<&QemuShutdownReport>,
+) {
+    runtime_trace::report_after_reap(directory, shutdown);
 }
 
 // These existing state reads do not drain events or pending requests. A failed
@@ -136,6 +157,7 @@ mod tests {
             guest,
             Path::new("/run/crucible"),
             "exec-child",
+            false,
         )?;
         let wrong_firmware = configuration(
             Path::new("/aos/qemu/bin/qemu-system-x86_64"),
@@ -146,6 +168,7 @@ mod tests {
             },
             Path::new("/run/crucible"),
             "exec-child",
+            false,
         )?;
 
         assert_ne!(

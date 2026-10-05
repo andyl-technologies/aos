@@ -127,3 +127,55 @@ fn regular_capture_keeps_shared_cursor_cloexec_and_owned_lifetime() {
         .unwrap_or_else(|e| panic!("read: {e}"));
     assert_eq!(bytes, b"before\ndiagnostic\nafter\n");
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn genuine_idle_callback_drops_full_or_closed_fifo_without_changing_original_advance() {
+    use crate::runtime::live_callbacks::{
+        idle_plan_witness::IdlePlanWitness, tests::test_live_state,
+    };
+    use crucible_shmem::{AdvanceStopCondition, KIND_VM, NodeSlot, authorize_advance_ceiling};
+    use std::ffi::OsStr;
+    use std::sync::Mutex;
+
+    let (reader, original) = pipe();
+    let original_flags = flags(&original, libc::F_GETFL);
+    let mut fill = destination(&original).unwrap_or_else(|error| panic!("capture: {error}"));
+    loop {
+        match fill.write(&[1_u8; 512]) {
+            Ok(length) => assert_eq!(length, 512),
+            Err(error) => {
+                assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+                break;
+            }
+        }
+    }
+    let mut reader = Some(reader);
+    for closed in [false, true] {
+        if closed {
+            drop(reader.take());
+        }
+        let slot = NodeSlot::new(KIND_VM);
+        let ceiling = authorize_advance_ceiling(0, 10, None)
+            .unwrap_or_else(|error| panic!("ceiling: {error}"));
+        slot.publish_scheduler_advance(ceiling, AdvanceStopCondition::Ceiling)
+            .unwrap_or_else(|error| panic!("publication: {error}"));
+        let mut state =
+            test_live_state(48, 1, 0, &slot).unwrap_or_else(|error| panic!("state: {error}"));
+        state
+            .on_vcpu_init(0)
+            .unwrap_or_else(|error| panic!("init: {error}"));
+        let mut witness = IdlePlanWitness::from_setting(Some(OsStr::new("256")));
+        witness.destination = Some(Mutex::new(
+            original
+                .try_clone()
+                .unwrap_or_else(|error| panic!("duplicate: {error}")),
+        ));
+        state.idle_plan_witness = witness;
+        assert_eq!(state.on_vcpu_idle(0, 0), Ok(()));
+        assert!(state.idle_advance_is_pending());
+        assert_eq!(slot.snapshot().current_icount, 0);
+        assert_eq!(slot.snapshot().idle_wake_icount, 10);
+        assert_eq!(flags(&original, libc::F_GETFL), original_flags);
+    }
+}

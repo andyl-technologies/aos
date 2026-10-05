@@ -427,6 +427,8 @@ impl QemuLiveHostIoRuntime {
             };
             if self.initial_advance_wake_pending {
                 self.checkpoint_idle_coordinate = checkpoint_idle_coordinate(&snapshot);
+                self.wait_observation
+                    .retain_initial_advance(&snapshot, self.checkpoint_idle_coordinate);
                 if self.checkpoint_idle_coordinate.is_some() {
                     // Preserve the original tokenized checkpoint handoff; a
                     // bare doorbell cannot re-arm its completed idle edge.
@@ -539,7 +541,7 @@ impl QemuLiveHostIoRuntime {
                 if remaining.is_zero() {
                     return Ok(QemuAsyncWaitOutcome::TimedOut);
                 }
-                self.observe_pending_wait("advance-pending", &snapshot, None, remaining);
+                self.observe_pending_advance_wait(&snapshot, checkpoint_idle_unreleased, remaining);
                 let poll_remaining = slice_deadline
                     .remaining()
                     .map_or(remaining, |slice| slice.min(remaining));

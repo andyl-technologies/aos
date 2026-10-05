@@ -2,8 +2,9 @@
 {
   pkgs,
   lib,
+  runtimeDiagnostics ? false,
 }:
 import ./phase2-qemu-whitebox-out-resume.nix {
-  inherit pkgs lib;
+  inherit pkgs lib runtimeDiagnostics;
   profile = "linux";
 }

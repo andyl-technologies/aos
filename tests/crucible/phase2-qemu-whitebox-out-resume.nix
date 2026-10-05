@@ -3,8 +3,11 @@
   pkgs,
   lib,
   profile ? "rom",
+  runtimeDiagnostics ? false,
 }:
-assert builtins.elem profile ["rom" "linux"]; let
+assert builtins.elem profile ["rom" "linux"];
+assert builtins.isBool runtimeDiagnostics;
+assert !runtimeDiagnostics || profile == "linux"; let
   source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
   flight = pkgs.mkCargoPackage {
@@ -157,7 +160,7 @@ assert builtins.elem profile ["rom" "linux"]; let
       mkdir /tmp/attempts
       ${pkgs.util-linux}/bin/mount -o loop,prjquota /tmp/attempts.img /tmp/attempts
 
-      ${lib.optionalString (profile == "linux") "export CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS=64\n"}for mode in ${lib.concatStringsSep " " modes}; do
+      ${lib.optionalString (profile == "linux") "export CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS=64\n"}${lib.optionalString runtimeDiagnostics "export CRUCIBLE_OUT_RESUME_RUNTIME_TRACE=1\n"}for mode in ${lib.concatStringsSep " " modes}; do
         mkdir -m 700 "/tmp/attempts/$mode"
         if ${pkgs.coreutils}/bin/timeout -k 15 ${
         if profile == "rom"

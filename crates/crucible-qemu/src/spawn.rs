@@ -1134,6 +1134,12 @@ pub(crate) fn guarded_qemu_process_command(
     if std::env::var("CRUCIBLE_TIME_OWNERSHIP_WITNESS").as_deref() == Ok("1") {
         command.env("CRUCIBLE_TIME_OWNERSHIP_WITNESS", "1");
     }
+    // The Linux fixture's exact opt-in reaches its bounded idle observer;
+    // aggregate diagnostics alone retain the original native I/O behavior.
+    // crucible-lint: allow host-nondeterminism-state -- a default-off observation flag cannot change control decisions.
+    if std::env::var("CRUCIBLE_OUT_RESUME_RUNTIME_TRACE").as_deref() == Ok("1") {
+        command.env("CRUCIBLE_OUT_RESUME_RUNTIME_TRACE", "1");
+    }
     // Aggregate mode uses this minimum for capped pending-return notices only;
     // forwarding it does not enable the legacy callback or stage streams.
     // Invalid or noncanonical values leave both filtered observations off.

@@ -37,9 +37,20 @@ pub(super) struct ClampExpectation {
     pub(super) device_progress: bool,
 }
 
+/// Copies the original coherent initial scheduler publication and idle guard.
+#[derive(Clone, Copy)]
+struct InitialAdvanceObservation {
+    checkpoint_idle_coordinate: Option<u64>,
+    sequence: u64,
+    ceiling_ps: u64,
+    stop_condition: u8,
+}
+
 /// Keeps diagnostic-only state outside checkpoints and runtime counters.
 pub(super) struct WaitObservation {
     remaining: u16,
+    initial_advance: Option<InitialAdvanceObservation>,
+    checkpoint_idle_unreleased: Option<bool>,
     pub(super) device_deadlines: Cell<Option<super::device_wait_observation::DeviceDeadlines>>,
     slice_timeout: Duration,
     slice_remaining: Duration,
@@ -65,6 +76,8 @@ impl WaitObservation {
 
     fn with_budget(maximum: u16) -> Self {
         Self {
+            initial_advance: None,
+            checkpoint_idle_unreleased: None,
             device_deadlines: Cell::new(None),
             remaining: if (1..=256).contains(&maximum) {
                 maximum
@@ -84,7 +97,25 @@ impl WaitObservation {
         self.remaining != 0
     }
 
+    /// Retains only values from the owner's already acquired initial snapshot.
+    pub(super) fn retain_initial_advance(
+        &mut self,
+        snapshot: &NodeSlotSnapshot,
+        checkpoint_idle_coordinate: Option<u64>,
+    ) {
+        if self.remaining != 0 {
+            self.initial_advance = Some(InitialAdvanceObservation {
+                checkpoint_idle_coordinate,
+                sequence: snapshot.advance_publication_sequence,
+                ceiling_ps: snapshot.max_advance_icount,
+                stop_condition: snapshot.advance_stop_condition,
+            });
+        }
+    }
+
     pub(super) fn begin(&mut self, timeout: Duration) {
+        self.initial_advance = None;
+        self.checkpoint_idle_unreleased = None;
         self.slice_timeout = timeout;
         self.slice_remaining = timeout;
         self.consumed_slices = Duration::ZERO;
@@ -149,6 +180,17 @@ struct RingIndices {
 }
 
 impl QemuLiveHostIoRuntime {
+    /// Copies the original guard decision without another mapped-state read.
+    pub(super) fn observe_pending_advance_wait(
+        &mut self,
+        snapshot: &NodeSlotSnapshot,
+        checkpoint_idle_unreleased: bool,
+        remaining: Duration,
+    ) {
+        self.wait_observation.checkpoint_idle_unreleased = Some(checkpoint_idle_unreleased);
+        self.observe_pending_wait("advance-pending", snapshot, None, remaining);
+    }
+
     /// Emits the original snapshot before sleeping, without servicing payloads.
     pub(super) fn observe_pending_wait(
         &mut self,
@@ -263,6 +305,10 @@ fn write_observation(
     indices: &RingIndices,
 ) -> std::io::Result<()> {
     let request = clamp.map(|clamp| clamp.request);
+    let initial = runtime.wait_observation.initial_advance;
+    let unreleased = (phase == "advance-pending")
+        .then_some(runtime.wait_observation.checkpoint_idle_unreleased)
+        .flatten();
     // Legacy *_icount slot coordinates are picosecond ticks; only the raw
     // logical-time partner counts retired instructions (shmem::TICKS_PER_NS).
     // None explicitly means unavailable, including advance's absent ACK fence.
@@ -303,6 +349,19 @@ fn write_observation(
         indices.fault_event,
         indices.fault_result,
     )?;
+    if phase == "advance-pending" {
+        write!(
+            sink,
+            " initial_checkpoint_idle_ps={:?} initial_advance_sequence={:?} initial_advance_ceiling_ps={:?} initial_advance_stop={:?} checkpoint_idle_unreleased={:?} advance_sequence={} advance_stop={}",
+            initial.and_then(|initial| initial.checkpoint_idle_coordinate),
+            initial.map(|initial| initial.sequence),
+            initial.map(|initial| initial.ceiling_ps),
+            initial.map(|initial| initial.stop_condition),
+            unreleased,
+            snapshot.advance_publication_sequence,
+            snapshot.advance_stop_condition,
+        )?;
+    }
     write!(
         sink,
         " block_io={:?} ninep_io={:?}",

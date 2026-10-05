@@ -1713,6 +1713,11 @@ fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
             env::var("CRUCIBLE_TIME_OWNERSHIP_WITNESS").ok(),
             (expected == "1").then(|| String::from("1")),
         );
+        let runtime_expected = env::var("CRUCIBLE_QEMU_TEST_RUNTIME_TRACE_EXPECTED")?;
+        assert_eq!(
+            env::var_os("CRUCIBLE_OUT_RESUME_RUNTIME_TRACE"),
+            (runtime_expected == "1").then(|| std::ffi::OsString::from("1")),
+        );
         let pending = env::var("CRUCIBLE_QEMU_TEST_PENDING_EXPECTED")?;
         assert_eq!(
             env::var("CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN").ok(),
@@ -1748,6 +1753,10 @@ fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
                 (EXPLICIT_ENV_SENTINEL, "explicit-child-value"),
                 (TIME_OWNERSHIP_EXPECTED, &env::var(TIME_OWNERSHIP_EXPECTED)?),
                 (
+                    "CRUCIBLE_QEMU_TEST_RUNTIME_TRACE_EXPECTED",
+                    &env::var("CRUCIBLE_QEMU_TEST_RUNTIME_TRACE_EXPECTED")?,
+                ),
+                (
                     "CRUCIBLE_QEMU_TEST_PENDING_EXPECTED",
                     &env::var("CRUCIBLE_QEMU_TEST_PENDING_EXPECTED")?,
                 ),
@@ -1762,12 +1771,17 @@ fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
     }
 
     let current_exe = env::current_exe()?;
-    for (setting, budget, minimum, pending) in [
-        (None, None, None, "absent"),
-        (Some("0"), Some("16"), Some("50000"), "50000"),
-        (Some("1"), Some("16"), Some("050000"), "absent"),
-        (Some("2"), Some("0"), Some("50000"), "absent"),
-        (Some("01"), Some("257"), Some("50000"), "absent"),
+    for (setting, budget, minimum, pending, runtime_trace) in [
+        (None, None, None, "absent", None),
+        (Some("0"), Some("16"), Some("50000"), "50000", None),
+        (Some("1"), Some("16"), Some("050000"), "absent", None),
+        (Some("2"), Some("0"), Some("50000"), "absent", None),
+        (Some("01"), Some("257"), Some("50000"), "absent", None),
+        (None, Some("64"), None, "absent", None),
+        (None, Some("64"), None, "absent", Some("1")),
+        (None, Some("64"), None, "absent", Some("0")),
+        (None, Some("64"), None, "absent", Some("01")),
+        (None, Some("64"), None, "absent", Some("true")),
     ] {
         let mut command = Command::new(&current_exe);
         command
@@ -1779,7 +1793,12 @@ fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
             .env(INHERITED_ENV_SENTINEL, "parent-only-value")
             .env(TIME_OWNERSHIP_EXPECTED, setting.unwrap_or("absent"))
             .env("CRUCIBLE_QEMU_TEST_PENDING_EXPECTED", pending)
+            .env(
+                "CRUCIBLE_QEMU_TEST_RUNTIME_TRACE_EXPECTED",
+                runtime_trace.unwrap_or("absent"),
+            )
             .env_remove("CRUCIBLE_TIME_OWNERSHIP_WITNESS")
+            .env_remove("CRUCIBLE_OUT_RESUME_RUNTIME_TRACE")
             .env_remove("CRUCIBLE_CONTROL_CALLBACK_WITNESS")
             .env_remove("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS")
             .env_remove("CRUCIBLE_CONTROL_CALLBACK_STAGE_MIN_TOKEN");
@@ -1791,6 +1810,9 @@ fn qemu_spawn_clears_inherited_environment_and_preserves_explicit_values()
         }
         if let Some(setting) = setting {
             command.env("CRUCIBLE_TIME_OWNERSHIP_WITNESS", setting);
+        }
+        if let Some(setting) = runtime_trace {
+            command.env("CRUCIBLE_OUT_RESUME_RUNTIME_TRACE", setting);
         }
 
         assert!(command.spawn()?.wait()?.success());
