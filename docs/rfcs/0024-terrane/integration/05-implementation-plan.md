@@ -125,17 +125,20 @@ empty `terrane` binary.
 ### T1 — Local repository
 
 **Status:** In progress. Latest completed full qualification records candidate
-`1ce3dbe9f62a`, which combines reviewed source discovery, immutable lookup,
+`7b36c2a5fc11`, which combines reviewed source discovery, immutable lookup,
 repeatable I/P/G maintenance, separate verifier/preparation work, common Memo
-replay and structural metadata validation. Its six owning Memo/index/no-std
-checks and both mandatory formatters pass. The reviewed core components pass
-650 tests with zero skips. Its default and keep-going
-current-trunk aggregates both exit 1; the latter reports eleven failed gate
+replay and structural Memo/Node metadata validation. Its seven owning
+Memo/Node/index/no-std checks and both mandatory formatters pass. Application
+compilation retains 109 test executables across 29 packages, including 72
+integration targets, without executing tests. The reviewed core components
+pass 650 tests with zero skips. Its default and keep-going
+current-trunk aggregates both exit 1; the latter reports ten failed gate
 dependencies, listed under T-DRV-2. Its observed native feature suite records
-384 passing and 25 failing tests out of 409; later profiles remain unqualified.
+387 passing and 26 failing tests out of 413; later profiles remain unqualified.
 An unchanged single-thread Nextest diagnostic of the first native profile
-executes all 409 tests: 404 pass and five fail with `Unsupported`, with zero
-skips. No unexpected `Expired`, `Elapsed` or `Denied` failure occurs in that
+on the earlier `1ce3dbe9f62a` candidate executes all 409 tests: 404 pass and
+five fail with `Unsupported`, with zero skips. No unexpected `Expired`,
+`Elapsed` or `Denied` failure occurs in that
 invocation. Different runners and scheduling conditions prevent attributing
 the earlier failures to a cause; the mandatory aggregate remains red.
 No formal task merge, task checkbox, milestone exit or freeze advances.
@@ -1007,8 +1010,8 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   The trunk compile check and both formatters pass: compiler messages retain
   107 test executables across all 29 application packages, including 70
   integration targets, without executing tests. Joint candidate compilation
-  and full trunk qualification remain separate. The Node candidate remains
-  isolated and does not complete T-DRV-2.
+  also passes below; its full trunk qualification remains red. The Node
+  candidate remains isolated and does not complete T-DRV-2.
   Reviewed common replay candidate `9fadba97815c` passes all 650 core tests
   with zero skips (Nextest run `e67f9315-54a2-4202-8d6c-fe8cbbd25775`),
   strict all-target core Clippy and rustdoc, the nine exact replay groups,
@@ -1035,6 +1038,23 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Later profiles remain unqualified. These components do not qualify persisted
   lookup, complete native admission/producer/coverage checks, root-associated
   retention or collection.
+  New combined dependency candidate `7b36c2a5fc11` adds the reviewed Node
+  prerequisite and shared application compilation check. All 5,755 tracked
+  file images remain unchanged through qualification; all twelve command log
+  hashes are independently verified. Its seven owning Memo/Node/index/no-std
+  checks and both mandatory formatters pass. Application compilation retains
+  109 test executables across 29 packages, including 72 integration targets,
+  without executing tests. Both complete current-trunk aggregates exit 1.
+  The keep-going run reports ten failed gate dependencies:
+  `bucket-file-layout`, `dom-dedup-scope`, `dom-reference-order`,
+  `feature-matrix`, `index-generation-manifest`, `prov-commit-verify`,
+  `prov-disclosure-boundary`, `ref-epoch-fencing`, `role-selection` and
+  `store-idempotent-put`. Its first native feature profile records 387 passing
+  and 26 failing tests out of 413, with no ignored or filtered cases:
+  eighteen `Expired`, five `Unsupported` and three `Elapsed`.
+  Later profiles remain unqualified. Required disclosure witnesses remain
+  missing or unqualified; diagnostic timing observations do not qualify them
+  or justify changing the mandatory checks.
   No formal task merge, checkbox or milestone freeze advances.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
