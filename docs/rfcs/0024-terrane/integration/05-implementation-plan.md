@@ -1055,6 +1055,20 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Later profiles remain unqualified. Required disclosure witnesses remain
   missing or unqualified; diagnostic timing observations do not qualify them
   or justify changing the mandatory checks.
+  The next repository prerequisite loads the independently selected owner's
+  namespace and exact I/P/G closure through immutable `ContentStore` reads,
+  then supplies the existing pure relationship verifier and query preparation.
+  A shared module and `checks.terrane.integration.index-loading` register four
+  exact groups for read-only loading, independent physical/contextual checks,
+  unavailable evidence and divergent relationships with separate work reports.
+  The declaration's requested check exits 1 on zero selected tests; registry
+  completeness, both mandatory formatters and the application compilation
+  check pass. Loading must preserve raw identity, physical placement, semantic
+  roles and expected source roots separately under DRV-25/27/30, TREE-35 and
+  PROP-31. Byte caching cannot remove contextual or repeated-occurrence checks.
+  Current producer/trust/authority checks, same-commit maintenance, corrected
+  owner commits and the positive native safe-index case remain separate
+  obligations. This declaration does not qualify implementation.
   No formal task merge, checkbox or milestone freeze advances.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
