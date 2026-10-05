@@ -135,10 +135,11 @@ pub enum LiveWhiteboxError {
     },
     /// A decoded registration arrived after the original catalog was frozen.
     #[error(
-        "safe white-box callback failed: selectable service failed: {source}; kind=register id={selectable_id} seq={sequence} prev={previous_sequence} done={completed_sequence} raw={raw_icount} ps={logical_ps} vcpu={vcpu_index}; pid={process_id} guest_pc={guest_pc}",
+        "safe white-box callback failed: selectable service failed: {source}; kind=register id={selectable_id} seq={sequence} prev={previous_sequence} done={completed_sequence} raw={raw_icount} ps={logical_ps} vcpu={vcpu_index}; pid={process_id} guest_pc={guest_pc} pc4={pc_bytes}",
         previous_sequence = optional_sequence(.previous_sequence),
         completed_sequence = optional_sequence(.completed_sequence),
         guest_pc = optional_guest_pc(.guest_pc),
+        pc_bytes = optional_pc_bytes(.pc_bytes),
     )]
     LateSelectableRegistration {
         /// The original catalog refusal.
@@ -162,6 +163,8 @@ pub enum LiveWhiteboxError {
         process_id: u32,
         /// Optional PC read during the failing instruction callback.
         guest_pc: Option<u64>,
+        /// Four advisory bytes from the current virtual mapping at that PC.
+        pc_bytes: Option<[u8; 4]>,
     },
     /// The safe doorbell callback rejected the live event.
     #[error("safe white-box callback failed: {message}")]
@@ -177,4 +180,16 @@ fn optional_sequence(value: &Option<u64>) -> String {
 
 fn optional_guest_pc(value: &Option<u64>) -> String {
     value.map_or_else(|| "unavailable".to_owned(), |value| format!("{value:#x}"))
+}
+
+fn optional_pc_bytes(value: &Option<[u8; 4]>) -> String {
+    value.map_or_else(
+        || "none".to_owned(),
+        |bytes| {
+            format!(
+                "{:02x}{:02x}{:02x}{:02x}",
+                bytes[0], bytes[1], bytes[2], bytes[3]
+            )
+        },
+    )
 }

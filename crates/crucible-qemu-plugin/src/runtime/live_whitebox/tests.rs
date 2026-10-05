@@ -112,6 +112,7 @@ fn late_failure() -> LiveWhiteboxError {
         vcpu_index: 0,
         process_id: std::process::id(),
         guest_pc: None,
+        pc_bytes: None,
     }
 }
 
@@ -147,8 +148,12 @@ fn unavailable_pc_keeps_original_late_refusal_and_context() {
         byte_array_free,
     };
     let original = late_failure().to_string();
-    let absent =
-        with_selectable_failure_pc(late_failure(), LiveWhiteboxRegisters::default(), reader);
+    let absent = with_selectable_failure_pc(
+        late_failure(),
+        LiveWhiteboxRegisters::default(),
+        reader,
+        &mut CodeMemory::unavailable(),
+    );
 
     assert_eq!(absent.to_string(), original);
     assert_eq!(PC_READS.get(), 0);
@@ -159,6 +164,7 @@ fn unavailable_pc_keeps_original_late_refusal_and_context() {
             ..LiveWhiteboxRegisters::default()
         },
         reader,
+        &mut CodeMemory::unavailable(),
     );
     assert_eq!(failed.to_string(), original);
     assert_eq!(PC_READS.get(), 1);
@@ -177,7 +183,12 @@ fn failure_only_pc_read_retains_exact_original_register_value() {
         instruction_pointer: Some(LiveWhiteboxRegisterHandle(std::ptr::null_mut())),
         ..LiveWhiteboxRegisters::default()
     };
-    let failure = with_selectable_failure_pc(late_failure(), registers, reader);
+    let failure = with_selectable_failure_pc(
+        late_failure(),
+        registers,
+        reader,
+        &mut CodeMemory::unavailable(),
+    );
 
     assert!(matches!(
         failure,
@@ -193,9 +204,226 @@ fn failure_only_pc_read_retains_exact_original_register_value() {
         message: "original selectable decode refusal".to_owned(),
     };
     let original_display = original.to_string();
-    let unchanged = with_selectable_failure_pc(original, registers, reader);
+    let unchanged =
+        with_selectable_failure_pc(original, registers, reader, &mut CodeMemory::unavailable());
     assert_eq!(unchanged.to_string(), original_display);
     assert_eq!(PC_READS.get(), 1);
+}
+
+/// Models only the existing callback memory-read provider, without a guest run.
+struct CodeMemory {
+    bytes: Option<Vec<u8>>,
+    reads: Vec<(u32, u64, u64, usize)>,
+}
+
+impl CodeMemory {
+    fn unavailable() -> Self {
+        Self {
+            bytes: None,
+            reads: Vec::new(),
+        }
+    }
+}
+
+impl GuestMemoryReader for CodeMemory {
+    fn read_guest_memory(
+        &mut self,
+        vcpu_index: u32,
+        current_icount: u64,
+        range: GuestMemoryRange,
+    ) -> Result<Vec<u8>, GuestMemoryReadError> {
+        assert!(matches!(
+            range.address_space(),
+            GuestMemoryAddressSpace::Virtual
+        ));
+        self.reads.push((
+            vcpu_index,
+            current_icount,
+            range.guest_address(),
+            range.len(),
+        ));
+        self.bytes
+            .clone()
+            .ok_or_else(|| GuestMemoryReadError::new("original optional code read failure"))
+    }
+}
+
+static SELECTED_PC_BYTES: [u8; 8] = 0x40c716_u64.to_le_bytes();
+static LAST_PC_BYTES: [u8; 8] = u64::MAX.to_le_bytes();
+
+extern "C" fn read_selected_pc(
+    _handle: *mut QemuPluginRegister,
+    array: *mut api::GByteArray,
+) -> bool {
+    let Some(mut array) = NonNull::new(array) else {
+        return false;
+    };
+    // SAFETY: the register reader owns this live array for the synchronous call;
+    // its data points to the immutable eight-byte provider result until freed.
+    unsafe {
+        array.as_mut().data = SELECTED_PC_BYTES.as_ptr().cast_mut();
+        array.as_mut().len = SELECTED_PC_BYTES.len() as c_uint;
+    }
+    true
+}
+
+extern "C" fn read_last_pc(_handle: *mut QemuPluginRegister, array: *mut api::GByteArray) -> bool {
+    let Some(mut array) = NonNull::new(array) else {
+        return false;
+    };
+    // SAFETY: the register reader owns this live array for the synchronous call;
+    // its data points to the immutable eight-byte provider result until freed.
+    unsafe {
+        array.as_mut().data = LAST_PC_BYTES.as_ptr().cast_mut();
+        array.as_mut().len = LAST_PC_BYTES.len() as c_uint;
+    }
+    true
+}
+
+#[test]
+fn failure_only_code_read_distinguishes_retained_elf_mapping_prefixes() {
+    // The retained init SDK block and observer allocator occupy this same PC.
+    // These exact four-byte prefixes are observations, not image authentication.
+    for (bytes, expected) in [
+        ([0x4c, 0x89, 0xf8, 0x4c], "4c89f84c"),
+        ([0x48, 0x85, 0xff, 0x49], "4885ff49"),
+    ] {
+        let mut memory = CodeMemory {
+            bytes: Some(bytes.to_vec()),
+            reads: Vec::new(),
+        };
+        let failure = with_selectable_failure_pc(
+            late_failure(),
+            LiveWhiteboxRegisters {
+                instruction_pointer: Some(LiveWhiteboxRegisterHandle(std::ptr::null_mut())),
+                ..LiveWhiteboxRegisters::default()
+            },
+            LiveRegisterReader {
+                read_register: read_selected_pc,
+                byte_array_new,
+                byte_array_free,
+            },
+            &mut memory,
+        );
+
+        assert_eq!(memory.reads, [(0, 100, 0x40c716, 4)]);
+        assert!(
+            failure
+                .to_string()
+                .contains(&format!("guest_pc=0x40c716 pc4={expected}"))
+        );
+        assert!(matches!(
+            failure,
+            LiveWhiteboxError::LateSelectableRegistration {
+                source,
+                pc_bytes: Some(observed),
+                ..
+            } if matches!(*source, crate::SelectableCatalogError::RegistrationAfterFreeze)
+                && observed == bytes
+        ));
+    }
+}
+
+#[test]
+fn absent_failed_or_overflowed_pc_never_reads_code_memory() {
+    for (registers, read_register) in [
+        (
+            LiveWhiteboxRegisters::default(),
+            read_pc as QemuReadRegisterFn,
+        ),
+        (
+            LiveWhiteboxRegisters {
+                instruction_pointer: Some(LiveWhiteboxRegisterHandle(std::ptr::null_mut())),
+                ..LiveWhiteboxRegisters::default()
+            },
+            reject_pc as QemuReadRegisterFn,
+        ),
+        (
+            LiveWhiteboxRegisters {
+                instruction_pointer: Some(LiveWhiteboxRegisterHandle(std::ptr::null_mut())),
+                ..LiveWhiteboxRegisters::default()
+            },
+            read_last_pc as QemuReadRegisterFn,
+        ),
+    ] {
+        let mut memory = CodeMemory::unavailable();
+        let failure = with_selectable_failure_pc(
+            late_failure(),
+            registers,
+            LiveRegisterReader {
+                read_register,
+                byte_array_new,
+                byte_array_free,
+            },
+            &mut memory,
+        );
+
+        assert!(memory.reads.is_empty());
+        assert!(failure.to_string().ends_with("pc4=none"));
+        assert!(matches!(
+            failure,
+            LiveWhiteboxError::LateSelectableRegistration { source, .. }
+                if matches!(*source, crate::SelectableCatalogError::RegistrationAfterFreeze)
+        ));
+    }
+}
+
+#[test]
+fn failed_or_nonexact_code_read_keeps_original_late_registration_refusal() {
+    for bytes in [None, Some(vec![0; 3]), Some(vec![0; 5])] {
+        let mut memory = CodeMemory {
+            bytes,
+            reads: Vec::new(),
+        };
+        let failure = with_selectable_failure_pc(
+            late_failure(),
+            LiveWhiteboxRegisters {
+                instruction_pointer: Some(LiveWhiteboxRegisterHandle(std::ptr::null_mut())),
+                ..LiveWhiteboxRegisters::default()
+            },
+            LiveRegisterReader {
+                read_register: read_selected_pc,
+                byte_array_new,
+                byte_array_free,
+            },
+            &mut memory,
+        );
+
+        assert_eq!(memory.reads, [(0, 100, 0x40c716, 4)]);
+        assert!(failure.to_string().contains("guest_pc=0x40c716 pc4=none"));
+        assert!(matches!(
+            failure,
+            LiveWhiteboxError::LateSelectableRegistration { source, .. }
+                if matches!(*source, crate::SelectableCatalogError::RegistrationAfterFreeze)
+        ));
+    }
+}
+
+#[test]
+fn other_callback_errors_never_read_optional_pc_or_code() {
+    PC_READS.set(0);
+    let mut memory = CodeMemory::unavailable();
+    let original = LiveWhiteboxError::Callback {
+        message: "original selectable decode refusal".to_owned(),
+    };
+    let expected = original.to_string();
+    let failure = with_selectable_failure_pc(
+        original,
+        LiveWhiteboxRegisters {
+            instruction_pointer: Some(LiveWhiteboxRegisterHandle(std::ptr::null_mut())),
+            ..LiveWhiteboxRegisters::default()
+        },
+        LiveRegisterReader {
+            read_register: read_pc,
+            byte_array_new,
+            byte_array_free,
+        },
+        &mut memory,
+    );
+
+    assert_eq!(failure.to_string(), expected);
+    assert_eq!(PC_READS.get(), 0);
+    assert!(memory.reads.is_empty());
 }
 
 #[test]
@@ -219,6 +447,7 @@ fn maximum_legal_late_registration_fatal_line_is_bounded() -> Result<(), Box<dyn
         vcpu_index: u32::MAX,
         process_id: u32::MAX,
         guest_pc: Some(u64::MAX),
+        pc_bytes: Some([u8::MAX; 4]),
     };
     let line = format!("crucible-qemu-plugin: live white-box callback failed: {failure}\n");
 

@@ -408,6 +408,7 @@ impl SelectableRegistrationService for LiveSelectableState {
                     vcpu_index: coordinate.vcpu_index(),
                     process_id: std::process::id(),
                     guest_pc: None,
+                    pc_bytes: None,
                 };
                 let error = SelectableDoorbellServiceError::new(failure.to_string());
                 self.registration_failure = Some(failure);

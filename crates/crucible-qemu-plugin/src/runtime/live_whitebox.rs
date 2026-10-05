@@ -682,7 +682,7 @@ impl LiveWhiteboxState {
             let outcome = selectable
                 .handle(&self.doorbell, self.apis, &mut reader, event, trap_tick_ps)
                 .map_err(|failure| {
-                    with_selectable_failure_pc(failure, registers, register_reader)
+                    with_selectable_failure_pc(failure, registers, register_reader, &mut reader)
                 })?;
             match outcome {
                 crate::SelectableDoorbellOutcome::Registered { registration, .. }
@@ -803,13 +803,36 @@ fn with_selectable_failure_pc(
     mut failure: LiveWhiteboxError,
     registers: LiveWhiteboxRegisters,
     reader: LiveRegisterReader,
+    memory: &mut impl GuestMemoryReader,
 ) -> LiveWhiteboxError {
-    if let LiveWhiteboxError::LateSelectableRegistration { guest_pc, .. } = &mut failure {
+    if let LiveWhiteboxError::LateSelectableRegistration {
+        guest_pc,
+        pc_bytes,
+        vcpu_index,
+        raw_icount,
+        ..
+    } = &mut failure
+    {
         // PC is advisory and never becomes another admission requirement or
         // masks the original refusal when its descriptor/read is unavailable.
         *guest_pc = registers
             .instruction_pointer
             .and_then(|handle| reader.read_u64(handle).ok());
+
+        // The public debug read observes the current virtual mapping, not a
+        // process identity or a guarantee that pending guest writes are flushed.
+        *pc_bytes = guest_pc.and_then(|pc| {
+            pc.checked_add(3)?;
+            memory
+                .read_guest_memory(
+                    *vcpu_index,
+                    *raw_icount,
+                    GuestMemoryRange::new(GuestMemoryAddressSpace::Virtual, pc, 4),
+                )
+                .ok()?
+                .try_into()
+                .ok()
+        });
     }
     failure
 }
