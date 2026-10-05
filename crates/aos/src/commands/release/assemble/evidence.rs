@@ -41,6 +41,7 @@ pub(super) fn build(
     report: &BuildReportV1,
     sbom: &[u8],
     advisory: &[u8],
+    unresolved_advisories: usize,
     licenses: &[u8],
     authorization: &[u8],
     completed_at: &str,
@@ -67,7 +68,13 @@ pub(super) fn build(
         if case.method != QualificationMethod::Automated || case.target.is_some() {
             bail!("build assembly cannot synthesize an operator or target qualification case");
         }
-        let details = check_details(&case, report, tier, manifest.artifacts.len())?;
+        let details = check_details(
+            &case,
+            report,
+            tier,
+            manifest.artifacts.len(),
+            unresolved_advisories,
+        )?;
         let report_value = BuildIntegrityReportV1 {
             schema_version: BUILD_INTEGRITY_REPORT_V1,
             case: &case,
@@ -159,6 +166,7 @@ fn check_details(
     report: &BuildReportV1,
     tier: RegistryTier,
     artifact_count: usize,
+    unresolved_advisories: usize,
 ) -> Result<BTreeMap<String, String>> {
     case.checks
         .iter()
@@ -177,10 +185,7 @@ fn check_details(
                     "Every signed narinfo reference resolved inside the {}-artifact closed payload.",
                     artifact_count
                 ),
-                "sbom-and-advisory-dispositions" => {
-                    "The exact SPDX inventory has a reviewed disposition with no unresolved advisories."
-                        .to_owned()
-                }
+                "sbom-and-advisory-dispositions" => advisory_detail(tier, unresolved_advisories)?,
                 "licenses-and-corresponding-source" => format!(
                     "Every planned output is linked to declared license inventory and corresponding source; {} source NARs are retained.",
                     report.sources.len()
@@ -191,6 +196,27 @@ fn check_details(
         })
         .collect::<Result<BTreeMap<_, _>>>()
         .context("deriving build-integrity check details")
+}
+
+/// Describes the advisory-disposition check under the registry tier's policy.
+///
+/// Like the repeat-build detail, a testing-tier release with unresolved
+/// advisories states how many remain, so the passing observation never
+/// claims a clean review it did not get.
+fn advisory_detail(tier: RegistryTier, unresolved: usize) -> Result<String> {
+    if unresolved == 0 {
+        return Ok(
+            "The exact SPDX inventory has a reviewed disposition with no unresolved advisories."
+                .to_owned(),
+        );
+    }
+    if !tier.accepts_unresolved_advisories() {
+        bail!("the {tier} registry tier refuses unresolved advisories");
+    }
+    Ok(format!(
+        "The exact SPDX inventory has a reviewed disposition; {unresolved} advisories remain \
+         unresolved, which the {tier} registry tier accepts."
+    ))
 }
 
 /// Describes the repeat-build check under the registry tier's policy.
@@ -308,6 +334,31 @@ mod tests {
              which the testing registry tier accepts."
         );
         Ok(())
+    }
+
+    #[test]
+    fn advisory_claim_without_unresolved_advisories_is_unchanged_on_every_tier() -> Result<()> {
+        for tier in [RegistryTier::Testing, RegistryTier::Production] {
+            assert_eq!(
+                advisory_detail(tier, 0)?,
+                "The exact SPDX inventory has a reviewed disposition with no unresolved advisories."
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn testing_tier_advisory_claim_states_the_unresolved_count() -> Result<()> {
+        let detail = advisory_detail(RegistryTier::Testing, 147)?;
+
+        assert!(detail.contains("147 advisories remain unresolved"));
+        assert!(detail.contains("testing registry tier accepts"));
+        Ok(())
+    }
+
+    #[test]
+    fn production_tier_cannot_claim_unresolved_advisories() {
+        assert!(advisory_detail(RegistryTier::Production, 1).is_err());
     }
 
     #[test]
