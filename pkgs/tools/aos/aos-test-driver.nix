@@ -151,6 +151,25 @@ mkDerivation {
     pkgs,
     ...
   }: {
+    deadline = pkgs.buildPackages.mkDerivation {
+      pname = "aos-test-driver-deadline";
+      version = "0";
+      src = null;
+      buildDeps = [pkgs.buildPackages.python3];
+      phases = [
+        {
+          name = "check";
+          script = ''
+            export PYTHONDONTWRITEBYTECODE=1
+            export PYTHONPATH=${./aos-test-driver}
+            ${pkgs.buildPackages.python3}/bin/python3 -m unittest discover \
+              -s ${./aos-test-driver/tests} -v
+            touch "$out"
+          '';
+        }
+      ];
+    };
+
     pyrefly = pkgs.buildPackages.mkDerivation {
       pname = "aos-test-driver-pyrefly";
       version = "0";

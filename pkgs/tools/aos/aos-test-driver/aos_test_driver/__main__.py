@@ -14,12 +14,15 @@ import argparse
 import io
 import json
 import logging
+import math
 import os
 import re
 import runpy
+import signal
 import sys
 import time
 from pathlib import Path
+from types import FrameType
 from typing import Any
 
 from .errors import AosDriverError
@@ -61,6 +64,20 @@ def _load_manifest(path: Path) -> dict[str, Any]:
         raise SystemExit(f"manifest missing top-level fields: {sorted(missing)}")
     if not isinstance(manifest["machines"], list) or not manifest["machines"]:
         raise SystemExit("manifest.machines must be a non-empty list")
+
+    timeout = manifest["timeout"]
+    if (
+        isinstance(timeout, bool)
+        or not isinstance(timeout, (int, float))
+        or timeout <= 0
+    ):
+        raise SystemExit("manifest.timeout must be a finite positive number")
+    try:
+        valid_timeout = math.isfinite(float(timeout))
+    except OverflowError:
+        valid_timeout = False
+    if not valid_timeout:
+        raise SystemExit("manifest.timeout must be a finite positive number")
 
     seen_transports: set[str] = set()
     for m in manifest["machines"]:
@@ -278,6 +295,36 @@ def _wait_system_ready(machines: list[Machine], timeout: float) -> None:
             )
 
 
+class _TestBodyTimeout(BaseException):
+    """Interrupt the body even when an assertion retries ordinary exceptions."""
+
+
+def _run_test(path: Path, init_globals: dict[str, object], timeout: float) -> None:
+    """Run one body under a wall-clock deadline and restore caller alarm state."""
+
+    def interrupt(_signum: int, _frame: FrameType | None) -> None:
+        raise _TestBodyTimeout(f"test body exceeded its {timeout:g}s deadline")
+
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.setitimer(signal.ITIMER_REAL, 0)
+    started = time.monotonic()
+    signal.signal(signal.SIGALRM, interrupt)
+    try:
+        signal.setitimer(signal.ITIMER_REAL, timeout)
+        runpy.run_path(str(path), init_globals=init_globals, run_name="__main__")
+        # A script may catch BaseException. It must not turn an expired budget
+        # into success merely by returning after the signal was delivered.
+        if time.monotonic() - started >= timeout:
+            raise _TestBodyTimeout(f"test body exceeded its {timeout:g}s deadline")
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        remaining, interval = previous_timer
+        if remaining > 0:
+            remaining = max(remaining - (time.monotonic() - started), 0.000001)
+        signal.setitimer(signal.ITIMER_REAL, remaining, interval)
+
+
 def main(argv: list[str] | None = None) -> int:
     _configure_stdio()
 
@@ -303,8 +350,8 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # Two-axis budget. `boot_timeout` covers VM boot → agent PING reply;
-    # `manifest["timeout"]` is left intact for the test body (per-RPC
-    # timeouts already enforce it indirectly). The briefing's Shape 1
+    # `manifest["timeout"]` bounds the whole test body after readiness.
+    # Per-RPC timeouts remain independent. The briefing's Shape 1
     # (agent never connects) was conflated with test-body slowness when
     # a single deadline covered both.
     boot_timeout: float = float(
@@ -336,12 +383,13 @@ def main(argv: list[str] | None = None) -> int:
             init_globals[m.name] = m
 
         log.info("==> Running test: %s", manifest["name"])
-        runpy.run_path(
-            str(args.test), init_globals=init_globals, run_name="__main__"
-        )
+        _run_test(args.test, init_globals, float(manifest["timeout"]))
         log.info("==> All tests passed for: %s", manifest["name"])
     except SystemExit:
         raise
+    except _TestBodyTimeout as e:
+        exit_code = 1
+        log.error("test failed: %s", e)
     except AosDriverError as e:
         exit_code = 1
         log.error("test failed: %s", e)
