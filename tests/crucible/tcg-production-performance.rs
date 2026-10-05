@@ -361,8 +361,13 @@ fn run_linux(args: &[String]) -> Result<()> {
         return Err("fingerprint must be on or off".into());
     }
     fs::create_dir_all(directory)?;
-    let socket_path = directory.join("qmp.sock");
-    let _ = fs::remove_file(&socket_path);
+    // Store-output paths can exceed Unix socket limits. The private transport
+    // lives outside the witness directory and is removed by its TempDir guard.
+    let socket_directory = tempfile::Builder::new().prefix("crucible-qmp-").tempdir()?;
+    let socket_path = socket_directory.path().join("qmp.sock");
+    if socket_path.as_os_str().len() >= 108 {
+        return Err("runtime temporary directory exceeds the Unix QMP socket path limit".into());
+    }
 
     let allocation = RegionAllocation::new(RegionConfig::new(1, 4))?;
     let layout = allocation.layout();

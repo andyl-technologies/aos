@@ -38,6 +38,7 @@ in
           libc = "0.2"
           serde_json = "1"
           sha2 = "0.10"
+          tempfile = "3"
           MANIFEST
 
           sed "s|@vendor@|${cargoDeps}|g" "${cargoDeps}/.cargo/config.toml" \
