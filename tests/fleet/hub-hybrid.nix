@@ -148,6 +148,11 @@
     error_log /var/lib/hybrid-s3/nginx-error.log info;
     events { worker_connections 128; }
     http {
+      # Only reads use the hold chain; multipart mutations retain Garage's replies.
+      map $request_method $provider_upstream {
+        default http://127.0.0.1:3900;
+        GET http://127.0.0.1:${if externalDirect then "3903" else "3900"};
+      }
       map $request_uri $provider_upload_query {
         ~[?&]uploadId(?:=|&|$) multipart_session;
         ~[?&]uploads(?:=|&|$) multipart_begin;
@@ -178,11 +183,7 @@
         ssl_certificate_key ${s3PrivateKey}/value;
         client_max_body_size 64m;
         location / {
-          proxy_pass http://127.0.0.1:${
-      if externalDirect
-      then "3903"
-      else "3900"
-    };
+          proxy_pass $provider_upstream$request_uri;
           proxy_set_header Host $http_host;
           proxy_http_version 1.1;
           proxy_request_buffering off;
