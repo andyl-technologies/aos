@@ -458,6 +458,7 @@ in rec {
     qemuExactPreemptionLive = import ./phase2-qemu-exact-preemption-live.nix {inherit pkgs;};
     tcgPerformanceFixtures = import ./tcg-performance-fixtures.nix {inherit pkgs;};
     tcgPerformanceDeterminism = import ./tcg-performance.nix {inherit pkgs;};
+    tcgLinuxBootPerformanceDeterminism = import ./tcg-linux-boot-performance.nix {inherit pkgs lib;};
     tcgProductionPerformanceDriver = import ./tcg-production-performance-driver.nix {inherit pkgs lib;};
     qemuLaunchValidation = import ./phase2-qemu-launch-validation.nix {inherit pkgs lib;};
     qemuNodeFactory = import ./phase2-qemu-node-factory.nix {inherit pkgs lib;};
