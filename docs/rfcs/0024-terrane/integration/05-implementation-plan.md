@@ -180,6 +180,14 @@ execution. Focused strict native Clippy still fails on inherited unused code;
 it reports no owned diagnostic. Earlier passing gates used the prior observer
 and do not qualify the corrected source or complete trunk floor.
 
+The shared native writers now use the registered 16-byte temporary-name
+suffix, preserving separate 32-byte operation and candidate nonces. All eight
+exact `bucket-file-atomic-write` cases and both mandatory formatters pass.
+Application compilation passes for that trunk source, recording 107 test
+executables across 29 packages, including 70 integration targets, without
+execution. Both actual Nix inputs match the two corrected writer files.
+This prerequisite does not qualify the isolated copy or disclosure candidates.
+
 The preceding completed full qualification records candidate
 `15540ef204ec`, which combines reviewed source discovery, immutable lookup,
 repeatable I/P/G maintenance, separate verifier/preparation work, common Memo

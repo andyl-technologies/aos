@@ -96,8 +96,8 @@ impl Frame {
             return Err(corrupt());
         }
 
-        let entropy = fs.random_bytes(32).await.map_err(io_failure)?;
-        if entropy.len() != 32 {
+        let entropy = fs.random_bytes(16).await.map_err(io_failure)?;
+        if entropy.len() != 16 {
             return Err(unsupported());
         }
         let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();

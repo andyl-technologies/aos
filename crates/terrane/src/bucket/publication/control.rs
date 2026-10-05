@@ -561,8 +561,8 @@ impl Control {
             return Err(corrupt());
         }
         let parent = self.parents(fs, key, true).await?;
-        let entropy = fs.random_bytes(32).await.map_err(files::io_failure)?;
-        if entropy.len() != 32 {
+        let entropy = fs.random_bytes(16).await.map_err(files::io_failure)?;
+        if entropy.len() != 16 {
             return Err(unsupported());
         }
         let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
