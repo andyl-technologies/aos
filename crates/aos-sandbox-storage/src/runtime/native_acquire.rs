@@ -68,20 +68,8 @@ pub(crate) fn original_fail_stop_deadline(
     validate_native_request_clock(request, clock)?;
     // The paired sample exposes integer wall seconds. Subtract the unknown
     // fractional second instead of allowing BOOTTIME to extend signed expiry.
-    let remaining = request
-        .request()
-        .claims()
-        .validity()
-        .1
-        .checked_sub(clock.wall_seconds())
-        .and_then(|seconds| seconds.checked_sub(1))
-        .and_then(|seconds| u64::try_from(seconds).ok())
-        .filter(|seconds| *seconds > 0)
-        .and_then(|seconds| seconds.checked_mul(1_000_000_000))
-        .ok_or(StorageRuntimeError::Recovery)?;
     clock
-        .boottime_nanoseconds()
-        .checked_add(remaining)
+        .conservative_expiry_deadline_data_v1(request.request().claims().validity().1)
         .ok_or(StorageRuntimeError::Recovery)
 }
 

@@ -418,16 +418,8 @@ fn conservative_deadline(
 ) -> Result<u64, ProviderLedgerError> {
     // Like Storage, subtract the unknown fractional wall second rather than
     // allowing local BOOTTIME to extend a signed absolute expiry.
-    let remaining = expires
-        .checked_sub(initial.wall_seconds())
-        .and_then(|seconds| seconds.checked_sub(1))
-        .and_then(|seconds| u64::try_from(seconds).ok())
-        .filter(|seconds| *seconds > 0)
-        .and_then(|seconds| seconds.checked_mul(1_000_000_000))
-        .ok_or(ProviderLedgerError::Unavailable)?;
     initial
-        .boottime_nanoseconds()
-        .checked_add(remaining)
+        .conservative_expiry_deadline_data_v1(expires)
         .ok_or(ProviderLedgerError::Unavailable)
 }
 
