@@ -322,3 +322,50 @@ fn positively_absent_inventory_does_not_initialize_profile_or_journals() {
     assert!(inventory.roots().is_empty());
     assert!(!profile.exists());
 }
+
+#[test]
+fn package_recovery_distinguishes_live_activation_from_completed_publication_gap() {
+    let directory = tempfile::tempdir().unwrap();
+    let roots = directory.path().join("roots");
+    fs::create_dir(&roots).unwrap();
+    let store = Store {
+        directory: roots,
+        calls: Arc::default(),
+    };
+    let desired = deployment("pending-source", true);
+    let cancellation = CancellationToken::default();
+    cancellation.cancel();
+    let mut transactions =
+        Transactions::open(directory.path(), store.clone(), journal_limits()).unwrap();
+    assert!(transactions.apply(&desired, &cancellation).is_err());
+    let live = transactions.pending_live_package().unwrap().unwrap();
+    assert_eq!(live.sequence, 1);
+    assert_eq!(live.content, desired.id().unwrap());
+    drop(transactions);
+
+    // Normal activation APIs write the effects Commit before package publication,
+    // reproducing the durable crash gap without constructing journal records.
+    let mut activation =
+        Activation::open(directory.path().join("effects.journal"), journal_limits()).unwrap();
+    activation
+        .activate_once(
+            &format!("package-1-{}", desired.id().unwrap()),
+            desired.graph(),
+            desired.retire(),
+            &mut Outcome(store.clone()),
+            &CancellationToken::default(),
+        )
+        .unwrap();
+    drop(activation);
+    let before = fs::read(directory.path().join("effects.journal")).unwrap();
+    let mut transactions = Transactions::open(directory.path(), store, journal_limits()).unwrap();
+    assert_eq!(transactions.pending_sequence(), Some(1));
+    assert_eq!(transactions.pending_live_package().unwrap(), None);
+    transactions.resume(&CancellationToken::default()).unwrap();
+    assert_eq!(transactions.current().unwrap().sequence, 1);
+    assert_eq!(transactions.pending_live_package().unwrap(), None);
+    assert_eq!(
+        fs::read(directory.path().join("effects.journal")).unwrap(),
+        before
+    );
+}

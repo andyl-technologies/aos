@@ -103,7 +103,30 @@ pub fn apply_with_sources<A: ArtifactAdmission>(
         &evaluation,
         cancellation,
         Some(sources),
+        None,
     )
+}
+
+/// Reports the committed publication selected by boot recovery.
+///
+/// An internal live recovery identity distinguishes completing effects in this
+/// invocation from repairing publication after an earlier effects completion.
+/// Neither outcome substitutes for authentication of retained boot sources.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveredPublication {
+    /// Names the committed profile generation requiring retained-source validation.
+    pub generation: u32,
+    pub(super) live: Option<crate::deployment::transaction::LiveRecovery>,
+}
+
+impl RecoveredPublication {
+    pub(super) fn matches_live(&self, generation: u32, sequence: u64, content: &str) -> bool {
+        self.generation == generation
+            && self
+                .live
+                .as_ref()
+                .is_some_and(|live| live.sequence == sequence && live.content == content)
+    }
 }
 
 /// Recovers package publication before a domain validates committed sources.
@@ -112,6 +135,10 @@ pub fn apply_with_sources<A: ArtifactAdmission>(
 /// from the pending generation. It does not evaluate a new image baseline.
 /// A pending live reconciliation already has a committed publication and remains
 /// untouched until source validation precedes its original attempt's recovery.
+/// Successful live package recovery records its exact deployment identity so
+/// the authenticated boot caller can avoid a second reconciliation immediately
+/// afterward. Publication-only recovery and already stable boots do not carry
+/// that identity and still require normal live reconciliation.
 /// An uninitialized profile returns `None` without admitting unused image inputs;
 /// the caller must authenticate its fresh deployment before applying effects.
 ///
@@ -122,7 +149,7 @@ pub fn apply_with_sources<A: ArtifactAdmission>(
 pub fn recover_profile_publication(
     command: &super::NativeDeploymentCommand,
     cancellation: &aos_ability_runtime::adapter::CancellationToken,
-) -> Result<Option<u32>> {
+) -> Result<Option<RecoveredPublication>> {
     let path = command
         .profile
         .as_ref()
@@ -159,11 +186,15 @@ pub fn recover_profile_publication(
         crate::deployment::transaction::journal_limits(),
     )?;
     super::configure_profile_observer(&mut consumer, &profile, None, cancellation)?;
+    let live = consumer.pending_live_package()?;
     if !consumer.pending_reconciliation() {
         consumer.recover(cancellation)?;
     }
     drop(consumer);
-    crate::profile::deployment::current_committed_generation(path)
+    Ok(
+        crate::profile::deployment::current_committed_generation(path)?
+            .map(|generation| RecoveredPublication { generation, live }),
+    )
 }
 
 pub(super) fn root(path: &Path) -> Result<PathBuf> {
@@ -183,6 +214,29 @@ mod tests {
             admission_sha256: Sha256Digest::of_bytes(b"unused image admission"),
             profile: Some(profile),
         }
+    }
+
+    #[test]
+    fn live_recovery_requires_exact_publication_sequence_and_content() {
+        let recovery = RecoveredPublication {
+            generation: 3,
+            live: Some(crate::deployment::transaction::LiveRecovery {
+                sequence: 7,
+                content: "original".to_owned(),
+            }),
+        };
+
+        assert!(recovery.matches_live(3, 7, "original"));
+        assert!(!recovery.matches_live(4, 7, "original"));
+        assert!(!recovery.matches_live(3, 8, "original"));
+        assert!(!recovery.matches_live(3, 7, "changed"));
+        assert!(
+            !RecoveredPublication {
+                generation: 3,
+                live: None
+            }
+            .matches_live(3, 7, "original")
+        );
     }
 
     #[test]

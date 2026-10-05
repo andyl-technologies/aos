@@ -92,11 +92,11 @@ fn run_host_command(
     }
 
     let cancellation = CancellationToken::default();
-    if let Some(number) =
+    if let Some(recovered) =
         crate::native_deployment::recover_profile_publication(command, &cancellation)?
     {
-        retained::verify(command, number)?;
-        return crate::native_deployment::apply(command, &cancellation);
+        retained::verify(command, recovered.generation)?;
+        return crate::native_deployment::apply_after_recovery(command, &cancellation, &recovered);
     }
     if !reader::metadata_required()? {
         return crate::native_deployment::apply(command, &cancellation);

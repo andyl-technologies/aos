@@ -162,6 +162,19 @@ impl Reconciliation {
     }
 }
 
+/// Identifies a package deployment that recovery must complete live.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct LiveRecovery {
+    /// Orders the original package publication attempt.
+    pub(crate) sequence: u64,
+    /// Binds the exact desired deployment recovered by that attempt.
+    pub(crate) content: String,
+}
+
+fn package_identity(sequence: u64, content: &str) -> String {
+    format!("package-{sequence}-{content}")
+}
+
 /// Owns one installation scope's generation and effect journals.
 pub struct Transactions<S> {
     journal: FileJournal<Event>,
@@ -262,13 +275,13 @@ impl<S: DeploymentStore> Transactions<S> {
             if self.state.pruning == Some(generation.sequence) {
                 continue;
             }
-            let identity = format!("package-{}-{}", generation.sequence, generation.content);
+            let identity = package_identity(generation.sequence, &generation.content);
             self.adapter
                 .artifacts_mut()
                 .retain_generation(&identity, &generation.deployment)?;
         }
         if let Some(pending) = &self.state.pending {
-            let identity = format!("package-{}-{}", pending.sequence, pending.deployment.id()?);
+            let identity = package_identity(pending.sequence, &pending.deployment.id()?);
             self.adapter
                 .artifacts_mut()
                 .retain_generation(&identity, &pending.deployment)?;
@@ -308,6 +321,24 @@ impl<S: DeploymentStore> Transactions<S> {
         *self.adapter.artifacts_mut() = store;
     }
 
+    // Both journals remain exclusively locked. A completed effects transaction
+    // only needs publication repair; it has not observed live state this boot.
+    pub(crate) fn pending_live_package(&self) -> Result<Option<LiveRecovery>> {
+        let Some(pending) = &self.state.pending else {
+            return Ok(None);
+        };
+        let content = pending.deployment.id()?;
+        let identity = package_identity(pending.sequence, &content);
+        Ok(
+            (self.activation.completed_transaction() != Some(identity.as_str())).then_some(
+                LiveRecovery {
+                    sequence: pending.sequence,
+                    content,
+                },
+            ),
+        )
+    }
+
     pub(crate) fn pending_reconciliation(&self) -> bool {
         self.state.reconciliation.is_some()
     }
@@ -326,7 +357,7 @@ impl<S: DeploymentStore> Transactions<S> {
             return Ok(None);
         };
         let content = pending.deployment.id()?;
-        let identity = format!("package-{}-{content}", pending.sequence);
+        let identity = package_identity(pending.sequence, &content);
         self.adapter
             .artifacts_mut()
             .retain_generation(&identity, &pending.deployment)?;
@@ -341,7 +372,7 @@ impl<S: DeploymentStore> Transactions<S> {
             .pending
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("prepared generation is absent"))?;
-        let identity = format!("package-{}-{}", pending.sequence, pending.deployment.id()?);
+        let identity = package_identity(pending.sequence, &pending.deployment.id()?);
         self.journal.ensure_capacity(1)?;
         let outputs = self.activation.activate_once(
             &identity,
@@ -407,7 +438,7 @@ impl<S: DeploymentStore> Transactions<S> {
             .current()
             .ok_or_else(|| anyhow::anyhow!("reconciliation has no committed generation"))?;
         let identity = reconciliation.identity();
-        let retained_identity = format!("package-{}-{}", current.sequence, current.content);
+        let retained_identity = package_identity(current.sequence, &current.content);
         self.adapter
             .artifacts_mut()
             .retain_generation(&retained_identity, &current.deployment)?;
@@ -473,7 +504,7 @@ impl<S: DeploymentStore> Transactions<S> {
             );
         }
         let sequence = self.next_sequence()?;
-        let identity = format!("package-{sequence}-{}", deployment.id()?);
+        let identity = package_identity(sequence, &deployment.id()?);
         self.adapter
             .artifacts_mut()
             .retain_generation(&identity, deployment)?;
@@ -531,7 +562,7 @@ impl<S: DeploymentStore> Transactions<S> {
             .generations
             .get(&sequence)
             .ok_or_else(|| anyhow::anyhow!("pruned generation is absent"))?;
-        let identity = format!("package-{sequence}-{}", generation.content);
+        let identity = package_identity(sequence, &generation.content);
         self.journal.ensure_capacity(1)?;
         self.adapter
             .artifacts_mut()
@@ -582,7 +613,7 @@ impl GenerationState {
                 pending
                     .deployment
                     .id()
-                    .map(|content| format!("package-{}-{content}", pending.sequence))
+                    .map(|content| package_identity(pending.sequence, &content))
             })
             .transpose()
     }
@@ -662,8 +693,7 @@ impl GenerationState {
                     outputs: outputs.clone(),
                     deployment: pending.deployment.clone(),
                 };
-                self.completed_activation =
-                    Some(format!("package-{}-{}", sequence, generation.content));
+                self.completed_activation = Some(package_identity(*sequence, &generation.content));
                 self.generations.insert(*sequence, generation);
                 self.pending = None;
             }

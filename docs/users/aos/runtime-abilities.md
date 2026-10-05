@@ -736,8 +736,12 @@ descriptor, and publication marker. It records a separate execution attempt
 bound to that generation's exact content, observes live resources, and repairs
 drift through the selected handlers. An interrupted attempt resumes its original
 identity and returns after completing that pending work, without starting a
-second transaction. Installation, removal, reconfiguration, and rollback publish
-new package generations; replaying the same committed state at boot does not.
+second transaction. This also applies when boot resumes a pending package
+activation, after validating its retained bootstrap sources. A publication-only
+repair after effects already completed still requires live reconciliation:
+repairing a profile pointer does not establish current resource state.
+Installation, removal, reconfiguration, and rollback publish new package
+generations; replaying the same committed state at boot does not.
 
 On EFI systems, initrd stores durable generation, effect-journal, and admission
 files as regular files on the boot ESP's FAT filesystem. Nix retention symlinks

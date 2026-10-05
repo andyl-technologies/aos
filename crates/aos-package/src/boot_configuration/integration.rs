@@ -286,6 +286,7 @@ async fn exercise_adoption(acquire_absent_package: bool) -> Result<()> {
     retained::verify(&host, changed)?;
     ensure!(
         crate::native_deployment::recover_profile_publication(&host, &cancellation)?
+            .map(|publication| publication.generation)
             == Some(changed),
         "boot recovery lost the committed operator generation"
     );
@@ -300,7 +301,7 @@ async fn exercise_adoption(acquire_absent_package: bool) -> Result<()> {
         verification_state(&profile, &fixture.state_directory)? == before_verify,
         "operator host verification changed committed authority or dispatched a handler"
     );
-    crate::native_deployment::apply(&host, &cancellation)?;
+    super::run_host_command(&host, false)?;
     let (rebooted_generation, rebooted) = current(&profile, &executable)?;
     ensure!(
         rebooted_generation == changed
@@ -315,7 +316,7 @@ async fn exercise_adoption(acquire_absent_package: bool) -> Result<()> {
     // A retained receipt is insufficient after live drift: reconciliation must
     // observe the resource and repair it without changing desired authority.
     fs::write(fixture.state_directory.join("value"), "external-drift")?;
-    crate::native_deployment::apply(&host, &cancellation)?;
+    super::run_host_command(&host, false)?;
     ensure!(
         current(&profile, &executable)?.0 == changed
             && fs::read(changed_generation.join("native-deployment.json"))? == changed_marker
@@ -355,8 +356,34 @@ async fn exercise_adoption(acquire_absent_package: bool) -> Result<()> {
             && crate::profile::deployment::has_pending_deployment(&profile.path)?,
         "host verification resumed or changed the original pending package activation"
     );
-    let recovered = crate::native_deployment::recover_profile_publication(&host, &cancellation)?
-        .context("interrupted operator generation did not commit during recovery")?;
+    let effects_path = profile.path.join("deployment/effects.journal");
+    let before_recovery = aos_ability_runtime::activation::inspect(
+        &effects_path,
+        crate::deployment::transaction::journal_limits(),
+    )?;
+    let begin_count = before_recovery
+        .records
+        .iter()
+        .filter(|record| record.event == "begin")
+        .count();
+    super::run_host_command(&host, false)
+        .context("recovering the interrupted package through the production boot path")?;
+    let after_recovery = aos_ability_runtime::activation::inspect(
+        &effects_path,
+        crate::deployment::transaction::journal_limits(),
+    )?;
+    ensure!(
+        after_recovery.pending.is_none()
+            && after_recovery.restoration.is_none()
+            && after_recovery
+                .records
+                .iter()
+                .filter(|record| record.event == "begin")
+                .count()
+                == begin_count,
+        "package boot recovery started an extra live reconciliation"
+    );
+    let recovered = current(&profile, &executable)?.0;
     ensure!(
         !crate::profile::deployment::has_pending_deployment(&profile.path)?
             && fs::read_to_string(fixture.state_directory.join("count"))? == count,
@@ -369,7 +396,7 @@ async fn exercise_adoption(acquire_absent_package: bool) -> Result<()> {
             && recovered_input.supplemental_inputs == initial.supplemental_inputs,
         "recovery did not retain the admitted operator source and original authorization"
     );
-    crate::native_deployment::apply(&host, &cancellation)?;
+    super::run_host_command(&host, false)?;
     ensure!(
         current(&profile, &executable)?.0 == recovered
             && fs::read_to_string(fixture.state_directory.join("count"))? == count,
@@ -419,11 +446,11 @@ async fn exercise_adoption(acquire_absent_package: bool) -> Result<()> {
     let publication = crate::native_deployment::recover_profile_publication(&host, &cancellation)?
         .context("pending reconciliation lost its committed publication")?;
     ensure!(
-        publication == recovered
+        publication.generation == recovered
             && crate::profile::deployment::has_pending_deployment(&profile.path)?,
         "publication recovery consumed the pending live reconciliation"
     );
-    retained::verify(&host, publication)?;
+    retained::verify(&host, publication.generation)?;
     crate::native_deployment::apply(&host, &cancellation)?;
     let completed_inspection = aos_ability_runtime::activation::inspect(
         &effects_path,
