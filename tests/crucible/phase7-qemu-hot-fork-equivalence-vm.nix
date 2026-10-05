@@ -51,54 +51,39 @@ assert builtins.elem caseProfile ["full" "single-guest"]; let
     destination = "/scenario.toml";
     text = builtins.readFile ./fixtures/e2e-determinism.scenario.toml;
   };
-  flight = pkgs.mkDerivation {
+  flight = pkgs.mkCargoPackage {
     pname = "crucible-qemu-hot-fork-equivalence-flight";
     version = "0";
     LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
     src = source;
+    inherit cargoDeps;
+    cargoRoot = "crates";
+    cargoBuildCommands = [
+      "test --frozen --offline --release --no-run -p crucible-daemon --lib"
+    ];
+    doCheck = false;
+    installBins = false;
+    # Preserve the original fixture executable while reusing the guarded Cargo target.
+    dontStrip = true;
+    dontPatchELF = true;
     buildDeps = [
       pkgs.coreutils
-      pkgs.jq
       pkgs.openssl
       pkgs.pkg-config
       pkgs.protobuf
-      pkgs.rust
       pkgs.sed
 
       pkgs.sqlite
     ];
     runtimeDeps = [pkgs.openssl pkgs.sqlite];
-    phases = [
-      {
-        name = "unpack";
-        script = ''
-          cp -R "$src" source
-          chmod -R u+w source
-          cd source
-        '';
-      }
-      {
-        name = "build";
-        script = ''
-          set -eu
-          export CARGO_HOME="$TMPDIR/cargo"
-          mkdir -p "$CARGO_HOME" .cargo
-          sed "s|@vendor@|${cargoDeps}|g" \
-            "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
-          cargo test --frozen --offline --release --no-run \
-            --message-format=json-render-diagnostics \
-            --manifest-path crates/Cargo.toml \
-            --target-dir "$TMPDIR/target" \
-            -p crucible-daemon --lib > "$TMPDIR/messages.jsonl"
-          binary=$(jq -r \
-            'select(.reason == "compiler-artifact" and .target.name == "crucible_daemon" and .profile.test == true and .executable != null) | .executable' \
-            "$TMPDIR/messages.jsonl")
-          test -f "$binary"
-          mkdir -p "$out/bin"
-          cp "$binary" "$out/bin/crucible-daemon-hot-fork-equivalence-flight"
-        '';
-      }
-    ];
+    postInstall = ''
+      binary=$(jq -r \
+        'select(.reason == "compiler-artifact" and .target.name == "crucible_daemon" and .profile.test == true and .executable != null) | .executable' \
+        "$NIX_BUILD_TOP/cargo-build-messages.jsonl")
+      test -f "$binary"
+      mkdir -p "$out/bin"
+      cp "$binary" "$out/bin/crucible-daemon-hot-fork-equivalence-flight"
+    '';
   };
   cgroupRoot =
     if campaignComposition == null
