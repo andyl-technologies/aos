@@ -1707,6 +1707,7 @@ in
                   "tcg-fast-paths",
                   "mutex-owner-cache",
                   "snapshot-fast-path",
+                  "settle-prepark",
               ):
                   with (source_root / f"{name}.result").open("w") as result:
                       subprocess.run([
@@ -1726,6 +1727,8 @@ in
               grep -q '^PASS production mutex owner cache:' mutex-owner-cache.result
               cat snapshot-fast-path.result
               grep -q '^PASS production snapshot fast path:' snapshot-fast-path.result
+              cat settle-prepark.result
+              grep -q '^PASS production settle prepark:' settle-prepark.result
               grep -Fxq 'PASS production TX/stop/clock/RR: batches, race, completion settlement, paused ack, explicit retry' \
                 net-output-stop.result
               grep -Fxq 'PASS lifecycle production encode/rebind: full save retained, canonical custody independence, guest frontier sensitivity, invalid rebind refusal' \
@@ -4283,7 +4286,7 @@ in
               for name in net-output-stop lifecycle-projection control-deferred \
                 control-observer control-delivery stopped-control-rearm \
                 template-control-drain net-stop-chain aio-fork-custody stop-context \
-                tcg-fast-paths mutex-owner-cache snapshot-fast-path; do
+                tcg-fast-paths mutex-owner-cache snapshot-fast-path settle-prepark; do
                 install -m 644 "$name.result" \
                   "$out/share/aos/crucible/$name.result"
                 install -m 644 "$name-proof/compile-command.json" \
