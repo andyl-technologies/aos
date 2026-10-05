@@ -85,6 +85,7 @@
         ])
       ];
     } {
+      activationInputs = [files.registry-git-env-file.outputs.resource];
       dependencies.prerequisites = [
         ingress.outputs.resource
       ];
@@ -116,6 +117,10 @@
         ])
       ];
     } {
+      activationInputs = [
+        files.registry-cache-env-file.outputs.resource
+        files.serve-configuration.outputs.resource
+      ];
       dependencies.prerequisites = [
         ingress.outputs.resource
       ];

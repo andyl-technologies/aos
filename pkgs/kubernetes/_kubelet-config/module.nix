@@ -60,6 +60,7 @@
     ];
   resourceGroup = config.aos.abilities.serviceManagement.operations.resourceGroup.effects.${package.name};
   service = {
+    activationInputs = [configuration.outputs.resource];
     policy.devicePolicy = {
       baseline_access = "standard-runtime-devices";
       rules = [

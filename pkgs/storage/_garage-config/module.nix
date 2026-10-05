@@ -94,6 +94,7 @@
     ignore_failure = false;
   };
   service = {
+    activationInputs = [operations.configuration.operations.file.effects.garage.outputs.resource];
     resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = {
       allow_privilege_escalation = false;

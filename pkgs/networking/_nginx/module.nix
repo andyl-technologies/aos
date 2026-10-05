@@ -419,6 +419,7 @@
   service = let
     configurationPath = operations.configuration.operations.file.effects.nginx.outputs.path;
   in {
+    activationInputs = [operations.configuration.operations.file.effects.nginx.outputs.resource];
     resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = {
       allow_privilege_escalation = false;

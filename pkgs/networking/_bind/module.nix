@@ -89,6 +89,7 @@
   ];
 
   serviceDefinition = {
+    activationInputs = [operations.configuration.operations.file.effects.bind.outputs.resource];
     service = "named";
     policy.hardening = {
       allow_privilege_escalation = false;

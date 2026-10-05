@@ -41,6 +41,7 @@
     ignore_failure = false;
   };
   service = {
+    activationInputs = lib.optionals (!managerOwned) [config.aos.abilities.configuration.operations.file.effects.ability-crucible.outputs.resource];
     service = "aos-ability-crucible";
     activationOwner = cfg.activationOwner;
     activationAfter = lib.optionals (!managerOwned) [runtimeResource configurationPath];

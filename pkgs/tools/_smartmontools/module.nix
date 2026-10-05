@@ -31,6 +31,7 @@
     DEVICESCAN -a -o on -S on -n standby,q -W 5,45,55 -m root
   '';
   serviceDefinition = {
+    activationInputs = [operations.configuration.operations.file.effects.smartd.outputs.resource];
     service = "smartd";
     policy.hardening = {
       allow_privilege_escalation = false;

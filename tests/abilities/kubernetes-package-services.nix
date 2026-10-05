@@ -17,6 +17,14 @@
     };
   };
   worker = evaluate [pkgs.k3s-worker] workerConfiguration;
+  reconfiguredWorker = evaluate [pkgs.k3s-worker] (workerConfiguration
+    // {
+      k3s = workerConfiguration.k3s // {networking.flannelBackend = "host-gw";};
+      aos.k3s.integrations.operator.node_labels."example.test/role" = "worker";
+    });
+  workerConfigurationInput = worker.config.aos.abilities.k3sConfiguration.operations.ensure.effects.base.input;
+  reconfiguredInput = reconfiguredWorker.config.aos.abilities.k3sConfiguration.operations.ensure.effects.base.input;
+  serviceInput = evaluated: evaluated.config.aos.abilities.serviceManagement.operations.realize.effects.k3s.input;
   controlPlane = evaluate [pkgs.k3s-control-plane] {
     k3s = {
       enable = true;
@@ -78,6 +86,12 @@
       true)).success;
 in
   assert worker.deployment.graph.order != [];
+  assert workerConfigurationInput.path == reconfiguredInput.path;
+  assert workerConfigurationInput.base != reconfiguredInput.base;
+  assert workerConfigurationInput.integrations != reconfiguredInput.integrations;
+  assert (serviceInput worker).dependencyValues == [workerConfigurationInput.base workerConfigurationInput.integrations];
+  assert (serviceInput reconfiguredWorker).dependencyValues == [reconfiguredInput.base reconfiguredInput.integrations];
+  assert (serviceInput worker).dependencyValues != (serviceInput reconfiguredWorker).dependencyValues;
   assert controlPlane.deployment.graph.order != [];
   assert controlPlane.config.k3s.role == "control-plane";
   assert roles.k3s-control-plane.command == "server --disable-agent --egress-selector-mode=cluster";

@@ -91,6 +91,7 @@
   account = operations.identity.operations.principal.effects.openldap.outputs.name;
   group = operations.identity.operations.group.effects.openldap.outputs.name;
   service = {
+    activationInputs = [operations.configuration.operations.file.effects.openldap.outputs.resource];
     resources.resource_group = resourceGroup.outputs.name;
     policy.hardening = {
       allow_privilege_escalation = false;
