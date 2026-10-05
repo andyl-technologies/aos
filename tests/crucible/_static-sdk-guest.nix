@@ -51,9 +51,15 @@ assert pkgs.stdenv.hostPlatform.system == "x86_64-linux";
         echo "${rootName} guest unexpectedly has an ELF interpreter" >&2
         exit 1
       fi
+      cc -static -O2 -Wall -Wextra -Werror ${./_static-sdk-init.c} -o "$TMPDIR/${rootName}-init"
+      if patchelf --print-interpreter "$TMPDIR/${rootName}-init" > "$TMPDIR/${rootName}-init.interpreter" 2>/dev/null; then
+        echo "${rootName} init unexpectedly has an ELF interpreter" >&2
+        exit 1
+      fi
       mkdir -p "$TMPDIR/${rootName}-root/proc" "$TMPDIR/${rootName}-root/sys" "$TMPDIR/${rootName}-root/dev"
-      cp "$executable" "$TMPDIR/${rootName}-root/init"
-      chmod 0755 "$TMPDIR/${rootName}-root/init"${
+      cp "$TMPDIR/${rootName}-init" "$TMPDIR/${rootName}-root/init"
+      cp "$executable" "$TMPDIR/${rootName}-root/sdk-init"
+      chmod 0755 "$TMPDIR/${rootName}-root/init" "$TMPDIR/${rootName}-root/sdk-init"${
         if extraFiles == {}
         then ""
         else

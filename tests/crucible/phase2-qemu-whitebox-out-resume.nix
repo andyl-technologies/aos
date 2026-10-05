@@ -169,6 +169,7 @@ assert builtins.elem profile ["rom" "linux"]; let
           :
         else
           status=$?
+          ${lib.optionalString (profile == "linux") ''echo "CRUCIBLE_OUT_RESUME_FAILED_MODE=$mode" >&2 || true''}
           cat "/tmp/$mode.result" >&2
           tail -c ${toString stderrTailBytes} "/tmp/$mode.log" >&2
           exit "$status"
