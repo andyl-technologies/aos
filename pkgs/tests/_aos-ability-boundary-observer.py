@@ -174,6 +174,16 @@ def held_sequence() -> str | None:
     return sequence if isinstance(sequence, str) else None
 
 
+def resumed_sequence() -> str | None:
+    """Return the recovery observation already retained for this sequence."""
+    try:
+        resumed = json.loads(RESUMED_EVENT.read_bytes())
+    except FileNotFoundError:
+        return None
+    sequence = resumed.get("sequence")
+    return sequence if isinstance(sequence, str) else None
+
+
 def matches_operation(event: dict[str, Any], target: dict[str, Any]) -> bool:
     """Match only the selected operation identity."""
     return (
@@ -208,7 +218,9 @@ def matches_recovery_boundary(event: dict[str, Any], target: dict[str, Any]) -> 
         and event.get("boundary") == "observation-returned"
         and event.get("action") == target["invocation_action"]
         and held_sequence() == target["sequence"]
-        and continued_sequence() != target["sequence"]
+        # A reboot flight may release recovery before reconnecting. Record its
+        # first observation even then, without replacing that retained evidence.
+        and resumed_sequence() != target["sequence"]
     )
 
 

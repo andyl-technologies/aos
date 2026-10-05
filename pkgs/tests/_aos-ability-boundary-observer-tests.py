@@ -117,6 +117,41 @@ class ObserverInterruptionTests(unittest.TestCase):
         self.assertEqual(resumed["event"], recovery)
         self.assertFalse(OBSERVER.matches_recovery_boundary(recovery, selected))
 
+    def test_precontinued_recovery_retains_first_observation(self):
+        selected = {
+            **self.target,
+            "action": "disconnect",
+            "effect": self.operation,
+            "sequence": "power-loss",
+        }
+        OBSERVER.record_held_event(
+            self.event, self.payload, selected["sequence"], None
+        )
+        OBSERVER.replace_canonical(
+            OBSERVER.CONTINUE, {"sequence": selected["sequence"]}
+        )
+        recovery = {**self.event, "boundary": "observation-returned"}
+        recovery_payload = OBSERVER.canonical_bytes(recovery)
+
+        self.assertTrue(OBSERVER.matches_recovery_boundary(recovery, selected))
+        sender, receiver = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+        with sender, receiver:
+            OBSERVER.hold_until_continued(
+                sender, recovery, recovery_payload, selected["sequence"], None
+            )
+            acknowledgement = json.loads(OBSERVER.read_frame(receiver))
+
+        retained = OBSERVER.RESUMED_EVENT.read_bytes()
+        self.assertEqual(json.loads(retained)["event"], recovery)
+        self.assertEqual(
+            acknowledgement["event_digest"],
+            OBSERVER.event_digest(recovery_payload),
+        )
+        self.assertFalse(OBSERVER.matches_recovery_boundary(recovery, selected))
+        later = {**recovery, "journal_sequence": 2}
+        self.assertFalse(OBSERVER.matches_recovery_boundary(later, selected))
+        self.assertEqual(OBSERVER.RESUMED_EVENT.read_bytes(), retained)
+
     def test_untrusted_peer_cannot_arm_interruption(self):
         with mock.patch.object(os, "kill") as kill:
             with self.assertRaisesRegex(ValueError, "root-owned runner"):
