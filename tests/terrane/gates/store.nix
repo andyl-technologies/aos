@@ -86,6 +86,10 @@ in {
           shift
           if [ "$package_name" = terrane-cli ]; then
             cargo test --frozen --offline -p "$package_name" --bin terrane "$@"
+          elif [ "$package_name" = terrane ]; then
+            # Independent native fixtures have real operation deadlines. Bound
+            # their fanout; each fixture still runs its own competing writers.
+            cargo test --frozen --offline -p "$package_name" --lib "$@" -- --test-threads=1
           else
             cargo test --frozen --offline -p "$package_name" --lib "$@"
           fi

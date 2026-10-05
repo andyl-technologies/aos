@@ -81,7 +81,7 @@ impl<F: LocalFs + BucketBinding + Sync + 'static> NativeFixture<F> {
     ///
     /// # Errors
     /// Preserves current source/destination denial, retention, fencing and storage failures.
-    pub(super) async fn fork(
+    pub(crate) async fn fork(
         &self,
         source: &str,
         destination: &str,

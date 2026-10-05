@@ -147,6 +147,20 @@ zero skips and strict rustdoc; strict native Clippy remains red on 36 library
 and 16 test diagnostics outside its owned files. No formal task merge,
 task checkbox, milestone exit or freeze advances.
 
+An unchanged single-thread libtest diagnostic of the same first native profile
+executes the exact 425 cases: 420 pass and the same five file-backend cases
+return `Unsupported`, with none ignored or filtered. All 378 original passes
+remain passes; the 38 `Expired`, three `Denied` and one `Elapsed` failures do
+not recur. The test body takes 738.75 seconds. All 2,754 Rust/Cargo images
+match the original immutable Nix source before and after the run. This
+demonstrates scheduling sensitivity without qualifying the protected Nix gate
+or identifying its original contention mechanism. Terrane's feature-matrix
+libtest invocations now schedule independent cases one at a time; every
+configuration, internal competing-writer test, clock and deadline is retained.
+Authoritative gate qualification remains pending. Retirement/restore and
+destination copy activation still need complete production implementations;
+the raw retirement-association and existing-registration refusals stay intact.
+
 The preceding completed full qualification records candidate
 `15540ef204ec`, which combines reviewed source discovery, immutable lookup,
 repeatable I/P/G maintenance, separate verifier/preparation work, common Memo
