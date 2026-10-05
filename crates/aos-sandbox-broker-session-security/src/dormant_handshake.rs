@@ -849,6 +849,15 @@ impl DormantReceivedBrokerRequestV1 {
         self.0.deadline_boottime_nanoseconds()
     }
 
+    pub(crate) fn is_original_mount_release_successor(&self, previous: &Self) -> bool {
+        self.0.direction() == aos_sandbox_protocol::authenticated_session::all_methods::AuthenticatedBrokerRequestDirectionV1::ServerReceive
+            && previous.method() == BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS
+            && self.method() == BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION
+            && self.authorization_artifacts().is_some()
+            && self.0.session_binding() == previous.0.session_binding()
+            && previous.0.client_sequence().checked_add(1) == Some(self.0.client_sequence())
+    }
+
     pub(crate) fn is_original_mount_inventory_successor(
         &self,
         original: &Self,
@@ -1507,6 +1516,11 @@ impl DormantBrokerOutcomeVerificationV1 {
     }
 }
 
+enum OriginalMountLiveDestinationV1<'slot> {
+    Acquire(&'slot mut Option<Result<aos_sandbox_protocol::LiveValidatedAcquireMountSourceRequest, aos_sandbox_protocol::ProtocolValidationError>>),
+    Release(&'slot mut Option<Result<aos_sandbox_protocol::LiveValidatedReleaseMountSourceAcquisitionRequest, aos_sandbox_protocol::ProtocolValidationError>>),
+}
+
 impl DormantAuthenticatedBrokerSessionV1 {
     /// Shares the original request/current-clock/Live decoder without taking it.
     ///
@@ -1520,9 +1534,39 @@ impl DormantAuthenticatedBrokerSessionV1 {
         clock: &mut Option<Result<u64, BrokerSessionSecurityError>>,
         live: &mut Option<Result<aos_sandbox_protocol::LiveValidatedAcquireMountSourceRequest, aos_sandbox_protocol::ProtocolValidationError>>,
     ) -> bool {
-        if request.0.method() != BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE
+        self.park_original_mount_live_recipe(
+            request, verification, clock, OriginalMountLiveDestinationV1::Acquire(live),
+        )
+    }
+
+    pub(crate) fn park_original_mount_release_live(
+        &mut self,
+        request: &DormantReceivedBrokerRequestV1,
+        verification: &mut Option<Result<DormantBrokerOutcomeVerificationV1, BrokerSessionSecurityError>>,
+        clock: &mut Option<Result<u64, BrokerSessionSecurityError>>,
+        live: &mut Option<Result<aos_sandbox_protocol::LiveValidatedReleaseMountSourceAcquisitionRequest, aos_sandbox_protocol::ProtocolValidationError>>,
+    ) -> bool {
+        self.park_original_mount_live_recipe(
+            request, verification, clock, OriginalMountLiveDestinationV1::Release(live),
+        )
+    }
+
+    fn park_original_mount_live_recipe(
+        &mut self,
+        request: &DormantReceivedBrokerRequestV1,
+        verification: &mut Option<Result<DormantBrokerOutcomeVerificationV1, BrokerSessionSecurityError>>,
+        clock: &mut Option<Result<u64, BrokerSessionSecurityError>>,
+        destination: OriginalMountLiveDestinationV1<'_>,
+    ) -> bool {
+        let (method, occupied) = match &destination {
+            OriginalMountLiveDestinationV1::Acquire(live) =>
+                (BrokerMethod::BROKER_METHOD_MOUNT_ACQUIRE_SOURCE, live.is_some()),
+            OriginalMountLiveDestinationV1::Release(live) =>
+                (BrokerMethod::BROKER_METHOD_MOUNT_RELEASE_SOURCE_ACQUISITION, live.is_some()),
+        };
+        if request.0.method() != method
             || request.0.authorization().is_none()
-            || verification.is_some() || clock.is_some() || live.is_some()
+            || verification.is_some() || clock.is_some() || occupied
         {
             return false;
         }
@@ -1532,14 +1576,20 @@ impl DormantAuthenticatedBrokerSessionV1 {
         let Some(Ok(now)) = clock.as_ref() else {
             return false;
         };
-        *live = Some(aos_sandbox_protocol::decode_acquire_mount_source_request(
-            request.0.exact_body(),
-            request.0.peer(),
-            request.0.peer_policy(),
-            *now,
-        ));
-        matches!(live, Some(Ok(decoded))
-            if decoded.header().request_id() == &request.0.request_id())
+        match destination {
+            OriginalMountLiveDestinationV1::Acquire(live) => {
+                *live = Some(aos_sandbox_protocol::decode_acquire_mount_source_request(
+                    request.0.exact_body(), request.0.peer(), request.0.peer_policy(), *now,
+                ));
+                matches!(live, Some(Ok(decoded)) if decoded.header().request_id() == &request.0.request_id())
+            }
+            OriginalMountLiveDestinationV1::Release(live) => {
+                *live = Some(aos_sandbox_protocol::decode_release_mount_source_acquisition_request(
+                    request.0.exact_body(), request.0.peer(), request.0.peer_policy(), *now,
+                ));
+                matches!(live, Some(Ok(decoded)) if decoded.header().request_id() == &request.0.request_id())
+            }
+        }
     }
 
     /// Rechecks the same resident signed request through the sole BSA owner.

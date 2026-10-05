@@ -32,10 +32,11 @@ mod readback;
 #[path = "native_positive/terminal.rs"]
 mod terminal;
 
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum OriginalPositivePurposeV5 {
+#[derive(Clone, Copy)]
+enum OriginalPositivePurposeV5<'release> {
     Positive,
     Terminal,
+    Release(&'release PreparedMountProviderRequestV2),
 }
 
 /// Stages no positive owner: only the actual original receiver initializes it.
@@ -61,6 +62,8 @@ pub(super) struct OriginalPositiveProgressV5 {
     first_failure: Option<SourceProviderSecurityError>,
     postcheck_failure: Option<SourceProviderSecurityError>,
     terminal: terminal::OriginalTerminalProgressV5,
+    release_send_attempted: bool,
+    release_send_result: Option<Result<(), aos_sandbox_linux::seqpacket::SeqpacketError>>,
 }
 
 impl OriginalPositiveProgressV5 {
@@ -87,6 +90,8 @@ impl OriginalPositiveProgressV5 {
             first_failure: None,
             postcheck_failure: None,
             terminal: terminal::OriginalTerminalProgressV5::new(),
+            release_send_attempted: false,
+            release_send_result: None,
         }
     }
 
@@ -121,7 +126,40 @@ impl OriginalPositiveProgressV5 {
     }
 }
 
+/// Borrows the actual original queue for one already checked Release send.
+///
+/// Construction is available only through the genuine Session and phase7
+/// receiver. Its private fields expose neither a socket nor a signing key.
+/// The caller keeps a separate reopened Release-effect owner and clock alive.
+pub struct OriginalReleaseSendLoanV1<'owner, 'payload> {
+    carrier: &'owner mut crate::carrier::InertSourceProviderCarrierV1,
+    progress: &'owner mut OriginalPositiveProgressV5,
+    payload: &'payload [u8],
+}
+
+impl OriginalReleaseSendLoanV1<'_, '_> {
+    /// Sends once and immediately parks the whole returned native result.
+    ///
+    /// All application preparation and checks preceded this consuming entry.
+    /// Retryable native errors are terminal for this selected purpose. Local
+    /// success proves neither Source admission, receipt, cleanup nor Drain.
+    pub fn send(self) {
+        self.progress.release_send_result = Some(
+            self.carrier.send_original_held_retaining_v5(self.payload),
+        );
+    }
+}
+
 impl OriginalNativeReceivedOutcomeV5 {
+    /// Borrows the actual selected Release send result without observing I/O.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn original_release_send_result_v1(
+        &self,
+    ) -> Option<&Result<(), aos_sandbox_linux::seqpacket::SeqpacketError>> {
+        self.positive.release_send_result.as_ref()
+    }
+
     pub(in crate::handshake::mount_request) fn original_complete_record_v5(
         &self,
     ) -> Option<&crate::carrier::ReceivedSourceProviderRecordV1> {
@@ -259,6 +297,238 @@ impl OriginalNativeReceivedOutcomeV5 {
 }
 
 impl CurrentRootMountSourceProviderSessionV1 {
+    /// Lends one prearmed native send over the same independently admitted Release.
+    ///
+    /// All whole-Session, canonical and physical readback checks finish before
+    /// return. While the short loan lives, the caller checks its disjoint effect
+    /// owner and original paired clock last, then consumes the loan into send.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a previous attempt, missing genuine phase7 custody, stale or
+    /// mismatched reservation, a changed current role, or unavailable originals.
+    #[doc(hidden)]
+    pub fn borrow_original_release_send_v1<'owner, 'payload>(
+        &'owner mut self,
+        writer: &MountOriginalNativeJournalAuthorityV5<'_>,
+        current: &OriginalRootProtectedReadbackV5,
+        original: &AuthorizedMountProviderOutcomeV2,
+        retained: &'owner mut OriginalNativeReceivedOutcomeV5,
+        release: &'payload PreparedMountProviderRequestV2,
+    ) -> Result<OriginalReleaseSendLoanV1<'owner, 'payload>, SourceProviderSecurityError> {
+        self.revalidate_original_release_custody_v1(writer, current, original, retained, release)?;
+        if retained.positive.release_send_attempted
+            || retained.positive.release_send_result.is_some()
+        {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
+        let mut matching = current.graph().legacy().provider_attempts.values().filter(|attempt| {
+            attempt.method == aos_sandbox_protocol::mount_source_acquisition_state::ProviderMethodV2::Release
+                && attempt.signed_request == release.canonical_signed_request()
+                && attempt.signed_request_digest == *release.projection().request_digests().2.as_bytes()
+                && attempt.request_id == release.projection().request_identity().0
+                && attempt.request_sequence == release.projection().request_identity().1
+                && attempt.state == ProviderAttemptStateV2::Reserved
+        });
+        let attempt = matching.next().ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        if matching.next().is_some()
+            || current.graph().legacy().provider_heads.values().all(|head| {
+                head.pending_attempt.is_none_or(|pending| pending.id != attempt.attempt_id
+                    || pending.revision != attempt.revision
+                    || pending.record_digest != attempt.record_digest)
+            })
+        {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
+        // The same resident receiver owns this irreversible latch and result.
+        // Dropping a loan before send never creates a retry opportunity.
+        retained.positive.release_send_attempted = true;
+        Ok(OriginalReleaseSendLoanV1 {
+            carrier: &mut self.carrier,
+            progress: &mut retained.positive,
+            payload: release.canonical_signed_request(),
+        })
+    }
+
+    fn require_original_release_request_current_v1(
+        &mut self,
+        release: &PreparedMountProviderRequestV2,
+        original: &AuthorizedMountProviderOutcomeV2,
+        retained: &OriginalNativeReceivedOutcomeV5,
+    ) -> Result<(), SourceProviderSecurityError> {
+        self.revalidate()?;
+        let now = super::super::current_unix_seconds()?;
+        let authorization = &release.outcome;
+        let projection = &release.projection;
+        let request = aos_sandbox_source_provider_protocol::decode_release_request(
+            authorization.signed_request.subject(),
+        ).map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+        let complete = retained.original_complete_record_v5()
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        let response = decode_acquire_response(&complete.payload)
+            .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+        let receipt = SignedSourceProviderReceiptV1::from_canonical_bytes(
+            response.signed_receipt().ok_or(SourceProviderSecurityError::SessionContinuity)?,
+        ).map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+        let lease = SignedSourceExportLeaseV1::from_canonical_bytes(
+            receipt.subject().signed_export_lease(),
+        ).map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+        let (lease_issued, lease_expires) = lease.subject().validity();
+        let inner = self.custody.inner();
+        let provider_key = inner.trust().keys().iter().find(|entry| {
+            entry.signer() == inner.provider_authority().traffic_signer()
+                && entry.state() == SourceProviderKeyTrustStateV1::Eligible
+        }).ok_or(SourceProviderSecurityError::SessionContinuity)?;
+
+        // This preparation is already signed by the genuine current Session.
+        // Its current role and exact bytes remain bound to the old physical
+        // acquisition; the historical Acquire deadline is not extended.
+        if retained.failed.get()
+            || original.native_outcome.as_ref()
+                .is_none_or(|owner| !Arc::ptr_eq(owner, &retained.original))
+            || authorization.native_outcome.is_some()
+            || authorization.method != SourceProviderMethod::Release
+            || authorization.signed_request.method() != SourceProviderMethod::Release
+            || projection.method != SourceProviderMethod::Release
+            || release.signed_request != authorization.signed_request.to_canonical_bytes()
+            || projection.signed_request_digest != digest_signed_request(&authorization.signed_request)
+            || authorization.signed_request_digest != projection.signed_request_digest
+            || authorization.typed_request_digest != digest_release_request(&request)
+            || projection.typed_request_digest != authorization.typed_request_digest
+            || authorization.provider != *inner.provider_authority().authority()
+            || authorization.holder != *inner.root_authority().authority()
+            || authorization.provider != original.provider
+            || authorization.holder != original.holder
+            || authorization.signed_request.signer() != inner.root_authority().traffic_signer()
+            || authorization.provider_outcome_signer != *provider_key.signer()
+            || authorization.provider_outcome_public_key != *provider_key.public_key()
+            || original.provider_outcome_signer != authorization.provider_outcome_signer
+            || original.provider_outcome_public_key != authorization.provider_outcome_public_key
+            || authorization.session_binding != self.session.binding()
+            || authorization.session_binding != original.session_binding
+            || projection.session_binding != authorization.session_binding
+            || request.session_binding() != authorization.session_binding
+            || authorization.provider_process_instance != self.session.provider_hello().process_instance()
+            || authorization.request_id != request.request_id()
+            || projection.request_id != request.request_id()
+            || authorization.request_sequence != request.sequence()
+            || projection.request_sequence != request.sequence()
+            || authorization.expected_response_sequence != projection.expected_response_sequence
+            || authorization.acquisition_id != original.acquisition_id
+            || authorization.acquisition_sequence != original.acquisition_sequence
+            || authorization.acquisition_id != Some(request.acquisition_id())
+            || authorization.lease_id != Some(request.lease_id())
+            || authorization.lease_digest != Some(request.lease_digest())
+            || lease.subject().lease_id() != request.lease_id()
+            || digest_signed_export_lease(&lease) != request.lease_digest()
+            || projection.session.trust_generation != inner.trust().trust_generation()
+            || projection.session.trust_digest != inner.trust().trust_digest()
+            || projection.session.revocation_generation != inner.trust().revocation_generation()
+            || projection.session.revocation_digest != inner.trust().revocation_digest()
+            || authorization.deadline_seconds != request.deadline_seconds()
+            || now < projection.session.authenticated_at_seconds
+            || now >= projection.session.current_valid_until_seconds
+            || now < lease_issued
+            || now >= lease_expires
+            || now >= request.deadline_seconds()
+        {
+            return Err(SourceProviderSecurityError::SessionContinuity);
+        }
+        // The original preparation supplies immutable catalog provenance only.
+        // Current kernel/peer/custody observations above belong to this Session.
+        retained.original.original_selection_v5()?;
+        Ok(())
+    }
+
+    /// Rechecks the same terminal original custody for an independently signed Release.
+    /// Attempts actual Session custody independently after a Release action.
+    ///
+    /// A missing or refused readback is not a reason to skip the kernel/peer
+    /// observation. This lends no authority and never renews an Acquire clock.
+    ///
+    /// # Errors
+    /// Returns the actual currentness refusal or rejects an unavailable cut.
+    #[doc(hidden)]
+    pub fn observe_original_release_post_v1(
+        &mut self,
+        writer: &MountOriginalNativeJournalAuthorityV5<'_>,
+        current: Option<&OriginalRootProtectedReadbackV5>,
+        original: &AuthorizedMountProviderOutcomeV2,
+        retained: &mut OriginalNativeReceivedOutcomeV5,
+        release: Option<&PreparedMountProviderRequestV2>,
+    ) -> Result<(), SourceProviderSecurityError> {
+        self.revalidate()?;
+        let current = current.ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        match release {
+            Some(release) => self.revalidate_original_release_custody_v1(
+                writer, current, original, retained, release,
+            ),
+            None => self.original_release_projection_v1(writer, current, original, retained)
+                .map(|_| ()),
+        }
+    }
+
+    /// Rechecks the same terminal original custody for an independently signed Release.
+    ///
+    /// This borrows the resident preparation and original image/descriptor
+    /// owners. It neither recreates their baseline nor supplies a Release-effect
+    /// permit; the caller separately checks its genuine paired Release clock.
+    ///
+    /// # Errors
+    ///
+    /// Retains the first refusal and ends the original Session on a changed
+    /// current role, Release, terminal cut, archive, physical owner or lease.
+    #[doc(hidden)]
+    pub fn revalidate_original_release_custody_v1(
+        &mut self,
+        writer: &MountOriginalNativeJournalAuthorityV5<'_>,
+        current: &OriginalRootProtectedReadbackV5,
+        original: &AuthorizedMountProviderOutcomeV2,
+        retained: &mut OriginalNativeReceivedOutcomeV5,
+        release: &PreparedMountProviderRequestV2,
+    ) -> Result<(), SourceProviderSecurityError> {
+        OriginalBoundaryV5::new(self, retained).run(|owner, retained| {
+            let retained = &mut **retained;
+            let result = (|| {
+                if !retained.positive.send_attempted
+                    || !matches!(retained.positive.send_result, Some(Ok(())))
+                    || retained.positive.first_failure.is_some()
+                    || retained.positive.postcheck_failure.is_some()
+                    || retained.original_terminal_failure_v5().is_some()
+                    || retained.original_terminal_postcheck_debt_v5().is_some()
+                {
+                    return Err(SourceProviderSecurityError::SessionContinuity);
+                }
+                owner.require_original_positive_owner_for_v5(
+                    writer, current, original, retained, OriginalPositivePurposeV5::Release(release),
+                )?;
+                let sidecar = current.graph().sidecars().get(&current.attempt())
+                    .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+                let provider = retained.original_provider_settled_v5()
+                    .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+                let unsigned = retained.original_unsigned_terminal_v5()
+                    .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+                let signed = retained.original_signed_terminal_v5()
+                    .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+                if sidecar.suffix().phase() != 7 || current.floor().is_some()
+                    || sidecar.suffix().control(Kind::ProviderSettled) != Some(provider)
+                    || sidecar.suffix().control(Kind::RootTerminalRecorded) != Some(signed)
+                    || signed.prepared() != unsigned || unsigned.predecessor() != provider.digest()
+                    || provider.scope() != signed.scope()
+                {
+                    return Err(SourceProviderSecurityError::SessionContinuity);
+                }
+                provider.verify_signature_claim(
+                    &NativeHeldSignerV1::SourceProvider(original.provider_outcome_signer.clone()),
+                    &original.provider_outcome_public_key,
+                ).map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+                owner.require_current_root_mount_record_role_v5(unsigned.signer())?;
+                owner.require_original_release_request_current_v1(release, original, retained)
+            })();
+            owner.finish_original_positive_v5(retained, result)
+        })
+    }
+
     pub(in crate::handshake::mount_request) fn capture_original_held_v5(
         &mut self,
         writer: &MountOriginalNativeJournalAuthorityV5<'_>,
@@ -329,7 +599,23 @@ impl CurrentRootMountSourceProviderSessionV1 {
         authorization: &AuthorizedMountProviderOutcomeV2,
         retained: &OriginalNativeReceivedOutcomeV5,
     ) -> Result<(), SourceProviderSecurityError> {
-        self.require_native_outcome_authorization_v3(authorization)?;
+        self.require_original_held_signature_for_v1(
+            authorization, retained, OriginalPositivePurposeV5::Positive,
+        )
+    }
+
+    fn require_original_held_signature_for_v1(
+        &mut self,
+        authorization: &AuthorizedMountProviderOutcomeV2,
+        retained: &OriginalNativeReceivedOutcomeV5,
+        purpose: OriginalPositivePurposeV5<'_>,
+    ) -> Result<(), SourceProviderSecurityError> {
+        match purpose {
+            OriginalPositivePurposeV5::Release(release) => {
+                self.require_original_release_request_current_v1(release, authorization, retained)?;
+            }
+            _ => self.require_native_outcome_authorization_v3(authorization)?,
+        }
         if retained.failed.get()
             || authorization.native_outcome.as_ref()
                 .is_none_or(|original| !Arc::ptr_eq(original, &retained.original))
@@ -377,11 +663,11 @@ impl CurrentRootMountSourceProviderSessionV1 {
         readback: &OriginalRootProtectedReadbackV5,
         authorization: &AuthorizedMountProviderOutcomeV2,
         retained: &mut OriginalNativeReceivedOutcomeV5,
-        purpose: OriginalPositivePurposeV5,
+        purpose: OriginalPositivePurposeV5<'_>,
     ) -> Result<(), SourceProviderSecurityError> {
         writer.validate_readback(readback)
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
-        self.require_original_held_signature_v5(authorization, retained)?;
+        self.require_original_held_signature_for_v1(authorization, retained, purpose)?;
         let sidecar = readback.graph().sidecars().get(&readback.attempt())
             .ok_or(SourceProviderSecurityError::SessionContinuity)?;
         let phase = sidecar.suffix().phase();
@@ -390,7 +676,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
         let floor = match purpose {
             OriginalPositivePurposeV5::Positive => Some(readback.floor()
                 .ok_or(SourceProviderSecurityError::SessionContinuity)?),
-            OriginalPositivePurposeV5::Terminal => readback.floor(),
+            OriginalPositivePurposeV5::Terminal | OriginalPositivePurposeV5::Release(_) => readback.floor(),
         };
         let held = retained.positive.held.as_ref()
             .ok_or(SourceProviderSecurityError::SessionContinuity)?;
@@ -406,12 +692,13 @@ impl CurrentRootMountSourceProviderSessionV1 {
             || match purpose {
                 OriginalPositivePurposeV5::Positive => !(1..=5).contains(&phase),
                 OriginalPositivePurposeV5::Terminal => !matches!(phase, 6 | 7),
+                OriginalPositivePurposeV5::Release(_) => phase != 7,
             }
             || match floor {
                 Some(floor) => floor.request().owner_id != readback.attempt()
                     || floor.original_prepared() != root1.prepared()
                     || floor.admission_cut() != sidecar.admission_cut(),
-                None => purpose != OriginalPositivePurposeV5::Terminal || phase != 7
+                None => !matches!(purpose, OriginalPositivePurposeV5::Terminal | OriginalPositivePurposeV5::Release(_)) || phase != 7
                     || original_root_remaining_v5(readback.graph(), readback.attempt())
                         .map_err(|_| SourceProviderSecurityError::SessionContinuity)? != 0,
             }
@@ -433,31 +720,52 @@ impl CurrentRootMountSourceProviderSessionV1 {
             self.custody.inner().trust(),
         )?;
         let (issued, expires) = reply.receipt().receipt().validity();
-        let now = super::super::current_unix_seconds()?;
-        if now < issued || now >= expires || expires > authorization.deadline_seconds {
-            return Err(SourceProviderSecurityError::SessionContinuity);
+        match purpose {
+            OriginalPositivePurposeV5::Release(release) => {
+                // Storage's old signed validity is historical provenance, not
+                // the current Release clock or a renewed Acquire deadline.
+                if issued >= expires || expires > authorization.deadline_seconds {
+                    return Err(SourceProviderSecurityError::SessionContinuity);
+                }
+                self.require_original_release_request_current_v1(release, authorization, retained)?;
+            }
+            _ => {
+                let now = super::super::current_unix_seconds()?;
+                if now < issued || now >= expires || expires > authorization.deadline_seconds {
+                    return Err(SourceProviderSecurityError::SessionContinuity);
+                }
+                self.require_original_storage_validity_v5(authorization, expires)?;
+            }
         }
-        self.require_original_storage_validity_v5(authorization, expires)?;
 
         if phase >= 3 {
             require_original_complete_cut_v5(readback, authorization, retained)?;
         }
         if retained.positive.checked.is_some() {
-            self.recheck_original_complete_physical_v5(authorization, retained)?;
+            self.recheck_original_complete_physical_for_v1(authorization, retained, purpose)?;
         }
         if phase >= 4 {
             match purpose {
                 OriginalPositivePurposeV5::Positive => require_original_accepted_cut_v5(readback, retained)?,
-                OriginalPositivePurposeV5::Terminal => require_original_accepted_cut_for_v5(readback, retained, purpose)?,
+                OriginalPositivePurposeV5::Terminal | OriginalPositivePurposeV5::Release(_) => {
+                    require_original_accepted_cut_for_v5(readback, retained, purpose)?;
+                }
             }
         }
-        self.require_native_outcome_authorization_v3(authorization)?;
+        match purpose {
+            OriginalPositivePurposeV5::Release(release) => {
+                self.require_original_release_request_current_v1(release, authorization, retained)?;
+            }
+            _ => self.require_native_outcome_authorization_v3(authorization)?,
+        }
         writer.validate_readback(readback)
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
 
         // Final paired time follows the slow original file/physical/full-graph
         // observations. The same lease may narrow, never renew, the old fence.
-        if let Some(record) = retained.original_complete_record_v5() {
+        if let OriginalPositivePurposeV5::Release(release) = purpose {
+            self.require_original_release_request_current_v1(release, authorization, retained)
+        } else if let Some(record) = retained.original_complete_record_v5() {
             self.require_original_positive_effect_clock_v5(
                 &retained.original,
                 &record.payload,
@@ -627,6 +935,34 @@ impl CurrentRootMountSourceProviderSessionV1 {
         authorization: &AuthorizedMountProviderOutcomeV2,
         retained: &mut OriginalNativeReceivedOutcomeV5,
     ) -> Result<(), SourceProviderSecurityError> {
+        self.recheck_original_complete_physical_for_v1(
+            authorization, retained, OriginalPositivePurposeV5::Positive,
+        )
+    }
+
+    fn recheck_original_complete_physical_for_v1(
+        &mut self,
+        authorization: &AuthorizedMountProviderOutcomeV2,
+        retained: &mut OriginalNativeReceivedOutcomeV5,
+        purpose: OriginalPositivePurposeV5<'_>,
+    ) -> Result<(), SourceProviderSecurityError> {
+        self.recheck_original_complete_baseline_v1(authorization, retained)?;
+        let record = retained.positive.complete.as_ref()
+            .and_then(RetainedSourceProviderRecordV5::bound)
+            .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+        match purpose {
+            OriginalPositivePurposeV5::Release(release) => {
+                self.require_original_release_request_current_v1(release, authorization, retained)
+            }
+            _ => self.require_native_outcome_response_v3(authorization, &record.payload, true),
+        }
+    }
+
+    fn recheck_original_complete_baseline_v1(
+        &mut self,
+        authorization: &AuthorizedMountProviderOutcomeV2,
+        retained: &mut OriginalNativeReceivedOutcomeV5,
+    ) -> Result<(), SourceProviderSecurityError> {
         let record = retained.positive.complete.as_ref()
             .and_then(RetainedSourceProviderRecordV5::bound)
             .ok_or(SourceProviderSecurityError::SessionContinuity)?;
@@ -639,8 +975,69 @@ impl CurrentRootMountSourceProviderSessionV1 {
             self,
             authorization.session_binding,
             cookie,
-        )?;
-        self.require_native_outcome_response_v3(authorization, &record.payload, true)
+        )
+    }
+
+    /// Projects the same physical original into Release reservation DATA.
+    ///
+    /// No descriptor or manager-presence capability is transferred. The real
+    /// caller retains this original and separately admits a new live Release.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an uncompleted terminal cut, failed original, changed physical
+    /// descriptor, current Root signer or acquisition association.
+    #[doc(hidden)]
+    pub fn original_release_projection_v1(
+        &mut self,
+        writer: &MountOriginalNativeJournalAuthorityV5<'_>,
+        current: &OriginalRootProtectedReadbackV5,
+        original: &AuthorizedMountProviderOutcomeV2,
+        retained: &mut OriginalNativeReceivedOutcomeV5,
+    ) -> Result<crate::descriptor::MountSourceRootCustodyProjectionV2, SourceProviderSecurityError> {
+        OriginalBoundaryV5::new(self, retained).run(|owner, retained| {
+            let retained = &mut **retained;
+            let result = (|| {
+                writer.validate_readback(current)
+                    .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+                owner.revalidate()?;
+                if retained.failed.get() || retained.original_terminal_failure_v5().is_some()
+                    || retained.original_terminal_postcheck_debt_v5().is_some()
+                    || original.native_outcome.as_ref()
+                        .is_none_or(|actual| !Arc::ptr_eq(actual, &retained.original))
+                {
+                    return Err(SourceProviderSecurityError::SessionContinuity);
+                }
+                let sidecar = current.graph().sidecars().get(&current.attempt())
+                    .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+                let signed = retained.original_signed_terminal_v5()
+                    .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+                if sidecar.suffix().phase() != 7 || current.floor().is_some()
+                    || sidecar.suffix().control(Kind::RootTerminalRecorded) != Some(signed)
+                {
+                    return Err(SourceProviderSecurityError::SessionContinuity);
+                }
+                owner.require_current_root_mount_record_role_v5(signed.signer())?;
+                require_original_complete_cut_v5(current, original, retained)?;
+                owner.recheck_original_complete_baseline_v1(original, retained)?;
+                let checked = retained.positive.checked.as_ref()
+                    .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+                let observation = retained.positive.physical.observation()
+                    .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+                let acquisition = current.graph().legacy().acquisitions.get(
+                    &current.graph().legacy().provider_attempts.get(&current.attempt())
+                        .ok_or(SourceProviderSecurityError::SessionContinuity)?.owner.owner_id(),
+                ).ok_or(SourceProviderSecurityError::SessionContinuity)?;
+                crate::descriptor::original_release_projection_v1(acquisition, checked, observation)
+            })();
+            match result {
+                Ok(projection) => Ok(projection),
+                Err(cause) => {
+                    retained.retain_positive_failure(cause);
+                    Err(owner.poison(SourceProviderSecurityError::SessionContinuity))
+                }
+            }
+        })
     }
 
     /// Derives first-R and unsigned Root4 only from the actual Complete phase3.
@@ -974,7 +1371,7 @@ fn require_original_accepted_cut_v5(
 fn require_original_accepted_cut_for_v5(
     readback: &OriginalRootProtectedReadbackV5,
     retained: &OriginalNativeReceivedOutcomeV5,
-    purpose: OriginalPositivePurposeV5,
+    purpose: OriginalPositivePurposeV5<'_>,
 ) -> Result<(), SourceProviderSecurityError> {
     let sidecar = readback.graph().sidecars().get(&readback.attempt())
         .ok_or(SourceProviderSecurityError::SessionContinuity)?;
@@ -987,7 +1384,7 @@ fn require_original_accepted_cut_for_v5(
     let floor = match purpose {
         OriginalPositivePurposeV5::Positive => Some(readback.floor()
             .ok_or(SourceProviderSecurityError::SessionContinuity)?),
-        OriginalPositivePurposeV5::Terminal => readback.floor(),
+        OriginalPositivePurposeV5::Terminal | OriginalPositivePurposeV5::Release(_) => readback.floor(),
     };
     let remaining = original_root_remaining_v5(readback.graph(), readback.attempt())
         .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
@@ -995,7 +1392,7 @@ fn require_original_accepted_cut_for_v5(
         || sidecar.disposition() != Some(assertion)
         || match floor {
             Some(floor) => floor.request().future_transactions != remaining,
-            None => purpose != OriginalPositivePurposeV5::Terminal
+            None => !matches!(purpose, OriginalPositivePurposeV5::Terminal | OriginalPositivePurposeV5::Release(_))
                 || sidecar.suffix().phase() != 7 || remaining != 0,
         }
     {
@@ -1032,7 +1429,7 @@ fn require_original_accepted_cut_for_v5(
                 && sidecar.suffix().prepared().is_none()
                 && sidecar.suffix().control(Kind::RootAccepted) == Some(signed)
         }),
-        6 | 7 if purpose == OriginalPositivePurposeV5::Terminal => {
+        6 | 7 if matches!(purpose, OriginalPositivePurposeV5::Terminal | OriginalPositivePurposeV5::Release(_)) => {
             retained.positive.signed.as_ref().is_some_and(|signed| {
                 signed.prepared() == unsigned
                     && sidecar.suffix().control(Kind::RootAccepted) == Some(signed)

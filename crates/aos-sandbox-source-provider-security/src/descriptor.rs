@@ -1898,25 +1898,7 @@ pub(crate) fn lifecycle_projection(
         descriptor_commitment,
         signed_outcome_digest,
     ) = observed.identity();
-    let mut hasher = Sha256::new();
-    hasher.update(b"aos.sandbox.mount.source-root-lifecycle.v2\0");
-    hasher.update([stage]);
-    hasher.update([0; 7]);
-    hasher.update(mount_acquisition_id.unwrap_or([0; 32]));
-    hasher.update(source_realization_handle.unwrap_or([0; 32]));
-    hasher.update(provider_acquisition_id);
-    hasher.update(provider_acquisition_sequence.to_be_bytes());
-    hasher.update(lease_id);
-    hasher.update(lease_digest.as_bytes());
-    hasher.update(session_binding.as_bytes());
-    hasher.update(descriptor_commitment.as_bytes());
-    hasher.update(signed_outcome_digest.as_bytes());
-    hasher.update(observation.kernel_boot_id());
-    hasher.update(observation.device().to_be_bytes());
-    hasher.update(observation.inode().to_be_bytes());
-    hasher.update(observation.unique_mount_id().to_be_bytes());
-    hasher.update(manager_custody.map_or([0; 32], |custody| custody.evidence_digest));
-    MountSourceRootCustodyProjectionV2 {
+    seal_lifecycle_projection(stage, MountSourceRootCustodyProjectionV2 {
         mount_acquisition_id,
         provider_acquisition_id,
         provider_acquisition_sequence,
@@ -1927,10 +1909,74 @@ pub(crate) fn lifecycle_projection(
         signed_outcome_digest,
         observation,
         source_realization_handle,
-        lifecycle_commitment: ObjectDigest::from_bytes(hasher.finalize().into()),
+        lifecycle_commitment: ObjectDigest::from_bytes([0; 32]),
         manager_custody,
         manager_custody_loss: None,
+    })
+}
+
+fn seal_lifecycle_projection(
+    stage: u8,
+    mut projection: MountSourceRootCustodyProjectionV2,
+) -> MountSourceRootCustodyProjectionV2 {
+    let mut hasher = Sha256::new();
+    hasher.update(b"aos.sandbox.mount.source-root-lifecycle.v2\0");
+    hasher.update([stage]);
+    hasher.update([0; 7]);
+    hasher.update(projection.mount_acquisition_id.unwrap_or([0; 32]));
+    hasher.update(projection.source_realization_handle.unwrap_or([0; 32]));
+    hasher.update(projection.provider_acquisition_id);
+    hasher.update(projection.provider_acquisition_sequence.to_be_bytes());
+    hasher.update(projection.lease_id);
+    hasher.update(projection.lease_digest.as_bytes());
+    hasher.update(projection.session_binding.as_bytes());
+    hasher.update(projection.descriptor_commitment.as_bytes());
+    hasher.update(projection.signed_outcome_digest.as_bytes());
+    hasher.update(projection.observation.kernel_boot_id());
+    hasher.update(projection.observation.device().to_be_bytes());
+    hasher.update(projection.observation.inode().to_be_bytes());
+    hasher.update(projection.observation.unique_mount_id().to_be_bytes());
+    hasher.update(projection.manager_custody.map_or([0; 32], |custody| custody.evidence_digest));
+    projection.lifecycle_commitment = ObjectDigest::from_bytes(hasher.finalize().into());
+    projection
+}
+
+// DATA only, after the Session has reobserved the actual original FD. There is
+// deliberately no ManagerPresence, descriptor extraction or negative custody.
+pub(crate) fn original_release_projection_v1(
+    row: &SourceAcquisitionRowV2,
+    checked: &crate::VerifiedMountProviderOutcomeV2,
+    observation: &SourceRootObservationV1,
+) -> Result<MountSourceRootCustodyProjectionV2, SourceProviderSecurityError> {
+    let evidence = row.evidence.as_ref().ok_or(SourceProviderSecurityError::SessionContinuity)?;
+    if row.manager_custody.is_some() || row.manager_custody_loss.is_some()
+        || checked.method != aos_sandbox_source_provider_protocol::SourceProviderMethod::Acquire
+        || checked.status != aos_sandbox_source_provider_protocol::SourceProviderStatus::Complete
+        || checked.acquisition_id.map(|id| *id.as_bytes())
+            != Some(evidence.provider_acquisition.acquisition_id)
+        || checked.acquisition_sequence != Some(evidence.provider_acquisition.acquisition_sequence)
+        || *checked.descriptor_commitment.as_bytes() != evidence.descriptor_commitment
+        || source_root_descriptor_commitment_v1(observation) != checked.descriptor_commitment
+    {
+        return Err(SourceProviderSecurityError::SessionContinuity);
     }
+    Ok(seal_lifecycle_projection(4, MountSourceRootCustodyProjectionV2 {
+        mount_acquisition_id: Some(row.acquisition_id),
+        provider_acquisition_id: evidence.provider_acquisition.acquisition_id,
+        provider_acquisition_sequence: evidence.provider_acquisition.acquisition_sequence,
+        lease_id: evidence.lease_id,
+        lease_digest: ObjectDigest::from_bytes(evidence.signed_lease_digest),
+        session_binding: checked.session_binding,
+        descriptor_commitment: checked.descriptor_commitment,
+        signed_outcome_digest: aos_sandbox_source_provider_protocol::provider_response_artifact_digest_v1(
+            aos_sandbox_source_provider_protocol::SourceProviderMethod::Acquire, &checked.canonical_response,
+        ),
+        observation: observation.clone(),
+        source_realization_handle: Some(evidence.source_realization_handle),
+        lifecycle_commitment: ObjectDigest::from_bytes([0; 32]),
+        manager_custody: None,
+        manager_custody_loss: None,
+    }))
 }
 
 fn fresh_manager_custody_evidence(

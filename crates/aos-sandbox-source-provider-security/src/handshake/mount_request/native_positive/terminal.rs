@@ -168,6 +168,18 @@ impl OriginalNativeReceivedOutcomeV5 {
     pub fn original_signed_terminal_v5(&self) -> Option<&SignedNativeHeldControlV1> {
         self.positive.terminal.signed.as_ref()
     }
+
+    /// Borrows the actual once-only Root13 native send result.
+    ///
+    /// A successful result records historical local transmission, not peer
+    /// receipt, current authority, Release admission or physical cleanup.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn original_terminal_send_result_v5(
+        &self,
+    ) -> Option<&Result<(), aos_sandbox_linux::seqpacket::SeqpacketError>> {
+        self.positive.terminal.send_result.as_ref()
+    }
 }
 
 impl CurrentRootMountSourceProviderSessionV1 {

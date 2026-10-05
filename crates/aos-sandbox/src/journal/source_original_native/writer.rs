@@ -714,6 +714,73 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
             OriginalHeldBasisPurposeV5::RootTerminal(held, root4, relay, storage, signed7, root13))
     }
 
+    /// Derives the separate Release status floor beside the unchanged cleanup floor.
+    ///
+    /// This method compares the actual current terminal carrier and all seven
+    /// owner mutations through the existing lifecycle proposer. Its output is
+    /// transaction DATA; the same writer still performs full-union preparation,
+    /// all-eight preflight, commit and physical readback.
+    ///
+    /// # Errors
+    ///
+    /// Refuses stale readback, a foreign namespace, deletion, nonterminal
+    /// predecessor, changed original custody or invalid independent capacity.
+    pub fn derive_original_release_admission_v1(
+        &self,
+        readback: &OriginalSourceProtectedReadbackV5,
+        owners: &JournalTransaction,
+        acquisition: ObjectDigest,
+    ) -> Result<JournalTransaction, JournalError> {
+        use aos_sandbox_source_provider_ledger::ledger::native_held_completion::{
+            SourceNativeHeldLifecycleV1, propose_native_held_lifecycle_v1,
+        };
+
+        self.validate_readback(readback)?;
+        self.require_current()?;
+        let journal = &self.authority.journal;
+        super::super::validate_transaction(owners, journal.limits)?;
+        if owners.records().len() != 7
+            || journal.transaction_ids.contains(owners.id())
+            || owners.records().iter().any(|record| {
+                record.namespace() != RecordNamespace::SourceProviderAuthority
+                    || record.value().is_none()
+            })
+        {
+            return Err(invalid("original Release admission owner shape"));
+        }
+
+        let mut after = journal.state.clone();
+        for record in owners.records() {
+            let value = record.value().ok_or(JournalError::InvalidTransaction)?;
+            after.insert(
+                (RecordNamespace::SourceProviderAuthority, record.key().to_vec()),
+                value.to_vec(),
+            );
+        }
+        let proposal = propose_native_held_lifecycle_v1(
+            super::owner_views(&journal.state),
+            super::owner_views(&after),
+            acquisition,
+            SourceNativeHeldLifecycleV1::ReleaseAdmitted,
+        ).map_err(|_| invalid("original Release complete lifecycle"))?;
+        let binding = proposal.status_binding()
+            .copied()
+            .ok_or(invalid("original Release independent status binding"))?;
+        let request = super::source_native_release_status_capacity_request_v1(binding);
+        let capacity = journal.prepare_global_capacity_reservation_v1(request, *owners.id())?;
+        let mut records = owners.records().to_vec();
+        records.push(capacity.record().clone());
+        let transaction = JournalTransaction::new(*owners.id(), records)?;
+
+        // The lifecycle comparison cannot replace any original Source5 row.
+        // The existing complete union independently checks both actual floors.
+        journal.source_original_replay.preview_transaction(
+            &journal.state, &transaction, journal.limits,
+        )?;
+        self.validate_readback(readback)?;
+        Ok(transaction)
+    }
+
     /// Checks the remaining envelope on the actual phase-two cut before spend.
     ///
     /// This derives symbolic codec bounds, not future Spent rows, signatures,

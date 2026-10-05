@@ -80,6 +80,15 @@ pub enum OriginalMountResponseProgressV5 {
     RootTerminalRecordedSent,
 }
 
+/// Reports the independent original Release's local dispatch, not cleanup.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OriginalMountReleaseProgressV1 {
+    /// The original owners retain a pending preparation or native append.
+    Pending,
+    /// The separately reserved Release was locally sent once on the same queue.
+    ReleaseSent,
+}
+
 /// Borrows the actual response failure still owned by the broker runtime.
 pub enum OriginalMountResponseFailureV5<'owner> {
     /// The same zero-FD syscall returned this error before later observation debt.
@@ -102,11 +111,13 @@ impl core::fmt::Debug for OriginalMountResponseFailureV5<'_> {
 enum OriginalAdvancePurposeV5 {
     Root1,
     Response,
+    Release,
 }
 
 enum OriginalAdvanceResultV5 {
     Root1(bool),
     Response(OriginalMountResponseProgressV5),
+    Release(OriginalMountReleaseProgressV1),
 }
 
 /// Retains the independent signed-domain admission for one original Acquire.
@@ -136,6 +147,7 @@ pub struct OriginalMountAcquireAuthorityV1 {
     attempted: bool,
     committed: bool,
     stopped: bool,
+    release_live: Option<aos_sandbox_protocol::LiveValidatedReleaseMountSourceAcquisitionRequest>,
 }
 
 #[derive(Clone, Copy)]
@@ -193,10 +205,24 @@ impl OriginalMountAcquireAuthorityV1 {
         live: aos_sandbox_protocol::LiveValidatedAcquireMountSourceRequest,
         body: Vec<u8>,
     ) -> Self {
+        let sandbox_id = *live.fence().sandbox_id();
+        let request_id = *live.header().request_id();
+        Self::from_original_inputs(sandbox_id, request_id, Some(live), None, body)
+    }
+
+    // One fixed reservoir layout serves both domain purposes. Neither input
+    // constructor authenticates the request or supplies a detached permit.
+    fn from_original_inputs(
+        sandbox_id: [u8; 16],
+        request_id: [u8; 16],
+        live: Option<aos_sandbox_protocol::LiveValidatedAcquireMountSourceRequest>,
+        release_live: Option<aos_sandbox_protocol::LiveValidatedReleaseMountSourceAcquisitionRequest>,
+        body: Vec<u8>,
+    ) -> Self {
         Self {
-            sandbox_id: *live.fence().sandbox_id(),
-            request_id: *live.header().request_id(),
-            live: Some(live),
+            sandbox_id,
+            request_id,
+            live,
             body: Some(body),
             admission: None,
             sealed_fence: None,
@@ -214,6 +240,7 @@ impl OriginalMountAcquireAuthorityV1 {
             attempted: false,
             committed: false,
             stopped: false,
+            release_live,
         }
     }
 
@@ -262,6 +289,74 @@ impl OriginalMountAcquireAuthorityV1 {
     /// Stops this original without authorizing cleanup, replay or quota release.
     pub fn stop(&mut self) {
         self.stopped = true;
+    }
+}
+
+/// Retains a genuine independently authorized Release beside the old flight.
+///
+/// Construction parks DATA only. Admission and the exact sealed pair must be
+/// committed and reopened by the same broker before any native Release effect.
+pub struct OriginalMountReleaseAuthorityV1 {
+    original: OriginalMountAcquireAuthorityV1,
+}
+
+impl OriginalMountReleaseAuthorityV1 {
+    /// Parks the actual Live Release and received body without observation.
+    #[must_use]
+    pub fn new(
+        live: aos_sandbox_protocol::LiveValidatedReleaseMountSourceAcquisitionRequest,
+        body: Vec<u8>,
+    ) -> Self {
+        let sandbox_id = *live.fence().sandbox_id();
+        let request_id = *live.header().request_id();
+        Self {
+            original: OriginalMountAcquireAuthorityV1::from_original_inputs(
+                sandbox_id, request_id, None, Some(live), body,
+            ),
+        }
+    }
+
+    /// Borrows the actual domain, journal or clock cause without an observation.
+    #[must_use]
+    pub fn failure(&self) -> Option<OriginalMountAcquireAuthorityFailureV1<'_>> {
+        self.original.failure()
+    }
+
+    /// Permanently refuses further effects without releasing the originals.
+    pub fn stop(&mut self) {
+        self.original.stop();
+    }
+}
+
+/// Borrows the same broker and its resident reopened Release effect.
+///
+/// The private fields prevent DATA, clocks or an Acquire owner being supplied
+/// as Release authority. This short loan must end before mutable broker work.
+pub struct OriginalMountReleaseEffectLoanV1<'owner> {
+    effect: OriginalMountSignedEffectLoanV1<'owner>,
+}
+
+impl OriginalMountReleaseEffectLoanV1<'_> {
+    /// Rechecks the actual reopened Pending effect against the original lease.
+    ///
+    /// # Errors
+    /// Refuses changed purpose, a stopped owner, absent pair or expired clocks.
+    pub fn check_before_release_effect(&mut self) -> Result<()> {
+        if self.effect.original.live.is_some() {
+            return Err(MountError::Fence("original Release purpose is absent"));
+        }
+        // This private loan is constructed only from the concrete Release
+        // authority. Its Live may have moved into the SAME original runtime;
+        // the reopened domain effect remains in this owner throughout.
+        // The selected signing loan borrows a different owner. Establish the
+        // actual reopened effect before the last paired-clock observation;
+        // only the existing pure clock validation follows that sample.
+        if self.effect.original.stopped || !self.effect.original.committed
+            || !matches!(self.effect.original.opened_effect, Some(Ok(_)))
+        {
+            return Err(MountError::Fence("original reopened Release effect is unavailable"));
+        }
+        self.effect.check_before_original_effect()
     }
 }
 
@@ -572,6 +667,140 @@ impl<W: MountWorker> MountBroker<W> {
         }
     }
 
+    /// Commits and reopens the independently admitted Release on this Journal.
+    ///
+    /// The exact same pair recipe owns every returned result before the next
+    /// crossing. The old Acquire effect and native flight remain untouched.
+    ///
+    /// # Errors
+    /// Refuses repeated admission, changed authority or failed exact readback.
+    pub fn prepare_original_release_authority(
+        &mut self,
+        release: &mut OriginalMountReleaseAuthorityV1,
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+    ) -> Result<()> {
+        self.prepare_original_acquire_authority(&mut release.original, artifacts)
+    }
+
+    /// Borrows a short checked boundary over the actual same-broker Release pair.
+    ///
+    /// # Errors
+    /// Refuses an uncommitted/stopped pair, wrong purpose or elapsed validity.
+    pub fn borrow_original_release_effect<'owner>(
+        &'owner mut self,
+        release: &'owner mut OriginalMountReleaseAuthorityV1,
+    ) -> Result<OriginalMountReleaseEffectLoanV1<'owner>> {
+        self.ensure_authority_healthy()?;
+        let mut loan = OriginalMountReleaseEffectLoanV1 {
+            effect: OriginalMountSignedEffectLoanV1 {
+                authority: &self.authority,
+                original: &mut release.original,
+            },
+        };
+        loan.check_before_release_effect()?;
+        Ok(loan)
+    }
+
+    /// Moves the independently admitted Release into the SAME retained flight.
+    ///
+    /// The old Live, Session, native terminal receiver and protected runtime
+    /// remain resident. This does not reopen the old sender or release custody.
+    ///
+    /// # Errors
+    /// Refuses an unhealthy owner, absent reopened pair or occupied destination.
+    /// Actual inputs remain in the authority or original runtime on refusal.
+    pub fn begin_signed_original_release(
+        &mut self,
+        release: &mut OriginalMountReleaseAuthorityV1,
+        session: &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
+    ) -> Result<()> {
+        let mut boundary = OriginalMountAuthorityBoundaryV1 {
+            broker: self,
+            original: &mut release.original,
+            completed: false,
+        };
+        let result = {
+            let mut entry = source_custody::QueryEntryBoundaryV6::new(boundary.broker, session);
+            let result = (|| {
+                let broker = &mut *entry.broker;
+                if broker.source_runtime_failed || boundary.original.stopped
+                    || !boundary.original.committed
+                {
+                    return Err(MountError::Fence("original Release pair is unavailable"));
+                }
+                OriginalMountSignedEffectLoanV1 {
+                    authority: &broker.authority,
+                    original: boundary.original,
+                }.check_before_original_effect()?;
+                broker.ensure_authority_healthy()?;
+                let Some(Ok(admission)) = boundary.original.admission.as_ref() else {
+                    return Err(MountError::Fence("original Release admission is absent"));
+                };
+                let deadline = admission.effect.plan_expires_seconds()
+                    .min(admission.effect.authority_expires_seconds());
+
+                broker.source_runtime_failed = true;
+                let mut runtime = source_custody::SourceRuntimeLoanV6::new(
+                    &mut broker.source_runtime,
+                    &mut broker.source_runtime_failed,
+                );
+                runtime.attach(&mut broker.journal)?;
+                runtime.operate(|owner| owner.begin_signed_original_release_v1(
+                    entry.session,
+                    &mut boundary.original.release_live,
+                    &mut boundary.original.body,
+                    deadline,
+                ))
+            })();
+            entry.finish(result)
+        };
+        match result {
+            Ok(()) => {
+                boundary.completed = true;
+                Ok(())
+            }
+            Err(cause) => {
+                if boundary.original.first_stage.is_none() {
+                    boundary.original.first_stage = Some(OriginalMountAuthorityStageV1::State);
+                    boundary.original.state_failure = Some(cause);
+                }
+                Err(MountError::Fence("original Release start remains retained"))
+            }
+        }
+    }
+
+    /// Advances native reservation and once-only send for the real Release.
+    ///
+    /// # Errors
+    /// Permanently ends the same Session on changed owners, clocks or native
+    /// results. Its actual native cause remains available separately below.
+    pub fn advance_signed_original_release(
+        &mut self,
+        release: &mut OriginalMountReleaseAuthorityV1,
+        session: &mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1,
+    ) -> Result<OriginalMountReleaseProgressV1> {
+        match self.advance_signed_original_recipe_v5(
+            &mut release.original, session, OriginalAdvancePurposeV5::Release,
+        )? {
+            OriginalAdvanceResultV5::Release(progress) => Ok(progress),
+            _ => Err(MountError::Fence("original progress purpose differs")),
+        }
+    }
+
+    /// Lends the same original native Release cause without I/O or retry.
+    #[must_use]
+    pub fn original_release_failure_v1(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source_runtime.as_ref().and_then(|runtime| runtime.original_release_failure_v1())
+    }
+
+    /// Lends later native Release observation debt separately from its cause.
+    ///
+    /// This performs no I/O, extraction, retry or physical cleanup.
+    #[must_use]
+    pub fn original_release_postcheck_debt_v1(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.source_runtime.as_ref().and_then(|runtime| runtime.original_release_postcheck_debt_v1())
+    }
+
     fn prepare_original_acquire_authority_inner(
         &mut self,
         original: &mut OriginalMountAcquireAuthorityV1,
@@ -586,23 +815,30 @@ impl<W: MountWorker> MountBroker<W> {
             original.state_failure("original request already has a durable effect");
             return false;
         }
-        let (Some(live), Some(body)) = (original.live.as_ref(), original.body.as_ref()) else {
+        let Some(body) = original.body.as_ref() else {
             original.state_failure("original request slots are incomplete");
             return false;
         };
+        if original.live.is_some() == original.release_live.is_some() {
+            original.state_failure("original request slots are incomplete");
+            return false;
+        }
 
         original.clock = Some(crate::service::trusted_paired_clock_sample());
         let Some(Ok(clock)) = original.clock.as_ref() else {
             original.first_stage = Some(OriginalMountAuthorityStageV1::Clock);
             return false;
         };
-        original.admission = Some(self.authority.admit_original_acquire_source(
-            live,
-            body,
-            artifacts,
-            clock,
-            self.journal.get(RecordNamespace::DesiredState, &original.sandbox_id),
-        ));
+        let prior = self.journal.get(RecordNamespace::DesiredState, &original.sandbox_id);
+        original.admission = Some(match (original.live.as_ref(), original.release_live.as_ref()) {
+            (Some(live), None) => self.authority.admit_original_acquire_source(
+                live, body, artifacts, clock, prior,
+            ),
+            (None, Some(live)) => self.authority.admit_original_release_source(
+                live, body, artifacts, clock, prior,
+            ),
+            _ => return false,
+        });
         let Some(Ok(admission)) = original.admission.as_ref() else {
             original.first_stage = Some(OriginalMountAuthorityStageV1::Admission);
             return false;
@@ -811,6 +1047,7 @@ impl<W: MountWorker> MountBroker<W> {
         match self.advance_signed_original_recipe_v5(original, session, OriginalAdvancePurposeV5::Root1)? {
             OriginalAdvanceResultV5::Root1(finished) => Ok(finished),
             OriginalAdvanceResultV5::Response(_) => Err(MountError::Fence("original progress purpose differs")),
+            OriginalAdvanceResultV5::Release(_) => Err(MountError::Fence("original progress purpose differs")),
         }
     }
 
@@ -832,6 +1069,7 @@ impl<W: MountWorker> MountBroker<W> {
         match self.advance_signed_original_recipe_v5(original, session, OriginalAdvancePurposeV5::Response)? {
             OriginalAdvanceResultV5::Response(progress) => Ok(progress),
             OriginalAdvanceResultV5::Root1(_) => Err(MountError::Fence("original progress purpose differs")),
+            OriginalAdvanceResultV5::Release(_) => Err(MountError::Fence("original progress purpose differs")),
         }
     }
 
@@ -894,6 +1132,16 @@ impl<W: MountWorker> MountBroker<W> {
                         OriginalAdvancePurposeV5::Response => owner
                             .advance_signed_original_response_v5(entry.session, &mut effect)
                             .map(OriginalAdvanceResultV5::Response),
+                        OriginalAdvancePurposeV5::Release => {
+                            let mut release_effect = OriginalMountReleaseEffectLoanV1 {
+                                effect: OriginalMountSignedEffectLoanV1 {
+                                    authority: effect.authority,
+                                    original: &mut *effect.original,
+                                },
+                            };
+                            owner.advance_signed_original_release_v1(entry.session, &mut release_effect)
+                                .map(OriginalAdvanceResultV5::Release)
+                        }
                     }
                 })
             })();

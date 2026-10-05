@@ -81,6 +81,14 @@ enum ProviderSendBoundaryV6 {
     Retryable,
 }
 
+// The detached branch consumes no signing opportunity. Its caller already
+// parked the signature under the original owner's irreversible once fence.
+#[derive(Clone, Copy)]
+enum NonAcquireSigningV1 {
+    Legacy,
+    DetachedRelease,
+}
+
 fn current_unix_seconds() -> Result<i64, SourceProviderSecurityError> {
     super::current_unix_seconds()
 }
@@ -280,6 +288,30 @@ impl CurrentRootMountSourceProviderSessionV1 {
             current_request_sequence,
             current_response_sequence,
             None,
+        )
+    }
+
+    /// Captures the current same-Session plan beside a genuine original Root archive.
+    ///
+    /// The named writer validates the complete native graph and all opened
+    /// capacity families before this shared planning recipe projects its Head.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale writer, nonidle Head, changed Session or sequence.
+    #[doc(hidden)]
+    pub fn current_original_release_session_plan_v1(
+        &mut self,
+        writer: &aos_sandbox::MountOriginalNativeJournalAuthorityV5<'_>,
+        head_key: Vec<u8>,
+        head_record: Vec<u8>,
+        request_sequence: u64,
+        response_sequence: u64,
+    ) -> Result<CurrentMountProviderSessionPlanV2, SourceProviderSecurityError> {
+        let snapshot = writer.snapshot()
+            .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+        self.current_mount_provider_session_plan_with_view_v2(
+            writer, snapshot, head_key, head_record, request_sequence, response_sequence, None,
         )
     }
 
@@ -632,7 +664,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
 
     fn consume_current_mount_plan(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &impl MountSourceAcquisitionJournalViewV2,
         plan: CurrentMountProviderSessionPlanV2,
     ) -> Result<(MountProviderSessionProjectionV2, u64, u64), SourceProviderSecurityError> {
         let (session, request_sequence, response_sequence, snapshot) =
@@ -643,7 +675,7 @@ impl CurrentRootMountSourceProviderSessionV1 {
 
     fn consume_current_mount_plan_with_snapshot(
         &mut self,
-        journal: &aos_sandbox::ProtectedJournalAuthority<'_>,
+        journal: &impl MountSourceAcquisitionJournalViewV2,
         plan: CurrentMountProviderSessionPlanV2,
     ) -> Result<
         (
@@ -1326,21 +1358,8 @@ impl CurrentRootMountSourceProviderSessionV1 {
         request: ReleaseSourceRequestV1,
         acquisition_sequence: u64,
     ) -> Result<PreparedMountProviderRequestV2, SourceProviderSecurityError> {
-        let (session_projection, expected_request_sequence, expected_response_sequence) =
-            self.consume_current_mount_plan(journal, plan)?;
-        if request.sequence() != expected_request_sequence {
-            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
-        }
-        if request.acquisition_id()
-            != aos_sandbox_source_provider_protocol::source_acquisition_id_v2(
-                request.holder_authority_id(),
-                request.holder_generation(),
-                request.holder_authority_digest(),
-                acquisition_sequence,
-            )
-        {
-            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
-        }
+        let (session_projection, expected_response_sequence) =
+            self.release_preparation_inputs_v1(journal, plan, &request, acquisition_sequence)?;
         let typed_request_digest = digest_release_request(&request);
         self.authorize_non_acquire_v2(
             SourceProviderMethod::Release,
@@ -1357,6 +1376,161 @@ impl CurrentRootMountSourceProviderSessionV1 {
             Some((request.lease_id(), request.lease_digest())),
             typed_request_digest,
             session_projection,
+        )
+    }
+
+    fn release_preparation_inputs_v1(
+        &mut self,
+        journal: &impl MountSourceAcquisitionJournalViewV2,
+        plan: CurrentMountProviderSessionPlanV2,
+        request: &ReleaseSourceRequestV1,
+        acquisition_sequence: u64,
+    ) -> Result<(MountProviderSessionProjectionV2, u64), SourceProviderSecurityError> {
+        let (session_projection, expected_request_sequence, expected_response_sequence) =
+            self.consume_current_mount_plan(journal, plan)?;
+        self.validate_release_plan_identity_v1(
+            expected_request_sequence, request, acquisition_sequence,
+        )?;
+        Ok((session_projection, expected_response_sequence))
+    }
+
+    fn validate_release_plan_identity_v1(
+        &mut self,
+        expected_request_sequence: u64,
+        request: &ReleaseSourceRequestV1,
+        acquisition_sequence: u64,
+    ) -> Result<(), SourceProviderSecurityError> {
+        if request.sequence() != expected_request_sequence {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
+        if request.acquisition_id()
+            != aos_sandbox_source_provider_protocol::source_acquisition_id_v2(
+                request.holder_authority_id(), request.holder_generation(),
+                request.holder_authority_digest(), acquisition_sequence,
+            )
+        {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
+        Ok(())
+    }
+
+    /// Prepares fixed Release signing DATA from the same current protected plan.
+    ///
+    /// The nested result preserves the actual Protocol preparation error in the
+    /// caller's resident slot. Neither result is a signing or Release permit.
+    ///
+    /// # Errors
+    ///
+    /// The outer error reports stale Session, journal or acquisition binding.
+    /// The inner error reports canonical subject, key-use or fingerprint failure.
+    #[doc(hidden)]
+    pub fn prepare_original_release_signing_data_v1(
+        &mut self,
+        writer: &aos_sandbox::MountOriginalNativeJournalAuthorityV5<'_>,
+        plan: &CurrentMountProviderSessionPlanV2,
+        request: &ReleaseSourceRequestV1,
+        acquisition_sequence: u64,
+    ) -> Result<
+        Result<aos_sandbox_source_provider_protocol::PreparedSourceReleaseRequestDataV1,
+            aos_sandbox_source_provider_protocol::SourceProviderSignatureError>,
+        SourceProviderSecurityError,
+    > {
+        self.validate_original_release_signing_inputs_v1(
+            writer, plan, request, acquisition_sequence,
+        )?;
+        let inner = self.custody.inner();
+        Ok(aos_sandbox_source_provider_protocol::PreparedSourceReleaseRequestDataV1::prepare(
+            encode_release_request(request),
+            inner.root_authority().traffic_signer().clone(),
+            inner.outcome_key().signing_key().verifying_key().as_bytes(),
+        ))
+    }
+
+    /// Lends the genuine Session key for the already prepared fixed Release.
+    ///
+    /// All whole-Session and custody observations finish before this short loan.
+    /// While it lives, the caller may check only its independently retained
+    /// effect owner and original paired clock, then enter detached signing.
+    ///
+    /// # Errors
+    ///
+    /// The outer error refuses stale or mismatched original planning. The inner
+    /// error retains the actual Protocol fingerprint failure without conversion.
+    #[doc(hidden)]
+    pub fn borrow_original_release_signing_loan_v1<'data, 'key>(
+        &'key mut self,
+        writer: &aos_sandbox::MountOriginalNativeJournalAuthorityV5<'_>,
+        plan: &CurrentMountProviderSessionPlanV2,
+        request: &ReleaseSourceRequestV1,
+        acquisition_sequence: u64,
+        data: &'data aos_sandbox_source_provider_protocol::PreparedSourceReleaseRequestDataV1,
+    ) -> Result<
+        Result<aos_sandbox_source_provider_protocol::SourceReleaseRequestSigningLoanV1<'data, 'key>,
+            aos_sandbox_source_provider_protocol::SourceProviderSignatureError>,
+        SourceProviderSecurityError,
+    > {
+        self.validate_original_release_signing_inputs_v1(
+            writer, plan, request, acquisition_sequence,
+        )?;
+        if data.subject() != encode_release_request(request).as_slice() {
+            return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
+        }
+        Ok(data.signing_loan(self.custody.inner().outcome_key().signing_key()))
+    }
+
+    fn validate_original_release_signing_inputs_v1(
+        &mut self,
+        writer: &aos_sandbox::MountOriginalNativeJournalAuthorityV5<'_>,
+        plan: &CurrentMountProviderSessionPlanV2,
+        request: &ReleaseSourceRequestV1,
+        acquisition_sequence: u64,
+    ) -> Result<(), SourceProviderSecurityError> {
+        self.validate_current_mount_plan(writer, plan)?;
+        self.validate_release_plan_identity_v1(
+            plan.current_request_sequence, request, acquisition_sequence,
+        )?;
+        let now = super::current_unix_seconds()?;
+        self.custody.inner_mut().revalidate_at(now)?;
+        let holder = self.custody.inner().root_authority().authority();
+        validate_non_acquire_policy_v1(
+            SourceProviderMethod::Release, request.session_binding(), self.session.binding(),
+            request.sequence(), request.request_id(), request.holder_authority_id(),
+            request.holder_generation(), request.holder_authority_digest(),
+            request.deadline_seconds(), plan.current_response_sequence,
+            Some((request.acquisition_id(), acquisition_sequence)),
+            Some((request.lease_id(), request.lease_digest())), holder, now,
+        ).map_err(|error| self.poison(error))
+    }
+
+    /// Assembles the existing verifier around an already resident Release signature.
+    ///
+    /// This consumes the genuine plan only after the detached result is parked;
+    /// it uses the same non-Acquire validation and output recipe without signing.
+    ///
+    /// # Errors
+    ///
+    /// Refuses stale planning, absent or mismatched signature, occupied output,
+    /// or failed post-sign custody. The caller retains the actual signed output.
+    #[doc(hidden)]
+    pub fn finish_original_release_signing_v1(
+        &mut self,
+        writer: &aos_sandbox::MountOriginalNativeJournalAuthorityV5<'_>,
+        plan: CurrentMountProviderSessionPlanV2,
+        request: &ReleaseSourceRequestV1,
+        acquisition_sequence: u64,
+        signed: &mut Option<SignedSourceProviderRequestV1>,
+        prepared: &mut Option<PreparedMountProviderRequestV2>,
+    ) -> Result<(), SourceProviderSecurityError> {
+        let (session_projection, expected_response_sequence) =
+            self.release_preparation_inputs_v1(writer, plan, request, acquisition_sequence)?;
+        self.authorize_non_acquire_recipe_v1(
+            SourceProviderMethod::Release, encode_release_request(request),
+            request.session_binding(), request.sequence(), request.request_id(),
+            request.holder_authority_id(), request.holder_generation(),
+            request.holder_authority_digest(), request.deadline_seconds(),
+            expected_response_sequence, Some((request.acquisition_id(), acquisition_sequence)),
+            Some((request.lease_id(), request.lease_digest())), digest_release_request(request),
+            session_projection, signed, prepared, NonAcquireSigningV1::DetachedRelease,
         )
     }
 
@@ -1656,7 +1830,41 @@ impl CurrentRootMountSourceProviderSessionV1 {
         signed: &mut Option<SignedSourceProviderRequestV1>,
         prepared: &mut Option<PreparedMountProviderRequestV2>,
     ) -> Result<(), SourceProviderSecurityError> {
-        if signed.is_some() || prepared.is_some() {
+        self.authorize_non_acquire_recipe_v1(
+            method, subject, session_binding, request_sequence, request_id,
+            holder_authority_id, holder_generation, holder_authority_digest,
+            deadline_seconds, expected_response_sequence, acquisition, lease,
+            typed_request_digest, session_projection, signed, prepared,
+            NonAcquireSigningV1::Legacy,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn authorize_non_acquire_recipe_v1(
+        &mut self,
+        method: SourceProviderMethod,
+        subject: Vec<u8>,
+        session_binding: ObjectDigest,
+        request_sequence: u64,
+        request_id: [u8; 16],
+        holder_authority_id: [u8; 16],
+        holder_generation: u64,
+        holder_authority_digest: ObjectDigest,
+        deadline_seconds: i64,
+        expected_response_sequence: u64,
+        acquisition: Option<(ObjectDigest, u64)>,
+        lease: Option<([u8; 16], ObjectDigest)>,
+        typed_request_digest: ObjectDigest,
+        session_projection: MountProviderSessionProjectionV2,
+        signed: &mut Option<SignedSourceProviderRequestV1>,
+        prepared: &mut Option<PreparedMountProviderRequestV2>,
+        signing: NonAcquireSigningV1,
+    ) -> Result<(), SourceProviderSecurityError> {
+        let invalid_signed_slot = match signing {
+            NonAcquireSigningV1::Legacy => signed.is_some(),
+            NonAcquireSigningV1::DetachedRelease => signed.is_none(),
+        };
+        if invalid_signed_slot || prepared.is_some() {
             return Err(self.poison(SourceProviderSecurityError::SessionContinuity));
         }
 
@@ -1672,35 +1880,37 @@ impl CurrentRootMountSourceProviderSessionV1 {
             inner.revalidate_at(now)?;
             let holder = inner.root_authority().authority().clone();
             let provider = inner.provider_authority().authority().clone();
-            if session_binding != current_session_binding
-                || request_sequence == 0
-                || request_id == [0; 16]
-                || holder_authority_id != holder.authority_id()
-                || holder_generation != holder.authority_generation()
-                || holder_authority_digest != holder.authority_digest()
-                || deadline_seconds <= now
-                || expected_response_sequence == 0
-                || !matches!(
-                    (method, acquisition, lease),
-                    (SourceProviderMethod::Release, Some(_), Some(_))
-                        | (SourceProviderMethod::Inventory, None, None)
-                )
-            {
-                return Err(SourceProviderSecurityError::SessionContinuity);
-            }
+            validate_non_acquire_policy_v1(
+                method, session_binding, current_session_binding, request_sequence, request_id,
+                holder_authority_id, holder_generation, holder_authority_digest,
+                deadline_seconds, expected_response_sequence, acquisition, lease, &holder, now,
+            )?;
             let trust_generation = inner.trust().trust_generation();
             let trust_digest = inner.trust().trust_digest();
             let revocation_generation = inner.trust().revocation_generation();
             let revocation_digest = inner.trust().revocation_digest();
-            let signed_request = sign_request(
-                method,
-                subject,
-                inner.root_authority().traffic_signer().clone(),
-                inner.outcome_key().signing_key(),
-            )
-            .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
-            // Retain exact signature before custody/key postchecks can fail.
-            *signed = Some(signed_request);
+            match signing {
+                NonAcquireSigningV1::Legacy => {
+                    let signed_request = sign_request(
+                        method, subject, inner.root_authority().traffic_signer().clone(),
+                        inner.outcome_key().signing_key(),
+                    ).map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+                    // Retain exact signature before custody/key postchecks can fail.
+                    *signed = Some(signed_request);
+                }
+                NonAcquireSigningV1::DetachedRelease => {
+                    let value = signed.as_ref()
+                        .ok_or(SourceProviderSecurityError::SessionContinuity)?;
+                    if method != SourceProviderMethod::Release
+                        || value.method() != method || value.subject() != subject.as_slice()
+                        || value.signer() != inner.root_authority().traffic_signer()
+                    {
+                        return Err(SourceProviderSecurityError::SessionContinuity);
+                    }
+                    verify_request(value, inner.outcome_key().signing_key().verifying_key().as_bytes())
+                        .map_err(|_| SourceProviderSecurityError::SessionContinuity)?;
+                }
+            }
 
             inner.revalidate_at(super::current_unix_seconds()?)?;
             let provider_key = inner
@@ -1809,6 +2019,40 @@ impl CurrentRootMountSourceProviderSessionV1 {
 
         Ok(())
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_non_acquire_policy_v1(
+    method: SourceProviderMethod,
+    session_binding: ObjectDigest,
+    current_session_binding: ObjectDigest,
+    request_sequence: u64,
+    request_id: [u8; 16],
+    holder_authority_id: [u8; 16],
+    holder_generation: u64,
+    holder_authority_digest: ObjectDigest,
+    deadline_seconds: i64,
+    expected_response_sequence: u64,
+    acquisition: Option<(ObjectDigest, u64)>,
+    lease: Option<([u8; 16], ObjectDigest)>,
+    holder: &SourceProviderAuthorityV1,
+    now: i64,
+) -> Result<(), SourceProviderSecurityError> {
+    if session_binding != current_session_binding
+        || request_sequence == 0 || request_id == [0; 16]
+        || holder_authority_id != holder.authority_id()
+        || holder_generation != holder.authority_generation()
+        || holder_authority_digest != holder.authority_digest()
+        || deadline_seconds <= now || expected_response_sequence == 0
+        || !matches!(
+            (method, acquisition, lease),
+            (SourceProviderMethod::Release, Some(_), Some(_))
+                | (SourceProviderMethod::Inventory, None, None)
+        )
+    {
+        return Err(SourceProviderSecurityError::SessionContinuity);
+    }
+    Ok(())
 }
 
 fn predecessor_death_matches_session(

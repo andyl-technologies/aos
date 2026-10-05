@@ -92,6 +92,29 @@ pub struct ProductionOriginalMountReceiptV1 {
     diagnostic_phase: OriginalMountDiagnosticPhaseV1,
     selected_first_source: Option<OriginalMountFirstFailureSourceV1>,
     selected_crossing: Option<OriginalMountSelectedCrossingV1>,
+    release: OriginalMountReleaseReceiptV1,
+}
+
+#[derive(Default)]
+struct OriginalMountReleaseReceiptV1 {
+    entered: bool,
+    cut: Option<Result<u64, crate::ProductionBrokerDeadlineErrorV1>>,
+    progress: Option<DormantBrokerRequestReceiveProgressV1>,
+    receive: Option<Result<(), ProductionBrokerReceiveErrorV1>>,
+    wait: Option<Result<(), DormantBrokerSessionHandshakeErrorV1>>,
+    owner: Option<Result<crate::DormantBrokerOutcomeVerificationV1, crate::BrokerSessionSecurityError>>,
+    clock: Option<Result<u64, crate::BrokerSessionSecurityError>>,
+    live: Option<Result<aos_sandbox_protocol::LiveValidatedReleaseMountSourceAcquisitionRequest, aos_sandbox_protocol::ProtocolValidationError>>,
+    body: Option<Vec<u8>>,
+    authority: Option<aos_sandbox_mount::broker::OriginalMountReleaseAuthorityV1>,
+    admission: Option<Result<(), aos_sandbox_mount::MountError>>,
+    action: Option<Result<(), aos_sandbox_mount::MountError>>,
+    progress_action: Option<Result<aos_sandbox_mount::broker::OriginalMountReleaseProgressV1, aos_sandbox_mount::MountError>>,
+    effect_post: Option<Result<(), aos_sandbox_mount::MountError>>,
+    state_failure: Option<ProductionBrokerReceiveErrorV1>,
+    admitted: bool,
+    started: bool,
+    root_loan_pending: bool,
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -109,6 +132,7 @@ enum OriginalMountSelectedCrossingV1 {
     InventoryAction(usize),
     InventoryResponse(usize),
     ReceiptPost,
+    Release,
 }
 
 // Only a source/index is retained. The actual cause stays in its owning Result,
@@ -129,6 +153,16 @@ enum OriginalMountFirstFailureSourceV1 {
     InventoryAction(usize),
     InventoryResponse(usize),
     InventoryPost(usize),
+    ReleaseCut,
+    ReleaseReceive,
+    ReleaseWait,
+    ReleaseOwner,
+    ReleaseClock,
+    ReleaseLive,
+    ReleaseAuthority,
+    ReleaseAction,
+    ReleaseState,
+    ReleaseEffectPost,
 }
 
 impl std::fmt::Debug for ProductionOriginalMountReceiptV1 {
@@ -380,6 +414,302 @@ impl ProductionOriginalMountReceiptV1 {
 
     pub(crate) fn terminal_stage(&self) -> crate::production_response::OriginalMountTerminalStageV1 {
         self.terminal.stage()
+    }
+
+    // This is a DATA routing observation, never Release admission. Both actual
+    // authenticated successors and all three committed/sent owners are required.
+    pub(crate) fn original_release_channel_settled(&self) -> bool {
+        use aos_proto::aos::sandbox::local::v1::BrokerMethod;
+        use crate::production_response::OriginalMountTerminalStageV1 as Stage;
+
+        if self.ended || self.selected_first_source.is_some()
+            || self.terminal.stage() != Stage::Sent || !self.terminal.has_committed()
+            || self.terminal.failure().is_some() || self.terminal.post_failure().is_some()
+            || self.inventory_index != 2
+            || self.inventory_responses.iter().any(|response|
+                response.stage() != Stage::Sent || !response.has_committed()
+                    || response.failure().is_some() || response.post_failure().is_some())
+            || self.inventory_receive.iter().any(|result| !matches!(result, Some(Ok(()))))
+            || self.inventory_actions.iter().any(|result| !matches!(result, Some(Ok(()))))
+            || self.terminal_owner_post.as_ref().is_some_and(Result::is_err)
+            || self.terminal_clock_post.as_ref().is_some_and(Result::is_err)
+        {
+            return false;
+        }
+        let (
+            Some(DormantBrokerRequestReceiveProgressV1::Received(acquire)),
+            Some(DormantBrokerRequestReceiveProgressV1::Received(resources)),
+            Some(DormantBrokerRequestReceiveProgressV1::Received(sources)),
+        ) = (self.progress.as_ref(), self.inventory_progress[0].as_ref(), self.inventory_progress[1].as_ref()) else {
+            return false;
+        };
+        resources.is_original_mount_inventory_successor(acquire, BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_RESOURCES)
+            && sources.is_original_mount_inventory_successor(resources, BrokerMethod::BROKER_METHOD_MOUNT_INVENTORY_SOURCE_ACQUISITIONS)
+    }
+
+    fn require_original_release_prefix(&mut self) -> bool {
+        if !self.original_release_channel_settled() {
+            return false;
+        }
+        // Earlier terminals are historical after their successors. Only this
+        // latest SourceAcquisitions result can be compared to today's head.
+        self.selected_crossing = Some(OriginalMountSelectedCrossingV1::InventoryResponse(1));
+        let current = self.inventory_responses[1].recheck(&mut self.session);
+        self.capture_selected_crossing();
+        current
+    }
+
+    pub(crate) fn receive_original_release_once<W: aos_sandbox_mount::worker::MountWorker>(
+        &mut self,
+        broker: &mut aos_sandbox_mount::broker::MountBroker<W>,
+    ) -> bool {
+        self.arm_selected_diagnostics();
+        self.retain_selected_authority_failure();
+        if self.ended || self.selected_first_source.is_some() || self.release.admitted {
+            return false;
+        }
+        let succeeded = {
+            let mut boundary = OriginalMountReceiptBoundaryV1 { owner: self, completed: false };
+            let succeeded = boundary.owner.receive_original_release_inner(broker);
+            boundary.owner.capture_selected_crossing();
+            boundary.completed = succeeded;
+            succeeded
+        };
+        succeeded
+    }
+
+    /// Starts the one fixed intake cut after the genuine latest-head check.
+    pub(crate) fn prepare_original_release_intake(&mut self) -> bool {
+        self.arm_selected_diagnostics();
+        self.retain_selected_authority_failure();
+        if self.ended || self.selected_first_source.is_some() || self.release.admitted {
+            return false;
+        }
+        if !self.release.entered {
+            if !self.require_original_release_prefix() {
+                return false;
+            }
+            self.release.entered = true;
+            self.selected_crossing = Some(OriginalMountSelectedCrossingV1::Release);
+            self.release.cut = Some(crate::production_service::production_deadline_after(
+                std::time::Duration::from_secs(45),
+            ));
+            self.capture_selected_crossing();
+        }
+        matches!(self.release.cut, Some(Ok(_)))
+    }
+
+    fn receive_original_release_inner<W: aos_sandbox_mount::worker::MountWorker>(
+        &mut self,
+        broker: &mut aos_sandbox_mount::broker::MountBroker<W>,
+    ) -> bool {
+        if !self.prepare_original_release_intake() {
+            return false;
+        }
+        self.selected_crossing = Some(OriginalMountSelectedCrossingV1::Release);
+        let Some(Ok(cut)) = self.release.cut.as_ref().map(|result| result.as_ref().copied()) else { return false; };
+        if self.release.progress.is_none() {
+            self.release.receive = Some(self.session.receive_production_request_progress(
+                cut, &mut self.release.progress,
+            ));
+            self.capture_selected_crossing();
+            if !matches!(self.release.receive, Some(Ok(()))) {
+                return false;
+            }
+            if matches!(self.release.progress, Some(DormantBrokerRequestReceiveProgressV1::Pending)) {
+                // Only this empty unconsumed state may repeat. The same fixed
+                // transport cut and every earlier request/result remain resident.
+                self.release.wait = Some((|| {
+                    crate::dormant_handshake::wait_for_handshake_readiness(
+                        self.session.as_fd()?, false, cut,
+                    )
+                })());
+                self.capture_selected_crossing();
+                if !matches!(self.release.wait, Some(Ok(()))) { return false; }
+                self.release.progress = None;
+                return true;
+            }
+        }
+        let (
+            Some(DormantBrokerRequestReceiveProgressV1::Received(previous)),
+            Some(DormantBrokerRequestReceiveProgressV1::Received(request)),
+        ) = (self.inventory_progress[1].as_ref(), self.release.progress.as_ref()) else {
+            self.release.state_failure = Some(ProductionBrokerReceiveErrorV1::AdmissionRecovery);
+            return false;
+        };
+        if !request.is_original_mount_release_successor(previous) {
+            self.release.state_failure = Some(ProductionBrokerReceiveErrorV1::AdmissionRecovery);
+            return false;
+        }
+        if !self.session.park_original_mount_release_live(
+            request, &mut self.release.owner, &mut self.release.clock, &mut self.release.live,
+        ) {
+            return false;
+        }
+        self.release.body = Some(request.body().to_vec());
+        if self.release.authority.is_some() || !matches!(self.release.live, Some(Ok(_)))
+            || self.release.body.is_none()
+        {
+            self.release.state_failure = Some(ProductionBrokerReceiveErrorV1::AdmissionRecovery);
+            return false;
+        }
+        // Destination/association checks precede this infallible closed move.
+        match (self.release.live.take(), self.release.body.take()) {
+            (Some(Ok(live)), Some(body)) => {
+                self.release.authority = Some(aos_sandbox_mount::broker::OriginalMountReleaseAuthorityV1::new(live, body));
+            }
+            (live, body) => {
+                self.release.live = live;
+                self.release.body = body;
+                return false;
+            }
+        }
+        let Some(artifacts) = request.authorization_artifacts() else { return false; };
+        let Some(authority) = self.release.authority.as_mut() else { return false; };
+        self.release.admission = Some(broker.prepare_original_release_authority(authority, artifacts));
+        self.capture_selected_crossing();
+        if !matches!(self.release.admission, Some(Ok(()))) { return false; }
+        // The newly authenticated pending request, not the old inventory head,
+        // supplies the after-boundary once it has advanced the same Session.
+        let current = self.recheck_original_release_request();
+        self.release.admitted = current;
+        current
+    }
+
+    pub(crate) fn original_release_intake_cut(&self) -> Option<u64> {
+        self.release.cut.as_ref()?.as_ref().ok().copied()
+    }
+
+    pub(crate) fn original_release_admitted(&self) -> bool {
+        self.release.admitted
+    }
+
+    /// Identifies an interrupted Root loan without borrowing its owned cause.
+    pub(crate) fn original_release_root_loan_pending(&self) -> bool {
+        self.release.root_loan_pending
+    }
+
+    /// Holds the authentic Release and current paired authority in this receipt.
+    pub(crate) fn advance_original_release<W: aos_sandbox_mount::worker::MountWorker>(
+        &mut self,
+        broker: &mut aos_sandbox_mount::broker::MountBroker<W>,
+        root: &mut crate::ProductionSelectedRootMountSourceProviderV1,
+    ) -> Option<aos_sandbox_mount::broker::OriginalMountReleaseProgressV1> {
+        if self.ended || self.selected_first_source.is_some() {
+            return None;
+        }
+        self.selected_crossing = Some(OriginalMountSelectedCrossingV1::Release);
+        if !self.release.admitted {
+            return self.receive_original_release_once(broker)
+                .then_some(aos_sandbox_mount::broker::OriginalMountReleaseProgressV1::Pending);
+        }
+        let authority = self.release.authority.as_mut()?;
+        // The loan ends before mutating the same broker. The returned Session
+        // remains borrowed from the independently retained Root opening owner.
+        let session = {
+            let mut effect = match broker.borrow_original_release_effect(authority) {
+                Ok(effect) => effect,
+                Err(cause) => {
+                    self.release.action = Some(Err(cause));
+                    self.capture_selected_crossing();
+                    return None;
+                }
+            };
+            // A caught unwind can occur after Root parked its actual error but
+            // before this delegate returned. Retain only this closed crossing;
+            // the cycle borrows that cause from the SAME Root owner on end.
+            self.release.root_loan_pending = true;
+            let session = root.borrow_current_session_for_original_release(&mut effect);
+            if session.is_some() {
+                self.release.root_loan_pending = false;
+            }
+            session
+        };
+        let Some(session) = session else {
+            use aos_sandbox_mount::broker::OriginalMountAcquireAuthorityFailureV1 as Failure;
+
+            // An effect-clock refusal belongs to the independent authority,
+            // before Root's returned status. Other Root-owned refusals retain
+            // the prearmed Root crossing, including caught unwind.
+            if authority.failure().is_some_and(|cause| !matches!(cause, Failure::Ended)) {
+                self.selected_first_source.get_or_insert(OriginalMountFirstFailureSourceV1::ReleaseAuthority);
+                self.release.root_loan_pending = false;
+            }
+            self.capture_selected_crossing();
+            return None;
+        };
+        if !self.release.started {
+            self.release.action = Some(broker.begin_signed_original_release(authority, session));
+            self.capture_selected_crossing();
+            if !matches!(self.release.action, Some(Ok(()))) {
+                return None;
+            }
+            self.release.started = true;
+            return Some(aos_sandbox_mount::broker::OriginalMountReleaseProgressV1::Pending);
+        }
+        self.release.progress_action = Some(broker.advance_signed_original_release(authority, session));
+        if matches!(self.release.progress_action, Some(Err(_)))
+            && broker.original_release_failure_v1().is_some()
+        {
+            // The broker's native child already selected its actual action
+            // cause before independent posts. Keep its outer status separate;
+            // the cycle lends the real cause directly from that SAME broker.
+            self.selected_first_source.get_or_insert(OriginalMountFirstFailureSourceV1::ReleaseAction);
+        }
+        self.capture_selected_crossing();
+        self.release.progress_action.as_ref()?.as_ref().ok().copied()
+    }
+
+    /// Rechecks the pending Release, never the stale inventory head or old D.
+    pub(crate) fn recheck_original_release<W: aos_sandbox_mount::worker::MountWorker>(
+        &mut self,
+        broker: &mut aos_sandbox_mount::broker::MountBroker<W>,
+        root: &mut crate::ProductionSelectedRootMountSourceProviderV1,
+    ) -> bool {
+        let root_current = if self.release.admitted {
+            match self.release.authority.as_mut() {
+                Some(authority) => match broker.borrow_original_release_effect(authority) {
+                    Ok(mut effect) => root.recheck_catalog_for_original_release(&mut effect),
+                    Err(cause) => {
+                        if self.release.effect_post.as_ref().is_none_or(Result::is_ok) {
+                            self.release.effect_post = Some(Err(cause));
+                        }
+                        false
+                    }
+                },
+                None => false,
+            }
+        } else {
+            self.original_release_intake_cut()
+                .is_some_and(|cut| root.recheck_catalog_for_original_release_intake(cut))
+        };
+        self.capture_selected_crossing();
+        let request_current = if self.release.admitted {
+            self.recheck_original_release_request()
+        } else {
+            // An empty Pending has not advanced the authenticated Session.
+            self.selected_crossing = Some(OriginalMountSelectedCrossingV1::InventoryResponse(1));
+            let current = self.inventory_responses[1].recheck(&mut self.session);
+            self.capture_selected_crossing();
+            current
+        };
+        root_current && request_current
+    }
+
+    pub(crate) fn recheck_original_release_request(&mut self) -> bool {
+        if self.ended { return false; }
+        self.selected_crossing = Some(OriginalMountSelectedCrossingV1::Release);
+        let Some(DormantBrokerRequestReceiveProgressV1::Received(request)) = self.release.progress.as_ref() else {
+            return false;
+        };
+        let Some(Ok(initial)) = self.release.owner.as_ref() else { return false; };
+        // Keep the initial request binding while fresh owner and clock results
+        // are parked independently in the existing selected post reservoirs.
+        let current = self.session.observe_original_mount_terminal_prefix(
+            request, initial, &mut self.terminal_owner_post, &mut self.terminal_clock_post,
+        );
+        self.capture_selected_crossing();
+        current
     }
 
     pub(crate) fn advance_nonadmitting_terminal(&mut self) -> bool {
@@ -660,6 +990,7 @@ impl ProductionOriginalMountReceiptV1 {
             Some(Crossing::ReceiptPost) if matches!(self.terminal_clock_post, Some(Err(_))) => {
                 Some(Source::ClockPost)
             }
+            Some(Crossing::Release) => self.release_failure_source(),
             _ => None,
         };
         if let Some(source) = source {
@@ -698,7 +1029,57 @@ impl ProductionOriginalMountReceiptV1 {
                 .map(Failure::Terminal),
             Source::InventoryPost(index) => self.inventory_responses[index].post_failure()
                 .map(Failure::TerminalPost),
+            Source::ReleaseCut => self.release.cut.as_ref().and_then(|result| result.as_ref().err())
+                .map(|cause| Failure::Terminal(cause)),
+            Source::ReleaseReceive => self.release.receive.as_ref().and_then(|result| result.as_ref().err())
+                .map(Failure::Receive),
+            Source::ReleaseWait => self.release.wait.as_ref().and_then(|result| result.as_ref().err())
+                .map(|cause| Failure::Terminal(cause)),
+            Source::ReleaseOwner => self.release.owner.as_ref().and_then(|result| result.as_ref().err())
+                .map(Failure::Currentness),
+            Source::ReleaseClock => self.release.clock.as_ref().and_then(|result| result.as_ref().err())
+                .map(Failure::Currentness),
+            Source::ReleaseLive => self.release.live.as_ref().and_then(|result| result.as_ref().err())
+                .map(Failure::Protocol),
+            Source::ReleaseAuthority => self.release.authority.as_ref().and_then(|owner| owner.failure())
+                .map(Failure::Authority),
+            Source::ReleaseAction => self.release.admission.as_ref().and_then(|result| result.as_ref().err())
+                .or_else(|| self.release.action.as_ref().and_then(|result| result.as_ref().err()))
+                .or_else(|| self.release.progress_action.as_ref().and_then(|result| result.as_ref().err()))
+                .map(|cause| Failure::Terminal(cause)),
+            Source::ReleaseState => self.release.state_failure.as_ref().map(Failure::Receive),
+            Source::ReleaseEffectPost => self.release.effect_post.as_ref()
+                .and_then(|result| result.as_ref().err()).map(|cause| Failure::Terminal(cause)),
         }
+    }
+
+    // Called only at the prearmed Release crossing, including negative end on
+    // caught unwind. Earlier owning causes are latched before independent posts.
+    fn release_failure_source(&self) -> Option<OriginalMountFirstFailureSourceV1> {
+        use OriginalMountFirstFailureSourceV1 as Source;
+        use aos_sandbox_mount::broker::OriginalMountAcquireAuthorityFailureV1 as Failure;
+
+        if matches!(self.release.cut, Some(Err(_))) { return Some(Source::ReleaseCut); }
+        if matches!(self.release.receive, Some(Err(_))) { return Some(Source::ReleaseReceive); }
+        if matches!(self.release.wait, Some(Err(_))) { return Some(Source::ReleaseWait); }
+        if self.release.state_failure.is_some() { return Some(Source::ReleaseState); }
+        if matches!(self.release.owner, Some(Err(_))) { return Some(Source::ReleaseOwner); }
+        if matches!(self.release.clock, Some(Err(_))) { return Some(Source::ReleaseClock); }
+        if matches!(self.release.live, Some(Err(_))) { return Some(Source::ReleaseLive); }
+        if self.release.authority.as_ref().and_then(|owner| owner.failure())
+            .is_some_and(|cause| !matches!(cause, Failure::Ended))
+        {
+            return Some(Source::ReleaseAuthority);
+        }
+        if matches!(self.release.admission, Some(Err(_))) || matches!(self.release.action, Some(Err(_)))
+            || matches!(self.release.progress_action, Some(Err(_)))
+        {
+            return Some(Source::ReleaseAction);
+        }
+        if matches!(self.terminal_owner_post, Some(Err(_))) { return Some(Source::OwnerPost); }
+        if matches!(self.terminal_clock_post, Some(Err(_))) { return Some(Source::ClockPost); }
+        if matches!(self.release.effect_post, Some(Err(_))) { return Some(Source::ReleaseEffectPost); }
+        None
     }
 
     /// Borrows the first failure without observation, recovery or renewal.
@@ -792,6 +1173,9 @@ impl ProductionOriginalMountReceiptV1 {
         if let Some(authority) = self.authority.as_mut() {
             authority.stop();
         }
+        if let Some(authority) = self.release.authority.as_mut() {
+            authority.stop();
+        }
         if self.terminal_stage() != crate::production_response::OriginalMountTerminalStageV1::Prepare {
             if self.terminal_shutdown.is_none() {
                 if let Some(Ok(alias)) = self.alias.as_ref() {
@@ -867,6 +1251,7 @@ impl DormantAuthenticatedBrokerSessionV1 {
             diagnostic_phase: OriginalMountDiagnosticPhaseV1::Acquire,
             selected_first_source: None,
             selected_crossing: None,
+            release: OriginalMountReleaseReceiptV1::default(),
         }
     }
 

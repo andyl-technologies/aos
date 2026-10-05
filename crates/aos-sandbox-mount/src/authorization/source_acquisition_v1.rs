@@ -83,6 +83,32 @@ impl MountAuthorityV1 {
         )
     }
 
+    /// Admits an exact modern Release without manufacturing a legacy envelope.
+    ///
+    /// The authentic receipt supplies the zero-FD body and signed quartet;
+    /// portable semantics are recomputed by the sole domain admission engine.
+    pub(crate) fn admit_original_release_source(
+        &self,
+        request: &LiveValidatedReleaseMountSourceAcquisitionRequest,
+        body: &[u8],
+        artifacts: &ValidatedUntrustedAuthorizationArtifacts,
+        current_clock: &RawPairedClockSample,
+        prior_fence: Option<&[u8]>,
+    ) -> Result<VerifiedMountAdmissionV1, MountAdmissionError> {
+        if request.header().protocol_version() != MOUNT_PROTOCOL_VERSION
+            || request.header().audience() != Audience::AUDIENCE_NODE_CONTROLLER
+            || mount_source_acquisition_request_digest_v1(body) != request.request_digest()
+        {
+            return Err(MountAdmissionError::RequestMismatch);
+        }
+        let semantics = canonical_release_mount_source_acquisition_semantics_v1(request.request())
+            .map_err(|_| MountAdmissionError::RequestMismatch)?;
+        self.admit_source_operation(
+            ValidatedSourceEffectCarrier { artifacts, request_body: body, descriptor_count: 0 },
+            request.header(), request.fence(), semantics, current_clock, prior_fence,
+        )
+    }
+
     /// Intersects one exact source Acquire with protected Mount authority.
     ///
     /// The request must already have passed live peer, header, deadline,

@@ -406,6 +406,101 @@ prepared_outcome_data!(
     status
 );
 
+/// Retains a fixed Release request and its canonical signing message as DATA.
+///
+/// Preparation does not establish key custody, currentness, once-only signing,
+/// persistence or Release authority. The original security owner supplies those
+/// independent obligations and keeps this envelope resident until attachment.
+pub struct PreparedSourceReleaseRequestDataV1 {
+    subject: Vec<u8>,
+    signer: SourceProviderSigningKeyV1,
+    message: Vec<u8>,
+}
+
+/// Borrows a validated key and the fixed Release message for detached signing.
+///
+/// The private borrows expose no key or message accessor. This pure crypto loan
+/// is not a once-only permit and cannot establish kernel or protected custody.
+pub struct SourceReleaseRequestSigningLoanV1<'data, 'key> {
+    message: &'data [u8],
+    signing_key: &'key SigningKey,
+}
+
+impl PreparedSourceReleaseRequestDataV1 {
+    /// Prepares the fixed Release domain with the existing request validators.
+    ///
+    /// # Errors
+    ///
+    /// Returns the existing signature error for a malformed Release subject,
+    /// wrong RootMountRecord usage or mismatched public-key fingerprint.
+    pub fn prepare(
+        subject: Vec<u8>,
+        signer: SourceProviderSigningKeyV1,
+        public_key: &[u8; 32],
+    ) -> Result<Self, SourceProviderSignatureError> {
+        validate_request_subject(SourceProviderMethod::Release, &subject)?;
+        require_usage(&signer, SourceProviderKeyUsageV1::RootMountRecord)?;
+        require_key_fingerprint(&signer, public_key)?;
+        let message = signing_message(
+            REQUEST_SIGNATURE_DOMAIN, SourceProviderMethod::Release as u8, &subject, &signer,
+        );
+        Ok(Self { subject, signer, message })
+    }
+
+    /// Borrows the exact canonical Release subject retained during preparation.
+    #[must_use]
+    pub fn subject(&self) -> &[u8] {
+        &self.subject
+    }
+
+    /// Lends the same message and actual key after fingerprint validation.
+    ///
+    /// All decoding, message allocation and fingerprint checks precede return.
+    /// An upper final clock check may follow while these immutable borrows live;
+    /// it must not attempt a mutable recheck of their owning key custody.
+    ///
+    /// # Errors
+    ///
+    /// Returns the existing public-key mismatch error for another actual key.
+    pub fn signing_loan<'data, 'key>(
+        &'data self,
+        signing_key: &'key SigningKey,
+    ) -> Result<SourceReleaseRequestSigningLoanV1<'data, 'key>, SourceProviderSignatureError> {
+        require_key_fingerprint(&self.signer, signing_key.verifying_key().as_bytes())?;
+        Ok(SourceReleaseRequestSigningLoanV1 {
+            message: &self.message,
+            signing_key,
+        })
+    }
+
+    /// Attaches detached signature DATA without allocating or verifying it.
+    ///
+    /// The subject and signer move directly into the unchanged envelope. Message
+    /// deallocation occurs here, after the caller has parked its signature.
+    #[must_use]
+    pub fn attach_signature(self, signature: SourceProviderSignature) -> SignedSourceProviderRequestV1 {
+        SignedSourceProviderRequestV1 {
+            method: SourceProviderMethod::Release,
+            subject: self.subject,
+            signer: self.signer,
+            signature,
+        }
+    }
+}
+
+impl SourceReleaseRequestSigningLoanV1<'_, '_> {
+    /// Computes only the detached signature over the already prepared message.
+    ///
+    /// This entry adds no AOS validation, observation, allocation or encoding.
+    /// It promises neither a library execution-time bound nor allocator/panic
+    /// closure. Its caller must immediately park the returned signature and
+    /// retain the genuine upper once-sign fence through all later postchecks.
+    #[must_use]
+    pub fn sign(&self) -> SourceProviderSignature {
+        detached_signature(self.message, self.signing_key)
+    }
+}
+
 impl PreparedSourceExportLeaseDataV5 {
     /// Prepares the fixed export-lease message without performing crypto.
     ///
@@ -1135,9 +1230,13 @@ pub(crate) fn sign_bytes(
 ) -> Result<SourceProviderSignature, SourceProviderSignatureError> {
     require_key_fingerprint(signer, signing_key.verifying_key().as_bytes())?;
     let message = signing_message(domain, code, subject, signer);
-    Ok(SourceProviderSignature::from_bytes(
-        signing_key.sign(&message).to_bytes(),
-    ))
+    Ok(detached_signature(&message, signing_key))
+}
+
+// Both old sign_bytes and the fixed prepared Release loan use this same crypto
+// expression. Inlining preserves the old fingerprint/message/sign/drop order.
+fn detached_signature(message: &[u8], signing_key: &SigningKey) -> SourceProviderSignature {
+    SourceProviderSignature::from_bytes(signing_key.sign(message).to_bytes())
 }
 
 pub(crate) fn verify_bytes(

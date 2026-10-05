@@ -666,7 +666,9 @@ fn retain_selected_original_response<W: aos_sandbox_mount::worker::MountWorker>(
 ) -> ! {
     let mut terminal_selected = false;
     loop {
-        let advanced = if terminal_selected {
+        let advanced = if original.original_release_channel_settled() {
+            original.advance_selected_original_release(broker).map(|_| ())
+        } else if terminal_selected {
             original.advance_selected_nonadmitting_terminal(broker).map(|_| ())
         } else {
             original.advance_selected_response_once(broker).map(|progress| {
@@ -677,7 +679,9 @@ fn retain_selected_original_response<W: aos_sandbox_mount::worker::MountWorker>(
             Ok(()) => {}
             Err(_) => {
                 original.end();
-                if let Some(cause) = broker.original_terminal_inventory_failure() {
+                if let Some(cause) = original.release_failure(broker) {
+                    eprintln!("aos-sandbox-mountd: original Release ended: {cause}; custody retained");
+                } else if let Some(cause) = broker.original_terminal_inventory_failure() {
                     eprintln!("aos-sandbox-mountd: original inventory ended: {cause}; invocation retained");
                 } else {
                     eprintln!("aos-sandbox-mountd: original response ended; invocation retained");

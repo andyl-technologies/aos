@@ -130,7 +130,7 @@ impl PreparedOriginalRootAppendV5 {
 }
 
 impl MountOriginalNativeJournalAuthorityV5<'_> {
-    fn initial_candidate_v5(
+    pub(super) fn initial_candidate_v5(
         &self,
         owners: &JournalTransaction,
         attempt: [u8; 32],
@@ -257,7 +257,7 @@ impl MountOriginalNativeJournalAuthorityV5<'_> {
         })
     }
 
-    fn finish_preparation_v5(
+    pub(super) fn finish_preparation_v5(
         &self,
         candidate: &mut PreparedOriginalRootAppendV5,
     ) -> Result<(), JournalError> {

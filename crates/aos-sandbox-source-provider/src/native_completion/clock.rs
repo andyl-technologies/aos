@@ -245,25 +245,171 @@ impl NativeAcquireClockGuardV1 {
         later: RawPairedClockSample,
         receipt_expires: Option<i64>,
     ) -> Result<(), ProviderLedgerError> {
-        self.initial
-            .validate_later_sample(later)
-            .map_err(|_| ProviderLedgerError::Unavailable)?;
-        let expires = receipt_expires.map_or(self.expires_seconds, |receipt| {
-            receipt.min(self.expires_seconds)
-        });
-        // Any narrower receipt intersection is derived from the SAME original
-        // pair, never a fresh wall-time-to-BOOTTIME rebasing on delivery/retry.
-        let deadline = self
-            .deadline
-            .min(conservative_deadline(self.initial, expires)?);
-        if later.wall_seconds() < self.issued_seconds
-            || later.wall_seconds() >= expires
-            || later.boottime_nanoseconds() >= deadline
+        validate_original_sample(
+            self.initial, self.deadline, self.issued_seconds,
+            self.expires_seconds, later, receipt_expires,
+        )
+    }
+}
+
+/// Retains a separately authenticated Release clock, never a renewed Acquire.
+///
+/// This private DATA guard joins the actual current request and resident lease.
+/// It grants no reservation, signing, native append, or physical cleanup.
+pub(crate) struct OriginalReleaseClockGuardV1 {
+    initial: RawPairedClockSample,
+    deadline: u64,
+    issued_seconds: i64,
+    expires_seconds: i64,
+    signed_request_digest: ObjectDigest,
+    attempt_digest: ObjectDigest,
+    acquisition_id: ObjectDigest,
+    session_binding: ObjectDigest,
+    lease_digest: ObjectDigest,
+}
+
+// A once-fixed transport wait narrows the later verified Release. It is not
+// an authorization lifetime and cannot replace any lease or signed deadline.
+pub(crate) fn original_release_receive_cut_v1() -> Result<u64, ProviderLedgerError> {
+    kernel_clock()?.boottime_nanoseconds().checked_add(45_000_000_000)
+        .ok_or(ProviderLedgerError::Unavailable)
+}
+
+pub(crate) fn require_original_release_receive_cut_v1(cutoff: u64) -> Result<(), ProviderLedgerError> {
+    if kernel_clock()?.boottime_nanoseconds() >= cutoff {
+        return Err(ProviderLedgerError::Unavailable);
+    }
+    Ok(())
+}
+
+impl OriginalReleaseClockGuardV1 {
+    /// Captures time only after genuine current Release and lease verification.
+    ///
+    /// # Errors
+    /// Rejects another method, canonical request, holder, session, acquisition,
+    /// attempt, lease, boot or validity window. The receive cut only narrows time.
+    pub(crate) fn capture(
+        current: &aos_sandbox_source_provider_security::CurrentProviderRequestV1,
+        original: &SignedSourceProviderRequestV1,
+        acquisition: &crate::model::AcquisitionRecordV1,
+        lease: &aos_sandbox_source_provider_protocol::SignedSourceExportLeaseV1,
+        receive_cut: u64,
+    ) -> Result<Self, ProviderLedgerError> {
+        use aos_sandbox_source_provider_protocol::{
+            VerifiedProviderRequestV1, digest_signed_export_lease,
+        };
+
+        let VerifiedProviderRequestV1::Release(verified) = current.verified() else {
+            return Err(ProviderLedgerError::Equivocation);
+        };
+        let request = verified.request();
+        let projection = verified.ingress_projection();
+        let signed_request_digest = digest_signed_request(original);
+        let lease_digest = digest_signed_export_lease(lease);
+        if original.method() != aos_sandbox_source_provider_protocol::SourceProviderMethod::Release
+            || original.to_canonical_bytes() != verified.attempt().canonical_signed_request()
+            || signed_request_digest != verified.attempt().signed_request_digest()
+            || request.acquisition_id() != acquisition.acquisition_id
+            || request.session_binding() != projection.session_binding()
+            || request.release_identity() != (
+                acquisition.acquisition_id,
+                lease.subject().lease_id(),
+                lease_digest,
+            )
+            || acquisition.lease_id != Some(lease.subject().lease_id())
+            || acquisition.lease_digest != Some(lease_digest)
+            || acquisition.signed_lease != lease.to_canonical_bytes()
+            || &acquisition.holder != projection.root_mount_authority()
+            || &acquisition.provider != projection.provider_authority()
+            || lease.subject().provider() != &acquisition.provider
+            || lease.subject().holder_authority() != (
+                request.holder_authority_id(), request.holder_generation(),
+                request.holder_authority_digest(),
+            )
+        {
+            return Err(ProviderLedgerError::Equivocation);
+        }
+
+        let initial = kernel_clock()?;
+        let (lease_issued, lease_expires) = lease.subject().validity();
+        let issued_seconds = projection.verified_at_seconds().max(lease_issued);
+        let expires_seconds = request.deadline_seconds()
+            .min(projection.current_valid_until_seconds()).min(lease_expires);
+        let deadline = conservative_deadline(initial, expires_seconds)?.min(receive_cut);
+        if initial.host_boot_id() != projection.signed_provider_hello().subject().kernel_boot_id()
+            || initial.host_boot_id() != projection.signed_root_mount_hello().subject().kernel_boot_id()
+            || initial.wall_seconds() < issued_seconds
+            || initial.wall_seconds() >= expires_seconds
+            || initial.boottime_nanoseconds() >= deadline
         {
             return Err(ProviderLedgerError::Unavailable);
         }
-        Ok(())
+        Ok(Self {
+            initial, deadline, issued_seconds, expires_seconds,
+            signed_request_digest,
+            attempt_digest: verified.attempt().attempt_digest(),
+            acquisition_id: acquisition.acquisition_id,
+            session_binding: request.session_binding(),
+            lease_digest,
+        })
     }
+
+    /// Lends the fixed narrowing cutoff without sampling or granting an effect.
+    pub(crate) const fn deadline(&self) -> u64 {
+        self.deadline
+    }
+
+    /// Rechecks the same genuine request, attempt, acquisition and original pair.
+    ///
+    /// # Errors
+    /// Rejects substituted originals, clock discontinuity or elapsed validity.
+    pub(crate) fn require_current(
+        &self,
+        current: &aos_sandbox_source_provider_security::CurrentProviderRequestV1,
+        original: &SignedSourceProviderRequestV1,
+    ) -> Result<(), ProviderLedgerError> {
+        let aos_sandbox_source_provider_protocol::VerifiedProviderRequestV1::Release(verified)
+            = current.verified() else {
+            return Err(ProviderLedgerError::Equivocation);
+        };
+        if digest_signed_request(original) != self.signed_request_digest
+            || verified.attempt().signed_request_digest() != self.signed_request_digest
+            || verified.attempt().attempt_digest() != self.attempt_digest
+            || verified.request().acquisition_id() != self.acquisition_id
+            || verified.request().session_binding() != self.session_binding
+            || verified.request().lease_digest() != self.lease_digest
+        {
+            return Err(ProviderLedgerError::Equivocation);
+        }
+        validate_original_sample(
+            self.initial, self.deadline, self.issued_seconds,
+            self.expires_seconds, kernel_clock()?, None,
+        )
+    }
+}
+
+// Both purposes use one continuity/intersection recipe. Acquire's call preserves
+// the original sample -> continuity -> narrower expiry -> cutoff -> check order.
+fn validate_original_sample(
+    initial: RawPairedClockSample,
+    original_deadline: u64,
+    issued_seconds: i64,
+    expires_seconds: i64,
+    later: RawPairedClockSample,
+    receipt_expires: Option<i64>,
+) -> Result<(), ProviderLedgerError> {
+    initial.validate_later_sample(later)
+        .map_err(|_| ProviderLedgerError::Unavailable)?;
+    let expires = receipt_expires.map_or(expires_seconds, |receipt| receipt.min(expires_seconds));
+    // A narrower intersection still derives from the SAME initial pair.
+    let deadline = original_deadline.min(conservative_deadline(initial, expires)?);
+    if later.wall_seconds() < issued_seconds
+        || later.wall_seconds() >= expires
+        || later.boottime_nanoseconds() >= deadline
+    {
+        return Err(ProviderLedgerError::Unavailable);
+    }
+    Ok(())
 }
 
 fn conservative_deadline(

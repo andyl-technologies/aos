@@ -84,6 +84,7 @@ pub use codec::{
 pub use crypto::{
     PreparedSourceExportLeaseDataV5, PreparedSourceProviderReceiptDataV5,
     PreparedSourceProviderStatusDataV5,
+    PreparedSourceReleaseRequestDataV1, SourceReleaseRequestSigningLoanV1,
     SignedSourceExportLeaseV1, SignedSourceProviderHelloV1, SignedSourceProviderInventoryV1,
     SignedSourceProviderReceiptV1, SignedSourceProviderRequestV1, SignedSourceProviderStatusV1,
     SignedSourceReleaseReceiptV1, SourceProviderKeyUsageV1, SourceProviderSignature,

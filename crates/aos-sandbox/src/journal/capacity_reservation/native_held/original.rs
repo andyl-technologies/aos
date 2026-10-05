@@ -48,6 +48,105 @@ pub struct OriginalRootCapacityRecordV5 {
 }
 
 impl OriginalRootCapacityRecordV5 {
+    /// Derives a distinct ordinary Release floor beside an exhausted original.
+    ///
+    /// This private DATA recipe does not mint another native7 reservation. The
+    /// named writer must compare the complete proposal and all current floors
+    /// before preflight, commit and physical readback.
+    pub(in crate::journal) fn release_floor_v1(
+        before: &RootNativeHeldGraphV2,
+        after: &RootNativeHeldGraphV2,
+        root_attempt: [u8; 32],
+        release_attempt: [u8; 32],
+        transaction: [u8; 16],
+        capacity_union: &std::collections::BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+        limits: JournalLimits,
+    ) -> Result<super::super::OrdinaryCapacityRecordV4, JournalError> {
+        use super::super::{
+            OrdinaryCapacityDataV4, OrdinaryCapacityKindV4, OrdinaryCapacityProfileV4,
+            OrdinaryCapacityRecordV4,
+        };
+
+        let proposal = aos_sandbox_protocol::mount_source_acquisition_state::native_held_completion::
+            validate_original_release_transition_v1(
+                before, after, root_attempt, release_attempt, transaction,
+            )
+            .map_err(|_| invalid("original Release canonical owner edge"))?;
+        let query = after.legacy().provider_attempts.get(&release_attempt)
+            .ok_or(invalid("original Release attempt absent"))?;
+        let sidecar = before.sidecars().get(&root_attempt)
+            .ok_or(invalid("original Release terminal archive absent"))?;
+
+        // Profile3 reserves both the three-owner outcome and the distinct
+        // negative-custody continuation. Each existing canonical owner value
+        // has the unchanged 4 MiB ceiling; this is conservative append DATA,
+        // not a claim that either physical cleanup or allocator funding exists.
+        let frames = 7_u32;
+        let owner_bytes = 4 * (7 + 75 + LEGACY_VALUE_BYTES);
+        let append_bytes = 2 * 184 + u64::from(frames) * 72
+            + owner_bytes + 2 * (7 + 75) + 300;
+        let maximum_transaction = 3 * (7 + 75 + LEGACY_VALUE_BYTES) + 2 * (7 + 75) + 300;
+        if limits.maximum_key_bytes < 75
+            || limits.maximum_record_bytes < 7 + 75 + LEGACY_VALUE_BYTES as usize
+            || limits.maximum_records_per_transaction < 5
+            || (limits.maximum_transaction_bytes as u64) < maximum_transaction
+        {
+            return Err(JournalError::LimitExceeded("original Release complete suffix"));
+        }
+
+        let mut before_hash = Sha256::new();
+        before_hash.update(b"aos.mount.original-release.before.v1\0");
+        hash_release_rows(&mut before_hash, before.canonical_records())?;
+        let owner_digest = Self::release_owner_digest_v1(&proposal.puts)?;
+
+        let mut union_hash = Sha256::new();
+        union_hash.update(b"aos.mount.original-release.capacity-union.v1\0");
+        for ((namespace, key), value) in capacity_union {
+            if *namespace == RecordNamespace::GlobalCapacityReservation {
+                union_hash.update([*namespace as u8]);
+                hash_release_bytes(&mut union_hash, key)?;
+                hash_release_bytes(&mut union_hash, value)?;
+            }
+        }
+        hash_release_bytes(&mut union_hash, &sidecar.to_canonical_bytes()
+            .map_err(|_| invalid("original Release archive encoding"))?)?;
+
+        let mut profile_hash = Sha256::new();
+        profile_hash.update(b"aos.mount.original-release.profile3.v1\0");
+        profile_hash.update(root_attempt);
+        profile_hash.update(release_attempt);
+        profile_hash.update(query.signed_request_digest);
+        profile_hash.update(frames.to_be_bytes());
+        profile_hash.update(append_bytes.to_be_bytes());
+
+        OrdinaryCapacityRecordV4::new(OrdinaryCapacityDataV4 {
+            kind: OrdinaryCapacityKindV4::ReleaseRequest,
+            profile: OrdinaryCapacityProfileV4::ReleaseOutcomeAndNegativeCustody,
+            owner_id: release_attempt,
+            original_owner_cut_digest: before_hash.finalize().into(),
+            operation_id: query.request_id,
+            original_artifact_digest: query.signed_request_digest,
+            admission_owner_mutation_digest: owner_digest,
+            admission_native_preservation_union_digest: union_hash.finalize().into(),
+            remaining_transactions: 2,
+            remaining_record_frames: frames,
+            remaining_append_bytes: append_bytes,
+            maximum_retained_growth_entries: 1,
+            maximum_retained_growth_bytes: 3 * LEGACY_VALUE_BYTES + 300,
+            admission_transaction: transaction,
+            remaining_profile_digest: profile_hash.finalize().into(),
+        })
+    }
+
+    pub(in crate::journal) fn release_owner_digest_v1(
+        puts: &std::collections::BTreeMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<[u8; 32], JournalError> {
+        let mut digest = Sha256::new();
+        digest.update(b"aos.mount.original-release.owners.v1\0");
+        hash_release_rows(&mut digest, puts)?;
+        Ok(digest.finalize().into())
+    }
+
     /// Constructs bounded original-family DATA with exact retained provenance.
     ///
     /// # Errors
@@ -328,6 +427,24 @@ impl OriginalRootCapacityRecordV5 {
         }
         Ok(bytes)
     }
+}
+
+fn hash_release_rows(
+    digest: &mut Sha256,
+    rows: &std::collections::BTreeMap<Vec<u8>, Vec<u8>>,
+) -> Result<(), JournalError> {
+    for (key, value) in rows {
+        hash_release_bytes(digest, key)?;
+        hash_release_bytes(digest, value)?;
+    }
+    Ok(())
+}
+
+fn hash_release_bytes(digest: &mut Sha256, bytes: &[u8]) -> Result<(), JournalError> {
+    let length = u32::try_from(bytes.len()).map_err(|_| JournalError::JournalTooLarge)?;
+    digest.update(length.to_be_bytes());
+    digest.update(bytes);
+    Ok(())
 }
 
 fn identity(payload: &[u8]) -> Result<[u8; 32], JournalError> {
