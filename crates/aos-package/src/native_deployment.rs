@@ -619,28 +619,6 @@ fn apply_profile(
                     .to_str()
                     .context("bootstrap descriptor is not UTF-8")?,
             )?;
-            let names = crate::install::native::configuration::selected_packages(
-                &descriptor,
-                &command.nix_store,
-                cancellation,
-            )?;
-            if !names.is_empty() {
-                // Metadata authorizes only these source bytes. Package roots
-                // are acquired separately under their original registry release.
-                admission.persist(&command.state_directory.join("registry-admissions"))?;
-                drop(consumer);
-                let config = crate::config::ApmConfig::load(ProfileScope::System)?;
-                return crate::install::native::configuration::apply_from_descriptor(
-                    &config,
-                    &profile,
-                    &installed,
-                    descriptor,
-                    deployment,
-                    names,
-                    cancellation,
-                    &aos_core::output::Printer::new(0, true, false),
-                );
-            }
             let supplemental = descriptor
                 .supplemental_inputs
                 .iter()
@@ -686,8 +664,29 @@ fn apply_profile(
                 retained_inputs,
                 evaluation_input: Some(source_descriptor.clone()),
             };
-            let projected =
-                evaluator.evaluate_with_observer(staging.path(), 60_000, cancellation)?;
+            let mut session = evaluator.session(staging.path());
+            let names: BTreeSet<String> = session
+                .selected_packages(cancellation)?
+                .into_iter()
+                .collect();
+            if !names.is_empty() {
+                // Metadata authorizes only these source bytes. Package roots
+                // are acquired separately under their original registry release.
+                admission.persist(&command.state_directory.join("registry-admissions"))?;
+                drop(consumer);
+                let config = crate::config::ApmConfig::load(ProfileScope::System)?;
+                return crate::install::native::configuration::apply_from_descriptor(
+                    &config,
+                    &profile,
+                    &installed,
+                    descriptor,
+                    deployment,
+                    names,
+                    cancellation,
+                    &aos_core::output::Printer::new(0, true, false),
+                );
+            }
+            let projected = session.evaluate_with_observer(60_000, cancellation)?;
             deployment = projected.deployment;
             projected_observer = Some(projected.observer);
             evaluation = EvaluationInputs::read(&source_descriptor)?;
@@ -1063,40 +1062,42 @@ fn deployment_observer_projected(
     for module in &input.packages.modules {
         admission.admit(&module.config_root)?;
     }
-    let declarations = retained_declarations(
-        &input.package_envelopes,
-        input.os_release.as_ref(),
-        &executable,
-    )?;
-    let evaluation = crate::deployment::evaluation::Evaluation {
-        os_release: input.os_release.clone(),
-        os_requirements: declarations.os_requirements,
-        package_releases: declarations.package_releases,
-        module_requirements: input
-            .resolution_lock
-            .as_ref()
-            .map_or_else(Vec::new, |lock| lock.module_requirements()),
-        nix_store: executable.clone(),
-        library: input.library,
-        scope: input.scope,
-        packages: input.packages,
-        configuration: input
-            .configuration
-            .into_iter()
-            .chain(input.runtime_configuration)
-            .collect(),
-        retained_inputs: Vec::new(),
-        evaluation_input: Some(descriptor),
-    };
-    let staging = tempfile::tempdir()?;
     let value = match projected {
         Some(value) => value.clone(),
-        None => evaluation.project_optional(
-            &["aos".into(), "execution".into(), "observer".into()],
-            staging.path(),
-            90_000,
-            cancellation,
-        )?,
+        None => {
+            let declarations = retained_declarations(
+                &input.package_envelopes,
+                input.os_release.as_ref(),
+                &executable,
+            )?;
+            let evaluation = crate::deployment::evaluation::Evaluation {
+                os_release: input.os_release.clone(),
+                os_requirements: declarations.os_requirements,
+                package_releases: declarations.package_releases,
+                module_requirements: input
+                    .resolution_lock
+                    .as_ref()
+                    .map_or_else(Vec::new, |lock| lock.module_requirements()),
+                nix_store: executable.clone(),
+                library: input.library,
+                scope: input.scope,
+                packages: input.packages,
+                configuration: input
+                    .configuration
+                    .into_iter()
+                    .chain(input.runtime_configuration)
+                    .collect(),
+                retained_inputs: Vec::new(),
+                evaluation_input: Some(descriptor),
+            };
+            let staging = tempfile::tempdir()?;
+            evaluation.project_optional(
+                &["aos".into(), "execution".into(), "observer".into()],
+                staging.path(),
+                90_000,
+                cancellation,
+            )?
+        }
     };
     if value.is_null() {
         return Ok(None);
