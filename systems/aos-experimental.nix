@@ -4,6 +4,14 @@
 
   aos.profiles.experimentalRelease.enable = true;
 
+  # The finalized x86_64 logical disk compresses to 817 MiB with the release
+  # zstd settings, above the 768 MiB budget it inherits; Arm carries the larger
+  # root payload and recovery ESP, as on the staging variant.
+  aos.image.budgets.maxDownloadMiB =
+    if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
+    then 1280
+    else 1024;
+
   # The converted disk formats exceed the compressed raw image budget.
   # Arm exports carry the full recovery ESP and the larger root payload.
   aos.image.budgets.maxConvertedDownloadMiB =
