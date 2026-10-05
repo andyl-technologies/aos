@@ -1,5 +1,6 @@
 //! Live whitebox runtime regression tests.
 
+use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::*;
@@ -82,6 +83,149 @@ fn register_zero_handle_is_present_and_read_unchanged() -> Result<(), LiveWhiteb
     };
     assert_eq!(reader.read_u64(pointer)?, 0x1122_3344_5566_7788);
     assert!(REGISTER_ZERO_READ.load(Ordering::Acquire));
+    Ok(())
+}
+
+thread_local! {
+    static PC_READS: Cell<usize> = const { Cell::new(0) };
+}
+
+extern "C" fn read_pc(handle: *mut QemuPluginRegister, array: *mut api::GByteArray) -> bool {
+    PC_READS.set(PC_READS.get() + 1);
+    read_register_zero(handle, array)
+}
+
+extern "C" fn reject_pc(_handle: *mut QemuPluginRegister, _array: *mut api::GByteArray) -> bool {
+    PC_READS.set(PC_READS.get() + 1);
+    false
+}
+
+fn late_failure() -> LiveWhiteboxError {
+    LiveWhiteboxError::LateSelectableRegistration {
+        source: Box::new(crate::SelectableCatalogError::RegistrationAfterFreeze),
+        selectable_id: "flight.ready".to_owned(),
+        sequence: 1,
+        previous_sequence: Some(1),
+        completed_sequence: Some(2),
+        raw_icount: 100,
+        logical_ps: 5_037,
+        vcpu_index: 0,
+        process_id: std::process::id(),
+        guest_pc: None,
+    }
+}
+
+#[test]
+fn optional_pc_descriptor_keeps_original_required_register_admission() {
+    for (architecture, pointer, length, pc) in [
+        (QemuPluginTargetArchitecture::X86_64, c"rax", c"rcx", c"rip"),
+        (QemuPluginTargetArchitecture::Aarch64, c"x0", c"x1", c"pc"),
+    ] {
+        let descriptors = [pointer, length, pc].map(|name| QemuPluginRegDescriptor {
+            handle: std::ptr::null_mut(),
+            name: name.as_ptr(),
+            feature: std::ptr::null(),
+            _is_readonly: false,
+        });
+
+        let original = required_registers(architecture, &descriptors[..2]);
+        assert!(original.complete(architecture));
+        assert!(original.instruction_pointer.is_none());
+        let observed = required_registers(architecture, &descriptors);
+        assert!(observed.complete(architecture));
+        assert!(observed.instruction_pointer.is_some());
+        assert!(!required_registers(architecture, &descriptors[2..]).complete(architecture));
+    }
+}
+
+#[test]
+fn unavailable_pc_keeps_original_late_refusal_and_context() {
+    PC_READS.set(0);
+    let reader = LiveRegisterReader {
+        read_register: reject_pc,
+        byte_array_new,
+        byte_array_free,
+    };
+    let original = late_failure().to_string();
+    let absent =
+        with_selectable_failure_pc(late_failure(), LiveWhiteboxRegisters::default(), reader);
+
+    assert_eq!(absent.to_string(), original);
+    assert_eq!(PC_READS.get(), 0);
+    let failed = with_selectable_failure_pc(
+        late_failure(),
+        LiveWhiteboxRegisters {
+            instruction_pointer: Some(LiveWhiteboxRegisterHandle(std::ptr::null_mut())),
+            ..LiveWhiteboxRegisters::default()
+        },
+        reader,
+    );
+    assert_eq!(failed.to_string(), original);
+    assert_eq!(PC_READS.get(), 1);
+    assert!(original.contains("guest_pc=unavailable"));
+}
+
+#[test]
+fn failure_only_pc_read_retains_exact_original_register_value() {
+    PC_READS.set(0);
+    let reader = LiveRegisterReader {
+        read_register: read_pc,
+        byte_array_new,
+        byte_array_free,
+    };
+    let registers = LiveWhiteboxRegisters {
+        instruction_pointer: Some(LiveWhiteboxRegisterHandle(std::ptr::null_mut())),
+        ..LiveWhiteboxRegisters::default()
+    };
+    let failure = with_selectable_failure_pc(late_failure(), registers, reader);
+
+    assert!(matches!(
+        failure,
+        LiveWhiteboxError::LateSelectableRegistration {
+            guest_pc: Some(0x1122_3344_5566_7788),
+            ..
+        }
+    ));
+    assert!(failure.to_string().contains("guest_pc=0x1122334455667788"));
+    assert_eq!(PC_READS.get(), 1);
+
+    let original = LiveWhiteboxError::Callback {
+        message: "original selectable decode refusal".to_owned(),
+    };
+    let original_display = original.to_string();
+    let unchanged = with_selectable_failure_pc(original, registers, reader);
+    assert_eq!(unchanged.to_string(), original_display);
+    assert_eq!(PC_READS.get(), 1);
+}
+
+#[test]
+fn maximum_legal_late_registration_fatal_line_is_bounded() -> Result<(), Box<dyn std::error::Error>>
+{
+    let registration = crucible_protocol::SelectableRegister::new(
+        u64::MAX,
+        "x".repeat(crucible_protocol::SELECTABLE_IDENTIFIER_MAX_BYTES),
+        vec![1],
+        vec![1],
+        vec!["readiness".to_owned()],
+    )?;
+    let failure = LiveWhiteboxError::LateSelectableRegistration {
+        source: Box::new(crate::SelectableCatalogError::RegistrationAfterFreeze),
+        selectable_id: registration.selectable_id().to_owned(),
+        sequence: registration.sequence(),
+        previous_sequence: Some(u64::MAX),
+        completed_sequence: Some(u64::MAX),
+        raw_icount: u64::MAX,
+        logical_ps: u64::MAX,
+        vcpu_index: u32::MAX,
+        process_id: u32::MAX,
+        guest_pc: Some(u64::MAX),
+    };
+    let line = format!("crucible-qemu-plugin: live white-box callback failed: {failure}\n");
+
+    assert!(line.is_ascii());
+    assert_eq!(line.lines().count(), 1);
+    assert!(line.len() <= 512, "{} bytes", line.len());
+    assert!(line.contains(registration.selectable_id()));
     Ok(())
 }
 

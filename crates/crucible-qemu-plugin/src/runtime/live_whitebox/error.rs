@@ -133,10 +133,48 @@ pub enum LiveWhiteboxError {
         /// Fixed callback read bound.
         maximum: usize,
     },
+    /// A decoded registration arrived after the original catalog was frozen.
+    #[error(
+        "safe white-box callback failed: selectable service failed: {source}; kind=register id={selectable_id} seq={sequence} prev={previous_sequence} done={completed_sequence} raw={raw_icount} ps={logical_ps} vcpu={vcpu_index}; pid={process_id} guest_pc={guest_pc}",
+        previous_sequence = optional_sequence(.previous_sequence),
+        completed_sequence = optional_sequence(.completed_sequence),
+        guest_pc = optional_guest_pc(.guest_pc),
+    )]
+    LateSelectableRegistration {
+        /// The original catalog refusal.
+        #[source]
+        source: Box<crate::SelectableCatalogError>,
+        /// Bounded identifier from the original decoded registration.
+        selectable_id: String,
+        /// Original registration sequence.
+        sequence: u64,
+        /// Previously admitted registration sequence, if any.
+        previous_sequence: Option<u64>,
+        /// Last completed request sequence, if any.
+        completed_sequence: Option<u64>,
+        /// Original pre-instruction raw coordinate.
+        raw_icount: u64,
+        /// Original pre-instruction logical coordinate.
+        logical_ps: u64,
+        /// Original callback vCPU.
+        vcpu_index: u32,
+        /// QEMU process receiving this callback.
+        process_id: u32,
+        /// Optional PC read during the failing instruction callback.
+        guest_pc: Option<u64>,
+    },
     /// The safe doorbell callback rejected the live event.
     #[error("safe white-box callback failed: {message}")]
     Callback {
         /// Stable callback diagnostic.
         message: String,
     },
+}
+
+fn optional_sequence(value: &Option<u64>) -> String {
+    value.map_or_else(|| "none".to_owned(), |value| value.to_string())
+}
+
+fn optional_guest_pc(value: &Option<u64>) -> String {
+    value.map_or_else(|| "unavailable".to_owned(), |value| format!("{value:#x}"))
 }

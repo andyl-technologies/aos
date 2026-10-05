@@ -145,6 +145,7 @@ pub(super) fn deliver_selectable_reply_on_vcpu_resume(
 struct LiveWhiteboxRegisters {
     pointer: Option<LiveWhiteboxRegisterHandle>,
     length: Option<LiveWhiteboxRegisterHandle>,
+    instruction_pointer: Option<LiveWhiteboxRegisterHandle>,
 }
 
 impl LiveWhiteboxRegisters {
@@ -225,6 +226,10 @@ fn required_registers(
             (QemuPluginTargetArchitecture::X86_64, b"rcx")
             | (QemuPluginTargetArchitecture::Aarch64, b"x1") => {
                 registers.length = handle;
+            }
+            (QemuPluginTargetArchitecture::X86_64, b"rip")
+            | (QemuPluginTargetArchitecture::Aarch64, b"pc") => {
+                registers.instruction_pointer = handle;
             }
             _ => {}
         }
@@ -674,8 +679,11 @@ impl LiveWhiteboxState {
                 .selectable
                 .as_mut()
                 .ok_or(LiveWhiteboxError::SelectableNotConfigured)?;
-            let outcome =
-                selectable.handle(&self.doorbell, self.apis, &mut reader, event, trap_tick_ps)?;
+            let outcome = selectable
+                .handle(&self.doorbell, self.apis, &mut reader, event, trap_tick_ps)
+                .map_err(|failure| {
+                    with_selectable_failure_pc(failure, registers, register_reader)
+                })?;
             match outcome {
                 crate::SelectableDoorbellOutcome::Registered { registration, .. }
                     if selectable.catalog_events_enabled() =>
@@ -790,6 +798,21 @@ impl LiveWhiteboxState {
 
 #[cfg(test)]
 mod tests;
+
+fn with_selectable_failure_pc(
+    mut failure: LiveWhiteboxError,
+    registers: LiveWhiteboxRegisters,
+    reader: LiveRegisterReader,
+) -> LiveWhiteboxError {
+    if let LiveWhiteboxError::LateSelectableRegistration { guest_pc, .. } = &mut failure {
+        // PC is advisory and never becomes another admission requirement or
+        // masks the original refusal when its descriptor/read is unavailable.
+        *guest_pc = registers
+            .instruction_pointer
+            .and_then(|handle| reader.read_u64(handle).ok());
+    }
+    failure
+}
 
 fn is_setup_complete_marker(payload: &[u8]) -> bool {
     WhiteboxDoorbellFrame::decode_bounded(payload, MAX_FRAME_DATA)
