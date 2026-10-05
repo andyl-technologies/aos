@@ -1108,7 +1108,12 @@ impl DerivedSourceRecordV3 {
         let checksum = take::<32>(&mut input)?;
         let record = Self { stage, operation, digests, request_id, clock, deadline, original, sections };
         record.validate()?;
-        if checksum != record.digest() { return Err(LifecycleAtomicSnapshotSourceErrorV1::Corrupt); }
+
+        // The structural checks preserve the canonical body bytes exactly.
+        // Reuse that resident body instead of allocating another serialization.
+        let expected: [u8; 32] = Sha256::new().chain_update(DIGEST_DOMAIN_V3)
+            .chain_update(&bytes[..bytes.len() - 32]).finalize().into();
+        if checksum != expected { return Err(LifecycleAtomicSnapshotSourceErrorV1::Corrupt); }
         Ok(record)
     }
 
