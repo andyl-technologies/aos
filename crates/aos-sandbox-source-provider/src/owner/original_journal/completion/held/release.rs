@@ -296,15 +296,7 @@ impl FixedProviderOwnerV1 {
         let stage = status.stage;
 
         let boundary = (|| {
-            if self.original_ingress.borrowed_catalog_v1()? != rows {
-                return Err(ProviderLedgerError::Equivocation.into());
-            }
-            let expected = self.original_ingress.borrowed_selection_v5()?.original_publication_projection().1;
-            if publication.len() != super::super::super::super::CANONICAL_CATALOG_PUBLICATION_BYTES
-                || ObjectDigest::from_bytes(sha2::Sha256::digest(publication).into()) != expected
-            {
-                return Err(ProviderLedgerError::ConfigurationMismatch.into());
-            }
+            self.require_original_publication_inputs_v5(publication, rows)?;
             self.require_original_release_owner_v1()?;
             self.original_release_v1()?.require_clock()?;
             Ok(())
@@ -720,13 +712,7 @@ impl FixedProviderOwnerV1 {
             return Progress::Closed;
         }
         let before = (|| {
-            if self.original_ingress.borrowed_catalog_v1()? != rows {
-                return Err(ProviderLedgerError::Equivocation.into());
-            }
-            let expected = self.original_ingress.borrowed_selection_v5()?.original_publication_projection().1;
-            if publication.len() != super::super::super::super::CANONICAL_CATALOG_PUBLICATION_BYTES
-                || ObjectDigest::from_bytes(sha2::Sha256::digest(publication).into()) != expected
-            { return Err(ProviderLedgerError::ConfigurationMismatch.into()); }
+            self.require_original_publication_inputs_v5(publication, rows)?;
             self.require_original_release_owner_v1()?;
             self.original_release_v1()?.require_clock()?;
             Ok(())
