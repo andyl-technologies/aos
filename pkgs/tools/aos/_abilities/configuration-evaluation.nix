@@ -253,6 +253,10 @@
       }
     ];
   };
+  configuredBootCommit = config.aos.services."configuration-evaluation.image-boot-commit";
+  activationEnabled =
+    (config.aos.config.unitGraph.enable or false)
+    && config.aos.services."control-plane.aos-activate".enable;
 in {
   options.aos.packageRuntime.configurationEvaluation = {
     enable = lib.mkOption {
@@ -280,11 +284,19 @@ in {
       description = "Admitted exact Nix database executable.";
     };
   };
-  config = {
-    aos.packageRuntime.configurationEvaluation.nixStoreExecutable = "${dependencies.nix}/bin/nix-store";
-    aos.services = {
-      "configuration-evaluation.registry-synchronization" = registrySynchronization // {enable = hostStage && cfg.enable;};
-      "configuration-evaluation.image-boot-commit" = bootCommit // {enable = hostStage && cfg.enable;};
-    };
-  };
+  config = lib.mkMerge [
+    {
+      aos.packageRuntime.configurationEvaluation.nixStoreExecutable = "${dependencies.nix}/bin/nix-store";
+      aos.services = {
+        "configuration-evaluation.registry-synchronization" = registrySynchronization // {enable = hostStage && cfg.enable;};
+        "configuration-evaluation.image-boot-commit" = bootCommit // {enable = hostStage && cfg.enable;};
+      };
+    }
+    (lib.mkIf (configuredBootCommit.enable && activationEnabled) {
+      # A prerequisite retry does not recreate a failed dependent job. Pull
+      # finalization into each activation start transaction, after convergence.
+      aos.services."control-plane.aos-activate".dependencies.wants =
+        lib.mkAfter ["${configuredBootCommit.manager_identity.name}.service"];
+    })
+  ];
 }

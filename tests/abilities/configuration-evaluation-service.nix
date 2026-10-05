@@ -26,6 +26,7 @@
         ../../pkgs/filesystem/_aos-filesystem-provider/module.nix
         ../../pkgs/tools/aos/_abilities/runtime-layout.nix
         ../../pkgs/tools/aos/_abilities/configuration-evaluation.nix
+        ../../pkgs/tools/aos/_abilities/control-plane/module.nix
         {
           options.aos.boot = {
             stage = lib.mkOption {
@@ -36,7 +37,12 @@
               type = lib.types.str;
               default = "${package.outPath}/bin/aos-image-evidence";
             };
+            preparationExecutable = lib.mkOption {
+              type = lib.types.str;
+              default = "${package.outPath}/bin/aos-boot-preparations";
+            };
           };
+          config.aos.config.unitGraph.enable = true;
           config.aos.packageRuntime.configurationEvaluation = {
             enable = enabled;
             measuredBoot = measured;
@@ -56,6 +62,22 @@
   command = (builtins.head commit.lifecycle.start).executable;
   registry = enabled.aos.services."configuration-evaluation.registry-synchronization";
   registryDirectory = builtins.head registry.directories.managed;
+  activation = configuration: configuration.aos.services."control-plane.aos-activate";
+  retryTarget = "${commit.manager_identity.name}.service";
+  configured = modules:
+    ((evaluate true true "host").extendModules {inherit modules;}).config;
+  commitDisabled = configured [
+    {aos.services."configuration-evaluation.image-boot-commit".enable = lib.mkForce false;}
+  ];
+  graphDisabled = configured [
+    {aos.config.unitGraph.enable = lib.mkForce false;}
+  ];
+  activationDisabled = configured [
+    {aos.services."control-plane.aos-activate".enable = lib.mkForce false;}
+  ];
+  renamedCommit = configured [
+    {aos.services."configuration-evaluation.image-boot-commit".manager_identity.name = lib.mkForce "renamed-boot-commit";}
+  ];
   composed = (evaluate true true "host").extendModules {
     modules = [
       ../../pkgs/boot/_aos-boot-storage/module.nix
@@ -80,6 +102,23 @@ in {
   authenticatedMeasurementRequired = command.arguments == ["commit" "--require-attestation-quote" "--image-evidence-executable" "${package.outPath}/bin/aos-image-evidence" "--pcr-public-key" key];
   unmeasuredCommitRetained = (builtins.head unmeasured.aos.services."configuration-evaluation.image-boot-commit".lifecycle.start).executable.arguments == ["commit"];
   finalizationWaitsForActivation = commit.dependencies.requires == ["aos-mount-esp.service" "aos-activate.service"] && commit.dependencies.before == ["multi-user.target"];
+  activationRetryPullsFinalization =
+    (activation enabled).dependencies.wants
+    == ["aos-registry-sync.service" retryTarget];
+  inactiveFinalizationOmitsRetryDependency =
+    builtins.all
+    (configuration: (activation configuration).dependencies.wants == ["aos-registry-sync.service"])
+    [disabled initrd commitDisabled graphDisabled activationDisabled];
+  retryDependencyPreservesOrdering =
+    builtins.elem "aos-activate.service" commit.dependencies.after
+    && builtins.elem "aos-activate.service" commit.dependencies.requires
+    && !(builtins.elem retryTarget (activation enabled).dependencies.after)
+    && !(builtins.elem "aos-activate.service" commit.dependencies.before)
+    && commit.lifecycle.remain_after_exit
+    && commit.lifecycle.restart == "never";
+  retryTargetUsesEffectiveManagerIdentity =
+    (activation renamedCommit).dependencies.wants
+    == ["aos-registry-sync.service" "renamed-boot-commit.service"];
   finalizationRequiresProjectedEspMount =
     projectedMount.enabled
     && projectedMount.activation_owner == "image"
