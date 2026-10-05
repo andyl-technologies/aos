@@ -101,11 +101,8 @@ pub(super) fn run(args: &ReleaseBuildArgs, nix: &NixRunner, printer: &Printer) -
             info.deriver.as_deref(),
             expected.derivation,
             expected.store_path,
-            |deriver| {
-                nix.store_query(
-                    Path::new(deriver),
-                    &["--query", "--binding", expected.output],
-                )
+            |derivation, binding| {
+                nix.store_query(Path::new(derivation), &["--query", "--binding", binding])
             },
         )?;
         info.references.sort();
@@ -203,24 +200,30 @@ pub(super) fn run(args: &ReleaseBuildArgs, nix: &NixRunner, printer: &Printer) -
 /// deriver. Input-addressed derivations that differ only in fixed-output
 /// inputs, such as a source fetch with a different URL list but the same
 /// hash, produce the same output paths. A different recorded deriver is
-/// accepted only when it is a store derivation that Nix itself binds, for
-/// the planned output name, to exactly the planned store path. The evidence
-/// still names the planned derivation.
+/// accepted only when it is a store derivation whose output of the same
+/// name produces exactly the planned store path. The evidence still names
+/// the planned derivation.
 ///
-/// `bind_output` receives the recorded deriver and returns the store path
-/// Nix binds to the planned output name.
+/// The plan names a package alias of a non-default output by the logical
+/// output `out`, so the Nix output name is found on the planned derivation:
+/// it is the output that produces the planned store path.
+///
+/// `binding` returns a derivation's environment binding: the
+/// whitespace-separated output names for `outputs`, and an output's store
+/// path for that output's name.
 ///
 /// # Errors
 ///
 /// Returns an error when no deriver is recorded, when the recorded deriver
-/// is not a store derivation, when its binding cannot be read, or when it
-/// binds the planned output name to a different store path.
+/// is not a store derivation, when a binding cannot be read, when no output
+/// of the planned derivation produces the planned store path, or when the
+/// recorded deriver's output of that name produces a different path.
 fn require_equivalent_deriver(
     id: &str,
     recorded: Option<&str>,
     planned: &str,
     store_path: &str,
-    bind_output: impl FnOnce(&str) -> Result<String>,
+    binding: impl Fn(&str, &str) -> Result<String>,
 ) -> Result<()> {
     let Some(recorded) = recorded else {
         bail!("realized output {id} has no recorded deriver");
@@ -232,12 +235,33 @@ fn require_equivalent_deriver(
         bail!("realized output {id} names a deriver outside the Nix store: {recorded}");
     }
 
-    let bound = bind_output(recorded)
-        .with_context(|| format!("reading the outputs of {id}'s recorded deriver {recorded}"))?;
+    let output = planned_output_name(id, planned, store_path, &binding)?;
+    let bound = binding(recorded, &output).with_context(|| {
+        format!("reading output {output} of {id}'s recorded deriver {recorded}")
+    })?;
     if bound.trim() != store_path {
         bail!("realized output {id} has a different deriver than the plan");
     }
     Ok(())
+}
+
+/// Returns the Nix output of the planned derivation that produces `store_path`.
+fn planned_output_name(
+    id: &str,
+    planned: &str,
+    store_path: &str,
+    binding: &impl Fn(&str, &str) -> Result<String>,
+) -> Result<String> {
+    let names = binding(planned, "outputs")
+        .with_context(|| format!("reading the outputs of {id}'s planned derivation"))?;
+    for name in names.split_whitespace() {
+        let path = binding(planned, name)
+            .with_context(|| format!("reading output {name} of {id}'s planned derivation"))?;
+        if path.trim() == store_path {
+            return Ok(name.to_string());
+        }
+    }
+    bail!("no output of {id}'s planned derivation produces {store_path}")
 }
 
 /// Decides which failed repeat builds the plan's registry tier admits.
@@ -444,55 +468,79 @@ mod tests {
 
     use super::*;
 
-    const PLANNED_DRV: &str = "/nix/store/2cy5z4qwn0wq2qx774wzk3x252zkxx09-abseil-cpp-1.drv";
-    const EQUIVALENT_DRV: &str = "/nix/store/1sfvcsz3kqc7a4xfy114x3yycsa61rxv-abseil-cpp-1.drv";
-    const OUTPUT_PATH: &str = "/nix/store/49br0y2s9c52ln7bxph87faa3kdkiyfz-abseil-cpp-1";
+    const PLANNED_DRV: &str = "/nix/store/k7gj3crbgracfq1wnn39g7jsc87df0jz-glibc-2.39.drv";
+    const EQUIVALENT_DRV: &str = "/nix/store/1sfvcsz3kqc7a4xfy114x3yycsa61rxv-glibc-2.39.drv";
+    const MAIN_PATH: &str = "/nix/store/49br0y2s9c52ln7bxph87faa3kdkiyfz-glibc-2.39";
+    const GETENT_PATH: &str = "/nix/store/l8l50qx80k70lclql35krjs6kris01pb-glibc-2.39-getent";
+
+    /// Binds the planned and equivalent derivations' `out` and `getent`
+    /// outputs, with the recorded deriver's `getent` set to `getent`.
+    fn bindings(getent: &'static str) -> impl Fn(&str, &str) -> Result<String> {
+        move |derivation, binding| match (derivation, binding) {
+            (_, "outputs") => Ok("out getent\n".to_string()),
+            (_, "out") => Ok(format!("{MAIN_PATH}\n")),
+            (PLANNED_DRV, "getent") => Ok(format!("{GETENT_PATH}\n")),
+            (EQUIVALENT_DRV, "getent") => Ok(format!("{getent}\n")),
+            _ => bail!("unexpected binding {binding} of {derivation}"),
+        }
+    }
 
     #[test]
     fn planned_deriver_is_accepted_without_a_lookup() -> Result<()> {
-        require_equivalent_deriver("id", Some(PLANNED_DRV), PLANNED_DRV, OUTPUT_PATH, |_| {
+        require_equivalent_deriver("id", Some(PLANNED_DRV), PLANNED_DRV, GETENT_PATH, |_, _| {
             bail!("the planned deriver needs no lookup")
         })
     }
 
     #[test]
-    fn equivalent_deriver_binding_the_planned_path_is_accepted() -> Result<()> {
+    fn equivalent_deriver_producing_the_planned_output_is_accepted() -> Result<()> {
         require_equivalent_deriver(
             "id",
             Some(EQUIVALENT_DRV),
             PLANNED_DRV,
-            OUTPUT_PATH,
-            |deriver| {
-                assert_eq!(deriver, EQUIVALENT_DRV);
-                Ok(format!("{OUTPUT_PATH}\n"))
-            },
+            GETENT_PATH,
+            bindings(GETENT_PATH),
         )
     }
 
     #[test]
-    fn deriver_binding_another_path_is_rejected() {
+    fn equivalence_uses_the_nix_output_not_the_logical_out_name() {
+        // The recorded deriver's `out` is the shared main path, so a check on
+        // the logical name would compare the wrong output.
         let result = require_equivalent_deriver(
             "id",
             Some(EQUIVALENT_DRV),
             PLANNED_DRV,
-            OUTPUT_PATH,
-            |_| Ok("/nix/store/hsjw5riiksy5w04rc4413asvr5c4k9h7-abseil-cpp-1".to_string()),
+            GETENT_PATH,
+            bindings("/nix/store/hsjw5riiksy5w04rc4413asvr5c4k9h7-glibc-2.39-getent"),
         );
 
         assert!(result.is_err_and(|error| error.to_string().contains("different deriver")));
     }
 
     #[test]
+    fn planned_derivation_must_produce_the_planned_path() {
+        let result = require_equivalent_deriver(
+            "id",
+            Some(EQUIVALENT_DRV),
+            PLANNED_DRV,
+            "/nix/store/mlpmyg9jpridbzyjk4327mzw7hj175j2-other",
+            bindings(GETENT_PATH),
+        );
+
+        assert!(result.is_err_and(|error| error.to_string().contains("no output")));
+    }
+
+    #[test]
     fn missing_or_foreign_derivers_are_rejected() {
-        let missing = require_equivalent_deriver("id", None, PLANNED_DRV, OUTPUT_PATH, |_| {
-            Ok(OUTPUT_PATH.to_string())
-        });
+        let missing =
+            require_equivalent_deriver("id", None, PLANNED_DRV, GETENT_PATH, bindings(GETENT_PATH));
         let foreign = require_equivalent_deriver(
             "id",
-            Some("/tmp/abseil-cpp-1.drv"),
+            Some("/tmp/glibc-2.39.drv"),
             PLANNED_DRV,
-            OUTPUT_PATH,
-            |_| Ok(OUTPUT_PATH.to_string()),
+            GETENT_PATH,
+            bindings(GETENT_PATH),
         );
 
         assert!(missing.is_err());
@@ -500,13 +548,13 @@ mod tests {
     }
 
     #[test]
-    fn unreadable_deriver_binding_fails_closed() {
+    fn unreadable_bindings_fail_closed() {
         let result = require_equivalent_deriver(
             "id",
             Some(EQUIVALENT_DRV),
             PLANNED_DRV,
-            OUTPUT_PATH,
-            |_| bail!("derivation is not valid"),
+            GETENT_PATH,
+            |_, _| bail!("derivation is not valid"),
         );
 
         assert!(result.is_err());
