@@ -1,4 +1,4 @@
-From 5d0aa85f7ca3ec3f63fede1c9892fdf89af5013f Mon Sep 17 00:00:00 2001
+From c0bdda17ff0196c1f8be49fdebb5508e57407d4f Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Sat, 3 Oct 2026 07:08:17 +0000
 Subject: [PATCH] Integrate deterministic execution and private fork I/O
@@ -81100,7 +81100,7 @@ index 0000000000000000000000000000000000000000..72b2a1320db867cae97f384a2e47c167
 +}
 diff --git a/plugins/crucible-fault-clock.c b/plugins/crucible-fault-clock.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..b83bf22812bf42bb574d5ea69ac2386b2a76a097
+index 0000000000000000000000000000000000000000..22402cb4b2fd35318ab38e75908ef93d6cfceec1
 --- /dev/null
 +++ b/plugins/crucible-fault-clock.c
 @@ -0,0 +1,4640 @@
@@ -83393,10 +83393,10 @@ index 0000000000000000000000000000000000000000..b83bf22812bf42bb574d5ea69ac2386b
 +        source_kind, instance);
 +
 +    return crucible_clock_vmstate_load_depth == 0 &&
-+           crucible_clock_mode() && source &&
-+           crucible_clock_bindings_sealed &&
++           source && crucible_clock_bindings_sealed &&
 +           (crucible_clock_terminal ||
-+            crucible_clock_source_has_effective_transform(source));
++            crucible_clock_source_has_effective_transform(source)) &&
++           crucible_clock_mode();
 +}
 +
 +bool qemu_crucible_fault_clock_source_rebase(
@@ -97960,7 +97960,7 @@ index 0000000000000000000000000000000000000000..4e4c1457c80b594038357e0ca8c10231
 +}
 diff --git a/plugins/crucible-fault-node.c b/plugins/crucible-fault-node.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..7e1f411e4dd160c83e149e10ede8da2eab39a5b8
+index 0000000000000000000000000000000000000000..6318723d6670ae8460d75d7709d3cdfb262c376c
 --- /dev/null
 +++ b/plugins/crucible-fault-node.c
 @@ -0,0 +1,13200 @@
@@ -107074,24 +107074,24 @@ index 0000000000000000000000000000000000000000..7e1f411e4dd160c83e149e10ede8da2e
 +
 +bool qemu_crucible_fault_memory_fetch_rules_active(void)
 +{
-+    return qemu_crucible_fault_memory_rules_active() &&
-+           (crucible_memory_access_classes &
-+            QEMU_CRUCIBLE_MEMORY_FETCH) != 0;
++    return (crucible_memory_access_classes &
++            QEMU_CRUCIBLE_MEMORY_FETCH) != 0 &&
++           qemu_crucible_fault_memory_rules_active();
 +}
 +
 +bool qemu_crucible_fault_memory_cpu_rules_active(void)
 +{
-+    return qemu_crucible_fault_memory_rules_active() &&
-+           (crucible_memory_access_classes &
++    return (crucible_memory_access_classes &
 +            (QEMU_CRUCIBLE_MEMORY_CPU_LOAD |
-+             QEMU_CRUCIBLE_MEMORY_CPU_STORE)) != 0;
++             QEMU_CRUCIBLE_MEMORY_CPU_STORE)) != 0 &&
++           qemu_crucible_fault_memory_rules_active();
 +}
 +
 +bool qemu_crucible_fault_memory_page_table_walk_rules_active(void)
 +{
-+    return qemu_crucible_fault_memory_rules_active() &&
-+           (crucible_memory_access_classes &
-+            QEMU_CRUCIBLE_MEMORY_PAGE_TABLE_WALK) != 0;
++    return (crucible_memory_access_classes &
++            QEMU_CRUCIBLE_MEMORY_PAGE_TABLE_WALK) != 0 &&
++           qemu_crucible_fault_memory_rules_active();
 +}
 +
 +bool qemu_crucible_fault_memory_page_table_walk_matches(
@@ -155874,6 +155874,697 @@ index 0000000000000000000000000000000000000000..8d80e3052d7c9a6b187e2f7095f7ab8e
 +    )
 +    subprocess.run(command, check=True)
 +    subprocess.run([str(binary)], check=True, timeout=10)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tests/unit/test-crucible-cold-fault-predicates.py b/tests/unit/test-crucible-cold-fault-predicates.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..e463b0cc66a91c9cf1bf509241612f841d6669c9
+--- /dev/null
++++ b/tests/unit/test-crucible-cold-fault-predicates.py
+@@ -0,0 +1,685 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise cold memory and clock predicates with unchanged production bodies.
++
++Real GLib arrays and the production interval tree execute memory index build,
++install, rebuild and VMState commit. Clock lookup, restore guards, rebase and
++projection execute production bodies. Accelerator identity, decoded rule fields,
++TLB flush effects, time/value arithmetic and timer callbacks are bounded
++providers. This is not a translated-TB, running-guest or migration-stream test.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import runpy
++import shlex
++import subprocess
++
++
++ROOT = Path(__file__).resolve().parents[2]
++definition = runpy.run_path(str(Path(__file__).with_name(
++    "test-crucible-net-output-stop.py")))["definition"]
++
++PRELUDE = r"""
++#include <errno.h>
++#include <limits.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++#include <glib.h>
++#include "qemu/typedefs.h"
++#define qemu_build_assert(condition) _Static_assert(condition, #condition)
++#include "qemu/atomic.h"
++#include "qemu/interval-tree.h"
++#include "plugins/qemu-plugin.h"
++#define error_report(...) g_error(__VA_ARGS__)
++/* ICOUNT_MODE_DEFINITION */
++#define QEMU_CLOCK_VIRTUAL 1
++#define CRUCIBLE_NODE_MEMORY_COUNTER_LIMIT 4194304
++
++/* Decoded field providers use symbolic tags, not a serialized command ABI. */
++enum {
++    CRUCIBLE_FAULT_COMMAND_MEMORY_ACCESS_TRANSFORM = 1,
++    CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE,
++    CRUCIBLE_FAULT_COMMAND_MEMORY_SERVICE,
++    CRUCIBLE_NODE_FAULT_FIELD_T3,
++    CRUCIBLE_NODE_FAULT_FIELD_T4,
++    CRUCIBLE_NODE_FAULT_FIELD_P8,
++};
++
++typedef struct CrucibleMemoryServiceLedger {
++    unsigned int identity;
++} CrucibleMemoryServiceLedger;
++
++typedef struct QemuCrucibleFaultRule {
++    uint16_t command_kind;
++    uint32_t classes, vcpu;
++    uint64_t start, length;
++    bool has_vcpu, valid;
++    CrucibleMemoryServiceLedger *service_ledger;
++} QemuCrucibleFaultRule;
++
++bool qemu_crucible_fault_memory_rules_active(void);
++bool qemu_crucible_fault_memory_fetch_rules_active(void);
++bool qemu_crucible_fault_memory_cpu_rules_active(void);
++bool qemu_crucible_fault_memory_page_table_walk_rules_active(void);
++bool qemu_crucible_fault_clock_source_active(uint16_t, uint32_t);
++bool qemu_crucible_fault_clock_source_rebase(uint16_t, uint32_t, uint64_t);
++bool qemu_crucible_fault_clock_project_ps(uint16_t, uint32_t, uint64_t,
++                                          uint64_t *, bool *);
++void qemu_crucible_fault_clock_vmstate_load_begin(void);
++void qemu_crucible_fault_clock_vmstate_load_end(bool);
++
++static const char *accel_name = "sim";
++static int icount_mode = ICOUNT_PRECISE;
++static unsigned int accel_reads, flushes, deadline_updates, rule_unrefs;
++static unsigned int base_calls, value_calls, rearms, wander_rearms;
++static unsigned int failure_reports, lookup_calls;
++static bool base_ok = true, value_ok = true, provider_read_error;
++static CPUState *current_cpu = (CPUState *)&flushes;
++static CPUState *first_cpu = (CPUState *)&deadline_updates;
++
++static const char *current_accel_name(void)
++{
++    accel_reads++;
++    return accel_name;
++}
++
++static int icount_enabled(void)
++{
++    return icount_mode;
++}
++
++static bool node_rule_memory_range(QemuCrucibleFaultRule *rule,
++                                   uint64_t *start, uint64_t *length)
++{
++    *start = rule->start;
++    *length = rule->length;
++    return rule->valid;
++}
++
++static bool node_field_bool(QemuCrucibleFaultRule *rule, uint16_t tag,
++                            bool *value)
++{
++    g_assert_cmpuint(tag, ==, CRUCIBLE_NODE_FAULT_FIELD_T3);
++    *value = rule->has_vcpu;
++    return rule->valid;
++}
++
++static bool node_field_u32(QemuCrucibleFaultRule *rule, uint16_t tag,
++                           uint32_t *value)
++{
++    g_assert_true(tag == CRUCIBLE_NODE_FAULT_FIELD_T4 ||
++                  tag == CRUCIBLE_NODE_FAULT_FIELD_P8);
++    *value = tag == CRUCIBLE_NODE_FAULT_FIELD_T4 ? rule->vcpu : rule->classes;
++    return rule->valid;
++}
++
++static uint32_t node_memory_service_actor_access_classes(
++    const QemuCrucibleFaultRule *rule)
++{
++    return rule->classes;
++}
++
++static void tlb_flush_all_cpus_synced(CPUState *cpu)
++{
++    g_assert_nonnull(cpu);
++    flushes++;
++}
++
++static void node_memory_retention_deadline_recompute(void)
++{
++    deadline_updates++;
++}
++
++static void qemu_crucible_fault_rule_unref(QemuCrucibleFaultRule *rule)
++{
++    if (rule) {
++        rule_unrefs++;
++    }
++}
++
++static int64_t qemu_clock_get_ps(int clock)
++{
++    g_assert_cmpint(clock, ==, QEMU_CLOCK_VIRTUAL);
++    return 1000;
++}
++"""
++
++GLOBALS = r"""
++static GPtrArray *crucible_node_rules;
++static GArray *crucible_memory_gpa_index, *crucible_memory_gva_index;
++static GPtrArray *crucible_memory_binding_order;
++static uint32_t crucible_memory_access_classes;
++static IntervalTreeRoot crucible_memory_gpa_root, crucible_memory_gva_root;
++static GChecksum *crucible_memory_checksum;
++static bool crucible_memory_recursive;
++static GHashTable *crucible_memory_retry_states, *crucible_memory_service_ledgers;
++static uint64_t crucible_memory_access_sequence, crucible_memory_retention_next_tick;
++static GArray *crucible_clock_sources;
++static bool crucible_clock_bindings_sealed, crucible_clock_terminal;
++static bool crucible_clock_restoring, crucible_clock_rearming_timers;
++static bool crucible_clock_vmstate_load_failed;
++static unsigned int crucible_clock_vmstate_load_depth;
++
++static bool crucible_clock_source_base(CrucibleClockSource *source,
++                                       uint64_t raw, uint64_t now,
++                                       uint64_t *base, bool *read_error)
++{
++    g_assert_nonnull(source);
++    g_assert_cmpuint(now, ==, 1000);
++    base_calls++;
++    *base = raw + 3;
++    *read_error = provider_read_error;
++    return base_ok;
++}
++
++static bool crucible_clock_source_value(CrucibleClockSource *source,
++                                        uint64_t raw, uint64_t now,
++                                        uint64_t opportunity, bool observing,
++                                        uint64_t *value, bool *read_error)
++{
++    g_assert_nonnull(source);
++    g_assert_cmpuint(now, ==, 1000);
++    g_assert_cmpuint(opportunity, ==, 0);
++    g_assert_false(observing);
++    value_calls++;
++    *value = raw + 7;
++    *read_error = provider_read_error;
++    return value_ok;
++}
++
++static void crucible_clock_report_read_failure(
++    CrucibleClockSource *source, uint16_t kind, uint32_t instance,
++    uint64_t raw, const char *reason)
++{
++    (void)source;
++    (void)kind;
++    (void)instance;
++    (void)raw;
++    g_assert_nonnull(reason);
++    failure_reports++;
++}
++
++static void timer_callback(void *opaque)
++{
++    g_assert_nonnull(opaque);
++    g_assert_true(crucible_clock_rearming_timers);
++    rearms++;
++}
++
++static void crucible_clock_wander_timer_rearm(CrucibleClockSource *source)
++{
++    g_assert_nonnull(source);
++    wander_rearms++;
++}
++"""
++
++CHECKS = r"""
++static CrucibleClockSource healthy_source(void)
++{
++    return (CrucibleClockSource) {
++        .capability.source_kind = 7,
++        .instance = 11,
++        .drift_numerator = 1,
++        .drift_denominator = 1,
++        .source_state = CRUCIBLE_CLOCK_HEALTHY,
++        .rearm_timers = timer_callback,
++        .timer_opaque = &rearms,
++    };
++}
++
++/* Initialized modes: sim requires precise icount, tcg accepts all three,
++ * and the hardware accelerators have icount disabled. */
++static const struct {
++    const char *name;
++    int icount;
++} legal_modes[] = {
++    { "sim", ICOUNT_PRECISE },
++    { "tcg", ICOUNT_DISABLED },
++    { "tcg", ICOUNT_PRECISE },
++    { "tcg", ICOUNT_ADAPTATIVE },
++    { "kvm", ICOUNT_DISABLED },
++    { "xen", ICOUNT_DISABLED },
++    { "hvf", ICOUNT_DISABLED },
++    { "whpx", ICOUNT_DISABLED },
++};
++
++/* Mixed-radix enumeration keeps the full Cartesian product readable. */
++static unsigned int take_axis(unsigned int *state, unsigned int alternatives)
++{
++    unsigned int value = *state % alternatives;
++
++    *state /= alternatives;
++    return value;
++}
++
++static void memory_truth_table(void)
++{
++    bool (*predicates[])(void) = {
++        qemu_crucible_fault_memory_fetch_rules_active,
++        qemu_crucible_fault_memory_cpu_rules_active,
++        qemu_crucible_fault_memory_page_table_walk_rules_active,
++    };
++    const uint32_t classes[] = { QEMU_CRUCIBLE_MEMORY_FETCH,
++        QEMU_CRUCIBLE_MEMORY_CPU_LOAD | QEMU_CRUCIBLE_MEMORY_CPU_STORE,
++        QEMU_CRUCIBLE_MEMORY_PAGE_TABLE_WALK };
++    GPtrArray *rules = g_ptr_array_new();
++    GArray *indexes[] = { NULL,
++        g_array_new(false, false, sizeof(CrucibleMemoryIndexEntry)),
++        g_array_new(false, false, sizeof(CrucibleMemoryIndexEntry)) };
++    unsigned int cases = 0;
++
++    g_array_set_size(indexes[2], 1);
++    for (size_t mode = 0; mode < G_N_ELEMENTS(legal_modes); mode++) {
++        accel_name = legal_modes[mode].name;
++        icount_mode = legal_modes[mode].icount;
++        for (unsigned int scenario = 0; scenario < 128 * 2 * 2 * 3 * 3; scenario++) {
++            unsigned int state = scenario;
++            unsigned int gpa = take_axis(&state, 3);
++            unsigned int gva = take_axis(&state, 3);
++            bool present = take_axis(&state, 2);
++            bool recursive = take_axis(&state, 2);
++            uint32_t mask = take_axis(&state, 128);
++
++            g_assert_cmpuint(state, ==, 0);
++            crucible_memory_access_classes = mask;
++            crucible_memory_recursive = recursive;
++            crucible_node_rules = present ? rules : NULL;
++            crucible_memory_gpa_index = indexes[gpa];
++            crucible_memory_gva_index = indexes[gva];
++            for (size_t predicate = 0; predicate < G_N_ELEMENTS(predicates); predicate++) {
++                bool class_present = (mask & classes[predicate]) != 0;
++                bool expected = class_present && !recursive && present &&
++                    mode == 0 && (gpa == 2 || gva == 2);
++                unsigned int reads = class_present && !recursive && present;
++
++                accel_reads = 0;
++                g_assert_cmpint(predicates[predicate](), ==, expected);
++                g_assert_cmpuint(accel_reads, ==, reads);
++                cases++;
++            }
++        }
++    }
++    g_assert_cmpuint(cases, ==, 110592);
++    g_array_unref(indexes[1]);
++    g_array_unref(indexes[2]);
++    g_ptr_array_unref(rules);
++    crucible_node_rules = NULL;
++    crucible_memory_gpa_index = crucible_memory_gva_index = NULL;
++    crucible_memory_recursive = false;
++    accel_name = "sim";
++    icount_mode = ICOUNT_PRECISE;
++    puts("PASS production cold fault predicates: 110592 legal memory mask/recursive/rules/index cases and exact identity-read counts");
++}
++
++static void assert_memory_classes(uint32_t mask)
++{
++    g_assert_cmpuint(crucible_memory_access_classes, ==, mask);
++    accel_reads = 0;
++    g_assert_cmpint(qemu_crucible_fault_memory_fetch_rules_active(), ==,
++                    (mask & QEMU_CRUCIBLE_MEMORY_FETCH) != 0);
++    g_assert_cmpint(qemu_crucible_fault_memory_cpu_rules_active(), ==,
++                    (mask & (QEMU_CRUCIBLE_MEMORY_CPU_LOAD |
++                             QEMU_CRUCIBLE_MEMORY_CPU_STORE)) != 0);
++    g_assert_cmpint(qemu_crucible_fault_memory_page_table_walk_rules_active(), ==,
++                    (mask & QEMU_CRUCIBLE_MEMORY_PAGE_TABLE_WALK) != 0);
++    unsigned int expected_reads = !!(mask & QEMU_CRUCIBLE_MEMORY_FETCH) +
++        !!(mask & (QEMU_CRUCIBLE_MEMORY_CPU_LOAD | QEMU_CRUCIBLE_MEMORY_CPU_STORE)) +
++        !!(mask & QEMU_CRUCIBLE_MEMORY_PAGE_TABLE_WALK);
++
++    g_assert_cmpuint(accel_reads, ==, expected_reads);
++}
++
++static void memory_transition_checks(void)
++{
++    QemuCrucibleFaultRule fetch = {
++        .command_kind = CRUCIBLE_FAULT_COMMAND_MEMORY_ACCESS_TRANSFORM,
++        .classes = QEMU_CRUCIBLE_MEMORY_FETCH,
++        .start = 0x1000, .length = 16, .valid = true,
++    };
++    QemuCrucibleFaultRule walk = fetch;
++    QemuCrucibleFaultRule invalid = fetch;
++    QemuCrucibleFaultRule service = fetch;
++    QemuCrucibleFaultRule region = fetch;
++
++    crucible_memory_access_classes = 0;
++    crucible_node_rules = g_ptr_array_new();
++    node_memory_index_rebuild();
++    assert_memory_classes(0);
++    g_assert_cmpuint(flushes, ==, 0);
++
++    g_ptr_array_add(crucible_node_rules, &fetch);
++    node_memory_index_rebuild();
++    assert_memory_classes(QEMU_CRUCIBLE_MEMORY_FETCH);
++    g_assert_nonnull(interval_tree_iter_first(&crucible_memory_gpa_root,
++                                               0x1000, 0x100f));
++    g_assert_cmpuint(flushes, ==, 0);
++
++    walk.has_vcpu = true;
++    walk.vcpu = 3;
++    walk.classes = QEMU_CRUCIBLE_MEMORY_PAGE_TABLE_WALK;
++    g_ptr_array_add(crucible_node_rules, &walk);
++    invalid.valid = false;
++    invalid.classes = QEMU_CRUCIBLE_MEMORY_CPU_STORE;
++    g_ptr_array_add(crucible_node_rules, &invalid);
++    node_memory_index_rebuild();
++    assert_memory_classes(QEMU_CRUCIBLE_MEMORY_FETCH |
++                          QEMU_CRUCIBLE_MEMORY_PAGE_TABLE_WALK);
++    g_assert_cmpuint(crucible_memory_gva_index->len, ==, 1);
++    g_assert_cmpuint(crucible_memory_binding_order->len, ==, 2);
++    g_assert_cmpuint(flushes, ==, 1);
++
++    g_ptr_array_set_size(crucible_node_rules, 0);
++    service.command_kind = CRUCIBLE_FAULT_COMMAND_MEMORY_SERVICE;
++    service.classes = QEMU_CRUCIBLE_MEMORY_CPU_LOAD;
++    g_ptr_array_add(crucible_node_rules, &service);
++    node_memory_index_rebuild();
++    assert_memory_classes(QEMU_CRUCIBLE_MEMORY_CPU_LOAD);
++    g_assert_cmpuint(flushes, ==, 2);
++
++    region.command_kind = CRUCIBLE_FAULT_COMMAND_MEMORY_REGION_STATE;
++    g_ptr_array_add(crucible_node_rules, &region);
++    node_memory_index_rebuild();
++    assert_memory_classes(0x3f);
++    g_assert_cmpuint(flushes, ==, 3);
++
++    g_ptr_array_set_size(crucible_node_rules, 0);
++    node_memory_index_rebuild();
++    assert_memory_classes(0);
++    g_assert_cmpuint(flushes, ==, 4);
++
++    /* Feed decoded staged indexes to the unchanged production restore commit. */
++    g_ptr_array_add(crucible_node_rules, &walk);
++    CrucibleMemoryVmstate *restored = g_new0(CrucibleMemoryVmstate, 1);
++    node_memory_index_build(crucible_node_rules, &restored->gpa_index,
++                            &restored->gva_index, &restored->binding_order,
++                            &restored->access_classes);
++    restored->ledgers = g_array_new(false, false,
++                                     sizeof(CrucibleMemoryVmstateLedger));
++    CrucibleMemoryServiceLedger service_ledger = { .identity = 5 };
++    CrucibleMemoryVmstateLedger ledger = {
++        .rule = &walk, .prepared_ledger = &service_ledger,
++    };
++    g_array_append_val(restored->ledgers, ledger);
++    restored->access_sequence = 73;
++    restored->retention_next_tick = 900;
++    crucible_memory_vmstate_commit(restored);
++    assert_memory_classes(QEMU_CRUCIBLE_MEMORY_PAGE_TABLE_WALK);
++    g_assert_cmpuint(crucible_memory_access_sequence, ==, 73);
++    g_assert_cmpuint(crucible_memory_retention_next_tick, ==, 900);
++    g_assert_cmpuint(flushes, ==, 5);
++    g_assert_cmpuint(deadline_updates, ==, 1);
++    g_assert_true(walk.service_ledger == &service_ledger);
++    g_assert_cmpuint(rule_unrefs, ==, 1);
++
++    g_ptr_array_set_size(crucible_node_rules, 0);
++    node_memory_index_rebuild();
++    assert_memory_classes(0);
++    g_assert_cmpuint(flushes, ==, 6);
++    puts("PASS production cold fault predicates: production index build/install/rebuild/remove and VMState restored masks retain flush transitions");
++}
++
++static void clock_truth_table(void)
++{
++    const uint8_t states[] = { CRUCIBLE_CLOCK_HEALTHY, CRUCIBLE_CLOCK_DEGRADED,
++        CRUCIBLE_CLOCK_FAILED_STOP, CRUCIBLE_CLOCK_FAILED_READ_ERROR,
++        CRUCIBLE_CLOCK_FALLBACK };
++    unsigned int cases = 0;
++
++    crucible_clock_sources = g_array_new(false, true, sizeof(CrucibleClockSource));
++    CrucibleClockSource source = healthy_source();
++    g_array_append_val(crucible_clock_sources, source);
++    GArray *rules = g_array_new(false, true, sizeof(CrucibleClockRuleState));
++    GArray *empty_rules = g_array_new(false, true, sizeof(CrucibleClockRuleState));
++    g_array_set_size(rules, 1);
++    QemuCrucibleFaultRule rule = { 0 };
++
++    for (size_t mode = 0; mode < G_N_ELEMENTS(legal_modes); mode++) {
++        accel_name = legal_modes[mode].name;
++        icount_mode = legal_modes[mode].icount;
++        for (unsigned int scenario = 0; scenario < 3 * 2 * 2 * 2 * 64 * 5 * 3; scenario++) {
++            unsigned int state = scenario;
++            unsigned int rule_array = take_axis(&state, 3);
++            unsigned int health = take_axis(&state, G_N_ELEMENTS(states));
++            unsigned int fields = take_axis(&state, 64);
++            bool terminal = take_axis(&state, 2);
++            bool sealed = take_axis(&state, 2);
++            bool present = take_axis(&state, 2);
++            unsigned int depth = take_axis(&state, 3);
++
++            g_assert_cmpuint(state, ==, 0);
++            crucible_clock_vmstate_load_depth = depth;
++            crucible_clock_bindings_sealed = sealed;
++            crucible_clock_terminal = terminal;
++            source = healthy_source();
++            source.rules = rule_array == 2 ? rules : rule_array == 1 ? empty_rules : NULL;
++            source.source_rule = fields & 1 ? &rule : NULL;
++            source.additive_picos = fields & 2 ? -7 : 0;
++            source.drift_numerator = fields & 4 ? 2 : 1;
++            source.frozen = fields & 8;
++            source.synchronizing = fields & 16;
++            source.source_state = states[health];
++
++            /* Equal ratios can use a non-unit denominator. */
++            if (fields & 32) {
++                source.drift_numerator *= 17;
++                source.drift_denominator *= 17;
++            }
++            g_array_index(crucible_clock_sources, CrucibleClockSource, 0) = source;
++            bool transformed = (fields & 31) || rule_array == 2 || health != 0;
++            bool candidate = !depth && present && sealed && (terminal || transformed);
++
++            accel_reads = lookup_calls = 0;
++            g_assert_cmpint(qemu_crucible_fault_clock_source_active(
++                7, present ? 11 : 12), ==, candidate && mode == 0);
++            g_assert_cmpuint(accel_reads, ==, candidate);
++            g_assert_cmpuint(lookup_calls, ==, 1);
++            cases++;
++        }
++    }
++    g_assert_cmpuint(cases, ==, 184320);
++    g_array_unref(rules);
++    g_array_unref(empty_rules);
++    source = healthy_source();
++    g_array_index(crucible_clock_sources, CrucibleClockSource, 0) = source;
++    accel_name = "sim";
++    icount_mode = ICOUNT_PRECISE;
++    crucible_clock_vmstate_load_depth = 0;
++    crucible_clock_bindings_sealed = true;
++    crucible_clock_terminal = false;
++    puts("PASS production cold fault predicates: 184320 legal clock guard/effective-field cases retain results, lookup and exact identity-read counts");
++}
++
++static void clock_callback_checks(void)
++{
++    CrucibleClockSource *source = &g_array_index(
++        crucible_clock_sources, CrucibleClockSource, 0);
++    uint64_t value;
++    bool read_error;
++
++    accel_reads = lookup_calls = 0;
++    for (unsigned int call = 0; call < 10000; call++) {
++        g_assert_true(qemu_crucible_fault_clock_source_rebase(7, 11, 100));
++        g_assert_true(qemu_crucible_fault_clock_project_ps(7, 11, 100,
++                                                         &value, &read_error));
++        g_assert_cmpuint(value, ==, 100);
++        g_assert_false(read_error);
++    }
++    g_assert_cmpuint(accel_reads, ==, 0);
++    g_assert_cmpuint(base_calls + value_calls + rearms, ==, 0);
++    g_assert_cmpuint(lookup_calls, ==, 30000);
++
++    source->additive_picos = 7;
++    accel_reads = 0;
++    g_assert_true(qemu_crucible_fault_clock_source_rebase(7, 11, 100));
++    g_assert_cmpuint(source->anchor_raw_ps, ==, 103);
++    g_assert_cmpuint(source->anchor_value_ps, ==, 103);
++    g_assert_cmpuint(source->transform_generation, ==, 1);
++    g_assert_false(source->has_last_value);
++    g_assert_cmpuint(rearms, ==, 1);
++    g_assert_true(qemu_crucible_fault_clock_project_ps(7, 11, 100,
++                                                     &value, &read_error));
++    g_assert_cmpuint(value, ==, 107);
++    g_assert_cmpuint(accel_reads, ==, 2);
++
++    base_ok = false;
++    g_assert_false(qemu_crucible_fault_clock_source_rebase(7, 11, 100));
++    base_ok = true;
++    provider_read_error = true;
++    g_assert_false(qemu_crucible_fault_clock_source_rebase(7, 11, 100));
++    provider_read_error = false;
++    value_ok = false;
++    g_assert_false(qemu_crucible_fault_clock_project_ps(7, 11, 100,
++                                                      &value, &read_error));
++    value_ok = true;
++    g_assert_cmpuint(failure_reports, ==, 1);
++    source->transform_generation = UINT64_MAX;
++    unsigned int before = base_calls;
++    g_assert_false(qemu_crucible_fault_clock_source_rebase(7, 11, 100));
++    g_assert_cmpuint(base_calls, ==, before);
++    source->transform_generation = 1;
++
++    qemu_crucible_fault_clock_vmstate_load_begin();
++    qemu_crucible_fault_clock_vmstate_load_begin();
++    accel_reads = 0;
++    g_assert_false(qemu_crucible_fault_clock_source_active(7, 11));
++    g_assert_cmpuint(accel_reads, ==, 0);
++    qemu_crucible_fault_clock_vmstate_load_end(true);
++    g_assert_cmpuint(crucible_clock_vmstate_load_depth, ==, 1);
++    g_assert_cmpuint(rearms, ==, 1);
++    qemu_crucible_fault_clock_vmstate_load_end(true);
++    g_assert_cmpuint(rearms, ==, 2);
++    g_assert_cmpuint(wander_rearms, ==, 1);
++    g_assert_false(crucible_clock_restoring);
++    g_assert_true(qemu_crucible_fault_clock_source_active(7, 11));
++
++    qemu_crucible_fault_clock_vmstate_load_begin();
++    qemu_crucible_fault_clock_vmstate_load_end(false);
++    g_assert_cmpuint(rearms, ==, 2);
++    crucible_clock_terminal = true;
++    accel_reads = 0;
++    g_assert_true(qemu_crucible_fault_clock_source_active(7, 11));
++    g_assert_cmpuint(accel_reads, ==, 1);
++    g_assert_false(qemu_crucible_fault_clock_project_ps(7, 11, 100,
++                                                      &value, &read_error));
++    g_assert_cmpuint(failure_reports, ==, 2);
++
++    puts("PASS production cold fault predicates: 20000 healthy callbacks avoid identity and transform providers; active rebase/projection, terminal and nested restore guards retain behavior");
++}
++
++int main(void)
++{
++    memory_truth_table();
++    memory_transition_checks();
++    clock_truth_table();
++    clock_callback_checks();
++    return 0;
++}
++"""
++
++
++def source_range(source, start, end):
++    """Extract a declaration group without changing its layout."""
++    return source[source.index(start):source.index(end)]
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--negative-control", choices=["memory-order", "clock-order"])
++    arguments = parser.parse_args()
++    arguments.output_dir.mkdir(parents=True, exist_ok=True)
++    node = (ROOT / "plugins/crucible-fault-node.c").read_text()
++    clock = (ROOT / "plugins/crucible-fault-clock.c").read_text()
++    memory_header = (ROOT / "include/qemu/crucible-fault.h").read_text()
++    icount_header = (ROOT / "include/exec/icount.h").read_text()
++    modes = source_range(icount_header, "typedef enum {",
++                         "/* Ordinary -icount")
++    types = "\n\n".join([
++        source_range(memory_header, "enum QemuCrucibleMemoryAccessClass {",
++                     "enum QemuCrucibleFwCfgDmaDirection {"),
++        source_range(node, "typedef struct CrucibleMemoryIndexEntry {",
++                     "static GPtrArray *crucible_node_rules;"),
++        source_range(node, "typedef struct CrucibleMemoryVmstateLedger {",
++                     "typedef struct CrucibleMemoryVmstateRetention {"),
++        source_range(clock, "enum CrucibleClockSourceState {",
++                     "static GArray *crucible_clock_sources;"),
++    ])
++    memory_bodies = "\n\n".join(definition(node, signature) for signature in [
++        "static void node_memory_index_finalize(",
++        "static void node_memory_index_build(",
++        "static void node_memory_index_install(",
++        "static void node_memory_index_rebuild(void)\n{",
++        "bool qemu_crucible_fault_memory_rules_active(",
++        "bool qemu_crucible_fault_memory_fetch_rules_active(",
++        "bool qemu_crucible_fault_memory_cpu_rules_active(",
++        "bool qemu_crucible_fault_memory_page_table_walk_rules_active(",
++        "static void crucible_memory_vmstate_free(",
++        "static void crucible_memory_vmstate_commit(",
++    ])
++    if arguments.negative_control == "memory-order":
++        old = definition(node, "bool qemu_crucible_fault_memory_fetch_rules_active(")
++        replacement = old.replace("return (crucible_memory_access_classes &",
++            "return qemu_crucible_fault_memory_rules_active() &&\n"
++            "           (crucible_memory_access_classes &")
++        replacement = replacement.replace(" != 0 &&\n"
++            "           qemu_crucible_fault_memory_rules_active();", " != 0;")
++        assert replacement != old
++        memory_bodies = memory_bodies.replace(old, replacement)
++    lookup = definition(clock, "static CrucibleClockSource *crucible_clock_source_by_kind(")
++    lookup_counter = r"""
++static CrucibleClockSource *counted_source_by_kind(uint16_t kind, uint32_t instance)
++{
++    lookup_calls++;
++    return crucible_clock_source_by_kind(kind, instance);
++}
++#define crucible_clock_source_by_kind counted_source_by_kind
++"""
++    clock_bodies = "\n\n".join(definition(clock, signature) for signature in [
++        "static bool crucible_clock_mode(",
++        "static void crucible_clock_rearm_source(",
++        "static bool crucible_clock_source_has_effective_transform(",
++        "bool qemu_crucible_fault_clock_source_active(",
++        "bool qemu_crucible_fault_clock_source_rebase(",
++        "bool qemu_crucible_fault_clock_project_ps(",
++        "void qemu_crucible_fault_clock_vmstate_load_begin(",
++        "void qemu_crucible_fault_clock_vmstate_load_end(",
++    ])
++    if arguments.negative_control == "clock-order":
++        guard = ("source && crucible_clock_bindings_sealed &&\n"
++                 "           (crucible_clock_terminal ||\n"
++                 "            crucible_clock_source_has_effective_transform(source)) &&\n"
++                 "           crucible_clock_mode();")
++        assert clock_bodies.count(guard) == 1
++        clock_bodies = clock_bodies.replace(guard,
++            "crucible_clock_mode() && source &&\n"
++            "           crucible_clock_bindings_sealed &&\n"
++            "           (crucible_clock_terminal ||\n"
++            "            crucible_clock_source_has_effective_transform(source));")
++    interval = (ROOT / "util/interval-tree.c").read_text()
++    interval = "\n".join(line for line in interval.splitlines()
++                         if not line.startswith("#include"))
++    generated = arguments.output_dir / "cold-fault-predicates.c"
++    generated.write_text("\n\n".join([
++        "/* SPDX-License-Identifier: GPL-2.0-or-later */",
++        PRELUDE.replace("/* ICOUNT_MODE_DEFINITION */", modes),
++        types, GLOBALS, interval, memory_bodies,
++        lookup, lookup_counter, clock_bodies, CHECKS,
++    ]))
++    binary = arguments.output_dir / "cold-fault-predicates"
++    command = [os.environ.get("CC", "cc"),
++               *shlex.split(os.environ.get("CFLAGS", "")),
++               str(generated), "-o", str(binary),
++               *shlex.split(os.environ.get("LDFLAGS", ""))]
++    (arguments.output_dir / "compile-command.json").write_text(
++        json.dumps({"cwd": os.getcwd(), "argv": command}, indent=2) + "\n")
++    subprocess.run(command, check=True)
++    print("Compiled production cold fault predicates fixture", flush=True)
++    subprocess.run([str(binary)], cwd=arguments.output_dir, check=True)
 +
 +
 +if __name__ == "__main__":
