@@ -77,6 +77,18 @@ pub trait QemuHostIoRuntime: Send {
         ))
     }
 
+    /// Observes the live polling policy for unit-test reconstruction checks.
+    ///
+    /// The default identifies a runtime without this test-only observation.
+    /// Production and externally feature-enabled builds expose no such method.
+    #[cfg(test)]
+    fn poll_intervals_for_test(
+        &self,
+        _remaining: std::time::Duration,
+    ) -> Option<(std::time::Duration, std::time::Duration)> {
+        None
+    }
+
     /// Clones the complete host-I/O continuation onto one branch-private ring.
     ///
     /// The source runtime must remain unchanged. Implementations must clone

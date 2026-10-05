@@ -77,8 +77,8 @@ fn run() -> Result<(), Box<dyn Error>> {
         .with_vm_shape(64, 1)
         .with_completion_timeout(Duration::from_secs(1));
     #[cfg(feature = "test-support")]
-    let config = if experiment == Some(true) {
-        config.with_short_clamp_ack_poll_for_test()
+    let config = if experiment == Some(false) {
+        config.with_slow_clamp_ack_poll_for_test()
     } else {
         config
     };

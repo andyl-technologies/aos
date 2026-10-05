@@ -1,8 +1,9 @@
 //! Compares ACK polling during one bounded, real Linux boot segment.
 //!
 //! Both fresh nodes receive the same grants and original readiness/idle checks.
-//! Only an explicitly feature-enabled candidate caps completed-clamp polling;
-//! host duration is advisory and never changes the scheduler's coordinates.
+//! The baseline explicitly restores one-millisecond scheduled clamp polling;
+//! the candidate uses the production 100-microsecond cap. Host duration remains
+//! advisory and never changes the scheduler's coordinates.
 
 use super::*;
 use crucible::{BackendError, BackendPhysicalStop, StepObservation};
@@ -82,9 +83,9 @@ pub(super) fn run(
     config: &QemuLiveNodeStepGateConfig,
     qemu: &Path,
 ) -> Result<(), ProbeError> {
-    let baseline = run_once_with_boot_probe(factory, config, qemu, false, None, true)?;
-    let candidate_config = config.clone().with_short_clamp_ack_poll_for_test();
-    let candidate = run_once_with_boot_probe(factory, &candidate_config, qemu, false, None, true)?;
+    let baseline_config = config.clone().with_slow_clamp_ack_poll_for_test();
+    let baseline = run_once_with_boot_probe(factory, &baseline_config, qemu, false, None, true)?;
+    let candidate = run_once_with_boot_probe(factory, config, qemu, false, None, true)?;
     compare_boundaries(
         "Linux boot ACK pair",
         &baseline.boundaries,

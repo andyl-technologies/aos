@@ -12,19 +12,21 @@ pub(super) struct PendingControlBoundary {
 }
 
 impl QemuLiveHostIoRuntime {
-    /// Caps only completed-clamp polling in an explicitly configured experiment.
+    /// Restores the one-millisecond ACK baseline for controlled comparisons.
     #[cfg(feature = "test-support")]
-    pub(crate) fn use_short_clamp_ack_poll_for_test(&mut self) {
-        self.clamp_ack_poll_cap = Some(Duration::from_micros(100));
+    pub(crate) fn use_slow_clamp_ack_poll_for_test(&mut self) {
+        self.slow_clamp_ack_poll = true;
     }
 
     pub(super) fn clamp_ack_poll_interval(&self, remaining: Duration) -> Duration {
-        let interval = self.poll_interval.min(remaining);
+        let cap = Duration::from_micros(100);
         #[cfg(feature = "test-support")]
-        let interval = self
-            .clamp_ack_poll_cap
-            .map_or(interval, |cap| interval.min(cap));
-        interval
+        let cap = if self.slow_clamp_ack_poll {
+            Duration::from_millis(1)
+        } else {
+            cap
+        };
+        self.poll_interval.min(remaining).min(cap)
     }
 
     fn wait_for_clamp_ack_poll(&mut self, remaining: Duration) {

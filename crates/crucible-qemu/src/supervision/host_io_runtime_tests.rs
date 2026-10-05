@@ -6,9 +6,8 @@ use super::*;
 #[path = "host_io_runtime_tests/completed_boundary.rs"]
 pub(crate) mod completed_boundary;
 
-#[cfg(feature = "test-support")]
-#[path = "host_io_runtime_tests/ack_poll_experiment.rs"]
-mod ack_poll_experiment;
+#[path = "host_io_runtime_tests/ack_poll.rs"]
+mod ack_poll;
 #[cfg(target_os = "linux")]
 #[path = "host_io_runtime_tests/block_coordinator_tests.rs"]
 mod block_coordinator;
@@ -824,6 +823,14 @@ fn hot_fork_rejects_pending_on_demand_fingerprint_request() -> Result<(), Box<dy
 #[test]
 fn hot_fork_clone_reconstructs_private_host_devices_without_aliasing_source()
 -> Result<(), Box<dyn std::error::Error>> {
+    assert_private_host_device_clone(false)?;
+    #[cfg(feature = "test-support")]
+    assert_private_host_device_clone(true)?;
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn assert_private_host_device_clone(slow_baseline: bool) -> Result<(), Box<dyn std::error::Error>> {
     use std::os::fd::AsFd;
 
     let (source_region, child_region, region_len) = private_region_pair()?;
@@ -843,6 +850,10 @@ fn hot_fork_clone_reconstructs_private_host_devices_without_aliasing_source()
     .with_block_servicer(block, BlockIoDiagnostics::shared())?
     .with_ninep_servicer(ninep, NinepIoDiagnostics::shared())
     .with_accelerator_servicer(accelerator);
+    #[cfg(feature = "test-support")]
+    if slow_baseline {
+        source.use_slow_clamp_ack_poll_for_test();
+    }
     let binding = ContentHash::from_bytes(b"branch-private-host-io");
     let before = source.checkpoint_host_io(binding)?;
     let source_block = source
@@ -857,6 +868,19 @@ fn hot_fork_clone_reconstructs_private_host_devices_without_aliasing_source()
         None,
     )?;
 
+    let expected_ack_interval = if slow_baseline {
+        Duration::from_millis(1)
+    } else {
+        Duration::from_micros(100)
+    };
+    assert_eq!(
+        source.poll_intervals_for_test(Duration::from_secs(1)),
+        Some((Duration::from_millis(1), expected_ack_interval))
+    );
+    assert_eq!(
+        child.poll_intervals_for_test(Duration::from_secs(1)),
+        Some((Duration::from_millis(1), expected_ack_interval))
+    );
     assert_eq!(source.checkpoint_host_io(binding)?, before);
     assert_eq!(child.checkpoint_host_io(binding)?, before);
     let child_block = child

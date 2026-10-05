@@ -160,7 +160,7 @@ pub struct QemuLiveNodeStepGateConfig {
     queue_capacity: u32,
     completion_timeout: Duration,
     #[cfg(feature = "test-support")]
-    short_clamp_ack_poll: bool,
+    slow_clamp_ack_poll: bool,
     unbounded_advance_completion: bool,
     console_capture: bool,
     rr_control_boundary_trace: bool,
@@ -232,14 +232,14 @@ impl QemuLiveNodeStepGateConfig {
         self
     }
 
-    /// Selects a 100-microsecond completed-clamp ACK poll cap for test support.
+    /// Selects the one-millisecond completed-clamp baseline for test support.
     ///
-    /// Discovery, priming, deadlines, publication and guest coordinates retain
-    /// their original behavior. Ordinary profiles keep the default interval.
+    /// Only scheduled clamp polling changes. Discovery, priming, deadlines,
+    /// publication and guest coordinates keep their production behavior.
     #[cfg(feature = "test-support")]
     #[must_use]
-    pub const fn with_short_clamp_ack_poll_for_test(mut self) -> Self {
-        self.short_clamp_ack_poll = true;
+    pub const fn with_slow_clamp_ack_poll_for_test(mut self) -> Self {
+        self.slow_clamp_ack_poll = true;
         self
     }
 
@@ -339,7 +339,7 @@ impl QemuLiveNodeStepGateConfig {
             queue_capacity: GATE_QUEUE_CAPACITY,
             completion_timeout: Duration::from_secs(240),
             #[cfg(feature = "test-support")]
-            short_clamp_ack_poll: false,
+            slow_clamp_ack_poll: false,
             unbounded_advance_completion: false,
             console_capture: false,
             rr_control_boundary_trace: false,
@@ -403,7 +403,7 @@ impl QemuLiveNodeStepGateConfig {
             queue_capacity: GATE_QUEUE_CAPACITY,
             completion_timeout: Duration::from_secs(240),
             #[cfg(feature = "test-support")]
-            short_clamp_ack_poll: false,
+            slow_clamp_ack_poll: false,
             unbounded_advance_completion: false,
             console_capture: false,
             rr_control_boundary_trace: false,
@@ -1531,10 +1531,10 @@ fn build_live_node_with_authority(
     ));
 
     #[cfg(feature = "test-support")]
-    if config.short_clamp_ack_poll {
+    if config.slow_clamp_ack_poll {
         // Arm after the original priming handoff, so only scheduled clamps
         // participate in the comparison.
-        runtime.use_short_clamp_ack_poll_for_test();
+        runtime.use_slow_clamp_ack_poll_for_test();
     }
 
     let qmp = if config.whitebox == QemuLaunchPluginSwitch::On {

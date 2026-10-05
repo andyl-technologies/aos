@@ -72,7 +72,7 @@ pub struct QemuLiveHostIoRuntime {
     vm_slot: u32,
     poll_interval: Duration,
     #[cfg(feature = "test-support")]
-    clamp_ack_poll_cap: Option<Duration>,
+    slow_clamp_ack_poll: bool,
     performance: performance::PerformanceDiagnostics,
     wait_observation: wait_observation::WaitObservation,
     advance_wait_deadline: AdvanceWaitDeadline,
@@ -244,7 +244,7 @@ impl QemuLiveHostIoRuntime {
             vm_slot,
             poll_interval,
             #[cfg(feature = "test-support")]
-            clamp_ack_poll_cap: None,
+            slow_clamp_ack_poll: false,
             performance: performance::PerformanceDiagnostics::from_environment(shmem_fd),
             wait_observation: wait_observation::WaitObservation::from_environment(shmem_fd),
             advance_wait_deadline: AdvanceWaitDeadline::default(),
@@ -530,6 +530,11 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         self.service_ninep_io(snapshot)
     }
 
+    #[cfg(test)]
+    fn poll_intervals_for_test(&self, remaining: Duration) -> Option<(Duration, Duration)> {
+        Some((self.poll_interval, self.clamp_ack_poll_interval(remaining)))
+    }
+
     fn clone_hot_fork_host_io_continuation(
         &mut self,
         execution_binding: ContentHash,
@@ -619,6 +624,10 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         .map_err(|source| {
             QemuAsyncDriverRuntimeError::new("clone hot-fork host-I/O runtime", source.to_string())
         })?;
+        #[cfg(feature = "test-support")]
+        {
+            continuation.slow_clamp_ack_poll = self.slow_clamp_ack_poll;
+        }
         continuation.checkpoint_idle_coordinate = self.checkpoint_idle_coordinate;
         continuation.staged_fault_events = self.staged_fault_events.clone();
         continuation.fault_event_staging_limit = self.fault_event_staging_limit;
