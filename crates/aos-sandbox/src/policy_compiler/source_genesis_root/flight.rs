@@ -39,6 +39,12 @@ enum Q04ReceivePositionV1 {
     FinalSourceObservation,
 }
 
+#[derive(Clone, Copy)]
+enum FirstSuccessorReceivePositionV2 { Open, Finished }
+
+#[derive(Clone, Copy)]
+enum OriginalWriteModeV2 { Ordinary, FirstSuccessor }
+
 /// Borrows one actual Root prepare flight; decoding an intent cannot create it.
 pub struct HeldRootSourceGenesisIntentV1<'flight> {
     origin: &'flight OriginalRootGenesisFlightV1<'flight>,
@@ -155,6 +161,8 @@ pub(in crate::policy_compiler) struct OriginalRootGenesisFlightV1<'profile> {
     poisoned: Cell<bool>,
     nonce: [u8; 16],
     source_uid: u32,
+    first_successor_wait_owners: RefCell<Vec<Result<(), SourceGenesisErrorV1>>>,
+    first_successor_wait_clocks: RefCell<Vec<Result<RawPairedClockSample, SourceGenesisErrorV1>>>,
 }
 
 pub(super) enum OriginalRootGenesisReplyV1<'flight> {
@@ -187,6 +195,8 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
             poisoned: Cell::new(false),
             nonce: [0; 16],
             source_uid,
+            first_successor_wait_owners: RefCell::new(Vec::new()),
+            first_successor_wait_clocks: RefCell::new(Vec::new()),
         };
         origin.establish_hello(client_nonce)?;
         Ok(origin)
@@ -236,6 +246,8 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
             poisoned: Cell::new(false),
             nonce: [0; 16],
             source_uid,
+            first_successor_wait_owners: RefCell::new(Vec::new()),
+            first_successor_wait_clocks: RefCell::new(Vec::new()),
         });
 
         Ok(client_nonce)
@@ -248,6 +260,160 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
         self.write(&request)?;
         let hello = self.receive_exact(56)?;
         self.accept_hello(&hello, client_nonce)
+    }
+
+    // Only the private first-successor invocation selects this purpose. The
+    // partial socket, adopted description and complete native receive Result
+    // are caller-resident before any later observation can fail.
+    pub(super) fn connect_first_successor_parked(
+        profile: &'profile ProductionControllerNormalRootProfileV1,
+        raw: &mut Option<OwnedFd>,
+        adopted: &mut Option<RetainedUnixStream>,
+        parked: &mut Option<Self>,
+        hello: &mut Vec<u8>,
+        received: &mut Option<Result<UnixStreamSubjectChunk, aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1>>,
+        controller_uid: u32,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        let client_nonce = Self::park_connection(profile, raw, adopted, parked)?;
+        let origin = parked.as_mut().ok_or(SourceGenesisErrorV1::Stale)?;
+        let mut request = [0; 32];
+        request[..8].copy_from_slice(super::wire::ROOT_FIRST_SOURCE_SUCCESSOR_QUERY_MAGIC_V2);
+        request[8..24].copy_from_slice(&client_nonce);
+        origin.write_first_successor(&request)?;
+        origin.receive_first_successor_exact(56, hello, received)?;
+        if hello.get(..8) != Some(super::wire::ROOT_FIRST_SOURCE_SUCCESSOR_HELLO_MAGIC_V2.as_slice())
+            || hello[8..16] != [0, 2, 0, 0, 0, 0, 0, 0]
+            || take::<16>(hello, 16)? != client_nonce || take::<16>(hello, 32)? == [0; 16]
+            || u32::from_be_bytes(take(hello, 48)?) != origin.source_uid
+            || u32::from_be_bytes(take(hello, 52)?) != controller_uid
+        {
+            return Err(SourceGenesisErrorV1::NonCanonical);
+        }
+        origin.nonce = take(hello, 32)?;
+        origin.recheck()
+    }
+
+    pub(super) fn first_successor_source_uid(&self) -> Result<u32, SourceGenesisErrorV1> {
+        self.recheck()?;
+        Ok(self.source_uid)
+    }
+
+    pub(super) fn first_successor_clock(&self) -> Result<RawPairedClockSample, SourceGenesisErrorV1> {
+        self.recheck()?;
+        self.observe_first_successor_clock()
+    }
+
+    // This independent observation remains available after transport poison.
+    // It compares the SAME original cut but never admits a send or a mutation.
+    pub(super) fn observe_first_successor_clock(&self) -> Result<RawPairedClockSample, SourceGenesisErrorV1> {
+        let current = kernel_pair()?;
+        self.clock.validate_later_sample(current).map_err(|_| SourceGenesisErrorV1::Stale)?;
+        require_original_root_age(self.clock, current)?;
+        transport::require_remaining(self.started + MAXIMUM_FLIGHT)?;
+        Ok(current)
+    }
+
+    // Reserve BOTH sides before poll. A native failure cannot be followed by
+    // a fallible post-reservation that would suppress its independent clocks.
+    pub(super) fn first_successor_wait_crossing(&self) -> Result<(), SourceGenesisErrorV1> {
+        {
+            let mut owners = self.first_successor_wait_owners.try_borrow_mut().map_err(|_| SourceGenesisErrorV1::Stale)?;
+            let mut clocks = self.first_successor_wait_clocks.try_borrow_mut().map_err(|_| SourceGenesisErrorV1::Stale)?;
+            owners.try_reserve(2).map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
+            clocks.try_reserve(2).map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
+        }
+        self.first_successor_wait_bookend()
+    }
+
+    // Called only by the closed selected mode. The final sample follows slow
+    // owner work, with pre-reserved residency and no subsequent allocation.
+    pub(super) fn first_successor_wait_bookend(&self) -> Result<(), SourceGenesisErrorV1> {
+        let mut owners = self.first_successor_wait_owners.try_borrow_mut().map_err(|_| SourceGenesisErrorV1::Stale)?;
+        let mut clocks = self.first_successor_wait_clocks.try_borrow_mut().map_err(|_| SourceGenesisErrorV1::Stale)?;
+        owners.push(self.recheck());
+        clocks.push(self.observe_first_successor_clock());
+        if owners.last().is_some_and(Result::is_err) || clocks.last().is_some_and(Result::is_err) {
+            self.poisoned.set(true);
+            return Err(SourceGenesisErrorV1::Stale);
+        }
+        Ok(())
+    }
+
+    pub(super) fn first_successor_wait_owner_results(&self) -> Result<std::cell::Ref<'_, Vec<Result<(), SourceGenesisErrorV1>>>, SourceGenesisErrorV1> {
+        self.first_successor_wait_owners.try_borrow().map_err(|_| SourceGenesisErrorV1::Stale)
+    }
+
+    pub(super) fn first_successor_wait_clock_results(&self) -> Result<std::cell::Ref<'_, Vec<Result<RawPairedClockSample, SourceGenesisErrorV1>>>, SourceGenesisErrorV1> {
+        self.first_successor_wait_clocks.try_borrow().map_err(|_| SourceGenesisErrorV1::Stale)
+    }
+
+    pub(super) fn first_successor_terminal_recheck(&self) -> Result<(), SourceGenesisErrorV1> {
+        let current = self.original_terminal_clock()?;
+        require_original_root_age(self.clock, current)
+    }
+
+    pub(super) fn receive_first_successor_exact(
+        &self,
+        length: usize,
+        output: &mut Vec<u8>,
+        received: &mut Option<Result<UnixStreamSubjectChunk, aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1>>,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        self.receive_first_successor_at_position(length, output, received, FirstSuccessorReceivePositionV2::Open)
+    }
+
+    pub(super) fn receive_first_successor_finish(
+        &self, length: usize, output: &mut Vec<u8>,
+        received: &mut Option<Result<UnixStreamSubjectChunk, aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1>>,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        self.receive_first_successor_at_position(length, output, received, FirstSuccessorReceivePositionV2::Finished)
+    }
+
+    fn require_first_successor_position(&self, position: FirstSuccessorReceivePositionV2) -> Result<(), SourceGenesisErrorV1> {
+        let current = match position {
+            FirstSuccessorReceivePositionV2::Open => self.first_successor_clock()?,
+            FirstSuccessorReceivePositionV2::Finished => self.original_terminal_clock()?,
+        };
+        require_original_root_age(self.clock, current)
+    }
+
+    fn receive_first_successor_at_position(
+        &self, length: usize, output: &mut Vec<u8>,
+        received: &mut Option<Result<UnixStreamSubjectChunk, aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1>>,
+        position: FirstSuccessorReceivePositionV2,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        if length == 0 || length > 4096 || !output.is_empty() || received.is_some() {
+            return Err(SourceGenesisErrorV1::Conflict);
+        }
+        output.try_reserve_exact(length).map_err(|_| SourceGenesisErrorV1::NonCanonical)?;
+        while output.len() < length {
+            self.require_first_successor_position(position)?;
+            *received = Some(self.stream.try_borrow_mut().map_err(|_| SourceGenesisErrorV1::Stale)?
+                .try_receive_subject_chunk_retaining(length - output.len()));
+            if received.as_ref().is_some_and(|result| result.as_ref().err().is_some_and(|error| {
+                error.is_nonconsuming_would_block() || error.is_nonconsuming_interrupted()
+            })) {
+                *received = None;
+                let stream = self.stream.try_borrow().map_err(|_| SourceGenesisErrorV1::Stale)?;
+                transport::wait_first_successor(
+                    stream.as_fd(), rustix::event::PollFlags::IN, self.started + MAXIMUM_FLIGHT, self,
+                )?;
+                continue;
+            }
+            if matches!(received, Some(Err(_))) {
+                self.poisoned.set(true);
+                return Err(SourceGenesisErrorV1::Stale);
+            }
+            let chunk = received.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(SourceGenesisErrorV1::Stale)?;
+            self.require_first_successor_position(position)?;
+            let stream = self.stream.try_borrow().map_err(|_| SourceGenesisErrorV1::Stale)?;
+            self.peer.require_chunk(&stream, chunk).map_err(|_| SourceGenesisErrorV1::Stale)?;
+            drop(stream);
+            output.extend_from_slice(chunk.payload());
+            self.require_first_successor_position(position)?;
+            *received = None;
+        }
+        self.require_first_successor_position(position)
     }
 
     fn accept_hello(&mut self, hello: &[u8], client_nonce: [u8; 16]) -> Result<(), SourceGenesisErrorV1> {
@@ -476,6 +642,10 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
     pub(in crate::policy_compiler) fn q04_terminal_clock(
         &self,
     ) -> Result<RawPairedClockSample, SourceGenesisErrorV1> {
+        self.original_terminal_clock()
+    }
+
+    fn original_terminal_clock(&self) -> Result<RawPairedClockSample, SourceGenesisErrorV1> {
         if self.poisoned.get() || self.started.elapsed() >= MAXIMUM_FLIGHT {
             return Err(SourceGenesisErrorV1::Stale);
         }
@@ -631,7 +801,21 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
         result
     }
 
+    pub(super) fn write_first_successor(&self, bytes: &[u8]) -> Result<(), SourceGenesisErrorV1> {
+        let result = self.write_with_mode(bytes, OriginalWriteModeV2::FirstSuccessor);
+        if result.is_err() {
+            self.poisoned.set(true);
+        }
+        result
+    }
+
     fn write_remaining(&self, bytes: &[u8]) -> Result<(), SourceGenesisErrorV1> {
+        self.write_with_mode(bytes, OriginalWriteModeV2::Ordinary)
+    }
+
+    // Ordinary mode preserves the original check/send/wait/drop ordering.
+    // The selected mode only adds final genuine original samples to this loop.
+    fn write_with_mode(&self, bytes: &[u8], mode: OriginalWriteModeV2) -> Result<(), SourceGenesisErrorV1> {
         if bytes.is_empty() || bytes.len() > 4096 {
             return Err(SourceGenesisErrorV1::NonCanonical);
         }
@@ -642,6 +826,9 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
                 .stream
                 .try_borrow()
                 .map_err(|_| SourceGenesisErrorV1::Stale)?;
+            if matches!(mode, OriginalWriteModeV2::FirstSuccessor) {
+                self.observe_first_successor_clock()?;
+            }
             match rustix::net::send(
                 stream.as_fd(),
                 &bytes[sent..],
@@ -649,11 +836,21 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
             ) {
                 Ok(0) => return Err(SourceGenesisErrorV1::Stale),
                 Ok(count) => sent += count,
-                Err(rustix::io::Errno::AGAIN | rustix::io::Errno::INTR) => transport::wait(
-                    stream.as_fd(),
-                    rustix::event::PollFlags::OUT,
-                    self.started + MAXIMUM_FLIGHT,
-                )?,
+                Err(rustix::io::Errno::AGAIN | rustix::io::Errno::INTR) => {
+                    match mode {
+                        OriginalWriteModeV2::Ordinary => transport::wait(
+                            stream.as_fd(),
+                            rustix::event::PollFlags::OUT,
+                            self.started + MAXIMUM_FLIGHT,
+                        )?,
+                        OriginalWriteModeV2::FirstSuccessor => transport::wait_first_successor(
+                            stream.as_fd(),
+                            rustix::event::PollFlags::OUT,
+                            self.started + MAXIMUM_FLIGHT,
+                            self,
+                        )?,
+                    }
+                }
                 Err(error) => return Err(std::io::Error::from(error).into()),
             }
         }
@@ -928,9 +1125,42 @@ pub(in crate::policy_compiler) fn kernel_pair() -> Result<RawPairedClockSample, 
     .map_err(|_| SourceGenesisErrorV1::Stale)
 }
 
+/// Samples the genuine kernel clock for one retained Root successor flight.
+///
+/// This is nonauthorizing clock DATA. A later sample must remain within the
+/// same boot and original 65-second server custody bound; it never changes a
+/// persisted successor intent's admission deadline.
+///
+/// # Errors
+/// Rejects kernel observation failure, reversed clocks, reboot or expiry.
+pub fn observe_root_first_source_successor_clock_v2(
+    original: Option<RawPairedClockSample>,
+) -> Result<RawPairedClockSample, SourceGenesisErrorV1> {
+    let current = kernel_pair()?;
+    if let Some(original) = original {
+        original.validate_later_sample(current)
+            .map_err(|_| SourceGenesisErrorV1::Stale)?;
+        let deadline = original.boottime_nanoseconds().checked_add(65_000_000_000)
+            .ok_or(SourceGenesisErrorV1::Stale)?;
+        if current.boottime_nanoseconds() >= deadline {
+            return Err(SourceGenesisErrorV1::Stale);
+        }
+    }
+    Ok(current)
+}
+
 // Pure nonauthorizing clock DATA comparison. The sole production caller
 // supplies its retained original pair and the just-observed genuine pair.
 fn require_q04_original_age(
+    original: RawPairedClockSample,
+    current: RawPairedClockSample,
+) -> Result<(), SourceGenesisErrorV1> {
+    require_original_root_age(original, current)
+}
+
+// Sole pure finite-age comparison shared by the two closed original purposes.
+// Neither a clock sample nor this comparison grants admission or adopts a peer.
+fn require_original_root_age(
     original: RawPairedClockSample,
     current: RawPairedClockSample,
 ) -> Result<(), SourceGenesisErrorV1> {

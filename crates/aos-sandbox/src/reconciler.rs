@@ -935,6 +935,20 @@ pub trait SingleNodeEffectExecutor {
         ))
     }
 
+    /// Completes only the actual retained first Source successor obligation.
+    ///
+    /// The default keeps selected failure custody; actual absence is inert.
+    ///
+    /// # Errors
+    /// Returns a resident failed owner that must survive deliberate termination.
+    #[cfg(target_os = "linux")]
+    fn coordinate_retained_first_source_successor_v2<'writers, 'profile>(
+        &'writers mut self, journal: &'writers mut Journal,
+        profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<Option<ObjectDigest>, crate::policy_compiler::FailedOriginalFirstSourceSuccessorV2<'writers, 'profile>> {
+        crate::policy_compiler::unavailable_first_source_successor_v2(journal, profile)
+    }
+
     /// Completes provisioned Source genesis using the executor's real owner.
     ///
     /// This internal startup hook is closed by default. The production override
@@ -1475,6 +1489,14 @@ where
         self.ledger_validated = false;
         self.executor
             .coordinate_provisioned_source_genesis_v1(&mut self.journal, input, profile)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn coordinate_retained_first_source_successor_v2<'writers, 'profile>(
+        &'writers mut self, profile: &'profile crate::normal_root::ProductionControllerNormalRootProfileV1,
+    ) -> Result<Option<ObjectDigest>, crate::policy_compiler::FailedOriginalFirstSourceSuccessorV2<'writers, 'profile>> {
+        self.ledger_validated = false;
+        self.executor.coordinate_retained_first_source_successor_v2(&mut self.journal, profile)
     }
 
     /// Loads and validates an operation's durable ownership gate, when present.

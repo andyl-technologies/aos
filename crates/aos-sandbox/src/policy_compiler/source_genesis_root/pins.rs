@@ -137,6 +137,36 @@ impl RootGenesisRolePinsV1 {
         }
         Ok(())
     }
+
+    // The administrative key is the SAME independently retained seed issuer,
+    // never an issuer selected by an approval or Source observation.
+    pub(super) fn verify_first_source_successor_v2(
+        &self,
+        packet: &crate::hierarchy::source_successor::SourceSuccessorApprovalDataV2,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        verify_retained_first_source_successor_v2(&self.encoded, packet)
+    }
+}
+
+// Cold replay checks the same independently retained public tuple. This
+// authenticates provenance only; freshness still belongs to the live owner.
+pub(super) fn verify_retained_first_source_successor_v2(
+    encoded: &[u8],
+    packet: &crate::hierarchy::source_successor::SourceSuccessorApprovalDataV2,
+) -> Result<(), SourceGenesisErrorV1> {
+    decode(encoded)?;
+    let seed = PinnedControllerSourceTreeSeedIssuerV1::decode(&encoded[16..96])?;
+    let authorization = PinnedPublisherProjectAuthorizationIssuerV2::decode(&encoded[96..176])?;
+    if u64::from_be_bytes(crate::hierarchy::genesis_profile::take(packet.body(), 16)?)
+        != seed.generation()
+        || &packet.body()[112..144] != role_tuple_digest(encoded)?.as_bytes()
+    {
+        return Err(SourceGenesisErrorV1::Conflict);
+    }
+
+    packet.verify_signature(seed.verifying_key())?;
+    verify_signed_project_authorization_claims_v2(&packet.body()[312..536], &authorization)?;
+    Ok(())
 }
 
 pub(super) fn role_tuple_digest(bytes: &[u8]) -> Result<ObjectDigest, SourceGenesisErrorV1> {

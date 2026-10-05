@@ -2745,7 +2745,10 @@ fn validate_capacity_domain_shape(
         | GlobalCapacityReservationPurposeV1::SourceProviderNativeTerminal
         | GlobalCapacityReservationPurposeV1::ControllerProjectAdmission
         | GlobalCapacityReservationPurposeV1::RootSourceGenesisAnchor
-        | GlobalCapacityReservationPurposeV1::ControllerConsumerResource => false,
+        | GlobalCapacityReservationPurposeV1::ControllerConsumerResource
+        | GlobalCapacityReservationPurposeV1::RootFirstSourceSuccessorAnchor
+        | GlobalCapacityReservationPurposeV1::SourceFirstSourceSuccessorAck
+        | GlobalCapacityReservationPurposeV1::ControllerFirstSourceSuccessorComplete => false,
     };
     closed
         .then_some(())
@@ -2763,9 +2766,17 @@ pub(crate) fn replay_projection<S: ProtectedDomainSchemaV1>(
     journal: &Journal,
     validator: &S::ReplayValidator,
 ) -> Result<ProtectedDomainProjectionV1<S>, ProtectedDomainJournalErrorV1> {
+    replay_projection_records::<S>(journal.all_records(), validator)
+}
+
+/// Replays actual native materialized rows through the same closed domain engine.
+pub(crate) fn replay_projection_records<'records, S: ProtectedDomainSchemaV1>(
+    records: impl Iterator<Item = (RecordNamespace, &'records [u8], &'records [u8])>,
+    validator: &S::ReplayValidator,
+) -> Result<ProtectedDomainProjectionV1<S>, ProtectedDomainJournalErrorV1> {
     let mut members = Vec::new();
     let mut seen = BTreeSet::new();
-    for (namespace, key_bytes, value) in journal.all_records() {
+    for (namespace, key_bytes, value) in records {
         if !key_bytes.starts_with(S::KEY_PREFIX) {
             continue;
         }

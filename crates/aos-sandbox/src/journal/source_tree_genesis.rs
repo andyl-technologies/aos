@@ -42,6 +42,8 @@ pub(crate) enum SourceGenesisTransitionV1 {
     None,
     Append,
     Anchor,
+    FirstSuccessorAppend,
+    FirstSuccessorAck,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -121,7 +123,7 @@ impl SourceGenesisAckV1 {
         )
     }
 
-    fn decode(bytes: &[u8]) -> Result<Self, JournalError> {
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, JournalError> {
         require_frame(bytes, b"AOSSGA01", ACK_BYTES, ACK_DOMAIN)?;
         let value = Self {
             instance: array(bytes, 16)?,
@@ -147,7 +149,7 @@ pub(crate) struct SourceGenesisRowsV1 {
     pub(crate) pending: Option<SourceGenesisPendingV1>,
 }
 
-fn current_rows(
+pub(crate) fn current_rows(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
 ) -> Result<SourceGenesisRowsV1, JournalError> {
     let mut receipts = BTreeMap::new();
@@ -228,6 +230,15 @@ pub(super) fn require_no_mutation(
 ) -> Result<(), JournalError> {
     let rows = current_rows(state)?;
     match transition {
+        SourceGenesisTransitionV1::FirstSuccessorAppend
+        | SourceGenesisTransitionV1::FirstSuccessorAck => {
+            super::source_tree_successor::require_genesis_predecessor(state, transaction)?;
+            if rows.pending.is_some()
+                || transaction.records().iter().any(|record| record.key().starts_with(KEY_FAMILY_PREFIX))
+            {
+                return Err(JournalError::ProtectedBoundary);
+            }
+        }
         SourceGenesisTransitionV1::None => {
             if rows.pending.is_some()
                 || transaction
@@ -341,6 +352,22 @@ pub(super) fn require_no_compaction(
         return Err(JournalError::ProtectedBoundary);
     }
     Ok(())
+}
+
+pub(super) fn recognize_replayed_transition(
+    transaction: &JournalTransaction,
+) -> Result<SourceGenesisTransitionV1, JournalError> {
+    let touches = transaction.records().iter().any(|record| record.key().starts_with(KEY_FAMILY_PREFIX));
+    if !touches {
+        return Ok(SourceGenesisTransitionV1::None);
+    }
+    if transaction.records().len() == 4 {
+        return Ok(SourceGenesisTransitionV1::Append);
+    }
+    if transaction.records().len() == 2 {
+        return Ok(SourceGenesisTransitionV1::Anchor);
+    }
+    Err(JournalError::ProtectedBoundary)
 }
 
 impl Journal {

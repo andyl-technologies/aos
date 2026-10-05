@@ -446,6 +446,20 @@ pub(super) fn decode_source_tree_seed_body_v1(
     )
 }
 
+/// Decodes retained seed DATA without authenticating its signature or issuer.
+pub(super) fn decode_retained_source_tree_seed_v1(
+    packet: &[u8; CONTROLLER_SOURCE_TREE_SEED_BYTES_V1],
+) -> Result<ControllerSourceTreeSeedV1, ControllerSourceTreeSeedErrorV1> {
+    if &packet[..8] != MAGIC
+        || packet[8..10] != VERSION.to_be_bytes()
+        || packet[10..12] != [0; 2]
+        || u64::from_be_bytes(take::<8>(packet, 12)?) == 0
+    {
+        return Err(ControllerSourceTreeSeedErrorV1::NonCanonical);
+    }
+    decode_source_tree_seed_body_v1(&packet[..BODY_BYTES])
+}
+
 /// Verifies a proposal using the Controller's fixed privileged issuer pin.
 ///
 /// The Controller must derive `expected` under protected current custody.

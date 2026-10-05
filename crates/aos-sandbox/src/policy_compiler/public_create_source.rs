@@ -72,6 +72,10 @@ const EXPLICIT_DRAFT_DOMAIN: &[u8] = b"aos.sandbox.public-create-policy-draft.v2
 #[cfg(target_os = "linux")]
 mod gen1_ancestry;
 #[cfg(target_os = "linux")]
+mod first_successor_ancestry;
+#[cfg(target_os = "linux")]
+pub(in crate::policy_compiler) use first_successor_ancestry::consume_completed_first_successor_ancestry_v2;
+#[cfg(target_os = "linux")]
 pub(in crate::policy_compiler) use gen1_ancestry::consume_completed_gen1_ancestry_v1;
 
 /// Reports a failed protected public-Create source join.

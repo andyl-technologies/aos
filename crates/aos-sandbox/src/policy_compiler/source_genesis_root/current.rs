@@ -14,6 +14,46 @@ use super::super::source_genesis_readback::{
 };
 use super::{RootSourceGenesisAuthorityV1, SourceHierarchyFloorRecordV1};
 
+/// Borrows the actual completed populated floor and its full immutable archive.
+///
+/// This protected-local profile is not whole-host disk anti-rollback. Only the
+/// genuine Root owner constructs the loan after fresh Controller/Source joins.
+#[must_use = "retain the actual Root writer through the original Finish"]
+pub struct CurrentRootFirstSourceSuccessorFloorV2<'root> {
+    owner: &'root RootSourceGenesisAuthorityV1,
+    archive: super::successor_owner::RootFirstSourceSuccessorArchiveV2,
+    completion: [u8; 96],
+}
+
+impl<'root> CurrentRootFirstSourceSuccessorFloorV2<'root> {
+    pub(super) fn from_completed_owner(
+        owner: &'root RootSourceGenesisAuthorityV1,
+        archive: super::successor_owner::RootFirstSourceSuccessorArchiveV2,
+        completion: [u8; 96],
+    ) -> Result<Self, SourceGenesisErrorV1> {
+        let current = Self { owner, archive, completion };
+        current.recheck()?;
+        Ok(current)
+    }
+
+    /// Borrows the logical floor without releasing its physical archive owner.
+    pub fn floor(&self) -> &super::RootFirstSourceSuccessorFloorV2 { &self.archive.floor }
+
+    /// Borrows the full original immutable intent retained beside that floor.
+    pub fn original_intent(&self) -> &super::RootFirstSourceSuccessorIntentV2 { &self.archive.original }
+
+    /// Borrows the joined final floor/Controller Complete/Source ACK DATA.
+    pub const fn completion(&self) -> &[u8; 96] { &self.completion }
+
+    /// Rechecks the same named Root writer, full archive and independent pins.
+    ///
+    /// # Errors
+    /// Rejects changed protected custody or any stored archive byte or join.
+    pub fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
+        self.owner.require_current_first_successor_archive_v2(&self.archive)
+    }
+}
+
 /// Borrows the actual Root's current settled generation-one Source floor.
 ///
 /// This server-local value cannot be cloned, serialized or adopted from a
