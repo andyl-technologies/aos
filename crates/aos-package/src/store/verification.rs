@@ -40,7 +40,13 @@ pub(crate) fn verify_store_object_in(
         root.as_os_str() == std::ffi::OsStr::new(store_path),
         "retention member path is not canonical"
     );
-    run_store_check_in(store_path, &["--check-validity"], executable)?;
+    // Querying references also checks database validity. Keep that check before
+    // dumping: daemon-backed Nix can serialize an unregistered filesystem path.
+    let actual_references = query_reference_hashes_in(store_path, executable)?;
+    ensure!(
+        actual_references == expected_references,
+        "store object {store_path} direct references differ from its authenticated catalog"
+    );
 
     let (actual_hash, actual_size) = dump_store_path_identity_in(store_path, executable)?;
     ensure!(
@@ -52,36 +58,6 @@ pub(crate) fn verify_store_object_in(
         "store object {store_path} NAR size mismatch: expected {expected_size}, observed {actual_size}"
     );
 
-    let actual_references = query_reference_hashes_in(store_path, executable)?;
-    ensure!(
-        actual_references == expected_references,
-        "store object {store_path} direct references differ from its authenticated catalog"
-    );
-    Ok(())
-}
-
-fn run_store_check_in(
-    store_path: &str,
-    arguments: &[&str],
-    executable: Option<&Path>,
-) -> anyhow::Result<()> {
-    use anyhow::{Context as _, bail};
-
-    let status = live_store_command(executable)?
-        .args(arguments)
-        .arg(store_path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("starting nix-store {} {store_path}", arguments.join(" ")))?;
-    let (status, stderr) = wait_for_store_command(status)?;
-    if !status.success() {
-        bail!(
-            "nix-store {} {store_path} failed: {}",
-            arguments.join(" "),
-            String::from_utf8_lossy(&stderr).trim()
-        );
-    }
     Ok(())
 }
 
@@ -321,3 +297,7 @@ fn terminate_and_reap(child: &mut std::process::Child) {
     let _ = child.kill();
     let _ = child.wait();
 }
+
+#[cfg(test)]
+#[path = "verification/tests.rs"]
+mod tests;
