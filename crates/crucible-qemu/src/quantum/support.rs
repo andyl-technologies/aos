@@ -155,6 +155,10 @@ pub(super) fn quantum_outcome(
 /// An error produced by the QEMU quantum shared-memory hot path.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum QemuQuantumError {
+    /// Either shared publication is busy or changed during one coherent read.
+    #[error("QEMU node publication is temporarily unavailable")]
+    PublicationUnavailable,
+
     /// A borrowed SPSC ring slice was not a nonzero power-of-two capacity.
     #[error("QEMU quantum {ring} capacity {capacity} is not a nonzero power of two")]
     InvalidQueueCapacity {

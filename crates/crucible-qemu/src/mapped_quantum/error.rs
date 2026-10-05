@@ -65,6 +65,15 @@ pub enum QemuMappedQuantumShmemHotPathError {
 
 impl QemuMappedQuantumShmemHotPathError {
     pub(super) fn into_channel_error(self, operation: &'static str) -> QemuNodeChannelError {
-        QemuNodeChannelError::new(operation, self.to_string())
+        if matches!(
+            &self,
+            Self::Quantum {
+                source: QemuQuantumError::PublicationUnavailable
+            }
+        ) {
+            QemuNodeChannelError::publication_unavailable(operation)
+        } else {
+            QemuNodeChannelError::new(operation, self.to_string())
+        }
     }
 }

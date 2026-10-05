@@ -63,18 +63,6 @@ where
         .map_err(QemuAsyncDriverError::Runtime)?;
     async_operations.push(QemuAsyncDriverOperation::YieldToControlPlane);
 
-    let mut pending = target
-        .start_quantum(horizon)
-        .map_err(QemuAsyncDriverError::Channel)?;
-    after_start(target, &mut pending).map_err(QemuAsyncDriverError::Channel)?;
-    runtime
-        .arm_advance_completion_fence(target.advance_completion_fence(&pending))
-        .map_err(QemuAsyncDriverError::Runtime)?;
-    runtime
-        .set_advance_completion_poll_slice(
-            (!policy.unbounded_advance_completion).then_some(Duration::from_secs(1)),
-        )
-        .map_err(QemuAsyncDriverError::Runtime)?;
     // Renewal is a liveness poll, not an attempt deadline. A short slice
     // observes child exit and an authored watchdog cancellation promptly.
     let wait_timeout = if policy.unbounded_advance_completion {
@@ -84,6 +72,29 @@ where
     } else {
         policy.timeout_for(QemuAsyncWait::AdvanceCompletion)
     };
+    runtime
+        .set_advance_completion_poll_slice(
+            (!policy.unbounded_advance_completion).then_some(Duration::from_secs(1)),
+        )
+        .map_err(QemuAsyncDriverError::Runtime)?;
+    runtime
+        .prepare_advance_completion(wait_timeout)
+        .map_err(QemuAsyncDriverError::Runtime)?;
+    let mut pending = match super::acquisition::acquire_quantum(
+        target,
+        runtime,
+        policy,
+        crash_detector,
+        horizon,
+        wait_timeout,
+    )? {
+        super::acquisition::Acquisition::Published(pending) => pending,
+        super::acquisition::Acquisition::Crashed(report) => return Ok(*report),
+    };
+    after_start(target, &mut pending).map_err(QemuAsyncDriverError::Channel)?;
+    runtime
+        .arm_advance_completion_fence(target.advance_completion_fence(&pending))
+        .map_err(QemuAsyncDriverError::Runtime)?;
     let mut first_wait = true;
     let completion = loop {
         let is_initial_wait = first_wait;

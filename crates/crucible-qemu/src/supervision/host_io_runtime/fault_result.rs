@@ -146,7 +146,8 @@ impl QemuLiveHostIoRuntime {
         deadline: &HostSupervisionDeadline,
         maximum_event_records: usize,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
-        let last_ack = loop {
+        let mut last_ack = None;
+        loop {
             self.drain_fault_events_for_pump(
                 maximum_event_records,
                 deadline,
@@ -154,25 +155,25 @@ impl QemuLiveHostIoRuntime {
                 "await fault result publication fence",
             )?;
             self.service_console_output()?;
-            let snapshot = self
-                .region
-                .node_slot(self.vm_slot)
-                .map_err(super::map_slot_error)?
-                .snapshot();
+            let Some(snapshot) = self.wait_node_snapshot(|| deadline.remaining())? else {
+                break;
+            };
+            last_ack = Some(snapshot.control_boundary_ack);
             if control_boundary_request_is_acknowledged(request, &snapshot) {
                 return Ok(());
             }
             if !deadline.has_time_remaining() {
-                break snapshot.control_boundary_ack;
+                break;
             }
             self.write_wake_doorbell()?;
             thread::sleep(self.poll_interval);
-        };
+        }
         Err(QemuAsyncDriverRuntimeError::new(
             "await fault result publication fence",
             format!(
                 "QEMU did not finish fault result/event pump for control token {} within {timeout:?}; last acknowledgement {}",
-                request.generation, last_ack
+                request.generation,
+                last_ack.map_or_else(|| String::from("unavailable"), |ack| ack.to_string())
             ),
         ))
     }

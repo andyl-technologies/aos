@@ -545,7 +545,10 @@ impl QemuLive9pIoServicer {
     ) -> Result<QemuLive9pIoServicerCheckpoint, QemuLive9pIoServicerError> {
         let pause_requested = self.region.header_snapshot().pause_requested != 0;
         let pair = self.ring_pair()?;
-        let node = pair.node_slot.snapshot();
+        let node = pair
+            .node_slot
+            .try_snapshot()
+            .ok_or(QemuLive9pIoServicerError::CheckpointNotQuiescent)?;
         if !checkpoint_boundary_is_quiescent(node.status, node.device_io_active, pause_requested) {
             return Err(QemuLive9pIoServicerError::CheckpointNotQuiescent);
         }
@@ -617,7 +620,10 @@ impl QemuLive9pIoServicer {
         validate_pending_fault_opportunities(checkpoint)?;
         let pause_requested = self.region.header_snapshot().pause_requested != 0;
         let pair = self.ring_pair()?;
-        let node = pair.node_slot.snapshot();
+        let node = pair
+            .node_slot
+            .try_snapshot()
+            .ok_or(QemuLive9pIoServicerError::CheckpointNotQuiescent)?;
         if !checkpoint_boundary_is_quiescent(node.status, node.device_io_active, pause_requested) {
             return Err(QemuLive9pIoServicerError::CheckpointNotQuiescent);
         }

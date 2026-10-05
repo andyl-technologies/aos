@@ -129,6 +129,48 @@ mod advance_publication_tests {
     }
 
     #[test]
+    fn single_attempt_snapshot_requires_both_complete_publications() {
+        let slot = NodeSlot::new(KIND_VM);
+        slot.publish_scheduler_advance(ceiling(100), AdvanceStopCondition::NextAuthenticatedIdle)
+            .unwrap_or_else(|error| panic!("scheduler control should publish: {error}"));
+        slot.publish_idle(10, 20)
+            .unwrap_or_else(|error| panic!("idle control should publish: {error}"));
+        let original = slot.snapshot();
+        assert_eq!(slot.try_snapshot(), Some(original));
+
+        // An unfinished writer may already have changed payload fields. Neither
+        // seqlock permits a host to accept that partial state.
+        slot.publish_gen
+            .store(original.publish_gen + 1, Ordering::Release);
+        slot.current_icount.store(15, Ordering::Release);
+        assert_eq!(slot.try_snapshot(), None);
+        slot.advance_publication_sequence
+            .store(original.advance_publication_sequence + 1, Ordering::Release);
+        slot.publish_gen
+            .store(original.publish_gen + 2, Ordering::Release);
+        assert_eq!(slot.try_snapshot(), None);
+        slot.max_advance_icount.store(80, Ordering::Release);
+        slot.advance_publication_sequence
+            .store(original.advance_publication_sequence + 2, Ordering::Release);
+
+        let accepted = slot
+            .try_snapshot()
+            .unwrap_or_else(|| panic!("completed publications must be readable"));
+        assert_eq!(accepted.current_icount, 15);
+        assert_eq!(accepted.max_advance_icount, 80);
+        assert_eq!(
+            accepted.advance_stop_condition,
+            AdvanceStopCondition::NextAuthenticatedIdle.encode()
+        );
+        assert_eq!(accepted.publish_gen, original.publish_gen + 2);
+        assert_eq!(
+            accepted.advance_publication_sequence,
+            original.advance_publication_sequence + 2
+        );
+        assert_eq!(slot.snapshot(), accepted);
+    }
+
+    #[test]
     fn full_mode_aba_changes_the_publication_sequence() {
         let slot = NodeSlot::new(KIND_VM);
         let before = slot.snapshot();

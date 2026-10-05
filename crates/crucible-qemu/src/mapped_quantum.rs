@@ -112,8 +112,12 @@ impl QemuMappedQuantumShmemHotPath {
     pub fn plugin_teardown_done(&self) -> Result<bool, QemuMappedQuantumShmemHotPathError> {
         self.region
             .node_slot(self.config.vm_slot)
-            .map(|slot| slot.snapshot().status == STATUS_DONE)
-            .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })
+            .map_err(|source| QemuMappedQuantumShmemHotPathError::RegionAccess { source })?
+            .try_snapshot()
+            .map(|snapshot| snapshot.status == STATUS_DONE)
+            .ok_or(QemuMappedQuantumShmemHotPathError::Quantum {
+                source: QemuQuantumError::PublicationUnavailable,
+            })
     }
 
     /// Binds one QEMU quantum channel to an owned mapped shared-memory region.
@@ -442,7 +446,9 @@ impl QemuMappedQuantumShmemHotPath {
             .map_err(|error| {
                 QemuNodeChannelError::new("reset coverage generation", error.to_string())
             })?;
-        let snapshot = slot.snapshot();
+        let snapshot = slot.try_snapshot().ok_or_else(|| {
+            QemuNodeChannelError::publication_unavailable("reset coverage generation")
+        })?;
         if snapshot.logical_time_restore_request != generation
             || snapshot.logical_time_restore_ack != generation
         {
@@ -790,7 +796,12 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
                             source.to_string(),
                         )
                     })?
-                    .snapshot(),
+                    .try_snapshot()
+                    .ok_or_else(|| {
+                        QemuNodeChannelError::publication_unavailable(
+                            "validate completed-quantum boundary",
+                        )
+                    })?,
             )?;
         }
         self.with_hot_path("finish_quantum", |hot_path| {
@@ -899,7 +910,7 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
 
     fn drain_observable_events(&mut self) -> Result<Vec<ObservableEvent>, QemuNodeChannelError> {
         let boundary = self.with_hot_path("observation boundary", |hot_path| {
-            Ok(hot_path.node_snapshot())
+            hot_path.node_snapshot().map_err(QemuNodeChannelError::from)
         })?;
         let mut events = self.drain_coverage_at_quantum_boundary(boundary.current_icount)?;
         self.drain_markers_at_quantum_boundary(boundary)?;
@@ -910,8 +921,9 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
 
     // crucible-lint: allow host-nondeterminism-state -- callers must validate this untrusted causal batch before another quantum.
     fn drain_rng_evidence(&mut self) -> Result<Vec<BackendRngEvidence>, QemuNodeChannelError> {
-        let boundary =
-            self.with_hot_path("causal boundary", |hot_path| Ok(hot_path.node_snapshot()))?;
+        let boundary = self.with_hot_path("causal boundary", |hot_path| {
+            hot_path.node_snapshot().map_err(QemuNodeChannelError::from)
+        })?;
         self.drain_markers_at_quantum_boundary(boundary)?;
         Ok(std::mem::take(&mut self.pending_rng_evidence))
     }
@@ -920,7 +932,7 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
         &mut self,
     ) -> Result<Vec<SelectablePlanPendingRequest>, QemuNodeChannelError> {
         let boundary = self.with_hot_path("selectable boundary", |hot_path| {
-            Ok(hot_path.node_snapshot())
+            hot_path.node_snapshot().map_err(QemuNodeChannelError::from)
         })?;
         self.drain_markers_at_quantum_boundary(boundary)?;
         Ok(std::mem::take(&mut self.pending_selectable_requests))
@@ -971,7 +983,10 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
             ));
         }
         let boundary_tick_ps = self.with_hot_path("selectable reply boundary", |hot_path| {
-            Ok(hot_path.node_snapshot().current_icount)
+            Ok(hot_path
+                .node_snapshot()
+                .map_err(QemuNodeChannelError::from)?
+                .current_icount)
         })?;
         let stopped_tick_ps = pending
             .trap_tick_ps()
@@ -1029,7 +1044,11 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
     fn deliver_frame(&mut self, input: BackendInput) -> Result<(), QemuNodeChannelError> {
         let delivery_icount = self.with_hot_path("delivery icount", |hot_path| {
             Ok(Icount {
-                retired: hot_path.node_snapshot().current_icount.saturating_add(1),
+                retired: hot_path
+                    .node_snapshot()
+                    .map_err(QemuNodeChannelError::from)?
+                    .current_icount
+                    .saturating_add(1),
             })
         })?;
         self.deliver_frame_at(input, delivery_icount)
@@ -1071,7 +1090,10 @@ impl QemuShmemHotPathChannel for QemuMappedQuantumShmemHotPath {
 
     fn execution_fingerprint(&mut self) -> Result<ExecutionFingerprint, QemuNodeChannelError> {
         let current_icount = self.with_hot_path("execution_fingerprint", |hot_path| {
-            Ok(hot_path.node_snapshot().current_icount)
+            Ok(hot_path
+                .node_snapshot()
+                .map_err(QemuNodeChannelError::from)?
+                .current_icount)
         })?;
         let sample = QemuMappedQuantumShmemHotPath::fingerprint_sample(self)
             .map_err(|source| {

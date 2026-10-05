@@ -19,6 +19,18 @@ mod event_drain_continuation;
 #[path = "host_io_runtime_tests/network_output.rs"]
 mod network_output;
 
+#[cfg(target_os = "linux")]
+#[path = "host_io_runtime_tests/publication_access.rs"]
+pub(crate) mod publication_access;
+
+#[cfg(target_os = "linux")]
+#[path = "host_io_runtime_tests/publication_liveness.rs"]
+mod publication_liveness;
+
+#[cfg(target_os = "linux")]
+#[path = "host_io_runtime_tests/publication_owner.rs"]
+mod publication_owner;
+
 #[test]
 fn on_demand_fingerprint_host_waits_for_exact_capture_request_ack()
 -> Result<(), Box<dyn std::error::Error>> {

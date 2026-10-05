@@ -113,7 +113,10 @@ impl QemuMappedQuantumShmemHotPath {
             .map_err(|source| {
                 QemuNodeChannelError::new("observe logical-time restore", source.to_string())
             })?
-            .snapshot();
+            .try_snapshot()
+            .ok_or_else(|| {
+                QemuNodeChannelError::publication_unavailable("observe logical-time restore")
+            })?;
         if snapshot.control_boundary_fault_command_frontier != boundary.fault_command_frontier
             || snapshot.control_boundary_capture_request != 0
         {

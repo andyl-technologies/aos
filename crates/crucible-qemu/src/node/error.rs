@@ -55,6 +55,7 @@ pub struct QemuNodeChannelError {
     pub timeout: Option<Duration>,
     /// Whether the operation may be retried without republishing its request.
     pub retryable: bool,
+    publication_unavailable: bool,
 }
 
 impl QemuNodeChannelError {
@@ -66,6 +67,7 @@ impl QemuNodeChannelError {
             message: message.into(),
             timeout: None,
             retryable: false,
+            publication_unavailable: false,
         }
     }
 
@@ -77,7 +79,26 @@ impl QemuNodeChannelError {
             message: message.into(),
             timeout: None,
             retryable: true,
+            publication_unavailable: false,
         }
+    }
+
+    /// Reports an unavailable coherent read before any publication side effect.
+    #[must_use]
+    pub fn publication_unavailable(operation: &'static str) -> Self {
+        Self {
+            operation,
+            message: String::from("node publication is temporarily unavailable"),
+            timeout: None,
+            retryable: true,
+            publication_unavailable: true,
+        }
+    }
+
+    /// Reports whether acquisition may retry without publishing a request.
+    #[must_use]
+    pub const fn is_publication_unavailable(&self) -> bool {
+        self.publication_unavailable
     }
 
     /// Creates a channel error classified as a bounded await timeout.
@@ -92,6 +113,7 @@ impl QemuNodeChannelError {
             message: message.into(),
             timeout: Some(timeout),
             retryable: false,
+            publication_unavailable: false,
         }
     }
 
@@ -111,6 +133,15 @@ impl QemuNodeChannelError {
 /// Reports a failure returned by the scheduler-facing QEMU node wrapper.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum QemuNodeError {
+    /// A coherent host read is temporarily unavailable and may be retried.
+    #[error("{plane} node publication for {operation} is temporarily unavailable")]
+    PublicationUnavailable {
+        /// Channel role being observed.
+        plane: QemuNodeChannelPlane,
+        /// Read-only operation being attempted.
+        operation: &'static str,
+    },
+
     /// A role-specific child channel failed an operation.
     #[error("{plane} channel operation {operation} failed: {message}")]
     Channel {
@@ -254,6 +285,12 @@ impl QemuNodeError {
     /// Attaches a node channel role to a channel-local error.
     #[must_use]
     pub fn from_channel(plane: QemuNodeChannelPlane, source: QemuNodeChannelError) -> Self {
+        if source.is_publication_unavailable() {
+            return Self::PublicationUnavailable {
+                plane,
+                operation: source.operation,
+            };
+        }
         Self::Channel {
             plane,
             operation: source.operation,

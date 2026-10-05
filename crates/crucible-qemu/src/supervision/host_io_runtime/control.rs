@@ -123,11 +123,9 @@ impl QemuLiveHostIoRuntime {
         if drained_events == 0 || device_progress || request.generation & 1 != 0 {
             return Ok(());
         }
-        let observed = self
-            .region
-            .node_slot(self.vm_slot)
-            .map_err(map_slot_error)?
-            .snapshot();
+        let Some(observed) = self.try_node_snapshot()? else {
+            return Ok(());
+        };
         if observed.control_boundary_ack != request.generation
             || observed.control_boundary_fault_command_frontier != request.fault_command_frontier
             || observed.control_boundary_capture_request
@@ -206,12 +204,21 @@ impl QemuLiveHostIoRuntime {
         &mut self,
         timeout: Duration,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
-        let snapshot = self
-            .region
-            .node_slot(self.vm_slot)
-            .map_err(map_slot_error)?
-            .snapshot();
-        self.clamp_completed_quantum(&snapshot, timeout)
+        let deadline = HostSupervisionDeadline::start(timeout);
+        // A coherent publication retains the original clamp behavior even for
+        // a zero budget. Only unavailable authority needs acquisition waiting.
+        let snapshot = match self.try_node_snapshot()? {
+            Some(snapshot) => snapshot,
+            None => self
+                .wait_node_snapshot(|| deadline.remaining())?
+                .ok_or_else(|| {
+                    QemuAsyncDriverRuntimeError::new(
+                        "fence priming handoff",
+                        "publication acquisition exhausted the handoff timeout",
+                    )
+                })?,
+        };
+        self.clamp_completed_quantum(&snapshot, deadline.remaining().unwrap_or_default())
     }
 
     /// Revokes the unused tail of a completed quantum before returning it.
@@ -259,7 +266,7 @@ impl QemuLiveHostIoRuntime {
         // state or changes the exact guest coordinate.
         let deadline = HostSupervisionDeadline::start(timeout);
         self.wait_observation.begin_clamp(timeout);
-        let mut last_observed_state;
+        let mut last_observed_state = None;
         let mut boundary_acknowledged = false;
         let initial_fault_event_indices = self.fault_event_ring_indices()?;
         let mut last_fault_event_indices;
@@ -280,11 +287,15 @@ impl QemuLiveHostIoRuntime {
             drained_fault_events += drained_this_poll;
             last_fault_event_indices = self.fault_event_ring_indices()?;
             self.service_console_output()?;
-            let observed = self
-                .region
-                .node_slot(self.vm_slot)
-                .map_err(map_slot_error)?
-                .snapshot();
+            let observed = match self.try_node_snapshot()? {
+                Some(observed) => observed,
+                None => {
+                    let Some(observed) = self.wait_node_snapshot(|| deadline.remaining())? else {
+                        break;
+                    };
+                    observed
+                }
+            };
             let block_progress = self.service_block_io(&observed)?;
             let ninep_progress = self.service_ninep_io(&observed)?;
             let accelerator_progress = self.service_accelerator_io(&observed)?;
@@ -295,7 +306,7 @@ impl QemuLiveHostIoRuntime {
             } else {
                 initial_idle_wake_icount
             };
-            last_observed_state = (observed, device_progress);
+            last_observed_state = Some((observed, device_progress));
             if device_progress {
                 self.publish_device_completion_deadline()?;
             }
@@ -379,8 +390,7 @@ impl QemuLiveHostIoRuntime {
                 last_fault_event_indices.0,
                 last_fault_event_indices.1,
                 drained_fault_events,
-                {
-                    let (observed, device_progress) = last_observed_state;
+                last_observed_state.map_or_else(|| String::from("unavailable"), |(observed, device_progress)| {
                     format!(
                         "token {}, wake signal {}, publish generation {}, current icount {}, raw icount {}, max advance icount {}, idle wake icount {}, status {}, device I/O active {}, fault-command frontier {}, fingerprint capture request {}, device progress {device_progress}",
                         observed.control_boundary_ack,
@@ -395,7 +405,7 @@ impl QemuLiveHostIoRuntime {
                         observed.control_boundary_fault_command_frontier,
                         observed.control_boundary_capture_request,
                     )
-                }
+                })
             ),
         ))
     }

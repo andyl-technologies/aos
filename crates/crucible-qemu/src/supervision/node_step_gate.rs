@@ -1434,6 +1434,7 @@ fn build_live_node_with_authority(
         .map(|capture| capture.payload.as_slice());
     let prepared_priming = launch_try!(prepare_guest_prime(
         &setup,
+        config.completion_timeout,
         identity,
         config.coverage,
         boot_backpressure_payload,
@@ -1488,7 +1489,6 @@ fn build_live_node_with_authority(
     );
     let mut priming = launch_try!(complete_guest_prime(
         &setup,
-        config.completion_timeout,
         prepared_priming,
         block_servicer.as_mut(),
         ninep_servicer.as_mut(),

@@ -1001,7 +1001,10 @@ impl QemuLiveBlockIoServicer {
                 self.vm_slot,
             )
             .map_err(|source| QemuLiveBlockIoServicerError::RegionAccess { source })?;
-        let node = pair.node_slot.snapshot();
+        let node = pair
+            .node_slot
+            .try_snapshot()
+            .ok_or(QemuLiveBlockIoServicerError::CheckpointNotQuiescent)?;
         if !checkpoint_boundary_is_quiescent(node.status, node.device_io_active, pause_requested) {
             return Err(QemuLiveBlockIoServicerError::CheckpointNotQuiescent);
         }
@@ -1147,7 +1150,10 @@ impl QemuLiveBlockIoServicer {
                 self.vm_slot,
             )
             .map_err(|source| QemuLiveBlockIoServicerError::RegionAccess { source })?;
-        let node = pair.node_slot.snapshot();
+        let node = pair
+            .node_slot
+            .try_snapshot()
+            .ok_or(QemuLiveBlockIoServicerError::CheckpointNotQuiescent)?;
         if !checkpoint_boundary_is_quiescent(node.status, node.device_io_active, pause_requested) {
             return Err(QemuLiveBlockIoServicerError::CheckpointNotQuiescent);
         }

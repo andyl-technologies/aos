@@ -64,11 +64,9 @@ impl QemuLiveHostIoRuntime {
         // The producer releases the frame before publishing its output pause.
         // A head observed after an older slot snapshot must wait for that fresh
         // coherent publication, rather than rejecting a valid newer event.
-        let observed = self
-            .region
-            .node_slot(self.vm_slot)
-            .map_err(map_slot_error)?
-            .snapshot();
+        let Some(observed) = self.try_node_snapshot()? else {
+            return Ok(None);
+        };
         if observed.publish_gen != snapshot.publish_gen {
             return Ok(None);
         }

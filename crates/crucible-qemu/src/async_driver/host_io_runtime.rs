@@ -4,6 +4,39 @@ use super::*;
 
 /// Host-I/O runtime used by the bounded async driver.
 pub trait QemuHostIoRuntime: Send {
+    /// Starts the original advance budget before acquiring its coherent source.
+    ///
+    /// Immediate model runtimes need no host deadline. Live runtimes retain
+    /// this same deadline through acquisition and ordinary completion polling.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a deadline that cannot be represented without renewing it.
+    fn prepare_advance_completion(
+        &mut self,
+        _timeout: Duration,
+    ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        Ok(())
+    }
+
+    /// Waits for coherent source availability without a wake or authorization.
+    ///
+    /// `Completed` means acquisition may be retried, not that a quantum ran.
+    /// `Pending` retains the original deadline for owned-child supervision.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a runtime without an explicit bounded publication-wait owner.
+    fn await_node_publication(
+        &mut self,
+        _timeout: Duration,
+    ) -> Result<QemuAsyncWaitOutcome, QemuAsyncDriverRuntimeError> {
+        Err(QemuAsyncDriverRuntimeError::new(
+            "await node publication",
+            "runtime has no bounded publication-wait owner",
+        ))
+    }
+
     /// Binds a scripted fixture's complete queue inventory to its World owner.
     ///
     /// This test-only seam creates no operational Source or native capability.
