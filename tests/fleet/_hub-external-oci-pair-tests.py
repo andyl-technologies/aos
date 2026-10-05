@@ -71,6 +71,30 @@ class ExternalPairTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.configuration(original=changed)
 
+    def test_mirror_reviewer_and_separate_guard_are_fixed_in_initial_configuration(self):
+        self.tools.update(mirrorFunctionalReviewer={"publicKey": "d" * 64, "keyId": "mirror-functional"},
+            externalMirrorInstaller="/nix/store/fixture/_hub-external-mirror-install.cjs")
+        roles = {**self.roles, "HUB_MIRROR_GUARD_KEY": "e" * 64}
+        selected = self.configuration(roles=roles)
+
+        self.assertEqual(selected["bindings"]["HUB_EXTERNAL_MIRROR_FUNCTIONAL_PROBE"], "1")
+        self.assertEqual(selected["bindings"]["HUB_MIRROR_GUARD_KEY"], "e" * 64)
+        self.assertEqual(selected["bindings"]["HUB_EXTERNAL_MIRROR_FUNCTIONAL_REVIEWER_PUBLIC_KEY"], "d" * 64)
+        self.assertNotEqual(selected["kvNamespaces"]["HUB_EXTERNAL_MIRROR_FUNCTIONAL_ACCEPTANCE"],
+            selected["kvNamespaces"]["HUB_DIRECT_UPLOAD_ACCEPTANCE"])
+        self.assertNotIn("mirrorFunctionalRegistryKey", selected)
+
+    def test_mirror_reviewer_or_guard_cannot_reuse_other_authority_roles(self):
+        self.tools.update(mirrorFunctionalReviewer={"publicKey": "c" * 64, "keyId": "mirror-functional"},
+            externalMirrorInstaller="/nix/store/fixture/_hub-external-mirror-install.cjs")
+        roles = {**self.roles, "HUB_MIRROR_GUARD_KEY": "e" * 64}
+        with self.assertRaises(ValueError):
+            self.configuration(roles=roles)
+        self.tools["mirrorFunctionalReviewer"]["publicKey"] = "d" * 64
+        roles["HUB_MIRROR_GUARD_KEY"] = roles["HUB_EXTERNAL_OBJECT_GUARD_KEY"]
+        with self.assertRaises(ValueError):
+            self.configuration(roles=roles)
+
     def test_stock_bootstrap_has_exact_later_helper_origins(self):
         fields = ("database", "release_seed", "channel_seed", "publication_keys", "qualification_keys",
             "route_keys", "HUB_HYBRID_INGRESS_KEY", "HUB_STORAGE_WORK_KEY", "jwt", "secrets", "probeManifest",

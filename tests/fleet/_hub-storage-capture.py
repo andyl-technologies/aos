@@ -29,6 +29,8 @@ MANAGED_OCI_CLEANUP_SIGNATURE_FIELDS = frozenset((
     "managed_oci_cleanup_request_signature", "managed_oci_cleanup_reply_signature",
 ))
 PROTECTED_HEADER_V4_FIELDS = PROTECTED_HEADER_FIELDS | MANAGED_OCI_CLEANUP_SIGNATURE_FIELDS
+MIRROR_SIGNATURE_FIELDS = frozenset(("mirror_guard_request_signature", "mirror_guard_reply_signature"))
+PROTECTED_HEADER_V5_FIELDS = PROTECTED_HEADER_V4_FIELDS | MIRROR_SIGNATURE_FIELDS
 STORAGE_AUTHENTICATED_FIELDS = frozenset((
     "version", "route", "planId", "operation", "requestSha256", "replySha256",
     "requestBytes", "replyBytes", "transportCallId",
@@ -43,11 +45,19 @@ EXTERNAL_OCI_CAPTURE_ROUTES = {
     "/_internal/storage/external-oci-source/v1": "external_oci_source",
     "/_internal/storage/external-oci-cleanup/v1": "external_oci_cleanup",
 }
+MIRROR_CAPTURE_ROUTES = {
+    "/_internal/storage/mirror-final-guard": "mirror_guard_control",
+    "/_internal/storage/mirror-final-guard-batch": "mirror_guard_batch",
+    "/__hub/external-mirror-functional-guard": "mirror_guard_control",
+    "/__hub/external-mirror-functional-guard-batch": "mirror_guard_batch",
+}
 MANAGED_CLEANUP_CAPTURE_ROUTE = "/_internal/storage/managed-oci-cleanup/v1"
-STORAGE_CAPTURE_ROUTES = {**COPY_CAPTURE_ROUTES, **EXTERNAL_OCI_CAPTURE_ROUTES,
+STORAGE_CAPTURE_ROUTES = {**COPY_CAPTURE_ROUTES, **EXTERNAL_OCI_CAPTURE_ROUTES, **MIRROR_CAPTURE_ROUTES,
     OCI_CAPTURE_ROUTE: "OciDocumentProjection",
     MANAGED_CLEANUP_CAPTURE_ROUTE: "managed_oci_cleanup"}
 STORAGE_SIGNATURE_FIELDS = {
+    **{route: ("mirror_guard_request_signature", "mirror_guard_reply_signature")
+        for route in MIRROR_CAPTURE_ROUTES},
     MANAGED_CLEANUP_CAPTURE_ROUTE: ("managed_oci_cleanup_request_signature",
         "managed_oci_cleanup_reply_signature"),
     **{route: ("request_signature", "reply_signature") for route in COPY_CAPTURE_ROUTES},
@@ -59,6 +69,8 @@ STORAGE_SIGNATURE_FIELDS = {
 
 
 def storage_transport_body_limit(route, side):
+    if route in MIRROR_CAPTURE_ROUTES:
+        return 256 * 1024
     if route == OCI_CAPTURE_ROUTE and side == "replyBytes":
         return 4 * 1024 * 1024 + 64 * 1024
     if route == "/_internal/storage/external-oci/v1" and side == "replyBytes":
@@ -70,6 +82,7 @@ def storage_transport_body_limit(route, side):
     return 64 * 1024
 
 AUTHENTICATED_EVENT_ROUTES = {
+    "mirror_guard_authenticated": MIRROR_CAPTURE_ROUTES,
     "managed_oci_cleanup_authenticated": {MANAGED_CLEANUP_CAPTURE_ROUTE: "managed_oci_cleanup"},
     "external_copy_authenticated": COPY_CAPTURE_ROUTES,
     "oci_projection_authenticated": {OCI_CAPTURE_ROUTE: "OciDocumentProjection"},
@@ -143,7 +156,7 @@ def finish_native_copy_capture(native, tools, selected):
         with os.fdopen(descriptor, 'wb') as output, os.fdopen(errors, 'wb') as error:
             result = subprocess.run(['journalctl', '--no-pager', '--output=json',
                 '--output-fields=__REALTIME_TIMESTAMP,_PID,_EXE,_SYSTEMD_UNIT,MESSAGE',
-                r'--grep=^\\[INFO\\] message=(external_copy_authenticated|oci_projection_authenticated|external_oci_authenticated|storage_final_sql_checked|external_oci_admission_actor_checked) ',
+                r'--grep=^\\[INFO\\] message=(external_copy_authenticated|oci_projection_authenticated|external_oci_authenticated|mirror_guard_authenticated|storage_final_sql_checked|external_oci_admission_actor_checked) ',
                 '--unit=aos-hub.service', '--after-cursor=' + selected['journalCursor']],
                 stdout=output, stderr=error, check=False, timeout=45)
             output.flush()
@@ -182,7 +195,8 @@ def capture_protected_headers(source, label, artifact_prefix=None):
         if (not isinstance(raw, dict) or (raw.get("version") == "2" and set(raw) != PROTECTED_HEADER_V2_FIELDS)
                 or (raw.get("version") == "3" and set(raw) != PROTECTED_HEADER_FIELDS)
                 or (raw.get("version") == "4" and set(raw) != PROTECTED_HEADER_V4_FIELDS)
-                or raw.get("version") not in {"2", "3", "4"}):
+                or (raw.get("version") == "5" and set(raw) != PROTECTED_HEADER_V5_FIELDS)
+                or raw.get("version") not in {"2", "3", "4", "5"}):
             raise ValueError("protected header capture shape differs")
         if (not re.fullmatch(r"[0-9a-f]{32}", raw["request_id"])
                 or raw["request_id"] in projected
@@ -204,8 +218,10 @@ def capture_protected_headers(source, label, artifact_prefix=None):
         files = {}
         for field in ("path_and_query", "ingress", "request_signature", "reply_signature",
                 "oci_request_signature", "oci_reply_signature",
-                *sorted(EXTERNAL_OCI_SIGNATURE_FIELDS | MANAGED_OCI_CLEANUP_SIGNATURE_FIELDS)):
-            if field in MANAGED_OCI_CLEANUP_SIGNATURE_FIELDS and raw["version"] != "4":
+                *sorted(EXTERNAL_OCI_SIGNATURE_FIELDS | MANAGED_OCI_CLEANUP_SIGNATURE_FIELDS | MIRROR_SIGNATURE_FIELDS)):
+            if field in MIRROR_SIGNATURE_FIELDS and raw["version"] != "5":
+                continue
+            if field in MANAGED_OCI_CLEANUP_SIGNATURE_FIELDS and raw["version"] not in {"4", "5"}:
                 continue
             value = raw.get(field, "")
             if not isinstance(value, str) or len(value.encode()) > 16 * 1024:

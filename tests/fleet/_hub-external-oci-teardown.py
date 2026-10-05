@@ -22,7 +22,8 @@ def shutdown_external_oci_helper(native, tools, prepared, helper):
         "terminalFile": root + "/helper-terminal.json"})
     if (paths["shutdownFile"], paths["terminalFile"]) not in {
             (root + "/helper-shutdown.json", root + "/helper-terminal.json"),
-            (root + "/inventory-restart-shutdown.json", root + "/inventory-restart-terminal.json")}:
+            (root + "/inventory-restart-shutdown.json", root + "/inventory-restart-terminal.json"),
+            (root + "/mirror-functional-shutdown.json", root + "/mirror-functional-terminal.json")}:
         raise ValueError("External helper shutdown leaves its selected actual epoch")
     request = install_direct_guest_file(native, tools["python"], paths["shutdownFile"],
         json.dumps(offered, separators=(",", ":")).encode())
@@ -72,6 +73,11 @@ def teardown_external_oci_pair(client, native, worker, tools, ownership, produce
     coordinates = prepared["coordinates"]
     processes = ownership.get("processes", {})
     results, failures = {}, []
+    if ownership.get("mirrorUpstream") is not None:
+        try:
+            results["mirrorUpstream"] = stop_external_mirror_upstream(worker, tools, ownership)
+        except Exception as error:
+            failures.append({"role": "mirrorUpstream", "failureClass": type(error).__name__})
     helper = ownership.get("helper")
     if helper is not None:
         try:

@@ -136,15 +136,29 @@ impl RemoteStorageWorkClient {
         };
         let signed = sign_mirror_guard_batch_lookup(key, &challenge)?;
         let request_bytes = signed.body.len();
+        let mut exchange = crate::storage_work::telemetry::ExchangeTelemetry::control(
+            &challenge.request_nonce,
+            "mirror_guard_batch",
+        );
+        exchange.offer_control(path, &signed.body);
         let response = self
             .http
             .post(format!("{origin}{path}"))
             .header("content-type", "application/json")
             .header(MIRROR_GUARD_SIGNATURE_HEADER, signed.signature)
+            .header(
+                crate::storage_work::telemetry::STORAGE_CALL_ID_HEADER,
+                exchange.transport_call_id(),
+            )
             .body(signed.body)
             .send()
             .await
-            .context("reading independent mirror guard batch")?;
+            .context("reading independent mirror guard batch")
+            .inspect_err(|_| exchange.finish("transport_failed"))?;
+        if !response.status().is_success() {
+            exchange.discard_status_response();
+            exchange.finish("http_rejected");
+        }
         ensure!(
             response.status().is_success(),
             "mirror guard batch refused its exact challenge"
@@ -158,7 +172,8 @@ impl RemoteStorageWorkClient {
         let mut bytes = Vec::new();
         let mut chunks = response.bytes_stream();
         while let Some(chunk) = chunks.next().await {
-            let chunk = chunk?;
+            let chunk = chunk.inspect_err(|_| exchange.finish("response_read_failed"))?;
+            exchange.observe_body(chunk.len());
             ensure!(
                 bytes
                     .len()
@@ -171,7 +186,10 @@ impl RemoteStorageWorkClient {
         let latest = u64::try_from(aos_hub_core::clock::now_unix_secs())?
             .checked_add(uncertainty)
             .context("mirror guard clock overflow")?;
-        let proofs = verify_mirror_guard_batch_reply(key, &signature, &bytes, &challenge, latest)?;
+        let proofs = verify_mirror_guard_batch_reply(key, &signature, &bytes, &challenge, latest)
+            .inspect_err(|_| exchange.finish("invalid_result"))?;
+        exchange.authenticated_control(&bytes);
+        exchange.finish("success");
         tracing::info!(
             items = items.len(),
             request_bytes,

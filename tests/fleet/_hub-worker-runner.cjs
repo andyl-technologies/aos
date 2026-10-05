@@ -12,7 +12,7 @@ function acceptanceRegistryServer(
   runtime, socketPath, bindings, namespaceObservation, ociNamespaceObservation,
   ociAnchorCreation, ociAcceptanceStaging, publicDocumentCacheObservation,
   managedCleanupFixtureInstallation, managedGcObservation,
-  copyNamespaceObservation,
+  copyNamespaceObservation, externalMirrorFunctionalInstallation,
 ) {
   const parent = lstatSync(path.dirname(socketPath));
   if (!parent.isDirectory() || parent.uid !== process.getuid() || (parent.mode & 0o077)) {
@@ -23,6 +23,7 @@ function acceptanceRegistryServer(
   let publicCacheActive = false;
   let managedGcActive = false;
   let managedCleanupActive = false;
+  let externalMirrorStagingActive = false;
   const server = createServer({ allowHalfOpen: true }, socket => {
     sockets.add(socket);
     socket.once('close', () => sockets.delete(socket));
@@ -114,6 +115,18 @@ function acceptanceRegistryServer(
             socket.end(JSON.stringify(await managedCleanupFixtureInstallation(request)) + '\n');
           } finally {
             managedCleanupActive = false;
+          }
+          return;
+        }
+        if (request.version === 1 && request.kind === 'external-mirror-functional-install') {
+          if (!externalMirrorFunctionalInstallation || externalMirrorStagingActive) {
+            throw new Error('External Mirror typed storage is unavailable');
+          }
+          externalMirrorStagingActive = true;
+          try {
+            socket.end(JSON.stringify(await externalMirrorFunctionalInstallation(request)) + '\n');
+          } finally {
+            externalMirrorStagingActive = false;
           }
           return;
         }
@@ -800,7 +813,7 @@ async function main() {
     acceptanceSocketPath, ociSdkNamespaceObservation, ociSdkAnchorEnabled,
     ociSdkAcceptanceRegistryKey, publicDocumentCacheCase, publicDocumentCacheObserverPath,
     managedGcObserverSelection, managedGcObserverPath, managedCleanupInstallerPath,
-    copyIsolationSelection, copyIsolationModulePath, ...options
+    copyIsolationSelection, copyIsolationModulePath, externalMirrorInstallerPath, ...options
   } = JSON.parse(configurationBytes);
   const queueOptions = QueuesOptionsSchema.parse(options);
   if (queueObservationPath && 'maxConcurrentInvocations' in QueueConsumerOptionsSchema.shape) {
@@ -948,6 +961,15 @@ async function main() {
         },
         managedGcObserverSelection ? managedGcObservation : undefined,
         copyNamespaceObservation,
+        request => {
+          if (typeof externalMirrorInstallerPath !== 'string'
+              || !externalMirrorInstallerPath.startsWith('/nix/store/')) {
+            throw new Error('External Mirror typed storage requires an immutable selected module');
+          }
+          ociHashFile(externalMirrorInstallerPath, 64 * 1024);
+          const { installExternalMirrorFunctional } = require(externalMirrorInstallerPath);
+          return installExternalMirrorFunctional(runtime, options, request, copyNamespaceObservation);
+        },
       );
       await acceptanceServer.ready;
     }

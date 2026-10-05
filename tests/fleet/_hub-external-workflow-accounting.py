@@ -216,6 +216,13 @@ def external_body_partition(decoded, original, observation, ingress_assessor):
         return result
     call = observation['value']
     if observation['kind'] == 'authenticated_control':
+        mirror_controls = {'mirror_guard': 'mirror_guard_control',
+            'mirror_guard_batch': 'mirror_guard_batch'}
+        if decoded['operation'] in mirror_controls:
+            require(call['operation'] == mirror_controls[decoded['operation']],
+                'Mirror checked Native event belongs to another operation')
+            require(call['planIdSha256'] == decoded['exchangeIdSha256'],
+                'Mirror checked Native nonce belongs to another challenge')
         require((call['requestSha256'], call['replySha256'], call['offeredRequestBytes'],
                  call['consumedReplyBytes']) == (decoded['requestSha256'], decoded['replySha256'],
                  result['capturedRequestBytes'], result['capturedReplyBytes']),
@@ -641,6 +648,22 @@ def consume_external_workflow_evidence(native, worker, tools, prepared, processe
         report['copyAssociation'] = {key: value for key, value in copy_association.items() if key != 'catalogue'}
     except (KeyError, TypeError, ValueError, OSError) as error:
         report['associationFailures'].append('copy_' + type(error).__name__)
+    mirror_accounting, mirror_cases, mirror_calls = None, {}, []
+    if business is not None and business.get('mirror') is not None:
+        try:
+            mirror_accounting = sibling('_hub-external-mirror-accounting')
+            mirror = business['mirror']
+            profile_digest = mirror['purpose']['producer']['selection']['profileDigest']
+            for mode, case in mirror['cases'].items():
+                query = mirror_accounting.mirror_current_query(case)
+                current = read_sql(query, 'external-mirror-current-' + mode.replace('_', '-'))
+                require(isinstance(current, dict) and set(current) == {'value', 'receipt'},
+                    'current Mirror SQL result lacks private custody')
+                raw = retained_guest_bytes(native, current['receipt'], SQL_MAXIMUM, read_private)
+                require(closed_json(raw) == current['value'], 'current Mirror SQL private result differs')
+                mirror_cases[mode] = {**case, 'effects': {**case['effects'], 'sql': current}}
+        except (KeyError, TypeError, ValueError, OSError) as error:
+            report['associationFailures'].append('mirror_' + type(error).__name__)
     sql_associations, copy_calls, selected_queries = [], [], {}
     for item in report['bodyPartitions']:
         if item['role'] != 'nativeOutbound':
@@ -648,12 +671,30 @@ def consume_external_workflow_evidence(native, worker, tools, prepared, processe
         identity = item['role'], item['requestId']
         decoded_row = decoded[identity]
         operation = decoded_row['operation']
-        if operation not in {'external_oci_control', 'external_oci_source',
+        is_mirror = mirror_accounting is not None and operation in (
+            mirror_accounting.MIRROR_WORK_OPERATIONS | mirror_accounting.MIRROR_GUARD_OPERATIONS)
+        if not is_mirror and operation not in {'external_oci_control', 'external_oci_source',
                              'external_copy_control', 'external_copy_metadata'}:
             continue
         try:
-            raw = retained_host_bytes(bodies[identity]['bodies']['request'], 64 * 1024)
+            raw = retained_host_bytes(bodies[identity]['bodies']['request'],
+                BODY_MAXIMUM if is_mirror else 64 * 1024)
             request = closed_json(raw)
+            if is_mirror:
+                require(len(mirror_cases) == 2, 'actual current Mirror destinations are unavailable')
+                sources = mirror_accounting.mirror_request_sources(request, operation)
+                require(isinstance(sources, list) and 0 < len(sources) <= 64,
+                    'Mirror request source partition is empty or excessive')
+                associations = [mirror_accounting.join_mirror_source_current(source,
+                    mirror_cases, profile_digest) for source in sources]
+                receipts = {sha256(canonical(row['currentSqlReceipt'])): row['currentSqlReceipt']
+                    for row in associations}
+                append_summary(mirror_calls, {'nativeRequestId': item['requestId'],
+                    'sourceCount': len(sources), 'associationsSha256': sha256(canonical(associations)),
+                    'currentSqlReceipts': list(receipts.values()),
+                    'existingFinalContextSha256': sha256(canonical(item['existingFinalCheck']))
+                        if item['existingFinalCheck'] is not None else None}, retained)
+                continue
             if operation.startswith('external_copy_'):
                 require(copy_association is not None, 'actual Copy API association is missing')
                 append_summary(copy_calls, {'nativeRequestId': item['requestId'],
@@ -677,6 +718,7 @@ def consume_external_workflow_evidence(native, worker, tools, prepared, processe
         except (KeyError, TypeError, ValueError, OSError) as error:
             report['associationFailures'].append('current_sql_' + type(error).__name__)
     report['currentSqlAssociation'] = sql_associations
+    report['mirrorCurrentSqlAssociation'] = mirror_calls
     if report['copyAssociation'] is not None:
         report['copyAssociation']['calls'] = copy_calls
     try:

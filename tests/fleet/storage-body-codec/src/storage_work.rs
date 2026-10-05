@@ -126,6 +126,30 @@ pub(super) fn decode_transport(
                 .unwrap_or(0)
                 .to_string();
         }
+        StorageWorkOutcome::MirrorLiveMetadata { content_base64, .. } => {
+            payload.selected_data_bytes = validated_base64_bytes(content_base64)?.to_string();
+        }
+        StorageWorkOutcome::MirrorLiveMetadataBatch { items } => {
+            use aos_hub_core::storage_work::live_metadata_batch::LiveMetadataOutcome;
+
+            payload.selected_data_bytes = sum_lengths(items.iter().filter_map(|item| {
+                if let LiveMetadataOutcome::Found { content_base64, .. } = &item.outcome {
+                    Some(validated_base64_bytes(content_base64))
+                } else {
+                    None
+                }
+            }))?
+            .to_string();
+        }
+        StorageWorkOutcome::MirrorTreeInventory { projection } => {
+            payload.selected_data_bytes = projection
+                .page
+                .as_ref()
+                .map(|page| serde_json::to_vec(page).map(|bytes| bytes.len()))
+                .transpose()?
+                .unwrap_or(0)
+                .to_string();
+        }
         _ => {}
     }
     let class = if matches!(result.outcome, StorageWorkOutcome::NotFound) {
@@ -138,6 +162,8 @@ pub(super) fn decode_transport(
             | StorageWorkOperation::DeleteIfMatches { .. }
     ) {
         "storage_work_gc_metadata"
+    } else if crate::mirror::supports_operation(&plan.operation) {
+        "mirror_storage_work_typed_observation"
     } else {
         "storage_work_typed_observation"
     };
@@ -145,27 +171,28 @@ pub(super) fn decode_transport(
 }
 
 fn supported(operation: &StorageWorkOperation) -> bool {
-    matches!(
-        operation,
-        StorageWorkOperation::ListPage { .. }
-            | StorageWorkOperation::Head { .. }
-            | StorageWorkOperation::HashOciRange { .. }
-            | StorageWorkOperation::DeleteIfMatches { .. }
-            | StorageWorkOperation::InspectSha256 { .. }
-            | StorageWorkOperation::InspectGitObject { .. }
-            | StorageWorkOperation::InspectGitObjects { .. }
-            | StorageWorkOperation::FilterGitTreeEntries { .. }
-            | StorageWorkOperation::InspectStoredGitPack { .. }
-            | StorageWorkOperation::FilterStoredGitPackTree { .. }
-            | StorageWorkOperation::InspectMetadata { .. }
-            | StorageWorkOperation::InspectMetadataObjects { .. }
-            | StorageWorkOperation::InspectDocumentation { .. }
-            | StorageWorkOperation::InspectDocumentationContent { .. }
-            | StorageWorkOperation::InspectOciRange { .. }
-            | StorageWorkOperation::PutMetadata { .. }
-            | StorageWorkOperation::PutProbe { .. }
-            | StorageWorkOperation::DeleteProbe { .. }
-    )
+    crate::mirror::supports_operation(operation)
+        || matches!(
+            operation,
+            StorageWorkOperation::ListPage { .. }
+                | StorageWorkOperation::Head { .. }
+                | StorageWorkOperation::HashOciRange { .. }
+                | StorageWorkOperation::DeleteIfMatches { .. }
+                | StorageWorkOperation::InspectSha256 { .. }
+                | StorageWorkOperation::InspectGitObject { .. }
+                | StorageWorkOperation::InspectGitObjects { .. }
+                | StorageWorkOperation::FilterGitTreeEntries { .. }
+                | StorageWorkOperation::InspectStoredGitPack { .. }
+                | StorageWorkOperation::FilterStoredGitPackTree { .. }
+                | StorageWorkOperation::InspectMetadata { .. }
+                | StorageWorkOperation::InspectMetadataObjects { .. }
+                | StorageWorkOperation::InspectDocumentation { .. }
+                | StorageWorkOperation::InspectDocumentationContent { .. }
+                | StorageWorkOperation::InspectOciRange { .. }
+                | StorageWorkOperation::PutMetadata { .. }
+                | StorageWorkOperation::PutProbe { .. }
+                | StorageWorkOperation::DeleteProbe { .. }
+        )
 }
 
 fn known_refusal(status: u16, body: &[u8]) -> bool {

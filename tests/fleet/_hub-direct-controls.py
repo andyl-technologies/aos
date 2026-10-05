@@ -106,7 +106,7 @@ class DirectBootstrapControls:
             self.token_refreshed_at = time.monotonic()
         if service not in {
             "BindingService", "StorageAuthorityService", "IdentityService",
-            "OrganizationService", "OperationService", "RegistryService",
+            "OrganizationService", "OperationService", "RegistryService", "RegistryMirrorService",
             "TopologyService", "ContainerService", "DomainService", "NetworkPolicyService",
             "DeliveryService", "DeliveryControllerService", "RouteService", "RouteControllerService",
         }:
@@ -221,15 +221,24 @@ class DirectBootstrapControls:
 
     def create_external_registry(self, organization, binding, registry_name,
                                  trust_keys, placement_name, placement_prefix,
-                                 current_write_revision, requires_conditional_writes):
+                                 current_write_revision, requires_conditional_writes, *,
+                                 mirror_run_id=None, label_prefix="fleet-direct"):
         """Select External storage through a genuine scan and writer promotion."""
         if binding["ownerScopeKey"] != organization["ownerScopeKey"]:
             raise ValueError("registry and External binding require the same actual owner")
         if not trust_keys or any(not isinstance(key, str) or not key for key in trust_keys):
             raise ValueError("registry requires the actual signed publisher trust anchors")
         binding_prefix = binding["spec"]["s3"]["prefix"].rstrip("/")
+        allowed_prefix = placement_prefix.startswith(binding_prefix + "/")
+        if mirror_run_id is not None:
+            if not re.fullmatch(r"[0-9a-f]{32}", mirror_run_id):
+                raise ValueError("Mirror registry requires its actual controlled run")
+            root = ".aos-mirror-qualification/" + mirror_run_id + "/final/"
+            allowed_prefix = placement_prefix in {root + "full", root + "pull-through"}
+        if not re.fullmatch(r"[a-z][a-z0-9-]{0,79}", label_prefix):
+            raise ValueError("registry control idempotency prefix differs")
         if (
-            not binding_prefix or not placement_prefix.startswith(binding_prefix + "/")
+            not binding_prefix or not allowed_prefix
             or any(part in {"", ".", ".."} for part in placement_prefix.split("/"))
             or type(requires_conditional_writes) is not bool
             or not re.fullmatch(r"[1-9][0-9]*", str(current_write_revision))
@@ -241,7 +250,7 @@ class DirectBootstrapControls:
                 "orgSlug": organization["slug"], "projectPath": "",
                 "name": registry_name, "visibility": "private", "trustKeys": trust_keys,
                 "expectedResourceVersion": "",
-            }, "fleet-direct-registry",
+            }, label_prefix + "-registry",
         )["registry"]
         surface = {"registrySlug": registry["slug"]}
         self.reviewed(
@@ -251,7 +260,7 @@ class DirectBootstrapControls:
                 "desiredReadEnabled": True, "readOrder": "0",
                 "requiresConditionalWrites": requires_conditional_writes,
                 "expectedResourceVersion": "",
-            }, "fleet-direct-placement",
+            }, label_prefix + "-placement",
         )
         placement = self.call("TopologyService", "GetPlacement", {
             "surface": surface, "name": placement_name,
@@ -260,7 +269,7 @@ class DirectBootstrapControls:
             "TopologyService", "PlanScanPlacement", "ScanPlacement", {
                 "surface": surface, "placementName": placement_name,
                 "expectedResourceVersion": placement["resourceVersion"],
-            }, "fleet-direct-placement-scan",
+            }, label_prefix + "-placement-scan",
         )["operation"]
         completed_scan = self.wait_operation(scan["operationId"], {"succeeded"})
         placement = self.call("TopologyService", "GetPlacement", {
@@ -278,7 +287,7 @@ class DirectBootstrapControls:
             "TopologyService", "PlanPromotePlacement", "PromotePlacement", {
                 "surface": surface, "placementName": placement_name,
                 "expectedResourceVersion": placement["resourceVersion"],
-            }, "fleet-direct-placement-promote",
+            }, label_prefix + "-placement-promote",
         )
 
         deadline = time.monotonic() + 120

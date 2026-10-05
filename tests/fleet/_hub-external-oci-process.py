@@ -21,7 +21,8 @@ def install_external_oci_consumers(worker, tools, prepared, consumers, issuer_bi
         "name", "scriptPath", "resourcePersistencePath", "r2Buckets", "durableObjects",
         "kvNamespaces", "queueProducers", "queueConsumers")}
     allowed = {"HUB_EXTERNAL_OBJECT_CONSUMER", "HUB_EXTERNAL_COPY_CONSUMER",
-        "HUB_EXTERNAL_OCI_CONSUMER", "HUB_EXTERNAL_STAGING_CONSUMER", "HUB_PROVIDER_CAPACITY_POLICY"}
+        "HUB_EXTERNAL_OCI_CONSUMER", "HUB_EXTERNAL_STAGING_CONSUMER", "HUB_PROVIDER_CAPACITY_POLICY",
+        "HUB_EXTERNAL_MIRROR_CONSUMER"}
     if not consumers or not set(consumers).issubset(allowed):
         raise ValueError("External consumer selection contains an unsupported domain")
     for name, value in consumers.items():
@@ -109,7 +110,8 @@ def require_external_background_controllers(ready, run_id):
     identity = "external-oci-inventory-" + run_id
     expected = {"placementScan": {"intervalSeconds": 2, "maximumPlacements": 5},
         "ociInventory": {"collectorId": identity, "idempotencyPrefix": identity,
-            "maximumPlacements": 100, "dispatchBudget": "native"}}
+            "maximumPlacements": 100, "dispatchBudget": "native"},
+        "mirrorSync": {"intervalSeconds": 60, "mode": "full"}}
     if ready.get("backgroundControllers") != expected:
         raise ValueError("External helper lacks its selected real controller task registrations")
     return expected
@@ -119,7 +121,8 @@ def await_external_oci_helper(native, tools, prepared, process, input_ref, candi
     """Verify the actual post-bind helper record against this separate helper pin."""
     root = prepared["coordinates"]["nativeRoot"]
     path = readiness_file or root + "/helper-ready.json"
-    if path not in {root + "/helper-ready.json", root + "/inventory-restart-ready.json"}:
+    if path not in {root + "/helper-ready.json", root + "/inventory-restart-ready.json",
+            root + "/mirror-functional-ready.json"}:
         raise ValueError("External helper readiness leaves its selected process epoch")
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:

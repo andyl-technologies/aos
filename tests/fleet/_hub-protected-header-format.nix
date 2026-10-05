@@ -1,8 +1,8 @@
 # Retain only compact application controls in a separate private fixture log.
 # Bearer, cookie, CSRF and provider authorization headers are never selected.
 selection: let
-  # Existing callers retain the version3 schema. Only the separately selected
-  # Managed pair records its cleanup MACs in the same owner-private log.
+  # Existing callers retain their schema. Selected pair logs add only the
+  # named cleanup and Mirror MACs, with no authorization or arbitrary headers.
   name =
     if builtins.isString selection
     then selection
@@ -11,6 +11,10 @@ selection: let
     if builtins.isString selection
     then false
     else selection.includeManagedCleanup or false;
+  includeMirror =
+    if builtins.isString selection
+    then false
+    else selection.includeMirror or false;
 in ''
   # Arbitrary query strings may contain credentials. Only the closed OCI
   # upload selectors are retained; every other query stays unsupported.
@@ -32,7 +36,7 @@ in ''
     retained $http_x_aos_hybrid_ingress;
   }
   log_format ${name} escape=json
-    '{"version":"${if includeManagedCleanup then "4" else "3"}","request_id":"$request_id",'
+    '{"version":"${if includeMirror then "5" else if includeManagedCleanup then "4" else "3"}","request_id":"$request_id",'
     '"origin_request_id":"$http_x_aos_fleet_request_id",'
     '"path_and_query":"${"$"}${name}_target","query_class":"${"$"}${name}_query_class",'
     '"method":"$request_method",'
@@ -48,5 +52,5 @@ in ''
     '"external_oci_source_request_signature":"$http_x_aos_external_oci_source_signature",'
     '"external_oci_source_reply_signature":"$sent_http_x_aos_external_oci_source_signature",'
     '"external_oci_cleanup_request_signature":"$http_x_aos_external_oci_cleanup_signature",'
-    '"external_oci_cleanup_reply_signature":"$sent_http_x_aos_external_oci_cleanup_signature"${if includeManagedCleanup then '',"managed_oci_cleanup_request_signature":"$http_x_aos_managed_oci_cleanup_signature","managed_oci_cleanup_reply_signature":"$sent_http_x_aos_managed_oci_cleanup_signature"'' else ""}}';
+    '"external_oci_cleanup_reply_signature":"$sent_http_x_aos_external_oci_cleanup_signature"${if includeManagedCleanup || includeMirror then '',"managed_oci_cleanup_request_signature":"$http_x_aos_managed_oci_cleanup_signature","managed_oci_cleanup_reply_signature":"$sent_http_x_aos_managed_oci_cleanup_signature"'' else ""}${if includeMirror then '',"mirror_guard_request_signature":"$http_x_aos_mirror_guard_signature","mirror_guard_reply_signature":"$sent_http_x_aos_mirror_guard_signature"'' else ""}}';
 ''

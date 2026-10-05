@@ -155,6 +155,9 @@ impl<'a> ExchangeTelemetry<'a> {
             "managed_oci_cleanup" => {
                 tracing::info!("managed_oci_cleanup_authenticated {encoded}");
             }
+            "mirror_guard_control" | "mirror_guard_batch" => {
+                tracing::info!("mirror_guard_authenticated {encoded}");
+            }
             _ => {}
         }
     }
@@ -191,6 +194,7 @@ pub(super) mod tests {
     use std::time::Duration;
 
     use aos_hub_core::storage_work::{StorageWorkOperation, StorageWorkOutcome, StorageWorkResult};
+    use sha2::Digest as _;
     use tracing::Subscriber;
     use tracing::field::{Field, Visit};
     use tracing::instrument::WithSubscriber as _;
@@ -271,6 +275,66 @@ pub(super) mod tests {
 
         fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
             self.0.insert(field.name().into(), format!("{value:?}"));
+        }
+    }
+
+    #[test]
+    fn mirror_guard_receipt_requires_complete_authenticated_success() {
+        for operation in ["mirror_guard_control", "mirror_guard_batch"] {
+            for outcome in ["success", "invalid_result", "cancelled"] {
+                let recorded = RecordedEvents::default();
+                let subscriber = tracing_subscriber::registry().with(recorded.clone());
+                let request = b"retained signed challenge";
+                let reply = b"retained verified reply";
+                let call_id = tracing::subscriber::with_default(subscriber, || {
+                    let mut exchange =
+                        super::ExchangeTelemetry::control("original-nonce", operation);
+                    let call_id = exchange.transport_call_id().to_owned();
+                    exchange.offer_control("/exact-mirror-route", request);
+                    exchange.observe_body(reply.len());
+                    // This exercises instrumentation only. The clients invoke
+                    // this hook after their existing MAC and freshness checks.
+                    exchange.authenticated_control(reply);
+                    exchange.finish(outcome);
+                    call_id
+                });
+                let rows = recorded.0.lock().unwrap();
+                let receipts: Vec<serde_json::Value> = rows
+                    .iter()
+                    .filter_map(|fields| {
+                        fields
+                            .get("message")
+                            .and_then(|message| message.strip_prefix("mirror_guard_authenticated "))
+                            .map(|body| serde_json::from_str(body).unwrap())
+                    })
+                    .collect();
+
+                if outcome == "success" {
+                    assert_eq!(receipts.len(), 1);
+                    let receipt = &receipts[0];
+                    assert_eq!(receipt["version"], 2);
+                    assert_eq!(receipt["transportCallId"], call_id);
+                    assert_eq!(receipt["operation"], operation);
+                    assert_eq!(receipt["route"], "/exact-mirror-route");
+                    assert_eq!(receipt["requestBytes"], request.len());
+                    assert_eq!(receipt["replyBytes"], reply.len());
+                    assert_eq!(
+                        receipt["requestSha256"],
+                        hex::encode(super::Sha256::digest(request))
+                    );
+                    assert_eq!(
+                        receipt["replySha256"],
+                        hex::encode(super::Sha256::digest(reply))
+                    );
+                } else {
+                    assert!(receipts.is_empty());
+                }
+                drop(rows);
+                let accounting = recorded.exchange();
+                assert_eq!(accounting["outcome"], outcome);
+                assert_eq!(accounting["transport_call_id"], call_id);
+                assert_eq!(accounting["observed_body_bytes"], reply.len().to_string());
+            }
         }
     }
 

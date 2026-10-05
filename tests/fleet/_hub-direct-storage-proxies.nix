@@ -17,6 +17,7 @@
   managedCleanupLossUpstream ? null,
   managedOciProfileHoldUpstream ? null,
   includeManagedCleanupControls ? false,
+  includeMirrorControls ? false,
   workerAdditionalHttp ? "",
   includeTransferCompletion ? false,
 }:
@@ -29,6 +30,7 @@ assert managedOciProfileHoldUpstream == null || managedOciProfileHoldUpstream ==
     protectedHeaders {
       inherit name;
       includeManagedCleanup = includeManagedCleanupControls;
+      includeMirror = includeMirrorControls;
     };
   format = name: root: extra: ''
     log_format ${name} escape=json

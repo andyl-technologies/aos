@@ -187,10 +187,12 @@ def select_external_storage_codec(tools, artifacts, process, run, role, epoch=No
     if role not in {'ordinary_native', 'controlled_external_oci_native'}:
         raise ValueError("External codec process role differs")
     label = 'external-oci-' + run + ('-stock-codec' if role == 'ordinary_native' else '-helper-codec')
-    if epoch not in {None, 'inventory-restart'}:
+    if epoch not in {None, 'inventory-restart', 'mirror-functional'}:
         raise ValueError("External codec epoch differs")
-    if epoch is not None:
+    if epoch == 'inventory-restart':
         label = 'external-oci-' + run + '-inventory-codec'
+    elif epoch == 'mirror-functional':
+        label = 'external-oci-' + run + '-mirror-codec'
     reviewed = await_direct_review(label, {
         'installedArtifacts': retain_direct_flow(label + '-installed-inputs.json', artifacts),
         'actualNativeProcess': retain_direct_flow(label + '-native-process.json', process),

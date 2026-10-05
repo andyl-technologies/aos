@@ -35,6 +35,7 @@ fn fixture() -> (StorageWorkPlan, StorageWorkResult) {
         binding_id: plan.binding_id,
         binding_resource_version: plan.binding_resource_version,
         source_bytes: 0,
+        versioned_sources: Vec::new(),
         outcome: StorageWorkOutcome::Head {
             object: StorageObjectIdentity {
                 key: "registry/HEAD".into(),
@@ -316,6 +317,7 @@ fn stored_pack_fixture() -> (StorageWorkPlan, StorageWorkResult) {
     // The Native validator checks this whole-object OID before it is counted.
     let projection = MirrorPackProjection {
         pack: MirrorPackSource {
+            provider_version: None,
             guarded_source: None,
             path: pack_path,
             sha256: hex::encode(Sha256::digest(pack)),
@@ -323,6 +325,7 @@ fn stored_pack_fixture() -> (StorageWorkPlan, StorageWorkResult) {
             etag: "\"pack-original\"".into(),
         },
         index: MirrorPackSource {
+            provider_version: None,
             guarded_source: None,
             path: index_path.clone(),
             sha256: hex::encode(Sha256::digest(index)),
@@ -501,7 +504,7 @@ fn stored_tree_counts_exact_page_bytes_and_refuses_changed_source_or_predicate()
 }
 
 #[test]
-fn stored_tree_verified_absence_counts_zero_and_upstream_pack_operations_stay_unsupported() {
+fn stored_tree_verified_absence_and_typed_upstream_pack_counts_are_distinct() {
     let (mut plan, mut result) = stored_tree_fixture();
     let absent_oid = "f".repeat(64);
     if let StorageWorkOperation::FilterStoredGitPackTree { query } = &mut plan.operation {
@@ -543,13 +546,117 @@ fn stored_tree_verified_absence_counts_zero_and_upstream_pack_operations_stay_un
         },
     };
     let request = serde_json::to_vec(&upstream_plan).unwrap();
-    assert!(decode(
+    let (_, class, payload) = decode_transport(
         &request,
         &serde_json::to_vec(&upstream_result).unwrap(),
-        "fixture"
+        "fixture",
+        200,
+    )
+    .unwrap();
+    assert_eq!(class, "mirror_storage_work_typed_observation");
+    assert_eq!(payload.selected_data_bytes, "28");
+    assert_eq!(payload.reply_raw_object_bytes, "0");
+
+    let (_, class, _) = decode_transport(&request, b"storage work failed", "fixture", 503).unwrap();
+    assert_eq!(class, "storage_work_refusal_metadata");
+    assert!(decode_transport(&request, b"unknown mirror failure", "fixture", 503).is_err());
+}
+
+#[test]
+fn mirror_tree_inventory_counts_exact_page_and_keeps_verified_absence_distinct() {
+    use aos_hub_core::mirror_tree_inventory::{
+        project_pages, MirrorTreeInventoryCommitment, MirrorTreeInventoryProjection,
+        MirrorTreeInventoryQuery, MirrorTreeInventorySource,
+    };
+
+    let (mut plan, mut result) = stored_tree_fixture();
+    let StorageWorkOutcome::GitPackTreeProjection { projection: stored } = result.outcome else {
+        panic!("stored tree fixture outcome");
+    };
+    let manifest: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../crates/aos-registry-surface/src/pack_index/fixtures/manifest.json"
+    ))
+    .unwrap();
+    let mut tree = Vec::new();
+    for (name, object) in [
+        ("base.toml", "base"),
+        ("changed.toml", "changed"),
+        ("small.toml", "small"),
+    ] {
+        tree.extend_from_slice(format!("100644 {name}\0").as_bytes());
+        tree.extend_from_slice(
+            &hex::decode(manifest["objects"][object]["oid"].as_str().unwrap()).unwrap(),
+        );
+    }
+    let query = MirrorTreeInventoryQuery {
+        source: MirrorTreeInventorySource::Pack {
+            inspection: aos_hub_core::mirror_inspection::MirrorPackInspection {
+                registry_id: 1,
+                registry_resource_version: 2,
+                mirror_resource_version: 3,
+                upstream_base: "https://example.org/registry/".into(),
+                index_path: stored.pair.index.path.clone(),
+                protected_profile_digest: "c".repeat(64),
+                selections: Vec::new(),
+            },
+        },
+        tree_oid: stored.tree_oid.clone(),
+        cursor: None,
+    };
+    let source = MirrorTreeInventoryCommitment::Pack { pair: stored.pair };
+    let page = project_pages(&query.tree_oid, &tree, &source.source_commitment().unwrap())
+        .unwrap()
+        .remove(0);
+    let expected_bytes = serde_json::to_vec(&page).unwrap().len();
+    plan.operation = StorageWorkOperation::InspectMirrorTreeInventory { query };
+    result.outcome = StorageWorkOutcome::MirrorTreeInventory {
+        projection: MirrorTreeInventoryProjection {
+            source,
+            tree_oid: stored.tree_oid,
+            object_size: stored.object_size,
+            page: Some(page),
+        },
+    };
+    let request = serde_json::to_vec(&plan).unwrap();
+    let (_, class, payload) = decode_transport(
+        &request,
+        &serde_json::to_vec(&result).unwrap(),
+        "fixture",
+        200,
+    )
+    .unwrap();
+    assert_eq!(class, "mirror_storage_work_typed_observation");
+    assert_eq!(payload.selected_data_bytes, expected_bytes.to_string());
+    assert_eq!(payload.reply_raw_object_bytes, "0");
+
+    let mut changed = result.clone();
+    if let StorageWorkOutcome::MirrorTreeInventory { projection } = &mut changed.outcome {
+        projection.page.as_mut().unwrap().source_commitment = "f".repeat(64);
+    }
+    assert!(decode_transport(
+        &request,
+        &serde_json::to_vec(&changed).unwrap(),
+        "fixture",
+        200
     )
     .is_err());
-    assert!(decode_transport(&request, b"storage work failed", "fixture", 503).is_err());
+
+    if let StorageWorkOperation::InspectMirrorTreeInventory { query } = &mut plan.operation {
+        query.tree_oid = "f".repeat(64);
+    }
+    if let StorageWorkOutcome::MirrorTreeInventory { projection } = &mut result.outcome {
+        projection.tree_oid = "f".repeat(64);
+        projection.object_size = None;
+        projection.page = None;
+    }
+    let (_, _, payload) = decode_transport(
+        &serde_json::to_vec(&plan).unwrap(),
+        &serde_json::to_vec(&result).unwrap(),
+        "fixture",
+        200,
+    )
+    .unwrap();
+    assert_eq!(payload.selected_data_bytes, "0");
 }
 
 #[test]

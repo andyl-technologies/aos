@@ -50,7 +50,9 @@ def external_oci_initial_configuration(original, tools, coordinates, roles, cloc
     """Select one fresh Worker and fixed origins before physical observations."""
     if coordinates != external_oci_pair_coordinates(coordinates["runId"]):
         raise ValueError("External OCI initial coordinates changed")
-    if (set(roles) != set(EXTERNAL_OCI_PAIR_KEYS) or len(set(roles.values())) != len(roles)
+    mirror = tools.get("mirrorFunctionalReviewer")
+    role_names = EXTERNAL_OCI_PAIR_KEYS + (("HUB_MIRROR_GUARD_KEY",) if mirror is not None else ())
+    if (set(roles) != set(role_names) or len(set(roles.values())) != len(roles)
             or any(not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{64}", value) is None
                 for value in roles.values())):
         raise ValueError("External OCI roles are not independent fresh keys")
@@ -119,6 +121,20 @@ def external_oci_initial_configuration(original, tools, coordinates, roles, cloc
             "HUB_DIRECT_UPLOAD_CLOCK_MODE": "bounded_utc",
             "HUB_DIRECT_UPLOAD_CLOCK_UNCERTAINTY_SECONDS": "1",
             "HUB_DIRECT_UPLOAD_CLOCK_QUALIFICATION": clock_policy["commitment"]}})
+    if mirror is not None:
+        if (set(mirror) != {"publicKey", "keyId"}
+                or not isinstance(mirror["publicKey"], str)
+                or re.fullmatch(r"[0-9a-f]{64}", mirror["publicKey"]) is None
+                or mirror["publicKey"] == reviewer_public_key
+                or not isinstance(mirror["keyId"], str)
+                or re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}", mirror["keyId"]) is None
+                or not tools.get("externalMirrorInstaller", "").startswith("/nix/store/")):
+            raise ValueError("Mirror functional reviewer is not an independent initially selected role")
+        configuration["externalMirrorInstallerPath"] = tools["externalMirrorInstaller"]
+        configuration["kvNamespaces"]["HUB_EXTERNAL_MIRROR_FUNCTIONAL_ACCEPTANCE"] = "external-mirror-" + run
+        configuration["bindings"].update({"HUB_EXTERNAL_MIRROR_FUNCTIONAL_PROBE": "1",
+            "HUB_EXTERNAL_MIRROR_FUNCTIONAL_REVIEWER_PUBLIC_KEY": mirror["publicKey"],
+            "HUB_EXTERNAL_MIRROR_FUNCTIONAL_REVIEWER_KEY_ID": mirror["keyId"]})
     return configuration
 
 
@@ -207,7 +223,9 @@ def provision_external_oci_pair(native, worker, client, database, tools,
             'probeManifest':[{'endpointId':'external-endpoint-'+selected['run'],'endpointGeneration':1,
                 'signerSecretRef':'external-probe-'+selected['run'],
                 'signingSeed':base64.urlsafe_b64encode(seed).decode().rstrip('=')}]}))
-    """, {"root": coordinates["workerRoot"], "run": run, "roles": EXTERNAL_OCI_PAIR_KEYS,
+    """, {"root": coordinates["workerRoot"], "run": run,
+        "roles": EXTERNAL_OCI_PAIR_KEYS + (("HUB_MIRROR_GUARD_KEY",)
+            if tools.get("mirrorFunctionalReviewer") is not None else ()),
         "reviewer": tools["reviewer"]}, timeout=40))
     original = json.loads(read_direct_guest_file(worker, tools["python"], original_configuration, 1024 * 1024))
     configuration = external_oci_initial_configuration(original, tools, coordinates,
@@ -215,7 +233,7 @@ def provision_external_oci_pair(native, worker, client, database, tools,
     body = json.dumps(configuration, sort_keys=True, separators=(",", ":")).encode()
     configuration_file = coordinates["workerRoot"] + "/configuration-bootstrap.json"
     install_direct_guest_file(worker, tools["python"], configuration_file, body)
-    files = {name: coordinates["nativeRoot"] + "/materials/" + name for name in EXTERNAL_OCI_PAIR_KEYS}
+    files = {name: coordinates["nativeRoot"] + "/materials/" + name for name in material["roles"]}
     files.update({"database": coordinates["nativeRoot"] + "/materials/database.url",
         "jwt": coordinates["nativeRoot"] + "/materials/jwt.key", "seal": coordinates["nativeRoot"] + "/materials/seal.key",
         "secrets": coordinates["nativeRoot"] + "/materials/secrets.json",
@@ -382,7 +400,7 @@ def start_external_oci_pair(native, worker, client, tools, prepared, boundaries,
 
 def observe_external_oci_pair(worker, tools, prepared, processes, label):
     """Retain real protected Clock replies and the selected live guard namespace."""
-    if label not in {"bootstrap", "installed", "final"}:
+    if label not in {"bootstrap", "installed", "final", "mirror-functional"}:
         raise ValueError("External OCI observation phase differs")
     coordinates = prepared["coordinates"]
     root = coordinates["workerRoot"] + "/observations-" + label

@@ -168,12 +168,22 @@ class NativeEpochTests(unittest.TestCase):
         identity = "external-oci-inventory-" + run
         ready = {"backgroundControllers": {"placementScan": {"intervalSeconds": 2, "maximumPlacements": 5},
             "ociInventory": {"collectorId": identity, "idempotencyPrefix": identity,
-                "maximumPlacements": 100, "dispatchBudget": "native"}}}
+                "maximumPlacements": 100, "dispatchBudget": "native"},
+            "mirrorSync": {"intervalSeconds": 60, "mode": "full"}}}
         process.require_external_background_controllers(ready, run)
         with self.assertRaises(ValueError):
             process.require_external_background_controllers({}, run)
         with self.assertRaises(ValueError):
             process.require_external_background_controllers(ready, "b" * 32)
+        without_mirror = copy.deepcopy(ready)
+        del without_mirror["backgroundControllers"]["mirrorSync"]
+        with self.assertRaises(ValueError):
+            process.require_external_background_controllers(without_mirror, run)
+        for field, changed in (("intervalSeconds", 1), ("mode", "pull_through")):
+            drifted = copy.deepcopy(ready)
+            drifted["backgroundControllers"]["mirrorSync"][field] = changed
+            with self.assertRaises(ValueError):
+                process.require_external_background_controllers(drifted, run)
         self.assertNotIn("complete", ready["backgroundControllers"])
 
 

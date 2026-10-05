@@ -24,6 +24,14 @@ def run_external_oci_pair_window(client, native, worker, s3, database_machine, t
     if copy_isolation not in {"same_worker", "source_worker"}:
         raise ValueError("External Copy isolation case differs")
     tools = {**tools, "copyIsolationCase": copy_isolation}
+    if copy_isolation == "same_worker":
+        review = await_direct_review("external-mirror-" + run + "-reviewer", {
+            "actualImmutableArtifacts": retain_direct_flow("external-mirror-" + run + "-tuple-input.json", artifacts),
+            "directReviewer": hashlib.sha256(reviewer_public_key.encode()).hexdigest(),
+            "reservedRoot": ".aos-mirror-qualification/" + run + "/final",
+        }, {"mirrorReviewerPublicKey", "mirrorReviewerKeyId"})["selection"]
+        tools["mirrorFunctionalReviewer"] = {"publicKey": review["mirrorReviewerPublicKey"],
+            "keyId": review["mirrorReviewerKeyId"]}
     addresses = json.loads(direct_guest_python(native, tools["python"], """
         import socket
         print(json.dumps({role:socket.gethostbyname(role) for role in ('native','worker')}))
@@ -135,7 +143,7 @@ def run_external_oci_business_lane(client, native, worker, s3, database_machine,
     }, operator, database_host)
     destination_credentials = setup.bootstrap_external_oci_destination(controls, worker,
         pair_tools, coordinates, credentials, material, operator, database_host, private_guest_command)
-    destination_review = await_direct_review(label + "-destination-provider-inputs", {
+    destination_review = await_direct_review(label + "-destination-inputs", {
         "actualBinding": retain_direct_flow(label + "-destination-binding.json", destination_credentials),
         "sourceClockNamespace": observation_sha,
     }, {"privateStagePolicy", "providerReviewFile"})
@@ -289,6 +297,12 @@ def run_external_oci_business_lane(client, native, worker, s3, database_machine,
     # current source head rather than inventing a separate reindex RPC.
     reindex = wait_external_oci_signed_index(controls, registry, publication["signedSource"]["sourceCommit"], label)
     read_sql = lambda query, label: read_external_oci_sql(native, pair_tools, prepared, processes["native"], query, label)
+    mirror = None
+    if pair_tools["copyIsolationCase"] == "same_worker":
+        mirror = run_external_mirror_business(client, native, worker, pair_tools, prepared,
+            processes, helper, direct, exports, credentials, controls, refresh,
+            workflow, artifacts, ownership)
+        processes, helper = mirror["processes"], mirror["helper"]
     catalogue = observe_external_copy_catalog(read_sql, registry,
         publication["signedSource"]["sourceCommit"], "external-oci-copy-catalogue")
     copied = run_external_placement_copy(controls, registry, credentials["binding"], catalogue,
@@ -310,6 +324,7 @@ def run_external_oci_business_lane(client, native, worker, s3, database_machine,
         "helper": helper, "route": route, "publication": publication, "readback": readback,
         "reindex": reindex, "copy": copied, "copyCancellation": cancelled, "copyClosedLoss": lost,
         "inventoryRestart": inventory_restart["evidence"],
+        "mirror": mirror["evidence"] if mirror is not None else None,
         "nativeBulkBytes": None,
         "scope": "connected emulated External OCI/Copy lane; independent full byte and provider joins required"}
     retain_direct_flow(label + "-business-window.json", report)

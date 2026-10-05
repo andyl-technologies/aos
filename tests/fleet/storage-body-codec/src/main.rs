@@ -12,6 +12,7 @@ mod copy_closed;
 mod copy_request;
 mod files;
 mod ingress;
+mod mirror;
 mod storage_work;
 
 #[cfg(test)]

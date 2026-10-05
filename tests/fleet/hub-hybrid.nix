@@ -205,6 +205,7 @@
   );
   workerObservationProxyConfig = writeFixture "hub-hybrid-fleet-worker-observation-nginx.conf" storageObservationProxies.workerConfiguration;
   managedObservationProxies = import ./_hub-managed-storage-proxies.nix {
+    includeMirrorControls = externalDirect;
     inherit serverCertificate serverPrivateKey;
     managedCleanupLossUpstream = "http://127.0.0.1:4660";
     managedOciProfileHoldUpstream = "http://127.0.0.1:4649";
@@ -409,10 +410,12 @@
     cp ${./_hub-external-oci-setup.py} "$out/_hub-external-oci-setup.py"
     cp ${./_hub-external-inventory-resume.py} "$out/_hub-external-inventory-resume.py"
     cp ${./_hub-external-workflow-accounting.py} "$out/_hub-external-workflow-accounting.py"
+    cp ${./_hub-external-mirror-accounting.py} "$out/_hub-external-mirror-accounting.py"
     cp ${./_hub-direct-boundary.py} "$out/_hub-direct-boundary.py"
     cp ${./_hub-direct-runtime-observations.py} "$out/_hub-direct-runtime-observations.py"
     cp ${./_hub-external-copy-window.py} "$out/_hub-external-copy-window.py"
     cp ${./_hub-external-copy-isolation.cjs} "$out/_hub-external-copy-isolation.cjs"
+    cp ${./_hub-external-mirror-install.cjs} "$out/_hub-external-mirror-install.cjs"
     cp ${./_hub-external-copy-lifetime.py} "$out/_hub-external-copy-lifetime.py"
     cp ${./_hub-external-copy-partial-hold.mjs} "$out/_hub-external-copy-partial-hold.mjs"
     cp ${./_hub-external-copy-closed-loss.mjs} "$out/_hub-external-copy-closed-loss.mjs"
@@ -728,6 +731,14 @@ in {
       builtins.readFile ./_hub-direct-controls.py
       + builtins.readFile ./_hub-managed-pair.py
       + builtins.readFile ./_hub-external-oci-pair.py
+      + builtins.readFile ./_hub-external-mirror-admission.py
+      + builtins.readFile ./_hub-external-mirror-window.py
+      + builtins.readFile ./_hub-external-mirror-source.py
+      + builtins.readFile ./_hub-external-mirror-observations.py
+      + builtins.readFile ./_hub-external-mirror-producer.py
+      + builtins.readFile ./_hub-external-mirror-functional.py
+      + builtins.readFile ./_hub-external-mirror-epoch.py
+      + builtins.readFile ./_hub-external-mirror-business.py
       + builtins.readFile ./_hub-external-oci-process.py
       + builtins.readFile ./_hub-external-oci-direct.py
       + builtins.readFile ./_hub-external-oci-business.py
@@ -825,6 +836,7 @@ in {
         else "native"
       }
       GARAGE = "${pkgs.garage}/bin/garage -c /var/lib/hybrid-s3/garage.toml"
+      FLEET_CUTOFF_MONOTONIC = time.monotonic() + ${toString (if externalDirect then 14400 else 2400)}
 
       for machine in (client, native, worker, s3${lib.optionalString separateDatabase ", database"}):
           machine.wait_for_unit("multi-user.target", timeout=240)
@@ -1002,6 +1014,8 @@ in {
         # python
         ''
           direct_tools = {
+              "fleetCutoffMonotonic": FLEET_CUTOFF_MONOTONIC,
+              "nativeSourcePath": "${pkgs.aos-hub.src}",
               "python": "${pkgs.python3}/bin/python3", "node": "${pkgs.nodejs}/bin/node",
               "runner": "${workerRunner}/value", "miniflare": "${pkgs.miniflare}",
               "workerd": "${pkgs.workerd-source}/bin/workerd", "curl": CURL,
@@ -1042,6 +1056,7 @@ in {
               "externalOciSetup": "${managedFixtureModules}/_hub-external-oci-setup.py",
               "externalInventoryResume": "${managedFixtureModules}/_hub-external-inventory-resume.py",
               "externalCopyIsolation": "${managedFixtureModules}/_hub-external-copy-isolation.cjs",
+              "externalMirrorInstaller": "${managedFixtureModules}/_hub-external-mirror-install.cjs",
               "externalCopyClosedLoss": "${managedFixtureModules}/_hub-external-copy-closed-loss.mjs",
               "externalCopyLifetime": "${managedFixtureModules}/_hub-external-copy-lifetime.py",
               "externalCopyCases": external_copy_cases,
@@ -1075,7 +1090,7 @@ in {
               "managedCleanupAccounting": "${managedFixtureModules}/_hub-managed-cleanup-accounting.py",
               "managedWorkflowAccounting": "${managedFixtureModules}/_hub-managed-workflow-accounting.py",
               "managedCleanupSql": "${managedFixtureModules}/_hub-managed-cleanup-sql.py",
-              "storageCodecSourceSha256": "${builtins.hashString "sha256" (builtins.concatStringsSep "" (map (name: builtins.readFile (runtimeSource + ("/tests/fleet/storage-body-codec/src/" + name))) ["main.rs" "files.rs" "classify.rs" "storage_work.rs" "ingress.rs" "controls.rs" "copy_request.rs" "copy_closed.rs"]))}",
+              "storageCodecSourceSha256": "${builtins.hashString "sha256" (builtins.concatStringsSep "" (map (name: builtins.readFile (runtimeSource + ("/tests/fleet/storage-body-codec/src/" + name))) ["main.rs" "files.rs" "classify.rs" "storage_work.rs" "ingress.rs" "controls.rs" "copy_request.rs" "copy_closed.rs" "mirror.rs"]))}",
               "storageCodecExecutable": {"path": "${storageBodyCodec}/bin/aos-storage-body-codec",
                   "sha256": hashlib.sha256(Path("${storageBodyCodec}/bin/aos-storage-body-codec").read_bytes()).hexdigest()},
               "managedIngressObservationSources": {

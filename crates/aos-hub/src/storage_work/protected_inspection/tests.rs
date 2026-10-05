@@ -430,8 +430,8 @@ async fn accepted_profile_without_actual_sql_authority_cannot_qualify_stored_rea
 }
 
 #[tokio::test]
-async fn external_stored_plan_shape_keeps_upstream_mirror_managed_only() {
-    let (_, binding, _, _) = fixture().await;
+async fn external_mirror_shape_still_requires_actual_destination_acceptance() {
+    let (db, binding, _, _) = fixture().await;
     let mut plan = plan(&binding);
     let index = format!("objects/pack/pack-{}.idx", "a".repeat(64));
     plan.operation = StorageWorkOperation::InspectStoredGitPack {
@@ -461,7 +461,20 @@ async fn external_stored_plan_shape_keeps_upstream_mirror_managed_only() {
             selections: Vec::new(),
         },
     };
-    assert!(plan.validate(&plan.deployment_id, plan.issued_at).is_err());
+    plan.validate(&plan.deployment_id, plan.issued_at).unwrap();
+
+    // Shape admission supplies no profile authority. Normal upstream inspection
+    // invokes this real destination selector before creating or dispatching its
+    // storage plan; an unqualified client cannot reach a provider exchange.
+    let work = super::super::RemoteStorageWorkClient::new(ORIGIN, "deployment-1".into(), &[11; 32])
+        .unwrap();
+    let error = work
+        .mirror_destination_profile_digest(&db, &binding)
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("mirror requires independently accepted External provider evidence"));
 }
 
 #[tokio::test]

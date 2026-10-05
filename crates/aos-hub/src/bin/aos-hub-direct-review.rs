@@ -17,6 +17,63 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    #[command(about = "Create new owner-private External Mirror functional reviewer keys")]
+    MirrorFunctionalFixtureKey {
+        /// Create a new raw ephemeral seed file.
+        #[arg(long)]
+        private_output: PathBuf,
+        /// Create its separate public verifier file.
+        #[arg(long)]
+        public_output: PathBuf,
+    },
+    #[command(about = "Prepare a finite External Mirror functional candidate from actual inputs")]
+    MirrorFunctionalPrepare {
+        /// Select closed actual retained inputs and installed files.
+        #[arg(long)]
+        selection_file: PathBuf,
+        /// Create a new unsigned candidate for independent review.
+        #[arg(long)]
+        output: PathBuf,
+    },
+    #[command(about = "Sign only an explicitly reviewed External Mirror functional candidate")]
+    MirrorFunctionalSign {
+        /// Recheck exact actual selected inputs.
+        #[arg(long)]
+        selection_file: PathBuf,
+        /// Read the independently reviewed candidate.
+        #[arg(long)]
+        candidate_file: PathBuf,
+        /// Require its explicit reviewed lowercase SHA-256.
+        #[arg(long)]
+        candidate_sha256: String,
+        /// Select only the private ephemeral functional reviewer seed.
+        #[arg(long)]
+        reviewer_key_file: PathBuf,
+        /// Match the separately installed functional verifier.
+        #[arg(long)]
+        reviewer_public_key_file: PathBuf,
+        /// Create a new signed functional-only artifact.
+        #[arg(long)]
+        output: PathBuf,
+    },
+    #[command(about = "Verify functional artifact bytes against current actual selected inputs")]
+    MirrorFunctionalVerify {
+        /// Reopen exact current actual inputs.
+        #[arg(long)]
+        selection_file: PathBuf,
+        /// Read the signed bounded functional artifact.
+        #[arg(long)]
+        artifact_file: PathBuf,
+    },
+    #[command(about = "Derive only the shared Rust External Mirror functional KV address")]
+    MirrorFunctionalRegistryKey {
+        /// Reopen exact current actual inputs.
+        #[arg(long)]
+        selection_file: PathBuf,
+        /// Verify the actual signed functional artifact before deriving its slot.
+        #[arg(long)]
+        artifact_file: PathBuf,
+    },
     #[command(about = "Create new owner-private ephemeral OCI fixture reviewer keys")]
     OciSdkFixtureKey {
         /// Create a new raw 32-byte seed; never select an existing signing key.
@@ -160,6 +217,49 @@ enum Command {
 
 fn main() -> std::process::ExitCode {
     let result = match Cli::parse().command {
+        Command::MirrorFunctionalFixtureKey {
+            private_output,
+            public_output,
+        } => aos_hub::external_mirror_review::create_external_mirror_fixture_key(
+            &private_output,
+            &public_output,
+        ),
+        Command::MirrorFunctionalPrepare {
+            selection_file,
+            output,
+        } => aos_hub::external_mirror_review::prepare_external_mirror_review(
+            &selection_file,
+            &output,
+        ),
+        Command::MirrorFunctionalSign {
+            selection_file,
+            candidate_file,
+            candidate_sha256,
+            reviewer_key_file,
+            reviewer_public_key_file,
+            output,
+        } => aos_hub::external_mirror_review::sign_external_mirror_review(
+            &selection_file,
+            &candidate_file,
+            &candidate_sha256,
+            &reviewer_key_file,
+            &reviewer_public_key_file,
+            &output,
+        ),
+        Command::MirrorFunctionalVerify {
+            selection_file,
+            artifact_file,
+        } => aos_hub::external_mirror_review::verify_external_mirror_review(
+            &selection_file,
+            &artifact_file,
+        ),
+        Command::MirrorFunctionalRegistryKey {
+            selection_file,
+            artifact_file,
+        } => aos_hub::external_mirror_review::external_mirror_registry_key(
+            &selection_file,
+            &artifact_file,
+        ),
         Command::OciSdkFixtureKey {
             private_output,
             public_output,

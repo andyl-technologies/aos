@@ -221,7 +221,7 @@ def _qualify_paired_external_oci_direct(native, worker, tools, prepared, process
     if int(runtime["runtime"]["maximumParallelProviderRequests"]) != 3:
         raise ValueError("paired preflight measured a different common provider capacity")
     hashes["pairedProfiles"] = retain_direct_flow(label + "-paired-runtime-projection.json", runtime)
-    selected = await_direct_review(label + "-copy-preflight-authorization", hashes,
+    selected = await_direct_review(label + "-copy-authorization", hashes,
         {"signedArtifact", "independentReview", "reviewerKeyId"})["selection"]
     artifact_bytes = direct_selected_bytes(selected["signedArtifact"], 4 * 1024 * 1024)
     artifact = _closed_review_json(artifact_bytes)
@@ -259,6 +259,22 @@ def _qualify_paired_external_oci_direct(native, worker, tools, prepared, process
         domain["producer_profile_digest"] = projected["producer_profile_digest"]
         domain["provider_concurrency"] = projected["admitted_provider_requests"]
     consumers["HUB_PROVIDER_CAPACITY_POLICY"] = capacity["policy"]
+    if tools.get("mirrorFunctionalReviewer") is not None:
+        reference = runtime["protectedProfiles"][0]
+        raw_profile = direct_selected_bytes({"path": reference["profileFile"],
+            "sha256": reference["profileSha256"]}, 262144)
+        profile = _closed_review_json(raw_profile)
+        configured = json.loads(configuration["bindings"]["HUB_EXTERNAL_OBJECT_CONSUMER"])
+        listing = [cohort for cohort in configured["cohorts"]
+            if cohort["association"] == bootstraps[0]["read_cohort"]["association"]
+            and cohort["credential"]["purpose"] == "list"]
+        if len(listing) != 1:
+            raise ValueError("Mirror transport lacks the independently installed source List cohort")
+        domain = external_mirror_domain(profile, bootstraps[0], {
+            "publication": bootstraps[0]["publication"],
+            "issuer_installation": bootstraps[0]["issuer_installation"], "list_cohort": listing[0]},
+            domains[0]["provider_contract"])
+        consumers["HUB_EXTERNAL_MIRROR_CONSUMER"] = {"version": 1, "domains": [domain]}
     candidate = candidate_factory()
     raw_candidate = read_direct_guest_file(native, tools["python"], candidate["candidateFile"], 4096)
     raw_signature = read_direct_guest_file(native, tools["python"], candidate["candidateSignatureFile"], 4096)

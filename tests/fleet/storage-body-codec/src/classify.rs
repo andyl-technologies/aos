@@ -76,6 +76,10 @@ pub(super) fn classify(
             payload = observed;
             (request.operation.kind(), class, request.plan_id)
         }
+        path if crate::mirror::supports_path(path) => {
+            control_case(case)?;
+            crate::mirror::decode_guard(path, request, reply, source_digest, deployment)?
+        }
         aos_hub_core::storage_authority::external_object::oci::control::EXTERNAL_OCI_PATH => {
             control_case(case)?;
             let (request, _) = aos_hub_core::storage_authority::external_object::oci::observation::decode_external_oci_control_observation(request, reply, deployment)?;
@@ -175,6 +179,7 @@ pub(super) fn classify(
         include_bytes!("controls.rs").as_slice(),
         include_bytes!("copy_request.rs").as_slice(),
         include_bytes!("copy_closed.rs").as_slice(),
+        include_bytes!("mirror.rs").as_slice(),
     ] {
         source.extend_from_slice(file);
     }
