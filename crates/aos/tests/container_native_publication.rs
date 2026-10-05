@@ -1209,9 +1209,8 @@ async fn create_ready_placement(
             requires_conditional_writes: false,
         })
         .await?;
-    Ok(db
-        .observe_surface_placement(placement.id, "ready", "complete", 1)
-        .await?)
+    db.observe_surface_placement(placement.id, "ready", "complete", 1)
+        .await
 }
 
 async fn configure_write_authority(
