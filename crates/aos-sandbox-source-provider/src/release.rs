@@ -794,158 +794,32 @@ pub(crate) fn reserve_release(
             next_request_sequence,
         );
     }
-    let release_key_value = ReleaseKeyV1 {
-        provider_id: acquisition.provider.authority_id(),
-        holder_id: acquisition.holder.authority_id(),
-        acquisition_id: acquisition.acquisition_id,
-    };
-    if ledger.recovered.releases.contains_key(&release_key_value) {
-        return Err(ProviderLedgerError::Equivocation);
-    }
-    let release_generation = ledger
-        .recovered
-        .authority
-        .last_release_generation
-        .checked_add(1)
-        .ok_or(ProviderLedgerError::InvalidTransition(
-            "release generation exhausted",
-        ))?;
-    let effect_id = derive_release_effect_id(
-        acquisition.acquisition_id,
-        attempt_evidence.attempt_digest(),
-        release_generation,
-    )?;
-    let attempt = reserved_attempt(
-        projection.provider_authority().clone(),
-        projection.root_mount_authority().clone(),
-        root_record_signer,
-        SourceProviderMethod::Release,
-        attempt_evidence.request_id(),
-        attempt_evidence.signed_request_digest(),
-        digest_release_request(request),
-        verified.release_intent_digest(),
-        acquisition.acquisition_sequence,
-        attempt_evidence.attempt_digest(),
-        projection.session_binding(),
-        request.sequence(),
-        request.deadline_seconds(),
-        projection.verified_at_seconds(),
-        projection.current_valid_until_seconds(),
-        projection.proof_class_capabilities(),
-        projection.supports_recursive(),
-        projection.supports_kernel_coupled(),
-        projection.root_mount_process_instance(),
-        projection.provider_process_instance(),
-        projection.signer_set_commitment(),
-        ledger.pending_recovery_bridge.as_ref(),
-        attempt_evidence.canonical_signed_request().to_vec(),
-    );
-    let (session, _persist_history) = prepare_session(
-        ledger,
-        projection,
+    let FreshReleaseRowsV1 {
+        attempt_key_value,
+        acquisition_key_value,
+        acquisition,
+        native_fence,
+        release_key_value,
+        attempt,
+        session,
+        release_plan,
+        release,
+        authority,
+        projected_acquisitions: _projected_acquisitions,
+        projected_releases: _projected_releases,
+        mut records,
+    } = prepare_fresh_release_rows_v1(
+        ReleaseSessionRecipeV1::Legacy(ledger),
+        verified,
         provider_execution_identity,
         existing_session,
-        request.sequence(),
+        root_record_signer,
+        attempt_key_value,
+        acquisition_key_value,
+        acquisition,
+        native_fence,
+        next_request_sequence,
     )?;
-    let session = reserve_session(session, next_request_sequence, attempt.attempt_digest)?;
-    acquisition.revision =
-        acquisition
-            .revision
-            .checked_add(1)
-            .ok_or(ProviderLedgerError::InvalidTransition(
-                "acquisition revision exhausted",
-            ))?;
-    acquisition.state = ProviderAcquisitionStateV1::Releasing;
-    acquisition.current_attempt_digest = attempt.attempt_digest;
-    acquisition.release_effect_id = Some(effect_id);
-    let acquisition_bytes = encode_acquisition(&acquisition);
-    let release_plan = ReleasePlanV1 {
-        provider_id: acquisition.provider.authority_id(),
-        holder_id: acquisition.holder.authority_id(),
-        session_binding: projection.session_binding(),
-        attempt_digest: acquisition.current_attempt_digest,
-        acquisition_id: acquisition.acquisition_id,
-        effect_id,
-        lease_id: request.lease_id(),
-        lease_digest: request.lease_digest(),
-        backend_id: acquisition.backend_id,
-        acquired_evidence: crate::backend::acquired_evidence(&acquisition)?,
-    };
-    let release = ReleaseRecordV1 {
-        revision: 1,
-        state: ProviderReleaseStateV1::Intent,
-        provider: acquisition.provider.clone(),
-        holder: acquisition.holder.clone(),
-        acquisition_id: acquisition.acquisition_id,
-        acquisition_sequence: acquisition.acquisition_sequence,
-        lease_id: request.lease_id(),
-        lease_digest: request.lease_digest(),
-        effect_id,
-        release_generation,
-        effect_attempt_digest: attempt.attempt_digest,
-        attempt_digest: attempt.attempt_digest,
-        backend_id: acquisition.backend_id,
-        backend_lineage_digest: release_plan.lineage_digest(),
-        backend_evidence: None,
-        release_observation_digest: None,
-        released_seconds: None,
-        receipt_digest: None,
-        signed_receipt: Vec::new(),
-        acquisition_record_digest: record_digest(&acquisition_bytes)?,
-    };
-    let mut authority = ledger.recovered.authority.clone();
-    authority.revision =
-        authority
-            .revision
-            .checked_add(1)
-            .ok_or(ProviderLedgerError::InvalidTransition(
-                "authority revision exhausted",
-            ))?;
-    authority.last_release_generation = release_generation;
-    authority.inventory_generation = authority.inventory_generation.checked_add(1).ok_or(
-        ProviderLedgerError::InvalidTransition("inventory generation exhausted"),
-    )?;
-    let mut projected_acquisitions = ledger.recovered.acquisitions.clone();
-    projected_acquisitions.insert(acquisition_key_value.clone(), acquisition.clone());
-    let mut projected_releases = ledger.recovered.releases.clone();
-    projected_releases.insert(release_key_value.clone(), release.clone());
-    let (inventory_digest, active_count) = global_inventory_state_digest(
-        authority.provider.authority_id(),
-        authority.catalog_generation,
-        authority.catalog_digest,
-        &projected_acquisitions,
-        &projected_releases,
-        ledger
-            .configuration
-            .limits()
-            .maximum_inventory_tombstones_per_holder(),
-    )?;
-    authority.inventory_state_digest = inventory_digest;
-    authority.active_lease_count = active_count;
-    let mut records = vec![
-        (attempt_key(&attempt_key_value), encode_attempt(&attempt)),
-        (acquisition_key(&acquisition_key_value), acquisition_bytes),
-        (release_key(&release_key_value), encode_release(&release)),
-        (
-            authority_key(authority.provider.authority_id()),
-            encode_authority(&authority),
-        ),
-        (
-            session_key(
-                session.provider.authority_id(),
-                session.holder.authority_id(),
-            ),
-            encode_session(&session),
-        ),
-    ];
-    records.push((
-        session_history_key(
-            session.provider.authority_id(),
-            session.holder.authority_id(),
-            session.session_binding,
-        ),
-        encode_session_history(&session),
-    ));
     let reservation_digest = if let Some(native) = &native_fence {
         records.push((
             crate::ledger::native_completion::native_completion_key_v2(acquisition.acquisition_id),
@@ -1022,6 +896,358 @@ pub(crate) fn reserve_release(
             signing_authorization,
         },
     ))
+}
+
+enum ReleaseSessionRecipeV1<'borrow, 'journal> {
+    Legacy(&'borrow ProviderLedgerV1<'journal>),
+    Original {
+        configuration: &'borrow crate::ProtectedProviderConfigurationV1,
+        recovered: &'borrow crate::model::RecoveredProviderLedgerV1,
+    },
+}
+
+impl ReleaseSessionRecipeV1<'_, '_> {
+    fn configuration(&self) -> &crate::ProtectedProviderConfigurationV1 {
+        match self {
+            Self::Legacy(ledger) => &ledger.configuration,
+            Self::Original { configuration, .. } => configuration,
+        }
+    }
+
+    fn recovered(&self) -> &crate::model::RecoveredProviderLedgerV1 {
+        match self {
+            Self::Legacy(ledger) => &ledger.recovered,
+            Self::Original { recovered, .. } => recovered,
+        }
+    }
+
+    fn recovery_bridge(&self) -> Option<&crate::recovery_bridge::RecoveryBridgeLinkV1> {
+        match self {
+            Self::Legacy(ledger) => ledger.pending_recovery_bridge.as_ref(),
+            Self::Original { .. } => None,
+        }
+    }
+}
+
+// Retain the projected maps through the same old commit/authorization interval.
+// They are not dropped at the helper return merely because only their digest is used.
+pub(crate) struct FreshReleaseRowsV1 {
+    attempt_key_value: AttemptKeyV1,
+    acquisition_key_value: AcquisitionKeyV1,
+    pub(crate) acquisition: crate::model::AcquisitionRecordV1,
+    native_fence: Option<crate::ledger::native_completion::NativeAcquireCompletionRecordV2>,
+    release_key_value: ReleaseKeyV1,
+    pub(crate) attempt: crate::model::AttemptRecordV1,
+    session: crate::model::HolderSessionHeadRecordV1,
+    release_plan: ReleasePlanV1,
+    release: ReleaseRecordV1,
+    authority: crate::model::AuthorityHeadRecordV1,
+    projected_acquisitions: std::collections::BTreeMap<AcquisitionKeyV1, crate::model::AcquisitionRecordV1>,
+    projected_releases: std::collections::BTreeMap<ReleaseKeyV1, ReleaseRecordV1>,
+    pub(crate) records: Vec<(Vec<u8>, Vec<u8>)>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn prepare_fresh_release_rows_v1(
+    recipe: ReleaseSessionRecipeV1<'_, '_>,
+    verified: &VerifiedProviderReleaseRequestV1,
+    provider_execution_identity: (u32, u64),
+    existing_session: Option<crate::model::HolderSessionHeadRecordV1>,
+    root_record_signer: aos_sandbox_source_provider_protocol::SourceProviderSigningKeyV1,
+    attempt_key_value: AttemptKeyV1,
+    acquisition_key_value: AcquisitionKeyV1,
+    mut acquisition: crate::model::AcquisitionRecordV1,
+    native_fence: Option<crate::ledger::native_completion::NativeAcquireCompletionRecordV2>,
+    next_request_sequence: u64,
+) -> Result<FreshReleaseRowsV1, ProviderLedgerError> {
+    let configuration = recipe.configuration();
+    let recovered = recipe.recovered();
+    let projection = verified.ingress_projection();
+    let request = verified.request();
+    let attempt_evidence = verified.attempt();
+    let release_key_value = ReleaseKeyV1 {
+        provider_id: acquisition.provider.authority_id(),
+        holder_id: acquisition.holder.authority_id(),
+        acquisition_id: acquisition.acquisition_id,
+    };
+    if recovered.releases.contains_key(&release_key_value) {
+        return Err(ProviderLedgerError::Equivocation);
+    }
+    let release_generation = recovered
+        .authority
+        .last_release_generation
+        .checked_add(1)
+        .ok_or(ProviderLedgerError::InvalidTransition(
+            "release generation exhausted",
+        ))?;
+    let effect_id = derive_release_effect_id(
+        acquisition.acquisition_id,
+        attempt_evidence.attempt_digest(),
+        release_generation,
+    )?;
+    let attempt = reserved_attempt(
+        projection.provider_authority().clone(),
+        projection.root_mount_authority().clone(),
+        root_record_signer,
+        SourceProviderMethod::Release,
+        attempt_evidence.request_id(),
+        attempt_evidence.signed_request_digest(),
+        digest_release_request(request),
+        verified.release_intent_digest(),
+        acquisition.acquisition_sequence,
+        attempt_evidence.attempt_digest(),
+        projection.session_binding(),
+        request.sequence(),
+        request.deadline_seconds(),
+        projection.verified_at_seconds(),
+        projection.current_valid_until_seconds(),
+        projection.proof_class_capabilities(),
+        projection.supports_recursive(),
+        projection.supports_kernel_coupled(),
+        projection.root_mount_process_instance(),
+        projection.provider_process_instance(),
+        projection.signer_set_commitment(),
+        recipe.recovery_bridge(),
+        attempt_evidence.canonical_signed_request().to_vec(),
+    );
+    let (session, _persist_history) = match &recipe {
+        ReleaseSessionRecipeV1::Legacy(ledger) => prepare_session(
+            ledger, projection, provider_execution_identity, existing_session, request.sequence(),
+        )?,
+        ReleaseSessionRecipeV1::Original { .. } => crate::transaction::prepare_original_session(
+            projection, provider_execution_identity, existing_session, request.sequence(),
+        )?,
+    };
+    let session = reserve_session(session, next_request_sequence, attempt.attempt_digest)?;
+    acquisition.revision =
+        acquisition
+            .revision
+            .checked_add(1)
+            .ok_or(ProviderLedgerError::InvalidTransition(
+                "acquisition revision exhausted",
+            ))?;
+    acquisition.state = ProviderAcquisitionStateV1::Releasing;
+    acquisition.current_attempt_digest = attempt.attempt_digest;
+    acquisition.release_effect_id = Some(effect_id);
+    let acquisition_bytes = encode_acquisition(&acquisition);
+    let release_plan = ReleasePlanV1 {
+        provider_id: acquisition.provider.authority_id(),
+        holder_id: acquisition.holder.authority_id(),
+        session_binding: projection.session_binding(),
+        attempt_digest: acquisition.current_attempt_digest,
+        acquisition_id: acquisition.acquisition_id,
+        effect_id,
+        lease_id: request.lease_id(),
+        lease_digest: request.lease_digest(),
+        backend_id: acquisition.backend_id,
+        acquired_evidence: crate::backend::acquired_evidence(&acquisition)?,
+    };
+    let release = ReleaseRecordV1 {
+        revision: 1,
+        state: ProviderReleaseStateV1::Intent,
+        provider: acquisition.provider.clone(),
+        holder: acquisition.holder.clone(),
+        acquisition_id: acquisition.acquisition_id,
+        acquisition_sequence: acquisition.acquisition_sequence,
+        lease_id: request.lease_id(),
+        lease_digest: request.lease_digest(),
+        effect_id,
+        release_generation,
+        effect_attempt_digest: attempt.attempt_digest,
+        attempt_digest: attempt.attempt_digest,
+        backend_id: acquisition.backend_id,
+        backend_lineage_digest: release_plan.lineage_digest(),
+        backend_evidence: None,
+        release_observation_digest: None,
+        released_seconds: None,
+        receipt_digest: None,
+        signed_receipt: Vec::new(),
+        acquisition_record_digest: record_digest(&acquisition_bytes)?,
+    };
+    let mut authority = recovered.authority.clone();
+    authority.revision =
+        authority
+            .revision
+            .checked_add(1)
+            .ok_or(ProviderLedgerError::InvalidTransition(
+                "authority revision exhausted",
+            ))?;
+    authority.last_release_generation = release_generation;
+    authority.inventory_generation = authority.inventory_generation.checked_add(1).ok_or(
+        ProviderLedgerError::InvalidTransition("inventory generation exhausted"),
+    )?;
+    let mut projected_acquisitions = recovered.acquisitions.clone();
+    projected_acquisitions.insert(acquisition_key_value.clone(), acquisition.clone());
+    let mut projected_releases = recovered.releases.clone();
+    projected_releases.insert(release_key_value.clone(), release.clone());
+    let (inventory_digest, active_count) = global_inventory_state_digest(
+        authority.provider.authority_id(),
+        authority.catalog_generation,
+        authority.catalog_digest,
+        &projected_acquisitions,
+        &projected_releases,
+        configuration
+            .limits()
+            .maximum_inventory_tombstones_per_holder(),
+    )?;
+    authority.inventory_state_digest = inventory_digest;
+    authority.active_lease_count = active_count;
+    let mut records = vec![
+        (attempt_key(&attempt_key_value), encode_attempt(&attempt)),
+        (acquisition_key(&acquisition_key_value), acquisition_bytes),
+        (release_key(&release_key_value), encode_release(&release)),
+        (
+            authority_key(authority.provider.authority_id()),
+            encode_authority(&authority),
+        ),
+        (
+            session_key(
+                session.provider.authority_id(),
+                session.holder.authority_id(),
+            ),
+            encode_session(&session),
+        ),
+    ];
+    records.push((
+        session_history_key(
+            session.provider.authority_id(),
+            session.holder.authority_id(),
+            session.session_binding,
+        ),
+        encode_session_history(&session),
+    ));
+
+    Ok(FreshReleaseRowsV1 {
+        attempt_key_value,
+        acquisition_key_value,
+        acquisition,
+        native_fence,
+        release_key_value,
+        attempt,
+        session,
+        release_plan,
+        release,
+        authority,
+        projected_acquisitions,
+        projected_releases,
+        records,
+    })
+}
+
+
+/// Prepares the independent Release from the same original terminal owner.
+///
+/// Its caller retains this whole result before deriving a separate status
+/// reservation. The common six-row recipe never creates Ready custody.
+///
+/// # Errors
+///
+/// Refuses another Session, replay, supersession, nonterminal original,
+/// stale sequence, an existing Release or exhausted retained-identity bounds.
+pub(crate) fn prepare_original_release_rows_v1(
+    configuration: &crate::ProtectedProviderConfigurationV1,
+    recovered: &crate::model::RecoveredProviderLedgerV1,
+    current: &aos_sandbox_source_provider_security::CurrentProviderRequestV1,
+    native: &crate::ledger::native_held_completion::SourceNativeHeldCompletionRecordV1,
+) -> Result<FreshReleaseRowsV1, ProviderLedgerError> {
+    let aos_sandbox_source_provider_protocol::VerifiedProviderRequestV1::Release(verified)
+        = current.verified()
+    else {
+        return Err(ProviderLedgerError::Equivocation);
+    };
+    let projection = verified.ingress_projection();
+    let (existing_session, same_session) = crate::transaction::projection_session_at(
+        configuration, recovered, projection,
+    )?;
+    if !same_session || existing_session.is_none() {
+        return Err(ProviderLedgerError::ConfigurationMismatch);
+    }
+    crate::transaction::validate_session_capacity_at(
+        configuration, recovered, &existing_session, projection,
+    )?;
+
+    let request = verified.request();
+    let attempt_evidence = verified.attempt();
+    let root_record_signer = projection.ordered_signers()[1].clone();
+    let attempt_key_value = AttemptKeyV1 {
+        provider_id: projection.provider_authority().authority_id(),
+        holder_id: projection.root_mount_authority().authority_id(),
+        root_record_key_id: root_record_signer.key_id(),
+        method: SourceProviderMethod::Release as u8,
+        request_id: attempt_evidence.request_id(),
+    };
+    if recovered.attempts.contains_key(&attempt_key_value) {
+        return Err(ProviderLedgerError::Equivocation);
+    }
+    let next_request_sequence = match verified.sequence() {
+        VerifiedProviderRequestSequenceV1::Fresh(advance)
+            if advance.accepted_sequence() == request.sequence()
+                && advance.attempt_digest() == attempt_evidence.attempt_digest() =>
+        {
+            advance.next_sequence()
+        }
+        _ => return Err(ProviderLedgerError::Equivocation),
+    };
+    let acquisition_key_value = AcquisitionKeyV1 {
+        provider_id: projection.provider_authority().authority_id(),
+        holder_id: projection.root_mount_authority().authority_id(),
+        acquisition_id: request.acquisition_id(),
+    };
+    let acquisition = recovered.acquisitions.get(&acquisition_key_value)
+        .cloned().ok_or(ProviderLedgerError::Equivocation)?;
+    if acquisition.state != ProviderAcquisitionStateV1::Active
+        || native.original().acquisition_id != acquisition.acquisition_id
+        || native.suffix().phase() != 10
+        || native.suffix().prepared().is_some()
+        || native.suffix().control(
+            aos_sandbox_source_provider_protocol::native_held_completion::NativeHeldControlKindV1::RootTerminalRecorded,
+        ).is_none()
+        || acquisition.lease_id != Some(request.lease_id())
+        || acquisition.lease_digest != Some(request.lease_digest())
+        || acquisition.holder.authority_id() != request.holder_authority_id()
+        || acquisition.holder.authority_generation() != request.holder_generation()
+        || acquisition.holder.authority_digest() != request.holder_authority_digest()
+    {
+        return Err(ProviderLedgerError::Equivocation);
+    }
+    let retained = recovered.attempts.len()
+        .saturating_add(recovered.acquisitions.len())
+        .saturating_add(recovered.releases.len());
+    if retained.checked_add(2)
+        .is_none_or(|count| count > configuration.limits().maximum_retained_identities())
+    {
+        return Err(ProviderLedgerError::LimitExceeded("retained identities"));
+    }
+
+    let mut rows = prepare_fresh_release_rows_v1(
+        ReleaseSessionRecipeV1::Original { configuration, recovered },
+        verified,
+        current.provider_execution_identity(),
+        existing_session,
+        root_record_signer,
+        attempt_key_value,
+        acquisition_key_value,
+        acquisition,
+        None,
+        next_request_sequence,
+    )?;
+    // Preserve the full held archive. A legacy outer re-encoding would destroy
+    // its original clock, terminal controls and independent cleanup obligation.
+    let outer = match native.original().state {
+        NativeAcquireCompletionStateV2::Active => native.original()
+            .advance(NativeAcquireCompletionStateV2::CleanupRequired)
+            .map_err(crate::transaction::map_pure_ledger_error)?,
+        NativeAcquireCompletionStateV2::CleanupRequired => native.original().clone(),
+        _ => return Err(ProviderLedgerError::Equivocation),
+    };
+    let next = crate::ledger::native_held_completion::SourceNativeHeldCompletionRecordV1::new(
+        outer, native.suffix().clone(),
+    ).map_err(crate::transaction::map_pure_ledger_error)?;
+    rows.records.push((
+        crate::ledger::native_completion::native_completion_key_v2(next.original().acquisition_id),
+        next.to_canonical_bytes().map_err(crate::transaction::map_pure_ledger_error)?,
+    ));
+    Ok(rows)
 }
 
 fn reserve_release_continuation(

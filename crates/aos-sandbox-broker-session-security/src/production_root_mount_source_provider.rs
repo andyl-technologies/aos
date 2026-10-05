@@ -43,6 +43,7 @@ pub struct ProductionSelectedRootMountSourceProviderV1 {
     first_stage: Option<SelectedRootOpeningStageV1>,
     catalog: crate::production_source_provider_catalog::SelectedMountCatalogCredentialsV1,
     shutdown_failure: Option<std::io::Error>,
+    release_effect: Option<Result<(), MountError>>,
 }
 
 #[derive(Clone, Copy)]
@@ -51,6 +52,7 @@ enum SelectedRootOpeningStageV1 {
     Security,
     Deadline,
     Catalog,
+    ReleaseEffect,
 }
 
 impl std::fmt::Debug for ProductionSelectedRootMountSourceProviderV1 {
@@ -69,6 +71,8 @@ pub enum ProductionSelectedRootMountSourceProviderFailureV1<'owner> {
     Deadline(&'owner ProductionBrokerSessionActivationErrorV1),
     /// The fixed delivered catalog reader retains its original native cause.
     Catalog(crate::production_source_provider_catalog::SelectedSourceProviderCatalogFailureRefV1<'owner>),
+    /// The genuine Release effect loan retains its returned currentness cause.
+    ReleaseEffect(&'owner MountError),
     /// The opening ended without a returned cause, including unwind.
     Ended,
 }
@@ -80,6 +84,7 @@ impl std::fmt::Debug for ProductionSelectedRootMountSourceProviderFailureV1<'_> 
             Self::Security(_) => "ProductionSelectedRootMountSourceProviderFailureV1::Security",
             Self::Deadline(_) => "ProductionSelectedRootMountSourceProviderFailureV1::Deadline",
             Self::Catalog(_) => "ProductionSelectedRootMountSourceProviderFailureV1::Catalog",
+            Self::ReleaseEffect(_) => "ProductionSelectedRootMountSourceProviderFailureV1::ReleaseEffect",
             Self::Ended => "ProductionSelectedRootMountSourceProviderFailureV1::Ended",
         })
     }
@@ -112,6 +117,7 @@ impl ProductionSelectedRootMountSourceProviderV1 {
             first_stage: None,
             catalog: Default::default(),
             shutdown_failure: None,
+            release_effect: None,
         }
     }
 
@@ -287,6 +293,120 @@ impl ProductionSelectedRootMountSourceProviderV1 {
         }
     }
 
+    /// Rechecks the genuine catalog and Session under the fixed intake cut.
+    pub(crate) fn recheck_catalog_for_original_release_intake(&mut self, cut: u64) -> bool {
+        if self.ended || self.first_stage.is_some() {
+            return false;
+        }
+        let mut boundary = SelectedRootOpeningBoundaryV1 { owner: self, completed: false };
+        let before = boundary.owner.release_session_is_present();
+        let catalog = boundary.owner.catalog.recheck();
+        if !catalog {
+            boundary.owner.note_failure(SelectedRootOpeningStageV1::Catalog);
+        }
+        let after = boundary.owner.release_session_is_present();
+        let clock = match remaining_duration(cut) {
+            Ok(_) => true,
+            Err(cause) => {
+                if boundary.owner.first_deadline_failure.is_none() {
+                    boundary.owner.first_deadline_failure = Some(cause);
+                }
+                boundary.owner.note_failure(SelectedRootOpeningStageV1::Deadline);
+                false
+            }
+        };
+        boundary.completed = before && catalog && after && clock;
+        boundary.completed
+    }
+
+    /// Rechecks the same catalog and owner under the newly admitted Release.
+    ///
+    /// The historical opening cutoff remains unchanged. Only this closed
+    /// purpose uses the actual committed Release effect's current clock.
+    pub(crate) fn recheck_catalog_for_original_release(
+        &mut self,
+        effect: &mut aos_sandbox_mount::broker::OriginalMountReleaseEffectLoanV1<'_>,
+    ) -> bool {
+        if self.ended || self.first_stage.is_some() {
+            return false;
+        }
+        let mut boundary = SelectedRootOpeningBoundaryV1 { owner: self, completed: false };
+        if !boundary.owner.check_release_effect(effect)
+            || !boundary.owner.release_session_is_present()
+        {
+            return false;
+        }
+        if !boundary.owner.catalog.recheck() {
+            boundary.owner.note_failure(SelectedRootOpeningStageV1::Catalog);
+            return false;
+        }
+        let current = boundary.owner.release_session_is_present();
+        let clock = boundary.owner.check_release_effect(effect);
+        boundary.completed = current && clock;
+        boundary.completed
+    }
+
+    /// Lends the genuine Session only after the short Release-effect bookend.
+    pub(crate) fn borrow_current_session_for_original_release(
+        &mut self,
+        effect: &mut aos_sandbox_mount::broker::OriginalMountReleaseEffectLoanV1<'_>,
+    ) -> Option<&mut aos_sandbox_source_provider_security::CurrentRootMountSourceProviderSessionV1> {
+        if self.ended || self.first_stage.is_some()
+            || !self.check_release_effect(effect)
+            || !self.release_session_is_present()
+            || !self.check_release_effect(effect)
+        {
+            self.end();
+            return None;
+        }
+        if !self.catalog.recheck() {
+            self.note_failure(SelectedRootOpeningStageV1::Catalog);
+            self.end();
+            return None;
+        }
+        if !self.release_session_is_present() || !self.check_release_effect(effect) {
+            self.end();
+            return None;
+        }
+        let first_stage = &mut self.first_stage;
+        let ended = &mut self.ended;
+        let owner = self.owner.as_mut()?;
+        match owner.borrow_current_session() {
+            Ok(Some(session)) => Some(session),
+            Ok(None) | Err(_) => {
+                // The lower owner retains and closes on its actual refusal.
+                // Do not erase that cause behind the outer ended fallback.
+                if first_stage.is_none() {
+                    *first_stage = Some(SelectedRootOpeningStageV1::Security);
+                }
+                *ended = true;
+                None
+            }
+        }
+    }
+
+    fn check_release_effect(
+        &mut self,
+        effect: &mut aos_sandbox_mount::broker::OriginalMountReleaseEffectLoanV1<'_>,
+    ) -> bool {
+        self.release_effect = Some(effect.check_before_release_effect());
+        if matches!(self.release_effect, Some(Ok(()))) {
+            true
+        } else {
+            self.note_failure(SelectedRootOpeningStageV1::ReleaseEffect);
+            false
+        }
+    }
+
+    fn release_session_is_present(&mut self) -> bool {
+        if matches!(self.owner.as_mut().map(|owner| owner.borrow_current_session()), Some(Ok(Some(_)))) {
+            true
+        } else {
+            self.note_failure(SelectedRootOpeningStageV1::Security);
+            false
+        }
+    }
+
     pub(crate) fn catalog_pair(&self) -> Option<(&[u8], &[u8])> {
         if self.ended { None } else { self.catalog.pair() }
     }
@@ -305,6 +425,9 @@ impl ProductionSelectedRootMountSourceProviderV1 {
                 .map(ProductionSelectedRootMountSourceProviderFailureV1::Deadline),
             Some(SelectedRootOpeningStageV1::Catalog) => self.catalog.failure()
                 .map(ProductionSelectedRootMountSourceProviderFailureV1::Catalog),
+            Some(SelectedRootOpeningStageV1::ReleaseEffect) => self.release_effect.as_ref()
+                .and_then(|result| result.as_ref().err())
+                .map(ProductionSelectedRootMountSourceProviderFailureV1::ReleaseEffect),
             None => None,
         };
         failure.or_else(|| self.ended.then_some(ProductionSelectedRootMountSourceProviderFailureV1::Ended))

@@ -162,6 +162,9 @@ pub enum FixedProviderOriginalCompletionProgressV5 {
     /// Root13 and the remaining cleanup floor were read back at phase10.
     /// This is not physical retirement, a cleanup ACK or population Drain.
     RootTerminalRecorded,
+    /// An independent Release and its status reservation were read back.
+    /// Original physical custody and cleanup debt remain held; this is not Drain.
+    ReleaseAdmitted,
     /// All returned originals and the first cause remain permanently held.
     Closed,
 }

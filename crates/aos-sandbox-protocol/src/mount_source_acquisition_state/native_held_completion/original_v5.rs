@@ -99,6 +99,26 @@ pub fn original_root_remaining_v5(graph: &RootNativeHeldGraphV2, attempt: [u8; 3
     })
 }
 
+/// Checks the immutable terminal archive required by independent Release DATA.
+pub(super) fn require_original_release_cut_v1(
+    graph: &RootNativeHeldGraphV2,
+    attempt: [u8; 32],
+) -> Result<()> {
+    let sidecar = graph.sidecars().get(&attempt)
+        .ok_or_else(|| state_error("original Release retained sidecar absent"))?;
+    if sidecar.suffix().phase() != 7
+        || sidecar.suffix().control(Kind::RootPrepared).is_none()
+        || sidecar.suffix().control(Kind::ProviderHeld).is_none()
+        || sidecar.suffix().control(Kind::RootAccepted).is_none()
+        || sidecar.suffix().control(Kind::RootTerminalRecorded).is_none()
+        || sidecar.response_transaction() == [0; 16]
+        || original_root_remaining_v5(graph, attempt)? != 0
+    {
+        return Err(state_error("original Release requires actual terminal Complete archive"));
+    }
+    Ok(())
+}
+
 /// Validates the same exact native owner edge with separately original funding.
 ///
 /// # Errors

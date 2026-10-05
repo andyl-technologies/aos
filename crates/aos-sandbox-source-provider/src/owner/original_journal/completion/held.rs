@@ -20,6 +20,7 @@ mod root_accepted;
 mod relay;
 mod settlement;
 mod root_terminal;
+mod release;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum HeldStageV5 {
@@ -50,6 +51,7 @@ pub(super) struct OriginalSourceHeldV5 {
     relay: Option<relay::OriginalSourceRelayV5>,
     settlement: Option<settlement::OriginalSourceSettlementV5>,
     root_terminal: Option<root_terminal::OriginalSourceRootTerminalV5>,
+    release: Option<release::OriginalSourceReleaseV1>,
 }
 
 impl OriginalSourceHeldV5 {
@@ -71,6 +73,7 @@ impl OriginalSourceHeldV5 {
             relay: None,
             settlement: None,
             root_terminal: None,
+            release: None,
         }
     }
 
@@ -87,6 +90,29 @@ impl OriginalSourceHeldV5 {
                 None => self.signatures.failure(),
             })
             .or_else(|| self.postcheck_debt.as_ref().map(|cause| cause as _))
+    }
+}
+
+impl OriginalSourceProducerV5 {
+    pub(in crate::owner::original_journal) fn original_release_append_parts_v1(
+        &mut self,
+    ) -> Result<(
+        &mut super::super::PreparedSourceOriginalV5,
+        Option<super::super::OriginalReleaseClockLoanV1<'_>>,
+    ), ProviderLedgerError> {
+        let child = self.original_completion.as_mut()
+            .and_then(|completion| completion.held.as_mut())
+            .and_then(|held| held.release.as_mut())
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        let clock = super::super::OriginalReleaseClockLoanV1 {
+            clock: child.clock.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(ProviderLedgerError::Unavailable)?,
+            current: child.current.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(ProviderLedgerError::Unavailable)?,
+            signed: child.signed.as_ref().and_then(|result| result.as_ref().ok())
+                .ok_or(ProviderLedgerError::Unavailable)?,
+        };
+        Ok((child.append.as_mut().ok_or(ProviderLedgerError::Unavailable)?, Some(clock)))
     }
 }
 

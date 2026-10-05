@@ -42,6 +42,67 @@ const TRANSACTION_ID_DOMAIN: &[u8] = b"aos.sandbox.source-provider.ledger.transa
 enum MutationShapeV1 {
     Ordinary,
     NativeReleaseFence,
+    OriginalNativeReleaseFence(ObjectDigest),
+}
+
+// These are two real borrowed owners, not caller-supplied snapshots. The
+// original route borrows the same validated readback and fixed held writer.
+enum MutationSourceV1<'borrow, 'journal, 'challenge> {
+    Legacy(&'borrow ProviderLedgerV1<'journal>),
+    Original {
+        writer: &'borrow aos_sandbox::SourceOriginalNativeJournalAuthorityV5<'journal, 'challenge>,
+        readback: &'borrow aos_sandbox::OriginalSourceProtectedReadbackV5,
+        configuration: &'borrow crate::ProtectedProviderConfigurationV1,
+        archived: &'borrow aos_sandbox_source_provider_security::ProtectedOriginalDeploymentV5,
+    },
+}
+
+impl MutationSourceV1<'_, '_, '_> {
+    fn configuration(&self) -> &crate::ProtectedProviderConfigurationV1 {
+        match self {
+            Self::Legacy(ledger) => &ledger.configuration,
+            Self::Original { configuration, .. } => configuration,
+        }
+    }
+
+    fn current_records(&self) -> Result<BTreeMap<Vec<u8>, Vec<u8>>, ProviderLedgerError> {
+        match self {
+            Self::Legacy(ledger) => {
+                ledger.journal.validate_source_provider_authority()?;
+                aos_sandbox_source_provider_ledger::collect_bounded_records(ledger.journal.records()?)
+                    .map_err(map_pure_ledger_error)
+            }
+            Self::Original { writer, readback, .. } => {
+                writer.validate_readback(readback)?;
+                aos_sandbox_source_provider_ledger::collect_bounded_records(
+                    readback.rows().iter()
+                        .filter(|((namespace, _), _)| *namespace == RecordNamespace::SourceProviderAuthority)
+                        .map(|((_, key), value)| (key.as_slice(), value.as_slice())),
+                ).map_err(map_pure_ledger_error)
+            }
+        }
+    }
+
+    fn recover_prospective(
+        &self,
+        records: &BTreeMap<Vec<u8>, Vec<u8>>,
+        validation_configuration: Option<&crate::ProtectedProviderConfigurationV1>,
+    ) -> Result<RecoveredProviderLedgerV1, ProviderLedgerError> {
+        match self {
+            Self::Legacy(_) => crate::recovery::recover_records(
+                records.iter().map(|(key, value)| (key.as_slice(), value.as_slice())),
+                validation_configuration.unwrap_or(self.configuration()),
+            ),
+            Self::Original { configuration, archived, .. } => {
+                let owners = records.iter().map(|(key, value)| {
+                    ((RecordNamespace::SourceProviderAuthority, key.clone()), value.clone())
+                }).collect();
+                crate::recovery::original_source_capacity::authenticate_archived_complete_cut_v5(
+                    &owners, archived, configuration,
+                )
+            }
+        }
+    }
 }
 
 pub(crate) enum CompletionCapacityV1 {
@@ -1496,6 +1557,41 @@ pub(crate) fn prepare_native_release_admission(
 fn prepare_mutations_with_shape(
     ledger: &ProviderLedgerV1<'_>,
     purpose: &[u8],
+    records: Vec<(Vec<u8>, Option<Vec<u8>>)>,
+    validation_configuration: Option<&crate::ProtectedProviderConfigurationV1>,
+    shape: MutationShapeV1,
+) -> Result<PreparedLedgerMutationV1, ProviderLedgerError> {
+    prepare_mutations_from_owner(
+        MutationSourceV1::Legacy(ledger), purpose, records, validation_configuration, shape,
+    )
+}
+
+/// Materializes a fixed Release reservation from the same original readback.
+///
+/// # Errors
+///
+/// Refuses stale custody, malformed rows or a noncanonical native Release CAS.
+/// This does not append, sign, lend Ready or authorize a physical release.
+pub(crate) fn prepare_original_release_admission(
+    writer: &aos_sandbox::SourceOriginalNativeJournalAuthorityV5<'_, '_>,
+    readback: &aos_sandbox::OriginalSourceProtectedReadbackV5,
+    configuration: &crate::ProtectedProviderConfigurationV1,
+    archived: &aos_sandbox_source_provider_security::ProtectedOriginalDeploymentV5,
+    acquisition: ObjectDigest,
+    records: Vec<(Vec<u8>, Option<Vec<u8>>)>,
+) -> Result<PreparedLedgerMutationV1, ProviderLedgerError> {
+    prepare_mutations_from_owner(
+        MutationSourceV1::Original { writer, readback, configuration, archived },
+        b"reserve-native-release-fence-v1",
+        records,
+        None,
+        MutationShapeV1::OriginalNativeReleaseFence(acquisition),
+    )
+}
+
+fn prepare_mutations_from_owner(
+    source: MutationSourceV1<'_, '_, '_>,
+    purpose: &[u8],
     mut records: Vec<(Vec<u8>, Option<Vec<u8>>)>,
     validation_configuration: Option<&crate::ProtectedProviderConfigurationV1>,
     shape: MutationShapeV1,
@@ -1506,7 +1602,9 @@ fn prepare_mutations_with_shape(
         ));
     }
     synchronize_session_history_mutations(&mut records)?;
-    let native_release_fence = matches!(shape, MutationShapeV1::NativeReleaseFence);
+    let native_release_fence = matches!(
+        shape, MutationShapeV1::NativeReleaseFence | MutationShapeV1::OriginalNativeReleaseFence(_),
+    );
     let maximum_records = if native_release_fence {
         7
     } else {
@@ -1538,6 +1636,16 @@ fn prepare_mutations_with_shape(
     }
     for (key, value) in &records {
         if let Some(value) = value {
+            if let MutationShapeV1::OriginalNativeReleaseFence(acquisition) = shape
+                && *key == crate::ledger::native_completion::native_completion_key_v2(acquisition)
+            {
+                let held = crate::ledger::native_held_completion::SourceNativeHeldCompletionRecordV1::from_canonical_bytes(key, value)
+                    .map_err(map_pure_ledger_error)?;
+                if held.to_canonical_bytes().map_err(map_pure_ledger_error)? != *value {
+                    return Err(ProviderLedgerError::Corrupt("proposed original Release carrier is not canonical"));
+                }
+                continue;
+            }
             let decoded = decode_record(key, value)?;
             if encode_decoded_record(&decoded) != *value {
                 return Err(ProviderLedgerError::Corrupt(
@@ -1546,10 +1654,7 @@ fn prepare_mutations_with_shape(
             }
         }
     }
-    ledger.journal.validate_source_provider_authority()?;
-    let current =
-        aos_sandbox_source_provider_ledger::collect_bounded_records(ledger.journal.records()?)
-            .map_err(map_pure_ledger_error)?;
+    let current = source.current_records()?;
     let mut prospective = current.clone();
     for (key, value) in &records {
         match value {
@@ -1561,9 +1666,20 @@ fn prepare_mutations_with_shape(
             }
         }
     }
-    if native_release_fence {
-        validate_native_release_admission_v1(&current, &prospective)
-            .map_err(map_pure_ledger_error)?;
+    match shape {
+        MutationShapeV1::NativeReleaseFence => {
+            validate_native_release_admission_v1(&current, &prospective)
+                .map_err(map_pure_ledger_error)?;
+        }
+        MutationShapeV1::OriginalNativeReleaseFence(acquisition) => {
+            crate::ledger::native_held_completion::propose_native_held_lifecycle_v1(
+                current.iter().map(|(key, value)| (key.as_slice(), value.as_slice())),
+                prospective.iter().map(|(key, value)| (key.as_slice(), value.as_slice())),
+                acquisition,
+                crate::ledger::native_held_completion::SourceNativeHeldLifecycleV1::ReleaseAdmitted,
+            ).map_err(map_pure_ledger_error)?;
+        }
+        MutationShapeV1::Ordinary => {}
     }
     aos_sandbox_source_provider_ledger::validate_prospective_transition(
         current
@@ -1584,12 +1700,7 @@ fn prepare_mutations_with_shape(
             ProviderLedgerError::MigrationNeedsProvenance(message)
         }
     })?;
-    let prospective_recovered = crate::recovery::recover_records(
-        prospective
-            .iter()
-            .map(|(key, value)| (key.as_slice(), value.as_slice())),
-        validation_configuration.unwrap_or(&ledger.configuration),
-    )?;
+    let prospective_recovered = source.recover_prospective(&prospective, validation_configuration)?;
     let (transaction_id, digest) = canonical_owner_transaction_id(purpose, &records)?;
     let journal_records = records
         .into_iter()

@@ -383,6 +383,56 @@ impl FixedMountSourceAcquisitionOwnerV2<'_> {
         })
     }
 
+    /// Parks the independently admitted Release in the existing original flight.
+    pub(crate) fn begin_signed_original_release_v1(
+        &mut self,
+        session: &mut CurrentRootMountSourceProviderSessionV1,
+        live: &mut Option<aos_sandbox_protocol::LiveValidatedReleaseMountSourceAcquisitionRequest>,
+        body: &mut Option<Vec<u8>>,
+        deadline: i64,
+    ) -> Result<()> {
+        OriginalRuntimeBoundaryV5::new(self, session).run(|owner, _session| {
+            let flight = owner.runtime.pending_original_native.as_mut()
+                .ok_or_else(|| state_error("original Release flight is absent"))?;
+            flight.begin_original_release_v1(live, body, deadline)
+        })
+    }
+
+    /// Reborrows the same writer for the independently admitted Release.
+    pub(crate) fn advance_signed_original_release_v1(
+        &mut self,
+        session: &mut CurrentRootMountSourceProviderSessionV1,
+        effect: &mut crate::broker::OriginalMountReleaseEffectLoanV1<'_>,
+    ) -> Result<crate::broker::OriginalMountReleaseProgressV1> {
+        OriginalRuntimeBoundaryV5::new(self, session).run(|owner, session| {
+            effect.check_before_release_effect()?;
+            let flight = owner.runtime.pending_original_native.as_mut()
+                .ok_or_else(|| state_error("original Release flight is absent"))?;
+            let sent = owner.runtime.pending_provider.as_ref()
+                .ok_or_else(|| state_error("original Release Sent custody is absent"))?;
+            flight.prearm_original_release_claim_v1()?;
+            let claimed = owner.protected.root_original_native_authority_v5();
+            let mut writer = match claimed {
+                Ok(writer) => {
+                    flight.retain_original_release_claim_v1(Ok(()));
+                    writer
+                }
+                Err(cause) => {
+                    flight.retain_original_release_claim_v1(Err(cause));
+                    return Err(state_error("original Release writer claim failed; actual cause retained"));
+                }
+            };
+            flight.advance_original_release_v1(
+                &mut owner.runtime.table,
+                &mut owner.runtime.original_native_sidecars,
+                &mut writer,
+                session,
+                sent,
+                effect,
+            )
+        })
+    }
+
     /// Keeps unrelated legacy operations away from retained original owners.
     pub(super) fn require_no_original_native_flight(&self) -> Result<()> {
         if self.runtime.pending_original_native.is_some() {
@@ -395,6 +445,20 @@ impl FixedMountSourceAcquisitionOwnerV2<'_> {
 }
 
 impl super::SourceAcquisitionRuntimeV2 {
+    pub(crate) fn original_release_failure_v1(&self)
+        -> Option<&(dyn std::error::Error + 'static)>
+    {
+        self.pending_original_native.as_ref()
+            .and_then(OriginalNativeAcquireFlightV5::original_release_failure_v1)
+    }
+
+    pub(crate) fn original_release_postcheck_debt_v1(&self)
+        -> Option<&(dyn std::error::Error + 'static)>
+    {
+        self.pending_original_native.as_ref()
+            .and_then(OriginalNativeAcquireFlightV5::original_release_postcheck_debt_v1)
+    }
+
     pub(crate) fn original_response_failure_v5(
         &self,
     ) -> Option<crate::broker::OriginalMountResponseFailureV5<'_>> {

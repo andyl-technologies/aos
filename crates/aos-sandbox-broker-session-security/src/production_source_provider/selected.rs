@@ -557,11 +557,13 @@ impl ProductionSelectedSourceProviderOriginalV1 {
         None
     }
 
-    /// Advances the SAME original pair through stored relay5 and local delivery.
+    /// Advances the SAME original through completion and independent Release.
     ///
-    /// The private owner, catalog originals and original deadline remain
-    /// resident. Actual completion causes precede distinct later bookend debt.
-    /// A local send is not a remote ACK, settlement or drain.
+    /// The private owner and catalog originals remain resident. Completion
+    /// retains its original deadline; only a genuinely verified fresh Release
+    /// supplies the later purpose's separately captured, narrowing clock.
+    /// Actual action causes precede distinct later bookend debt. Local send and
+    /// Release admission establish neither cleanup, settlement nor Drain.
     ///
     /// # Errors
     ///
@@ -599,15 +601,15 @@ impl ProductionSelectedSourceProviderOriginalV1 {
             return None;
         }
 
-        let before = self.check_opening_boundary(ingress)
+        let before = self.check_completion_boundary(ingress)
             .and_then(|()| self.catalog.recheck())
-            .and_then(|()| self.check_opening_boundary(ingress));
+            .and_then(|()| self.check_completion_boundary(ingress));
         if let Err(cause) = before {
             self.completion_failure = Some(cause);
             return None;
         }
         let progress = match self.owner.as_mut() {
-            Some(owner) => owner.advance_original_native_terminal_receipt_v5(
+            Some(owner) => owner.advance_original_native_release_v1(
                 &self.catalog.publication.bytes, &self.catalog.rows.bytes,
             ),
             None => {
@@ -621,7 +623,7 @@ impl ProductionSelectedSourceProviderOriginalV1 {
         // Core parks its whole action results before this later readback. A
         // failed bookend cannot replace the original completion/send cause.
         let after = self.catalog.recheck()
-            .and_then(|()| self.check_opening_boundary(ingress));
+            .and_then(|()| self.check_completion_boundary(ingress));
         if let Err(cause) = after {
             if self.completion_postcheck_debt.is_none() {
                 self.completion_postcheck_debt = Some(cause);
@@ -634,6 +636,13 @@ impl ProductionSelectedSourceProviderOriginalV1 {
         } else {
             Some(progress)
         }
+    }
+
+    /// Borrows independent Release posts while the same native owner stays held.
+    #[must_use]
+    pub fn original_release_postcheck_debt(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.owner.as_ref().and_then(FixedProviderOwnerV1::original_release_postcheck_debt_v1)
+            .or_else(|| self.completion_postcheck_debt.as_ref().map(|cause| cause as _))
     }
 
     /// Rechecks only the resident waiting cut without receiving another packet.
@@ -675,10 +684,21 @@ impl ProductionSelectedSourceProviderOriginalV1 {
         ingress.check_selected_boundary(self.deadline)
     }
 
+    fn check_completion_boundary(&self, ingress: &mut ProductionSourceProviderIngressV1)
+        -> Result<(), ProductionSourceProviderIngressErrorV1>
+    {
+        // Only the genuine phase10 owner can install this separately bounded
+        // intake. Historical opening D is unchanged and never renewed.
+        let deadline = self.owner.as_ref()
+            .and_then(FixedProviderOwnerV1::original_release_deadline_v1)
+            .unwrap_or(self.deadline);
+        ingress.check_selected_boundary(deadline)
+    }
+
     /// Lends actual retained failure custody without any observation or retry.
     pub fn failure(&self) -> Option<ProductionSelectedSourceProviderFailureRefV1<'_>> {
         if let Some(cause) = self.owner.as_ref()
-            .and_then(FixedProviderOwnerV1::original_terminal_receipt_failure_v5)
+            .and_then(FixedProviderOwnerV1::original_release_failure_v1)
         {
             return Some(ProductionSelectedSourceProviderFailureRefV1::Completion(cause));
         }
@@ -723,7 +743,7 @@ impl ProductionSelectedSourceProviderOriginalV1 {
         }
         // Splitting these resident fields avoids a self-borrowing stored view.
         if let Some(cause) = self.owner.as_ref()
-            .and_then(FixedProviderOwnerV1::original_terminal_receipt_failure_v5)
+            .and_then(FixedProviderOwnerV1::original_release_failure_v1)
         {
             return ProductionSelectedSourceProviderFailureRefV1::Completion(cause);
         }

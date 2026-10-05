@@ -36,6 +36,9 @@ use pending::OriginalNativePendingFlightV5;
 mod positive;
 use positive::OriginalNativePositiveFlightV5;
 
+mod release;
+use release::OriginalRootReleaseFlightV1;
+
 // Closed result disposition only: both recipes call the SAME native validator
 // at the same body sites. No caller can substitute a predicate or authority.
 enum OriginalInstallDispositionV5<'slots> {
@@ -110,6 +113,7 @@ pub(in crate::source_acquisition) struct OriginalNativeAcquireFlightV5 {
     sent: Option<SentMountProviderRequestV2>,
     pending: OriginalNativePendingFlightV5,
     positive: OriginalNativePositiveFlightV5,
+    release: Option<OriginalRootReleaseFlightV1>,
 }
 
 /// Fails the genuine original flight and actual Session on returned error or unwind.
@@ -194,6 +198,7 @@ impl OriginalNativeAcquireFlightV5 {
             sent: None,
             pending: OriginalNativePendingFlightV5::new(),
             positive: OriginalNativePositiveFlightV5::new(),
+            release: None,
         }
     }
 

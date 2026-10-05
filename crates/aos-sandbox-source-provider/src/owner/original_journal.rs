@@ -55,6 +55,49 @@ mod storage_offer;
 mod completion;
 use producer::{OriginalProducerAppendV5, OriginalSourceProducerV5};
 
+#[derive(Clone, Copy)]
+enum OriginalJournalPurposeV1 {
+    Producer(OriginalProducerAppendV5),
+    Release,
+}
+
+struct OriginalReleaseClockLoanV1<'owner> {
+    clock: &'owner crate::native_completion::clock::OriginalReleaseClockGuardV1,
+    current: &'owner CurrentProviderRequestV1,
+    signed: &'owner SignedSourceProviderRequestV1,
+}
+
+impl OriginalReleaseClockLoanV1<'_> {
+    fn require_current(&self) -> Result<(), ProviderLedgerError> {
+        self.clock.require_current(self.current, self.signed)
+    }
+}
+
+// The selected clock and append are disjoint fields in one original owner.
+// This loan cannot outlive that owner or replace its current authenticated request.
+fn original_append_parts_v1(
+    producer: &mut OriginalSourceProducerV5,
+    purpose: OriginalJournalPurposeV1,
+) -> Result<(&mut PreparedSourceOriginalV5, Option<OriginalReleaseClockLoanV1<'_>>), ProviderLedgerError> {
+    match purpose {
+        OriginalJournalPurposeV1::Producer(step) => Ok((producer.append_mut(step)?, None)),
+        OriginalJournalPurposeV1::Release => producer.original_release_append_parts_v1(),
+    }
+}
+
+fn require_original_append_clock_v1(
+    ingress: &super::original_ingress::OriginalIngressV1,
+    held_expiry: Option<i64>,
+    release: Option<&OriginalReleaseClockLoanV1<'_>>,
+) -> Result<(), ProviderLedgerError> {
+    if let Some(clock) = release {
+        clock.require_current()?;
+    } else if let Some(expiry) = held_expiry {
+        ingress.borrowed_clock_v5()?.revalidate(Some(expiry))?;
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 pub(super) struct OriginalJournalV5 {
     history: OriginalJournalHistoryV5,
@@ -460,11 +503,18 @@ impl FixedProviderOwnerV1 {
         &mut self,
         step: OriginalProducerAppendV5,
     ) -> Result<(), ProviderLedgerError> {
+        self.prepare_original_journal_for_v1(OriginalJournalPurposeV1::Producer(step))
+    }
+
+    fn prepare_original_journal_for_v1(
+        &mut self,
+        purpose: OriginalJournalPurposeV1,
+    ) -> Result<(), ProviderLedgerError> {
         let mut guard = FirstBirthClosureGuardV5::new(self);
-        let result = guard.owner.prepare_original_journal_inner_v5(step);
+        let result = guard.owner.prepare_original_journal_inner_v5(purpose);
 
         if result.is_err() {
-            if let Ok(retained) = guard.owner.retained_original_append_mut_v5(step) {
+            if let Ok(retained) = guard.owner.retained_original_append_for_v1(purpose) {
                 retained.failed = true;
             }
         } else {
@@ -477,18 +527,29 @@ impl FixedProviderOwnerV1 {
         &mut self,
         step: OriginalProducerAppendV5,
     ) -> Result<&mut PreparedSourceOriginalV5, ProviderLedgerError> {
+        self.retained_original_append_for_v1(OriginalJournalPurposeV1::Producer(step))
+    }
+
+    fn retained_original_append_for_v1(
+        &mut self,
+        purpose: OriginalJournalPurposeV1,
+    ) -> Result<&mut PreparedSourceOriginalV5, ProviderLedgerError> {
         let Some(FixedProviderOwnerStateV1::HeldReadOnly(held)) = self.state.as_mut() else {
             return Err(ProviderLedgerError::Unavailable);
         };
-        held.original.as_mut().and_then(|original| original.producer.as_mut())
-            .ok_or(ProviderLedgerError::Unavailable)?.append_mut(step)
+        let producer = held.original.as_mut().and_then(|original| original.producer.as_mut())
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        original_append_parts_v1(producer, purpose).map(|(append, _)| append)
     }
 
     fn prepare_original_journal_inner_v5(
         &mut self,
-        step: OriginalProducerAppendV5,
+        purpose: OriginalJournalPurposeV1,
     ) -> Result<(), ProviderLedgerError> {
-        let held_expiry = if step.is_original_held() { Some(self.original_held_expiry_v5()?) } else { None };
+        let held_expiry = match purpose {
+            OriginalJournalPurposeV1::Producer(step) if step.is_original_held() => Some(self.original_held_expiry_v5()?),
+            _ => None,
+        };
         self.retain_first_original_runtime_v5()?;
         self.observe_original_journal_v5()?;
         let Some(FixedProviderOwnerStateV1::HeldReadOnly(held)) = self.state.as_mut() else {
@@ -496,16 +557,15 @@ impl FixedProviderOwnerV1 {
         };
         let original = held.original.as_mut().ok_or(ProviderLedgerError::RuntimePoisoned)?;
         let history = &mut original.history;
-        let retained = original.producer.as_mut().ok_or(ProviderLedgerError::Unavailable)?
-            .append_mut(step)?;
+        let (retained, release_clock) = original_append_parts_v1(
+            original.producer.as_mut().ok_or(ProviderLedgerError::Unavailable)?, purpose,
+        )?;
         let projection = held.session.current_projection()?;
         retained.session = Some(projection.session_binding());
         let challenges = self.hold_challenges.original_history_v5()?;
         let authority = self.journal.as_mut().ok_or(ProviderLedgerError::RuntimePoisoned)?
             .claim_source_original_native_v5(&challenges)?;
-        if let Some(expiry) = held_expiry {
-            self.original_ingress.borrowed_clock_v5()?.revalidate(Some(expiry))?;
-        }
+        require_original_append_clock_v1(&self.original_ingress, held_expiry, release_clock.as_ref())?;
         authority.prepare(&mut retained.owners, &mut retained.sandbox)?;
         let prepared = retained.sandbox.as_ref().ok_or(ProviderLedgerError::RuntimePoisoned)?;
         let comparison = prepared.comparison().ok_or(ProviderLedgerError::Unavailable)?;
@@ -521,9 +581,7 @@ impl FixedProviderOwnerV1 {
         let capture = history.current_capture.as_ref().ok_or(ProviderLedgerError::RuntimePoisoned)?;
         let catalog = aos_sandbox_source_provider_security::verify_catalog_publication(capture, &held.publication)?;
         let current = history.current.as_ref().ok_or(ProviderLedgerError::RuntimePoisoned)?;
-        if let Some(expiry) = held_expiry {
-            self.original_ingress.borrowed_clock_v5()?.revalidate(Some(expiry))?;
-        }
+        require_original_append_clock_v1(&self.original_ingress, held_expiry, release_clock.as_ref())?;
         let eligibility = archive.capture_deployment(
             capture,
             &catalog,
@@ -554,9 +612,7 @@ impl FixedProviderOwnerV1 {
         }
 
         let query = observed_query_bytes(retained.controls.as_ref(), projection.session_binding())?;
-        if let Some(expiry) = held_expiry {
-            self.original_ingress.borrowed_clock_v5()?.revalidate(Some(expiry))?;
-        }
+        require_original_append_clock_v1(&self.original_ingress, held_expiry, release_clock.as_ref())?;
         retained.reference = Some(archive.install_cut(
             &subject, &durable, &durable, retained.origin.as_ref(), &eligibility,
             seconds, &challenges, &projection, query,
@@ -573,9 +629,7 @@ impl FixedProviderOwnerV1 {
             &self.backend_verifier,
         )?;
         held.session.current_projection()?;
-        if let Some(expiry) = held_expiry {
-            self.original_ingress.borrowed_clock_v5()?.revalidate(Some(expiry))?;
-        }
+        require_original_append_clock_v1(&self.original_ingress, held_expiry, release_clock.as_ref())?;
         Ok(())
     }
 
@@ -584,11 +638,18 @@ impl FixedProviderOwnerV1 {
         &mut self,
         step: OriginalProducerAppendV5,
     ) -> Result<(), ProviderLedgerError> {
+        self.preflight_original_journal_for_v1(OriginalJournalPurposeV1::Producer(step))
+    }
+
+    fn preflight_original_journal_for_v1(
+        &mut self,
+        purpose: OriginalJournalPurposeV1,
+    ) -> Result<(), ProviderLedgerError> {
         let mut guard = FirstBirthClosureGuardV5::new(self);
-        let checked = guard.owner.preflight_original_journal_inner_v5(step);
+        let checked = guard.owner.preflight_original_journal_inner_v5(purpose);
 
         if checked.is_err() {
-            if let Ok(retained) = guard.owner.retained_original_append_mut_v5(step) {
+            if let Ok(retained) = guard.owner.retained_original_append_for_v1(purpose) {
                 retained.failed = true;
             }
         } else {
@@ -599,10 +660,13 @@ impl FixedProviderOwnerV1 {
 
     fn preflight_original_journal_inner_v5(
         &mut self,
-        step: OriginalProducerAppendV5,
+        purpose: OriginalJournalPurposeV1,
     ) -> Result<(), ProviderLedgerError> {
-        let held_expiry = if step.is_original_held() { Some(self.original_held_expiry_v5()?) } else { None };
-        let retained = self.retained_original_append_mut_v5(step)?;
+        let held_expiry = match purpose {
+            OriginalJournalPurposeV1::Producer(step) if step.is_original_held() => Some(self.original_held_expiry_v5()?),
+            _ => None,
+        };
+        let retained = self.retained_original_append_for_v1(purpose)?;
         if retained.failed || retained.attempted {
             return Err(ProviderLedgerError::RuntimePoisoned);
         }
@@ -612,8 +676,9 @@ impl FixedProviderOwnerV1 {
         };
         let original = held.original.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
         let history = &mut original.history;
-        let retained = original.producer.as_mut().ok_or(ProviderLedgerError::Unavailable)?
-            .append_mut(step)?;
+        let (retained, release_clock) = original_append_parts_v1(
+            original.producer.as_mut().ok_or(ProviderLedgerError::Unavailable)?, purpose,
+        )?;
         let projection = held.session.current_projection()?;
         if retained.session != Some(projection.session_binding()) {
             return Err(ProviderLedgerError::Equivocation);
@@ -651,14 +716,10 @@ impl FixedProviderOwnerV1 {
             authority.configured_limits(),
             &self.backend_verifier,
         )?;
-        if let Some(expiry) = held_expiry {
-            self.original_ingress.borrowed_clock_v5()?.revalidate(Some(expiry))?;
-        }
+        require_original_append_clock_v1(&self.original_ingress, held_expiry, release_clock.as_ref())?;
         authority.preflight(prepared)?;
         held.session.current_projection()?;
-        if let Some(expiry) = held_expiry {
-            self.original_ingress.borrowed_clock_v5()?.revalidate(Some(expiry))?;
-        }
+        require_original_append_clock_v1(&self.original_ingress, held_expiry, release_clock.as_ref())?;
         Ok(())
     }
 
@@ -667,11 +728,18 @@ impl FixedProviderOwnerV1 {
         &mut self,
         step: OriginalProducerAppendV5,
     ) -> Result<(), ProviderLedgerError> {
+        self.commit_original_journal_for_v1(OriginalJournalPurposeV1::Producer(step))
+    }
+
+    fn commit_original_journal_for_v1(
+        &mut self,
+        purpose: OriginalJournalPurposeV1,
+    ) -> Result<(), ProviderLedgerError> {
         let mut guard = FirstBirthClosureGuardV5::new(self);
-        let checked = guard.owner.commit_original_journal_inner_v5(step);
+        let checked = guard.owner.commit_original_journal_inner_v5(purpose);
 
         if checked.is_err() {
-            if let Ok(retained) = guard.owner.retained_original_append_mut_v5(step) {
+            if let Ok(retained) = guard.owner.retained_original_append_for_v1(purpose) {
                 retained.failed = true;
             }
         } else {
@@ -682,11 +750,14 @@ impl FixedProviderOwnerV1 {
 
     fn commit_original_journal_inner_v5(
         &mut self,
-        step: OriginalProducerAppendV5,
+        purpose: OriginalJournalPurposeV1,
     ) -> Result<(), ProviderLedgerError> {
-        let held_expiry = if step.is_original_held() { Some(self.original_held_expiry_v5()?) } else { None };
-        self.preflight_original_journal_append_v5(step)?;
-        self.retained_original_append_mut_v5(step)?.attempted = true;
+        let held_expiry = match purpose {
+            OriginalJournalPurposeV1::Producer(step) if step.is_original_held() => Some(self.original_held_expiry_v5()?),
+            _ => None,
+        };
+        self.preflight_original_journal_for_v1(purpose)?;
+        self.retained_original_append_for_v1(purpose)?.attempted = true;
         let Some(FixedProviderOwnerStateV1::HeldReadOnly(held)) = self.state.as_mut() else {
             return Err(ProviderLedgerError::Unavailable);
         };
@@ -695,11 +766,10 @@ impl FixedProviderOwnerV1 {
             .claim_source_original_native_v5(&challenges)?;
         let appended = (|| {
             let original = held.original.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
-            let retained = original.producer.as_mut().ok_or(ProviderLedgerError::Unavailable)?
-                .append_mut(step)?;
-            if let Some(expiry) = held_expiry {
-                self.original_ingress.borrowed_clock_v5()?.revalidate(Some(expiry))?;
-            }
+            let (retained, release_clock) = original_append_parts_v1(
+                original.producer.as_mut().ok_or(ProviderLedgerError::Unavailable)?, purpose,
+            )?;
+            require_original_append_clock_v1(&self.original_ingress, held_expiry, release_clock.as_ref())?;
             authority.commit_prepared(
                 retained.sandbox.as_mut().ok_or(ProviderLedgerError::Unavailable)?,
                 &mut retained.readback,
@@ -719,9 +789,7 @@ impl FixedProviderOwnerV1 {
                 retained.origin.as_ref(),
             )?;
             held.session.current_projection()?;
-            if let Some(expiry) = held_expiry {
-                self.original_ingress.borrowed_clock_v5()?.revalidate(Some(expiry))?;
-            }
+            require_original_append_clock_v1(&self.original_ingress, held_expiry, release_clock.as_ref())?;
             Ok(())
         })();
         if appended.is_err() {

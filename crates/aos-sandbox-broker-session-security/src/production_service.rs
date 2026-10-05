@@ -406,6 +406,113 @@ impl ProductionOriginalMountCycleV1 {
         receipt && root && startup && clock
     }
 
+    /// Reports only the completed channel prefix for private routing.
+    #[must_use]
+    pub fn original_release_channel_settled(&self) -> bool {
+        !self.ended && self.receipt.original_release_channel_settled()
+    }
+
+    /// Advances independently authorized Release on the SAME retained owners.
+    ///
+    /// The fixed intake cut starts only after all three authentic exchanges.
+    /// Once the actual Release is admitted, its genuine reopened effect and
+    /// original paired clock replace the historical Acquire crossing. Local
+    /// send is DATA only: it permits neither cleanup nor descriptor release.
+    ///
+    /// # Errors
+    /// Ends both queues before diagnostic/drop on receive, admission, native
+    /// reservation, signing, send or independent owner/clock refusal.
+    pub fn advance_selected_original_release<W: aos_sandbox_mount::worker::MountWorker>(
+        &mut self,
+        broker: &mut aos_sandbox_mount::broker::MountBroker<W>,
+    ) -> Result<aos_sandbox_mount::broker::OriginalMountReleaseProgressV1, ProductionOriginalMountCycleFailureV1<'_>> {
+        if self.ended || self.first_stage.is_some() || self.startup.is_none()
+            || !self.attempted || !self.locally_sent
+            || !self.receipt.original_release_channel_settled()
+        {
+            self.end();
+            return Err(self.failure_or_ended());
+        }
+        let progress = {
+            let mut boundary = OriginalMountCycleBoundaryV1 { owner: self, completed: false };
+            let owner = &mut *boundary.owner;
+            // Before a receive can block, retain the one new intake cut and
+            // observe the genuine startup/catalog owners. The Root bookend's
+            // final clock is that fixed cut, never the historical Acquire D.
+            let intake_current = if owner.receipt.original_release_admitted() {
+                true
+            } else if !owner.receipt.prepare_original_release_intake() {
+                owner.note_failure(OriginalMountCycleStageV1::Receipt);
+                false
+            } else {
+                let startup = match owner.startup.as_mut() {
+                    Some(startup) => broker.recheck_selected_mount_startup(startup).is_ok(),
+                    None => false,
+                };
+                if !startup {
+                    owner.note_failure(OriginalMountCycleStageV1::Startup);
+                }
+                let root = owner.receipt.original_release_intake_cut()
+                    .is_some_and(|cut| owner.root.recheck_catalog_for_original_release_intake(cut));
+                if !root {
+                    owner.note_failure(OriginalMountCycleStageV1::Root);
+                }
+                startup && root
+            };
+            let progress = if intake_current {
+                owner.receipt.advance_original_release(broker, &mut owner.root)
+            } else {
+                None
+            };
+            if progress.is_none() {
+                owner.note_failure(if owner.receipt.original_release_root_loan_pending() {
+                    OriginalMountCycleStageV1::Root
+                } else {
+                    OriginalMountCycleStageV1::Receipt
+                });
+            }
+            // These independent posts also run after an actual action Err.
+            // The receipt's selected crossing was armed before dispatch, so
+            // caught unwind still lends its already resident cause on end.
+            let root_receipt = owner.receipt.recheck_original_release(broker, &mut owner.root);
+            if !root_receipt {
+                if owner.root.failure().is_some() {
+                    owner.note_failure(OriginalMountCycleStageV1::Root);
+                } else {
+                    owner.note_failure(OriginalMountCycleStageV1::Receipt);
+                }
+            }
+            let startup = match owner.startup.as_mut() {
+                Some(startup) => broker.recheck_selected_mount_startup(startup).is_ok(),
+                None => false,
+            };
+            if !startup {
+                owner.note_failure(OriginalMountCycleStageV1::Startup);
+            }
+            boundary.completed = progress.is_some() && root_receipt && startup;
+            if boundary.completed { progress } else { None }
+        };
+        progress.ok_or_else(|| self.failure_or_ended())
+    }
+
+    /// Lends the actual native Release cause without copying or rechecking it.
+    #[must_use]
+    pub fn release_failure<'owner, W: aos_sandbox_mount::worker::MountWorker>(
+        &self,
+        broker: &'owner aos_sandbox_mount::broker::MountBroker<W>,
+    ) -> Option<&'owner (dyn std::error::Error + 'static)> {
+        broker.original_release_failure_v1()
+    }
+
+    /// Lends independent native Release posts without replacing its first cause.
+    #[must_use]
+    pub fn release_postcheck_debt<'owner, W: aos_sandbox_mount::worker::MountWorker>(
+        &self,
+        broker: &'owner aos_sandbox_mount::broker::MountBroker<W>,
+    ) -> Option<&'owner (dyn std::error::Error + 'static)> {
+        broker.original_release_postcheck_debt_v1()
+    }
+
     /// Borrows the actual response cause from its SAME broker runtime owner.
     ///
     /// This performs no observation, retry, extraction or cause cloning. The
@@ -676,6 +783,8 @@ impl ProductionOriginalMountCycleV1 {
                 }
             }
             Some(OriginalMountCycleStageV1::Deadline) => self.deadline_result.as_ref().and_then(|result| result.as_ref().err()).map(ProductionOriginalMountCycleFailureV1::Deadline),
+            None if self.receipt.original_release_root_loan_pending() => self.root.failure()
+                .map(ProductionOriginalMountCycleFailureV1::Root),
             None => self.receipt.selected_failure_for_cycle()
                 .map(ProductionOriginalMountCycleFailureV1::Receipt),
         };

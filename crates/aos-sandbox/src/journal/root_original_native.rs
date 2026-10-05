@@ -21,7 +21,9 @@ use aos_sandbox_source_provider_protocol::native_held_completion::{
 };
 use sha2::{Digest as _, Sha256};
 
-use super::capacity_reservation::OrdinaryCapacityKindV4;
+use super::capacity_reservation::{
+    OrdinaryCapacityKindV4, OrdinaryCapacityProfileV4, OrdinaryCapacityRecordV4,
+};
 use super::capacity_reservation::family::{CanonicalCapacityFamily, canonical_reservations};
 use super::native_held::OriginalRootCapacityRecordV5;
 use super::{
@@ -56,7 +58,146 @@ fn graph(state: &State) -> Result<RootNativeHeldGraphV2, JournalError> {
 fn require_named_funding(state: &State, limits: JournalLimits) -> Result<(), JournalError> {
     // Query coexistence is a complete metadata join, never a generic allowance.
     super::root_original_inventory::pending(state, limits)?;
-    require_supported_funding_families(&canonical_reservations(state)?)
+    let mut families = canonical_reservations(state)?;
+    if families.iter().any(is_original_release_floor) {
+        validate_original_release_floors(state, &families)?;
+        families.retain(|family| !is_original_release_floor(family));
+    }
+    require_supported_funding_families(&families)
+}
+
+fn is_original_release_floor(family: &CanonicalCapacityFamily) -> bool {
+    matches!(family, CanonicalCapacityFamily::Ordinary4(floor)
+        if floor.data().kind == OrdinaryCapacityKindV4::ReleaseRequest)
+}
+
+fn validate_original_release_floors(
+    state: &State,
+    families: &[CanonicalCapacityFamily],
+) -> Result<(), JournalError> {
+    use aos_sandbox_protocol::mount_source_acquisition_state::{
+        ProviderAttemptStateV2, ProviderMethodV2, ProviderQueryOwnerV2,
+        SourceAcquisitionPhaseV2,
+    };
+
+    let checked = graph(state)?;
+    let mut owners = BTreeSet::new();
+    for family in families {
+        let CanonicalCapacityFamily::Ordinary4(floor) = family else { continue };
+        let data = floor.data();
+        if data.kind != OrdinaryCapacityKindV4::ReleaseRequest { continue; }
+        if !owners.insert(data.owner_id)
+            || data.profile != OrdinaryCapacityProfileV4::ReleaseOutcomeAndNegativeCustody
+        {
+            return Err(invalid());
+        }
+        let query = checked.legacy().provider_attempts.get(&data.owner_id)
+            .ok_or_else(invalid)?;
+        let ProviderQueryOwnerV2::Release { acquisition_id } = query.owner else {
+            return Err(invalid());
+        };
+        let row = checked.legacy().acquisitions.get(&acquisition_id).ok_or_else(invalid)?;
+        let root = row.acquire_lineage.root.id;
+        let sidecar = checked.sidecars().get(&root).ok_or_else(invalid)?;
+        let head = checked.legacy().provider_heads
+            .get(&(row.scope.holder_authority_id, row.scope.provider_authority_id))
+            .ok_or_else(invalid)?;
+        if sidecar.suffix().phase() != 7
+            || original_root_remaining_v5(&checked, root).map_err(|_| invalid())? != 0
+            || query.method != ProviderMethodV2::Release
+            || query.state != ProviderAttemptStateV2::Reserved
+            || row.phase != SourceAcquisitionPhaseV2::Releasing
+            || row.release_lineage.as_ref().is_none_or(|lineage| {
+                lineage.root.id != data.owner_id || lineage.tail.id != data.owner_id
+            })
+            || head.pending_attempt.as_ref().is_none_or(|pending| pending.id != data.owner_id)
+            || query.signed_request_digest != data.original_artifact_digest
+            || query.request_id != data.operation_id
+        {
+            return Err(invalid());
+        }
+        let puts = original_release_current_puts(&checked, data.owner_id)?;
+        if OriginalRootCapacityRecordV5::release_owner_digest_v1(&puts)?
+            != data.admission_owner_mutation_digest
+        {
+            return Err(invalid());
+        }
+    }
+    Ok(())
+}
+
+fn original_release_current_puts(
+    checked: &RootNativeHeldGraphV2,
+    release: [u8; 32],
+) -> Result<BTreeMap<Vec<u8>, Vec<u8>>, JournalError> {
+    use aos_sandbox_protocol::mount_source_acquisition_state::{
+        ProviderQueryOwnerV2, StoredRecordV2, encode_mount_source_state_record_v2,
+    };
+
+    let query = checked.legacy().provider_attempts.get(&release).ok_or_else(invalid)?;
+    let ProviderQueryOwnerV2::Release { acquisition_id } = query.owner else {
+        return Err(invalid());
+    };
+    let row = checked.legacy().acquisitions.get(&acquisition_id).ok_or_else(invalid)?;
+    let head = checked.legacy().provider_heads
+        .get(&(row.scope.holder_authority_id, row.scope.provider_authority_id))
+        .ok_or_else(invalid)?;
+    [
+        StoredRecordV2::ProviderQueryAttempt { value: query.clone() },
+        StoredRecordV2::Acquisition { value: row.clone() },
+        StoredRecordV2::ProviderHead { value: head.clone() },
+    ].iter().map(|record| encode_mount_source_state_record_v2(record)
+        .map_err(|_| invalid())).collect()
+}
+
+fn derive_original_release(
+    state: &State,
+    owners: &JournalTransaction,
+    root: [u8; 32],
+    release: [u8; 32],
+    limits: JournalLimits,
+) -> Result<(JournalTransaction, OrdinaryCapacityRecordV4), JournalError> {
+    require_named_funding(state, limits)?;
+    if canonical_reservations(state)?.iter().any(is_original_release_floor) {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    super::root_local_recovery::require_fences(state, owners)?;
+    let before = graph(state)?;
+    let after = graph(&apply(state, owners.records())?)?;
+    let proposal = aos_sandbox_protocol::mount_source_acquisition_state::native_held_completion::
+        validate_original_release_transition_v1(&before, &after, root, release, *owners.id())
+        .map_err(|_| invalid())?;
+    require_exact_owner_puts(owners, &proposal.puts, None)?;
+    let floor = OriginalRootCapacityRecordV5::release_floor_v1(
+        &before, &after, root, release, *owners.id(), state, limits,
+    )?;
+    let mut records = owners.records().to_vec();
+    records.push(floor.to_journal_record());
+    let transaction = JournalTransaction::new(*owners.id(), records)?;
+    validate_transaction(&transaction, limits)?;
+    Ok((transaction, floor))
+}
+
+fn validate_original_release_edge(
+    state: &State,
+    transaction: &JournalTransaction,
+    root: [u8; 32],
+    limits: JournalLimits,
+) -> Result<(), JournalError> {
+    let floors = transaction.records().iter()
+        .filter(|record| record.namespace() == RecordNamespace::GlobalCapacityReservation)
+        .map(OrdinaryCapacityRecordV4::from_journal_record)
+        .collect::<Result<Vec<_>, _>>()?;
+    let [floor] = floors.as_slice() else { return Err(invalid()) };
+    if floor.data().kind != OrdinaryCapacityKindV4::ReleaseRequest {
+        return Err(invalid());
+    }
+    let owners = JournalTransaction::new(*transaction.id(), transaction.records().iter()
+        .filter(|record| record.namespace() == RecordNamespace::MountSourceAcquisition)
+        .cloned().collect())?;
+    let (derived, _) = derive_original_release(state, &owners, root, floor.data().owner_id, limits)?;
+    if derived != *transaction { return Err(invalid()); }
+    Ok(())
 }
 
 /// Shares only the closed family policy after complete canonical traversal.
@@ -472,6 +613,13 @@ pub(super) fn validate_edge(
     attempt: [u8; 32],
     limits: JournalLimits,
 ) -> Result<Option<[u8; 32]>, JournalError> {
+    if transaction.records().iter().any(|record| {
+        record.namespace() == RecordNamespace::GlobalCapacityReservation
+            && record.value().is_some_and(|bytes| bytes.get(8..13) == Some(&[0, 4, 40, 10, 12]))
+    }) {
+        validate_original_release_edge(state, transaction, attempt, limits)?;
+        return Ok(None);
+    }
     let owners: Vec<_> = transaction
         .records()
         .iter()
@@ -520,6 +668,20 @@ pub(super) fn validate_replayed_transaction(
     limits: JournalLimits,
     successor_sequence: u64,
 ) -> Result<bool, JournalError> {
+    if let Some(floor) = transaction.records().iter().find(|record| {
+        record.namespace() == RecordNamespace::GlobalCapacityReservation
+            && record.value().is_some_and(|bytes| bytes.get(8..13) == Some(&[0, 4, 40, 10, 12]))
+    }) {
+        let floor = OrdinaryCapacityRecordV4::from_journal_record(floor)?;
+        let after = graph(&apply(state, &transaction.records().iter()
+            .filter(|record| record.namespace() == RecordNamespace::MountSourceAcquisition)
+            .cloned().collect::<Vec<_>>())?)?;
+        let query = after.legacy().provider_attempts.get(&floor.data().owner_id)
+            .ok_or_else(invalid)?;
+        let row = after.legacy().acquisitions.get(&query.owner.owner_id()).ok_or_else(invalid)?;
+        validate_original_release_edge(state, transaction, row.acquire_lineage.root.id, limits)?;
+        return Ok(true);
+    }
     let mut selected = None;
     for record in transaction.records() {
         if record.namespace() != RecordNamespace::GlobalCapacityReservation {
@@ -653,6 +815,23 @@ impl<'journal> MountOriginalNativeJournalAuthorityV5<'journal> {
         self.require_current()?;
         require_named_funding(&self.authority.journal.state, self.authority.journal.limits)?;
         pending(&self.authority.journal.state, self.authority.journal.limits)?;
+        if self.authority.journal.state.iter().any(|((namespace, _), value)| {
+            *namespace == RecordNamespace::GlobalCapacityReservation
+                && value.get(8..13) == Some(&[0, 4, 40, 10, 12])
+        }) {
+            for family in canonical_reservations(&self.authority.journal.state)? {
+                if let CanonicalCapacityFamily::Ordinary4(floor) = family {
+                    if floor.data().kind == OrdinaryCapacityKindV4::ReleaseRequest
+                        && !self.authority.journal.transaction_ids
+                            .contains(&floor.data().admission_transaction)
+                    {
+                        // A compacted scalar floor cannot replace actual original
+                        // Release admission provenance on this selected hot route.
+                        return Err(JournalError::StaleAuthoritySnapshot);
+                    }
+                }
+            }
+        }
         graph(&self.authority.journal.state)
     }
 
@@ -773,6 +952,40 @@ impl<'journal> MountOriginalNativeJournalAuthorityV5<'journal> {
         let mut retained = None;
         self.prepare_transition_retaining_v5(owners, attempt, &mut retained)?;
         retained.ok_or_else(invalid)
+    }
+
+    /// Parks an independently funded Release beside the same phase7 original.
+    ///
+    /// The returned candidate uses the existing one-shot preflight, commit and
+    /// physical capture engine. It never spends or remints the original native
+    /// floor and cannot authorize physical release or retirement.
+    ///
+    /// # Errors
+    ///
+    /// Retains failed candidate custody for occupied slots, changed originals,
+    /// a nonfresh Release, another capacity debt or any opened ceiling failure.
+    #[doc(hidden)]
+    pub fn prepare_original_release_retaining_v1(
+        &self,
+        owners: &JournalTransaction,
+        root: [u8; 32],
+        release: [u8; 32],
+        slot: &mut Option<PreparedOriginalRootAppendV5>,
+    ) -> Result<(), JournalError> {
+        custody::PreparationBoundaryV5::new(slot).run(|slot| {
+            if slot.is_some() {
+                return Err(invalid());
+            }
+            *slot = Some(self.initial_candidate_v5(owners, root));
+            self.current_graph()?;
+            let (transaction, _) = derive_original_release(
+                &self.authority.journal.state, owners, root, release,
+                self.authority.journal.limits,
+            )?;
+            let candidate = slot.as_mut().ok_or_else(invalid)?;
+            candidate.transaction = transaction;
+            self.finish_preparation_v5(candidate)
+        })
     }
 
     /// Prepares exact signed Root1 storage before either original carrier send.

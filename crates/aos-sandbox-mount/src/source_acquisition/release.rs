@@ -10,12 +10,14 @@ use aos_sandbox_protocol::{
     LiveValidatedReleaseMountSourceAcquisitionRequest, mount_source_acquisition_request_digest_v1,
 };
 use aos_sandbox_source_provider_protocol::{
-    ReleaseSourceRequestV1, SignedSourceProviderRequestV1, SourceProviderAuthorityV1,
+    PreparedSourceReleaseRequestDataV1, ReleaseSourceRequestV1,
+    SignedSourceProviderRequestV1, SourceProviderAuthorityV1, SourceProviderSignature,
+    SourceProviderSignatureError,
     SourceProviderMethod, decode_release_request, digest_release_request,
 };
 use aos_sandbox_source_provider_security::{
     CurrentRootMountSourceProviderSessionV1, PreparedMountProviderRequestV2,
-    PreparedMountSourceReleaseV2,
+    PreparedMountSourceReleaseV2, MountSourceRootCustodyProjectionV2,
 };
 
 use super::SourceAcquisitionTableV2;
@@ -43,6 +45,31 @@ pub(crate) struct ReservedReleaseProviderQueryV2 {
 pub(crate) struct RetainedReleasePreparationFailureV2 {
     error: crate::MountError,
     prepared_release: PreparedMountSourceReleaseV2,
+}
+
+enum ReleasePreparationV1<'writer, 'journal, 'outputs, 'effect_owner> {
+    Legacy(&'writer mut ProtectedJournalAuthority<'journal>),
+    Original {
+        writer: &'writer aos_sandbox::MountOriginalNativeJournalAuthorityV5<'journal>,
+        signed: &'outputs mut Option<SignedSourceProviderRequestV1>,
+        prepared: &'outputs mut Option<PreparedMountProviderRequestV2>,
+        signing: &'outputs mut OriginalReleaseSigningV1,
+        effect: &'outputs mut crate::broker::OriginalMountReleaseEffectLoanV1<'effect_owner>,
+    },
+}
+
+/// Keeps preparation, native signature and actual lower failures in one attempt.
+///
+/// The enclosing original owner supplies the negative guard. No slot is cleared
+/// for a second signing opportunity after a returned error or caught unwind.
+#[derive(Default)]
+pub(super) struct OriginalReleaseSigningV1 {
+    pub(super) entered: bool,
+    pub(super) unsigned: Option<std::result::Result<PreparedSourceReleaseRequestDataV1, SourceProviderSignatureError>>,
+    pub(super) signature: Option<SourceProviderSignature>,
+    pub(super) loan_failure: Option<SourceProviderSignatureError>,
+    pub(super) security_failure: Option<aos_sandbox_source_provider_security::SourceProviderSecurityError>,
+    pub(super) effect: Option<Result<()>>,
 }
 
 impl ReservedReleaseProviderQueryV2 {
@@ -113,6 +140,50 @@ impl SourceAcquisitionTableV2 {
         provider_deadline_seconds: i64,
         prepared_release: &PreparedMountSourceReleaseV2,
     ) -> Result<(JournalTransaction, PreparedMountProviderRequestV2)> {
+        let (transaction, prepared, _) = self.prepare_release_reservation_recipe_v1(
+            session, live_request, mount_request, provider_deadline_seconds,
+            prepared_release.projection(), ReleasePreparationV1::Legacy(journal),
+        )?;
+        Ok((transaction, prepared.ok_or_else(|| state_error("legacy Release preparation absent"))?))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn prepare_original_release_reservation_v1<'effect_owner>(
+        &mut self,
+        writer: &aos_sandbox::MountOriginalNativeJournalAuthorityV5<'_>,
+        session: &mut CurrentRootMountSourceProviderSessionV1,
+        live_request: &LiveValidatedReleaseMountSourceAcquisitionRequest,
+        mount_request: Vec<u8>,
+        provider_deadline_seconds: i64,
+        custody: &MountSourceRootCustodyProjectionV2,
+        signed: &mut Option<SignedSourceProviderRequestV1>,
+        prepared: &mut Option<PreparedMountProviderRequestV2>,
+        signing: &mut OriginalReleaseSigningV1,
+        effect: &mut crate::broker::OriginalMountReleaseEffectLoanV1<'effect_owner>,
+    ) -> Result<(JournalTransaction, [u8; 32])> {
+        if signed.is_some() || prepared.is_some() {
+            return Err(state_error("original Release preparation outputs occupied"));
+        }
+        let (transaction, local, attempt) = self.prepare_release_reservation_recipe_v1(
+            session, live_request, mount_request, provider_deadline_seconds, custody,
+            ReleasePreparationV1::Original { writer, signed, prepared, signing, effect },
+        )?;
+        if local.is_some() {
+            return Err(state_error("original Release unexpectedly returned consuming custody"));
+        }
+        Ok((transaction, attempt))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_release_reservation_recipe_v1(
+        &mut self,
+        session: &mut CurrentRootMountSourceProviderSessionV1,
+        live_request: &LiveValidatedReleaseMountSourceAcquisitionRequest,
+        mount_request: Vec<u8>,
+        provider_deadline_seconds: i64,
+        custody: &MountSourceRootCustodyProjectionV2,
+        mut preparation: ReleasePreparationV1<'_, '_, '_, '_>,
+    ) -> Result<(JournalTransaction, Option<PreparedMountProviderRequestV2>, [u8; 32])> {
         let request = live_request.request();
         let acquisition_id = *request.acquisition_id().as_bytes();
         let current_row = self
@@ -128,7 +199,6 @@ impl SourceAcquisitionTableV2 {
             .evidence
             .as_ref()
             .ok_or_else(|| state_error("Mount Release lacks Complete Acquire evidence"))?;
-        let custody = prepared_release.projection();
         let loss_matches = match custody.manager_custody_loss() {
             None => current_row.manager_custody_loss.is_none(),
             Some(loss) => {
@@ -194,16 +264,20 @@ impl SourceAcquisitionTableV2 {
         .value()
         .ok_or_else(|| state_error("provider head materialized as a delete"))?
         .to_vec();
-        let plan = session
-            .current_mount_provider_session_plan_v2(
+        let plan = match &mut preparation {
+            ReleasePreparationV1::Legacy(journal) => session.current_mount_provider_session_plan_v2(
                 journal,
                 journal.snapshot()?,
                 provider_head_key(identity.0, identity.1),
                 head_record,
                 current_head.next_request_sequence,
                 current_head.next_response_sequence,
-            )
-            .map_err(|_| state_error("protected Release session planning failed"))?;
+            ),
+            ReleasePreparationV1::Original { writer, .. } => session.current_original_release_session_plan_v1(
+                writer, provider_head_key(identity.0, identity.1), head_record,
+                current_head.next_request_sequence, current_head.next_response_sequence,
+            ),
+        }.map_err(|_| state_error("protected Release session planning failed"))?;
         let projected = super::security::session_from_projection(
             plan.session(),
             self.provider_sessions
@@ -308,61 +382,136 @@ impl SourceAcquisitionTableV2 {
             provider_deadline_seconds.min(projected.current_valid_until_seconds),
         )
         .map_err(|_| state_error("table-derived provider Release request is invalid"))?;
-        let prepared = if historical_holder {
-            let acquire_session_id = current_row
-                .evidence
-                .as_ref()
-                .ok_or_else(|| state_error("historical Release lacks Acquire evidence"))?
-                .session_id;
-            let predecessor_session = self
-                .provider_sessions
-                .get(&acquire_session_id)
-                .cloned()
-                .ok_or_else(|| state_error("historical Release session is absent"))?;
-            let predecessor_holder = SourceProviderAuthorityV1::new(
-                predecessor_session.scope.holder_authority_id,
-                predecessor_session.root_mount_authority_generation,
-                ObjectDigest::from_bytes(predecessor_session.root_mount_authority_digest),
-            )
-            .map_err(|_| state_error("historical Release holder authority is invalid"))?;
-            let authorization = session
-                .authorize_historical_mount_release_v2(
-                    journal,
-                    journal.snapshot()?,
-                    acquisition_key(acquisition_id),
-                    materialized_record(StoredRecordV2::Acquisition {
-                        value: current_row.clone(),
-                    })?,
-                    provider_session_key(predecessor_session.session_id),
-                    materialized_record(StoredRecordV2::ProviderSession {
-                        value: predecessor_session.clone(),
-                    })?,
-                    predecessor_holder,
-                    ObjectDigest::from_bytes(current_row.provider_acquisition.acquisition_id),
-                    current_row.provider_acquisition.acquisition_sequence,
-                    evidence.lease_id,
-                    ObjectDigest::from_bytes(evidence.signed_lease_digest),
-                    predecessor_session.authenticated_at_seconds,
-                    predecessor_session.trust_generation,
-                    ObjectDigest::from_bytes(predecessor_session.trust_digest),
-                    predecessor_session.revocation_generation,
-                    ObjectDigest::from_bytes(predecessor_session.revocation_digest),
-                    predecessor_session.signed_root_mount_hello.clone(),
-                )
-                .map_err(|_| state_error("historical acquisition authorization failed"))?;
-            session
-                .prepare_historical_release_v2(journal, plan, provider_request, authorization)
-                .map_err(|_| state_error("protected historical Release preparation failed"))?
-        } else {
-            session
-                .prepare_release_v2(
-                    journal,
-                    plan,
-                    provider_request,
-                    current_row.provider_acquisition.acquisition_sequence,
-                )
-                .map_err(|_| state_error("protected provider Release preparation failed"))?
-        };
+        let mut consuming_prepared = None;
+        match &mut preparation {
+            ReleasePreparationV1::Legacy(journal) => {
+                consuming_prepared = Some(if historical_holder {
+                    let acquire_session_id = current_row
+                        .evidence
+                        .as_ref()
+                        .ok_or_else(|| state_error("historical Release lacks Acquire evidence"))?
+                        .session_id;
+                    let predecessor_session = self
+                        .provider_sessions
+                        .get(&acquire_session_id)
+                        .cloned()
+                        .ok_or_else(|| state_error("historical Release session is absent"))?;
+                    let predecessor_holder = SourceProviderAuthorityV1::new(
+                        predecessor_session.scope.holder_authority_id,
+                        predecessor_session.root_mount_authority_generation,
+                        ObjectDigest::from_bytes(predecessor_session.root_mount_authority_digest),
+                    )
+                    .map_err(|_| state_error("historical Release holder authority is invalid"))?;
+                    let authorization = session
+                        .authorize_historical_mount_release_v2(
+                            journal,
+                            journal.snapshot()?,
+                            acquisition_key(acquisition_id),
+                            materialized_record(StoredRecordV2::Acquisition {
+                                value: current_row.clone(),
+                            })?,
+                            provider_session_key(predecessor_session.session_id),
+                            materialized_record(StoredRecordV2::ProviderSession {
+                                value: predecessor_session.clone(),
+                            })?,
+                            predecessor_holder,
+                            ObjectDigest::from_bytes(current_row.provider_acquisition.acquisition_id),
+                            current_row.provider_acquisition.acquisition_sequence,
+                            evidence.lease_id,
+                            ObjectDigest::from_bytes(evidence.signed_lease_digest),
+                            predecessor_session.authenticated_at_seconds,
+                            predecessor_session.trust_generation,
+                            ObjectDigest::from_bytes(predecessor_session.trust_digest),
+                            predecessor_session.revocation_generation,
+                            ObjectDigest::from_bytes(predecessor_session.revocation_digest),
+                            predecessor_session.signed_root_mount_hello.clone(),
+                        )
+                        .map_err(|_| state_error("historical acquisition authorization failed"))?;
+                    session
+                        .prepare_historical_release_v2(journal, plan, provider_request, authorization)
+                        .map_err(|_| state_error("protected historical Release preparation failed"))?
+                } else {
+                    session
+                        .prepare_release_v2(
+                            journal,
+                            plan,
+                            provider_request,
+                            current_row.provider_acquisition.acquisition_sequence,
+                        )
+                        .map_err(|_| state_error("protected provider Release preparation failed"))?
+                });
+            }
+            ReleasePreparationV1::Original { writer, signed, prepared, signing, effect } => {
+                if historical_holder {
+                    return Err(state_error("original Release cannot replace its historical holder"));
+                }
+                if signing.entered || signing.unsigned.is_some() || signing.signature.is_some()
+                    || signing.loan_failure.is_some() || signing.security_failure.is_some()
+                    || signing.effect.is_some() || signed.is_some() || prepared.is_some()
+                {
+                    return Err(state_error("original Release signing attempt is not empty"));
+                }
+                signing.entered = true;
+                let acquisition_sequence = current_row.provider_acquisition.acquisition_sequence;
+                match session.prepare_original_release_signing_data_v1(
+                    writer, &plan, &provider_request, acquisition_sequence,
+                ) {
+                    Ok(result) => signing.unsigned = Some(result),
+                    Err(error) => {
+                        signing.security_failure = Some(error);
+                        return Err(state_error("original Release signing preparation failed"));
+                    }
+                }
+                let Some(Ok(data)) = signing.unsigned.as_ref() else {
+                    return Err(state_error("original Release canonical signing preparation failed"));
+                };
+                let loan = match session.borrow_original_release_signing_loan_v1(
+                    writer, &plan, &provider_request, acquisition_sequence, data,
+                ) {
+                    Ok(Ok(loan)) => loan,
+                    Ok(Err(error)) => {
+                        signing.loan_failure = Some(error);
+                        return Err(state_error("original Release key loan failed"));
+                    }
+                    Err(error) => {
+                        signing.security_failure = Some(error);
+                        return Err(state_error("original Release signing custody failed"));
+                    }
+                };
+                // This owner is disjoint from the key-borrowed Session. Its last
+                // observation is the original paired clock; no Session recheck,
+                // encoding, key lookup or allocation follows before signing.
+                signing.effect = Some(effect.check_before_release_effect());
+                if !matches!(signing.effect, Some(Ok(()))) {
+                    return Err(state_error("original Release signing effect expired"));
+                }
+                signing.signature = Some(loan.sign());
+                drop(loan);
+
+                // All destination/association checks preceded signing. This
+                // pure attachment has no observation, allocation or error path.
+                match (signing.unsigned.take(), signing.signature.take()) {
+                    (Some(Ok(data)), Some(signature)) => {
+                        **signed = Some(data.attach_signature(signature));
+                    }
+                    (unsigned, signature) => {
+                        signing.unsigned = unsigned;
+                        signing.signature = signature;
+                        return Err(state_error("original Release attachment originals are absent"));
+                    }
+                }
+                if let Err(error) = session.finish_original_release_signing_v1(
+                    writer, plan, &provider_request, acquisition_sequence, signed, prepared,
+                ) {
+                    signing.security_failure = Some(error);
+                    return Err(state_error("protected provider Release assembly failed"));
+                }
+            }
+        }
+        let prepared = match &preparation {
+            ReleasePreparationV1::Legacy(_) => consuming_prepared.as_ref(),
+            ReleasePreparationV1::Original { prepared, .. } => prepared.as_ref(),
+        }.ok_or_else(|| state_error("protected Release preparation output absent"))?;
         let request_projection = prepared.projection();
         let signed_request = SignedSourceProviderRequestV1::from_canonical_bytes(
             prepared.canonical_signed_request(),
@@ -474,6 +623,6 @@ impl SourceAcquisitionTableV2 {
                 },
             ],
         )?;
-        Ok((transaction, prepared))
+        Ok((transaction, consuming_prepared, attempt.attempt_id))
     }
 }
