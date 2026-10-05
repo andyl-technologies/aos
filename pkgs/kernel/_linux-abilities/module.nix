@@ -19,7 +19,7 @@
         };
         moduleTree = lib.mkOption {
           type = lib.types.str;
-          description = "Loadable modules built against the kernel ABI.";
+          description = "Release-specific directory of loadable modules built against the kernel ABI.";
         };
         release = lib.mkOption {
           type = lib.types.str;
