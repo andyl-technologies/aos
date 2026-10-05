@@ -268,6 +268,8 @@
     aos.image.budgets = {
       maxRuntimeClosureMiB = 912;
       maxInitrdMiB = 144;
+      # The complete diagnostic runtime produces a 731 MiB EROFS root.
+      maxRootMiB = lib.mkForce 768;
       maxDownloadMiB = lib.mkForce rawDownloadMiB;
       # Recovery bundles retain their existing allowance independently of raw disks.
       maxRecoveryBundleMiB = lib.mkForce recoveryBundleMiB;
