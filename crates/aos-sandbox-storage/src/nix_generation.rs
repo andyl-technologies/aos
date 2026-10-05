@@ -10,6 +10,8 @@ use aos_sandbox_protocol::nix_generation::CanonicalNixGenerationPreparationV1;
 use crate::authorization::StorageAdmissionError;
 use crate::{StorageBrokerError, StorageCatalogPreparationOutcomeV1};
 
+pub(crate) mod seed;
+
 /// Classifies a selected refusal while its actual cause remains resident.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("original Nix generation preparation is closed")]

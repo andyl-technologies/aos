@@ -22,6 +22,38 @@ use crate::source::{ObjectSource, SourceError, load_exact};
 const ACL_FEATURE: &str = "aos.sandbox.metadata.posix-acl";
 const ABSOLUTE_SYMLINK_FEATURE: &str = "aos.sandbox.symlink.absolute";
 const PARENT_SYMLINK_FEATURE: &str = "aos.sandbox.symlink.parent-escape";
+const STORAGE_CENSUS_FEATURE: &str = "aos.sandbox.storage.snapshot-metadata-census";
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CompilationDisposition {
+    Presentation,
+    StorageCensus,
+}
+
+/// Retains a complete census validation without exposing a presentation index.
+///
+/// This is canonical DATA, not a Snapshot, origin, resource or currentness loan.
+/// The staging writer stays owned until this value is dropped; neither it nor
+/// a compiled presentation binding can be extracted through this interface.
+pub struct StorageCensusValidation<W> {
+    summary: CompileSummary,
+    tree: ObjectDescriptor,
+    _staging: StagedIndex<W>,
+}
+
+impl<W> StorageCensusValidation<W> {
+    /// Borrows the aggregate facts proved by the complete graph traversal.
+    #[must_use]
+    pub const fn summary(&self) -> &CompileSummary {
+        &self.summary
+    }
+
+    /// Borrows the exact canonical Tree validated by this census.
+    #[must_use]
+    pub const fn tree(&self) -> &ObjectDescriptor {
+        &self.tree
+    }
+}
 
 /// Compiles hostile portable trees under explicit whole-graph limits.
 #[derive(Clone, Copy, Debug)]
@@ -57,6 +89,57 @@ impl TreeCompiler {
         S: ObjectSource,
         W: Write + Seek,
     {
+        self.compile_for(
+            source, staging, tree_descriptor, compiler_abi,
+            CompilationDisposition::Presentation,
+        )
+    }
+
+    /// Validates full census DATA through the same bounded graph engine.
+    ///
+    /// The Tree must declare the exact Storage census feature. Content objects
+    /// are checked as well as directory objects. The result deliberately has
+    /// no index/presentation accessor; ordinary compilation still rejects this
+    /// feature and never accepts privileged census metadata by removing it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CompileError`] for a missing/unknown feature, malformed graph,
+    /// inaccessible or mismatched object, limit excess or staging failure.
+    pub fn validate_storage_census<S, W>(
+        &self,
+        source: &mut S,
+        staging: IndexStaging<W>,
+        tree_descriptor: &ObjectDescriptor,
+        compiler_abi: [u8; 32],
+    ) -> Result<StorageCensusValidation<W>, CompileError<S::Error>>
+    where
+        S: ObjectSource,
+        W: Write + Seek,
+    {
+        let (summary, staging) = self.compile_for(
+            source, staging, tree_descriptor, compiler_abi,
+            CompilationDisposition::StorageCensus,
+        )?;
+        Ok(StorageCensusValidation {
+            summary,
+            tree: tree_descriptor.clone(),
+            _staging: staging,
+        })
+    }
+
+    fn compile_for<S, W>(
+        &self,
+        source: &mut S,
+        staging: IndexStaging<W>,
+        tree_descriptor: &ObjectDescriptor,
+        compiler_abi: [u8; 32],
+        disposition: CompilationDisposition,
+    ) -> Result<(CompileSummary, StagedIndex<W>), CompileError<S::Error>>
+    where
+        S: ObjectSource,
+        W: Write + Seek,
+    {
         validate_descriptor_role(DescriptorRole::ImmutableViewSource, tree_descriptor)
             .map_err(|_| CompileError::InvalidTreeDescriptor)?;
         let tree_reservation = object_reservation(tree_descriptor)?;
@@ -64,7 +147,10 @@ impl TreeCompiler {
         let tree_bytes = load_exact(source, tree_descriptor, self.limits.object_bytes)?;
         let tree = decode_tree(tree_bytes.bytes(), self.decode_limits())?;
         let features = tree.required_features().to_vec();
-        let feature_bits = validate_tree_features(&features)?;
+        let feature_bits = match disposition {
+            CompilationDisposition::Presentation => validate_tree_features(&features)?,
+            CompilationDisposition::StorageCensus => validate_census_features(&features)?,
+        };
         let root_descriptor = tree.root().clone();
         let retained_tree = tree_retained_charge(&root_descriptor, &features)?;
         let maximum_tree_bytes = tree_reservation.max(retained_tree);
@@ -120,7 +206,16 @@ impl TreeCompiler {
                 .working_bytes
                 .checked_sub(work.charged_bytes)
                 .ok_or(CompileError::InternalAccounting)?;
-            self.visit_directory(source, &mut index, &features, work, &mut state)?;
+            match disposition {
+                CompilationDisposition::Presentation => {
+                    self.visit_directory(source, &mut index, &features, work, &mut state)?;
+                }
+                CompilationDisposition::StorageCensus => {
+                    self.visit_directory_for(
+                        source, &mut index, &features, work, &mut state, disposition,
+                    )?;
+                }
+            }
         }
 
         validate_hardlinks(&mut state, self.limits.working_bytes)?;
@@ -164,6 +259,24 @@ impl TreeCompiler {
         features: &[FeatureRef],
         work: Work,
         state: &mut WalkState,
+    ) -> Result<(), CompileError<S::Error>>
+    where
+        S: ObjectSource,
+        W: Write + Seek,
+    {
+        self.visit_directory_for(
+            source, index, features, work, state, CompilationDisposition::Presentation,
+        )
+    }
+
+    fn visit_directory_for<S, W>(
+        &self,
+        source: &mut S,
+        index: &mut StructuralIndexBuilder<W>,
+        features: &[FeatureRef],
+        work: Work,
+        state: &mut WalkState,
+        disposition: CompilationDisposition,
     ) -> Result<(), CompileError<S::Error>>
     where
         S: ObjectSource,
@@ -242,6 +355,9 @@ impl TreeCompiler {
                 Node::File(file) => {
                     self.charge_node(state)?;
                     self.charge_metadata(&file.metadata, features, state)?;
+                    if disposition == CompilationDisposition::StorageCensus {
+                        self.verify_census_content(source, &file.content, state)?;
+                    }
                     let logical = file.content.logical_size();
                     state.logical_bytes =
                         checked_add(state.logical_bytes, logical, "logical bytes")?;
@@ -312,6 +428,43 @@ impl TreeCompiler {
             .working_bytes
             .checked_sub(object_charge)
             .ok_or(CompileError::InternalAccounting)?;
+        Ok(())
+    }
+
+    fn verify_census_content<S: ObjectSource>(
+        &self,
+        source: &mut S,
+        content: &ContentLayout,
+        state: &mut WalkState,
+    ) -> Result<(), CompileError<S::Error>> {
+        match content {
+            ContentLayout::Whole { content } => {
+                self.verify_census_object(source, content, state)
+            }
+            ContentLayout::Sparse(sparse) => {
+                for extent in sparse.extents() {
+                    self.verify_census_object(source, extent.content(), state)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn verify_census_object<S: ObjectSource>(
+        &self,
+        source: &mut S,
+        descriptor: &ObjectDescriptor,
+        state: &mut WalkState,
+    ) -> Result<(), CompileError<S::Error>> {
+        // Content is raw bytes, not a decoded CBOR tree or directory. The
+        // exact loader retains one encoded vector and fixed read/EOF scratch.
+        let reservation = census_content_reservation(descriptor.encoded_size())?;
+        let peak = checked_add(state.working_bytes, reservation, "working bytes")?;
+        enforce(peak, self.limits.working_bytes, "working bytes")?;
+        state.maximum_working_bytes = state.maximum_working_bytes.max(peak);
+
+        let bytes = load_exact(source, descriptor, self.limits.object_bytes)?;
+        drop(bytes);
         Ok(())
     }
 
@@ -671,6 +824,25 @@ where
     Ok(bits)
 }
 
+fn validate_census_features<E>(features: &[FeatureRef]) -> Result<u32, CompileError<E>>
+where
+    E: std::error::Error + 'static,
+{
+    require_feature(features, STORAGE_CENSUS_FEATURE)?;
+    let mut bits = 0_u32;
+    for feature in features {
+        if feature.namespace() == STORAGE_CENSUS_FEATURE
+            && feature.major() == 1 && feature.minor() == 0
+        {
+            // The full Tree binding retains this requirement. The private
+            // staged DATA cannot escape as an index with an erased feature.
+            continue;
+        }
+        bits |= validate_tree_features(std::slice::from_ref(feature))?;
+    }
+    Ok(bits)
+}
+
 fn compare_components(left: &[PathName], right: &[PathName]) -> Ordering {
     left.iter()
         .map(PathName::as_bytes)
@@ -817,6 +989,17 @@ where
         .ok_or(CompileError::LimitExceeded("working bytes"))
 }
 
+/// Charges the exact Content buffer and the sole loader's fixed scratch.
+fn census_content_reservation<E>(encoded_bytes: u64) -> Result<u64, CompileError<E>>
+where
+    E: std::error::Error + 'static,
+{
+    // load_exact uses an 8 KiB read buffer and one EOF byte while its Vec is
+    // resident. Content never enters the CBOR container decoder.
+    let fixed_bytes = 8 * 1024 + 1 + std::mem::size_of::<Vec<u8>>() as u64;
+    checked_add(encoded_bytes, fixed_bytes, "working bytes")
+}
+
 fn tree_retained_charge<E>(
     root: &ObjectDescriptor,
     features: &[FeatureRef],
@@ -886,6 +1069,31 @@ where
         Ok(())
     } else {
         Err(CompileError::LimitExceeded(name))
+    }
+}
+
+#[cfg(test)]
+mod census_reservation_tests {
+    use std::convert::Infallible;
+
+    use super::{CompileError, census_content_reservation, enforce};
+
+    #[test]
+    fn raw_content_charges_bytes_and_fixed_loader_scratch_without_cbor_expansion() {
+        let fixed_bytes = 8 * 1024 + 1 + std::mem::size_of::<Vec<u8>>() as u64;
+
+        for encoded_bytes in [0, 516_160, 16 * 1024 * 1024] {
+            let reservation = census_content_reservation::<Infallible>(encoded_bytes)
+                .unwrap_or_else(|error| panic!("Content reservation failed: {error}"));
+
+            assert_eq!(reservation, encoded_bytes + fixed_bytes);
+            assert!(enforce::<Infallible>(reservation, 32 * 1024 * 1024, "working bytes").is_ok());
+        }
+
+        assert!(matches!(
+            census_content_reservation::<Infallible>(u64::MAX),
+            Err(CompileError::LimitExceeded("working bytes"))
+        ));
     }
 }
 

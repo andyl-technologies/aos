@@ -139,18 +139,59 @@ pub fn read_exact_positioned_retaining_cause(
     })
 }
 
+/// Reads census DATA at fixed offsets with at most 64 KiB per content read.
+///
+/// The caller owns the partial output and its admission/bounds/custody. Borrow
+/// the descriptor to retain ownership; an owned argument is consumed normally.
+/// This adds no retry, allocation, clock, currentness or descriptor authority.
+/// The sole EOF probe remains one byte at the complete expected output length.
+///
+/// # Errors
+///
+/// Returns the original native error from any content read or EOF probe, or
+/// an exact-length refusal. Interrupted reads fail immediately without retry.
+pub fn read_exact_positioned_census_retaining_cause(
+    descriptor: impl AsFd,
+    output: &mut [u8],
+) -> Result<(), ExactReadFailure> {
+    read_exact_positioned_for(
+        output,
+        |buffer, position| rustix::io::pread(&descriptor, buffer, position),
+        PositionedReadExtent::Census64KiB,
+    )
+}
+
+#[derive(Clone, Copy)]
+enum PositionedReadExtent {
+    Legacy,
+    Census64KiB,
+}
+
 // Both classified legacy entrypoints and the native-cause entry share this
 // exact read/EOF sequence. Only the legacy boundary discards native errors.
 fn read_exact_positioned_core(
     output: &mut [u8],
+    read_at: impl FnMut(&mut [u8], u64) -> rustix::io::Result<usize>,
+) -> Result<(), ExactReadFailure> {
+    read_exact_positioned_for(output, read_at, PositionedReadExtent::Legacy)
+}
+
+fn read_exact_positioned_for(
+    output: &mut [u8],
     mut read_at: impl FnMut(&mut [u8], u64) -> rustix::io::Result<usize>,
+    extent: PositionedReadExtent,
 ) -> Result<(), ExactReadFailure> {
     let mut offset = 0;
     while offset < output.len() {
         let position = u64::try_from(offset).map_err(|_| ExactReadFailure::Read)?;
         let remaining = output.len() - offset;
-        let read = read_at(&mut output[offset..], position).map_err(ExactReadFailure::Io)?;
-        if read == 0 || read > remaining {
+        let supplied = match extent {
+            PositionedReadExtent::Legacy => remaining,
+            PositionedReadExtent::Census64KiB => remaining.min(64 * 1024),
+        };
+        let read = read_at(&mut output[offset..offset + supplied], position)
+            .map_err(ExactReadFailure::Io)?;
+        if read == 0 || read > supplied {
             return Err(ExactReadFailure::Read);
         }
         offset += read;
@@ -366,5 +407,73 @@ mod tests {
         assert!(result.is_ok());
         assert_eq!(output, [7, 8, 7, 8]);
         assert_eq!(calls, [(0, 4), (2, 2), (4, 1)]);
+    }
+
+    #[test]
+    fn census_chunks_bound_the_actual_slice_and_probe_eof_once() {
+        let mut output = vec![0; 2 * 64 * 1024 + 7];
+        let expected_length = output.len();
+        let mut calls = Vec::new();
+
+        let result = read_exact_positioned_for(
+            &mut output,
+            |buffer, position| {
+                calls.push((position, buffer.len()));
+                if position == expected_length as u64 {
+                    return Ok(0);
+                }
+                buffer.fill(9);
+                Ok(buffer.len())
+            },
+            PositionedReadExtent::Census64KiB,
+        );
+
+        assert!(result.is_ok());
+        assert_eq!(calls, [(0, 65536), (65536, 65536), (131072, 7), (131079, 1)]);
+        assert!(output.iter().all(|byte| *byte == 9));
+    }
+
+    #[test]
+    fn census_rejects_overreporting_the_supplied_chunk_without_retry() {
+        let mut output = vec![0; 64 * 1024 + 1];
+        let mut calls = Vec::new();
+
+        let result = read_exact_positioned_for(
+            &mut output,
+            |buffer, position| {
+                calls.push((position, buffer.len()));
+                Ok(buffer.len() + 1)
+            },
+            PositionedReadExtent::Census64KiB,
+        );
+
+        assert!(matches!(result, Err(ExactReadFailure::Read)));
+        assert_eq!(calls, [(0, 65536)]);
+    }
+
+    #[test]
+    fn census_retains_partial_output_and_the_first_native_failure() {
+        for errno in [rustix::io::Errno::IO, rustix::io::Errno::INTR] {
+            let mut output = vec![0; 64 * 1024 + 7];
+            let mut calls = Vec::new();
+
+            let result = read_exact_positioned_for(
+                &mut output,
+                |buffer, position| {
+                    calls.push((position, buffer.len()));
+                    if position != 0 {
+                        return Err(errno);
+                    }
+                    buffer.fill(3);
+                    Ok(buffer.len())
+                },
+                PositionedReadExtent::Census64KiB,
+            );
+
+            assert!(matches!(result, Err(ExactReadFailure::Io(actual)) if actual == errno));
+            assert_eq!(calls, [(0, 65536), (65536, 7)]);
+            assert!(output[..65536].iter().all(|byte| *byte == 3));
+            assert_eq!(&output[65536..], &[0; 7]);
+        }
     }
 }

@@ -25,6 +25,8 @@ use sha2::{Digest as _, Sha256};
 
 use crate::root_policy::PortableRootAttributesV1;
 
+pub(crate) mod census;
+
 const MAGIC: &[u8; 8] = b"AOSSMT01";
 const VERSION: u16 = 1;
 const IDENTITY_PROFILE: u16 = 1;

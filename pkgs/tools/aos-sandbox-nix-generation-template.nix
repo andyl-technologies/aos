@@ -10,6 +10,7 @@
   stdenv,
   buildPackages,
   initialRoots ? [],
+  emitPortableSeedGraph ? false,
 }: let
   declaredRoots = [nix.out] ++ initialRoots;
   validRoots =
@@ -62,6 +63,8 @@
       seedRootRelativePath = "root";
       seedDescriptorRelativePath = "seed280";
       evidenceSources = [./aos-sandbox-nix-generation-template.nix];
+    } // lib.optionalAttrs emitPortableSeedGraph {
+      inherit portableSeedGraph;
     };
 
     meta = {
@@ -94,6 +97,34 @@
     ];
     meta = {
       description = "Finalized Nix seed descriptor and observed counter DATA";
+      license = "Apache-2.0";
+    };
+  };
+
+  # This third DATA output sees the same finalized target bytes, but runs only
+  # a native AOS-built tool. No descriptor/graph is fed back into its seed root.
+  portableSeedGraph = buildPackages.mkDerivation {
+    pname = "aos-sandbox-nix-seed-portable-graph";
+    version = "1";
+    src = null;
+    buildDeps = [buildPackages.aos-sandbox-zfs-worker buildPackages.coreutils];
+    dontStrip = true;
+    dontPatchELF = true;
+    dontNukeRefs = true;
+    phases = [
+      {
+        name = "measure-complete-graph";
+        script = ''
+          set -eu
+          test -s ${seedMeasurement}/seed280
+          mkdir -p "$out"
+          ${buildPackages.aos-sandbox-zfs-worker}/bin/aos-sandbox-nix-seed-tree \
+            ${seedTree}/root "$out"
+        '';
+      }
+    ];
+    meta = {
+      description = "Complete original Nix seed Core graph DATA, without signature or G0 authority";
       license = "Apache-2.0";
     };
   };

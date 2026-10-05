@@ -33,12 +33,17 @@ required-features = ["held-tree-fixture"]
 name = "aos-sandbox-held-snapshot-reader"
 path = "src/bin/aos-sandbox-held-snapshot-reader.rs"
 
+[[bin]]
+name = "aos-sandbox-nix-seed-tree"
+path = "src/bin/aos-sandbox-nix-seed-tree.rs"
+
 [features]
 default = []
 kernel-tests = ["aos-sandbox-linux/kernel-tests"]
 held-tree-fixture = []
 
 [dependencies]
+aos-filesystem-view-core.workspace = true
 aos-proto.workspace = true
 aos-sandbox-agent.workspace = true
 aos-sandbox.workspace = true
@@ -51,7 +56,7 @@ aos-sandbox-source-provider-protocol.workspace = true
 buffa.workspace = true
 ed25519-dalek = { workspace = true, features = ["zeroize"] }
 hmac.workspace = true
-rustix = { workspace = true, features = ["event", "fs", "rand", "time"] }
+rustix = { workspace = true, features = ["event", "fs", "param", "rand", "time"] }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

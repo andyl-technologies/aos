@@ -46,6 +46,7 @@
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-storage --bin aos-sandbox-workspace-root-initializer"
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-storage --bin aos-sandbox-guest-root-publisher"
       "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-storage --bin aos-sandbox-held-snapshot-reader"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-storage --bin aos-sandbox-nix-seed-tree"
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-storage"
     ];
     buildDeps = [buildProtobuf];
@@ -117,6 +118,7 @@ in
       test -x "$out/bin/aos-sandbox-workspace-root-initializer"
       test -x "$out/bin/aos-sandbox-guest-root-publisher"
       test -x "$out/bin/aos-sandbox-held-snapshot-reader"
+      test -x "$out/bin/aos-sandbox-nix-seed-tree"
       test ! -e "$out/bin/aos-sandbox-held-tree-fixture"
     '';
 

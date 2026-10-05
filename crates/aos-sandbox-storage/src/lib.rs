@@ -34,6 +34,7 @@ pub mod catalog_preparation;
 mod nix_generation;
 
 pub use nix_generation::{StorageGenerationAttemptV1, StorageGenerationStoppedV1};
+pub use nix_generation::seed::{NixSeedTreeArtifactErrorV1, run_nix_seed_tree_artifact};
 mod catalog_transition;
 mod clone_identity;
 mod dormant_broker_session;

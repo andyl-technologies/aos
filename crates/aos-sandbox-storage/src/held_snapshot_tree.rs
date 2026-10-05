@@ -46,6 +46,19 @@ use sha2::{Digest as _, Sha256};
 use crate::process::original_cutoff::WorkerOriginalCheckedViewV3;
 use crate::root_policy::PortableRootAttributesV1;
 
+pub(crate) mod census;
+
+/// Walks selected canonical DATA using the same directory traversal engine.
+///
+/// The caller retains the actual readonly root, census reservoir and original
+/// root bookends. This entry cannot acquire a Snapshot or issue an authority.
+pub(crate) fn capture_seed_census(
+    root: &BeneathRoot,
+    census: &mut census::CensusWalkState,
+) -> Result<(), HeldSnapshotTreeErrorV1> {
+    PhysicalTreeWalker::default().measure_census(root, census)
+}
+
 const MAXIMUM_DEPTH: usize = 64;
 const MAXIMUM_NODES: usize = 4096;
 const MAXIMUM_FILE_BYTES: usize = 16 * 1024 * 1024;
@@ -472,6 +485,100 @@ impl PhysicalTreeWalker<'_, '_> {
         self.object(PortableMediaType::Tree, &encode_tree(&tree))
     }
 
+    fn measure_census(
+        &mut self,
+        root: &BeneathRoot,
+        state: &mut census::CensusWalkState,
+    ) -> Result<(), HeldSnapshotTreeErrorV1> {
+        let result = self.measure_census_inner(root, state);
+        if result.is_err() {
+            // The descendant's first real failure stays resident before every
+            // still-active ancestor's independent original inode postcheck.
+            state.post_active_directories();
+        }
+        result.map_err(|_| HeldSnapshotTreeErrorV1::Unsupported)
+    }
+
+    fn measure_census_inner(
+        &mut self,
+        root: &BeneathRoot,
+        state: &mut census::CensusWalkState,
+    ) -> Result<(), census::CensusDataError> {
+        use census::{CensusDataError, CensusVisit};
+
+        self.add_node().map_err(|_| CensusDataError::Capacity)?;
+        let result = state.start_directory(root, 0, None);
+        if let Err(error) = result {
+            state.retain_node_result(0, Err(error));
+            return Err(CensusDataError::Closed);
+        }
+
+        // This selected scheduling disposition is iterative. It shares the
+        // same resident native open/read/metadata/node engines, but does not
+        // change the ordinary recursive traversal or its drop intervals.
+        while let Some(visit) = state.next_visit() {
+            let (parent, name) = match visit {
+                CensusVisit::FinishDirectory(index) => {
+                    let result = state.finish_directory(index);
+                    if !state.retain_node_result(index, result) {
+                        return Err(CensusDataError::Closed);
+                    }
+                    if let Err(error) = state.retire_directory(index) {
+                        state.retain_preparation_failure(error);
+                        return Err(CensusDataError::Closed);
+                    }
+                    continue;
+                }
+                CensusVisit::Child { parent, name } => (parent, name),
+            };
+
+            let index = match state.prepare_child(parent, &name) {
+                Ok(index) => index,
+                Err(error) => {
+                    state.retain_preparation_failure(error);
+                    return Err(CensusDataError::Closed);
+                }
+            };
+            if self.add_node().is_err() {
+                state.retain_node_result(index, Err(CensusDataError::Capacity));
+                return Err(CensusDataError::Closed);
+            }
+            let kind = match state.inspect_child(root, parent, index, &name) {
+                Ok(kind) => kind,
+                Err(error) => {
+                    state.retain_node_result(index, Err(error));
+                    let _post = state.post_node(index);
+                    return Err(CensusDataError::Closed);
+                }
+            };
+
+            if kind == FileType::Directory {
+                let result = state.start_directory(root, index, Some((parent, name)));
+                if let Err(error) = result {
+                    state.retain_node_result(index, Err(error));
+                    let _post = state.post_node(index);
+                    return Err(CensusDataError::Closed);
+                }
+                continue;
+            }
+            let result = match kind {
+                FileType::Regular => state.capture_file(root, index),
+                FileType::Symlink => state.capture_symlink(parent, index, &name),
+                FileType::Directory | FileType::Other => Err(CensusDataError::Metadata),
+            };
+            let success = state.retain_node_result(index, result);
+            let postcheck = state.post_node(index);
+            if !success || postcheck.is_err() {
+                return Err(CensusDataError::Closed);
+            }
+            if let Err(error) = state.add_child(parent, name, index) {
+                state.retain_preparation_failure(error);
+                return Err(CensusDataError::Closed);
+            }
+        }
+        Ok(())
+    }
+
     fn measure_directory(
         &mut self,
         root: &BeneathRoot,
@@ -747,7 +854,7 @@ fn portable_metadata(
     .map_err(|_| HeldSnapshotTreeErrorV1::Unsupported)
 }
 
-fn same_inode_state(before: &Stat, after: &Stat) -> bool {
+pub(crate) fn same_inode_state(before: &Stat, after: &Stat) -> bool {
     before.st_dev == after.st_dev
         && before.st_ino == after.st_ino
         && before.st_mode == after.st_mode

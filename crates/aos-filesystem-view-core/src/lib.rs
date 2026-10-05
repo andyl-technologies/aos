@@ -14,7 +14,7 @@ mod remote_source;
 mod source;
 mod view_projection;
 
-pub use graph::{CompileError, CompileSummary, TreeCompiler};
+pub use graph::{CompileError, CompileSummary, StorageCensusValidation, TreeCompiler};
 pub use index::{
     CompiledIndexBinding, DirectoryEntries, DirectoryEntryView, DirectoryRange, INDEX_MEDIA_TYPE,
     IndexAclEntries, IndexAclRange, IndexContentView, IndexCrosslinks, IndexError,
