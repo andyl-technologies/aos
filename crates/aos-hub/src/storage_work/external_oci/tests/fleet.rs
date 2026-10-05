@@ -1036,7 +1036,8 @@ async fn genuine_direct_selection_installs_the_same_verified_profiles_on_work() 
                 "collectorId":format!("external-oci-inventory-{}", "1".repeat(32)),
                 "idempotencyPrefix":format!("external-oci-inventory-{}", "1".repeat(32)),
                 "maximumPlacements":100,"dispatchBudget":"native"
-            }
+            },
+            "mirrorSync":{"intervalSeconds":60,"mode":"full"}
         })
     );
     tokio::task::yield_now().await;

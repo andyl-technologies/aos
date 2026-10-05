@@ -12,6 +12,7 @@
   runtimeSource ? null,
   separateDatabase ? false,
   externalDirect ? false,
+  readRevisionFixture ? null,
 }: let
   databaseHost =
     if separateDatabase
@@ -34,6 +35,11 @@
     if externalDirect
     then pkgs.aos-hub-direct-guard-e2e.passthru.workerDist
     else pkgs.aos-hub-worker-dist;
+  alternateRevision = import ./_hub-direct-read-revision-fixture.nix {
+    inherit lib pkgs;
+    worker = workerDist;
+    selected = readRevisionFixture;
+  };
   containerFixture = mkSystem {
     systemName = "server";
     modules = [
@@ -513,6 +519,14 @@
           HUB_DIRECT_VERIFY_METADATA_MAX_CONCURRENT_INVOCATIONS = "unsupported";
           HUB_DIRECT_VERIFY_MAX_PARALLEL_OBJECTS = "3";
           HUB_DIRECT_QUALIFY_MAX_PROVIDER_REQUESTS = "3";
+          # This fixed initial policy is measured with the genuine preflight.
+          HUB_PROVIDER_CAPACITY_POLICY = builtins.toJSON {
+            version = 1;
+            deployment_id = "fleet-hybrid-v1";
+            source_digest = builtins.hashString "sha256" (toString workerDist.src);
+            script_version = "emulated-${builtins.hashString "sha256" (toString workerDist.src)}";
+            maximum_provider_requests = 3;
+          };
           HUB_DIRECT_QUALIFY_MAX_OBJECT_BYTES = "2147483648";
         };
     }
@@ -605,6 +619,8 @@
         pkgs.aos-hub-worker-dist
         s3PublicTrust
         workerDist.src
+        alternateRevision.source
+        alternateRevision.distribution
         nativeObservationProxyConfig
         workerObservationProxyConfig
         managedNativeObservationProxyTemplate
@@ -735,6 +751,7 @@ in {
       + builtins.readFile ./_hub-managed-gc-window.py
       + builtins.readFile ./_hub-direct-issuer-scale-main.py
       + builtins.readFile ./_hub-direct-stale-index-setup.py
+      + builtins.readFile ./_hub-direct-read-fault-window.py
       + builtins.readFile ./_hub-direct-provider-hold-setup.py
       + builtins.readFile ./_hub-direct-verification-source.py
       + builtins.readFile ./_hub-direct-verification-timeout.py
@@ -1090,6 +1107,11 @@ in {
               "managedWorkerObservationProxyTemplate": {"path": "${managedWorkerObservationProxyTemplate}/value",
                   "sha256": hashlib.sha256(Path("${managedWorkerObservationProxyTemplate}/value").read_bytes()).hexdigest()},
               "nixStore": "${pkgs.nix}/bin/nix-store", "nixBin": "${pkgs.nix}/bin",
+              "readRevisionFixture": ${builtins.toJSON {
+                source = toString alternateRevision.source;
+                distribution = toString alternateRevision.distribution;
+                inherit (alternateRevision) purpose sourceDigest scriptVersion features;
+              }},
               "workerSourcePath": "${workerDist.src}", "workerDistribution": "${workerDist}",
               "wasm": "${workerDist}/index.wasm", "shim": "${workerDist}/shim.mjs",
               "processSampler": "${processSampler}/value", "installationObserver": "${installationObserver}/value",

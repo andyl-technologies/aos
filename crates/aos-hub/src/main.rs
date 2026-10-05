@@ -1503,7 +1503,12 @@ async fn main() -> Result<()> {
                     loop {
                         tick.tick().await;
                         index_all(&db, index_surfaces.as_ref()).await;
-                        sync_due_mirrors(&db, mirror_work.as_ref(), now_secs()).await;
+                        aos_hub::mirror::scheduler::sync_due_mirrors(
+                            &db,
+                            mirror_work.as_ref(),
+                            now_secs(),
+                        )
+                        .await;
                         prune_expired_invitation_secrets(&db).await;
                         match aos_hub::export::purge_expired_orgs(&db, now_secs()).await {
                             Ok(purged) => {
@@ -2617,63 +2622,6 @@ async fn index_all(db: &Database, surfaces: &dyn aos_hub_core::fetch::SurfacePro
         .await
         {
             tracing::warn!(slug = %registry.slug, placement_id = placement.id, error = %format!("{err:#}"), "index failed");
-        }
-    }
-}
-
-/// Syncs every full mirror whose schedule is due.
-///
-/// A full mirror is *due* when it has never synced or `schedule_secs` have
-/// elapsed since its last attempt. Each sync verifies the upstream surface and
-/// copies it into the local binding; a verification failure is recorded and
-/// logged, never fatal to the loop.
-async fn sync_due_mirrors(
-    db: &Arc<Database>,
-    work: Option<&Arc<aos_hub::storage_work::RemoteStorageWorkClient>>,
-    now: i64,
-) {
-    let sources = match db.list_mirror_sources().await {
-        Ok(sources) => sources,
-        Err(err) => {
-            tracing::warn!(error = %format!("{err:#}"), "listing mirror sources");
-            return;
-        }
-    };
-    for (registry_id, source) in sources {
-        if source.mode != "full" {
-            continue; // pull-through mirrors are served on demand, not synced.
-        }
-        let due = match source.last_sync_at {
-            None => true,
-            Some(last) => now - last >= source.schedule_secs,
-        };
-        if !due {
-            continue;
-        }
-        let registry = match db.registry_by_id(registry_id).await {
-            Ok(Some(registry)) => registry,
-            Ok(None) => continue,
-            Err(err) => {
-                tracing::warn!(error = %format!("{err:#}"), "loading mirror registry");
-                continue;
-            }
-        };
-        let result = match work {
-            Some(work) => aos_hub::mirror::hybrid::sync_full_mirror(db, work, &registry).await,
-            None => aos_hub::mirror::sync_full_mirror(db, &registry).await,
-        };
-        match result {
-            Ok(result) => tracing::info!(
-                slug = %registry.slug,
-                commit = %result.commit,
-                files = result.files_copied,
-                "full mirror synced"
-            ),
-            Err(err) => tracing::warn!(
-                slug = %registry.slug,
-                error = %format!("{err:#}"),
-                "full mirror sync failed"
-            ),
         }
     }
 }

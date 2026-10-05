@@ -3,8 +3,8 @@
 use std::{
     collections::BTreeMap,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
     },
 };
 
@@ -195,6 +195,7 @@ async fn project(blocks: usize) -> (Objects, StorageWorkPlan, StorageWorkResult)
     let plan = plan(artifact);
     plan.validate("fixture-deployment", 101).unwrap();
     let result = StorageWorkResult {
+        versioned_sources: Vec::new(),
         plan_id: plan.plan_id.clone(),
         placement_id: plan.placement_id,
         placement_resource_version: plan.placement_resource_version,
@@ -223,14 +224,18 @@ async fn worker_parses_once_and_native_detail_receives_only_canonical_content() 
     let input_bytes = reads.iter().map(|(_, bytes)| *bytes as u64).sum::<u64>();
     assert_eq!(input_bytes, result.source_bytes);
     assert!(request.len() < 64 * 1024);
-    assert!(!request
-        .windows(b"nix-archive-1".len())
-        .any(|bytes| bytes == b"nix-archive-1"));
+    assert!(
+        !request
+            .windows(b"nix-archive-1".len())
+            .any(|bytes| bytes == b"nix-archive-1")
+    );
     assert!(body.len() > MAX_RESULT_BYTES);
     assert!(body.len() <= plan.operation.maximum_result_bytes());
-    assert!(!body
-        .windows(b"nix-archive-1".len())
-        .any(|bytes| bytes == b"nix-archive-1"));
+    assert!(
+        !body
+            .windows(b"nix-archive-1".len())
+            .any(|bytes| bytes == b"nix-archive-1")
+    );
     drop(reads);
 
     let fetches = Arc::new(AtomicUsize::new(0));
@@ -253,7 +258,11 @@ async fn worker_parses_once_and_native_detail_receives_only_canonical_content() 
     .unwrap();
     assert_eq!(loaded, document(2));
     assert_eq!(fetches.load(Ordering::SeqCst), 0);
-    eprintln!("documentation content request_bytes={} input_bytes={input_bytes} output_bytes={} nar_reads=1 Native_fetches=0", request.len(), body.len());
+    eprintln!(
+        "documentation content request_bytes={} input_bytes={input_bytes} output_bytes={} nar_reads=1 Native_fetches=0",
+        request.len(),
+        body.len()
+    );
 }
 
 #[tokio::test]
@@ -281,15 +290,17 @@ async fn native_rejects_changed_content_fences_selection_and_cost() {
 
     let (mut objects, artifact) = objects(&document(1));
     objects.objects.get_mut("nar/document.nar").unwrap()[100] ^= 1;
-    assert!(inspect_content(
-        &objects,
-        "fixture-package",
-        "1.0",
-        "x86_64-linux",
-        &artifact
-    )
-    .await
-    .is_err());
+    assert!(
+        inspect_content(
+            &objects,
+            "fixture-package",
+            "1.0",
+            "x86_64-linux",
+            &artifact
+        )
+        .await
+        .is_err()
+    );
 }
 
 #[tokio::test]
@@ -328,5 +339,9 @@ async fn documentation_has_an_explicit_four_mib_content_bound() {
     extra.id = "overflow-section".into();
     oversized.sections.push(extra);
     assert!(oversized.canonical_json().is_err());
-    eprintln!("documentation maximum query input_bytes={} output_bytes={} limit={MAX_DOCUMENTATION_CONTENT_RESULT_BYTES}", result.source_bytes, body.len());
+    eprintln!(
+        "documentation maximum query input_bytes={} output_bytes={} limit={MAX_DOCUMENTATION_CONTENT_RESULT_BYTES}",
+        result.source_bytes,
+        body.len()
+    );
 }

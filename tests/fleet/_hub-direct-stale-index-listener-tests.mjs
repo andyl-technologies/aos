@@ -18,7 +18,7 @@ const directory = path.dirname(fileURLToPath(import.meta.url));
 const openssl = process.argv[2];
 assert.ok(openssl?.startsWith('/nix/store/'), 'select the source-built OpenSSL executable');
 
-async function fixture({ delayUpstream = false } = {}) {
+async function fixture({ delayUpstream = false, replyStatus = 200, replyBody = '{}' } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'aos-stale-index-tls-'));
   fs.chmodSync(root, 0o700);
   const certificateFile = path.join(root, 'certificate.pem');
@@ -39,10 +39,10 @@ async function fixture({ delayUpstream = false } = {}) {
     request.end = body => {
       const response = new PassThrough();
       calls.push({ options, body: Buffer.from(body), response });
-      response.statusCode = 200;
-      response.rawHeaders = ['Content-Type', 'application/json', 'Content-Length', '2'];
+      response.statusCode = replyStatus;
+      response.rawHeaders = ['Content-Type', 'application/json', 'Content-Length', String(Buffer.byteLength(replyBody))];
       receive(response);
-      if (!delayUpstream) response.end('{}');
+      if (!delayUpstream) response.end(replyBody);
     };
     return request;
   };
@@ -133,6 +133,52 @@ test('unarmed and nonmatching plans preserve transport without an invented hold'
     assert.equal(await current.send(other), 200);
     assert.equal((await current.control({ version: 1, kind: 'status' })).result.state, 'unused');
     assert.deepEqual(current.calls.map(call => call.body), [body, other]);
+  } finally { await current.close(); }
+});
+
+test('revision retains the real reply once and restores the original stale hold purpose', async () => {
+  const current = await fixture({ replyStatus: 503, replyBody: 'storage work failed' });
+  try {
+    assert.equal((await current.control({ version: 1, kind: 'finish-revision' })).status, 'refused');
+    assert.equal((await current.control({ version: 1, kind: 'arm-revision', selection: current.selection })).status, 'observed');
+    const body = Buffer.from(JSON.stringify(current.original));
+    const terminal = current.send(body);
+    const held = await waitHeld(current);
+    assert.equal((await current.control({ version: 1, kind: 'finish-revision' })).status, 'refused');
+    await current.control({ version: 1, kind: 'release', requestSha256: held.requestSha256 });
+    assert.equal(await terminal, 503);
+    const receipt = JSON.parse(fs.readFileSync(path.join(current.root, 'revision-reply.json')));
+    assert.equal(receipt.status, 503);
+    assert.equal(receipt.requestSha256, held.requestSha256);
+    assert.deepEqual(Buffer.from(receipt.bodyBase64, 'base64'), Buffer.from('storage work failed'));
+    assert.deepEqual(fs.readFileSync(path.join(current.root, 'revision-hold/original-request.json')), body);
+    assert.equal((await current.control({ version: 1, kind: 'finish-revision' })).status, 'observed');
+    assert.equal((await current.control({ version: 1, kind: 'arm-revision', selection: current.selection })).status, 'refused');
+    assert.equal((await current.control({ version: 1, kind: 'arm', selection: current.selection })).status, 'observed');
+    const staleTerminal = current.send(body);
+    await waitHeld(current);
+    await current.control({ version: 1, kind: 'close' });
+    assert.equal(await staleTerminal, 502);
+    assert.equal(current.calls.length, 1);
+  } finally { await current.close(); }
+});
+
+test('revision finish refuses while an upstream response remains outstanding', async () => {
+  const current = await fixture({ delayUpstream: true });
+  try {
+    await current.control({ version: 1, kind: 'arm-revision', selection: current.selection });
+    const terminal = current.send(Buffer.from(JSON.stringify(current.original)));
+    const held = await waitHeld(current);
+    await current.control({ version: 1, kind: 'release', requestSha256: held.requestSha256 });
+    const deadline = Date.now() + 2000;
+    while (!current.calls.length && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    assert.equal(current.calls.length, 1);
+    assert.equal((await current.control({ version: 1, kind: 'finish-revision' })).status, 'refused');
+    current.calls[0].response.end('{}');
+    assert.equal(await terminal, 200);
+    assert.equal((await current.control({ version: 1, kind: 'finish-revision' })).status, 'observed');
   } finally { await current.close(); }
 });
 

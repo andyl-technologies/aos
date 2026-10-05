@@ -941,6 +941,8 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
     assert native_bulk["nativeBulkBytes"] == 0, native_bulk
     summary["nativeBulkAssessment"] = native_bulk
     retain_direct_flow("actual-publication-assessed.json", summary)
+    summary["workerRevisionRefusal"], process = run_direct_worker_revision_case(
+        native, worker, s3, tools, process, registries["a"], sources["a"], tools["installedRuntimeArtifacts"])
     summary["stalePlacementCommitRefusal"] = qualify_direct_stale_index(
         native, worker, client, database_machine, tools, controls, registries["a"], sources["a"],
         process, tools["installedRuntimeArtifacts"])
@@ -949,7 +951,7 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
     # measurements. Their distinction remains explicit in the retained ledger.
     print("Actual External publication measurements and scoped Native bulk assessment retained:",
           str(Path('external-direct-flow/actual-publication-assessed.json').resolve()), flush=True)
-    return summary
+    return summary, process
 
 
 def run_external_direct_fleet(client, native, worker, s3, database_machine, tools,
@@ -1104,10 +1106,13 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
     # All ordinary publishers use this one genuine selected policy. Retain its
     # paths in the caller so later verification/copy windows do not recreate it.
     tools = prepare_direct_client_provider_policy(client, tools, credentials)
-    publication = run_external_direct_publication(client, native, worker, s3, tools, controls, credentials,
+    publication, process = run_external_direct_publication(client, native, worker, s3, tools, controls, credentials,
         authority, process, identity, acceptance, database_machine)
     verification_timeout = run_direct_verification_timeout(client, native, worker, s3, tools,
         controls, credentials, process)
+    called_faults = called_read_fault_ledger(verification_timeout,
+        publication["stalePlacementCommitRefusal"], publication["workerRevisionRefusal"])
+    retain_direct_flow("actual-called-read-faults.json", called_faults)
     managed = run_managed_pair_window(client, native, worker, database_machine, tools,
         database_host, original_configuration, artifacts)
     external_oci = {}
@@ -1130,4 +1135,5 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
             "issuerLifecycle": issuer_lifecycle, "issuerCutoff": issuer_cutoff,
             "dependencyFailures": failures, "browserSession": browser,
             "terminalColdRefusal": cold_refusal, "managedR2Window": managed, "leaseScale": lease_scale,
-            "providerTimeout": verification_timeout, "externalOciCopyWindow": external_oci}
+            "providerTimeout": verification_timeout, "calledReadFaults": called_faults,
+            "externalOciCopyWindow": external_oci}

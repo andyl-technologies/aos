@@ -5,15 +5,17 @@ use std::sync::Arc;
 use aos_hub_core::{
     db::{Database, NewSurfacePlacementSpec, SurfaceTarget},
     storage_authority::{
-        control::StorageAuthorityObjectScope, external_object::copy::source::CopySourceClosure,
-        lease::LeaseInteger, GuardIncarnation, StorageGuardStamp,
+        GuardIncarnation, StorageGuardStamp, control::StorageAuthorityObjectScope,
+        external_object::copy::source::CopySourceClosure, lease::LeaseInteger,
     },
     storage_work::StorageCredentialSelector,
-    tree_projection::{selection_digest, GitTreeCursor},
+    tree_projection::{GitTreeCursor, selection_digest},
 };
 
 use super::*;
-use crate::direct_upload::authority::{external_acceptance_fixture, NativeDirectUploadAcceptances};
+use crate::direct_upload::authority::{NativeDirectUploadAcceptances, external_acceptance_fixture};
+use base64::Engine as _;
+use sha2::Digest as _;
 
 const ORIGIN: &str = "https://localhost:4673";
 
@@ -144,14 +146,16 @@ async fn retained_binding_cannot_fall_back_after_executor_audience_changes() {
         select_external_profile(&accepted, "deployment-1", ORIGIN, &binding, now).unwrap(),
         Some(profile)
     );
-    assert!(select_external_profile(
-        &accepted,
-        "deployment-1",
-        "https://localhost:4679",
-        &binding,
-        now,
-    )
-    .is_err());
+    assert!(
+        select_external_profile(
+            &accepted,
+            "deployment-1",
+            "https://localhost:4679",
+            &binding,
+            now,
+        )
+        .is_err()
+    );
     assert!(
         select_external_profile(&accepted, "another-deployment", ORIGIN, &binding, now).is_err()
     );
@@ -159,15 +163,17 @@ async fn retained_binding_cannot_fall_back_after_executor_audience_changes() {
     let mut unrelated = binding.clone();
     unrelated.id += 1;
     unrelated.stable_id = "unconfigured-binding".into();
-    assert!(select_external_profile(
-        &accepted,
-        "another-deployment",
-        "https://localhost:4679",
-        &unrelated,
-        now,
-    )
-    .unwrap()
-    .is_none());
+    assert!(
+        select_external_profile(
+            &accepted,
+            "another-deployment",
+            "https://localhost:4679",
+            &unrelated,
+            now,
+        )
+        .unwrap()
+        .is_none()
+    );
 }
 
 #[tokio::test]
@@ -203,14 +209,16 @@ async fn source_requires_exact_accepted_domain_and_never_synthesizes_a_version()
     }
     let mut invented = object.clone();
     invented.provider_version = Some("1".into());
-    assert!(validate_source(
-        &plan,
-        "info/refs",
-        &invented,
-        Some(&guarded),
-        Some(&profile)
-    )
-    .is_err());
+    assert!(
+        validate_source(
+            &plan,
+            "info/refs",
+            &invented,
+            Some(&guarded),
+            Some(&profile)
+        )
+        .is_err()
+    );
     // Genuine unconfigured legacy results retain their existing optional form.
     validate_source(&plan, "info/refs", &object, None, None).unwrap();
 }
@@ -322,7 +330,7 @@ async fn missing_tree_continuation_still_commits_the_exact_pair_incarnation() {
         page: None,
     };
     validate_pack_cursor(&query, &projection).unwrap();
-    validate_pair(&plan, &pair, Some(&profile)).unwrap();
+    validate_pair(&plan, &pair, Some(&profile), &[]).unwrap();
 
     // Provider key, ETag, size and encoded hash stay equal; a new guard-issued
     // incarnation still invalidates a continuation even when the tree is absent.
@@ -339,7 +347,7 @@ async fn missing_tree_continuation_still_commits_the_exact_pair_incarnation() {
     };
     assert!(validate_pack_cursor(&query, &changed).is_err());
     pair.index.guarded_source = None;
-    assert!(validate_pair(&plan, &pair, Some(&profile)).is_err());
+    assert!(validate_pair(&plan, &pair, Some(&profile), &[]).is_err());
 }
 
 fn pack_source(
@@ -349,6 +357,7 @@ fn pack_source(
 ) -> aos_hub_core::mirror_inspection::MirrorPackSource {
     let (object, guarded) = source(plan, profile, path);
     aos_hub_core::mirror_inspection::MirrorPackSource {
+        provider_version: None,
         path: path.into(),
         sha256: guarded.closure.sha256.clone(),
         size: object.size,
@@ -413,9 +422,11 @@ async fn accepted_profile_without_actual_sql_authority_cannot_qualify_stored_rea
         work: Arc::new(work),
     };
     let error = fetch.stored_inspection_profile().await.unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("physical authority does not exist"));
+    assert!(
+        error
+            .to_string()
+            .contains("physical authority does not exist")
+    );
 }
 
 #[tokio::test]
@@ -451,4 +462,137 @@ async fn external_stored_plan_shape_keeps_upstream_mirror_managed_only() {
         },
     };
     assert!(plan.validate(&plan.deployment_id, plan.issued_at).is_err());
+}
+
+#[tokio::test]
+async fn bare_provider_version_never_substitutes_for_authenticated_installed_read_evidence() {
+    let (_, binding, _, accepted) = fixture().await;
+    let DirectProtectedProfile::External { profile, .. } = &accepted else {
+        panic!("External");
+    };
+    let plan = plan(&binding);
+    let (mut identity, guarded) = source(&plan, profile, "info/refs");
+    identity.provider_version = Some("actual-version".into());
+    assert!(validate_source(&plan, "info/refs", &identity, None, Some(profile)).is_err());
+    let evidence = aos_hub_core::storage_work::protected_inspection::VersionedInspectionSource {
+        version: 1,
+        producer_profile_digest: accepted.digest().unwrap(),
+        configured_domain_digest: "c".repeat(64),
+        scope: guarded.scope,
+        source: identity.clone(),
+        range: None,
+        metadata_only: false,
+        sha256: "d".repeat(64),
+    };
+    validate_source_observed(
+        &plan,
+        "info/refs",
+        &identity,
+        None,
+        Some(profile),
+        &[evidence.clone()],
+    )
+    .unwrap();
+    assert!(
+        validate_source_observed(
+            &plan,
+            "different",
+            &identity,
+            None,
+            Some(profile),
+            &[evidence.clone()]
+        )
+        .is_err()
+    );
+    let mut changed = evidence.clone();
+    changed.source.provider_version = Some("substituted".into());
+    assert!(
+        validate_source_observed(
+            &plan,
+            "info/refs",
+            &identity,
+            None,
+            Some(profile),
+            &[changed]
+        )
+        .is_err()
+    );
+    changed = evidence;
+    changed.scope.guard_namespace_id = "foreign".into();
+    assert!(
+        validate_source_observed(
+            &plan,
+            "info/refs",
+            &identity,
+            None,
+            Some(profile),
+            &[changed]
+        )
+        .is_err()
+    );
+}
+
+#[tokio::test]
+async fn versioned_read_selection_keeps_frozen_hash_interval_and_signed_semantic_paths() {
+    let (_, binding, _, accepted) = fixture().await;
+    let DirectProtectedProfile::External { profile, .. } = &accepted else {
+        panic!("External");
+    };
+    let mut plan = plan(&binding);
+    let path = format!("oci/blobs/sha256/{}", "a".repeat(64));
+    let (mut identity, guarded) = source(&plan, profile, &path);
+    identity.provider_version = Some("actual-version".into());
+    let evidence = aos_hub_core::storage_work::protected_inspection::VersionedInspectionSource {
+        version: 1,
+        producer_profile_digest: accepted.digest().unwrap(),
+        configured_domain_digest: "c".repeat(64),
+        scope: guarded.scope,
+        source: identity,
+        range: Some((2, 4)),
+        metadata_only: false,
+        sha256: "d".repeat(64),
+    };
+    plan.operation = StorageWorkOperation::InspectOciRange {
+        path: path.clone(),
+        start: 2,
+        end: 4,
+    };
+    validate_versioned_selection(&plan, &path, &evidence).unwrap();
+    let mut changed = evidence.clone();
+    changed.range = Some((0, 2));
+    assert!(validate_versioned_selection(&plan, &path, &changed).is_err());
+    changed = evidence;
+    changed.metadata_only = true;
+    assert!(validate_versioned_selection(&plan, &path, &changed).is_err());
+    assert!(validate_versioned_selection(&plan, "other", &changed).is_err());
+}
+
+#[tokio::test]
+async fn bounded_versioned_content_must_match_its_completed_read_digest() {
+    let (_, binding, _, accepted) = fixture().await;
+    let DirectProtectedProfile::External { profile, .. } = &accepted else {
+        panic!("External");
+    };
+    let plan = plan(&binding);
+    let (mut source, guarded) = source(&plan, profile, "info/refs");
+    source.provider_version = Some("actual-version".into());
+    let bytes = b"metadata";
+    source.size = bytes.len() as u64;
+    let mut evidence =
+        aos_hub_core::storage_work::protected_inspection::VersionedInspectionSource {
+            version: 1,
+            producer_profile_digest: accepted.digest().unwrap(),
+            configured_domain_digest: "c".repeat(64),
+            scope: guarded.scope,
+            source: source.clone(),
+            range: None,
+            metadata_only: false,
+            sha256: hex::encode(sha2::Sha256::digest(bytes)),
+        };
+    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+    validate_versioned_content(&source, &encoded, &[evidence.clone()]).unwrap();
+    let other = base64::engine::general_purpose::STANDARD.encode(b"changed!");
+    assert!(validate_versioned_content(&source, &other, &[evidence.clone()]).is_err());
+    evidence.metadata_only = true;
+    assert!(validate_versioned_content(&source, &encoded, &[evidence]).is_err());
 }

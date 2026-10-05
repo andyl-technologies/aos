@@ -27,7 +27,7 @@ pub(in crate::external_object) fn begin(
         head.pending.is_none()
             && head.stage.is_none()
             && head.copy.is_none()
-            && head.oci.is_none()
+            && head.oci.is_none() && head.mirror.is_none()
             && head.observation.is_none()
             && head.receipts.get() < MAX_RECEIPTS,
         "unknown object turn or receipt capacity blocks observation"

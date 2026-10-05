@@ -84,20 +84,20 @@ mod metadata_batch;
 pub mod protected_inspection;
 
 pub use frozen_cleanup::{
-    StorageFrozenCleanupAccess, StorageFrozenCleanupHeadResult, StorageFrozenCleanupOperation,
-    StorageFrozenCleanupRequest, MAX_FROZEN_CLEANUP_BYTES, STORAGE_FROZEN_CLEANUP_PATH,
+    MAX_FROZEN_CLEANUP_BYTES, STORAGE_FROZEN_CLEANUP_PATH, StorageFrozenCleanupAccess,
+    StorageFrozenCleanupHeadResult, StorageFrozenCleanupOperation, StorageFrozenCleanupRequest,
 };
 
 pub use metadata_batch::{
-    paged_metadata_result, StorageMetadataDocument, StorageMetadataObject, StorageMetadataPage,
+    StorageMetadataDocument, StorageMetadataObject, StorageMetadataPage, paged_metadata_result,
 };
 
 pub use binding_snapshot::{
+    MAX_BINDING_CONTROL_BYTES, MAX_CREDENTIAL_PROBE_BYTES, STORAGE_BINDING_CONTROL_PATH,
+    STORAGE_CREDENTIAL_PROBE_FAILURE_STAGES, STORAGE_CREDENTIAL_PROBE_PATH,
     StorageBindingAcknowledgement, StorageBindingControl, StorageBindingPublication,
     StorageBindingSnapshot, StorageCredentialMaterial, StorageCredentialProbeRequest,
-    StorageCredentialReference, StorageCredentialSelector, MAX_BINDING_CONTROL_BYTES,
-    MAX_CREDENTIAL_PROBE_BYTES, STORAGE_BINDING_CONTROL_PATH,
-    STORAGE_CREDENTIAL_PROBE_FAILURE_STAGES, STORAGE_CREDENTIAL_PROBE_PATH,
+    StorageCredentialReference, StorageCredentialSelector,
 };
 
 /// One frozen staged object consumed by an OCI blob composition.
@@ -823,6 +823,9 @@ pub struct StorageWorkResult {
     /// Live metadata batches sum only completed reads with known counts. An item
     /// with an unknown count prevents this field from establishing total cost.
     pub source_bytes: u64,
+    /// Completed installed versioned reads, never closure or dispatch authority.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub versioned_sources: Vec<protected_inspection::VersionedInspectionSource>,
     /// Typed semantic result.
     pub outcome: StorageWorkOutcome,
 }
@@ -1588,10 +1591,12 @@ mod tests {
             }
         ));
         let serialized = serde_json::to_value(&operation).unwrap();
-        assert!(serialized
-            .as_object()
-            .unwrap()
-            .contains_key("expected_provider_version"));
+        assert!(
+            serialized
+                .as_object()
+                .unwrap()
+                .contains_key("expected_provider_version")
+        );
         assert!(serialized["expected_provider_version"].is_null());
 
         // Old executors reject unknown fields per RPC even if a prior pairing
@@ -1696,9 +1701,11 @@ mod tests {
             retained.validate("deployment-1", 200),
             Err(StorageWorkError::InvalidTime)
         );
-        assert!(retained
-            .validate_observation_shape("another-deployment")
-            .is_err());
+        assert!(
+            retained
+                .validate_observation_shape("another-deployment")
+                .is_err()
+        );
 
         retained.expires_at = retained.issued_at + 31;
         assert!(retained.validate_observation_shape("deployment-1").is_err());
@@ -1749,10 +1756,12 @@ mod tests {
             *delete_binding_write_revision = None;
         }
         assert_eq!(scoped.operation.credential_purposes(), &["delete", "read"]);
-        assert!(serde_json::to_value(&scoped.operation)
-            .unwrap()
-            .get("delete_binding_write_revision")
-            .is_none());
+        assert!(
+            serde_json::to_value(&scoped.operation)
+                .unwrap()
+                .get("delete_binding_write_revision")
+                .is_none()
+        );
     }
 
     #[test]

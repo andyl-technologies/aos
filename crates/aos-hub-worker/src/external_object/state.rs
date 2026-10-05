@@ -45,6 +45,8 @@ pub(super) struct Head {
     pub copy: Option<super::copy::state::Owner>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oci: Option<super::oci::state::Owner>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mirror: Option<super::mirror::state::Owner>,
 }
 
 /// One current positive publication pointer; receipts remain immutable KV records.
@@ -104,6 +106,7 @@ impl Head {
                 && self.observation.is_none()
                 && self.copy.is_none()
                 && self.oci.is_none()
+                && self.mirror.is_none()
                 && self
                     .stage
                     .as_ref()
@@ -151,6 +154,7 @@ impl Head {
             stage: None,
             copy: None,
             oci: None,
+            mirror: None,
         })
     }
 
@@ -195,7 +199,8 @@ impl Head {
                 self.pending.is_none()
                     && self.stage.is_none()
                     && self.observation.is_none()
-                    && self.oci.is_none(),
+                    && self.oci.is_none()
+                && self.mirror.is_none(),
                 "copy owner overlaps another physical workflow"
             );
         }
@@ -206,9 +211,17 @@ impl Head {
                 self.pending.is_none()
                     && self.observation.is_none()
                     && self.stage.is_none()
-                    && self.copy.is_none(),
+                    && self.copy.is_none()
+                    && self.mirror.is_none(),
                 "external OCI ownership conflicts with another physical owner"
             );
+        }
+
+        if let Some(mirror) = &self.mirror {
+            mirror.validate()?;
+            ensure!(self.pending.is_none() && self.observation.is_none()
+                && self.stage.is_none() && self.copy.is_none() && self.oci.is_none(),
+                "external mirror ownership conflicts with another physical owner");
         }
 
         // The foundational floor's validator is private; new dispatch still
@@ -249,6 +262,7 @@ impl Head {
                     && self.stage.is_none()
                     && self.copy.is_none()
                     && self.oci.is_none()
+                && self.mirror.is_none()
                     && self.visible_receipt.is_some(),
                 "corrupt observation slot"
             );
@@ -313,7 +327,8 @@ impl Head {
                 && self.stage.is_none()
                 && self.observation.is_none()
                 && self.copy.is_none()
-                && self.oci.is_none(),
+                && self.oci.is_none()
+                && self.mirror.is_none(),
             "unknown object turn blocks dispatch"
         );
         ensure!(

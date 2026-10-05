@@ -11,11 +11,11 @@ use std::{
 
 use aos_hub_core::{direct_upload::*, mirror_work::*, storage_work::*};
 use axum::{
+    Router,
     body::Body,
     extract::{Request, State},
     response::Response,
     routing::post,
-    Router,
 };
 
 use super::*;
@@ -157,6 +157,7 @@ async fn execute(State(state): State<Arc<Mutex<Peer>>>, request: Request) -> Res
         return Response::builder().status(502).body(Body::empty()).unwrap();
     }
     let result = StorageWorkResult {
+        versioned_sources: Vec::new(),
         plan_id: plan.plan_id,
         placement_id: plan.placement_id,
         placement_resource_version: plan.placement_resource_version,
@@ -353,11 +354,12 @@ async fn discovery_configuration_changes_refuse_before_admission_or_provider_con
             .is_err()
     );
     assert!(peer.lock().unwrap().requests.is_empty());
-    assert!(db
-        .mirror_import_for_path(registry.id, "web/object-000.json")
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        db.mirror_import_for_path(registry.id, "web/object-000.json")
+            .await
+            .unwrap()
+            .is_none()
+    );
 
     let source = db.registry_mirror(registry.id).await.unwrap().unwrap();
     let selection =
@@ -382,11 +384,12 @@ async fn discovery_configuration_changes_refuse_before_admission_or_provider_con
             .is_err()
     );
     assert!(peer.lock().unwrap().requests.is_empty());
-    assert!(db
-        .mirror_import_for_path(registry.id, "web/object-000.json")
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        db.mirror_import_for_path(registry.id, "web/object-000.json")
+            .await
+            .unwrap()
+            .is_none()
+    );
     task.abort();
 }
 
@@ -419,14 +422,16 @@ async fn sixty_four_small_objects_use_five_actual_bounded_tls_phase_requests() {
         };
         assert_eq!(items.len(), 64);
     }
-    assert!(peer
-        .request_bytes
-        .iter()
-        .all(|bytes| *bytes <= MAX_PLAN_BYTES));
-    assert!(peer
-        .response_bytes
-        .iter()
-        .all(|bytes| *bytes <= MAX_RESULT_BYTES));
+    assert!(
+        peer.request_bytes
+            .iter()
+            .all(|bytes| *bytes <= MAX_PLAN_BYTES)
+    );
+    assert!(
+        peer.response_bytes
+            .iter()
+            .all(|bytes| *bytes <= MAX_RESULT_BYTES)
+    );
     eprintln!(
         "controlled mirror TLS preparation requests={} max_request_bytes={} max_reply_bytes={}",
         peer.requests.len(),
@@ -442,15 +447,16 @@ async fn partial_refusal_and_lost_phase_reply_keep_exact_originals_for_recovery(
     peer.lock().unwrap().refuse_path = Some("web/object-000.json".into());
     assert!(prepare(&db, &client, &registry, selected()).await.is_err());
     for index in 1..64 {
-        assert!(db
-            .mirror_import_for_path(registry.id, &format!("web/object-{index:03}.json"))
-            .await
-            .unwrap()
-            .unwrap()
-            .progress
-            .unwrap()
-            .verified
-            .is_some());
+        assert!(
+            db.mirror_import_for_path(registry.id, &format!("web/object-{index:03}.json"))
+                .await
+                .unwrap()
+                .unwrap()
+                .progress
+                .unwrap()
+                .verified
+                .is_some()
+        );
     }
     peer.lock().unwrap().refuse_path = None;
     peer.lock().unwrap().lose_upload_reply = true;

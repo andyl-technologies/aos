@@ -159,7 +159,8 @@ fn canonical_loose_projection_preserves_incarnation_and_refuses_representation_c
     assert_eq!(kind, ObjectKind::Tree);
     let source = MirrorTreeInventoryCommitment::Loose {
         object: MirrorPackSource {
-        guarded_source: None,
+            provider_version: None,
+            guarded_source: None,
             path: oid.loose_path(),
             sha256: hex::encode(Sha256::digest(&encoded)),
             size: encoded.len() as u64,

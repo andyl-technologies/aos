@@ -5,7 +5,7 @@
 //! Complete encoded bodies remain beside storage; only verified commitments and
 //! selected decoded content cross the storage-work boundary.
 
-use anyhow::{ensure, Context as _, Result};
+use anyhow::{Context as _, Result, ensure};
 use aos_hub_core::mirror_inspection::{MirrorPackProjection, MirrorPackSelection};
 use aos_hub_core::storage_work::{
     StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan, StorageWorkResult,
@@ -397,6 +397,7 @@ async fn build_loose_inventory(
         "loose source ended before exact length"
     );
     let object = aos_hub_core::mirror_inspection::MirrorPackSource {
+        provider_version: None,
         guarded_source: None,
         path,
         sha256: hex::encode(Sha256::digest(&encoded)),

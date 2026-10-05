@@ -10,7 +10,7 @@ use aos_hub_core::db::{
 };
 use aos_hub_core::oci_gc_controller::OciGcDeletionController;
 use aos_hub_core::storage_work::{
-    StorageWorkKey, StorageWorkResult, STORAGE_WORK_SIGNATURE_HEADER,
+    STORAGE_WORK_SIGNATURE_HEADER, StorageWorkKey, StorageWorkResult,
 };
 use aos_oci_types::Sha256Digest;
 use axum::{
@@ -243,6 +243,7 @@ async fn reviewed_absent_r2_action_uses_only_head_and_fenced_reads_cannot_finali
                         return Err(StatusCode::CONFLICT);
                     }
                     Ok(axum::Json(StorageWorkResult {
+                        versioned_sources: Vec::new(),
                         plan_id: plan.plan_id,
                         placement_id: plan.placement_id,
                         placement_resource_version: plan.placement_resource_version,

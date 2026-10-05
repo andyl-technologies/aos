@@ -15,8 +15,8 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    StorageObjectIdentity, StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan,
-    StorageWorkResult, MAX_METADATA_BYTES, MAX_METADATA_INSPECTION_BATCH, MAX_RESULT_BYTES,
+    MAX_METADATA_BYTES, MAX_METADATA_INSPECTION_BATCH, MAX_RESULT_BYTES, StorageObjectIdentity,
+    StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan, StorageWorkResult,
 };
 
 /// One exact metadata body and its provider snapshot identity.
@@ -202,6 +202,7 @@ fn result_for_page(
     source_bytes: u64,
 ) -> StorageWorkResult {
     StorageWorkResult {
+        versioned_sources: Vec::new(),
         plan_id: plan.plan_id.clone(),
         placement_id: plan.placement_id,
         placement_resource_version: plan.placement_resource_version,
@@ -372,8 +373,10 @@ mod tests {
         }
         let paths = vec!["HEAD"; MAX_METADATA_INSPECTION_BATCH + 1];
         assert!(plan(&paths, 0).validate("metadata-test", 101).is_err());
-        assert!(plan(&["HEAD", "info/refs"], 0)
-            .validate("metadata-test", 101)
-            .is_ok());
+        assert!(
+            plan(&["HEAD", "info/refs"], 0)
+                .validate("metadata-test", 101)
+                .is_ok()
+        );
     }
 }

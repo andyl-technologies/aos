@@ -60,15 +60,23 @@ impl Selection {
                 guarded_source,
                 ..
             } => {
-                ensure!(
-                    selected == path && expected_provider_version.is_none(),
-                    "protected inventory path or provider version differs"
-                );
-                let guarded = guarded_source
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("protected inventory source closure absent"))?;
-                guarded.validate_for(&guarded.scope.full_key, *total, strong_etag)?;
-                (*total, Some(guarded.closure.sha256.clone()))
+                ensure!(selected == path, "inventory selected path differs");
+                if let Some(version) = expected_provider_version {
+                    ensure!(
+                        version != "null"
+                            && aos_hub_core::storage_work::valid_provider_version(version)
+                            && guarded_source.is_none(),
+                        "versioned inventory cannot adopt a closure"
+                    );
+                    aos_hub_core::surface_write::strong_if_match_etag(strong_etag)?;
+                    (*total, None)
+                } else {
+                    let guarded = guarded_source.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!("protected inventory source closure absent")
+                    })?;
+                    guarded.validate_for(&guarded.scope.full_key, *total, strong_etag)?;
+                    (*total, Some(guarded.closure.sha256.clone()))
+                }
             }
             StorageWorkOperation::InspectMetadata { path: selected } => {
                 ensure!(selected == path, "metadata path differs");

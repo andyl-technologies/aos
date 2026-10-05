@@ -97,5 +97,8 @@ impl ProtectedInspectionSource {
     }
 }
 
+mod versioned;
+pub use versioned::VersionedInspectionSource;
+
 #[cfg(test)]
 mod tests;

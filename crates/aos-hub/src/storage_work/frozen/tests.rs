@@ -8,7 +8,7 @@ use aos_hub_core::db::{
 };
 use aos_hub_core::fetch::SurfaceProvider as _;
 use aos_hub_core::storage_work::{
-    StorageObjectIdentity, StorageWorkKey, StorageWorkResult, STORAGE_WORK_SIGNATURE_HEADER,
+    STORAGE_WORK_SIGNATURE_HEADER, StorageObjectIdentity, StorageWorkKey, StorageWorkResult,
 };
 use aos_hub_core::surface_write::SurfaceWriteProvider as _;
 use axum::body::Bytes;
@@ -185,6 +185,7 @@ async fn frozen_hybrid_cleanup_keeps_old_address_after_placement_and_capability_
                     _ => panic!("cleanup must not send object bodies"),
                 };
                 axum::Json(StorageWorkResult {
+                    versioned_sources: Vec::new(),
                     plan_id: plan.plan_id,
                     placement_id: plan.placement_id,
                     placement_resource_version: plan.placement_resource_version,

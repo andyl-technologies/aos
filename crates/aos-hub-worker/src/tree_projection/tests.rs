@@ -81,6 +81,7 @@ async fn execute(objects: &dyn SurfaceFetch, plan: &StorageWorkPlan) -> Result<S
     };
     let (outcome, source_bytes) = inspect(objects, plan, oid, names, cursor.as_ref()).await?;
     let result = StorageWorkResult {
+        versioned_sources: Vec::new(),
         plan_id: plan.plan_id.clone(),
         placement_id: plan.placement_id,
         placement_resource_version: plan.placement_resource_version,
@@ -259,7 +260,9 @@ async fn actual_indexer_selects_root_fields_without_raw_tree_fetch_and_matches_l
         tree_oid.loose_path(),
         object::encode_loose(ObjectKind::Tree, &tree).unwrap(),
     );
-    let commit = format!("tree {tree_oid}\nauthor Fixture <fixture@example.test> 100 +0000\ncommitter Fixture <fixture@example.test> 100 +0000\n\nfixture\n");
+    let commit = format!(
+        "tree {tree_oid}\nauthor Fixture <fixture@example.test> 100 +0000\ncommitter Fixture <fixture@example.test> 100 +0000\n\nfixture\n"
+    );
     let commit_oid = object::hash_object(ObjectKind::Commit, commit.as_bytes());
     objects.objects.insert(
         commit_oid.loose_path(),
@@ -288,9 +291,11 @@ async fn actual_indexer_selects_root_fields_without_raw_tree_fetch_and_matches_l
     assert_eq!(hybrid.root.registry.name, worker.root.registry.name);
     assert!(hybrid.packages.is_empty());
     assert_eq!(remote.selections.lock().unwrap().len(), 1);
-    assert!(!remote.selections.lock().unwrap()[0]
-        .iter()
-        .any(|name| name == "ignored.txt"));
+    assert!(
+        !remote.selections.lock().unwrap()[0]
+            .iter()
+            .any(|name| name == "ignored.txt")
+    );
 }
 
 #[tokio::test]
@@ -304,9 +309,11 @@ async fn malformed_source_and_invalid_cursor_fail_before_any_native_rows_are_acc
     let mut cursor = page.next_cursor.unwrap();
     cursor.next_index = 0;
     let before = objects.reads.lock().unwrap().len();
-    assert!(execute(&objects, &plan(oid, names.clone(), Some(cursor)))
-        .await
-        .is_err());
+    assert!(
+        execute(&objects, &plan(oid, names.clone(), Some(cursor)))
+            .await
+            .is_err()
+    );
     assert_eq!(objects.reads.lock().unwrap().len(), before);
 
     objects.objects.insert(
@@ -384,26 +391,43 @@ struct GuardedObjects {
 #[async_trait::async_trait]
 impl super::SourceReader for GuardedObjects {
     async fn read(&self, path: &str, maximum: usize) -> Result<Option<super::VerifiedSource>> {
-        use aos_hub_core::storage_authority::{control::StorageAuthorityObjectScope,
-            external_object::copy::source::CopySourceClosure, lease::LeaseInteger,
-            GuardIncarnation, PhysicalStorageAuthorityId, StorageGuardStamp};
+        use aos_hub_core::storage_authority::{
+            GuardIncarnation, PhysicalStorageAuthorityId, StorageGuardStamp,
+            control::StorageAuthorityObjectScope, external_object::copy::source::CopySourceClosure,
+            lease::LeaseInteger,
+        };
         use aos_hub_core::storage_work::protected_inspection::ProtectedInspectionSource;
         use sha2::{Digest as _, Sha256};
 
-        let Some((bytes, identity)) = super::read_source(&self.objects, &self.request, path, maximum).await? else {
+        let Some((bytes, identity)) =
+            super::read_source(&self.objects, &self.request, path, maximum).await?
+        else {
             return Ok(None);
         };
         let authority = PhysicalStorageAuthorityId::parse("11111111-1111-4111-8111-111111111111")?;
         let guarded = ProtectedInspectionSource {
             version: 1,
-            scope: StorageAuthorityObjectScope { guard_namespace_id: "controlled-source".into(),
-                physical_authority_id: authority.clone(), full_key: format!("binding/{}", identity.key) },
-            closure: CopySourceClosure { guard_stamp: StorageGuardStamp { physical_authority_id: authority,
-                incarnation: GuardIncarnation::parse(self.incarnation.to_string())? },
-                receipt_digest: "a".repeat(64), sha256: hex::encode(Sha256::digest(&bytes)),
-                bytes: LeaseInteger::new(bytes.len() as i64)?, etag: Some(identity.etag.clone()) },
+            scope: StorageAuthorityObjectScope {
+                guard_namespace_id: "controlled-source".into(),
+                physical_authority_id: authority.clone(),
+                full_key: format!("binding/{}", identity.key),
+            },
+            closure: CopySourceClosure {
+                guard_stamp: StorageGuardStamp {
+                    physical_authority_id: authority,
+                    incarnation: GuardIncarnation::parse(self.incarnation.to_string())?,
+                },
+                receipt_digest: "a".repeat(64),
+                sha256: hex::encode(Sha256::digest(&bytes)),
+                bytes: LeaseInteger::new(bytes.len() as i64)?,
+                etag: Some(identity.etag.clone()),
+            },
         };
-        Ok(Some(super::VerifiedSource { bytes, identity, guarded: Some(guarded) }))
+        Ok(Some(super::VerifiedSource {
+            bytes,
+            identity,
+            guarded: Some(guarded),
+        }))
     }
 }
 
@@ -411,17 +435,120 @@ impl super::SourceReader for GuardedObjects {
 async fn closed_tree_reader_preserves_fallback_and_refuses_same_tag_new_incarnation_cursor() {
     let (objects, oid, names) = fixture(40, "\"unchanged-provider-tag\"");
     let request = plan(oid, names.clone(), None);
-    let mut reader = GuardedObjects { objects, request: request.clone(), incarnation: 1 };
-    let (outcome, _) = super::inspect_with_reader(&reader, &request, &oid.to_hex(), &names, None).await.unwrap();
-    let StorageWorkOutcome::GitTreeEntries { source, guarded_source, page } = outcome else { panic!() };
+    let mut reader = GuardedObjects {
+        objects,
+        request: request.clone(),
+        incarnation: 1,
+    };
+    let (outcome, _) = super::inspect_with_reader(&reader, &request, &oid.to_hex(), &names, None)
+        .await
+        .unwrap();
+    let StorageWorkOutcome::GitTreeEntries {
+        source,
+        guarded_source,
+        page,
+    } = outcome
+    else {
+        panic!()
+    };
     assert!(guarded_source.is_some());
     assert_eq!(source.etag, "\"unchanged-provider-tag\"");
     assert_eq!(reader.objects.reads.lock().unwrap().len(), 2);
     let cursor = page.next_cursor.unwrap();
-    super::inspect_with_reader(&reader, &request, &oid.to_hex(), &names, Some(&cursor)).await.unwrap();
+    super::inspect_with_reader(&reader, &request, &oid.to_hex(), &names, Some(&cursor))
+        .await
+        .unwrap();
 
     reader.incarnation = 2;
-    assert!(super::inspect_with_reader(&reader, &request, &oid.to_hex(), &names, Some(&cursor)).await.is_err());
-    reader.objects.objects.insert(oid.loose_path(), object::encode_loose(ObjectKind::Tree, b"wrong").unwrap());
-    assert!(super::inspect_with_reader(&reader, &request, &oid.to_hex(), &names, None).await.is_err());
+    assert!(
+        super::inspect_with_reader(&reader, &request, &oid.to_hex(), &names, Some(&cursor))
+            .await
+            .is_err()
+    );
+    reader.objects.objects.insert(
+        oid.loose_path(),
+        object::encode_loose(ObjectKind::Tree, b"wrong").unwrap(),
+    );
+    assert!(
+        super::inspect_with_reader(&reader, &request, &oid.to_hex(), &names, None)
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn completed_versioned_tree_read_keeps_rows_and_refuses_same_tag_version_drift() {
+    struct CompletedSource {
+        objects: Objects,
+        provider_version: String,
+        plan: StorageWorkPlan,
+    }
+
+    #[async_trait::async_trait]
+    impl super::SourceReader for CompletedSource {
+        async fn read(&self, path: &str, maximum: usize) -> Result<Option<super::VerifiedSource>> {
+            let Some(bytes) = self.objects.fetch(path).await? else {
+                return Ok(None);
+            };
+            anyhow::ensure!(bytes.len() <= maximum);
+            Ok(Some(super::VerifiedSource {
+                identity: StorageObjectIdentity {
+                    key: self.plan.object_key(path)?,
+                    size: bytes.len() as u64,
+                    etag: self.objects.etag.clone(),
+                    provider_version: Some(self.provider_version.clone()),
+                },
+                bytes,
+                guarded: None,
+            }))
+        }
+    }
+
+    // This drives the real bounded parser with completed-read identities. It
+    // grants no installed profile/lease or permission to open provider traffic.
+    let (objects, oid, names) = fixture(40, "\"same-tag\"");
+    let original = plan(oid, names.clone(), None);
+    let mut source = CompletedSource {
+        objects,
+        provider_version: "read-version-1".into(),
+        plan: original.clone(),
+    };
+    let (outcome, _) = super::inspect_with_reader(&source, &original, &oid.to_hex(), &names, None)
+        .await
+        .unwrap();
+    let StorageWorkOutcome::GitTreeEntries {
+        source: observed,
+        guarded_source,
+        page,
+    } = outcome
+    else {
+        panic!("tree");
+    };
+    assert_eq!(observed.provider_version.as_deref(), Some("read-version-1"));
+    assert!(guarded_source.is_none());
+    assert_eq!(page.entries.len(), MAX_TREE_PAGE_ENTRIES);
+    assert!(page.next_cursor.is_some());
+
+    let continued = plan(oid, names.clone(), page.next_cursor.clone());
+    super::inspect_with_reader(
+        &source,
+        &continued,
+        &oid.to_hex(),
+        &names,
+        page.next_cursor.as_ref(),
+    )
+    .await
+    .unwrap();
+    source.provider_version = "read-version-2".into();
+    assert!(
+        super::inspect_with_reader(
+            &source,
+            &continued,
+            &oid.to_hex(),
+            &names,
+            page.next_cursor.as_ref()
+        )
+        .await
+        .is_err()
+    );
 }

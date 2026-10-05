@@ -191,11 +191,11 @@ pub(super) mod tests {
     use std::time::Duration;
 
     use aos_hub_core::storage_work::{StorageWorkOperation, StorageWorkOutcome, StorageWorkResult};
+    use tracing::Subscriber;
     use tracing::field::{Field, Visit};
     use tracing::instrument::WithSubscriber as _;
-    use tracing::Subscriber;
-    use tracing_subscriber::layer::SubscriberExt as _;
     use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::SubscriberExt as _;
 
     use super::StorageWorkPlan;
     use crate::storage_work::RemoteStorageWorkClient;
@@ -316,6 +316,7 @@ pub(super) mod tests {
     async fn retry_accounting_separates_offered_plans_from_observed_bodies() {
         let plan = plan();
         let result = StorageWorkResult {
+            versioned_sources: Vec::new(),
             plan_id: plan.plan_id.clone(),
             placement_id: 1,
             placement_resource_version: 1,
@@ -380,11 +381,13 @@ pub(super) mod tests {
         let recorded = RecordedEvents::default();
         let subscriber = tracing_subscriber::registry().with(recorded.clone());
 
-        assert!(client
-            .execute(&plan())
-            .with_subscriber(subscriber)
-            .await
-            .is_err());
+        assert!(
+            client
+                .execute(&plan())
+                .with_subscriber(subscriber)
+                .await
+                .is_err()
+        );
         server.abort();
 
         let event = recorded.exchange();

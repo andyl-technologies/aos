@@ -4,11 +4,12 @@
 {
   source,
   separateDatabase ? true,
+  readRevisionFixture ? null,
 }: let
   aos = import source {};
   spec = import (source + "/tests/fleet/hub-hybrid.nix") {
     inherit (aos) lib mkSystem pkgs;
-    inherit separateDatabase;
+    inherit separateDatabase readRevisionFixture;
     externalDirect = true;
     runtimeSource = source;
   };

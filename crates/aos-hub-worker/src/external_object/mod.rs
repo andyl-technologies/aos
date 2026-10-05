@@ -23,6 +23,7 @@ pub(crate) use inspection::installed_inventory_mode;
 #[cfg(any(test, target_arch = "wasm32"))]
 pub(crate) use inspection::InventoryDomainMode;
 mod copy;
+mod mirror;
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) use copy::{

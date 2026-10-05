@@ -130,6 +130,7 @@ fn aggregate_budget_retains_every_original_and_actual_completed_read_cost() {
         .map(|target| positive(target, &vec![0; 128 * 1024]))
         .collect();
     let mut result = StorageWorkResult {
+        versioned_sources: Vec::new(),
         plan_id: plan.plan_id.clone(),
         placement_id: 4,
         placement_resource_version: 5,

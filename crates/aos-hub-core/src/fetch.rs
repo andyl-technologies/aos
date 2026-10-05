@@ -657,6 +657,22 @@ pub trait SurfaceFetch: BackendBounds {
         }
     }
 
+    /// Returns a provider version retained from an already completed inspection read.
+    ///
+    /// The default reports no version. An installed reader must match the exact
+    /// path, size and tag; this hook must not perform discovery or mint evidence.
+    ///
+    /// # Errors
+    /// Refuses missing, ambiguous or substituted completed-read observations.
+    async fn inspection_provider_version(
+        &self,
+        _path: &str,
+        _size: u64,
+        _etag: &str,
+    ) -> Result<Option<String>> {
+        Ok(None)
+    }
+
     /// The byte length of the object at `path`, or `None` when it does not exist.
     ///
     /// Used by the write facade to compute the *overwrite delta* charged against

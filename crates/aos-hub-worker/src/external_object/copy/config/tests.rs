@@ -64,7 +64,7 @@ fn distinct_sql_bindings_cannot_alias_the_same_physical_key() {
     distinct_physical_keys(&domain.read_cohort, &source, &alternate, &aliased_scope).unwrap();
 }
 
-pub(in crate::external_object::copy) fn fixture() -> (ObjectConfig, Config, ExternalCopyOriginal) {
+pub(in crate::external_object) fn fixture() -> (ObjectConfig, Config, ExternalCopyOriginal) {
     let mut object = crate::external_object::tests::config();
     let publication = &object.publications[0];
     let cohort = |purpose, effects| {

@@ -83,6 +83,7 @@ fn plan() -> StorageWorkPlan {
 
 fn absent(plan: &StorageWorkPlan) -> StorageWorkResult {
     StorageWorkResult {
+        versioned_sources: Vec::new(),
         plan_id: plan.plan_id.clone(),
         placement_id: plan.placement_id,
         placement_resource_version: plan.placement_resource_version,

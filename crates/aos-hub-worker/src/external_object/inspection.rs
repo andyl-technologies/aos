@@ -1,12 +1,13 @@
-//! Guarded typed inspection over genuine permanent External source closures.
+//! Guarded typed inspection over closed or immutable-version External sources.
 //!
 //! Semantic parsers remain storage-local. Selection and source evidence never
 //! grant business authority; actual reads require current independent leases.
 
+pub(crate) mod batch;
 #[cfg(target_arch = "wasm32")]
 mod runtime;
-pub(crate) mod batch;
 pub(super) mod selection;
+pub(super) mod versioned;
 #[cfg(target_arch = "wasm32")]
 pub(crate) use runtime::{execute, installed_inventory_mode};
 #[cfg(target_arch = "wasm32")]

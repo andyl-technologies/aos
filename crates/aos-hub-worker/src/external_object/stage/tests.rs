@@ -427,6 +427,7 @@ impl Fixture {
             stage: None,
             copy: None,
             oci: None,
+            mirror: None,
         }
     }
 

@@ -37,10 +37,10 @@ use aos_hub_core::storage_credential::{
     DatabaseStorageCredentialResolver, StorageCredentialResolver,
 };
 use aos_hub_core::storage_work::{
-    StorageBindingPublication, StorageCredentialSelector, StorageDocumentationPage,
-    StorageGitObjectProjection, StorageObjectIdentity, StorageWorkOperation, StorageWorkOutcome,
-    StorageWorkPlan, StorageWorkResult, MAX_GIT_INSPECTION_CONTENT_BYTES, MAX_METADATA_BYTES,
-    MAX_OCI_HASH_RANGE_BYTES, MAX_OCI_RANGE_BYTES,
+    MAX_GIT_INSPECTION_CONTENT_BYTES, MAX_METADATA_BYTES, MAX_OCI_HASH_RANGE_BYTES,
+    MAX_OCI_RANGE_BYTES, StorageBindingPublication, StorageCredentialSelector,
+    StorageDocumentationPage, StorageGitObjectProjection, StorageObjectIdentity,
+    StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan, StorageWorkResult,
 };
 use aos_hub_core::surface_write::{
     FrozenSurfaceAccess, MultipartAbortOutcome, PartTag, SurfaceWrite, SurfaceWriteProvider,
@@ -85,8 +85,8 @@ pub(crate) async fn execute_external_storage_work(
             publication,
             Some(signal.clone()),
         )
-            .await
-            .map(Some);
+        .await
+        .map(Some);
     }
     let probe = match &plan.operation {
         StorageWorkOperation::PutProbe { path, .. }
@@ -103,13 +103,17 @@ pub(crate) async fn execute_external_storage_work(
             publication,
             Some(signal.clone()),
         )
-            .await
-            .map(Some);
+        .await
+        .map(Some);
     }
-    if let Some(result) = crate::external_object::execute_inspection(env, plan, publication, signal).await? {
+    if let Some(result) =
+        crate::external_object::execute_inspection(env, plan, publication, signal).await?
+    {
         return Ok(Some(result));
     }
-    if let Some(result) = crate::external_object::execute_scan_read(env, plan, publication, signal).await? {
+    if let Some(result) =
+        crate::external_object::execute_scan_read(env, plan, publication, signal).await?
+    {
         return Ok(Some(result));
     }
     crate::external_object::deny_legacy(env, &publication.snapshot)?;
@@ -722,8 +726,14 @@ pub(crate) async fn execute_r2_storage_work(
             expected_etag,
             ..
         } => {
-            anyhow::ensure!(source_binding_id.is_none(), "generic copy lacks independent source binding authority");
-            anyhow::ensure!(source_binding_id.is_none(), "generic copy lacks independent source binding authority");
+            anyhow::ensure!(
+                source_binding_id.is_none(),
+                "generic copy lacks independent source binding authority"
+            );
+            anyhow::ensure!(
+                source_binding_id.is_none(),
+                "generic copy lacks independent source binding authority"
+            );
             let source_key = keymap::r2_key(source_prefix, path);
             let destination_key = plan.object_key(path)?;
             let source = fetcher
@@ -1183,7 +1193,10 @@ async fn inspect_git_object_with_policy(
             .checked_add(source.size)
             .context("Git inspection source byte count overflowed")?
     };
-    Ok((Some(project_git_loose(oid, &loose, source, guarded)?), source_bytes))
+    Ok((
+        Some(project_git_loose(oid, &loose, source, guarded)?),
+        source_bytes,
+    ))
 }
 
 async fn inspect_git_shard(
@@ -1229,7 +1242,10 @@ async fn inspect_git_shard(
             return Ok((None, 0));
         };
         let source_bytes = source.size;
-        Ok((Some(project_git_loose(oid, &loose, source, guarded)?), source_bytes))
+        Ok((
+            Some(project_git_loose(oid, &loose, source, guarded)?),
+            source_bytes,
+        ))
     });
     let inspections = if guarded {
         crate::external_object::collect_guarded_git_reads(reads, 1).await?
@@ -1310,11 +1326,14 @@ pub(crate) async fn read_bounded_source(
         bytes.len() as u64 == expected,
         "storage source ended before its declared size"
     );
+    let provider_version = fetcher
+        .inspection_provider_version(path, expected, &etag)
+        .await?;
     let source = StorageObjectIdentity {
         key: plan.object_key(path)?,
         size: expected,
         etag,
-        provider_version: None,
+        provider_version,
     };
     Ok(Some((bytes, source)))
 }
@@ -1480,6 +1499,7 @@ pub(crate) fn storage_work_result(
     source_bytes: u64,
 ) -> StorageWorkResult {
     StorageWorkResult {
+        versioned_sources: Vec::new(),
         plan_id: plan.plan_id.clone(),
         placement_id: plan.placement_id,
         placement_resource_version: plan.placement_resource_version,
@@ -3594,8 +3614,8 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
 
     use futures_util::TryStreamExt as _;
     use js_sys::{Array, Object, Promise, Reflect, Uint8Array};
-    use wasm_bindgen::closure::Closure;
     use wasm_bindgen::JsValue;
+    use wasm_bindgen::closure::Closure;
 
     fn set_method(target: &Object, name: &str, value: &JsValue) -> Result<()> {
         Reflect::set(target, &JsValue::from_str(name), value)

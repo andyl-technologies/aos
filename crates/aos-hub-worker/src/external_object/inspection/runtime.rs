@@ -1,8 +1,10 @@
-//! Current-publication typed parsers over permanently closed protected sources.
+//! Current-publication typed parsers over closed or immutable-version sources.
 //!
 //! Only the source guard opens provider streams. This adapter retains the
 //! authenticated application cutoff, real capacity reservation and native
-//! cancellation owner through each EOF. It emits existing compact parser DTOs.
+//! cancellation owner through each EOF. Versionless reads require a permanent
+//! producer closure; versioned reads require actual version/ETag/size discovery
+//! and exact conditional responses. Both emit bounded storage-local parser DTOs.
 
 use anyhow::{Context as _, Result, ensure};
 use aos_hub_core::{
@@ -82,18 +84,6 @@ pub(crate) async fn execute(
         .iter()
         .find(|domain| domain.read_cohort.association.binding_id.get() == plan.binding_id)
         .context("protected inspection read domain absent")?;
-    if domain.provider_contract.protected_versionless.is_none()
-        && matches!(
-            plan.operation,
-            StorageWorkOperation::Head { .. } | StorageWorkOperation::HashOciRange { .. }
-        )
-    {
-        return Ok(None);
-    }
-    ensure!(
-        domain.provider_contract.protected_versionless.is_some(),
-        "protected inspection source contract absent"
-    );
     let reader = GuardedReader {
         env,
         plan,
@@ -101,6 +91,7 @@ pub(crate) async fn execute(
         signal,
         object: &object,
         domain,
+        versioned_sources: std::cell::RefCell::new(Vec::new()),
     };
     reader.current()?;
     crate::direct_upload::provider_capacity::policy::configure_bounded(
@@ -126,6 +117,29 @@ pub(crate) async fn execute(
     let (outcome, source_bytes) = match &plan.operation {
         Op::Head { path } => {
             let (metadata, _, _, scope) = reader.lookup(path).await?;
+            if let Some(identity) = metadata.versioned_source {
+                let evidence =
+                    aos_hub_core::storage_work::protected_inspection::VersionedInspectionSource {
+                        version: 1,
+                        producer_profile_digest: domain.producer_profile_digest.clone(),
+                        configured_domain_digest: domain.commitment()?,
+                        scope,
+                        source: identity.clone(),
+                        range: None,
+                        metadata_only: true,
+                        sha256: hex::encode(Sha256::digest([])),
+                    };
+                evidence.validate()?;
+                reader.versioned_sources.borrow_mut().push(evidence);
+                reader.current()?;
+                return Ok(Some(reader.result(
+                    StorageWorkOutcome::Head {
+                        object: identity,
+                        guarded_source: None,
+                    },
+                    0,
+                )));
+            }
             let Some(closure) = metadata.closure else {
                 return Ok(Some(crate::surface::storage_work_result(
                     plan,
@@ -198,7 +212,7 @@ pub(crate) async fn execute(
                     start: *start,
                     end: *end,
                     sha256_state: state,
-                    guarded_source: Some(guarded),
+                    guarded_source: guarded,
                 },
                 end - start + 1,
             )
@@ -214,18 +228,33 @@ pub(crate) async fn execute(
                     0,
                 )));
             };
+            let source_bytes = read.identity.size;
             (
                 StorageWorkOutcome::Metadata {
                     source: read.identity,
                     content_base64: base64::engine::general_purpose::STANDARD.encode(read.bytes),
                 },
-                read.guarded.closure.bytes.get() as u64,
+                source_bytes,
             )
         }
         Op::InspectMetadataObjects { paths, cursor } => {
-            return Ok(Some(
-                crate::surface::metadata_batch::inspect(&reader, plan, paths, *cursor).await?,
-            ));
+            let mut result =
+                crate::surface::metadata_batch::inspect(&reader, plan, paths, *cursor).await?;
+            result.versioned_sources = reader.versioned_sources.borrow().clone();
+            while serde_json::to_vec(&result)?.len() > aos_hub_core::storage_work::MAX_RESULT_BYTES
+            {
+                let StorageWorkOutcome::MetadataObjects { page } = &mut result.outcome else {
+                    anyhow::bail!("metadata evidence result mode differs");
+                };
+                ensure!(
+                    page.objects.len() > 1,
+                    "metadata source evidence cannot fit first object"
+                );
+                page.objects.pop();
+                page.next_cursor = Some(*cursor + page.objects.len());
+            }
+            reader.current()?;
+            return Ok(Some(result));
         }
         Op::InspectGitObject { oid } => {
             let (projection, count) =
@@ -291,7 +320,7 @@ pub(crate) async fn execute(
             };
             (
                 StorageWorkOutcome::OciRange {
-                    guarded_source: Some(guarded),
+                    guarded_source: guarded,
                     source: identity,
                     start: *start,
                     end: *end,
@@ -306,11 +335,7 @@ pub(crate) async fn execute(
         _ => anyhow::bail!("protected typed operation differs"),
     };
     reader.current()?;
-    Ok(Some(crate::surface::storage_work_result(
-        plan,
-        outcome,
-        source_bytes,
-    )))
+    Ok(Some(reader.result(outcome, source_bytes)))
 }
 
 fn supported(operation: &StorageWorkOperation) -> bool {
@@ -338,12 +363,15 @@ struct GuardedReader<'a> {
     signal: &'a worker::web_sys::AbortSignal,
     object: &'a Config,
     domain: &'a Domain,
+    versioned_sources: std::cell::RefCell<
+        Vec<aos_hub_core::storage_work::protected_inspection::VersionedInspectionSource>,
+    >,
 }
 
 struct Whole {
     bytes: Vec<u8>,
     identity: StorageObjectIdentity,
-    guarded: ProtectedInspectionSource,
+    guarded: Option<ProtectedInspectionSource>,
 }
 
 // Lifetime registrations handle the actual caller signal. Their Drop removes
@@ -369,6 +397,19 @@ impl Drop for RequestAbort {
 }
 
 impl GuardedReader<'_> {
+    fn versioned(&self) -> bool {
+        self.domain
+            .provider_contract
+            .protected_versionless
+            .is_none()
+    }
+
+    fn result(&self, outcome: StorageWorkOutcome, source_bytes: u64) -> StorageWorkResult {
+        let mut result = crate::surface::storage_work_result(self.plan, outcome, source_bytes);
+        result.versioned_sources = self.versioned_sources.borrow().clone();
+        result
+    }
+
     fn current(&self) -> Result<()> {
         let clock = self.object.clock();
         let deployment = self.env.var("HUB_DEPLOYMENT_ID")?.to_string();
@@ -434,8 +475,14 @@ impl GuardedReader<'_> {
             self.domain.commitment()?,
             scope.clone(),
             selection.clone(),
-            Operation::InspectLookup {
-                read_lease: lease.clone(),
+            if self.versioned() {
+                Operation::InspectVersionedLookup {
+                    read_lease: lease.clone(),
+                }
+            } else {
+                Operation::InspectLookup {
+                    read_lease: lease.clone(),
+                }
             },
         )?;
         let controller = RequestAbort::new()?;
@@ -461,39 +508,53 @@ impl GuardedReader<'_> {
         maximum: usize,
         initial: Option<crate::direct_upload::provider_capacity::Permit>,
         mut consume: impl FnMut(&[u8]) -> Result<()>,
-    ) -> Result<Option<(StorageObjectIdentity, ProtectedInspectionSource)>> {
+    ) -> Result<Option<(StorageObjectIdentity, Option<ProtectedInspectionSource>)>> {
         let (metadata, lease, selection, scope) = self.lookup(path).await?;
-        let Some(closure) = metadata.closure else {
-            return Ok(None);
+        let (identity, guarded) = if self.versioned() {
+            let Some(identity) = metadata.versioned_source else {
+                return Ok(None);
+            };
+            ensure!(
+                metadata.closure.is_none(),
+                "versioned read adopted a closure"
+            );
+            (identity, None)
+        } else {
+            let Some(closure) = metadata.closure else {
+                return Ok(None);
+            };
+            let identity = StorageObjectIdentity {
+                key: self.plan.object_key(path)?,
+                size: u64::try_from(closure.bytes.get())?,
+                etag: metadata.etag.context("closed inspection tag absent")?,
+                provider_version: None,
+            };
+            let guarded = ProtectedInspectionSource {
+                version: 1,
+                scope: scope.clone(),
+                closure,
+            };
+            guarded.validate_identity(
+                self.plan,
+                path,
+                &self.domain.read_cohort.association.binding_prefix,
+                &identity,
+            )?;
+            (identity, Some(guarded))
         };
-        let etag = metadata.etag.context("closed inspection tag absent")?;
-        let total = u64::try_from(closure.bytes.get())?;
-        let guarded = ProtectedInspectionSource {
-            version: 1,
-            scope: scope.clone(),
-            closure: closure.clone(),
-        };
-        let identity = StorageObjectIdentity {
-            key: self.plan.object_key(path)?,
-            size: total,
-            etag: etag.clone(),
-            provider_version: None,
-        };
-        guarded.validate_identity(
-            self.plan,
-            path,
-            &self.domain.read_cohort.association.binding_prefix,
-            &identity,
-        )?;
+        let etag = identity.etag.clone();
+        let total = identity.size;
         if let StorageWorkOperation::HashOciRange {
             total,
             strong_etag,
             guarded_source,
+            expected_provider_version,
             ..
         } = &self.plan.operation
         {
             ensure!(
-                guarded_source.as_ref() == Some(&guarded)
+                guarded_source.as_ref() == guarded.as_ref()
+                    && expected_provider_version == &identity.provider_version
                     && *total == identity.size
                     && strong_etag == &identity.etag,
                 "protected inventory HEAD changed its frozen closed source"
@@ -523,7 +584,9 @@ impl GuardedReader<'_> {
         );
         let mut initial = initial;
         let mut completed = 0_u64;
-        while completed < bytes {
+        let mut opened_empty = false;
+        while completed < bytes || self.versioned() && bytes == 0 && !opened_empty {
+            opened_empty = true;
             let range_bytes = (bytes - completed).min(range_bound);
             let range_offset = offset
                 .checked_add(completed)
@@ -541,12 +604,20 @@ impl GuardedReader<'_> {
                 self.domain.commitment()?,
                 scope.clone(),
                 selection.clone(),
-                Operation::InspectRange {
-                    closure: closure.clone(),
-                    read_lease: lease.clone(),
-                    etag: etag.clone(),
-                    offset: range_offset,
-                    bytes: range_bytes,
+                match &guarded {
+                    Some(guarded) => Operation::InspectRange {
+                        closure: guarded.closure.clone(),
+                        read_lease: lease.clone(),
+                        etag: etag.clone(),
+                        offset: range_offset,
+                        bytes: range_bytes,
+                    },
+                    None => Operation::InspectVersionedRange {
+                        source: identity.clone(),
+                        read_lease: lease.clone(),
+                        offset: range_offset,
+                        bytes: range_bytes,
+                    },
                 },
             )?;
             let reservation = source::reserve(&mut message, initial.take(), &window).await?;
@@ -591,20 +662,59 @@ impl GuardedReader<'_> {
             completed == bytes,
             "inspection did not consume its exact signed interval"
         );
+        let sha256 = hex::encode(sha.finalize());
         if interval.is_none() {
+            let expected = guarded
+                .as_ref()
+                .map(|guarded| guarded.closure.sha256.as_str())
+                .or(selection.expected_sha256.as_deref());
             ensure!(
-                hex::encode(sha.finalize()) == closure.sha256,
-                "inspection complete encoded SHA differs from the retained source"
+                expected.is_none_or(|expected| sha256 == expected),
+                "inspection complete encoded SHA differs from its selected source"
             );
         }
         let (after, _, _, after_scope) = self.lookup(path).await?;
         ensure!(
-            after_scope == guarded.scope
-                && after.closure.as_ref() == Some(&closure)
-                && after.etag.as_deref() == Some(&etag),
+            after_scope == scope
+                && after.etag.as_deref() == Some(&etag)
+                && match &guarded {
+                    Some(guarded) =>
+                        after.closure.as_ref() == Some(&guarded.closure)
+                            && after.versioned_source.is_none(),
+                    None =>
+                        after.closure.is_none()
+                            && after.versioned_source.as_ref() == Some(&identity),
+                },
             "inspection source incarnation changed after EOF"
         );
         self.current()?;
+        if self.versioned() {
+            let evidence =
+                aos_hub_core::storage_work::protected_inspection::VersionedInspectionSource {
+                    version: 1,
+                    producer_profile_digest: self.domain.producer_profile_digest.clone(),
+                    configured_domain_digest: self.domain.commitment()?,
+                    scope,
+                    metadata_only: false,
+                    source: identity.clone(),
+                    range: interval,
+                    sha256,
+                };
+            evidence.validate_identity(
+                self.plan,
+                path,
+                &self.domain.read_cohort.association.binding_prefix,
+                &identity,
+            )?;
+            let mut completed = self.versioned_sources.borrow_mut();
+            ensure!(
+                completed.len() < 128,
+                "inspection completed source evidence exceeds bound"
+            );
+            if !completed.contains(&evidence) {
+                completed.push(evidence);
+            }
+        }
         Ok(Some((identity, guarded)))
     }
 
@@ -641,7 +751,13 @@ impl GuardedReader<'_> {
         start: u64,
         end: u64,
         initial: Option<crate::direct_upload::provider_capacity::Permit>,
-    ) -> Result<Option<(Vec<u8>, StorageObjectIdentity, ProtectedInspectionSource)>> {
+    ) -> Result<
+        Option<(
+            Vec<u8>,
+            StorageObjectIdentity,
+            Option<ProtectedInspectionSource>,
+        )>,
+    > {
         let mut bytes = Vec::new();
         let read = self
             .read_into(
@@ -673,13 +789,39 @@ impl SurfaceFetch for GuardedReader<'_> {
             .map(|read| read.bytes))
     }
 
+    async fn inspection_provider_version(
+        &self,
+        path: &str,
+        size: u64,
+        etag: &str,
+    ) -> Result<Option<String>> {
+        if !self.versioned() {
+            return Ok(None);
+        }
+        let key = self.plan.object_key(path)?;
+        let completed = self.versioned_sources.borrow();
+        let mut matching = completed.iter().filter(|evidence| {
+            evidence.range.is_none()
+                && evidence.source.key == key
+                && evidence.source.size == size
+                && evidence.source.etag == etag
+        });
+        let source = matching
+            .next()
+            .context("versioned completed inspection evidence absent")?;
+        ensure!(
+            matching.all(|other| other.source == source.source),
+            "versioned inspection identity ambiguous"
+        );
+        Ok(source.source.provider_version.clone())
+    }
+
     async fn size(&self, path: &str) -> Result<Option<u64>> {
-        Ok(self
-            .lookup(path)
-            .await?
-            .0
-            .closure
-            .map(|source| source.bytes.get() as u64))
+        let metadata = self.lookup(path).await?.0;
+        Ok(metadata
+            .versioned_source
+            .map(|source| source.size)
+            .or_else(|| metadata.closure.map(|source| source.bytes.get() as u64)))
     }
 
     async fn fetch_stream(
@@ -718,7 +860,7 @@ impl crate::tree_projection::SourceReader for GuardedReader<'_> {
             crate::tree_projection::VerifiedSource {
                 bytes: read.bytes,
                 identity: read.identity,
-                guarded: Some(read.guarded),
+                guarded: read.guarded,
             }
         }))
     }
@@ -819,8 +961,10 @@ impl GuardedReader<'_> {
                 pack.etag.clone(),
                 index.etag.clone(),
             )?;
-            pair.pack.guarded_source = Some(pack_guard.clone());
-            pair.index.guarded_source = Some(index_guard.clone());
+            pair.pack.provider_version = pack.provider_version.clone();
+            pair.index.provider_version = index.provider_version.clone();
+            pair.pack.guarded_source = pack_guard.clone();
+            pair.index.guarded_source = index_guard.clone();
             let commitment = pair.source_commitment()?;
             ensure!(
                 query
@@ -855,28 +999,35 @@ impl GuardedReader<'_> {
                 pack.etag.clone(),
                 index.etag.clone(),
             )?;
-            projection.pack.guarded_source = Some(pack_guard.clone());
-            projection.index.guarded_source = Some(index_guard.clone());
+            projection.pack.provider_version = pack.provider_version.clone();
+            projection.index.provider_version = index.provider_version.clone();
+            projection.pack.guarded_source = pack_guard.clone();
+            projection.index.guarded_source = index_guard.clone();
             projection.validate(index_path, selections)?;
             StorageWorkOutcome::GitPackProjection { projection }
         };
         // The two gates are never nested. Recheck both exact retained closures
         // after decoding before exposing a commitment or selected content.
-        for (path, original, etag) in [
-            (pack_path.as_str(), &pack_guard, &pack.etag),
-            (index_path, &index_guard, &index.etag),
+        for (path, identity, guarded) in [
+            (pack_path.as_str(), &pack, &pack_guard),
+            (index_path, &index, &index_guard),
         ] {
             let (current, _, _, scope) = self.lookup(path).await?;
             ensure!(
-                scope == original.scope
-                    && current.closure.as_ref() == Some(&original.closure)
-                    && current.etag.as_ref() == Some(etag),
+                current.etag.as_ref() == Some(&identity.etag)
+                    && match guarded {
+                        Some(guarded) =>
+                            scope == guarded.scope
+                                && current.closure.as_ref() == Some(&guarded.closure),
+                        None =>
+                            current.closure.is_none()
+                                && current.versioned_source.as_ref() == Some(identity),
+                    },
                 "stored pair incarnation changed during verification"
             );
         }
         self.current()?;
-        Ok(crate::surface::storage_work_result(
-            self.plan,
+        Ok(self.result(
             outcome,
             pack.size
                 .checked_add(index.size)

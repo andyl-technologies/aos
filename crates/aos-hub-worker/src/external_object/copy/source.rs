@@ -1,14 +1,15 @@
-//! Guard-held reads of a previously closed versionless physical source.
+//! Guard-held reads of closed or immutable-version physical sources.
 //!
-//! Lookup projects permanent receipt metadata. Only a separately leased range
-//! touches the provider; its exact source gate stays held through EOF/cancel.
-//! The receipt header is a pre-read closure, never a declaration of stream EOF.
+//! Versionless lookup projects permanent receipts; installed versioned lookup
+//! performs a separately leased HEAD. Exact conditional ranges retain their
+//! source-key gate through EOF/cancel. Reply headers authenticate source
+//! selection, never a declaration of stream EOF.
 
 use super::super::{
     config::configured,
     protocol::{GUARD_HEADER, MAX_MESSAGE, SCOPE_HEADER},
     state::Head,
-    storage::{self, ExternalObjectGuard, BINDING, HEAD},
+    storage::{self, BINDING, ExternalObjectGuard, HEAD},
 };
 use super::{
     config,
@@ -16,7 +17,7 @@ use super::{
     source_protocol::{self, Operation},
     stream::Reader,
 };
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use aos_hub_core::{
     s3surface::S3Surface,
     storage_authority::{
@@ -26,7 +27,7 @@ use aos_hub_core::{
     storage_work::{StorageCredentialSelector, StorageWorkOperation, StorageWorkPlan},
 };
 use base64::Engine as _;
-use futures_util::future::{select, Either};
+use futures_util::future::{Either, select};
 use std::{rc::Rc, time::Duration};
 use worker::{Env, Fetch, Headers, Method, Request, RequestInit, Response, ResponseBody};
 
@@ -55,7 +56,14 @@ pub(in crate::external_object) fn inspection_request(
     selection: super::super::inspection::selection::Selection,
     operation: Operation,
 ) -> Result<source_protocol::Request> {
-    build_request(plan, profile_digest, scope, None, Some(selection), operation)
+    build_request(
+        plan,
+        profile_digest,
+        scope,
+        None,
+        Some(selection),
+        operation,
+    )
 }
 
 fn build_request(
@@ -96,7 +104,7 @@ pub(in crate::external_object) async fn reserve(
     initial: Option<crate::direct_upload::provider_capacity::Permit>,
     window: &super::window::DispatchWindow<'_>,
 ) -> Result<crate::direct_upload::provider_capacity::transfer::Reservation> {
-    use crate::direct_upload::provider_capacity::{self, transfer, Class};
+    use crate::direct_upload::provider_capacity::{self, Class, transfer};
     window.check()?;
     let permit = match initial {
         Some(permit) => permit,
@@ -115,7 +123,7 @@ pub(in crate::external_object) async fn reserve(
     Ok(reservation)
 }
 
-/// Reads authenticated closure metadata without a provider or mutation effect.
+/// Reads authenticated source metadata in the explicitly selected installed mode.
 ///
 /// # Errors
 /// Refuses missing/changed permanent provenance or a corrupt/mismatched reply.
@@ -142,10 +150,16 @@ pub(in crate::external_object) async fn inspection_lookup(
     signal: &worker::web_sys::AbortSignal,
 ) -> Result<source_protocol::InspectionLookup> {
     let response = call(env, message, Some(signal)).await?;
-    let signature = response.headers().get(GUARD_HEADER)?
+    let signature = response
+        .headers()
+        .get(GUARD_HEADER)?
         .ok_or_else(|| anyhow::anyhow!("inspection source signature absent"))?;
     let body = crate::direct_digest::read_bounded_native(response, MAX_MESSAGE).await?;
-    source_protocol::verify_inspection_lookup(&storage::key(env)?, message, &signature, &body)
+    if matches!(message.operation, Operation::InspectVersionedLookup { .. }) {
+        source_protocol::verify_versioned_source(&storage::key(env)?, message, &signature, &body)
+    } else {
+        source_protocol::verify_inspection_lookup(&storage::key(env)?, message, &signature, &body)
+    }
 }
 
 /// Opens one exact range and verifies its retained closure before handing off bytes.
@@ -179,7 +193,11 @@ pub(in crate::external_object) async fn range(
         "protected source receipt oversized"
     );
     let body = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(encoded)?;
-    source_protocol::verify_reply(&storage::key(env)?, message, &signature, &body)?;
+    if matches!(message.operation, Operation::InspectVersionedRange { .. }) {
+        source_protocol::verify_versioned_source(&storage::key(env)?, message, &signature, &body)?;
+    } else {
+        source_protocol::verify_reply(&storage::key(env)?, message, &signature, &body)?;
+    }
     if let Some(owner) = &mut unhanded {
         owner.disarm();
     }
@@ -258,9 +276,13 @@ impl ExternalObjectGuard {
                         .is_ok_and(|digest| digest == message.profile_digest)
                 })
                 .ok_or_else(|| anyhow::anyhow!("protected source profile absent"))?;
+            let versioned = matches!(
+                message.operation,
+                Operation::InspectVersionedLookup { .. } | Operation::InspectVersionedRange { .. }
+            );
             ensure!(
-                domain.provider_contract.protected_versionless.is_some(),
-                "protected source provider contract absent"
+                versioned == domain.provider_contract.protected_versionless.is_none(),
+                "inspection source mode differs from installed provider contract"
             );
             let deployment = self.env.var("HUB_DEPLOYMENT_ID")?.to_string();
             message
@@ -269,8 +291,11 @@ impl ExternalObjectGuard {
             message.current(object.clock().observed_at)?;
             let (prefix, path) = source_path(&message)?;
             if let Some(inspection) = &message.inspection {
-                inspection.validate_scope(&message.plan,
-                    &domain.read_cohort.association.binding_prefix, &message.scope)?;
+                inspection.validate_scope(
+                    &message.plan,
+                    &domain.read_cohort.association.binding_prefix,
+                    &message.scope,
+                )?;
             }
             let selected_scope = if let Some(selector) = &message.selector {
                 domain.selector_scope_for(&object, selector, false)?
@@ -312,10 +337,17 @@ impl ExternalObjectGuard {
                 }
                 worker::Delay::from(Duration::from_millis(50)).await;
             };
+            if versioned {
+                return super::super::inspection::versioned::fetch(
+                    self, request, &message, &object, domain, gate,
+                )
+                .await;
+            }
             if matches!(message.operation, Operation::InspectLookup { .. }) {
                 return super::super::inspection::absence::fetch(
                     self, request, &message, &object, domain, gate,
-                ).await;
+                )
+                .await;
             }
             crate::direct_guard::deny_legacy(&self.state.storage()).await?;
             let mut head = storage::load_head(&self.state.storage())
@@ -329,7 +361,11 @@ impl ExternalObjectGuard {
                 source_protocol::sign_reply(&key, &message, closure.clone())?;
             let range = match &message.operation {
                 Operation::Lookup | Operation::Check { .. } => None,
-                Operation::InspectLookup { .. } => anyhow::bail!("inspection lookup dispatch differs"),
+                Operation::InspectLookup { .. }
+                | Operation::InspectVersionedLookup { .. }
+                | Operation::InspectVersionedRange { .. } => {
+                    anyhow::bail!("inspection dispatch differs")
+                }
                 Operation::Range {
                     read_lease,
                     offset,
@@ -351,13 +387,22 @@ impl ExternalObjectGuard {
                 return Ok(Response::from_bytes(receipt)?.with_headers(headers));
             };
             let maximum_range = if message.inspection.is_some() {
-                domain.provider_contract.maximum_copy_read_range_bytes
-                    .ok_or_else(|| anyhow::anyhow!("typed inspection accepted Read range bound absent"))?
+                domain
+                    .provider_contract
+                    .maximum_copy_read_range_bytes
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("typed inspection accepted Read range bound absent")
+                    })?
             } else {
-                domain.provider_contract.maximum_copy_read_range_bytes.unwrap_or(domain.part_bytes)
+                domain
+                    .provider_contract
+                    .maximum_copy_read_range_bytes
+                    .unwrap_or(domain.part_bytes)
             };
-            ensure!(bytes <= maximum_range.get() as u64,
-                "protected source exceeds its accepted conditional range bound");
+            ensure!(
+                bytes <= maximum_range.get() as u64,
+                "protected source exceeds its accepted conditional range bound"
+            );
             let publication =
                 crate::hybrid_binding::resolve_for_plan(&self.env, &message.plan).await?;
             publication.snapshot.authorizes(
@@ -415,7 +460,9 @@ impl ExternalObjectGuard {
             // The application reserves GET+PUT atomically. Consume its real
             // GET slot only after exact MAC, source, closure and lease checks.
             crate::direct_upload::provider_capacity::policy::configure_bounded(
-                &self.env, u32::from(domain.provider_concurrency), 3,
+                &self.env,
+                u32::from(domain.provider_concurrency),
+                3,
             )?;
             message.current(
                 object
@@ -426,7 +473,9 @@ impl ExternalObjectGuard {
             )?;
             let transferred = match &message.operation {
                 Operation::Range { .. } | Operation::InspectRange { .. }
-                    if message.inspection.is_some() || matches!(message.operation, Operation::Range { .. }) => {
+                    if message.inspection.is_some()
+                        || matches!(message.operation, Operation::Range { .. }) =>
+                {
                     let ticket = message
                         .capacity_transfer
                         .as_ref()
@@ -650,7 +699,10 @@ impl ExternalObjectGuard {
 fn source_path(message: &source_protocol::Request) -> Result<(String, String)> {
     if let Some(inspection) = &message.inspection {
         inspection.validate(&message.plan)?;
-        Ok((message.plan.placement_prefix.clone(), inspection.path.clone()))
+        Ok((
+            message.plan.placement_prefix.clone(),
+            inspection.path.clone(),
+        ))
     } else if let Some(selector) = &message.selector {
         Ok((selector.source.prefix.clone(), selector.path.clone()))
     } else {

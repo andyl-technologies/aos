@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use aos_hub_core::db::{
     BindingCredentialRevisionRecord, BindingRecord, BindingWriteRevisionRecord, Database,
     OciUploadChunkRecord, SurfacePlacementRecord,
@@ -18,17 +18,17 @@ use aos_hub_core::fetch::{
     SurfaceInventoryHashChunk, SurfaceListPage, SurfaceListedEvidence, SurfaceObjectEvidence,
     SurfaceProvider,
 };
-use aos_hub_core::secret_version::{verify_secret_fingerprint, SecretVersionResolver};
+use aos_hub_core::secret_version::{SecretVersionResolver, verify_secret_fingerprint};
 use aos_hub_core::storage_work::{
-    StorageBindingAcknowledgement, StorageBindingControl, StorageBindingPublication,
-    StorageBindingSnapshot, StorageCapabilities, StorageCredentialMaterial,
-    StorageCredentialSelector, StorageGitObjectProjection, StorageOciChunkSource, StorageWorkKey,
-    StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan, StorageWorkResult,
     MAX_BINDING_CONTROL_BYTES, MAX_DOCUMENTATION_ROWS, MAX_GIT_INSPECTION_BATCH,
     MAX_GIT_INSPECTION_CONTENT_BYTES, MAX_METADATA_BYTES, MAX_METADATA_INSPECTION_BATCH,
     MAX_OCI_HASH_RANGE_BYTES, MAX_OCI_RANGE_BYTES, MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES,
     STORAGE_BINDING_CONTROL_PATH, STORAGE_CAPABILITIES_CHALLENGE, STORAGE_CAPABILITIES_PATH,
-    STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER,
+    STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER, StorageBindingAcknowledgement,
+    StorageBindingControl, StorageBindingPublication, StorageBindingSnapshot, StorageCapabilities,
+    StorageCredentialMaterial, StorageCredentialSelector, StorageGitObjectProjection,
+    StorageOciChunkSource, StorageWorkKey, StorageWorkOperation, StorageWorkOutcome,
+    StorageWorkPlan, StorageWorkResult,
 };
 use aos_hub_core::surface_write::{
     FrozenSurfaceAccess, MultipartAbortOutcome, PartTag, SurfaceDeleteOutcome,
@@ -3539,6 +3539,7 @@ mod tests {
             },
         };
         let result = StorageWorkResult {
+            versioned_sources: Vec::new(),
             plan_id: plan.plan_id.clone(),
             placement_id: plan.placement_id,
             placement_resource_version: plan.placement_resource_version,
@@ -3668,9 +3669,11 @@ mod tests {
         let operation = || StorageWorkOperation::Head {
             path: "object".into(),
         };
-        assert!(client
-            .plan_for_placement(&placement, &binding, operation(), 101)
-            .is_err());
+        assert!(
+            client
+                .plan_for_placement(&placement, &binding, operation(), 101)
+                .is_err()
+        );
 
         client
             .published_bindings
@@ -3691,21 +3694,25 @@ mod tests {
                 generation: 2,
             }]
         );
-        assert!(client
-            .plan_for_placement(
-                &placement,
-                &binding,
-                StorageWorkOperation::ListPage {
-                    prefix: "".into(),
-                    cursor: None,
-                    limit: 1,
-                },
-                101,
-            )
-            .is_err());
-        assert!(client
-            .plan_for_placement(&placement, &binding, operation(), 201)
-            .is_err());
+        assert!(
+            client
+                .plan_for_placement(
+                    &placement,
+                    &binding,
+                    StorageWorkOperation::ListPage {
+                        prefix: "".into(),
+                        cursor: None,
+                        limit: 1,
+                    },
+                    101,
+                )
+                .is_err()
+        );
+        assert!(
+            client
+                .plan_for_placement(&placement, &binding, operation(), 201)
+                .is_err()
+        );
     }
 
     #[test]
@@ -3759,19 +3766,25 @@ mod tests {
             .unwrap()
             .insert(binding.id, snapshot);
 
-        assert!(client
-            .validate_published_binding_snapshot(&binding, &[credential.clone()], &revision)
-            .is_ok());
+        assert!(
+            client
+                .validate_published_binding_snapshot(&binding, &[credential.clone()], &revision)
+                .is_ok()
+        );
         let mut rotated = credential.clone();
         rotated.generation += 1;
-        assert!(client
-            .validate_published_binding_snapshot(&binding, &[rotated], &revision)
-            .is_err());
+        assert!(
+            client
+                .validate_published_binding_snapshot(&binding, &[rotated], &revision)
+                .is_err()
+        );
         let mut moved = binding.clone();
         moved.object_prefix = Some("other-tenant".into());
-        assert!(client
-            .validate_published_binding_snapshot(&moved, &[credential], &revision)
-            .is_err());
+        assert!(
+            client
+                .validate_published_binding_snapshot(&moved, &[credential], &revision)
+                .is_err()
+        );
     }
 
     #[test]
@@ -3806,6 +3819,7 @@ mod tests {
             },
         };
         let mut result = StorageWorkResult {
+            versioned_sources: Vec::new(),
             plan_id: plan.plan_id.clone(),
             placement_id: plan.placement_id,
             placement_resource_version: plan.placement_resource_version,
@@ -3947,6 +3961,7 @@ mod tests {
             },
         };
         let mut result = StorageWorkResult {
+            versioned_sources: Vec::new(),
             plan_id: plan.plan_id.clone(),
             placement_id: plan.placement_id,
             placement_resource_version: plan.placement_resource_version,
@@ -4011,6 +4026,7 @@ mod tests {
             },
         };
         let mut result = StorageWorkResult {
+            versioned_sources: Vec::new(),
             plan_id: plan.plan_id.clone(),
             placement_id: plan.placement_id,
             placement_resource_version: plan.placement_resource_version,
@@ -4064,6 +4080,7 @@ mod tests {
             },
         };
         let mut result = StorageWorkResult {
+            versioned_sources: Vec::new(),
             plan_id: plan.plan_id.clone(),
             placement_id: plan.placement_id,
             placement_resource_version: plan.placement_resource_version,
@@ -4124,6 +4141,7 @@ mod tests {
             operation: StorageWorkOperation::InspectGitObject { oid: oid.clone() },
         };
         let mut result = StorageWorkResult {
+            versioned_sources: Vec::new(),
             plan_id: plan.plan_id.clone(),
             placement_id: plan.placement_id,
             placement_resource_version: plan.placement_resource_version,
@@ -4199,6 +4217,7 @@ mod tests {
             })
             .collect();
         let mut result = StorageWorkResult {
+            versioned_sources: Vec::new(),
             plan_id: plan.plan_id.clone(),
             placement_id: plan.placement_id,
             placement_resource_version: plan.placement_resource_version,
@@ -4240,6 +4259,7 @@ mod tests {
             },
         };
         let mut result = StorageWorkResult {
+            versioned_sources: Vec::new(),
             plan_id: plan.plan_id.clone(),
             placement_id: plan.placement_id,
             placement_resource_version: plan.placement_resource_version,
@@ -4292,6 +4312,7 @@ mod tests {
             },
         };
         let mut result = StorageWorkResult {
+            versioned_sources: Vec::new(),
             plan_id: plan.plan_id.clone(),
             placement_id: plan.placement_id,
             placement_resource_version: plan.placement_resource_version,
@@ -4349,6 +4370,7 @@ mod tests {
             },
         };
         let mut result = StorageWorkResult {
+            versioned_sources: Vec::new(),
             plan_id: plan.plan_id.clone(),
             placement_id: plan.placement_id,
             placement_resource_version: plan.placement_resource_version,

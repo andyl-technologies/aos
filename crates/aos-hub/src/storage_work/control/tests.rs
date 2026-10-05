@@ -5,8 +5,8 @@ use std::sync::Arc;
 use aos_hub_core::db::{Database, NewSurfacePlacementSpec, SurfaceTarget};
 use aos_hub_core::fetch::SurfaceFetch as _;
 use aos_hub_core::storage_work::{
-    StorageBindingSnapshot, StorageObjectIdentity, StorageWorkKey, StorageWorkOperation,
-    StorageWorkOutcome, StorageWorkResult, STORAGE_WORK_SIGNATURE_HEADER,
+    STORAGE_WORK_SIGNATURE_HEADER, StorageBindingSnapshot, StorageObjectIdentity, StorageWorkKey,
+    StorageWorkOperation, StorageWorkOutcome, StorageWorkResult,
 };
 use axum::body::Bytes;
 use axum::http::HeaderMap;
@@ -183,6 +183,7 @@ async fn surface_with_binding(
                     _ => panic!("OCI control reads must use head and bounded ranges"),
                 };
                 axum::Json(StorageWorkResult {
+                    versioned_sources: Vec::new(),
                     plan_id: plan.plan_id,
                     placement_id: plan.placement_id,
                     placement_resource_version: plan.placement_resource_version,

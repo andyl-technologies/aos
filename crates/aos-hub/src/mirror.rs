@@ -45,6 +45,7 @@
 //! the upstream serves them.
 
 pub mod hybrid;
+pub mod scheduler;
 
 use std::collections::{BTreeMap, BTreeSet};
 

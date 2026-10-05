@@ -254,7 +254,7 @@ impl ExternalObjectGuard {
                 if matches!(
                     intent.operation,
                     ExternalStageOperation::CreateDestination { .. }
-                ) && head.stage.is_none() && head.oci.is_none()
+                ) && head.stage.is_none() && head.oci.is_none() && head.mirror.is_none()
                 {
                     let owner_key = format!(
                         "external-stage/destination-owner/v1/{}",
@@ -614,6 +614,7 @@ fn initialize(object: &ObjectConfig, config: &config::Config, intent: &Intent) -
         stage: None,
         copy: None,
         oci: None,
+        mirror: None,
     })
 }
 
@@ -863,7 +864,7 @@ pub(in crate::external_object) async fn verify_observable_destination(
             && head.stage.is_none()
             && head.observation.is_none()
             && head.copy.is_none()
-            && head.oci.is_none(),
+            && head.oci.is_none() && head.mirror.is_none(),
         "active physical turn blocks observation"
     );
     let visible = head

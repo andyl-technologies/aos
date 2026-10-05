@@ -5,16 +5,16 @@
 use super::*;
 use aos_hub_core::{db::*, storage_work::*};
 use axum::{
+    Router,
     body::Body,
     extract::{Request, State},
     response::Response,
     routing::post,
-    Router,
 };
 use live_metadata_batch::LiveMetadataObservation;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
 };
 
 const DEPLOYMENT: &str = "live-batch-fixture";
@@ -184,6 +184,7 @@ async fn execute(State(peer): State<Arc<Peer>>, request: Request) -> Response {
         _ => 2,
     };
     let result = StorageWorkResult {
+        versioned_sources: Vec::new(),
         plan_id: plan.plan_id,
         placement_id: plan.placement_id,
         placement_resource_version: plan.placement_resource_version,
@@ -338,9 +339,11 @@ async fn older_advertised_singleton_uses_four_bounded_tls_calls_without_unknown_
     )
     .await
     .unwrap();
-    assert!(returned
-        .iter()
-        .all(|item| item.as_deref() == Some(&b"{}"[..])));
+    assert!(
+        returned
+            .iter()
+            .all(|item| item.as_deref() == Some(&b"{}"[..]))
+    );
     let requests = peer.requests.lock().unwrap();
     assert_eq!(requests.len(), 32);
     assert!(requests.iter().all(|plan| matches!(
@@ -365,16 +368,18 @@ async fn rewritten_or_refused_items_never_return_partial_success() {
         },
     ] {
         let (_directory, _db, placement, binding, work, peer, task) = fixture(peer).await;
-        assert!(exchange_targets(
-            &work,
-            &placement,
-            &binding,
-            &targets(&placement, &binding),
-            true,
-            || async { Ok(()) }
-        )
-        .await
-        .is_err());
+        assert!(
+            exchange_targets(
+                &work,
+                &placement,
+                &binding,
+                &targets(&placement, &binding),
+                true,
+                || async { Ok(()) }
+            )
+            .await
+            .is_err()
+        );
         assert_eq!(peer.requests.lock().unwrap().len(), 1);
         task.abort();
     }
@@ -557,16 +562,18 @@ async fn oversized_remote_batch_is_refused_without_singleton_compatibility_retry
         ..Peer::default()
     })
     .await;
-    assert!(exchange_targets(
-        &work,
-        &placement,
-        &binding,
-        &targets(&placement, &binding),
-        true,
-        || async { Ok(()) }
-    )
-    .await
-    .is_err());
+    assert!(
+        exchange_targets(
+            &work,
+            &placement,
+            &binding,
+            &targets(&placement, &binding),
+            true,
+            || async { Ok(()) }
+        )
+        .await
+        .is_err()
+    );
     assert_eq!(peer.requests.lock().unwrap().len(), 1);
     assert!(peer.responses.lock().unwrap()[0] > MAX_RESULT_BYTES);
     task.abort();

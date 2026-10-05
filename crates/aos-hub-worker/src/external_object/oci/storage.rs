@@ -133,7 +133,7 @@ impl Journal {
             head.pending.is_none()
                 && head.stage.is_none()
                 && head.observation.is_none()
-                && head.copy.is_none(),
+                && head.copy.is_none() && head.mirror.is_none(),
             "another physical operation owns this OCI key"
         );
         let prior = Self::lookup(&storage, &work.original).await?;
@@ -151,7 +151,7 @@ impl Journal {
             }
             None => {
                 ensure!(
-                    head.oci.is_none() && head.visible_receipt.is_none(),
+                    head.oci.is_none() && head.mirror.is_none() && head.visible_receipt.is_none(),
                     "external OCI key has another retained incarnation"
                 );
                 Session::declare(work.original.clone(), config.digest()?)?
@@ -414,9 +414,9 @@ pub(super) async fn closed_for_lookup(
     ensure!(
         head.pending.is_none()
             && head.stage.is_none()
-            && head.oci.is_none()
+            && head.oci.is_none() && head.mirror.is_none()
             && head.observation.is_none()
-            && head.copy.is_none()
+            && head.copy.is_none() && head.mirror.is_none()
             && session.phase == Phase::Closed
             && session.pending.is_none()
             && session.closed.as_ref() == Some(expected),

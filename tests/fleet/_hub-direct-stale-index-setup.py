@@ -50,7 +50,10 @@ def install_direct_stale_index_path(native, tools):
 class DirectStaleIndexSql:
     """Retain bounded real SELECT results from the original Native database."""
 
-    def __init__(self, native, tools):
+    def __init__(self, native, tools, *, label="held-index"):
+        if label not in {"held-index", "read-revision"}:
+            raise ValueError("Index SQL observation label differs")
+        self.label = label
         self.native = native
         self.tools = tools
         self.sequence = 0
@@ -68,6 +71,8 @@ class DirectStaleIndexSql:
             from urllib.parse import urlsplit
 
             root = Path('/var/lib/hybrid-native-stale-index/sql')
+            if selected['label'] != 'held-index':
+                root = root / selected['label']
             root.mkdir(mode=0o700, exist_ok=True)
             database = Path(selected['database']).read_text().strip()
             parsed = urlsplit(database)
@@ -97,9 +102,9 @@ class DirectStaleIndexSql:
                 'querySha256':hashlib.sha256(query.encode()).hexdigest(),'exitCode':result.returncode,
                 'stderrSha256':hashlib.sha256(result.stderr).hexdigest()}}))
         """, {"sequence": self.sequence, "query": query,
-            "database": self.tools["nativeDatabaseUrlFile"],
+            "database": self.tools["nativeDatabaseUrlFile"], "label": self.label,
             "psql": self.tools["postgres"] + "/psql"}, timeout=35))
-        retain_direct_flow("held-index-sql-" + str(self.sequence) + ".json", observed)
+        retain_direct_flow(self.label + "-sql-" + str(self.sequence) + ".json", observed)
         return observed["rows"]
 
 

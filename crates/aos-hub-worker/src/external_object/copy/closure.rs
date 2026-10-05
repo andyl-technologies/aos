@@ -32,7 +32,7 @@ pub(in crate::external_object) async fn current(
             && head.observation.is_none()
             && head.stage.is_none()
             && head.copy.is_none()
-            && head.oci.is_none(),
+            && head.oci.is_none() && head.mirror.is_none(),
         "protected copy source remains active or unknown"
     );
     let visible = head

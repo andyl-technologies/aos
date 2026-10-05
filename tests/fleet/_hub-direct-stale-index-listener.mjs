@@ -95,6 +95,8 @@ export async function startListener(configuration) {
   const key = boundedFile(configuration.privateKeyFile, 64 * 1024);
   const root = configuration.root;
   let hold = null;
+  let holdPurpose = null;
+  let revisionUsed = false;
   let active = 0;
   let sequence = 0;
   let shuttingDown = false;
@@ -181,9 +183,34 @@ export async function startListener(configuration) {
           port: configuration.upstreamPort, servername: configuration.originHost,
           ca, rejectUnauthorized: true, method: request.method, path: request.url,
           headers }, received => {
+          const retainedReply = [];
+          let retainedReplyBytes = 0;
+          if (ownsHold && holdPurpose === 'revision') {
+            received.on('data', bytes => {
+              retainedReplyBytes += bytes.length;
+              if (retainedReplyBytes > 256 * 1024) {
+                received.destroy(new Error('revision_reply_bound'));
+                return;
+              }
+              retainedReply.push(bytes);
+            });
+          }
           response.writeHead(received.statusCode, received.rawHeaders);
           received.on('error', reject);
-          received.on('end', resolve);
+          received.on('end', () => {
+            if (ownsHold && holdPurpose === 'revision') {
+              try {
+                retain(root, 'revision-reply.json', {
+                  version: 1, status: received.statusCode,
+                  requestSha256: crypto.createHash('sha256').update(body).digest('hex'),
+                  bodyBase64: Buffer.concat(retainedReply, retainedReplyBytes).toString('base64'),
+                  observedAtUnixMillis: String(Date.now()),
+                  scope: 'actual upstream reply; listener does not authenticate the original',
+                });
+              } catch (error) { reject(error); return; }
+            }
+            resolve();
+          });
           received.pipe(response);
         });
         upstream.setTimeout(35000, () => upstream.destroy(new Error('listener_upstream_timeout')));
@@ -227,7 +254,23 @@ export async function startListener(configuration) {
           const directory = path.join(root, 'hold');
           fs.mkdirSync(directory, { mode: 0o700 });
           hold = module.stalePlacementHold(request.selection, directory);
+          holdPurpose = 'stale-placement';
           result = hold.status();
+        } else if (exact(request, ['version', 'kind', 'selection']) && request.version === 1
+            && request.kind === 'arm-revision' && !hold && !revisionUsed
+            && request.selection.originHost === configuration.originHost) {
+          const directory = path.join(root, 'revision-hold');
+          fs.mkdirSync(directory, { mode: 0o700 });
+          hold = module.stalePlacementHold(request.selection, directory);
+          holdPurpose = 'revision';
+          revisionUsed = true;
+          result = hold.status();
+        } else if (exact(request, ['version', 'kind']) && request.version === 1
+            && request.kind === 'finish-revision' && holdPurpose === 'revision'
+            && hold?.status().state === 'released' && active === 0) {
+          result = hold.status();
+          hold = null;
+          holdPurpose = null;
         } else if (exact(request, ['version', 'kind']) && request.version === 1
             && request.kind === 'status') {
           result = hold ? hold.status() : { version: 1, state: 'unarmed' };

@@ -9,7 +9,7 @@
 //!   -> encoded SHA256/size/ETag commitments + <=128KiB decoded projection
 //! ```
 
-use anyhow::{ensure, Context as _, Result};
+use anyhow::{Context as _, Result, ensure};
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 
@@ -148,10 +148,14 @@ impl MirrorPackTreeProjection {
             self.tree_oid == query.oid && self.object_size.is_some() == self.page.is_some(),
             "pack tree result changed its selected identity"
         );
-        if self.pair.pack.guarded_source.is_some() {
-            ensure!(query.cursor.as_ref().is_none_or(|cursor|
-                self.pair.source_commitment().is_ok_and(|actual| actual == cursor.source_commitment)),
-                "guarded pair cursor refers to another source incarnation");
+        if self.pair.pack.guarded_source.is_some() || self.pair.pack.provider_version.is_some() {
+            ensure!(
+                query.cursor.as_ref().is_none_or(|cursor| self
+                    .pair
+                    .source_commitment()
+                    .is_ok_and(|actual| actual == cursor.source_commitment)),
+                "guarded pair cursor refers to another source incarnation"
+            );
         }
         if let (Some(size), Some(page)) = (self.object_size, &self.page) {
             ensure!(
@@ -173,9 +177,13 @@ impl MirrorPackTreeProjection {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MirrorPackSource {
+    /// Actual immutable provider version; absent on existing mirror/Managed forms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_version: Option<String>,
     /// Genuine guarded External closure; omitted for existing Managed and mirror forms.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub guarded_source: Option<crate::storage_work::protected_inspection::ProtectedInspectionSource>,
+    pub guarded_source:
+        Option<crate::storage_work::protected_inspection::ProtectedInspectionSource>,
     /// Canonical surface-relative pack or index path.
     pub path: String,
     /// Independently computed SHA-256 of the complete encoded body.
@@ -231,11 +239,31 @@ impl MirrorPackProjection {
         use sha2::{Digest as _, Sha256};
         let mut hash = Sha256::new();
         match (&self.pack.guarded_source, &self.index.guarded_source) {
-            (None, None) => hash.update(b"aos.storage.verified-git-pair-source.v1\0"),
+            (None, None) => match (&self.pack.provider_version, &self.index.provider_version) {
+                (None, None) => hash.update(b"aos.storage.verified-git-pair-source.v1\0"),
+                (Some(pack), Some(index)) => {
+                    ensure!(
+                        pack != "null"
+                            && index != "null"
+                            && crate::storage_work::valid_provider_version(pack)
+                            && crate::storage_work::valid_provider_version(index),
+                        "versioned pair has invalid provider identities"
+                    );
+                    hash.update(b"aos.storage.versioned-git-pair-source.v1\0");
+                }
+                _ => anyhow::bail!("versioned pair evidence is incomplete"),
+            },
             (Some(pack), Some(index)) => {
+                ensure!(
+                    self.pack.provider_version.is_none() && self.index.provider_version.is_none(),
+                    "guarded pair cannot adopt provider versions"
+                );
                 for (source, guarded) in [(&self.pack, pack), (&self.index, index)] {
                     guarded.validate_for(&guarded.scope.full_key, source.size, &source.etag)?;
-                    ensure!(guarded.closure.sha256 == source.sha256, "guarded pack source hash differs");
+                    ensure!(
+                        guarded.closure.sha256 == source.sha256,
+                        "guarded pack source hash differs"
+                    );
                 }
                 hash.update(b"aos.storage.guarded-git-pair-source.v1\0");
             }
@@ -284,6 +312,7 @@ impl MirrorPackProjection {
         crate::surface_write::strong_if_match_etag(&index_etag)?;
         let projection = Self {
             pack: MirrorPackSource {
+                provider_version: None,
                 guarded_source: None,
                 path: pair.pack_path,
                 sha256: hex::encode(pair.pack.sha256),
@@ -291,6 +320,7 @@ impl MirrorPackProjection {
                 etag: pack_etag,
             },
             index: MirrorPackSource {
+                provider_version: None,
                 guarded_source: None,
                 path: pair.index_path,
                 sha256: hex::encode(pair.index.sha256),
