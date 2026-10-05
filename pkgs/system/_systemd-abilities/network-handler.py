@@ -26,10 +26,10 @@ def require(condition, message):
         raise ValueError(message)
 
 
-def value(text):
+def value(text, *, quoted=True):
     require(isinstance(text, str) and text and not any(ord(c) < 32 for c in text), "invalid networkd value")
     require(not any(c in text for c in '\\"%'), "ambiguous networkd value")
-    return '"' + text + '"'
+    return '"' + text + '"' if quoted else text
 
 
 def link_name(name):
@@ -58,13 +58,14 @@ def addressing(policy):
     text = "DHCP=" + ("yes" if policy["dhcp"] else "no") + "\n"
     for address in policy["addresses"]:
         ipaddress.ip_interface(address)
-        text += "Address=" + value(address) + "\n"
+        # networkd's IP parsers receive raw values without removing quotes.
+        text += "Address=" + value(address, quoted=False) + "\n"
     if policy.get("gateway"):
         ipaddress.ip_address(policy["gateway"])
-        text += "Gateway=" + value(policy["gateway"]) + "\n"
+        text += "Gateway=" + value(policy["gateway"], quoted=False) + "\n"
     for address in policy["dns"]:
         ipaddress.ip_address(address)
-        text += "DNS=" + value(address) + "\n"
+        text += "DNS=" + value(address, quoted=False) + "\n"
     link_local = policy.get("link_local", "ipv6")
     require(link_local in ("no", "ipv4", "ipv6", "yes"), "invalid link-local policy")
     text += "LinkLocalAddressing=" + link_local + "\n"
@@ -97,7 +98,7 @@ def render(policy):
     def parent(match, setting, child):
         identity = json.dumps(match, sort_keys=True, separators=(",", ":"))
         entry = parents.setdefault(identity, [match, []])
-        entry[1].append(setting + "=" + value(child) + "\n")
+        entry[1].append(setting + "=" + link_name(child) + "\n")
 
     mtu = policy.get("mtu", 0)
     require(type(mtu) is int and 0 <= mtu <= 65535, "invalid MTU")
@@ -113,7 +114,7 @@ def render(policy):
         else:
             link_name(name)
             match = {"kind": "name", "value": name}
-            netdev = "[NetDev]\nName=" + value(name) + "\nKind=" + kind + "\n"
+            netdev = "[NetDev]\nName=" + name + "\nKind=" + kind + "\n"
             if kind == "vlan":
                 require(type(link["id"]) is int and 1 <= link["id"] <= 4094, "invalid VLAN id")
                 netdev += "\n[VLAN]\nId=" + str(link["id"]) + "\n"
@@ -154,7 +155,7 @@ def render(policy):
     if resolver["enabled"]:
         for address in resolver["nameservers"]:
             ipaddress.ip_address(address)
-        text = "[Resolve]\nDNS=" + " ".join(value(address) for address in resolver["nameservers"]) + "\n"
+        text = "[Resolve]\nDNS=" + " ".join(value(address, quoted=False) for address in resolver["nameservers"]) + "\n"
         text += "Domains=" + " ".join(value(domain) for domain in resolver["search"]) + "\nDNSSEC=" + resolver["dnssec"] + "\n"
         text += "DNSOverTLS=opportunistic\nMulticastDNS=no\nLLMNR=no\n"
         files["etc/systemd/resolved.conf.d/50-aos-native.conf"] = text
