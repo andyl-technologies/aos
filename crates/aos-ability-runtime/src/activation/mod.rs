@@ -47,7 +47,7 @@ pub enum Action {
 }
 
 /// Carries the exact, retained context for a handler invocation.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Invocation {
     /// Identifies the logical effect independently of its current revision.
@@ -65,7 +65,7 @@ pub struct Invocation {
 }
 
 /// Supplies bounded migration context when input or handler content changes.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PreviousState {
     /// Retains the prior implementation and its typed contract.

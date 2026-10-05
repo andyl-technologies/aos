@@ -40,7 +40,7 @@ pub struct ModuleGraph {
 }
 
 /// Defines one typed operation after handler selection.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Effect {
     /// Names the package owning this operation, or the deployment environment.
@@ -70,7 +70,7 @@ pub struct Effect {
 }
 
 /// Retains an input option's generated documentation.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct InputOption {
     /// Describes the option as authored by its declaring module.
@@ -81,7 +81,7 @@ pub struct InputOption {
 }
 
 /// Distinguishes executable implementations from pure handler composition.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum Handler {
     /// Invokes an immutable artifact through the standard handler protocol.
@@ -113,7 +113,7 @@ pub enum Lifetime {
 }
 
 /// Names a producer's result without executing that producer during evaluation.
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OutputReference {
     /// Carries the fixed deferred-value marker.

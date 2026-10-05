@@ -132,9 +132,7 @@ impl State {
                     anyhow::anyhow!("restoration effect absent from active graph")
                 })?;
                 ensure!(
-                    canonical::to_vec(effect)? == canonical::to_vec(&invocation.effect)?
-                        && canonical::to_vec(&retained.invocation)?
-                            == canonical::to_vec(invocation.as_ref())?,
+                    effect == &invocation.effect && &retained.invocation == invocation.as_ref(),
                     "restoration differs from original completed invocation"
                 );
                 ensure!(
@@ -251,8 +249,10 @@ impl State {
                         expected
                     }
                 };
+                // Equality includes every invocation field. Canonical encoding
+                // remains a separate frame invariant, without replay allocations.
                 ensure!(
-                    canonical::to_vec(&expected)? == canonical::to_vec(invocation.as_ref())?,
+                    &expected == invocation.as_ref(),
                     "dispatch differs from checked activation state"
                 );
             }
@@ -453,10 +453,102 @@ pub(super) fn fingerprint(graph: &CheckedModuleGraph, retire: &[String]) -> Resu
 
 #[cfg(test)]
 mod tests {
-    use aos_ability_plan::module_graph::identity_key;
+    use aos_ability_plan::module_graph::{InputOption, identity_key};
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn replay_compares_full_contracts_and_previous_state() {
+        let graph = super::super::tests::graph(Some("expected"), "instance");
+        let document = graph.document().clone();
+        let id = &graph.graph().order[0];
+        let mut state = State::default();
+        state
+            .apply(&Event::Begin {
+                transaction: "original".into(),
+                document: document.clone(),
+                retire: vec![],
+            })
+            .unwrap();
+        let original = state.application(id).unwrap();
+        state
+            .apply(&Event::Started {
+                invocation: Box::new(original.clone()),
+            })
+            .unwrap();
+        state
+            .apply(&Event::Finished {
+                outputs: original.input.clone(),
+            })
+            .unwrap();
+
+        // Documentation does not affect a desired revision, but it still
+        // belongs to the exact contract retained for replay and restoration.
+        let mut changed_contract = original.clone();
+        changed_contract.effect.inputs.insert(
+            "value".into(),
+            InputOption {
+                description: "substituted contract".into(),
+                value_type: original.effect.results["value"].clone(),
+            },
+        );
+        assert!(
+            state
+                .check(&Event::RestorationStarted {
+                    invocation: Box::new(changed_contract),
+                })
+                .is_err()
+        );
+        state
+            .check(&Event::RestorationStarted {
+                invocation: Box::new(original),
+            })
+            .unwrap();
+
+        state.apply(&Event::Commit).unwrap();
+        state
+            .apply(&Event::Begin {
+                transaction: "next".into(),
+                document,
+                retire: vec![],
+            })
+            .unwrap();
+        let expected = state.application(id).unwrap();
+        let decoded: Invocation =
+            canonical::from_slice(&canonical::to_vec(&expected).unwrap(), "invocation").unwrap();
+        state
+            .check(&Event::Started {
+                invocation: Box::new(decoded),
+            })
+            .unwrap();
+
+        let mut changed_previous_contract = expected.clone();
+        changed_previous_contract
+            .previous
+            .as_mut()
+            .unwrap()
+            .effect
+            .owner = "another-owner".into();
+        let mut changed_previous_input = expected.clone();
+        changed_previous_input.previous.as_mut().unwrap().input = json!({"value":"forged"});
+        let mut changed_previous_output = expected;
+        changed_previous_output.previous.as_mut().unwrap().outputs = json!({"value":"forged"});
+
+        for invocation in [
+            changed_previous_contract,
+            changed_previous_input,
+            changed_previous_output,
+        ] {
+            assert!(
+                state
+                    .check(&Event::Started {
+                        invocation: Box::new(invocation),
+                    })
+                    .is_err()
+            );
+        }
+    }
 
     fn referenced_graph() -> (CheckedModuleGraph, String, String, String) {
         let template = super::super::tests::graph(Some("template"), "persistent");
