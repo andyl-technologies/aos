@@ -16,7 +16,7 @@
 //! [`AosError::NixNotFound`] / [`AosError::RootNotFound`] so callers
 //! can map them to the standard exit codes.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -28,6 +28,8 @@ use std::thread;
 use anyhow::{Context, Result};
 
 use crate::error::AosError;
+
+mod derivation_outputs;
 
 /// Wraps interactions with the Nix CLI tools (`nix-build`, `nix-instantiate`,
 /// `nix-store`, `nix-collect-garbage`, `nix-shell`).
@@ -561,6 +563,33 @@ impl NixRunner {
             }
         }
         Ok(serde_json::Value::Object(combined))
+    }
+
+    /// Returns every output of a store derivation and the store path it
+    /// produces, keyed by Nix output name.
+    ///
+    /// The map is read with `nix derivation show`, which describes the
+    /// derivation itself. Unlike `nix-store --query --binding outputs`, this
+    /// also works for derivations built with structured attributes, which
+    /// have no `outputs` environment binding. Both the older document keyed
+    /// by derivation path and the newer versioned document are accepted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a path that is not an exact `/nix/store/*.drv`
+    /// path, when `nix derivation show` fails, or when its JSON omits the
+    /// derivation, lists no outputs, or names an output without a static
+    /// store path.
+    pub fn derivation_outputs(&self, derivation: &Path) -> Result<BTreeMap<String, String>> {
+        require_exact_derivation_paths(&[derivation.to_path_buf()])?;
+
+        let arguments = [
+            "derivation".to_string(),
+            "show".to_string(),
+            derivation.to_string_lossy().into_owned(),
+        ];
+        let output = self.run_nix("nix", &arguments)?;
+        derivation_outputs::parse(derivation, &output.stdout)
     }
 
     /// Instantiates (but does not build) a derivation from `default.nix`,
