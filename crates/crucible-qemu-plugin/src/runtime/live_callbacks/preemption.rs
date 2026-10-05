@@ -86,6 +86,22 @@ impl LiveVcpuTimeCallbackState {
         };
         let raw_ceiling =
             effective_ceiling.saturating_sub(offset) / crucible_shmem::TICKS_PER_INSTRUCTION;
+        if self.preemption_enqueue_active.load(Ordering::Acquire) {
+            // A synchronous QEMU admission query must leave the outer enqueue
+            // owner and its still-pending mailbox command untouched.
+            return Ok(raw_ceiling);
+        }
+        let Some(published) = self
+            .slot
+            .get()
+            .pending_preemption_command()
+            .map_err(|source| LiveVcpuTimeCallbackError::PreemptionMailbox { source })?
+        else {
+            // The host publishes a command before its owning RUN grant. An
+            // empty acquire observation leaves later publication pending for
+            // the next query; it needs no enqueue ownership or atomic RMW.
+            return Ok(raw_ceiling);
+        };
         if self
             .preemption_enqueue_active
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -97,14 +113,6 @@ impl LiveVcpuTimeCallbackState {
             return Ok(raw_ceiling);
         }
         let _guard = PreemptionEnqueueGuard(&self.preemption_enqueue_active);
-        let Some(published) = self
-            .slot
-            .get()
-            .pending_preemption_command()
-            .map_err(|source| LiveVcpuTimeCallbackError::PreemptionMailbox { source })?
-        else {
-            return Ok(raw_ceiling);
-        };
         let command = published.command;
         if command.ceiling_tick > effective_ceiling {
             // The mailbox is published before the RUN that owns it. Keep the
