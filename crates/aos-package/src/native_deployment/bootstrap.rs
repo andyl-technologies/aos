@@ -112,10 +112,13 @@ pub fn apply_with_sources<A: ArtifactAdmission>(
 /// from the pending generation. It does not evaluate a new image baseline.
 /// A pending live reconciliation already has a committed publication and remains
 /// untouched until source validation precedes its original attempt's recovery.
+/// An uninitialized profile returns `None` without admitting unused image inputs;
+/// the caller must authenticate its fresh deployment before applying effects.
 ///
 /// # Errors
-/// Returns an error for invalid image authority, admission or journal failure,
-/// lock contention, or failed recovery effects.
+/// Returns an error for an invalid profile binding, partial journals, lock
+/// contention, or failed recovery. Existing journals also require valid image
+/// authority and retained artifact admission.
 pub fn recover_profile_publication(
     command: &super::NativeDeploymentCommand,
     cancellation: &aos_ability_runtime::adapter::CancellationToken,
@@ -124,7 +127,7 @@ pub fn recover_profile_publication(
         .profile
         .as_ref()
         .context("profile recovery requires an authoritative profile")?;
-    let (_, _, receipt) = super::prepare(command)?;
+    super::validate_state_location(command)?;
     let inspection = crate::profile::Profile {
         path: path.clone(),
         scope: crate::types::ProfileScope::System,
@@ -137,6 +140,7 @@ pub fn recover_profile_publication(
         );
         return Ok(None);
     }
+    let (_, _, receipt) = super::prepare(command)?;
     super::persist_receipt(&command.state_directory.join("admissions"), &receipt)?;
     let profile =
         crate::profile::Profile::open_at(path.clone(), crate::types::ProfileScope::System)?;
@@ -169,6 +173,84 @@ pub(super) fn root(path: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn uninitialized_command(profile: PathBuf) -> super::super::NativeDeploymentCommand {
+        super::super::NativeDeploymentCommand {
+            input: profile.join("absent-image"),
+            state_directory: profile.join("deployment"),
+            nix_store: profile.join("absent-nix-store"),
+            admission: profile.join("absent-admission"),
+            admission_sha256: Sha256Digest::of_bytes(b"unused image admission"),
+            profile: Some(profile),
+        }
+    }
+
+    #[test]
+    fn uninitialized_profile_does_not_admit_unused_image_inputs() {
+        let root = tempfile::tempdir().unwrap();
+        let profile = root.path().join("profile");
+        let command = uninitialized_command(profile.clone());
+
+        let recovered = recover_profile_publication(
+            &command,
+            &aos_ability_runtime::adapter::CancellationToken::default(),
+        )
+        .unwrap();
+
+        assert_eq!(recovered, None);
+        assert!(profile.join("mutation.lock").is_file());
+        assert!(!command.state_directory.exists());
+        assert!(!command.input.exists());
+    }
+
+    #[test]
+    fn invalid_profile_bindings_are_rejected_before_creating_a_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let profile = root.path().join("profile");
+        let cases = [
+            (Some(profile.clone()), PathBuf::from("relative-state")),
+            (
+                Some(PathBuf::from("relative-profile")),
+                profile.join("deployment"),
+            ),
+            (Some(profile.clone()), root.path().join("foreign-state")),
+        ];
+
+        for (selected, state_directory) in cases {
+            let mut command = uninitialized_command(profile.clone());
+            command.profile = selected;
+            command.state_directory = state_directory;
+
+            assert!(
+                recover_profile_publication(
+                    &command,
+                    &aos_ability_runtime::adapter::CancellationToken::default(),
+                )
+                .is_err()
+            );
+            assert!(!profile.exists());
+            assert!(!command.state_directory.exists());
+        }
+    }
+
+    #[test]
+    fn partial_journal_is_rejected_before_image_admission() {
+        let root = tempfile::tempdir().unwrap();
+        let command = uninitialized_command(root.path().join("profile"));
+        std::fs::create_dir_all(&command.state_directory).unwrap();
+        let effects = command.state_directory.join("effects.journal");
+        std::fs::write(&effects, b"partial journal").unwrap();
+
+        let error = recover_profile_publication(
+            &command,
+            &aos_ability_runtime::adapter::CancellationToken::default(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("partially initialized"));
+        assert_eq!(std::fs::read(effects).unwrap(), b"partial journal");
+        assert!(!command.state_directory.join("admissions").exists());
+    }
 
     #[test]
     fn descriptor_preserves_source_roles_and_requires_supplemental_roots() {

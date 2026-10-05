@@ -1188,7 +1188,7 @@ pub fn verify(command: &NativeDeploymentCommand) -> Result<()> {
     Ok(())
 }
 
-fn prepare(command: &NativeDeploymentCommand) -> Result<(Deployment, Admission, Receipt)> {
+fn validate_state_location(command: &NativeDeploymentCommand) -> Result<()> {
     ensure!(
         command.state_directory.is_absolute(),
         "native deployment state directory must be absolute"
@@ -1199,6 +1199,11 @@ fn prepare(command: &NativeDeploymentCommand) -> Result<(Deployment, Admission, 
             "host state directory must be the selected profile's deployment directory"
         );
     }
+    Ok(())
+}
+
+fn prepare(command: &NativeDeploymentCommand) -> Result<(Deployment, Admission, Receipt)> {
+    validate_state_location(command)?;
     let (input, _) = document::read_directory_in(
         &command.input,
         &command.nix_store,
