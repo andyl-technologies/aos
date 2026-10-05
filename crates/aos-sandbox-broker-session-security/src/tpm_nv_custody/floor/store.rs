@@ -568,6 +568,16 @@ pub(in crate::tpm_nv_custody) struct HostSuffixPreflightV1 {
     transactions: Vec<JournalTransaction>,
 }
 
+impl HostSuffixPreflightV1 {
+    // Borrow only the actual canonical recipe already owned by this suffix.
+    // This private DATA view exposes neither its token nor an append right.
+    pub(in crate::tpm_nv_custody) fn first_canary_transaction_v2(
+        &self,
+    ) -> Result<&JournalTransaction, HostOwnedJournalErrorV1> {
+        self.transactions.first().ok_or(HostOwnedJournalErrorV1::Changed)
+    }
+}
+
 impl<'origin, 'startup> HostSidecarStoreV1<'origin, 'startup> {
     pub(in crate::tpm_nv_custody) fn from_host(
         custody: HostSidecarCustodyV1<'origin, 'startup>,
@@ -676,6 +686,24 @@ impl<'origin, 'startup> HostSidecarStoreV1<'origin, 'startup> {
         authority.validate_preflight_for_effect(&suffix.token, &suffix.transactions)?;
         drop(authority);
         self.validate_held()
+    }
+
+    /// Dispatches only the first actual TX of this freshly validated suffix.
+    ///
+    /// The enclosing genuine held owner parks the entire native Result before
+    /// any postcheck. This seam exports neither a writer nor a raw token.
+    pub(in crate::tpm_nv_custody) fn commit_first_canary_v2(
+        &mut self,
+        suffix: &HostSuffixPreflightV1,
+        original: &crate::tpm_nv_custody::host::CanaryAuthenticatedRequestV3<'_>,
+    ) -> Result<aos_sandbox::CommitResult, HostOwnedJournalErrorV1> {
+        self.validate_suffix(suffix)?;
+        let transaction = suffix.transactions.first()
+            .ok_or(HostOwnedJournalErrorV1::Changed)?;
+        let mut authority = self.custody.journal_mut()
+            .claim_protected_authority(RecordNamespace::HostCatalogReconciliation)?;
+        original.require_clock()?;
+        authority.commit(transaction).map_err(HostOwnedJournalErrorV1::from)
     }
 }
 

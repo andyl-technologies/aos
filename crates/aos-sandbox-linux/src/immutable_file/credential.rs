@@ -161,7 +161,17 @@ impl SealedReadOnlyCredential {
         self.bytes == 0
     }
 
-    fn revalidate(&self) -> Result<(), ImmutableFileError> {
+    /// Rechecks the same owned descriptor's admitted read-only seal geometry.
+    ///
+    /// This borrowed DATA check neither duplicates the descriptor nor grants
+    /// authority to use its contents for another purpose.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ImmutableFileError`] when metadata or descriptor observations
+    /// fail, or the file's type, owner, anonymity, access mode, exact length, or
+    /// complete seal set no longer meets the original admission contract.
+    pub fn revalidate(&self) -> Result<(), ImmutableFileError> {
         let metadata = fstat(&self.descriptor).map_err(|error| linux("fstat", error))?;
         if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile {
             return Err(ImmutableFileError::NotRegular);

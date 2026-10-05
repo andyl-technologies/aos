@@ -46,6 +46,13 @@ pub(crate) struct HostCanaryRootExportOriginalV1 {
     first_failure: Option<CanaryExportCause>,
     attempted: bool,
     closed: bool,
+    full_job: Option<Result<std::result::Result<
+        aos_sandbox_linux::immutable_file::SealedReadOnlyCredential,
+        aos_sandbox_linux::immutable_file::ImmutableFileError,
+    >>>,
+    selected_window: Option<([u8; 16], u64, u64)>,
+    post_debt: [Option<CanaryExportCause>; 8],
+    post_count: usize,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -60,6 +67,17 @@ enum CanaryExportCause {
     Binding(#[from] aos_sandbox_linux::seqpacket::RecordBindingError),
     #[error(transparent)]
     Host(#[from] HostError),
+    #[error(transparent)]
+    Carrier(#[from] SeqpacketError),
+    #[error(transparent)]
+    SealObservation(aos_sandbox_linux::immutable_file::ImmutableFileError),
+    #[error("selected Host original clock or custody changed")]
+    Changed,
+    #[error("selected Host original paired clock observation failed")]
+    PairedClock {
+        boot: Option<aos_sandbox_linux::Error>,
+        clock: Option<HostError>,
+    },
 }
 
 type CanaryExportResult<T> = std::result::Result<T, CanaryExportCause>;
@@ -75,6 +93,10 @@ impl HostCanaryRootExportOriginalV1 {
             first_failure: None,
             attempted: false,
             closed: false,
+            full_job: None,
+            selected_window: None,
+            post_debt: std::array::from_fn(|_| None),
+            post_count: 0,
         }
     }
 
@@ -106,8 +128,95 @@ impl HostCanaryRootExportOriginalV1 {
         }
         self.attempted = true;
         self.closed = true;
-        let result = self.measure_inner(workspace, original, baseline_digest);
+        let result = self.measure_inner(workspace, original, baseline_digest, false);
         self.finish_observation(result)
+    }
+
+    /// Measures the selected prefix from the genuine retained full-job owner.
+    ///
+    /// This is the installed selected path, not a decoded-job/descriptor
+    /// factory. The sealed Result and actual original credentials remain
+    /// resident before/after exchange; failures never resend or replace them.
+    pub(crate) fn measure_job_original_v2(
+        &mut self,
+        workspace: &ResolvedWorkspace,
+        job: &mut crate::broker::canary_job::HostCanaryJobOwnerV1,
+        baseline_digest: [u8; 32],
+    ) -> Result<()> {
+        if self.closed || self.attempted || self.full_job.is_some()
+            || self.storage_cgroup.is_none()
+        {
+            return Err(canary_export_refusal());
+        }
+        self.attempted = true;
+        self.closed = true;
+        let observation = SelectedHostExportObservationV2 { owner: self };
+        let result = (|| {
+            let original = job.originals()?;
+            observation.owner.selected_window = Some((
+                original.boot_id, original.not_before, original.deadline,
+            ));
+            // Preserve BOTH the genuine job-owner refusal and the native
+            // sealed-file Result before inspecting either or doing posts.
+            observation.owner.full_job = Some(job.seal_original_job_v2());
+            if !matches!(observation.owner.full_job.as_ref(), Some(Ok(Ok(_)))) {
+                return Err(CanaryExportCause::Changed);
+            }
+            job.recheck()?;
+            let original = job.originals()?;
+            observation.owner.measure_inner(workspace, original, baseline_digest, true)
+        })();
+        if let Err(cause) = result {
+            observation.owner.first_failure.get_or_insert(cause);
+        }
+        let post = job.recheck().map(|_| ()).map_err(CanaryExportCause::from);
+        observation.owner.retain_selected_post(post);
+        let service = observation.owner.require_service_original();
+        observation.owner.retain_selected_post(service);
+        if let Some(Ok(Ok(job))) = observation.owner.full_job.as_ref() {
+            let sealed = job.revalidate().map_err(CanaryExportCause::SealObservation);
+            observation.owner.retain_selected_post(sealed);
+        }
+        if let (Some(Ok(socket)), Some(Ok(reply))) = (
+            observation.owner.socket.as_mut(), observation.owner.reply.as_ref(),
+        ) {
+            let origin = socket.validate_received_origin_retaining(reply)
+                .map_err(CanaryExportCause::from);
+            observation.owner.retain_selected_post(origin);
+        }
+        // The same original boot and B/D are observed last, including when
+        // any earlier action, file, job or peer check has already failed.
+        let clock = observation.owner.require_selected_clock_v2();
+        observation.owner.retain_selected_post(clock);
+        if observation.owner.first_failure.is_some() {
+            if let Some(Ok(socket)) = observation.owner.socket.as_mut() {
+                socket.close();
+            }
+            Err(canary_export_refusal())
+        } else {
+            observation.owner.closed = false;
+            Ok(())
+        }
+    }
+
+    fn require_selected_clock_v2(&self) -> CanaryExportResult<()> {
+        let boot = aos_sandbox_linux::boot::KernelBootId::current();
+        let now = boottime();
+        // Both genuine observations occur before either Result is inspected.
+        let (expected, before, deadline) = self.selected_window
+            .ok_or(CanaryExportCause::Changed)?;
+        compare_selected_clock_v2(boot, now, expected, before, deadline)
+    }
+
+    fn retain_selected_post(&mut self, result: CanaryExportResult<()>) {
+        if let Err(cause) = result {
+            if self.first_failure.is_none() {
+                self.first_failure = Some(cause);
+            } else if let Some(slot) = self.post_debt.get_mut(self.post_count) {
+                *slot = Some(cause);
+                self.post_count += 1;
+            }
+        }
     }
 
     fn measure_inner(
@@ -115,6 +224,7 @@ impl HostCanaryRootExportOriginalV1 {
         workspace: &ResolvedWorkspace,
         original: &crate::broker::canary_job::OriginalHostCanaryJobV1,
         baseline_digest: [u8; 32],
+        full_job: bool,
     ) -> CanaryExportResult<()> {
         let proof = workspace.guest_root_publication().ok_or_else(canary_export_refusal)?;
         if boottime()? >= original.deadline {
@@ -132,11 +242,28 @@ impl HostCanaryRootExportOriginalV1 {
         let bytes = self.request.as_ref().ok_or_else(canary_export_refusal)?
             .encode()?;
 
+        if full_job {
+            self.require_selected_clock_v2()?;
+        }
         self.socket = Some(DescriptorSubjectSocket::connect_retaining(Path::new(EXPORT_SOCKET)));
         let socket = self.socket.as_mut().ok_or_else(canary_export_refusal)?
             .as_mut().map_err(|_| canary_export_refusal())?;
         socket.begin_original_retention_v1();
-        send_request(socket, &bytes, original.deadline)?;
+        if full_job {
+            let sealed = self.full_job.as_ref().ok_or_else(canary_export_refusal)?
+                .as_ref().map_err(|_| canary_export_refusal())?
+                .as_ref().map_err(|_| canary_export_refusal())?;
+            sealed.revalidate().map_err(CanaryExportCause::SealObservation)?;
+            let job_bytes = u32::try_from(sealed.len()).map_err(|_| canary_export_refusal())?;
+            let wrapper = aos_sandbox_protocol::storage_root_export::StorageCanaryJobRequestV2 {
+                job_bytes, request: *self.request.as_ref().ok_or_else(canary_export_refusal)?,
+            }.encode()?;
+            // No expensive file/schema work follows this original sample.
+            require_selected_job_clock_v2(original)?;
+            send_job_request_v2(socket, &wrapper, sealed.as_fd(), original)?;
+        } else {
+            send_request(socket, &bytes, original.deadline)?;
+        }
 
         loop {
             if boottime()? >= original.deadline {
@@ -227,6 +354,47 @@ impl HostCanaryRootExportOriginalV1 {
     }
 }
 
+/// Keeps the already parked original endpoint fenced across caught unwind.
+struct SelectedHostExportObservationV2<'owner> {
+    owner: &'owner mut HostCanaryRootExportOriginalV1,
+}
+
+impl Drop for SelectedHostExportObservationV2<'_> {
+    fn drop(&mut self) {
+        if self.owner.closed {
+            if let Some(Ok(socket)) = self.owner.socket.as_mut() {
+                socket.close();
+            }
+        }
+    }
+}
+
+fn require_selected_job_clock_v2(
+    job: &crate::broker::canary_job::OriginalHostCanaryJobV1,
+) -> CanaryExportResult<()> {
+    let boot = aos_sandbox_linux::boot::KernelBootId::current();
+    let now = boottime();
+    compare_selected_clock_v2(boot, now, job.boot_id, job.not_before, job.deadline)
+}
+
+fn compare_selected_clock_v2(
+    boot: std::result::Result<aos_sandbox_linux::boot::KernelBootId, aos_sandbox_linux::Error>,
+    now: Result<u64>,
+    expected: [u8; 16],
+    before: u64,
+    deadline: u64,
+) -> CanaryExportResult<()> {
+    match (boot, now) {
+        (Ok(boot), Ok(now)) if boot.into_bytes() == expected && before <= now && now < deadline => {
+            Ok(())
+        }
+        (Ok(_), Ok(_)) => Err(CanaryExportCause::Changed),
+        (boot, clock) => Err(CanaryExportCause::PairedClock {
+            boot: boot.err(), clock: clock.err(),
+        }),
+    }
+}
+
 impl Drop for HostCanaryRootExportOriginalV1 {
     fn drop(&mut self) {
         if let Some(Ok(socket)) = self.socket.as_mut() {
@@ -237,6 +405,19 @@ impl Drop for HostCanaryRootExportOriginalV1 {
 
 fn canary_export_refusal() -> HostError {
     HostError::State("Host canary root prefix is unavailable".to_owned())
+}
+
+fn send_job_request_v2(
+    socket: &mut DescriptorSubjectSocket,
+    bytes: &[u8; 418],
+    original_job: std::os::fd::BorrowedFd<'_>,
+    job: &crate::broker::canary_job::OriginalHostCanaryJobV1,
+) -> CanaryExportResult<()> {
+    // Readiness polling consumes neither the job nor an atomic record. The
+    // one actual send is never restarted, even after an ambiguous failure.
+    wait_until(socket, PollFlags::OUT, job.deadline)?;
+    require_selected_job_clock_v2(job)?;
+    socket.send_with_descriptors_retaining(bytes, &[original_job]).map_err(Into::into)
 }
 
 /// Retains the exact Storage service cgroup for detached-root replies.

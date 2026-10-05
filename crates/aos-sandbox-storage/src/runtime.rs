@@ -27,6 +27,7 @@ mod native_readback;
 mod repair_worker_drain;
 mod operator_startup;
 mod canary_export_held;
+pub(crate) use canary_export_held::CanaryBootstrapOriginalLoanV2;
 pub(crate) use native_acquire::{
     StorageNativeDeliveryOutcomeV2, original_fail_stop_deadline,
     validate_native_request_clock, validate_original_clock,
@@ -792,6 +793,52 @@ impl StorageBrokerRuntime {
             &self.worker_dispatch,
             &self.broker_instance_id,
             verifier,
+        );
+    }
+
+    /// Runs only the admitted, resident canary association producer.
+    ///
+    /// The root-export caller selects this before its Legacy accept/receive.
+    /// A selected refusal cannot fall back or substitute packet DATA for the
+    /// original startup. Completion still sends no gen0, ACK or root permit.
+    pub(crate) fn serve_canary_export_selected_v2(
+        &mut self,
+        listener: &mut aos_sandbox_linux::seqpacket::RecordSubjectListener,
+        verifier: &crate::peer::HostRootExportPeerVerifier,
+        template: &ProtectedGuestRootTemplateV1,
+    ) {
+        if !self.canary_export.receive_selected_original_v2(
+            listener, self.original_worker_startup.as_mut(), verifier,
+        ) {
+            return;
+        }
+        let inventory = (|| {
+            let deadline = self.canary_export.selected_deadline_v2()
+                .ok_or(StorageRuntimeError::Recovery)?;
+            let now = boottime_now_nanoseconds()?;
+            let cutoff = guest_root_inventory_cutoff(now, deadline)?;
+            self.inventory_resources(deadline, cutoff)
+        })();
+        if !self.canary_export.park_selected_inventory_v2(inventory, template, &self.broker_instance_id) {
+            self.canary_export.finish_selected_runtime_observations_v2(
+                &self.coordinator, self.native_issuance.as_mut(),
+                self.original_worker_startup.as_mut(), &self.worker_dispatch, verifier,
+            );
+            return;
+        }
+        if !self.canary_export.prepare_selected_cut_v2(
+            &self.coordinator, self.native_issuance.as_mut(),
+            &self.worker_dispatch, &self.broker_instance_id,
+        ) {
+            self.canary_export.finish_selected_runtime_observations_v2(
+                &self.coordinator, self.native_issuance.as_mut(),
+                self.original_worker_startup.as_mut(), &self.worker_dispatch, verifier,
+            );
+            return;
+        }
+        self.canary_export.complete_selected_bootstrap_v2(
+            &mut self.coordinator, self.native_issuance.as_mut(),
+            self.original_worker_startup.as_mut(), &self.worker_dispatch, verifier,
         );
     }
 

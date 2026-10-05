@@ -22,6 +22,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use aos_sandbox_protocol::runtime_deployment::DeploymentGenesisV1;
+use aos_sandbox_protocol::runtime_deployment::canary::{
+    CanaryAssociationV2, CanaryPurposeV2, COMPOSITE_GENESIS_BYTES_V2, GENESIS_KEY_V2,
+};
 use ed25519_dalek::{Signature, VerifyingKey};
 use sha2::{Digest as _, Sha256};
 
@@ -59,6 +62,45 @@ pub(crate) const MAIN_LIMITS: JournalLimits = JournalLimits {
     maximum_materialized_records: MAXIMUM_ROWS,
 };
 
+/// Fixes the separately provisioned association-only main's eight native bounds.
+pub(crate) const CANARY_MAIN_LIMITS_V2: JournalLimits = JournalLimits {
+    maximum_journal_bytes: 135_853,
+    maximum_record_bytes: 999,
+    maximum_key_bytes: 28,
+    maximum_records_per_transaction: 1,
+    maximum_transaction_bytes: 999,
+    maximum_transactions: 65,
+    maximum_materialized_bytes: 51_296,
+    maximum_materialized_records: 65,
+};
+
+/// Commits the exact version-separated schema and all eight selected main bounds.
+pub(super) fn canary_schema_contract_v3() -> [u8; 32] {
+    let mut hash = Sha256::new()
+        .chain_update(b"aos.runtime-deployment.canary-schema-limits.v3\0");
+    for text in ["AOSRDCQ3", "request826=96+402+208+120", "coordinates=catalog+primary+native",
+        "aos.sandbox.storage.held-snapshot-materialized-state.v1\0",
+        "aos.sandbox.operator-repair-native-cut.v4\0",
+        "AOSRCQ01:402", "Host-bootstrap418-one-full-job-FD", "AOSCEB01:208",
+        "AOSRDCP2:496", "AOSRDC02:776", "AOSRDCR2:368", "reply1144-zero-application-FD",
+        "deployment-canary-genesis-v2:964", "c+ordinalBE+phase1:10",
+        "aos.runtime-deployment.canary-association-tx.v2\0"]
+    {
+        hash.update((text.len() as u64).to_be_bytes());
+        hash.update(text.as_bytes());
+    }
+    for value in [CANARY_MAIN_LIMITS_V2.maximum_journal_bytes,
+        CANARY_MAIN_LIMITS_V2.maximum_record_bytes as u64,
+        CANARY_MAIN_LIMITS_V2.maximum_key_bytes as u64,
+        CANARY_MAIN_LIMITS_V2.maximum_records_per_transaction as u64,
+        CANARY_MAIN_LIMITS_V2.maximum_transaction_bytes as u64,
+        CANARY_MAIN_LIMITS_V2.maximum_transactions as u64,
+        CANARY_MAIN_LIMITS_V2.maximum_materialized_bytes as u64,
+        CANARY_MAIN_LIMITS_V2.maximum_materialized_records as u64]
+    { hash.update(value.to_be_bytes()); }
+    hash.finalize().into()
+}
+
 /// Requires the actual held original main path, root ownership and all eight limits.
 ///
 /// The namespace number is not permission to open another Host catalog. This
@@ -77,7 +119,7 @@ pub(crate) fn require_deployment_main_v1(
     journal: &Journal,
 ) -> Result<(), NvCustodyErrorV1> {
     owner.recheck()?;
-    journal.require_protected_named_location(Path::new(DIRECTORY), MAIN_NAME, 0, MAIN_LIMITS)
+    journal.require_protected_named_location(Path::new(DIRECTORY), MAIN_NAME, 0, owner.main_limits())
         .map_err(|_| NvCustodyErrorV1::Provisioning)?;
     let mut rows = 0_usize;
     for (namespace, _, _) in journal.all_records() {
@@ -86,6 +128,9 @@ pub(crate) fn require_deployment_main_v1(
         }
         rows = rows.checked_add(1).ok_or(NvCustodyErrorV1::Encoding)?;
         require_deployment_row_bound_v1(rows)?;
+        if rows > owner.main_limits().maximum_materialized_records {
+            return Err(NvCustodyErrorV1::Encoding);
+        }
     }
     require_deployment_row_bound_v1(rows)?;
     journal.require_runtime_deployment_native_history_v1(owner)
@@ -116,6 +161,14 @@ pub(crate) fn require_current_deployment_rows_v1(
     sequence: u64,
     records: &BTreeMap<&[u8], &[u8]>,
 ) -> Result<(), NvCustodyErrorV1> {
+    if let Some(purpose) = owner.canary_purpose() {
+        owner.recheck()?;
+        require_canary_rows_v2(
+            sequence, records, owner.exact_bytes(), owner.claims(),
+            owner.publisher_verifier(), owner.scope(), purpose,
+        )?;
+        return owner.recheck();
+    }
     owner.recheck()?;
     require_rows(
         sequence,
@@ -144,6 +197,14 @@ pub(crate) fn require_prospective_deployment_append_v1<'data>(
     records: &BTreeMap<&'data [u8], &'data [u8]>,
     transaction: &'data JournalTransaction,
 ) -> Result<(), NvCustodyErrorV1> {
+    if let Some(purpose) = owner.canary_purpose() {
+        owner.recheck()?;
+        validated_canary_append_rows_v2(
+            sequence, records, transaction, owner.exact_bytes(), owner.claims(),
+            owner.publisher_verifier(), owner.scope(), purpose,
+        )?;
+        return owner.recheck();
+    }
     owner.recheck()?;
     require_append(
         sequence,
@@ -182,6 +243,154 @@ pub(crate) fn require_native_step_binding_v1(
         return Err(NvCustodyErrorV1::Provisioning);
     }
     Ok(())
+}
+
+/// Compares an actual validated native association with the sole wire decoder.
+pub(crate) fn require_native_canary_binding_v2(
+    key: &[u8],
+    bytes: &[u8],
+    composite: &[u8],
+    genesis: &DeploymentGenesisV1,
+    signer: VerifyingKey,
+    purpose: &CanaryPurposeV2,
+    native_transaction: [u8; 16],
+    native_begin_sequence: u64,
+) -> Result<(), NvCustodyErrorV1> {
+    let association = decode_canary_row_v2(
+        key, bytes, composite, genesis, signer, purpose,
+    )?;
+    if association.fields().main_transaction != native_transaction
+        || association.fields().main_next != native_begin_sequence
+    {
+        return Err(NvCustodyErrorV1::Provisioning);
+    }
+    Ok(())
+}
+
+fn decode_canary_row_v2(
+    key: &[u8],
+    bytes: &[u8],
+    composite: &[u8],
+    genesis: &DeploymentGenesisV1,
+    signer: VerifyingKey,
+    purpose: &CanaryPurposeV2,
+) -> Result<CanaryAssociationV2, NvCustodyErrorV1> {
+    if key.len() != 10 || key[0] != b'c' || key[9] != 1
+        || composite.len() != COMPOSITE_GENESIS_BYTES_V2
+    {
+        return Err(NvCustodyErrorV1::Encoding);
+    }
+    let row = CanaryAssociationV2::decode(bytes, &signer)
+        .map_err(|_| NvCustodyErrorV1::Encoding)?;
+    let fields = row.fields();
+    if key[1..9] != fields.ordinal.to_be_bytes()
+        || fields.node != genesis.node || fields.deployment != genesis.deployment
+        || fields.purpose != purpose.digest()
+        || fields.genesis != <[u8; 32]>::from(Sha256::digest(&composite[..SIGNED_GENESIS_BYTES]))
+        || fields.publisher_profile != genesis.publisher_profile
+        || fields.publisher_policy != genesis.mac_policy
+        || fields.storage_profile != purpose.contract(160).map_err(|_| NvCustodyErrorV1::Encoding)?
+        || fields.storage_policy != purpose.contract(192).map_err(|_| NvCustodyErrorV1::Encoding)?
+        || signer.to_bytes() != genesis.signer
+    {
+        return Err(NvCustodyErrorV1::Provisioning);
+    }
+    Ok(row)
+}
+
+/// Reuses the complete-map head engine at each actual immutable predecessor.
+fn require_canary_rows_v2(
+    sequence: u64,
+    records: &BTreeMap<&[u8], &[u8]>,
+    composite: &[u8],
+    genesis: &DeploymentGenesisV1,
+    signer: VerifyingKey,
+    scope: [u8; 32],
+    purpose: &CanaryPurposeV2,
+) -> Result<Option<CanaryAssociationV2>, NvCustodyErrorV1> {
+    if records.is_empty() || records.len() > CANARY_MAIN_LIMITS_V2.maximum_materialized_records
+        || composite.len() != COMPOSITE_GENESIS_BYTES_V2
+        || records.get(GENESIS_KEY_V2).copied() != Some(composite)
+    {
+        return Err(NvCustodyErrorV1::Provisioning);
+    }
+    let bytes = records.iter().try_fold(0_usize, |used, (key, value)| {
+        used.checked_add(key.len()).and_then(|used| used.checked_add(value.len()))
+            .ok_or(NvCustodyErrorV1::Encoding)
+    })?;
+    if bytes > CANARY_MAIN_LIMITS_V2.maximum_materialized_bytes {
+        return Err(NvCustodyErrorV1::Encoding);
+    }
+
+    let mut prefix = BTreeMap::from([(GENESIS_KEY_V2, composite)]);
+    let mut next = INITIAL_SEQUENCE;
+    let mut previous: Option<CanaryAssociationV2> = None;
+    let mut transactions = BTreeSet::from([
+        aos_sandbox_protocol::runtime_deployment::canary::composite_genesis_transaction_v2(composite)
+            .map_err(|_| NvCustodyErrorV1::Encoding)?,
+    ]);
+    let mut attempts = BTreeSet::new();
+    let mut requests = BTreeSet::new();
+    let mut nonces = BTreeSet::new();
+    for (&key, &value) in records {
+        if key == GENESIS_KEY_V2 { continue; }
+        let row = decode_canary_row_v2(key, value, composite, genesis, signer, purpose)?;
+        let fields = row.fields();
+        let expected_ordinal = previous.as_ref().map_or(1, |previous| previous.fields().ordinal + 1);
+        let expected_previous = previous.as_ref().map_or([0; 32], CanaryAssociationV2::digest);
+        let head = canonical_purpose_main_head_v1(
+            NvCustodyEndpointV1::RuntimeDeployment, scope, next, &prefix,
+        )?;
+        if fields.ordinal != expected_ordinal || fields.previous_association != expected_previous
+            || fields.main_next != next || fields.main_head != head
+            || !transactions.insert(fields.main_transaction)
+            || !attempts.insert(fields.attempt) || !requests.insert(fields.request_digest)
+            || !nonces.insert(fields.nonce)
+        {
+            return Err(NvCustodyErrorV1::Provisioning);
+        }
+        prefix.insert(key, value);
+        next = next.checked_add(3).filter(|next| *next != u64::MAX)
+            .ok_or(NvCustodyErrorV1::Encoding)?;
+        previous = Some(row);
+    }
+    if sequence != next { return Err(NvCustodyErrorV1::Provisioning); }
+    Ok(previous)
+}
+
+fn validated_canary_append_rows_v2<'data>(
+    sequence: u64,
+    records: &BTreeMap<&'data [u8], &'data [u8]>,
+    transaction: &'data JournalTransaction,
+    composite: &[u8],
+    genesis: &DeploymentGenesisV1,
+    signer: VerifyingKey,
+    scope: [u8; 32],
+    purpose: &CanaryPurposeV2,
+) -> Result<(u64, BTreeMap<&'data [u8], &'data [u8]>), NvCustodyErrorV1> {
+    require_canary_rows_v2(sequence, records, composite, genesis, signer, scope, purpose)?;
+    if records.len() >= CANARY_MAIN_LIMITS_V2.maximum_materialized_records
+        || transaction.records().len() != 1
+    {
+        return Err(NvCustodyErrorV1::Encoding);
+    }
+    let record = &transaction.records()[0];
+    let value = record.value().ok_or(NvCustodyErrorV1::Encoding)?;
+    if record.namespace() != NAMESPACE || record.key() == GENESIS_KEY_V2
+        || records.contains_key(record.key())
+    {
+        return Err(NvCustodyErrorV1::Provisioning);
+    }
+    let row = decode_canary_row_v2(record.key(), value, composite, genesis, signer, purpose)?;
+    if row.fields().main_transaction != *transaction.id() {
+        return Err(NvCustodyErrorV1::Provisioning);
+    }
+    let next = sequence.checked_add(3).filter(|next| *next != u64::MAX)
+        .ok_or(NvCustodyErrorV1::Encoding)?;
+    let mut after = records.clone();
+    after.insert(record.key(), value);
+    require_canary_rows_v2(next, &after, composite, genesis, signer, scope, purpose)?;
+    Ok((next, after))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -507,7 +716,12 @@ pub(super) fn compared_prospective_deployment_head_v1<'data>(
     transaction: &'data JournalTransaction,
 ) -> Result<(u64, [u8; 32]), NvCustodyErrorV1> {
     owner.recheck()?;
-    let (next_sequence, after) = validated_append_rows_v1(
+    let (next_sequence, after) = if let Some(purpose) = owner.canary_purpose() {
+        validated_canary_append_rows_v2(
+            sequence, records, transaction, owner.exact_bytes(), owner.claims(),
+            owner.publisher_verifier(), owner.scope(), purpose,
+        )?
+    } else { validated_append_rows_v1(
         sequence,
         records,
         transaction,
@@ -515,7 +729,7 @@ pub(super) fn compared_prospective_deployment_head_v1<'data>(
         owner.claims(),
         owner.publisher_verifier(),
         owner.scope(),
-    )?;
+    )? };
     let head = canonical_purpose_main_head_v1(
         NvCustodyEndpointV1::RuntimeDeployment, owner.scope(), next_sequence, &after,
     )?;

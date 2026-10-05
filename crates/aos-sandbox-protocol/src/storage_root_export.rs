@@ -197,6 +197,62 @@ pub const STORAGE_CANARY_EXPORT_ACK_BYTES_V1: usize = 192;
 /// Exact byte length of one private settled confirmation.
 pub const STORAGE_CANARY_EXPORT_CONFIRMATION_BYTES_V1: usize = 184;
 
+/// Exact selected wrapper carrying one full signed-job descriptor and old request.
+pub const STORAGE_CANARY_JOB_REQUEST_BYTES_V2: usize = 418;
+
+/// Names the full job width without converting signed input DATA to authority.
+///
+/// The receiver must retain exactly one sealed read-only FD, derive the actual
+/// job with its independently enrolled approval pin, and compare the entire
+/// embedded request under its original startup and protected writer owners.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StorageCanaryJobRequestV2 {
+    /// Exact signed job width, including all ten segments and signature.
+    pub job_bytes: u32,
+    /// Original canonical 402-byte request; its grammar remains unchanged.
+    pub request: StorageCanaryExportRequestV1,
+}
+
+impl StorageCanaryJobRequestV2 {
+    /// Encodes the fixed selected DATA wrapper without admitting an effect.
+    ///
+    /// # Errors
+    /// Rejects a job width beyond the sole decoder bound or invalid old request.
+    pub fn encode(&self) -> Result<[u8; STORAGE_CANARY_JOB_REQUEST_BYTES_V2], StorageRootExportProtocolErrorV1> {
+        if !(1032..=349_192).contains(&self.job_bytes) {
+            return Err(StorageRootExportProtocolErrorV1);
+        }
+        let request = self.request.encode()?;
+        let mut bytes = [0; STORAGE_CANARY_JOB_REQUEST_BYTES_V2];
+        bytes[..8].copy_from_slice(b"AOSHCX02");
+        bytes[8..10].copy_from_slice(&2u16.to_be_bytes());
+        bytes[12..16].copy_from_slice(&self.job_bytes.to_be_bytes());
+        bytes[16..].copy_from_slice(&request);
+        Ok(bytes)
+    }
+
+    /// Decodes only the exact selected wrapper, leaving the full FD unconsumed.
+    ///
+    /// # Errors
+    /// Rejects width, version, flags, job bound and noncanonical embedded DATA.
+    pub fn decode(bytes: &[u8]) -> Result<Self, StorageRootExportProtocolErrorV1> {
+        if bytes.len() != STORAGE_CANARY_JOB_REQUEST_BYTES_V2
+            || bytes[..8] != *b"AOSHCX02" || bytes[8..10] != 2u16.to_be_bytes()
+            || bytes[10..12] != [0; 2]
+        {
+            return Err(StorageRootExportProtocolErrorV1);
+        }
+        let value = Self {
+            job_bytes: u32::from_be_bytes(read_array(bytes, 12)?),
+            request: StorageCanaryExportRequestV1::decode(&bytes[16..])?,
+        };
+        if value.encode()?.as_slice() != bytes {
+            return Err(StorageRootExportProtocolErrorV1);
+        }
+        Ok(value)
+    }
+}
+
 const CANARY_REQUEST_MAGIC: &[u8; 8] = b"AOSRCQ01";
 const CANARY_RESPONSE_MAGIC: &[u8; 8] = b"AOSRCR01";
 const CANARY_ACK_MAGIC: &[u8; 8] = b"AOSRCA01";

@@ -13,12 +13,14 @@ use std::os::unix::fs::FileExt as _;
 use std::path::Path;
 
 use aos_sandbox_protocol::runtime_deployment::DeploymentGenesisV1;
+use aos_sandbox_protocol::runtime_deployment::canary::CanaryPurposeV2;
 use ed25519_dalek::VerifyingKey;
 
 use crate::runtime_deployment::{
     GENESIS_KEY, MAIN_DIRECTORY_V1, MAIN_LIMITS, MAIN_NAME, NAMESPACE,
     SIDECAR_NAME, VerifiedDeploymentGenesisV1, genesis_native_transaction_v1,
     require_deployment_row_bound_v1, require_native_step_binding_v1,
+    require_native_canary_binding_v2,
 };
 
 use super::{
@@ -35,6 +37,61 @@ enum MainHistoryObservationV1 {
 }
 
 impl Journal {
+    /// Compares selected main COMMIT DATA through the same original replay.
+    pub(crate) fn compare_canary_main_commit_v2(
+        &self,
+        owner: &VerifiedDeploymentGenesisV1<'_>,
+        transaction: &JournalTransaction,
+        returned: &super::CommitResult,
+    ) -> Result<(), JournalError> {
+        self.compare_canary_commit_inner_v2(owner, transaction, returned, CanaryCommitMemberV2::Main)
+    }
+
+    /// Compares selected sidecar COMMIT DATA through the same original replay.
+    pub(crate) fn compare_canary_sidecar_commit_v2(
+        &self,
+        owner: &VerifiedDeploymentGenesisV1<'_>,
+        transaction: &JournalTransaction,
+        returned: &super::CommitResult,
+    ) -> Result<(), JournalError> {
+        self.compare_canary_commit_inner_v2(owner, transaction, returned, CanaryCommitMemberV2::Sidecar)
+    }
+
+    fn compare_canary_commit_inner_v2(
+        &self,
+        owner: &VerifiedDeploymentGenesisV1<'_>,
+        transaction: &JournalTransaction,
+        returned: &super::CommitResult,
+        member: CanaryCommitMemberV2,
+    ) -> Result<(), JournalError> {
+        owner.recheck().map_err(|_| JournalError::ProtectedBoundary)?;
+        if owner.canary_purpose().is_none() {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        let before = FileIdentity::of(&self.file)?;
+        let history = match member {
+            CanaryCommitMemberV2::Main => self.capture_runtime_deployment_main_history_v1(owner)?,
+            CanaryCommitMemberV2::Sidecar => self.capture_runtime_deployment_sidecar_history_v1(owner)?,
+        };
+        let last = history.transactions().last().ok_or(JournalError::ProtectedBoundary)?;
+        let distance = u64::try_from(transaction.records().len()).ok()
+            .and_then(|records| records.checked_add(1)).ok_or(JournalError::SequenceExhausted)?;
+        if last.transaction() != transaction || last.commit_sequence() != returned.commit_sequence
+            || last.begin_sequence().checked_add(distance) != Some(returned.commit_sequence)
+            || returned.commit_sequence.checked_add(1) != Some(last.next_sequence())
+            || last.next_sequence() != self.next_sequence || returned.durable_bytes != before.size
+        {
+            return Err(JournalError::StaleAuthoritySnapshot);
+        }
+        // The capture above uses the sole ReadAt/native framing engine and
+        // checks the complete replayed physical end against this SAME File.
+        // No reopened File, second parser or caller-reconstructed cut is used.
+        if FileIdentity::of(&self.file)? != before {
+            return Err(JournalError::StaleAuthoritySnapshot);
+        }
+        owner.recheck().map_err(|_| JournalError::ProtectedBoundary)
+    }
+
     /// Retains bounded native transactions under the unchanged main audit.
     pub(crate) fn capture_runtime_deployment_main_history_v1(
         &self,
@@ -77,34 +134,37 @@ impl Journal {
         observation: MainHistoryObservationV1,
     ) -> Result<Option<RetainedDeploymentNativeHistoryV1>, JournalError> {
         owner.recheck().map_err(|_| JournalError::ProtectedBoundary)?;
+        let limits = owner.main_limits();
         self.require_protected_named_location(
-            Path::new(MAIN_DIRECTORY_V1), MAIN_NAME, 0, MAIN_LIMITS,
+            Path::new(MAIN_DIRECTORY_V1), MAIN_NAME, 0, limits,
         )?;
         require_deployment_row_bound_v1(self.state.len())
             .map_err(|_| JournalError::ProtectedBoundary)?;
-        if self.committed_transactions > MAIN_LIMITS.maximum_transactions {
+        if self.committed_transactions > limits.maximum_transactions {
             return Err(JournalError::LimitExceeded("deployment native transactions"));
         }
 
         let witness = self.protected_writer_name_witness()?;
         let physical = FileIdentity::of(&self.file)?;
-        if physical.size > MAIN_LIMITS.maximum_journal_bytes {
+        if physical.size > limits.maximum_journal_bytes {
             return Err(JournalError::JournalTooLarge);
         }
 
         let result = (|| {
-            let mut history = HistoryAuditV1::from_bindings(
+            let mut history = if owner.canary_purpose().is_some() {
+                HistoryAuditV1::from_canary_bindings(&self.state, owner)?
+            } else { HistoryAuditV1::from_bindings(
                 &self.state,
                 owner.exact_bytes(),
                 owner.claims(),
                 owner.publisher_verifier(),
-            )?;
+            )? };
             if matches!(observation, MainHistoryObservationV1::RetainNative) {
                 history.retained = Some(RetainedDeploymentNativeHistoryV1::new(physical.size)?);
             }
 
             let mut reader = ReadAtCursorV1::new(&self.file, physical.size);
-            let replayed = replay_observed(&mut reader, MAIN_LIMITS, Some(&mut history))?;
+            let replayed = replay_observed(&mut reader, limits, Some(&mut history))?;
             history.finish(&replayed)?;
             self.require_deployment_replayed_snapshot(&replayed, physical.size)?;
 
@@ -123,7 +183,7 @@ impl Journal {
         // Recheck even after a failed parse/copy. No pathname is reopened, and no
         // seek on the append writer's shared open-file description occurs.
         self.require_protected_named_location(
-            Path::new(MAIN_DIRECTORY_V1), MAIN_NAME, 0, MAIN_LIMITS,
+            Path::new(MAIN_DIRECTORY_V1), MAIN_NAME, 0, limits,
         )?;
         self.validate_protected_writer_name_witness(&witness)?;
         if FileIdentity::of(&self.file)? != physical {
@@ -152,6 +212,12 @@ impl Journal {
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Copy)]
+enum CanaryCommitMemberV2 {
+    Main,
+    Sidecar,
 }
 
 /// Retains an original-opener denial without granting path or currentness authority.
@@ -215,6 +281,9 @@ pub(super) struct HistoryAuditV1<'data> {
     genesis: &'data DeploymentGenesisV1,
     signer: VerifyingKey,
     genesis_transaction: [u8; 16],
+    genesis_key: &'static [u8],
+    limits: super::JournalLimits,
+    canary_purpose: Option<&'data CanaryPurposeV2>,
     commits: usize,
     last_phase_key: Option<[u8; 10]>,
     retained: Option<RetainedDeploymentNativeHistoryV1>,
@@ -239,6 +308,35 @@ impl<'data> HistoryAuditV1<'data> {
             genesis,
             signer,
             genesis_transaction,
+            genesis_key: GENESIS_KEY,
+            limits: MAIN_LIMITS,
+            canary_purpose: None,
+            commits: 0,
+            last_phase_key: None,
+            retained: None,
+        })
+    }
+
+    /// Supplies selected DATA only from the same actual original owner.
+    fn from_canary_bindings(
+        expected: &'data BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+        owner: &'data VerifiedDeploymentGenesisV1<'_>,
+    ) -> Result<Self, JournalError> {
+        let limits = owner.main_limits();
+        if expected.is_empty() || expected.len() > limits.maximum_materialized_records {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        let purpose = owner.canary_purpose().ok_or(JournalError::ProtectedBoundary)?;
+        Ok(Self {
+            expected,
+            exact_genesis: owner.exact_bytes(),
+            genesis: owner.claims(),
+            signer: owner.publisher_verifier(),
+            genesis_transaction: owner.native_genesis_transaction()
+                .map_err(|_| JournalError::ProtectedBoundary)?,
+            genesis_key: owner.main_key(),
+            limits,
+            canary_purpose: Some(purpose),
             commits: 0,
             last_phase_key: None,
             retained: None,
@@ -255,7 +353,7 @@ impl<'data> HistoryAuditV1<'data> {
         let next_commits = self.commits
             .checked_add(1)
             .ok_or(JournalError::LimitExceeded("deployment native transactions"))?;
-        if next_commits > MAIN_LIMITS.maximum_transactions
+        if next_commits > self.limits.maximum_transactions
             || transaction.records().len() != 1
             || begin_sequence.checked_add(2) != Some(commit_sequence)
             || &transaction.id()[8..] == b"compact1"
@@ -277,7 +375,7 @@ impl<'data> HistoryAuditV1<'data> {
         if self.commits == 0 {
             if begin_sequence != 1
                 || commit_sequence != 3
-                || record.key() != GENESIS_KEY
+                || record.key() != self.genesis_key
                 || value != self.exact_genesis
                 || *transaction.id() != self.genesis_transaction
             {
@@ -287,15 +385,20 @@ impl<'data> HistoryAuditV1<'data> {
             let key: [u8; 10] = record.key()
                 .try_into()
                 .map_err(|_| JournalError::ProtectedBoundary)?;
-            if record.key() == GENESIS_KEY
+            if record.key() == self.genesis_key
                 || self.last_phase_key.is_some_and(|previous| previous >= key)
             {
                 return Err(JournalError::ProtectedBoundary);
             }
-            require_native_step_binding_v1(
+            if let Some(purpose) = self.canary_purpose {
+                require_native_canary_binding_v2(
+                    &key, value, self.exact_genesis, self.genesis, self.signer, purpose,
+                    *transaction.id(), begin_sequence,
+                ).map_err(|_| JournalError::ProtectedBoundary)?;
+            } else { require_native_step_binding_v1(
                 &key, value, self.genesis, self.signer, *transaction.id(), begin_sequence,
             )
-            .map_err(|_| JournalError::ProtectedBoundary)?;
+            .map_err(|_| JournalError::ProtectedBoundary)?; }
             self.last_phase_key = Some(key);
         }
 

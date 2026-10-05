@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use aos_sandbox::{HostPhysicalInvocationErrorV1, HostPhysicalInvocationLeaseV1};
 use aos_sandbox_linux::guest_confinement::task_has_subject;
-use aos_sandbox_linux::pidfd::PidFd;
+use aos_sandbox_linux::pidfd::{PidFd, PidFdProcObservationsV1};
 use aos_sandbox_linux::seqpacket::{ReceivedRecord, RetainedSeqpacketReceiveErrorV1, SeqpacketError};
 use zeroize::Zeroizing;
 
@@ -84,6 +84,8 @@ pub(in crate::tpm_nv_custody) enum PhysicalTpmFailureV1 {
     Unfinished,
     #[error("original Host disk association changed around fresh NV")]
     Changed,
+    #[error("selected original paired clock changed or failed")]
+    CanaryClock(#[from] super::CanaryClockCauseV2),
 }
 
 impl PhysicalTpmFailureV1 {
@@ -167,6 +169,37 @@ pub(in crate::tpm_nv_custody) struct RetainedHostPhysicalBindingV1<'owner, 'orig
     first_failure: Option<Arc<PhysicalTpmFailureV1>>,
     compared_before: Option<(StoredHostFloorV1, [u8; 32])>,
     debt: HostCarrierDebtV1,
+    canary: Option<CanaryPhysicalSlotsV2>,
+}
+
+/// Adds fixed selected-only destinations without changing ordinary replacement.
+struct CanaryPhysicalSlotsV2 {
+    requests: [Option<[u8; REQUEST_BYTES]>; 3],
+    replies: [Option<ReceivedRecord>; 3],
+    current: Option<usize>,
+    attempted: [bool; 3],
+    helper: Option<PidFdProcObservationsV1>,
+    command: Option<std::process::Command>,
+    latest: Option<HelperObservationV1>,
+    first: Arc<Option<PhysicalTpmFailureV1>>,
+    posts: [Option<PhysicalTpmFailureV1>; 8],
+}
+
+#[derive(Clone, Debug)]
+pub(in crate::tpm_nv_custody) struct CanaryPhysicalErrorV2 {
+    cause: Arc<Option<PhysicalTpmFailureV1>>,
+}
+
+impl fmt::Display for CanaryPhysicalErrorV2 {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("selected Host physical attempt is permanently fenced")
+    }
+}
+
+impl Error for CanaryPhysicalErrorV2 {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.cause.as_ref().as_ref().map(|cause| cause as &(dyn Error + 'static))
+    }
 }
 
 impl<'owner, 'origin, 'startup> RetainedHostPhysicalBindingV1<'owner, 'origin, 'startup> {
@@ -190,7 +223,212 @@ impl<'owner, 'origin, 'startup> RetainedHostPhysicalBindingV1<'owner, 'origin, '
                 acknowledgment: None,
                 observation: None,
             },
+            canary: None,
         }
+    }
+
+    pub(in crate::tpm_nv_custody) fn prepare_canary_v2(&mut self) -> Result<(), PhysicalTpmFailureV1> {
+        if self.canary.is_some() || self.phase != HostAttemptPhaseV1::Fresh {
+            return Err(PhysicalTpmFailureV1::State);
+        }
+        self.canary = Some(CanaryPhysicalSlotsV2 {
+            requests: [None; 3], replies: std::array::from_fn(|_| None),
+            current: None, attempted: [false; 3], helper: None, command: None, latest: None,
+            first: Arc::new(None), posts: std::array::from_fn(|_| None),
+        });
+        self.journal.prepare_canary_destinations_v2()?;
+        Ok(())
+    }
+
+    pub(in crate::tpm_nv_custody) fn is_canary_v2(&self) -> bool {
+        self.canary.is_some()
+    }
+
+    pub(in crate::tpm_nv_custody) fn begin_canary_v2(
+        &mut self, expected: HostAttemptPhaseV1,
+    ) -> Result<(), PhysicalTpmFailureV1> {
+        let selected = self.canary.as_mut().ok_or(PhysicalTpmFailureV1::State)?;
+        if selected.first.as_ref().is_some() || Arc::get_mut(&mut selected.first).is_none()
+            || selected.posts.iter().any(Option::is_some)
+        {
+            return Err(PhysicalTpmFailureV1::State);
+        }
+        begin_phase(&mut self.phase, expected)
+    }
+
+    pub(in crate::tpm_nv_custody) fn complete_canary_v2(&mut self) -> Result<(), PhysicalTpmFailureV1> {
+        complete_phase(&mut self.phase)
+    }
+
+    pub(in crate::tpm_nv_custody) fn stage_canary_request_v2(
+        &mut self, bytes: [u8; REQUEST_BYTES],
+    ) -> Result<(), PhysicalTpmFailureV1> {
+        let selected = self.canary.as_mut().ok_or(PhysicalTpmFailureV1::State)?;
+        let index = selected.requests.iter().position(Option::is_none)
+            .ok_or(PhysicalTpmFailureV1::State)?;
+        if selected.replies[index].is_some() || selected.attempted[index] {
+            return Err(PhysicalTpmFailureV1::State);
+        }
+        selected.requests[index] = Some(bytes);
+        selected.current = Some(index);
+        Ok(())
+    }
+
+    pub(in crate::tpm_nv_custody) fn canary_main_data_v2(
+        &mut self,
+    ) -> Result<super::journal::CanaryHostMainDataV2, PhysicalTpmFailureV1> {
+        Ok(self.journal.canary_main_data_v2()?)
+    }
+
+    pub(in crate::tpm_nv_custody) fn fund_canary_v2(
+        &mut self, transaction: &aos_sandbox::JournalTransaction,
+    ) -> Result<crate::tpm_nv_custody::HostFloorIntentDataV1, PhysicalTpmFailureV1> {
+        Ok(self.journal.fund_canary_same_v2(transaction)?)
+    }
+
+    pub(in crate::tpm_nv_custody) fn commit_canary_v2(
+        &mut self, step: super::journal::CanaryHostNativeStepV2,
+        transaction: &aos_sandbox::JournalTransaction,
+        original: &super::CanaryAuthenticatedRequestV3<'_>,
+    ) -> Result<(), PhysicalTpmFailureV1> {
+        self.journal.commit_canary_step_v2(step, transaction, original)?;
+        Ok(())
+    }
+
+    pub(in crate::tpm_nv_custody) fn canary_extend_input_v2(
+        &mut self, transaction: &aos_sandbox::JournalTransaction,
+    ) -> Result<[u8; 32], PhysicalTpmFailureV1> {
+        let input = self.journal.canary_extend_input_v2(transaction)?;
+        let value = self.canary.as_ref().and_then(|selected| selected.latest.as_ref())
+            .map(|observation| observation.value)
+            .ok_or(PhysicalTpmFailureV1::State)?;
+        let (stored, scope) = self.compared_state()?;
+        if reconcile_host_floor_data_v1(scope, stored.checkpoint,
+            stored.prepared.as_ref().map(|(intent, _)| *intent), stored.current, value,
+        )? != FloorRecoveryV1::ExtendPrepared {
+            return Err(PhysicalTpmFailureV1::Changed);
+        }
+        Ok(input)
+    }
+
+    pub(in crate::tpm_nv_custody) fn retain_canary_observation_v2(
+        &mut self, observation: HelperObservationV1,
+    ) -> Result<(), PhysicalTpmFailureV1> {
+        self.canary.as_mut().ok_or(PhysicalTpmFailureV1::State)?.latest = Some(observation);
+        Ok(())
+    }
+
+    pub(in crate::tpm_nv_custody) fn canary_nv_v2(&self) -> Result<[u8; 32], PhysicalTpmFailureV1> {
+        Ok(self.canary.as_ref().and_then(|selected| selected.latest.as_ref())
+            .ok_or(PhysicalTpmFailureV1::State)?.value)
+    }
+
+    // Retain the actual first owning cause before independent post observations
+    // or invocation shutdown. Arc clones share diagnostics, never an owner.
+    pub(in crate::tpm_nv_custody) fn retain_canary_failure_v2(
+        &mut self, cause: PhysicalTpmFailureV1,
+    ) -> Result<(), PhysicalTpmFailureV1> {
+        let selected = self.canary.as_mut().ok_or(PhysicalTpmFailureV1::State)?;
+        if selected.first.as_ref().is_none() {
+            let slot = Arc::get_mut(&mut selected.first).ok_or(PhysicalTpmFailureV1::State)?;
+            *slot = Some(cause);
+        }
+        Ok(())
+    }
+
+    pub(in crate::tpm_nv_custody) fn retain_canary_post_v2(
+        &mut self, index: usize, result: Result<(), PhysicalTpmFailureV1>,
+    ) {
+        if let Err(cause) = result {
+            if let Some(selected) = &mut self.canary {
+                if selected.first.as_ref().is_none() {
+                    let slot = match Arc::get_mut(&mut selected.first) {
+                        Some(slot) => slot,
+                        None => std::process::abort(),
+                    };
+                    *slot = Some(cause);
+                } else if let Some(slot) = selected.posts.get_mut(index) {
+                    if slot.is_some() {
+                        std::process::abort();
+                    }
+                    *slot = Some(cause);
+                } else {
+                    std::process::abort();
+                }
+            } else {
+                std::process::abort();
+            }
+        }
+    }
+
+    pub(in crate::tpm_nv_custody) fn canary_failure_v2(&self) -> Option<CanaryPhysicalErrorV2> {
+        self.canary.as_ref().filter(|selected| selected.first.as_ref().is_some())
+            .map(|selected| CanaryPhysicalErrorV2 { cause: Arc::clone(&selected.first) })
+    }
+
+    pub(in crate::tpm_nv_custody) fn canary_original_posts_v2(&mut self) {
+        let inputs = self.journal.observe_canary_inputs_v2().map_err(PhysicalTpmFailureV1::from);
+        self.retain_canary_post_v2(0, inputs);
+        let main = self.journal.observe_canary_main_name_v2().map_err(PhysicalTpmFailureV1::from);
+        self.retain_canary_post_v2(1, main);
+        let sidecar = self.journal.observe_canary_sidecar_name_v2().map_err(PhysicalTpmFailureV1::from);
+        self.retain_canary_post_v2(2, sidecar);
+        if let Some(invocation) = &mut self.invocation {
+            let result = invocation.recheck().map_err(PhysicalTpmFailureV1::from);
+            self.retain_canary_post_v2(3, result);
+        }
+    }
+
+    pub(in crate::tpm_nv_custody) fn observe_canary_helper_identity_v2(
+        &mut self, original: &PidFd,
+    ) -> Result<aos_sandbox_linux::pidfd::PidFdProcessIdentity, PhysicalTpmFailureV1> {
+        self.canary.as_mut().and_then(|selected| selected.helper.as_mut())
+            .ok_or(PhysicalTpmFailureV1::State)?
+            .observe_identity(original).map_err(PhysicalTpmFailureV1::Linux)
+    }
+
+    pub(in crate::tpm_nv_custody) fn capture_canary_helper_v2(
+        &mut self, original: &PidFd,
+    ) -> Result<aos_sandbox_linux::pidfd::PidFdProcessIdentity, PhysicalTpmFailureV1> {
+        let selected = self.canary.as_mut().ok_or(PhysicalTpmFailureV1::State)?;
+        if selected.helper.is_some() {
+            return Err(PhysicalTpmFailureV1::State);
+        }
+        selected.helper = Some(original.prepare_proc_observations_v1());
+        let helper = selected.helper.as_mut().ok_or(PhysicalTpmFailureV1::State)?;
+        let identity = helper.capture_stat(original).map_err(PhysicalTpmFailureV1::Linux)?;
+        let context = helper.capture_context(original).map_err(PhysicalTpmFailureV1::Linux)?;
+        require_canary_helper_context_v2(context)?;
+        Ok(identity)
+    }
+
+    pub(in crate::tpm_nv_custody) fn stage_canary_command_v2(
+        &mut self, command: std::process::Command,
+    ) -> Result<(), PhysicalTpmFailureV1> {
+        let selected = self.canary.as_mut().ok_or(PhysicalTpmFailureV1::State)?;
+        if selected.command.is_some() {
+            return Err(PhysicalTpmFailureV1::State);
+        }
+        selected.command = Some(command);
+        Ok(())
+    }
+
+    pub(in crate::tpm_nv_custody) fn spawn_canary_helper_v2(
+        &mut self, original: &super::CanaryAuthenticatedRequestV3<'_>,
+    ) -> Result<std::process::Child, PhysicalTpmFailureV1> {
+        let command = self.canary.as_mut().and_then(|selected| selected.command.as_mut())
+            .ok_or(PhysicalTpmFailureV1::State)?;
+        original.require_clock()?;
+        command.spawn().map_err(PhysicalTpmFailureV1::Child)
+    }
+
+    pub(in crate::tpm_nv_custody) fn observe_canary_helper_context_v2(
+        &mut self, original: &PidFd,
+    ) -> Result<(), PhysicalTpmFailureV1> {
+        let helper = self.canary.as_mut().and_then(|selected| selected.helper.as_mut())
+            .ok_or(PhysicalTpmFailureV1::State)?;
+        let context = helper.observe_context(original).map_err(PhysicalTpmFailureV1::Linux)?;
+        require_canary_helper_context_v2(context)
     }
 
     pub(in crate::tpm_nv_custody) fn begin(
@@ -343,7 +581,12 @@ impl<'owner, 'origin, 'startup> RetainedHostPhysicalBindingV1<'owner, 'origin, '
         &mut self,
         pidfd: &PidFd,
     ) -> Result<(), PhysicalTpmFailureV1> {
-        if !task_has_subject(pidfd, HELPER_SUBJECT).map_err(PhysicalTpmFailureV1::Linux)? {
+        if let Some(selected) = &mut self.canary {
+            let helper = selected.helper.as_mut().ok_or(PhysicalTpmFailureV1::State)?;
+            helper.observe_identity(pidfd).map_err(PhysicalTpmFailureV1::Linux)?;
+            let context = helper.observe_context(pidfd).map_err(PhysicalTpmFailureV1::Linux)?;
+            require_canary_helper_context_v2(context)?;
+        } else if !task_has_subject(pidfd, HELPER_SUBJECT).map_err(PhysicalTpmFailureV1::Linux)? {
             return Err(FloorErrorV1::Provisioning.into());
         }
         self.invocation.as_mut().ok_or(PhysicalTpmFailureV1::State)?
@@ -412,14 +655,33 @@ impl<'owner, 'origin, 'startup> RetainedHostPhysicalBindingV1<'owner, 'origin, '
         match frame {
             HostFrameV1::Hello => self.debt.hello_attempted = true,
             HostFrameV1::Auth => self.debt.auth_attempted = true,
-            HostFrameV1::Request => self.debt.request_attempted = true,
+            HostFrameV1::Request => {
+                if let Some(selected) = &mut self.canary {
+                    if let Some(index) = selected.current {
+                        selected.attempted[index] = true;
+                    }
+                } else {
+                    self.debt.request_attempted = true;
+                }
+            }
         }
     }
 
     pub(in crate::tpm_nv_custody) fn stage_reply(&mut self, kind: HostReplyV1, record: ReceivedRecord) {
         match kind {
             HostReplyV1::Acknowledgment => self.debt.acknowledgment = Some(record),
-            HostReplyV1::Observation => self.debt.observation = Some(record),
+            HostReplyV1::Observation => {
+                if let Some(selected) = &mut self.canary {
+                    let index = selected.current.unwrap_or_else(|| std::process::abort());
+                    let slot = selected.replies.get_mut(index).unwrap_or_else(|| std::process::abort());
+                    if slot.is_some() {
+                        std::process::abort();
+                    }
+                    *slot = Some(record);
+                } else {
+                    self.debt.observation = Some(record);
+                }
+            }
         }
     }
 
@@ -429,10 +691,24 @@ impl<'owner, 'origin, 'startup> RetainedHostPhysicalBindingV1<'owner, 'origin, '
     ) -> Result<&ReceivedRecord, PhysicalTpmFailureV1> {
         match kind {
             HostReplyV1::Acknowledgment => self.debt.acknowledgment.as_ref(),
-            HostReplyV1::Observation => self.debt.observation.as_ref(),
+            HostReplyV1::Observation => {
+                if let Some(selected) = &self.canary {
+                    selected.current.and_then(|index| selected.replies[index].as_ref())
+                } else {
+                    self.debt.observation.as_ref()
+                }
+            }
         }
         .ok_or(PhysicalTpmFailureV1::State)
     }
+}
+
+fn require_canary_helper_context_v2(context: &[u8]) -> Result<(), PhysicalTpmFailureV1> {
+    let context = context.strip_suffix(&[0]).or_else(|| context.strip_suffix(b"\n")).unwrap_or(context);
+    if context != HELPER_SUBJECT.as_bytes() {
+        return Err(FloorErrorV1::Provisioning.into());
+    }
+    Ok(())
 }
 
 fn begin_phase(
@@ -504,6 +780,77 @@ impl<'owner, 'origin, 'startup> HostPhysicalReadConsumerV1<'owner, 'origin, 'sta
     /// This cannot extend NV, write/recover journals or create a restart permit.
     pub(super) fn classify(&mut self) -> Result<FloorRecoveryV1, HostPhysicalReadErrorV1> {
         self.physical.classify_host()
+    }
+}
+
+/// Borrows the SAME original journal/physical engine for the fixed V2 producer.
+///
+/// Construction parks originals before admission. Only the coordinator with
+/// the genuine authenticated record can invoke its purpose-closed phases; no
+/// operation, raw transport, Names, floor, deadline or authority is supplied.
+pub(super) struct HostCanaryPhysicalConsumerV2<'owner, 'origin, 'startup> {
+    physical: RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'startup>,
+}
+
+impl<'owner, 'origin, 'startup> HostCanaryPhysicalConsumerV2<'owner, 'origin, 'startup> {
+    pub(super) fn retain(owner: &'owner mut HostOwnedJournalInputsV1<'origin, 'startup>) -> Self {
+        Self {
+            physical: RetainedPhysicalTpmOwnerV1::retain_host(RetainedHostPhysicalBindingV1::park(owner)),
+        }
+    }
+
+    pub(super) fn prepare_once(&mut self) -> Result<(), PhysicalTpmFailureV1> {
+        self.physical.prepare_canary_host_v2()
+    }
+
+    pub(super) fn admit(
+        &mut self, original: &super::CanaryAuthenticatedRequestV3<'_>,
+    ) -> Result<FloorRecoveryV1, CanaryPhysicalErrorV2> {
+        self.physical.admit_canary_host_v2(original)
+    }
+
+    pub(super) fn main_data(
+        &mut self, original: &super::CanaryAuthenticatedRequestV3<'_>,
+    ) -> Result<super::journal::CanaryHostMainDataV2, CanaryPhysicalErrorV2> {
+        self.physical.canary_main_data_v2(original)
+    }
+
+    pub(super) fn fund(
+        &mut self, transaction: &aos_sandbox::JournalTransaction,
+        original: &super::CanaryAuthenticatedRequestV3<'_>,
+    ) -> Result<crate::tpm_nv_custody::HostFloorIntentDataV1, CanaryPhysicalErrorV2> {
+        self.physical.fund_canary_host_v2(transaction, original)
+    }
+
+    pub(super) fn commit(
+        &mut self, step: super::journal::CanaryHostNativeStepV2,
+        transaction: &aos_sandbox::JournalTransaction,
+        original: &super::CanaryAuthenticatedRequestV3<'_>,
+    ) -> Result<(), CanaryPhysicalErrorV2> {
+        self.physical.commit_canary_host_v2(step, transaction, original)
+    }
+
+    pub(super) fn extend(
+        &mut self, transaction: &aos_sandbox::JournalTransaction,
+        original: &super::CanaryAuthenticatedRequestV3<'_>,
+    ) -> Result<(), CanaryPhysicalErrorV2> {
+        self.physical.extend_canary_host_v2(transaction, original)
+    }
+
+    pub(super) fn classify(
+        &mut self, original: &super::CanaryAuthenticatedRequestV3<'_>,
+    ) -> Result<FloorRecoveryV1, CanaryPhysicalErrorV2> {
+        self.physical.classify_canary_host_v2(original)
+    }
+
+    pub(super) fn final_nv(&self) -> Result<[u8; 32], PhysicalTpmFailureV1> {
+        self.physical.canary_final_nv_v2()
+    }
+
+    pub(super) fn terminal_observations(
+        &mut self, original: &super::CanaryAuthenticatedRequestV3<'_>,
+    ) -> Result<(), CanaryPhysicalErrorV2> {
+        self.physical.observe_canary_terminal_v2(original)
     }
 }
 

@@ -80,6 +80,7 @@ pub mod nix_service;
 mod error;
 mod fixed_role_credential;
 mod tpm_nv_custody;
+pub use tpm_nv_custody::{RuntimeDeploymentCanaryRunErrorV2, run_runtime_deployment_canary_once_v2};
 mod handoff;
 mod handshake;
 mod host_consumer_cgroup_transfer;

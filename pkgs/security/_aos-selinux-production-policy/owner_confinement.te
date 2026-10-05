@@ -742,6 +742,149 @@ allow { aos_sandbox_nix_t aos_nix_online_store_reader_t } aos_nix_online_store_t
 allow aos_sandbox_nix_t aos_nix_online_store_t:file ioctl;
 allowxperm aos_sandbox_nix_t aos_nix_online_store_t:file ioctl { 0x6686 };
 # AOS_ONLINE_NIX_END
+# AOS_HOST_RUNTIME_BEGIN
+
+require {
+    class memfd_file { getattr ioctl open read };
+}
+
+type_transition init_t aos_sandbox_storage_credential_t:file aos_sandbox_storage_credential_t "runtime-deployment-genesis-v1";
+type_transition init_t aos_sandbox_storage_credential_t:file aos_sandbox_storage_credential_t "runtime-deployment-provisioner-pin-v1";
+type_transition init_t aos_sandbox_storage_credential_t:file aos_sandbox_storage_credential_t "runtime-deployment-canary-purpose-v2";
+allow aos_sandbox_storage_t tmpfs_t:filesystem getattr;
+
+# Disabled fixed Host055 producer. The publisher owns already provisioned
+# journals and its independent delivery; only its measured private child may
+# open the TPM. Neither role inherits runtime/Create or provisioning authority.
+type aos_runtime_deployment_publisher_t;
+typeattribute aos_runtime_deployment_publisher_t domain;
+typeattribute aos_runtime_deployment_publisher_t aos_private_root_custody_domain;
+role system_r types aos_runtime_deployment_publisher_t;
+type aos_runtime_deployment_publisher_exec_t;
+type aos_runtime_deployment_profile_t;
+type aos_runtime_deployment_credential_t;
+type aos_runtime_deployment_state_t;
+type aos_runtime_deployment_lock_t;
+type aos_runtime_deployment_runtime_t;
+
+type aos_runtime_deployment_helper_t;
+typeattribute aos_runtime_deployment_helper_t domain;
+typeattribute aos_runtime_deployment_helper_t aos_private_root_custody_domain;
+typeattribute aos_runtime_deployment_helper_t aos_no_context_translation_domain;
+role system_r types aos_runtime_deployment_helper_t;
+type aos_runtime_deployment_helper_exec_t;
+
+allow init_t aos_runtime_deployment_publisher_exec_t:file { execute getattr map open read };
+allow init_t aos_runtime_deployment_publisher_t:process transition;
+allow init_t aos_runtime_deployment_publisher_t:process2 nnp_transition;
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_publisher_exec_t:file { entrypoint execute getattr map open read };
+allow aos_runtime_deployment_publisher_t self:process { fork getattr getsched sigchld signal };
+allow aos_runtime_deployment_publisher_t init_t:fd use;
+allow aos_runtime_deployment_publisher_t self:unix_stream_socket { accept connect create getattr getopt listen read setopt shutdown write };
+
+# Original self, fixed Storage/PID1 task DATA, immutable image and status-only
+# observations. These reads do not grant ptrace, manager mutation or execution
+# of the delegate image. Every live comparison remains in its resident owner.
+allow aos_runtime_deployment_publisher_t { self init_t aos_sandbox_storage_t }:dir { getattr open read search };
+allow aos_runtime_deployment_publisher_t { self init_t aos_sandbox_storage_t }:file { getattr open read };
+allow aos_runtime_deployment_publisher_t { self init_t aos_sandbox_storage_t }:lnk_file { getattr read };
+allow aos_runtime_deployment_publisher_t { aos_sandbox_storage_exec_t init_exec_t }:file { getattr open read };
+allow aos_runtime_deployment_publisher_t { root_t var_t var_lib_t var_run_t usr_t etc_t device_t }:dir { getattr open search };
+allow aos_runtime_deployment_publisher_t aos_sandbox_view_parent_t:dir { getattr open search };
+allow aos_runtime_deployment_publisher_t { usr_t etc_t }:file { getattr open read };
+allow aos_runtime_deployment_publisher_t etc_t:lnk_file { getattr read };
+allow aos_runtime_deployment_publisher_t { lib_t ld_so_t }:file { execute getattr map open read };
+allow aos_runtime_deployment_publisher_t proc_t:dir { getattr open read search };
+allow aos_runtime_deployment_publisher_t proc_t:filesystem getattr;
+allow aos_runtime_deployment_publisher_t security_t:dir { getattr open read search };
+allow aos_runtime_deployment_publisher_t security_t:filesystem getattr;
+allow aos_runtime_deployment_publisher_t security_t:file { getattr open read };
+allow aos_runtime_deployment_publisher_t cgroup_t:dir { getattr open read search };
+allow aos_runtime_deployment_publisher_t cgroup_t:file { getattr open read };
+allow aos_runtime_deployment_publisher_t sysctl_t:dir search;
+allow aos_runtime_deployment_publisher_t sysctl_kernel_t:dir search;
+allow aos_runtime_deployment_publisher_t sysctl_kernel_t:file { getattr open read };
+allow aos_runtime_deployment_publisher_t systemd_unit_t:file { getattr open read };
+allow aos_runtime_deployment_publisher_t null_device_t:chr_file { getattr open read write };
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_profile_t:file { getattr open read };
+allow init_t aos_runtime_deployment_profile_t:file { getattr open read };
+allow aos_runtime_deployment_publisher_t system_dbusd_var_run_t:sock_file { getattr open read write };
+allow aos_runtime_deployment_publisher_t system_dbusd_t:unix_stream_socket connectto;
+allow aos_runtime_deployment_publisher_t { init_t system_dbusd_t }:dbus send_msg;
+allow { init_t system_dbusd_t } aos_runtime_deployment_publisher_t:dbus send_msg;
+allow aos_runtime_deployment_publisher_t systemd_unit_t:service status;
+allow aos_runtime_deployment_publisher_t init_t:system status;
+
+# Original credentials are immutable PID1 copies, not a secret-source writer.
+# Unknown names keep the ordinary temporary type. Storage uses its existing
+# credential SID/tmpfs association; the three added named transitions above
+# are the only selected additions to that established delivery mechanism.
+allow aos_runtime_deployment_credential_t tmpfs_t:filesystem associate;
+allow aos_runtime_deployment_publisher_t tmpfs_t:filesystem getattr;
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_credential_t:dir { getattr open read search };
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_credential_t:file { getattr open read };
+allow init_t aos_runtime_deployment_credential_t:dir { add_name create getattr mounton open read relabelto remove_name search setattr write };
+allow init_t aos_runtime_deployment_credential_t:file { create getattr open read setattr unlink write };
+type_transition init_t aos_runtime_deployment_credential_t:file init_tmpfs_t;
+type_transition init_t aos_runtime_deployment_credential_t:file aos_runtime_deployment_credential_t "runtime-deployment-genesis-v1";
+type_transition init_t aos_runtime_deployment_credential_t:file aos_runtime_deployment_credential_t "runtime-deployment-provisioner-pin-v1";
+type_transition init_t aos_runtime_deployment_credential_t:file aos_runtime_deployment_credential_t "runtime-deployment-canary-purpose-v2";
+type_transition init_t aos_runtime_deployment_credential_t:file aos_runtime_deployment_credential_t "runtime-deployment-signing-seed-v1";
+type_transition init_t aos_runtime_deployment_credential_t:file aos_runtime_deployment_credential_t "runtime-deployment-tpm-index-auth-v1";
+
+# Both journals/empty locks must already exist. No directory creation, removal,
+# rename, relabel, foreign writer or offline bootstrap is enabled here.
+allow { aos_runtime_deployment_state_t aos_runtime_deployment_lock_t } fs_t:filesystem associate;
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_state_t:dir { getattr open read search };
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_state_t:file { append getattr open read write };
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_lock_t:file { getattr lock open read write };
+
+# PID1 owns the fixed activated pathname. Storage alone connects; the received
+# full job remains sealed nonauthorizing DATA. These are type-wide SCM read
+# cells, never acceptance of an arbitrary descriptor as an authenticated job.
+allow aos_runtime_deployment_runtime_t tmpfs_t:filesystem associate;
+allow init_t aos_runtime_deployment_runtime_t:dir { add_name create getattr open remove_name search setattr write };
+allow init_t aos_runtime_deployment_runtime_t:sock_file { create getattr open read setattr unlink write };
+allow aos_sandbox_storage_t aos_runtime_deployment_runtime_t:dir { getattr open search };
+allow aos_sandbox_storage_t aos_runtime_deployment_runtime_t:sock_file { getattr open read write };
+allow aos_sandbox_storage_t aos_runtime_deployment_publisher_t:unix_stream_socket connectto;
+allow aos_runtime_deployment_publisher_t aos_sandbox_storage_t:fd use;
+allow aos_sandbox_storage_t aos_sandbox_host_t:fd use;
+allow { aos_sandbox_storage_t aos_runtime_deployment_publisher_t } aos_sandbox_host_t:memfd_file { getattr open read };
+
+# Same measured helper launcher and original lock pair; no PID1 helper entry,
+# new hierarchy capability, new lock open/flock, or journal write in the child.
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_helper_exec_t:file { execute getattr map open read };
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_helper_t:process { getattr sigkill signal transition };
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_helper_t:process2 nnp_transition;
+type_transition aos_runtime_deployment_publisher_t aos_runtime_deployment_helper_exec_t:process aos_runtime_deployment_helper_t;
+allow aos_runtime_deployment_helper_t aos_runtime_deployment_helper_exec_t:file { entrypoint execute getattr map open read };
+allow aos_runtime_deployment_helper_t aos_runtime_deployment_publisher_t:process sigchld;
+allow aos_runtime_deployment_helper_t aos_runtime_deployment_publisher_t:fd use;
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_helper_t:fd use;
+allow aos_runtime_deployment_helper_t aos_runtime_deployment_publisher_t:unix_stream_socket { getattr getopt read setopt shutdown write };
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_helper_t:dir { getattr open read search };
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_helper_t:file { getattr open read };
+allow aos_runtime_deployment_publisher_t aos_runtime_deployment_helper_t:lnk_file { getattr read };
+allow aos_runtime_deployment_helper_t self:process { getattr getsched setrlimit sigchld signal };
+allow aos_runtime_deployment_helper_t self:dir { getattr open search };
+allow aos_runtime_deployment_helper_t self:file { getattr open read };
+allow aos_runtime_deployment_helper_t self:lnk_file { getattr read };
+allow aos_runtime_deployment_helper_t { root_t usr_t device_t proc_t }:dir { getattr open search };
+allow aos_runtime_deployment_helper_t proc_t:filesystem getattr;
+allow aos_runtime_deployment_helper_t { lib_t ld_so_t }:file { execute getattr map open read };
+allow aos_runtime_deployment_helper_t security_t:dir { getattr open search };
+allow aos_runtime_deployment_helper_t security_t:filesystem getattr;
+allow aos_runtime_deployment_helper_t security_t:file { getattr open read };
+allow aos_runtime_deployment_helper_t aos_method46_tpm_device_t:chr_file { getattr open read write };
+allow aos_runtime_deployment_helper_t aos_runtime_deployment_lock_t:file { getattr read write };
+allow aos_runtime_deployment_helper_t null_device_t:chr_file { getattr open read write };
+
+# PID1's independent population/metadata observer is not a helper launch route.
+allow init_t { aos_runtime_deployment_publisher_t aos_runtime_deployment_helper_t }:dir { getattr search open read lock ioctl };
+allow init_t { aos_runtime_deployment_publisher_t aos_runtime_deployment_helper_t }:file { getattr open read lock ioctl };
+allow init_t { aos_runtime_deployment_publisher_t aos_runtime_deployment_helper_t }:lnk_file { getattr read };
+# AOS_HOST_RUNTIME_END
 # AOS_SELECTED_MOUNT_SOURCE_BEGIN
 
 # This closed suffix is compiled only with the fixed Mount/Source carrier.

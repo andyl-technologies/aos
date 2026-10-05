@@ -12,16 +12,22 @@
 //! runtime-deployment-signing-seed-v1 = separate private publisher seed:32
 //! ```
 
+use std::cell::RefCell;
 use std::path::Path;
 
 use aos_sandbox_protocol::runtime_deployment::{
     DEPLOYMENT_GENESIS_BYTES_V1, DeploymentGenesisV1,
+};
+use aos_sandbox_protocol::runtime_deployment::canary::{
+    COMPOSITE_GENESIS_BYTES_V2, CanaryPurposeV2, GENESIS_KEY_V2,
+    composite_genesis_transaction_v2,
 };
 use ed25519_dalek::{SigningKey, VerifyingKey};
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
 use crate::journal::RecordNamespace;
+use crate::public_api_session::RuntimeDeploymentCredentialCustodyV2;
 use crate::tpm_nv_custody::credential::{
     CredentialOwnerPolicyV1, read_optional_bounded_role_credential_v1,
 };
@@ -57,6 +63,84 @@ pub(crate) struct VerifiedDeploymentGenesisV1<'startup> {
     provisioner: VerifyingKey,
     signer: SigningKey,
     genesis: DeploymentGenesisV1,
+    canary: Option<CanaryGenesisCustodyV2>,
+}
+
+/// Keeps the actual protected originals, not a decoded replacement for custody.
+struct CanaryGenesisCustodyV2 {
+    credentials: RefCell<RuntimeDeploymentCredentialCustodyV2>,
+    purpose: CanaryPurposeV2,
+}
+
+/// Parks decoded inputs while the caller still owns every credential original.
+pub(super) struct CanaryGenesisAssemblyV2<'startup> {
+    startup: &'startup ProductionRuntimeDeploymentStartupV1,
+    exact: Vec<u8>,
+    provisioner: VerifyingKey,
+    signer: SigningKey,
+    genesis: DeploymentGenesisV1,
+    purpose: CanaryPurposeV2,
+}
+
+impl<'startup> CanaryGenesisAssemblyV2<'startup> {
+    pub(super) fn decode(
+        startup: &'startup ProductionRuntimeDeploymentStartupV1,
+        credentials: &RuntimeDeploymentCredentialCustodyV2,
+    ) -> Result<Self, NvCustodyErrorV1> {
+        if !startup.is_canary_v2() {
+            return Err(NvCustodyErrorV1::Provisioning);
+        }
+        let [signed, provisioner, seed, auth, purpose] = credentials.ready()
+            .ok_or(NvCustodyErrorV1::Provisioning)?;
+        let provisioner = VerifyingKey::from_bytes(
+            &provisioner.try_into().map_err(|_| NvCustodyErrorV1::Encoding)?,
+        ).map_err(|_| NvCustodyErrorV1::Provisioning)?;
+        if provisioner.is_weak() || seed == [0; 32] || auth == [0; 32] || seed == auth {
+            return Err(NvCustodyErrorV1::Provisioning);
+        }
+        let mut secret = Zeroizing::new([0; 32]);
+        secret.copy_from_slice(seed);
+        let signer = SigningKey::from_bytes(&secret);
+        let genesis = decode_signed(signed, &provisioner)?;
+        require_bindings(&genesis, startup.profile_digest(), startup.canonical_policy_digest())?;
+        if genesis.signer != signer.verifying_key().to_bytes()
+            || genesis.signer == provisioner.to_bytes()
+        {
+            return Err(NvCustodyErrorV1::Provisioning);
+        }
+        let purpose = CanaryPurposeV2::decode(
+            purpose,
+            &signed.try_into().map_err(|_| NvCustodyErrorV1::Encoding)?,
+            &genesis,
+            &provisioner,
+        ).map_err(|_| NvCustodyErrorV1::Provisioning)?;
+        require_canary_contracts(startup, &purpose)?;
+
+        let mut exact = Vec::new();
+        exact.try_reserve_exact(COMPOSITE_GENESIS_BYTES_V2)
+            .map_err(|_| NvCustodyErrorV1::Unavailable)?;
+        exact.extend_from_slice(signed);
+        exact.extend_from_slice(purpose.bytes());
+        Ok(Self { startup, exact, provisioner, signer, genesis, purpose })
+    }
+
+    /// No check or allocation follows the original credential move.
+    pub(super) fn into_original(
+        self,
+        credentials: RuntimeDeploymentCredentialCustodyV2,
+    ) -> VerifiedDeploymentGenesisV1<'startup> {
+        VerifiedDeploymentGenesisV1 {
+            startup: self.startup,
+            exact: self.exact,
+            provisioner: self.provisioner,
+            signer: self.signer,
+            genesis: self.genesis,
+            canary: Some(CanaryGenesisCustodyV2 {
+                credentials: RefCell::new(credentials),
+                purpose: self.purpose,
+            }),
+        }
+    }
 }
 
 impl<'startup> VerifiedDeploymentGenesisV1<'startup> {
@@ -90,6 +174,7 @@ impl<'startup> VerifiedDeploymentGenesisV1<'startup> {
             provisioner,
             signer,
             genesis,
+            canary: None,
         };
         owner.recheck()?;
         Ok(owner)
@@ -101,6 +186,9 @@ impl<'startup> VerifiedDeploymentGenesisV1<'startup> {
     ///
     /// Rejects any startup drift or missing/substituted fixed credential.
     pub(crate) fn recheck(&self) -> Result<(), NvCustodyErrorV1> {
+        if let Some(canary) = &self.canary {
+            return self.recheck_canary(canary).map_err(|_| NvCustodyErrorV1::Provisioning);
+        }
         self.startup.recheck().map_err(|_| NvCustodyErrorV1::Provisioning)?;
         if read_role(GENESIS_ROLE, SIGNED_GENESIS_BYTES, false)? != self.exact
             || read_provisioner()?.to_bytes() != self.provisioner.to_bytes()
@@ -150,12 +238,119 @@ impl<'startup> VerifiedDeploymentGenesisV1<'startup> {
     }
 
     pub(crate) fn scope(&self) -> [u8; 32] {
+        if self.canary.is_some() {
+            return Sha256::new()
+                .chain_update(b"aos.sandbox.tpm-floor.runtime-deployment.canary-scope.v2\0")
+                .chain_update(&self.exact)
+                .finalize()
+                .into();
+        }
         Sha256::new()
             .chain_update(b"aos.sandbox.tpm-floor.closed-purpose.scope.v1\0")
             .chain_update(&self.exact)
             .finalize()
             .into()
     }
+
+    pub(crate) fn canary_purpose(&self) -> Option<&CanaryPurposeV2> {
+        self.canary.as_ref().map(|canary| &canary.purpose)
+    }
+
+    pub(crate) fn compare_canary_signing_original(
+        &self,
+        directory: &std::fs::File,
+        signing_file: &std::fs::File,
+    ) -> Result<(), super::RuntimeDeploymentComparisonErrorV1> {
+        self.recheck_selected()?;
+        {
+            let canary = self.canary.as_ref().ok_or(NvCustodyErrorV1::Provisioning)?;
+            let mut credentials = canary.credentials.try_borrow_mut()
+                .map_err(|_| NvCustodyErrorV1::Provisioning)?;
+            if credentials.compare_signing_original(directory, signing_file).is_err() {
+                let cause = credentials.diagnostic();
+                drop(credentials);
+                return Err(super::RuntimeDeploymentComparisonErrorV1::credential_diagnostic(cause));
+            }
+        }
+        // The original RefCell loan ends before the outer startup/credential
+        // comparison and before any Security-side crypto can run.
+        self.recheck_selected()
+    }
+
+    pub(crate) fn signed_genesis_bytes(&self) -> &[u8] {
+        if self.canary.is_some() { &self.exact[..SIGNED_GENESIS_BYTES] } else { &self.exact }
+    }
+
+    pub(crate) fn main_key(&self) -> &'static [u8] {
+        if self.canary.is_some() { GENESIS_KEY_V2 } else { GENESIS_KEY }
+    }
+
+    pub(crate) fn main_limits(&self) -> crate::journal::JournalLimits {
+        if self.canary.is_some() { super::preparation::CANARY_MAIN_LIMITS_V2 }
+        else { super::preparation::MAIN_LIMITS }
+    }
+
+    pub(crate) fn native_genesis_transaction(&self) -> Result<[u8; 16], NvCustodyErrorV1> {
+        if self.canary.is_some() {
+            composite_genesis_transaction_v2(&self.exact)
+                .map_err(|_| NvCustodyErrorV1::Encoding)
+        } else {
+            genesis_native_transaction_v1(&self.exact)
+        }
+    }
+
+    pub(super) fn recheck_selected(&self) -> Result<(), super::RuntimeDeploymentComparisonErrorV1> {
+        let canary = self.canary.as_ref().ok_or(NvCustodyErrorV1::Provisioning)?;
+        self.recheck_canary(canary)
+    }
+
+    fn recheck_canary(&self, canary: &CanaryGenesisCustodyV2)
+        -> Result<(), super::RuntimeDeploymentComparisonErrorV1>
+    {
+        self.startup.recheck()?;
+        let mut credentials = canary.credentials.try_borrow_mut()
+            .map_err(|_| NvCustodyErrorV1::Provisioning)?;
+        if credentials.recheck().is_err() {
+            let cause = credentials.diagnostic();
+            drop(credentials);
+            return Err(super::RuntimeDeploymentComparisonErrorV1::credential_diagnostic(cause));
+        }
+        let [signed, provisioner, seed, auth, purpose] = credentials.ready()
+            .ok_or(NvCustodyErrorV1::Provisioning)?;
+        if signed != self.signed_genesis_bytes()
+            || provisioner != self.provisioner.to_bytes()
+            || auth == [0; 32] || seed == [0; 32] || auth == seed
+            || purpose != canary.purpose.bytes()
+        {
+            credentials.fence();
+            return Err(NvCustodyErrorV1::Provisioning.into());
+        }
+        let mut secret = Zeroizing::new([0; 32]);
+        secret.copy_from_slice(seed);
+        if SigningKey::from_bytes(&secret).verifying_key() != self.signer.verifying_key()
+            || decode_signed(signed, &self.provisioner)? != self.genesis
+        {
+            credentials.fence();
+            return Err(NvCustodyErrorV1::Provisioning.into());
+        }
+        require_canary_contracts(self.startup, &canary.purpose)?;
+        drop(credentials);
+        self.startup.recheck().map_err(Into::into)
+    }
+}
+
+fn require_canary_contracts(
+    startup: &ProductionRuntimeDeploymentStartupV1,
+    purpose: &CanaryPurposeV2,
+) -> Result<(), NvCustodyErrorV1> {
+    let contracts = startup.canary_contracts_v2()
+        .map_err(|_| NvCustodyErrorV1::Provisioning)?;
+    for (offset, expected) in [160, 192, 224, 256, 288, 392].into_iter().zip(contracts) {
+        if purpose.contract(offset).map_err(|_| NvCustodyErrorV1::Encoding)? != expected {
+            return Err(NvCustodyErrorV1::Provisioning);
+        }
+    }
+    Ok(())
 }
 
 /// Derives the external provisioner's initial native UUID from signed bytes.
@@ -285,6 +480,31 @@ pub(super) fn credential_contract() -> [u8; 32] {
     hash.update([NAMESPACE as u8]);
     hash.update(0x0180_a055_u32.to_be_bytes());
     hash.update(0x8100_a055_u32.to_be_bytes());
+    hash.finalize().into()
+}
+
+/// Binds only the five original fixed, root-only read-only delivery roles.
+pub(super) fn canary_credential_contract_v2() -> [u8; 32] {
+    let mut hash = Sha256::new()
+        .chain_update(b"aos.runtime-deployment.canary-credential-contract.v2\0");
+    for text in [CREDENTIAL_DIRECTORY, UNIT, OWNER_CONTEXT,
+        "system_u:object_r:aos_runtime_deployment_credential_t"]
+    {
+        hash.update((text.len() as u64).to_be_bytes());
+        hash.update(text.as_bytes());
+    }
+    for (role, width) in [(GENESIS_ROLE, 468u64), (PROVISIONER_ROLE, 32),
+        (SIGNER_ROLE, 32), (AUTH_ROLE, 32), ("runtime-deployment-canary-purpose-v2", 496)]
+    {
+        hash.update((role.len() as u64).to_be_bytes());
+        hash.update(role.as_bytes());
+        hash.update(width.to_be_bytes());
+    }
+    hash.update(0u32.to_be_bytes());
+    hash.update(0u32.to_be_bytes());
+    hash.update(0o500u32.to_be_bytes());
+    hash.update(0o400u32.to_be_bytes());
+    hash.update(b"readonly-mount-no-access-or-default-acl");
     hash.finalize().into()
 }
 

@@ -16,6 +16,7 @@ pub(crate) mod physical;
     reason = "Host input admission has no physical coordinator or activation"
 )]
 mod host;
+pub use host::{RuntimeDeploymentCanaryRunErrorV2, run_runtime_deployment_canary_once_v2};
 
 mod floor;
 

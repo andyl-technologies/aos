@@ -73,6 +73,22 @@
 /var/lib/aos/sandbox-network/namespace-inspector/spent-staging/\.aosni-spent-[0-9a-f]{64} -- system_u:object_r:aos_sandbox_network_spent_record_t
 /var/lib/aos/sandbox-network/namespace-inspector/spent-final -d system_u:object_r:aos_sandbox_network_spent_final_t
 /var/lib/aos/sandbox-network/namespace-inspector/spent-final/aosni-spent-[0-9a-f]{64} -- system_u:object_r:aos_sandbox_network_spent_record_t
+# AOS_HOST_RUNTIME_BEGIN
+
+/run/credentials/aos-storaged\.service/(runtime-deployment-genesis-v1|runtime-deployment-provisioner-pin-v1|runtime-deployment-canary-purpose-v2) -- system_u:object_r:aos_sandbox_storage_credential_t
+
+# Fixed disabled Host055 artifacts and independently provisioned originals.
+/(nix|nix\.lower)/store/[^/]+-aos-sandbox-runtime-publisher-0\.1\.0/bin/aos-sandbox-runtime-publisher -- system_u:object_r:aos_runtime_deployment_publisher_exec_t
+/(nix|nix\.lower)/store/[^/]+-aos-runtime-deployment-tpm-helper-0\.1\.0/libexec/aos-runtime-deployment-tpm-helper -- system_u:object_r:aos_runtime_deployment_helper_exec_t
+/(nix|nix\.lower)/store/[^/]+-aos-runtime-deployment-startup-profile-1/(profile\.json|source-policy\.33|effective-policy\.tsv) -- system_u:object_r:aos_runtime_deployment_profile_t
+/(nix|nix\.lower)/store/[^/]+-aos-runtime-deployment-storage-profile-2/(storage\.json|source-policy\.33|effective-policy\.tsv) -- system_u:object_r:aos_runtime_deployment_profile_t
+/run/credentials/aos-sandbox-runtime-publisher\.service -d system_u:object_r:aos_runtime_deployment_credential_t
+/run/credentials/aos-sandbox-runtime-publisher\.service/(runtime-deployment-genesis-v1|runtime-deployment-provisioner-pin-v1|runtime-deployment-canary-purpose-v2|runtime-deployment-signing-seed-v1|runtime-deployment-tpm-index-auth-v1) -- system_u:object_r:aos_runtime_deployment_credential_t
+/var/lib/aos/sandbox/runtime-deployment -d system_u:object_r:aos_runtime_deployment_state_t
+/var/lib/aos/sandbox/runtime-deployment/(preparation\.journal|tpm-floor\.journal) -- system_u:object_r:aos_runtime_deployment_state_t
+/var/lib/aos/sandbox/runtime-deployment/(preparation\.journal\.lock|tpm-floor\.journal\.lock) -- system_u:object_r:aos_runtime_deployment_lock_t
+/run/aos/sandbox/runtime-deployment\.sock -s system_u:object_r:aos_runtime_deployment_runtime_t
+# AOS_HOST_RUNTIME_END
 # AOS_SELECTED_MOUNT_SOURCE_BEGIN
 
 # The selected carrier's daemon is already sealed with this exact object type.

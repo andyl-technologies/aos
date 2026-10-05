@@ -29,11 +29,16 @@ diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
  #include "fd-util.h"
 +#include "fs-util.h"
  #include "fstab-util.h"
-@@ -6121,19 +6128,213 @@ static int merge_by_names(Unit *u, Set *names, const char *id) {
+@@ -6121,19 +6128,221 @@ static int merge_by_names(Unit *u, Set *names, const char *id) {
          return 0;
  }
  
 +bool aos_network_protected_name(const char *name) {
++        /* The fixed Host055 producer shares the same immutable parser and
++         * every-command seal, not the OwnLauncher image-loan role mapping. */
++        if (streq_ptr(name, "aos-sandbox-runtime-publisher.service") ||
++            streq_ptr(name, "aos-sandbox-runtime-publisher.socket"))
++                return true;
 +        return streq_ptr(name, "aos-netd.service") ||
 +               (name && startswith(name, "aos-sandbox-network-namespace-inspector@") && endswith(name, ".service")) ||
 +               (name && startswith(name, "aos-sandbox-network-lifecycle-worker@") && endswith(name, ".service"));
@@ -67,6 +72,9 @@ diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
 +                return "aos-sandbox-network-namespace-inspector@.service";
 +        if (startswith(name, "aos-sandbox-network-lifecycle-worker@") && endswith(name, ".service"))
 +                return "aos-sandbox-network-lifecycle-worker@.service";
++        if (streq(name, "aos-sandbox-runtime-publisher.service") ||
++            streq(name, "aos-sandbox-runtime-publisher.socket"))
++                return name;
 +        return NULL;
 +}
 +
@@ -243,7 +251,7 @@ diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
          /* Possibly rebuild the fragment map to catch new units */
          r = unit_file_build_name_map(&u->manager->lookup_paths,
                                       &u->manager->unit_cache_timestamp_hash,
-@@ -6149,24 +6350,48 @@ int unit_load_fragment(Unit *u) {
+@@ -6149,24 +6358,48 @@ int unit_load_fragment(Unit *u) {
                                      &names);
          if (r < 0 && r != -ENOENT)
                  return r;
@@ -397,7 +405,7 @@ diff --git a/src/core/unit.c b/src/core/unit.c
 +        r = aos_network_unit_environment(u, &env);
          if (r < 0) {
                  log_unit_error_errno(u, r, "Failed to determine effective environment: %m");
-@@ -5594,8 +5609,8 @@ int unit_set_exec_params(Unit *u, ExecParameters *p) {
+@@ -5594,8 +5609,18 @@ int unit_set_exec_params(Unit *u, ExecParameters *p) {
          assert(p);
  
          /* Copy parameters from manager */
@@ -406,8 +414,18 @@ diff --git a/src/core/unit.c b/src/core/unit.c
          if (r < 0)
                  return r;
  
++        /* Socket Exec* commands use this same path, not service_spawn. The
++         * existing Network command interval is unchanged by this closed cut. */
++        if (aos_network_image_guard_active() &&
++            (streq_ptr(u->id, "aos-sandbox-runtime-publisher.service") ||
++             streq_ptr(u->id, "aos-sandbox-runtime-publisher.socket"))) {
++                r = aos_network_verify_loaded_fragment(u);
++                if (r < 0)
++                        return r;
++        }
++
          p->runtime_scope = u->manager->runtime_scope;
-@@ -6664,4 +6679,8 @@ int unit_live_mount(
+@@ -6664,4 +6689,8 @@ int unit_live_mount(
          assert(u);
          assert(UNIT_VTABLE(u)->live_mount);
  

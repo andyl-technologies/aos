@@ -167,6 +167,26 @@ pub(crate) fn require_actual_mappings(
     if maps.len() as u64 > MAXIMUM_MAPS_BYTES {
         return Err(NormalRootStartupErrorV1::Image);
     }
+    require_executable_mapping_data_v2(files, required, &maps)
+}
+
+/// Compares bounded executable maps DATA through the existing closure engine.
+///
+/// This neither opens a process nor authenticates the source of these bytes.
+/// A selected caller must retain its genuine subject, original maps descriptor
+/// and immutable image pins, with the same owner checks around acquisition.
+///
+/// # Errors
+/// Rejects oversized, malformed or foreign executable mappings and missing
+/// required executable/loader members, exactly as the ordinary self reader.
+pub(crate) fn require_executable_mapping_data_v2(
+    files: &[RetainedImmutableFileV1],
+    required: &[&str],
+    maps: &str,
+) -> Result<(), NormalRootStartupErrorV1> {
+    if maps.len() as u64 > MAXIMUM_MAPS_BYTES {
+        return Err(NormalRootStartupErrorV1::Image);
+    }
     let identities = files
         .iter()
         .map(|file| file.physical_identity())

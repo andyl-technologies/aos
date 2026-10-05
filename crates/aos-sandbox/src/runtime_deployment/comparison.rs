@@ -25,7 +25,8 @@ use crate::tpm_nv_custody::{
     NvCustodyEndpointV1, NvCustodyErrorV1, canonical_purpose_main_head_v1,
 };
 
-use super::genesis::{NAMESPACE, VerifiedDeploymentGenesisV1};
+use super::genesis::{CanaryGenesisAssemblyV2, NAMESPACE, VerifiedDeploymentGenesisV1};
+use crate::public_api_session::RuntimeDeploymentCredentialCustodyV2;
 use super::preparation::{
     MAIN_LIMITS, compared_deployment_native_prefix_v1,
     compared_prospective_deployment_head_v1, compared_retained_deployment_transition_v1,
@@ -54,6 +55,49 @@ enum ComparisonFailureV1 {
     Unusable,
     #[error("deployment retained comparison differs")]
     Changed,
+    #[error("selected deployment resident diagnostic")]
+    Selected(#[source] SelectedComparisonDiagnosticV2),
+}
+
+/// Closed source aliases carry diagnostics only, not an admitted component.
+#[derive(Debug)]
+enum SelectedComparisonDiagnosticV2 {
+    Credential(std::sync::Arc<Option<crate::public_api_session::ControllerNixPublicCredentialErrorV1>>),
+    Admission(std::sync::Arc<Option<RuntimeDeploymentComparisonErrorV1>>),
+    Delegate(std::sync::Arc<Option<super::startup::RuntimeDeploymentStorageDelegateErrorV2>>),
+}
+
+impl std::fmt::Display for SelectedComparisonDiagnosticV2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("selected deployment original component rejected")
+    }
+}
+
+impl std::error::Error for SelectedComparisonDiagnosticV2 {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Credential(slot) => slot.as_ref().as_ref()
+                .map(|cause| cause as &(dyn std::error::Error + 'static)),
+            Self::Admission(slot) => slot.as_ref().as_ref()
+                .map(|cause| cause as &(dyn std::error::Error + 'static)),
+            Self::Delegate(slot) => slot.as_ref().as_ref()
+                .map(|cause| cause as &(dyn std::error::Error + 'static)),
+        }
+    }
+}
+
+impl RuntimeDeploymentComparisonErrorV1 {
+    pub(super) fn credential_diagnostic(
+        slot: std::sync::Arc<Option<crate::public_api_session::ControllerNixPublicCredentialErrorV1>>,
+    ) -> Self {
+        Self { cause: ComparisonFailureV1::Selected(SelectedComparisonDiagnosticV2::Credential(slot)) }
+    }
+
+    pub(super) fn delegate_diagnostic(
+        slot: std::sync::Arc<Option<super::startup::RuntimeDeploymentStorageDelegateErrorV2>>,
+    ) -> Self {
+        Self { cause: ComparisonFailureV1::Selected(SelectedComparisonDiagnosticV2::Delegate(slot)) }
+    }
 }
 
 impl From<NvCustodyErrorV1> for RuntimeDeploymentComparisonErrorV1 {
@@ -90,7 +134,162 @@ pub struct RuntimeDeploymentComparisonOriginsV1<'startup> {
     genesis: VerifiedDeploymentGenesisV1<'startup>,
 }
 
+/// Retains the selected credential admission and its once-only original transfer.
+///
+/// Its only input is the real captured publisher startup. Empty construction
+/// confers no authority and opens no credential. Callers park this owner before
+/// `admit_once`; failed reads, signatures and final checks keep returned Files,
+/// zeroizing buffers and the first typed cause resident in this same owner.
+#[must_use = "retain the entire selected admission on failure or interruption"]
+pub struct RuntimeDeploymentCanaryOriginsCaptureV2<'startup> {
+    startup: &'startup ProductionRuntimeDeploymentStartupV1,
+    credentials: Option<RuntimeDeploymentCredentialCustodyV2>,
+    assembly: Option<CanaryGenesisAssemblyV2<'startup>>,
+    origins: Option<RuntimeDeploymentComparisonOriginsV1<'startup>>,
+    first_failure: std::sync::Arc<Option<RuntimeDeploymentComparisonErrorV1>>,
+    attempted: bool,
+    ready: bool,
+}
+
+/// Shares a selected admission's immutable first typed diagnostic.
+///
+/// The opaque view exposes the original typed source chain, never secret bytes,
+/// a descriptor, retry permission or an independently usable Origins owner.
+pub struct RuntimeDeploymentCanaryFailureV2 {
+    cause: RuntimeDeploymentComparisonErrorV1,
+}
+
+impl std::fmt::Debug for RuntimeDeploymentCanaryFailureV2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeDeploymentCanaryFailureV2").finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for RuntimeDeploymentCanaryFailureV2 {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("selected deployment original admission rejected")
+    }
+}
+
+impl std::error::Error for RuntimeDeploymentCanaryFailureV2 {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { Some(&self.cause) }
+}
+
+impl<'startup> RuntimeDeploymentCanaryOriginsCaptureV2<'startup> {
+    /// Allocates empty selected slots around the same genuine startup borrow.
+    #[must_use]
+    pub fn new(startup: &'startup ProductionRuntimeDeploymentStartupV1) -> Self {
+        Self {
+            startup,
+            credentials: Some(RuntimeDeploymentCredentialCustodyV2::new()),
+            assembly: None,
+            origins: None,
+            first_failure: std::sync::Arc::new(None),
+            attempted: false,
+            ready: false,
+        }
+    }
+
+    /// Admits the fixed five-role selected delivery once, without moving failure custody.
+    ///
+    /// # Errors
+    /// Refuses repetition, ordinary startup, credential provenance or signature
+    /// changes, unequal purpose contracts and failed final original bookends.
+    /// An error or unwind leaves this owner permanently nonpositive.
+    pub fn admit_once(&mut self) -> Result<(), RuntimeDeploymentCanaryFailureV2> {
+        if self.first_failure.is_some() {
+            return Err(self.diagnostic());
+        }
+        if std::sync::Arc::get_mut(&mut self.first_failure).is_none() {
+            std::process::abort();
+        }
+        let result = if self.attempted {
+            Err(RuntimeDeploymentComparisonErrorV1 { cause: ComparisonFailureV1::Unusable })
+        } else {
+            self.attempted = true;
+            self.admit_inner()
+        };
+        match result {
+            Ok(()) => {
+                self.ready = true;
+                Ok(())
+            }
+            Err(error) => {
+                self.ready = false;
+                let slot = std::sync::Arc::get_mut(&mut self.first_failure)
+                    .unwrap_or_else(|| std::process::abort());
+                *slot = Some(error);
+                Err(self.diagnostic())
+            }
+        }
+    }
+
+    fn diagnostic(&self) -> RuntimeDeploymentCanaryFailureV2 {
+        RuntimeDeploymentCanaryFailureV2 {
+            cause: RuntimeDeploymentComparisonErrorV1 {
+                cause: ComparisonFailureV1::Selected(SelectedComparisonDiagnosticV2::Admission(
+                    std::sync::Arc::clone(&self.first_failure),
+                )),
+            },
+        }
+    }
+
+    /// Borrows the once-admitted original without extracting its credentials.
+    #[must_use]
+    pub fn origins(&self) -> Option<&RuntimeDeploymentComparisonOriginsV1<'startup>> {
+        if self.ready { self.origins.as_ref() } else { None }
+    }
+
+    fn admit_inner(&mut self) -> Result<(), RuntimeDeploymentComparisonErrorV1> {
+        self.startup.recheck()?;
+        if !self.startup.is_canary_v2() {
+            return Err(NvCustodyErrorV1::Provisioning.into());
+        }
+        let credentials = self.credentials.as_mut().ok_or(NvCustodyErrorV1::Provisioning)?;
+        if credentials.capture().is_err() {
+            return Err(RuntimeDeploymentComparisonErrorV1::credential_diagnostic(credentials.diagnostic()));
+        }
+        self.assembly = Some(CanaryGenesisAssemblyV2::decode(
+            self.startup,
+            self.credentials.as_ref().ok_or(NvCustodyErrorV1::Provisioning)?,
+        )?);
+        let credentials = self.credentials.as_mut().ok_or(NvCustodyErrorV1::Provisioning)?;
+        if credentials.recheck().is_err() {
+            return Err(RuntimeDeploymentComparisonErrorV1::credential_diagnostic(credentials.diagnostic()));
+        }
+        self.startup.recheck()?;
+
+        // Validate the whole destination tuple before moving any original.
+        // Failure restores the exact same tuple; success moves it once and
+        // parks the completed owner before its fallible final comparison.
+        let pair = (self.assembly.take(), self.credentials.take());
+        let (assembly, credentials) = match pair {
+            (Some(assembly), Some(credentials)) => (assembly, credentials),
+            (assembly, credentials) => {
+                self.assembly = assembly;
+                self.credentials = credentials;
+                return Err(NvCustodyErrorV1::Provisioning.into());
+            }
+        };
+        self.origins = Some(RuntimeDeploymentComparisonOriginsV1 {
+            genesis: assembly.into_original(credentials),
+        });
+        self.origins.as_ref().ok_or(NvCustodyErrorV1::Provisioning)?.recheck()
+    }
+}
+
 impl<'startup> RuntimeDeploymentComparisonOriginsV1<'startup> {
+    /// Parks the fixed selected credential attempt around this actual startup.
+    ///
+    /// This is empty custody, not admission. The returned owner must remain
+    /// resident while its once-only admission and every later loan are used.
+    #[must_use]
+    pub fn capture_canary_v2(
+        startup: &'startup ProductionRuntimeDeploymentStartupV1,
+    ) -> RuntimeDeploymentCanaryOriginsCaptureV2<'startup> {
+        RuntimeDeploymentCanaryOriginsCaptureV2::new(startup)
+    }
+
     /// Returns the existing fixed main limits as rechecked input DATA.
     ///
     /// This exposes no writer, reservation or permission to select other limits.
@@ -100,7 +299,7 @@ impl<'startup> RuntimeDeploymentComparisonOriginsV1<'startup> {
     /// Rejects drift of the same genuine startup or fixed genesis credentials.
     pub fn compared_main_limits(&self) -> Result<JournalLimits, RuntimeDeploymentComparisonErrorV1> {
         self.recheck()?;
-        let limits = MAIN_LIMITS;
+        let limits = self.genesis.main_limits();
         self.recheck()?;
         Ok(limits)
     }
@@ -125,6 +324,9 @@ impl<'startup> RuntimeDeploymentComparisonOriginsV1<'startup> {
     ///
     /// Rejects startup, policy, image, service or fixed credential drift.
     pub fn recheck(&self) -> Result<(), RuntimeDeploymentComparisonErrorV1> {
+        if self.genesis.canary_purpose().is_some() {
+            return self.genesis.recheck_selected();
+        }
         self.genesis.recheck().map_err(Into::into)
     }
 
@@ -152,7 +354,57 @@ impl<'startup> RuntimeDeploymentComparisonOriginsV1<'startup> {
     /// Borrows the exact admitted signed genesis as historical input DATA.
     #[must_use]
     pub fn signed_genesis(&self) -> &[u8] {
-        self.genesis.exact_bytes()
+        self.genesis.signed_genesis_bytes()
+    }
+
+    /// Borrows the exact admitted selected purpose as historical DATA only.
+    #[must_use]
+    pub fn canary_purpose_v2(&self)
+        -> Option<&aos_sandbox_protocol::runtime_deployment::canary::CanaryPurposeV2>
+    {
+        self.genesis.canary_purpose()
+    }
+
+    /// Compares an additional original signing File with the selected fixed delivery.
+    ///
+    /// The directory and leaf are borrowed observations, never inputs that
+    /// construct these Origins or an authority-bearing signer. A successful
+    /// unit result exposes no key, bytes, descriptor, signature or permission.
+    ///
+    /// # Errors
+    /// Refuses ordinary or fenced custody, changed original startup/roles,
+    /// foreign protected directory or leaf, nonexact width, mode, SID, ACL,
+    /// mount, fixed name, or retained inode identity.
+    pub fn compare_canary_signing_original_v2(
+        &self,
+        original_directory: &std::fs::File,
+        original_signing_file: &std::fs::File,
+    ) -> Result<(), RuntimeDeploymentComparisonErrorV1> {
+        self.genesis.compare_canary_signing_original(
+            original_directory, original_signing_file,
+        )
+    }
+
+    /// Borrows composite genesis DATA without permitting another original owner.
+    #[must_use]
+    pub fn admitted_genesis_bytes_v2(&self) -> &[u8] { self.genesis.exact_bytes() }
+
+    /// Prepares empty fixed Storage-delegation slots around these genuine Origins.
+    ///
+    /// No socket, packet, PID, image or declared-current scalar can construct
+    /// a completed capture. The actual original record and carrier must remain
+    /// resident beside the returned attempt throughout its once-only checks.
+    ///
+    /// # Errors
+    /// Refuses ordinary purpose, changed or fenced original startup/credentials.
+    pub fn capture_storage_delegate_v2(
+        &self,
+    ) -> Result<super::startup::RuntimeDeploymentStorageDelegateCaptureV2<'_>, RuntimeDeploymentComparisonErrorV1> {
+        self.recheck()?;
+        let purpose = self.genesis.canary_purpose().ok_or(NvCustodyErrorV1::Provisioning)?;
+        Ok(super::startup::RuntimeDeploymentStorageDelegateCaptureV2::new(
+            self.genesis.startup(), purpose,
+        ))
     }
 
     /// Borrows the independently admitted genesis claims without floor authority.
@@ -280,6 +532,53 @@ pub struct HeldRuntimeDeploymentPairComparisonV1<'origin, 'startup, 'main, 'side
 }
 
 impl HeldRuntimeDeploymentPairComparisonV1<'_, '_, '_, '_> {
+    /// Compares returned selected main COMMIT DATA against these originals.
+    ///
+    /// The genuine selected genesis and original native replay establish only
+    /// equality of the actual TX, BEGIN/COMMIT/NEXT and same File's durable end.
+    /// This UNIT comparison issues no floor, append, recovery or currentness.
+    ///
+    /// # Errors
+    /// Refuses ordinary mode, fenced pair, changed names/cut, absent exact TX
+    /// or differing original native metadata and returned commit/extent DATA.
+    pub fn compare_canary_main_commit_v2(
+        &mut self,
+        transaction: &JournalTransaction,
+        returned: &crate::CommitResult,
+    ) -> Result<(), RuntimeDeploymentComparisonErrorV1> {
+        self.begin_operation()?;
+        self.recheck_inner()?;
+        self.current.main.compare_canary_main_commit_v2(
+            &self.current.origins.genesis, transaction, returned,
+        )?;
+        self.recheck_inner()?;
+        self.usable = true;
+        Ok(())
+    }
+
+    /// Compares returned selected sidecar COMMIT DATA against these originals.
+    ///
+    /// It borrows this same pair and the same original replay engine. Successful
+    /// comparison is DATA, never sidecar/NV/currentness or mutation authority.
+    ///
+    /// # Errors
+    /// Refuses ordinary mode, fenced pair, changed names/cut, absent exact TX
+    /// or differing actual native boundaries, commit sequence or durable extent.
+    pub fn compare_canary_sidecar_commit_v2(
+        &mut self,
+        transaction: &JournalTransaction,
+        returned: &crate::CommitResult,
+    ) -> Result<(), RuntimeDeploymentComparisonErrorV1> {
+        self.begin_operation()?;
+        self.recheck_inner()?;
+        self.sidecar.compare_canary_sidecar_commit_v2(
+            &self.current.origins.genesis, transaction, returned,
+        )?;
+        self.recheck_inner()?;
+        self.usable = true;
+        Ok(())
+    }
+
     /// Rechecks the same original pair, full native snapshots and genuine Origins.
     ///
     /// # Errors
@@ -596,8 +895,9 @@ impl<'origin, 'startup, 'main>
         let target = compared_prospective_deployment_head_v1(
             &self.origins.genesis, self.snapshot.sequence(), &records, transaction,
         )?;
-        let prepared = transaction.encode_prepared_v1(MAIN_LIMITS)?;
-        let maximum = JournalTransaction::maximum_prepared_bytes_v1(MAIN_LIMITS)?;
+        let limits = self.origins.genesis.main_limits();
+        let prepared = transaction.encode_prepared_v1(limits)?;
+        let maximum = JournalTransaction::maximum_prepared_bytes_v1(limits)?;
         if prepared.len() > maximum {
             return Err(changed_comparison());
         }

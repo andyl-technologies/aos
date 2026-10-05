@@ -857,6 +857,109 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
         operation.finish(result)
     }
 
+    pub(in crate::tpm_nv_custody) fn prepare_canary_host_v2(&mut self) -> Result<(), PhysicalTpmFailureV1> {
+        self.host_mut()?.prepare_canary_v2()
+    }
+
+    pub(in crate::tpm_nv_custody) fn admit_canary_host_v2(
+        &mut self, original: &super::host::CanaryAuthenticatedRequestV3<'_>,
+    ) -> Result<FloorRecoveryV1, super::host::physical::CanaryPhysicalErrorV2> {
+        let operation = CanaryHostOperationV2::begin(self, HostAttemptPhaseV1::Fresh);
+        let result = if operation.began {
+            operation.owner.admit_host_inner_v2(Some(original))
+        } else { Err(PhysicalTpmFailureV1::State) };
+        operation.finish(result, original)
+    }
+
+    pub(in crate::tpm_nv_custody) fn canary_main_data_v2(
+        &mut self, original: &super::host::CanaryAuthenticatedRequestV3<'_>,
+    ) -> Result<super::host::CanaryHostMainDataV2, super::host::physical::CanaryPhysicalErrorV2> {
+        let operation = CanaryHostOperationV2::begin(self, HostAttemptPhaseV1::Ready);
+        let result = if operation.began {
+            operation.owner.host_mut().and_then(|host| host.canary_main_data_v2())
+        } else { Err(PhysicalTpmFailureV1::State) };
+        operation.finish(result, original)
+    }
+
+    pub(in crate::tpm_nv_custody) fn fund_canary_host_v2(
+        &mut self, transaction: &aos_sandbox::JournalTransaction,
+        original: &super::host::CanaryAuthenticatedRequestV3<'_>,
+    ) -> Result<super::HostFloorIntentDataV1, super::host::physical::CanaryPhysicalErrorV2> {
+        let operation = CanaryHostOperationV2::begin(self, HostAttemptPhaseV1::Ready);
+        let result = if operation.began {
+            operation.owner.host_mut().and_then(|host| host.fund_canary_v2(transaction))
+        } else { Err(PhysicalTpmFailureV1::State) };
+        operation.finish(result, original)
+    }
+
+    pub(in crate::tpm_nv_custody) fn commit_canary_host_v2(
+        &mut self, step: super::host::CanaryHostNativeStepV2,
+        transaction: &aos_sandbox::JournalTransaction,
+        original: &super::host::CanaryAuthenticatedRequestV3<'_>,
+    ) -> Result<(), super::host::physical::CanaryPhysicalErrorV2> {
+        let operation = CanaryHostOperationV2::begin(self, HostAttemptPhaseV1::Ready);
+        let result = if operation.began {
+            operation.owner.require_custody().and_then(|()| {
+                operation.owner.host_mut()?.commit_canary_v2(step, transaction, original)
+            })
+        } else { Err(PhysicalTpmFailureV1::State) };
+        operation.finish(result, original)
+    }
+
+    pub(in crate::tpm_nv_custody) fn extend_canary_host_v2(
+        &mut self, transaction: &aos_sandbox::JournalTransaction,
+        original: &super::host::CanaryAuthenticatedRequestV3<'_>,
+    ) -> Result<(), super::host::physical::CanaryPhysicalErrorV2> {
+        let operation = CanaryHostOperationV2::begin(self, HostAttemptPhaseV1::Ready);
+        let result = if operation.began {
+            (|| {
+                operation.owner.host_mut()?.capture_disk_cut()?;
+                let input = operation.owner.host_mut()?.canary_extend_input_v2(transaction)?;
+                let observation = operation.owner.exchange_inner_v2(
+                    HelperOperationV1::Extend, input, Some(original),
+                )?;
+                if operation.owner.host_mut()?.classify_observation(observation)? != FloorRecoveryV1::CommitPrepared {
+                    return Err(PhysicalTpmFailureV1::Changed);
+                }
+                operation.owner.host_mut()?.require_disk_cut()?;
+                operation.owner.require_custody()
+            })()
+        } else { Err(PhysicalTpmFailureV1::State) };
+        operation.finish(result, original)
+    }
+
+    pub(in crate::tpm_nv_custody) fn classify_canary_host_v2(
+        &mut self, original: &super::host::CanaryAuthenticatedRequestV3<'_>,
+    ) -> Result<FloorRecoveryV1, super::host::physical::CanaryPhysicalErrorV2> {
+        let operation = CanaryHostOperationV2::begin(self, HostAttemptPhaseV1::Ready);
+        let result = if operation.began {
+            operation.owner.classify_host_inner_v2(Some(original))
+        } else { Err(PhysicalTpmFailureV1::State) };
+        operation.finish(result, original)
+    }
+
+    pub(in crate::tpm_nv_custody) fn canary_final_nv_v2(&self) -> Result<[u8; 32], PhysicalTpmFailureV1> {
+        let host = self.host()?;
+        host.canary_nv_v2()
+    }
+
+    /// Runs one same-original observation pass without issuing a TPM command.
+    /// A failed component returns its already resident cause/debt rather than
+    /// issuing another pass or manufacturing a fresh positive floor proof.
+    pub(in crate::tpm_nv_custody) fn observe_canary_terminal_v2(
+        &mut self, original: &super::host::CanaryAuthenticatedRequestV3<'_>,
+    ) -> Result<(), super::host::physical::CanaryPhysicalErrorV2> {
+        if let RetainedPhysicalBindingV1::Host(host) = &self.binding {
+            if let Some(cause) = host.canary_failure_v2() {
+                // Its failed action already ran the inner terminal posts.
+                return Err(cause);
+            }
+        }
+        let operation = CanaryHostOperationV2::begin(self, HostAttemptPhaseV1::Ready);
+        let result = if operation.began { Ok(()) } else { Err(PhysicalTpmFailureV1::State) };
+        operation.finish(result, original)
+    }
+
     pub(in crate::tpm_nv_custody) fn classify_host(
         &mut self,
     ) -> Result<FloorRecoveryV1, HostPhysicalReadErrorV1> {
@@ -866,6 +969,12 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
     }
 
     fn admit_host_inner(&mut self) -> Result<FloorRecoveryV1, PhysicalTpmFailureV1> {
+        self.admit_host_inner_v2(None)
+    }
+
+    fn admit_host_inner_v2(
+        &mut self, original: Option<&super::host::CanaryAuthenticatedRequestV3<'_>>,
+    ) -> Result<FloorRecoveryV1, PhysicalTpmFailureV1> {
         self.host_mut()?.claim_invocation()?;
         self.host_mut()?.retain_locks()?;
         self.nonce = crate::entropy::nonzero_random::<32, _>(&mut crate::entropy::KernelEntropy)
@@ -884,24 +993,39 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
         let (channel, child_channel) = SeqpacketSocket::pair_with_record_subjects()
             .map_err(PhysicalTpmFailureV1::Send)?;
         self.channel = Some(channel);
-        let child = Command::new(self.host()?.helper_path())
-            .env_clear()
-            .stdin(Stdio::from(child_channel))
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(PhysicalTpmFailureV1::Child)?;
+        let child = if let Some(original) = original {
+            let mut command = Command::new(self.host()?.helper_path());
+            command.env_clear()
+                .stdin(Stdio::from(child_channel))
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            self.host_mut()?.stage_canary_command_v2(command)?;
+            self.host_mut()?.recheck()?;
+            self.host_mut()?.spawn_canary_helper_v2(original)?
+        } else {
+            Command::new(self.host()?.helper_path())
+                .env_clear()
+                .stdin(Stdio::from(child_channel))
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(PhysicalTpmFailureV1::Child)?
+        };
         // Stage each real owner BEFORE later pidfd/identity/image admission.
         self.child = Some(OwnedHelperChildV1(child));
         let pid = NonZeroU32::new(self.child()?.0.id()).ok_or(FloorErrorV1::Unavailable)?;
         self.pidfd = Some(PidFd::open(pid).map_err(PhysicalTpmFailureV1::Linux)?);
-        self.identity = Some(
-            self.pidfd()?.process_identity()
-                .map_err(PhysicalTpmFailureV1::Linux)?,
-        );
+        self.identity = Some(if original.is_some() {
+            match (&mut self.binding, self.pidfd.as_ref()) {
+                (RetainedPhysicalBindingV1::Host(host), Some(pidfd)) => host.capture_canary_helper_v2(pidfd)?,
+                _ => return Err(PhysicalTpmFailureV1::State),
+            }
+        } else {
+            self.pidfd()?.process_identity().map_err(PhysicalTpmFailureV1::Linux)?
+        });
         self.measure_host_helper_before_hello()?;
 
-        self.send_frame(&hello[..], SentLocksV1::Host, Some(HostFrameV1::Hello))?;
+        self.send_frame_inner_v2(&hello[..], SentLocksV1::Host, Some(HostFrameV1::Hello), original)?;
         let acknowledgment = self.receive_frame(LOCK_ACK_BYTES, HostReplyV1::Acknowledgment)?;
         framing::require_lock_ack_v2(self.received_payload(&acknowledgment)?, self.nonce)
             .map_err(PhysicalTpmFailureV1::Carrier)?;
@@ -915,15 +1039,31 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
         )
         .map_err(PhysicalTpmFailureV1::Carrier)?;
         self.host_mut()?.stage_auth(authentication.clone());
-        self.send_frame(&authentication[..], SentLocksV1::None, Some(HostFrameV1::Auth))?;
+        self.send_frame_inner_v2(&authentication[..], SentLocksV1::None, Some(HostFrameV1::Auth), original)?;
         drop(authentication);
         drop(auth);
-        self.classify_host_inner()
+        self.classify_host_inner_v2(original)
     }
 
     fn classify_host_inner(&mut self) -> Result<FloorRecoveryV1, PhysicalTpmFailureV1> {
+        self.classify_host_inner_v2(None)
+    }
+
+    fn classify_host_inner_v2(
+        &mut self, original: Option<&super::host::CanaryAuthenticatedRequestV3<'_>>,
+    ) -> Result<FloorRecoveryV1, PhysicalTpmFailureV1> {
         self.host_mut()?.capture_disk_cut()?;
-        let observation = self.exchange(HelperOperationV1::Read, [0; 32])?;
+        let observation = self.exchange_inner_v2(HelperOperationV1::Read, [0; 32], original)?;
+        if original.is_some() {
+            // Canonical observation fields have been decoded by the SAME
+            // engine. Keep the actual observed value before later disk checks.
+            let copy = HelperObservationV1 {
+                name: observation.name, name_algorithm: observation.name_algorithm,
+                attributes: observation.attributes, size: observation.size,
+                policy_length: observation.policy_length, value: observation.value,
+            };
+            self.host_mut()?.retain_canary_observation_v2(copy)?;
+        }
         let classification = self.host_mut()?.classify_observation(observation)?;
         self.require_custody()?;
         // Include the final helper/currentness check in the same disk cut's
@@ -1029,6 +1169,15 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
         operation: HelperOperationV1,
         input: [u8; 32],
     ) -> Result<HelperObservationV1, PhysicalTpmFailureV1> {
+        self.exchange_inner_v2(operation, input, None)
+    }
+
+    fn exchange_inner_v2(
+        &mut self,
+        operation: HelperOperationV1,
+        input: [u8; 32],
+        original: Option<&super::host::CanaryAuthenticatedRequestV3<'_>>,
+    ) -> Result<HelperObservationV1, PhysicalTpmFailureV1> {
         self.require_custody()?;
         let request = if self.is_host() {
             framing::encode_request_v2(operation, self.nonce, self.sequence, input)
@@ -1037,10 +1186,14 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
             encode_request_v2(operation, self.nonce, self.sequence, input)?
         };
         let frame = if self.is_host() {
-            if operation != HelperOperationV1::Read {
+            if operation != HelperOperationV1::Read && original.is_none() {
                 return Err(FloorErrorV1::Provisioning.into());
             }
-            self.host_mut()?.stage_request(request);
+            if original.is_some() {
+                self.host_mut()?.stage_canary_request_v2(request)?;
+            } else {
+                self.host_mut()?.stage_request(request);
+            }
             Some(HostFrameV1::Request)
         } else if self.is_retained_broker() {
             self.broker_mut()?.request = Some(request);
@@ -1049,7 +1202,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
             None
         };
         let result = (|| {
-            self.send_frame(&request, SentLocksV1::None, frame)?;
+            self.send_frame_inner_v2(&request, SentLocksV1::None, frame, original)?;
             let response = self.receive_frame(RESPONSE_BYTES, HostReplyV1::Observation)?;
             let payload = self.received_payload(&response)?;
             let observation = if self.is_host() {
@@ -1065,6 +1218,12 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
                 .ok_or(FloorErrorV1::Unavailable)?;
             Ok(observation)
         })();
+        if original.is_some() {
+            // The selected operation guard parks this raw owning cause before
+            // independent posts and only then closes the original invocation.
+            // Ordinary Host/Broker cleanup below remains the literal old path.
+            return result;
+        }
         if result.is_err() {
             self.poisoned = true;
             match &mut self.binding {
@@ -1129,6 +1288,16 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
         locks: SentLocksV1<'_>,
         frame: Option<HostFrameV1>,
     ) -> Result<(), PhysicalTpmFailureV1> {
+        self.send_frame_inner_v2(bytes, locks, frame, None)
+    }
+
+    fn send_frame_inner_v2(
+        &mut self,
+        bytes: &[u8],
+        locks: SentLocksV1<'_>,
+        frame: Option<HostFrameV1>,
+        original: Option<&super::host::CanaryAuthenticatedRequestV3<'_>>,
+    ) -> Result<(), PhysicalTpmFailureV1> {
         if self.is_retained_broker() {
             let attempt = self.broker_mut()?;
             if attempt.helper_phase != BrokerHelperPhaseV1::Measured {
@@ -1163,24 +1332,45 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
                 }
                 self.host_mut()?.note_attempt(frame);
             }
-            let channel = self.channel()?;
-            let sent = match &locks {
-                SentLocksV1::Broker(locks) => channel
-                    .send_with_descriptors(bytes, &[locks[0].as_fd(), locks[1].as_fd()]),
-                SentLocksV1::BrokerRetained => {
-                    let locks = &self.broker()?.locks;
-                    channel.send_with_descriptors(bytes, &[locks[0].as_fd(), locks[1].as_fd()])
+            let sent = if let Some(original) = original {
+                let descriptors = match &locks {
+                    SentLocksV1::Host => Some(self.host()?.lock_fds()?),
+                    SentLocksV1::None => None,
+                    _ => return Err(PhysicalTpmFailureV1::State),
+                };
+                let channel = self.channel()?;
+                // All owner/image/child/slot/frame observations precede this
+                // final original pair. No replacement deadline or resample
+                // follows it before the one native dispatch.
+                original.require_clock()?;
+                match descriptors {
+                    Some(descriptors) => channel.send_with_descriptors(bytes, &descriptors),
+                    None => channel.send(bytes),
                 }
-                SentLocksV1::Host => channel
-                    .send_with_descriptors(bytes, &self.host()?.lock_fds()?),
-                SentLocksV1::None => channel.send(bytes),
+            } else {
+                let channel = self.channel()?;
+                match &locks {
+                    SentLocksV1::Broker(locks) => channel
+                        .send_with_descriptors(bytes, &[locks[0].as_fd(), locks[1].as_fd()]),
+                    SentLocksV1::BrokerRetained => {
+                        let locks = &self.broker()?.locks;
+                        channel.send_with_descriptors(bytes, &[locks[0].as_fd(), locks[1].as_fd()])
+                    }
+                    SentLocksV1::Host => channel
+                        .send_with_descriptors(bytes, &self.host()?.lock_fds()?),
+                    SentLocksV1::None => channel.send(bytes),
+                }
             };
             match sent {
                 Ok(()) => {
                     self.check_broker_cold_deadline()?;
                     return Ok(());
                 }
-                Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {}
+                Err(error @ (SeqpacketError::WouldBlock | SeqpacketError::Interrupted)) => {
+                    if original.is_some() {
+                        return Err(self.send_error(error));
+                    }
+                }
                 Err(error) => return Err(self.send_error(error)),
             }
         }
@@ -1398,6 +1588,9 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
     fn observe_original_identity(&mut self) -> Result<PidFdProcessIdentity, PhysicalTpmFailureV1> {
         let pidfd = self.pidfd.as_ref().ok_or(FloorErrorV1::Unavailable)?;
         match &mut self.binding {
+            RetainedPhysicalBindingV1::Host(host) if host.is_canary_v2() => {
+                host.observe_canary_helper_identity_v2(pidfd)
+            }
             RetainedPhysicalBindingV1::Broker { attempt: Some(attempt), .. } => {
                 attempt.observations
                     .as_mut()
@@ -1420,7 +1613,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
         &mut self,
         frame: &ReceivedFrameV1,
     ) -> Result<bool, PhysicalTpmFailureV1> {
-        if !self.is_retained_broker() {
+        if !self.is_retained_broker() && !self.is_canary_host_v2() {
             // Host and Legacy retain the original pathname identity call.
             return Ok(
                 self.received_record(frame)?
@@ -1462,6 +1655,10 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
             RetainedPhysicalBindingV1::Host(host) => Ok(host),
             _ => Err(PhysicalTpmFailureV1::State),
         }
+    }
+
+    fn is_canary_host_v2(&self) -> bool {
+        matches!(&self.binding, RetainedPhysicalBindingV1::Host(host) if host.is_canary_v2())
     }
 
     fn broker_profile(&self) -> Result<FloorProfileV1, FloorErrorV1> {
@@ -1780,6 +1977,134 @@ impl Drop for RetainedPhysicalTpmOwnerV1<'_, '_, '_> {
         }
         // Broker adds no destructor effect. All original fields drop in order:
         // child -> channel -> pidfd -> identity -> image -> service -> profile.
+    }
+}
+
+/// Keeps the selected first owning cause resident before posts or shutdown.
+///
+/// This guard changes no ordinary disposition. Its eight post destinations
+/// were reserved before admission: inputs, main name, sidecar name, invocation,
+/// original helper process, context, carrier and unconditional final clock.
+struct CanaryHostOperationV2<'operation, 'owner, 'origin, 'startup> {
+    owner: &'operation mut RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'startup>,
+    began: bool,
+    complete: bool,
+}
+
+impl<'operation, 'owner, 'origin, 'startup>
+    CanaryHostOperationV2<'operation, 'owner, 'origin, 'startup>
+{
+    fn begin(
+        owner: &'operation mut RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'startup>,
+        expected: HostAttemptPhaseV1,
+    ) -> Self {
+        let began = match &mut owner.binding {
+            RetainedPhysicalBindingV1::Host(host) => {
+                match host.begin_canary_v2(expected) {
+                    Ok(()) => true,
+                    Err(cause) => {
+                        if host.retain_canary_failure_v2(cause).is_err() {
+                            std::process::abort();
+                        }
+                        false
+                    }
+                }
+            }
+            _ => std::process::abort(),
+        };
+        Self { owner, began, complete: false }
+    }
+
+    fn finish<T>(
+        mut self,
+        result: Result<T, PhysicalTpmFailureV1>,
+        original: &super::host::CanaryAuthenticatedRequestV3<'_>,
+    ) -> Result<T, super::host::physical::CanaryPhysicalErrorV2> {
+        if !self.began {
+            let error = match &mut self.owner.binding {
+                RetainedPhysicalBindingV1::Host(host) => {
+                    let error = host.canary_failure_v2().unwrap_or_else(|| std::process::abort());
+                    host.close();
+                    error
+                }
+                _ => std::process::abort(),
+            };
+            self.owner.poisoned = true;
+            self.complete = true;
+            return Err(error);
+        }
+        let value = match result {
+            Ok(value) => Some(value),
+            Err(cause) => {
+                if self.owner.host_mut().and_then(|host| host.retain_canary_failure_v2(cause)).is_err() {
+                    std::process::abort();
+                }
+                None
+            }
+        };
+        if let RetainedPhysicalBindingV1::Host(host) = &mut self.owner.binding {
+            host.canary_original_posts_v2();
+        }
+        if self.owner.pidfd.is_some() && self.owner.child.is_some() {
+            let process = self.owner.require_original_child_process();
+            if let RetainedPhysicalBindingV1::Host(host) = &mut self.owner.binding {
+                host.retain_canary_post_v2(4, process);
+            }
+            let context = match (&mut self.owner.binding, self.owner.pidfd.as_ref()) {
+                (RetainedPhysicalBindingV1::Host(host), Some(pidfd)) => {
+                    host.observe_canary_helper_context_v2(pidfd)
+                }
+                _ => Err(PhysicalTpmFailureV1::State),
+            };
+            if let RetainedPhysicalBindingV1::Host(host) = &mut self.owner.binding {
+                host.retain_canary_post_v2(5, context);
+            }
+        }
+        if let Some(channel) = self.owner.channel.as_ref() {
+            let carrier = channel.as_fd().map(|_| ()).map_err(PhysicalTpmFailureV1::Send);
+            if let RetainedPhysicalBindingV1::Host(host) = &mut self.owner.binding {
+                host.retain_canary_post_v2(6, carrier);
+            }
+        }
+        // Always sample the same original pair LAST, even when native/schema
+        // or positive owner checks have fenced themselves. This never issues
+        // a TPM command, supplies a replacement floor or renews the window.
+        let clock = original.require_clock().map_err(PhysicalTpmFailureV1::from);
+        if let RetainedPhysicalBindingV1::Host(host) = &mut self.owner.binding {
+            host.retain_canary_post_v2(7, clock);
+            if host.canary_failure_v2().is_none() {
+                if let Err(cause) = host.complete_canary_v2() {
+                    if host.retain_canary_failure_v2(cause).is_err() {
+                        std::process::abort();
+                    }
+                }
+            }
+            if let Some(error) = host.canary_failure_v2() {
+                host.close();
+                self.owner.poisoned = true;
+                self.complete = true;
+                return Err(error);
+            }
+        }
+        self.complete = true;
+        match value {
+            Some(value) => Ok(value),
+            None => std::process::abort(),
+        }
+    }
+}
+
+impl Drop for CanaryHostOperationV2<'_, '_, '_, '_> {
+    fn drop(&mut self) {
+        if !self.complete {
+            if let RetainedPhysicalBindingV1::Host(host) = &mut self.owner.binding {
+                if host.retain_canary_failure_v2(PhysicalTpmFailureV1::Unfinished).is_err() {
+                    std::process::abort();
+                }
+                host.close();
+            }
+            self.owner.poisoned = true;
+        }
     }
 }
 

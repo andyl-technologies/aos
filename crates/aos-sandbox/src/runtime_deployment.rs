@@ -26,9 +26,13 @@ pub use comparison::{
     HeldRuntimeDeploymentAppendComparisonV1, HeldRuntimeDeploymentMainComparisonV1,
     HeldRuntimeDeploymentPairComparisonV1,
     RuntimeDeploymentComparisonErrorV1, RuntimeDeploymentComparisonOriginsV1,
+    RuntimeDeploymentCanaryOriginsCaptureV2, RuntimeDeploymentCanaryFailureV2,
 };
 pub use crate::journal::RuntimeDeploymentNativeTransactionDataV1;
 pub use invocation::{HostPhysicalInvocationErrorV1, HostPhysicalInvocationLeaseV1};
+pub use service_policy::{
+    RuntimeDeploymentStorageDeliveryReadbackV2, observe_canary_storage_delivery_v2,
+};
 
 pub(crate) use genesis::VerifiedDeploymentGenesisV1;
 pub(crate) use genesis::{
@@ -39,7 +43,7 @@ pub(crate) use genesis::{
 // literal or new role is introduced, and genesis.rs visibility stays unchanged.
 pub(crate) const SIDECAR_NAME: &str = genesis::SIDECAR_NAME;
 pub(crate) use preparation::{
-    MAIN_LIMITS, require_native_step_binding_v1,
+    MAIN_LIMITS, require_native_step_binding_v1, require_native_canary_binding_v2,
     require_current_deployment_rows_v1, require_deployment_main_v1,
     require_deployment_row_bound_v1,
     require_prospective_deployment_append_v1,
@@ -58,6 +62,13 @@ pub(crate) const LISTENER_FD_NAME: &str = "aos-runtime-deployment";
 pub(crate) const PID1_FD_NAME: &str = "aos-runtime-deployment-pid1-image";
 pub(crate) const PROFILE_FD_NAME: &str = "aos-runtime-deployment-startup-profile";
 pub(crate) const SOCKET_PATH: &str = "/run/aos/sandbox/runtime-deployment.sock";
+
+/// Selects only the two compiled publisher admission recipes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum DeploymentAdmissionModeV2 {
+    Legacy,
+    Canary,
+}
 
 /// Reports rejection of the deployment-only publisher's actual startup.
 #[derive(Debug, thiserror::Error)]

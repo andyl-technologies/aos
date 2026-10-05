@@ -579,8 +579,8 @@ impl HostBroker<
                     let resolved = catalog.resolve(&fence, plan)?;
                     let store = original.store.as_ref().ok_or_else(canary_unavailable)?;
                     let baseline = store.retain_prefix_baseline_original(&mut original.job)?;
-                    original.root_export.measure_original(
-                        &resolved.workspace, original.job.originals()?, baseline,
+                    original.root_export.measure_job_original_v2(
+                        &resolved.workspace, &mut original.job, baseline,
                     )?;
                     store.require_complete_prefix_components_original(
                         original.root_export.measured_original()?,
